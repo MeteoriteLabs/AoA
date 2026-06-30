@@ -16,7 +16,7 @@ import {
   hubPreferencesService,
   permissionService,
 } from "../services/index.js";
-import { HttpError, unauthorized } from "../errors.js";
+import { HttpError, notFound, unauthorized } from "../errors.js";
 import { assertCompanyAccess } from "./authz.js";
 import { emitStaleWorkHubItems } from "../services/hub-stale-work.js";
 import { emitOpenApprovalHubItems } from "../services/hub-approval-requests.js";
@@ -123,6 +123,24 @@ export function hubItemRoutes(db: Db) {
     await emitStaleWorkHubItems(db, companyId, null);
     const result = await counterSnapshots.getOrRefresh({ companyId, userId, role });
     res.json(result);
+  });
+
+  // GET item — RBAC-scoped hydration route for realtime toasts/viewers. Live
+  // events only carry metadata; clients load rich title/summary fields here.
+  router.get("/companies/:companyId/hub-items/:id", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const hubItemId = req.params.id as string;
+    assertCompanyAccess(req, companyId);
+    const userId = requireBoardUserId(req);
+    const role = await resolveRole(req, companyId, userId);
+    const item = await svc.getVisible(companyId, {
+      hubItemId,
+      actorUserId: userId,
+      role,
+      status: "any",
+    });
+    if (!item) throw notFound("Hub item not found");
+    res.json(item);
   });
 
   // POST action — optimistic-concurrency transition + audit-before-side-effect.

@@ -1,5 +1,11 @@
 export type { Company } from "./company.js";
 export type {
+  LiveEvent,
+  HubItemChangedLivePayload,
+  HubCountsChangedLivePayload,
+  HubDigestChangedLivePayload,
+} from "./live.js";
+export type {
   Agent,
   AgentPermissions,
   AgentKeyCreated,
@@ -90,7 +96,6 @@ export type {
   DetectedOutput,
   DetectedOutputForUI,
 } from "./heartbeat.js";
-export type { LiveEvent } from "./live.js";
 export type { DashboardSummary } from "./dashboard.js";
 export type { HomeSummary, GoalProgress, GoalGapNudge, RecentActivityItem, SetupStatus } from "./home.js";
 export type { ActivityEvent } from "./activity.js";

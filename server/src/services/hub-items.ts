@@ -13,7 +13,16 @@ import {
   suggestions,
   issues,
 } from "@armyofagents/db";
-import type { HubGroupMode, HubItemStatus, HubLane, HubSemanticType, HubOwnerPool, HubUserStateInput } from "@armyofagents/shared";
+import type {
+  HubCountsChangedLivePayload,
+  HubGroupMode,
+  HubItemChangedLivePayload,
+  HubItemStatus,
+  HubLane,
+  HubSemanticType,
+  HubOwnerPool,
+  HubUserStateInput,
+} from "@armyofagents/shared";
 import {
   HUB_SEMANTIC_TYPES,
   laneForSemanticType,
@@ -40,6 +49,7 @@ import { HttpError } from "../errors.js";
 import { hubCounterSnapshotsService } from "./hub-counter-snapshots.js";
 import { orgHierarchyService } from "./org-hierarchy.js";
 import { permissionService } from "./permissions.js";
+import { publishLiveEvent } from "./live-events.js";
 
 // Semantic types that resolve to a given lane (lane is derived, not a column).
 function semanticTypesForLane(lane: HubLane): HubSemanticType[] {
@@ -171,6 +181,34 @@ export function hubItemsService(db: Db) {
     };
   }
 
+  function publishHubItemChanged(
+    item: { id: string; companyId: string; semanticType: string | null; status: string; version: number },
+    change: HubItemChangedLivePayload["change"],
+  ) {
+    if (!item.semanticType) return;
+    const semanticType = item.semanticType as HubSemanticType;
+    publishLiveEvent({
+      companyId: item.companyId,
+      type: "hub.item.changed",
+      payload: {
+        itemId: item.id,
+        semanticType,
+        lane: laneForSemanticType(semanticType),
+        status: item.status as HubItemStatus,
+        version: item.version,
+        change,
+      } satisfies HubItemChangedLivePayload,
+    });
+  }
+
+  function publishHubCountsChanged(companyId: string, reason: HubCountsChangedLivePayload["reason"]) {
+    publishLiveEvent({
+      companyId,
+      type: "hub.counts.changed",
+      payload: { reason } satisfies HubCountsChangedLivePayload,
+    });
+  }
+
   function hubOwnedPriorState(item: {
     status: string;
     version: number;
@@ -287,6 +325,10 @@ export function hubItemsService(db: Db) {
     // id-less `{ lane }` object to callers (P2-5).
     if (!row) throw conflict("Hub item vanished during emit; retry.");
     await invalidateCounterSnapshotsForCompany(a.companyId);
+    if (!a.executor) {
+      publishHubItemChanged(row, "created");
+      publishHubCountsChanged(a.companyId, "item_changed");
+    }
     return { ...row, lane: laneForSemanticType(a.semanticType) };
   }
 
@@ -573,6 +615,7 @@ export function hubItemsService(db: Db) {
     }
 
     await invalidateCounterSnapshotsForUser(args.companyId, args.actorUserId);
+    publishHubCountsChanged(args.companyId, "personal_state_changed");
     return row;
   }
 
@@ -765,7 +808,18 @@ export function hubItemsService(db: Db) {
     });
 
     if (!committed.replayed && args.sideEffect) await args.sideEffect();
-    if (!committed.replayed) await invalidateCounterSnapshotsForCompany(args.companyId);
+    if (!committed.replayed) {
+      await invalidateCounterSnapshotsForCompany(args.companyId);
+      publishHubItemChanged(
+        committed.item,
+        args.action === "resolve"
+          ? "resolved"
+          : args.action === "archive"
+            ? "archived"
+            : "state_changed",
+      );
+      publishHubCountsChanged(args.companyId, "item_changed");
+    }
     return {
       item: committed.item,
       auditId: committed.auditId,
