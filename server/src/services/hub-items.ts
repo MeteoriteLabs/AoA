@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import type { Db } from "@armyofagents/db";
 import {
@@ -16,7 +16,6 @@ import {
 import type { HubGroupMode, HubItemStatus, HubLane, HubSemanticType, HubOwnerPool, HubUserStateInput } from "@armyofagents/shared";
 import {
   HUB_SEMANTIC_TYPES,
-  HEARTBEAT_RUN_STATUSES,
   laneForSemanticType,
   authorityForSemanticType,
 } from "@armyofagents/shared";
@@ -24,11 +23,13 @@ import type { UserRole } from "@armyofagents/shared";
 
 // Heartbeat-backed hub items are actionable while the source run is live, or
 // while it is the latest failed/timed-out run for its agent.
-const HEARTBEAT_ACTIONABLE_STATUSES: ReadonlySet<string> = new Set(
-  HEARTBEAT_RUN_STATUSES.filter((s) =>
-    s === "queued" || s === "scheduled_retry" || s === "running" || s === "failed" || s === "timed_out"
-  ),
-);
+const HEARTBEAT_ACTIONABLE_STATUSES: ReadonlySet<string> = new Set([
+  "queued",
+  "scheduled_retry",
+  "running",
+  "failed",
+  "timed_out",
+]);
 const APPROVAL_OPEN_STATUSES: ReadonlySet<string> = new Set(["pending", "revision_requested"]);
 const STALE_WORK_STATUSES: ReadonlySet<string> = new Set(["todo", "in_progress"]);
 const STALE_WORK_THRESHOLD_MS = 24 * 60 * 60 * 1000;
@@ -1065,20 +1066,21 @@ export function hubItemsService(db: Db) {
       .limit(1)
       .then((r) => r[0] ?? null);
     if (!row) return { terminal: true, summary: null, permissionRevision: null };
-    const newerRun = await db
+    const latestRun = await db
       .select({ id: heartbeatRuns.id })
       .from(heartbeatRuns)
       .where(
         and(
           eq(heartbeatRuns.companyId, companyId),
           eq(heartbeatRuns.agentId, row.agentId),
-          gt(heartbeatRuns.createdAt, row.createdAt),
         ),
       )
+      .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
       .limit(1)
       .then((r) => r[0] ?? null);
+    const isSuperseded = latestRun != null && latestRun.id !== sourceId;
     return {
-      terminal: !HEARTBEAT_ACTIONABLE_STATUSES.has(row.status) || Boolean(newerRun),
+      terminal: !HEARTBEAT_ACTIONABLE_STATUSES.has(row.status) || isSuperseded,
       summary: row.error ?? null,
       permissionRevision: row.updatedAt ? new Date(row.updatedAt).toISOString() : null,
     };
