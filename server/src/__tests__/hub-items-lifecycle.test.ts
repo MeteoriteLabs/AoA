@@ -27,6 +27,10 @@ function makeSelectChain(rows: unknown[], captured: { where: unknown[] }) {
   return chain;
 }
 
+function encodeTestCursor(createdAt: string, id: string) {
+  return Buffer.from(JSON.stringify({ createdAt, id }), "utf8").toString("base64url");
+}
+
 function makeDb(rows: unknown[] = []) {
   const captured = { where: [] as unknown[] };
   const db = {
@@ -37,6 +41,10 @@ function makeDb(rows: unknown[] = []) {
 
 function renderWhere(condition: unknown) {
   return new PgDialect().sqlToQuery(condition as never).sql.toLowerCase();
+}
+
+function renderWhereQuery(condition: unknown) {
+  return new PgDialect().sqlToQuery(condition as never);
 }
 
 describe("hubItems lifecycle query semantics", () => {
@@ -83,5 +91,42 @@ describe("hubItems lifecycle query semantics", () => {
     expect(whereSql).toContain('"hub_item_user_state"."dismissed_at" is null');
     expect(whereSql).toContain('"hub_item_user_state"."snoozed_until" is null');
     expect(whereSql).toContain('"hub_item_user_state"."snoozed_until" <=');
+  });
+
+  it("query searches title, summary, source, scope, and semantic fields with escaped LIKE", async () => {
+    const { db, captured } = makeDb();
+    const svc = hubItemsService(db as never);
+
+    await svc.query("company-1", {
+      actorUserId: "alice",
+      role: "founder",
+      q: String.raw`100%_ready\ship`,
+    } as never);
+
+    const where = renderWhereQuery(captured.where[0]);
+    const whereSql = where.sql.toLowerCase();
+    expect(whereSql).toContain('lower("notifications"."title") like');
+    expect(whereSql).toContain('lower("notifications"."summary") like');
+    expect(whereSql).toContain('lower("notifications"."source_type") like');
+    expect(whereSql).toContain('lower("notifications"."scope_key") like');
+    expect(whereSql).toContain('lower("notifications"."semantic_type") like');
+    expect(whereSql).toContain("escape '\\'");
+    expect(where.params).toContain(String.raw`%100\%\_ready\\ship%`);
+  });
+
+  it("query applies stable keyset cursor predicates", async () => {
+    const { db, captured } = makeDb();
+    const svc = hubItemsService(db as never);
+
+    await svc.query("company-1", {
+      actorUserId: "alice",
+      role: "founder",
+      cursor: encodeTestCursor("2026-06-30T00:00:00.000Z", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+    } as never);
+
+    const whereSql = renderWhere(captured.where[0]);
+    expect(whereSql).toContain('"notifications"."created_at" <');
+    expect(whereSql).toContain('"notifications"."created_at" =');
+    expect(whereSql).toContain('"notifications"."id" <');
   });
 });

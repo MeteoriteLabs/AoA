@@ -68,6 +68,29 @@ export const updateHubPreferencesSchema = z
 
 export type UpdateHubPreferencesInput = z.infer<typeof updateHubPreferencesSchema>;
 
+export const hubListRowSchema = z
+  .object({
+    id: z.string().min(1),
+    groupKey: z.string().nullable(),
+    groupLabel: z.string().nullable(),
+    groupCount: z.number().int().nonnegative().nullable(),
+    scopeKey: z.string().nullable(),
+    slaAt: z.string().datetime().nullable(),
+  })
+  .passthrough();
+
+export type HubListRow = z.infer<typeof hubListRowSchema>;
+
+export const hubListResponseSchema = z
+  .object({
+    items: z.array(hubListRowSchema),
+    nextCursor: z.string().nullable(),
+    totalKnown: z.number().int().nonnegative().nullable(),
+  })
+  .strict();
+
+export type HubListResponse = z.infer<typeof hubListResponseSchema>;
+
 // ── Action (POST /companies/:companyId/hub-items/:id/action) ──────────────────
 // Optimistic-concurrency action envelope. `expectedVersion` is the version the
 // client last saw → a mismatch yields 409. `nextStatus` is the target lifecycle

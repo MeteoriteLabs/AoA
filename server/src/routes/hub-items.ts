@@ -97,6 +97,9 @@ export function hubItemRoutes(db: Db) {
       status: query.status,
       includeDismissed: query.includeDismissed,
       includeSnoozed: query.includeSnoozed,
+      q: query.q,
+      cursor: query.cursor,
+      groupMode: query.groupMode,
       limit: query.limit,
     });
     res.json(items);

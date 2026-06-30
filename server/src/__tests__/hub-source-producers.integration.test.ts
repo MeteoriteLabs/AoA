@@ -252,7 +252,7 @@ describe.skipIf(process.platform === "win32")("hub W1b source reconcilers", () =
 
     await svc.reconcile(companyId, { sourceType: "approval" });
 
-    const rows = await svc.query(companyId, {
+    const { items: rows } = await svc.query(companyId, {
       actorUserId: founderId,
       role: "founder",
       lane: "waiting_on_you",
@@ -278,7 +278,7 @@ describe.skipIf(process.platform === "win32")("hub W1b source reconcilers", () =
     await svc.reconcile(companyId, { sourceType: "suggestion" });
     await svc.reconcile(companyId, { sourceType: "issue" });
 
-    const rows = await svc.query(companyId, { actorUserId: founderId, role: "founder" });
+    const { items: rows } = await svc.query(companyId, { actorUserId: founderId, role: "founder" });
     expect(rows).toHaveLength(0);
   });
 
@@ -300,13 +300,13 @@ describe.skipIf(process.platform === "win32")("hub W1b source reconcilers", () =
 
     await svc.reconcile(companyId, { sourceType: "issue" });
 
-    let rows = await svc.query(companyId, { actorUserId: founderId, role: "founder" });
+    let { items: rows } = await svc.query(companyId, { actorUserId: founderId, role: "founder" });
     expect(rows.map((r) => r.semanticType).sort()).toEqual(["mention", "stale_work"].sort());
 
     await db.execute(sql`UPDATE issues SET status = 'blocked', updated_at = now() - interval '2 days' WHERE id = ${issue.id}`);
     await svc.reconcile(companyId, { sourceType: "issue" });
 
-    rows = await svc.query(companyId, { actorUserId: founderId, role: "founder" });
+    rows = (await svc.query(companyId, { actorUserId: founderId, role: "founder" })).items;
     expect(rows.map((r) => r.semanticType)).toEqual(["mention"]);
   });
 
@@ -320,7 +320,7 @@ describe.skipIf(process.platform === "win32")("hub W1b source reconcilers", () =
     await db.execute(sql`UPDATE issues SET updated_at = now() - interval '2 hours' WHERE id = ${issue.id}`);
     await svc.reconcile(companyId, { sourceType: "issue" });
 
-    const rows = await svc.query(companyId, { actorUserId: founderId, role: "founder" });
+    const { items: rows } = await svc.query(companyId, { actorUserId: founderId, role: "founder" });
     expect(rows).toHaveLength(0);
   });
 
@@ -334,7 +334,7 @@ describe.skipIf(process.platform === "win32")("hub W1b source reconcilers", () =
 
     await svc.reconcile(companyId, { sourceType: "issue" });
 
-    const rows = await svc.query(companyId, {
+    const { items: rows } = await svc.query(companyId, {
       actorUserId: founderId,
       role: "founder",
       lane: "suggestions",
@@ -363,7 +363,7 @@ describe.skipIf(process.platform === "win32")("hub W1b source reconcilers", () =
     );
     await svc.reconcile(companyId, { sourceType: "discussion" });
 
-    const rows = await svc.query(companyId, { actorUserId: nextOwnerId, role: "member" });
+    const { items: rows } = await svc.query(companyId, { actorUserId: nextOwnerId, role: "member" });
     expect(rows).toHaveLength(1);
     expect(rows[0]?.ownerUserId).toBe(nextOwnerId);
     expect(rows[0]?.scopeKey).not.toBe(discussion.scopeId);
@@ -389,7 +389,7 @@ describe.skipIf(process.platform === "win32")("hub W1b source reconcilers", () =
     await db.execute(sql`UPDATE discussions SET pending_item_count = 0, updated_at = now() + interval '1 second' WHERE id = ${discussion.id}`);
     await svc.reconcile(companyId, { sourceType: "discussion" });
 
-    const rows = await svc.query(companyId, { actorUserId: founderId, role: "founder" });
+    const { items: rows } = await svc.query(companyId, { actorUserId: founderId, role: "founder" });
     expect(rows.map((r) => r.semanticType)).toEqual(["mention"]);
   });
 });

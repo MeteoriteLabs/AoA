@@ -15,6 +15,7 @@ import {
 import {
   hubActionSchema,
   hubBulkActionSchema,
+  hubListResponseSchema,
   hubPreferencesSchema,
   hubUserStateSchema,
   listHubItemsQuery,
@@ -111,6 +112,36 @@ describe("hub contract", () => {
       density: "comfortable",
       showAutopilotEntry: true,
       updatedAt: null,
+    });
+  });
+  it("accepts W1d list response envelopes with group metadata", () => {
+    expect(
+      hubListResponseSchema.parse({
+        items: [
+          {
+            id: "hub-1",
+            title: "Deploy approval",
+            groupKey: "source:approval",
+            groupLabel: "approval",
+            groupCount: null,
+            scopeKey: null,
+            slaAt: null,
+          },
+        ],
+        nextCursor: "cursor-1",
+        totalKnown: null,
+      }),
+    ).toMatchObject({
+      items: [
+        {
+          id: "hub-1",
+          groupKey: "source:approval",
+          groupLabel: "approval",
+          groupCount: null,
+        },
+      ],
+      nextCursor: "cursor-1",
+      totalKnown: null,
     });
   });
   it("rejects empty visible lane preferences", () => {

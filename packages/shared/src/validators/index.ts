@@ -480,6 +480,8 @@ export {
   hubUndoSchema,
   hubPreferencesSchema,
   updateHubPreferencesSchema,
+  hubListRowSchema,
+  hubListResponseSchema,
   type ListHubItemsQuery,
   type HubActionInput,
   type HubUserStateInput,
@@ -487,4 +489,6 @@ export {
   type HubUndoInput,
   type HubPreferences,
   type UpdateHubPreferencesInput,
+  type HubListRow,
+  type HubListResponse,
 } from "./hub.js";

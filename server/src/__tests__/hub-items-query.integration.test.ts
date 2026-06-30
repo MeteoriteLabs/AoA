@@ -104,8 +104,8 @@ describe.skipIf(process.platform === "win32")("hubItems.query — real DB", () =
     const svc = hubItemsService(db);
     await svc.emit({ companyId, semanticType: "approval_request", sourceType: "approval", sourceId: "a1", title: "owned", ownerUserId: memberId });
     await svc.emit({ companyId, semanticType: "approval_request", sourceType: "approval", sourceId: "a2", title: "founder-only", ownerUserId: founderId });
-    const asFounder = await svc.query(companyId, { actorUserId: founderId, role: "founder" });
-    const asMember = await svc.query(companyId, { actorUserId: memberId, role: "team_member" });
+    const { items: asFounder } = await svc.query(companyId, { actorUserId: founderId, role: "founder" });
+    const { items: asMember } = await svc.query(companyId, { actorUserId: memberId, role: "team_member" });
     expect(asFounder.map((i) => i.title).sort()).toEqual(["founder-only", "owned"]);
     expect(asMember.map((i) => i.title)).toEqual(["owned"]);
   });
@@ -117,7 +117,7 @@ describe.skipIf(process.platform === "win32")("hubItems.query — real DB", () =
     const open = await svc.emit({ companyId, semanticType: "run_failed", sourceType: "heartbeat_run", sourceId: "r-open", title: "open-one", ownerUserId: founderId });
     const resolved = await svc.emit({ companyId, semanticType: "run_failed", sourceType: "heartbeat_run", sourceId: "r-done", title: "resolved-one", ownerUserId: founderId });
     await db.execute(sql`UPDATE notifications SET status = 'resolved' WHERE id = ${resolved.id}`);
-    const rows = await svc.query(companyId, { actorUserId: founderId, role: "founder" });
+    const { items: rows } = await svc.query(companyId, { actorUserId: founderId, role: "founder" });
     expect(rows.map((i) => i.id)).toEqual([open.id]);
   });
 
@@ -131,11 +131,11 @@ describe.skipIf(process.platform === "win32")("hubItems.query — real DB", () =
     await db.execute(sql`INSERT INTO hub_item_user_state (id, company_id, hub_item_id, principal_type, principal_id, read_at) VALUES (gen_random_uuid(), ${companyId}, ${read.id}, 'user', ${founderId}, now())`);
     await db.execute(sql`INSERT INTO hub_item_user_state (id, company_id, hub_item_id, principal_type, principal_id, dismissed_at) VALUES (gen_random_uuid(), ${companyId}, ${dismissed.id}, 'user', ${founderId}, now())`);
 
-    const def = await svc.query(companyId, { actorUserId: founderId, role: "founder" });
+    const { items: def } = await svc.query(companyId, { actorUserId: founderId, role: "founder" });
     expect(def.map((i) => i.id)).toEqual([read.id]); // dismissed excluded
     expect(def.find((i) => i.id === read.id)?.readAt).toBeTruthy(); // per-user read joined
 
-    const withDismissed = await svc.query(companyId, { actorUserId: founderId, role: "founder", includeDismissed: true });
+    const { items: withDismissed } = await svc.query(companyId, { actorUserId: founderId, role: "founder", includeDismissed: true });
     expect(withDismissed.map((i) => i.id).sort()).toEqual([read.id, dismissed.id].sort());
   });
 
@@ -149,10 +149,10 @@ describe.skipIf(process.platform === "win32")("hubItems.query — real DB", () =
     await db.execute(sql`INSERT INTO hub_item_user_state (id, company_id, hub_item_id, principal_type, principal_id, snoozed_until) VALUES (gen_random_uuid(), ${companyId}, ${future.id}, 'user', ${founderId}, now() + interval '1 day')`);
     await db.execute(sql`INSERT INTO hub_item_user_state (id, company_id, hub_item_id, principal_type, principal_id, snoozed_until) VALUES (gen_random_uuid(), ${companyId}, ${past.id}, 'user', ${founderId}, now() - interval '1 day')`);
 
-    const def = await svc.query(companyId, { actorUserId: founderId, role: "founder" });
+    const { items: def } = await svc.query(companyId, { actorUserId: founderId, role: "founder" });
     expect(def.map((i) => i.id).sort()).toEqual([active.id, past.id].sort());
 
-    const withSnoozed = await svc.query(companyId, { actorUserId: founderId, role: "founder", includeSnoozed: true });
+    const { items: withSnoozed } = await svc.query(companyId, { actorUserId: founderId, role: "founder", includeSnoozed: true });
     expect(withSnoozed.map((i) => i.id).sort()).toEqual([active.id, future.id, past.id].sort());
   });
 
@@ -166,10 +166,10 @@ describe.skipIf(process.platform === "win32")("hubItems.query — real DB", () =
     await db.execute(sql`INSERT INTO hub_item_user_state (id, company_id, hub_item_id, principal_type, principal_id, snoozed_until) VALUES (gen_random_uuid(), ${companyId}, ${snoozedByFounder.id}, 'user', ${founderId}, now() + interval '1 day')`);
     await db.execute(sql`INSERT INTO hub_item_user_state (id, company_id, hub_item_id, principal_type, principal_id, dismissed_at) VALUES (gen_random_uuid(), ${companyId}, ${dismissedByFounder.id}, 'user', ${founderId}, now())`);
 
-    const asFounder = await svc.query(companyId, { actorUserId: founderId, role: "founder" });
+    const { items: asFounder } = await svc.query(companyId, { actorUserId: founderId, role: "founder" });
     expect(asFounder.map((i) => i.id)).toEqual([]);
 
-    const asBob = await svc.query(companyId, { actorUserId: bobId, role: "team_member" });
+    const { items: asBob } = await svc.query(companyId, { actorUserId: bobId, role: "team_member" });
     expect(asBob.map((i) => i.id).sort()).toEqual([dismissedByFounder.id, snoozedByFounder.id].sort());
   });
 
@@ -183,7 +183,7 @@ describe.skipIf(process.platform === "win32")("hubItems.query — real DB", () =
     await db.execute(sql`UPDATE notifications SET created_at = now() WHERE id = ${dismissed.id}`);
     await db.execute(sql`INSERT INTO hub_item_user_state (id, company_id, hub_item_id, principal_type, principal_id, dismissed_at) VALUES (gen_random_uuid(), ${companyId}, ${dismissed.id}, 'user', ${founderId}, now())`);
 
-    const rows = await svc.query(companyId, { actorUserId: founderId, role: "founder", limit: 1 });
+    const { items: rows } = await svc.query(companyId, { actorUserId: founderId, role: "founder", limit: 1 });
 
     expect(rows.map((i) => i.id)).toEqual([visible.id]);
   });
@@ -200,7 +200,7 @@ describe.skipIf(process.platform === "win32")("hubItems.query — real DB", () =
     // A dept-B-scoped item owned by the founder — leadA must NOT see it.
     await svc.emit({ companyId, semanticType: "run_failed", sourceType: "heartbeat_run", sourceId: "rb", title: "deptB-item", ownerUserId: founderId, scopeKey: deptB });
 
-    const asLeadA = await svc.query(companyId, { actorUserId: leadA, role: "team_lead" });
+    const { items: asLeadA } = await svc.query(companyId, { actorUserId: leadA, role: "team_lead" });
     expect(asLeadA.map((i) => i.title)).toEqual(["deptA-item"]); // sees A, not B
   });
 });

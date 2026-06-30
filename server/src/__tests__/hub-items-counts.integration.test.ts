@@ -164,7 +164,7 @@ describe.skipIf(process.platform === "win32")("hubItems.counts — real DB", () 
     const c = await svc.counts(companyId, founderId, "founder");
     expect(c).toEqual({ open: 1, unread: 1 }); // only the still-open item counts
     // Sanity: the lone open item is the one we left open.
-    const rows = await svc.query(companyId, { actorUserId: founderId, role: "founder" });
+    const { items: rows } = await svc.query(companyId, { actorUserId: founderId, role: "founder" });
     expect(rows.map((i) => i.id)).toEqual([open.id]);
   });
 

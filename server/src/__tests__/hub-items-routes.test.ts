@@ -168,20 +168,59 @@ describe("hub-items routes", () => {
 
   it("(a) GET list asserts company access and returns the RBAC-scoped service result", async () => {
     mockPerms.getEffectiveRole.mockResolvedValue("team_member");
-    mockSvc.query.mockResolvedValue([{ id: ITEM_ID, title: "owned", lane: "waiting_on_you" }]);
+    mockSvc.query.mockResolvedValue({
+      items: [{ id: ITEM_ID, title: "owned", lane: "waiting_on_you" }],
+      nextCursor: null,
+      totalKnown: null,
+    });
     const app = createApp(boardActor());
 
     const res = await request(app).get(`/api/companies/${COMPANY_A}/hub-items`);
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(res.body).toHaveLength(1);
-    expect(res.body[0].title).toBe("owned");
+    expect(res.body.items).toHaveLength(1);
+    expect(res.body.items[0].title).toBe("owned");
     expect(mockEmitOpenApprovalHubItems).toHaveBeenCalledWith(expect.anything(), COMPANY_A, expect.any(Number));
     expect(mockEmitStaleWorkHubItems).toHaveBeenCalledWith(expect.anything(), COMPANY_A, expect.any(Number));
     // RBAC scope (resolved role) is threaded into the service.
     expect(mockSvc.query).toHaveBeenCalledWith(
       COMPANY_A,
       expect.objectContaining({ actorUserId: "user-1", role: "team_member" }),
+    );
+  });
+
+  it("GET list passes W1d search, cursor, and group mode options to the service", async () => {
+    mockPerms.getEffectiveRole.mockResolvedValue("founder");
+    mockSvc.query.mockResolvedValue({
+      items: [],
+      nextCursor: "next-cursor",
+      totalKnown: null,
+    });
+    const app = createApp(boardActor());
+
+    const res = await request(app)
+      .get(`/api/companies/${COMPANY_A}/hub-items`)
+      .query({
+        lane: "waiting_on_you",
+        q: "deploy",
+        cursor: "cursor-1",
+        groupMode: "source",
+        limit: "25",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toEqual({ items: [], nextCursor: "next-cursor", totalKnown: null });
+    expect(mockSvc.query).toHaveBeenCalledWith(
+      COMPANY_A,
+      expect.objectContaining({
+        actorUserId: "user-1",
+        role: "founder",
+        lane: "waiting_on_you",
+        q: "deploy",
+        cursor: "cursor-1",
+        groupMode: "source",
+        limit: 25,
+      }),
     );
   });
 

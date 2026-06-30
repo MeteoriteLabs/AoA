@@ -107,6 +107,15 @@ export const notifications = pgTable(
     hubClaimedOpenIdx: index("hub_items_claimed_open_idx")
       .on(table.companyId, table.claimedByUserId)
       .where(sql`${table.status} = 'open'`),
+    hubGroupOpenIdx: index("hub_items_group_open_idx")
+      .on(table.companyId, table.groupKey, table.createdAt)
+      .where(sql`${table.status} = 'open'`),
+    hubScopeOpenIdx: index("hub_items_scope_open_idx")
+      .on(table.companyId, table.scopeKey, table.createdAt)
+      .where(sql`${table.status} = 'open'`),
+    hubSourceOpenIdx: index("hub_items_source_open_idx")
+      .on(table.companyId, table.sourceType, table.createdAt)
+      .where(sql`${table.status} = 'open'`),
     hubSourceUniqueIdx: uniqueIndex("hub_items_source_unique_idx").on(
       table.sourceUniqueKey,
     ),

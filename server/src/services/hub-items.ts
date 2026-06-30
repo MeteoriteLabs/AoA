@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import type { Db } from "@armyofagents/db";
 import {
@@ -13,7 +13,7 @@ import {
   suggestions,
   issues,
 } from "@armyofagents/db";
-import type { HubItemStatus, HubLane, HubSemanticType, HubOwnerPool, HubUserStateInput } from "@armyofagents/shared";
+import type { HubGroupMode, HubItemStatus, HubLane, HubSemanticType, HubOwnerPool, HubUserStateInput } from "@armyofagents/shared";
 import {
   HUB_SEMANTIC_TYPES,
   HEARTBEAT_RUN_STATUSES,
@@ -67,6 +67,66 @@ export interface EmitArgs {
   // Emit in the SAME transaction as the source mutation (no silent drops). A
   // PgTransaction is NOT assignable to Db — callers pass `tx as unknown as Db`.
   executor?: Db;
+}
+
+type HubListRow = typeof hubItems.$inferSelect & {
+  lane: HubLane | null;
+  readAt: Date | null;
+  snoozedUntil: Date | null;
+  dismissedAt: Date | null;
+  groupKey: string | null;
+  groupLabel: string | null;
+  groupCount: number | null;
+  scopeKey: string | null;
+  slaAt: Date | null;
+};
+
+interface HubListResponse {
+  items: HubListRow[];
+  nextCursor: string | null;
+  totalKnown: number | null;
+}
+
+function encodeCursor(row: { createdAt: Date; id: string }) {
+  return Buffer.from(JSON.stringify({ createdAt: row.createdAt.toISOString(), id: row.id }), "utf8")
+    .toString("base64url");
+}
+
+function decodeCursor(cursor: string) {
+  const parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as {
+    createdAt: string;
+    id: string;
+  };
+  return { createdAt: new Date(parsed.createdAt), id: parsed.id };
+}
+
+function likePattern(q: string) {
+  return `%${q.toLowerCase().replace(/[\\%_]/g, (match) => `\\${match}`)}%`;
+}
+
+function deriveFallbackGroupKey(
+  item: { semanticType: string | null; scopeKey: string | null; sourceType: string | null; groupKey: string | null },
+  groupMode: HubGroupMode,
+) {
+  if (groupMode === "none") return null;
+  if (item.groupKey) return item.groupKey;
+  if (groupMode === "source") return item.sourceType ? `source:${item.sourceType}` : null;
+  if (groupMode === "scope") return item.scopeKey ? `scope:${item.scopeKey}` : null;
+  if (groupMode === "type") return item.semanticType ? `type:${item.semanticType}` : null;
+  const parts = [item.semanticType ?? "unknown", item.scopeKey ?? "global", item.sourceType ?? "unknown"];
+  return `auto:${parts.join(":")}`;
+}
+
+function deriveGroupLabel(
+  item: { semanticType: string | null; scopeKey: string | null; sourceType: string | null; groupKey: string | null },
+  groupMode: HubGroupMode,
+) {
+  if (groupMode === "none") return null;
+  if (item.groupKey) return item.groupKey;
+  if (groupMode === "source") return item.sourceType ?? null;
+  if (groupMode === "scope") return item.scopeKey ?? null;
+  if (groupMode === "type") return item.semanticType ?? null;
+  return [item.semanticType, item.scopeKey, item.sourceType].filter(Boolean).join(" / ") || null;
 }
 
 export function hubItemsService(db: Db) {
@@ -277,9 +337,12 @@ export function hubItemsService(db: Db) {
       status?: HubItemStatus;
       includeDismissed?: boolean;
       includeSnoozed?: boolean;
+      q?: string;
+      cursor?: string;
+      groupMode?: HubGroupMode;
       limit?: number;
     },
-  ) {
+  ): Promise<HubListResponse> {
     const { actorUserId } = opts;
     // Resolve the effective role if not supplied by the caller (route may pass it).
     const role = opts.role ?? (await permissionService(db).getEffectiveRole(companyId, actorUserId));
@@ -301,7 +364,29 @@ export function hubItemsService(db: Db) {
       const now = new Date();
       conds.push(or(isNull(hubItemUserState.snoozedUntil), lte(hubItemUserState.snoozedUntil, now))!);
     }
+    if (opts.q) {
+      const pattern = likePattern(opts.q);
+      conds.push(
+        or(
+          sql`lower(${hubItems.title}) like ${pattern} escape '\\'`,
+          sql`lower(${hubItems.summary}) like ${pattern} escape '\\'`,
+          sql`lower(${hubItems.sourceType}) like ${pattern} escape '\\'`,
+          sql`lower(${hubItems.scopeKey}) like ${pattern} escape '\\'`,
+          sql`lower(${hubItems.semanticType}) like ${pattern} escape '\\'`,
+        )!,
+      );
+    }
+    if (opts.cursor) {
+      const cursor = decodeCursor(opts.cursor);
+      conds.push(
+        or(
+          lt(hubItems.createdAt, cursor.createdAt),
+          and(eq(hubItems.createdAt, cursor.createdAt), lt(hubItems.id, cursor.id)),
+        )!,
+      );
+    }
     const limit = Math.min(Math.max(opts.limit ?? 50, 1), 50);
+    const groupMode = opts.groupMode ?? "auto";
 
     const rows = await db
       .select({
@@ -323,9 +408,14 @@ export function hubItemsService(db: Db) {
       // Stable order: createdAt is not unique, so add id as a deterministic
       // tiebreaker before W1b builds ordered lists / pagination (P2-6).
       .orderBy(sql`${hubItems.createdAt} DESC, ${hubItems.id} DESC`)
-      .limit(limit);
+      .limit(limit + 1);
 
-    return rows
+    const pageRows = rows.slice(0, limit);
+    const nextCursor = rows.length > limit && pageRows.length > 0
+      ? encodeCursor(pageRows[pageRows.length - 1]!.item)
+      : null;
+
+    const items = pageRows
       .map((r) => ({
         ...r.item,
         lane: r.item.semanticType
@@ -335,7 +425,14 @@ export function hubItemsService(db: Db) {
         readAt: r.readAt,
         snoozedUntil: r.snoozedUntil,
         dismissedAt: r.dismissedAt,
+        groupKey: deriveFallbackGroupKey(r.item, groupMode),
+        groupLabel: deriveGroupLabel(r.item, groupMode),
+        groupCount: null,
+        scopeKey: r.item.scopeKey,
+        slaAt: r.item.slaAt,
       }));
+
+    return { items, nextCursor, totalKnown: null };
   }
 
   async function getVisible(
