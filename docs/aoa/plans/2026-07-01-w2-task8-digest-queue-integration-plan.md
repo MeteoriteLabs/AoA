@@ -34,7 +34,7 @@
 - Modify: `server/src/services/notification-digest.ts`
 - Modify: `server/src/__tests__/notification-digest.test.ts`
 
-- [ ] **Step 1: Write failing service tests**
+- [x] **Step 1: Write failing service tests**
 
 Append a new `describe("notificationDigestService", ...)` block to `server/src/__tests__/notification-digest.test.ts`.
 
@@ -132,7 +132,7 @@ it("publishes digest changed only when queue or ack changes rows", async () => {
 });
 ```
 
-- [ ] **Step 2: Run digest tests and verify RED**
+- [x] **Step 2: Run digest tests and verify RED**
 
 Run:
 
@@ -142,7 +142,7 @@ corepack pnpm@9.15.4 test:run server/src/__tests__/notification-digest.test.ts
 
 Expected: FAIL because `queueForUser` currently returns `void`, does not call `.returning()`, and no digest live events are published.
 
-- [ ] **Step 3: Implement digest service changes**
+- [x] **Step 3: Implement digest service changes**
 
 In `server/src/services/notification-digest.ts`:
 
@@ -153,7 +153,7 @@ In `server/src/services/notification-digest.ts`:
 - Publish when `args.publish !== false && created.length > 0`.
 - In `ackForUser`, publish when `updated.length > 0`.
 
-- [ ] **Step 4: Run digest tests and verify GREEN**
+- [x] **Step 4: Run digest tests and verify GREEN**
 
 Run:
 
@@ -163,7 +163,7 @@ corepack pnpm@9.15.4 test:run server/src/__tests__/notification-digest.test.ts
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit Task 1**
+- [x] **Step 5: Commit Task 1**
 
 ```sh
 git add server/src/services/notification-digest.ts server/src/__tests__/notification-digest.test.ts
@@ -178,7 +178,7 @@ git commit -m "feat(notifications): publish digest queue changes"
 - Modify: `server/src/services/hub-items.ts`
 - Modify: `server/src/__tests__/hub-items-emit.integration.test.ts`
 
-- [ ] **Step 1: Write failing emit integration tests**
+- [x] **Step 1: Write failing emit integration tests**
 
 In `server/src/__tests__/hub-items-emit.integration.test.ts`, add helpers:
 
@@ -283,7 +283,7 @@ it("does not queue digest delivery for silent preferences", async () => {
 });
 ```
 
-- [ ] **Step 2: Run emit tests and verify RED**
+- [x] **Step 2: Run emit tests and verify RED**
 
 Run:
 
@@ -293,7 +293,7 @@ corepack pnpm@9.15.4 test:run server/src/__tests__/hub-items-emit.integration.te
 
 Expected on Linux: FAIL because emit does not queue digest rows. Expected on Windows: skipped by existing `describe.skipIf(process.platform === "win32")`; rely on service tests locally and CI for embedded Postgres.
 
-- [ ] **Step 3: Implement candidate and preference evaluation**
+- [x] **Step 3: Implement candidate and preference evaluation**
 
 In `server/src/services/hub-items.ts`:
 
@@ -315,7 +315,7 @@ In `server/src/services/hub-items.ts`:
   - do not queue when `rule.deliveryMode === "silent"` or digest is disabled.
 - Call `await queueDigestDeliveries(row, !a.executor)` after counter invalidation and before live item/count publish.
 
-- [ ] **Step 4: Run server tests and typecheck**
+- [x] **Step 4: Run server tests and typecheck**
 
 Run:
 
@@ -326,7 +326,7 @@ corepack pnpm@9.15.4 --filter @armyofagents/server typecheck
 
 Expected: PASS. On Windows, the embedded Postgres emit integration remains skipped.
 
-- [ ] **Step 5: Commit Task 2**
+- [x] **Step 5: Commit Task 2**
 
 ```sh
 git add server/src/services/hub-items.ts server/src/__tests__/hub-items-emit.integration.test.ts
