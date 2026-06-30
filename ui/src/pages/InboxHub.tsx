@@ -63,6 +63,7 @@ export function InboxHub() {
   const [debouncedSearchText, setDebouncedSearchText] = useState("");
   const [cursor, setCursor] = useState<string | null>(null);
   const [accumulatedItems, setAccumulatedItems] = useState<HubItemListRow[]>([]);
+  const [optimisticPreferences, setOptimisticPreferences] = useState<HubPreferences | null>(null);
 
   const laneSlug = params.lane ?? null;
   const activeLane = laneSlug ? SLUG_TO_LANE[laneSlug] ?? null : null;
@@ -87,12 +88,37 @@ export function InboxHub() {
     queryFn: () => hubItemsApi.getPreferences(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
-  const preferences = preferencesQuery.data ?? DEFAULT_HUB_PREFERENCES;
+  const serverPreferences = preferencesQuery.data ?? DEFAULT_HUB_PREFERENCES;
+  const preferences = optimisticPreferences ?? serverPreferences;
 
   const updatePreferences = useMutation({
     mutationFn: (patch: UpdateHubPreferencesInput) =>
       hubItemsApi.updatePreferences(selectedCompanyId!, patch),
-    onSuccess: async () => {
+    onMutate: async (patch) => {
+      if (!selectedCompanyId) return { previous: undefined };
+      const queryKey = queryKeys.hubItems.preferences(selectedCompanyId);
+      await queryClient.cancelQueries({ queryKey });
+      const previous = queryClient.getQueryData<HubPreferences>(queryKey);
+      queryClient.setQueryData<HubPreferences>(queryKey, {
+        ...(previous ?? DEFAULT_HUB_PREFERENCES),
+        ...patch,
+      });
+      return { previous };
+    },
+    onError: (_error, _patch, context) => {
+      setOptimisticPreferences(null);
+      if (!selectedCompanyId || !context?.previous) return;
+      queryClient.setQueryData(
+        queryKeys.hubItems.preferences(selectedCompanyId),
+        context.previous,
+      );
+    },
+    onSuccess: (updated) => {
+      setOptimisticPreferences(updated);
+      if (!selectedCompanyId) return;
+      queryClient.setQueryData(queryKeys.hubItems.preferences(selectedCompanyId), updated);
+    },
+    onSettled: async () => {
       if (!selectedCompanyId) return;
       await Promise.all([
         queryClient.invalidateQueries({
@@ -100,6 +126,7 @@ export function InboxHub() {
         }),
         queryClient.invalidateQueries({ queryKey: ["hub-items", selectedCompanyId] }),
       ]);
+      setOptimisticPreferences(null);
     },
   });
 
@@ -275,6 +302,7 @@ export function InboxHub() {
   };
 
   const handlePreferencesChange = (patch: UpdateHubPreferencesInput) => {
+    setOptimisticPreferences({ ...preferences, ...patch });
     updatePreferences.mutate(patch);
     if (patch.visibleLanes && activeLane && !patch.visibleLanes.includes(activeLane)) {
       navigate("/inbox-hub");

@@ -1,4 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { HubPreferences } from "@armyofagents/shared";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { describe, expect, it, vi, beforeEach } from "vitest";
@@ -41,6 +42,8 @@ vi.mock("@/api/hub-items", () => ({
       results: [],
     }),
     audit: vi.fn().mockResolvedValue([]),
+    getPreferences: vi.fn().mockResolvedValue(defaultPreferences()),
+    updatePreferences: vi.fn().mockResolvedValue(defaultPreferences()),
   },
 }));
 
@@ -86,12 +89,26 @@ beforeEach(() => {
     results: [],
   });
   vi.mocked(hubItemsApi.audit).mockResolvedValue([]);
+  vi.mocked(hubItemsApi.getPreferences).mockResolvedValue(defaultPreferences());
+  vi.mocked(hubItemsApi.updatePreferences).mockResolvedValue(defaultPreferences());
 });
 
 type HubListItem = Awaited<ReturnType<typeof hubItemsApi.list>>["items"][number];
 
 function hubList(items: HubListItem[], nextCursor: string | null = null) {
   return { items, nextCursor, totalKnown: null };
+}
+
+function defaultPreferences(overrides: Partial<HubPreferences> = {}): HubPreferences {
+  return {
+    defaultLanding: "home",
+    visibleLanes: ["waiting_on_you", "notifications", "suggestions"],
+    groupMode: "auto",
+    density: "comfortable",
+    showAutopilotEntry: true,
+    updatedAt: null,
+    ...overrides,
+  };
 }
 
 function hubItem(overrides: Partial<HubListItem> = {}) {
@@ -423,6 +440,43 @@ describe("InboxHub page", () => {
         groupMode: "auto",
         limit: 50,
       });
+    });
+  });
+
+  it("optimistically applies hub preference lane visibility changes", async () => {
+    let resolvePreferences: (value: HubPreferences) => void = () => {};
+    vi.mocked(hubItemsApi.updatePreferences).mockReturnValueOnce(
+      new Promise<HubPreferences>((resolve) => {
+        resolvePreferences = resolve;
+      }),
+    );
+
+    renderPage("/P4/inbox-hub/waiting");
+
+    await screen.findByRole("navigation", { name: /hub lanes/i });
+    fireEvent.click(screen.getByRole("button", { name: /hub settings/i }));
+    const notificationsToggle = screen.getByRole("checkbox", { name: "Notifications" });
+    expect(notificationsToggle).toBeChecked();
+
+    fireEvent.click(notificationsToggle);
+
+    expect(notificationsToggle).not.toBeChecked();
+    expect(
+      within(screen.getByRole("navigation", { name: /hub lanes/i })).queryByRole("button", {
+        name: /notifications/i,
+      }),
+    ).not.toBeInTheDocument();
+    await waitFor(() => {
+      expect(hubItemsApi.updatePreferences).toHaveBeenCalledWith("company-1", {
+        visibleLanes: ["waiting_on_you", "suggestions"],
+      });
+    });
+
+    resolvePreferences(
+      defaultPreferences({ visibleLanes: ["waiting_on_you", "suggestions"] }),
+    );
+    await waitFor(() => {
+      expect(notificationsToggle).not.toBeChecked();
     });
   });
 
