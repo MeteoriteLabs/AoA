@@ -4,6 +4,8 @@ import type {
   HubItemStatus,
   HubLane,
   HubPreferences,
+  NotificationPreferences,
+  UpdateNotificationPreferencesInput,
   UpdateHubPreferencesInput,
 } from "@armyofagents/shared";
 import { DEFAULT_NOTIFICATION_PREFERENCES } from "@armyofagents/shared";
@@ -131,11 +133,20 @@ export function InboxHub() {
     queryFn: () => hubItemsApi.notificationPreferences.get(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  const notificationPreferences =
+    notificationPreferencesQuery.data ?? DEFAULT_NOTIFICATION_PREFERENCES;
+
+  const notificationDigestQuery = useQuery({
+    queryKey: selectedCompanyId
+      ? queryKeys.notifications.digest(selectedCompanyId)
+      : ["notifications", "digest", "none"],
+    queryFn: () => hubItemsApi.notificationDigest.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
 
   useEffect(() => {
-    notificationPreferencesRef.current =
-      notificationPreferencesQuery.data ?? DEFAULT_NOTIFICATION_PREFERENCES;
-  }, [notificationPreferencesQuery.data]);
+    notificationPreferencesRef.current = notificationPreferences;
+  }, [notificationPreferences]);
 
   useEffect(() => {
     if (!selectedCompanyId) return;
@@ -192,6 +203,69 @@ export function InboxHub() {
         queryClient.invalidateQueries({ queryKey: ["hub-items", selectedCompanyId] }),
       ]);
       setOptimisticPreferences(null);
+    },
+  });
+
+  const updateNotificationPreferences = useMutation({
+    mutationFn: (patch: UpdateNotificationPreferencesInput) =>
+      hubItemsApi.notificationPreferences.update(selectedCompanyId!, patch),
+    onMutate: async (patch) => {
+      if (!selectedCompanyId) return { previous: undefined };
+      const queryKey = queryKeys.notifications.preferences(selectedCompanyId);
+      await queryClient.cancelQueries({ queryKey });
+      const previous = queryClient.getQueryData<NotificationPreferences>(queryKey);
+      queryClient.setQueryData<NotificationPreferences>(queryKey, {
+        ...(previous ?? DEFAULT_NOTIFICATION_PREFERENCES),
+        ...patch,
+      });
+      return { previous };
+    },
+    onError: (_error, _patch, context) => {
+      if (!selectedCompanyId || !context?.previous) return;
+      queryClient.setQueryData(
+        queryKeys.notifications.preferences(selectedCompanyId),
+        context.previous,
+      );
+    },
+    onSuccess: (updated) => {
+      if (!selectedCompanyId) return;
+      queryClient.setQueryData(
+        queryKeys.notifications.preferences(selectedCompanyId),
+        updated,
+      );
+    },
+    onSettled: async () => {
+      if (!selectedCompanyId) return;
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.notifications.preferences(selectedCompanyId),
+      });
+    },
+  });
+
+  const resetNotificationPreferences = useMutation({
+    mutationFn: () => hubItemsApi.notificationPreferences.reset(selectedCompanyId!),
+    onSuccess: (updated) => {
+      if (!selectedCompanyId) return;
+      queryClient.setQueryData(
+        queryKeys.notifications.preferences(selectedCompanyId),
+        updated,
+      );
+    },
+    onSettled: async () => {
+      if (!selectedCompanyId) return;
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.notifications.preferences(selectedCompanyId),
+      });
+    },
+  });
+
+  const ackNotificationDigest = useMutation({
+    mutationFn: () => hubItemsApi.notificationDigest.ack(selectedCompanyId!),
+    onSettled: async () => {
+      if (!selectedCompanyId) return;
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.notifications.digest(selectedCompanyId),
+      });
     },
   });
 
@@ -487,10 +561,26 @@ export function InboxHub() {
       hasMore={!!listQuery.data?.nextCursor}
       isLoadingMore={listQuery.isFetching && !!cursor}
       preferences={preferences}
+      notificationPreferences={notificationPreferences}
+      notificationPreferencesPending={
+        updateNotificationPreferences.isPending ||
+        resetNotificationPreferences.isPending ||
+        ackNotificationDigest.isPending
+      }
+      digestItems={notificationDigestQuery.data?.items ?? []}
       onLaneChange={handleLaneChange}
       onSearchTextChange={setSearchText}
       onLoadMore={handleLoadMore}
       onPreferencesChange={handlePreferencesChange}
+      onUpdateNotificationPreferences={(patch) => {
+        updateNotificationPreferences.mutate(patch);
+      }}
+      onResetNotificationPreferences={() => {
+        resetNotificationPreferences.mutate();
+      }}
+      onAckDigest={() => {
+        ackNotificationDigest.mutate();
+      }}
       onHistoryStatusChange={handleHistoryStatusChange}
       onSelectItem={handleSelectItem}
       onMarkRead={handleMarkRead}

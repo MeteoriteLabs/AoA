@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { HubPreferences, NotificationPreferences } from "@armyofagents/shared";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { hubItemsApi } from "@/api/hub-items";
@@ -320,6 +321,45 @@ describe("InboxHub page", () => {
 
     await waitFor(() => expect(hubItemsApi.getOne).toHaveBeenCalledWith("company-1", "hub-1"));
     expect(mockPushToast).not.toHaveBeenCalled();
+  });
+
+  it("updates notification preferences from hub settings", async () => {
+    const user = userEvent.setup();
+    renderPage("/P4/inbox/waiting");
+
+    await user.click(await screen.findByRole("button", { name: /hub settings/i }));
+    await user.click(screen.getByRole("button", { name: /notification preferences/i }));
+    await user.selectOptions(screen.getByLabelText(/approval request delivery/i), "digest");
+
+    await waitFor(() => {
+      expect(hubItemsApi.notificationPreferences.update).toHaveBeenCalledWith(
+        "company-1",
+        expect.objectContaining({
+          rules: expect.arrayContaining([
+            expect.objectContaining({
+              semanticType: "approval_request",
+              deliveryMode: "digest",
+            }),
+          ]),
+        }),
+      );
+    });
+  });
+
+  it("acknowledges pending digest items from hub settings", async () => {
+    const user = userEvent.setup();
+    vi.mocked(hubItemsApi.notificationDigest.list).mockResolvedValue({
+      items: [hubItem({ id: "digest-1", title: "Digest reminder" })],
+    });
+    renderPage("/P4/inbox/waiting");
+
+    await user.click(await screen.findByRole("button", { name: /hub settings/i }));
+    await user.click(screen.getByRole("button", { name: /notification preferences/i }));
+    await user.click(await screen.findByRole("button", { name: /acknowledge digest/i }));
+
+    await waitFor(() => {
+      expect(hubItemsApi.notificationDigest.ack).toHaveBeenCalledWith("company-1");
+    });
   });
 
   it("maps the waiting slug to the waiting_on_you API lane with the preview limit", async () => {
