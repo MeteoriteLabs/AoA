@@ -21,7 +21,12 @@ interface HubShellProps {
   auditLoading: boolean;
   selectedBulkIds: Set<string>;
   bulkMessage: string | null;
+  searchText?: string;
+  hasMore?: boolean;
+  isLoadingMore?: boolean;
   onLaneChange: (lane: HubRailLane) => void;
+  onSearchTextChange?: (value: string) => void;
+  onLoadMore?: () => void;
   onHistoryStatusChange: (status: Extract<HubItemStatus, "open" | "resolved" | "archived">) => void;
   onSelectItem: (itemId: string | null) => void;
   onMarkRead: (itemId: string) => void;
@@ -46,7 +51,12 @@ export function HubShell({
   auditLoading = false,
   selectedBulkIds = EMPTY_BULK_IDS,
   bulkMessage = null,
+  searchText = "",
+  hasMore = false,
+  isLoadingMore = false,
   onLaneChange,
+  onSearchTextChange = noop,
+  onLoadMore = noop,
   onHistoryStatusChange = noop,
   onSelectItem,
   onMarkRead,
@@ -88,6 +98,18 @@ export function HubShell({
               </div>
             ) : null}
           </div>
+          {!showHome ? (
+            <div className="border-b border-border px-4 py-2">
+              <input
+                type="search"
+                aria-label="Search hub"
+                value={searchText}
+                onChange={(event) => onSearchTextChange(event.target.value)}
+                placeholder="Search"
+                className="h-9 w-full rounded-md border border-border bg-bg px-3 text-sm outline-none focus:border-brand"
+              />
+            </div>
+          ) : null}
           {!showHome && selectedCount > 0 ? (
             <div className="flex h-11 items-center justify-between gap-3 border-b border-border bg-card px-4 text-xs">
               <span className="text-muted-foreground">{selectedCount} selected</span>
@@ -130,9 +152,12 @@ export function HubShell({
               error={error}
               selectedItemId={selectedItemId}
               selectedBulkIds={selectedBulkIds}
+              hasMore={hasMore}
+              isLoadingMore={isLoadingMore}
               onSelectItem={onSelectItem}
               onMarkRead={onMarkRead}
               onToggleBulkItem={onToggleBulkItem}
+              onLoadMore={onLoadMore}
             />
           )}
         </section>

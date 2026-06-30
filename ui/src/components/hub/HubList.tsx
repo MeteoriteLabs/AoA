@@ -8,9 +8,12 @@ interface HubListProps {
   error: unknown;
   selectedItemId: string | null;
   selectedBulkIds: Set<string>;
+  hasMore?: boolean;
+  isLoadingMore?: boolean;
   onSelectItem: (itemId: string) => void;
   onMarkRead: (itemId: string) => void;
   onToggleBulkItem: (itemId: string) => void;
+  onLoadMore?: () => void;
 }
 
 function formatDate(value: string) {
@@ -26,9 +29,12 @@ export function HubList({
   error,
   selectedItemId,
   selectedBulkIds,
+  hasMore = false,
+  isLoadingMore = false,
   onSelectItem,
   onMarkRead,
   onToggleBulkItem,
+  onLoadMore,
 }: HubListProps) {
   if (isLoading) {
     return <div className="p-4 text-sm text-muted-foreground">Loading hub items...</div>;
@@ -96,6 +102,18 @@ export function HubList({
           </div>
         );
       })}
+      {hasMore ? (
+        <div className="border-b border-border p-3">
+          <button
+            type="button"
+            onClick={onLoadMore}
+            disabled={isLoadingMore}
+            className="h-9 w-full rounded-md border border-border text-sm text-text hover:bg-card disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {isLoadingMore ? "Loading..." : "Load more"}
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -12,7 +12,7 @@ vi.mock("../client", () => ({
   },
 }));
 
-import { hubItemsApi } from "../hub-items";
+import { hubItemsApi, normalizeHubListResponse, type HubItemListRow } from "../hub-items";
 
 describe("hubItemsApi", () => {
   beforeEach(() => vi.clearAllMocks());
@@ -62,6 +62,31 @@ describe("hubItemsApi", () => {
     expect(get).toHaveBeenCalledWith(
       "/companies/company-1/hub-items?includeSnoozed=true&limit=50",
     );
+  });
+
+  it("builds W1d list query params", async () => {
+    get.mockResolvedValueOnce({ items: [], nextCursor: null, totalKnown: null });
+
+    await hubItemsApi.list("company-1", {
+      lane: "waiting_on_you",
+      status: "open",
+      q: "deploy",
+      groupMode: "auto",
+      cursor: "abc",
+      limit: 25,
+    });
+
+    expect(get).toHaveBeenCalledWith(
+      "/companies/company-1/hub-items?lane=waiting_on_you&status=open&q=deploy&groupMode=auto&cursor=abc&limit=25",
+    );
+  });
+
+  it("normalizes legacy bare-array list responses", () => {
+    expect(normalizeHubListResponse([{ id: "hub-1" } as HubItemListRow])).toEqual({
+      items: [{ id: "hub-1" }],
+      nextCursor: null,
+      totalKnown: null,
+    });
   });
 
   it("falls back to default limit for non-finite caller input", async () => {

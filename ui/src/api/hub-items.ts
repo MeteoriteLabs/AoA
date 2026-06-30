@@ -1,4 +1,5 @@
 import type {
+  HubGroupMode,
   HubItemPriority,
   HubItemStatus,
   HubLane,
@@ -27,6 +28,11 @@ export interface HubItemListRow {
   readAt: string | null;
   snoozedUntil: string | null;
   dismissedAt: string | null;
+  groupKey: string | null;
+  groupLabel: string | null;
+  groupCount: number | null;
+  scopeKey: string | null;
+  slaAt: string | null;
 }
 
 export interface HubListOptions {
@@ -34,7 +40,16 @@ export interface HubListOptions {
   status?: HubItemStatus;
   includeDismissed?: boolean;
   includeSnoozed?: boolean;
+  q?: string;
+  cursor?: string;
+  groupMode?: HubGroupMode;
   limit?: number;
+}
+
+export interface HubListResponse {
+  items: HubItemListRow[];
+  nextCursor: string | null;
+  totalKnown: number | null;
 }
 
 export interface HubCounts {
@@ -141,6 +156,9 @@ function listQuery(opts: HubListOptions = {}) {
   const params = new URLSearchParams();
   if (opts.lane) params.set("lane", opts.lane);
   if (opts.status) params.set("status", opts.status);
+  if (opts.q) params.set("q", opts.q);
+  if (opts.groupMode) params.set("groupMode", opts.groupMode);
+  if (opts.cursor) params.set("cursor", opts.cursor);
   if (opts.includeDismissed) params.set("includeDismissed", "true");
   if (opts.includeSnoozed) params.set("includeSnoozed", "true");
   const rawLimit = Number.isFinite(opts.limit) ? opts.limit! : 50;
@@ -149,10 +167,21 @@ function listQuery(opts: HubListOptions = {}) {
   return query ? `?${query}` : "";
 }
 
+export function normalizeHubListResponse(
+  response: HubListResponse | HubItemListRow[],
+): HubListResponse {
+  if (Array.isArray(response)) {
+    return { items: response, nextCursor: null, totalKnown: null };
+  }
+  return response;
+}
+
 export const hubItemsApi = {
-  list: (companyId: string, opts?: HubListOptions) =>
-    api.get<HubItemListRow[]>(
-      `/companies/${companyId}/hub-items${listQuery(opts)}`,
+  list: async (companyId: string, opts?: HubListOptions) =>
+    normalizeHubListResponse(
+      await api.get<HubListResponse | HubItemListRow[]>(
+        `/companies/${companyId}/hub-items${listQuery(opts)}`,
+      ),
     ),
   counts: (companyId: string) =>
     api.get<HubCounts>(`/companies/${companyId}/hub-items/counts`),

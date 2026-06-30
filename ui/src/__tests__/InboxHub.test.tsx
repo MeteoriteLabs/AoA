@@ -18,7 +18,7 @@ vi.mock("@/context/BreadcrumbContext", () => ({
 
 vi.mock("@/api/hub-items", () => ({
   hubItemsApi: {
-    list: vi.fn().mockResolvedValue([]),
+    list: vi.fn().mockResolvedValue({ items: [], nextCursor: null, totalKnown: null }),
     counts: vi.fn().mockResolvedValue({ open: 0, unread: 0 }),
     markRead: vi.fn().mockResolvedValue({}),
     markUnread: vi.fn().mockResolvedValue({}),
@@ -63,7 +63,7 @@ function renderPage(initialEntry: string) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(hubItemsApi.list).mockResolvedValue([]);
+  vi.mocked(hubItemsApi.list).mockResolvedValue(hubList([]));
   vi.mocked(hubItemsApi.counts).mockResolvedValue({ open: 0, unread: 0 });
   vi.mocked(hubItemsApi.markRead).mockResolvedValue({});
   vi.mocked(hubItemsApi.markUnread).mockResolvedValue({});
@@ -88,7 +88,13 @@ beforeEach(() => {
   vi.mocked(hubItemsApi.audit).mockResolvedValue([]);
 });
 
-function hubItem(overrides: Partial<Awaited<ReturnType<typeof hubItemsApi.list>>[number]> = {}) {
+type HubListItem = Awaited<ReturnType<typeof hubItemsApi.list>>["items"][number];
+
+function hubList(items: HubListItem[], nextCursor: string | null = null) {
+  return { items, nextCursor, totalKnown: null };
+}
+
+function hubItem(overrides: Partial<HubListItem> = {}) {
   return {
     id: "hub-1",
     companyId: "company-1",
@@ -110,8 +116,13 @@ function hubItem(overrides: Partial<Awaited<ReturnType<typeof hubItemsApi.list>>
     readAt: null,
     snoozedUntil: null,
     dismissedAt: null,
+    groupKey: null,
+    groupLabel: null,
+    groupCount: null,
+    scopeKey: null,
+    slaAt: null,
     ...overrides,
-  } as Awaited<ReturnType<typeof hubItemsApi.list>>[number];
+  } as HubListItem;
 }
 
 describe("InboxHub page", () => {
@@ -129,13 +140,14 @@ describe("InboxHub page", () => {
       expect(vi.mocked(hubItemsApi.list)).toHaveBeenCalledWith("company-1", {
         lane: "waiting_on_you",
         status: "open",
+        groupMode: "auto",
         limit: 50,
       });
     });
   });
 
   it("marks an unread row read only once even if it is clicked repeatedly", async () => {
-    vi.mocked(hubItemsApi.list).mockResolvedValue([hubItem()]);
+    vi.mocked(hubItemsApi.list).mockResolvedValue(hubList([hubItem()]));
 
     renderPage("/P4/inbox-hub/waiting");
 
@@ -149,9 +161,9 @@ describe("InboxHub page", () => {
   });
 
   it("viewer can mark a selected read item unread", async () => {
-    vi.mocked(hubItemsApi.list).mockResolvedValue([
+    vi.mocked(hubItemsApi.list).mockResolvedValue(hubList([
       hubItem({ readAt: "2026-06-29T10:01:00.000Z" }),
-    ]);
+    ]));
 
     renderPage("/P4/inbox-hub/waiting/hub-1");
 
@@ -163,7 +175,7 @@ describe("InboxHub page", () => {
   });
 
   it("viewer can dismiss and snooze the selected item", async () => {
-    vi.mocked(hubItemsApi.list).mockResolvedValue([hubItem()]);
+    vi.mocked(hubItemsApi.list).mockResolvedValue(hubList([hubItem()]));
 
     renderPage("/P4/inbox-hub/waiting/hub-1");
 
@@ -181,7 +193,7 @@ describe("InboxHub page", () => {
   });
 
   it("viewer can undo personal dismiss and snooze actions", async () => {
-    vi.mocked(hubItemsApi.list).mockResolvedValue([hubItem()]);
+    vi.mocked(hubItemsApi.list).mockResolvedValue(hubList([hubItem()]));
 
     renderPage("/P4/inbox-hub/waiting/hub-1");
 
@@ -197,7 +209,7 @@ describe("InboxHub page", () => {
   });
 
   it("viewer resolves an item and can undo the server-backed action", async () => {
-    vi.mocked(hubItemsApi.list).mockResolvedValue([hubItem()]);
+    vi.mocked(hubItemsApi.list).mockResolvedValue(hubList([hubItem()]));
 
     renderPage("/P4/inbox-hub/waiting/hub-1");
 
@@ -218,8 +230,8 @@ describe("InboxHub page", () => {
 
   it("keeps server undo reachable after the resolved item leaves the active list", async () => {
     vi.mocked(hubItemsApi.list)
-      .mockResolvedValueOnce([hubItem()])
-      .mockResolvedValue([]);
+      .mockResolvedValueOnce(hubList([hubItem()]))
+      .mockResolvedValue(hubList([]));
 
     renderPage("/P4/inbox-hub/waiting/hub-1");
 
@@ -235,9 +247,9 @@ describe("InboxHub page", () => {
   });
 
   it("viewer shows claim and release actions for board-pool items", async () => {
-    vi.mocked(hubItemsApi.list).mockResolvedValue([
+    vi.mocked(hubItemsApi.list).mockResolvedValue(hubList([
       hubItem({ semanticType: "stale_work", lane: "suggestions", ownerPool: "board" }),
-    ]);
+    ]));
 
     renderPage("/P4/inbox-hub/suggestions/hub-1");
 
@@ -260,6 +272,7 @@ describe("InboxHub page", () => {
       expect(hubItemsApi.list).toHaveBeenLastCalledWith("company-1", {
         lane: "waiting_on_you",
         status: "resolved",
+        groupMode: "auto",
         limit: 50,
       });
     });
@@ -270,20 +283,21 @@ describe("InboxHub page", () => {
       expect(hubItemsApi.list).toHaveBeenLastCalledWith("company-1", {
         lane: "waiting_on_you",
         status: "archived",
+        groupMode: "auto",
         limit: 50,
       });
     });
   });
 
   it("opens resolved and archived history items in the viewer", async () => {
-    vi.mocked(hubItemsApi.list).mockResolvedValue([
+    vi.mocked(hubItemsApi.list).mockResolvedValue(hubList([
       hubItem({
         id: "history-1",
         status: "resolved",
         title: "Resolved approval",
         readAt: "2026-06-29T10:01:00.000Z",
       }),
-    ]);
+    ]));
 
     renderPage("/P4/inbox-hub/waiting/history-1");
     fireEvent.click(await screen.findByRole("button", { name: /^resolved$/i }));
@@ -292,14 +306,14 @@ describe("InboxHub page", () => {
   });
 
   it("loads an audit timeline for the selected history item", async () => {
-    vi.mocked(hubItemsApi.list).mockResolvedValue([
+    vi.mocked(hubItemsApi.list).mockResolvedValue(hubList([
       hubItem({
         id: "history-1",
         status: "archived",
         title: "Archived notification",
         readAt: "2026-06-29T10:01:00.000Z",
       }),
-    ]);
+    ]));
     vi.mocked(hubItemsApi.audit).mockResolvedValue([
       {
         id: "audit-1",
@@ -328,10 +342,10 @@ describe("InboxHub page", () => {
   });
 
   it("bulk archives selected open items with optimistic versions", async () => {
-    vi.mocked(hubItemsApi.list).mockResolvedValue([
+    vi.mocked(hubItemsApi.list).mockResolvedValue(hubList([
       hubItem({ id: "hub-1", title: "First approval", version: 1 }),
       hubItem({ id: "hub-2", title: "Second approval", version: 3 }),
-    ]);
+    ]));
 
     renderPage("/P4/inbox-hub/waiting");
 
@@ -350,10 +364,10 @@ describe("InboxHub page", () => {
   });
 
   it("bulk dismisses selected open items as personal state", async () => {
-    vi.mocked(hubItemsApi.list).mockResolvedValue([
+    vi.mocked(hubItemsApi.list).mockResolvedValue(hubList([
       hubItem({ id: "hub-1", title: "Dismiss one" }),
       hubItem({ id: "hub-2", title: "Dismiss two" }),
-    ]);
+    ]));
 
     renderPage("/P4/inbox-hub/waiting");
 
@@ -372,10 +386,10 @@ describe("InboxHub page", () => {
   });
 
   it("shows a compact bulk result summary when one selected item fails", async () => {
-    vi.mocked(hubItemsApi.list).mockResolvedValue([
+    vi.mocked(hubItemsApi.list).mockResolvedValue(hubList([
       hubItem({ id: "hub-1", title: "Fresh item", version: 1 }),
       hubItem({ id: "hub-2", title: "Changed item", version: 1 }),
-    ]);
+    ]));
     vi.mocked(hubItemsApi.bulkAction).mockResolvedValue({
       bulkId: "bulk-partial",
       summary: { succeeded: 1, failed: 1, skipped: 0 },
@@ -392,5 +406,44 @@ describe("InboxHub page", () => {
     fireEvent.click(await screen.findByRole("button", { name: /archive selected/i }));
 
     expect(await screen.findByText(/1 succeeded, 1 failed/i)).toBeInTheDocument();
+  });
+
+  it("passes search text to the list query", async () => {
+    renderPage("/P4/inbox-hub/waiting");
+
+    fireEvent.change(await screen.findByRole("searchbox", { name: /search hub/i }), {
+      target: { value: "deploy" },
+    });
+
+    await waitFor(() => {
+      expect(hubItemsApi.list).toHaveBeenLastCalledWith("company-1", {
+        lane: "waiting_on_you",
+        status: "open",
+        q: "deploy",
+        groupMode: "auto",
+        limit: 50,
+      });
+    });
+  });
+
+  it("loads the next cursor page", async () => {
+    vi.mocked(hubItemsApi.list)
+      .mockResolvedValueOnce(hubList([hubItem({ id: "hub-1", title: "First approval" })], "cursor-2"))
+      .mockResolvedValueOnce(hubList([hubItem({ id: "hub-2", title: "Second approval" })]));
+
+    renderPage("/P4/inbox-hub/waiting");
+
+    fireEvent.click(await screen.findByRole("button", { name: /load more/i }));
+
+    await waitFor(() => {
+      expect(hubItemsApi.list).toHaveBeenLastCalledWith("company-1", {
+        lane: "waiting_on_you",
+        status: "open",
+        groupMode: "auto",
+        cursor: "cursor-2",
+        limit: 50,
+      });
+    });
+    expect(await screen.findByText(/second approval/i)).toBeInTheDocument();
   });
 });

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { HubItemStatus, HubLane } from "@armyofagents/shared";
-import { hubItemsApi, type HubItemListRow } from "@/api/hub-items";
+import { hubItemsApi, type HubItemListRow, type HubListResponse } from "@/api/hub-items";
 import { HubShell } from "@/components/hub/HubShell";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
@@ -45,6 +45,10 @@ export function InboxHub() {
   >("open");
   const [selectedBulkIds, setSelectedBulkIds] = useState<Set<string>>(() => new Set());
   const [bulkMessage, setBulkMessage] = useState<string | null>(null);
+  const [searchText, setSearchText] = useState("");
+  const [debouncedSearchText, setDebouncedSearchText] = useState("");
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [accumulatedItems, setAccumulatedItems] = useState<HubItemListRow[]>([]);
 
   const laneSlug = params.lane ?? null;
   const activeLane = laneSlug ? SLUG_TO_LANE[laneSlug] ?? null : null;
@@ -62,17 +66,33 @@ export function InboxHub() {
     enabled: !!selectedCompanyId,
   });
 
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setDebouncedSearchText(searchText.trim());
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [searchText]);
+
   const listOptions = useMemo(
     () =>
       activeLane
         ? {
             lane: activeLane,
             status: historyStatus,
+            q: debouncedSearchText || undefined,
+            groupMode: "auto" as const,
+            cursor: cursor ?? undefined,
             limit: 50,
           }
         : undefined,
-    [activeLane, historyStatus],
+    [activeLane, cursor, debouncedSearchText, historyStatus],
   );
+
+  useEffect(() => {
+    setCursor(null);
+    setAccumulatedItems([]);
+    setSelectedBulkIds(new Set());
+  }, [activeLane, debouncedSearchText, historyStatus]);
 
   const listQuery = useQuery({
     queryKey:
@@ -83,16 +103,33 @@ export function InboxHub() {
     enabled: !!selectedCompanyId && !!listOptions,
   });
 
+  useEffect(() => {
+    if (!activeLane || !listQuery.data) return;
+    const nextItems = listQuery.data.items;
+    setAccumulatedItems((current) => {
+      if (!cursor) return nextItems;
+      const seen = new Set(current.map((item) => item.id));
+      return [...current, ...nextItems.filter((item) => !seen.has(item.id))];
+    });
+  }, [activeLane, cursor, listQuery.data]);
+
   const markRead = useMutation({
     mutationFn: (itemId: string) => hubItemsApi.markRead(selectedCompanyId!, itemId),
     onMutate: (itemId) => {
       if (!selectedCompanyId) return;
       const readAt = new Date().toISOString();
-      queryClient.setQueriesData<HubItemListRow[]>(
+      queryClient.setQueriesData<HubListResponse | HubItemListRow[]>(
         { queryKey: ["hub-items", selectedCompanyId] },
         (old) =>
           Array.isArray(old)
             ? old.map((item) => (item.id === itemId ? { ...item, readAt } : item))
+            : old && Array.isArray(old.items)
+              ? {
+                  ...old,
+                  items: old.items.map((item) =>
+                    item.id === itemId ? { ...item, readAt } : item,
+                  ),
+                }
             : old,
       );
     },
@@ -107,7 +144,7 @@ export function InboxHub() {
     },
   });
 
-  const items = listQuery.data ?? [];
+  const items = activeLane ? accumulatedItems : [];
   const selectedItemId =
     params.itemId && items.some((item) => item.id === params.itemId)
       ? params.itemId
@@ -139,7 +176,6 @@ export function InboxHub() {
     status: Extract<HubItemStatus, "open" | "resolved" | "archived">,
   ) => {
     setHistoryStatus(status);
-    setSelectedBulkIds(new Set());
     setBulkMessage(null);
   };
 
@@ -181,6 +217,12 @@ export function InboxHub() {
       return;
     }
     navigate(`${lanePath}/${itemId}`);
+  };
+
+  const handleLoadMore = () => {
+    if (listQuery.data?.nextCursor) {
+      setCursor(listQuery.data.nextCursor);
+    }
   };
 
   const handleMarkRead = (itemId: string) => {
@@ -258,7 +300,12 @@ export function InboxHub() {
       auditLoading={auditQuery.isLoading}
       selectedBulkIds={selectedBulkIds}
       bulkMessage={bulkMessage}
+      searchText={searchText}
+      hasMore={!!listQuery.data?.nextCursor}
+      isLoadingMore={listQuery.isFetching && !!cursor}
       onLaneChange={handleLaneChange}
+      onSearchTextChange={setSearchText}
+      onLoadMore={handleLoadMore}
       onHistoryStatusChange={handleHistoryStatusChange}
       onSelectItem={handleSelectItem}
       onMarkRead={handleMarkRead}

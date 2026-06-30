@@ -123,12 +123,16 @@ export const queryKeys = {
         status?: string;
         includeDismissed?: boolean;
         includeSnoozed?: boolean;
+        q?: string;
+        cursor?: string;
+        groupMode?: string;
         limit?: number;
       },
     ) => ["hub-items", companyId, opts ?? {}] as const,
     counts: (companyId: string) => ["hub-items", companyId, "counts"] as const,
     audit: (companyId: string, itemId: string) =>
       ["hub-items", companyId, itemId, "audit"] as const,
+    preferences: (companyId: string) => ["hub-items", companyId, "preferences"] as const,
   },
   sidebarPreferences: (companyId: string) => ["sidebar-preferences", companyId] as const,
   inboxDismissals: (companyId: string) => ["inbox-dismissals", companyId] as const,
