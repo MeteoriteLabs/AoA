@@ -6,11 +6,15 @@ import type {
   HubPreferences,
   UpdateHubPreferencesInput,
 } from "@armyofagents/shared";
+import { DEFAULT_NOTIFICATION_PREFERENCES } from "@armyofagents/shared";
 import { hubItemsApi, type HubItemListRow, type HubListResponse } from "@/api/hub-items";
 import { HubShell } from "@/components/hub/HubShell";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
+import { useLiveUpdates } from "@/context/LiveUpdatesProvider";
+import { useToast } from "@/context/ToastContext";
 import { useHubItemMutations } from "@/hooks/useHubItemMutations";
+import { buildHubToastInput, shouldToastHubItem } from "@/lib/hub-toast-bridge";
 import { queryKeys } from "@/lib/queryKeys";
 import { Navigate, useLocation, useNavigate, useParams } from "@/lib/router";
 
@@ -60,7 +64,10 @@ export function InboxHub() {
     itemId?: string;
   }>();
   const queryClient = useQueryClient();
+  const { onHubItemChanged } = useLiveUpdates();
+  const { pushToast } = useToast();
   const markingReadItemIds = useRef(new Set<string>());
+  const notificationPreferencesRef = useRef(DEFAULT_NOTIFICATION_PREFERENCES);
   const hubMutations = useHubItemMutations(selectedCompanyId);
   const [undoAction, setUndoAction] = useState<{
     label: string;
@@ -116,6 +123,38 @@ export function InboxHub() {
   });
   const serverPreferences = preferencesQuery.data ?? DEFAULT_HUB_PREFERENCES;
   const preferences = optimisticPreferences ?? serverPreferences;
+
+  const notificationPreferencesQuery = useQuery({
+    queryKey: selectedCompanyId
+      ? queryKeys.notifications.preferences(selectedCompanyId)
+      : ["notifications", "preferences", "none"],
+    queryFn: () => hubItemsApi.notificationPreferences.get(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  useEffect(() => {
+    notificationPreferencesRef.current =
+      notificationPreferencesQuery.data ?? DEFAULT_NOTIFICATION_PREFERENCES;
+  }, [notificationPreferencesQuery.data]);
+
+  useEffect(() => {
+    if (!selectedCompanyId) return;
+    return onHubItemChanged(async (itemId) => {
+      try {
+        const item = await hubItemsApi.getOne(selectedCompanyId, itemId);
+        const decision = shouldToastHubItem({
+          item,
+          preferences: notificationPreferencesRef.current,
+          now: new Date(),
+        });
+        if (decision.show) {
+          pushToast(buildHubToastInput(selectedCompanyId, item));
+        }
+      } catch {
+        // The RBAC hydration route may 404 for stale/hidden items; ignore the poke.
+      }
+    });
+  }, [onHubItemChanged, pushToast, selectedCompanyId]);
 
   const updatePreferences = useMutation({
     mutationFn: (patch: UpdateHubPreferencesInput) =>
