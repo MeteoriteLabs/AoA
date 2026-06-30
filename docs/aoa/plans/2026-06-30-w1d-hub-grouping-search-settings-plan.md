@@ -804,7 +804,7 @@ git commit -m "feat(hub): harden mobile and keyboard navigation"
 - Create `server/src/__tests__/hub-counter-snapshots.test.ts`
 - Modify `server/src/__tests__/hub-items-lifecycle.test.ts`
 
-- [ ] **Step 1: Add failing counter snapshot tests**
+- [x] **Step 1: Add failing counter snapshot tests**
 
 Tests must prove snapshots are per user + company and are invalidated by shared and personal mutations:
 
@@ -829,7 +829,7 @@ it("invalidates the actor snapshot after personal state changes", async () => {
 });
 ```
 
-- [ ] **Step 2: Add DB schema**
+- [x] **Step 2: Add DB schema**
 
 Schema:
 
@@ -854,7 +854,7 @@ export const hubCounterSnapshots = pgTable(
 );
 ```
 
-- [ ] **Step 3: Implement refresh and invalidation service**
+- [x] **Step 3: Implement refresh and invalidation service**
 
 Rules:
 
@@ -865,11 +865,11 @@ Rules:
 - `invalidateCompany(companyId)` marks all company snapshots invalid after emit/resolve/archive/claim/release/reconcile.
 - No method creates rows for users who have never opened the hub.
 
-- [ ] **Step 4: Wire counts route**
+- [x] **Step 4: Wire counts route**
 
 `GET /hub-items/counts` should call `hubCounterSnapshotsService.getOrRefresh`, not raw `svc.counts`, while preserving the exact `{ open, unread }` response.
 
-- [ ] **Step 5: Run targeted tests**
+- [x] **Step 5: Run targeted tests**
 
 Run:
 
@@ -892,7 +892,15 @@ it("does not return a stale snapshot when invalidated after compute", async () =
 });
 ```
 
-- [ ] **Step 6: Commit**
+Verified with:
+
+```sh
+corepack pnpm@9.15.4 test:run server/src/__tests__/hub-counter-snapshots.test.ts server/src/__tests__/hub-items-lifecycle.test.ts server/src/__tests__/hub-items-routes.test.ts packages/db/src/__tests__/hub-items-schema.test.ts
+corepack pnpm@9.15.4 --filter @armyofagents/server typecheck
+corepack pnpm@9.15.4 --filter @armyofagents/db typecheck
+```
+
+- [x] **Step 6: Commit**
 
 ```sh
 git add packages/db/src/schema/hub_counter_snapshots.ts packages/db/src/schema/index.ts packages/db/src/migrations server/src/services/hub-counter-snapshots.ts server/src/services/hub-items.ts server/src/services/index.ts server/src/__tests__/hub-counter-snapshots.test.ts server/src/__tests__/hub-items-lifecycle.test.ts server/src/__tests__/hub-items-routes.test.ts

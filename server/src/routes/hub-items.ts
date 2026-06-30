@@ -10,7 +10,12 @@ import {
   updateHubPreferencesSchema,
 } from "@armyofagents/shared";
 import { validate } from "../middleware/validate.js";
-import { hubItemsService, hubPreferencesService, permissionService } from "../services/index.js";
+import {
+  hubCounterSnapshotsService,
+  hubItemsService,
+  hubPreferencesService,
+  permissionService,
+} from "../services/index.js";
 import { HttpError, unauthorized } from "../errors.js";
 import { assertCompanyAccess } from "./authz.js";
 import { emitStaleWorkHubItems } from "../services/hub-stale-work.js";
@@ -37,6 +42,9 @@ export function hubItemRoutes(db: Db) {
   const router = Router();
   const svc = hubItemsService(db);
   const preferences = hubPreferencesService(db);
+  const counterSnapshots = hubCounterSnapshotsService(db, {
+    liveCounts: ({ companyId, userId, role }) => svc.counts(companyId, userId, role),
+  });
   const perms = permissionService(db);
 
   // Resolve the effective role for query/counts. Implicit-authority actors
@@ -113,7 +121,7 @@ export function hubItemRoutes(db: Db) {
     const role = await resolveRole(req, companyId, userId);
     await emitOpenApprovalHubItems(db, companyId);
     await emitStaleWorkHubItems(db, companyId);
-    const result = await svc.counts(companyId, userId, role);
+    const result = await counterSnapshots.getOrRefresh({ companyId, userId, role });
     res.json(result);
   });
 

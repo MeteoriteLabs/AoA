@@ -24,6 +24,10 @@ const mockHubPreferences = vi.hoisted(() => ({
   reset: vi.fn(),
 }));
 
+const mockHubCounterSnapshots = vi.hoisted(() => ({
+  getOrRefresh: vi.fn(),
+}));
+
 const mockPerms = vi.hoisted(() => ({
   getEffectiveRole: vi.fn(),
   isFounder: vi.fn(),
@@ -37,6 +41,7 @@ const mockEmitStaleWorkHubItems = vi.hoisted(() => vi.fn().mockResolvedValue([])
 vi.mock("../services/index.js", () => ({
   hubItemsService: () => mockSvc,
   hubPreferencesService: () => mockHubPreferences,
+  hubCounterSnapshotsService: () => mockHubCounterSnapshots,
   permissionService: () => mockPerms,
   logActivity: mockLogActivity,
 }));
@@ -94,6 +99,7 @@ function boardActor(
 describe("hub-items routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockHubCounterSnapshots.getOrRefresh.mockResolvedValue({ open: 0, unread: 0 });
   });
 
   it("GET preferences/me returns user company-scoped preferences", async () => {
@@ -531,13 +537,18 @@ describe("hub-items routes", () => {
 
   it("(e) GET counts returns { open, unread }", async () => {
     mockPerms.getEffectiveRole.mockResolvedValue("founder");
-    mockSvc.counts.mockResolvedValue({ open: 5, unread: 3 });
+    mockHubCounterSnapshots.getOrRefresh.mockResolvedValue({ open: 5, unread: 3 });
     const app = createApp(boardActor());
 
     const res = await request(app).get(`/api/companies/${COMPANY_A}/hub-items/counts`);
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body).toEqual({ open: 5, unread: 3 });
-    expect(mockSvc.counts).toHaveBeenCalledWith(COMPANY_A, "user-1", "founder");
+    expect(mockHubCounterSnapshots.getOrRefresh).toHaveBeenCalledWith({
+      companyId: COMPANY_A,
+      userId: "user-1",
+      role: "founder",
+    });
+    expect(mockSvc.counts).not.toHaveBeenCalled();
   });
 });

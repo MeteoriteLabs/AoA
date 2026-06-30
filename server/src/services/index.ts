@@ -17,6 +17,7 @@ export { dashboardService } from "./dashboard.js";
 export { sidebarBadgeService } from "./sidebar-badges.js";
 export { sidebarPreferencesService } from "./sidebar-preferences.js";
 export { hubPreferencesService } from "./hub-preferences.js";
+export { hubCounterSnapshotsService } from "./hub-counter-snapshots.js";
 export { inboxDismissalService } from "./inbox-dismissals.js";
 export { userEntityPinService } from "./user-entity-pins.js";
 export { accessService } from "./access.js";

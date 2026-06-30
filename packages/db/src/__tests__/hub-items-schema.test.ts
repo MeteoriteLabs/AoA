@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { hubItems, notifications } from "../schema/notifications.js";
 import { hubPreferences } from "../schema/hub_preferences.js";
+import { hubCounterSnapshots } from "../schema/hub_counter_snapshots.js";
 
 describe("hubItems schema", () => {
   it("hubItems aliases the notifications table and exposes hub columns", () => {
@@ -31,6 +32,20 @@ describe("hubItems schema", () => {
       "updatedAt",
     ]) {
       expect(hubPreferences, col).toHaveProperty(col);
+    }
+  });
+
+  it("hubCounterSnapshots exposes bounded per-user counter columns", () => {
+    for (const col of [
+      "userId",
+      "companyId",
+      "openCount",
+      "unreadCount",
+      "invalidatedAt",
+      "computedAt",
+      "updatedAt",
+    ]) {
+      expect(hubCounterSnapshots, col).toHaveProperty(col);
     }
   });
 });

@@ -101,6 +101,7 @@ export { workflowTemplates } from "./workflow_templates.js";
 export { notifications, hubItems } from "./notifications.js";
 export * from "./hub_item_user_state.js";
 export * from "./hub_audit.js";
+export { hubCounterSnapshots } from "./hub_counter_snapshots.js";
 export { companySkills } from "./company_skills.js";
 export { budgetPolicies } from "./budget_policies.js";
 export { budgetIncidents } from "./budget_incidents.js";

@@ -7,8 +7,17 @@ const mockPerms = vi.hoisted(() => ({
   getTeamLeadDepartments: vi.fn(),
 }));
 
+const mockCounterSnapshots = vi.hoisted(() => ({
+  invalidateUser: vi.fn(),
+  invalidateCompany: vi.fn(),
+}));
+
 vi.mock("../services/permissions.js", () => ({
   permissionService: () => mockPerms,
+}));
+
+vi.mock("../services/hub-counter-snapshots.js", () => ({
+  hubCounterSnapshotsService: () => mockCounterSnapshots,
 }));
 
 function makeSelectChain(rows: unknown[], captured: { where: unknown[] }) {
@@ -37,6 +46,24 @@ function makeDb(rows: unknown[] = []) {
     select: vi.fn(() => makeSelectChain(rows, captured)),
   };
   return { db, captured };
+}
+
+function makeInsertChain(rows: unknown[]) {
+  const chain = {
+    values: vi.fn(() => chain),
+    onConflictDoUpdate: vi.fn(() => chain),
+    returning: vi.fn(() => Promise.resolve(rows)),
+  };
+  return chain;
+}
+
+function makeUpdateChain(rows: unknown[]) {
+  const chain = {
+    set: vi.fn(() => chain),
+    where: vi.fn(() => chain),
+    returning: vi.fn(() => Promise.resolve(rows)),
+  };
+  return chain;
 }
 
 function renderWhere(condition: unknown) {
@@ -128,5 +155,71 @@ describe("hubItems lifecycle query semantics", () => {
     expect(whereSql).toContain('"notifications"."created_at" <');
     expect(whereSql).toContain('"notifications"."created_at" =');
     expect(whereSql).toContain('"notifications"."id" <');
+  });
+
+  it("invalidates the actor snapshot after personal state changes", async () => {
+    const insertChain = makeInsertChain([{ id: "state-1" }]);
+    const { db } = makeDb([
+      {
+        id: "hub-1",
+        companyId: "company-1",
+        semanticType: "approval_request",
+        status: "open",
+      },
+    ]);
+    Object.assign(db, { insert: vi.fn(() => insertChain) });
+    const svc = hubItemsService(db as never);
+
+    await svc.applyPersonalState({
+      companyId: "company-1",
+      hubItemId: "hub-1",
+      actorUserId: "user-1",
+      role: "founder",
+      state: { kind: "dismiss" },
+    });
+
+    expect(mockCounterSnapshots.invalidateUser).toHaveBeenCalledWith("company-1", "user-1");
+  });
+
+  it("invalidates company snapshots after shared lifecycle actions", async () => {
+    const current = {
+      id: "hub-1",
+      companyId: "company-1",
+      semanticType: "approval_request",
+      status: "open",
+      version: 1,
+      resolvedAt: null,
+      archivedAt: null,
+      claimedByUserId: null,
+      claimedAt: null,
+      ownerPool: null,
+    };
+    const tx = {
+      update: vi.fn(() => makeUpdateChain([{ ...current, status: "resolved", version: 2 }])),
+      insert: vi
+        .fn()
+        .mockReturnValueOnce(makeInsertChain([
+          { id: "audit-1", undoDeadline: new Date("2026-06-30T10:00:08.000Z") },
+        ]))
+        .mockReturnValueOnce(makeInsertChain([])),
+    };
+    const db = {
+      select: vi.fn(() => makeSelectChain([current], { where: [] })),
+      transaction: vi.fn((callback: (tx: unknown) => Promise<unknown>) => callback(tx)),
+    };
+    const svc = hubItemsService(db as never);
+
+    await svc.recordLifecycleAction({
+      companyId: "company-1",
+      hubItemId: "hub-1",
+      action: "resolve",
+      expectedVersion: 1,
+      actorType: "user",
+      actorId: "user-1",
+      actorIsFounder: true,
+      authorityBasis: "founder",
+    });
+
+    expect(mockCounterSnapshots.invalidateCompany).toHaveBeenCalledWith("company-1");
   });
 });

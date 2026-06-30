@@ -36,6 +36,7 @@ const HUB_UNDO_WINDOW_MS = 8_000;
 import { redactSecretsInString } from "../redaction.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { HttpError } from "../errors.js";
+import { hubCounterSnapshotsService } from "./hub-counter-snapshots.js";
 import { orgHierarchyService } from "./org-hierarchy.js";
 import { permissionService } from "./permissions.js";
 
@@ -130,6 +131,8 @@ function deriveGroupLabel(
 }
 
 export function hubItemsService(db: Db) {
+  const counterSnapshots = hubCounterSnapshotsService(db);
+
   function sourceUniqueKey(a: EmitArgs): string {
     return [a.companyId, a.sourceType, a.sourceId, a.semanticType, a.scopeKey ?? ""].join(":");
   }
@@ -245,6 +248,7 @@ export function hubItemsService(db: Db) {
     // (empty RETURNING) and the re-select, `row` is undefined — never return an
     // id-less `{ lane }` object to callers (P2-5).
     if (!row) throw conflict("Hub item vanished during emit; retry.");
+    await counterSnapshots.invalidateCompany(a.companyId);
     return { ...row, lane: laneForSemanticType(a.semanticType) };
   }
 
@@ -505,6 +509,7 @@ export function hubItemsService(db: Db) {
       })
       .returning();
 
+    await counterSnapshots.invalidateUser(args.companyId, args.actorUserId);
     return row;
   }
 
@@ -697,6 +702,7 @@ export function hubItemsService(db: Db) {
     });
 
     if (!committed.replayed && args.sideEffect) await args.sideEffect();
+    if (!committed.replayed) await counterSnapshots.invalidateCompany(args.companyId);
     return {
       item: committed.item,
       auditId: committed.auditId,
@@ -746,7 +752,7 @@ export function hubItemsService(db: Db) {
     }
 
     const prior = (audit.priorState ?? {}) as Record<string, unknown>;
-    return db.transaction(async (txRaw) => {
+    const result = await db.transaction(async (txRaw) => {
       const tx = txRaw as unknown as Db;
       const updated = await tx
         .update(hubItems)
@@ -801,6 +807,8 @@ export function hubItemsService(db: Db) {
 
       return { item: decorateItem(updated), auditId: undoAudit.id };
     });
+    await counterSnapshots.invalidateCompany(args.companyId);
+    return result;
   }
 
   async function bulkAction(args: {
@@ -1280,6 +1288,7 @@ export function hubItemsService(db: Db) {
     console.log(
       `[hub.reconcile] company=${companyId} source=${opts.sourceType} healed=${healed} (closed=${closed} refreshed=${refreshed})`,
     );
+    if (healed > 0) await counterSnapshots.invalidateCompany(companyId);
     return { healed, closed, refreshed };
   }
 
