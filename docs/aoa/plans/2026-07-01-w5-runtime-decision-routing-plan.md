@@ -236,21 +236,21 @@ pnpm --filter @armyofagents/db test:run
 - `server/src/__tests__/agent-runtime-decisions.test.ts`
 - `server/src/__tests__/hub-runtime-decisions.test.ts`
 
-- [ ] Write failing service tests for prompt creation, idempotency, redaction, owner resolution, answer transitions, relay marking, and timeout transitions.
-- [ ] Add nonce/source-revision tests:
+- [x] Write failing service tests for prompt creation, idempotency, redaction, owner resolution, answer transitions, relay marking, and timeout transitions.
+- [x] Add nonce/source-revision tests:
   - stale `expectedSourceRevision` rejects with conflict
   - answer with wrong nonce/run/company is rejected
   - already answered/relayed prompts are idempotent only with the same idempotency key
   - relay failure leaves the hub item actionable with `relay_failed`
-- [ ] Add redaction/RBAC tests:
+- [x] Add redaction/RBAC tests:
   - secrets are redacted before hub summary/message persistence
   - raw prompt/details are not returned to unauthorized users
   - authority is enforced server-side on answer, not only by disabled UI controls
-- [ ] Implement service methods.
-- [ ] Add runtime decision source reconciler in hub service.
-- [ ] Ensure audit/activity entries are written before answer state changes.
-- [ ] Add counter invalidation/live event assertions.
-- [ ] Run focused server tests.
+- [x] Implement service methods.
+- [x] Add runtime decision source reconciler in hub service.
+- [x] Ensure audit/activity entries are written before answer state changes.
+- [x] Add counter invalidation/live event assertions.
+- [x] Run focused server tests.
 
 ## Task 3: Routes and RBAC
 

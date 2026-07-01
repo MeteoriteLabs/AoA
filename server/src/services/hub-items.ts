@@ -6,6 +6,7 @@ import {
   hubItemUserState,
   hubAudit,
   activityLog,
+  agentRuntimeDecisions,
   companyMemberships,
   approvals,
   heartbeatRuns,
@@ -1443,9 +1444,33 @@ export function hubItemsService(db: Db) {
     };
   };
 
+  const reconcileRuntimeDecision: SourceReconciler = async (companyId, sourceId) => {
+    const row = await db
+      .select({
+        title: agentRuntimeDecisions.title,
+        status: agentRuntimeDecisions.status,
+        summary: agentRuntimeDecisions.summary,
+        promptText: agentRuntimeDecisions.promptText,
+        relayError: agentRuntimeDecisions.relayError,
+        sourceRevision: agentRuntimeDecisions.sourceRevision,
+      })
+      .from(agentRuntimeDecisions)
+      .where(and(eq(agentRuntimeDecisions.id, sourceId), eq(agentRuntimeDecisions.companyId, companyId)))
+      .limit(1)
+      .then((r) => r[0] ?? null);
+    if (!row) return { terminal: true, summary: null, permissionRevision: null };
+    return {
+      terminal: ["relayed", "expired", "cancelled"].includes(row.status),
+      title: row.title,
+      summary: row.summary ?? row.promptText ?? row.relayError ?? null,
+      permissionRevision: String(row.sourceRevision),
+    };
+  };
+
   const SOURCE_RECONCILERS: Record<string, SourceReconciler> = {
     approval: reconcileApproval,
     heartbeat_run: reconcileHeartbeatRun,
+    runtime_decision: reconcileRuntimeDecision,
     join_request: reconcileJoinRequest,
     discussion: reconcileDiscussion,
     suggestion: reconcileSuggestion,
