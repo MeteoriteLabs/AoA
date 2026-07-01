@@ -71,6 +71,14 @@ function serializeDate(value: Date | string | null | undefined): string | null {
   return value instanceof Date ? value.toISOString() : value;
 }
 
+function auditedPostActionVersion(priorState: unknown): number | null {
+  if (priorState == null || typeof priorState !== "object") return null;
+  const priorVersion = (priorState as { version?: unknown }).version;
+  return typeof priorVersion === "number" && Number.isInteger(priorVersion) && priorVersion >= 0
+    ? priorVersion + 1
+    : null;
+}
+
 function isAutopilotMode(value: unknown): value is HubAutopilotMode {
   return value === "off" || value === "assist" || value === "drive";
 }
@@ -373,9 +381,9 @@ export function hubAutopilotService(db: Db, deps: HubAutopilotDeps = {}) {
           autonomyLevel: hubAudit.autonomyLevel,
           reason: hubAudit.reason,
           decisionContext: hubAudit.decisionContext,
+          priorState: hubAudit.priorState,
           undoDeadline: hubAudit.undoDeadline,
           itemStatus: hubItems.status,
-          itemVersion: hubItems.version,
           createdAt: hubAudit.createdAt,
         })
         .from(hubAudit)
@@ -402,7 +410,7 @@ export function hubAutopilotService(db: Db, deps: HubAutopilotDeps = {}) {
           decisionContext: row.decisionContext ?? null,
           undoDeadline: serializeDate(row.undoDeadline),
           itemStatus: (row.itemStatus as HubItemStatus | null) ?? null,
-          itemVersion: typeof row.itemVersion === "number" ? row.itemVersion : null,
+          itemVersion: auditedPostActionVersion(row.priorState),
           createdAt: serializeDate(row.createdAt) ?? new Date(0).toISOString(),
         })),
       };

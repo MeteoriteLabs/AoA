@@ -32,6 +32,19 @@ function makeEmptyDb() {
   } as any;
 }
 
+function makeRowsDb(rows: unknown[]) {
+  const query = {
+    from: vi.fn(() => query),
+    leftJoin: vi.fn(() => query),
+    where: vi.fn(() => query),
+    orderBy: vi.fn(() => query),
+    limit: vi.fn(async () => rows),
+  };
+  return {
+    select: vi.fn(() => query),
+  } as any;
+}
+
 describe("hubAutopilotService", () => {
   it("returns an off default policy when no row exists", async () => {
     const policy = await hubAutopilotService(makeEmptyDb()).get("company-1");
@@ -203,5 +216,34 @@ describe("hubAutopilotService", () => {
 
     expect(hubItems.recordLifecycleAction.mock.calls[0][0]).not.toHaveProperty("relayResult");
     expect(hubItems.recordLifecycleAction.mock.calls[0][0]).toHaveProperty("decisionContext");
+  });
+
+  it("returns the audited post-action version for undoable recent actions", async () => {
+    const service = hubAutopilotService(
+      makeRowsDb([
+        {
+          auditId: "audit-1",
+          hubItemId: "hub-1",
+          title: "Run complete",
+          semanticType: "run_complete",
+          action: "resolve",
+          autonomyLevel: "drive",
+          reason: "trusted",
+          decisionContext: {},
+          priorState: { status: "open", version: 2 },
+          undoDeadline: new Date("2026-07-01T12:00:00.000Z"),
+          itemStatus: "resolved",
+          itemVersion: 9,
+          createdAt: new Date("2026-07-01T11:59:00.000Z"),
+        },
+      ]),
+    );
+
+    const result = await service.listRecentActions("company-1");
+
+    expect(result.items[0]).toMatchObject({
+      auditId: "audit-1",
+      itemVersion: 3,
+    });
   });
 });
