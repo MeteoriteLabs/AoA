@@ -3,6 +3,7 @@ import type { Db } from "@armyofagents/db";
 import { runtimeDecisionAnswerSchema } from "@armyofagents/shared";
 import { validate } from "../middleware/validate.js";
 import { agentRuntimeDecisionService, permissionService } from "../services/index.js";
+import { runtimeDecisionDetail } from "../services/agent-runtime-decisions.js";
 import { assertCompanyAccess } from "./authz.js";
 import { forbidden, unauthorized } from "../errors.js";
 
@@ -54,7 +55,7 @@ export function agentRuntimeDecisionRoutes(db: Db) {
         actorUserId: userId,
         ...req.body,
       });
-      res.json(answered);
+      res.json(runtimeDecisionDetail(answered));
     },
   );
 

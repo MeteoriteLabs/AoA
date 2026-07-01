@@ -160,7 +160,9 @@ function commandHash(command: string | null | undefined) {
 function pathMatchesScope(path: string | null | undefined, scope: string | null) {
   if (!scope) return true;
   if (!path) return false;
-  return path === scope || path.startsWith(scope.endsWith("/") || scope.endsWith("\\") ? scope : `${scope}/`);
+  const normalizedPath = path.replace(/\\/g, "/").replace(/\/+$/, "");
+  const normalizedScope = scope.replace(/\\/g, "/").replace(/\/+$/, "");
+  return normalizedPath === normalizedScope || normalizedPath.startsWith(`${normalizedScope}/`);
 }
 
 function networkMatchesScope(networkTarget: string | null | undefined, scope: string | null) {

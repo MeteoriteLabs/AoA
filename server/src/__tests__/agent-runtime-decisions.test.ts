@@ -170,6 +170,38 @@ describe("agentRuntimeDecisionService", () => {
     expect(result.decision.status).toBe("answered");
   });
 
+  it("matches allow-always path scopes across Windows and POSIX separators", async () => {
+    const { service, repo } = makeService({
+      listTrustRules: vi.fn(async () => [
+        baseTrustRule({
+          toolName: "edit",
+          pathScope: "C:\\repo\\packages\\ui",
+          riskClass: null,
+        }),
+      ]),
+    });
+
+    await service.createPrompt({
+      companyId: "company-1",
+      agentId: "agent-1",
+      runId: "11111111-1111-4111-8111-111111111111",
+      adapterType: "claude_local",
+      kind: "permission",
+      nonce: "nonce-windows-path",
+      title: "Allow file edit?",
+      toolName: "edit",
+      path: "C:/repo/packages/ui/src/App.tsx",
+      timeoutPolicy: "deny",
+    });
+
+    expect(repo.createDecision).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "answered",
+        decision: "allow_always",
+      }),
+    );
+  });
+
   it("does not auto-answer non-matching trust rules or work questions", async () => {
     const { service, repo } = makeService({
       listTrustRules: vi.fn(async () => [baseTrustRule({ riskClass: "high" })]),
