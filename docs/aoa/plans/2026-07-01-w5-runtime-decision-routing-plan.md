@@ -261,11 +261,11 @@ pnpm --filter @armyofagents/db test:run
 - `server/src/__tests__/agent-runtime-decisions-routes.test.ts`
 - `server/src/__tests__/hub-items-routes.test.ts`
 
-- [ ] Write failing route tests for board-only access, company scoping, founder/operator authority, optimistic conflict, stale prompt, and invalid decision payloads.
-- [ ] Add runtime decision routes.
-- [ ] Mount routes in app.
-- [ ] Trigger runtime decision reconciliation for Waiting on you list/count routes.
-- [ ] Run focused route tests.
+- [x] Write failing route tests for board-only access, company scoping, founder/operator authority, optimistic conflict, stale prompt, and invalid decision payloads.
+- [x] Add runtime decision routes.
+- [x] Mount routes in app.
+- [x] Trigger runtime decision reconciliation for Waiting on you list/count routes.
+- [x] Run focused route tests.
 
 ## Task 4: Heartbeat Broker and Test Bridge
 

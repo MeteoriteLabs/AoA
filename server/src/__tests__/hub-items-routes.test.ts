@@ -16,6 +16,7 @@ const mockSvc = vi.hoisted(() => ({
   undoAction: vi.fn(),
   bulkAction: vi.fn(),
   getAudit: vi.fn(),
+  reconcile: vi.fn(),
 }));
 
 const mockHubPreferences = vi.hoisted(() => ({
@@ -194,6 +195,7 @@ describe("hub-items routes", () => {
     expect(res.body.items[0].title).toBe("owned");
     expect(mockEmitOpenApprovalHubItems).toHaveBeenCalledWith(expect.anything(), COMPANY_A, expect.any(Number));
     expect(mockEmitStaleWorkHubItems).toHaveBeenCalledWith(expect.anything(), COMPANY_A, expect.any(Number));
+    expect(mockSvc.reconcile).toHaveBeenCalledWith(COMPANY_A, { sourceType: "runtime_decision" });
     expect(mockAutopilot.evaluateOpenItems).toHaveBeenCalledWith({ companyId: COMPANY_A, limit: 50 });
     // RBAC scope (resolved role) is threaded into the service.
     expect(mockSvc.query).toHaveBeenCalledWith(
@@ -224,6 +226,7 @@ describe("hub-items routes", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body).toEqual({ items: [], nextCursor: "next-cursor", totalKnown: null });
     expect(mockAutopilot.evaluateOpenItems).toHaveBeenCalledWith({ companyId: COMPANY_A, limit: 25 });
+    expect(mockSvc.reconcile).toHaveBeenCalledWith(COMPANY_A, { sourceType: "runtime_decision" });
     expect(mockSvc.query).toHaveBeenCalledWith(
       COMPANY_A,
       expect.objectContaining({
@@ -611,6 +614,7 @@ describe("hub-items routes", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockEmitOpenApprovalHubItems).toHaveBeenCalledWith(expect.anything(), COMPANY_A);
     expect(mockEmitStaleWorkHubItems).toHaveBeenCalledWith(expect.anything(), COMPANY_A, null);
+    expect(mockSvc.reconcile).toHaveBeenCalledWith(COMPANY_A, { sourceType: "runtime_decision" });
     expect(mockHubCounterSnapshots.getOrRefresh).toHaveBeenCalled();
   });
 });

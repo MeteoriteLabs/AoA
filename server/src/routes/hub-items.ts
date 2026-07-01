@@ -64,6 +64,10 @@ export function hubItemRoutes(db: Db) {
     }
   }
 
+  async function reconcileRuntimeDecisionHubItems(companyId: string) {
+    await svc.reconcile(companyId, { sourceType: "runtime_decision" });
+  }
+
   router.get("/companies/:companyId/hub-items/preferences/me", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -104,6 +108,7 @@ export function hubItemRoutes(db: Db) {
     const query: ListHubItemsQuery = listHubItemsQuery.parse(req.query);
     if (!query.lane || query.lane === "waiting_on_you") {
       await emitOpenApprovalHubItems(db, companyId, query.limit);
+      await reconcileRuntimeDecisionHubItems(companyId);
     }
     if (!query.lane || query.lane === "suggestions") {
       await emitStaleWorkHubItems(db, companyId, query.limit);
@@ -132,6 +137,7 @@ export function hubItemRoutes(db: Db) {
     const role = await resolveRole(req, companyId, userId);
     await emitOpenApprovalHubItems(db, companyId);
     await emitStaleWorkHubItems(db, companyId, null);
+    await reconcileRuntimeDecisionHubItems(companyId);
     await evaluateAutopilotRefresh(companyId, 25);
     const result = await counterSnapshots.getOrRefresh({ companyId, userId, role });
     res.json(result);

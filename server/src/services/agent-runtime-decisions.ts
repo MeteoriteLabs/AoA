@@ -3,6 +3,7 @@ import { and, eq, inArray, lte } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { agentRuntimeDecisions } from "@armyofagents/db";
 import type {
+  RuntimeDecisionDetail,
   RuntimeDecisionKind,
   RuntimeDecisionPermissionDecision,
   RuntimeDecisionStatus,
@@ -113,6 +114,44 @@ function promptHash(input: Pick<CreatePromptInput, "kind" | "title" | "summary" 
 
 function sourceUniqueKey(input: { companyId: string; runId: string; nonce: string }) {
   return `runtime:${input.companyId}:${input.runId}:${input.nonce}`;
+}
+
+function toIso(value: Date | string | null): string | null {
+  if (value == null) return null;
+  return value instanceof Date ? value.toISOString() : value;
+}
+
+export function runtimeDecisionDetail(row: AgentRuntimeDecisionRow): RuntimeDecisionDetail {
+  return {
+    id: row.id,
+    hubItemId: null,
+    companyId: row.companyId,
+    agentId: row.agentId,
+    runId: row.runId,
+    adapterType: row.adapterType as RuntimeDecisionDetail["adapterType"],
+    adapterSessionId: row.adapterSessionId,
+    kind: row.kind as RuntimeDecisionKind,
+    status: row.status as RuntimeDecisionStatus,
+    sourceRevision: row.sourceRevision,
+    nonce: row.nonce,
+    title: row.title,
+    summary: row.summary,
+    promptText: row.promptText,
+    toolName: row.toolName,
+    command: row.command,
+    cwd: row.cwd,
+    path: row.path,
+    networkTarget: row.networkTarget,
+    riskClass: row.riskClass,
+    options: row.options as RuntimeDecisionDetail["options"],
+    timeoutPolicy: row.timeoutPolicy as RuntimeDecisionTimeoutPolicy,
+    expiresAt: toIso(row.expiresAt),
+    answeredAt: toIso(row.answeredAt),
+    relayedAt: toIso(row.relayedAt),
+    relayError: row.relayError,
+    createdAt: toIso(row.createdAt) ?? new Date(0).toISOString(),
+    updatedAt: toIso(row.updatedAt) ?? new Date(0).toISOString(),
+  };
 }
 
 function realRepo(db: Db): DecisionRepo {
@@ -244,6 +283,12 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
     return { decision: created, hubItem };
   }
 
+  async function getDetail(companyId: string, decisionId: string) {
+    const row = await repo.getDecision(companyId, decisionId);
+    if (!row) throw notFound("Runtime decision prompt not found");
+    return runtimeDecisionDetail(row);
+  }
+
   async function loadActive(companyId: string, decisionId: string) {
     const row = await repo.getDecision(companyId, decisionId);
     if (!row) throw notFound("Runtime decision prompt not found");
@@ -372,6 +417,7 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
 
   return {
     createPrompt,
+    getDetail,
     answerPrompt,
     markRelayFailed,
     markRelayed,
