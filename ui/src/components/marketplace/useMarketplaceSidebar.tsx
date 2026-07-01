@@ -77,6 +77,7 @@ export function useMarketplaceSidebar(activeKey: MarketplaceSidebarKey): {
   useLayoutEffect(() => {
     setSecondarySidebar(
       <SecondarySidebar
+        title="Marketplace"
         sections={sections}
         collapsed={collapsed}
         onToggleCollapse={() => setCollapsed((v) => !v)}

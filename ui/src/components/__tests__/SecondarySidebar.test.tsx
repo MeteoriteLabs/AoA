@@ -121,15 +121,30 @@ describe("SecondarySidebar", () => {
     expect(container.querySelector("button[aria-label*='sidebar']")).toBeNull();
   });
 
-  it("collapse toggle is anchored to the top-right corner", () => {
+  it("headerless: collapse toggle is anchored to the top-right corner", () => {
     const { container } = render(
       <SecondarySidebar sections={SECTIONS} onToggleCollapse={vi.fn()} />
     );
     const toggle = container.querySelector("button[aria-label='Collapse sidebar']")!;
-    expect(toggle.className).toContain("absolute");
-    expect(toggle.className).toContain("right-2");
-    expect(toggle.className).toContain("top-3");
-    expect(toggle.className).not.toContain("mt-auto");
+    const wrapper = toggle.parentElement!;
+    expect(wrapper.className).toContain("absolute");
+    expect(wrapper.className).toContain("right-2");
+    expect(wrapper.className).toContain("top-3");
+  });
+
+  it("renders a panel header with the title and hosts the collapse toggle in it", () => {
+    const { container } = render(
+      <SecondarySidebar sections={SECTIONS} title="Marketplace" onToggleCollapse={vi.fn()} />
+    );
+    const header = container.querySelector("h2");
+    expect(header?.textContent).toBe("Marketplace");
+    // Panel-header size convention (14px semibold).
+    expect(header?.className).toContain("text-[14px]");
+    expect(header?.className).toContain("font-semibold");
+    // With a header, there is no legacy top gap and no floating toggle wrapper.
+    expect(container.querySelector("[role='navigation']")?.className).not.toContain("pt-16");
+    const toggle = container.querySelector("button[aria-label='Collapse sidebar']")!;
+    expect(toggle.parentElement?.className).not.toContain("absolute");
   });
 
   it("custom className merges through", () => {

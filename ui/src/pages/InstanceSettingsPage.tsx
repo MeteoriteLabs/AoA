@@ -138,7 +138,7 @@ export function InstanceSettingsPage() {
     ];
     return [
       {
-        title: "Settings",
+        // No section title — the SecondarySidebar header ("Settings") covers it.
         items: items.map((item) => ({
           id: item.key,
           label: item.label,
@@ -154,6 +154,7 @@ export function InstanceSettingsPage() {
   useLayoutEffect(() => {
     setSecondarySidebar(
       <SecondarySidebar
+        title="Settings"
         sections={settingsSections}
         collapsed={sidebarCollapsed}
         onToggleCollapse={() => setSidebarCollapsed((c) => !c)}
