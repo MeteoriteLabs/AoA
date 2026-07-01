@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { MemoryRouter, Route, Routes, Outlet } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { mockCompanyContext, mockDialogContext } from "./test-utils";
 import MarketplacePackageDetail from "../pages/MarketplacePackageDetail";
@@ -19,7 +19,9 @@ function wrap(initialPath: string) {
     <QueryClientProvider client={qc}>
       <MemoryRouter initialEntries={[initialPath]}>
         <Routes>
-          <Route path="/marketplace/package/:id/*" element={<MarketplacePackageDetail />} />
+          <Route element={<Outlet context={{ setSecondarySidebar: () => {} }} />}>
+            <Route path="/marketplace/package/:id/*" element={<MarketplacePackageDetail />} />
+          </Route>
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,

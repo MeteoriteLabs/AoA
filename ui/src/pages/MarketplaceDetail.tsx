@@ -24,7 +24,9 @@ import {
   TYPE_LABELS_PLURAL,
   pathToItemType,
   shortSource,
+  isAoaItem,
 } from "@/lib/marketplace-constants";
+import { useMarketplaceSidebar } from "@/components/marketplace/useMarketplaceSidebar";
 import type { MarketplaceItemType, PluginRecord } from "@armyofagents/shared";
 
 const CAP_PREVIEW = 8;
@@ -60,6 +62,21 @@ export default function MarketplaceDetail() {
     if (!catalog || !catalogItemId) return null;
     return catalog.items.find((i) => i.id === catalogItemId) ?? null;
   }, [catalog, catalogItemId]);
+
+  // AoA-first-party items live under the AoA view, not their type section — so the
+  // sidebar highlight + back link point to AoA for them.
+  const isAoa = item ? isAoaItem(item) : false;
+  useMarketplaceSidebar(isAoa ? "aoa" : itemType ?? "home");
+  const backTo = isAoa
+    ? "/marketplace?view=aoa"
+    : itemType
+      ? `/marketplace?type=${itemType}`
+      : "/marketplace";
+  const backLabel = isAoa
+    ? "AoA"
+    : itemType
+      ? TYPE_LABELS_PLURAL[itemType]
+      : "marketplace";
 
   const parentPackage = useMemo(() => {
     if (!item || !packages) return null;
@@ -150,10 +167,10 @@ export default function MarketplaceDetail() {
               {error?.message ?? "Catalog unavailable"}
             </p>
             <Link
-              to={`/marketplace?type=${itemType}`}
+              to={backTo}
               className="text-sm text-primary hover:underline mt-3 inline-block"
             >
-              ← Back to {TYPE_LABELS_PLURAL[itemType]}
+              ← Back to {backLabel}
             </Link>
           </div>
         )}
@@ -162,10 +179,10 @@ export default function MarketplaceDetail() {
           <div className="text-center py-12">
             <p className="text-lg font-medium">Item not found: {catalogItemId}</p>
             <Link
-              to={`/marketplace?type=${itemType}`}
+              to={backTo}
               className="text-sm text-primary hover:underline mt-2 inline-block"
             >
-              ← Back to {TYPE_LABELS_PLURAL[itemType]}
+              ← Back to {backLabel}
             </Link>
           </div>
         )}

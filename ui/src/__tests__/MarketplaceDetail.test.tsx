@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { MemoryRouter, Route, Routes, Outlet } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import MarketplaceDetail from "@/pages/MarketplaceDetail";
@@ -55,7 +55,9 @@ function wrap(initialPath: string) {
         <ToastProvider>
           <InstallToastProvider>
             <Routes>
-              <Route path="/marketplace/:type/:slug/*" element={<MarketplaceDetail />} />
+              <Route element={<Outlet context={{ setSecondarySidebar: () => {} }} />}>
+                <Route path="/marketplace/:type/:slug/*" element={<MarketplaceDetail />} />
+              </Route>
             </Routes>
             <ToastViewport />
           </InstallToastProvider>
