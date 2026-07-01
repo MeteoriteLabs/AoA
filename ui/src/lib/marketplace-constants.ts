@@ -1,5 +1,9 @@
 import { Bot, Puzzle, Sparkles, type LucideIcon } from "lucide-react";
-import type { MarketplaceItemType } from "@armyofagents/shared";
+import type {
+  MarketplaceCatalogItem,
+  MarketplaceItemType,
+  MarketplacePackage,
+} from "@armyofagents/shared";
 
 /**
  * Type-default icons. `team` uses `Bot` (not `Users`) per design-system §10.1
@@ -141,4 +145,37 @@ export function shortSource(url: string, fallback: string): string {
 export function authorFromSource(url: string): string {
   const m = url.match(/github\.com\/([^/]+)/i);
   return m?.[1] ?? "community";
+}
+
+/** GitHub orgs (lowercased) whose marketplace items/packages are AoA first-party. */
+export const AOA_OWNERS = new Set(["aoa-curated", "meteoritelabs", "armyofagents"]);
+
+export function isAoaOwner(owner: string | null | undefined): boolean {
+  return owner != null && AOA_OWNERS.has(owner.toLowerCase());
+}
+
+/** Strict github owner from a source URL; null if not a github.com URL. */
+function githubOwner(url: string): string | null {
+  try {
+    const u = new URL(url);
+    if (!/(^|\.)github\.com$/i.test(u.hostname)) return null;
+    return u.pathname.split("/").filter(Boolean)[0]?.toLowerCase() ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * AoA's own catalog item — segregated into the marketplace "AoA" section and
+ * excluded from the general type sections, search, and packages. Matches by
+ * github owner or `provider.id` only (NOT the provider display name — "Army of
+ * Agents" is not a slug).
+ */
+export function isAoaItem(item: MarketplaceCatalogItem): boolean {
+  return isAoaOwner(githubOwner(item.source.url)) || isAoaOwner(item.provider?.id);
+}
+
+/** AoA's own derived package. `id` is `owner/repo` for synthesized packages. */
+export function isAoaPackage(pkg: MarketplacePackage): boolean {
+  return isAoaOwner(pkg.id.split("/")[0]) || isAoaOwner(pkg.provider?.id);
 }
