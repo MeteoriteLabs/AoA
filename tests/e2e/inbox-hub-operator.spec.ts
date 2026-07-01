@@ -1,6 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { cleanupTestCompanies, seedCompany } from "./helpers/seed-company";
 import { seedHubItem } from "./helpers/seed-hub-item";
+import { clickHubAction } from "./helpers/hub-actions";
 
 test.describe("Inbox Hub final operator flow", () => {
   test.beforeEach(async ({ request }) => {
@@ -26,19 +27,28 @@ test.describe("Inbox Hub final operator flow", () => {
       .click();
     await expect(page.getByText(/Review hire agent approval/i)).toBeVisible();
 
-    await page.getByRole("button", { name: /Review hire agent approval/i }).click();
+    // Opening the item marks it read (PATCH …/state), which invalidates + remounts
+    // the list/viewer; settle it before asserting the viewer opened.
+    await clickHubAction(
+      page,
+      page.getByRole("button", { name: /Review hire agent approval/i }),
+      "state",
+    );
     await expect(page.getByRole("complementary", { name: /hub viewer/i })).toBeVisible();
     await page.getByRole("link", { name: /open full/i }).click();
     await expect(page).toHaveURL(new RegExp(`/approvals/${approval.id}`));
 
     await page.goBack();
     await expect(page.getByRole("complementary", { name: /hub viewer/i })).toBeVisible();
-    await page.getByRole("button", { name: /^resolve$/i }).click();
+    // Each lifecycle action (POST …/action, undo POST …/undo) invalidates the list
+    // and remounts the viewer that holds these buttons; wait for each to settle so
+    // the next control isn't detached mid-click.
+    await clickHubAction(page, page.getByRole("button", { name: /^resolve$/i }), "action");
     await expect(page.getByRole("button", { name: /undo resolve/i })).toBeVisible();
-    await page.getByRole("button", { name: /undo resolve/i }).click();
+    await clickHubAction(page, page.getByRole("button", { name: /undo resolve/i }), "undo");
     await expect(page.getByRole("button", { name: /^resolve$/i })).toBeVisible();
 
-    await page.getByRole("button", { name: /^archive$/i }).click();
+    await clickHubAction(page, page.getByRole("button", { name: /^archive$/i }), "action");
     await page.getByRole("button", { name: /^archived$/i }).click();
     await expect(page.getByRole("button", { name: /Review hire agent approval/i })).toBeVisible();
   });
@@ -56,9 +66,17 @@ test.describe("Inbox Hub final operator flow", () => {
     const approval = (await approvalRes.json()) as { id: string };
 
     await page.goto(`/${company.issuePrefix}/approvals/pending`);
-    await expect(page.getByRole("heading", { name: /Approvals/i })).toBeVisible();
+    // 30s: the first navigation compiles the Approvals route chunk under vite-dev
+    // on a cold CI runner (~8s), well past the default 5s assertion timeout.
+    await expect(page.getByRole("heading", { name: /Approvals/i })).toBeVisible({
+      timeout: 30_000,
+    });
     await page.goto(`/${company.issuePrefix}/approvals/all`);
-    await expect(page.getByRole("heading", { name: /Approvals/i })).toBeVisible();
+    // 30s: the first navigation compiles the Approvals route chunk under vite-dev
+    // on a cold CI runner (~8s), well past the default 5s assertion timeout.
+    await expect(page.getByRole("heading", { name: /Approvals/i })).toBeVisible({
+      timeout: 30_000,
+    });
     await page.goto(`/${company.issuePrefix}/approvals/${approval.id}`);
     await expect(page).toHaveURL(new RegExp(`/${company.issuePrefix}/approvals/${approval.id}`));
   });
