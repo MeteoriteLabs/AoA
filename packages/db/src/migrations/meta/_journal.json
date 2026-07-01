@@ -1121,6 +1121,13 @@
       "when": 1782916523563,
       "tag": "0159_military_scarecrow",
       "breakpoints": true
+    },
+    {
+      "idx": 160,
+      "version": "7",
+      "when": 1782929079320,
+      "tag": "0160_lumpy_jack_power",
+      "breakpoints": true
     }
   ]
 }

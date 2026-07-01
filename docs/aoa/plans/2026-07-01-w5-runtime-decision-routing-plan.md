@@ -210,17 +210,17 @@ W5b:
 - `packages/db/src/schema/agent_runtime_trust_rules.ts`
 - `packages/db/src/schema/index.ts`
 
-- [ ] Write failing shared contract tests for prompt kinds, statuses, decisions, timeout policies, and `agent_runtime_decision` lane placement.
-- [ ] Add shared constants/types/validators.
-- [ ] Write failing DB schema/export tests for both new tables and required indexes/columns.
-- [ ] Add Drizzle schemas and exports.
-- [ ] Generate migration:
+- [x] Write failing shared contract tests for prompt kinds, statuses, decisions, timeout policies, and `agent_runtime_decision` lane placement.
+- [x] Add shared constants/types/validators.
+- [x] Write failing DB schema/export tests for both new tables and required indexes/columns.
+- [x] Add Drizzle schemas and exports.
+- [x] Generate migration:
 
 ```powershell
 pnpm db:generate
 ```
 
-- [ ] Run focused verification:
+- [x] Run focused verification:
 
 ```powershell
 pnpm --filter @armyofagents/shared test:run -- hub-contract

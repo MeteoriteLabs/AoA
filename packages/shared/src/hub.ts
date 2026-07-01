@@ -20,6 +20,38 @@ export type HubItemStatus = (typeof HUB_ITEM_STATUSES)[number];
 export const HUB_ITEM_PRIORITIES = ["low", "normal", "high", "urgent"] as const;
 export type HubItemPriority = (typeof HUB_ITEM_PRIORITIES)[number];
 
+export const RUNTIME_DECISION_KINDS = ["permission", "work_question"] as const;
+export type RuntimeDecisionKind = (typeof RUNTIME_DECISION_KINDS)[number];
+
+export const RUNTIME_DECISION_STATUSES = [
+  "created",
+  "shown",
+  "answered",
+  "relayed",
+  "expired",
+  "cancelled",
+  "relay_failed",
+] as const;
+export type RuntimeDecisionStatus = (typeof RUNTIME_DECISION_STATUSES)[number];
+
+export const RUNTIME_DECISION_PERMISSION_DECISIONS = [
+  "allow_once",
+  "allow_always",
+  "deny",
+] as const;
+export type RuntimeDecisionPermissionDecision =
+  (typeof RUNTIME_DECISION_PERMISSION_DECISIONS)[number];
+
+export const RUNTIME_DECISION_TIMEOUT_POLICIES = [
+  "deny",
+  "cancel_run",
+  "park_run",
+  "continue_with_default",
+  "escalate",
+] as const;
+export type RuntimeDecisionTimeoutPolicy =
+  (typeof RUNTIME_DECISION_TIMEOUT_POLICIES)[number];
+
 // Semantic type = WHAT the item is, independent of its source table. Adding a
 // type = one entry here + one registry entry (W1b). The W5 runtime-decision type
 // is RESERVED (no adapter bridge yet — see master scope §10).

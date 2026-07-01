@@ -11,10 +11,16 @@ import {
   HUB_SEMANTIC_TYPES,
   HUB_SEMANTIC_TO_LANE,
   HUB_AUTHORITY_BY_TYPE,
+  RUNTIME_DECISION_KINDS,
+  RUNTIME_DECISION_STATUSES,
+  RUNTIME_DECISION_PERMISSION_DECISIONS,
+  RUNTIME_DECISION_TIMEOUT_POLICIES,
   laneForSemanticType,
   authorityForSemanticType,
 } from "../hub.js";
 import {
+  runtimeDecisionAnswerSchema,
+  runtimeDecisionDetailSchema,
   hubActionSchema,
   hubAutopilotPolicySchema,
   hubBulkActionSchema,
@@ -43,6 +49,103 @@ describe("hub contract", () => {
     expect(HUB_SEMANTIC_TO_LANE.agent_runtime_decision).toBe("waiting_on_you");
     expect(HUB_AUTHORITY_BY_TYPE.agent_runtime_decision).toBe("founder");
     expect(authorityForSemanticType("agent_runtime_decision")).toBe("founder");
+  });
+  it("exports W5 runtime decision lifecycle constants", () => {
+    expect(RUNTIME_DECISION_KINDS).toEqual(["permission", "work_question"]);
+    expect(RUNTIME_DECISION_STATUSES).toEqual([
+      "created",
+      "shown",
+      "answered",
+      "relayed",
+      "expired",
+      "cancelled",
+      "relay_failed",
+    ]);
+    expect(RUNTIME_DECISION_PERMISSION_DECISIONS).toEqual([
+      "allow_once",
+      "allow_always",
+      "deny",
+    ]);
+    expect(RUNTIME_DECISION_TIMEOUT_POLICIES).toEqual([
+      "deny",
+      "cancel_run",
+      "park_run",
+      "continue_with_default",
+      "escalate",
+    ]);
+  });
+  it("accepts W5 runtime permission answers with nonce and source revision binding", () => {
+    const parsed = runtimeDecisionAnswerSchema.parse({
+      kind: "permission",
+      decision: "allow_once",
+      expectedSourceRevision: 3,
+      nonce: "nonce-abc",
+      idempotencyKey: "answer-1",
+    });
+
+    expect(parsed).toMatchObject({
+      kind: "permission",
+      decision: "allow_once",
+      expectedSourceRevision: 3,
+      nonce: "nonce-abc",
+    });
+  });
+  it("accepts W5 runtime work-question answers and rejects implicit deny", () => {
+    const parsed = runtimeDecisionAnswerSchema.parse({
+      kind: "work_question",
+      answer: { value: "monthly" },
+      expectedSourceRevision: 4,
+      nonce: "nonce-question",
+    });
+
+    expect(parsed.kind).toBe("work_question");
+    if (parsed.kind === "work_question") {
+      expect(parsed.answer).toEqual({ value: "monthly" });
+    }
+
+    expect(() =>
+      runtimeDecisionAnswerSchema.parse({
+        kind: "work_question",
+        decision: "deny",
+        expectedSourceRevision: 4,
+        nonce: "nonce-question",
+      }),
+    ).toThrow();
+  });
+  it("accepts bounded W5 runtime decision detail payloads for the hub viewer", () => {
+    const parsed = runtimeDecisionDetailSchema.parse({
+      id: "550e8400-e29b-41d4-a716-446655440010",
+      hubItemId: "550e8400-e29b-41d4-a716-446655440011",
+      companyId: "550e8400-e29b-41d4-a716-446655440012",
+      agentId: "550e8400-e29b-41d4-a716-446655440013",
+      runId: "550e8400-e29b-41d4-a716-446655440014",
+      adapterType: "claude_local",
+      adapterSessionId: null,
+      kind: "permission",
+      status: "shown",
+      sourceRevision: 2,
+      nonce: "nonce-detail",
+      title: "Allow shell command?",
+      summary: "Agent wants to run a test command.",
+      promptText: "pnpm test:run",
+      toolName: "shell",
+      command: "pnpm test:run",
+      cwd: "C:/repo",
+      path: null,
+      networkTarget: null,
+      riskClass: "medium",
+      options: null,
+      timeoutPolicy: "deny",
+      expiresAt: "2026-07-01T12:00:00.000Z",
+      answeredAt: null,
+      relayedAt: null,
+      relayError: null,
+      createdAt: "2026-07-01T11:45:00.000Z",
+      updatedAt: "2026-07-01T11:45:00.000Z",
+    });
+
+    expect(parsed.kind).toBe("permission");
+    expect(parsed.status).toBe("shown");
   });
   it("statuses are the three terminal-distinct lifecycle states + open", () => {
     expect(HUB_ITEM_STATUSES).toEqual(["open", "snoozed", "resolved", "archived"]);

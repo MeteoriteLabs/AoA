@@ -487,6 +487,8 @@ export {
   hubListRowSchema,
   hubListResponseSchema,
   hubCurationMetadataSchema,
+  runtimeDecisionAnswerSchema,
+  runtimeDecisionDetailSchema,
   type ListHubItemsQuery,
   type HubActionInput,
   type HubUserStateInput,
@@ -503,4 +505,6 @@ export {
   type HubListRow,
   type HubListResponse,
   type HubCurationMetadata,
+  type RuntimeDecisionAnswerInput,
+  type RuntimeDecisionDetail,
 } from "./hub.js";
