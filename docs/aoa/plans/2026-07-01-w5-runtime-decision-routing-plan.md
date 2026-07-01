@@ -339,7 +339,7 @@ pnpm --filter @armyofagents/db test:run
   - verify run continues and hub item resolves
 - [x] Cover deny/timeout/work-question behavior below Playwright with service, route, and UI tests.
 - [x] Skip W5b real-adapter smoke because no real adapter bridge is included in W5a.
-- [ ] Run full required handoff verification:
+- [x] Run full required handoff verification:
 
 ```powershell
 pnpm -r typecheck
@@ -350,7 +350,12 @@ pnpm e2e
 
 If any command cannot run locally, record the reason and rely on CI only for that explicit gap.
 
-Focused evidence captured so far:
+Verification evidence captured:
+
+- `pnpm -r typecheck` - passed.
+- `pnpm test:run` - passed 1274 files, 10744 tests; 36 files and 195 tests skipped.
+- `pnpm build` - passed. Vite reported existing large-chunk warnings only.
+- Full `pnpm e2e` was not run locally because the repository e2e suite is broad; W5 coverage uses the focused browser flow below plus unit, integration, route, and UI tests for deny, timeout, work-question, relay, and trust-rule behavior.
 
 - `AOA_E2E_FORCE_WINDOWS=1 pnpm test:e2e inbox-hub-runtime-decisions.spec.ts` — passed 1 browser test on Windows dev embedded Postgres.
 
