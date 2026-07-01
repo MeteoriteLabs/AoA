@@ -4,7 +4,10 @@ import type { LobbySidebarItem } from "@/components/LobbySidebar";
 export function lobbyActiveItem(pathname: string): LobbySidebarItem {
   const path = pathname.split("?")[0];
   if (path.startsWith("/marketplace")) return "marketplace";
-  if (path.startsWith("/instance/settings")) return "settings";
+  // Instance Access renders inside the Settings shell (shared secondary sidebar),
+  // so it belongs to the Settings top-level nav section too.
+  if (path.startsWith("/instance/settings") || path.startsWith("/instance/access"))
+    return "settings";
   // "/" and everything else default to the organizations list.
   return "organizations";
 }

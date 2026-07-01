@@ -15,6 +15,9 @@ describe("lobbyActiveItem", () => {
     expect(lobbyActiveItem("/instance/settings")).toBe("settings");
     expect(lobbyActiveItem("/instance/settings?tab=backups")).toBe("settings");
   });
+  it("maps instance access to settings (shares the Settings shell)", () => {
+    expect(lobbyActiveItem("/instance/access")).toBe("settings");
+  });
   it("defaults unknown paths to organizations", () => {
     expect(lobbyActiveItem("/whatever")).toBe("organizations");
   });
