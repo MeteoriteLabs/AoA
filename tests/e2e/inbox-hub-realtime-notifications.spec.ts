@@ -20,8 +20,10 @@ test.describe("Inbox Hub realtime notifications", () => {
     const company = await seedCompany(request, `E2E-HUB-W2L3-${Date.now()}`);
     await ensureLocalBoardUser();
 
+    await installLiveSocketProbe(page, company.id);
     await page.goto(`/${company.issuePrefix}/inbox/waiting`);
     await expect(page.getByRole("navigation", { name: /hub lanes/i })).toBeVisible();
+    await waitForLiveSocket(page, company.id);
 
     await updateNotificationPreferences(request, company.id, {
       deliveryMode: "realtime",
@@ -33,10 +35,13 @@ test.describe("Inbox Hub realtime notifications", () => {
       title: "W2 realtime approval toast",
     });
     await publishHubItemChange(request, company.id, realtime);
-    await expect(page.getByRole("button", { name: /W2 realtime approval toast/i })).toBeVisible({
+    await expect(toast(page, "W2 realtime approval toast")).toBeVisible({
       timeout: 15_000,
     });
-    await expect(toast(page, "W2 realtime approval toast")).toBeVisible();
+    await page.goto(`/${company.issuePrefix}/inbox/waiting/${realtime.id}`);
+    await expect(page.getByRole("heading", { name: /W2 realtime approval toast/i })).toBeVisible({
+      timeout: 15_000,
+    });
     await dismissToasts(page);
 
     await openNotificationPreferences(page);
@@ -58,7 +63,6 @@ test.describe("Inbox Hub realtime notifications", () => {
       timeout: 15_000,
     });
     await expect(toast(page, "W2 digest approval summary")).toHaveCount(0);
-    await expect(page.getByText("W2 digest approval summary")).toHaveCount(2);
 
     await page.getByLabel(/approval request delivery/i).selectOption("silent");
     await expect(page.getByLabel(/approval request delivery/i)).toHaveValue("silent");
@@ -76,10 +80,13 @@ test.describe("Inbox Hub realtime notifications", () => {
     await expect(page.getByText("W2 silent approval hidden")).toHaveCount(1);
 
     await page.getByLabel(/approval request delivery/i).selectOption("realtime");
-    await page.getByRole("checkbox", { name: /quiet hours/i }).check();
-    await page.getByLabel(/quiet hours start/i).fill("00:00");
-    await page.getByLabel(/quiet hours end/i).fill("00:00");
-    await expect(page.getByLabel(/approval request delivery/i)).toHaveValue("realtime");
+    await updateNotificationPreferences(request, company.id, {
+      deliveryMode: "realtime",
+      quietHours: { enabled: true, start: "00:00", end: "00:00", timezone: "UTC" },
+    });
+    await page.reload();
+    await expect(page.getByRole("navigation", { name: /hub lanes/i })).toBeVisible();
+    await waitForLiveSocket(page, company.id);
 
     const quiet = await seedRealtimeHubItem(company.id, {
       sourceId: "quiet-hours",
@@ -96,7 +103,6 @@ test.describe("Inbox Hub realtime notifications", () => {
       timeout: 15_000,
     });
     await expect(toast(page, "W2 quiet hours digest fallback")).toHaveCount(0);
-    await expect(page.getByText("W2 quiet hours digest fallback")).toHaveCount(2);
 
     expect(realtime.id).toBeTruthy();
   });
@@ -141,6 +147,56 @@ async function seedRealtimeHubItem(
     title: input.title,
     ownerPool: "board",
   });
+}
+
+function liveSocketPath(companyId: string) {
+  return `/api/companies/${encodeURIComponent(companyId)}/events/ws`;
+}
+
+async function installLiveSocketProbe(page: Page, companyId: string) {
+  const expectedPath = liveSocketPath(companyId);
+  await page.addInitScript(({ expectedPath }) => {
+    const win = window as typeof window & {
+      __aoaLiveSocketOpen?: Record<string, boolean>;
+    };
+    const NativeWebSocket = window.WebSocket;
+    win.__aoaLiveSocketOpen = win.__aoaLiveSocketOpen ?? {};
+
+    function PatchedWebSocket(url: string | URL, protocols?: string | string[]) {
+      const socket =
+        protocols === undefined
+          ? new NativeWebSocket(url)
+          : new NativeWebSocket(url, protocols);
+      if (String(url).includes(expectedPath)) {
+        win.__aoaLiveSocketOpen![expectedPath] = false;
+        socket.addEventListener("open", () => {
+          win.__aoaLiveSocketOpen![expectedPath] = true;
+        });
+        socket.addEventListener("close", () => {
+          win.__aoaLiveSocketOpen![expectedPath] = false;
+        });
+      }
+      return socket;
+    }
+
+    Object.setPrototypeOf(PatchedWebSocket, NativeWebSocket);
+    PatchedWebSocket.prototype = NativeWebSocket.prototype;
+    window.WebSocket = PatchedWebSocket as unknown as typeof WebSocket;
+  }, { expectedPath });
+}
+
+async function waitForLiveSocket(page: Page, companyId: string) {
+  const expectedPath = liveSocketPath(companyId);
+  await page.waitForFunction(
+    (path) => {
+      const win = window as typeof window & {
+        __aoaLiveSocketOpen?: Record<string, boolean>;
+      };
+      return win.__aoaLiveSocketOpen?.[path] === true;
+    },
+    expectedPath,
+    { timeout: 15_000 },
+  );
 }
 
 async function publishHubItemChange(

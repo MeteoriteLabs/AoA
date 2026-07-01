@@ -303,6 +303,32 @@ describe("InboxHub page", () => {
     });
   });
 
+  it("does not bridge hub item changes to toasts before notification preferences load", async () => {
+    let resolvePreferences: (preferences: NotificationPreferences) => void = () => {};
+    vi.mocked(hubItemsApi.notificationPreferences.get).mockReturnValue(
+      new Promise<NotificationPreferences>((resolve) => {
+        resolvePreferences = resolve;
+      }),
+    );
+    vi.mocked(hubItemsApi.getOne).mockResolvedValue(
+      hubItem({ title: "Early event title", version: 3 }),
+    );
+    renderPage("/P4/inbox");
+
+    await screen.findByText(/Autopilot/i);
+    await waitFor(() => expect(liveHubItemCallbacks.size).toBe(1));
+    await act(async () => {
+      for (const cb of liveHubItemCallbacks) cb("hub-1");
+    });
+
+    expect(hubItemsApi.getOne).not.toHaveBeenCalledWith("company-1", "hub-1");
+    expect(mockPushToast).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolvePreferences(defaultNotificationPreferences());
+    });
+  });
+
   it("does not toast digest-mode hub item changes", async () => {
     vi.mocked(hubItemsApi.notificationPreferences.get).mockResolvedValue(
       defaultNotificationPreferences({

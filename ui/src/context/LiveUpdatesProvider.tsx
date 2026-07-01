@@ -678,12 +678,16 @@ export function handleLiveEvent(
     queryClient.invalidateQueries({ queryKey: ["hub-items", expectedCompanyId] });
     queryClient.invalidateQueries({ queryKey: queryKeys.hubItems.counts(expectedCompanyId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(expectedCompanyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.notifications.digest(expectedCompanyId) });
     const itemId = readString(payload.itemId);
     if (itemId) notifyHubItemChanged?.(itemId);
     return;
   }
 
   if (event.type === "hub.counts.changed") {
+    if (readString(payload.reason) === "personal_state_changed") {
+      queryClient.invalidateQueries({ queryKey: ["hub-items", expectedCompanyId] });
+    }
     queryClient.invalidateQueries({ queryKey: queryKeys.hubItems.counts(expectedCompanyId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(expectedCompanyId) });
     return;

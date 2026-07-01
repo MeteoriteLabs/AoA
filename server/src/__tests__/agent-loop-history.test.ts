@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-vi.mock("drizzle-orm", () => ({ eq: vi.fn((a:any,b:any)=>({eq:[a,b]})), and: vi.fn((...a:any)=>({and:a})) }));
+vi.mock("drizzle-orm", () => ({
+  eq: vi.fn((a: any, b: any) => ({ eq: [a, b] })),
+  and: vi.fn((...a: any) => ({ and: a })),
+  or: vi.fn((...a: any) => ({ or: a })),
+}));
 vi.mock("@armyofagents/db", () => ({
   internalAgentConfig: {},
   agents: {},

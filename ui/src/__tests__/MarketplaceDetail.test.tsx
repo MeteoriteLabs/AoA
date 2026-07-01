@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
@@ -70,6 +70,10 @@ describe("MarketplaceDetail", () => {
     vi.clearAllMocks();
     vi.mocked(pluginsApi.list).mockResolvedValue([]);
     vi.mocked(marketplaceApi.getPackages).mockResolvedValue([]);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it("renders skill detail with inline README", async () => {
@@ -163,6 +167,23 @@ describe("MarketplaceDetail", () => {
     );
     expect(screen.getByText("companies.read")).toBeInTheDocument();
     expect(screen.getByText("issues.read")).toBeInTheDocument();
+  });
+
+  it("aborts pending README fetches when the detail page unmounts", async () => {
+    vi.mocked(marketplaceApi.getCatalog).mockResolvedValueOnce(FULL_CATALOG);
+    const fetchMock = vi.fn(() => new Promise<Response>(() => {}));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { unmount } = wrap("/marketplace/agent/aoa-curated/engineer");
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit | undefined;
+    expect(init?.signal).toBeInstanceOf(AbortSignal);
+    expect(init?.signal?.aborted).toBe(false);
+
+    unmount();
+
+    expect(init?.signal?.aborted).toBe(true);
   });
 
   it("Install button opens install modal", async () => {

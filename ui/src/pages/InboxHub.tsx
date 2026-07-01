@@ -69,7 +69,7 @@ export function InboxHub() {
   const { onHubItemChanged } = useLiveUpdates();
   const { pushToast } = useToast();
   const markingReadItemIds = useRef(new Set<string>());
-  const notificationPreferencesRef = useRef(DEFAULT_NOTIFICATION_PREFERENCES);
+  const notificationPreferencesRef = useRef<NotificationPreferences | null>(null);
   const hubMutations = useHubItemMutations(selectedCompanyId);
   const [undoAction, setUndoAction] = useState<{
     label: string;
@@ -145,17 +145,20 @@ export function InboxHub() {
   });
 
   useEffect(() => {
-    notificationPreferencesRef.current = notificationPreferences;
-  }, [notificationPreferences]);
+    notificationPreferencesRef.current = notificationPreferencesQuery.data ?? null;
+  }, [notificationPreferencesQuery.data, selectedCompanyId]);
 
   useEffect(() => {
     if (!selectedCompanyId) return;
     return onHubItemChanged(async (itemId) => {
+      const loadedNotificationPreferences = notificationPreferencesRef.current;
+      if (!loadedNotificationPreferences) return;
+
       try {
         const item = await hubItemsApi.getOne(selectedCompanyId, itemId);
         const decision = shouldToastHubItem({
           item,
-          preferences: notificationPreferencesRef.current,
+          preferences: loadedNotificationPreferences,
           now: new Date(),
         });
         if (decision.show) {

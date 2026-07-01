@@ -47,7 +47,7 @@ describe("handleLiveEvent hub invalidations", () => {
     } as unknown as QueryClient & { invalidateQueries: ReturnType<typeof vi.fn> };
   }
 
-  it("invalidates hub list, counts, and badges when a hub item event arrives", () => {
+  it("invalidates hub list, counts, badges, and digest when a hub item event arrives", () => {
     const queryClient = makeQueryClient();
     const notifyHubItemChanged = vi.fn();
 
@@ -80,7 +80,36 @@ describe("handleLiveEvent hub invalidations", () => {
     expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
       queryKey: queryKeys.sidebarBadges("co1"),
     });
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
+      queryKey: queryKeys.notifications.digest("co1"),
+    });
     expect(notifyHubItemChanged).toHaveBeenCalledWith("hub-1");
+  });
+
+  it("invalidates hub lists when a personal-state counts event arrives", () => {
+    const queryClient = makeQueryClient();
+
+    handleLiveEvent(
+      queryClient,
+      "co1",
+      {
+        id: 2,
+        companyId: "co1",
+        type: "hub.counts.changed",
+        createdAt: "2026-06-30T00:00:00.000Z",
+        payload: { reason: "personal_state_changed" },
+      },
+      vi.fn(),
+      { cooldownHits: new Map(), suppressUntil: 0 },
+    );
+
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["hub-items", "co1"] });
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
+      queryKey: queryKeys.hubItems.counts("co1"),
+    });
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
+      queryKey: queryKeys.sidebarBadges("co1"),
+    });
   });
 
   it("invalidates notification digest when a digest event arrives", () => {
