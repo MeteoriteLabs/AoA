@@ -34,6 +34,18 @@ vi.mock("@/components/ui/tooltip", () => ({
   TooltipProvider: ({ children }: any) => <>{children}</>,
 }));
 
+// Radix DropdownMenu doesn't run cleanly in jsdom (portal + pointer events).
+// Render children inline and map onSelect→onClick so items are directly testable.
+// Same convention as AgentCard.test.tsx.
+vi.mock("@/components/ui/dropdown-menu", () => ({
+  DropdownMenu: ({ children }: any) => <div>{children}</div>,
+  DropdownMenuTrigger: ({ children }: any) => <>{children}</>,
+  DropdownMenuContent: ({ children }: any) => <div>{children}</div>,
+  DropdownMenuItem: ({ children, onSelect }: any) => (
+    <div role="menuitem" onClick={onSelect}>{children}</div>
+  ),
+}));
+
 // --- Tests ---
 
 describe("LobbySidebar", () => {
@@ -138,5 +150,54 @@ describe("LobbySidebar", () => {
     );
     const aside = container.querySelector("aside");
     expect(aside?.getAttribute("data-collapsed")).toBe("true");
+  });
+
+  // --- Rounded floating rail (Task 1) ---
+
+  it("renders the primary rail as a rounded floating island (no right border)", () => {
+    const { container } = renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
+    const aside = container.querySelector("aside")!;
+    expect(aside.className).toContain("rounded-2xl");
+    expect(aside.className).toContain("border-border");
+    // Floating island uses an all-sides border, not the old flush right border.
+    expect(aside.className).not.toContain("border-r");
+  });
+
+  it("drawer mode is full-width and NOT rounded", () => {
+    const { container } = renderWithProviders(
+      <LobbySidebar onCreateCompany={onCreateCompany} drawer />,
+    );
+    const aside = container.querySelector("aside")!;
+    expect(aside.className).toContain("w-full");
+    expect(aside.className).not.toContain("rounded-2xl");
+  });
+
+  // --- New-organization split button + floating Import menu (Task 2) ---
+
+  it("expanded: renders the create button and the More-options trigger", () => {
+    renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
+    expect(screen.getByRole("button", { name: /^new organization$/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /more organization options/i })).toBeInTheDocument();
+  });
+
+  it("Import organization menuitem navigates to /import", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
+    await user.click(screen.getByRole("menuitem", { name: /import organization/i }));
+    expect(mockNavigate).toHaveBeenCalledWith("/import", undefined);
+  });
+
+  it("primary + New organization still creates in one click (no regression)", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
+    await user.click(screen.getByRole("button", { name: /^new organization$/i }));
+    expect(onCreateCompany).toHaveBeenCalledTimes(1);
+  });
+
+  it("collapsed: no More-options trigger and no import menuitem (create-only)", () => {
+    localStorage.setItem("aoa.lobby.sidebar-collapsed", "true");
+    renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
+    expect(screen.queryByRole("button", { name: /more organization options/i })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: /import organization/i })).toBeNull();
   });
 });

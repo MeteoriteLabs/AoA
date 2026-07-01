@@ -3,13 +3,21 @@ import { useNavigate } from "@/lib/router";
 import {
   BookOpen,
   Building2,
+  ChevronDown,
   FileText,
   Plus,
   Settings,
   Store,
+  Upload,
 } from "lucide-react";
 import { UserMenu } from "@/components/UserMenu";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { SidebarCollapseToggle } from "@/components/SidebarCollapseToggle";
 import { cn } from "@/lib/utils";
@@ -161,8 +169,10 @@ export function LobbySidebar({
         data-collapsed={collapsed}
         data-drawer={drawer || undefined}
         className={cn(
-          "relative flex h-dvh shrink-0 flex-col",
-          drawer ? "w-full" : "border-r border-border bg-card/50 backdrop-blur-sm transition-[width] duration-[180ms]",
+          "relative flex shrink-0 flex-col",
+          drawer
+            ? "w-full h-dvh"
+            : "h-[calc(100dvh-1rem)] my-2 ml-2 overflow-hidden rounded-2xl border border-border bg-card/50 backdrop-blur-sm transition-[width] duration-[180ms]",
           !drawer && (collapsed ? "w-[56px]" : "w-[220px]"),
           !drawer && "lobby-sidebar-enter",
         )}
@@ -202,14 +212,35 @@ export function LobbySidebar({
               <TooltipContent side="right" sideOffset={8}>New organization</TooltipContent>
             </Tooltip>
           ) : (
-            <Button
-              size="default"
-              onClick={create}
-              className="w-full justify-center gap-1.5"
-            >
-              <Plus />
-              New organization
-            </Button>
+            <DropdownMenu>
+              {/* Attached split button — primary creates in one click; the
+                  joined chevron segment opens a floating menu (no layout shift). */}
+              <div className="flex">
+                <Button
+                  size="default"
+                  onClick={create}
+                  className="flex-1 justify-center gap-1.5 rounded-r-none"
+                >
+                  <Plus />
+                  New organization
+                </Button>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    size="default"
+                    aria-label="More organization options"
+                    className="rounded-l-none border-l border-l-black/20 px-2 data-[state=open]:[&_svg]:rotate-180"
+                  >
+                    <ChevronDown className="size-4 transition-transform" />
+                  </Button>
+                </DropdownMenuTrigger>
+              </div>
+              <DropdownMenuContent align="end" sideOffset={6} className="min-w-[200px]">
+                <DropdownMenuItem onSelect={() => navTo("/import")}>
+                  <Upload />
+                  Import organization
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           )}
         </div>
 
@@ -279,7 +310,8 @@ export function LobbySidebar({
         <SidebarCollapseToggle
           collapsed={collapsed}
           onToggle={() => setCollapsed((c) => !c)}
-          sidebarWidth={collapsed ? 56 : 220}
+          sidebarWidth={(collapsed ? 56 : 220) + 8}
+          top={17}
           className="hidden md:inline-flex"
         />
       )}
