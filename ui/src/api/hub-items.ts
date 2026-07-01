@@ -5,6 +5,8 @@ import type {
   HubItemStatus,
   HubLane,
   HubSemanticType,
+  NotificationPreferences,
+  UpdateNotificationPreferencesInput,
   UpdateHubPreferencesInput,
 } from "@armyofagents/shared";
 import { api } from "./client";
@@ -57,6 +59,14 @@ export interface HubListResponse {
 export interface HubCounts {
   open: number;
   unread: number;
+}
+
+export interface NotificationDigestResponse {
+  items: HubItemListRow[];
+}
+
+export interface NotificationDigestAckResponse {
+  acked: number;
 }
 
 export type HubPersonalState =
@@ -185,6 +195,8 @@ export const hubItemsApi = {
         `/companies/${companyId}/hub-items${listQuery(opts)}`,
       ),
     ),
+  getOne: (companyId: string, itemId: string) =>
+    api.get<HubItemListRow>(`/companies/${companyId}/hub-items/${itemId}`),
   counts: (companyId: string) =>
     api.get<HubCounts>(`/companies/${companyId}/hub-items/counts`),
   getPreferences: (companyId: string) =>
@@ -199,6 +211,29 @@ export const hubItemsApi = {
       `/companies/${companyId}/hub-items/preferences/me/reset`,
       {},
     ),
+  notificationPreferences: {
+    get: (companyId: string) =>
+      api.get<NotificationPreferences>(`/companies/${companyId}/notifications/preferences/me`),
+    update: (companyId: string, patch: UpdateNotificationPreferencesInput) =>
+      api.patch<NotificationPreferences>(
+        `/companies/${companyId}/notifications/preferences/me`,
+        patch,
+      ),
+    reset: (companyId: string) =>
+      api.post<NotificationPreferences>(
+        `/companies/${companyId}/notifications/preferences/me/reset`,
+        {},
+      ),
+  },
+  notificationDigest: {
+    list: (companyId: string) =>
+      api.get<NotificationDigestResponse>(`/companies/${companyId}/notifications/digest/me`),
+    ack: (companyId: string) =>
+      api.post<NotificationDigestAckResponse>(
+        `/companies/${companyId}/notifications/digest/me/ack`,
+        {},
+      ),
+  },
   markRead: (companyId: string, itemId: string) =>
     api.patch(`/companies/${companyId}/hub-items/${itemId}/state`, {
       kind: "read",

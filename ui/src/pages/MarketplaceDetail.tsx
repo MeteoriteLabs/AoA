@@ -89,13 +89,18 @@ export default function MarketplaceDetail() {
     }
     setReadmeText(null);
     setReadmeError(null);
-    fetch(item.resourceUrl)
+    const controller = new AbortController();
+    fetch(item.resourceUrl, { signal: controller.signal })
       .then((res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return res.text();
       })
       .then((text) => setReadmeText(text))
-      .catch((err) => setReadmeError(err.message));
+      .catch((err) => {
+        if (err instanceof DOMException && err.name === "AbortError") return;
+        setReadmeError(err.message);
+      });
+    return () => controller.abort();
   }, [item]);
 
   const Icon = itemType ? TYPE_ICONS[itemType] : null;

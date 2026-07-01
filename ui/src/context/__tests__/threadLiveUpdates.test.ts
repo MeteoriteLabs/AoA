@@ -1,6 +1,7 @@
-import { describe, it, expect } from "vitest";
-import { threadEventToInvalidations } from "../LiveUpdatesProvider";
+import { describe, it, expect, vi } from "vitest";
+import { handleLiveEvent, threadEventToInvalidations } from "../LiveUpdatesProvider";
 import { queryKeys } from "../../lib/queryKeys";
+import type { QueryClient } from "@tanstack/react-query";
 
 // Plan 7 Task 4: a thread.* live event maps to the React Query keys to
 // invalidate (refetch-on-poke). RBAC stays in REST — invalidation just refetches.
@@ -35,5 +36,101 @@ describe("threadEventToInvalidations", () => {
       "co1",
     );
     expect(keys).toEqual([]);
+  });
+});
+
+describe("handleLiveEvent hub invalidations", () => {
+  function makeQueryClient() {
+    return {
+      invalidateQueries: vi.fn(),
+      getQueryData: vi.fn(),
+    } as unknown as QueryClient & { invalidateQueries: ReturnType<typeof vi.fn> };
+  }
+
+  it("invalidates hub list, counts, badges, and digest when a hub item event arrives", () => {
+    const queryClient = makeQueryClient();
+    const notifyHubItemChanged = vi.fn();
+
+    handleLiveEvent(
+      queryClient,
+      "co1",
+      {
+        id: 1,
+        companyId: "co1",
+        type: "hub.item.changed",
+        createdAt: "2026-06-30T00:00:00.000Z",
+        payload: {
+          itemId: "hub-1",
+          semanticType: "reminder",
+          lane: "notifications",
+          status: "open",
+          version: 1,
+          change: "created",
+        },
+      },
+      vi.fn(),
+      { cooldownHits: new Map(), suppressUntil: 0 },
+      notifyHubItemChanged,
+    );
+
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["hub-items", "co1"] });
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
+      queryKey: queryKeys.hubItems.counts("co1"),
+    });
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
+      queryKey: queryKeys.sidebarBadges("co1"),
+    });
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
+      queryKey: queryKeys.notifications.digest("co1"),
+    });
+    expect(notifyHubItemChanged).toHaveBeenCalledWith("hub-1");
+  });
+
+  it("invalidates hub lists when a personal-state counts event arrives", () => {
+    const queryClient = makeQueryClient();
+
+    handleLiveEvent(
+      queryClient,
+      "co1",
+      {
+        id: 2,
+        companyId: "co1",
+        type: "hub.counts.changed",
+        createdAt: "2026-06-30T00:00:00.000Z",
+        payload: { reason: "personal_state_changed" },
+      },
+      vi.fn(),
+      { cooldownHits: new Map(), suppressUntil: 0 },
+    );
+
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["hub-items", "co1"] });
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
+      queryKey: queryKeys.hubItems.counts("co1"),
+    });
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
+      queryKey: queryKeys.sidebarBadges("co1"),
+    });
+  });
+
+  it("invalidates notification digest when a digest event arrives", () => {
+    const queryClient = makeQueryClient();
+
+    handleLiveEvent(
+      queryClient,
+      "co1",
+      {
+        id: 2,
+        companyId: "co1",
+        type: "hub.digest.changed",
+        createdAt: "2026-06-30T00:00:00.000Z",
+        payload: { reason: "queued" },
+      },
+      vi.fn(),
+      { cooldownHits: new Map(), suppressUntil: 0 },
+    );
+
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
+      queryKey: queryKeys.notifications.digest("co1"),
+    });
   });
 });

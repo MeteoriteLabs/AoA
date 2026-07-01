@@ -71,6 +71,31 @@ async function seedCompanyWithFounder(): Promise<{ companyId: string; founderId:
   return { companyId, founderId };
 }
 
+async function setNotificationRule(
+  companyId: string,
+  userId: string,
+  deliveryMode: "realtime" | "digest" | "silent",
+) {
+  await db.execute(sql`
+    INSERT INTO notification_preferences (id, user_id, company_id, rules, quiet_hours, digest, created_at, updated_at)
+    VALUES (
+      gen_random_uuid(),
+      ${userId},
+      ${companyId},
+      ${JSON.stringify([{ semanticType: "approval_request", deliveryMode, toastEnabled: true }])}::jsonb,
+      ${JSON.stringify({ enabled: false, start: "18:00", end: "09:00", timezone: "UTC" })}::jsonb,
+      ${JSON.stringify({ enabled: true, cadence: "daily" })}::jsonb,
+      now(),
+      now()
+    )
+    ON CONFLICT (user_id, company_id) DO UPDATE SET
+      rules = excluded.rules,
+      quiet_hours = excluded.quiet_hours,
+      digest = excluded.digest,
+      updated_at = now()
+  `);
+}
+
 describe.skipIf(process.platform === "win32")("hubItems.emit — real DB", () => {
   it("setup harness boots", () => {
     if (setupError) throw new Error(String(setupError));
@@ -167,5 +192,54 @@ describe.skipIf(process.platform === "win32")("hubItems.emit — real DB", () =>
     expect(row.delivery_attempts).toBe(0);
     expect(row.delivered_at).toBeTruthy();
     expect(row.delivery_error).toBeNull();
+  });
+
+  it("queues digest delivery for a digest-preferring visible user when emitting a hub item", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const { companyId, founderId } = await seedCompanyWithFounder();
+    await setNotificationRule(companyId, founderId, "digest");
+
+    const item = await hubItemsService(db).emit({
+      companyId,
+      semanticType: "approval_request",
+      sourceType: "approval",
+      sourceId: "digest-visible",
+      title: "Needs digest",
+      ownerUserId: founderId,
+    });
+
+    const rows = await db.execute(sql`
+      SELECT count(*)::int AS n
+      FROM notification_digest_items
+      WHERE company_id = ${companyId}
+        AND user_id = ${founderId}
+        AND hub_item_id = ${item.id}
+        AND acked_at IS NULL
+    `);
+    expect(firstRow<{ n: number }>(rows).n).toBe(1);
+  });
+
+  it("does not queue digest delivery for silent preferences", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const { companyId, founderId } = await seedCompanyWithFounder();
+    await setNotificationRule(companyId, founderId, "silent");
+
+    const item = await hubItemsService(db).emit({
+      companyId,
+      semanticType: "approval_request",
+      sourceType: "approval",
+      sourceId: "digest-silent",
+      title: "Silent item",
+      ownerUserId: founderId,
+    });
+
+    const rows = await db.execute(sql`
+      SELECT count(*)::int AS n
+      FROM notification_digest_items
+      WHERE company_id = ${companyId}
+        AND user_id = ${founderId}
+        AND hub_item_id = ${item.id}
+    `);
+    expect(firstRow<{ n: number }>(rows).n).toBe(0);
   });
 });

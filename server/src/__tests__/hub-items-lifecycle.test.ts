@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PgDialect } from "drizzle-orm/pg-core";
 import { hubItemsService } from "../services/hub-items.js";
+import { publishLiveEvent } from "../services/live-events.js";
 
 const mockPerms = vi.hoisted(() => ({
   getEffectiveRole: vi.fn(),
@@ -10,6 +11,10 @@ const mockPerms = vi.hoisted(() => ({
 const mockCounterSnapshots = vi.hoisted(() => ({
   invalidateUser: vi.fn(),
   invalidateCompany: vi.fn(),
+}));
+
+vi.mock("../services/live-events.js", () => ({
+  publishLiveEvent: vi.fn(),
 }));
 
 vi.mock("../services/permissions.js", () => ({
@@ -161,10 +166,19 @@ describe("hubItems lifecycle query semantics", () => {
     const insertChain = makeInsertChain([{ id: "state-1" }]);
     const { db } = makeDb([
       {
-        id: "hub-1",
-        companyId: "company-1",
-        semanticType: "approval_request",
-        status: "open",
+        item: {
+          id: "hub-1",
+          companyId: "company-1",
+          semanticType: "approval_request",
+          status: "open",
+          scopeKey: null,
+          sourceType: null,
+          groupKey: null,
+          slaAt: null,
+        },
+        readAt: null,
+        snoozedUntil: null,
+        dismissedAt: null,
       },
     ]);
     Object.assign(db, { insert: vi.fn(() => insertChain) });
@@ -179,6 +193,11 @@ describe("hubItems lifecycle query semantics", () => {
     });
 
     expect(mockCounterSnapshots.invalidateUser).toHaveBeenCalledWith("company-1", "user-1");
+    expect(publishLiveEvent).toHaveBeenCalledWith({
+      companyId: "company-1",
+      type: "hub.counts.changed",
+      payload: { reason: "personal_state_changed" },
+    });
   });
 
   it("invalidates company snapshots after shared lifecycle actions", async () => {
@@ -221,5 +240,22 @@ describe("hubItems lifecycle query semantics", () => {
     });
 
     expect(mockCounterSnapshots.invalidateCompany).toHaveBeenCalledWith("company-1");
+    expect(publishLiveEvent).toHaveBeenCalledWith({
+      companyId: "company-1",
+      type: "hub.item.changed",
+      payload: {
+        itemId: "hub-1",
+        semanticType: "approval_request",
+        lane: "waiting_on_you",
+        status: "resolved",
+        version: 2,
+        change: "resolved",
+      },
+    });
+    expect(publishLiveEvent).toHaveBeenCalledWith({
+      companyId: "company-1",
+      type: "hub.counts.changed",
+      payload: { reason: "item_changed" },
+    });
   });
 });

@@ -1,10 +1,14 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { HubPreferences } from "@armyofagents/shared";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import type { HubPreferences, NotificationPreferences } from "@armyofagents/shared";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { hubItemsApi } from "@/api/hub-items";
 import { InboxHub } from "../pages/InboxHub";
+
+const mockPushToast = vi.hoisted(() => vi.fn());
+const liveHubItemCallbacks = vi.hoisted(() => new Set<(itemId: string) => void>());
 
 function LocationProbe() {
   const location = useLocation();
@@ -27,9 +31,25 @@ vi.mock("@/context/BreadcrumbContext", () => ({
   useBreadcrumbs: () => ({ setBreadcrumbs: vi.fn() }),
 }));
 
+vi.mock("@/context/LiveUpdatesProvider", () => ({
+  useLiveUpdates: () => ({
+    onHubItemChanged: (cb: (itemId: string) => void) => {
+      liveHubItemCallbacks.add(cb);
+      return () => liveHubItemCallbacks.delete(cb);
+    },
+  }),
+}));
+
+vi.mock("@/context/ToastContext", () => ({
+  useToast: () => ({
+    pushToast: mockPushToast,
+  }),
+}));
+
 vi.mock("@/api/hub-items", () => ({
   hubItemsApi: {
     list: vi.fn().mockResolvedValue({ items: [], nextCursor: null, totalKnown: null }),
+    getOne: vi.fn().mockResolvedValue({}),
     counts: vi.fn().mockResolvedValue({ open: 0, unread: 0 }),
     markRead: vi.fn().mockResolvedValue({}),
     markUnread: vi.fn().mockResolvedValue({}),
@@ -54,6 +74,15 @@ vi.mock("@/api/hub-items", () => ({
     audit: vi.fn().mockResolvedValue([]),
     getPreferences: vi.fn().mockResolvedValue(defaultPreferences()),
     updatePreferences: vi.fn().mockResolvedValue(defaultPreferences()),
+    notificationPreferences: {
+      get: vi.fn().mockResolvedValue(defaultNotificationPreferences()),
+      update: vi.fn().mockResolvedValue(defaultNotificationPreferences()),
+      reset: vi.fn().mockResolvedValue(defaultNotificationPreferences()),
+    },
+    notificationDigest: {
+      list: vi.fn().mockResolvedValue({ items: [] }),
+      ack: vi.fn().mockResolvedValue({ acked: 0 }),
+    },
   },
 }));
 
@@ -81,7 +110,9 @@ function renderPage(initialEntry: string) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  liveHubItemCallbacks.clear();
   vi.mocked(hubItemsApi.list).mockResolvedValue(hubList([]));
+  vi.mocked(hubItemsApi.getOne).mockResolvedValue(hubItem());
   vi.mocked(hubItemsApi.counts).mockResolvedValue({ open: 0, unread: 0 });
   vi.mocked(hubItemsApi.markRead).mockResolvedValue({});
   vi.mocked(hubItemsApi.markUnread).mockResolvedValue({});
@@ -106,6 +137,17 @@ beforeEach(() => {
   vi.mocked(hubItemsApi.audit).mockResolvedValue([]);
   vi.mocked(hubItemsApi.getPreferences).mockResolvedValue(defaultPreferences());
   vi.mocked(hubItemsApi.updatePreferences).mockResolvedValue(defaultPreferences());
+  vi.mocked(hubItemsApi.notificationPreferences.get).mockResolvedValue(
+    defaultNotificationPreferences(),
+  );
+  vi.mocked(hubItemsApi.notificationPreferences.update).mockResolvedValue(
+    defaultNotificationPreferences(),
+  );
+  vi.mocked(hubItemsApi.notificationPreferences.reset).mockResolvedValue(
+    defaultNotificationPreferences(),
+  );
+  vi.mocked(hubItemsApi.notificationDigest.list).mockResolvedValue({ items: [] });
+  vi.mocked(hubItemsApi.notificationDigest.ack).mockResolvedValue({ acked: 0 });
 });
 
 type HubListItem = Awaited<ReturnType<typeof hubItemsApi.list>>["items"][number];
@@ -121,6 +163,20 @@ function defaultPreferences(overrides: Partial<HubPreferences> = {}): HubPrefere
     groupMode: "auto",
     density: "comfortable",
     showAutopilotEntry: true,
+    updatedAt: null,
+    ...overrides,
+  };
+}
+
+function defaultNotificationPreferences(
+  overrides: Partial<NotificationPreferences> = {},
+): NotificationPreferences {
+  return {
+    rules: [
+      { semanticType: "approval_request", deliveryMode: "realtime", toastEnabled: true },
+    ],
+    quietHours: { enabled: false, start: "18:00", end: "09:00", timezone: "UTC" },
+    digest: { enabled: true, cadence: "daily" },
     updatedAt: null,
     ...overrides,
   };
@@ -224,6 +280,112 @@ describe("InboxHub page", () => {
     renderPage("/P4/inbox-hub");
 
     expect(await screen.findByText(/Autopilot/i)).toBeInTheDocument();
+  });
+
+  it("bridges realtime hub item changes to hydrated toasts", async () => {
+    vi.mocked(hubItemsApi.getOne).mockResolvedValue(
+      hubItem({ title: "Authorized row title", version: 7 }),
+    );
+    renderPage("/P4/inbox");
+
+    await screen.findByText(/Autopilot/i);
+    await waitFor(() => expect(liveHubItemCallbacks.size).toBe(1));
+    await act(async () => {
+      for (const cb of liveHubItemCallbacks) cb("hub-1");
+    });
+
+    await waitFor(() => {
+      expect(hubItemsApi.getOne).toHaveBeenCalledWith("company-1", "hub-1");
+      expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({
+        dedupeKey: "hub:company-1:hub-1:7",
+        title: "Authorized row title",
+      }));
+    });
+  });
+
+  it("does not bridge hub item changes to toasts before notification preferences load", async () => {
+    let resolvePreferences: (preferences: NotificationPreferences) => void = () => {};
+    vi.mocked(hubItemsApi.notificationPreferences.get).mockReturnValue(
+      new Promise<NotificationPreferences>((resolve) => {
+        resolvePreferences = resolve;
+      }),
+    );
+    vi.mocked(hubItemsApi.getOne).mockResolvedValue(
+      hubItem({ title: "Early event title", version: 3 }),
+    );
+    renderPage("/P4/inbox");
+
+    await screen.findByText(/Autopilot/i);
+    await waitFor(() => expect(liveHubItemCallbacks.size).toBe(1));
+    await act(async () => {
+      for (const cb of liveHubItemCallbacks) cb("hub-1");
+    });
+
+    expect(hubItemsApi.getOne).not.toHaveBeenCalledWith("company-1", "hub-1");
+    expect(mockPushToast).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolvePreferences(defaultNotificationPreferences());
+    });
+  });
+
+  it("does not toast digest-mode hub item changes", async () => {
+    vi.mocked(hubItemsApi.notificationPreferences.get).mockResolvedValue(
+      defaultNotificationPreferences({
+        rules: [
+          { semanticType: "approval_request", deliveryMode: "digest", toastEnabled: true },
+        ],
+      }),
+    );
+    renderPage("/P4/inbox");
+
+    await screen.findByText(/Autopilot/i);
+    await waitFor(() => expect(liveHubItemCallbacks.size).toBe(1));
+    await act(async () => {
+      for (const cb of liveHubItemCallbacks) cb("hub-1");
+    });
+
+    await waitFor(() => expect(hubItemsApi.getOne).toHaveBeenCalledWith("company-1", "hub-1"));
+    expect(mockPushToast).not.toHaveBeenCalled();
+  });
+
+  it("updates notification preferences from hub settings", async () => {
+    const user = userEvent.setup();
+    renderPage("/P4/inbox/waiting");
+
+    await user.click(await screen.findByRole("button", { name: /hub settings/i }));
+    await user.click(screen.getByRole("button", { name: /notification preferences/i }));
+    await user.selectOptions(screen.getByLabelText(/approval request delivery/i), "digest");
+
+    await waitFor(() => {
+      expect(hubItemsApi.notificationPreferences.update).toHaveBeenCalledWith(
+        "company-1",
+        expect.objectContaining({
+          rules: expect.arrayContaining([
+            expect.objectContaining({
+              semanticType: "approval_request",
+              deliveryMode: "digest",
+            }),
+          ]),
+        }),
+      );
+    });
+  });
+
+  it("acknowledges pending digest items from hub settings", async () => {
+    const user = userEvent.setup();
+    vi.mocked(hubItemsApi.notificationDigest.list).mockResolvedValue({
+      items: [hubItem({ id: "digest-1", title: "Digest reminder" })],
+    });
+    renderPage("/P4/inbox/waiting");
+
+    await user.click(await screen.findByRole("button", { name: /hub settings/i }));
+    await user.click(screen.getByRole("button", { name: /notification preferences/i }));
+    await user.click(await screen.findByRole("button", { name: /acknowledge digest/i }));
+
+    await waitFor(() => {
+      expect(hubItemsApi.notificationDigest.ack).toHaveBeenCalledWith("company-1");
+    });
   });
 
   it("maps the waiting slug to the waiting_on_you API lane with the preview limit", async () => {

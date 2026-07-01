@@ -221,7 +221,11 @@ export const queryKeys = {
   commanderSkills: (companyId: string) => ["commander-skills", companyId] as const,
   agentRuns: (companyId: string) => ["agent-runs", companyId] as const,
   agentReminders: (companyId: string) => ["agent-reminders", companyId] as const,
-  notifications: (companyId: string) => ["notifications", companyId] as const,
+  notifications: {
+    list: (companyId: string) => ["notifications", companyId] as const,
+    preferences: (companyId: string) => ["notifications", companyId, "preferences"] as const,
+    digest: (companyId: string) => ["notifications", companyId, "digest"] as const,
+  },
   workflowTemplates: {
     list: (companyId: string) => ["workflow-templates", companyId] as const,
     detail: (companyId: string, id: string) => ["workflow-templates", companyId, id] as const,

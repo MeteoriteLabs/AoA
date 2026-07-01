@@ -67,3 +67,17 @@ export async function seedHubItem(input: SeedHubItemInput) {
     await client?.end();
   }
 }
+
+export async function bumpHubItemVersionForTest(item: Pick<typeof hubItems.$inferSelect, "id" | "version">) {
+  const db = createDb(e2eDatabaseUrl());
+  try {
+    const client = (db as unknown as {
+      $client?: (strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown>;
+    }).$client;
+    if (!client) throw new Error("Test DB client is unavailable");
+    await client`UPDATE notifications SET version = ${item.version + 1} WHERE id = ${item.id}`;
+  } finally {
+    const client = (db as unknown as { $client?: { end: () => Promise<void> } }).$client;
+    await client?.end();
+  }
+}

@@ -1,4 +1,4 @@
-import { test, expect, type APIRequestContext, type Page } from "@playwright/test";
+import { test, expect, type APIRequestContext, type APIResponse, type Page } from "@playwright/test";
 import { cleanupTestCompanies, seedCompany } from "./helpers/seed-company";
 
 const ARTIFACT_TYPES = ["document", "presentation", "code", "design", "report", "other"] as const;
@@ -29,6 +29,27 @@ async function jsonOrThrow<T>(res: { ok(): boolean; status(): number; text(): Pr
     throw new Error(`${label} failed: ${res.status()} ${body}`);
   }
   return res.json();
+}
+
+async function getWithTransientRetry(
+  request: APIRequestContext,
+  url: string,
+  label: string,
+): Promise<APIResponse> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      return await request.get(url);
+    } catch (error) {
+      lastError = error;
+      const message = error instanceof Error ? error.message : String(error);
+      if (!/(ECONNRESET|socket hang up|connection reset)/i.test(message) || attempt === 3) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, attempt * 250));
+    }
+  }
+  throw new Error(`${label} failed after retries: ${String(lastError)}`);
 }
 
 async function createArtifact(
@@ -523,7 +544,7 @@ test.describe("thread scope handoff context", () => {
         }>;
       }>
     >(
-      await request.get(`/api/issues/${createdTaskId}/context-bundles`),
+      await getWithTransientRetry(request, `/api/issues/${createdTaskId}/context-bundles`, "list created task context bundles"),
       "list created task context bundles",
     );
     const scopeBundle = bundles.find((bundle) => bundle.sourceKind === "discussion_scope");
@@ -712,7 +733,7 @@ test.describe("thread scope handoff context", () => {
     );
 
     const bundles = await jsonOrThrow<Array<{ sourceKind: string; items: Array<{ label: string | null }> }>>(
-      await request.get(`/api/issues/${createdTaskId}/context-bundles`),
+      await getWithTransientRetry(request, `/api/issues/${createdTaskId}/context-bundles`, "list background-created task context bundles"),
       "list background-created task context bundles",
     );
     const scopeBundle = bundles.find((bundle) => bundle.sourceKind === "discussion_scope");

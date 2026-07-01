@@ -1,6 +1,6 @@
 import { test, expect, type APIRequestContext, type Page } from "@playwright/test";
 import { cleanupTestCompanies, seedCompany } from "./helpers/seed-company";
-import { seedHubItem } from "./helpers/seed-hub-item";
+import { bumpHubItemVersionForTest, seedHubItem } from "./helpers/seed-hub-item";
 
 type SeededHubItem = Awaited<ReturnType<typeof seedHubItem>>;
 
@@ -163,7 +163,7 @@ test.describe("Inbox Hub W1c lifecycle", () => {
     await page.getByRole("checkbox", { name: /select bulk fresh stale work/i }).check();
     await page.getByRole("checkbox", { name: /select bulk changed stale work/i }).check();
 
-    await act(request, company.id, changed, "claim");
+    await bumpHubItemVersionForTest(changed);
 
     await page.getByRole("button", { name: /archive selected/i }).click();
     await expect(page.locator('[role="status"]').filter({ hasText: /1 succeeded, 1 failed/i })).toBeVisible();

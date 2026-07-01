@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { HubShell } from "../HubShell";
 import type { HubItemListRow } from "@/api/hub-items";
+import type { NotificationPreferences } from "@armyofagents/shared";
 
 vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({
@@ -64,6 +65,21 @@ function renderShell(overrides: Partial<React.ComponentProps<typeof HubShell>> =
       />
     </MemoryRouter>,
   );
+}
+
+function notificationPreferences(
+  overrides: Partial<NotificationPreferences> = {},
+): NotificationPreferences {
+  return {
+    rules: [
+      { semanticType: "approval_request", deliveryMode: "realtime", toastEnabled: true },
+      { semanticType: "reminder", deliveryMode: "realtime", toastEnabled: true },
+    ],
+    quietHours: { enabled: false, start: "18:00", end: "09:00", timezone: "UTC" },
+    digest: { enabled: true, cadence: "daily" },
+    updatedAt: null,
+    ...overrides,
+  };
 }
 
 describe("HubShell", () => {
@@ -144,7 +160,64 @@ describe("HubShell", () => {
     expect(screen.getByRole("checkbox", { name: /autopilot entry/i })).toBeChecked();
     expect(
       screen.getByRole("button", { name: /notification preferences/i }),
-    ).toBeDisabled();
+    ).toBeEnabled();
+  });
+
+  it("opens notification preferences from hub settings and shows digest summary", async () => {
+    const user = userEvent.setup();
+    const onAckDigest = vi.fn();
+    const onResetNotificationPreferences = vi.fn();
+    renderShell({
+      notificationPreferences: notificationPreferences(),
+      digestItems: [
+        { ...items[0], id: "digest-1", semanticType: "reminder", lane: "notifications", title: "Digest reminder" },
+      ],
+      onAckDigest,
+      onResetNotificationPreferences,
+    } as Partial<React.ComponentProps<typeof HubShell>>);
+
+    await user.click(screen.getByRole("button", { name: /hub settings/i }));
+    await user.click(screen.getByRole("button", { name: /notification preferences/i }));
+
+    expect(screen.getByRole("heading", { name: /notification preferences/i })).toBeInTheDocument();
+    expect(screen.getByText("Digest reminder")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /acknowledge digest/i }));
+    expect(onAckDigest).toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: /reset notification preferences/i }));
+    expect(onResetNotificationPreferences).toHaveBeenCalled();
+  });
+
+  it("changes notification delivery, toast, and quiet-hours preferences", async () => {
+    const user = userEvent.setup();
+    const onUpdateNotificationPreferences = vi.fn();
+    renderShell({
+      notificationPreferences: notificationPreferences(),
+      onUpdateNotificationPreferences,
+    } as Partial<React.ComponentProps<typeof HubShell>>);
+
+    await user.click(screen.getByRole("button", { name: /hub settings/i }));
+    await user.click(screen.getByRole("button", { name: /notification preferences/i }));
+
+    await user.selectOptions(screen.getByLabelText(/reminder delivery/i), "digest");
+    expect(onUpdateNotificationPreferences).toHaveBeenCalledWith({
+      rules: expect.arrayContaining([
+        expect.objectContaining({ semanticType: "reminder", deliveryMode: "digest" }),
+      ]),
+    });
+
+    await user.click(screen.getByRole("checkbox", { name: /reminder toast/i }));
+    expect(onUpdateNotificationPreferences).toHaveBeenCalledWith({
+      rules: expect.arrayContaining([
+        expect.objectContaining({ semanticType: "reminder", toastEnabled: false }),
+      ]),
+    });
+
+    await user.click(screen.getByRole("checkbox", { name: /quiet hours/i }));
+    expect(onUpdateNotificationPreferences).toHaveBeenCalledWith({
+      quietHours: { enabled: true, start: "18:00", end: "09:00", timezone: "UTC" },
+    });
   });
 
   it("focuses search when slash is pressed outside an editable field", async () => {

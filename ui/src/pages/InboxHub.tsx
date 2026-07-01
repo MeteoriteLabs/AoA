@@ -4,13 +4,19 @@ import type {
   HubItemStatus,
   HubLane,
   HubPreferences,
+  NotificationPreferences,
+  UpdateNotificationPreferencesInput,
   UpdateHubPreferencesInput,
 } from "@armyofagents/shared";
+import { DEFAULT_NOTIFICATION_PREFERENCES } from "@armyofagents/shared";
 import { hubItemsApi, type HubItemListRow, type HubListResponse } from "@/api/hub-items";
 import { HubShell } from "@/components/hub/HubShell";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
+import { useLiveUpdates } from "@/context/LiveUpdatesProvider";
+import { useToast } from "@/context/ToastContext";
 import { useHubItemMutations } from "@/hooks/useHubItemMutations";
+import { buildHubToastInput, shouldToastHubItem } from "@/lib/hub-toast-bridge";
 import { queryKeys } from "@/lib/queryKeys";
 import { Navigate, useLocation, useNavigate, useParams } from "@/lib/router";
 
@@ -60,7 +66,10 @@ export function InboxHub() {
     itemId?: string;
   }>();
   const queryClient = useQueryClient();
+  const { onHubItemChanged } = useLiveUpdates();
+  const { pushToast } = useToast();
   const markingReadItemIds = useRef(new Set<string>());
+  const notificationPreferencesRef = useRef<NotificationPreferences | null>(null);
   const hubMutations = useHubItemMutations(selectedCompanyId);
   const [undoAction, setUndoAction] = useState<{
     label: string;
@@ -117,6 +126,50 @@ export function InboxHub() {
   const serverPreferences = preferencesQuery.data ?? DEFAULT_HUB_PREFERENCES;
   const preferences = optimisticPreferences ?? serverPreferences;
 
+  const notificationPreferencesQuery = useQuery({
+    queryKey: selectedCompanyId
+      ? queryKeys.notifications.preferences(selectedCompanyId)
+      : ["notifications", "preferences", "none"],
+    queryFn: () => hubItemsApi.notificationPreferences.get(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+  const notificationPreferences =
+    notificationPreferencesQuery.data ?? DEFAULT_NOTIFICATION_PREFERENCES;
+
+  const notificationDigestQuery = useQuery({
+    queryKey: selectedCompanyId
+      ? queryKeys.notifications.digest(selectedCompanyId)
+      : ["notifications", "digest", "none"],
+    queryFn: () => hubItemsApi.notificationDigest.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  useEffect(() => {
+    notificationPreferencesRef.current = notificationPreferencesQuery.data ?? null;
+  }, [notificationPreferencesQuery.data, selectedCompanyId]);
+
+  useEffect(() => {
+    if (!selectedCompanyId) return;
+    return onHubItemChanged(async (itemId) => {
+      const loadedNotificationPreferences = notificationPreferencesRef.current;
+      if (!loadedNotificationPreferences) return;
+
+      try {
+        const item = await hubItemsApi.getOne(selectedCompanyId, itemId);
+        const decision = shouldToastHubItem({
+          item,
+          preferences: loadedNotificationPreferences,
+          now: new Date(),
+        });
+        if (decision.show) {
+          pushToast(buildHubToastInput(selectedCompanyId, item));
+        }
+      } catch {
+        // The RBAC hydration route may 404 for stale/hidden items; ignore the poke.
+      }
+    });
+  }, [onHubItemChanged, pushToast, selectedCompanyId]);
+
   const updatePreferences = useMutation({
     mutationFn: (patch: UpdateHubPreferencesInput) =>
       hubItemsApi.updatePreferences(selectedCompanyId!, patch),
@@ -153,6 +206,69 @@ export function InboxHub() {
         queryClient.invalidateQueries({ queryKey: ["hub-items", selectedCompanyId] }),
       ]);
       setOptimisticPreferences(null);
+    },
+  });
+
+  const updateNotificationPreferences = useMutation({
+    mutationFn: (patch: UpdateNotificationPreferencesInput) =>
+      hubItemsApi.notificationPreferences.update(selectedCompanyId!, patch),
+    onMutate: async (patch) => {
+      if (!selectedCompanyId) return { previous: undefined };
+      const queryKey = queryKeys.notifications.preferences(selectedCompanyId);
+      await queryClient.cancelQueries({ queryKey });
+      const previous = queryClient.getQueryData<NotificationPreferences>(queryKey);
+      queryClient.setQueryData<NotificationPreferences>(queryKey, {
+        ...(previous ?? DEFAULT_NOTIFICATION_PREFERENCES),
+        ...patch,
+      });
+      return { previous };
+    },
+    onError: (_error, _patch, context) => {
+      if (!selectedCompanyId || !context?.previous) return;
+      queryClient.setQueryData(
+        queryKeys.notifications.preferences(selectedCompanyId),
+        context.previous,
+      );
+    },
+    onSuccess: (updated) => {
+      if (!selectedCompanyId) return;
+      queryClient.setQueryData(
+        queryKeys.notifications.preferences(selectedCompanyId),
+        updated,
+      );
+    },
+    onSettled: async () => {
+      if (!selectedCompanyId) return;
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.notifications.preferences(selectedCompanyId),
+      });
+    },
+  });
+
+  const resetNotificationPreferences = useMutation({
+    mutationFn: () => hubItemsApi.notificationPreferences.reset(selectedCompanyId!),
+    onSuccess: (updated) => {
+      if (!selectedCompanyId) return;
+      queryClient.setQueryData(
+        queryKeys.notifications.preferences(selectedCompanyId),
+        updated,
+      );
+    },
+    onSettled: async () => {
+      if (!selectedCompanyId) return;
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.notifications.preferences(selectedCompanyId),
+      });
+    },
+  });
+
+  const ackNotificationDigest = useMutation({
+    mutationFn: () => hubItemsApi.notificationDigest.ack(selectedCompanyId!),
+    onSettled: async () => {
+      if (!selectedCompanyId) return;
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.notifications.digest(selectedCompanyId),
+      });
     },
   });
 
@@ -448,10 +564,26 @@ export function InboxHub() {
       hasMore={!!listQuery.data?.nextCursor}
       isLoadingMore={listQuery.isFetching && !!cursor}
       preferences={preferences}
+      notificationPreferences={notificationPreferences}
+      notificationPreferencesPending={
+        updateNotificationPreferences.isPending ||
+        resetNotificationPreferences.isPending ||
+        ackNotificationDigest.isPending
+      }
+      digestItems={notificationDigestQuery.data?.items ?? []}
       onLaneChange={handleLaneChange}
       onSearchTextChange={setSearchText}
       onLoadMore={handleLoadMore}
       onPreferencesChange={handlePreferencesChange}
+      onUpdateNotificationPreferences={(patch) => {
+        updateNotificationPreferences.mutate(patch);
+      }}
+      onResetNotificationPreferences={() => {
+        resetNotificationPreferences.mutate();
+      }}
+      onAckDigest={() => {
+        ackNotificationDigest.mutate();
+      }}
       onHistoryStatusChange={handleHistoryStatusChange}
       onSelectItem={handleSelectItem}
       onMarkRead={handleMarkRead}

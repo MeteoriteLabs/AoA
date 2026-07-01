@@ -4,6 +4,7 @@ import { render, screen, waitFor, cleanup, fireEvent } from "@testing-library/re
 // These tests render a multi-query page; give enough headroom for slow CI runs.
 vi.setConfig({ testTimeout: 15000 });
 import { MemoryRouter, Route, Routes } from "react-router-dom";
+import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   mockCompanyContext,
@@ -211,11 +212,12 @@ describe("ProjectDetail — Discussions tab", () => {
   });
 
   it("shows New Discussion button that opens capture modal pre-scoped", async () => {
+    const user = userEvent.setup();
     renderProjectDetail("/projects/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d/discussions");
 
     await screen.findByText("Sprint Planning Notes", {}, { timeout: 5000 });
 
-    fireEvent.click(await screen.findByText("New Discussion", {}, { timeout: 5000 }));
+    await user.click(await screen.findByRole("button", { name: /new discussion/i }, { timeout: 5000 }));
     await waitFor(() => {
       expect(mockDialogContext.openDiscussionCapture).toHaveBeenCalledWith(
         expect.objectContaining({

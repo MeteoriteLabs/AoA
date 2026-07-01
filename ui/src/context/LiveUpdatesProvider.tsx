@@ -47,6 +47,8 @@ interface LiveUpdatesContextValue {
   sendPresence: (threadId: string, opts?: { typing?: boolean }) => void;
   /** Register a callback fired whenever the WS reconnects after a drop. Returns an unsubscribe fn. */
   onReconnect: (cb: () => void) => () => void;
+  /** Register a callback fired when a visible hub item changes. Returns an unsubscribe fn. */
+  onHubItemChanged: (cb: (itemId: string) => void) => () => void;
   /** Latest presence roster per thread (keyed by threadId). */
   presenceByThread: Record<string, ThreadPresenceMember[]>;
   /** Latest working-agents roster per thread (keyed by threadId). */
@@ -64,6 +66,7 @@ const NOOP_LIVE_UPDATES: LiveUpdatesContextValue = {
   unsubscribeThread: () => {},
   sendPresence: () => {},
   onReconnect: () => () => {},
+  onHubItemChanged: () => () => {},
   presenceByThread: {},
   workingAgentsByThread: {},
 };
@@ -555,12 +558,13 @@ function gatedPushToast(
   if (id !== null) recordToastHit(gate, category);
 }
 
-function handleLiveEvent(
+export function handleLiveEvent(
   queryClient: QueryClient,
   expectedCompanyId: string,
   event: LiveEvent,
   pushToast: (toast: ToastInput) => string | null,
   gate: ToastGate,
+  notifyHubItemChanged?: (itemId: string) => void,
 ) {
   if (event.companyId !== expectedCompanyId) return;
 
@@ -670,6 +674,30 @@ function handleLiveEvent(
     return;
   }
 
+  if (event.type === "hub.item.changed") {
+    queryClient.invalidateQueries({ queryKey: ["hub-items", expectedCompanyId] });
+    queryClient.invalidateQueries({ queryKey: queryKeys.hubItems.counts(expectedCompanyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(expectedCompanyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.notifications.digest(expectedCompanyId) });
+    const itemId = readString(payload.itemId);
+    if (itemId) notifyHubItemChanged?.(itemId);
+    return;
+  }
+
+  if (event.type === "hub.counts.changed") {
+    if (readString(payload.reason) === "personal_state_changed") {
+      queryClient.invalidateQueries({ queryKey: ["hub-items", expectedCompanyId] });
+    }
+    queryClient.invalidateQueries({ queryKey: queryKeys.hubItems.counts(expectedCompanyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(expectedCompanyId) });
+    return;
+  }
+
+  if (event.type === "hub.digest.changed") {
+    queryClient.invalidateQueries({ queryKey: queryKeys.notifications.digest(expectedCompanyId) });
+    return;
+  }
+
   // Plan 7: thread.* events (refetch-on-poke). Presence is ephemeral and never
   // refetches; the ThreadDetail page consumes thread.presence directly.
   if (event.type.startsWith("thread.") && event.type !== "thread.presence") {
@@ -693,14 +721,14 @@ function handleLiveEvent(
 
   if (event.type === "internal_agent.reminder") {
     queryClient.invalidateQueries({ queryKey: queryKeys.agentReminders(expectedCompanyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.notifications(expectedCompanyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.notifications.list(expectedCompanyId) });
     // Cockpit live invalidation: reminders affect the Today card
     queryClient.invalidateQueries({ queryKey: queryKeys.cockpit(expectedCompanyId) });
     return;
   }
 
   if (event.type === "internal_agent.notification") {
-    queryClient.invalidateQueries({ queryKey: queryKeys.notifications(expectedCompanyId) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.notifications.list(expectedCompanyId) });
     return;
   }
 
@@ -774,6 +802,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
   const socketRef = useRef<WebSocket | null>(null);
   const subscribedThreadsRef = useRef<Map<string, number>>(new Map());
   const reconnectListenersRef = useRef<Set<() => void>>(new Set());
+  const hubItemChangedListenersRef = useRef<Set<(itemId: string) => void>>(new Set());
 
   const [connectionState, setConnectionState] = useState<LiveConnectionState>(
     typeof navigator !== "undefined" && navigator.onLine === false ? "offline" : "connecting",
@@ -843,6 +872,24 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
     return () => {
       reconnectListenersRef.current.delete(cb);
     };
+  }, []);
+
+  const onHubItemChanged = useCallback((cb: (itemId: string) => void) => {
+    hubItemChangedListenersRef.current.add(cb);
+    return () => {
+      hubItemChangedListenersRef.current.delete(cb);
+    };
+  }, []);
+
+  const notifyHubItemChanged = useCallback((itemId: string) => {
+    if (!itemId) return;
+    for (const cb of hubItemChangedListenersRef.current) {
+      try {
+        cb(itemId);
+      } catch {
+        // listener errors must not break the socket
+      }
+    }
   }, []);
 
   // Track browser online/offline so the composer can warn instead of failing silently.
@@ -933,7 +980,14 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
             }
             return;
           }
-          handleLiveEvent(queryClient, selectedCompanyId, parsed, pushToast, gateRef.current);
+          handleLiveEvent(
+            queryClient,
+            selectedCompanyId,
+            parsed,
+            pushToast,
+            gateRef.current,
+            notifyHubItemChanged,
+          );
         } catch {
           // Ignore non-JSON payloads.
         }
@@ -965,7 +1019,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
       }
       socketRef.current = null;
     };
-  }, [queryClient, selectedCompanyId, pushToast, sendRaw]);
+  }, [queryClient, selectedCompanyId, pushToast, sendRaw, notifyHubItemChanged]);
 
   const contextValue = useMemo<LiveUpdatesContextValue>(
     () => ({
@@ -974,10 +1028,20 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
       unsubscribeThread,
       sendPresence,
       onReconnect,
+      onHubItemChanged,
       presenceByThread,
       workingAgentsByThread,
     }),
-    [connectionState, subscribeThread, unsubscribeThread, sendPresence, onReconnect, presenceByThread, workingAgentsByThread],
+    [
+      connectionState,
+      subscribeThread,
+      unsubscribeThread,
+      sendPresence,
+      onReconnect,
+      onHubItemChanged,
+      presenceByThread,
+      workingAgentsByThread,
+    ],
   );
 
   return (

@@ -425,6 +425,9 @@ export type {
   DetectedOutput,
   DetectedOutputForUI,
   LiveEvent,
+  HubItemChangedLivePayload,
+  HubCountsChangedLivePayload,
+  HubDigestChangedLivePayload,
   DashboardSummary,
   HomeSummary,
   GoalProgress,
@@ -1042,6 +1045,7 @@ export {
 } from "./constants/github.js";
 
 export { API_PREFIX, API } from "./api.js";
+export * from "./notification-preferences.js";
 
 // Phase 3b/3c/3d: Commander cockpit data contract
 export type {

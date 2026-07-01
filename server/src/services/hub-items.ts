@@ -6,6 +6,7 @@ import {
   hubItemUserState,
   hubAudit,
   activityLog,
+  companyMemberships,
   approvals,
   heartbeatRuns,
   joinRequests,
@@ -13,7 +14,17 @@ import {
   suggestions,
   issues,
 } from "@armyofagents/db";
-import type { HubGroupMode, HubItemStatus, HubLane, HubSemanticType, HubOwnerPool, HubUserStateInput } from "@armyofagents/shared";
+import type {
+  HubCountsChangedLivePayload,
+  HubGroupMode,
+  HubItemChangedLivePayload,
+  HubItemStatus,
+  HubLane,
+  HubSemanticType,
+  HubOwnerPool,
+  HubUserStateInput,
+  NotificationPreferences,
+} from "@armyofagents/shared";
 import {
   HUB_SEMANTIC_TYPES,
   laneForSemanticType,
@@ -38,8 +49,11 @@ import { redactSecretsInString } from "../redaction.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { HttpError } from "../errors.js";
 import { hubCounterSnapshotsService } from "./hub-counter-snapshots.js";
+import { notificationDigestService } from "./notification-digest.js";
+import { notificationPreferencesService } from "./notification-preferences.js";
 import { orgHierarchyService } from "./org-hierarchy.js";
 import { permissionService } from "./permissions.js";
+import { publishLiveEvent } from "./live-events.js";
 
 // Semantic types that resolve to a given lane (lane is derived, not a column).
 function semanticTypesForLane(lane: HubLane): HubSemanticType[] {
@@ -78,7 +92,7 @@ export interface EmitArgs {
   executor?: Db;
 }
 
-type HubListRow = typeof hubItems.$inferSelect & {
+export type HubListRow = typeof hubItems.$inferSelect & {
   lane: HubLane | null;
   readAt: Date | null;
   snoozedUntil: Date | null;
@@ -90,7 +104,7 @@ type HubListRow = typeof hubItems.$inferSelect & {
   slaAt: Date | null;
 };
 
-interface HubListResponse {
+export interface HubListResponse {
   items: HubListRow[];
   nextCursor: string | null;
   totalKnown: number | null;
@@ -171,6 +185,59 @@ export function hubItemsService(db: Db) {
     };
   }
 
+  function publishHubItemChanged(
+    item: { id: string; companyId: string; semanticType: string | null; status: string; version: number },
+    change: HubItemChangedLivePayload["change"],
+  ) {
+    if (!item.semanticType) return;
+    const semanticType = item.semanticType as HubSemanticType;
+    publishLiveEvent({
+      companyId: item.companyId,
+      type: "hub.item.changed",
+      payload: {
+        itemId: item.id,
+        semanticType,
+        lane: laneForSemanticType(semanticType),
+        status: item.status as HubItemStatus,
+        version: item.version,
+        change,
+      } satisfies HubItemChangedLivePayload,
+    });
+  }
+
+  function toListRow(
+    item: typeof hubItems.$inferSelect,
+    state: {
+      readAt?: Date | null;
+      snoozedUntil?: Date | null;
+      dismissedAt?: Date | null;
+    } = {},
+    groupMode: HubGroupMode = "auto",
+  ): HubListRow {
+    return {
+      ...item,
+      lane: item.semanticType
+        ? laneForSemanticType(item.semanticType as HubSemanticType)
+        : null,
+      readAt: state.readAt ?? null,
+      snoozedUntil: state.snoozedUntil ?? null,
+      dismissedAt: state.dismissedAt ?? null,
+      groupKey: deriveFallbackGroupKey(item, groupMode),
+      groupLabel: deriveGroupLabel(item, groupMode),
+      groupCount: null,
+      scopeKey: item.scopeKey,
+      slaAt: item.slaAt,
+    };
+  }
+
+  function publishHubCountsChanged(companyId: string, reason: HubCountsChangedLivePayload["reason"]) {
+    publishLiveEvent({
+      companyId,
+      type: "hub.counts.changed",
+      payload: { reason } satisfies HubCountsChangedLivePayload,
+    });
+  }
+
   function hubOwnedPriorState(item: {
     status: string;
     version: number;
@@ -209,6 +276,111 @@ export function hubItemsService(db: Db) {
     const founder = await org.getFounderUserId(a.companyId);
     if (!founder) throw unprocessable("Cannot emit a hub item: company has no human owner");
     return founder;
+  }
+
+  function clockMinutes(value: string) {
+    const [hours, minutes] = value.split(":").map(Number);
+    return (hours ?? 0) * 60 + (minutes ?? 0);
+  }
+
+  function zonedClockMinutes(now: Date, timezone: string) {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: timezone,
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).formatToParts(now);
+    const hourPart = parts.find((part) => part.type === "hour")?.value ?? "0";
+    const minutePart = parts.find((part) => part.type === "minute")?.value ?? "0";
+    const hour = Number(hourPart) % 24;
+    return hour * 60 + Number(minutePart);
+  }
+
+  function quietHoursActive(
+    quietHours: NotificationPreferences["quietHours"],
+    now = new Date(),
+  ) {
+    if (!quietHours.enabled) return false;
+    const start = clockMinutes(quietHours.start);
+    const end = clockMinutes(quietHours.end);
+    if (start === end) return true;
+    const current = zonedClockMinutes(now, quietHours.timezone);
+    return start < end
+      ? current >= start && current < end
+      : current >= start || current < end;
+  }
+
+  async function findDigestCandidateUserIds(
+    conn: Db,
+    item: { companyId: string; ownerUserId: string | null; scopeKey: string | null },
+  ) {
+    const memberships = await conn
+      .select({ userId: companyMemberships.principalId })
+      .from(companyMemberships)
+      .where(
+        and(
+          eq(companyMemberships.companyId, item.companyId),
+          eq(companyMemberships.principalType, "user"),
+          eq(companyMemberships.status, "active"),
+        ),
+      );
+    const candidates = new Set<string>();
+    const permissions = permissionService(conn);
+    for (const membership of memberships) {
+      const userId = membership.userId;
+      if (userId === item.ownerUserId) {
+        candidates.add(userId);
+        continue;
+      }
+      const role = await permissions.getEffectiveRole(item.companyId, userId);
+      if (role === "founder") {
+        candidates.add(userId);
+        continue;
+      }
+      if (role === "team_lead" && item.scopeKey) {
+        const leadDepartments = await permissions.getTeamLeadDepartments(item.companyId, userId);
+        if (leadDepartments.includes(item.scopeKey)) {
+          candidates.add(userId);
+        }
+      }
+    }
+    return [...candidates];
+  }
+
+  async function queueDigestDeliveries(
+    conn: Db,
+    item: {
+      id: string;
+      companyId: string;
+      semanticType: string | null;
+      status: string;
+      ownerUserId: string | null;
+      scopeKey: string | null;
+    },
+    publish: boolean,
+  ) {
+    if (item.status !== "open" || !item.semanticType) return;
+    const semanticType = item.semanticType as HubSemanticType;
+    const userIds = await findDigestCandidateUserIds(conn, item);
+    const preferences = notificationPreferencesService(conn);
+    const digest = notificationDigestService(conn);
+    for (const userId of userIds) {
+      const userPreferences = await preferences.get(userId, item.companyId);
+      if (!userPreferences.digest.enabled) continue;
+      const rule = userPreferences.rules.find((r) => r.semanticType === semanticType);
+      if (!rule || rule.deliveryMode === "silent") continue;
+      const shouldQueue =
+        rule.deliveryMode === "digest" ||
+        (rule.deliveryMode === "realtime" && quietHoursActive(userPreferences.quietHours));
+      if (!shouldQueue) continue;
+      await digest.queueForUser({
+        companyId: item.companyId,
+        userId,
+        hubItemId: item.id,
+        semanticType,
+        publish,
+      });
+    }
   }
 
   async function emit(a: EmitArgs) {
@@ -287,6 +459,11 @@ export function hubItemsService(db: Db) {
     // id-less `{ lane }` object to callers (P2-5).
     if (!row) throw conflict("Hub item vanished during emit; retry.");
     await invalidateCounterSnapshotsForCompany(a.companyId);
+    await queueDigestDeliveries(conn, row, !a.executor);
+    if (!a.executor) {
+      publishHubItemChanged(row, "created");
+      publishHubCountsChanged(a.companyId, "item_changed");
+    }
     return { ...row, lane: laneForSemanticType(a.semanticType) };
   }
 
@@ -458,21 +635,11 @@ export function hubItemsService(db: Db) {
       : null;
 
     const items = pageRows
-      .map((r) => ({
-        ...r.item,
-        lane: r.item.semanticType
-          ? laneForSemanticType(r.item.semanticType as HubSemanticType)
-          : null,
-        // Per-principal state attached from the sparse user-state table.
+      .map((r) => toListRow(r.item, {
         readAt: r.readAt,
         snoozedUntil: r.snoozedUntil,
         dismissedAt: r.dismissedAt,
-        groupKey: deriveFallbackGroupKey(r.item, groupMode),
-        groupLabel: deriveGroupLabel(r.item, groupMode),
-        groupCount: null,
-        scopeKey: r.item.scopeKey,
-        slaAt: r.item.slaAt,
-      }));
+      }, groupMode));
 
     return { items, nextCursor, totalKnown: null };
   }
@@ -493,11 +660,27 @@ export function hubItemsService(db: Db) {
       conds.push(eq(hubItems.status, opts.status ?? "open"));
     }
     return db
-      .select()
+      .select({
+        item: hubItems,
+        readAt: hubItemUserState.readAt,
+        snoozedUntil: hubItemUserState.snoozedUntil,
+        dismissedAt: hubItemUserState.dismissedAt,
+      })
       .from(hubItems)
+      .leftJoin(
+        hubItemUserState,
+        and(
+          eq(hubItemUserState.hubItemId, hubItems.id),
+          eq(hubItemUserState.principalType, "user"),
+          eq(hubItemUserState.principalId, opts.actorUserId),
+        ),
+      )
       .where(and(...conds))
       .limit(1)
-      .then((r) => r[0] ?? null);
+      .then((r) => {
+        const row = r[0];
+        return row ? toListRow(row.item, row) : null;
+      });
   }
 
   async function applyPersonalState(args: {
@@ -573,6 +756,7 @@ export function hubItemsService(db: Db) {
     }
 
     await invalidateCounterSnapshotsForUser(args.companyId, args.actorUserId);
+    publishHubCountsChanged(args.companyId, "personal_state_changed");
     return row;
   }
 
@@ -765,7 +949,18 @@ export function hubItemsService(db: Db) {
     });
 
     if (!committed.replayed && args.sideEffect) await args.sideEffect();
-    if (!committed.replayed) await invalidateCounterSnapshotsForCompany(args.companyId);
+    if (!committed.replayed) {
+      await invalidateCounterSnapshotsForCompany(args.companyId);
+      publishHubItemChanged(
+        committed.item,
+        args.action === "resolve"
+          ? "resolved"
+          : args.action === "archive"
+            ? "archived"
+            : "state_changed",
+      );
+      publishHubCountsChanged(args.companyId, "item_changed");
+    }
     return {
       item: committed.item,
       auditId: committed.auditId,

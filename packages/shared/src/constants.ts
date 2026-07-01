@@ -323,6 +323,10 @@ export const LIVE_EVENT_TYPES = [
   "thread.entry.created",
   "thread.link.created",
   "thread.presence",
+  // W2 Layer 3: Inbox Hub realtime notifications
+  "hub.item.changed",
+  "hub.counts.changed",
+  "hub.digest.changed",
 ] as const;
 export type LiveEventType = (typeof LIVE_EVENT_TYPES)[number];
 
@@ -956,6 +960,9 @@ export const CLI_TOOLS = [
 
 export const NOTIFICATION_PREFERENCES = ["silent", "digest", "realtime"] as const;
 export type NotificationPreference = (typeof NOTIFICATION_PREFERENCES)[number];
+
+export const NOTIFICATION_DIGEST_CADENCES = ["daily"] as const;
+export type NotificationDigestCadence = (typeof NOTIFICATION_DIGEST_CADENCES)[number];
 
 export const TRIGGER_TYPES = ["conversation", "proactive", "event", "sub_agent"] as const;
 export type TriggerType = (typeof TRIGGER_TYPES)[number];

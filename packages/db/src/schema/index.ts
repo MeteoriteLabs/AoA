@@ -19,6 +19,8 @@ export * from "./team_members.js";
 export * from "./team_coordinations.js";
 export { sidebarPreferences } from "./sidebar_preferences.js";
 export { hubPreferences } from "./hub_preferences.js";
+export { notificationPreferences } from "./notification_preferences.js";
+export { notificationDigestItems } from "./notification_digest_items.js";
 export { inboxDismissals } from "./inbox_dismissals.js";
 export { userEntityPins } from "./user_entity_pins.js";
 export { goals } from "./goals.js";

@@ -244,6 +244,46 @@ describe("hub-items routes", () => {
     expect(mockSvc.query).not.toHaveBeenCalled();
   });
 
+  it("GET item hydrates one RBAC-visible hub item", async () => {
+    mockPerms.getEffectiveRole.mockResolvedValue("team_member");
+    mockSvc.getVisible.mockResolvedValue({
+      id: ITEM_ID,
+      companyId: COMPANY_A,
+      title: "Visible item",
+      status: "open",
+      lane: "waiting",
+    });
+    const app = createApp(boardActor());
+
+    const res = await request(app).get(`/api/companies/${COMPANY_A}/hub-items/${ITEM_ID}`);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.title).toBe("Visible item");
+    expect(res.body.lane).toBe("waiting");
+    expect(mockSvc.getVisible).toHaveBeenCalledWith(COMPANY_A, {
+      hubItemId: ITEM_ID,
+      actorUserId: "user-1",
+      role: "team_member",
+      status: "any",
+    });
+  });
+
+  it("GET item returns 404 when the item is hidden by RBAC", async () => {
+    mockPerms.getEffectiveRole.mockResolvedValue("team_member");
+    mockSvc.getVisible.mockResolvedValue(null);
+    const app = createApp(boardActor());
+
+    const res = await request(app).get(`/api/companies/${COMPANY_A}/hub-items/${ITEM_ID}`);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(404);
+    expect(mockSvc.getVisible).toHaveBeenCalledWith(COMPANY_A, {
+      hubItemId: ITEM_ID,
+      actorUserId: "user-1",
+      role: "team_member",
+      status: "any",
+    });
+  });
+
   it("(b) POST action with a stale expectedVersion → 409", async () => {
     mockPerms.isFounder.mockResolvedValue(true);
     mockSvc.recordLifecycleAction.mockRejectedValue(

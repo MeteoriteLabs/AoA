@@ -1,6 +1,6 @@
 # Inbox Hub Integration Roadmap
 
-**Status:** Active integration roadmap; W1b/W1c/W1d merged in PR #244, final cutover merged in PR #246, W2 Layer 2 active on `codex/inbox-hub-next-roadmap`
+**Status:** Active integration roadmap; W1b/W1c/W1d merged in PR #244, final cutover merged in PR #246, W2 Layer 3 active on `codex/w2-layer3-notifications-realtime`
 **Date:** 2026-06-29
 **Type:** Integration roadmap / planning spine
 **Design authority:** `docs/aoa/plans/2026-06-26-inbox-hub-master-scope.md`
@@ -25,11 +25,12 @@ Completed foundations:
 
 Current roadmap branch:
 
-- **Branch:** `codex/inbox-hub-next-roadmap`
-- **Purpose:** carry W2 Layer 2 after W1 final cutover merged.
-- **Rule:** keep W2 Layer 2 scoped to registry-driven persistent notifications,
-  canonical hub emit, legacy route state sync, dead-type cleanup, and focused
-  compatibility tests. Keep W2 Layer 3 and W3/W4/W5 out of this PR.
+- **Branch:** `codex/w2-layer3-notifications-realtime`
+- **Purpose:** carry W2 Layer 3 after W2 Layer 2 established the registry and
+  canonical hub-backed notification emit path.
+- **Rule:** keep W2 Layer 3 scoped to realtime hub events, toast bridge,
+  notification preferences, digest queue integration, and focused e2e
+  coverage. Keep W3/W4/W5 out of this PR.
 
 Final cutover status:
 
@@ -53,16 +54,23 @@ Merged in PR #244:
   mobile rail drawer and stacked viewer flow, keyboard shortcuts, per-user
   counter snapshots, and W1d Playwright coverage.
 
-Planned/active next:
+Completed W2 foundation:
 
-- **W2 Layer 2:** active in `docs/aoa/plans/2026-06-30-w2-layer2-notifications-registry-plan.md`.
-  Scope is persistent notification registry, canonical hub-backed create path,
+- **W2 Layer 2:** implemented from
+  `docs/aoa/plans/2026-06-30-w2-layer2-notifications-registry-plan.md`.
+  Scope was persistent notification registry, canonical hub-backed create path,
   legacy route state sync, direct-write guard, cockpit proactive compatibility,
   and dead-type cleanup.
 
+Planned/active next:
+
+- **W2 Layer 3:** active in
+  `docs/aoa/plans/2026-06-30-w2-layer3-realtime-notifications-plan.md`.
+  Scope is realtime hub events, toast bridge, preferences, quiet hours, digest
+  queue integration, and e2e coverage.
+
 Not yet planned or built:
 
-- W2 Layer 3
 - W3 Autopilot
 - W4 Steward
 - W5 runtime decision routing
@@ -96,10 +104,10 @@ This avoids mixing W2/W3/W4/W5 implementation into the route cutover.
 
 These stay outside the UI integration PR:
 
-- **W2 Layer 2:** active on `codex/inbox-hub-next-roadmap`; notifications
-  registry, canonical hub-backed persistent emit, legacy route state sync, and
-  dead-type cleanup.
-- **W2 Layer 3:** realtime, toast bridge, preferences, anti-spam, digests
+- **W2 Layer 2:** implemented; notifications registry, canonical hub-backed
+  persistent emit, legacy route state sync, and dead-type cleanup.
+- **W2 Layer 3:** active on `codex/w2-layer3-notifications-realtime`;
+  realtime, toast bridge, preferences, quiet hours, and digests.
 - **W3:** Autopilot autonomy and auto-action audit/undo
 - **W4:** Steward crew agent and curation worker
 - **W5:** runtime decision routing and per-adapter bridges
@@ -295,12 +303,14 @@ Layer 2 should lock the persistent notification registry and single emit path
 against the shared hub semantic contract. Layer 3 should replace polling with
 realtime and add the toast bridge plus preferences.
 
-Current status: W2 Layer 2 is active on `codex/inbox-hub-next-roadmap`.
-Compatibility predicates for old proactive notification rows
-(`internal_agent.proactive` and `internal_agent_proactive`) remain until a
-separate backfill/migration plan proves they can be removed. W2 Layer 3 remains
-deferred; realtime, toast bridge, preferences, anti-spam, quiet hours, and
-digests are not part of W2-L2.
+Current status: W2 Layer 3 is active on
+`codex/w2-layer3-notifications-realtime`. W2 Layer 2 established the registry
+and canonical hub-backed emit path. Layer 3 now adds RBAC-scoped live hub
+events, query invalidation, toast hydration, notification preferences, quiet
+hours, digest queueing, and focused browser coverage. Compatibility predicates
+for old proactive notification rows (`internal_agent.proactive` and
+`internal_agent_proactive`) remain until a separate backfill/migration plan
+proves they can be removed.
 
 Dependency boundary: W1 can use polling and W1a routes. W1 must not invent a
 second notification store or toast system.
@@ -343,7 +353,8 @@ the exact test files and commands.
 Each W1 phase must pass these gates before the next phase starts:
 
 - Focused unit/component/API/e2e tests for the phase are green.
-- No W2/W3/W4/W5 implementation code has entered the branch.
+- No later-workstream implementation has entered the branch outside the current
+  scoped PR. For the active W2 Layer 3 PR, W3/W4/W5 stay out.
 - The old Inbox equivalence matrix is updated for every source category touched.
 - Seeded demo/test data verifies the new lane/viewer behavior.
 - `/inbox` remains on the old route until the final cutover plan explicitly
@@ -465,7 +476,7 @@ Current final-cutover evidence on `feat/inbox-hub-integration`:
   - rebase `feat/inbox-hub-integration` onto `origin/main` if needed
   - inspect `git diff --name-only origin/main...HEAD`
 - Commit each implementation task separately.
-- Do not mix W2/W3/W4/W5 implementation into the W1 UI integration PR.
+- Do not mix W3/W4/W5 implementation into the W2 Layer 3 PR.
 - Do not rename DB tables or API routes for UI naming changes.
 - Preserve company scoping and RBAC checks in every route or client behavior.
 - Keep docs updated when behavior, commands, or phase boundaries change.
@@ -491,10 +502,11 @@ mid-task:
 
 ## 8. Next Step
 
-Review and execute the final cutover and acceptance plan:
+Finish W2 Layer 3, then plan the next queue in order:
 
-`docs/aoa/plans/2026-06-30-inbox-hub-final-cutover-acceptance-plan.md`
+1. W3 Autopilot autonomy and auto-action audit/undo.
+2. W4 Steward curation worker and dedicated `kind=aoa` member.
+3. W5 runtime decision routing and per-adapter bridges.
 
-The plan verifies old Inbox coverage, route cutover behavior, sidebar/header
-badge links, final operator acceptance, visual QA, and final W1 readiness
-evidence.
+Each next workstream needs its own investigate -> implementation plan -> review
+-> build cycle before code starts.
