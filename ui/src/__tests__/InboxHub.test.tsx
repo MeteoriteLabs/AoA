@@ -1,5 +1,10 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { HubPreferences, NotificationPreferences } from "@armyofagents/shared";
+import type {
+  HubAutopilotActionsResponse,
+  HubAutopilotPolicy,
+  HubPreferences,
+  NotificationPreferences,
+} from "@armyofagents/shared";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
@@ -74,6 +79,14 @@ vi.mock("@/api/hub-items", () => ({
     audit: vi.fn().mockResolvedValue([]),
     getPreferences: vi.fn().mockResolvedValue(defaultPreferences()),
     updatePreferences: vi.fn().mockResolvedValue(defaultPreferences()),
+    autopilotPolicy: {
+      get: vi.fn().mockResolvedValue(defaultAutopilotPolicy()),
+      update: vi.fn().mockResolvedValue(defaultAutopilotPolicy()),
+      reset: vi.fn().mockResolvedValue(defaultAutopilotPolicy()),
+    },
+    autopilotActions: {
+      list: vi.fn().mockResolvedValue(defaultAutopilotActions()),
+    },
     notificationPreferences: {
       get: vi.fn().mockResolvedValue(defaultNotificationPreferences()),
       update: vi.fn().mockResolvedValue(defaultNotificationPreferences()),
@@ -137,6 +150,18 @@ beforeEach(() => {
   vi.mocked(hubItemsApi.audit).mockResolvedValue([]);
   vi.mocked(hubItemsApi.getPreferences).mockResolvedValue(defaultPreferences());
   vi.mocked(hubItemsApi.updatePreferences).mockResolvedValue(defaultPreferences());
+  vi.mocked(hubItemsApi.autopilotPolicy.get).mockResolvedValue(
+    defaultAutopilotPolicy(),
+  );
+  vi.mocked(hubItemsApi.autopilotPolicy.update).mockResolvedValue(
+    defaultAutopilotPolicy(),
+  );
+  vi.mocked(hubItemsApi.autopilotPolicy.reset).mockResolvedValue(
+    defaultAutopilotPolicy(),
+  );
+  vi.mocked(hubItemsApi.autopilotActions.list).mockResolvedValue(
+    defaultAutopilotActions(),
+  );
   vi.mocked(hubItemsApi.notificationPreferences.get).mockResolvedValue(
     defaultNotificationPreferences(),
   );
@@ -178,6 +203,31 @@ function defaultNotificationPreferences(
     quietHours: { enabled: false, start: "18:00", end: "09:00", timezone: "UTC" },
     digest: { enabled: true, cadence: "daily" },
     updatedAt: null,
+    ...overrides,
+  };
+}
+
+function defaultAutopilotPolicy(
+  overrides: Partial<HubAutopilotPolicy> = {},
+): HubAutopilotPolicy {
+  return {
+    mode: "off",
+    handledToday: 0,
+    lastHandledAt: null,
+    rules: [
+      { semanticType: "approval_request", action: "none", minTrustScore: 100, enabled: false },
+      { semanticType: "run_complete", action: "none", minTrustScore: 100, enabled: false },
+    ],
+    updatedAt: null,
+    ...overrides,
+  };
+}
+
+function defaultAutopilotActions(
+  overrides: Partial<HubAutopilotActionsResponse> = {},
+): HubAutopilotActionsResponse {
+  return {
+    items: [],
     ...overrides,
   };
 }
@@ -369,6 +419,59 @@ describe("InboxHub page", () => {
           ]),
         }),
       );
+    });
+  });
+
+  it("updates Autopilot policy from hub settings", async () => {
+    const user = userEvent.setup();
+    renderPage("/P4/inbox/waiting");
+
+    await user.click(await screen.findByRole("button", { name: /hub settings/i }));
+    await user.selectOptions(screen.getByRole("combobox", { name: /autopilot mode/i }), "drive");
+
+    await waitFor(() => {
+      expect(hubItemsApi.autopilotPolicy.update).toHaveBeenCalledWith("company-1", {
+        mode: "drive",
+      });
+    });
+  });
+
+  it("undoes a recent Autopilot action from Home", async () => {
+    const user = userEvent.setup();
+    vi.mocked(hubItemsApi.autopilotPolicy.get).mockResolvedValue(
+      defaultAutopilotPolicy({ mode: "drive", handledToday: 1 }),
+    );
+    vi.mocked(hubItemsApi.autopilotActions.list).mockResolvedValue(
+      defaultAutopilotActions({
+        items: [
+          {
+            auditId: "audit-1",
+            hubItemId: "hub-1",
+            title: "Finished run",
+            semanticType: "run_complete",
+            action: "resolve",
+            autonomyLevel: "drive",
+            reason: "Trusted completion",
+            decisionContext: {},
+            undoDeadline: "2099-01-01T00:00:00.000Z",
+            itemStatus: "resolved",
+            itemVersion: 3,
+            createdAt: "2026-07-01T12:00:00.000Z",
+          },
+        ],
+      }),
+    );
+    renderPage("/P4/inbox");
+
+    await user.click(
+      await screen.findByRole("button", { name: /undo autopilot action finished run/i }),
+    );
+
+    await waitFor(() => {
+      expect(hubItemsApi.undo).toHaveBeenCalledWith("company-1", "hub-1", {
+        auditId: "audit-1",
+        expectedVersion: 3,
+      });
     });
   });
 

@@ -1,10 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
+  HubAutopilotActionRow,
+  HubAutopilotActionsResponse,
+  HubAutopilotPolicy,
   HubItemStatus,
   HubLane,
   HubPreferences,
   NotificationPreferences,
+  UpdateHubAutopilotPolicyInput,
   UpdateNotificationPreferencesInput,
   UpdateHubPreferencesInput,
 } from "@armyofagents/shared";
@@ -54,6 +58,14 @@ const DEFAULT_HUB_PREFERENCES: HubPreferences = {
   showAutopilotEntry: true,
   updatedAt: null,
 };
+const DEFAULT_AUTOPILOT_POLICY: HubAutopilotPolicy = {
+  mode: "off",
+  handledToday: 0,
+  lastHandledAt: null,
+  rules: [],
+  updatedAt: null,
+};
+const DEFAULT_AUTOPILOT_ACTIONS: HubAutopilotActionsResponse = { items: [] };
 
 export function InboxHub() {
   const { selectedCompanyId } = useCompany();
@@ -141,6 +153,22 @@ export function InboxHub() {
       ? queryKeys.notifications.digest(selectedCompanyId)
       : ["notifications", "digest", "none"],
     queryFn: () => hubItemsApi.notificationDigest.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  const autopilotPolicyQuery = useQuery({
+    queryKey: selectedCompanyId
+      ? queryKeys.hubItems.autopilotPolicy(selectedCompanyId)
+      : ["hub-items", "autopilot-policy", "none"],
+    queryFn: () => hubItemsApi.autopilotPolicy.get(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
+
+  const autopilotActionsQuery = useQuery({
+    queryKey: selectedCompanyId
+      ? queryKeys.hubItems.autopilotActions(selectedCompanyId)
+      : ["hub-items", "autopilot-actions", "none"],
+    queryFn: () => hubItemsApi.autopilotActions.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
 
@@ -259,6 +287,51 @@ export function InboxHub() {
       await queryClient.invalidateQueries({
         queryKey: queryKeys.notifications.preferences(selectedCompanyId),
       });
+    },
+  });
+
+  const updateAutopilotPolicy = useMutation({
+    mutationFn: (patch: UpdateHubAutopilotPolicyInput) =>
+      hubItemsApi.autopilotPolicy.update(selectedCompanyId!, patch),
+    onSuccess: (updated) => {
+      if (!selectedCompanyId) return;
+      queryClient.setQueryData(
+        queryKeys.hubItems.autopilotPolicy(selectedCompanyId),
+        updated,
+      );
+    },
+    onSettled: async () => {
+      if (!selectedCompanyId) return;
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.hubItems.autopilotPolicy(selectedCompanyId),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.hubItems.autopilotActions(selectedCompanyId),
+        }),
+      ]);
+    },
+  });
+
+  const resetAutopilotPolicy = useMutation({
+    mutationFn: () => hubItemsApi.autopilotPolicy.reset(selectedCompanyId!),
+    onSuccess: (updated) => {
+      if (!selectedCompanyId) return;
+      queryClient.setQueryData(
+        queryKeys.hubItems.autopilotPolicy(selectedCompanyId),
+        updated,
+      );
+    },
+    onSettled: async () => {
+      if (!selectedCompanyId) return;
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.hubItems.autopilotPolicy(selectedCompanyId),
+        }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.hubItems.autopilotActions(selectedCompanyId),
+        }),
+      ]);
     },
   });
 
@@ -518,6 +591,26 @@ export function InboxHub() {
     setUndoAction(null);
   };
 
+  const handleUndoAutopilotAction = (action: HubAutopilotActionRow) => {
+    if (!selectedCompanyId || !action.hubItemId || action.itemVersion == null) return;
+    hubMutations.undo.mutate(
+      {
+        itemId: action.hubItemId,
+        payload: {
+          auditId: action.auditId,
+          expectedVersion: action.itemVersion,
+        },
+      },
+      {
+        onSettled: async () => {
+          await queryClient.invalidateQueries({
+            queryKey: queryKeys.hubItems.autopilotActions(selectedCompanyId),
+          });
+        },
+      },
+    );
+  };
+
   if (legacyInboxHubTarget) {
     return <Navigate to={legacyInboxHubTarget} replace />;
   }
@@ -571,6 +664,11 @@ export function InboxHub() {
         ackNotificationDigest.isPending
       }
       digestItems={notificationDigestQuery.data?.items ?? []}
+      autopilotPolicy={autopilotPolicyQuery.data ?? DEFAULT_AUTOPILOT_POLICY}
+      autopilotActions={autopilotActionsQuery.data ?? DEFAULT_AUTOPILOT_ACTIONS}
+      autopilotPending={
+        updateAutopilotPolicy.isPending || resetAutopilotPolicy.isPending
+      }
       onLaneChange={handleLaneChange}
       onSearchTextChange={setSearchText}
       onLoadMore={handleLoadMore}
@@ -584,6 +682,13 @@ export function InboxHub() {
       onAckDigest={() => {
         ackNotificationDigest.mutate();
       }}
+      onUpdateAutopilotPolicy={(patch) => {
+        updateAutopilotPolicy.mutate(patch);
+      }}
+      onResetAutopilotPolicy={() => {
+        resetAutopilotPolicy.mutate();
+      }}
+      onUndoAutopilotAction={handleUndoAutopilotAction}
       onHistoryStatusChange={handleHistoryStatusChange}
       onSelectItem={handleSelectItem}
       onMarkRead={handleMarkRead}

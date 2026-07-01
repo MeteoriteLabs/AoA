@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { HubShell } from "../HubShell";
 import type { HubItemListRow } from "@/api/hub-items";
-import type { NotificationPreferences } from "@armyofagents/shared";
+import type { HubAutopilotActionsResponse, HubAutopilotPolicy, NotificationPreferences } from "@armyofagents/shared";
 
 vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({
@@ -78,6 +78,29 @@ function notificationPreferences(
     quietHours: { enabled: false, start: "18:00", end: "09:00", timezone: "UTC" },
     digest: { enabled: true, cadence: "daily" },
     updatedAt: null,
+    ...overrides,
+  };
+}
+
+function autopilotPolicy(overrides: Partial<HubAutopilotPolicy> = {}): HubAutopilotPolicy {
+  return {
+    mode: "off",
+    handledToday: 0,
+    lastHandledAt: null,
+    rules: [
+      { semanticType: "approval_request", action: "none", minTrustScore: 100, enabled: false },
+      { semanticType: "run_complete", action: "none", minTrustScore: 100, enabled: false },
+    ],
+    updatedAt: null,
+    ...overrides,
+  };
+}
+
+function autopilotActions(
+  overrides: Partial<HubAutopilotActionsResponse> = {},
+): HubAutopilotActionsResponse {
+  return {
+    items: [],
     ...overrides,
   };
 }
@@ -161,6 +184,72 @@ describe("HubShell", () => {
     expect(
       screen.getByRole("button", { name: /notification preferences/i }),
     ).toBeEnabled();
+  });
+
+  it("renders live Autopilot status on Hub Home with recent undoable actions", async () => {
+    const user = userEvent.setup();
+    const onUndoAutopilotAction = vi.fn();
+    renderShell({
+      activeLane: null,
+      autopilotPolicy: autopilotPolicy({ mode: "drive", handledToday: 1 }),
+      autopilotActions: autopilotActions({
+        items: [
+          {
+            auditId: "audit-1",
+            hubItemId: "hub-1",
+            title: "Finished run",
+            semanticType: "run_complete",
+            action: "resolve",
+            autonomyLevel: "drive",
+            reason: "Trusted completion",
+            decisionContext: {},
+            undoDeadline: "2099-01-01T00:00:00.000Z",
+            itemStatus: "resolved",
+            itemVersion: 3,
+            createdAt: "2026-07-01T12:00:00.000Z",
+          },
+        ],
+      }),
+      onUndoAutopilotAction,
+    });
+
+    expect(screen.getByText("Drive")).toBeInTheDocument();
+    expect(screen.getByText(/handled today/i)).toHaveTextContent("1 handled today");
+    expect(screen.getByText("Finished run")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /undo autopilot action finished run/i }));
+    expect(onUndoAutopilotAction).toHaveBeenCalledWith(expect.objectContaining({ auditId: "audit-1" }));
+  });
+
+  it("updates and resets Autopilot mode from hub settings", async () => {
+    const user = userEvent.setup();
+    const onUpdateAutopilotPolicy = vi.fn();
+    const onResetAutopilotPolicy = vi.fn();
+    renderShell({
+      autopilotPolicy: autopilotPolicy({ mode: "off" }),
+      onUpdateAutopilotPolicy,
+      onResetAutopilotPolicy,
+    });
+
+    await user.click(screen.getByRole("button", { name: /hub settings/i }));
+    await user.selectOptions(screen.getByRole("combobox", { name: /autopilot mode/i }), "drive");
+    expect(onUpdateAutopilotPolicy).toHaveBeenCalledWith({ mode: "drive" });
+
+    await user.click(screen.getByRole("button", { name: /reset autopilot/i }));
+    expect(onResetAutopilotPolicy).toHaveBeenCalled();
+  });
+
+  it("prevents founder-gated categories from being configured for auto-handle", async () => {
+    const user = userEvent.setup();
+    renderShell({
+      autopilotPolicy: autopilotPolicy(),
+    });
+
+    await user.click(screen.getByRole("button", { name: /hub settings/i }));
+
+    expect(screen.getByText("Approval Request")).toBeInTheDocument();
+    expect(screen.getByText(/founder-gated/i)).toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: /approval request autopilot action/i })).not.toBeInTheDocument();
   });
 
   it("opens notification preferences from hub settings and shows digest summary", async () => {

@@ -2,6 +2,10 @@ import { Menu, Settings, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { HubAuditRow, HubItemListRow } from "@/api/hub-items";
 import type {
+  HubAutopilotAction,
+  HubAutopilotActionRow,
+  HubAutopilotMode,
+  HubAutopilotPolicy,
   HubDensity,
   HubGroupMode,
   HubItemStatus,
@@ -10,9 +14,10 @@ import type {
   NotificationPreferences,
   NotificationPreference,
   UpdateHubPreferencesInput,
+  UpdateHubAutopilotPolicyInput,
   UpdateNotificationPreferencesInput,
 } from "@armyofagents/shared";
-import { DEFAULT_NOTIFICATION_PREFERENCES } from "@armyofagents/shared";
+import { DEFAULT_NOTIFICATION_PREFERENCES, isFounderGatedAutopilotType } from "@armyofagents/shared";
 import { Button } from "@/components/ui/button";
 import { HubHome } from "./HubHome";
 import { HubList } from "./HubList";
@@ -29,6 +34,14 @@ const DEFAULT_PREFERENCES: HubPreferences = {
   showAutopilotEntry: true,
   updatedAt: null,
 };
+const DEFAULT_AUTOPILOT_POLICY: HubAutopilotPolicy = {
+  mode: "off",
+  handledToday: 0,
+  lastHandledAt: null,
+  rules: [],
+  updatedAt: null,
+};
+const EMPTY_AUTOPILOT_ACTIONS: { items: HubAutopilotActionRow[] } = { items: [] };
 
 interface HubShellProps {
   activeLane: HubRailLane;
@@ -49,6 +62,9 @@ interface HubShellProps {
   notificationPreferences?: NotificationPreferences;
   notificationPreferencesPending?: boolean;
   digestItems?: HubItemListRow[];
+  autopilotPolicy?: HubAutopilotPolicy;
+  autopilotActions?: { items: HubAutopilotActionRow[] };
+  autopilotPending?: boolean;
   onLaneChange: (lane: HubRailLane) => void;
   onSearchTextChange?: (value: string) => void;
   onLoadMore?: () => void;
@@ -56,6 +72,9 @@ interface HubShellProps {
   onUpdateNotificationPreferences?: (patch: UpdateNotificationPreferencesInput) => void;
   onResetNotificationPreferences?: () => void;
   onAckDigest?: () => void;
+  onUpdateAutopilotPolicy?: (patch: UpdateHubAutopilotPolicyInput) => void;
+  onResetAutopilotPolicy?: () => void;
+  onUndoAutopilotAction?: (action: HubAutopilotActionRow) => void;
   onHistoryStatusChange: (status: Extract<HubItemStatus, "open" | "resolved" | "archived">) => void;
   onSelectItem: (itemId: string | null) => void;
   onMarkRead: (itemId: string) => void;
@@ -87,6 +106,9 @@ export function HubShell({
   notificationPreferences = DEFAULT_NOTIFICATION_PREFERENCES,
   notificationPreferencesPending = false,
   digestItems = [],
+  autopilotPolicy = DEFAULT_AUTOPILOT_POLICY,
+  autopilotActions = EMPTY_AUTOPILOT_ACTIONS,
+  autopilotPending = false,
   onLaneChange,
   onSearchTextChange = noop,
   onLoadMore = noop,
@@ -94,6 +116,9 @@ export function HubShell({
   onUpdateNotificationPreferences = noop,
   onResetNotificationPreferences = noop,
   onAckDigest = noop,
+  onUpdateAutopilotPolicy = noop,
+  onResetAutopilotPolicy = noop,
+  onUndoAutopilotAction = noop,
   onHistoryStatusChange = noop,
   onSelectItem,
   onMarkRead,
@@ -204,6 +229,19 @@ export function HubShell({
     });
   };
 
+  const updateAutopilotRule = (
+    semanticType: HubAutopilotPolicy["rules"][number]["semanticType"],
+    patch: Partial<
+      Pick<HubAutopilotPolicy["rules"][number], "enabled" | "action" | "minTrustScore">
+    >,
+  ) => {
+    onUpdateAutopilotPolicy({
+      rules: autopilotPolicy.rules.map((rule) =>
+        rule.semanticType === semanticType ? { ...rule, ...patch } : rule,
+      ),
+    });
+  };
+
   return (
     <div className="flex h-[calc(100vh-96px)] min-h-[520px] flex-col overflow-hidden border-y border-border bg-bg text-text lg:flex-row">
       <div className="hidden lg:block">
@@ -258,9 +296,9 @@ export function HubShell({
                 {showHome ? "Hub Home" : laneTitle(activeLane)}
               </h1>
             </div>
-            {!showHome ? (
-              <div className="flex shrink-0 gap-1">
-                {(["open", "resolved", "archived"] as const).map((status) => (
+            <div className="flex shrink-0 gap-1">
+              {!showHome
+                ? (["open", "resolved", "archived"] as const).map((status) => (
                   <Button
                     key={status}
                     type="button"
@@ -271,21 +309,21 @@ export function HubShell({
                   >
                     {statusLabel(status)}
                   </Button>
-                ))}
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  aria-label="Hub settings"
-                  aria-expanded={settingsOpen}
-                  onClick={() => setSettingsOpen((open) => !open)}
-                >
-                  <Settings className="size-4" aria-hidden="true" />
-                </Button>
-              </div>
-            ) : null}
+                ))
+                : null}
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                aria-label="Hub settings"
+                aria-expanded={settingsOpen}
+                onClick={() => setSettingsOpen((open) => !open)}
+              >
+                <Settings className="size-4" aria-hidden="true" />
+              </Button>
+            </div>
           </div>
-          {!showHome && settingsOpen ? (
+          {settingsOpen ? (
             <div className="grid gap-3 border-b border-border bg-card px-4 py-3 text-xs">
               <label className="grid gap-1">
                 <span className="text-muted-foreground">Default landing</span>
@@ -362,6 +400,117 @@ export function HubShell({
                 />
                 <span>Autopilot entry</span>
               </label>
+              <div className="grid gap-3 border-t border-border pt-3">
+                <div className="flex items-center justify-between gap-3">
+                  <h2 className="text-sm font-semibold">Autopilot</h2>
+                  {autopilotPending ? (
+                    <span className="text-[11px] text-muted-foreground">Saving</span>
+                  ) : null}
+                </div>
+                <label className="grid gap-1">
+                  <span className="text-muted-foreground">Mode</span>
+                  <select
+                    aria-label="Autopilot mode"
+                    value={autopilotPolicy.mode}
+                    disabled={autopilotPending}
+                    onChange={(event) =>
+                      onUpdateAutopilotPolicy({
+                        mode: event.target.value as HubAutopilotMode,
+                      })
+                    }
+                    className="h-8 rounded border border-border bg-bg px-2"
+                  >
+                    <option value="off">Off</option>
+                    <option value="assist">Assist</option>
+                    <option value="drive">Drive</option>
+                  </select>
+                </label>
+                <div className="grid gap-2">
+                  {autopilotPolicy.rules.map((rule) => {
+                    const label = semanticTypeLabel(rule.semanticType);
+                    const founderGated = isFounderGatedAutopilotType(rule.semanticType);
+                    return (
+                      <div key={rule.semanticType} className="grid gap-2 border-t border-border pt-2 first:border-t-0 first:pt-0">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="font-medium">{label}</div>
+                          {founderGated ? (
+                            <span className="text-[11px] uppercase text-muted-foreground">
+                              Founder-gated
+                            </span>
+                          ) : null}
+                        </div>
+                        {founderGated ? (
+                          <div className="text-muted-foreground">
+                            Escalation only.
+                          </div>
+                        ) : (
+                          <div className="grid gap-2 sm:grid-cols-3">
+                            <label className="flex items-center gap-2 self-end">
+                              <input
+                                type="checkbox"
+                                aria-label={`${label} autopilot enabled`}
+                                checked={rule.enabled}
+                                disabled={autopilotPending}
+                                onChange={(event) =>
+                                  updateAutopilotRule(rule.semanticType, {
+                                    enabled: event.target.checked,
+                                  })
+                                }
+                              />
+                              <span>Enabled</span>
+                            </label>
+                            <label className="grid gap-1">
+                              <span className="text-muted-foreground">Action</span>
+                              <select
+                                aria-label={`${label} autopilot action`}
+                                value={rule.action}
+                                disabled={autopilotPending}
+                                onChange={(event) =>
+                                  updateAutopilotRule(rule.semanticType, {
+                                    action: event.target.value as HubAutopilotAction,
+                                  })
+                                }
+                                className="h-8 rounded border border-border bg-bg px-2"
+                              >
+                                <option value="none">None</option>
+                                <option value="resolve">Resolve</option>
+                                <option value="archive">Archive</option>
+                              </select>
+                            </label>
+                            <label className="grid gap-1">
+                              <span className="text-muted-foreground">Min trust</span>
+                              <input
+                                type="number"
+                                min={0}
+                                max={100}
+                                aria-label={`${label} min trust`}
+                                value={rule.minTrustScore}
+                                disabled={autopilotPending}
+                                onChange={(event) =>
+                                  updateAutopilotRule(rule.semanticType, {
+                                    minTrustScore: Number(event.target.value),
+                                  })
+                                }
+                                className="h-8 rounded border border-border bg-bg px-2"
+                              />
+                            </label>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="justify-start"
+                  disabled={autopilotPending}
+                  onClick={onResetAutopilotPolicy}
+                >
+                  Reset Autopilot
+                </Button>
+              </div>
               <Button
                 type="button"
                 variant="ghost"
@@ -566,7 +715,10 @@ export function HubShell({
               items={items}
               visibleLanes={preferences.visibleLanes}
               showAutopilotEntry={preferences.showAutopilotEntry}
+              autopilotPolicy={autopilotPolicy}
+              autopilotActions={autopilotActions.items}
               onLaneChange={(lane: HubLane) => onLaneChange(lane)}
+              onUndoAutopilotAction={onUndoAutopilotAction}
             />
           ) : (
             <HubList
