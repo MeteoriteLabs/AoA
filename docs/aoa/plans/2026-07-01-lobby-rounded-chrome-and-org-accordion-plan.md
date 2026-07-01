@@ -92,39 +92,52 @@ git commit -m "feat(lobby): rounded floating primary rail + tests"
 
 ---
 
-## Task 2: New-organization accordion (split button + import)
+## Task 2: New-organization split button with floating Import menu
 
 **Files:**
-- Implementation (already in tree): `ui/src/components/LobbySidebar.tsx` — split button + `orgMenuOpen` state + accordion row
+- Implementation (already in tree): `ui/src/components/LobbySidebar.tsx` — attached split button + `DropdownMenu`
 - Test: `ui/src/__tests__/LobbySidebar.test.tsx`
 
-- [ ] **Step 1: Add accordion behavior tests**
+**Approach note:** Import opens in a floating Radix `DropdownMenu` (no layout
+shift, aligned to the chevron), not an inline accordion. Radix's real portal +
+pointer events do not run cleanly in jsdom, so tests **mock**
+`@/components/ui/dropdown-menu` (render children inline) — the same convention as
+`ui/src/__tests__/AgentCard.test.tsx`.
 
-Append to the same describe block:
+- [ ] **Step 1: Add the dropdown-menu mock near the other `vi.mock` calls**
+
+In `ui/src/__tests__/LobbySidebar.test.tsx`, add alongside the existing mocks
+(after the tooltip mock):
 
 ```tsx
-it("expanded: import accordion is hidden until the chevron is clicked", () => {
+// Radix DropdownMenu doesn't run cleanly in jsdom (portal + pointer events).
+// Render children inline and map onSelect→onClick so items are directly testable.
+vi.mock("@/components/ui/dropdown-menu", () => ({
+  DropdownMenu: ({ children }: any) => <div>{children}</div>,
+  DropdownMenuTrigger: ({ children }: any) => <>{children}</>,
+  DropdownMenuContent: ({ children }: any) => <div>{children}</div>,
+  DropdownMenuItem: ({ children, onSelect }: any) => (
+    <div role="menuitem" onClick={onSelect}>{children}</div>
+  ),
+}));
+```
+
+- [ ] **Step 2: Add split-button behavior tests**
+
+Append to the `describe("LobbySidebar", ...)` block:
+
+```tsx
+it("expanded: renders the create button and the More-options trigger", () => {
   renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
-  expect(screen.queryByRole("button", { name: /import organization/i })).toBeNull();
+  expect(screen.getByRole("button", { name: /^new organization$/i })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: /more organization options/i })).toBeInTheDocument();
 });
 
-it("clicking the chevron reveals Import organization; clicking it navigates to /import", async () => {
+it("Import organization menuitem navigates to /import", async () => {
   const user = userEvent.setup();
   renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
-  await user.click(screen.getByRole("button", { name: /more organization options/i }));
-  const importBtn = screen.getByRole("button", { name: /import organization/i });
-  expect(importBtn).toBeInTheDocument();
-  await user.click(importBtn);
+  await user.click(screen.getByRole("menuitem", { name: /import organization/i }));
   expect(mockNavigate).toHaveBeenCalledWith("/import", undefined);
-});
-
-it("import accordion closes after navigating", async () => {
-  const user = userEvent.setup();
-  renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
-  await user.click(screen.getByRole("button", { name: /more organization options/i }));
-  await user.click(screen.getByRole("button", { name: /import organization/i }));
-  expect(screen.queryByRole("button", { name: /import organization/i })).toBeNull();
 });
 
 it("primary + New organization still creates in one click (no regression)", async () => {
@@ -134,60 +147,73 @@ it("primary + New organization still creates in one click (no regression)", asyn
   expect(onCreateCompany).toHaveBeenCalledTimes(1);
 });
 
-it("collapsed: no chevron and no import row (create-only)", () => {
+it("collapsed: no More-options trigger and no import menuitem (create-only)", () => {
   localStorage.setItem("aoa.lobby.sidebar-collapsed", "true");
   renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
   expect(screen.queryByRole("button", { name: /more organization options/i })).toBeNull();
-  expect(screen.queryByRole("button", { name: /import organization/i })).toBeNull();
+  expect(screen.queryByRole("menuitem", { name: /import organization/i })).toBeNull();
 });
 ```
 
-- [ ] **Step 2: Run the tests — expect PASS (impl already in tree)**
+- [ ] **Step 3: Run the tests — expect PASS (impl already in tree)**
 
 Run: `pnpm --filter @armyofagents/ui test:run -- src/__tests__/LobbySidebar.test.tsx`
-Expected: PASS. (Clean checkout: apply the split-button + accordion block from design doc §"1. LobbySidebar" and the `orgMenuOpen` state, plus the `ChevronDown`/`Upload` imports, then re-run.)
+Expected: PASS. (Clean checkout: apply the reference implementation below plus the
+`DropdownMenu*` imports and the `ChevronDown`/`Upload` icon imports, then re-run.)
 
-Reference implementation (already present) — replaces the expanded-branch create button:
+Reference implementation (already present) — the expanded-branch CTA:
 
 ```tsx
-<div className="flex flex-col gap-1.5">
-  <div className="flex gap-1.5">
-    <Button size="default" onClick={create} className="flex-1 justify-center gap-1.5">
+<DropdownMenu>
+  {/* Attached split button — primary creates in one click; the
+      joined chevron segment opens a floating menu (no layout shift). */}
+  <div className="flex">
+    <Button
+      size="default"
+      onClick={create}
+      className="flex-1 justify-center gap-1.5 rounded-r-none"
+    >
       <Plus />
       New organization
     </Button>
-    <Button
-      size="icon"
-      variant="secondary"
-      onClick={() => setOrgMenuOpen((o) => !o)}
-      aria-label="More organization options"
-      aria-expanded={orgMenuOpen}
-      className="size-9 shrink-0"
-    >
-      <ChevronDown className={cn("transition-transform", orgMenuOpen && "rotate-180")} />
-    </Button>
+    <DropdownMenuTrigger asChild>
+      <Button
+        size="default"
+        aria-label="More organization options"
+        className="rounded-l-none border-l border-l-black/20 px-2 data-[state=open]:[&_svg]:rotate-180"
+      >
+        <ChevronDown className="size-4 transition-transform" />
+      </Button>
+    </DropdownMenuTrigger>
   </div>
-  {orgMenuOpen && (
-    <button
-      type="button"
-      onClick={() => {
-        setOrgMenuOpen(false);
-        navTo("/import");
-      }}
-      className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-[13px] font-medium text-foreground/[0.78] transition-colors hover:bg-white/[0.04] hover:text-foreground"
-    >
-      <Upload className="size-4 shrink-0" />
+  <DropdownMenuContent align="end" sideOffset={6} className="min-w-[200px]">
+    <DropdownMenuItem onSelect={() => navTo("/import")}>
+      <Upload />
       Import organization
-    </button>
-  )}
-</div>
+    </DropdownMenuItem>
+  </DropdownMenuContent>
+</DropdownMenu>
 ```
 
-- [ ] **Step 3: Commit**
+Required imports at the top of `LobbySidebar.tsx`:
+
+```tsx
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+```
+plus `ChevronDown` and `Upload` added to the existing `lucide-react` import. No
+local open-state is used (Radix owns it) — the `orgMenuOpen` prototype state is
+removed.
+
+- [ ] **Step 4: Commit**
 
 ```bash
 git add ui/src/__tests__/LobbySidebar.test.tsx ui/src/components/LobbySidebar.tsx
-git commit -m "feat(lobby): New-organization split button with Import accordion"
+git commit -m "feat(lobby): New-organization split button with floating Import menu"
 ```
 
 ---
@@ -372,8 +398,8 @@ Expected: all green (including LobbySidebar + SecondarySidebar + Settings suites
 
 The dev instance auto-HMRs. Using the gstack browse binary
 (`~/.claude/skills/gstack/browse/dist/browse`):
-- `goto http://127.0.0.1:3280/` → screenshot → confirm rounded rail + split button, `console --errors` clean.
-- Click the chevron → screenshot → confirm "Import organization" accordion.
+- `goto http://127.0.0.1:3280/` → screenshot → confirm rounded rail + attached split button, `console --errors` clean.
+- Click the chevron → screenshot → confirm the floating "Import organization" menu overlays the nav (no layout shift) and is aligned to the button.
 - `goto http://127.0.0.1:3280/instance/settings` → screenshot → confirm the secondary sidebar is a rounded island and the primary is force-collapsed + rounded.
 - Toggle the primary collapse → confirm the toggle sits on the seam and the collapsed rail shows create-only (no chevron).
 

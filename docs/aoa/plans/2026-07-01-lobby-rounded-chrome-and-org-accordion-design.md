@@ -35,9 +35,9 @@ consistency. (User decision: "lobby now, app later.")
 | # | Decision | Rationale |
 |---|----------|-----------|
 | D1 | **Aesthetic = "floating rail only"**, not "full floating panels". Only the sidebar(s) become rounded islands; main content stays flush to the window edge. | User compared both live and chose the lighter treatment. |
-| D2 | **No drop shadow** on the floating rail. | design-system §7: inline UI never has shadows — reserved for floating overlays. Border + `bg-card/50` carries the float. |
-| D3 | **Split button**, primary click still creates in one click (no regression). Chevron is a *separate* secondary button. | Preserves the existing one-click create; adds import without a second permanent CTA. |
-| D4 | **Import via inline accordion** below the split button (not a floating dropdown menu). | Matches the founder's "accordion" mental model. Closes on navigate. |
+| D2 | **No drop shadow** on the floating *rail* (inline chrome). The org *menu* is a floating overlay and keeps its shadow. | design-system §7: inline UI never has shadows — but overlays (dropdowns) do. Rail float is carried by border + `bg-card/50`. |
+| D3 | **Attached split button**, primary click still creates in one click (no regression). The chevron is a *joined* segment (rounded-r on the primary, rounded-l + left divider on the chevron) so the two read as one control. | Preserves the existing one-click create; the chevron feels part of the button, not a detached second button. |
+| D4 | **Import via a floating dropdown menu** anchored to the chevron (`DropdownMenu`, `align="end"`), NOT an inline accordion. | Revised 2026-07-01 after live review: the inline accordion pushed the nav rows down (layout shift) and spanned the full sidebar width (not tied to the button). A floating menu overlays content with no shift and stays aligned to the trigger. |
 | D5 | **Collapsed rail (56px) = create-only.** Chevron + accordion hidden; the `+` icon just creates, as today. | User: "when collapsed we don't need to show it." Import is a rarer action; no room at 56px. |
 | D6 | **Secondary sidebar rounding is opt-in** via a new `floating` prop (default `false`). | `SecondarySidebar` is shared with in-company pages; a global change would leak past the agreed scope. |
 
@@ -49,13 +49,16 @@ consistency. (User decision: "lobby now, app later.")
   `my-2 ml-2 overflow-hidden rounded-2xl border border-border`, and switches
   height from `h-dvh` to `h-[calc(100dvh-1rem)]` to account for the vertical
   margin. Drawer mode (mobile Sheet) is unchanged (`w-full h-dvh`, no rounding).
-- **Split-button CTA (expanded only):** primary `Button` (create →
-  `onCreateCompany`) with `flex-1`, plus a secondary icon `Button` holding a
-  `ChevronDown` that toggles `orgMenuOpen` state. When open, an accordion
-  `<button>` row ("Import organization", `Upload` icon) renders below and
-  navigates to `/import` (via the sidebar's existing `navTo`, which also fires
-  `onNavigate` to close the mobile drawer). The chevron rotates 180° when open.
-  `aria-expanded` reflects state; the accordion row closes itself on click.
+- **Attached split-button CTA (expanded only):** a `DropdownMenu` wraps a
+  `flex` row of two `Button`s: the primary create button (`onCreateCompany`,
+  `flex-1`, `rounded-r-none`) and a `DropdownMenuTrigger`-wrapped chevron button
+  (`rounded-l-none`, `border-l border-l-black/20`, `px-2`, aria-label "More
+  organization options"). The chevron's `ChevronDown` rotates 180° on open via
+  `data-[state=open]:[&_svg]:rotate-180`. `DropdownMenuContent` (`align="end"`,
+  `sideOffset={6}`, `min-w-[200px]`) holds one `DropdownMenuItem` — "Import
+  organization" (`Upload` icon) whose `onSelect` calls `navTo("/import")`. Radix
+  handles open/close, outside-click, keyboard nav, and the floating portal (no
+  layout shift). No local open-state is needed.
 - **Collapsed CTA:** unchanged — the icon-only `+` button that creates, wrapped
   in a tooltip. No chevron, no accordion.
 - **Collapse toggle:** `SidebarCollapseToggle` gets `sidebarWidth + 8` (to sit on
@@ -84,29 +87,30 @@ consistency. (User decision: "lobby now, app later.")
 
 ## Data flow / state
 
-- New local state `orgMenuOpen: boolean` in `LobbySidebar` (default `false`).
-  Toggled by the chevron; reset to `false` on import-navigate. No persistence —
-  the accordion always starts closed on mount.
+- No local open-state — `DropdownMenu` (Radix) owns open/close internally.
 - No new props on `LobbyShell` / `LobbySidebar` for import: the sidebar already
   has `navigate`, so import is `navTo("/import")` — the same route the empty-state
   hero uses (`LobbyEmptyState.onImport`).
 
 ## Accessibility
 
-- Chevron button: `aria-label="More organization options"`, `aria-expanded`
-  bound to `orgMenuOpen`.
-- Accordion import row is a real `<button type="button">` (keyboard-focusable).
+- Chevron `DropdownMenuTrigger` button: `aria-label="More organization options"`.
+  Radix manages `aria-expanded` / `aria-haspopup` and focus/keyboard nav on the
+  menu automatically.
+- Import is a `DropdownMenuItem` (role `menuitem`, keyboard-navigable).
 - Rounded rails are cosmetic; nav semantics unchanged.
 
 ## Testing
 
-- **`LobbySidebar` (new/updated tests):**
-  - Expanded: renders the split button; chevron toggles the accordion; clicking
-    "Import organization" calls navigation with `/import` and closes the
-    accordion; primary button still calls `onCreateCompany`.
-  - Collapsed: no chevron / no import row rendered; `+` still creates.
-  - Drawer mode: still renders full-width (no rounding regressions), accordion
-    import fires `onNavigate`.
+- **`LobbySidebar` (new/updated tests):** mock `@/components/ui/dropdown-menu`
+  (render children inline, map `DropdownMenuItem.onSelect` → `onClick`, expose
+  `role="menuitem"`) following the `AgentCard.test` convention — Radix's real
+  portal + pointer events don't run cleanly in jsdom.
+  - Expanded: renders the primary create button + the "More organization
+    options" trigger; the "Import organization" menuitem navigates to `/import`;
+    primary button still calls `onCreateCompany`.
+  - Collapsed: no trigger / no import menuitem rendered; `+` still creates.
+  - Drawer mode: still renders full-width (no rounding regressions).
 - **`SecondarySidebar` (updated test):** `floating` toggles the rounded classes;
   default render is byte-for-byte the flush rail (guards in-company usage).
 - Existing `SettingsPage-redesign` / `InstanceSettingsPage-signout` /
@@ -114,9 +118,11 @@ consistency. (User decision: "lobby now, app later.")
 
 ## Risks / edge cases
 
-- **Click-outside to close the accordion:** not implemented (v1). The accordion
-  closes on navigate and on chevron re-click; a stray-open state is harmless.
-  Noted as an optional follow-up.
+- **Menu open/close, outside-click, keyboard nav:** all handled by Radix
+  `DropdownMenu` — no custom state to get wrong.
+- **Menu width vs. narrow rail:** `min-w-[200px]` with `align="end"` keeps the
+  floating menu anchored to the chevron and within/over the ~196px content width;
+  it overlays the nav rows (by design) rather than shifting them.
 - **Collapse-toggle offset is magic-number-ish** (`+8`, `top 17`). Tied to the
   `ml-2` / `my-2` gutter; if the gutter changes, the offset must change with it.
   Documented in §8 so it is not mysterious.
