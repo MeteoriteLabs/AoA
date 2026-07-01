@@ -45,11 +45,36 @@ function baseDecision(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function baseTrustRule(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "rule-1",
+    companyId: "company-1",
+    agentId: "agent-1",
+    adapterType: "claude_local",
+    toolName: "shell",
+    commandHash: null,
+    pathScope: null,
+    networkScope: null,
+    riskClass: "medium",
+    enabled: true,
+    expiresAt: null,
+    createdByUserId: "founder-1",
+    lastUsedAt: null,
+    createdAt: now(),
+    updatedAt: now(),
+    ...overrides,
+  };
+}
+
 function makeService(repoOverrides: Record<string, unknown> = {}) {
   const repo = {
     createDecision: vi.fn(async (input) => baseDecision(input as Record<string, unknown>)),
     getDecision: vi.fn(async () => baseDecision()),
     listActiveForRun: vi.fn(async () => []),
+    listTrustRules: vi.fn(async () => []),
+    createTrustRule: vi.fn(async (input) => baseTrustRule(input as Record<string, unknown>)),
+    revokeTrustRule: vi.fn(async () => baseTrustRule({ enabled: false })),
+    markTrustRuleUsed: vi.fn(async () => {}),
     updateDecision: vi.fn(async (_id, patch) => baseDecision(patch as Record<string, unknown>)),
     listDueForExpiry: vi.fn(async () => []),
     ...repoOverrides,
@@ -111,6 +136,107 @@ describe("agentRuntimeDecisionService", () => {
       }),
     );
     expect(result.hubItem).toMatchObject({ id: "hub-1" });
+  });
+
+  it("auto-answers matching allow-always trust rules for permission prompts", async () => {
+    const { service, repo } = makeService({
+      listTrustRules: vi.fn(async () => [baseTrustRule()]),
+    });
+
+    const result = await service.createPrompt({
+      companyId: "company-1",
+      agentId: "agent-1",
+      runId: "11111111-1111-4111-8111-111111111111",
+      adapterType: "claude_local",
+      kind: "permission",
+      nonce: "nonce-trusted",
+      title: "Allow shell command?",
+      toolName: "shell",
+      command: "pnpm test:run",
+      riskClass: "medium",
+      timeoutPolicy: "deny",
+    });
+
+    expect(repo.createDecision).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "answered",
+        sourceRevision: 1,
+        decision: "allow_always",
+        answeredByUserId: "founder-1",
+        answeredAt: now(),
+      }),
+    );
+    expect(repo.markTrustRuleUsed).toHaveBeenCalledWith({ ruleId: "rule-1", usedAt: now() });
+    expect(result.decision.status).toBe("answered");
+  });
+
+  it("does not auto-answer non-matching trust rules or work questions", async () => {
+    const { service, repo } = makeService({
+      listTrustRules: vi.fn(async () => [baseTrustRule({ riskClass: "high" })]),
+    });
+
+    await service.createPrompt({
+      companyId: "company-1",
+      agentId: "agent-1",
+      runId: "11111111-1111-4111-8111-111111111111",
+      adapterType: "claude_local",
+      kind: "permission",
+      nonce: "nonce-untrusted",
+      title: "Allow shell command?",
+      toolName: "shell",
+      command: "pnpm test:run",
+      riskClass: "medium",
+      timeoutPolicy: "deny",
+    });
+    expect(repo.createDecision).toHaveBeenLastCalledWith(expect.objectContaining({ status: "created", decision: null }));
+
+    await service.createPrompt({
+      companyId: "company-1",
+      agentId: "agent-1",
+      runId: "11111111-1111-4111-8111-111111111111",
+      adapterType: "claude_local",
+      kind: "work_question",
+      nonce: "nonce-question",
+      title: "Need product answer",
+      timeoutPolicy: "escalate",
+    });
+    expect(repo.createDecision).toHaveBeenLastCalledWith(expect.objectContaining({ kind: "work_question", status: "created" }));
+  });
+
+  it("creates, lists, and revokes allow-always trust rules with audit rows", async () => {
+    const { service, repo, activityLogger } = makeService();
+
+    const created = await service.createTrustRule({
+      companyId: "company-1",
+      agentId: "agent-1",
+      adapterType: "claude_local",
+      toolName: "shell",
+      command: "pnpm test:run",
+      riskClass: "medium",
+      createdByUserId: "founder-1",
+    });
+    const listed = await service.listTrustRules({ companyId: "company-1", adapterType: "claude_local" });
+    const revoked = await service.revokeTrustRule({
+      companyId: "company-1",
+      ruleId: "rule-1",
+      actorUserId: "founder-1",
+    });
+
+    expect(repo.createTrustRule).toHaveBeenCalledWith(
+      expect.objectContaining({
+        companyId: "company-1",
+        adapterType: "claude_local",
+        enabled: true,
+        commandHash: expect.any(String),
+      }),
+    );
+    expect(repo.listTrustRules).toHaveBeenCalledWith({ companyId: "company-1", adapterType: "claude_local" });
+    expect(repo.revokeTrustRule).toHaveBeenCalledWith({ companyId: "company-1", ruleId: "rule-1" });
+    expect(activityLogger).toHaveBeenCalledWith(expect.objectContaining({ action: "runtime_decision_trust_rule.created" }));
+    expect(activityLogger).toHaveBeenCalledWith(expect.objectContaining({ action: "runtime_decision_trust_rule.revoked" }));
+    expect(created.id).toBe("rule-1");
+    expect(listed).toEqual([]);
+    expect(revoked.enabled).toBe(false);
   });
 
   it("rejects answers with a stale source revision or wrong nonce", async () => {

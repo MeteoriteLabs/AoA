@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { and, eq, inArray, lte } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { agentRuntimeDecisions } from "@armyofagents/db";
+import { agentRuntimeDecisions, agentRuntimeTrustRules } from "@armyofagents/db";
 import type {
   RuntimeDecisionDetail,
   RuntimeDecisionKind,
@@ -29,6 +29,7 @@ const TERMINAL_STATUSES = new Set<RuntimeDecisionStatus>([
 ]);
 
 export type AgentRuntimeDecisionRow = typeof agentRuntimeDecisions.$inferSelect;
+export type AgentRuntimeTrustRuleRow = typeof agentRuntimeTrustRules.$inferSelect;
 
 type CreatePromptInput = {
   companyId: string;
@@ -72,7 +73,7 @@ type RelayFailedInput = {
 };
 
 type ExpireDueInput = {
-  companyId: string;
+  companyId?: string;
   limit: number;
 };
 
@@ -83,15 +84,32 @@ type WaitForAnswerInput = {
   timeoutMs?: number;
 };
 
+type CreateTrustRuleInput = {
+  companyId: string;
+  agentId?: string | null;
+  adapterType: string;
+  toolName?: string | null;
+  command?: string | null;
+  pathScope?: string | null;
+  networkScope?: string | null;
+  riskClass?: string | null;
+  expiresAt?: Date | null;
+  createdByUserId: string;
+};
+
 type DecisionRepo = {
   createDecision(input: typeof agentRuntimeDecisions.$inferInsert): Promise<AgentRuntimeDecisionRow>;
   getDecision(companyId: string, decisionId: string): Promise<AgentRuntimeDecisionRow | null>;
   listActiveForRun(input: { companyId: string; runId: string }): Promise<AgentRuntimeDecisionRow[]>;
+  listTrustRules(input: { companyId: string; adapterType?: string; includeDisabled?: boolean }): Promise<AgentRuntimeTrustRuleRow[]>;
+  createTrustRule(input: typeof agentRuntimeTrustRules.$inferInsert): Promise<AgentRuntimeTrustRuleRow>;
+  revokeTrustRule(input: { companyId: string; ruleId: string }): Promise<AgentRuntimeTrustRuleRow | null>;
+  markTrustRuleUsed(input: { ruleId: string; usedAt: Date }): Promise<void>;
   updateDecision(
     decisionId: string,
     patch: Partial<typeof agentRuntimeDecisions.$inferInsert>,
   ): Promise<AgentRuntimeDecisionRow>;
-  listDueForExpiry(input: { companyId: string; now: Date; limit: number }): Promise<AgentRuntimeDecisionRow[]>;
+  listDueForExpiry(input: { companyId?: string; now: Date; limit: number }): Promise<AgentRuntimeDecisionRow[]>;
 };
 
 type HubItemsApi = Pick<ReturnType<typeof hubItemsService>, "emit">;
@@ -109,15 +127,17 @@ function safeText(value: string | null | undefined): string | null {
 }
 
 function promptHash(input: Pick<CreatePromptInput, "kind" | "title" | "summary" | "promptText" | "command">) {
-  return createHash("sha256")
-    .update(JSON.stringify({
+  return hashString(JSON.stringify({
       kind: input.kind,
       title: input.title,
       summary: input.summary ?? null,
       promptText: input.promptText ?? null,
       command: input.command ?? null,
-    }))
-    .digest("hex");
+    }));
+}
+
+function hashString(value: string) {
+  return createHash("sha256").update(value).digest("hex");
 }
 
 function sourceUniqueKey(input: { companyId: string; runId: string; nonce: string }) {
@@ -131,6 +151,35 @@ function toIso(value: Date | string | null): string | null {
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function commandHash(command: string | null | undefined) {
+  return command ? hashString(command) : null;
+}
+
+function pathMatchesScope(path: string | null | undefined, scope: string | null) {
+  if (!scope) return true;
+  if (!path) return false;
+  return path === scope || path.startsWith(scope.endsWith("/") || scope.endsWith("\\") ? scope : `${scope}/`);
+}
+
+function networkMatchesScope(networkTarget: string | null | undefined, scope: string | null) {
+  if (!scope) return true;
+  return networkTarget === scope;
+}
+
+function trustRuleMatchesPrompt(rule: AgentRuntimeTrustRuleRow, input: CreatePromptInput, now: Date) {
+  if (!rule.enabled) return false;
+  if (rule.expiresAt && rule.expiresAt.getTime() <= now.getTime()) return false;
+  if (rule.companyId !== input.companyId) return false;
+  if (rule.adapterType !== input.adapterType) return false;
+  if (rule.agentId && rule.agentId !== input.agentId) return false;
+  if (rule.toolName && rule.toolName !== input.toolName) return false;
+  if (rule.commandHash && rule.commandHash !== commandHash(input.command)) return false;
+  if (!pathMatchesScope(input.path, rule.pathScope)) return false;
+  if (!networkMatchesScope(input.networkTarget, rule.networkScope)) return false;
+  if (rule.riskClass && rule.riskClass !== input.riskClass) return false;
+  return true;
 }
 
 export function runtimeDecisionDetail(row: AgentRuntimeDecisionRow): RuntimeDecisionDetail {
@@ -187,6 +236,11 @@ function realRepo(db: Db): DecisionRepo {
             options: input.options ?? null,
             expiresAt: input.expiresAt ?? null,
             timeoutPolicy: input.timeoutPolicy,
+            status: input.status,
+            sourceRevision: input.sourceRevision,
+            decision: input.decision ?? null,
+            answeredByUserId: input.answeredByUserId ?? null,
+            answeredAt: input.answeredAt ?? null,
             updatedAt: new Date(),
           },
         })
@@ -213,6 +267,35 @@ function realRepo(db: Db): DecisionRepo {
           ),
         );
     },
+    async listTrustRules(input) {
+      const conditions = [
+        eq(agentRuntimeTrustRules.companyId, input.companyId),
+      ];
+      if (input.adapterType) conditions.push(eq(agentRuntimeTrustRules.adapterType, input.adapterType));
+      if (!input.includeDisabled) conditions.push(eq(agentRuntimeTrustRules.enabled, true));
+      return db.select().from(agentRuntimeTrustRules).where(and(...conditions));
+    },
+    async createTrustRule(input) {
+      return db
+        .insert(agentRuntimeTrustRules)
+        .values(input)
+        .returning()
+        .then((rows) => rows[0]);
+    },
+    async revokeTrustRule(input) {
+      return db
+        .update(agentRuntimeTrustRules)
+        .set({ enabled: false, updatedAt: new Date() })
+        .where(and(eq(agentRuntimeTrustRules.companyId, input.companyId), eq(agentRuntimeTrustRules.id, input.ruleId)))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+    },
+    async markTrustRuleUsed(input) {
+      await db
+        .update(agentRuntimeTrustRules)
+        .set({ lastUsedAt: input.usedAt, updatedAt: input.usedAt })
+        .where(eq(agentRuntimeTrustRules.id, input.ruleId));
+    },
     async updateDecision(decisionId, patch) {
       return db
         .update(agentRuntimeDecisions)
@@ -222,16 +305,15 @@ function realRepo(db: Db): DecisionRepo {
         .then((rows) => rows[0]);
     },
     async listDueForExpiry(input) {
+      const conditions = [
+        inArray(agentRuntimeDecisions.status, ["created", "shown"]),
+        lte(agentRuntimeDecisions.expiresAt, input.now),
+      ];
+      if (input.companyId) conditions.push(eq(agentRuntimeDecisions.companyId, input.companyId));
       return db
         .select()
         .from(agentRuntimeDecisions)
-        .where(
-          and(
-            eq(agentRuntimeDecisions.companyId, input.companyId),
-            inArray(agentRuntimeDecisions.status, ["created", "shown"]),
-            lte(agentRuntimeDecisions.expiresAt, input.now),
-          ),
-        )
+        .where(and(...conditions))
         .limit(input.limit);
     },
   };
@@ -277,6 +359,10 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
   }
 
   async function createPrompt(input: CreatePromptInput) {
+    const matchingTrustRule = input.kind === "permission"
+      ? (await repo.listTrustRules({ companyId: input.companyId, adapterType: input.adapterType }))
+        .find((rule) => trustRuleMatchesPrompt(rule, input, now()))
+      : null;
     const created = await repo.createDecision({
       companyId: input.companyId,
       agentId: input.agentId,
@@ -285,9 +371,9 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
       adapterSessionId: input.adapterSessionId ?? null,
       adapterSessionParams: input.adapterSessionParams ?? null,
       kind: input.kind,
-      status: "created",
+      status: matchingTrustRule ? "answered" : "created",
       nonce: input.nonce,
-      sourceRevision: 0,
+      sourceRevision: matchingTrustRule ? 1 : 0,
       promptHash: promptHash(input),
       sourceUniqueKey: sourceUniqueKey(input),
       title: safeText(input.title) ?? "Runtime decision",
@@ -302,9 +388,68 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
       options: input.options ?? null,
       expiresAt: input.expiresAt ?? null,
       timeoutPolicy: input.timeoutPolicy,
+      decision: matchingTrustRule ? "allow_always" : null,
+      answeredByUserId: matchingTrustRule?.createdByUserId ?? null,
+      answeredAt: matchingTrustRule ? now() : null,
     });
+    if (matchingTrustRule) {
+      await repo.markTrustRuleUsed({ ruleId: matchingTrustRule.id, usedAt: now() });
+    }
     const hubItem = await emitHubItem(created);
     return { decision: created, hubItem };
+  }
+
+  async function createTrustRule(input: CreateTrustRuleInput) {
+    const rule = await repo.createTrustRule({
+      companyId: input.companyId,
+      agentId: input.agentId ?? null,
+      adapterType: input.adapterType,
+      toolName: input.toolName ?? null,
+      commandHash: commandHash(input.command),
+      pathScope: input.pathScope ?? null,
+      networkScope: input.networkScope ?? null,
+      riskClass: input.riskClass ?? null,
+      enabled: true,
+      expiresAt: input.expiresAt ?? null,
+      createdByUserId: input.createdByUserId,
+    });
+    await activityLogger({
+      companyId: input.companyId,
+      actorType: "user",
+      actorId: input.createdByUserId,
+      action: "runtime_decision_trust_rule.created",
+      entityType: "agent_runtime_trust_rule",
+      entityId: rule.id,
+      details: {
+        agentId: input.agentId ?? null,
+        adapterType: input.adapterType,
+        toolName: input.toolName ?? null,
+        hasCommandScope: Boolean(input.command),
+        pathScope: input.pathScope ?? null,
+        networkScope: input.networkScope ?? null,
+        riskClass: input.riskClass ?? null,
+      },
+    });
+    return rule;
+  }
+
+  async function listTrustRules(input: { companyId: string; adapterType?: string; includeDisabled?: boolean }) {
+    return repo.listTrustRules(input);
+  }
+
+  async function revokeTrustRule(input: { companyId: string; ruleId: string; actorUserId: string }) {
+    const rule = await repo.revokeTrustRule({ companyId: input.companyId, ruleId: input.ruleId });
+    if (!rule) throw notFound("Runtime decision trust rule not found");
+    await activityLogger({
+      companyId: input.companyId,
+      actorType: "user",
+      actorId: input.actorUserId,
+      action: "runtime_decision_trust_rule.revoked",
+      entityType: "agent_runtime_trust_rule",
+      entityId: rule.id,
+      details: { adapterType: rule.adapterType, toolName: rule.toolName },
+    });
+    return rule;
   }
 
   async function getDetail(companyId: string, decisionId: string) {
@@ -484,6 +629,9 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
 
   return {
     createPrompt,
+    createTrustRule,
+    listTrustRules,
+    revokeTrustRule,
     getDetail,
     answerPrompt,
     waitForAnswer,

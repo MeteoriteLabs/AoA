@@ -289,11 +289,11 @@ pnpm --filter @armyofagents/db test:run
 - startup/sweep integration file used by heartbeat workers
 - route/API/UI files for trust rules as needed
 
-- [ ] Write tests for due prompt expiry and timeout policies.
-- [ ] Write tests for scoped allow-always matching and non-matching cases.
-- [ ] Implement sweeper with bounded batch size.
-- [ ] Implement trust-rule create/revoke/list flow.
-- [ ] Ensure work questions cannot be blanket auto-denied.
+- [x] Write tests for due prompt expiry and timeout policies.
+- [x] Write tests for scoped allow-always matching and non-matching cases.
+- [x] Implement sweeper with bounded batch size.
+- [x] Implement trust-rule create/revoke/list flow.
+- [x] Ensure work questions cannot be blanket auto-denied.
 
 ## Task 6: Hub Runtime Decision Viewer UI
 

@@ -29,6 +29,7 @@ import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import {
   heartbeatService,
+  agentRuntimeDecisionService,
   issueMonitorSchedulerService,
   productivityReviewService,
   routineService,
@@ -1053,6 +1054,20 @@ setInterval(() => {
     logger.warn({ err }, "chronicler sweep error"),
   );
 }, CHRONICLER_SWEEP_INTERVAL_MS);
+
+const RUNTIME_DECISION_TIMEOUT_SWEEP_INTERVAL_MS = 30 * 1000;
+const RUNTIME_DECISION_TIMEOUT_SWEEP_LIMIT = 100;
+let runtimeDecisionTimeoutSweepInFlight = false;
+setInterval(() => {
+  if (runtimeDecisionTimeoutSweepInFlight) return;
+  runtimeDecisionTimeoutSweepInFlight = true;
+  void agentRuntimeDecisionService(db as any)
+    .expireDuePrompts({ limit: RUNTIME_DECISION_TIMEOUT_SWEEP_LIMIT })
+    .catch((err: unknown) => logger.warn({ err }, "runtime decision timeout sweep failed"))
+    .finally(() => {
+      runtimeDecisionTimeoutSweepInFlight = false;
+    });
+}, RUNTIME_DECISION_TIMEOUT_SWEEP_INTERVAL_MS);
 
 if (config.databaseBackupEnabled) {
   const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;
