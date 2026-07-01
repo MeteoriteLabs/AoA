@@ -24,6 +24,13 @@ import { cn } from "@/lib/utils";
 
 const COLLAPSE_KEY = "aoa.lobby.sidebar-collapsed";
 
+// The rail floats with an `ml-2` (8px) left gutter and `my-2` top gutter. The
+// external collapse toggle must shift right by the gutter to stay on the
+// rail/main seam, and down to align with the header row inside the floated card.
+// Keep these in lockstep with the aside's `my-2 ml-2` classes.
+const RAIL_GUTTER_PX = 8;
+const RAIL_TOGGLE_TOP_PX = 17;
+
 interface LobbyNavRowProps {
   icon: React.ComponentType<{ className?: string }>;
   label: string;
@@ -321,8 +328,8 @@ export function LobbySidebar({
         <SidebarCollapseToggle
           collapsed={collapsed}
           onToggle={handleToggle}
-          sidebarWidth={(collapsed ? 56 : 220) + 8}
-          top={17}
+          sidebarWidth={(collapsed ? 56 : 220) + RAIL_GUTTER_PX}
+          top={RAIL_TOGGLE_TOP_PX}
           className="hidden md:inline-flex"
         />
       )}

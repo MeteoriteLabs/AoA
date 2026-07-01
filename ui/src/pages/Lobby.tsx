@@ -10,7 +10,10 @@ import { LobbyCompanyCard } from "@/components/LobbyCompanyCard";
 import { LobbyEmptyState } from "@/components/LobbyEmptyState";
 import { LobbyShellMobileMenuButton } from "@/components/LobbyShell";
 
-function deriveFirstName(displayName: string | undefined, email: string | undefined): string {
+function deriveFirstName(
+  displayName: string | undefined,
+  email: string | undefined
+): string {
   if (displayName?.trim()) {
     const first = displayName.trim().split(/\s+/)[0];
     if (first) return first;
@@ -54,17 +57,26 @@ export function Lobby() {
   }
 
   const isEmpty = visibleCompanies.length === 0;
-  const firstName = deriveFirstName(profile?.displayName ?? undefined, profile?.email ?? undefined);
+  const firstName = deriveFirstName(
+    profile?.displayName ?? undefined,
+    profile?.email ?? undefined
+  );
   const pendingCompanies = stats
-    ? visibleCompanies.filter((c) => (stats[c.id]?.pendingApprovalCount ?? 0) > 0).length
+    ? visibleCompanies.filter(
+        (c) => (stats[c.id]?.pendingApprovalCount ?? 0) > 0
+      ).length
     : 0;
   const subtitleParts: string[] = [];
   subtitleParts.push(
-    `${visibleCompanies.length} ${visibleCompanies.length === 1 ? "organization" : "organizations"}`,
+    `${visibleCompanies.length} ${
+      visibleCompanies.length === 1 ? "organization" : "organizations"
+    }`
   );
   if (pendingCompanies > 0) {
     subtitleParts.push(
-      `${pendingCompanies} with pending approval${pendingCompanies === 1 ? "" : "s"}`,
+      `${pendingCompanies} with pending approval${
+        pendingCompanies === 1 ? "" : "s"
+      }`
     );
   }
 
@@ -78,35 +90,37 @@ export function Lobby() {
       {/* Mobile hamburger — hidden on tablet+ */}
       <LobbyShellMobileMenuButton className="mb-4" />
 
-          {/* Welcome */}
-          <div className="mb-6 sm:mb-7 lobby-heading-enter">
-            <h1 className="text-[1.25rem] sm:text-[1.4rem] md:text-[1.55rem] font-bold tracking-[-0.025em] text-foreground">
-              Welcome back, {firstName}
-              <span className="text-brand">.</span>
-            </h1>
-            <p className="mt-1 text-[0.82rem] sm:text-[0.86rem] text-dim">{subtitleParts.join(" · ")}.</p>
-          </div>
+      {/* Welcome */}
+      <div className="mb-6 sm:mb-7 lobby-heading-enter">
+        <h1 className="text-[1.25rem] sm:text-[1.4rem] md:text-[1.55rem] font-bold tracking-[-0.025em] text-foreground">
+          Welcome back, {firstName}
+          <span className="text-brand">.</span>
+        </h1>
+        <p className="mt-1 text-[0.82rem] sm:text-[0.86rem] text-dim">
+          {subtitleParts.join(" · ")}.
+        </p>
+      </div>
 
-          <div className="mb-3 sm:mb-3.5 text-[0.66rem] sm:text-[0.7rem] font-semibold uppercase tracking-[0.08em] text-dim">
-            Your organizations
-          </div>
+      <div className="mb-3 sm:mb-3.5 text-[0.66rem] sm:text-[0.7rem] font-semibold uppercase tracking-[0.08em] text-dim">
+        Your organizations
+      </div>
 
-          <div className="flex flex-col gap-3 sm:gap-3.5">
-            {visibleCompanies.map((company, i) => (
-              <div
-                key={company.id}
-                className="lobby-card-enter"
-                style={{ "--lobby-card-index": i } as CSSProperties}
-              >
-                <LobbyCompanyCard
-                  company={company}
-                  stats={stats?.[company.id]}
-                  statsLoading={statsLoading}
-                  onClick={() => navigate(`/${company.issuePrefix}/home`)}
-                />
-              </div>
-            ))}
+      <div className="flex flex-col gap-3 sm:gap-3.5">
+        {visibleCompanies.map((company, i) => (
+          <div
+            key={company.id}
+            className="lobby-card-enter"
+            style={{ "--lobby-card-index": i } as CSSProperties}
+          >
+            <LobbyCompanyCard
+              company={company}
+              stats={stats?.[company.id]}
+              statsLoading={statsLoading}
+              onClick={() => navigate(`/${company.issuePrefix}/home`)}
+            />
           </div>
+        ))}
+      </div>
     </div>
   );
 }

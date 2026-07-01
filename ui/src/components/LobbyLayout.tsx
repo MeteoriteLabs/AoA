@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { Outlet, useLocation } from "@/lib/router";
 import { useDialog } from "@/context/DialogContext";
 import { LobbyShell } from "@/components/LobbyShell";
@@ -24,6 +24,9 @@ export function LobbyLayout() {
   const { openOnboarding } = useDialog();
   const location = useLocation();
   const [secondarySidebar, setSecondarySidebar] = useState<ReactNode | null>(null);
+  // Stable context identity (setSecondarySidebar is a stable useState setter) so
+  // Outlet consumers don't re-render just because this layout re-rendered.
+  const outletContext = useMemo<LobbyOutletContext>(() => ({ setSecondarySidebar }), []);
 
   return (
     <LobbyShell
@@ -31,7 +34,7 @@ export function LobbyLayout() {
       onCreateCompany={() => openOnboarding()}
       secondarySidebar={secondarySidebar}
     >
-      <Outlet context={{ setSecondarySidebar } satisfies LobbyOutletContext} />
+      <Outlet context={outletContext} />
     </LobbyShell>
   );
 }

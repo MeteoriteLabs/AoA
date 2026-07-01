@@ -223,14 +223,16 @@ describe("InstanceSettingsPage Sign out section", () => {
     expect(screen.getByTestId("sidebar-item-access")).toBeInTheDocument();
   });
 
-  it("clicking a non-Access sidebar item updates the ?tab= query param", async () => {
+  it("clicking a non-Access sidebar item switches the active tab to that section", async () => {
     const user = userEvent.setup();
     renderSettings({ initialEntries: ["/instance/settings"] });
+    // General is active on load, so the Privacy body is not mounted yet
+    // (Radix Tabs only renders the active TabsContent).
+    expect(screen.queryByTestId("privacy-tab-stub")).not.toBeInTheDocument();
     await user.click(screen.getByTestId("sidebar-item-privacy"));
-    // The page should now have ?tab=privacy in its URL or active state.
-    // Use queryAllByText to avoid a "Found multiple elements" error — the mobile
-    // pill row (md:hidden) also renders a "Privacy" span alongside the desktop
-    // SecondarySidebar mock, so there are two matching text nodes in JSDOM.
-    expect(window.location.search.includes("tab=privacy") || screen.queryAllByText(/privacy/i).length >= 1).toBeTruthy();
+    // handleTabChange("privacy") → setSearchParams({tab:privacy}) → activeTab
+    // becomes "privacy" → the Privacy tab body mounts. Fails if the click wiring
+    // is broken (the previous assertion could not fail).
+    expect(await screen.findByTestId("privacy-tab-stub")).toBeInTheDocument();
   });
 });
