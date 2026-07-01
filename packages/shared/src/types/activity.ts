@@ -1,7 +1,9 @@
+export type ActivityActorType = "agent" | "user" | "system" | "autonomy";
+
 export interface ActivityEvent {
   id: string;
   companyId: string;
-  actorType: "agent" | "user" | "system";
+  actorType: ActivityActorType;
   actorId: string;
   action: string;
   entityType: string;

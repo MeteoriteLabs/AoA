@@ -5,7 +5,10 @@ import type {
   HubItemStatus,
   HubLane,
   HubSemanticType,
+  HubAutopilotActionsResponse,
+  HubAutopilotPolicy,
   NotificationPreferences,
+  UpdateHubAutopilotPolicyInput,
   UpdateNotificationPreferencesInput,
   UpdateHubPreferencesInput,
 } from "@armyofagents/shared";
@@ -211,6 +214,24 @@ export const hubItemsApi = {
       `/companies/${companyId}/hub-items/preferences/me/reset`,
       {},
     ),
+  autopilotPolicy: {
+    get: (companyId: string) =>
+      api.get<HubAutopilotPolicy>(`/companies/${companyId}/hub-autopilot/policy`),
+    update: (companyId: string, patch: UpdateHubAutopilotPolicyInput) =>
+      api.patch<HubAutopilotPolicy>(
+        `/companies/${companyId}/hub-autopilot/policy`,
+        patch,
+      ),
+    reset: (companyId: string) =>
+      api.post<HubAutopilotPolicy>(
+        `/companies/${companyId}/hub-autopilot/policy/reset`,
+        {},
+      ),
+  },
+  autopilotActions: {
+    list: (companyId: string) =>
+      api.get<HubAutopilotActionsResponse>(`/companies/${companyId}/hub-autopilot/actions`),
+  },
   notificationPreferences: {
     get: (companyId: string) =>
       api.get<NotificationPreferences>(`/companies/${companyId}/notifications/preferences/me`),

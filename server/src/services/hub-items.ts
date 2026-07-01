@@ -24,6 +24,7 @@ import type {
   HubOwnerPool,
   HubUserStateInput,
   NotificationPreferences,
+  ActivityActorType,
 } from "@armyofagents/shared";
 import {
   HUB_SEMANTIC_TYPES,
@@ -798,12 +799,14 @@ export function hubItemsService(db: Db) {
     hubItemId: string;
     action: "resolve" | "archive" | "claim" | "release";
     expectedVersion: number;
-    actorType: "user" | "agent" | "system";
+    actorType: "user" | "agent" | "system" | "autonomy";
     actorId: string;
     actorIsFounder: boolean;
     authorityBasis?: string;
+    autonomyLevel?: string;
     reason?: string;
     idempotencyKey?: string;
+    decisionContext?: unknown;
     sideEffect?: () => Promise<{ irreversibleSideEffects?: unknown; relayResult?: unknown }>;
   }) {
     const current = await db
@@ -921,8 +924,10 @@ export function hubItemsService(db: Db) {
           actorId: args.actorId,
           action: args.action,
           authorityBasis: args.authorityBasis ?? null,
+          autonomyLevel: args.autonomyLevel ?? null,
           reason: args.reason ?? null,
           idempotencyKey: args.idempotencyKey ?? null,
+          decisionContext: args.decisionContext ?? null,
           priorState: hubOwnedPriorState(current),
           undoDeadline,
         })
@@ -1074,7 +1079,7 @@ export function hubItemsService(db: Db) {
     actorUserId: string;
     actorIsFounder: boolean;
     role?: UserRole;
-    actorType: "user" | "agent" | "system";
+    actorType: "user" | "agent" | "system" | "autonomy";
     bulkId?: string;
     items: Array<{
       id: string;
@@ -1166,7 +1171,7 @@ export function hubItemsService(db: Db) {
     hubItemId: string;
     action: string;
     expectedVersion: number;
-    actorType: string;
+    actorType: ActivityActorType;
     actorId: string;
     actorIsFounder: boolean; // route resolves via permissionService (founder OR board)
     authorityBasis?: string;
@@ -1182,7 +1187,7 @@ export function hubItemsService(db: Db) {
       hubItemId: args.hubItemId,
       action,
       expectedVersion: args.expectedVersion,
-      actorType: args.actorType as "user" | "agent" | "system",
+      actorType: args.actorType,
       actorId: args.actorId,
       actorIsFounder: args.actorIsFounder,
       authorityBasis: args.authorityBasis,

@@ -125,6 +125,23 @@ describe("hubItemsApi", () => {
     );
   });
 
+  it("reads, updates, resets, and lists hub autopilot resources", async () => {
+    get.mockResolvedValueOnce({ mode: "off", handledToday: 0, lastHandledAt: null, rules: [], updatedAt: null });
+    patch.mockResolvedValueOnce({ mode: "drive", handledToday: 0, lastHandledAt: null, rules: [], updatedAt: null });
+    post.mockResolvedValueOnce({ mode: "off", handledToday: 0, lastHandledAt: null, rules: [], updatedAt: null });
+    get.mockResolvedValueOnce({ items: [] });
+
+    await hubItemsApi.autopilotPolicy.get("company-1");
+    await hubItemsApi.autopilotPolicy.update("company-1", { mode: "drive" });
+    await hubItemsApi.autopilotPolicy.reset("company-1");
+    await hubItemsApi.autopilotActions.list("company-1");
+
+    expect(get).toHaveBeenCalledWith("/companies/company-1/hub-autopilot/policy");
+    expect(patch).toHaveBeenCalledWith("/companies/company-1/hub-autopilot/policy", { mode: "drive" });
+    expect(post).toHaveBeenCalledWith("/companies/company-1/hub-autopilot/policy/reset", {});
+    expect(get).toHaveBeenCalledWith("/companies/company-1/hub-autopilot/actions");
+  });
+
   it("marks an item read through sparse state route", async () => {
     patch.mockResolvedValueOnce({});
 

@@ -1,24 +1,37 @@
 import type { HubItemListRow } from "@/api/hub-items";
-import type { HubLane } from "@armyofagents/shared";
+import type { HubAutopilotActionRow, HubAutopilotPolicy, HubLane } from "@armyofagents/shared";
 import { Button } from "@/components/ui/button";
 
 interface HubHomeProps {
   counts: { open: number; unread: number };
   items: HubItemListRow[];
+  autopilotPolicy: HubAutopilotPolicy;
+  autopilotActions: HubAutopilotActionRow[];
   visibleLanes?: HubLane[];
   showAutopilotEntry?: boolean;
   onLaneChange: (lane: HubLane) => void;
+  onUndoAutopilotAction?: (action: HubAutopilotActionRow) => void;
 }
 
 export function HubHome({
   counts,
   items,
+  autopilotPolicy,
+  autopilotActions,
   visibleLanes,
   showAutopilotEntry = true,
   onLaneChange,
+  onUndoAutopilotAction,
 }: HubHomeProps) {
   const topItem = items[0] ?? null;
   const canShowLane = (lane: HubLane) => !visibleLanes || visibleLanes.includes(lane);
+  const canUndo = (action: HubAutopilotActionRow) =>
+    Boolean(
+      action.hubItemId &&
+        action.itemVersion != null &&
+        action.undoDeadline &&
+        Date.parse(action.undoDeadline) > Date.now(),
+    );
   return (
     <section className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-5">
       <div className="grid grid-cols-2 gap-3">
@@ -57,12 +70,46 @@ export function HubHome({
       {showAutopilotEntry ? (
         <div className="mt-auto border-t border-border pt-4">
           <div className="text-sm font-medium">Autopilot</div>
-          <div className="mt-2 flex items-center justify-between text-sm text-muted-foreground">
-            <span>Manual review</span>
-            <span className="rounded border border-border px-2 py-1 text-xs">Preview</span>
+          <div className="mt-2 flex items-center justify-between gap-3 text-sm">
+            <span>{autopilotModeLabel(autopilotPolicy.mode)}</span>
+            <span className="text-xs text-muted-foreground">
+              {autopilotPolicy.handledToday} handled today
+            </span>
           </div>
+          {autopilotActions.length > 0 ? (
+            <ul className="mt-3 grid gap-2">
+              {autopilotActions.slice(0, 5).map((action) => (
+                <li key={action.auditId} className="grid gap-1 border-t border-border pt-2 text-sm first:border-t-0 first:pt-0">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="min-w-0 truncate">{action.title}</span>
+                    <span className="shrink-0 text-xs uppercase text-muted-foreground">{action.action}</span>
+                  </div>
+                  {action.reason ? (
+                    <div className="line-clamp-2 text-xs text-muted-foreground">{action.reason}</div>
+                  ) : null}
+                  {canUndo(action) && onUndoAutopilotAction ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="w-fit px-0"
+                      onClick={() => onUndoAutopilotAction(action)}
+                    >
+                      Undo Autopilot action {action.title}
+                    </Button>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          ) : null}
         </div>
       ) : null}
     </section>
   );
+}
+
+function autopilotModeLabel(mode: HubAutopilotPolicy["mode"]) {
+  if (mode === "drive") return "Drive";
+  if (mode === "assist") return "Assist";
+  return "Off";
 }

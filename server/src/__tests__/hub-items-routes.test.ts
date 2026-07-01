@@ -28,6 +28,10 @@ const mockHubCounterSnapshots = vi.hoisted(() => ({
   getOrRefresh: vi.fn(),
 }));
 
+const mockAutopilot = vi.hoisted(() => ({
+  evaluateOpenItems: vi.fn(),
+}));
+
 const mockPerms = vi.hoisted(() => ({
   getEffectiveRole: vi.fn(),
   isFounder: vi.fn(),
@@ -42,6 +46,7 @@ vi.mock("../services/index.js", () => ({
   hubItemsService: () => mockSvc,
   hubPreferencesService: () => mockHubPreferences,
   hubCounterSnapshotsService: () => mockHubCounterSnapshots,
+  hubAutopilotService: () => mockAutopilot,
   permissionService: () => mockPerms,
   logActivity: mockLogActivity,
 }));
@@ -100,6 +105,7 @@ describe("hub-items routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockHubCounterSnapshots.getOrRefresh.mockResolvedValue({ open: 0, unread: 0 });
+    mockAutopilot.evaluateOpenItems.mockResolvedValue({ evaluated: 0, handled: 0, escalated: 0 });
   });
 
   it("GET preferences/me returns user company-scoped preferences", async () => {
@@ -188,6 +194,7 @@ describe("hub-items routes", () => {
     expect(res.body.items[0].title).toBe("owned");
     expect(mockEmitOpenApprovalHubItems).toHaveBeenCalledWith(expect.anything(), COMPANY_A, expect.any(Number));
     expect(mockEmitStaleWorkHubItems).toHaveBeenCalledWith(expect.anything(), COMPANY_A, expect.any(Number));
+    expect(mockAutopilot.evaluateOpenItems).toHaveBeenCalledWith({ companyId: COMPANY_A, limit: 50 });
     // RBAC scope (resolved role) is threaded into the service.
     expect(mockSvc.query).toHaveBeenCalledWith(
       COMPANY_A,
@@ -216,6 +223,7 @@ describe("hub-items routes", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body).toEqual({ items: [], nextCursor: "next-cursor", totalKnown: null });
+    expect(mockAutopilot.evaluateOpenItems).toHaveBeenCalledWith({ companyId: COMPANY_A, limit: 25 });
     expect(mockSvc.query).toHaveBeenCalledWith(
       COMPANY_A,
       expect.objectContaining({
@@ -338,6 +346,7 @@ describe("hub-items routes", () => {
     expect(res.body.item.status).toBe("resolved");
     expect(res.body.auditId).toBe("audit-1");
     expect(res.body.undoDeadline).toBe("2026-06-29T00:00:08.000Z");
+    expect(mockAutopilot.evaluateOpenItems).not.toHaveBeenCalled();
     expect(mockSvc.recordLifecycleAction).toHaveBeenCalledWith(
       expect.objectContaining({ actorIsFounder: true, action: "resolve" }),
     );
@@ -589,6 +598,7 @@ describe("hub-items routes", () => {
       userId: "user-1",
       role: "founder",
     });
+    expect(mockAutopilot.evaluateOpenItems).toHaveBeenCalledWith({ companyId: COMPANY_A, limit: 25 });
     expect(mockSvc.counts).not.toHaveBeenCalled();
   });
 

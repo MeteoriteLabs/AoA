@@ -133,6 +133,10 @@ export const queryKeys = {
     audit: (companyId: string, itemId: string) =>
       ["hub-items", companyId, itemId, "audit"] as const,
     preferences: (companyId: string) => ["hub-items", companyId, "preferences"] as const,
+    autopilotPolicy: (companyId: string) =>
+      ["hub-items", companyId, "autopilot-policy"] as const,
+    autopilotActions: (companyId: string) =>
+      ["hub-items", companyId, "autopilot-actions"] as const,
   },
   sidebarPreferences: (companyId: string) => ["sidebar-preferences", companyId] as const,
   inboxDismissals: (companyId: string) => ["inbox-dismissals", companyId] as const,

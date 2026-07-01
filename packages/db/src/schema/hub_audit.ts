@@ -23,6 +23,7 @@ export const hubAudit = pgTable(
     priorState: jsonb("prior_state"),              // {status, version, ...} before the transition
     sourceRevision: text("source_revision"),
     reason: text("reason"),
+    decisionContext: jsonb("decision_context"),
     undoDeadline: timestamp("undo_deadline", { withTimezone: true }),
     irreversibleSideEffects: jsonb("irreversible_side_effects"),
     relayResult: jsonb("relay_result"),
