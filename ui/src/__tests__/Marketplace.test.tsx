@@ -63,13 +63,12 @@ vi.mock("@tanstack/react-query", async () => {
 vi.mock("@/context/CompanyContext", () => ({ useCompany: () => mockCompanyContext }));
 vi.mock("@/context/DialogContext", () => ({ useDialog: () => mockDialogContext }));
 
-vi.mock("@/components/LobbySidebar", () => ({
-  LobbySidebar: () => <aside data-testid="lobby-sidebar" />,
-}));
-
-vi.mock("@/components/ui/sheet", () => ({
-  Sheet: ({ children }: any) => <>{children}</>,
-  SheetContent: ({ children }: any) => <>{children}</>,
+// Page renders inside the persistent LobbyLayout shell; stub only the mobile
+// hamburger it renders (shell chrome is covered by LobbyLayout.test.tsx).
+vi.mock("@/components/LobbyShell", () => ({
+  LobbyShellMobileMenuButton: ({ className }: any) => (
+    <button aria-label="Open menu" className={className} />
+  ),
 }));
 
 vi.mock("@/components/UserMenu", () => ({ UserMenu: () => <div /> }));
@@ -121,10 +120,6 @@ describe("Marketplace (hub)", () => {
     } as any);
   });
 
-  it("renders inside LobbyShell with marketplace active", () => {
-    renderWithProviders(<Marketplace />);
-    expect(screen.getAllByTestId("lobby-sidebar").length).toBeGreaterThanOrEqual(1);
-  });
 
   it("renders the filter chip row with all 5 chips", () => {
     renderWithProviders(<Marketplace />);

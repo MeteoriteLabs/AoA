@@ -8,7 +8,7 @@ import { companiesApi, type CompanyStats } from "@/api/companies";
 import { queryKeys } from "@/lib/queryKeys";
 import { LobbyCompanyCard } from "@/components/LobbyCompanyCard";
 import { LobbyEmptyState } from "@/components/LobbyEmptyState";
-import { LobbyShell, LobbyShellMobileMenuButton } from "@/components/LobbyShell";
+import { LobbyShellMobileMenuButton } from "@/components/LobbyShell";
 
 function deriveFirstName(displayName: string | undefined, email: string | undefined): string {
   if (displayName?.trim()) {
@@ -68,17 +68,15 @@ export function Lobby() {
     );
   }
 
-  return (
-    <LobbyShell activeItem="organizations" onCreateCompany={() => openOnboarding()}>
-      {isEmpty ? (
-        <LobbyEmptyState
-          onCreate={() => openOnboarding()}
-          onImport={() => navigate("/import")}
-        />
-      ) : (
-        <div className="mx-auto w-full max-w-4xl px-4 py-5 sm:px-6 sm:py-7 md:px-10 md:py-9">
-          {/* Mobile hamburger — hidden on tablet+ */}
-          <LobbyShellMobileMenuButton className="mb-4" />
+  return isEmpty ? (
+    <LobbyEmptyState
+      onCreate={() => openOnboarding()}
+      onImport={() => navigate("/import")}
+    />
+  ) : (
+    <div className="mx-auto w-full max-w-4xl px-4 py-5 sm:px-6 sm:py-7 md:px-10 md:py-9">
+      {/* Mobile hamburger — hidden on tablet+ */}
+      <LobbyShellMobileMenuButton className="mb-4" />
 
           {/* Welcome */}
           <div className="mb-6 sm:mb-7 lobby-heading-enter">
@@ -109,8 +107,6 @@ export function Lobby() {
               </div>
             ))}
           </div>
-        </div>
-      )}
-    </LobbyShell>
+    </div>
   );
 }

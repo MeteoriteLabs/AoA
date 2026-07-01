@@ -55,15 +55,13 @@ vi.mock("@/components/LobbyCompanyCard", () => ({
   ),
 }));
 
-vi.mock("@/components/LobbySidebar", () => ({
-  LobbySidebar: () => <aside data-testid="lobby-sidebar" />,
-}));
-
-// Sheet primitive needs Radix portals & focus management; stub as a no-op
-// passthrough so the mobile drawer in Lobby renders without complications.
-vi.mock("@/components/ui/sheet", () => ({
-  Sheet: ({ children }: any) => <>{children}</>,
-  SheetContent: ({ children }: any) => <>{children}</>,
+// The page now renders inside the persistent LobbyLayout shell; here we only
+// need the mobile hamburger it renders. Stub it so the page doesn't require the
+// real LobbyShell context (that chrome is covered by LobbyLayout.test.tsx).
+vi.mock("@/components/LobbyShell", () => ({
+  LobbyShellMobileMenuButton: ({ className }: any) => (
+    <button aria-label="Open menu" className={className} />
+  ),
 }));
 
 vi.mock("@/components/LobbyEmptyState", () => ({
@@ -86,14 +84,6 @@ describe("Lobby", () => {
     vi.clearAllMocks();
     mockCompanyContext.loading = false;
     mockCompanyContext.companies = [];
-  });
-
-  it("renders the LobbySidebar (desktop inline + mobile drawer instance)", () => {
-    mockCompanyContext.companies = [makeCompany()];
-    renderWithProviders(<Lobby />);
-    // Lobby renders the sidebar twice: once inline for desktop (md+), and
-    // once inside the mobile Sheet drawer. Both share the same mock test-id.
-    expect(screen.getAllByTestId("lobby-sidebar").length).toBeGreaterThanOrEqual(1);
   });
 
   it("renders company cards when companies exist", () => {
@@ -191,18 +181,6 @@ describe("Lobby", () => {
     renderWithProviders(<Lobby />);
 
     expect(screen.getByText("Loading...")).toBeInTheDocument();
-  });
-
-  // Phase 2 lobby pilot: page background uses brand-red radial wash
-  // anchored top-center (replaces the prior diagonal purple-wash gradient).
-  // Per design-system §8.4: lobby surfaces get full brand-tinted radial wash.
-  it("applies the brand-red radial wash gradient on the lobby root", () => {
-    mockCompanyContext.companies = [makeCompany()];
-    const { container } = renderWithProviders(<Lobby />);
-    const root = container.firstChild as HTMLElement | null;
-    expect(root).toBeTruthy();
-    expect(root!.className).toMatch(/radial-gradient/);
-    expect(root!.className).toContain("brand-focus-ring");
   });
 
   // Mount choreography classes are applied to heading + each card wrapper.

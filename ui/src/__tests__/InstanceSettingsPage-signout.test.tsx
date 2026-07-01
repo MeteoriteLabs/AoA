@@ -1,8 +1,25 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { Routes, Route } from "react-router-dom";
 import { renderWithProviders, mockCompanyContext, makeCompany } from "./test-utils";
 import { InstanceSettingsPage } from "../pages/InstanceSettingsPage";
+import { LobbyLayout } from "@/components/LobbyLayout";
+
+// The page now renders inside the persistent LobbyLayout (which owns the shell
+// and the secondary-sidebar slot the page fills via outlet context). Render it
+// under a real LobbyLayout route so useOutletContext + the SecondarySidebar
+// handoff work exactly as in production.
+function renderSettings(opts?: { initialEntries?: string[] }) {
+  return renderWithProviders(
+    <Routes>
+      <Route element={<LobbyLayout />}>
+        <Route path="/instance/settings" element={<InstanceSettingsPage />} />
+      </Route>
+    </Routes>,
+    { initialEntries: opts?.initialEntries ?? ["/instance/settings"] },
+  );
+}
 
 vi.mock("../context/CompanyContext", () => ({
   useCompany: () => mockCompanyContext,
@@ -118,14 +135,14 @@ describe("InstanceSettingsPage Sign out section", () => {
   });
 
   it("renders the Sign out button in the General tab", async () => {
-    renderWithProviders(<InstanceSettingsPage />);
+    renderSettings();
     expect(
       await screen.findByRole("button", { name: /sign out/i }),
     ).toBeInTheDocument();
   });
 
   it("renders the Sign out section heading and description", async () => {
-    renderWithProviders(<InstanceSettingsPage />);
+    renderSettings();
     const heading = await screen.findByRole("heading", { name: "Sign out", level: 2 });
     expect(heading).toBeInTheDocument();
     expect(
@@ -135,7 +152,7 @@ describe("InstanceSettingsPage Sign out section", () => {
 
   it("calls authApi.signOut on button click", async () => {
     const user = userEvent.setup();
-    renderWithProviders(<InstanceSettingsPage />);
+    renderSettings();
 
     const button = await screen.findByRole("button", { name: /sign out/i });
     await user.click(button);
@@ -147,7 +164,7 @@ describe("InstanceSettingsPage Sign out section", () => {
     // Return a promise that never resolves so isPending stays true
     mockSignOut.mockReturnValue(new Promise(() => {}));
     const user = userEvent.setup();
-    renderWithProviders(<InstanceSettingsPage />);
+    renderSettings();
 
     const button = await screen.findByRole("button", { name: /sign out/i });
     await user.click(button);
@@ -159,15 +176,10 @@ describe("InstanceSettingsPage Sign out section", () => {
     );
   });
 
-  it("renders inside LobbyShell with settings active", () => {
-    renderWithProviders(<InstanceSettingsPage />);
-    expect(screen.getAllByTestId("lobby-sidebar").length).toBeGreaterThanOrEqual(1);
-  });
-
   describe("Sign out section visibility by deployment mode", () => {
     it("hides the Sign out section when deploymentMode is local_trusted", async () => {
       mockGetHealth.mockResolvedValue({ status: "ok", deploymentMode: "local_trusted" });
-      renderWithProviders(<InstanceSettingsPage />);
+      renderSettings();
 
       // Wait for general settings to load so the General tab body is rendered.
       await screen.findByRole("heading", { name: /keyboard shortcuts/i });
@@ -182,7 +194,7 @@ describe("InstanceSettingsPage Sign out section", () => {
 
     it("renders the Sign out section when deploymentMode is authenticated", async () => {
       mockGetHealth.mockResolvedValue({ status: "ok", deploymentMode: "authenticated" });
-      renderWithProviders(<InstanceSettingsPage />);
+      renderSettings();
 
       expect(
         await screen.findByRole("heading", { name: "Sign out", level: 2 }),
@@ -191,7 +203,7 @@ describe("InstanceSettingsPage Sign out section", () => {
 
     it("renders the Sign out section when deploymentMode is undefined (legacy)", async () => {
       mockGetHealth.mockResolvedValue({ status: "ok" });
-      renderWithProviders(<InstanceSettingsPage />);
+      renderSettings();
 
       expect(
         await screen.findByRole("heading", { name: "Sign out", level: 2 }),
@@ -200,7 +212,7 @@ describe("InstanceSettingsPage Sign out section", () => {
   });
 
   it("renders SecondarySidebar with all 7 settings sections", () => {
-    renderWithProviders(<InstanceSettingsPage />);
+    renderSettings();
     expect(screen.getByTestId("secondary-sidebar")).toBeInTheDocument();
     expect(screen.getByTestId("sidebar-item-general")).toBeInTheDocument();
     expect(screen.getByTestId("sidebar-item-privacy")).toBeInTheDocument();
@@ -213,7 +225,7 @@ describe("InstanceSettingsPage Sign out section", () => {
 
   it("clicking a non-Access sidebar item updates the ?tab= query param", async () => {
     const user = userEvent.setup();
-    renderWithProviders(<InstanceSettingsPage />, { initialEntries: ["/instance/settings"] });
+    renderSettings({ initialEntries: ["/instance/settings"] });
     await user.click(screen.getByTestId("sidebar-item-privacy"));
     // The page should now have ?tab=privacy in its URL or active state.
     // Use queryAllByText to avoid a "Found multiple elements" error — the mobile

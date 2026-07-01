@@ -35,12 +35,12 @@ vi.mock("@/context/CompanyContext", () => ({
   }),
 }));
 
-vi.mock("@/components/LobbySidebar", () => ({
-  LobbySidebar: () => <aside data-testid="lobby-sidebar" />,
-}));
-vi.mock("@/components/ui/sheet", () => ({
-  Sheet: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  SheetContent: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+// Page renders inside the persistent LobbyLayout shell; stub only the mobile
+// hamburger it renders (shell chrome is covered by LobbyLayout.test.tsx).
+vi.mock("@/components/LobbyShell", () => ({
+  LobbyShellMobileMenuButton: ({ className }: { className?: string }) => (
+    <button aria-label="Open menu" className={className} />
+  ),
 }));
 vi.mock("@/context/DialogContext", () => ({
   useDialog: () => ({ openOnboarding: vi.fn() }),
@@ -269,15 +269,6 @@ describe("MarketplaceDetail", () => {
     expect(screen.getByRole("button", { name: /^install$/i })).toBeInTheDocument();
   });
 
-  it("renders inside LobbyShell with marketplace active", async () => {
-    vi.mocked(marketplaceApi.getCatalog).mockResolvedValueOnce(FULL_CATALOG);
-    wrap("/marketplace/skill/aoa-curated/code-review");
-
-    await waitFor(() =>
-      expect(screen.getAllByRole("heading", { level: 1, name: "Code Review" }).length).toBeGreaterThanOrEqual(1),
-    );
-    expect(screen.getAllByTestId("lobby-sidebar").length).toBeGreaterThanOrEqual(1);
-  });
 
   it("renders a verified-blue checkmark for verified items in the hero", async () => {
     vi.mocked(marketplaceApi.getCatalog).mockResolvedValueOnce(FULL_CATALOG);

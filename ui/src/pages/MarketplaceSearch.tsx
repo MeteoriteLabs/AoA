@@ -4,8 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useCatalog } from "@/hooks/useCatalog";
 import { CatalogCard } from "@/components/marketplace/CatalogCard";
-import { LobbyShell, LobbyShellMobileMenuButton } from "@/components/LobbyShell";
-import { useDialog } from "@/context/DialogContext";
+import { LobbyShellMobileMenuButton } from "@/components/LobbyShell";
 import { searchItems, filterByCategory, groupByType } from "@/api/marketplace";
 import { TYPE_LABELS_PLURAL } from "@/lib/marketplace-constants";
 import { pluginsApi } from "@/api/plugins";
@@ -16,7 +15,6 @@ const TYPES: MarketplaceItemType[] = ["plugin", "skill", "agent", "team"];
 
 export default function MarketplaceSearch() {
   const [searchParams] = useSearchParams();
-  const { openOnboarding } = useDialog();
   const q = searchParams.get("q") ?? "";
   const category = searchParams.get("category") ?? "";
 
@@ -45,7 +43,7 @@ export default function MarketplaceSearch() {
     : 0;
 
   return (
-    <LobbyShell activeItem="marketplace" onCreateCompany={() => openOnboarding()}>
+    <>
       <div className="mx-auto w-full max-w-[1080px] px-4 py-6 sm:px-6 sm:py-7 md:px-10 md:py-9">
         <LobbyShellMobileMenuButton className="mb-4" />
 
@@ -116,6 +114,6 @@ export default function MarketplaceSearch() {
           </div>
         )}
       </div>
-    </LobbyShell>
+    </>
   );
 }

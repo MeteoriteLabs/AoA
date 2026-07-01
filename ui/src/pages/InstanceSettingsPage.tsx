@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "@/lib/router";
-import { useSearchParams } from "react-router-dom";
+import { useOutletContext, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Activity,
@@ -27,8 +27,8 @@ import { Button } from "@/components/ui/button";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
 import { healthApi } from "@/api/health";
-import { LobbyShell, LobbyShellMobileMenuButton } from "@/components/LobbyShell";
-import { useDialog } from "@/context/DialogContext";
+import { LobbyShellMobileMenuButton } from "@/components/LobbyShell";
+import type { LobbyOutletContext } from "@/components/LobbyLayout";
 
 export function InstanceSettingsPage() {
   const navigate = useNavigate();
@@ -123,7 +123,7 @@ export function InstanceSettingsPage() {
     },
   });
 
-  const { openOnboarding } = useDialog();
+  const { setSecondarySidebar } = useOutletContext<LobbyOutletContext>();
 
   const settingsSections: SecondarySidebarSection[] = useMemo(() => {
     const items = [
@@ -150,6 +150,19 @@ export function InstanceSettingsPage() {
     ];
   }, [activeTab, handleTabChange]);
 
+  // Hand the settings secondary sidebar up to the persistent LobbyLayout shell.
+  useLayoutEffect(() => {
+    setSecondarySidebar(
+      <SecondarySidebar
+        sections={settingsSections}
+        collapsed={sidebarCollapsed}
+        onToggleCollapse={() => setSidebarCollapsed((c) => !c)}
+        floating
+      />,
+    );
+    return () => setSecondarySidebar(null);
+  }, [setSecondarySidebar, settingsSections, sidebarCollapsed]);
+
   const censorUsernameInLogs = generalQuery.data?.censorUsernameInLogs === true;
   const keyboardShortcuts = generalQuery.data?.keyboardShortcuts === true;
   const enableIsolatedWorkspaces = experimentalQuery.data?.enableIsolatedWorkspaces === true;
@@ -157,20 +170,7 @@ export function InstanceSettingsPage() {
   const enableWorkspaceTtlSweeper = experimentalQuery.data?.enableWorkspaceTtlSweeper === true;
 
   return (
-    <LobbyShell
-      activeItem="settings"
-      defaultCollapsed
-      onCreateCompany={() => openOnboarding()}
-      secondarySidebar={
-        <SecondarySidebar
-          sections={settingsSections}
-          collapsed={sidebarCollapsed}
-          onToggleCollapse={() => setSidebarCollapsed((c) => !c)}
-          floating
-        />
-      }
-    >
-      <div className="mx-auto w-full max-w-[1080px] px-4 py-6 sm:px-6 sm:py-7 md:px-10 md:py-9">
+    <div className="mx-auto w-full max-w-[1080px] px-4 py-6 sm:px-6 sm:py-7 md:px-10 md:py-9">
         <LobbyShellMobileMenuButton className="mb-4" />
 
         {/* Page heading — no back button (sidebar handles navigation) */}
@@ -362,7 +362,6 @@ export function InstanceSettingsPage() {
           </TabsContent>
         </Tabs>
       </div>
-    </LobbyShell>
   );
 }
 

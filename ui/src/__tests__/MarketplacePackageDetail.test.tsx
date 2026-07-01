@@ -74,12 +74,12 @@ vi.mock("@/hooks/usePackages", () => ({
 vi.mock("@/context/CompanyContext", () => ({ useCompany: () => mockCompanyContext }));
 vi.mock("@/context/DialogContext", () => ({ useDialog: () => mockDialogContext }));
 
-vi.mock("@/components/LobbySidebar", () => ({
-  LobbySidebar: () => <aside data-testid="lobby-sidebar" />,
-}));
-vi.mock("@/components/ui/sheet", () => ({
-  Sheet: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  SheetContent: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+// Page renders inside the persistent LobbyLayout shell; stub only the mobile
+// hamburger it renders (shell chrome is covered by LobbyLayout.test.tsx).
+vi.mock("@/components/LobbyShell", () => ({
+  LobbyShellMobileMenuButton: ({ className }: { className?: string }) => (
+    <button aria-label="Open menu" className={className} />
+  ),
 }));
 vi.mock("@/components/UserMenu", () => ({ UserMenu: () => <div /> }));
 
@@ -107,11 +107,6 @@ function setupHooks(opts: {
 describe("MarketplacePackageDetail", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("renders inside LobbyShell with marketplace active", () => {
-    setupHooks({ catalog: SAMPLE_CATALOG, packages: [SAMPLE_PACKAGE] });
-    wrap("/marketplace/package/garrytan/gstack");
-    expect(screen.getAllByTestId("lobby-sidebar").length).toBeGreaterThanOrEqual(1);
-  });
 
   it("renders the package name + verified check + top-right item badge", () => {
     setupHooks({ catalog: SAMPLE_CATALOG, packages: [SAMPLE_PACKAGE] });

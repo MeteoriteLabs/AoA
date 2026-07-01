@@ -8,7 +8,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { LobbyShell, LobbyShellMobileMenuButton } from "@/components/LobbyShell";
+import { LobbyShellMobileMenuButton } from "@/components/LobbyShell";
 import { StackedIcon } from "@/components/marketplace/StackedIcon";
 import { ProviderLogo } from "@/components/marketplace/ProviderLogo";
 import { PackageInstallModal } from "@/components/marketplace/install/PackageInstallModal";
@@ -16,7 +16,6 @@ import { CatalogCard } from "@/components/marketplace/CatalogCard";
 import { shortSource, authorFromSource } from "@/lib/marketplace-constants";
 import { useCatalog } from "@/hooks/useCatalog";
 import { usePackages } from "@/hooks/usePackages";
-import { useDialog } from "@/context/DialogContext";
 import type { MarketplaceCatalogItem } from "@armyofagents/shared";
 
 
@@ -25,7 +24,6 @@ export default function MarketplacePackageDetail() {
   const restPath = params["*"] ?? "";
   const fullPackageId = restPath ? `${params.id}/${restPath}` : (params.id ?? "");
 
-  const { openOnboarding } = useDialog();
   const { data: catalog, isLoading: catalogLoading } = useCatalog();
   const { data: packages, isLoading: packagesLoading } = usePackages();
   const [installOpen, setInstallOpen] = useState(false);
@@ -44,7 +42,7 @@ export default function MarketplacePackageDetail() {
   const isLoading = catalogLoading || packagesLoading;
 
   return (
-    <LobbyShell activeItem="marketplace" onCreateCompany={() => openOnboarding()}>
+    <>
       <div className="mx-auto w-full max-w-[920px] px-4 py-6 sm:px-6 sm:py-7 md:px-10 md:py-9">
         <LobbyShellMobileMenuButton className="mb-4" />
         <Link
@@ -147,6 +145,6 @@ export default function MarketplacePackageDetail() {
           </div>
         )}
       </div>
-    </LobbyShell>
+    </>
   );
 }
