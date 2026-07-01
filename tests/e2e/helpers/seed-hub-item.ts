@@ -11,6 +11,14 @@ export interface SeedHubItemInput {
   ownerUserId?: string | null;
   ownerPool?: HubOwnerPool | null;
   priority?: HubItemPriority;
+  groupKey?: string | null;
+  curationGroupLabel?: string | null;
+  curationGroupSummary?: string | null;
+  curationReason?: string | null;
+  curationPriorityReason?: string | null;
+  curationRevision?: number;
+  curatedAt?: Date | null;
+  curatedByAgentId?: string | null;
 }
 
 function e2eDatabaseUrl() {
@@ -47,6 +55,14 @@ export async function seedHubItem(input: SeedHubItemInput) {
         ownerUserId: input.ownerUserId ?? null,
         ownerPool: input.ownerPool ?? null,
         priority: input.priority ?? "normal",
+        groupKey: input.groupKey ?? null,
+        curationGroupLabel: input.curationGroupLabel ?? null,
+        curationGroupSummary: input.curationGroupSummary ?? null,
+        curationReason: input.curationReason ?? null,
+        curationPriorityReason: input.curationPriorityReason ?? null,
+        curationRevision: input.curationRevision ?? 0,
+        curatedAt: input.curatedAt ?? null,
+        curatedByAgentId: input.curatedByAgentId ?? null,
         status: "open",
       })
       .onConflictDoUpdate({
@@ -58,6 +74,14 @@ export async function seedHubItem(input: SeedHubItemInput) {
           priority: input.priority ?? "normal",
           ownerUserId: input.ownerUserId ?? null,
           ownerPool: input.ownerPool ?? null,
+          groupKey: input.groupKey ?? null,
+          curationGroupLabel: input.curationGroupLabel ?? null,
+          curationGroupSummary: input.curationGroupSummary ?? null,
+          curationReason: input.curationReason ?? null,
+          curationPriorityReason: input.curationPriorityReason ?? null,
+          curationRevision: input.curationRevision ?? 0,
+          curatedAt: input.curatedAt ?? null,
+          curatedByAgentId: input.curatedByAgentId ?? null,
         },
       })
       .returning();

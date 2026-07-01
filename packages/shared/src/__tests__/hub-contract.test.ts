@@ -18,6 +18,7 @@ import {
   hubActionSchema,
   hubAutopilotPolicySchema,
   hubBulkActionSchema,
+  hubCurationMetadataSchema,
   updateHubAutopilotPolicySchema,
   hubListResponseSchema,
   hubPreferencesSchema,
@@ -147,6 +148,44 @@ describe("hub contract", () => {
       nextCursor: "cursor-1",
       totalKnown: null,
     });
+  });
+  it("accepts bounded W4 curation metadata without changing the semantic type contract", () => {
+    const parsed = hubCurationMetadataSchema.parse({
+      curationGroupLabel: "Failed runs",
+      curationGroupSummary: "3 failed runs need review.",
+      curationReason: "Grouped by source and scope.",
+      curationPriorityReason: "Urgent because SLA is within 30 minutes.",
+      curationRevision: 2,
+      curatedAt: "2026-07-01T10:00:00.000Z",
+      curatedByAgentId: "550e8400-e29b-41d4-a716-446655440000",
+    });
+
+    expect(parsed.curationRevision).toBe(2);
+    expect(HUB_SEMANTIC_TYPES).not.toContain("steward_curation");
+  });
+  it("rejects unbounded W4 curation explanation text", () => {
+    expect(() =>
+      hubCurationMetadataSchema.parse({
+        curationGroupLabel: "A".repeat(121),
+        curationGroupSummary: null,
+        curationReason: null,
+        curationPriorityReason: null,
+        curationRevision: 0,
+        curatedAt: null,
+        curatedByAgentId: null,
+      }),
+    ).toThrow();
+    expect(() =>
+      hubCurationMetadataSchema.parse({
+        curationGroupLabel: null,
+        curationGroupSummary: "B".repeat(501),
+        curationReason: null,
+        curationPriorityReason: null,
+        curationRevision: 0,
+        curatedAt: null,
+        curatedByAgentId: null,
+      }),
+    ).toThrow();
   });
   it("rejects empty visible lane preferences", () => {
     expect(() =>

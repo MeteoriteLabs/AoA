@@ -1,6 +1,6 @@
 # Inbox Hub Integration Roadmap
 
-**Status:** Active integration roadmap; W1b/W1c/W1d merged in PR #244, final cutover merged in PR #246, W2 Layer 3 merged in PR #248, W3 Autopilot active on `codex/w3-autopilot-planning`
+**Status:** Active integration roadmap; W1b/W1c/W1d merged in PR #244, final cutover merged in PR #246, W2 Layer 3 merged in PR #248, W3 Autopilot merged in PR #249, W4a Steward foundation implemented on `codex/w4-steward-planning` pending final verification
 **Date:** 2026-06-29
 **Type:** Integration roadmap / planning spine
 **Design authority:** `docs/aoa/plans/2026-06-26-inbox-hub-master-scope.md`
@@ -25,13 +25,12 @@ Completed foundations:
 
 Current roadmap branch:
 
-- **Branch:** `codex/w3-autopilot-planning`
-- **Purpose:** carry W3 Autopilot Core after W1 lifecycle/audit and W2
-  realtime notification foundations landed.
-- **Rule:** keep W3 scoped to deterministic Autopilot policy, trust-gated
-  evaluation, autonomous hub lifecycle actions, auto-action audit, Home/settings
-  controls, undo, and focused acceptance coverage. Keep W4 Steward intelligence
-  and W5 adapter bridges out of this PR.
+- **Branch:** `codex/w4-steward-planning`
+- **Purpose:** build and verify the first W4 Steward foundation slice after W3
+  Autopilot Core landed.
+- **Rule:** keep W4 scoped to Steward seeding, deterministic hub curation,
+  explanation/group-summary metadata, and focused acceptance coverage. Keep W5
+  runtime adapter bridges and Mail drafting out of this PR.
 
 Final cutover status:
 
@@ -67,55 +66,49 @@ Completed W2 foundation:
   Scope was realtime hub events, toast bridge, preferences, quiet hours, digest
   queue integration, and focused e2e coverage.
 
-Planned/active next:
+Completed W3 foundation:
 
-- **W3 Autopilot:** active in
+- **W3 Autopilot:** merged in PR #249 from
   `docs/aoa/plans/2026-07-01-w3-autopilot-core-plan.md` on
-  `codex/w3-autopilot-planning`. Scope is deterministic policy/evaluation,
+  `codex/w3-autopilot-planning`. Scope was deterministic policy/evaluation,
   trust-gated auto-handle vs escalate, autonomous audit, undo, Home/settings UI,
   and e2e acceptance coverage.
 
+Active next:
+
+- **W4 Steward:** W4a foundation implemented from
+  `docs/aoa/plans/2026-07-01-w4-steward-foundation-plan.md` on
+  `codex/w4-steward-planning`. Scope is Steward crew seeding, deterministic hub
+  curation, explanation/group-summary metadata, a narrow curation write tool,
+  and focused operator acceptance coverage. Final verification is still the
+  readiness gate.
+
 Not yet planned or built:
 
-- W4 Steward
 - W5 runtime decision routing
 
 ---
 
 ## 2. PR Strategy
 
-### W1 Integration PRs
+### Completed Integration PRs
 
 PR #244 carried the coherent W1 hub experience through W1b/W1c/W1d and is now
-merged. The remaining W1 work should be a focused final cutover PR from
-`feat/inbox-hub-integration` or the latest `origin/main`.
-
-### Final Cutover PR
-
-One focused PR carries:
-
-1. **Route cutover:** `/inbox` opens the Hub; old `/inbox/new`, `/inbox/all`,
-   and `/inbox-hub/*` remain valid through redirects or compatibility handling.
-2. **Navigation cutover:** sidebar has one Inbox entry and no Hub preview entry;
-   Approvals stays reachable.
-3. **Badge and coverage parity:** old Inbox categories are mapped, tested, or
-   explicitly deferred.
-4. **Final operator acceptance:** desktop, stale/permission recovery, and mobile
-   Playwright flows.
-
-This avoids mixing W2/W3/W4/W5 implementation into the route cutover.
+merged. PR #246 carried final Inbox route/navigation cutover and is now merged.
+There is no remaining W1 cutover PR in this roadmap.
 
 ### Separate Later PRs
 
-These stay outside the UI integration PR:
+These stay in separate focused PRs:
 
 - **W2 Layer 2:** implemented; notifications registry, canonical hub-backed
   persistent emit, legacy route state sync, and dead-type cleanup.
 - **W2 Layer 3:** merged in PR #248; realtime, toast bridge, preferences,
   quiet hours, and digests.
-- **W3:** active on `codex/w3-autopilot-planning`; Autopilot autonomy and
-  auto-action audit/undo.
-- **W4:** Steward crew agent and curation worker
+- **W3:** merged in PR #249; Autopilot autonomy and auto-action audit/undo.
+- **W4:** W4a implementation on `codex/w4-steward-planning`; Steward crew
+  agent, deterministic curation worker, narrow curation write tool, UI
+  explanation surfaces, and focused acceptance coverage.
 - **W5:** runtime decision routing and per-adapter bridges
 
 The roadmap tracks these later workstreams only as dependency boundaries. They
@@ -323,12 +316,12 @@ second notification store or toast system.
 ### W3 - Autopilot
 
 Autopilot owns trust-gated auto-handle vs escalate behavior, delegated authority,
-auto-action audit, and undo. W1b may show a display/control shell only.
+auto-action audit, and undo.
 
-Current status: W3 Core is active on `codex/w3-autopilot-planning` from
-`docs/aoa/plans/2026-07-01-w3-autopilot-core-plan.md`. This PR is limited to
-deterministic policy/evaluation, safe hub lifecycle auto-actions, audit/undo,
-and the Hub Home/settings control surface.
+Current status: W3 Core merged in PR #249 from
+`docs/aoa/plans/2026-07-01-w3-autopilot-core-plan.md`. Scope was deterministic
+policy/evaluation, safe hub lifecycle auto-actions, audit/undo, and the Hub
+Home/settings control surface.
 
 Dependency boundary: W3 depends on W1 lifecycle and audit/action semantics being
 stable.
@@ -336,11 +329,14 @@ stable.
 ### W4 - Steward
 
 Steward is the dedicated curation agent and deterministic worker for grouping,
-triage explanations, and draft assistance. It should not be mixed into the UI
-shell work.
+and triage explanations. Draft assistance is deferred to the future Mail work.
 
-Current status: not planned and not built after W3 Core. It still needs its own
-investigate -> implementation plan -> review -> build cycle.
+Current status: W4a foundation implemented from
+`docs/aoa/plans/2026-07-01-w4-steward-foundation-plan.md` on
+`codex/w4-steward-planning`, pending final verification. W4a remains scoped to
+Steward seeding, deterministic curation, explanation/group-summary metadata, a
+narrow curation write tool, UI explanation surfaces, and operator acceptance
+coverage.
 
 Dependency boundary: W4 depends on stable hub item taxonomy, lifecycle, and
 Autopilot policy.
@@ -350,7 +346,7 @@ Autopilot policy.
 W5 routes org-agent permission prompts and substantive work questions into
 Waiting on you and relays answers back to blocked runs.
 
-Current status: not planned and not built after W3 Core. It still needs its own
+Current status: not planned and not built after W4. It still needs its own
 per-adapter feasibility matrix and implementation plan.
 
 Dependency boundary: W5 requires a per-adapter feasibility matrix first. Start
@@ -366,15 +362,15 @@ the exact test files and commands.
 
 ### Phase Gates
 
-Each W1 phase must pass these gates before the next phase starts:
+Each implementation PR must pass these gates before the next workstream starts:
 
 - Focused unit/component/API/e2e tests for the phase are green.
 - No later-workstream implementation has entered the branch outside the current
-  scoped PR. For the active W2 Layer 3 PR, W3/W4/W5 stay out.
+  scoped PR. For the active W4 PR, W5 and Mail stay out.
 - The old Inbox equivalence matrix is updated for every source category touched.
 - Seeded demo/test data verifies the new lane/viewer behavior.
-- `/inbox` remains on the old route until the final cutover plan explicitly
-  switches it.
+- `/inbox` remains the hub route after PR #246; do not reintroduce the legacy
+  `Inbox.tsx` surface.
 - `git diff --name-only origin/main...HEAD` is reviewed so the branch contains
   only intended roadmap, plan, and implementation files.
 
@@ -486,17 +482,17 @@ Current final-cutover evidence on `feat/inbox-hub-integration`:
 ## 6. Branch Hygiene
 
 - Keep `feat/inbox-hub-integration` rebased on `origin/main`.
-- Before starting final cutover and before final PR review, run:
+- Before starting a new workstream PR and before final PR review, run:
   - `git fetch origin`
-  - confirm `origin/main` includes PR #244's W1b/W1c/W1d merge
-  - rebase `feat/inbox-hub-integration` onto `origin/main` if needed
+  - confirm `origin/main` includes the prior workstream merge
+  - rebase the active workstream branch onto `origin/main` if needed
   - inspect `git diff --name-only origin/main...HEAD`
 - Commit each implementation task separately.
-- Do not mix W3/W4/W5 implementation into the W2 Layer 3 PR.
+- Do not mix W5 or Mail implementation into the W4 PR.
 - Do not rename DB tables or API routes for UI naming changes.
 - Preserve company scoping and RBAC checks in every route or client behavior.
 - Keep docs updated when behavior, commands, or phase boundaries change.
-- No dependency additions are expected for final cutover. If a dependency becomes
+- No dependency additions are expected for W4a. If a dependency becomes
   necessary, follow the current `AGENTS.md` dependency workflow and commit
   manifest and lockfile changes together when required.
 
@@ -507,21 +503,21 @@ Current final-cutover evidence on `feat/inbox-hub-integration`:
 These must be resolved inside the relevant implementation plan, not improvised
 mid-task:
 
-- Final cutover: exact compatibility behavior for `/inbox/new`, `/inbox/all`,
-  and `/inbox-hub/*`.
-- Final cutover: sidebar badge source after hub counts become canonical.
-- Final cutover: old Inbox category parity and explicit deferrals.
-- Final cutover: whether legacy `Inbox.tsx` is deleted immediately or kept
-  unreferenced for one cleanup PR.
+- W4: exact Steward wakeup payload/tool contract before implementation.
+- W4: curation metadata versioning and live refresh behavior.
+- W4: audit boundary if a later slice mutates priority, SLA, ownership,
+  assignment, escalation, or lifecycle state.
+- W5: per-adapter feasibility matrix before any runtime bridge implementation.
 
 ---
 
 ## 8. Next Step
 
-Finish W3 Core, then plan the next queue in order:
+Proceed through the next queue in order:
 
-1. W4 Steward curation worker and dedicated `kind=aoa` member.
-2. W5 runtime decision routing and per-adapter bridges.
+1. Finish final verification and PR readiness for W4 Steward foundation from
+   `docs/aoa/plans/2026-07-01-w4-steward-foundation-plan.md`.
+2. Plan W5 runtime decision routing and per-adapter bridges.
 
 Each next workstream needs its own investigate -> implementation plan -> review
 -> build cycle before code starts.

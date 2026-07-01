@@ -8,6 +8,7 @@ vi.mock("../services/internal-agent/aoa-agents/ensure-adjutant.js", () => ({ ens
 vi.mock("../services/internal-agent/aoa-agents/ensure-scout.js", () => ({ ensureScout: vi.fn(async () => { calls.push("scout"); }) }));
 vi.mock("../services/internal-agent/aoa-agents/ensure-engineer.js", () => ({ ensureEngineer: vi.fn(async () => { calls.push("engineer"); }) }));
 vi.mock("../services/internal-agent/aoa-agents/ensure-chronicler.js", () => ({ ensureChronicler: vi.fn(async () => { calls.push("chronicler"); }) }));
+vi.mock("../services/internal-agent/aoa-agents/ensure-steward.js", () => ({ ensureSteward: vi.fn(async () => { calls.push("steward"); }) }));
 vi.mock("../middleware/logger.js", () => ({ logger: { warn: vi.fn(), debug: vi.fn() } }));
 
 import { ensureAllCrewAgents } from "../services/internal-agent/aoa-agents/ensure-all-crew.js";
@@ -15,18 +16,18 @@ import { ensureAllCrewAgents } from "../services/internal-agent/aoa-agents/ensur
 describe("ensureAllCrewAgents", () => {
   beforeEach(() => { calls.length = 0; });
 
-  it("runs all six crew ensures", async () => {
+  it("runs all seven crew ensures", async () => {
     await ensureAllCrewAgents({} as any, "co-1");
-    expect(calls.sort()).toEqual(["adjutant", "chronicler", "commander", "engineer", "scout", "staff"]);
+    expect(calls.sort()).toEqual(["adjutant", "chronicler", "commander", "engineer", "scout", "staff", "steward"]);
   });
 
   it("one failing ensure does not abort the rest", async () => {
     const mod = await import("../services/internal-agent/aoa-agents/ensure-scout.js");
     (mod.ensureScout as any).mockRejectedValueOnce(new Error("boom"));
     await ensureAllCrewAgents({} as any, "co-1");
-    // scout threw, but the other five still ran
+    // scout threw, but the other six still ran
     expect(calls).toContain("commander");
     expect(calls).toContain("engineer");
-    expect(calls.length).toBe(5);
+    expect(calls.length).toBe(6);
   });
 });

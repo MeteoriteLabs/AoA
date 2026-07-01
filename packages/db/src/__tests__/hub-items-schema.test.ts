@@ -82,4 +82,18 @@ describe("hubItems schema", () => {
     }
     expect(hubAudit).toHaveProperty("decisionContext");
   });
+
+  it("exports W4 curation metadata columns on hubItems", () => {
+    for (const col of [
+      "curationGroupLabel",
+      "curationGroupSummary",
+      "curationReason",
+      "curationPriorityReason",
+      "curationRevision",
+      "curatedAt",
+      "curatedByAgentId",
+    ]) {
+      expect(hubItems, col).toHaveProperty(col);
+    }
+  });
 });

@@ -170,6 +170,55 @@ describe("HubShell", () => {
     );
   });
 
+  it("renders curated group summaries in grouped rows", () => {
+    renderShell({
+      items: Array.from({ length: 3 }, (_, index) => ({
+        ...items[0],
+        id: `hub-curated-${index + 1}`,
+        title: `Approval ${index + 1}`,
+        curationGroupSummary: "Three related approvals are waiting for founder review.",
+      }) as HubItemListRow),
+    });
+
+    expect(screen.getByText("Three related approvals are waiting for founder review.")).toBeInTheDocument();
+  });
+
+  it("shows curation reasons in the viewer only when metadata exists", () => {
+    const curated = renderShell({
+      selectedItemId: "hub-1",
+      items: [
+        {
+          ...items[0],
+          curationReason: "SLA is due in 20 minutes.",
+          curationPriorityReason: "Urgent priority is set on this hub item.",
+        } as HubItemListRow,
+      ],
+    });
+
+    expect(screen.getByText("Why you are seeing this")).toBeInTheDocument();
+    expect(screen.getByText("SLA is due in 20 minutes.")).toBeInTheDocument();
+    expect(screen.getByText("Urgent priority is set on this hub item.")).toBeInTheDocument();
+
+    curated.unmount();
+    renderShell({ selectedItemId: "hub-1" });
+    expect(screen.queryByText("Why you are seeing this")).not.toBeInTheDocument();
+  });
+
+  it("uses curation reason on Hub Home needs-you-most", () => {
+    renderShell({
+      activeLane: null,
+      items: [
+        {
+          ...items[0],
+          curationReason: "SLA is due in 20 minutes.",
+        } as HubItemListRow,
+      ],
+    });
+
+    expect(screen.getByText("Review hire approval")).toBeInTheDocument();
+    expect(screen.getByText("SLA is due in 20 minutes.")).toBeInTheDocument();
+  });
+
   it("renders preference controls", async () => {
     const user = userEvent.setup();
     renderShell();

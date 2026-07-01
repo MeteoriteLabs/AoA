@@ -61,6 +61,10 @@ export function HubViewer({
   const entry = HUB_REGISTRY[item.semanticType];
   const Icon = entry.icon;
   const fullLink = entry.fullLink(item);
+  const whyReasons = [
+    item.curationReason,
+    item.curationPriorityReason,
+  ].filter((reason): reason is string => Boolean(reason));
 
   return (
     <aside
@@ -99,6 +103,18 @@ export function HubViewer({
         </h2>
         {item.summary ? (
           <p className="mt-3 text-sm leading-6 text-muted-foreground">{item.summary}</p>
+        ) : null}
+        {whyReasons.length > 0 ? (
+          <section aria-label="Why you are seeing this" className="mt-5 border-t border-border pt-4">
+            <h3 className="text-xs font-semibold uppercase text-muted-foreground">
+              Why you are seeing this
+            </h3>
+            <ul className="mt-2 space-y-1.5 text-sm leading-6 text-muted-foreground">
+              {whyReasons.map((reason) => (
+                <li key={reason}>{reason}</li>
+              ))}
+            </ul>
+          </section>
         ) : null}
         <dl className="mt-5 grid grid-cols-2 gap-3 text-sm">
           <div>

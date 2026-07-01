@@ -73,6 +73,7 @@ export {
   type ThreadEventListenerOpts,
 } from "./thread-events.js";
 export { notificationService } from "./notifications.js";
+export { hubCurationService, deriveCurationForHubItem } from "./hub-curation.js";
 export { companySkillService } from "./company-skills.js";
 export type { RuntimeSkillEntry } from "./company-skills.js";
 export { agentInstructionsService, syncInstructionsBundleConfigFromFilePath } from "./agent-instructions.js";
