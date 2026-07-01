@@ -30,6 +30,10 @@ test.describe("planning mode dispatch gate", () => {
     await page.goto(`/${company.issuePrefix}/issues`);
   }
 
+  function taskTitleText(page: Page, title: string) {
+    return page.locator("span", { hasText: title }).first();
+  }
+
   async function createPlanningTask(page: Page, title: string) {
     await expect(page).toHaveTitle(/\w+/);
 
@@ -58,7 +62,7 @@ test.describe("planning mode dispatch gate", () => {
     await expect(createButton).toBeEnabled({ timeout: 5_000 });
     await createButton.click();
 
-    const taskTitle = page.getByText(title);
+    const taskTitle = taskTitleText(page, title);
     await expect(taskTitle).toBeVisible({ timeout: 5_000 });
 
     // Verify the "Planning" pill is visible (indicating the work mode was set).
@@ -78,7 +82,7 @@ test.describe("planning mode dispatch gate", () => {
     const title = "Planning review: heartbeat gate";
     await createPlanningTask(page, title);
 
-    const taskTitle = page.getByText(title);
+    const taskTitle = taskTitleText(page, title);
     await expect(taskTitle).toBeVisible({ timeout: 5_000 });
 
     // Locate the task row and check its status is "todo" (not "in_progress").
