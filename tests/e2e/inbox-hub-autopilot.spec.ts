@@ -103,8 +103,9 @@ test.describe("Inbox Hub W3 Autopilot", () => {
         response.request().method() === "PATCH" &&
         response.status() === 200,
       ),
-      enabledCheckbox.check(),
+      enabledCheckbox.click(),
     ]);
+    await expect(enabledCheckbox).toBeChecked();
     await expect(actionSelect).toBeEnabled();
     await Promise.all([
       page.waitForResponse((response) =>
