@@ -309,6 +309,10 @@ export function InboxHub() {
         queryClient.invalidateQueries({
           queryKey: queryKeys.hubItems.autopilotActions(selectedCompanyId),
         }),
+        queryClient.invalidateQueries({ queryKey: ["hub-items", selectedCompanyId] }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.hubItems.counts(selectedCompanyId),
+        }),
       ]);
     },
   });
@@ -330,6 +334,10 @@ export function InboxHub() {
         }),
         queryClient.invalidateQueries({
           queryKey: queryKeys.hubItems.autopilotActions(selectedCompanyId),
+        }),
+        queryClient.invalidateQueries({ queryKey: ["hub-items", selectedCompanyId] }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.hubItems.counts(selectedCompanyId),
         }),
       ]);
     },
