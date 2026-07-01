@@ -4,7 +4,6 @@ import { Bot, ChevronLeft, ChevronRight, Layers, Puzzle, Search, Sparkles } from
 import { useQuery } from "@tanstack/react-query";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useCompany } from "@/context/CompanyContext";
-import { useDialog } from "@/context/DialogContext";
 import { useCatalog } from "@/hooks/useCatalog";
 import { usePackages } from "@/hooks/usePackages";
 import { CatalogCard } from "@/components/marketplace/CatalogCard";
@@ -12,7 +11,7 @@ import { PackageCard } from "@/components/marketplace/PackageCard";
 import { PackageInstallModal } from "@/components/marketplace/install/PackageInstallModal";
 import { MarketplaceFilterChips } from "@/components/marketplace/MarketplaceFilterChips";
 import { MarketplaceSubfilterChips } from "@/components/marketplace/MarketplaceSubfilterChips";
-import { LobbyShell, LobbyShellMobileMenuButton } from "@/components/LobbyShell";
+import { LobbyShellMobileMenuButton } from "@/components/LobbyShell";
 import { pluginsApi } from "@/api/plugins";
 import { queryKeys } from "@/lib/queryKeys";
 import { filterByType } from "@/api/marketplace";
@@ -235,7 +234,6 @@ function OverviewShelf({
 export default function Marketplace() {
   const { data: catalog, isLoading, error } = useCatalog();
   const { data: packages } = usePackages();
-  const { openOnboarding } = useDialog();
   useCompany();
 
   const { data: installedPlugins } = useQuery({
@@ -404,7 +402,7 @@ export default function Marketplace() {
   }
 
   return (
-    <LobbyShell activeItem="marketplace" onCreateCompany={() => openOnboarding()}>
+    <>
       <div className="mx-auto w-full max-w-[1080px] px-4 py-6 sm:px-6 sm:py-7 md:px-10 md:py-9">
         <LobbyShellMobileMenuButton className="mb-4" />
 
@@ -488,6 +486,6 @@ export default function Marketplace() {
           if (!nextOpen) setPackageToInstall(null);
         }}
       />
-    </LobbyShell>
+    </>
   );
 }

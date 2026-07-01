@@ -21,6 +21,12 @@ export interface SecondarySidebarProps {
   collapsed?: boolean;
   onToggleCollapse?: () => void;
   className?: string;
+  /**
+   * When true, render as a floating rounded "island" (lobby-tier chrome) instead
+   * of the flush right-bordered rail. Opt-in — in-company consumers (TeamLayout,
+   * in-company SettingsLayout) leave it false. See design-system §8.1.2.
+   */
+  floating?: boolean;
 }
 
 export function SecondarySidebar({
@@ -28,12 +34,16 @@ export function SecondarySidebar({
   collapsed = false,
   onToggleCollapse,
   className,
+  floating = false,
 }: SecondarySidebarProps) {
   return (
     <div
       className={cn(
-        "border-r border-border bg-secondary-sidebar flex flex-col pt-16 pb-3.5",
+        "relative bg-secondary-sidebar flex flex-col pt-16 pb-3.5",
         "transition-[width] duration-[180ms]",
+        floating
+          ? "h-[calc(100dvh-1rem)] my-2 ml-2 overflow-hidden rounded-2xl border border-border"
+          : "border-r border-border",
         collapsed ? "w-12 px-1" : "w-[200px] px-2",
         className
       )}
@@ -106,7 +116,7 @@ export function SecondarySidebar({
           type="button"
           onClick={onToggleCollapse}
           aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-          className="mt-auto mx-2 my-2 size-7 rounded-md text-very-dim hover:bg-white/[0.04] hover:text-text inline-flex items-center justify-center"
+          className="absolute right-2 top-3 size-7 rounded-md text-very-dim hover:bg-white/[0.04] hover:text-text inline-flex items-center justify-center"
         >
           {collapsed ? <ChevronRight className="size-4" /> : <ChevronLeft className="size-4" />}
         </button>

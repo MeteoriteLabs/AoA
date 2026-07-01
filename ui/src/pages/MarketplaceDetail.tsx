@@ -12,8 +12,7 @@ import { usePackages } from "@/hooks/usePackages";
 import { packageDetailUrl } from "@/components/marketplace/PackageCard";
 import { pluginsApi } from "@/api/plugins";
 import { queryKeys } from "@/lib/queryKeys";
-import { LobbyShell, LobbyShellMobileMenuButton } from "@/components/LobbyShell";
-import { useDialog } from "@/context/DialogContext";
+import { LobbyShellMobileMenuButton } from "@/components/LobbyShell";
 import { TrustBadge } from "@/components/marketplace/TrustBadge";
 import { TypeChip } from "@/components/marketplace/TypeChip";
 import { ReadmeRender } from "@/components/marketplace/ReadmeRender";
@@ -45,7 +44,6 @@ export default function MarketplaceDetail() {
   const fullSlug = restPath ? `${slugSegment}/${restPath}` : slugSegment;
   const catalogItemId = itemType ? `${itemType}:${fullSlug}` : null;
 
-  const { openOnboarding } = useDialog();
   const { data: catalog, isLoading, error } = useCatalog();
   const { data: packages } = usePackages();
   const [readmeText, setReadmeText] = useState<string | null>(null);
@@ -113,7 +111,7 @@ export default function MarketplaceDetail() {
       : null;
 
   return (
-    <LobbyShell activeItem="marketplace" onCreateCompany={() => openOnboarding()}>
+    <>
       <div className="mx-auto w-full max-w-[920px] px-4 py-6 sm:px-6 sm:py-7 md:px-10 md:py-9">
         <LobbyShellMobileMenuButton className="mb-4" />
         <Link
@@ -383,6 +381,6 @@ export default function MarketplaceDetail() {
         </div>
         )}
       </div>
-    </LobbyShell>
+    </>
   );
 }

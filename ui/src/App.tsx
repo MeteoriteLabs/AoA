@@ -7,6 +7,7 @@ import { authApi } from "./api/auth";
 import { healthApi } from "./api/health";
 import { Dashboard } from "./pages/Dashboard";
 import { Lobby } from "./pages/Lobby";
+import { LobbyLayout } from "./components/LobbyLayout";
 import { InstanceSettingsPage } from "./pages/InstanceSettingsPage";
 import { InstanceAccessPage } from "./pages/InstanceAccessPage";
 import { Companies } from "./pages/Companies";
@@ -319,7 +320,16 @@ export function App() {
           <Route path="invite/:token" element={<InviteLandingPage />} />
 
           <Route element={<CloudAccessGate />}>
-            <Route index element={<Lobby />} />
+            {/* Persistent lobby shell — sidebar mounts once, content swaps via <Outlet/> */}
+            <Route element={<LobbyLayout />}>
+              <Route index element={<Lobby />} />
+              <Route path="instance/settings" element={<InstanceSettingsPage />} />
+              <Route path="marketplace" element={<Marketplace />} />
+              <Route path="marketplace/search" element={<MarketplaceSearch />} />
+              <Route path="marketplace/package/:id/*" element={<MarketplacePackageDetail />} />
+              <Route path="marketplace/:type" element={<MarketplaceTypeRedirect />} />
+              <Route path="marketplace/:type/:slug/*" element={<MarketplaceDetail />} />
+            </Route>
             <Route path="me" element={<Me />} />
             <Route path="export" element={<Layout />}>
               <Route index element={<CompanyExport />} />
@@ -327,14 +337,8 @@ export function App() {
             <Route path="import" element={<Layout />}>
               <Route index element={<CompanyImport />} />
             </Route>
-            <Route path="instance/settings" element={<InstanceSettingsPage />} />
             <Route path="instance/settings/plugins/:pluginId" element={<PluginSettings />} />
             <Route path="instance/access" element={<InstanceAccessPage />} />
-            <Route path="marketplace" element={<Marketplace />} />
-            <Route path="marketplace/search" element={<MarketplaceSearch />} />
-            <Route path="marketplace/package/:id/*" element={<MarketplacePackageDetail />} />
-            <Route path="marketplace/:type" element={<MarketplaceTypeRedirect />} />
-            <Route path="marketplace/:type/:slug/*" element={<MarketplaceDetail />} />
             <Route path="companies" element={<UnprefixedBoardRedirect />} />
             <Route path="issues" element={<UnprefixedBoardRedirect />} />
             <Route path="issues/:issueId" element={<UnprefixedBoardRedirect />} />

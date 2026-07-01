@@ -1,20 +1,35 @@
-import { useEffect, useState } from "react";
+import { useLayoutEffect, useState } from "react";
 import { useNavigate } from "@/lib/router";
 import {
   BookOpen,
   Building2,
+  ChevronDown,
   FileText,
   Plus,
   Settings,
   Store,
+  Upload,
 } from "lucide-react";
 import { UserMenu } from "@/components/UserMenu";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { SidebarCollapseToggle } from "@/components/SidebarCollapseToggle";
 import { cn } from "@/lib/utils";
 
 const COLLAPSE_KEY = "aoa.lobby.sidebar-collapsed";
+
+// The rail floats with an `ml-2` (8px) left gutter and `my-2` top gutter. The
+// external collapse toggle must shift right by the gutter to stay on the
+// rail/main seam, and down to align with the header row inside the floated card.
+// Keep these in lockstep with the aside's `my-2 ml-2` classes.
+const RAIL_GUTTER_PX = 8;
+const RAIL_TOGGLE_TOP_PX = 17;
 
 interface LobbyNavRowProps {
   icon: React.ComponentType<{ className?: string }>;
@@ -86,11 +101,12 @@ interface LobbySidebarProps {
   /** Optional callback invoked when a nav item is clicked (for closing the drawer on mobile). */
   onNavigate?: () => void;
   /**
-   * Override the persisted-collapse default. When provided, the sidebar starts
-   * in this state on first mount and writes through to localStorage as the
-   * user toggles. Used to auto-collapse on page entry (e.g., Settings).
+   * Reactive: when true (the current page provides a secondary sidebar), the
+   * primary force-collapses out of the way; the user may still peek-expand it
+   * transiently (not persisted). When false, the primary reflects the persisted
+   * preference and manual toggles update it. See design-system §8.1.1.
    */
-  defaultCollapsed?: boolean;
+  hasSecondarySidebar?: boolean;
 }
 
 /**
@@ -115,35 +131,48 @@ export function LobbySidebar({
   activeItem = "organizations",
   drawer = false,
   onNavigate,
-  defaultCollapsed,
+  hasSecondarySidebar = false,
 }: LobbySidebarProps) {
   const navigate = useNavigate();
-  const [collapsed, setCollapsed] = useState<boolean>(() => {
+  // Persisted global preference (only mutated by manual toggles on pages WITHOUT
+  // a secondary sidebar). `collapsed` is what's actually rendered.
+  const [pref, setPref] = useState<boolean>(() => {
     if (drawer) return false;
-    // Pages with a secondary sidebar (currently only Settings) explicitly
-    // request primary collapse. Honor that on every mount, regardless of the
-    // user's stored preference — the secondary sidebar is the prominent nav on
-    // those pages, so the primary should collapse out of the way every time.
-    // See Decision #98 + design-system §8.1.1.
-    if (defaultCollapsed === true) return true;
     try {
-      const stored = localStorage.getItem(COLLAPSE_KEY);
-      if (stored === "true") return true;
-      if (stored === "false") return false;
-      return defaultCollapsed ?? false;
+      return localStorage.getItem(COLLAPSE_KEY) === "true";
     } catch {
-      return defaultCollapsed ?? false;
+      return false;
     }
   });
+  const [collapsed, setCollapsed] = useState<boolean>(() =>
+    drawer ? false : hasSecondarySidebar ? true : pref,
+  );
 
-  useEffect(() => {
+  // React to navigating into/out of a secondary-sidebar page: force-collapse
+  // when a secondary sidebar is present, otherwise reflect the preference.
+  // useLayoutEffect (not useEffect) so the collapse lands BEFORE paint — the
+  // persistent LobbyLayout never remounts this sidebar, so a post-paint effect
+  // would flash the expanded rail beside the secondary sidebar for one frame.
+  useLayoutEffect(() => {
     if (drawer) return;
+    setCollapsed(hasSecondarySidebar ? true : pref);
+  }, [drawer, hasSecondarySidebar, pref]);
+
+  const handleToggle = () => {
+    if (hasSecondarySidebar) {
+      // Transient peek on a secondary-sidebar page — do not persist.
+      setCollapsed((c) => !c);
+      return;
+    }
+    const next = !collapsed;
+    setCollapsed(next);
+    setPref(next);
     try {
-      localStorage.setItem(COLLAPSE_KEY, String(collapsed));
+      localStorage.setItem(COLLAPSE_KEY, String(next));
     } catch {
       // noop — storage may be disabled
     }
-  }, [collapsed, drawer]);
+  };
 
   const navTo = (path: string) => {
     navigate(path);
@@ -161,8 +190,10 @@ export function LobbySidebar({
         data-collapsed={collapsed}
         data-drawer={drawer || undefined}
         className={cn(
-          "relative flex h-dvh shrink-0 flex-col",
-          drawer ? "w-full" : "border-r border-border bg-card/50 backdrop-blur-sm transition-[width] duration-[180ms]",
+          "relative flex shrink-0 flex-col",
+          drawer
+            ? "w-full h-dvh"
+            : "h-[calc(100dvh-1rem)] my-2 ml-2 overflow-hidden rounded-2xl border border-border bg-card/50 backdrop-blur-sm transition-[width] duration-[180ms]",
           !drawer && (collapsed ? "w-[56px]" : "w-[220px]"),
           !drawer && "lobby-sidebar-enter",
         )}
@@ -202,14 +233,35 @@ export function LobbySidebar({
               <TooltipContent side="right" sideOffset={8}>New organization</TooltipContent>
             </Tooltip>
           ) : (
-            <Button
-              size="default"
-              onClick={create}
-              className="w-full justify-center gap-1.5"
-            >
-              <Plus />
-              New organization
-            </Button>
+            <DropdownMenu>
+              {/* Attached split button — primary creates in one click; the
+                  joined chevron segment opens a floating menu (no layout shift). */}
+              <div className="flex">
+                <Button
+                  size="default"
+                  onClick={create}
+                  className="flex-1 justify-center gap-1.5 rounded-r-none"
+                >
+                  <Plus />
+                  New organization
+                </Button>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    size="default"
+                    aria-label="More organization options"
+                    className="rounded-l-none border-l border-l-black/20 px-2 data-[state=open]:[&_svg]:rotate-180"
+                  >
+                    <ChevronDown className="size-4 transition-transform" />
+                  </Button>
+                </DropdownMenuTrigger>
+              </div>
+              <DropdownMenuContent align="end" sideOffset={6} className="min-w-[200px]">
+                <DropdownMenuItem onSelect={() => navTo("/import")}>
+                  <Upload />
+                  Import organization
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           )}
         </div>
 
@@ -278,8 +330,9 @@ export function LobbySidebar({
       {!drawer && (
         <SidebarCollapseToggle
           collapsed={collapsed}
-          onToggle={() => setCollapsed((c) => !c)}
-          sidebarWidth={collapsed ? 56 : 220}
+          onToggle={handleToggle}
+          sidebarWidth={(collapsed ? 56 : 220) + RAIL_GUTTER_PX}
+          top={RAIL_TOGGLE_TOP_PX}
           className="hidden md:inline-flex"
         />
       )}
