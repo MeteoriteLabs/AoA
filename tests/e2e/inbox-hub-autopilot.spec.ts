@@ -142,7 +142,7 @@ test.describe("Inbox Hub W3 Autopilot", () => {
     });
 
     await page.goto(`/${company.issuePrefix}/inbox`);
-    await expect(page.getByText("Drive")).toBeVisible();
+    await expect(page.getByText("Drive", { exact: true })).toBeVisible();
     await expect(page.getByText(/1 handled today/i)).toBeVisible();
     await expect(page.getByText("W3 trusted run complete")).toBeVisible();
     await expect(page.getByText(/Autopilot Drive accepted run_complete/i)).toBeVisible();
