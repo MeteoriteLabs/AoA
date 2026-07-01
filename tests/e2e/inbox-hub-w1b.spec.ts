@@ -1,6 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { cleanupTestCompanies, seedCompany } from "./helpers/seed-company";
 import { seedHubItem } from "./helpers/seed-hub-item";
+import { clickHubAction } from "./helpers/hub-actions";
 
 test.describe("Inbox Hub W1b", () => {
   test.beforeEach(async ({ request }) => {
@@ -29,7 +30,14 @@ test.describe("Inbox Hub W1b", () => {
     await laneNav.getByRole("button", { name: /waiting on you/i }).click();
     await expect(page.getByText(/Review hire agent approval/i)).toBeVisible();
 
-    await page.getByRole("button", { name: /Review hire agent approval/i }).click();
+    // Opening the item marks it read (PATCH …/state) → list invalidation + remount;
+    // settle it so the viewer/URL assertions and the deep-link goto below don't race
+    // the refetch.
+    await clickHubAction(
+      page,
+      page.getByRole("button", { name: /Review hire agent approval/i }),
+      "state",
+    );
     await expect(page.getByRole("complementary", { name: /hub viewer/i })).toBeVisible();
     await expect(page).toHaveURL(new RegExp(`/inbox/waiting/.+`));
 
