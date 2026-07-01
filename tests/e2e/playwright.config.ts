@@ -12,8 +12,15 @@ import { FAKE_EMBEDDER_CONTROL_PATH } from "./helpers/fake-embedder";
 // start as administrative. If DATABASE_URL is provided, AoA uses external
 // Postgres instead, so Windows e2e can run normally.
 // Linux + macOS coverage is unaffected.
+//
+// Escape hatch: on a real (non-runneradmin) Windows dev machine, embedded
+// postgres starts fine. Set AOA_E2E_FORCE_WINDOWS=1 to run the full e2e suite
+// locally on Windows with embedded postgres despite the CI-runner limitation
+// (Issue #114). CI leaves this unset, so the runner still skips as before.
 const WINDOWS_WITH_EMBEDDED_POSTGRES =
-  process.platform === "win32" && !process.env.DATABASE_URL?.trim();
+  process.platform === "win32" &&
+  !process.env.DATABASE_URL?.trim() &&
+  process.env.AOA_E2E_FORCE_WINDOWS !== "1";
 
 // Use a dedicated port so e2e tests always start their own server in local_trusted mode,
 // even when the dev server is running on :3100 in authenticated mode.
