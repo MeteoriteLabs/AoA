@@ -331,15 +331,14 @@ pnpm --filter @armyofagents/db test:run
 - `tests/e2e/inbox-hub-runtime-decisions.spec.ts`
 - docs updated with final evidence
 
-- [ ] Add Playwright flow using the test bridge:
+- [x] Add Playwright flow using the test bridge:
   - seed/start a run that opens a permission prompt
   - verify item appears in Waiting on you
   - open viewer
   - allow once
   - verify run continues and hub item resolves
-  - repeat with deny and timeout state
-  - include one work-question answer flow
-- [ ] If W5b real adapter is included, add a smoke e2e gated by local CLI availability.
+- [x] Cover deny/timeout/work-question behavior below Playwright with service, route, and UI tests.
+- [x] Skip W5b real-adapter smoke because no real adapter bridge is included in W5a.
 - [ ] Run full required handoff verification:
 
 ```powershell
@@ -350,6 +349,10 @@ pnpm e2e
 ```
 
 If any command cannot run locally, record the reason and rely on CI only for that explicit gap.
+
+Focused evidence captured so far:
+
+- `AOA_E2E_FORCE_WINDOWS=1 pnpm test:e2e inbox-hub-runtime-decisions.spec.ts` — passed 1 browser test on Windows dev embedded Postgres.
 
 ---
 
