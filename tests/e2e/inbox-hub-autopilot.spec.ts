@@ -76,37 +76,52 @@ test.describe("Inbox Hub W3 Autopilot", () => {
     await expect(page.getByText("Autopilot")).toBeVisible();
 
     await page.getByRole("button", { name: /hub settings/i }).click();
+    const modeSelect = page.getByRole("combobox", { name: /autopilot mode/i });
+    const enabledCheckbox = page.getByRole("checkbox", {
+      name: /run complete autopilot enabled/i,
+    });
+    const actionSelect = page.getByRole("combobox", {
+      name: /run complete autopilot action/i,
+    });
+    const minTrustInput = page.getByRole("spinbutton", {
+      name: /run complete min trust/i,
+    });
+
+    await expect(modeSelect).toBeEnabled();
     await Promise.all([
       page.waitForResponse((response) =>
         response.url().includes("/hub-autopilot/policy") &&
         response.request().method() === "PATCH" &&
         response.status() === 200,
       ),
-      page.getByRole("combobox", { name: /autopilot mode/i }).selectOption("drive"),
+      modeSelect.selectOption("drive"),
     ]);
+    await expect(enabledCheckbox).toBeEnabled();
     await Promise.all([
       page.waitForResponse((response) =>
         response.url().includes("/hub-autopilot/policy") &&
         response.request().method() === "PATCH" &&
         response.status() === 200,
       ),
-      page.getByRole("checkbox", { name: /run complete autopilot enabled/i }).check(),
+      enabledCheckbox.check(),
     ]);
+    await expect(actionSelect).toBeEnabled();
     await Promise.all([
       page.waitForResponse((response) =>
         response.url().includes("/hub-autopilot/policy") &&
         response.request().method() === "PATCH" &&
         response.status() === 200,
       ),
-      page.getByRole("combobox", { name: /run complete autopilot action/i }).selectOption("resolve"),
+      actionSelect.selectOption("resolve"),
     ]);
+    await expect(minTrustInput).toBeEnabled();
     await Promise.all([
       page.waitForResponse((response) =>
         response.url().includes("/hub-autopilot/policy") &&
         response.request().method() === "PATCH" &&
         response.status() === 200,
       ),
-      page.getByRole("spinbutton", { name: /run complete min trust/i }).fill("0"),
+      minTrustInput.fill("0"),
     ]);
 
     const run = await seedTrustedHeartbeatRun(company.id);
