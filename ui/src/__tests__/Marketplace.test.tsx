@@ -300,4 +300,45 @@ describe("Marketplace (hub) — sections", () => {
     renderMarketplace();
     expect(screen.queryByRole("button", { name: /see all/i })).not.toBeInTheDocument();
   });
+
+  it("shows the cross-sell empty state (not 'No matches.') when a type has only AoA items", () => {
+    vi.mocked(useCatalog).mockReturnValue({
+      data: {
+        schemaVersion: "1.0.0",
+        generatedAt: "2026-05-01T00:00:00Z",
+        itemCount: 2,
+        items: [
+          makeFixtureItem({ id: "skill:s1", type: "skill", name: "real-skill" }),
+          makeFixtureItem({
+            id: "plugin:aoa",
+            type: "plugin",
+            name: "aoa-plugin",
+            source: { adapter: "github", url: "https://github.com/aoa-curated/p", locator: "p" },
+          }),
+        ],
+      },
+      isLoading: false,
+      error: null,
+    } as any);
+    renderMarketplace("/marketplace?type=plugin");
+    expect(screen.getByTestId("marketplace-empty-plugin")).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: /no third-party plugins yet/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /browse aoa plugins/i }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("No matches.")).not.toBeInTheDocument();
+  });
+
+  it("keeps the generic 'No matches.' state for a search that returns nothing", async () => {
+    const user = userEvent.setup();
+    renderMarketplace("/marketplace?type=plugin");
+    await user.type(
+      screen.getByPlaceholderText(/search marketplace/i),
+      "zzz-nonexistent",
+    );
+    expect(screen.getByText("No matches.")).toBeInTheDocument();
+    expect(screen.queryByTestId("marketplace-empty-plugin")).not.toBeInTheDocument();
+  });
 });

@@ -82,6 +82,64 @@ const SECTION_LABELS: Record<MarketplaceItemType, string> = {
 const SECTION_ORDER: ReadonlyArray<MarketplaceItemType> = ["skill", "plugin", "agent", "team"];
 const SKILL_PACKAGE_PREVIEW_COUNT = 6;
 
+const SECTION_SINGULAR: Record<MarketplaceItemType, string> = {
+  skill: "skill",
+  plugin: "plugin",
+  agent: "agent",
+  team: "team",
+};
+
+// Shown when a single type section (Plugins/Agents/Teams/Skills) has zero
+// third-party items and no active search. The community catalog genuinely has
+// no items of that type yet (all such items are AoA first-party, segregated to
+// the AoA view), so keep the section visible and cross-sell AoA rather than
+// hiding the nav entry.
+function TypeEmptyState({
+  type,
+  aoaCount,
+  onBrowseAoa,
+}: {
+  type: MarketplaceItemType;
+  aoaCount: number;
+  onBrowseAoa: () => void;
+}) {
+  const Icon = SECTION_ICONS[type];
+  const tone = SECTION_TONES[type];
+  const label = SECTION_LABELS[type].toLowerCase();
+  const singular = SECTION_SINGULAR[type];
+  return (
+    <div
+      data-testid={`marketplace-empty-${type}`}
+      className="rounded-xl border border-border bg-card px-6 py-12 text-center"
+    >
+      <span
+        className={cn(
+          "mx-auto mb-4 inline-flex size-12 items-center justify-center rounded-xl border",
+          tone,
+        )}
+      >
+        <Icon className="size-5" />
+      </span>
+      <h3 className="text-[15px] font-semibold">No third-party {label} yet</h3>
+      <p className="mx-auto mt-1.5 max-w-sm text-[13px] text-dim">
+        {aoaCount > 0
+          ? `The community catalog hasn’t published any ${label} yet — but AoA ships ${aoaCount} first-party ${aoaCount === 1 ? singular : label} you can use right now.`
+          : `The community catalog hasn’t published any ${label} yet. New ${label} land here as the catalog grows.`}
+      </p>
+      {aoaCount > 0 && (
+        <button
+          type="button"
+          onClick={onBrowseAoa}
+          className="mt-4 inline-flex items-center gap-1.5 rounded-md border border-brand/30 bg-brand/[0.08] px-3.5 py-2 text-[13px] font-medium text-[hsl(15_60%_75%)] hover:bg-brand/[0.12]"
+        >
+          <Sparkles className="size-3.5 text-brand" />
+          Browse AoA {label}
+        </button>
+      )}
+    </div>
+  );
+}
+
 interface SectionHeaderProps {
   type: MarketplaceItemType;
   total: number;
@@ -289,6 +347,11 @@ export default function Marketplace() {
   // AoA first-party items are segregated: only under the AoA view, never in the
   // main type/Home views, search, or packages.
   const aoaItems = useMemo(() => items.filter(isAoaItem), [items]);
+  const aoaByType = useMemo(() => {
+    const out: Record<MarketplaceItemType, number> = { skill: 0, plugin: 0, agent: 0, team: 0 };
+    for (const it of aoaItems) out[it.type] += 1;
+    return out;
+  }, [aoaItems]);
   const mainItems = useMemo(() => items.filter((i) => !isAoaItem(i)), [items]);
   const base = isAoaView ? aoaItems : mainItems;
   const mainPackages = useMemo(
@@ -490,9 +553,17 @@ export default function Marketplace() {
             Failed to load catalog.
           </div>
         ) : visible.length === 0 ? (
-          <div className="rounded-xl border border-border bg-card p-6 text-sm text-dim text-center">
-            No matches.
-          </div>
+          selectedType !== null && !isAoaView && !search.trim() ? (
+            <TypeEmptyState
+              type={selectedType}
+              aoaCount={aoaByType[selectedType]}
+              onBrowseAoa={() => navigate("/marketplace?view=aoa")}
+            />
+          ) : (
+            <div className="rounded-xl border border-border bg-card p-6 text-sm text-dim text-center">
+              No matches.
+            </div>
+          )
         ) : selectedType !== null ? (
           // Single-section view: cap removed, "See all" hidden.
           selectedType === "skill" ? (

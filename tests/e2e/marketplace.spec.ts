@@ -191,10 +191,12 @@ test.describe("Marketplace UI", () => {
       page.getByRole("heading", { level: 1, name: /marketplace/i }),
     ).toBeVisible({ timeout: 15_000 });
 
-    // Frozen fixture has 5 items (4 plugins + 1 skill). At least one CatalogCard
-    // should render its name as an h3. Slack is in the fixture.
+    // Frozen fixture has 5 items (4 plugins + 1 skill). The 4 plugins are AoA
+    // first-party (MeteoriteLabs-owned) → segregated to the AoA view; only the
+    // anthropic template-skill shows in the main/home view. Its CatalogCard
+    // renders the name as an h3.
     await expect(
-      page.getByRole("heading", { name: "Slack", level: 3 }).first(),
+      page.getByRole("heading", { name: "template-skill", level: 3 }).first(),
     ).toBeVisible();
   });
 
@@ -226,7 +228,7 @@ test.describe("Marketplace UI", () => {
     ).not.toBeVisible({ timeout: 15_000 });
   });
 
-  test("/marketplace/plugin type-filter page renders 'Plugins' heading with item count", async ({
+  test("/marketplace/plugin type-filter page shows the cross-sell empty state (all plugins are AoA first-party)", async ({
     page,
   }) => {
     // /marketplace/plugin redirects → /marketplace?type=plugin (MarketplaceTypeRedirect).
@@ -242,7 +244,26 @@ test.describe("Marketplace UI", () => {
     const pluginsPill = page.getByRole("button", { name: /^plugins/i });
     await expect(pluginsPill).toHaveAttribute("data-active", "true");
 
-    // Slack plugin card should be listed (present in bundled snapshot)
+    // The bundled fixture's plugins are all AoA first-party (MeteoriteLabs-owned),
+    // so the main Plugins view is empty and shows the cross-sell empty state
+    // (which stays visible + points to AoA rather than hiding the section).
+    await expect(page.getByTestId("marketplace-empty-plugin")).toBeVisible();
+    await expect(
+      page.getByRole("heading", { name: /no third-party plugins yet/i }),
+    ).toBeVisible();
+  });
+
+  test("AoA view surfaces the segregated first-party plugins", async ({
+    page,
+  }) => {
+    // AoA-owned items are excluded from the main sections and live under the
+    // AoA view (?view=aoa). Slack (aoa-curated) appears only here.
+    await page.goto("/marketplace?view=aoa");
+
+    await expect(
+      page.getByRole("heading", { level: 1, name: /marketplace/i }),
+    ).toBeVisible({ timeout: 15_000 });
+
     await expect(
       page.getByRole("heading", { name: "Slack", level: 3 }),
     ).toBeVisible();
