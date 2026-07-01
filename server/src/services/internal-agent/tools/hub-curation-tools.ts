@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, isNull, or, sql } from "drizzle-orm";
 import { hubItems } from "@armyofagents/db";
 import type { AgentTool, ToolResult } from "../types.js";
 import { hubCurationService, type UpdateHubCurationSummaryInput } from "../../hub-curation.js";
@@ -86,6 +86,27 @@ function toCurationContextItem(row: {
   };
 }
 
+function derivedGroupKeyExpression() {
+  return sql<string>`
+    'auto:' || ${hubItems.companyId} ||
+    ':' || coalesce(${hubItems.semanticType}, 'unknown') ||
+    ':' || coalesce(${hubItems.scopeKey}, 'global') ||
+    ':' || coalesce(${hubItems.sourceType}, 'unknown') ||
+    ':' || case
+      when ${hubItems.ownerPool} is not null then 'pool:' || ${hubItems.ownerPool}
+      when ${hubItems.ownerUserId} is not null then 'owner:' || ${hubItems.ownerUserId}
+      else 'owner:unassigned'
+    end
+  `;
+}
+
+function groupKeyCondition(groupKey: string) {
+  return or(
+    eq(hubItems.groupKey, groupKey),
+    and(isNull(hubItems.groupKey), eq(derivedGroupKeyExpression(), groupKey)),
+  );
+}
+
 export const hubReadCurationContextTool: AgentTool = {
   name: "hub.readCurationContext",
   description:
@@ -144,7 +165,7 @@ export const hubReadCurationContextTool: AgentTool = {
           eq(hubItems.companyId, parsed.data.companyId),
           parsed.data.targetType === "item"
             ? eq(hubItems.id, parsed.data.hubItemId!)
-            : eq(hubItems.groupKey, parsed.data.groupKey!),
+            : groupKeyCondition(parsed.data.groupKey!),
           eq(hubItems.status, "open"),
         ),
       );

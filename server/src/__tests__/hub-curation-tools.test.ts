@@ -1,4 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
+import { inspect } from "node:util";
 import type { ToolContext } from "../services/internal-agent/types.js";
 
 const updateSummaryMock = vi.hoisted(() => vi.fn());
@@ -40,7 +41,7 @@ function makeReadDb(rows: Array<Record<string, unknown>>) {
   const where = vi.fn(() => ({ limit, orderBy }));
   const from = vi.fn(() => ({ where }));
   const select = vi.fn(() => ({ from }));
-  return { select, _limit: limit } as any;
+  return { select, _limit: limit, _where: where } as any;
 }
 
 describe("hub.updateCurationSummary tool", () => {
@@ -228,6 +229,44 @@ describe("hub.readCurationContext tool", () => {
         ],
       },
     });
+  });
+
+  it("builds group reads against persisted and derived auto group keys", async () => {
+    const ctx = makeCtx();
+    ctx.db = makeReadDb([
+      {
+        id: HUB_ITEM_ID,
+        semanticType: "run_failed",
+        sourceType: "heartbeat_run",
+        sourceId: "run-1",
+        title: "Failed run",
+        summary: null,
+        priority: "high",
+        slaAt: null,
+        curationRevision: 2,
+      },
+    ]);
+
+    const result = await hubReadCurationContextTool.execute(
+      {
+        companyId: COMPANY_ID,
+        targetType: "group",
+        groupKey: `auto:${COMPANY_ID}:run_failed:engineering:heartbeat_run:owner:user-1`,
+      },
+      ctx,
+    );
+
+    expect(result).toMatchObject({
+      success: true,
+      data: {
+        targetType: "group",
+        groupKey: `auto:${COMPANY_ID}:run_failed:engineering:heartbeat_run:owner:user-1`,
+        items: [expect.objectContaining({ hubItemId: HUB_ITEM_ID })],
+      },
+    });
+    const whereCondition = inspect(ctx.db._where.mock.calls[0][0], { depth: 20 });
+    expect(whereCondition).toContain("auto:");
+    expect(whereCondition).toContain("owner:unassigned");
   });
 
   it("requires the matching target identifier", async () => {
