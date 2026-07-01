@@ -12,6 +12,7 @@ import {
 import { validate } from "../middleware/validate.js";
 import {
   hubCounterSnapshotsService,
+  hubAutopilotService,
   hubItemsService,
   hubPreferencesService,
   permissionService,
@@ -41,6 +42,7 @@ function hasImplicitFounderAuthority(req: Request): boolean {
 export function hubItemRoutes(db: Db) {
   const router = Router();
   const svc = hubItemsService(db);
+  const autopilot = hubAutopilotService(db);
   const preferences = hubPreferencesService(db);
   const counterSnapshots = hubCounterSnapshotsService(db, {
     liveCounts: ({ companyId, userId, role }) => svc.counts(companyId, userId, role),
@@ -52,6 +54,14 @@ export function hubItemRoutes(db: Db) {
   async function resolveRole(req: Request, companyId: string, userId: string): Promise<UserRole> {
     if (hasImplicitFounderAuthority(req)) return "founder";
     return perms.getEffectiveRole(companyId, userId);
+  }
+
+  async function evaluateAutopilotRefresh(companyId: string, limit: number) {
+    try {
+      await autopilot.evaluateOpenItems({ companyId, limit });
+    } catch (error) {
+      console.warn("[hub.autopilot] refresh evaluation failed", error);
+    }
   }
 
   router.get("/companies/:companyId/hub-items/preferences/me", async (req, res) => {
@@ -98,6 +108,7 @@ export function hubItemRoutes(db: Db) {
     if (!query.lane || query.lane === "suggestions") {
       await emitStaleWorkHubItems(db, companyId, query.limit);
     }
+    await evaluateAutopilotRefresh(companyId, query.limit);
     const items = await svc.query(companyId, {
       actorUserId: userId,
       role,
@@ -121,6 +132,7 @@ export function hubItemRoutes(db: Db) {
     const role = await resolveRole(req, companyId, userId);
     await emitOpenApprovalHubItems(db, companyId);
     await emitStaleWorkHubItems(db, companyId, null);
+    await evaluateAutopilotRefresh(companyId, 25);
     const result = await counterSnapshots.getOrRefresh({ companyId, userId, role });
     res.json(result);
   });

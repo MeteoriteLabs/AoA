@@ -18,6 +18,7 @@ import {
 } from "@armyofagents/shared";
 import { hubItemsService } from "./hub-items.js";
 import { trustScoreService } from "./trust-scores.js";
+import { HttpError } from "../errors.js";
 
 type PolicyRow = {
   mode: string;
@@ -315,6 +316,50 @@ export function hubAutopilotService(db: Db, deps: HubAutopilotDeps = {}) {
 
     evaluate,
     applyEvaluation,
+
+    async evaluateOpenItems(args: {
+      companyId: string;
+      limit: number;
+    }): Promise<{ evaluated: number; handled: number; escalated: number }> {
+      const limit = Math.min(Math.max(args.limit, 1), 25);
+      const rows = await db
+        .select({
+          id: hubItems.id,
+          semanticType: hubItems.semanticType,
+          sourceType: hubItems.sourceType,
+          sourceId: hubItems.sourceId,
+          version: hubItems.version,
+        })
+        .from(hubItems)
+        .where(and(eq(hubItems.companyId, args.companyId), eq(hubItems.status, "open")))
+        .limit(limit);
+
+      let evaluated = 0;
+      let handled = 0;
+      let escalated = 0;
+      for (const row of rows) {
+        if (!row.semanticType || !(HUB_SEMANTIC_TYPES as readonly string[]).includes(row.semanticType)) continue;
+        const semanticType = row.semanticType as HubSemanticType;
+        if (isFounderGatedAutopilotType(semanticType)) continue;
+        evaluated += 1;
+        try {
+          const result = await applyEvaluation({
+            companyId: args.companyId,
+            hubItemId: row.id,
+            semanticType,
+            sourceType: row.sourceType,
+            sourceId: row.sourceId,
+            version: row.version,
+          });
+          if (result.handled) handled += 1;
+          else if (result.evaluation.decision === "escalate") escalated += 1;
+        } catch (error) {
+          if (error instanceof HttpError && error.status === 409) continue;
+          throw error;
+        }
+      }
+      return { evaluated, handled, escalated };
+    },
 
     async listRecentActions(companyId: string, args: { limit?: number } = {}): Promise<HubAutopilotActionsResponse> {
       const limit = Math.min(Math.max(args.limit ?? 10, 1), 50);
