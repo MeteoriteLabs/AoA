@@ -1,11 +1,12 @@
 import type { Db } from "@armyofagents/db";
 import { activityLog } from "@armyofagents/db";
+import type { ActivityActorType } from "@armyofagents/shared";
 import { publishLiveEvent } from "./live-events.js";
 import { sanitizeRecord } from "../redaction.js";
 
 export interface LogActivityInput {
   companyId: string;
-  actorType: "agent" | "user" | "system";
+  actorType: ActivityActorType;
   actorId: string;
   action: string;
   entityType: string;

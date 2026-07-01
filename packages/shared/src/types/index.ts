@@ -98,7 +98,7 @@ export type {
 } from "./heartbeat.js";
 export type { DashboardSummary } from "./dashboard.js";
 export type { HomeSummary, GoalProgress, GoalGapNudge, RecentActivityItem, SetupStatus } from "./home.js";
-export type { ActivityEvent } from "./activity.js";
+export type { ActivityActorType, ActivityEvent } from "./activity.js";
 export type { SidebarBadges } from "./sidebar-badges.js";
 export type {
   CompanyMembership,

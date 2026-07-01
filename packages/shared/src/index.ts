@@ -434,6 +434,7 @@ export type {
   GoalGapNudge,
   RecentActivityItem,
   SetupStatus,
+  ActivityActorType,
   ActivityEvent,
   SidebarBadges,
   CompanyMembership,

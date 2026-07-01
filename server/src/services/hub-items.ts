@@ -24,6 +24,7 @@ import type {
   HubOwnerPool,
   HubUserStateInput,
   NotificationPreferences,
+  ActivityActorType,
 } from "@armyofagents/shared";
 import {
   HUB_SEMANTIC_TYPES,
@@ -1170,7 +1171,7 @@ export function hubItemsService(db: Db) {
     hubItemId: string;
     action: string;
     expectedVersion: number;
-    actorType: string;
+    actorType: ActivityActorType;
     actorId: string;
     actorIsFounder: boolean; // route resolves via permissionService (founder OR board)
     authorityBasis?: string;
@@ -1186,7 +1187,7 @@ export function hubItemsService(db: Db) {
       hubItemId: args.hubItemId,
       action,
       expectedVersion: args.expectedVersion,
-      actorType: args.actorType as "user" | "agent" | "system",
+      actorType: args.actorType,
       actorId: args.actorId,
       actorIsFounder: args.actorIsFounder,
       authorityBasis: args.authorityBasis,
