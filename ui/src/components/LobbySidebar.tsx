@@ -94,11 +94,12 @@ interface LobbySidebarProps {
   /** Optional callback invoked when a nav item is clicked (for closing the drawer on mobile). */
   onNavigate?: () => void;
   /**
-   * Override the persisted-collapse default. When provided, the sidebar starts
-   * in this state on first mount and writes through to localStorage as the
-   * user toggles. Used to auto-collapse on page entry (e.g., Settings).
+   * Reactive: when true (the current page provides a secondary sidebar), the
+   * primary force-collapses out of the way; the user may still peek-expand it
+   * transiently (not persisted). When false, the primary reflects the persisted
+   * preference and manual toggles update it. See design-system §8.1.1.
    */
-  defaultCollapsed?: boolean;
+  hasSecondarySidebar?: boolean;
 }
 
 /**
@@ -123,35 +124,45 @@ export function LobbySidebar({
   activeItem = "organizations",
   drawer = false,
   onNavigate,
-  defaultCollapsed,
+  hasSecondarySidebar = false,
 }: LobbySidebarProps) {
   const navigate = useNavigate();
-  const [collapsed, setCollapsed] = useState<boolean>(() => {
+  // Persisted global preference (only mutated by manual toggles on pages WITHOUT
+  // a secondary sidebar). `collapsed` is what's actually rendered.
+  const [pref, setPref] = useState<boolean>(() => {
     if (drawer) return false;
-    // Pages with a secondary sidebar (currently only Settings) explicitly
-    // request primary collapse. Honor that on every mount, regardless of the
-    // user's stored preference — the secondary sidebar is the prominent nav on
-    // those pages, so the primary should collapse out of the way every time.
-    // See Decision #98 + design-system §8.1.1.
-    if (defaultCollapsed === true) return true;
     try {
-      const stored = localStorage.getItem(COLLAPSE_KEY);
-      if (stored === "true") return true;
-      if (stored === "false") return false;
-      return defaultCollapsed ?? false;
+      return localStorage.getItem(COLLAPSE_KEY) === "true";
     } catch {
-      return defaultCollapsed ?? false;
+      return false;
     }
   });
+  const [collapsed, setCollapsed] = useState<boolean>(() =>
+    drawer ? false : hasSecondarySidebar ? true : pref,
+  );
 
+  // React to navigating into/out of a secondary-sidebar page: force-collapse
+  // when a secondary sidebar is present, otherwise reflect the preference.
   useEffect(() => {
     if (drawer) return;
+    setCollapsed(hasSecondarySidebar ? true : pref);
+  }, [drawer, hasSecondarySidebar, pref]);
+
+  const handleToggle = () => {
+    if (hasSecondarySidebar) {
+      // Transient peek on a secondary-sidebar page — do not persist.
+      setCollapsed((c) => !c);
+      return;
+    }
+    const next = !collapsed;
+    setCollapsed(next);
+    setPref(next);
     try {
-      localStorage.setItem(COLLAPSE_KEY, String(collapsed));
+      localStorage.setItem(COLLAPSE_KEY, String(next));
     } catch {
       // noop — storage may be disabled
     }
-  }, [collapsed, drawer]);
+  };
 
   const navTo = (path: string) => {
     navigate(path);
@@ -309,7 +320,7 @@ export function LobbySidebar({
       {!drawer && (
         <SidebarCollapseToggle
           collapsed={collapsed}
-          onToggle={() => setCollapsed((c) => !c)}
+          onToggle={handleToggle}
           sidebarWidth={(collapsed ? 56 : 220) + 8}
           top={17}
           className="hidden md:inline-flex"

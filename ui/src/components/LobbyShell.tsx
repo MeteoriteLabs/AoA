@@ -31,12 +31,6 @@ interface LobbyShellProps {
   /** Click handler for the sidebar's "+ New organization" button. */
   onCreateCompany: () => void;
   /**
-   * Auto-collapse the desktop primary sidebar to icons-only by default. The
-   * user can still expand it manually via the collapse toggle. Used on Settings
-   * (where the secondary sidebar takes prominence) and similar pages.
-   */
-  defaultCollapsed?: boolean;
-  /**
    * Optional secondary sidebar rendered flush between the primary sidebar and
    * the main content. Hidden on mobile (the primary drawer covers the nav
    * surface on small viewports). Used by Settings — see InstanceSettingsPage.
@@ -58,7 +52,6 @@ interface LobbyShellProps {
 export function LobbyShell({
   activeItem,
   onCreateCompany,
-  defaultCollapsed,
   secondarySidebar,
   children,
 }: LobbyShellProps) {
@@ -77,7 +70,7 @@ export function LobbyShell({
           <LobbySidebar
             activeItem={activeItem}
             onCreateCompany={onCreateCompany}
-            defaultCollapsed={defaultCollapsed}
+            hasSecondarySidebar={secondarySidebar != null}
           />
         </div>
 
