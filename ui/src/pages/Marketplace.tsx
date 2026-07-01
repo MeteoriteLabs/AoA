@@ -9,12 +9,16 @@ import { usePackages } from "@/hooks/usePackages";
 import { CatalogCard } from "@/components/marketplace/CatalogCard";
 import { PackageCard } from "@/components/marketplace/PackageCard";
 import { PackageInstallModal } from "@/components/marketplace/install/PackageInstallModal";
-import { MarketplaceFilterChips } from "@/components/marketplace/MarketplaceFilterChips";
 import { MarketplaceSubfilterChips } from "@/components/marketplace/MarketplaceSubfilterChips";
 import { LobbyShellMobileMenuButton } from "@/components/LobbyShell";
+import {
+  useMarketplaceSidebar,
+  type MarketplaceSidebarKey,
+} from "@/components/marketplace/useMarketplaceSidebar";
+import { useNavigate } from "@/lib/router";
 import { pluginsApi } from "@/api/plugins";
 import { queryKeys } from "@/lib/queryKeys";
-import { filterByType } from "@/api/marketplace";
+import { isAoaItem, isAoaPackage } from "@/lib/marketplace-constants";
 import { cn } from "@/lib/utils";
 import type {
   MarketplaceItemType,
@@ -246,10 +250,23 @@ export default function Marketplace() {
   );
 
   const [searchParams] = useSearchParams();
-  const [selectedType, setSelectedType] = useState<MarketplaceItemType | null>(() => {
-    const t = searchParams.get("type");
-    return t === "plugin" || t === "skill" || t === "agent" || t === "team" ? t : null;
-  });
+  const navigate = useNavigate();
+  // URL is the single source of truth (the persistent LobbyLayout never remounts
+  // this page, so local filter state would go stale on sidebar navigation).
+  const isAoaView = searchParams.get("view") === "aoa";
+  const typeParam = searchParams.get("type");
+  const selectedType: MarketplaceItemType | null =
+    typeParam === "plugin" || typeParam === "skill" || typeParam === "agent" || typeParam === "team"
+      ? typeParam
+      : null;
+  const activeKey: MarketplaceSidebarKey = isAoaView ? "aoa" : selectedType ?? "home";
+  const { pillItems } = useMarketplaceSidebar(activeKey);
+  const goType = (t: MarketplaceItemType | null) =>
+    navigate(t ? `/marketplace?type=${t}` : "/marketplace");
+  const activePillRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    activePillRef.current?.scrollIntoView?.({ inline: "center", block: "nearest" });
+  }, [activeKey]);
   const [sortMode, setSortMode] = useState<SortMode>("all");
   const [showAllSkillPackages, setShowAllSkillPackages] = useState(false);
   const [search, setSearch] = useState("");
@@ -269,25 +286,25 @@ export default function Marketplace() {
   }, []);
 
   const items = useMemo(() => catalog?.items ?? [], [catalog]);
+  // AoA first-party items are segregated: only under the AoA view, never in the
+  // main type/Home views, search, or packages.
+  const aoaItems = useMemo(() => items.filter(isAoaItem), [items]);
+  const mainItems = useMemo(() => items.filter((i) => !isAoaItem(i)), [items]);
+  const base = isAoaView ? aoaItems : mainItems;
+  const mainPackages = useMemo(
+    () => (packages ?? []).filter((p) => !isAoaPackage(p)),
+    [packages],
+  );
+
   const packageInstallMembers = useMemo<MarketplaceCatalogItem[]>(() => {
     if (!packageToInstall) return [];
     const idSet = new Set(packageToInstall.memberItemIds);
     return items.filter((item) => idSet.has(item.id));
   }, [items, packageToInstall]);
 
-  const typeCounts = useMemo<Partial<Record<MarketplaceItemType, number>>>(
-    () => ({
-      skill: filterByType(items, "skill").length,
-      plugin: filterByType(items, "plugin").length,
-      agent: filterByType(items, "agent").length,
-      team: filterByType(items, "team").length,
-    }),
-    [items],
-  );
-
   const visible = useMemo(() => {
     const q = search.trim().toLowerCase();
-    let list = items;
+    let list = base;
     if (selectedType) list = list.filter((it) => it.type === selectedType);
     if (q) {
       list = list.filter(
@@ -296,7 +313,7 @@ export default function Marketplace() {
       );
     }
     return applySort(list, sortMode);
-  }, [items, selectedType, search, sortMode]);
+  }, [base, selectedType, search, sortMode]);
 
   // Group visible (post-search, post-sort) items by type.
   const grouped = useMemo<Record<MarketplaceItemType, MarketplaceCatalogItem[]>>(() => {
@@ -308,16 +325,16 @@ export default function Marketplace() {
   }, [visible]);
 
   function renderPackageOverview() {
-    if (!packages?.length) return null;
+    if (!mainPackages.length) return null;
     return (
       <section className="mb-7">
-        <PackagesHeader total={packages.length} onSeeAll={() => setSelectedType("skill")} />
+        <PackagesHeader total={mainPackages.length} onSeeAll={() => goType("skill")} />
         <OverviewShelf
           label="packages"
           testId="marketplace-packages-overview"
           scrollTestId="marketplace-packages-overview-scroll"
         >
-          {packages.map((pkg) => (
+          {mainPackages.map((pkg) => (
             <PackageCard key={pkg.id} pkg={pkg} onInstallAll={setPackageToInstall} />
           ))}
         </OverviewShelf>
@@ -326,11 +343,11 @@ export default function Marketplace() {
   }
 
   function renderSkillPackageSection() {
-    if (!packages?.length) return null;
-    const hasMore = packages.length > SKILL_PACKAGE_PREVIEW_COUNT;
+    if (!mainPackages.length) return null;
+    const hasMore = mainPackages.length > SKILL_PACKAGE_PREVIEW_COUNT;
     const visiblePackages = showAllSkillPackages
-      ? packages
-      : packages.slice(0, SKILL_PACKAGE_PREVIEW_COUNT);
+      ? mainPackages
+      : mainPackages.slice(0, SKILL_PACKAGE_PREVIEW_COUNT);
     return (
       <section className="mb-7">
         <div className="mb-3 flex items-center justify-between">
@@ -339,7 +356,7 @@ export default function Marketplace() {
               <Layers className="size-3" />
             </span>
             Skill packages
-            <span className="text-very-dim font-normal normal-case tracking-normal">· {packages.length}</span>
+            <span className="text-very-dim font-normal normal-case tracking-normal">· {mainPackages.length}</span>
           </h2>
           {hasMore && (
             <button
@@ -373,8 +390,8 @@ export default function Marketplace() {
         <SectionHeader
           type={type}
           total={total}
-          showSeeAll={selectedType === null && total > SECTION_CAP}
-          onSeeAll={() => setSelectedType(type)}
+          showSeeAll={selectedType === null && !isAoaView && total > SECTION_CAP}
+          onSeeAll={() => goType(type)}
         />
         {isOverview ? (
           <OverviewShelf label="section">
@@ -428,9 +445,28 @@ export default function Marketplace() {
           />
         </div>
 
-        {/* Filter chips (type) */}
-        <div className="mb-4">
-          <MarketplaceFilterChips value={selectedType} onChange={setSelectedType} counts={typeCounts} />
+        {/* Mobile type nav — desktop uses the LobbyShell secondary sidebar slot (§8.6) */}
+        <div className="md:hidden mb-4 -mx-4 overflow-x-auto px-4 [&::-webkit-scrollbar]:hidden [scrollbar-width:none]">
+          <div className="flex gap-1.5 w-max">
+            {pillItems.map((p) => (
+              <button
+                key={p.id}
+                ref={p.active ? activePillRef : undefined}
+                type="button"
+                data-active={p.active ? "true" : undefined}
+                onClick={p.onClick}
+                className={cn(
+                  "inline-flex items-center gap-1.5 px-3 py-2 rounded-full text-[12.5px] font-medium border whitespace-nowrap shrink-0 transition-colors",
+                  p.active
+                    ? "bg-brand/[0.08] text-[hsl(15_60%_75%)] border-brand/[0.25]"
+                    : "bg-card border-border text-foreground/[0.78] hover:bg-card-2 hover:text-foreground",
+                )}
+              >
+                {p.icon}
+                {p.label}
+              </button>
+            ))}
+          </div>
         </div>
 
         {/* Sub-filter chips (sort/discover) */}
@@ -468,12 +504,14 @@ export default function Marketplace() {
             renderSection(selectedType, grouped[selectedType], grouped[selectedType].length)
           )
         ) : (
-          // All-view: overview shelves, capped, with packages promoted first.
+          // All-view (Home) or AoA view: overview shelves. Home promotes packages
+          // first; the AoA view shows only AoA items (no packages) uncapped.
           <>
-            {renderPackageOverview()}
+            {!isAoaView && renderPackageOverview()}
             {SECTION_ORDER.map((type) => {
-              const items = grouped[type];
-              return renderSection(type, items.slice(0, SECTION_CAP), items.length);
+              const groupedItems = grouped[type];
+              const cap = isAoaView ? groupedItems.length : SECTION_CAP;
+              return renderSection(type, groupedItems.slice(0, cap), groupedItems.length);
             })}
           </>
         )}
