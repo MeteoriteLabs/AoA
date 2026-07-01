@@ -166,6 +166,7 @@ export function InstanceSettingsPage() {
           sections={settingsSections}
           collapsed={sidebarCollapsed}
           onToggleCollapse={() => setSidebarCollapsed((c) => !c)}
+          floating
         />
       }
     >

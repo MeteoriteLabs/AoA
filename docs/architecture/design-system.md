@@ -296,6 +296,16 @@ Implementation: pages opt in by passing `defaultCollapsed={true}` to `LobbyShell
 
 Current consumers (2026-05-09): `InstanceSettingsPage` only. Marketplace pages briefly used this in Phase A but were removed in Phase D when this rule was formalized. Locked as Decision #98.
 
+### 8.1.2 Lobby-tier floating rails (2026-07)
+
+The lobby-tier chrome (`LobbyShell` surfaces: Lobby, Marketplace, Settings) renders its primary rail — and, when present, its secondary sidebar — as a floating rounded "island": `my-2 ml-2 rounded-2xl border border-border`, `h-[calc(100dvh-1rem)]`, `overflow-hidden`, and **no drop shadow** (per §7 inline UI carries no shadow — the border + `bg-card/50` sells the float). Main content stays flush to the window edge ("floating rail only", not full floating panels).
+
+The external collapse toggle is offset by the 8px left gutter (`sidebarWidth + 8`, `top 17`) so it still straddles the rail/main seam. The mobile drawer (`drawer` mode) is unaffected — it renders full-width inside the Sheet with no rounding.
+
+**New-organization CTA:** the expanded primary rail's "+ New organization" is an *attached split button* — the primary segment creates (one click), and a joined chevron segment (`DropdownMenuTrigger`) opens a floating Radix `DropdownMenu` (`align="end"`) with "Import organization". The menu overlays the nav (no layout shift); shadows are allowed here because a dropdown is a floating overlay, not inline chrome. Collapsed rail = create-only (no chevron/import).
+
+**Scope:** lobby-tier only. The in-company primary `Sidebar` and the in-company `SecondarySidebar` consumers (`TeamLayout`, in-company `SettingsLayout`) keep the flush-rail look. `SecondarySidebar` exposes an opt-in `floating` prop (default false) so only the lobby-tier `InstanceSettingsPage` gets the island treatment. Propagating the floating look app-wide is a tracked follow-up.
+
 ### 8.2 Sidebar collapse
 
 - Both primary and secondary collapse to icon-only (~48–56px wide).

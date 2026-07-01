@@ -127,4 +127,18 @@ describe("SecondarySidebar", () => {
     );
     expect(container.querySelector("[role='navigation']")?.className).toContain("custom-sidebar");
   });
+
+  it("default (non-floating) keeps the flush right border and no rounding", () => {
+    const { container } = render(<SecondarySidebar sections={SECTIONS} />);
+    const root = container.querySelector("[role='navigation']")!;
+    expect(root.className).toContain("border-r");
+    expect(root.className).not.toContain("rounded-2xl");
+  });
+
+  it("floating variant is a rounded island with an all-sides border", () => {
+    const { container } = render(<SecondarySidebar sections={SECTIONS} floating />);
+    const root = container.querySelector("[role='navigation']")!;
+    expect(root.className).toContain("rounded-2xl");
+    expect(root.className).not.toContain("border-r");
+  });
 });
