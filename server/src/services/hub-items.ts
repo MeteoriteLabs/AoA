@@ -798,12 +798,14 @@ export function hubItemsService(db: Db) {
     hubItemId: string;
     action: "resolve" | "archive" | "claim" | "release";
     expectedVersion: number;
-    actorType: "user" | "agent" | "system";
+    actorType: "user" | "agent" | "system" | "autonomy";
     actorId: string;
     actorIsFounder: boolean;
     authorityBasis?: string;
+    autonomyLevel?: string;
     reason?: string;
     idempotencyKey?: string;
+    decisionContext?: unknown;
     sideEffect?: () => Promise<{ irreversibleSideEffects?: unknown; relayResult?: unknown }>;
   }) {
     const current = await db
@@ -921,8 +923,10 @@ export function hubItemsService(db: Db) {
           actorId: args.actorId,
           action: args.action,
           authorityBasis: args.authorityBasis ?? null,
+          autonomyLevel: args.autonomyLevel ?? null,
           reason: args.reason ?? null,
           idempotencyKey: args.idempotencyKey ?? null,
+          decisionContext: args.decisionContext ?? null,
           priorState: hubOwnedPriorState(current),
           undoDeadline,
         })
@@ -1074,7 +1078,7 @@ export function hubItemsService(db: Db) {
     actorUserId: string;
     actorIsFounder: boolean;
     role?: UserRole;
-    actorType: "user" | "agent" | "system";
+    actorType: "user" | "agent" | "system" | "autonomy";
     bulkId?: string;
     items: Array<{
       id: string;
