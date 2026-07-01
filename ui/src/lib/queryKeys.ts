@@ -138,6 +138,10 @@ export const queryKeys = {
     autopilotActions: (companyId: string) =>
       ["hub-items", companyId, "autopilot-actions"] as const,
   },
+  agentRuntimeDecisions: {
+    detail: (companyId: string, decisionId: string) =>
+      ["agent-runtime-decisions", companyId, decisionId] as const,
+  },
   sidebarPreferences: (companyId: string) => ["sidebar-preferences", companyId] as const,
   inboxDismissals: (companyId: string) => ["inbox-dismissals", companyId] as const,
   activity: (companyId: string) => ["activity", companyId] as const,

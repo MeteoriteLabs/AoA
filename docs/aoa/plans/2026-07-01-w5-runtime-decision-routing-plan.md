@@ -305,12 +305,12 @@ pnpm --filter @armyofagents/db test:run
 - `ui/src/__tests__/InboxHub.test.tsx`
 - component tests under `ui/src/components/hub/__tests__/`
 
-- [ ] Write failing UI tests for permission prompt controls, work-question answer, stale/answered/expired states, and allow-always gating.
-- [ ] Add API client and query keys.
-- [ ] Add registry-backed viewer for `agent_runtime_decision`.
-- [ ] Wire mutations and invalidation.
-- [ ] Verify responsive layout and no overlapping text.
-- [ ] Run focused UI tests.
+- [x] Write failing UI tests for permission prompt controls, work-question answer, stale/answered/expired states, and allow-always gating.
+- [x] Add API client and query keys.
+- [x] Add registry-backed viewer for `agent_runtime_decision`.
+- [x] Wire mutations and invalidation.
+- [x] Verify responsive layout and no overlapping text.
+- [x] Run focused UI tests.
 
 ## Task 7: Real Adapter Bridge Spike/Implementation Gate
 

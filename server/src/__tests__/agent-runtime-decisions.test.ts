@@ -308,6 +308,16 @@ describe("agentRuntimeDecisionService", () => {
     expect(activityLogger.mock.invocationCallOrder[0]).toBeLessThan(
       repo.updateDecision.mock.invocationCallOrder[0],
     );
+    expect(repo.createTrustRule).toHaveBeenCalledWith(
+      expect.objectContaining({
+        companyId: "company-1",
+        agentId: "agent-1",
+        adapterType: "claude_local",
+        toolName: "shell",
+        commandHash: expect.any(String),
+        createdByUserId: "founder-1",
+      }),
+    );
     expect(result.status).toBe("answered");
   });
 

@@ -511,6 +511,19 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
       answeredAt: now(),
       sourceRevision: row.sourceRevision + 1,
     });
+    if (input.kind === "permission" && input.decision === "allow_always") {
+      await createTrustRule({
+        companyId: row.companyId,
+        agentId: row.agentId,
+        adapterType: row.adapterType,
+        toolName: row.toolName,
+        command: row.command,
+        pathScope: row.path,
+        networkScope: row.networkTarget,
+        riskClass: row.riskClass,
+        createdByUserId: input.actorUserId,
+      });
+    }
     await emitHubItem(answered);
     return answered;
   }

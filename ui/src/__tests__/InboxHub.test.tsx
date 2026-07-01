@@ -10,6 +10,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { hubItemsApi } from "@/api/hub-items";
+import { agentRuntimeDecisionsApi } from "@/api/agent-runtime-decisions";
 import { InboxHub } from "../pages/InboxHub";
 
 const mockPushToast = vi.hoisted(() => vi.fn());
@@ -99,6 +100,13 @@ vi.mock("@/api/hub-items", () => ({
   },
 }));
 
+vi.mock("@/api/agent-runtime-decisions", () => ({
+  agentRuntimeDecisionsApi: {
+    detail: vi.fn(),
+    answer: vi.fn(),
+  },
+}));
+
 function renderPage(initialEntry: string) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
@@ -173,6 +181,10 @@ beforeEach(() => {
   );
   vi.mocked(hubItemsApi.notificationDigest.list).mockResolvedValue({ items: [] });
   vi.mocked(hubItemsApi.notificationDigest.ack).mockResolvedValue({ acked: 0 });
+  vi.mocked(agentRuntimeDecisionsApi.detail).mockResolvedValue(runtimeDecisionDetail());
+  vi.mocked(agentRuntimeDecisionsApi.answer).mockResolvedValue(
+    runtimeDecisionDetail({ status: "answered", sourceRevision: 4 }),
+  );
 });
 
 type HubListItem = Awaited<ReturnType<typeof hubItemsApi.list>>["items"][number];
@@ -263,6 +275,40 @@ function hubItem(overrides: Partial<HubListItem> = {}) {
   } as HubListItem;
 }
 
+function runtimeDecisionDetail(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "decision-1",
+    hubItemId: "hub-runtime",
+    companyId: "company-1",
+    agentId: "agent-1",
+    runId: "run-1",
+    adapterType: "codex_local",
+    adapterSessionId: "session-1",
+    kind: "permission",
+    status: "shown",
+    sourceRevision: 3,
+    nonce: "nonce-1",
+    title: "Allow command?",
+    summary: "Run tests",
+    promptText: "Run pnpm test:run?",
+    toolName: "shell",
+    command: "pnpm test:run",
+    cwd: "C:/repo",
+    path: null,
+    networkTarget: null,
+    riskClass: "medium",
+    options: null,
+    timeoutPolicy: "deny",
+    expiresAt: null,
+    answeredAt: null,
+    relayedAt: null,
+    relayError: null,
+    createdAt: "2026-07-01T00:00:00.000Z",
+    updatedAt: "2026-07-01T00:00:00.000Z",
+    ...overrides,
+  } as never;
+}
+
 describe("InboxHub page", () => {
   it("renders the hub at the canonical /inbox route", async () => {
     renderPage("/P4/inbox");
@@ -324,6 +370,102 @@ describe("InboxHub page", () => {
     await waitFor(() => {
       expect(screen.getByTestId("location")).toHaveTextContent("/P4/inbox/waiting/hub-1");
     });
+  });
+
+  it("answers runtime permission prompts from the hub viewer", async () => {
+    vi.mocked(hubItemsApi.list).mockResolvedValue(
+      hubList([
+        hubItem({
+          id: "hub-runtime",
+          semanticType: "agent_runtime_decision",
+          title: "Allow command?",
+          sourceType: "runtime_decision",
+          sourceId: "decision-1",
+        }),
+      ]),
+    );
+
+    renderPage("/P4/inbox/waiting/hub-runtime");
+
+    expect(await screen.findByText("Run pnpm test:run?")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /allow once/i }));
+
+    await waitFor(() => {
+      expect(agentRuntimeDecisionsApi.answer).toHaveBeenCalledWith(
+        "company-1",
+        "decision-1",
+        {
+          kind: "permission",
+          decision: "allow_once",
+          expectedSourceRevision: 3,
+          nonce: "nonce-1",
+        },
+      );
+    });
+  });
+
+  it("submits runtime work-question answers from the hub viewer", async () => {
+    vi.mocked(hubItemsApi.list).mockResolvedValue(
+      hubList([
+        hubItem({
+          id: "hub-runtime",
+          semanticType: "agent_runtime_decision",
+          title: "Need product answer",
+          sourceType: "runtime_decision",
+          sourceId: "decision-1",
+        }),
+      ]),
+    );
+    vi.mocked(agentRuntimeDecisionsApi.detail).mockResolvedValue(
+      runtimeDecisionDetail({
+        kind: "work_question",
+        title: "Need product answer",
+        promptText: "Which segment should we prioritize?",
+      }),
+    );
+
+    renderPage("/P4/inbox/waiting/hub-runtime");
+
+    await userEvent.type(
+      await screen.findByRole("textbox", { name: /work question answer/i }),
+      "Founder-led SaaS teams.",
+    );
+    await userEvent.click(screen.getByRole("button", { name: /send answer/i }));
+
+    await waitFor(() => {
+      expect(agentRuntimeDecisionsApi.answer).toHaveBeenCalledWith(
+        "company-1",
+        "decision-1",
+        {
+          kind: "work_question",
+          answer: { text: "Founder-led SaaS teams." },
+          expectedSourceRevision: 3,
+          nonce: "nonce-1",
+        },
+      );
+    });
+  });
+
+  it("disables runtime decision actions after the prompt expires", async () => {
+    vi.mocked(hubItemsApi.list).mockResolvedValue(
+      hubList([
+        hubItem({
+          id: "hub-runtime",
+          semanticType: "agent_runtime_decision",
+          title: "Allow command?",
+          sourceType: "runtime_decision",
+          sourceId: "decision-1",
+        }),
+      ]),
+    );
+    vi.mocked(agentRuntimeDecisionsApi.detail).mockResolvedValue(
+      runtimeDecisionDetail({ status: "expired" }),
+    );
+
+    renderPage("/P4/inbox/waiting/hub-runtime");
+
+    expect(await screen.findByRole("button", { name: /allow always/i })).toBeDisabled();
+    expect(screen.getByText("expired")).toBeInTheDocument();
   });
 
   it("renders Home by default", async () => {
