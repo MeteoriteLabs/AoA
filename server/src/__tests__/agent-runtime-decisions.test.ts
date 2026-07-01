@@ -49,6 +49,7 @@ function makeService(repoOverrides: Record<string, unknown> = {}) {
   const repo = {
     createDecision: vi.fn(async (input) => baseDecision(input as Record<string, unknown>)),
     getDecision: vi.fn(async () => baseDecision()),
+    listActiveForRun: vi.fn(async () => []),
     updateDecision: vi.fn(async (_id, patch) => baseDecision(patch as Record<string, unknown>)),
     listDueForExpiry: vi.fn(async () => []),
     ...repoOverrides,
@@ -230,6 +231,41 @@ describe("agentRuntimeDecisionService", () => {
     );
     expect(hubItems.emit).toHaveBeenCalled();
     expect(result.expired).toBe(1);
+  });
+
+  it("cancels active run prompts and emits hub reconciliation updates", async () => {
+    const active = baseDecision({ id: "active-1", status: "shown", sourceRevision: 4 });
+    const { service, repo, hubItems, activityLogger } = makeService({
+      listActiveForRun: vi.fn(async () => [active]),
+    });
+
+    const result = await service.cancelActiveForRun({
+      companyId: "company-1",
+      runId: "11111111-1111-4111-8111-111111111111",
+      reason: "run cancelled",
+    });
+
+    expect(repo.listActiveForRun).toHaveBeenCalledWith({
+      companyId: "company-1",
+      runId: "11111111-1111-4111-8111-111111111111",
+    });
+    expect(activityLogger).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "runtime_decision.cancelled",
+        entityId: "active-1",
+        details: { sourceRevision: 4, reason: "run cancelled" },
+      }),
+    );
+    expect(repo.updateDecision).toHaveBeenCalledWith(
+      "active-1",
+      expect.objectContaining({
+        status: "cancelled",
+        relayError: "run cancelled",
+        sourceRevision: 5,
+      }),
+    );
+    expect(hubItems.emit).toHaveBeenCalled();
+    expect(result.cancelled).toBe(1);
   });
 
   it("reports relay_failed prompts as non-terminal and relayed prompts as terminal for hub reconciliation", () => {

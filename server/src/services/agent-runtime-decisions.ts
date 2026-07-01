@@ -76,9 +76,17 @@ type ExpireDueInput = {
   limit: number;
 };
 
+type WaitForAnswerInput = {
+  companyId: string;
+  decisionId: string;
+  pollIntervalMs?: number;
+  timeoutMs?: number;
+};
+
 type DecisionRepo = {
   createDecision(input: typeof agentRuntimeDecisions.$inferInsert): Promise<AgentRuntimeDecisionRow>;
   getDecision(companyId: string, decisionId: string): Promise<AgentRuntimeDecisionRow | null>;
+  listActiveForRun(input: { companyId: string; runId: string }): Promise<AgentRuntimeDecisionRow[]>;
   updateDecision(
     decisionId: string,
     patch: Partial<typeof agentRuntimeDecisions.$inferInsert>,
@@ -119,6 +127,10 @@ function sourceUniqueKey(input: { companyId: string; runId: string; nonce: strin
 function toIso(value: Date | string | null): string | null {
   if (value == null) return null;
   return value instanceof Date ? value.toISOString() : value;
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export function runtimeDecisionDetail(row: AgentRuntimeDecisionRow): RuntimeDecisionDetail {
@@ -188,6 +200,18 @@ function realRepo(db: Db): DecisionRepo {
         .where(and(eq(agentRuntimeDecisions.id, decisionId), eq(agentRuntimeDecisions.companyId, companyId)))
         .limit(1)
         .then((rows) => rows[0] ?? null);
+    },
+    async listActiveForRun(input) {
+      return db
+        .select()
+        .from(agentRuntimeDecisions)
+        .where(
+          and(
+            eq(agentRuntimeDecisions.companyId, input.companyId),
+            eq(agentRuntimeDecisions.runId, input.runId),
+            inArray(agentRuntimeDecisions.status, ["created", "shown", "answered", "relay_failed"]),
+          ),
+        );
     },
     async updateDecision(decisionId, patch) {
       return db
@@ -346,6 +370,23 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
     return answered;
   }
 
+  async function waitForAnswer(input: WaitForAnswerInput) {
+    const startedAt = Date.now();
+    const pollIntervalMs = Math.max(0, input.pollIntervalMs ?? 1000);
+    for (;;) {
+      const row = await repo.getDecision(input.companyId, input.decisionId);
+      if (!row) throw notFound("Runtime decision prompt not found");
+      if (row.status === "answered") return row;
+      if (TERMINAL_STATUSES.has(row.status as RuntimeDecisionStatus)) {
+        throw conflict("Runtime decision prompt is no longer actionable");
+      }
+      if (input.timeoutMs != null && Date.now() - startedAt >= input.timeoutMs) {
+        throw conflict("Timed out waiting for runtime decision answer");
+      }
+      await sleep(pollIntervalMs);
+    }
+  }
+
   async function markRelayFailed(input: RelayFailedInput) {
     const row = await loadActive(input.companyId, input.decisionId);
     await activityLogger({
@@ -415,13 +456,41 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
     return { expired };
   }
 
+  async function cancelActiveForRun(input: { companyId: string; runId: string; reason: string }) {
+    const active = await repo.listActiveForRun({ companyId: input.companyId, runId: input.runId });
+    let cancelled = 0;
+    for (const row of active) {
+      await activityLogger({
+        companyId: row.companyId,
+        actorType: "system",
+        actorId: "runtime_decision_run_cleanup",
+        action: "runtime_decision.cancelled",
+        entityType: "agent_runtime_decision",
+        entityId: row.id,
+        agentId: row.agentId,
+        runId: row.runId,
+        details: { sourceRevision: row.sourceRevision, reason: input.reason },
+      });
+      const updated = await repo.updateDecision(row.id, {
+        status: "cancelled",
+        relayError: safeText(input.reason),
+        sourceRevision: row.sourceRevision + 1,
+      });
+      await emitHubItem(updated);
+      cancelled += 1;
+    }
+    return { cancelled };
+  }
+
   return {
     createPrompt,
     getDetail,
     answerPrompt,
+    waitForAnswer,
     markRelayFailed,
     markRelayed,
     expireDuePrompts,
+    cancelActiveForRun,
     emitHubItemForPrompt: emitHubItem,
   };
 }

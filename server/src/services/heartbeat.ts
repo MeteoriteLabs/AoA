@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { and, asc, desc, eq, gt, inArray, lte, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import {
@@ -55,7 +56,12 @@ import {
   writeAoaSkillSyncPreference,
   signalRunningProcess,
 } from "@armyofagents/adapter-utils/server-utils";
-import type { AdapterRuntimeServiceReport } from "@armyofagents/adapter-utils";
+import type {
+  AdapterRuntimeDecisionBroker,
+  AdapterRuntimeDecisionPromptBase,
+  AdapterRuntimePermissionDecision,
+  AdapterRuntimeServiceReport,
+} from "@armyofagents/adapter-utils";
 import type { PluginToolDispatcher } from "./plugin-tool-dispatcher.js";
 import { buildRunInputBundle } from "./run-input-bundles.js";
 import { redactAndCapPrompt } from "./prompt-snapshot.js";
@@ -63,6 +69,7 @@ import {
   cancelCrewRunsForAgent,
   cancelCrewRunsForCompany,
 } from "./crew-cancellation.js";
+import { agentRuntimeDecisionService, type AgentRuntimeDecisionRow } from "./agent-runtime-decisions.js";
 
 export {
   cancelCrewRunsForAgent,
@@ -202,6 +209,171 @@ export function resolveAdapterExecutionContext(
   const executionTarget = resolveAdapterExecutionTarget(adapterConfigObject.executionTarget);
   const runtimeCommandSpec = adapter.getRuntimeCommandSpec?.(adapterConfigObject) ?? null;
   return { executionTarget, runtimeCommandSpec };
+}
+
+type HeartbeatRuntimeDecisionEvent = {
+  eventType: string;
+  stream: "system";
+  level: "info" | "warn" | "error";
+  message: string;
+  payload?: Record<string, unknown>;
+};
+
+type HeartbeatRuntimeDecisionService = Pick<
+  ReturnType<typeof agentRuntimeDecisionService>,
+  "createPrompt" | "waitForAnswer" | "markRelayed" | "markRelayFailed"
+>;
+
+type HeartbeatRuntimeDecisionBrokerInput = {
+  run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "agentId">;
+  agent: Pick<typeof agents.$inferSelect, "id" | "companyId" | "name" | "adapterType">;
+  runtime: {
+    sessionId: string | null;
+    sessionParams: Record<string, unknown> | null;
+    sessionDisplayId: string | null;
+    taskKey: string | null;
+  };
+  runtimeDecisions: HeartbeatRuntimeDecisionService;
+  appendRunEvent: (event: HeartbeatRuntimeDecisionEvent) => Promise<void>;
+  markRunWaiting: (decision: AgentRuntimeDecisionRow) => Promise<void>;
+  clearRunWaiting: (decision: AgentRuntimeDecisionRow) => Promise<void>;
+  pollIntervalMs?: number;
+};
+
+function normalizeRuntimeDecisionExpiresAt(value: Date | string | null | undefined): Date | null {
+  if (value == null) return null;
+  return value instanceof Date ? value : new Date(value);
+}
+
+function relayErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+export function createHeartbeatRuntimeDecisionBroker(
+  input: HeartbeatRuntimeDecisionBrokerInput,
+): AdapterRuntimeDecisionBroker {
+  const adapterType = input.agent.adapterType ?? "process";
+  const adapterSessionId = input.runtime.sessionDisplayId ?? input.runtime.sessionId ?? null;
+
+  async function createPrompt(kind: "permission" | "work_question", prompt: AdapterRuntimeDecisionPromptBase) {
+    const { decision } = await input.runtimeDecisions.createPrompt({
+      companyId: input.run.companyId,
+      agentId: input.agent.id,
+      runId: input.run.id,
+      adapterType,
+      adapterSessionId,
+      adapterSessionParams: input.runtime.sessionParams,
+      kind,
+      nonce: prompt.nonce ?? randomUUID(),
+      title: prompt.title,
+      summary: prompt.summary,
+      promptText: prompt.promptText,
+      toolName: prompt.toolName,
+      command: prompt.command,
+      cwd: prompt.cwd,
+      path: prompt.path,
+      networkTarget: prompt.networkTarget,
+      riskClass: prompt.riskClass,
+      options: prompt.options,
+      expiresAt: normalizeRuntimeDecisionExpiresAt(prompt.expiresAt),
+      timeoutPolicy: prompt.timeoutPolicy ?? "deny",
+    });
+
+    await input.appendRunEvent({
+      eventType: "runtime_decision.prompt_created",
+      stream: "system",
+      level: "info",
+      message: "runtime decision prompt created",
+      payload: {
+        decisionId: decision.id,
+        kind,
+        nonce: decision.nonce,
+        sourceRevision: decision.sourceRevision,
+      },
+    });
+    await input.markRunWaiting(decision);
+    return decision;
+  }
+
+  async function waitAndRelay(decision: AgentRuntimeDecisionRow) {
+    const answered = await input.runtimeDecisions.waitForAnswer({
+      companyId: input.run.companyId,
+      decisionId: decision.id,
+      pollIntervalMs: input.pollIntervalMs,
+    });
+    await input.appendRunEvent({
+      eventType: "runtime_decision.prompt_answered",
+      stream: "system",
+      level: "info",
+      message: "runtime decision prompt answered",
+      payload: {
+        decisionId: answered.id,
+        kind: answered.kind,
+        sourceRevision: answered.sourceRevision,
+      },
+    });
+
+    try {
+      const relayed = await input.runtimeDecisions.markRelayed({
+        companyId: input.run.companyId,
+        decisionId: decision.id,
+      });
+      await input.appendRunEvent({
+        eventType: "runtime_decision.relayed",
+        stream: "system",
+        level: "info",
+        message: "runtime decision answer relayed",
+        payload: {
+          decisionId: relayed.id,
+          kind: relayed.kind,
+          sourceRevision: relayed.sourceRevision,
+        },
+      });
+      await input.clearRunWaiting(relayed);
+      return relayed;
+    } catch (error) {
+      await input.runtimeDecisions.markRelayFailed({
+        companyId: input.run.companyId,
+        decisionId: decision.id,
+        relayError: relayErrorMessage(error),
+      });
+      await input.appendRunEvent({
+        eventType: "runtime_decision.relay_failed",
+        stream: "system",
+        level: "error",
+        message: "runtime decision answer relay failed",
+        payload: {
+          decisionId: decision.id,
+          error: relayErrorMessage(error),
+        },
+      });
+      throw error;
+    }
+  }
+
+  return {
+    async requestPermission(prompt) {
+      const created = await createPrompt("permission", prompt);
+      const relayed = await waitAndRelay(created);
+      if (!relayed.decision) throw conflict("Permission runtime decision was answered without a decision");
+      return {
+        kind: "permission",
+        decisionId: created.id,
+        decision: relayed.decision as AdapterRuntimePermissionDecision,
+        sourceRevision: relayed.sourceRevision,
+      };
+    },
+    async askWorkQuestion(prompt) {
+      const created = await createPrompt("work_question", prompt);
+      const relayed = await waitAndRelay(created);
+      return {
+        kind: "work_question",
+        decisionId: created.id,
+        answer: relayed.answerPayload ?? {},
+        sourceRevision: relayed.sourceRevision,
+      };
+    },
+  };
 }
 
 export function applyEnvironmentRuntimeTarget(
@@ -1431,6 +1603,21 @@ export function heartbeatService(db: Db) {
       .update(agentWakeupRequests)
       .set({ status, ...patch, updatedAt: new Date() })
       .where(eq(agentWakeupRequests.id, wakeupRequestId));
+  }
+
+  async function cancelRuntimeDecisionPromptsForRun(
+    run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId">,
+    reason: string,
+  ) {
+    try {
+      await agentRuntimeDecisionService(db).cancelActiveForRun({
+        companyId: run.companyId,
+        runId: run.id,
+        reason,
+      });
+    } catch (err) {
+      logger.warn({ err, runId: run.id }, "failed to cancel runtime decision prompts for terminal run");
+    }
   }
 
   async function hasIncompleteDependencies(companyId: string, issueId: string) {
@@ -3758,6 +3945,30 @@ export function heartbeatService(db: Db) {
         logger.warn({ err: snapErr, runId: run.id }, "[heartbeat] prompt snapshot preparation failed (best-effort, ignored)");
       }
 
+      const runtimeDecisionBroker = createHeartbeatRuntimeDecisionBroker({
+        run,
+        agent,
+        runtime: runtimeForAdapter,
+        runtimeDecisions: agentRuntimeDecisionService(db),
+        appendRunEvent: async (event) => {
+          await appendRunEvent(currentRun, seq++, event);
+        },
+        markRunWaiting: async (decision) => {
+          await setRunStatus(run.id, "running", {
+            livenessState: "waiting_on_human",
+            livenessReason: "runtime_decision",
+            nextAction: `runtime_decision:${decision.id}`,
+          });
+        },
+        clearRunWaiting: async () => {
+          await setRunStatus(run.id, "running", {
+            livenessState: null,
+            livenessReason: null,
+            nextAction: null,
+          });
+        },
+      });
+
       const adapterResult = await adapter.execute({
         runId: run.id,
         agent,
@@ -3769,6 +3980,7 @@ export function heartbeatService(db: Db) {
         onLog: onLogWithOutput,
         onMeta: onAdapterMeta,
         authToken: authToken ?? undefined,
+        runtimeDecisionBroker,
         onSpawn,
       });
       await livePreviewDetection.flush();
@@ -3928,6 +4140,7 @@ export function heartbeatService(db: Db) {
         finishedAt: new Date(),
         error: adapterResult.errorMessage ?? null,
       });
+      await cancelRuntimeDecisionPromptsForRun(run, `run ${status}`);
 
       const finalizedRun = await getRun(run.id);
       if (finalizedRun) {
@@ -5128,6 +5341,7 @@ export function heartbeatService(db: Db) {
       });
 
       if (cancelled) {
+        await cancelRuntimeDecisionPromptsForRun(cancelled, "run cancelled");
         await appendRunEvent(cancelled, 1, {
           eventType: "lifecycle",
           stream: "system",
@@ -5160,6 +5374,7 @@ export function heartbeatService(db: Db) {
           finishedAt: new Date(),
           error: "Cancelled due to agent pause",
         });
+        await cancelRuntimeDecisionPromptsForRun(run, "run cancelled due to agent pause");
 
         const running = runningProcesses.get(run.id);
         if (running) {
@@ -5205,6 +5420,7 @@ export function heartbeatService(db: Db) {
             finishedAt: new Date(),
             error: "Cancelled due to budget hard-stop",
           });
+          await cancelRuntimeDecisionPromptsForRun(run, "run cancelled due to budget hard-stop");
           const running = runningProcesses.get(run.id);
           if (running) {
             logger.info(
@@ -5241,6 +5457,7 @@ export function heartbeatService(db: Db) {
           finishedAt: new Date(),
           error: "Cancelled due to company budget hard-stop",
         });
+        await cancelRuntimeDecisionPromptsForRun(run, "run cancelled due to company budget hard-stop");
         const running = runningProcesses.get(run.id);
         if (running) {
           logger.info(

@@ -274,13 +274,13 @@ pnpm --filter @armyofagents/db test:run
 - `server/src/services/heartbeat.ts`
 - relevant heartbeat tests under `server/src/__tests__/`
 
-- [ ] Write failing tests with a fake/test adapter that opens a runtime decision and waits.
-- [ ] Add optional broker type to `AdapterExecutionContext`.
-- [ ] Build broker in heartbeat and pass it to adapters.
-- [ ] Record run events for prompt lifecycle.
-- [ ] Mark run liveness/nextAction while waiting and clear it after relay.
-- [ ] Cancel/expire prompts on run terminal states.
-- [ ] Run focused heartbeat tests.
+- [x] Write failing tests with a fake/test adapter that opens a runtime decision and waits.
+- [x] Add optional broker type to `AdapterExecutionContext`.
+- [x] Build broker in heartbeat and pass it to adapters.
+- [x] Record run events for prompt lifecycle.
+- [x] Mark run liveness/nextAction while waiting and clear it after relay.
+- [x] Cancel/expire prompts on run terminal states.
+- [x] Run focused heartbeat tests.
 
 ## Task 5: Timeout Sweeper and Allow-Always Rules
 
