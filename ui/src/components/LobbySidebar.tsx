@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useLayoutEffect, useState } from "react";
 import { useNavigate } from "@/lib/router";
 import {
   BookOpen,
@@ -150,7 +150,10 @@ export function LobbySidebar({
 
   // React to navigating into/out of a secondary-sidebar page: force-collapse
   // when a secondary sidebar is present, otherwise reflect the preference.
-  useEffect(() => {
+  // useLayoutEffect (not useEffect) so the collapse lands BEFORE paint — the
+  // persistent LobbyLayout never remounts this sidebar, so a post-paint effect
+  // would flash the expanded rail beside the secondary sidebar for one frame.
+  useLayoutEffect(() => {
     if (drawer) return;
     setCollapsed(hasSecondarySidebar ? true : pref);
   }, [drawer, hasSecondarySidebar, pref]);

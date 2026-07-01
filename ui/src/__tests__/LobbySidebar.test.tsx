@@ -157,6 +157,22 @@ describe("LobbySidebar", () => {
     expect(container.querySelector("aside")?.getAttribute("data-collapsed")).toBe("true");
   });
 
+  it("collapses/expands reactively when hasSecondarySidebar toggles without remount (persistent-layout transition)", () => {
+    // Persistent LobbyLayout keeps this component mounted across navigation, so
+    // rerender (not remount) mirrors navigating into/out of Settings.
+    localStorage.setItem("aoa.lobby.sidebar-collapsed", "false");
+    const { container, rerender } = renderWithProviders(
+      <LobbySidebar onCreateCompany={onCreateCompany} />,
+    );
+    expect(container.querySelector("aside")?.getAttribute("data-collapsed")).toBe("false");
+    // Navigate INTO a secondary-sidebar page → force-collapse.
+    rerender(<LobbySidebar onCreateCompany={onCreateCompany} hasSecondarySidebar activeItem="settings" />);
+    expect(container.querySelector("aside")?.getAttribute("data-collapsed")).toBe("true");
+    // Navigate back OUT → restore the expanded preference.
+    rerender(<LobbySidebar onCreateCompany={onCreateCompany} />);
+    expect(container.querySelector("aside")?.getAttribute("data-collapsed")).toBe("false");
+  });
+
   it("peek-expanding on a secondary-sidebar page does not persist the preference", async () => {
     const user = userEvent.setup();
     localStorage.setItem("aoa.lobby.sidebar-collapsed", "false");
