@@ -82,7 +82,13 @@ async function waitForIndexStatus(
   targetStatus: string,
   opts: { timeoutMs?: number; pollMs?: number } = {},
 ): Promise<void> {
-  const { timeoutMs = 60_000, pollMs = 500 } = opts;
+  // 80s default: a stopgap for the intermittent pgvector case where the embed +
+  // vector-write lands slowly under CI load. NOTE: this only helps *slow-arrival*
+  // — if the row is never enqueued (e.g. the boot-cached pgvector-capability probe
+  // races enqueueMemoryEmbedding's Guard 1) the item stays permanently not_indexed
+  // and no timeout helps. Pinning that path is tracked as Tier 1.5 in
+  // docs/aoa/plans/2026-07-01-e2e-flake-stabilization-plan.md.
+  const { timeoutMs = 80_000, pollMs = 500 } = opts;
   const deadline = Date.now() + timeoutMs;
   let lastStatus = "item not found";
   let lastItems = "";
@@ -187,7 +193,7 @@ test.describe("memory index status — pgvector-gated (AOA_E2E_PGVECTOR=1 requir
         !PGVECTOR_AVAILABLE,
         "Requires pgvector extension (set AOA_E2E_PGVECTOR=1 to enable)",
       );
-      test.setTimeout(90_000);
+      test.setTimeout(120_000); // 80s poll (see waitForIndexStatus) + setup/assert headroom
 
       // The fake embedder is always active in e2e (AOA_E2E_FAKE_EMBEDDER=1).
       // Ensure no forced error is set so embeds succeed.
@@ -239,7 +245,7 @@ test.describe("memory index status — pgvector-gated (AOA_E2E_PGVECTOR=1 requir
         !PGVECTOR_AVAILABLE,
         "Requires pgvector extension (set AOA_E2E_PGVECTOR=1 to enable)",
       );
-      test.setTimeout(90_000);
+      test.setTimeout(120_000); // 80s poll (see waitForIndexStatus) + setup/assert headroom
 
       clearFakeEmbedderControl();
 

@@ -248,14 +248,21 @@ test.describe("provider-switching: agent config save-side", () => {
 
     await page.goto(`/${issuePrefix}/agents/${agentId}/configure`);
 
-    // Select the "Adapter & model" rail section to reveal the Test environment button.
-    await page
-      .getByRole("button", { name: "Adapter & model" })
-      .click();
-
+    // Select the "Adapter & model" rail section to reveal the Test environment
+    // button. The rail click can be dropped by a mount-time re-render burst
+    // (company-context + adapterModels query + draft-adapter effect settling),
+    // stranding the form on the default Identity section — the button then never
+    // renders and a plain toBeVisible wait cannot recover a lost click. Retry the
+    // rail click until the adapter section actually renders (re-clicking while
+    // already on the adapter section is a no-op, so this is idempotent).
     const testEnvironmentButton = page.getByRole("button", { name: "Test environment" });
-    await expect(testEnvironmentButton).toBeVisible({ timeout: 10_000 });
-    await expect(testEnvironmentButton).toBeEnabled();
+    await expect(async () => {
+      await page.getByRole("button", { name: "Adapter & model" }).click();
+      await expect(testEnvironmentButton).toBeVisible({ timeout: 2_000 });
+    }).toPass({ timeout: 15_000 });
+    // Explicit timeout: the button is disabled until company context resolves
+    // (`!selectedCompanyId`), which can lag the section switch on a fresh deep-link.
+    await expect(testEnvironmentButton).toBeEnabled({ timeout: 10_000 });
     await testEnvironmentButton.dispatchEvent("click");
 
     // Pass OR fail status both render the result div (codex may be absent on CI).
