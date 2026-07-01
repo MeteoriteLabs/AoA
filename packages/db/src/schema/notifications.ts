@@ -75,6 +75,16 @@ export const notifications = pgTable(
     version: integer("version").notNull().default(0), // optimistic concurrency token
     resolvedAt: timestamp("resolved_at", { withTimezone: true }),
     archivedAt: timestamp("archived_at", { withTimezone: true }),
+
+    // W4 Steward display-only curation metadata. These fields have their own
+    // revision so background explanation updates never bump lifecycle version.
+    curationGroupLabel: text("curation_group_label"),
+    curationGroupSummary: text("curation_group_summary"),
+    curationReason: text("curation_reason"),
+    curationPriorityReason: text("curation_priority_reason"),
+    curationRevision: integer("curation_revision").notNull().default(0),
+    curatedAt: timestamp("curated_at", { withTimezone: true }),
+    curatedByAgentId: uuid("curated_by_agent_id"),
   },
   (table) => ({
     companyUserIdx: index("notifications_company_user_idx").on(

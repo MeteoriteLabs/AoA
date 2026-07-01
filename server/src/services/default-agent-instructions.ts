@@ -23,6 +23,8 @@ const DEFAULT_AGENT_BUNDLE_FILES = {
   scout: ["AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"],
   // Routing-card redesign — Chronicler keeps per-thread routing cards fresh.
   chronicler: ["AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"],
+  // Inbox Hub W4 — Steward writes bounded hub curation explanations.
+  steward: ["AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"],
 } as const;
 
 type DefaultAgentBundleRole = keyof typeof DEFAULT_AGENT_BUNDLE_FILES;
@@ -47,6 +49,7 @@ const DEFAULT_AGENT_BUNDLE_DIRS: Record<DefaultAgentBundleRole, string> = {
   engineer: "engineer",
   scout: "scout",
   chronicler: "chronicler",
+  steward: "steward",
 };
 
 function resolveDefaultAgentBundleUrl(role: DefaultAgentBundleRole, fileName: string) {

@@ -203,4 +203,40 @@ describe.skipIf(process.platform === "win32")("hubItems.query — real DB", () =
     const { items: asLeadA } = await svc.query(companyId, { actorUserId: leadA, role: "team_lead" });
     expect(asLeadA.map((i) => i.title)).toEqual(["deptA-item"]); // sees A, not B
   });
+
+  it("returns W4 curation metadata and prefers curated group labels", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const { companyId, founderId } = await seedCompanyWithFounder();
+    const svc = hubItemsService(db);
+    const item = await svc.emit({
+      companyId,
+      semanticType: "run_failed",
+      sourceType: "heartbeat_run",
+      sourceId: "curated-run",
+      title: "curated",
+      ownerUserId: founderId,
+      scopeKey: "engineering",
+    });
+    await db.execute(sql`
+      UPDATE notifications
+      SET
+        curation_group_label = 'Failed runs',
+        curation_group_summary = '3 failed runs need review.',
+        curation_reason = 'SLA is due in 20 minutes.',
+        curation_priority_reason = 'Urgent priority is set on this hub item.',
+        curation_revision = 2,
+        curated_at = now()
+      WHERE id = ${item.id}
+    `);
+
+    const { items } = await svc.query(companyId, { actorUserId: founderId, role: "founder" });
+    expect(items[0]).toMatchObject({
+      id: item.id,
+      groupLabel: "Failed runs",
+      curationGroupSummary: "3 failed runs need review.",
+      curationReason: "SLA is due in 20 minutes.",
+      curationPriorityReason: "Urgent priority is set on this hub item.",
+      curationRevision: 2,
+    });
+  });
 });

@@ -9,6 +9,7 @@ import { ensureAdjutant } from "./ensure-adjutant.js";
 import { ensureScout } from "./ensure-scout.js";
 import { ensureEngineer } from "./ensure-engineer.js";
 import { ensureChronicler } from "./ensure-chronicler.js";
+import { ensureSteward } from "./ensure-steward.js";
 
 /**
  * True when this company's AoA crew is governed by an installed marketplace
@@ -56,6 +57,7 @@ export async function ensureAllCrewAgents(db: Db, companyId: string): Promise<vo
     ["scout", () => ensureScout(db, companyId)],
     ["engineer", () => ensureEngineer(db, companyId)],
     ["chronicler", () => ensureChronicler(db, companyId)],
+    ["steward", () => ensureSteward(db, companyId)],
   ];
   for (const [label, fn] of steps) {
     try {

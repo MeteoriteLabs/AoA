@@ -7,6 +7,9 @@ describe("resolveCrewRole", () => {
   it("returns the first VALID CrewRole found across the agent's triggers", async () => {
     expect(await resolveCrewRole(makeDb([{ config: { role: "engineer" } }]), "a1")).toBe("engineer");
   });
+  it("recognizes the Steward role so sweep wakeups pass the dispatcher autonomy gate", async () => {
+    expect(await resolveCrewRole(makeDb([{ config: { role: "steward" } }]), "steward-1")).toBe("steward");
+  });
   it("returns null when no trigger carries a role", async () => {
     expect(await resolveCrewRole(makeDb([{ config: {} }]), "a2")).toBeNull();
   });

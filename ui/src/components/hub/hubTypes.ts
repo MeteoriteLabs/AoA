@@ -25,6 +25,7 @@ export type HubListEntry =
       kind: "group";
       key: string;
       label: string;
+      summary: string | null;
       items: HubItemListRow[];
       unreadCount: number;
     };
@@ -61,7 +62,8 @@ export function buildHubListEntries(
     entries.push({
       kind: "group",
       key: item.groupKey,
-      label: item.groupLabel ?? item.groupKey,
+      label: item.curationGroupLabel ?? item.groupLabel ?? item.groupKey,
+      summary: groupItems.find((groupItem) => groupItem.curationGroupSummary)?.curationGroupSummary ?? null,
       items: groupItems,
       unreadCount: groupItems.filter((groupItem) => !groupItem.readAt).length,
     });

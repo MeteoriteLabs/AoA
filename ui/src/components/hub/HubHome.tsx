@@ -66,6 +66,11 @@ export function HubHome({
         <div className="mt-2 text-sm text-muted-foreground">
           {topItem ? topItem.title : "Nothing needs attention right now."}
         </div>
+        {topItem?.curationReason || topItem?.curationPriorityReason ? (
+          <div className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">
+            {topItem.curationReason ?? topItem.curationPriorityReason}
+          </div>
+        ) : null}
       </div>
       {showAutopilotEntry ? (
         <div className="mt-auto border-t border-border pt-4">

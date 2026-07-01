@@ -86,6 +86,11 @@ export function HubList({
                 </span>
                 <span className="text-xs text-muted-foreground">{entry.unreadCount} unread</span>
               </button>
+              {entry.summary ? (
+                <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">
+                  {entry.summary}
+                </p>
+              ) : null}
             </div>,
             ...groupRows.map((item) => renderItem(item)),
           ];

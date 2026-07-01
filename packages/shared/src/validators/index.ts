@@ -486,6 +486,7 @@ export {
   hubAutopilotActionsResponseSchema,
   hubListRowSchema,
   hubListResponseSchema,
+  hubCurationMetadataSchema,
   type ListHubItemsQuery,
   type HubActionInput,
   type HubUserStateInput,
@@ -501,4 +502,5 @@ export {
   type HubAutopilotActionsResponse,
   type HubListRow,
   type HubListResponse,
+  type HubCurationMetadata,
 } from "./hub.js";

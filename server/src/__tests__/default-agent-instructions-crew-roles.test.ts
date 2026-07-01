@@ -1,7 +1,14 @@
 import { describe, it, expect } from "vitest";
 import { loadDefaultAgentInstructionsBundle } from "../services/default-agent-instructions.js";
 
-const CREW = ["router", "planner", "dispatcher", "memory_keeper", "scribe"] as const;
+const CREW = [
+  "router",
+  "planner",
+  "dispatcher",
+  "memory_keeper",
+  "scribe",
+  "steward",
+] as const;
 
 describe("default-agent-instructions — crew role bundles", () => {
   it("loads a 4-file bundle for every crew role", async () => {

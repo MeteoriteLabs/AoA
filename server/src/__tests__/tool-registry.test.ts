@@ -23,7 +23,7 @@ const mockCtx: ToolContext = {
 
 describe("Tool Registry", () => {
   describe("createToolRegistry", () => {
-    it("returns all 71 tools", () => {
+    it("returns all 75 tools", () => {
       // Task C2 batch 1 (T15) added 7 thread+query tools to the 40 prior tools:
       // thread.listEntries, thread.setIntent, thread.postScopeProposal,
       // thread.updateSummary, thread.createLink, get_thread_summary,
@@ -52,8 +52,11 @@ describe("Tool Registry", () => {
       // query_company_artifacts (company-wide artifact listing, ctx.companyId-scoped).
       // Task 9 W3 added 1 memory tool:
       // write_memory (unified write+RAG-index, status=pending, Critical Rule #6).
+      // W4 Steward added 2 coordination tools:
+      // hub.readCurationContext (redacted curation read) and
+      // hub.updateCurationSummary (bounded display-only hub curation write).
       const tools = createToolRegistry();
-      expect(tools).toHaveLength(73);
+      expect(tools).toHaveLength(75);
     });
 
     it("every tool has required fields", () => {

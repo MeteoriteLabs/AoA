@@ -95,6 +95,22 @@ export const hubListResponseSchema = z
 
 export type HubListResponse = z.infer<typeof hubListResponseSchema>;
 
+const nullableBoundedText = (max: number) => z.string().trim().min(1).max(max).nullable();
+
+export const hubCurationMetadataSchema = z
+  .object({
+    curationGroupLabel: nullableBoundedText(120),
+    curationGroupSummary: nullableBoundedText(500),
+    curationReason: nullableBoundedText(500),
+    curationPriorityReason: nullableBoundedText(500),
+    curationRevision: z.number().int().nonnegative(),
+    curatedAt: z.string().datetime().nullable(),
+    curatedByAgentId: z.string().uuid().nullable(),
+  })
+  .strict();
+
+export type HubCurationMetadata = z.infer<typeof hubCurationMetadataSchema>;
+
 // ── Action (POST /companies/:companyId/hub-items/:id/action) ──────────────────
 // Optimistic-concurrency action envelope. `expectedVersion` is the version the
 // client last saw → a mismatch yields 409. `nextStatus` is the target lifecycle

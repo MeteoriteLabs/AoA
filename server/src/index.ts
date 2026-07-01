@@ -42,6 +42,7 @@ import { runAdjutantSweep } from "./services/internal-agent/aoa-agents/sweep-adj
 import { runControllerSweep } from "./services/internal-agent/aoa-agents/sweep-controller.js";
 import { runMemoryKeeperSweep, MK_SWEEP_DEBOUNCE_MS } from "./services/internal-agent/aoa-agents/sweep-memory-keeper.js";
 import { runInboxSweep } from "./services/internal-agent/aoa-agents/sweep-inbox.js";
+import { runStewardSweep, STEWARD_SWEEP_INTERVAL_MS } from "./services/internal-agent/aoa-agents/sweep-steward.js";
 import {
   reconcilePersistedRuntimeServicesOnStartup,
   restartDesiredRuntimeServicesOnStartup,
@@ -1034,6 +1035,18 @@ setInterval(() => {
     .catch((err) => logger.warn({ err }, "inbox routing sweep tick failed"))
     .finally(() => { inboxSweepInFlight = false; });
 }, INBOX_SWEEP_INTERVAL_MS);
+
+// Sub-agent #6: Steward curation backstop sweep.
+// Deterministic hub curation is cheap and display-only; LLM wakeups are deduped
+// per group via agentWakeupRequests.dedupKey so repeated ticks do not flood.
+let stewardSweepInFlight = false;
+setInterval(() => {
+  if (stewardSweepInFlight) return;
+  stewardSweepInFlight = true;
+  void runStewardSweep(db as any)
+    .catch((err) => logger.warn({ err }, "steward sweep tick failed"))
+    .finally(() => { stewardSweepInFlight = false; });
+}, STEWARD_SWEEP_INTERVAL_MS);
 
 setInterval(() => {
   runChroniclerSweep(db as any).catch((err: unknown) =>

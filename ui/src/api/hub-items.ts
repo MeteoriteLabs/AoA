@@ -40,6 +40,13 @@ export interface HubItemListRow {
   groupCount: number | null;
   scopeKey: string | null;
   slaAt: string | null;
+  curationGroupLabel?: string | null;
+  curationGroupSummary?: string | null;
+  curationReason?: string | null;
+  curationPriorityReason?: string | null;
+  curationRevision?: number;
+  curatedAt?: string | null;
+  curatedByAgentId?: string | null;
 }
 
 export interface HubListOptions {

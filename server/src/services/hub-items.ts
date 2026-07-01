@@ -103,6 +103,13 @@ export type HubListRow = typeof hubItems.$inferSelect & {
   groupCount: number | null;
   scopeKey: string | null;
   slaAt: Date | null;
+  curationGroupLabel: string | null;
+  curationGroupSummary: string | null;
+  curationReason: string | null;
+  curationPriorityReason: string | null;
+  curationRevision: number;
+  curatedAt: Date | null;
+  curatedByAgentId: string | null;
 };
 
 export interface HubListResponse {
@@ -224,7 +231,7 @@ export function hubItemsService(db: Db) {
       snoozedUntil: state.snoozedUntil ?? null,
       dismissedAt: state.dismissedAt ?? null,
       groupKey: deriveFallbackGroupKey(item, groupMode),
-      groupLabel: deriveGroupLabel(item, groupMode),
+      groupLabel: item.curationGroupLabel ?? deriveGroupLabel(item, groupMode),
       groupCount: null,
       scopeKey: item.scopeKey,
       slaAt: item.slaAt,

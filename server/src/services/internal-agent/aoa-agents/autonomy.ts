@@ -24,7 +24,8 @@ export type CrewRole =
   | "engineer"
   | "scout"
   | "reviewer"
-  | "chronicler";
+  | "chronicler"
+  | "steward";
 
 /** Minimum autonomy level at which each role auto-runs. Core roles are always on (0). */
 export const ROLE_MIN_AUTONOMY: Record<CrewRole, number> = {
@@ -41,6 +42,7 @@ export const ROLE_MIN_AUTONOMY: Record<CrewRole, number> = {
   scout: 1,         // mention-driven internal-only research (Phase 1 — no browse); aligns with engineer
   reviewer: 1,      // mention-driven critique; advise-only, posts a review like scout
   chronicler: 0,    // core infrastructure: card maintenance always runs (like scribe/memory_keeper)
+  steward: 0,       // core infrastructure: hub curation summaries always run
 };
 
 /**

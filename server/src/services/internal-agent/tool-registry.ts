@@ -82,6 +82,10 @@ import { attachTaskArtifactTool } from "./tools/attach-task-artifact-tool.js";
 // `coordination` category — confers no capability, so it never widens the agent's
 // capability set (like the other three Spec B task tools).
 import { setTaskStatusTool } from "./tools/set-task-status-tool.js";
+import {
+  hubReadCurationContextTool,
+  hubUpdateCurationSummaryTool,
+} from "./tools/hub-curation-tools.js";
 
 export function createToolRegistry(): AgentTool[] {
   return [
@@ -167,6 +171,10 @@ export function createToolRegistry(): AgentTool[] {
     // and delegates ownership + autonomy-dial enforcement to the A4 guard via
     // issueService.update's actor.effectiveDial.
     setTaskStatusTool,
+    // W4 Steward â€” bounded display-only hub curation metadata write. This
+    // never performs lifecycle/source actions and is allowlisted only for Steward.
+    hubReadCurationContextTool,
+    hubUpdateCurationSummaryTool,
   ];
 }
 
