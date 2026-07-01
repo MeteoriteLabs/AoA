@@ -1,6 +1,8 @@
 // packages/shared/src/__tests__/hub-contract.test.ts
 import { describe, it, expect } from "vitest";
 import {
+  HUB_AUTOPILOT_ACTIONS,
+  HUB_AUTOPILOT_MODES,
   HUB_LANES,
   HUB_ITEM_STATUSES,
   HUB_DENSITIES,
@@ -14,7 +16,9 @@ import {
 } from "../hub.js";
 import {
   hubActionSchema,
+  hubAutopilotPolicySchema,
   hubBulkActionSchema,
+  updateHubAutopilotPolicySchema,
   hubListResponseSchema,
   hubPreferencesSchema,
   hubUserStateSchema,
@@ -212,5 +216,69 @@ describe("hub contract", () => {
         items: [{ id: "550e8400-e29b-41d4-a716-446655440001", action: "resolve" }],
       }),
     ).toThrow();
+  });
+  it("exposes W3 autopilot modes and actions", () => {
+    expect(HUB_AUTOPILOT_MODES).toEqual(["off", "assist", "drive"]);
+    expect(HUB_AUTOPILOT_ACTIONS).toEqual(["none", "resolve", "archive"]);
+  });
+  it("accepts a company autopilot policy with category rules", () => {
+    const parsed = hubAutopilotPolicySchema.parse({
+      mode: "assist",
+      handledToday: 0,
+      lastHandledAt: null,
+      rules: [
+        {
+          semanticType: "run_complete",
+          action: "resolve",
+          minTrustScore: 80,
+          enabled: true,
+        },
+      ],
+      updatedAt: null,
+    });
+
+    expect(parsed.rules[0].semanticType).toBe("run_complete");
+  });
+  it("rejects autopilot auto-handle for founder-gated categories in W3 core", () => {
+    expect(() =>
+      updateHubAutopilotPolicySchema.parse({
+        rules: [
+          {
+            semanticType: "approval_request",
+            action: "resolve",
+            minTrustScore: 80,
+            enabled: true,
+          },
+        ],
+      }),
+    ).toThrow();
+  });
+  it("rejects duplicate autopilot semantic type rules", () => {
+    expect(() =>
+      updateHubAutopilotPolicySchema.parse({
+        rules: [
+          { semanticType: "run_complete", action: "resolve", minTrustScore: 80, enabled: true },
+          { semanticType: "run_complete", action: "archive", minTrustScore: 90, enabled: true },
+        ],
+      }),
+    ).toThrow();
+  });
+  it("has explicit autopilot rule coverage for every hub semantic type", () => {
+    const covered = new Set(
+      hubAutopilotPolicySchema.parse({
+        mode: "off",
+        handledToday: 0,
+        lastHandledAt: null,
+        rules: HUB_SEMANTIC_TYPES.map((semanticType) => ({
+          semanticType,
+          action: "none",
+          minTrustScore: 100,
+          enabled: false,
+        })),
+        updatedAt: null,
+      }).rules.map((rule) => rule.semanticType),
+    );
+
+    expect(covered.size).toBe(HUB_SEMANTIC_TYPES.length);
   });
 });

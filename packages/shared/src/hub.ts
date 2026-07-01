@@ -96,6 +96,22 @@ export function authorityForSemanticType(t: HubSemanticType): HubAuthority {
   return HUB_AUTHORITY_BY_TYPE[t];
 }
 
+export const HUB_AUTOPILOT_MODES = ["off", "assist", "drive"] as const;
+export type HubAutopilotMode = (typeof HUB_AUTOPILOT_MODES)[number];
+
+export const HUB_AUTOPILOT_ACTIONS = ["none", "resolve", "archive"] as const;
+export type HubAutopilotAction = (typeof HUB_AUTOPILOT_ACTIONS)[number];
+
+export const HUB_AUTOPILOT_FOUNDER_GATED_TYPES = [
+  "approval_request",
+  "join_request",
+  "agent_runtime_decision",
+] as const satisfies readonly HubSemanticType[];
+
+export function isFounderGatedAutopilotType(type: HubSemanticType): boolean {
+  return (HUB_AUTOPILOT_FOUNDER_GATED_TYPES as readonly string[]).includes(type);
+}
+
 // Owner pool sentinel for authority-gated items with no single natural owner.
 export const HUB_OWNER_POOLS = ["board"] as const;
 export type HubOwnerPool = (typeof HUB_OWNER_POOLS)[number];

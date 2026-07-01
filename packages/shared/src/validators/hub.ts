@@ -1,10 +1,14 @@
 import { z } from "zod";
 import {
+  HUB_AUTOPILOT_ACTIONS,
+  HUB_AUTOPILOT_MODES,
   HUB_DENSITIES,
   HUB_GROUP_MODES,
   HUB_ITEM_STATUSES,
   HUB_LANDING_TARGETS,
   HUB_LANES,
+  HUB_SEMANTIC_TYPES,
+  isFounderGatedAutopilotType,
 } from "../hub.js";
 
 const queryBoolean = z
@@ -176,3 +180,101 @@ export const hubUndoSchema = z
   .strict();
 
 export type HubUndoInput = z.infer<typeof hubUndoSchema>;
+
+function rejectDuplicateSemanticTypes(
+  rules: Array<{ semanticType: string }>,
+  ctx: z.RefinementCtx,
+): void {
+  const seen = new Set<string>();
+  for (const [index, rule] of rules.entries()) {
+    if (seen.has(rule.semanticType)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["rules", index, "semanticType"],
+        message: "Autopilot policy cannot contain duplicate semantic type rules",
+      });
+    }
+    seen.add(rule.semanticType);
+  }
+}
+
+export const hubAutopilotRuleSchema = z
+  .object({
+    semanticType: z.enum(HUB_SEMANTIC_TYPES),
+    action: z.enum(HUB_AUTOPILOT_ACTIONS),
+    minTrustScore: z.number().int().min(0).max(100),
+    enabled: z.boolean(),
+  })
+  .strict()
+  .superRefine((rule, ctx) => {
+    if (rule.enabled && rule.action !== "none" && isFounderGatedAutopilotType(rule.semanticType)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["action"],
+        message: "Founder-gated hub categories cannot be auto-handled in W3 core",
+      });
+    }
+  });
+
+export type HubAutopilotRule = z.infer<typeof hubAutopilotRuleSchema>;
+
+export const hubAutopilotPolicySchema = z
+  .object({
+    mode: z.enum(HUB_AUTOPILOT_MODES),
+    handledToday: z.number().int().nonnegative(),
+    lastHandledAt: z.string().datetime().nullable(),
+    rules: z.array(hubAutopilotRuleSchema),
+    updatedAt: z.string().datetime().nullable(),
+  })
+  .strict()
+  .superRefine((policy, ctx) => rejectDuplicateSemanticTypes(policy.rules, ctx));
+
+export type HubAutopilotPolicy = z.infer<typeof hubAutopilotPolicySchema>;
+
+export const updateHubAutopilotPolicySchema = z
+  .object({
+    mode: z.enum(HUB_AUTOPILOT_MODES).optional(),
+    rules: z.array(hubAutopilotRuleSchema).optional(),
+  })
+  .strict()
+  .superRefine((patch, ctx) => rejectDuplicateSemanticTypes(patch.rules ?? [], ctx));
+
+export type UpdateHubAutopilotPolicyInput = z.infer<typeof updateHubAutopilotPolicySchema>;
+
+export const hubAutopilotEvaluationResultSchema = z
+  .object({
+    decision: z.enum(["noop", "auto_handle", "escalate"]),
+    action: z.enum(HUB_AUTOPILOT_ACTIONS),
+    reason: z.string().min(1),
+    autonomyLevel: z.enum(HUB_AUTOPILOT_MODES),
+  })
+  .strict();
+
+export type HubAutopilotEvaluationResult = z.infer<typeof hubAutopilotEvaluationResultSchema>;
+
+export const hubAutopilotActionRowSchema = z
+  .object({
+    auditId: z.string().min(1),
+    hubItemId: z.string().nullable(),
+    title: z.string(),
+    semanticType: z.enum(HUB_SEMANTIC_TYPES).nullable(),
+    action: z.enum(["resolve", "archive"]),
+    autonomyLevel: z.enum(HUB_AUTOPILOT_MODES).nullable(),
+    reason: z.string().nullable(),
+    decisionContext: z.unknown(),
+    undoDeadline: z.string().datetime().nullable(),
+    itemStatus: z.enum(HUB_ITEM_STATUSES).nullable(),
+    itemVersion: z.number().int().nonnegative().nullable(),
+    createdAt: z.string().datetime(),
+  })
+  .strict();
+
+export type HubAutopilotActionRow = z.infer<typeof hubAutopilotActionRowSchema>;
+
+export const hubAutopilotActionsResponseSchema = z
+  .object({
+    items: z.array(hubAutopilotActionRowSchema),
+  })
+  .strict();
+
+export type HubAutopilotActionsResponse = z.infer<typeof hubAutopilotActionsResponseSchema>;
