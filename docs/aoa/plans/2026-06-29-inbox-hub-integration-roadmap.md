@@ -1,6 +1,6 @@
 # Inbox Hub Integration Roadmap
 
-**Status:** Active integration roadmap; W1b/W1c/W1d merged in PR #244, final cutover merged in PR #246, W2 Layer 3 active on `codex/w2-layer3-notifications-realtime`
+**Status:** Active integration roadmap; W1b/W1c/W1d merged in PR #244, final cutover merged in PR #246, W2 Layer 3 merged in PR #248, W3 Autopilot active on `codex/w3-autopilot-planning`
 **Date:** 2026-06-29
 **Type:** Integration roadmap / planning spine
 **Design authority:** `docs/aoa/plans/2026-06-26-inbox-hub-master-scope.md`
@@ -25,12 +25,13 @@ Completed foundations:
 
 Current roadmap branch:
 
-- **Branch:** `codex/w2-layer3-notifications-realtime`
-- **Purpose:** carry W2 Layer 3 after W2 Layer 2 established the registry and
-  canonical hub-backed notification emit path.
-- **Rule:** keep W2 Layer 3 scoped to realtime hub events, toast bridge,
-  notification preferences, digest queue integration, and focused e2e
-  coverage. Keep W3/W4/W5 out of this PR.
+- **Branch:** `codex/w3-autopilot-planning`
+- **Purpose:** carry W3 Autopilot Core after W1 lifecycle/audit and W2
+  realtime notification foundations landed.
+- **Rule:** keep W3 scoped to deterministic Autopilot policy, trust-gated
+  evaluation, autonomous hub lifecycle actions, auto-action audit, Home/settings
+  controls, undo, and focused acceptance coverage. Keep W4 Steward intelligence
+  and W5 adapter bridges out of this PR.
 
 Final cutover status:
 
@@ -61,17 +62,21 @@ Completed W2 foundation:
   Scope was persistent notification registry, canonical hub-backed create path,
   legacy route state sync, direct-write guard, cockpit proactive compatibility,
   and dead-type cleanup.
+- **W2 Layer 3:** merged in PR #248 from
+  `docs/aoa/plans/2026-06-30-w2-layer3-realtime-notifications-plan.md`.
+  Scope was realtime hub events, toast bridge, preferences, quiet hours, digest
+  queue integration, and focused e2e coverage.
 
 Planned/active next:
 
-- **W2 Layer 3:** active in
-  `docs/aoa/plans/2026-06-30-w2-layer3-realtime-notifications-plan.md`.
-  Scope is realtime hub events, toast bridge, preferences, quiet hours, digest
-  queue integration, and e2e coverage.
+- **W3 Autopilot:** active in
+  `docs/aoa/plans/2026-07-01-w3-autopilot-core-plan.md` on
+  `codex/w3-autopilot-planning`. Scope is deterministic policy/evaluation,
+  trust-gated auto-handle vs escalate, autonomous audit, undo, Home/settings UI,
+  and e2e acceptance coverage.
 
 Not yet planned or built:
 
-- W3 Autopilot
 - W4 Steward
 - W5 runtime decision routing
 
@@ -106,9 +111,10 @@ These stay outside the UI integration PR:
 
 - **W2 Layer 2:** implemented; notifications registry, canonical hub-backed
   persistent emit, legacy route state sync, and dead-type cleanup.
-- **W2 Layer 3:** active on `codex/w2-layer3-notifications-realtime`;
-  realtime, toast bridge, preferences, quiet hours, and digests.
-- **W3:** Autopilot autonomy and auto-action audit/undo
+- **W2 Layer 3:** merged in PR #248; realtime, toast bridge, preferences,
+  quiet hours, and digests.
+- **W3:** active on `codex/w3-autopilot-planning`; Autopilot autonomy and
+  auto-action audit/undo.
 - **W4:** Steward crew agent and curation worker
 - **W5:** runtime decision routing and per-adapter bridges
 
@@ -303,9 +309,8 @@ Layer 2 should lock the persistent notification registry and single emit path
 against the shared hub semantic contract. Layer 3 should replace polling with
 realtime and add the toast bridge plus preferences.
 
-Current status: W2 Layer 3 is active on
-`codex/w2-layer3-notifications-realtime`. W2 Layer 2 established the registry
-and canonical hub-backed emit path. Layer 3 now adds RBAC-scoped live hub
+Current status: W2 Layer 3 merged in PR #248. W2 Layer 2 established the
+registry and canonical hub-backed emit path. Layer 3 added RBAC-scoped live hub
 events, query invalidation, toast hydration, notification preferences, quiet
 hours, digest queueing, and focused browser coverage. Compatibility predicates
 for old proactive notification rows (`internal_agent.proactive` and
@@ -320,6 +325,11 @@ second notification store or toast system.
 Autopilot owns trust-gated auto-handle vs escalate behavior, delegated authority,
 auto-action audit, and undo. W1b may show a display/control shell only.
 
+Current status: W3 Core is active on `codex/w3-autopilot-planning` from
+`docs/aoa/plans/2026-07-01-w3-autopilot-core-plan.md`. This PR is limited to
+deterministic policy/evaluation, safe hub lifecycle auto-actions, audit/undo,
+and the Hub Home/settings control surface.
+
 Dependency boundary: W3 depends on W1 lifecycle and audit/action semantics being
 stable.
 
@@ -329,6 +339,9 @@ Steward is the dedicated curation agent and deterministic worker for grouping,
 triage explanations, and draft assistance. It should not be mixed into the UI
 shell work.
 
+Current status: not planned and not built after W3 Core. It still needs its own
+investigate -> implementation plan -> review -> build cycle.
+
 Dependency boundary: W4 depends on stable hub item taxonomy, lifecycle, and
 Autopilot policy.
 
@@ -336,6 +349,9 @@ Autopilot policy.
 
 W5 routes org-agent permission prompts and substantive work questions into
 Waiting on you and relays answers back to blocked runs.
+
+Current status: not planned and not built after W3 Core. It still needs its own
+per-adapter feasibility matrix and implementation plan.
 
 Dependency boundary: W5 requires a per-adapter feasibility matrix first. Start
 with one adapter behind a feature flag. W1a reserves the type; W1b can render a
@@ -502,11 +518,10 @@ mid-task:
 
 ## 8. Next Step
 
-Finish W2 Layer 3, then plan the next queue in order:
+Finish W3 Core, then plan the next queue in order:
 
-1. W3 Autopilot autonomy and auto-action audit/undo.
-2. W4 Steward curation worker and dedicated `kind=aoa` member.
-3. W5 runtime decision routing and per-adapter bridges.
+1. W4 Steward curation worker and dedicated `kind=aoa` member.
+2. W5 runtime decision routing and per-adapter bridges.
 
 Each next workstream needs its own investigate -> implementation plan -> review
 -> build cycle before code starts.
