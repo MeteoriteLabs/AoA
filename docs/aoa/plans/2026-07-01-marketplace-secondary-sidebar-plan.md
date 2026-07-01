@@ -2,24 +2,23 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax.
 
-**Goal:** Replace the marketplace's horizontal type-chip row with a floating secondary sidebar (Home / Skills / Plugins / Agents / Teams / AoA), and segregate AoA first-party items into the AoA entry (excluded from the main sections).
+**Goal:** Replace the marketplace's horizontal type-chip row with a floating secondary sidebar (Home / Skills / Plugins / Agents / Teams / AoA), and segregate AoA first-party items **and packages** into the AoA entry (fully excluded from the main sections, search, and install-from-Home paths).
 
-**Architecture:** A shared `useMarketplaceSidebar(activeKey)` hook computes counts from `useCatalog`, builds the `SecondarySidebar` sections, and pushes them to the persistent `LobbyLayout` via the Outlet context (same pattern as `InstanceSettingsPage`). AoA membership is a pure predicate `isAoaItem` (github owner ∈ AoA orgs). All 4 marketplace pages call the hook so the chrome is consistent.
+**Architecture:** A shared `useMarketplaceSidebar(activeKey)` hook computes counts from `useCatalog` (AoA-excluded) and pushes the `SecondarySidebar` to the persistent `LobbyLayout` Outlet context (the `InstanceSettingsPage` pattern). Filtering is driven by the **URL** (`?type=` / `?view=aoa`) as the single source of truth — no local `selectedType` state. AoA membership is a pure predicate (`isAoaItem` / `isAoaPackage`, github owner ∈ AoA orgs). All 4 marketplace pages call the hook.
 
 **Tech Stack:** React + react-router-dom (`@/lib/router`), TailwindCSS v4, `SecondarySidebar`, `useCatalog`, vitest + @testing-library/react.
 
 **Design doc:** `docs/aoa/plans/2026-07-01-marketplace-secondary-sidebar-design.md`
 
-**Commands:**
-- Unit (one file): `pnpm --filter @armyofagents/ui exec vitest run <path>`
-- Typecheck: `pnpm --filter @armyofagents/ui typecheck`
-- Full suite: `pnpm --filter @armyofagents/ui test:run`
+**Incorporates Codex plan review (2026-07-01):** URL-as-source-of-truth (no stale `selectedType`), convert `setSelectedType` callers to nav, exclude AoA from **search** and **packages** (not just item lists), AoA-aware detail pages, strict github-owner parsing, provider-**id**-only matching, and CompanyContext-mocked hook tests.
 
-**Deviation from design doc:** `isAoaItem` lives in `ui/src/lib/marketplace-constants.ts` (next to the existing `authorFromSource` it reuses), NOT a new `marketplace-aoa.ts` — colocated with the owner parser.
+**Commands:** unit `pnpm --filter @armyofagents/ui exec vitest run <path>`; typecheck `pnpm --filter @armyofagents/ui typecheck`; full `pnpm --filter @armyofagents/ui test:run`.
+
+**File-location note:** the AoA predicates live in `ui/src/lib/marketplace-constants.ts` (next to `authorFromSource`).
 
 ---
 
-## Task 1: `isAoaItem` predicate
+## Task 1: AoA predicates (`isAoaItem`, `isAoaPackage`)
 
 **Files:**
 - Modify: `ui/src/lib/marketplace-constants.ts`
@@ -31,72 +30,88 @@ Create `ui/src/lib/__tests__/marketplace-aoa.test.ts`:
 
 ```ts
 import { describe, it, expect } from "vitest";
-import { isAoaItem, AOA_OWNERS } from "../marketplace-constants";
-import type { MarketplaceCatalogItem } from "@armyofagents/shared";
+import { isAoaItem, isAoaPackage, isAoaOwner, AOA_OWNERS } from "../marketplace-constants";
+import type { MarketplaceCatalogItem, MarketplacePackage } from "@armyofagents/shared";
 
-function item(url: string, provider?: { id?: string; name?: string }): MarketplaceCatalogItem {
-  return { source: { url }, provider } as unknown as MarketplaceCatalogItem;
-}
+const item = (url: string, provider?: { id?: string; name?: string }) =>
+  ({ source: { url }, provider }) as unknown as MarketplaceCatalogItem;
+const pkg = (id: string, provider?: { id?: string }) =>
+  ({ id, provider }) as unknown as MarketplacePackage;
 
-describe("isAoaItem", () => {
-  it("matches AoA-org github owners (case-insensitive)", () => {
-    expect(isAoaItem(item("https://github.com/aoa-curated/code-review"))).toBe(true);
+describe("AoA predicates", () => {
+  it("isAoaItem matches AoA github owners (case-insensitive)", () => {
+    expect(isAoaItem(item("https://github.com/aoa-curated/x"))).toBe(true);
     expect(isAoaItem(item("https://github.com/MeteoriteLabs/x"))).toBe(true);
-    expect(isAoaItem(item("https://github.com/armyofagents/y"))).toBe(true);
-    expect(isAoaItem(item("https://github.com/ArmyOfAgents/y"))).toBe(true);
+    expect(isAoaItem(item("https://github.com/ArmyOfAgents/x"))).toBe(true);
   });
-  it("does not match third-party owners", () => {
-    expect(isAoaItem(item("https://github.com/garrytan/gstack"))).toBe(false);
-    expect(isAoaItem(item("https://github.com/openai/x"))).toBe(false);
+  it("isAoaItem rejects third-party + non-github hosts", () => {
+    expect(isAoaItem(item("https://github.com/garrytan/x"))).toBe(false);
+    expect(isAoaItem(item("https://notgithub.com/aoa-curated/x"))).toBe(false);
   });
-  it("matches when provider id/name is an AoA org even if url is odd", () => {
-    expect(isAoaItem(item("skills.sh/foo", { id: "aoa-curated" }))).toBe(true);
+  it("isAoaItem matches by provider.id (not by display name)", () => {
+    expect(isAoaItem(item("https://skills.sh/x", { id: "aoa-curated" }))).toBe(true);
+    expect(isAoaItem(item("https://skills.sh/x", { name: "Army of Agents" }))).toBe(false);
   });
-  it("AOA_OWNERS is lowercase", () => {
+  it("isAoaPackage matches owner/repo id + provider.id", () => {
+    expect(isAoaPackage(pkg("aoa-curated/crew"))).toBe(true);
+    expect(isAoaPackage(pkg("garrytan/gstack"))).toBe(false);
+    expect(isAoaPackage(pkg("x", { id: "armyofagents" }))).toBe(true);
+  });
+  it("AOA_OWNERS entries are lowercase", () => {
     for (const o of AOA_OWNERS) expect(o).toBe(o.toLowerCase());
   });
 });
 ```
 
-- [ ] **Step 2: Run — expect FAIL (isAoaItem not exported)**
+- [ ] **Step 2: Run — expect FAIL**
 
 Run: `pnpm --filter @armyofagents/ui exec vitest run src/lib/__tests__/marketplace-aoa.test.ts`
-Expected: FAIL (no `isAoaItem` export).
+Expected: FAIL (exports missing).
 
 - [ ] **Step 3: Implement in `marketplace-constants.ts`**
 
-Add (near `authorFromSource`, and import the item type at the top of the file):
+Add near `authorFromSource` (import the shared types at the top of the file):
 
 ```ts
-import type { MarketplaceCatalogItem } from "@armyofagents/shared";
+import type { MarketplaceCatalogItem, MarketplacePackage } from "@armyofagents/shared";
 
-/** GitHub orgs (lowercased) whose marketplace items are AoA first-party. */
+/** GitHub orgs (lowercased) whose marketplace items/packages are AoA first-party. */
 export const AOA_OWNERS = new Set(["aoa-curated", "meteoritelabs", "armyofagents"]);
 
-/** True when an item is AoA's own (crew/teams/skills) — segregated into the
- *  marketplace "AoA" section and excluded from the general type sections. */
+export function isAoaOwner(owner: string | null | undefined): boolean {
+  return owner != null && AOA_OWNERS.has(owner.toLowerCase());
+}
+
+/** Strict github owner from a source URL; null if not a github.com URL. */
+function githubOwner(url: string): string | null {
+  try {
+    const u = new URL(url);
+    if (!/(^|\.)github\.com$/i.test(u.hostname)) return null;
+    return u.pathname.split("/").filter(Boolean)[0]?.toLowerCase() ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** AoA's own catalog item (segregated into the "AoA" section). Owner or provider.id
+ *  only — NOT provider display name ("Army of Agents" is not a slug). */
 export function isAoaItem(item: MarketplaceCatalogItem): boolean {
-  const owner = authorFromSource(item.source.url).toLowerCase();
-  if (AOA_OWNERS.has(owner)) return true;
-  const providerId = item.provider?.id?.toLowerCase();
-  const providerName = item.provider?.name?.toLowerCase();
-  return (
-    (providerId !== undefined && AOA_OWNERS.has(providerId)) ||
-    (providerName !== undefined && AOA_OWNERS.has(providerName))
-  );
+  return isAoaOwner(githubOwner(item.source.url)) || isAoaOwner(item.provider?.id);
+}
+
+/** AoA's own derived package. `id` is `owner/repo` for synthesized packages. */
+export function isAoaPackage(pkg: MarketplacePackage): boolean {
+  return isAoaOwner(pkg.id.split("/")[0]) || isAoaOwner(pkg.provider?.id);
 }
 ```
 
-- [ ] **Step 4: Run — expect PASS**
-
-Run: `pnpm --filter @armyofagents/ui exec vitest run src/lib/__tests__/marketplace-aoa.test.ts`
-Expected: PASS (4 tests).
+- [ ] **Step 4: Run — expect PASS** → `pnpm --filter @armyofagents/ui exec vitest run src/lib/__tests__/marketplace-aoa.test.ts`
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add ui/src/lib/marketplace-constants.ts ui/src/lib/__tests__/marketplace-aoa.test.ts
-git commit -m "feat(marketplace): isAoaItem predicate for first-party segregation"
+git commit -m "feat(marketplace): AoA item/package predicates (strict github owner + provider.id)"
 ```
 
 ---
@@ -107,11 +122,7 @@ git commit -m "feat(marketplace): isAoaItem predicate for first-party segregatio
 - Create: `ui/src/components/marketplace/useMarketplaceSidebar.tsx`
 - Test: `ui/src/components/marketplace/__tests__/useMarketplaceSidebar.test.tsx`
 
-The hook computes counts (AoA-excluded for types), builds the two-section sidebar
-(main types + AoA below a divider), pushes it to the LobbyLayout Outlet context, and
-returns `pillItems` for the mobile row. Navigation via `useNavigate`.
-
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing test (mock CompanyContext so `@/lib/router` useNavigate works)**
 
 Create `ui/src/components/marketplace/__tests__/useMarketplaceSidebar.test.tsx`:
 
@@ -122,22 +133,18 @@ import { MemoryRouter, Routes, Route, Outlet } from "react-router-dom";
 import type { ReactNode } from "react";
 import { useMarketplaceSidebar } from "../useMarketplaceSidebar";
 
-const CATALOG = {
-  items: [
-    { id: "1", type: "skill", name: "a", description: "", source: { url: "https://github.com/garrytan/x" } },
-    { id: "2", type: "skill", name: "b", description: "", source: { url: "https://github.com/aoa-curated/y" } },
-    { id: "3", type: "agent", name: "c", description: "", source: { url: "https://github.com/openai/z" } },
-  ],
-};
+const CATALOG = { items: [
+  { id: "1", type: "skill", name: "a", description: "", source: { url: "https://github.com/garrytan/x" } },
+  { id: "2", type: "skill", name: "b", description: "", source: { url: "https://github.com/aoa-curated/y" } },
+  { id: "3", type: "agent", name: "c", description: "", source: { url: "https://github.com/openai/z" } },
+] };
 vi.mock("@/hooks/useCatalog", () => ({ useCatalog: () => ({ data: CATALOG }) }));
+// @/lib/router useNavigate calls useCompany — stub CompanyContext.
+vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompany: null }) }));
 
 function Harness({ activeKey }: { activeKey: any }) {
   const { pillItems } = useMarketplaceSidebar(activeKey);
-  return <div data-testid="pills">{pillItems.map((p) => `${p.id}:${p.count}`).join(",")}</div>;
-}
-
-function Captor() {
-  return <div />;
+  return <div data-testid="pills">{pillItems.map((p) => `${p.id}:${p.count}:${p.active ? 1 : 0}`).join(",")}</div>;
 }
 
 function renderHook(activeKey: any) {
@@ -145,9 +152,7 @@ function renderHook(activeKey: any) {
   render(
     <MemoryRouter initialEntries={["/marketplace"]}>
       <Routes>
-        <Route
-          element={<Outlet context={{ setSecondarySidebar: (n: ReactNode) => { captured = n; } }} />}
-        >
+        <Route element={<Outlet context={{ setSecondarySidebar: (n: ReactNode) => { captured = n; } }} />}>
           <Route path="/marketplace" element={<Harness activeKey={activeKey} />} />
         </Route>
       </Routes>
@@ -157,37 +162,33 @@ function renderHook(activeKey: any) {
 }
 
 describe("useMarketplaceSidebar", () => {
-  it("type counts exclude AoA items; AoA count is the AoA items", () => {
+  it("type counts exclude AoA; home is the non-AoA total; aoa counts AoA items", () => {
     renderHook("home");
-    // skill: 1 non-aoa (garrytan) — the aoa-curated skill is excluded; agent: 1; aoa: 1
-    expect(screen.getByTestId("pills").textContent).toContain("skill:1");
-    expect(screen.getByTestId("pills").textContent).toContain("agent:1");
-    expect(screen.getByTestId("pills").textContent).toContain("aoa:1");
+    const t = screen.getByTestId("pills").textContent!;
+    expect(t).toContain("home:2"); // garrytan skill + openai agent (aoa-curated excluded)
+    expect(t).toContain("skill:1");
+    expect(t).toContain("agent:1");
+    expect(t).toContain("aoa:1");
   });
-
-  it("home count is the non-AoA total", () => {
-    renderHook("home");
-    expect(screen.getByTestId("pills").textContent).toContain("home:2");
+  it("marks the active key", () => {
+    renderHook("skill");
+    expect(screen.getByTestId("pills").textContent).toContain("skill:1:1");
   });
-
   it("pushes a SecondarySidebar node to the outlet context", () => {
-    const { getCaptured } = renderHook("skill");
+    const { getCaptured } = renderHook("aoa");
     expect(getCaptured()).not.toBeNull();
   });
 });
 ```
 
-- [ ] **Step 2: Run — expect FAIL (module missing)**
-
-Run: `pnpm --filter @armyofagents/ui exec vitest run src/components/marketplace/__tests__/useMarketplaceSidebar.test.tsx`
-Expected: FAIL.
+- [ ] **Step 2: Run — expect FAIL (module missing)** → `pnpm --filter @armyofagents/ui exec vitest run src/components/marketplace/__tests__/useMarketplaceSidebar.test.tsx`
 
 - [ ] **Step 3: Implement the hook**
 
 Create `ui/src/components/marketplace/useMarketplaceSidebar.tsx`:
 
 ```tsx
-import { useLayoutEffect, useState } from "react";
+import { useLayoutEffect, useMemo, useState } from "react";
 import { Bot, Home, Puzzle, Sparkles, Users } from "lucide-react";
 import type { MarketplaceItemType } from "@armyofagents/shared";
 import { useNavigate, useOutletContext } from "@/lib/router";
@@ -205,10 +206,9 @@ export type MarketplaceSidebarKey = "home" | MarketplaceItemType | "aoa";
 /**
  * Builds the marketplace floating secondary sidebar (Home / Skills / Plugins /
  * Agents / Teams | AoA), pushes it to the persistent LobbyLayout via the outlet
- * context, and returns `pillItems` for the mobile sub-nav (§8.6). Counts come
- * from the catalog with AoA items excluded from the type counts; the AoA entry
- * counts the AoA-first-party items. Called by every marketplace page so the
- * sidebar chrome is consistent.
+ * context, and returns `pillItems` for the mobile sub-nav (§8.6). Type counts
+ * exclude AoA items; the AoA entry counts AoA-first-party items. Called by every
+ * marketplace page so the sidebar chrome is consistent.
  */
 export function useMarketplaceSidebar(activeKey: MarketplaceSidebarKey): {
   pillItems: SecondarySidebarItem[];
@@ -218,47 +218,51 @@ export function useMarketplaceSidebar(activeKey: MarketplaceSidebarKey): {
   const { data: catalog } = useCatalog();
   const [collapsed, setCollapsed] = useState(false);
 
-  const items = catalog?.items ?? [];
-  const aoaCount = items.filter(isAoaItem).length;
-  const main = items.filter((i) => !isAoaItem(i));
-  const c = {
-    home: main.length,
-    skill: main.filter((i) => i.type === "skill").length,
-    plugin: main.filter((i) => i.type === "plugin").length,
-    agent: main.filter((i) => i.type === "agent").length,
-    team: main.filter((i) => i.type === "team").length,
-    aoa: aoaCount,
-  };
+  const counts = useMemo(() => {
+    const items = catalog?.items ?? [];
+    const main = items.filter((i) => !isAoaItem(i));
+    return {
+      home: main.length,
+      skill: main.filter((i) => i.type === "skill").length,
+      plugin: main.filter((i) => i.type === "plugin").length,
+      agent: main.filter((i) => i.type === "agent").length,
+      team: main.filter((i) => i.type === "team").length,
+      aoa: items.filter(isAoaItem).length,
+    };
+  }, [catalog]);
 
-  const go = (key: MarketplaceSidebarKey) => {
-    if (key === "home") navigate("/marketplace");
-    else if (key === "aoa") navigate("/marketplace?view=aoa");
-    else navigate(`/marketplace?type=${key}`);
-  };
+  const pillItems = useMemo<SecondarySidebarItem[]>(() => {
+    const go = (key: MarketplaceSidebarKey) => {
+      if (key === "home") navigate("/marketplace");
+      else if (key === "aoa") navigate("/marketplace?view=aoa");
+      else navigate(`/marketplace?type=${key}`);
+    };
+    const mk = (
+      id: MarketplaceSidebarKey,
+      label: string,
+      icon: SecondarySidebarItem["icon"],
+    ): SecondarySidebarItem => ({
+      id,
+      label,
+      icon,
+      count: counts[id as keyof typeof counts],
+      active: activeKey === id,
+      onClick: () => go(id),
+    });
+    return [
+      mk("home", "Home", <Home />),
+      mk("skill", "Skills", <Sparkles />),
+      mk("plugin", "Plugins", <Puzzle />),
+      mk("agent", "Agents", <Bot />),
+      mk("team", "Teams", <Users />),
+      mk("aoa", "AoA", <Sparkles className="text-brand" />),
+    ];
+  }, [counts, activeKey, navigate]);
 
-  const mk = (
-    id: MarketplaceSidebarKey,
-    label: string,
-    icon: SecondarySidebarItem["icon"],
-    count: number,
-  ): SecondarySidebarItem => ({
-    id,
-    label,
-    icon,
-    count,
-    active: activeKey === id,
-    onClick: () => go(id),
-  });
-
-  const mainItems: SecondarySidebarItem[] = [
-    mk("home", "Home", <Home />, c.home),
-    mk("skill", "Skills", <Sparkles />, c.skill),
-    mk("plugin", "Plugins", <Puzzle />, c.plugin),
-    mk("agent", "Agents", <Bot />, c.agent),
-    mk("team", "Teams", <Users />, c.team),
-  ];
-  const aoaItem = mk("aoa", "AoA", <Sparkles className="text-brand" />, c.aoa);
-  const sections: SecondarySidebarSection[] = [{ items: mainItems }, { items: [aoaItem] }];
+  const sections = useMemo<SecondarySidebarSection[]>(
+    () => [{ items: pillItems.slice(0, 5) }, { items: pillItems.slice(5) }],
+    [pillItems],
+  );
 
   useLayoutEffect(() => {
     setSecondarySidebar(
@@ -270,219 +274,221 @@ export function useMarketplaceSidebar(activeKey: MarketplaceSidebarKey): {
       />,
     );
     return () => setSecondarySidebar(null);
-    // Rebuild when the active row, collapse state, or any count changes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [setSecondarySidebar, activeKey, collapsed, c.home, c.skill, c.plugin, c.agent, c.team, c.aoa]);
+  }, [setSecondarySidebar, sections, collapsed]);
 
-  return { pillItems: [...mainItems, aoaItem] };
+  return { pillItems };
 }
 ```
 
-- [ ] **Step 4: Run — expect PASS**
-
-Run: `pnpm --filter @armyofagents/ui exec vitest run src/components/marketplace/__tests__/useMarketplaceSidebar.test.tsx`
-Expected: PASS (3 tests).
+- [ ] **Step 4: Run — expect PASS** → same path as Step 2.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add ui/src/components/marketplace/useMarketplaceSidebar.tsx ui/src/components/marketplace/__tests__/useMarketplaceSidebar.test.tsx
-git commit -m "feat(marketplace): useMarketplaceSidebar hook (sections + counts + outlet handoff)"
+git commit -m "feat(marketplace): useMarketplaceSidebar hook (AoA-excluded counts + outlet handoff)"
 ```
 
 ---
 
-## Task 3: Wire the sidebar into `Marketplace.tsx` (browse page)
+## Task 3: `Marketplace.tsx` — URL-driven filtering + AoA view + packages/exclusion
 
 **Files:**
 - Modify: `ui/src/pages/Marketplace.tsx`
 - Test: `ui/src/__tests__/Marketplace.test.tsx`
 
-- [ ] **Step 1: Derive the active key + AoA view; split items; drop the chips**
+- [ ] **Step 1: URL as source of truth (remove `selectedType` state)**
 
-In `Marketplace.tsx`:
-1. Read `view` alongside `type`:
-   ```tsx
-   const isAoaView = searchParams.get("view") === "aoa";
-   const activeKey: MarketplaceSidebarKey = isAoaView
-     ? "aoa"
-     : (selectedType ?? "home");
-   ```
-2. Call the hook and get pill items:
-   ```tsx
-   const { pillItems } = useMarketplaceSidebar(activeKey);
-   ```
-3. Split the catalog and choose the base list per view. Replace the `visible`
-   base so Home/type views use non-AoA items and the AoA view uses AoA items:
-   ```tsx
-   const aoaItems = useMemo(() => items.filter(isAoaItem), [items]);
-   const mainItems = useMemo(() => items.filter((i) => !isAoaItem(i)), [items]);
-   const base = isAoaView ? aoaItems : mainItems;
-   ```
-   Then in the `visible` memo use `base` instead of `items` as the starting list,
-   and in `typeCounts` use `mainItems` instead of `items`. When `isAoaView`, ignore
-   `selectedType` (show all AoA types).
-4. Remove the `<MarketplaceFilterChips .../>` render (the sidebar replaces it) and
-   its import.
-5. Add the mobile pill row (md:hidden), mirroring InstanceSettingsPage, driven by
-   `pillItems`:
-   ```tsx
-   <div className="md:hidden mb-5 -mx-4 overflow-x-auto px-4 [&::-webkit-scrollbar]:hidden [scrollbar-width:none]">
-     <div className="flex gap-1.5 w-max">
-       {pillItems.map((p) => (
-         <button
-           key={p.id}
-           type="button"
-           data-active={p.active ? "true" : undefined}
-           onClick={p.onClick}
-           className={cn(
-             "inline-flex items-center gap-1.5 px-3 py-2 rounded-full text-[12.5px] font-medium border whitespace-nowrap shrink-0 transition-colors",
-             p.active
-               ? "bg-brand/[0.08] text-[hsl(15_60%_75%)] border-brand/[0.25]"
-               : "bg-card border-border text-foreground/[0.78] hover:bg-card-2 hover:text-foreground",
-           )}
-         >
-           {p.icon}
-           {p.label}
-         </button>
-       ))}
-     </div>
-   </div>
-   ```
-   (Import `useMarketplaceSidebar`, `type MarketplaceSidebarKey` from the hook,
-   `isAoaItem` from marketplace-constants, and `cn` if not already imported.)
-6. When `isAoaView`, the section heading area should render all AoA types (reuse the
-   existing `SECTION_ORDER`/`grouped` render path against the AoA `base`); the
-   "packages" rows (skill packages) render only on non-AoA views for v1 (guard the
-   package render with `!isAoaView`). Item-level exclusion is already handled by `base`.
-
-- [ ] **Step 2: Update `Marketplace.test.tsx`**
-
-The chip-row tests (`renders the filter chip row with all 5 chips`, `clicking the
-Skills chip filters…`, `renders the sub-filter chip row…` if it asserted the type
-chips) must move to sidebar assertions. Because the page now needs the Outlet
-context, render it under a minimal `LobbyLayout`-style wrapper (mirror the
-`renderSettings` helper in `InstanceSettingsPage-signout.test.tsx`):
+Replace the `selectedType` `useState` (Marketplace.tsx:249) with derived values, and
+add the AoA view + active key:
 
 ```tsx
-import { MemoryRouter, Routes, Route, Outlet } from "react-router-dom";
-function renderMarketplace(path = "/marketplace") {
-  return renderWithProviders(
-    <MemoryRouter initialEntries={[path]}>
-      <Routes>
-        <Route element={<Outlet context={{ setSecondarySidebar: () => {} }} />}>
-          <Route path="/marketplace" element={<Marketplace />} />
-        </Route>
-      </Routes>
-    </MemoryRouter>,
-  );
-}
+const isAoaView = searchParams.get("view") === "aoa";
+const typeParam = searchParams.get("type");
+const selectedType: MarketplaceItemType | null =
+  typeParam === "plugin" || typeParam === "skill" || typeParam === "agent" || typeParam === "team"
+    ? typeParam
+    : null;
+const activeKey: MarketplaceSidebarKey = isAoaView ? "aoa" : (selectedType ?? "home");
+const { pillItems } = useMarketplaceSidebar(activeKey);
+const goType = (t: MarketplaceItemType | null) => navigate(t ? `/marketplace?type=${t}` : "/marketplace");
 ```
 
-Keep the catalog/hero/error tests. Add: on `/marketplace?view=aoa` the grid shows
-AoA items and excludes a known non-AoA item; on `/marketplace` (home) a known
-AoA-owned item is NOT in the grid. Use the existing test catalog fixture; if it has
-no aoa-curated item, add one inline to the mock.
+Add `const navigate = useNavigate();` (from `@/lib/router`) if not present.
 
-- [ ] **Step 3: Typecheck + run Marketplace test**
+- [ ] **Step 2: Split items + packages; exclude AoA from main; base per view**
 
-Run: `pnpm --filter @armyofagents/ui typecheck`
-Run: `pnpm --filter @armyofagents/ui exec vitest run src/__tests__/Marketplace.test.tsx`
-Expected: typecheck clean; Marketplace tests pass.
+```tsx
+const aoaItems = useMemo(() => items.filter(isAoaItem), [items]);
+const mainItems = useMemo(() => items.filter((i) => !isAoaItem(i)), [items]);
+const base = isAoaView ? aoaItems : mainItems;
+const mainPackages = useMemo(() => (packages ?? []).filter((p) => !isAoaPackage(p)), [packages]);
+```
+- In `typeCounts`, compute from `mainItems` (not `items`).
+- In the `visible` memo, start from `base` (not `items`); when `isAoaView`, ignore
+  `selectedType` (show all AoA types).
+- Everywhere the render used `packages`, use `mainPackages`, and **guard package rows
+  with `!isAoaView`** (AoA view shows AoA items as individual cards, no package rows in
+  v1). This closes the install-from-Home leak for AoA packages.
+- `packageInstallMembers` already resolves by member id; since AoA packages no longer
+  render, they can't open the modal from main rows — no extra change needed.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 3: Convert `setSelectedType` callers to navigation; drop the chips**
+
+- Line ~314 `PackagesHeader onSeeAll={() => setSelectedType("skill")}` → `onSeeAll={() => goType("skill")}`.
+- Line ~377 section `onSeeAll={() => setSelectedType(type)}` → `onSeeAll={() => goType(type)}`.
+- Remove `<MarketplaceFilterChips value={selectedType} onChange={setSelectedType} counts={typeCounts} />`
+  (line ~433) and its import.
+
+- [ ] **Step 4: Add the mobile pill row (with active auto-scroll, mirroring Settings)**
+
+Add near the top of the content (md:hidden), using `pillItems`:
+
+```tsx
+const activePillRef = useRef<HTMLButtonElement>(null);
+useEffect(() => {
+  activePillRef.current?.scrollIntoView({ inline: "center", block: "nearest" });
+}, [activeKey]);
+```
+```tsx
+<div className="md:hidden mb-5 -mx-4 overflow-x-auto px-4 [&::-webkit-scrollbar]:hidden [scrollbar-width:none]">
+  <div className="flex gap-1.5 w-max">
+    {pillItems.map((p) => (
+      <button
+        key={p.id}
+        ref={p.active ? activePillRef : undefined}
+        type="button"
+        data-active={p.active ? "true" : undefined}
+        onClick={p.onClick}
+        className={cn(
+          "inline-flex items-center gap-1.5 px-3 py-2 rounded-full text-[12.5px] font-medium border whitespace-nowrap shrink-0 transition-colors",
+          p.active
+            ? "bg-brand/[0.08] text-[hsl(15_60%_75%)] border-brand/[0.25]"
+            : "bg-card border-border text-foreground/[0.78] hover:bg-card-2 hover:text-foreground",
+        )}
+      >
+        {p.icon}
+        {p.label}
+      </button>
+    ))}
+  </div>
+</div>
+```
+Imports to add: `useMarketplaceSidebar` + `type MarketplaceSidebarKey`, `isAoaItem`,
+`isAoaPackage`, `useNavigate` (from `@/lib/router`), `useRef`/`useEffect` (react), `cn`.
+
+- [ ] **Step 5: Update `Marketplace.test.tsx`**
+
+- Wrap renders in a minimal Outlet-context + LobbyShell-mock wrapper (the file already
+  mocks `@/components/LobbyShell` from PR #255 — keep that mock):
+  ```tsx
+  import { MemoryRouter, Routes, Route, Outlet } from "react-router-dom";
+  function renderMarketplace(path = "/marketplace") {
+    return renderWithProviders(
+      <MemoryRouter initialEntries={[path]}>
+        <Routes>
+          <Route element={<Outlet context={{ setSecondarySidebar: () => {} }} />}>
+            <Route path="/marketplace" element={<Marketplace />} />
+          </Route>
+        </Routes>
+      </MemoryRouter>,
+    );
+  }
+  ```
+- Replace chip-row tests with: home grid EXCLUDES a known aoa-curated item; `?view=aoa`
+  grid shows ONLY AoA items; `?type=skill` excludes AoA. Ensure the test catalog mock
+  has ≥1 aoa-curated item (add inline if missing).
+- Keep hero/error/count tests.
+
+- [ ] **Step 6: Typecheck + run** → `pnpm --filter @armyofagents/ui typecheck` then `... vitest run src/__tests__/Marketplace.test.tsx`. Expected: clean + pass.
+
+- [ ] **Step 7: Commit**
 
 ```bash
 git add ui/src/pages/Marketplace.tsx ui/src/__tests__/Marketplace.test.tsx
-git commit -m "feat(marketplace): secondary sidebar + AoA view on the browse page"
+git commit -m "feat(marketplace): URL-driven sidebar filtering + AoA view (items + packages excluded from main)"
 ```
 
 ---
 
-## Task 4: Persist the sidebar on the other marketplace pages
+## Task 4: Persist the sidebar on Detail / Search / Package pages (AoA-aware)
 
 **Files:**
-- Modify: `ui/src/pages/MarketplaceDetail.tsx`, `MarketplaceSearch.tsx`, `MarketplacePackageDetail.tsx`
-- Tests: the three `Marketplace*.test.tsx` (add the Outlet wrapper)
+- Modify: `MarketplaceDetail.tsx`, `MarketplaceSearch.tsx`, `MarketplacePackageDetail.tsx`
+- Tests: the three `Marketplace*.test.tsx`
 
-- [ ] **Step 1: Call the hook on each page with a derived active key**
+- [ ] **Step 1: `MarketplaceSearch` — call hook + EXCLUDE AoA from results**
 
-For each page, add `useMarketplaceSidebar(<key>)` near the top of the component:
-- `MarketplaceDetail.tsx` (route `/marketplace/:type/:slug`): derive from the item /
-  `useParams().type` when it is a valid `MarketplaceItemType`, else `"home"`:
-  ```tsx
-  const params = useParams();
-  const key = (["skill","plugin","agent","team"] as const).includes(params.type as any)
+In `MarketplaceSearch.tsx`:
+```tsx
+useMarketplaceSidebar("home");
+```
+And in the `grouped` memo, start from non-AoA items:
+```tsx
+let items = catalog.items.filter((i) => !isAoaItem(i));
+```
+(import `useMarketplaceSidebar`, `isAoaItem`.)
+
+- [ ] **Step 2: `MarketplaceDetail` — AoA-aware active key + back link**
+
+After the item is resolved from the catalog, derive:
+```tsx
+const key: MarketplaceSidebarKey = item && isAoaItem(item)
+  ? "aoa"
+  : (["skill","plugin","agent","team"] as const).includes(params.type as any)
     ? (params.type as MarketplaceSidebarKey)
     : "home";
-  useMarketplaceSidebar(key);
-  ```
-- `MarketplacePackageDetail.tsx` (skill packages): `useMarketplaceSidebar("skill")`.
-- `MarketplaceSearch.tsx`: `useMarketplaceSidebar("home")`.
+useMarketplaceSidebar(key);
+```
+Point the existing "Back to marketplace/Skills" link at the AoA view when the item is
+AoA: `to={item && isAoaItem(item) ? "/marketplace?view=aoa" : "/marketplace"}` (adjust
+to the actual back-link JSX; keep its label logic sensible). (import `useMarketplaceSidebar`, `isAoaItem`.)
 
-(Each page already renders under `LobbyLayout`, so `useOutletContext` resolves.)
+- [ ] **Step 3: `MarketplacePackageDetail` — AoA-aware key**
 
-- [ ] **Step 2: Update the three page tests to wrap in the Outlet context**
+```tsx
+useMarketplaceSidebar(pkg && isAoaPackage(pkg) ? "aoa" : "skill");
+```
+(import `useMarketplaceSidebar`, `isAoaPackage`.) If `pkg` isn't loaded yet, pass `"skill"` until it resolves (the hook re-runs on change).
 
-Each of `MarketplaceDetail.test.tsx`, `MarketplaceSearch.test.tsx`,
-`MarketplacePackageDetail.test.tsx` renders the page directly. Wrap the render in the
-same minimal Outlet-context wrapper as Task 3 Step 2 (a `setSecondarySidebar: () => {}`
-context), because the page now calls `useOutletContext`. Keep all existing assertions.
+- [ ] **Step 4: Update the three page tests**
 
-- [ ] **Step 3: Typecheck + run the three tests**
+Wrap each render in the same Outlet-context wrapper (Task 3 Step 5); keep their existing
+`@/components/LobbyShell` mocks. Keep existing assertions. Add to Search: a known
+aoa-curated item does NOT appear in results.
 
-Run: `pnpm --filter @armyofagents/ui typecheck`
-Run: `pnpm --filter @armyofagents/ui exec vitest run src/__tests__/MarketplaceDetail.test.tsx src/__tests__/MarketplaceSearch.test.tsx src/__tests__/MarketplacePackageDetail.test.tsx`
-Expected: clean + all pass.
+- [ ] **Step 5: Typecheck + run the three tests** → `pnpm --filter @armyofagents/ui typecheck` then `... vitest run src/__tests__/MarketplaceDetail.test.tsx src/__tests__/MarketplaceSearch.test.tsx src/__tests__/MarketplacePackageDetail.test.tsx`.
 
-- [ ] **Step 4: Retire `MarketplaceFilterChips` if unused**
+- [ ] **Step 6: Retire `MarketplaceFilterChips` if unused**
 
-Run: `grep -rn "MarketplaceFilterChips" ui/src --include=*.tsx | grep -v __tests__`
-If no non-test references remain, delete `ui/src/components/marketplace/MarketplaceFilterChips.tsx`
-and its test `ui/src/components/marketplace/__tests__/MarketplaceFilterChips.test.tsx`
-(if present). If still referenced, leave it.
+`grep -rn "MarketplaceFilterChips" ui/src --include=*.tsx | grep -v __tests__` → if empty,
+delete the component + its test; else leave it.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add ui/src/pages/MarketplaceDetail.tsx ui/src/pages/MarketplaceSearch.tsx ui/src/pages/MarketplacePackageDetail.tsx ui/src/__tests__/MarketplaceDetail.test.tsx ui/src/__tests__/MarketplaceSearch.test.tsx ui/src/__tests__/MarketplacePackageDetail.test.tsx
-git commit -m "feat(marketplace): persist secondary sidebar across detail/search/package pages"
+git commit -m "feat(marketplace): persist AoA-aware sidebar across detail/search/package pages"
 ```
 
 ---
 
 ## Task 5: Full verification + live check
 
-**Files:** none (verification only)
-
-- [ ] **Step 1: Typecheck**
-
-Run: `pnpm --filter @armyofagents/ui typecheck` → expect clean.
-
-- [ ] **Step 2: Full UI suite**
-
-Run: `pnpm --filter @armyofagents/ui test:run` → expect all green.
-
-- [ ] **Step 3: Live-verify on :3281** (uses the `feat/lobby-empty-state` instance)
-
-Using the gstack browse binary:
-- `goto http://127.0.0.1:3281/marketplace` → secondary sidebar renders (Home / Skills /
-  Plugins / Agents / Teams | AoA), primary rail auto-collapsed, horizontal chips gone.
-  Screenshot; `console --errors` clean.
-- Click **AoA** → URL `?view=aoa`, grid shows AoA items only; click **Skills** →
-  `?type=skill`, AoA items absent; **Home** → `/marketplace`, AoA items absent.
-- Drill into an item → the sidebar persists (Task 4).
-- Narrow viewport → mobile pill row shows; sidebar hidden.
-
-Expected: all correct, zero console errors, AoA items segregated.
-
-- [ ] **Step 4: Screenshot proof** — save + share the browse page with the sidebar.
+- [ ] **Step 1: Typecheck** → `pnpm --filter @armyofagents/ui typecheck` (clean).
+- [ ] **Step 2: Full suite** → `pnpm --filter @armyofagents/ui test:run` (all green).
+- [ ] **Step 3: Live-verify on :3281** (gstack browse):
+  - `/marketplace` → sidebar renders (Home/Skills/Plugins/Agents/Teams | AoA), chips gone, primary auto-collapsed. Console clean.
+  - Click **AoA** (`?view=aoa`) → only AoA items; **Skills** (`?type=skill`) → AoA absent; **Home** → AoA absent. "See all" on a section still navigates correctly.
+  - Search (`/marketplace/search?q=...`) → no AoA items in results.
+  - Drill into an AoA item → sidebar highlights **AoA**, back link returns to AoA view.
+  - Narrow viewport → mobile pill row with active pill scrolled into view.
+- [ ] **Step 4: Screenshot proof** — save + share the browse page + the AoA view.
 
 ---
 
 ## Self-review notes
 
-- **Spec coverage:** M1 outlet handoff → Task 2; M2 entries → hook; M3 Home=All + `?type=` → hook `go`/Task 3; M4 AoA `?view=aoa` → Task 3; M5 `isAoaItem` → Task 1; M6 exclusion → Task 3 `base`/counts; M7 remove chips → Task 3; M8 all pages → Task 4; M9 mobile pills → Task 3.
-- **Placeholder scan:** none — concrete code/commands throughout.
-- **Type consistency:** `MarketplaceSidebarKey` used across hook + pages; `isAoaItem`/`AOA_OWNERS` signatures stable; `SecondarySidebarItem`/`Section` from the real component; `useCatalog().data.items` shape matches Marketplace.tsx usage.
-- **Known caveat (documented):** skill-*packages* rows are AoA-excluded only via the `!isAoaView` guard in v1; item-level exclusion (the hard requirement) is fully handled by `base`. Package-owner exclusion on Home is a follow-up if the mixed packages row looks wrong in the live check.
+- **Codex P1 coverage:** #1 URL-derived (no useState) → Task 3 Step 1; #2 setSelectedType→nav → Step 3; #3 search excludes AoA → Task 4 Step 1; #4 detail AoA active/back → Task 4 Step 2; #5 packages excluded + no install-from-Home → Task 3 Step 2; #6 CompanyContext mock → Task 2 Step 1; #7 provider.id-only + strict github host → Task 1 Step 3.
+- **Codex P2 coverage:** strict URL parse (Task 1), mobile auto-scroll (Task 3 Step 4), memoized counts/sections deps (Task 2 hook), stronger hook-test assertions (Task 2 Step 1), keep LobbyShell mock (Task 3/4 tests).
+- **Placeholders:** none. **Type consistency:** `MarketplaceSidebarKey`, `isAoaItem`/`isAoaPackage`/`isAoaOwner`, `SecondarySidebarItem/Section` consistent across tasks.
