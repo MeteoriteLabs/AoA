@@ -60,7 +60,13 @@ export default defineConfig({
   // The e2e suite boots only in local_trusted mode (see webServer env below).
   // Multi-user authenticated-mode e2e is tracked for 1.1.
   timeout: 60_000,
-  retries: 0,
+  // Retry up to twice on CI to absorb transient React refetch/remount churn that
+  // detaches elements mid-interaction (the dominant e2e flake class). Kept at
+  // 0 locally so flakes surface during development. `trace: "on-first-retry"`
+  // (below) captures a trace on the retry for root-causing. Damage control —
+  // not a substitute for fixing the underlying churn (see
+  // docs/aoa/plans/2026-07-01-e2e-flake-stabilization-plan.md).
+  retries: process.env.CI ? 2 : 0,
   // Single worker: e2e specs share an embedded-postgres-backed instance
   // (one AOA_HOME per config run). Seed-and-cleanup helpers in helpers/
   // are not worker-safe; multiple workers race on /api/companies. Force
