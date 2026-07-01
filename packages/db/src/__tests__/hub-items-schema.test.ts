@@ -4,6 +4,7 @@ import { hubPreferences } from "../schema/hub_preferences.js";
 import { hubCounterSnapshots } from "../schema/hub_counter_snapshots.js";
 import { notificationPreferences } from "../schema/notification_preferences.js";
 import { notificationDigestItems } from "../schema/notification_digest_items.js";
+import { hubAudit, hubAutopilotPolicies } from "../schema/index.js";
 
 describe("hubItems schema", () => {
   it("hubItems aliases the notifications table and exposes hub columns", () => {
@@ -72,5 +73,13 @@ describe("hubItems schema", () => {
     ]) {
       expect(notificationDigestItems, col).toHaveProperty(col);
     }
+  });
+
+  it("exports W3 autopilot policy table and reversible audit metadata", () => {
+    expect(hubAutopilotPolicies).toBeDefined();
+    for (const col of ["companyId", "mode", "rules", "updatedAt"]) {
+      expect(hubAutopilotPolicies, col).toHaveProperty(col);
+    }
+    expect(hubAudit).toHaveProperty("decisionContext");
   });
 });
