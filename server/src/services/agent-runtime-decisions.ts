@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, eq, inArray, lte } from "drizzle-orm";
+import { and, eq, inArray, lte, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { agentRuntimeDecisions, agentRuntimeTrustRules } from "@armyofagents/db";
 import type {
@@ -108,7 +108,8 @@ type DecisionRepo = {
   updateDecision(
     decisionId: string,
     patch: Partial<typeof agentRuntimeDecisions.$inferInsert>,
-  ): Promise<AgentRuntimeDecisionRow>;
+    guard?: { sourceRevision?: number; statuses?: RuntimeDecisionStatus[] },
+  ): Promise<AgentRuntimeDecisionRow | null>;
   listDueForExpiry(input: { companyId?: string; now: Date; limit: number }): Promise<AgentRuntimeDecisionRow[]>;
 };
 
@@ -154,7 +155,8 @@ function sleep(ms: number) {
 }
 
 function commandHash(command: string | null | undefined) {
-  return command ? hashString(command) : null;
+  const redacted = safeText(command);
+  return redacted ? hashString(redacted) : null;
 }
 
 function pathMatchesScope(path: string | null | undefined, scope: string | null) {
@@ -225,6 +227,7 @@ function realRepo(db: Db): DecisionRepo {
         .values(input)
         .onConflictDoUpdate({
           target: agentRuntimeDecisions.sourceUniqueKey,
+          targetWhere: sql`source_unique_key is not null`,
           set: {
             title: input.title,
             summary: input.summary ?? null,
@@ -298,13 +301,20 @@ function realRepo(db: Db): DecisionRepo {
         .set({ lastUsedAt: input.usedAt, updatedAt: input.usedAt })
         .where(eq(agentRuntimeTrustRules.id, input.ruleId));
     },
-    async updateDecision(decisionId, patch) {
+    async updateDecision(decisionId, patch, guard) {
+      const conditions = [eq(agentRuntimeDecisions.id, decisionId)];
+      if (guard?.sourceRevision !== undefined) {
+        conditions.push(eq(agentRuntimeDecisions.sourceRevision, guard.sourceRevision));
+      }
+      if (guard?.statuses?.length) {
+        conditions.push(inArray(agentRuntimeDecisions.status, guard.statuses));
+      }
       return db
         .update(agentRuntimeDecisions)
         .set({ ...patch, updatedAt: new Date() })
-        .where(eq(agentRuntimeDecisions.id, decisionId))
+        .where(and(...conditions))
         .returning()
-        .then((rows) => rows[0]);
+        .then((rows) => rows[0] ?? null);
     },
     async listDueForExpiry(input) {
       const conditions = [
@@ -489,6 +499,18 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
   async function answerPrompt(input: AnswerPromptInput) {
     const row = await loadActive(input.companyId, input.decisionId);
     assertAnswerMatches(row, input);
+    const answered = await repo.updateDecision(row.id, {
+      status: "answered",
+      decision: input.kind === "permission" ? input.decision : null,
+      answerPayload: input.kind === "work_question" ? input.answer : null,
+      answeredByUserId: input.actorUserId,
+      answeredAt: now(),
+      sourceRevision: row.sourceRevision + 1,
+    }, {
+      sourceRevision: row.sourceRevision,
+      statuses: ["created", "shown"],
+    });
+    if (!answered) throw conflict("Runtime decision prompt was already answered");
     await activityLogger({
       companyId: row.companyId,
       actorType: "user",
@@ -504,14 +526,6 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
         sourceRevision: row.sourceRevision,
         idempotencyKey: input.idempotencyKey ?? null,
       },
-    });
-    const answered = await repo.updateDecision(row.id, {
-      status: "answered",
-      decision: input.kind === "permission" ? input.decision : null,
-      answerPayload: input.kind === "work_question" ? input.answer : null,
-      answeredByUserId: input.actorUserId,
-      answeredAt: now(),
-      sourceRevision: row.sourceRevision + 1,
     });
     if (input.kind === "permission" && input.decision === "allow_always") {
       await createTrustRule({
@@ -565,6 +579,7 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
       relayError: safeText(input.relayError),
       sourceRevision: row.sourceRevision + 1,
     });
+    if (!failed) throw conflict("Runtime decision prompt changed before relay failure could be recorded");
     await emitHubItem(failed);
     return failed;
   }
@@ -587,6 +602,7 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
       relayedAt: now(),
       sourceRevision: row.sourceRevision + 1,
     });
+    if (!relayed) throw conflict("Runtime decision prompt changed before relay could be recorded");
     await emitHubItem(relayed);
     return relayed;
   }
@@ -610,6 +626,7 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
         status: "expired",
         sourceRevision: row.sourceRevision + 1,
       });
+      if (!updated) continue;
       await emitHubItem(updated);
       expired += 1;
     }
@@ -636,6 +653,7 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
         relayError: safeText(input.reason),
         sourceRevision: row.sourceRevision + 1,
       });
+      if (!updated) continue;
       await emitHubItem(updated);
       cancelled += 1;
     }

@@ -324,6 +324,10 @@ describe("agentRuntimeDecisionService", () => {
         answeredAt: now(),
         sourceRevision: 3,
       }),
+      expect.objectContaining({
+        sourceRevision: 2,
+        statuses: ["created", "shown"],
+      }),
     );
     expect(activityLogger).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -337,8 +341,8 @@ describe("agentRuntimeDecisionService", () => {
         runId: "11111111-1111-4111-8111-111111111111",
       }),
     );
-    expect(activityLogger.mock.invocationCallOrder[0]).toBeLessThan(
-      repo.updateDecision.mock.invocationCallOrder[0],
+    expect(repo.updateDecision.mock.invocationCallOrder[0]).toBeLessThan(
+      activityLogger.mock.invocationCallOrder[0],
     );
     expect(repo.createTrustRule).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -351,6 +355,79 @@ describe("agentRuntimeDecisionService", () => {
       }),
     );
     expect(result.status).toBe("answered");
+  });
+
+  it("returns conflict without answer side effects when the guarded answer update loses a race", async () => {
+    const { service, repo, activityLogger, hubItems } = makeService({
+      updateDecision: vi.fn(async () => null),
+    });
+
+    await expect(
+      service.answerPrompt({
+        companyId: "company-1",
+        decisionId: "decision-1",
+        actorUserId: "founder-1",
+        expectedSourceRevision: 2,
+        nonce: "nonce-1",
+        kind: "permission",
+        decision: "allow_always",
+      }),
+    ).rejects.toMatchObject({ status: 409 });
+
+    expect(repo.updateDecision).toHaveBeenCalledWith(
+      "decision-1",
+      expect.objectContaining({ status: "answered", sourceRevision: 3 }),
+      expect.objectContaining({ sourceRevision: 2, statuses: ["created", "shown"] }),
+    );
+    expect(activityLogger).not.toHaveBeenCalledWith(
+      expect.objectContaining({ action: "runtime_decision.answered" }),
+    );
+    expect(repo.createTrustRule).not.toHaveBeenCalled();
+    expect(hubItems.emit).not.toHaveBeenCalled();
+  });
+
+  it("matches allow-always rules against redacted command text consistently", async () => {
+    let savedRule: ReturnType<typeof baseTrustRule> | null = null;
+    const { service, repo } = makeService({
+      createTrustRule: vi.fn(async (input) => {
+        savedRule = baseTrustRule(input as Record<string, unknown>);
+        return savedRule;
+      }),
+      listTrustRules: vi.fn(async () => savedRule ? [savedRule] : []),
+    });
+
+    await service.createTrustRule({
+      companyId: "company-1",
+      agentId: "agent-1",
+      adapterType: "claude_local",
+      toolName: "shell",
+      command: "AOA_API_KEY=sk-ant-abc123DEF456ghi789 pnpm test:run",
+      riskClass: "medium",
+      createdByUserId: "founder-1",
+    });
+
+    await service.createPrompt({
+      companyId: "company-1",
+      agentId: "agent-1",
+      runId: "11111111-1111-4111-8111-111111111111",
+      adapterType: "claude_local",
+      kind: "permission",
+      nonce: "nonce-secret",
+      title: "Allow shell command?",
+      toolName: "shell",
+      command: "AOA_API_KEY=sk-ant-abc123DEF456ghi789 pnpm test:run",
+      riskClass: "medium",
+      timeoutPolicy: "deny",
+    });
+
+    expect(repo.createDecision).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        status: "answered",
+        decision: "allow_always",
+        command: "AOA_API_KEY=***REDACTED*** pnpm test:run",
+      }),
+    );
+    expect(repo.markTrustRuleUsed).toHaveBeenCalledWith({ ruleId: "rule-1", usedAt: now() });
   });
 
   it("keeps relay failures actionable and refreshes the hub item", async () => {
