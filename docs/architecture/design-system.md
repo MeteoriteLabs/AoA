@@ -292,9 +292,20 @@ A page **force-collapses the primary sidebar on every mount** if and only if it 
 
 Mental model: *primary collapses BECAUSE secondary takes over.* Don't auto-collapse just to give a page more horizontal room — that's confusing because the user can't tell why their preference was overridden.
 
-Implementation: pages opt in by passing `defaultCollapsed={true}` to `LobbyShell`. The `LobbySidebar` state initializer treats that prop as a force-override that supersedes localStorage on every mount. The user can still manually expand within the page; navigating away and back re-applies the force-collapse.
+Implementation (2026-07 — persistent shell): the lobby pages render under a single
+persistent `LobbyLayout` (§8.1.2), so the shell no longer remounts on navigation
+and a mount-time override can't fire. The rule is now **reactive**: `LobbyShell`
+passes `hasSecondarySidebar` (true when the current page filled the outlet-context
+secondary-sidebar slot) to `LobbySidebar`, which force-collapses the primary while
+it is true and restores the persisted preference (`localStorage["aoa.lobby.sidebar-collapsed"]`)
+when it is false. A manual expand on a secondary-sidebar page is a **transient
+peek** — it is not written to the preference. The old mount-time `defaultCollapsed`
+prop is removed.
 
-Current consumers (2026-05-09): `InstanceSettingsPage` only. Marketplace pages briefly used this in Phase A but were removed in Phase D when this rule was formalized. Locked as Decision #98.
+Current consumers (2026-07): `InstanceSettingsPage` only (it provides the secondary
+sidebar via the `LobbyLayout` outlet context). Marketplace pages briefly used this
+in Phase A but were removed in Phase D when this rule was formalized. Locked as
+Decision #98.
 
 ### 8.1.2 Lobby-tier floating rails (2026-07)
 
