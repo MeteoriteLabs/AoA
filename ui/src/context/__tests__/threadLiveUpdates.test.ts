@@ -48,6 +48,7 @@ describe("handleLiveEvent hub invalidations", () => {
   }
 
   it("invalidates hub list, counts, badges, and digest when a hub item event arrives", () => {
+    vi.useFakeTimers();
     const queryClient = makeQueryClient();
     const notifyHubItemChanged = vi.fn();
 
@@ -73,7 +74,7 @@ describe("handleLiveEvent hub invalidations", () => {
       notifyHubItemChanged,
     );
 
-    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["hub-items", "co1"] });
+    // Counts, badges, digest, and the viewer refresh fire immediately.
     expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
       queryKey: queryKeys.hubItems.counts("co1"),
     });
@@ -84,9 +85,17 @@ describe("handleLiveEvent hub invalidations", () => {
       queryKey: queryKeys.notifications.digest("co1"),
     });
     expect(notifyHubItemChanged).toHaveBeenCalledWith("hub-1");
+    // The broad hub-items LIST invalidation is trailing-coalesced, not immediate.
+    expect(queryClient.invalidateQueries).not.toHaveBeenCalledWith({
+      queryKey: ["hub-items", "co1"],
+    });
+    vi.advanceTimersByTime(200);
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["hub-items", "co1"] });
+    vi.useRealTimers();
   });
 
   it("invalidates hub lists when a personal-state counts event arrives", () => {
+    vi.useFakeTimers();
     const queryClient = makeQueryClient();
 
     handleLiveEvent(
@@ -103,13 +112,19 @@ describe("handleLiveEvent hub invalidations", () => {
       { cooldownHits: new Map(), suppressUntil: 0 },
     );
 
-    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["hub-items", "co1"] });
+    // Counts + badges immediate; the LIST invalidation is trailing-coalesced.
     expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
       queryKey: queryKeys.hubItems.counts("co1"),
     });
     expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
       queryKey: queryKeys.sidebarBadges("co1"),
     });
+    expect(queryClient.invalidateQueries).not.toHaveBeenCalledWith({
+      queryKey: ["hub-items", "co1"],
+    });
+    vi.advanceTimersByTime(200);
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["hub-items", "co1"] });
+    vi.useRealTimers();
   });
 
   it("invalidates notification digest when a digest event arrives", () => {

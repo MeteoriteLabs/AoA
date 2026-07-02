@@ -558,6 +558,27 @@ function gatedPushToast(
   if (id !== null) recordToastHit(gate, category);
 }
 
+// Trailing-coalesce the broad `["hub-items", cid]` LIST invalidation. Both
+// `hub.item.changed` and `hub.counts.changed(personal_state_changed)` invalidate
+// it, and each can arrive back-to-back with the actor's own mutation-side
+// invalidation — collapsing them into one trailing refetch avoids the double
+// list refetch/re-render. This defers only the LIST refetch by a few hundred ms;
+// counts/sidebar/digest and notifyHubItemChanged stay immediate below, and the
+// mutation-side invalidation still fires now (WS-down safety unaffected).
+const HUB_LIST_INVALIDATE_DEBOUNCE_MS = 200;
+const hubListInvalidateTimers = new Map<string, ReturnType<typeof setTimeout>>();
+function scheduleHubListInvalidate(queryClient: QueryClient, companyId: string) {
+  const existing = hubListInvalidateTimers.get(companyId);
+  if (existing) clearTimeout(existing);
+  hubListInvalidateTimers.set(
+    companyId,
+    setTimeout(() => {
+      hubListInvalidateTimers.delete(companyId);
+      void queryClient.invalidateQueries({ queryKey: ["hub-items", companyId] });
+    }, HUB_LIST_INVALIDATE_DEBOUNCE_MS),
+  );
+}
+
 export function handleLiveEvent(
   queryClient: QueryClient,
   expectedCompanyId: string,
@@ -675,7 +696,7 @@ export function handleLiveEvent(
   }
 
   if (event.type === "hub.item.changed") {
-    queryClient.invalidateQueries({ queryKey: ["hub-items", expectedCompanyId] });
+    scheduleHubListInvalidate(queryClient, expectedCompanyId);
     queryClient.invalidateQueries({ queryKey: queryKeys.hubItems.counts(expectedCompanyId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(expectedCompanyId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.notifications.digest(expectedCompanyId) });
@@ -686,7 +707,7 @@ export function handleLiveEvent(
 
   if (event.type === "hub.counts.changed") {
     if (readString(payload.reason) === "personal_state_changed") {
-      queryClient.invalidateQueries({ queryKey: ["hub-items", expectedCompanyId] });
+      scheduleHubListInvalidate(queryClient, expectedCompanyId);
     }
     queryClient.invalidateQueries({ queryKey: queryKeys.hubItems.counts(expectedCompanyId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(expectedCompanyId) });

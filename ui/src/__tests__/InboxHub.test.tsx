@@ -519,6 +519,34 @@ describe("InboxHub page", () => {
     });
   });
 
+  it("optimistically clears the unread indicator on click (infinite-query paged cache)", async () => {
+    vi.mocked(hubItemsApi.list).mockResolvedValue(hubList([hubItem()]));
+    // Hold markRead unresolved so we observe the OPTIMISTIC list update before any
+    // server settle/refetch — this exercises the `{ pages: [...] }` cache branch.
+    let resolveMarkRead: (() => void) | undefined;
+    vi.mocked(hubItemsApi.markRead).mockImplementation(
+      () =>
+        new Promise((res) => {
+          resolveMarkRead = () => res({} as never);
+        }),
+    );
+
+    renderPage("/P4/inbox-hub/waiting");
+
+    const row = await screen.findByRole("button", { name: /approve deployment/i });
+    expect(screen.getByLabelText("Unread")).toBeInTheDocument();
+
+    fireEvent.click(row);
+
+    // The optimistic setQueriesData must reach the paged list cache and re-derive
+    // `items`, removing the unread dot — if the `{pages}` branch no-ops this fails.
+    await waitFor(() => {
+      expect(screen.queryByLabelText("Unread")).not.toBeInTheDocument();
+    });
+
+    resolveMarkRead?.();
+  });
+
   it("viewer can mark a selected read item unread", async () => {
     vi.mocked(hubItemsApi.list).mockResolvedValue(hubList([
       hubItem({ readAt: "2026-06-29T10:01:00.000Z" }),
