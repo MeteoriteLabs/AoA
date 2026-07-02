@@ -625,7 +625,10 @@ describe("agentRuntimeDecisionService", () => {
   });
 
   it("keeps relay failures actionable and refreshes the hub item", async () => {
-    const { service, repo, hubItems } = makeService();
+    const answered = baseDecision({ status: "answered", sourceRevision: 3 });
+    const { service, repo, hubItems } = makeService({
+      getDecision: vi.fn(async () => answered),
+    });
 
     const result = await service.markRelayFailed({
       companyId: "company-1",
@@ -638,11 +641,62 @@ describe("agentRuntimeDecisionService", () => {
       expect.objectContaining({
         status: "relay_failed",
         relayError: "adapter hook disconnected",
+        sourceRevision: 4,
+      }),
+      expect.objectContaining({
         sourceRevision: 3,
+        statuses: ["answered"],
       }),
     );
     expect(hubItems.emit).toHaveBeenCalled();
     expect(result.status).toBe("relay_failed");
+  });
+
+  it("skips relay failure side effects when the answered prompt changed concurrently", async () => {
+    const answered = baseDecision({ status: "answered", sourceRevision: 3 });
+    const { service, repo, hubItems, activityLogger } = makeService({
+      getDecision: vi.fn(async () => answered),
+      updateDecision: vi.fn(async () => null),
+    });
+
+    await expect(
+      service.markRelayFailed({
+        companyId: "company-1",
+        decisionId: "decision-1",
+        relayError: "adapter hook disconnected",
+      }),
+    ).rejects.toMatchObject({ status: 409 });
+
+    expect(repo.updateDecision).toHaveBeenCalledWith(
+      "decision-1",
+      expect.objectContaining({ status: "relay_failed", sourceRevision: 4 }),
+      expect.objectContaining({ sourceRevision: 3, statuses: ["answered"] }),
+    );
+    expect(activityLogger).not.toHaveBeenCalled();
+    expect(hubItems.emit).not.toHaveBeenCalled();
+  });
+
+  it("guards relay success against cancellation races", async () => {
+    const answered = baseDecision({ status: "answered", sourceRevision: 3 });
+    const { service, repo, hubItems, activityLogger } = makeService({
+      getDecision: vi.fn(async () => answered),
+      updateDecision: vi.fn(async () => null),
+    });
+
+    await expect(
+      service.markRelayed({
+        companyId: "company-1",
+        decisionId: "decision-1",
+      }),
+    ).rejects.toMatchObject({ status: 409 });
+
+    expect(repo.updateDecision).toHaveBeenCalledWith(
+      "decision-1",
+      expect.objectContaining({ status: "relayed", sourceRevision: 4 }),
+      expect.objectContaining({ sourceRevision: 3, statuses: ["answered"] }),
+    );
+    expect(activityLogger).not.toHaveBeenCalled();
+    expect(hubItems.emit).not.toHaveBeenCalled();
   });
 
   it("throws a runtime cancellation sentinel when a waited prompt is cancelled", async () => {
@@ -661,7 +715,7 @@ describe("agentRuntimeDecisionService", () => {
     ).rejects.toBeInstanceOf(RuntimeDecisionCancelledError);
   });
 
-  it("expires due prompts with bounded batch behavior", async () => {
+  it("parks due prompts with park/escalate policies instead of expiring them", async () => {
     const due = baseDecision({ id: "due-1", status: "shown", timeoutPolicy: "park_run", sourceRevision: 5 });
     const { service, repo, hubItems } = makeService({
       listDueForExpiry: vi.fn(async () => [due]),
@@ -680,7 +734,8 @@ describe("agentRuntimeDecisionService", () => {
     expect(repo.updateDecision).toHaveBeenCalledWith(
       "due-1",
       expect.objectContaining({
-        status: "expired",
+        status: "shown",
+        expiresAt: null,
         sourceRevision: 6,
       }),
       expect.objectContaining({
@@ -689,7 +744,7 @@ describe("agentRuntimeDecisionService", () => {
       }),
     );
     expect(hubItems.emit).toHaveBeenCalled();
-    expect(result.expired).toBe(1);
+    expect(result.expired).toBe(0);
   });
 
   it("applies deny timeout policy as an answer for due permission prompts", async () => {

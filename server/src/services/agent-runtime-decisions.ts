@@ -642,71 +642,84 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
 
   async function markRelayFailed(input: RelayFailedInput) {
     const row = await loadActive(input.companyId, input.decisionId);
-    await activityLogger({
-      companyId: row.companyId,
-      actorType: "system",
-      actorId: "runtime_decision_relay",
-      action: "runtime_decision.relay_failed",
-      entityType: "agent_runtime_decision",
-      entityId: row.id,
-      agentId: row.agentId,
-      runId: row.runId,
-      details: { sourceRevision: row.sourceRevision, relayError: input.relayError },
-    });
     const failed = await repo.updateDecision(row.id, {
       status: "relay_failed",
       relayError: safeText(input.relayError),
       sourceRevision: row.sourceRevision + 1,
+    }, {
+      sourceRevision: row.sourceRevision,
+      statuses: ["answered"],
     });
-    if (!failed) throw conflict("Runtime decision prompt changed before relay failure could be recorded");
+    if (!failed) {
+      return throwRelayTransitionConflict(input.companyId, input.decisionId, "Runtime decision prompt changed before relay failure could be recorded");
+    }
+    await activityLogger({
+      companyId: failed.companyId,
+      actorType: "system",
+      actorId: "runtime_decision_relay",
+      action: "runtime_decision.relay_failed",
+      entityType: "agent_runtime_decision",
+      entityId: failed.id,
+      agentId: failed.agentId,
+      runId: failed.runId,
+      details: { sourceRevision: row.sourceRevision, relayError: input.relayError },
+    });
     await emitHubItem(failed);
     return failed;
   }
 
   async function markRelayed(input: { companyId: string; decisionId: string }) {
     const row = await loadActive(input.companyId, input.decisionId);
-    await activityLogger({
-      companyId: row.companyId,
-      actorType: "system",
-      actorId: "runtime_decision_relay",
-      action: "runtime_decision.relayed",
-      entityType: "agent_runtime_decision",
-      entityId: row.id,
-      agentId: row.agentId,
-      runId: row.runId,
-      details: { sourceRevision: row.sourceRevision },
-    });
     const relayed = await repo.updateDecision(row.id, {
       status: "relayed",
       relayedAt: now(),
       sourceRevision: row.sourceRevision + 1,
+    }, {
+      sourceRevision: row.sourceRevision,
+      statuses: ["answered"],
     });
-    if (!relayed) throw conflict("Runtime decision prompt changed before relay could be recorded");
+    if (!relayed) {
+      return throwRelayTransitionConflict(input.companyId, input.decisionId, "Runtime decision prompt changed before relay could be recorded");
+    }
+    await activityLogger({
+      companyId: relayed.companyId,
+      actorType: "system",
+      actorId: "runtime_decision_relay",
+      action: "runtime_decision.relayed",
+      entityType: "agent_runtime_decision",
+      entityId: relayed.id,
+      agentId: relayed.agentId,
+      runId: relayed.runId,
+      details: { sourceRevision: row.sourceRevision },
+    });
     await emitHubItem(relayed);
     return relayed;
+  }
+
+  async function throwRelayTransitionConflict(companyId: string, decisionId: string, message: string): Promise<never> {
+    const current = await repo.getDecision(companyId, decisionId);
+    if (current?.status === "cancelled") {
+      throw new RuntimeDecisionCancelledError(current);
+    }
+    throw conflict(message);
   }
 
   async function expireDuePrompts(input: ExpireDueInput) {
     const due = await repo.listDueForExpiry({ companyId: input.companyId, now: now(), limit: input.limit });
     let expired = 0;
     for (const row of due) {
-      await activityLogger({
-        companyId: row.companyId,
-        actorType: "system",
-        actorId: "runtime_decision_timeout",
-        action: "runtime_decision.expired",
-        entityType: "agent_runtime_decision",
-        entityId: row.id,
-        agentId: row.agentId,
-        runId: row.runId,
-        details: { sourceRevision: row.sourceRevision, timeoutPolicy: row.timeoutPolicy },
-      });
       const patch: Partial<typeof agentRuntimeDecisions.$inferInsert> =
         row.kind === "permission" && row.timeoutPolicy === "deny"
           ? {
               status: "answered",
               decision: "deny",
               answeredAt: now(),
+              sourceRevision: row.sourceRevision + 1,
+            }
+          : row.timeoutPolicy === "park_run" || row.timeoutPolicy === "escalate"
+          ? {
+              status: row.status,
+              expiresAt: null,
               sourceRevision: row.sourceRevision + 1,
             }
           : {
@@ -719,8 +732,20 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
         statuses: ["created", "shown"],
       });
       if (!updated) continue;
+      const parked = row.timeoutPolicy === "park_run" || row.timeoutPolicy === "escalate";
+      await activityLogger({
+        companyId: updated.companyId,
+        actorType: "system",
+        actorId: "runtime_decision_timeout",
+        action: parked ? "runtime_decision.timeout_parked" : "runtime_decision.expired",
+        entityType: "agent_runtime_decision",
+        entityId: updated.id,
+        agentId: updated.agentId,
+        runId: updated.runId,
+        details: { sourceRevision: row.sourceRevision, timeoutPolicy: row.timeoutPolicy },
+      });
       await emitHubItem(updated);
-      expired += 1;
+      if (!parked) expired += 1;
     }
     return { expired };
   }

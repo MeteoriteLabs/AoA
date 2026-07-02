@@ -69,6 +69,8 @@ export function HubViewer({
     item.curationReason,
     item.curationPriorityReason,
   ].filter((reason): reason is string => Boolean(reason));
+  const isRuntimeDecision = item.semanticType === "agent_runtime_decision";
+  const showLifecycleActions = !isRuntimeDecision;
 
   return (
     <aside
@@ -108,7 +110,7 @@ export function HubViewer({
         {item.summary ? (
           <p className="mt-3 text-sm leading-6 text-muted-foreground">{item.summary}</p>
         ) : null}
-        {item.semanticType === "agent_runtime_decision" ? (
+        {isRuntimeDecision ? (
           <RuntimeDecisionPanel item={item} />
         ) : null}
         {whyReasons.length > 0 ? (
@@ -193,25 +195,29 @@ export function HubViewer({
             <Clock3 className="size-4" aria-hidden="true" />
             Snooze
           </Button>
-          <Button
-            type="button"
-            variant="secondary"
-            size="sm"
-            onClick={() => onLifecycleAction?.(item, "resolve")}
-          >
-            <CheckCircle2 className="size-4" aria-hidden="true" />
-            Resolve
-          </Button>
-          <Button
-            type="button"
-            variant="secondary"
-            size="sm"
-            onClick={() => onLifecycleAction?.(item, "archive")}
-          >
-            <Archive className="size-4" aria-hidden="true" />
-            Archive
-          </Button>
-          {item.ownerPool === "board" && !item.claimedByUserId ? (
+          {showLifecycleActions ? (
+            <>
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                onClick={() => onLifecycleAction?.(item, "resolve")}
+              >
+                <CheckCircle2 className="size-4" aria-hidden="true" />
+                Resolve
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                onClick={() => onLifecycleAction?.(item, "archive")}
+              >
+                <Archive className="size-4" aria-hidden="true" />
+                Archive
+              </Button>
+            </>
+          ) : null}
+          {showLifecycleActions && item.ownerPool === "board" && !item.claimedByUserId ? (
             <Button
               type="button"
               variant="secondary"
@@ -222,7 +228,7 @@ export function HubViewer({
               Claim
             </Button>
           ) : null}
-          {item.claimedByUserId ? (
+          {showLifecycleActions && item.claimedByUserId ? (
             <Button
               type="button"
               variant="secondary"
