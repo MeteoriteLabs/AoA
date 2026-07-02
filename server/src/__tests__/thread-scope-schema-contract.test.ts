@@ -51,6 +51,8 @@ describe("thread scope schema contract", () => {
     ]) {
       expect(cols.has(name)).toBe(true);
     }
+    // W1a: assignee is carried in payload — there is NO dedicated assignee column
+    expect(cols.has("assigneeAgentId")).toBe(false);
   });
 
   it("exports artifact links and issue scopeVersionId", () => {
