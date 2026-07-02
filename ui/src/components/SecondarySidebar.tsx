@@ -1,5 +1,5 @@
 import * as React from "react";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export type SecondarySidebarItem = {
@@ -27,6 +27,13 @@ export interface SecondarySidebarProps {
    * in-company SettingsLayout) leave it false. See design-system §8.1.2.
    */
   floating?: boolean;
+  /**
+   * Optional panel header shown at the top (matches the app's 42px header
+   * convention: `text-[14px] font-semibold tracking-wide`, bottom border). The
+   * collapse toggle lives inside this header. Lobby-tier sidebars pass this;
+   * without it the legacy top-gap + floating toggle layout is used.
+   */
+  title?: string;
 }
 
 export function SecondarySidebar({
@@ -35,12 +42,26 @@ export function SecondarySidebar({
   onToggleCollapse,
   className,
   floating = false,
+  title,
 }: SecondarySidebarProps) {
+  const toggleButton = onToggleCollapse ? (
+    <button
+      type="button"
+      onClick={onToggleCollapse}
+      aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+      className="size-7 shrink-0 rounded-md text-very-dim hover:bg-white/[0.04] hover:text-text inline-flex items-center justify-center"
+    >
+      {collapsed ? <PanelLeftOpen className="size-4" /> : <PanelLeftClose className="size-4" />}
+    </button>
+  ) : null;
+
   return (
     <div
       className={cn(
-        "relative bg-secondary-sidebar flex flex-col pt-16 pb-3.5",
+        "relative bg-secondary-sidebar flex flex-col pb-3.5",
         "transition-[width] duration-[180ms]",
+        // Legacy top gap only when there's no header row.
+        !title && "pt-16",
         floating
           ? "h-[calc(100dvh-1rem)] my-2 ml-2 overflow-hidden rounded-2xl border border-border"
           : "border-r border-border",
@@ -51,6 +72,21 @@ export function SecondarySidebar({
       role="navigation"
       aria-label="Page navigation"
     >
+      {title && (
+        <div
+          className={cn(
+            "flex h-[42px] shrink-0 items-center border-b border-border mb-2",
+            // Offset the container padding so the border spans the full width.
+            collapsed ? "-mx-1 justify-center px-0" : "-mx-2 justify-between px-3",
+          )}
+        >
+          {!collapsed && (
+            <h2 className="text-[14px] font-semibold tracking-wide truncate">{title}</h2>
+          )}
+          {toggleButton}
+        </div>
+      )}
+
       {sections.map((section, idx) => (
         <div
           key={section.title ?? String(idx)}
@@ -111,15 +147,10 @@ export function SecondarySidebar({
           ))}
         </div>
       ))}
-      {onToggleCollapse && (
-        <button
-          type="button"
-          onClick={onToggleCollapse}
-          aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-          className="absolute right-2 top-3 size-7 rounded-md text-very-dim hover:bg-white/[0.04] hover:text-text inline-flex items-center justify-center"
-        >
-          {collapsed ? <ChevronRight className="size-4" /> : <ChevronLeft className="size-4" />}
-        </button>
+
+      {/* Legacy floating toggle for headerless (in-company) usage. */}
+      {!title && toggleButton && (
+        <div className="absolute right-2 top-3">{toggleButton}</div>
       )}
     </div>
   );

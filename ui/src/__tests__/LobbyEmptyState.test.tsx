@@ -5,9 +5,9 @@ import { renderWithProviders } from "./test-utils";
 import { LobbyEmptyState } from "../components/LobbyEmptyState";
 
 describe("LobbyEmptyState", () => {
-  it("shows the welcome headline", () => {
+  it("shows the crew-hero headline", () => {
     renderWithProviders(<LobbyEmptyState onCreate={vi.fn()} onImport={vi.fn()} />);
-    expect(screen.getByText(/welcome to/i)).toBeInTheDocument();
+    expect(screen.getByText(/bigger than your headcount/i)).toBeInTheDocument();
   });
 
   it("shows a Create company CTA", () => {

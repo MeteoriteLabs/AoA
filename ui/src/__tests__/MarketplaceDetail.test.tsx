@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { MemoryRouter, Route, Routes, Outlet } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import MarketplaceDetail from "@/pages/MarketplaceDetail";
@@ -55,7 +55,9 @@ function wrap(initialPath: string) {
         <ToastProvider>
           <InstallToastProvider>
             <Routes>
-              <Route path="/marketplace/:type/:slug/*" element={<MarketplaceDetail />} />
+              <Route element={<Outlet context={{ setSecondarySidebar: () => {} }} />}>
+                <Route path="/marketplace/:type/:slug/*" element={<MarketplaceDetail />} />
+              </Route>
             </Routes>
             <ToastViewport />
           </InstallToastProvider>
@@ -200,6 +202,44 @@ describe("MarketplaceDetail", () => {
     await userEvent.click(installBtn);
     // Modal title appears once dialog mounts.
     await waitFor(() => expect(screen.getByText("Install Slack")).toBeInTheDocument());
+  });
+
+  it("primary breadcrumb links back to the AoA view for an AoA item", async () => {
+    // isAoaItem() keys off the github owner in source.url (not the id), so give
+    // code-review an aoa-curated source → AoA first-party. Opened from ?view=aoa,
+    // the breadcrumb must return to the AoA view, not Home (where it's hidden).
+    vi.mocked(marketplaceApi.getCatalog).mockResolvedValueOnce({
+      ...FULL_CATALOG,
+      items: FULL_CATALOG.items.map((item) =>
+        item.id === "skill:aoa-curated/code-review"
+          ? { ...item, source: { ...item.source, url: "https://github.com/aoa-curated/skills" } }
+          : item,
+      ),
+    });
+    const { container } = wrap("/marketplace/skill/aoa-curated/code-review");
+    await waitFor(() =>
+      expect(
+        screen.getAllByRole("heading", { level: 1, name: "Code Review" }).length,
+      ).toBeGreaterThanOrEqual(1),
+    );
+    const crumb = container.querySelector('a[href="/marketplace?view=aoa"]');
+    expect(crumb).toBeInTheDocument();
+    expect(crumb?.textContent).toMatch(/marketplace/i);
+    expect(crumb?.textContent).toMatch(/aoa/i);
+  });
+
+  it("primary breadcrumb links back to the type view for a non-AoA item", async () => {
+    vi.mocked(marketplaceApi.getCatalog).mockResolvedValueOnce(FULL_CATALOG);
+    const { container } = wrap("/marketplace/skill/community/example-author/quick-tip");
+    await waitFor(() =>
+      expect(
+        screen.getByRole("heading", { level: 1, name: "Quick Tip" }),
+      ).toBeInTheDocument(),
+    );
+    const crumb = container.querySelector('a[href="/marketplace?type=skill"]');
+    expect(crumb).toBeInTheDocument();
+    expect(crumb?.textContent).toMatch(/marketplace/i);
+    expect(crumb?.textContent).toMatch(/skills/i);
   });
 
   it("renders 404 for unknown item id", async () => {

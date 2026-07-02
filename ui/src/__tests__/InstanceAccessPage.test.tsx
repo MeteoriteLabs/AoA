@@ -1,9 +1,24 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { Routes, Route, Outlet } from "react-router-dom";
 import { renderWithProviders, makeCompany } from "./test-utils";
 import { InstanceAccessPage } from "../pages/InstanceAccessPage";
 import { ApiError } from "../api/client";
+
+// The page now renders inside the persistent LobbyLayout and pushes the Settings
+// sidebar via outlet context — render it under a minimal Outlet so
+// useOutletContext resolves.
+function renderAccess() {
+  return renderWithProviders(
+    <Routes>
+      <Route element={<Outlet context={{ setSecondarySidebar: () => {} }} />}>
+        <Route path="/instance/access" element={<InstanceAccessPage />} />
+      </Route>
+    </Routes>,
+    { initialEntries: ["/instance/access"] },
+  );
+}
 
 const mockSearchAdminUsers = vi.fn();
 const mockGetUserCompanyAccess = vi.fn();
@@ -25,6 +40,13 @@ const mockPushToast = vi.fn();
 
 vi.mock("../context/ToastContext", () => ({
   useToast: () => ({ pushToast: mockPushToast }),
+}));
+
+// Page renders inside the persistent LobbyLayout shell; stub the mobile hamburger.
+vi.mock("@/components/LobbyShell", () => ({
+  LobbyShellMobileMenuButton: ({ className }: any) => (
+    <button aria-label="Open menu" className={className} />
+  ),
 }));
 
 const company1 = makeCompany({ id: "comp-1", name: "Acme", issuePrefix: "ACM" });
@@ -97,13 +119,15 @@ describe("InstanceAccessPage", () => {
   });
 
   it("renders header + search input", async () => {
-    renderWithProviders(<InstanceAccessPage />);
-    expect(screen.getByText("Instance Access")).toBeInTheDocument();
+    renderAccess();
+    expect(
+      screen.getByRole("heading", { name: /instance access/i }),
+    ).toBeInTheDocument();
     expect(screen.getByPlaceholderText("Search by name or email")).toBeInTheDocument();
   });
 
   it("calls searchAdminUsers on mount and renders the user list", async () => {
-    renderWithProviders(<InstanceAccessPage />);
+    renderAccess();
     await waitFor(() => {
       expect(mockSearchAdminUsers).toHaveBeenCalledWith("");
     });
@@ -113,7 +137,7 @@ describe("InstanceAccessPage", () => {
 
   it("re-queries with new needle when search input changes", async () => {
     const user = userEvent.setup();
-    renderWithProviders(<InstanceAccessPage />);
+    renderAccess();
     await screen.findByText("Alice");
 
     const input = screen.getByPlaceholderText("Search by name or email");
@@ -125,7 +149,7 @@ describe("InstanceAccessPage", () => {
   });
 
   it("auto-selects the first user and fetches their company access", async () => {
-    renderWithProviders(<InstanceAccessPage />);
+    renderAccess();
     await waitFor(() => {
       expect(mockGetUserCompanyAccess).toHaveBeenCalledWith(alice.id);
     });
@@ -133,13 +157,13 @@ describe("InstanceAccessPage", () => {
 
   it("shows empty state when no users match the search", async () => {
     mockSearchAdminUsers.mockResolvedValue([]);
-    renderWithProviders(<InstanceAccessPage />);
+    renderAccess();
     expect(await screen.findByText(/No users match that search/i)).toBeInTheDocument();
   });
 
   it("shows admin-required error on 403", async () => {
     mockSearchAdminUsers.mockRejectedValue(new ApiError("Forbidden", 403, null));
-    renderWithProviders(<InstanceAccessPage />);
+    renderAccess();
     expect(
       await screen.findByText(/Instance admin access is required/i),
     ).toBeInTheDocument();
@@ -147,7 +171,7 @@ describe("InstanceAccessPage", () => {
 
   it("opens AlertDialog confirmation when promoting a user", async () => {
     const user = userEvent.setup();
-    renderWithProviders(<InstanceAccessPage />);
+    renderAccess();
 
     await user.click(
       await screen.findByRole("button", { name: /promote to instance admin/i }),
@@ -161,7 +185,7 @@ describe("InstanceAccessPage", () => {
 
   it("calls promoteInstanceAdmin after confirming in the dialog", async () => {
     const user = userEvent.setup();
-    renderWithProviders(<InstanceAccessPage />);
+    renderAccess();
 
     await user.click(
       await screen.findByRole("button", { name: /promote to instance admin/i }),
@@ -176,7 +200,7 @@ describe("InstanceAccessPage", () => {
 
   it("calls demoteInstanceAdmin after confirming removal for an admin user", async () => {
     const user = userEvent.setup();
-    renderWithProviders(<InstanceAccessPage />);
+    renderAccess();
 
     await user.click(await screen.findByText("Bob"));
     await waitFor(() => {
@@ -196,7 +220,7 @@ describe("InstanceAccessPage", () => {
 
   it("saves company access when Save button is clicked", async () => {
     const user = userEvent.setup();
-    renderWithProviders(<InstanceAccessPage />);
+    renderAccess();
 
     await user.click(
       await screen.findByRole("button", { name: /save company access/i }),

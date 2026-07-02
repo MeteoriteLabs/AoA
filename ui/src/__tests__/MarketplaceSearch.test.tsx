@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { MemoryRouter, Route, Routes, Outlet } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import MarketplaceSearch from "@/pages/MarketplaceSearch";
@@ -33,7 +33,9 @@ function wrap(initialPath: string) {
     <QueryClientProvider client={qc}>
       <MemoryRouter initialEntries={[initialPath]}>
         <Routes>
-          <Route path="/marketplace/search" element={<MarketplaceSearch />} />
+          <Route element={<Outlet context={{ setSecondarySidebar: () => {} }} />}>
+            <Route path="/marketplace/search" element={<MarketplaceSearch />} />
+          </Route>
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,

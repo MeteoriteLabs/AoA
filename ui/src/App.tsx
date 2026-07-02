@@ -324,6 +324,7 @@ export function App() {
             <Route element={<LobbyLayout />}>
               <Route index element={<Lobby />} />
               <Route path="instance/settings" element={<InstanceSettingsPage />} />
+              <Route path="instance/access" element={<InstanceAccessPage />} />
               <Route path="marketplace" element={<Marketplace />} />
               <Route path="marketplace/search" element={<MarketplaceSearch />} />
               <Route path="marketplace/package/:id/*" element={<MarketplacePackageDetail />} />
@@ -338,7 +339,6 @@ export function App() {
               <Route index element={<CompanyImport />} />
             </Route>
             <Route path="instance/settings/plugins/:pluginId" element={<PluginSettings />} />
-            <Route path="instance/access" element={<InstanceAccessPage />} />
             <Route path="companies" element={<UnprefixedBoardRedirect />} />
             <Route path="issues" element={<UnprefixedBoardRedirect />} />
             <Route path="issues/:issueId" element={<UnprefixedBoardRedirect />} />

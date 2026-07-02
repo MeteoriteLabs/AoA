@@ -1,21 +1,13 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "@/lib/router";
-import { useOutletContext, useSearchParams } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import {
-  Activity,
-  Database,
-  FlaskConical,
-  HeartPulse,
-  Lock,
-  LogOut,
-  Puzzle,
-  Settings as SettingsIcon,
-  Shield,
-} from "lucide-react";
+import { LogOut } from "lucide-react";
 import type { PatchInstanceGeneralSettings } from "@armyofagents/shared";
 import { Tabs, TabsContent } from "@/components/ui/tabs";
-import { SecondarySidebar, type SecondarySidebarSection } from "@/components/SecondarySidebar";
+import {
+  useSettingsSidebar,
+  type SettingsSidebarKey,
+} from "@/components/settings/useSettingsSidebar";
 import { PrivacyTab } from "@/components/settings/PrivacyTab";
 import { BackupsTab } from "@/components/settings/BackupsTab";
 import { HeartbeatsTab } from "@/components/settings/HeartbeatsTab";
@@ -28,15 +20,16 @@ import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
 import { healthApi } from "@/api/health";
 import { LobbyShellMobileMenuButton } from "@/components/LobbyShell";
-import type { LobbyOutletContext } from "@/components/LobbyLayout";
 
 export function InstanceSettingsPage() {
-  const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [searchParams] = useSearchParams();
   const activeTab = searchParams.get("tab") ?? "general";
   const [actionError, setActionError] = useState<string | null>(null);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+
+  // Shared settings sidebar (also used by InstanceAccessPage) — pushes the
+  // "Settings" secondary sidebar to the persistent LobbyLayout shell.
+  const { pillItems } = useSettingsSidebar(activeTab as SettingsSidebarKey);
 
   const activePillRef = useRef<HTMLButtonElement | null>(null);
 
@@ -48,21 +41,6 @@ export function InstanceSettingsPage() {
       block: "nearest",
     });
   }, [activeTab]);
-
-  const handleTabChange = useCallback(
-    (value: string) => {
-      if (value === "access") {
-        navigate("/instance/access");
-        return;
-      }
-      setSearchParams((prev) => {
-        const next = new URLSearchParams(prev);
-        next.set("tab", value);
-        return next;
-      });
-    },
-    [navigate, setSearchParams],
-  );
 
   // ── General settings ──────────────────────────────────────────────────────
 
@@ -123,46 +101,6 @@ export function InstanceSettingsPage() {
     },
   });
 
-  const { setSecondarySidebar } = useOutletContext<LobbyOutletContext>();
-
-  const settingsSections: SecondarySidebarSection[] = useMemo(() => {
-    const items = [
-      { key: "general", label: "General", icon: <SettingsIcon className="size-4" /> },
-      { key: "health", label: "Health", icon: <HeartPulse className="size-4" /> },
-      { key: "privacy", label: "Privacy", icon: <Shield className="size-4" /> },
-      { key: "backups", label: "Backups", icon: <Database className="size-4" /> },
-      { key: "heartbeats", label: "Heartbeats", icon: <Activity className="size-4" /> },
-      { key: "experimental", label: "Experimental", icon: <FlaskConical className="size-4" /> },
-      { key: "plugins", label: "Plugins", icon: <Puzzle className="size-4" /> },
-      { key: "access", label: "Access", icon: <Lock className="size-4" /> },
-    ];
-    return [
-      {
-        title: "Settings",
-        items: items.map((item) => ({
-          id: item.key,
-          label: item.label,
-          icon: item.icon,
-          active: activeTab === item.key,
-          onClick: () => handleTabChange(item.key),
-        })),
-      },
-    ];
-  }, [activeTab, handleTabChange]);
-
-  // Hand the settings secondary sidebar up to the persistent LobbyLayout shell.
-  useLayoutEffect(() => {
-    setSecondarySidebar(
-      <SecondarySidebar
-        sections={settingsSections}
-        collapsed={sidebarCollapsed}
-        onToggleCollapse={() => setSidebarCollapsed((c) => !c)}
-        floating
-      />,
-    );
-    return () => setSecondarySidebar(null);
-  }, [setSecondarySidebar, settingsSections, sidebarCollapsed]);
-
   const censorUsernameInLogs = generalQuery.data?.censorUsernameInLogs === true;
   const keyboardShortcuts = generalQuery.data?.keyboardShortcuts === true;
   const enableIsolatedWorkspaces = experimentalQuery.data?.enableIsolatedWorkspaces === true;
@@ -184,7 +122,7 @@ export function InstanceSettingsPage() {
         <div className="md:hidden mb-5 relative">
           <div className="overflow-x-auto -mx-4 px-4 pb-1 [&::-webkit-scrollbar]:hidden [scrollbar-width:none]">
             <div className="flex gap-1.5 w-max">
-              {settingsSections[0]?.items.map((item) => (
+              {pillItems.map((item) => (
                 <button
                   key={item.id}
                   ref={item.active ? activePillRef : undefined}

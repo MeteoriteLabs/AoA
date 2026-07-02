@@ -1,7 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "@/lib/router";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Shield, ShieldCheck } from "lucide-react";
+import { ShieldCheck } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { LobbyShellMobileMenuButton } from "@/components/LobbyShell";
+import { useSettingsSidebar } from "@/components/settings/useSettingsSidebar";
 import { accessApi } from "@/api/access";
 import { ApiError } from "@/api/client";
 import { Button } from "@/components/ui/button";
@@ -21,10 +23,16 @@ import { useToast } from "@/context/ToastContext";
 import { queryKeys } from "@/lib/queryKeys";
 
 export function InstanceAccessPage() {
-  const navigate = useNavigate();
   const { companies } = useCompany();
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
+  // Access is a settings section — show the shared Settings sidebar (Access active)
+  // inside the persistent LobbyLayout shell, so it doesn't read as a new page.
+  const { pillItems } = useSettingsSidebar("access");
+  const activePillRef = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => {
+    activePillRef.current?.scrollIntoView?.({ inline: "center", block: "nearest" });
+  }, []);
   const [search, setSearch] = useState("");
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
   const [selectedCompanyIds, setSelectedCompanyIds] = useState<Set<string>>(new Set());
@@ -117,27 +125,49 @@ export function InstanceAccessPage() {
   };
 
   return (
-    <div className="flex h-dvh flex-col bg-background text-foreground">
-      <header className="flex items-center gap-3 px-6 h-14 shrink-0 border-b border-border">
-        <button
-          type="button"
-          onClick={() => navigate("/instance/settings")}
-          className="flex items-center justify-center h-8 w-8 rounded-md text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
-          aria-label="Back to Instance Settings"
-        >
-          <ArrowLeft className="h-4 w-4" />
-        </button>
-        <div className="flex items-center gap-2">
-          <Shield className="h-4 w-4 text-muted-foreground" />
-          <span className="text-sm font-bold tracking-tight text-foreground">Instance Access</span>
-        </div>
-      </header>
+    <div className="mx-auto w-full max-w-[1080px] px-4 py-6 sm:px-6 sm:py-7 md:px-10 md:py-9">
+      <LobbyShellMobileMenuButton className="mb-4" />
 
-      <main className="flex-1 overflow-auto">
-        <div className="mx-auto max-w-6xl px-6 py-8 space-y-6">
-          <p className="max-w-3xl text-sm text-muted-foreground">
-            Search users, manage instance-admin status, and control which companies they can access.
-          </p>
+      <div className="mb-5">
+        <h1 className="text-[1.55rem] font-bold tracking-tight">
+          Instance access<span className="text-brand">.</span>
+        </h1>
+      </div>
+
+      {/* Mobile-only section nav (desktop uses the LobbyShell secondary sidebar slot) */}
+      <div className="md:hidden mb-5 relative">
+        <div className="overflow-x-auto -mx-4 px-4 pb-1 [&::-webkit-scrollbar]:hidden [scrollbar-width:none]">
+          <div className="flex gap-1.5 w-max">
+            {pillItems.map((item) => (
+              <button
+                key={item.id}
+                ref={item.active ? activePillRef : undefined}
+                type="button"
+                data-active={item.active ? "true" : undefined}
+                onClick={item.onClick}
+                className={cn(
+                  "inline-flex items-center gap-1.5 px-3 py-2 rounded-full text-[12.5px] font-medium transition-colors border whitespace-nowrap shrink-0",
+                  item.active
+                    ? "bg-brand/[0.08] text-[hsl(15_60%_75%)] border-brand/[0.25]"
+                    : "bg-card border-border text-foreground/[0.78] hover:bg-card-2 hover:text-foreground",
+                )}
+              >
+                {item.icon}
+                <span>{item.label}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+        <div
+          aria-hidden
+          className="pointer-events-none absolute right-0 top-0 bottom-1 w-8 bg-gradient-to-l from-bg to-transparent"
+        />
+      </div>
+
+      <div className="space-y-6">
+        <p className="max-w-3xl text-sm text-muted-foreground">
+          Search users, manage instance-admin status, and control which companies they can access.
+        </p>
 
           {usersQuery.error ? (
             <div className="text-sm text-destructive">
@@ -309,8 +339,7 @@ export function InstanceAccessPage() {
               </section>
             </div>
           )}
-        </div>
-      </main>
+      </div>
 
       <AlertDialog open={adminConfirmOpen} onOpenChange={setAdminConfirmOpen}>
         <AlertDialogContent>

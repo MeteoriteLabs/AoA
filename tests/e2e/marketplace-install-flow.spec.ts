@@ -201,10 +201,9 @@ test.describe("Marketplace install flow", () => {
     // Verify no error state
     await expect(page.getByText("Could not load the marketplace")).not.toBeVisible();
 
-    // Verify Slack plugin card is shown (present in bundled snapshot)
-    await expect(
-      page.getByRole("heading", { name: "Slack", level: 3 }),
-    ).toBeVisible();
+    // The bundled fixture's plugins are all AoA first-party (MeteoriteLabs-owned),
+    // so the Plugins view shows the cross-sell empty state rather than plugin cards.
+    await expect(page.getByTestId("marketplace-empty-plugin")).toBeVisible();
   });
 
   test("install modal has Cancel button that closes without installing", async ({

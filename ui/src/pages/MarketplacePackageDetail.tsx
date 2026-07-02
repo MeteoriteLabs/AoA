@@ -13,7 +13,8 @@ import { StackedIcon } from "@/components/marketplace/StackedIcon";
 import { ProviderLogo } from "@/components/marketplace/ProviderLogo";
 import { PackageInstallModal } from "@/components/marketplace/install/PackageInstallModal";
 import { CatalogCard } from "@/components/marketplace/CatalogCard";
-import { shortSource, authorFromSource } from "@/lib/marketplace-constants";
+import { shortSource, authorFromSource, isAoaPackage } from "@/lib/marketplace-constants";
+import { useMarketplaceSidebar } from "@/components/marketplace/useMarketplaceSidebar";
 import { useCatalog } from "@/hooks/useCatalog";
 import { usePackages } from "@/hooks/usePackages";
 import type { MarketplaceCatalogItem } from "@armyofagents/shared";
@@ -32,6 +33,8 @@ export default function MarketplacePackageDetail() {
     () => packages?.find((p) => p.id === fullPackageId) ?? null,
     [packages, fullPackageId],
   );
+
+  useMarketplaceSidebar(pkg && isAoaPackage(pkg) ? "aoa" : "skill");
 
   const memberItems = useMemo<MarketplaceCatalogItem[]>(() => {
     if (!pkg || !catalog) return [];

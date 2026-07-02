@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { MemoryRouter, Routes, Route, Outlet } from "react-router-dom";
 import { renderWithProviders, mockCompanyContext, mockDialogContext } from "./test-utils";
 import Marketplace from "../pages/Marketplace";
 import type { CatalogItem, MarketplaceCatalogFile, MarketplacePackage } from "@armyofagents/shared";
@@ -10,7 +11,7 @@ import { useCatalog } from "@/hooks/useCatalog";
 const mockCatalog: MarketplaceCatalogFile = {
   schemaVersion: "1.0.0",
   generatedAt: "2026-05-01T00:00:00Z",
-  itemCount: 4,
+  itemCount: 5,
   items: [
     {
       id: "skill:office-hours", type: "skill", name: "/office-hours",
@@ -37,49 +38,55 @@ const mockCatalog: MarketplaceCatalogFile = {
     {
       id: "team:product", type: "team", name: "product-team",
       description: "Multi-agent product team", version: "1.0.0",
-      source: { adapter: "github", url: "https://github.com/aoa/teams", locator: "product-team" },
+      source: { adapter: "github", url: "https://github.com/anthropic/teams", locator: "product-team" },
       trust: { tier: "community", source: "x" }, status: "active", addedAt: "2026-03-01T00:00:00Z",
+      category: "engineering", tags: [],
+    } as CatalogItem,
+    {
+      // AoA first-party (aoa-curated owner) — must be segregated into the AoA view.
+      id: "skill:aoa-crew", type: "skill", name: "aoa-default-crew",
+      description: "AoA's own crew", version: "1.0.0",
+      source: { adapter: "github", url: "https://github.com/aoa-curated/crew", locator: "crew" },
+      trust: { tier: "verified", source: "x" }, status: "active", addedAt: "2026-05-01T00:00:00Z",
       category: "engineering", tags: [],
     } as CatalogItem,
   ],
 };
 
-vi.mock("@/hooks/useCatalog", () => ({
-  useCatalog: vi.fn(),
-}));
-
-vi.mock("@/hooks/usePackages", () => ({
-  usePackages: vi.fn(),
-}));
+vi.mock("@/hooks/useCatalog", () => ({ useCatalog: vi.fn() }));
+vi.mock("@/hooks/usePackages", () => ({ usePackages: vi.fn() }));
 
 vi.mock("@tanstack/react-query", async () => {
   const actual = await vi.importActual<typeof import("@tanstack/react-query")>("@tanstack/react-query");
-  return {
-    ...actual,
-    useQuery: vi.fn().mockReturnValue({ data: [], isLoading: false }),
-  };
+  return { ...actual, useQuery: vi.fn().mockReturnValue({ data: [], isLoading: false }) };
 });
 
 vi.mock("@/context/CompanyContext", () => ({ useCompany: () => mockCompanyContext }));
 vi.mock("@/context/DialogContext", () => ({ useDialog: () => mockDialogContext }));
 
-// Page renders inside the persistent LobbyLayout shell; stub only the mobile
-// hamburger it renders (shell chrome is covered by LobbyLayout.test.tsx).
+// Page renders inside the persistent LobbyLayout shell; stub the mobile hamburger.
 vi.mock("@/components/LobbyShell", () => ({
   LobbyShellMobileMenuButton: ({ className }: any) => (
     <button aria-label="Open menu" className={className} />
   ),
 }));
-
 vi.mock("@/components/UserMenu", () => ({ UserMenu: () => <div /> }));
+vi.mock("@/components/marketplace/install/SnapshotInstallModal", () => ({ SnapshotInstallModal: () => null }));
+vi.mock("@/components/marketplace/install/PluginInstallModal", () => ({ PluginInstallModal: () => null }));
 
-vi.mock("@/components/marketplace/install/SnapshotInstallModal", () => ({
-  SnapshotInstallModal: () => null,
-}));
-
-vi.mock("@/components/marketplace/install/PluginInstallModal", () => ({
-  PluginInstallModal: () => null,
-}));
+// Marketplace now pushes its SecondarySidebar to the LobbyLayout outlet context;
+// render it under a minimal Outlet so useOutletContext resolves. The mobile pill
+// row is what's asserted in-DOM for type nav.
+function renderMarketplace(path = "/marketplace") {
+  return renderWithProviders(
+    <Routes>
+      <Route element={<Outlet context={{ setSecondarySidebar: () => {} }} />}>
+        <Route path="/marketplace" element={<Marketplace />} />
+      </Route>
+    </Routes>,
+    { initialEntries: [path] },
+  );
+}
 
 function makeFixtureItem(overrides: Partial<CatalogItem> & Pick<CatalogItem, "id" | "type" | "name">): CatalogItem {
   return {
@@ -98,50 +105,57 @@ function makeFixtureItem(overrides: Partial<CatalogItem> & Pick<CatalogItem, "id
 describe("Marketplace (hub)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(useCatalog).mockReturnValue({
-      data: mockCatalog,
-      isLoading: false,
-      error: null,
-    } as any);
+    vi.mocked(useCatalog).mockReturnValue({ data: mockCatalog, isLoading: false, error: null } as any);
     vi.mocked(usePackages).mockReturnValue({
       data: [
         {
-          id: "garrytan/gstack",
-          name: "gstack",
+          id: "garrytan/gstack", name: "gstack",
           sourceUrl: "https://github.com/garrytan/gstack",
           memberItemIds: ["skill:office-hours", "skill:qa"],
-          count: 2,
-          verified: true,
-          explicit: false,
+          count: 2, verified: true, explicit: false,
         },
       ],
-      isLoading: false,
-      error: null,
+      isLoading: false, error: null,
     } as any);
   });
 
-
-  it("renders the filter chip row with all 5 chips", () => {
-    renderWithProviders(<Marketplace />);
-    // "All" appears in both FilterChips and SubfilterChips rows — just check at least one exists
-    expect(screen.getAllByRole("button", { name: /^all$/i }).length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByRole("button", { name: /skills/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /plugins/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /agents/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /teams/i })).toBeInTheDocument();
+  it("renders the mobile type nav pills including AoA", () => {
+    renderMarketplace();
+    expect(screen.getByRole("button", { name: /^home$/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^skills$/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^plugins$/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^agents$/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^teams$/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^aoa$/i })).toBeInTheDocument();
   });
 
-  it("clicking the Skills chip filters the grid to skill items", async () => {
-    const user = userEvent.setup();
-    renderWithProviders(<Marketplace />);
-    await user.click(screen.getByRole("button", { name: /skills/i }));
-    // Skill is shown, plugin name is not.
+  it("?type=skill shows skills and hides plugins", () => {
+    renderMarketplace("/marketplace?type=skill");
     expect(screen.getByText("/office-hours")).toBeInTheDocument();
     expect(screen.queryByText("github-issues")).not.toBeInTheDocument();
   });
 
+  it("Home excludes AoA items", () => {
+    renderMarketplace("/marketplace");
+    expect(screen.getByText("/office-hours")).toBeInTheDocument();
+    expect(screen.queryByText("aoa-default-crew")).not.toBeInTheDocument();
+  });
+
+  it("?type=skill excludes AoA items", () => {
+    renderMarketplace("/marketplace?type=skill");
+    expect(screen.getByText("/office-hours")).toBeInTheDocument();
+    expect(screen.queryByText("aoa-default-crew")).not.toBeInTheDocument();
+  });
+
+  it("?view=aoa shows only AoA items", () => {
+    renderMarketplace("/marketplace?view=aoa");
+    expect(screen.getByText("aoa-default-crew")).toBeInTheDocument();
+    expect(screen.queryByText("/office-hours")).not.toBeInTheDocument();
+    expect(screen.queryByText("github-issues")).not.toBeInTheDocument();
+  });
+
   it("renders the sub-filter chip row with sort modes", () => {
-    renderWithProviders(<Marketplace />);
+    renderMarketplace();
     expect(screen.getByRole("button", { name: /featured$/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /recently added/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /a–z/i })).toBeInTheDocument();
@@ -149,37 +163,36 @@ describe("Marketplace (hub)", () => {
 
   it("clicking Featured filters to items with featured=true", async () => {
     const user = userEvent.setup();
-    renderWithProviders(<Marketplace />);
+    renderMarketplace();
     await user.click(screen.getByRole("button", { name: /featured$/i }));
     expect(screen.getByText("/office-hours")).toBeInTheDocument();
     expect(screen.queryByText("github-issues")).not.toBeInTheDocument();
   });
 
   it("renders a mobile hamburger button (md:hidden)", () => {
-    renderWithProviders(<Marketplace />);
+    renderMarketplace();
     expect(screen.getByRole("button", { name: /open menu/i })).toBeInTheDocument();
   });
 
-  it("renders the Packages section heading when type filter is null", () => {
-    renderWithProviders(<Marketplace />);
+  it("renders the Packages section heading on Home", () => {
+    renderMarketplace();
     expect(screen.getByText(/^packages$/i)).toBeInTheDocument();
   });
 
   it("renders package cards when packages are available", () => {
-    renderWithProviders(<Marketplace />);
-    // gstack is the only package fixture
+    renderMarketplace();
     expect(screen.getByText("gstack")).toBeInTheDocument();
   });
 
-  it("shows Packages as the first top-level overview section on All", () => {
-    renderWithProviders(<Marketplace />);
+  it("shows Packages as the first top-level overview section on Home", () => {
+    renderMarketplace();
     const headers = screen.getAllByRole("heading", { level: 2 });
     expect(headers[0]).toHaveTextContent(/packages/i);
     expect(headers[1]).toHaveTextContent(/skills/i);
   });
 
-  it("renders packages in the overview shelf on All", () => {
-    renderWithProviders(<Marketplace />);
+  it("renders packages in the overview shelf on Home", () => {
+    renderMarketplace();
     const shelf = screen.getByTestId("marketplace-packages-overview");
     expect(shelf).toHaveTextContent("gstack");
     expect(shelf).toHaveClass("auto-cols-[calc(100vw-2rem)]");
@@ -187,7 +200,7 @@ describe("Marketplace (hub)", () => {
   });
 
   it("hides the native overview shelf scrollbar and renders chevron controls", () => {
-    renderWithProviders(<Marketplace />);
+    renderMarketplace();
     const shelf = screen.getByTestId("marketplace-packages-overview-scroll");
     expect(shelf).toHaveClass("[&::-webkit-scrollbar]:hidden");
     expect(shelf).toHaveClass("[scrollbar-width:none]");
@@ -195,43 +208,28 @@ describe("Marketplace (hub)", () => {
     expect(screen.getByRole("button", { name: /scroll packages right/i })).toBeInTheDocument();
   });
 
-  it("hides the Packages strip when a non-Skills chip is active", async () => {
-    const user = userEvent.setup();
-    renderWithProviders(<Marketplace />);
-    await user.click(screen.getByRole("button", { name: /plugins/i }));
+  it("hides the Packages strip on a non-Skills type view", () => {
+    renderMarketplace("/marketplace?type=plugin");
     expect(screen.queryByText(/^packages$/i)).not.toBeInTheDocument();
     expect(screen.queryByText("gstack")).not.toBeInTheDocument();
   });
 
-  it("shows skill packages as an expandable grid before the skills grid when the Skills chip is active", async () => {
+  it("shows skill packages as an expandable grid before the skills grid on ?type=skill", async () => {
     const user = userEvent.setup();
     const manyPackages: MarketplacePackage[] = Array.from({ length: 7 }, (_, index) => ({
-      id: `owner/package-${index + 1}`,
-      name: `package-${index + 1}`,
+      id: `owner/package-${index + 1}`, name: `package-${index + 1}`,
       sourceUrl: `https://github.com/owner/package-${index + 1}`,
-      memberItemIds: ["skill:office-hours"],
-      count: index + 1,
-      verified: true,
-      explicit: false,
+      memberItemIds: ["skill:office-hours"], count: index + 1, verified: true, explicit: false,
     }));
-    vi.mocked(usePackages).mockReturnValue({
-      data: manyPackages,
-      isLoading: false,
-      error: null,
-    } as any);
-    renderWithProviders(<Marketplace />);
-    // Chip's accessible name is "Skills{count}" (e.g. "Skills1"); start-anchored partial match.
-    await user.click(screen.getByRole("button", { name: /^skills/i }));
+    vi.mocked(usePackages).mockReturnValue({ data: manyPackages, isLoading: false, error: null } as any);
+    renderMarketplace("/marketplace?type=skill");
     const headers = screen.getAllByRole("heading", { level: 2 });
     expect(headers[0]).toHaveTextContent(/skill packages/i);
     expect(headers[1]).toHaveTextContent(/^skills/i);
     const section = screen.getByTestId("marketplace-skills-packages-grid");
     expect(section).toHaveTextContent("package-1");
     expect(section).not.toHaveTextContent("package-7");
-    expect(screen.queryByRole("button", { name: /scroll skill packages/i })).not.toBeInTheDocument();
-
     await user.click(screen.getByRole("button", { name: /view more/i }));
-
     expect(section).toHaveTextContent("package-7");
     expect(screen.getByRole("button", { name: /show less/i })).toBeInTheDocument();
   });
@@ -240,18 +238,12 @@ describe("Marketplace (hub)", () => {
 describe("Marketplace (hub) — sections", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(useCatalog).mockReturnValue({
-      data: mockCatalog,
-      isLoading: false,
-      error: null,
-    } as any);
-    vi.mocked(usePackages).mockReturnValue({
-      data: [], isLoading: false, error: null,
-    } as any);
+    vi.mocked(useCatalog).mockReturnValue({ data: mockCatalog, isLoading: false, error: null } as any);
+    vi.mocked(usePackages).mockReturnValue({ data: [], isLoading: false, error: null } as any);
   });
 
   it("renders all four section headers in order Skills → Plugins → Agents → Teams", () => {
-    renderWithProviders(<Marketplace />);
+    renderMarketplace();
     const headers = screen.getAllByRole("heading", { level: 2 });
     const labels = headers.map((h) => h.textContent?.toLowerCase() ?? "");
     const idxSkill = labels.findIndex((l) => l.includes("skills"));
@@ -266,8 +258,7 @@ describe("Marketplace (hub) — sections", () => {
 
   it("hides a section whose post-filter item count is zero", async () => {
     const user = userEvent.setup();
-    renderWithProviders(<Marketplace />);
-    // Sort = "Featured" — only office-hours is featured (a skill). Plugins/Agents/Teams sections must hide.
+    renderMarketplace();
     await user.click(screen.getByRole("button", { name: /featured$/i }));
     const headers = screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent?.toLowerCase() ?? "");
     const has = (label: string) => headers.some((h) => h.includes(label));
@@ -277,8 +268,7 @@ describe("Marketplace (hub) — sections", () => {
     expect(has("teams")).toBe(false);
   });
 
-  it("clicking 'See all →' on a section sets the type chip to that type", async () => {
-    // Override the default catalog so Skills overflows the cap (need > 6 skills)
+  it("caps each section at SECTION_CAP items on Home", () => {
     const overflow = Array.from({ length: 8 }).map((_, i) =>
       makeFixtureItem({ id: `skill:s${i}`, type: "skill", name: `skill-${i}` }),
     );
@@ -286,33 +276,14 @@ describe("Marketplace (hub) — sections", () => {
       data: { schemaVersion: "1.0.0", generatedAt: "2026-05-01T00:00:00Z", itemCount: 8, items: overflow },
       isLoading: false, error: null,
     } as any);
-    const user = userEvent.setup();
-    renderWithProviders(<Marketplace />);
-    const seeAll = screen.getByRole("button", { name: /see all/i });
-    await user.click(seeAll);
-    // After clicking "See all", the Skills chip should be in the active state.
-    // Chip's accessible name is "Skills{count}" — start-anchored partial match.
-    const skillsChip = screen.getByRole("button", { name: /^skills/i });
-    expect(skillsChip).toHaveAttribute("data-active", "true");
-  });
-
-  it("caps each section at SECTION_CAP items in the all-view", async () => {
-    const overflow = Array.from({ length: 8 }).map((_, i) =>
-      makeFixtureItem({ id: `skill:s${i}`, type: "skill", name: `skill-${i}` }),
-    );
-    vi.mocked(useCatalog).mockReturnValue({
-      data: { schemaVersion: "1.0.0", generatedAt: "2026-05-01T00:00:00Z", itemCount: 8, items: overflow },
-      isLoading: false, error: null,
-    } as any);
-    renderWithProviders(<Marketplace />);
-    // Only first 6 skill names should render; the 7th and 8th are clipped.
+    renderMarketplace();
     expect(screen.getByText("skill-0")).toBeInTheDocument();
     expect(screen.getByText("skill-5")).toBeInTheDocument();
     expect(screen.queryByText("skill-6")).not.toBeInTheDocument();
     expect(screen.queryByText("skill-7")).not.toBeInTheDocument();
   });
 
-  it("removes the cap when a single type chip is active (single-section view)", async () => {
+  it("removes the cap on a single type view (?type=skill)", () => {
     const overflow = Array.from({ length: 8 }).map((_, i) =>
       makeFixtureItem({ id: `skill:s${i}`, type: "skill", name: `skill-${i}` }),
     );
@@ -320,18 +291,65 @@ describe("Marketplace (hub) — sections", () => {
       data: { schemaVersion: "1.0.0", generatedAt: "2026-05-01T00:00:00Z", itemCount: 8, items: overflow },
       isLoading: false, error: null,
     } as any);
-    const user = userEvent.setup();
-    renderWithProviders(<Marketplace />);
-    // Chip's accessible name is "Skills{count}" — start-anchored partial match.
-    await user.click(screen.getByRole("button", { name: /^skills/i }));
-    // All 8 should render now.
+    renderMarketplace("/marketplace?type=skill");
     expect(screen.getByText("skill-0")).toBeInTheDocument();
     expect(screen.getByText("skill-7")).toBeInTheDocument();
   });
 
   it("hides 'See all →' when a section's total fits inside the cap", () => {
-    // Default fixture has 1 of each type — far below SECTION_CAP=6.
-    renderWithProviders(<Marketplace />);
+    renderMarketplace();
     expect(screen.queryByRole("button", { name: /see all/i })).not.toBeInTheDocument();
+  });
+
+  it("shows the cross-sell empty state (not 'No matches.') when a type has only AoA items", () => {
+    vi.mocked(useCatalog).mockReturnValue({
+      data: {
+        schemaVersion: "1.0.0",
+        generatedAt: "2026-05-01T00:00:00Z",
+        itemCount: 2,
+        items: [
+          makeFixtureItem({ id: "skill:s1", type: "skill", name: "real-skill" }),
+          makeFixtureItem({
+            id: "plugin:aoa",
+            type: "plugin",
+            name: "aoa-plugin",
+            source: { adapter: "github", url: "https://github.com/aoa-curated/p", locator: "p" },
+          }),
+        ],
+      },
+      isLoading: false,
+      error: null,
+    } as any);
+    renderMarketplace("/marketplace?type=plugin");
+    expect(screen.getByTestId("marketplace-empty-plugin")).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: /no third-party plugins yet/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /browse aoa plugins/i }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("No matches.")).not.toBeInTheDocument();
+  });
+
+  it("keeps the generic 'No matches.' state for a search that returns nothing", async () => {
+    const user = userEvent.setup();
+    renderMarketplace("/marketplace?type=plugin");
+    await user.type(
+      screen.getByPlaceholderText(/search marketplace/i),
+      "zzz-nonexistent",
+    );
+    expect(screen.getByText("No matches.")).toBeInTheDocument();
+    expect(screen.queryByTestId("marketplace-empty-plugin")).not.toBeInTheDocument();
+  });
+
+  it("keeps 'No matches.' (not the empty hero) when a sub-filter empties a non-empty type", async () => {
+    const user = userEvent.setup();
+    // mockCatalog's plugin (github-issues) is a real third-party item but is not
+    // featured — the Featured sub-filter reduces the plugin list to zero.
+    renderMarketplace("/marketplace?type=plugin");
+    expect(screen.getByText("github-issues")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /featured$/i }));
+    expect(screen.getByText("No matches.")).toBeInTheDocument();
+    expect(screen.queryByTestId("marketplace-empty-plugin")).not.toBeInTheDocument();
   });
 });

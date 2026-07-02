@@ -5,8 +5,9 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useCatalog } from "@/hooks/useCatalog";
 import { CatalogCard } from "@/components/marketplace/CatalogCard";
 import { LobbyShellMobileMenuButton } from "@/components/LobbyShell";
+import { useMarketplaceSidebar } from "@/components/marketplace/useMarketplaceSidebar";
 import { searchItems, filterByCategory, groupByType } from "@/api/marketplace";
-import { TYPE_LABELS_PLURAL } from "@/lib/marketplace-constants";
+import { TYPE_LABELS_PLURAL, isAoaItem } from "@/lib/marketplace-constants";
 import { pluginsApi } from "@/api/plugins";
 import { queryKeys } from "@/lib/queryKeys";
 import type { MarketplaceItemType, PluginRecord } from "@armyofagents/shared";
@@ -19,6 +20,7 @@ export default function MarketplaceSearch() {
   const category = searchParams.get("category") ?? "";
 
   const { data: catalog, isLoading, error } = useCatalog();
+  useMarketplaceSidebar("home");
 
   const { data: installedPlugins } = useQuery({
     queryKey: queryKeys.plugins.all,
@@ -32,7 +34,8 @@ export default function MarketplaceSearch() {
 
   const grouped = useMemo(() => {
     if (!catalog) return null;
-    let items = catalog.items;
+    // AoA first-party items are only discoverable under the AoA view, not search.
+    let items = catalog.items.filter((i) => !isAoaItem(i));
     if (category) items = filterByCategory(items, category);
     if (q.trim()) items = searchItems(items, q);
     return groupByType(items);

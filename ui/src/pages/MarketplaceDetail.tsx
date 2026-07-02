@@ -24,7 +24,9 @@ import {
   TYPE_LABELS_PLURAL,
   pathToItemType,
   shortSource,
+  isAoaItem,
 } from "@/lib/marketplace-constants";
+import { useMarketplaceSidebar } from "@/components/marketplace/useMarketplaceSidebar";
 import type { MarketplaceItemType, PluginRecord } from "@armyofagents/shared";
 
 const CAP_PREVIEW = 8;
@@ -60,6 +62,21 @@ export default function MarketplaceDetail() {
     if (!catalog || !catalogItemId) return null;
     return catalog.items.find((i) => i.id === catalogItemId) ?? null;
   }, [catalog, catalogItemId]);
+
+  // AoA-first-party items live under the AoA view, not their type section — so the
+  // sidebar highlight + back link point to AoA for them.
+  const isAoa = item ? isAoaItem(item) : false;
+  useMarketplaceSidebar(isAoa ? "aoa" : itemType ?? "home");
+  const backTo = isAoa
+    ? "/marketplace?view=aoa"
+    : itemType
+      ? `/marketplace?type=${itemType}`
+      : "/marketplace";
+  const backLabel = isAoa
+    ? "AoA"
+    : itemType
+      ? TYPE_LABELS_PLURAL[itemType]
+      : "marketplace";
 
   const parentPackage = useMemo(() => {
     if (!item || !packages) return null;
@@ -115,10 +132,11 @@ export default function MarketplaceDetail() {
       <div className="mx-auto w-full max-w-[920px] px-4 py-6 sm:px-6 sm:py-7 md:px-10 md:py-9">
         <LobbyShellMobileMenuButton className="mb-4" />
         <Link
-          to="/marketplace"
+          to={backTo}
           className="mb-4 inline-flex items-center gap-1 text-[12px] text-very-dim hover:text-foreground"
         >
-          <ChevronLeft className="size-3.5" /> Marketplace · {itemType ? TYPE_LABELS_PLURAL[itemType] : ""}
+          <ChevronLeft className="size-3.5" /> Marketplace
+          {backLabel !== "marketplace" ? ` · ${backLabel}` : ""}
         </Link>
 
         {!itemType && (
@@ -150,10 +168,10 @@ export default function MarketplaceDetail() {
               {error?.message ?? "Catalog unavailable"}
             </p>
             <Link
-              to={`/marketplace?type=${itemType}`}
+              to={backTo}
               className="text-sm text-primary hover:underline mt-3 inline-block"
             >
-              ← Back to {TYPE_LABELS_PLURAL[itemType]}
+              ← Back to {backLabel}
             </Link>
           </div>
         )}
@@ -162,10 +180,10 @@ export default function MarketplaceDetail() {
           <div className="text-center py-12">
             <p className="text-lg font-medium">Item not found: {catalogItemId}</p>
             <Link
-              to={`/marketplace?type=${itemType}`}
+              to={backTo}
               className="text-sm text-primary hover:underline mt-2 inline-block"
             >
-              ← Back to {TYPE_LABELS_PLURAL[itemType]}
+              ← Back to {backLabel}
             </Link>
           </div>
         )}
