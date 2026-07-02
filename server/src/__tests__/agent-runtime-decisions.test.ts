@@ -1058,13 +1058,25 @@ describe("agentRuntimeDecisionService", () => {
     expect(result.cancelled).toBe(0);
   });
 
-  it("reports relay_failed prompts as non-terminal and relayed prompts as terminal for hub reconciliation", () => {
+  it("reports runtime decision source terminality for hub reconciliation", () => {
     expect(runtimeDecisionSourceSnapshot(null)).toMatchObject({ terminal: true });
     expect(runtimeDecisionSourceSnapshot(baseDecision({ status: "relay_failed" }))).toMatchObject({
       terminal: false,
       permissionRevision: "2",
     });
+    expect(runtimeDecisionSourceSnapshot(baseDecision({
+      status: "cancelled",
+      timeoutPolicy: "park_run",
+      relayError: "timeout policy parked the run",
+      summary: "Original question",
+    }))).toMatchObject({
+      terminal: false,
+      summary: "timeout policy parked the run",
+    });
     expect(runtimeDecisionSourceSnapshot(baseDecision({ status: "relayed" }))).toMatchObject({
+      terminal: true,
+    });
+    expect(runtimeDecisionSourceSnapshot(baseDecision({ status: "cancelled", timeoutPolicy: "cancel_run" }))).toMatchObject({
       terminal: true,
     });
   });

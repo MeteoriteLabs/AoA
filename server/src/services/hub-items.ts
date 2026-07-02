@@ -692,6 +692,47 @@ export function hubItemsService(db: Db) {
       });
   }
 
+  async function getVisibleBySource(
+    companyId: string,
+    opts: {
+      sourceType: string;
+      sourceId: string;
+      actorUserId: string;
+      role?: UserRole;
+      status?: HubItemStatus | "any";
+    },
+  ) {
+    const role = opts.role ?? (await permissionService(db).getEffectiveRole(companyId, opts.actorUserId));
+    const conds = await visibilityConds(companyId, opts.actorUserId, role);
+    conds.push(eq(hubItems.sourceType, opts.sourceType));
+    conds.push(eq(hubItems.sourceId, opts.sourceId));
+    if (opts.status !== "any") {
+      conds.push(eq(hubItems.status, opts.status ?? "open"));
+    }
+    return db
+      .select({
+        item: hubItems,
+        readAt: hubItemUserState.readAt,
+        snoozedUntil: hubItemUserState.snoozedUntil,
+        dismissedAt: hubItemUserState.dismissedAt,
+      })
+      .from(hubItems)
+      .leftJoin(
+        hubItemUserState,
+        and(
+          eq(hubItemUserState.hubItemId, hubItems.id),
+          eq(hubItemUserState.principalType, "user"),
+          eq(hubItemUserState.principalId, opts.actorUserId),
+        ),
+      )
+      .where(and(...conds))
+      .limit(1)
+      .then((r) => {
+        const row = r[0];
+        return row ? toListRow(row.item, row) : null;
+      });
+  }
+
   async function applyPersonalState(args: {
     companyId: string;
     hubItemId: string;
@@ -1452,6 +1493,7 @@ export function hubItemsService(db: Db) {
         summary: agentRuntimeDecisions.summary,
         promptText: agentRuntimeDecisions.promptText,
         relayError: agentRuntimeDecisions.relayError,
+        timeoutPolicy: agentRuntimeDecisions.timeoutPolicy,
         sourceRevision: agentRuntimeDecisions.sourceRevision,
       })
       .from(agentRuntimeDecisions)
@@ -1459,10 +1501,14 @@ export function hubItemsService(db: Db) {
       .limit(1)
       .then((r) => r[0] ?? null);
     if (!row) return { terminal: true, summary: null, permissionRevision: null };
+    const visibleTimeoutFollowUp =
+      row.status === "cancelled" && (row.timeoutPolicy === "park_run" || row.timeoutPolicy === "escalate");
     return {
-      terminal: ["relayed", "expired", "cancelled"].includes(row.status),
+      terminal: ["relayed", "expired", "cancelled"].includes(row.status) && !visibleTimeoutFollowUp,
       title: row.title,
-      summary: row.summary ?? row.promptText ?? row.relayError ?? null,
+      summary: visibleTimeoutFollowUp
+        ? row.relayError ?? row.summary ?? row.promptText ?? null
+        : row.summary ?? row.promptText ?? row.relayError ?? null,
       permissionRevision: String(row.sourceRevision),
     };
   };
@@ -1675,6 +1721,7 @@ export function hubItemsService(db: Db) {
     resolveOwner,
     query,
     getVisible,
+    getVisibleBySource,
     applyPersonalState,
     getAudit,
     recordLifecycleAction,

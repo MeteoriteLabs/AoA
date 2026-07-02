@@ -28,6 +28,10 @@ const TERMINAL_STATUSES = new Set<RuntimeDecisionStatus>([
   "cancelled",
 ]);
 
+function isVisibleTimeoutFollowUp(row: AgentRuntimeDecisionRow) {
+  return row.status === "cancelled" && (row.timeoutPolicy === "park_run" || row.timeoutPolicy === "escalate");
+}
+
 export type AgentRuntimeDecisionRow = typeof agentRuntimeDecisions.$inferSelect;
 export type AgentRuntimeTrustRuleRow = typeof agentRuntimeTrustRules.$inferSelect;
 
@@ -417,9 +421,11 @@ export function runtimeDecisionSourceSnapshot(row: AgentRuntimeDecisionRow | nul
   if (!row) return { terminal: true, summary: null, permissionRevision: null };
   const status = row.status as RuntimeDecisionStatus;
   return {
-    terminal: TERMINAL_STATUSES.has(status),
+    terminal: TERMINAL_STATUSES.has(status) && !isVisibleTimeoutFollowUp(row),
     title: row.title,
-    summary: row.summary ?? row.promptText ?? row.relayError ?? null,
+    summary: isVisibleTimeoutFollowUp(row)
+      ? row.relayError ?? row.summary ?? row.promptText ?? null
+      : row.summary ?? row.promptText ?? row.relayError ?? null,
     permissionRevision: String(row.sourceRevision),
   };
 }

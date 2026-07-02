@@ -12,12 +12,18 @@ const mockRuntimeDecisions = vi.hoisted(() => ({
   revokeTrustRule: vi.fn(),
 }));
 
+const mockHubItems = vi.hoisted(() => ({
+  getVisibleBySource: vi.fn(),
+}));
+
 const mockPerms = vi.hoisted(() => ({
   isFounder: vi.fn(),
+  getEffectiveRole: vi.fn(),
 }));
 
 vi.mock("../services/index.js", () => ({
   agentRuntimeDecisionService: () => mockRuntimeDecisions,
+  hubItemsService: () => mockHubItems,
   permissionService: () => mockPerms,
 }));
 
@@ -108,6 +114,8 @@ describe("agent runtime decision routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockPerms.isFounder.mockResolvedValue(true);
+    mockPerms.getEffectiveRole.mockResolvedValue("team_member");
+    mockHubItems.getVisibleBySource.mockResolvedValue(null);
     mockRuntimeDecisions.getDetail.mockResolvedValue(permissionDetail);
     mockRuntimeDecisions.answerPrompt.mockResolvedValue({ ...permissionDetail, status: "answered", sourceRevision: 3 });
     mockRuntimeDecisions.listTrustRules.mockResolvedValue([trustRule]);
@@ -178,13 +186,45 @@ describe("agent runtime decision routes", () => {
     expect(mockRuntimeDecisions.getDetail).not.toHaveBeenCalled();
   });
 
-  it("GET detail returns a company-scoped runtime decision for board users", async () => {
+  it("GET detail returns a runtime decision for founders", async () => {
     const res = await request(createApp())
       .get(`/api/companies/${COMPANY_A}/agent-runtime-decisions/${DECISION_ID}`);
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body).toMatchObject({ id: DECISION_ID, kind: "permission", sourceRevision: 2 });
     expect(mockRuntimeDecisions.getDetail).toHaveBeenCalledWith(COMPANY_A, DECISION_ID);
+    expect(mockHubItems.getVisibleBySource).not.toHaveBeenCalled();
+  });
+
+  it("GET detail allows non-founder board users only when the hub item is visible", async () => {
+    mockPerms.isFounder.mockResolvedValue(false);
+    mockPerms.getEffectiveRole.mockResolvedValue("team_member");
+    mockHubItems.getVisibleBySource.mockResolvedValue({ id: "hub-1" });
+
+    const allowed = await request(createApp())
+      .get(`/api/companies/${COMPANY_A}/agent-runtime-decisions/${DECISION_ID}`);
+
+    expect(allowed.status, JSON.stringify(allowed.body)).toBe(200);
+    expect(mockHubItems.getVisibleBySource).toHaveBeenCalledWith(COMPANY_A, {
+      sourceType: "runtime_decision",
+      sourceId: DECISION_ID,
+      actorUserId: "user-1",
+      role: "team_member",
+      status: "any",
+    });
+    expect(mockRuntimeDecisions.getDetail).toHaveBeenCalledWith(COMPANY_A, DECISION_ID);
+  });
+
+  it("GET detail hides prompts from non-founder board users without visible hub access", async () => {
+    mockPerms.isFounder.mockResolvedValue(false);
+    mockPerms.getEffectiveRole.mockResolvedValue("team_member");
+    mockHubItems.getVisibleBySource.mockResolvedValue(null);
+
+    const res = await request(createApp())
+      .get(`/api/companies/${COMPANY_A}/agent-runtime-decisions/${DECISION_ID}`);
+
+    expect(res.status).toBe(404);
+    expect(mockRuntimeDecisions.getDetail).not.toHaveBeenCalled();
   });
 
   it("POST answer rejects non-founder board users before mutating", async () => {
