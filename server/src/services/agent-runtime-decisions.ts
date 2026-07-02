@@ -100,6 +100,7 @@ type CreateTrustRuleInput = {
   adapterType: string;
   toolName?: string | null;
   command?: string | null;
+  commandHash?: string | null;
   pathScope?: string | null;
   networkScope?: string | null;
   riskClass?: string | null;
@@ -177,8 +178,7 @@ function sleep(ms: number) {
 }
 
 function commandHash(command: string | null | undefined) {
-  const redacted = safeText(command);
-  return redacted ? hashString(redacted) : null;
+  return command ? hashString(command) : null;
 }
 
 function jsonEquivalent(a: unknown, b: unknown) {
@@ -217,6 +217,7 @@ function networkMatchesScope(networkTarget: string | null | undefined, scope: st
 
 function hasConcreteTrustScope(input: {
   command?: string | null;
+  commandHash?: string | null;
   path?: string | null;
   pathScope?: string | null;
   networkTarget?: string | null;
@@ -225,6 +226,7 @@ function hasConcreteTrustScope(input: {
 }) {
   return Boolean(
     input.command ||
+    input.commandHash ||
     input.path ||
     input.pathScope ||
     input.networkTarget ||
@@ -296,6 +298,7 @@ function realRepo(db: Db): DecisionRepo {
             promptText: input.promptText ?? null,
             toolName: input.toolName ?? null,
             command: input.command ?? null,
+            commandHash: input.commandHash ?? null,
             cwd: input.cwd ?? null,
             path: input.path ?? null,
             networkTarget: input.networkTarget ?? null,
@@ -468,6 +471,7 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
       promptText: safeText(input.promptText),
       toolName: input.toolName ?? null,
       command: safeText(input.command),
+      commandHash: commandHash(input.command),
       cwd: safeText(input.cwd),
       path: safeText(input.path),
       networkTarget: safeText(input.networkTarget),
@@ -495,7 +499,7 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
       agentId: input.agentId ?? null,
       adapterType: input.adapterType,
       toolName: input.toolName ?? null,
-      commandHash: commandHash(input.command),
+      commandHash: input.commandHash ?? commandHash(input.command),
       pathScope: input.pathScope ?? null,
       networkScope: input.networkScope ?? null,
       riskClass: input.riskClass ?? null,
@@ -622,7 +626,7 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
         agentId: row.agentId,
         adapterType: row.adapterType,
         toolName: row.toolName,
-        command: row.command,
+        commandHash: row.commandHash,
         pathScope: row.path,
         networkScope: row.networkTarget,
         riskClass: row.riskClass,
@@ -731,7 +735,10 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
             }
           : row.timeoutPolicy === "park_run" || row.timeoutPolicy === "escalate"
           ? {
-              status: row.status,
+              status: "cancelled",
+              relayError: row.timeoutPolicy === "escalate"
+                ? "timeout policy escalated the run"
+                : "timeout policy parked the run",
               expiresAt: null,
               sourceRevision: row.sourceRevision + 1,
             }
@@ -758,11 +765,11 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
         details: { sourceRevision: row.sourceRevision, timeoutPolicy: row.timeoutPolicy },
       });
       await emitHubItem(updated);
-      if (row.timeoutPolicy === "cancel_run") {
+      if (row.timeoutPolicy === "cancel_run" || parked) {
         await runCanceller?.({
           companyId: updated.companyId,
           runId: updated.runId,
-          reason: "timeout policy cancelled the run",
+          reason: updated.relayError ?? "runtime decision timeout policy cancelled the run",
         });
       }
       if (!parked) expired += 1;

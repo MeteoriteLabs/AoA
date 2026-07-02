@@ -121,6 +121,7 @@ describe("hubItems schema", () => {
       "promptText",
       "toolName",
       "command",
+      "commandHash",
       "cwd",
       "path",
       "networkTarget",

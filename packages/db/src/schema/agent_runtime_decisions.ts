@@ -35,6 +35,7 @@ export const agentRuntimeDecisions = pgTable(
     promptText: text("prompt_text"),
     toolName: text("tool_name"),
     command: text("command"),
+    commandHash: text("command_hash"),
     cwd: text("cwd"),
     path: text("path"),
     networkTarget: text("network_target"),

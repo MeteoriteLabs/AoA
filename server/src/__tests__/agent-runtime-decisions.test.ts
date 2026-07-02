@@ -27,6 +27,7 @@ function baseDecision(overrides: Record<string, unknown> = {}) {
     promptText: "pnpm test:run",
     toolName: "shell",
     command: "pnpm test:run",
+    commandHash: "command-hash-1",
     cwd: "C:/repo",
     path: null,
     networkTarget: null,
@@ -124,6 +125,7 @@ describe("agentRuntimeDecisionService", () => {
         summary: "Command includes ***REDACTED***.",
         promptText: "Run AOA_API_KEY=***REDACTED*** pnpm test:run",
         command: "AOA_API_KEY=***REDACTED*** pnpm test:run",
+        commandHash: expect.any(String),
         promptHash: expect.any(String),
         sourceUniqueKey: "runtime:company-1:11111111-1111-4111-8111-111111111111:nonce-1",
       }),
@@ -403,6 +405,53 @@ describe("agentRuntimeDecisionService", () => {
     expect(repo.createDecision).toHaveBeenLastCalledWith(expect.objectContaining({ kind: "work_question", status: "created" }));
   });
 
+  it("does not match secret-bearing commands by their redacted display text", async () => {
+    let trustedCommandHash: string | null = null;
+    const { service, repo } = makeService({
+      createTrustRule: vi.fn(async (input) => {
+        trustedCommandHash = (input as { commandHash?: string | null }).commandHash ?? null;
+        return baseTrustRule(input as Record<string, unknown>);
+      }),
+      listTrustRules: vi.fn(async () =>
+        trustedCommandHash
+          ? [baseTrustRule({ commandHash: trustedCommandHash, riskClass: null })]
+          : []
+      ),
+    });
+
+    await service.createTrustRule({
+      companyId: "company-1",
+      agentId: "agent-1",
+      adapterType: "claude_local",
+      toolName: "shell",
+      command: "AOA_API_KEY=sk-ant-abc123DEF456ghi789 pnpm test:run",
+      createdByUserId: "founder-1",
+    });
+
+    await service.createPrompt({
+      companyId: "company-1",
+      agentId: "agent-1",
+      runId: "11111111-1111-4111-8111-111111111111",
+      adapterType: "claude_local",
+      kind: "permission",
+      nonce: "nonce-secret-command",
+      title: "Allow shell command?",
+      toolName: "shell",
+      command: "AOA_API_KEY=sk-ant-xyz987UVW654rst321 pnpm test:run",
+      timeoutPolicy: "deny",
+    });
+
+    expect(repo.createDecision).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        status: "created",
+        decision: null,
+        command: "AOA_API_KEY=***REDACTED*** pnpm test:run",
+        commandHash: expect.any(String),
+      }),
+    );
+    expect(repo.markTrustRuleUsed).not.toHaveBeenCalled();
+  });
+
   it("creates, lists, and revokes allow-always trust rules with audit rows", async () => {
     const { service, repo, activityLogger } = makeService();
 
@@ -519,7 +568,7 @@ describe("agentRuntimeDecisionService", () => {
         agentId: "agent-1",
         adapterType: "claude_local",
         toolName: "shell",
-        commandHash: expect.any(String),
+        commandHash: "command-hash-1",
         createdByUserId: "founder-1",
       }),
     );
@@ -592,6 +641,7 @@ describe("agentRuntimeDecisionService", () => {
   it("rejects allow-always answers when the prompt has no concrete scope", async () => {
     const unscoped = baseDecision({
       command: null,
+      commandHash: null,
       path: null,
       networkTarget: null,
       riskClass: null,
@@ -803,9 +853,9 @@ describe("agentRuntimeDecisionService", () => {
     ).rejects.toBeInstanceOf(RuntimeDecisionCancelledError);
   });
 
-  it("parks due prompts with park/escalate policies instead of expiring them", async () => {
+  it("cancels due prompts with park/escalate policies so waiting runs unblock", async () => {
     const due = baseDecision({ id: "due-1", status: "shown", timeoutPolicy: "park_run", sourceRevision: 5 });
-    const { service, repo, hubItems } = makeService({
+    const { service, repo, hubItems, runCanceller } = makeService({
       listDueForExpiry: vi.fn(async () => [due]),
     });
 
@@ -822,7 +872,8 @@ describe("agentRuntimeDecisionService", () => {
     expect(repo.updateDecision).toHaveBeenCalledWith(
       "due-1",
       expect.objectContaining({
-        status: "shown",
+        status: "cancelled",
+        relayError: "timeout policy parked the run",
         expiresAt: null,
         sourceRevision: 6,
       }),
@@ -832,6 +883,11 @@ describe("agentRuntimeDecisionService", () => {
       }),
     );
     expect(hubItems.emit).toHaveBeenCalled();
+    expect(runCanceller).toHaveBeenCalledWith({
+      companyId: "company-1",
+      runId: "11111111-1111-4111-8111-111111111111",
+      reason: "timeout policy parked the run",
+    });
     expect(result.expired).toBe(0);
   });
 
