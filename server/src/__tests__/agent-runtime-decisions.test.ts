@@ -69,7 +69,10 @@ function baseTrustRule(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function makeService(repoOverrides: Record<string, unknown> = {}) {
+function makeService(
+  repoOverrides: Record<string, unknown> = {},
+  depOverrides: { runCanceller?: (i: { companyId: string; runId: string; reason: string }) => Promise<void> } = {},
+) {
   const repo = {
     createDecision: vi.fn(async (input) => baseDecision(input as Record<string, unknown>)),
     getDecision: vi.fn(async () => baseDecision()),
@@ -86,7 +89,7 @@ function makeService(repoOverrides: Record<string, unknown> = {}) {
     emit: vi.fn(async () => ({ id: "hub-1", version: 0 })),
   };
   const activityLogger = vi.fn(async () => {});
-  const runCanceller = vi.fn(async () => {});
+  const runCanceller = depOverrides.runCanceller ?? vi.fn(async () => {});
   const service = agentRuntimeDecisionService({} as never, {
     repo: repo as never,
     hubItems: hubItems as never,
@@ -1119,5 +1122,87 @@ describe("agentRuntimeDecisionService", () => {
     expect(repo.createDecision).toHaveBeenCalledWith(
       expect.objectContaining({ expiresAt: explicit }),
     );
+  });
+
+  it("continue_with_default relays an explicit default option when present", async () => {
+    const due = baseDecision({
+      id: "d-cwd-1", kind: "permission", timeoutPolicy: "continue_with_default",
+      status: "shown", sourceRevision: 5,
+      options: [{ label: "Allow once", value: "allow_once", isDefault: true }],
+    });
+    const updateDecision = vi.fn(async (_id, patch) => baseDecision(patch as Record<string, unknown>));
+    const { service } = makeService({ listDueForExpiry: vi.fn(async () => [due]), updateDecision });
+    await service.expireDuePrompts({ limit: 10 });
+    expect(updateDecision).toHaveBeenCalledWith(
+      "d-cwd-1",
+      expect.objectContaining({ status: "answered", decision: "allow_once" }),
+      expect.objectContaining({ sourceRevision: 5, statuses: ["created", "shown"] }),
+    );
+  });
+
+  it("continue_with_default without a default falls back to deny for permission", async () => {
+    const due = baseDecision({
+      id: "d-cwd-2", kind: "permission", timeoutPolicy: "continue_with_default",
+      status: "shown", sourceRevision: 3, options: null,
+    });
+    const updateDecision = vi.fn(async (_id, patch) => baseDecision(patch as Record<string, unknown>));
+    const { service } = makeService({ listDueForExpiry: vi.fn(async () => [due]), updateDecision });
+    await service.expireDuePrompts({ limit: 10 });
+    expect(updateDecision).toHaveBeenCalledWith(
+      "d-cwd-2",
+      expect.objectContaining({ status: "answered", decision: "deny" }),
+      expect.anything(),
+    );
+  });
+
+  it("continue_with_default without a default parks a work_question (never denies)", async () => {
+    const due = baseDecision({
+      id: "d-cwd-3", kind: "work_question", timeoutPolicy: "continue_with_default",
+      status: "shown", sourceRevision: 1, options: null, decision: null,
+    });
+    const updateDecision = vi.fn(async (_id, patch) => baseDecision(patch as Record<string, unknown>));
+    const runCanceller = vi.fn(async () => {});
+    const { service } = makeService(
+      { listDueForExpiry: vi.fn(async () => [due]), updateDecision },
+      { runCanceller },
+    );
+    await service.expireDuePrompts({ limit: 10 });
+    expect(updateDecision).toHaveBeenCalledWith(
+      "d-cwd-3",
+      expect.objectContaining({ status: "cancelled" }),
+      expect.anything(),
+    );
+    expect(runCanceller).toHaveBeenCalled();
+  });
+
+  it("reports processed count for drain control", async () => {
+    const rows = Array.from({ length: 3 }, (_, i) =>
+      baseDecision({ id: `due-${i}`, status: "shown", timeoutPolicy: "cancel_run", sourceRevision: 1 }),
+    );
+    const { service } = makeService({
+      listDueForExpiry: vi.fn(async () => rows),
+      updateDecision: vi.fn(async (_id, patch) => baseDecision(patch as Record<string, unknown>)),
+    });
+    const result = await service.expireDuePrompts({ limit: 100 });
+    expect(result.processed).toBe(3);
+  });
+
+  it("keeps sweeping after runCanceller throws for one run", async () => {
+    const rows = [
+      baseDecision({ id: "due-0", runId: "run-a", status: "shown", timeoutPolicy: "cancel_run", sourceRevision: 1 }),
+      baseDecision({ id: "due-1", runId: "run-b", status: "shown", timeoutPolicy: "cancel_run", sourceRevision: 1 }),
+    ];
+    const runCanceller = vi.fn(async ({ runId }: { runId: string }) => {
+      if (runId === "run-a") throw new Error("Heartbeat run not found");
+    });
+    const { service } = makeService(
+      {
+        listDueForExpiry: vi.fn(async () => rows),
+        updateDecision: vi.fn(async (_id, patch) => baseDecision(patch as Record<string, unknown>)),
+      },
+      { runCanceller },
+    );
+    const result = await service.expireDuePrompts({ limit: 100 });
+    expect(result.processed).toBe(2);
   });
 });

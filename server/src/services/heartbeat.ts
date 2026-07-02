@@ -71,6 +71,7 @@ import {
 } from "./crew-cancellation.js";
 import {
   agentRuntimeDecisionService,
+  defaultTimeoutPolicy,
   RuntimeDecisionCancelledError,
   type AgentRuntimeDecisionRow,
 } from "./agent-runtime-decisions.js";
@@ -280,7 +281,7 @@ export function createHeartbeatRuntimeDecisionBroker(
       riskClass: prompt.riskClass,
       options: prompt.options,
       expiresAt: normalizeRuntimeDecisionExpiresAt(prompt.expiresAt),
-      timeoutPolicy: prompt.timeoutPolicy ?? (kind === "permission" ? "deny" : "park_run"),
+      timeoutPolicy: prompt.timeoutPolicy ?? defaultTimeoutPolicy(kind),
     });
 
     await input.appendRunEvent({

@@ -441,6 +441,92 @@ export function runtimeDecisionSourceSnapshot(row: AgentRuntimeDecisionRow | nul
   };
 }
 
+type TimeoutOutcome = {
+  patch: Partial<typeof agentRuntimeDecisions.$inferInsert>;
+  cancelsRun: boolean;
+  parked: boolean;
+};
+
+function resolveExplicitDefault(row: AgentRuntimeDecisionRow):
+  | { decision: RuntimeDecisionPermissionDecision }
+  | { answer: Record<string, unknown> }
+  | null {
+  const options = Array.isArray(row.options) ? row.options : [];
+  const def = options.find(
+    (o): o is Record<string, unknown> =>
+      Boolean(o) && typeof o === "object" && (o as Record<string, unknown>).isDefault === true,
+  );
+  if (!def) return null;
+  const value = def.value;
+  if (row.kind === "permission") {
+    return typeof value === "string" &&
+      (RUNTIME_DECISION_PERMISSION_DECISIONS as readonly string[]).includes(value)
+      ? { decision: value as RuntimeDecisionPermissionDecision }
+      : null;
+  }
+  return { answer: { selected: value ?? null } };
+}
+
+function fallbackPolicyOutcome(
+  row: AgentRuntimeDecisionRow,
+  policy: RuntimeDecisionTimeoutPolicy,
+  bumpRev: number,
+  nowDate: Date,
+): TimeoutOutcome {
+  if (row.kind === "permission" && policy === "deny") {
+    return {
+      patch: { status: "answered", decision: "deny", answeredAt: nowDate, sourceRevision: bumpRev },
+      cancelsRun: false,
+      parked: false,
+    };
+  }
+  if (policy === "park_run" || policy === "escalate") {
+    return {
+      patch: {
+        status: "cancelled",
+        relayError: policy === "escalate"
+          ? "timeout policy escalated the run"
+          : "timeout policy parked the run",
+        expiresAt: null,
+        sourceRevision: bumpRev,
+      },
+      cancelsRun: true,
+      parked: true,
+    };
+  }
+  return {
+    patch: {
+      status: policy === "cancel_run" ? "cancelled" : "expired",
+      relayError: policy === "cancel_run" ? "timeout policy cancelled the run" : undefined,
+      sourceRevision: bumpRev,
+    },
+    cancelsRun: policy === "cancel_run",
+    parked: false,
+  };
+}
+
+function timeoutOutcome(row: AgentRuntimeDecisionRow, nowDate: Date): TimeoutOutcome {
+  const bumpRev = row.sourceRevision + 1;
+  if (row.timeoutPolicy === "continue_with_default") {
+    const def = resolveExplicitDefault(row);
+    if (def) {
+      return {
+        patch: {
+          status: "answered",
+          decision: "decision" in def ? def.decision : null,
+          answerPayload: "answer" in def ? def.answer : null,
+          answeredAt: nowDate,
+          sourceRevision: bumpRev,
+        },
+        cancelsRun: false,
+        parked: false,
+      };
+    }
+    return fallbackPolicyOutcome(row, defaultTimeoutPolicy(row.kind as RuntimeDecisionKind), bumpRev, nowDate);
+  }
+  return fallbackPolicyOutcome(row, row.timeoutPolicy as RuntimeDecisionTimeoutPolicy, bumpRev, nowDate);
+}
+
 export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
   const repo = deps.repo ?? realRepo(db);
   const hub = deps.hubItems ?? hubItemsService(db);
@@ -742,42 +828,23 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
   }
 
   async function expireDuePrompts(input: ExpireDueInput) {
-    const due = await repo.listDueForExpiry({ companyId: input.companyId, now: now(), limit: input.limit });
+    const nowDate = now();
+    const due = await repo.listDueForExpiry({ companyId: input.companyId, now: nowDate, limit: input.limit });
     let expired = 0;
+    let processed = 0;
     for (const row of due) {
-      const patch: Partial<typeof agentRuntimeDecisions.$inferInsert> =
-        row.kind === "permission" && row.timeoutPolicy === "deny"
-          ? {
-              status: "answered",
-              decision: "deny",
-              answeredAt: now(),
-              sourceRevision: row.sourceRevision + 1,
-            }
-          : row.timeoutPolicy === "park_run" || row.timeoutPolicy === "escalate"
-          ? {
-              status: "cancelled",
-              relayError: row.timeoutPolicy === "escalate"
-                ? "timeout policy escalated the run"
-                : "timeout policy parked the run",
-              expiresAt: null,
-              sourceRevision: row.sourceRevision + 1,
-            }
-          : {
-              status: row.timeoutPolicy === "cancel_run" ? "cancelled" : "expired",
-              relayError: row.timeoutPolicy === "cancel_run" ? "timeout policy cancelled the run" : undefined,
-              sourceRevision: row.sourceRevision + 1,
-            };
-      const updated = await repo.updateDecision(row.id, patch, {
+      const outcome = timeoutOutcome(row, nowDate);
+      const updated = await repo.updateDecision(row.id, outcome.patch, {
         sourceRevision: row.sourceRevision,
         statuses: ["created", "shown"],
       });
       if (!updated) continue;
-      const parked = row.timeoutPolicy === "park_run" || row.timeoutPolicy === "escalate";
+      processed += 1;
       await activityLogger({
         companyId: updated.companyId,
         actorType: "system",
         actorId: "runtime_decision_timeout",
-        action: parked ? "runtime_decision.timeout_parked" : "runtime_decision.expired",
+        action: outcome.parked ? "runtime_decision.timeout_parked" : "runtime_decision.expired",
         entityType: "agent_runtime_decision",
         entityId: updated.id,
         agentId: updated.agentId,
@@ -785,16 +852,21 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
         details: { sourceRevision: row.sourceRevision, timeoutPolicy: row.timeoutPolicy },
       });
       await emitHubItem(updated);
-      if (row.timeoutPolicy === "cancel_run" || parked) {
-        await runCanceller?.({
-          companyId: updated.companyId,
-          runId: updated.runId,
-          reason: updated.relayError ?? "runtime decision timeout policy cancelled the run",
-        });
+      if (outcome.cancelsRun) {
+        try {
+          await runCanceller?.({
+            companyId: updated.companyId,
+            runId: updated.runId,
+            reason: updated.relayError ?? "runtime decision timeout policy cancelled the run",
+          });
+        } catch {
+          // Run may already be gone (FK cascade / purge). The decision row is
+          // already flipped (durable effect); do not poison the batch.
+        }
       }
-      if (!parked) expired += 1;
+      if (!outcome.parked) expired += 1;
     }
-    return { expired };
+    return { expired, processed };
   }
 
   async function cancelActiveForRun(input: { companyId: string; runId: string; reason: string }) {
