@@ -11,6 +11,10 @@ import {
   internalAgentApi,
   toolPermissionsApi,
 } from "@/api/internal-agent";
+import {
+  agentRuntimeDecisionsApi,
+  type AgentRuntimeTrustRule,
+} from "@/api/agent-runtime-decisions";
 import type {
   CommanderToolPermission,
   CommanderTrustRule,
@@ -97,6 +101,51 @@ const CAPABILITY_GROUPS = [
     ] as AgentCapability[],
   },
 ];
+
+type TrustedActionRow =
+  | {
+      source: "commander";
+      id: string;
+      label: string;
+      sourceLabel: string;
+      fingerprint: string;
+      createdAt: string;
+    }
+  | {
+      source: "runtime";
+      id: string;
+      label: string;
+      sourceLabel: string;
+      fingerprint: string;
+      createdAt: string;
+    };
+
+function commanderRuleRow(rule: CommanderTrustRule): TrustedActionRow {
+  return {
+    source: "commander",
+    id: rule.id,
+    label: rule.toolName,
+    sourceLabel: "Commander",
+    fingerprint: `${rule.paramsHashVersion}:${rule.paramsHashPrefix}`,
+    createdAt: rule.createdAt,
+  };
+}
+
+function runtimeRuleRow(rule: AgentRuntimeTrustRule): TrustedActionRow {
+  return {
+    source: "runtime",
+    id: rule.id,
+    label: rule.toolName ?? rule.adapterType,
+    sourceLabel: "Runtime decision",
+    fingerprint: [
+      rule.commandHashPrefix ? `cmd:${rule.commandHashPrefix}` : null,
+      rule.pathScope ? `path:${rule.pathScope}` : null,
+      rule.networkScope ? `net:${rule.networkScope}` : null,
+      rule.riskClass ? `risk:${rule.riskClass}` : null,
+    ].filter(Boolean).join(" / ") || "scope",
+    createdAt: rule.createdAt,
+  };
+}
 
 const CONTEXT_BUDGET_OPTIONS = [
   { value: 4000, label: "Compact (4,000)" },
@@ -240,6 +289,12 @@ export function CommanderSection() {
     enabled: !!selectedCompanyId && active === "trusted-actions",
   });
 
+  const { data: runtimeTrustRulesData, isLoading: runtimeTrustRulesLoading } = useQuery({
+    queryKey: queryKeys.agentRuntimeDecisions.trustRules(selectedCompanyId!),
+    queryFn: () => agentRuntimeDecisionsApi.listTrustRules(selectedCompanyId!),
+    enabled: !!selectedCompanyId && active === "trusted-actions",
+  });
+
   const [permissionEdits, setPermissionEdits] = useState<Record<string, Partial<CommanderToolPermission>>>({});
 
   const updatePermissionsMutation = useMutation({
@@ -257,6 +312,16 @@ export function CommanderSection() {
     onSuccess: () => {
       queryClient.invalidateQueries({
         queryKey: ["commander-tool-trust-rules", selectedCompanyId],
+      });
+    },
+  });
+
+  const revokeRuntimeTrustRuleMutation = useMutation({
+    mutationFn: (ruleId: string) =>
+      agentRuntimeDecisionsApi.revokeTrustRule(selectedCompanyId!, ruleId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.agentRuntimeDecisions.trustRules(selectedCompanyId!),
       });
     },
   });
@@ -600,17 +665,30 @@ export function CommanderSection() {
         )}
         {active === "trusted-actions" && (
           <TrustedActionsTabContent
-            rules={trustRulesData?.rules ?? []}
-            isLoading={trustRulesLoading}
-            revokeRule={(ruleId) => revokeTrustRuleMutation.mutate(ruleId)}
+            rules={[
+              ...(trustRulesData?.rules ?? []).map(commanderRuleRow),
+              ...(runtimeTrustRulesData?.rules ?? []).map(runtimeRuleRow),
+            ]}
+            isLoading={trustRulesLoading || runtimeTrustRulesLoading}
+            revokeRule={(rule) => {
+              if (rule.source === "runtime") {
+                revokeRuntimeTrustRuleMutation.mutate(rule.id);
+                return;
+              }
+              revokeTrustRuleMutation.mutate(rule.id);
+            }}
             revokingRuleId={
               revokeTrustRuleMutation.isPending
-                ? revokeTrustRuleMutation.variables
+                ? `commander:${revokeTrustRuleMutation.variables}`
+                : revokeRuntimeTrustRuleMutation.isPending
+                  ? `runtime:${revokeRuntimeTrustRuleMutation.variables}`
                 : null
             }
             error={
               revokeTrustRuleMutation.isError
                 ? revokeTrustRuleMutation.error.message
+                : revokeRuntimeTrustRuleMutation.isError
+                  ? revokeRuntimeTrustRuleMutation.error.message
                 : null
             }
           />
@@ -627,9 +705,9 @@ function TrustedActionsTabContent({
   revokingRuleId,
   error,
 }: {
-  rules: CommanderTrustRule[];
+  rules: TrustedActionRow[];
   isLoading: boolean;
-  revokeRule: (ruleId: string) => void;
+  revokeRule: (rule: TrustedActionRow) => void;
   revokingRuleId: string | null;
   error: string | null;
 }) {
@@ -653,8 +731,8 @@ function TrustedActionsTabContent({
   return (
     <div className="space-y-4">
       <p className="text-xs text-muted-foreground">
-        Revoke exact actions that were approved with allow always. Fingerprints
-        identify the saved tool parameters without exposing the original values.
+        Revoke actions that were approved with allow always. Fingerprints identify
+        saved scopes without exposing original secret-bearing values.
       </p>
       <div className="rounded-md border border-border overflow-hidden">
         <table className="w-full text-sm">
@@ -662,6 +740,9 @@ function TrustedActionsTabContent({
             <tr>
               <th className="px-3 py-2 text-left font-medium text-xs text-muted-foreground">
                 Tool
+              </th>
+              <th className="px-3 py-2 text-left font-medium text-xs text-muted-foreground">
+                Source
               </th>
               <th className="px-3 py-2 text-left font-medium text-xs text-muted-foreground">
                 Fingerprint
@@ -676,10 +757,11 @@ function TrustedActionsTabContent({
           </thead>
           <tbody className="divide-y divide-border">
             {rules.map((rule) => (
-              <tr key={rule.id}>
-                <td className="px-3 py-2 font-mono text-xs">{rule.toolName}</td>
+              <tr key={`${rule.source}:${rule.id}`}>
+                <td className="px-3 py-2 font-mono text-xs">{rule.label}</td>
+                <td className="px-3 py-2 text-xs text-muted-foreground">{rule.sourceLabel}</td>
                 <td className="px-3 py-2 font-mono text-xs">
-                  {rule.paramsHashVersion}:{rule.paramsHashPrefix}
+                  {rule.fingerprint}
                 </td>
                 <td className="px-3 py-2 text-xs text-muted-foreground">
                   {relativeTime(rule.createdAt)}
@@ -688,10 +770,11 @@ function TrustedActionsTabContent({
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => revokeRule(rule.id)}
-                    disabled={revokingRuleId === rule.id}
+                    onClick={() => revokeRule(rule)}
+                    disabled={revokingRuleId === `${rule.source}:${rule.id}`}
+                    aria-label={`Revoke ${rule.source === "runtime" ? "runtime trust rule" : "trusted Commander action"} ${rule.label}`}
                   >
-                    {revokingRuleId === rule.id ? (
+                    {revokingRuleId === `${rule.source}:${rule.id}` ? (
                       <Loader2 className="h-3 w-3 animate-spin mr-1" />
                     ) : null}
                     Revoke

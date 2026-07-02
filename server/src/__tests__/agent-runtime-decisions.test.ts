@@ -634,6 +634,10 @@ describe("agentRuntimeDecisionService", () => {
         status: "expired",
         sourceRevision: 6,
       }),
+      expect.objectContaining({
+        sourceRevision: 5,
+        statuses: ["created", "shown"],
+      }),
     );
     expect(hubItems.emit).toHaveBeenCalled();
     expect(result.expired).toBe(1);
@@ -658,9 +662,34 @@ describe("agentRuntimeDecisionService", () => {
         answeredAt: now(),
         sourceRevision: 6,
       }),
+      expect.objectContaining({
+        sourceRevision: 5,
+        statuses: ["created", "shown"],
+      }),
     );
     expect(hubItems.emit).toHaveBeenCalled();
     expect(result.expired).toBe(1);
+  });
+
+  it("skips timeout expiry side effects when the prompt revision changed concurrently", async () => {
+    const due = baseDecision({ id: "due-1", status: "shown", timeoutPolicy: "deny", sourceRevision: 5 });
+    const { service, repo, hubItems } = makeService({
+      listDueForExpiry: vi.fn(async () => [due]),
+      updateDecision: vi.fn(async () => null),
+    });
+
+    const result = await service.expireDuePrompts({
+      companyId: "company-1",
+      limit: 10,
+    });
+
+    expect(repo.updateDecision).toHaveBeenCalledWith(
+      "due-1",
+      expect.objectContaining({ status: "answered", sourceRevision: 6 }),
+      expect.objectContaining({ sourceRevision: 5, statuses: ["created", "shown"] }),
+    );
+    expect(hubItems.emit).not.toHaveBeenCalled();
+    expect(result.expired).toBe(0);
   });
 
   it("cancels active run prompts and emits hub reconciliation updates", async () => {

@@ -3,7 +3,10 @@ import type { Db } from "@armyofagents/db";
 import { runtimeDecisionAnswerSchema } from "@armyofagents/shared";
 import { validate } from "../middleware/validate.js";
 import { agentRuntimeDecisionService, permissionService } from "../services/index.js";
-import { runtimeDecisionDetail } from "../services/agent-runtime-decisions.js";
+import {
+  runtimeDecisionDetail,
+  type AgentRuntimeTrustRuleRow,
+} from "../services/agent-runtime-decisions.js";
 import { assertCompanyAccess } from "./authz.js";
 import { forbidden, unauthorized } from "../errors.js";
 
@@ -18,6 +21,29 @@ function hasImplicitFounderAuthority(req: Request): boolean {
   return req.actor.source === "local_implicit" || req.actor.isInstanceAdmin === true;
 }
 
+function toIso(value: Date | string | null): string | null {
+  if (value == null) return null;
+  return value instanceof Date ? value.toISOString() : value;
+}
+
+function runtimeTrustRuleSummary(rule: AgentRuntimeTrustRuleRow) {
+  return {
+    id: rule.id,
+    agentId: rule.agentId,
+    adapterType: rule.adapterType,
+    toolName: rule.toolName,
+    commandHashPrefix: rule.commandHash?.slice(0, 8) ?? null,
+    pathScope: rule.pathScope,
+    networkScope: rule.networkScope,
+    riskClass: rule.riskClass,
+    enabled: rule.enabled,
+    expiresAt: toIso(rule.expiresAt),
+    lastUsedAt: toIso(rule.lastUsedAt),
+    createdAt: toIso(rule.createdAt) ?? new Date(0).toISOString(),
+    updatedAt: toIso(rule.updatedAt) ?? new Date(0).toISOString(),
+  };
+}
+
 export function agentRuntimeDecisionRoutes(db: Db) {
   const router = Router();
   const runtimeDecisions = agentRuntimeDecisionService(db);
@@ -28,6 +54,34 @@ export function agentRuntimeDecisionRoutes(db: Db) {
     if (await perms.isFounder(companyId, userId)) return;
     throw forbidden("Runtime decisions require founder authority");
   }
+
+  router.get("/companies/:companyId/agent-runtime-decisions/trust-rules", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const userId = requireBoardUserId(req);
+    await requireFounderAuthority(req, companyId, userId);
+
+    const rules = await runtimeDecisions.listTrustRules({
+      companyId,
+      includeDisabled: false,
+    });
+    res.json({ rules: rules.map(runtimeTrustRuleSummary) });
+  });
+
+  router.delete("/companies/:companyId/agent-runtime-decisions/trust-rules/:ruleId", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const ruleId = req.params.ruleId as string;
+    assertCompanyAccess(req, companyId);
+    const userId = requireBoardUserId(req);
+    await requireFounderAuthority(req, companyId, userId);
+
+    await runtimeDecisions.revokeTrustRule({
+      companyId,
+      ruleId,
+      actorUserId: userId,
+    });
+    res.json({ success: true });
+  });
 
   router.get("/companies/:companyId/agent-runtime-decisions/:id", async (req, res) => {
     const companyId = req.params.companyId as string;

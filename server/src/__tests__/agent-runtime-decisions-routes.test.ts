@@ -8,6 +8,8 @@ import { agentRuntimeDecisionRoutes } from "../routes/agent-runtime-decisions.js
 const mockRuntimeDecisions = vi.hoisted(() => ({
   getDetail: vi.fn(),
   answerPrompt: vi.fn(),
+  listTrustRules: vi.fn(),
+  revokeTrustRule: vi.fn(),
 }));
 
 const mockPerms = vi.hoisted(() => ({
@@ -22,6 +24,7 @@ vi.mock("../services/index.js", () => ({
 const COMPANY_A = "11111111-1111-1111-1111-111111111111";
 const COMPANY_B = "55555555-5555-5555-5555-555555555555";
 const DECISION_ID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+const TRUST_RULE_ID = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
 
 const permissionDetail = {
   id: DECISION_ID,
@@ -52,6 +55,24 @@ const permissionDetail = {
   relayError: null,
   createdAt: "2026-07-01T00:00:00.000Z",
   updatedAt: "2026-07-01T00:00:00.000Z",
+};
+
+const trustRule = {
+  id: TRUST_RULE_ID,
+  companyId: COMPANY_A,
+  agentId: "22222222-2222-2222-2222-222222222222",
+  adapterType: "openai_codex",
+  toolName: "shell",
+  commandHash: "abc123456789",
+  pathScope: "C:/repo",
+  networkScope: null,
+  riskClass: "medium",
+  enabled: true,
+  expiresAt: null,
+  createdByUserId: "user-1",
+  lastUsedAt: null,
+  createdAt: new Date("2026-07-01T00:00:00.000Z"),
+  updatedAt: new Date("2026-07-01T00:00:00.000Z"),
 };
 
 function boardActor(
@@ -89,6 +110,61 @@ describe("agent runtime decision routes", () => {
     mockPerms.isFounder.mockResolvedValue(true);
     mockRuntimeDecisions.getDetail.mockResolvedValue(permissionDetail);
     mockRuntimeDecisions.answerPrompt.mockResolvedValue({ ...permissionDetail, status: "answered", sourceRevision: 3 });
+    mockRuntimeDecisions.listTrustRules.mockResolvedValue([trustRule]);
+    mockRuntimeDecisions.revokeTrustRule.mockResolvedValue({ ...trustRule, enabled: false });
+  });
+
+  it("GET trust rules requires founder authority and does not fall through to detail", async () => {
+    mockPerms.isFounder.mockResolvedValue(false);
+
+    const rejected = await request(createApp())
+      .get(`/api/companies/${COMPANY_A}/agent-runtime-decisions/trust-rules`);
+
+    expect(rejected.status).toBe(403);
+    expect(mockRuntimeDecisions.getDetail).not.toHaveBeenCalled();
+    expect(mockRuntimeDecisions.listTrustRules).not.toHaveBeenCalled();
+
+    mockPerms.isFounder.mockResolvedValue(true);
+    const allowed = await request(createApp())
+      .get(`/api/companies/${COMPANY_A}/agent-runtime-decisions/trust-rules`);
+
+    expect(allowed.status, JSON.stringify(allowed.body)).toBe(200);
+    expect(allowed.body.rules).toEqual([
+      expect.objectContaining({
+        id: TRUST_RULE_ID,
+        adapterType: "openai_codex",
+        commandHashPrefix: "abc12345",
+        enabled: true,
+        createdAt: "2026-07-01T00:00:00.000Z",
+      }),
+    ]);
+    expect(mockRuntimeDecisions.listTrustRules).toHaveBeenCalledWith({
+      companyId: COMPANY_A,
+      includeDisabled: false,
+    });
+    expect(mockRuntimeDecisions.getDetail).not.toHaveBeenCalled();
+  });
+
+  it("DELETE trust rule requires founder authority and revokes by company", async () => {
+    mockPerms.isFounder.mockResolvedValue(false);
+
+    const rejected = await request(createApp())
+      .delete(`/api/companies/${COMPANY_A}/agent-runtime-decisions/trust-rules/${TRUST_RULE_ID}`);
+
+    expect(rejected.status).toBe(403);
+    expect(mockRuntimeDecisions.revokeTrustRule).not.toHaveBeenCalled();
+
+    mockPerms.isFounder.mockResolvedValue(true);
+    const allowed = await request(createApp())
+      .delete(`/api/companies/${COMPANY_A}/agent-runtime-decisions/trust-rules/${TRUST_RULE_ID}`);
+
+    expect(allowed.status, JSON.stringify(allowed.body)).toBe(200);
+    expect(allowed.body).toEqual({ success: true });
+    expect(mockRuntimeDecisions.revokeTrustRule).toHaveBeenCalledWith({
+      companyId: COMPANY_A,
+      ruleId: TRUST_RULE_ID,
+      actorUserId: "user-1",
+    });
   });
 
   it("GET detail requires board authentication and company access", async () => {

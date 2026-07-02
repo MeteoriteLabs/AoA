@@ -701,7 +701,10 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
               relayError: row.timeoutPolicy === "cancel_run" ? "timeout policy cancelled the run" : undefined,
               sourceRevision: row.sourceRevision + 1,
             };
-      const updated = await repo.updateDecision(row.id, patch);
+      const updated = await repo.updateDecision(row.id, patch, {
+        sourceRevision: row.sourceRevision,
+        statuses: ["created", "shown"],
+      });
       if (!updated) continue;
       await emitHubItem(updated);
       expired += 1;
