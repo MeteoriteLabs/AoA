@@ -172,6 +172,24 @@ function networkMatchesScope(networkTarget: string | null | undefined, scope: st
   return networkTarget === scope;
 }
 
+function hasConcreteTrustScope(input: {
+  command?: string | null;
+  path?: string | null;
+  pathScope?: string | null;
+  networkTarget?: string | null;
+  networkScope?: string | null;
+  riskClass?: string | null;
+}) {
+  return Boolean(
+    input.command ||
+    input.path ||
+    input.pathScope ||
+    input.networkTarget ||
+    input.networkScope ||
+    input.riskClass,
+  );
+}
+
 function trustRuleMatchesPrompt(rule: AgentRuntimeTrustRuleRow, input: CreatePromptInput, now: Date) {
   if (!rule.enabled) return false;
   if (rule.expiresAt && rule.expiresAt.getTime() <= now.getTime()) return false;
@@ -412,6 +430,9 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
   }
 
   async function createTrustRule(input: CreateTrustRuleInput) {
+    if (!hasConcreteTrustScope(input)) {
+      throw unprocessable("Allow always requires a concrete command, path, network, or risk scope");
+    }
     const rule = await repo.createTrustRule({
       companyId: input.companyId,
       agentId: input.agentId ?? null,
@@ -499,6 +520,9 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
   async function answerPrompt(input: AnswerPromptInput) {
     const row = await loadActive(input.companyId, input.decisionId);
     assertAnswerMatches(row, input);
+    if (input.kind === "permission" && input.decision === "allow_always" && !hasConcreteTrustScope(row)) {
+      throw unprocessable("Allow always requires a concrete command, path, network, or risk scope");
+    }
     const answered = await repo.updateDecision(row.id, {
       status: "answered",
       decision: input.kind === "permission" ? input.decision : null,
@@ -508,7 +532,7 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
       sourceRevision: row.sourceRevision + 1,
     }, {
       sourceRevision: row.sourceRevision,
-      statuses: ["created", "shown"],
+      statuses: ["created", "shown", "relay_failed"],
     });
     if (!answered) throw conflict("Runtime decision prompt was already answered");
     await activityLogger({
@@ -622,10 +646,20 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
         runId: row.runId,
         details: { sourceRevision: row.sourceRevision, timeoutPolicy: row.timeoutPolicy },
       });
-      const updated = await repo.updateDecision(row.id, {
-        status: "expired",
-        sourceRevision: row.sourceRevision + 1,
-      });
+      const patch: Partial<typeof agentRuntimeDecisions.$inferInsert> =
+        row.kind === "permission" && row.timeoutPolicy === "deny"
+          ? {
+              status: "answered",
+              decision: "deny",
+              answeredAt: now(),
+              sourceRevision: row.sourceRevision + 1,
+            }
+          : {
+              status: row.timeoutPolicy === "cancel_run" ? "cancelled" : "expired",
+              relayError: row.timeoutPolicy === "cancel_run" ? "timeout policy cancelled the run" : undefined,
+              sourceRevision: row.sourceRevision + 1,
+            };
+      const updated = await repo.updateDecision(row.id, patch);
       if (!updated) continue;
       await emitHubItem(updated);
       expired += 1;

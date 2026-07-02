@@ -326,7 +326,7 @@ describe("agentRuntimeDecisionService", () => {
       }),
       expect.objectContaining({
         sourceRevision: 2,
-        statuses: ["created", "shown"],
+        statuses: ["created", "shown", "relay_failed"],
       }),
     );
     expect(activityLogger).toHaveBeenCalledWith(
@@ -357,6 +357,56 @@ describe("agentRuntimeDecisionService", () => {
     expect(result.status).toBe("answered");
   });
 
+  it("rejects allow-always answers when the prompt has no concrete scope", async () => {
+    const unscoped = baseDecision({
+      command: null,
+      path: null,
+      networkTarget: null,
+      riskClass: null,
+    });
+    const { service, repo } = makeService({
+      getDecision: vi.fn(async () => unscoped),
+    });
+
+    await expect(
+      service.answerPrompt({
+        companyId: "company-1",
+        decisionId: "decision-1",
+        actorUserId: "founder-1",
+        expectedSourceRevision: 2,
+        nonce: "nonce-1",
+        kind: "permission",
+        decision: "allow_always",
+      }),
+    ).rejects.toMatchObject({ status: 422 });
+
+    expect(repo.updateDecision).not.toHaveBeenCalled();
+    expect(repo.createTrustRule).not.toHaveBeenCalled();
+  });
+
+  it("allows relay-failed prompts to be answered again for retry", async () => {
+    const relayFailed = baseDecision({ status: "relay_failed", sourceRevision: 3 });
+    const { service, repo } = makeService({
+      getDecision: vi.fn(async () => relayFailed),
+    });
+
+    await service.answerPrompt({
+      companyId: "company-1",
+      decisionId: "decision-1",
+      actorUserId: "founder-1",
+      expectedSourceRevision: 3,
+      nonce: "nonce-1",
+      kind: "permission",
+      decision: "allow_once",
+    });
+
+    expect(repo.updateDecision).toHaveBeenCalledWith(
+      "decision-1",
+      expect.objectContaining({ status: "answered", decision: "allow_once", sourceRevision: 4 }),
+      expect.objectContaining({ sourceRevision: 3, statuses: ["created", "shown", "relay_failed"] }),
+    );
+  });
+
   it("returns conflict without answer side effects when the guarded answer update loses a race", async () => {
     const { service, repo, activityLogger, hubItems } = makeService({
       updateDecision: vi.fn(async () => null),
@@ -377,7 +427,7 @@ describe("agentRuntimeDecisionService", () => {
     expect(repo.updateDecision).toHaveBeenCalledWith(
       "decision-1",
       expect.objectContaining({ status: "answered", sourceRevision: 3 }),
-      expect.objectContaining({ sourceRevision: 2, statuses: ["created", "shown"] }),
+      expect.objectContaining({ sourceRevision: 2, statuses: ["created", "shown", "relay_failed"] }),
     );
     expect(activityLogger).not.toHaveBeenCalledWith(
       expect.objectContaining({ action: "runtime_decision.answered" }),
@@ -452,7 +502,7 @@ describe("agentRuntimeDecisionService", () => {
   });
 
   it("expires due prompts with bounded batch behavior", async () => {
-    const due = baseDecision({ id: "due-1", status: "shown", sourceRevision: 5 });
+    const due = baseDecision({ id: "due-1", status: "shown", timeoutPolicy: "park_run", sourceRevision: 5 });
     const { service, repo, hubItems } = makeService({
       listDueForExpiry: vi.fn(async () => [due]),
     });
@@ -471,6 +521,30 @@ describe("agentRuntimeDecisionService", () => {
       "due-1",
       expect.objectContaining({
         status: "expired",
+        sourceRevision: 6,
+      }),
+    );
+    expect(hubItems.emit).toHaveBeenCalled();
+    expect(result.expired).toBe(1);
+  });
+
+  it("applies deny timeout policy as an answer for due permission prompts", async () => {
+    const due = baseDecision({ id: "due-1", kind: "permission", timeoutPolicy: "deny", status: "shown", sourceRevision: 5 });
+    const { service, repo, hubItems } = makeService({
+      listDueForExpiry: vi.fn(async () => [due]),
+    });
+
+    const result = await service.expireDuePrompts({
+      companyId: "company-1",
+      limit: 10,
+    });
+
+    expect(repo.updateDecision).toHaveBeenCalledWith(
+      "due-1",
+      expect.objectContaining({
+        status: "answered",
+        decision: "deny",
+        answeredAt: now(),
         sourceRevision: 6,
       }),
     );
