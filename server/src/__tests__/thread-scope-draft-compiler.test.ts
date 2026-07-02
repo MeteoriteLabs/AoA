@@ -333,3 +333,61 @@ describe("compileThreadScopeDraft", () => {
     expect(result.items.some((item) => item.kind === "memory_candidate")).toBe(false);
   });
 });
+
+describe("compileThreadScopeDraft — proposedTasks", () => {
+  const base = {
+    threadTitle: "Auth rewrite",
+    summaryText: "Migrate auth to JWT",
+    entries: [{ id: "e1", seq: 1, inputType: "write", rawContent: "let's scope the auth work" }],
+    extractedItems: [],
+    attachments: [],
+  };
+
+  it("emits one assigned task_proposal per proposedTask and no placeholder", () => {
+    const out = compileThreadScopeDraft({
+      ...base,
+      proposedTasks: [
+        { title: "Build token endpoint", assigneeAgentId: "agent-eng" },
+        { title: "Add refresh rotation", assigneeAgentId: "agent-eng" },
+        { title: "Unassigned research" }, // no assignee → null
+      ],
+    });
+    const tasks = out.items.filter((i) => i.kind === "task_proposal");
+    expect(tasks).toHaveLength(3);
+    expect(tasks.map((t) => t.title)).toEqual([
+      "Build token endpoint",
+      "Add refresh rotation",
+      "Unassigned research",
+    ]);
+    expect(tasks[0].payload.assigneeAgentId).toBe("agent-eng");
+    expect(tasks[2].payload.assigneeAgentId).toBeNull();
+    // placeholder title must never appear when proposedTasks are given
+    expect(tasks.map((t) => t.title)).not.toContain("Implement real multi-message scope generation");
+  });
+
+  it("falls back to extracted-item compilation when proposedTasks is absent", () => {
+    const out = compileThreadScopeDraft(base); // no proposedTasks
+    // no extracted items + text contains 'scope' → legacy placeholder still fires
+    const tasks = out.items.filter((i) => i.kind === "task_proposal");
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0].title).toBe("Implement real multi-message scope generation");
+  });
+
+  it("D1 dedup: proposedTasks suppress extracted task_proposals but keep decisions/memory", () => {
+    const out = compileThreadScopeDraft({
+      ...base,
+      extractedItems: [
+        { id: "x1", discussionEntryId: "e1", type: "task", title: "Extracted duplicate task", status: "pending" },
+        { id: "x2", discussionEntryId: "e1", type: "decision", title: "Use JWT", status: "pending" },
+      ] as any,
+      proposedTasks: [{ title: "Adjutant task", assigneeAgentId: "agent-eng" }],
+    });
+    const tasks = out.items.filter((i) => i.kind === "task_proposal");
+    // ONLY the proposed task — zero extracted task_proposals, zero placeholder
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0].title).toBe("Adjutant task");
+    expect(tasks[0].payload.assigneeAgentId).toBe("agent-eng");
+    // the extracted decision survives
+    expect(out.items.some((i) => i.kind === "decision" && i.title === "Use JWT")).toBe(true);
+  });
+});
