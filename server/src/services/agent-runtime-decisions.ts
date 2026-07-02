@@ -129,6 +129,7 @@ type ServiceDeps = {
   repo?: DecisionRepo;
   hubItems?: HubItemsApi;
   activityLogger?: (input: LogActivityInput) => Promise<void>;
+  runCanceller?: (input: { companyId: string; runId: string; reason: string }) => Promise<void>;
   now?: () => Date;
 };
 
@@ -303,7 +304,7 @@ function realRepo(db: Db): DecisionRepo {
             expiresAt: input.expiresAt ?? null,
             timeoutPolicy: input.timeoutPolicy,
             status: input.status,
-            sourceRevision: input.sourceRevision,
+            sourceRevision: sql`${agentRuntimeDecisions.sourceRevision} + 1`,
             decision: input.decision ?? null,
             answerIdempotencyKey: input.answerIdempotencyKey ?? null,
             answeredByUserId: input.answeredByUserId ?? null,
@@ -424,6 +425,7 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
   const repo = deps.repo ?? realRepo(db);
   const hub = deps.hubItems ?? hubItemsService(db);
   const activityLogger = deps.activityLogger ?? ((input: LogActivityInput) => logActivity(db, input));
+  const runCanceller = deps.runCanceller;
   const now = deps.now ?? (() => new Date());
 
   async function emitHubItem(decision: AgentRuntimeDecisionRow) {
@@ -756,6 +758,13 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
         details: { sourceRevision: row.sourceRevision, timeoutPolicy: row.timeoutPolicy },
       });
       await emitHubItem(updated);
+      if (row.timeoutPolicy === "cancel_run") {
+        await runCanceller?.({
+          companyId: updated.companyId,
+          runId: updated.runId,
+          reason: "timeout policy cancelled the run",
+        });
+      }
       if (!parked) expired += 1;
     }
     return { expired };

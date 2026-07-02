@@ -1058,10 +1058,15 @@ setInterval(() => {
 const RUNTIME_DECISION_TIMEOUT_SWEEP_INTERVAL_MS = 30 * 1000;
 const RUNTIME_DECISION_TIMEOUT_SWEEP_LIMIT = 100;
 let runtimeDecisionTimeoutSweepInFlight = false;
+const runtimeDecisionTimeoutHeartbeat = heartbeatService(db as any);
 setInterval(() => {
   if (runtimeDecisionTimeoutSweepInFlight) return;
   runtimeDecisionTimeoutSweepInFlight = true;
-  void agentRuntimeDecisionService(db as any)
+  void agentRuntimeDecisionService(db as any, {
+    runCanceller: async ({ runId }) => {
+      await runtimeDecisionTimeoutHeartbeat.cancelRun(runId);
+    },
+  })
     .expireDuePrompts({ limit: RUNTIME_DECISION_TIMEOUT_SWEEP_LIMIT })
     .catch((err: unknown) => logger.warn({ err }, "runtime decision timeout sweep failed"))
     .finally(() => {

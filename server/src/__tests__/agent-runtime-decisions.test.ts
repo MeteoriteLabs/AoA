@@ -85,13 +85,15 @@ function makeService(repoOverrides: Record<string, unknown> = {}) {
     emit: vi.fn(async () => ({ id: "hub-1", version: 0 })),
   };
   const activityLogger = vi.fn(async () => {});
+  const runCanceller = vi.fn(async () => {});
   const service = agentRuntimeDecisionService({} as never, {
     repo: repo as never,
     hubItems: hubItems as never,
     activityLogger,
+    runCanceller,
     now,
   });
-  return { service, repo, hubItems, activityLogger };
+  return { service, repo, hubItems, activityLogger, runCanceller };
 }
 
 describe("agentRuntimeDecisionService", () => {
@@ -258,6 +260,50 @@ describe("agentRuntimeDecisionService", () => {
     expect(conflictConfig).toEqual(expect.objectContaining({
       setWhere: expect.anything(),
     }));
+  });
+
+  it("bumps the source revision when a nonce refresh updates an open prompt", async () => {
+    let conflictConfig: { set?: Record<string, unknown> } | null = null;
+    const db = {
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn(() => ({
+            then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve([]).then(resolve),
+          })),
+        })),
+      })),
+      insert: vi.fn(() => ({
+        values: vi.fn(() => ({
+          onConflictDoUpdate: vi.fn((config) => {
+            conflictConfig = config;
+            return {
+              returning: () => Promise.resolve([baseDecision({ sourceRevision: 8 })]),
+            };
+          }),
+        })),
+      })),
+    };
+    const hubItems = { emit: vi.fn(async () => ({ id: "hub-1", version: 0 })) };
+    const service = agentRuntimeDecisionService(db as never, {
+      hubItems: hubItems as never,
+      activityLogger: vi.fn(async () => {}),
+      now,
+    });
+
+    await service.createPrompt({
+      companyId: "company-1",
+      agentId: "agent-1",
+      runId: "11111111-1111-4111-8111-111111111111",
+      adapterType: "claude_local",
+      kind: "permission",
+      nonce: "nonce-refresh",
+      title: "Allow refreshed command?",
+      toolName: "shell",
+      command: "pnpm build",
+      timeoutPolicy: "deny",
+    });
+
+    expect(conflictConfig?.set?.sourceRevision).not.toBe(0);
   });
 
   it("matches allow-always path scopes across Windows and POSIX separators", async () => {
@@ -815,6 +861,54 @@ describe("agentRuntimeDecisionService", () => {
     );
     expect(hubItems.emit).toHaveBeenCalled();
     expect(result.expired).toBe(1);
+  });
+
+  it("cancels the run when a due prompt expires with cancel_run policy", async () => {
+    const due = baseDecision({ id: "due-1", status: "shown", timeoutPolicy: "cancel_run", sourceRevision: 5 });
+    const { service, repo, runCanceller } = makeService({
+      listDueForExpiry: vi.fn(async () => [due]),
+      updateDecision: vi.fn(async (_id, patch) => baseDecision({ id: "due-1", ...(patch as Record<string, unknown>) })),
+    });
+
+    const result = await service.expireDuePrompts({
+      companyId: "company-1",
+      limit: 10,
+    });
+
+    expect(repo.updateDecision).toHaveBeenCalledWith(
+      "due-1",
+      expect.objectContaining({
+        status: "cancelled",
+        relayError: "timeout policy cancelled the run",
+        sourceRevision: 6,
+      }),
+      expect.objectContaining({
+        sourceRevision: 5,
+        statuses: ["created", "shown"],
+      }),
+    );
+    expect(runCanceller).toHaveBeenCalledWith({
+      companyId: "company-1",
+      runId: "11111111-1111-4111-8111-111111111111",
+      reason: "timeout policy cancelled the run",
+    });
+    expect(result.expired).toBe(1);
+  });
+
+  it("does not cancel the run when cancel_run timeout loses the guarded update race", async () => {
+    const due = baseDecision({ id: "due-1", status: "shown", timeoutPolicy: "cancel_run", sourceRevision: 5 });
+    const { service, runCanceller } = makeService({
+      listDueForExpiry: vi.fn(async () => [due]),
+      updateDecision: vi.fn(async () => null),
+    });
+
+    const result = await service.expireDuePrompts({
+      companyId: "company-1",
+      limit: 10,
+    });
+
+    expect(runCanceller).not.toHaveBeenCalled();
+    expect(result.expired).toBe(0);
   });
 
   it("skips timeout expiry side effects when the prompt revision changed concurrently", async () => {
