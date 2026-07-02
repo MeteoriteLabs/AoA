@@ -28,6 +28,17 @@ const TERMINAL_STATUSES = new Set<RuntimeDecisionStatus>([
   "cancelled",
 ]);
 
+const PERMISSION_DEFAULT_TTL_MS = 60 * 60 * 1000; // 1h
+const WORK_QUESTION_DEFAULT_TTL_MS = 24 * 60 * 60 * 1000; // 24h
+
+function defaultTtlMs(kind: RuntimeDecisionKind) {
+  return kind === "permission" ? PERMISSION_DEFAULT_TTL_MS : WORK_QUESTION_DEFAULT_TTL_MS;
+}
+
+export function defaultTimeoutPolicy(kind: RuntimeDecisionKind): RuntimeDecisionTimeoutPolicy {
+  return kind === "permission" ? "deny" : "park_run";
+}
+
 function isVisibleTimeoutFollowUp(row: AgentRuntimeDecisionRow) {
   return row.status === "cancelled" && (row.timeoutPolicy === "park_run" || row.timeoutPolicy === "escalate");
 }
@@ -455,10 +466,13 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
   }
 
   async function createPrompt(input: CreatePromptInput) {
+    const nowDate = now();
     const matchingTrustRule = input.kind === "permission"
       ? (await repo.listTrustRules({ companyId: input.companyId, adapterType: input.adapterType }))
-        .find((rule) => trustRuleMatchesPrompt(rule, input, now()))
+        .find((rule) => trustRuleMatchesPrompt(rule, input, nowDate))
       : null;
+    const resolvedExpiresAt =
+      input.expiresAt ?? new Date(nowDate.getTime() + defaultTtlMs(input.kind));
     const created = await repo.createDecision({
       companyId: input.companyId,
       agentId: input.agentId,
@@ -483,11 +497,11 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
       networkTarget: safeText(input.networkTarget),
       riskClass: input.riskClass ?? null,
       options: input.options ? redactJsonSecrets(input.options) as Array<Record<string, unknown>> : null,
-      expiresAt: input.expiresAt ?? null,
+      expiresAt: resolvedExpiresAt,
       timeoutPolicy: input.timeoutPolicy,
       decision: matchingTrustRule ? "allow_always" : null,
       answeredByUserId: matchingTrustRule?.createdByUserId ?? null,
-      answeredAt: matchingTrustRule ? now() : null,
+      answeredAt: matchingTrustRule ? nowDate : null,
     });
     if (matchingTrustRule) {
       await repo.markTrustRuleUsed({ ruleId: matchingTrustRule.id, usedAt: now() });

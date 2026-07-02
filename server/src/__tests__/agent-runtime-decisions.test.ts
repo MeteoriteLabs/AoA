@@ -1080,4 +1080,44 @@ describe("agentRuntimeDecisionService", () => {
       terminal: true,
     });
   });
+
+  it("defaults permission prompt expiry to 1h when none supplied", async () => {
+    const { service, repo } = makeService();
+    await service.createPrompt({
+      companyId: "company-1", agentId: "agent-1",
+      runId: "11111111-1111-4111-8111-111111111111",
+      adapterType: "claude_local", kind: "permission", nonce: "nonce-1",
+      title: "Allow?", timeoutPolicy: "deny",
+    });
+    expect(repo.createDecision).toHaveBeenCalledWith(
+      expect.objectContaining({ expiresAt: new Date("2026-07-01T13:00:00.000Z") }),
+    );
+  });
+
+  it("defaults work_question expiry to 24h when none supplied", async () => {
+    const { service, repo } = makeService();
+    await service.createPrompt({
+      companyId: "company-1", agentId: "agent-1",
+      runId: "11111111-1111-4111-8111-111111111111",
+      adapterType: "claude_local", kind: "work_question", nonce: "nonce-2",
+      title: "Which approach?", timeoutPolicy: "park_run",
+    });
+    expect(repo.createDecision).toHaveBeenCalledWith(
+      expect.objectContaining({ expiresAt: new Date("2026-07-02T12:00:00.000Z") }),
+    );
+  });
+
+  it("honours an explicitly supplied expiry", async () => {
+    const { service, repo } = makeService();
+    const explicit = new Date("2026-07-01T12:05:00.000Z");
+    await service.createPrompt({
+      companyId: "company-1", agentId: "agent-1",
+      runId: "11111111-1111-4111-8111-111111111111",
+      adapterType: "claude_local", kind: "permission", nonce: "nonce-3",
+      title: "Allow?", timeoutPolicy: "deny", expiresAt: explicit,
+    });
+    expect(repo.createDecision).toHaveBeenCalledWith(
+      expect.objectContaining({ expiresAt: explicit }),
+    );
+  });
 });
