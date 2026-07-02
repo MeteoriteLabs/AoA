@@ -565,7 +565,9 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
       runId: input.runId,
       adapterType: input.adapterType,
       adapterSessionId: input.adapterSessionId ?? null,
-      adapterSessionParams: input.adapterSessionParams ?? null,
+      adapterSessionParams: input.adapterSessionParams
+        ? (redactJsonSecrets(input.adapterSessionParams) as Record<string, unknown>)
+        : null,
       kind: input.kind,
       status: matchingTrustRule ? "answered" : "created",
       nonce: input.nonce,
@@ -575,7 +577,7 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
       title: safeText(input.title) ?? "Runtime decision",
       summary: safeText(input.summary),
       promptText: safeText(input.promptText),
-      toolName: input.toolName ?? null,
+      toolName: safeText(input.toolName),
       command: safeText(input.command),
       commandHash: commandHash(input.command),
       cwd: safeText(input.cwd),

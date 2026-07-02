@@ -1187,6 +1187,21 @@ describe("agentRuntimeDecisionService", () => {
     expect(result.processed).toBe(3);
   });
 
+  it("redacts toolName and adapterSessionParams before persistence", async () => {
+    const { service, repo } = makeService();
+    await service.createPrompt({
+      companyId: "company-1", agentId: "agent-1",
+      runId: "11111111-1111-4111-8111-111111111111",
+      adapterType: "claude_local", kind: "permission", nonce: "nonce-r",
+      title: "Allow?", timeoutPolicy: "deny",
+      toolName: "shell sk-ant-abc123DEF456ghi789",
+      adapterSessionParams: { token: "sk-ant-abc123DEF456ghi789", mode: "run" },
+    });
+    const arg = repo.createDecision.mock.calls[0][0];
+    expect(arg.toolName).toBe("shell ***REDACTED***");
+    expect(arg.adapterSessionParams).toEqual({ token: "***REDACTED***", mode: "run" });
+  });
+
   it("keeps sweeping after runCanceller throws for one run", async () => {
     const rows = [
       baseDecision({ id: "due-0", runId: "run-a", status: "shown", timeoutPolicy: "cancel_run", sourceRevision: 1 }),
