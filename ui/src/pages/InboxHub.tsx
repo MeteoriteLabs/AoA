@@ -1,5 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import type {
   HubAutopilotActionRow,
   HubAutopilotActionsResponse,
@@ -97,8 +102,6 @@ export function InboxHub() {
   const [bulkMessage, setBulkMessage] = useState<string | null>(null);
   const [searchText, setSearchText] = useState("");
   const [debouncedSearchText, setDebouncedSearchText] = useState("");
-  const [cursor, setCursor] = useState<string | null>(null);
-  const [accumulatedItems, setAccumulatedItems] = useState<HubItemListRow[]>([]);
   const [optimisticPreferences, setOptimisticPreferences] = useState<HubPreferences | null>(null);
 
   const laneSlug = params.lane ?? null;
@@ -380,56 +383,84 @@ export function InboxHub() {
             status: historyStatus,
             q: debouncedSearchText || undefined,
             groupMode: preferences.groupMode,
-            cursor: cursor ?? undefined,
             limit: 50,
           }
         : undefined,
-    [activeLane, cursor, debouncedSearchText, historyStatus, preferences.groupMode],
+    [activeLane, debouncedSearchText, historyStatus, preferences.groupMode],
   );
 
+  // Reset the bulk selection on any list-scope change. Page accumulation resets
+  // for free: the query key includes lane/search/status, so useInfiniteQuery
+  // starts a fresh page-1 fetch whenever the scope changes.
   useEffect(() => {
-    setCursor(null);
-    setAccumulatedItems([]);
     setSelectedBulkIds(new Set());
   }, [activeLane, debouncedSearchText, historyStatus]);
 
-  const listQuery = useQuery({
+  // Pages accumulate in the react-query cache (no useState mirror). v5's default
+  // structuralSharing keeps item references stable across an unchanged refetch,
+  // so the list doesn't re-render on every hub mutation (the flicker fix).
+  const listQuery = useInfiniteQuery({
     queryKey:
       selectedCompanyId && listOptions
         ? queryKeys.hubItems.list(selectedCompanyId, listOptions)
         : ["hub-items", selectedCompanyId ?? "none", "home"],
-    queryFn: () => hubItemsApi.list(selectedCompanyId!, listOptions),
+    queryFn: ({ pageParam }) =>
+      hubItemsApi.list(selectedCompanyId!, {
+        ...listOptions!,
+        cursor: pageParam ?? undefined,
+      }),
     enabled: !!selectedCompanyId && !!listOptions,
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
   });
-
-  useEffect(() => {
-    if (!activeLane || !listQuery.data) return;
-    const nextItems = listQuery.data.items;
-    setAccumulatedItems((current) => {
-      if (!cursor) return nextItems;
-      const seen = new Set(current.map((item) => item.id));
-      return [...current, ...nextItems.filter((item) => !seen.has(item.id))];
-    });
-  }, [activeLane, cursor, listQuery.data]);
 
   const markRead = useMutation({
     mutationFn: (itemId: string) => hubItemsApi.markRead(selectedCompanyId!, itemId),
     onMutate: (itemId) => {
       if (!selectedCompanyId) return;
       const readAt = new Date().toISOString();
-      queryClient.setQueriesData<HubListResponse | HubItemListRow[]>(
+      // Broad prefix matcher: this hits the list, counts, audit, preferences and
+      // autopilot caches. Branch order matters — the infinite-query list cache is
+      // `{ pages: HubListResponse[], pageParams }`, so match `"pages" in old` FIRST
+      // (before the `.items`/array branches) and leave every other shape as `old`.
+      queryClient.setQueriesData<unknown>(
         { queryKey: ["hub-items", selectedCompanyId] },
-        (old) =>
-          Array.isArray(old)
-            ? old.map((item) => (item.id === itemId ? { ...item, readAt } : item))
-            : old && Array.isArray(old.items)
-              ? {
-                  ...old,
-                  items: old.items.map((item) =>
-                    item.id === itemId ? { ...item, readAt } : item,
-                  ),
-                }
-            : old,
+        (old: unknown) => {
+          if (
+            old &&
+            typeof old === "object" &&
+            "pages" in old &&
+            Array.isArray((old as { pages: HubListResponse[] }).pages)
+          ) {
+            const paged = old as { pages: HubListResponse[]; pageParams: unknown[] };
+            return {
+              ...paged,
+              pages: paged.pages.map((page) => ({
+                ...page,
+                items: page.items.map((item) =>
+                  item.id === itemId ? { ...item, readAt } : item,
+                ),
+              })),
+            };
+          }
+          if (Array.isArray(old)) {
+            return old.map((item) =>
+              (item as HubItemListRow).id === itemId
+                ? { ...(item as HubItemListRow), readAt }
+                : item,
+            );
+          }
+          if (old && typeof old === "object" && Array.isArray((old as HubListResponse).items)) {
+            const resp = old as HubListResponse;
+            return {
+              ...resp,
+              items: resp.items.map((item) =>
+                item.id === itemId ? { ...item, readAt } : item,
+              ),
+            };
+          }
+          return old;
+        },
       );
     },
     onError: (_error, itemId) => {
@@ -443,7 +474,10 @@ export function InboxHub() {
     },
   });
 
-  const items = activeLane ? accumulatedItems : [];
+  const items = useMemo(
+    () => (activeLane ? (listQuery.data?.pages.flatMap((page) => page.items) ?? []) : []),
+    [activeLane, listQuery.data],
+  );
   const selectedItemId =
     params.itemId && items.some((item) => item.id === params.itemId)
       ? params.itemId
@@ -528,8 +562,8 @@ export function InboxHub() {
   };
 
   const handleLoadMore = () => {
-    if (listQuery.data?.nextCursor) {
-      setCursor(listQuery.data.nextCursor);
+    if (listQuery.hasNextPage && !listQuery.isFetchingNextPage) {
+      void listQuery.fetchNextPage();
     }
   };
 
@@ -662,8 +696,8 @@ export function InboxHub() {
       selectedBulkIds={selectedBulkIds}
       bulkMessage={bulkMessage}
       searchText={searchText}
-      hasMore={!!listQuery.data?.nextCursor}
-      isLoadingMore={listQuery.isFetching && !!cursor}
+      hasMore={listQuery.hasNextPage}
+      isLoadingMore={listQuery.isFetchingNextPage}
       preferences={preferences}
       notificationPreferences={notificationPreferences}
       notificationPreferencesPending={
