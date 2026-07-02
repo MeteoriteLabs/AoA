@@ -336,6 +336,9 @@ export function createHeartbeatRuntimeDecisionBroker(
       await input.clearRunWaiting(relayed);
       return relayed;
     } catch (error) {
+      if (error instanceof RuntimeDecisionCancelledError) {
+        throw error;
+      }
       await input.runtimeDecisions.markRelayFailed({
         companyId: input.run.companyId,
         decisionId: decision.id,
@@ -2097,6 +2100,7 @@ export function heartbeatService(db: Db) {
         finishedAt: now,
         error: "Process lost -- server may have restarted",
       });
+      await cancelRuntimeDecisionPromptsForRun(run, "run failed");
       const updatedRun = await getRun(run.id);
       if (updatedRun) {
         await appendRunEvent(updatedRun, 1, {

@@ -242,4 +242,37 @@ describe("heartbeat runtime decision broker", () => {
     expect(runtimeDecisions.markRelayed).not.toHaveBeenCalled();
     expect(runtimeDecisions.markRelayFailed).not.toHaveBeenCalled();
   });
+
+  it("preserves cancellation when markRelayed loses a race to run cancellation", async () => {
+    const created = decisionRow();
+    const answered = decisionRow({ status: "answered", sourceRevision: 1, decision: "allow_once" });
+    const cancelled = decisionRow({ status: "cancelled", sourceRevision: 2, relayError: "run cancelled" });
+    const cancelError = new RuntimeDecisionCancelledError(cancelled as never);
+    const runtimeDecisions = {
+      createPrompt: vi.fn().mockResolvedValue({ decision: created, hubItem: { id: "hub-1" } }),
+      waitForAnswer: vi.fn().mockResolvedValue(answered),
+      markRelayed: vi.fn().mockRejectedValue(cancelError),
+      markRelayFailed: vi.fn(),
+    };
+    const broker = createHeartbeatRuntimeDecisionBroker({
+      run,
+      agent,
+      runtime,
+      runtimeDecisions,
+      appendRunEvent: vi.fn().mockResolvedValue(undefined),
+      markRunWaiting: vi.fn().mockResolvedValue(undefined),
+      clearRunWaiting: vi.fn().mockResolvedValue(undefined),
+      pollIntervalMs: 0,
+    });
+
+    await expect(
+      broker.requestPermission({
+        nonce: "nonce-1",
+        title: "Allow command?",
+      }),
+    ).rejects.toBe(cancelError);
+
+    expect(runtimeDecisions.markRelayed).toHaveBeenCalledWith({ companyId: run.companyId, decisionId: created.id });
+    expect(runtimeDecisions.markRelayFailed).not.toHaveBeenCalled();
+  });
 });

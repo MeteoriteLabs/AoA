@@ -88,12 +88,19 @@ vi.mock("../services/activity-log.js", () => ({ logActivity: vi.fn() }));
 
 // The in-memory process map — shared and mutable so tests can seed it.
 // Hoisted so the vi.mock factory (also hoisted) can reference it safely.
-const { runningProcesses } = vi.hoisted(() => ({
+const { runningProcesses, cancelActiveForRunMock } = vi.hoisted(() => ({
   runningProcesses: new Map<string, unknown>(),
+  cancelActiveForRunMock: vi.fn(),
 }));
 vi.mock("../adapters/index.js", () => ({
   getServerAdapter: vi.fn(),
   runningProcesses,
+}));
+vi.mock("../services/agent-runtime-decisions.js", () => ({
+  agentRuntimeDecisionService: vi.fn(() => ({
+    cancelActiveForRun: cancelActiveForRunMock,
+  })),
+  RuntimeDecisionCancelledError: class RuntimeDecisionCancelledError extends Error {},
 }));
 
 vi.mock("../agent-auth-jwt.js", () => ({ createLocalAgentJwt: vi.fn() }));
@@ -196,9 +203,12 @@ function staleRun(over: Partial<Record<string, unknown>>) {
 describe("reapOrphanedRuns — A-H6 concurrency-clamp queued runs", () => {
   beforeEach(() => {
     runningProcesses.clear();
+    cancelActiveForRunMock.mockReset();
+    cancelActiveForRunMock.mockResolvedValue({ cancelled: 0 });
   });
   afterEach(() => {
     runningProcesses.clear();
+    cancelActiveForRunMock.mockReset();
   });
 
   it("does NOT reap a stale `queued` run (no process) in the periodic path", async () => {
@@ -222,6 +232,20 @@ describe("reapOrphanedRuns — A-H6 concurrency-clamp queued runs", () => {
     await svc.reapOrphanedRuns({ staleThresholdMs: PERIODIC_THRESHOLD });
 
     expect(processLostCalls(updateCalls).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("cancels active runtime decision prompts when it reaps an orphaned run", async () => {
+    const run = staleRun({ id: "run_with_prompt", status: "running" });
+    const { db } = createMockDb();
+    const svc = createServiceWithRuns(db, [run]);
+
+    await svc.reapOrphanedRuns({ staleThresholdMs: PERIODIC_THRESHOLD });
+
+    expect(cancelActiveForRunMock).toHaveBeenCalledWith({
+      companyId: "co_1",
+      runId: "run_with_prompt",
+      reason: "run failed",
+    });
   });
 
   it("STILL reaps a `queued` orphan on startup (staleThresholdMs === 0)", async () => {
