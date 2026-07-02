@@ -29,6 +29,7 @@ import { logger } from "./middleware/logger.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import {
   heartbeatService,
+  agentRuntimeDecisionService,
   issueMonitorSchedulerService,
   productivityReviewService,
   routineService,
@@ -1053,6 +1054,31 @@ setInterval(() => {
     logger.warn({ err }, "chronicler sweep error"),
   );
 }, CHRONICLER_SWEEP_INTERVAL_MS);
+
+const RUNTIME_DECISION_TIMEOUT_SWEEP_INTERVAL_MS = 30 * 1000;
+const RUNTIME_DECISION_TIMEOUT_SWEEP_LIMIT = 100;
+const RUNTIME_DECISION_TIMEOUT_SWEEP_MAX_BATCHES = 10; // <= 1000 rows/tick ceiling
+let runtimeDecisionTimeoutSweepInFlight = false;
+const runtimeDecisionTimeoutHeartbeat = heartbeatService(db as any);
+setInterval(() => {
+  if (runtimeDecisionTimeoutSweepInFlight) return;
+  runtimeDecisionTimeoutSweepInFlight = true;
+  void (async () => {
+    const svc = agentRuntimeDecisionService(db as any, {
+      runCanceller: async ({ runId }) => {
+        await runtimeDecisionTimeoutHeartbeat.cancelRun(runId);
+      },
+    });
+    for (let batch = 0; batch < RUNTIME_DECISION_TIMEOUT_SWEEP_MAX_BATCHES; batch++) {
+      const { processed } = await svc.expireDuePrompts({ limit: RUNTIME_DECISION_TIMEOUT_SWEEP_LIMIT });
+      if (processed < RUNTIME_DECISION_TIMEOUT_SWEEP_LIMIT) break;
+    }
+  })()
+    .catch((err: unknown) => logger.warn({ err }, "runtime decision timeout sweep failed"))
+    .finally(() => {
+      runtimeDecisionTimeoutSweepInFlight = false;
+    });
+}, RUNTIME_DECISION_TIMEOUT_SWEEP_INTERVAL_MS);
 
 if (config.databaseBackupEnabled) {
   const backupIntervalMs = config.databaseBackupIntervalMinutes * 60 * 1000;

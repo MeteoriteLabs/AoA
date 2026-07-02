@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { AGENT_ADAPTER_TYPES } from "../constants.js";
 import {
   HUB_AUTOPILOT_ACTIONS,
   HUB_AUTOPILOT_MODES,
@@ -7,6 +8,10 @@ import {
   HUB_ITEM_STATUSES,
   HUB_LANDING_TARGETS,
   HUB_LANES,
+  RUNTIME_DECISION_KINDS,
+  RUNTIME_DECISION_PERMISSION_DECISIONS,
+  RUNTIME_DECISION_STATUSES,
+  RUNTIME_DECISION_TIMEOUT_POLICIES,
   HUB_SEMANTIC_TYPES,
   isFounderGatedAutopilotType,
 } from "../hub.js";
@@ -110,6 +115,73 @@ export const hubCurationMetadataSchema = z
   .strict();
 
 export type HubCurationMetadata = z.infer<typeof hubCurationMetadataSchema>;
+
+const runtimeDecisionAnswerBaseSchema = z.object({
+  expectedSourceRevision: z.number().int().nonnegative(),
+  nonce: z.string().trim().min(1).max(256),
+  idempotencyKey: z.string().trim().min(1).max(200).optional(),
+});
+
+export const runtimeDecisionAnswerSchema = z.discriminatedUnion("kind", [
+  runtimeDecisionAnswerBaseSchema
+    .extend({
+      kind: z.literal("permission"),
+      decision: z.enum(RUNTIME_DECISION_PERMISSION_DECISIONS),
+    })
+    .strict(),
+  runtimeDecisionAnswerBaseSchema
+    .extend({
+      kind: z.literal("work_question"),
+      answer: z.record(z.unknown()),
+    })
+    .strict(),
+]);
+
+export type RuntimeDecisionAnswerInput = z.infer<typeof runtimeDecisionAnswerSchema>;
+
+export const runtimeDecisionDetailSchema = z
+  .object({
+    id: z.string().uuid(),
+    hubItemId: z.string().uuid().nullable(),
+    companyId: z.string().uuid(),
+    agentId: z.string().uuid(),
+    runId: z.string().uuid(),
+    adapterType: z.enum(AGENT_ADAPTER_TYPES),
+    adapterSessionId: z.string().nullable(),
+    kind: z.enum(RUNTIME_DECISION_KINDS),
+    status: z.enum(RUNTIME_DECISION_STATUSES),
+    sourceRevision: z.number().int().nonnegative(),
+    nonce: z.string().min(1),
+    title: z.string().trim().min(1).max(160),
+    summary: z.string().trim().min(1).max(1000).nullable(),
+    promptText: z.string().trim().min(1).max(4000).nullable(),
+    toolName: z.string().trim().min(1).max(160).nullable(),
+    command: z.string().trim().min(1).max(1000).nullable(),
+    cwd: z.string().trim().min(1).max(1000).nullable(),
+    path: z.string().trim().min(1).max(1000).nullable(),
+    networkTarget: z.string().trim().min(1).max(1000).nullable(),
+    riskClass: z.string().trim().min(1).max(80).nullable(),
+    options: z
+      .array(
+        z
+          .object({
+            label: z.string().min(1),
+            value: z.string().min(1),
+          })
+          .passthrough(),
+      )
+      .nullable(),
+    timeoutPolicy: z.enum(RUNTIME_DECISION_TIMEOUT_POLICIES),
+    expiresAt: z.string().datetime().nullable(),
+    answeredAt: z.string().datetime().nullable(),
+    relayedAt: z.string().datetime().nullable(),
+    relayError: z.string().nullable(),
+    createdAt: z.string().datetime(),
+    updatedAt: z.string().datetime(),
+  })
+  .strict();
+
+export type RuntimeDecisionDetail = z.infer<typeof runtimeDecisionDetailSchema>;
 
 // ── Action (POST /companies/:companyId/hub-items/:id/action) ──────────────────
 // Optimistic-concurrency action envelope. `expectedVersion` is the version the

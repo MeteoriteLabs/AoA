@@ -26,6 +26,7 @@ import { issueRoutes } from "./routes/issues.js";
 import { goalRoutes } from "./routes/goals.js";
 import { hubItemRoutes } from "./routes/hub-items.js";
 import { hubAutopilotRoutes } from "./routes/hub-autopilot.js";
+import { agentRuntimeDecisionRoutes } from "./routes/agent-runtime-decisions.js";
 import { teamsRoutes } from "./routes/teams.js";
 import { teamImportsRoutes } from "./routes/team-imports.js";
 import { approvalRoutes } from "./routes/approvals.js";
@@ -276,6 +277,7 @@ export async function createApp(
   api.use(goalRoutes(db));
   api.use(hubItemRoutes(db));
   api.use(hubAutopilotRoutes(db));
+  api.use(agentRuntimeDecisionRoutes(db));
   api.use(teamsRoutes(db));
   api.use(teamImportsRoutes(db));
   // Phase 6.0: memory-folders and memory-assets routes MUST mount before

@@ -1121,6 +1121,34 @@
       "when": 1782916523563,
       "tag": "0159_military_scarecrow",
       "breakpoints": true
+    },
+    {
+      "idx": 160,
+      "version": "7",
+      "when": 1782929079320,
+      "tag": "0160_lumpy_jack_power",
+      "breakpoints": true
+    },
+    {
+      "idx": 161,
+      "version": "7",
+      "when": 1782973080143,
+      "tag": "0161_perpetual_black_tom",
+      "breakpoints": true
+    },
+    {
+      "idx": 162,
+      "version": "7",
+      "when": 1782985054844,
+      "tag": "0162_absent_marten_broadcloak",
+      "breakpoints": true
+    },
+    {
+      "idx": 163,
+      "version": "7",
+      "when": 1782995975534,
+      "tag": "0163_demonic_marauders",
+      "breakpoints": true
     }
   ]
 }

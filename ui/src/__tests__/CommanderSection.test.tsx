@@ -86,6 +86,10 @@ const trustRulesMock = {
   list: vi.fn().mockResolvedValue({ rules: [] }),
   revoke: vi.fn().mockResolvedValue({ success: true }),
 };
+const runtimeTrustRulesMock = {
+  listTrustRules: vi.fn().mockResolvedValue({ rules: [] }),
+  revokeTrustRule: vi.fn().mockResolvedValue({ success: true }),
+};
 
 vi.mock("@/api/internal-agent", () => ({
   internalAgentApi: new Proxy(
@@ -99,6 +103,13 @@ vi.mock("@/api/internal-agent", () => ({
   commanderTrustRulesApi: new Proxy(
     {},
     { get: (_t, prop) => (trustRulesMock as any)[prop] },
+  ),
+}));
+
+vi.mock("@/api/agent-runtime-decisions", () => ({
+  agentRuntimeDecisionsApi: new Proxy(
+    {},
+    { get: (_t, prop) => (runtimeTrustRulesMock as any)[prop] },
   ),
 }));
 
@@ -166,6 +177,8 @@ describe("CommanderSection", () => {
     apiMock.getRuns.mockResolvedValue(makeRunsResponse());
     trustRulesMock.list.mockResolvedValue({ rules: [] });
     trustRulesMock.revoke.mockResolvedValue({ success: true });
+    runtimeTrustRulesMock.listTrustRules.mockResolvedValue({ rules: [] });
+    runtimeTrustRulesMock.revokeTrustRule.mockResolvedValue({ success: true });
   });
 
   it("renders tab bar with all tabs", async () => {
@@ -255,6 +268,47 @@ describe("CommanderSection", () => {
 
     await waitFor(() => {
       expect(trustRulesMock.revoke).toHaveBeenCalledWith("comp-1", "trust-1");
+    });
+  });
+
+  it("renders and revokes W5 runtime allow-always trust rules", async () => {
+    runtimeTrustRulesMock.listTrustRules.mockResolvedValue({
+      rules: [
+        {
+          id: "runtime-trust-1",
+          agentId: "agent-1",
+          adapterType: "openai_codex",
+          toolName: "shell",
+          commandHashPrefix: "1234abcd",
+          pathScope: "C:/repo",
+          networkScope: null,
+          riskClass: "medium",
+          enabled: true,
+          lastUsedAt: null,
+          expiresAt: null,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        },
+      ],
+    });
+    const user = userEvent.setup();
+    renderWithProviders(<CommanderSection />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("tab-trusted-actions")).toBeInTheDocument();
+    });
+    await user.click(screen.getByTestId("tab-trusted-actions"));
+
+    await waitFor(() => {
+      expect(screen.getByText("shell")).toBeInTheDocument();
+    });
+    expect(screen.getByText("Runtime decision")).toBeInTheDocument();
+    expect(screen.getByText(/cmd:1234abcd/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Revoke runtime trust rule shell" }));
+
+    await waitFor(() => {
+      expect(runtimeTrustRulesMock.revokeTrustRule).toHaveBeenCalledWith("comp-1", "runtime-trust-1");
     });
   });
 

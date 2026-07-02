@@ -196,6 +196,57 @@ export interface McpBridgeSpec {
   env: Record<string, string>;
 }
 
+export type AdapterRuntimePermissionDecision = "allow_once" | "allow_always" | "deny";
+export type AdapterRuntimeDecisionTimeoutPolicy =
+  | "deny"
+  | "cancel_run"
+  | "park_run"
+  | "continue_with_default"
+  | "escalate";
+
+export interface AdapterRuntimeDecisionPromptBase {
+  nonce?: string;
+  title: string;
+  summary?: string | null;
+  promptText?: string | null;
+  toolName?: string | null;
+  command?: string | null;
+  cwd?: string | null;
+  path?: string | null;
+  networkTarget?: string | null;
+  riskClass?: string | null;
+  options?: Array<Record<string, unknown>> | null;
+  expiresAt?: Date | string | null;
+  timeoutPolicy?: AdapterRuntimeDecisionTimeoutPolicy;
+}
+
+export interface AdapterRuntimePermissionPrompt extends AdapterRuntimeDecisionPromptBase {
+  kind?: "permission";
+}
+
+export interface AdapterRuntimeWorkQuestionPrompt extends AdapterRuntimeDecisionPromptBase {
+  kind?: "work_question";
+}
+
+export interface AdapterRuntimePermissionAnswer {
+  kind: "permission";
+  decisionId: string;
+  decision: AdapterRuntimePermissionDecision;
+  sourceRevision: number;
+}
+
+export interface AdapterRuntimeWorkQuestionAnswer {
+  kind: "work_question";
+  decisionId: string;
+  answer: Record<string, unknown>;
+  sourceRevision: number;
+}
+
+export interface AdapterRuntimeDecisionBroker {
+  requestPermission(input: AdapterRuntimePermissionPrompt): Promise<AdapterRuntimePermissionAnswer>;
+  askWorkQuestion(input: AdapterRuntimeWorkQuestionPrompt): Promise<AdapterRuntimeWorkQuestionAnswer>;
+}
+
 export interface AdapterExecutionContext {
   runId: string;
   agent: AdapterAgent;
@@ -210,6 +261,13 @@ export interface AdapterExecutionContext {
    * back to existing behavior. Wired by a later milestone.
    */
   mcpBridge?: McpBridgeSpec;
+  /**
+   * Optional human-decision broker. Adapters can use this to pause a run for a
+   * permission prompt or work-question without knowing how the Hub stores,
+   * displays, or relays answers. Unset means the adapter falls back to existing
+   * local behavior.
+   */
+  runtimeDecisionBroker?: AdapterRuntimeDecisionBroker;
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onMeta?: (meta: AdapterInvocationMeta) => Promise<void>;
   authToken?: string;

@@ -6,6 +6,7 @@ import {
   hubItemUserState,
   hubAudit,
   activityLog,
+  agentRuntimeDecisions,
   companyMemberships,
   approvals,
   heartbeatRuns,
@@ -55,6 +56,7 @@ import { notificationPreferencesService } from "./notification-preferences.js";
 import { orgHierarchyService } from "./org-hierarchy.js";
 import { permissionService } from "./permissions.js";
 import { publishLiveEvent } from "./live-events.js";
+import { runtimeDecisionSourceSnapshot } from "./agent-runtime-decisions.js";
 
 // Semantic types that resolve to a given lane (lane is derived, not a column).
 function semanticTypesForLane(lane: HubLane): HubSemanticType[] {
@@ -664,6 +666,47 @@ export function hubItemsService(db: Db) {
     const role = opts.role ?? (await permissionService(db).getEffectiveRole(companyId, opts.actorUserId));
     const conds = await visibilityConds(companyId, opts.actorUserId, role);
     conds.push(eq(hubItems.id, opts.hubItemId));
+    if (opts.status !== "any") {
+      conds.push(eq(hubItems.status, opts.status ?? "open"));
+    }
+    return db
+      .select({
+        item: hubItems,
+        readAt: hubItemUserState.readAt,
+        snoozedUntil: hubItemUserState.snoozedUntil,
+        dismissedAt: hubItemUserState.dismissedAt,
+      })
+      .from(hubItems)
+      .leftJoin(
+        hubItemUserState,
+        and(
+          eq(hubItemUserState.hubItemId, hubItems.id),
+          eq(hubItemUserState.principalType, "user"),
+          eq(hubItemUserState.principalId, opts.actorUserId),
+        ),
+      )
+      .where(and(...conds))
+      .limit(1)
+      .then((r) => {
+        const row = r[0];
+        return row ? toListRow(row.item, row) : null;
+      });
+  }
+
+  async function getVisibleBySource(
+    companyId: string,
+    opts: {
+      sourceType: string;
+      sourceId: string;
+      actorUserId: string;
+      role?: UserRole;
+      status?: HubItemStatus | "any";
+    },
+  ) {
+    const role = opts.role ?? (await permissionService(db).getEffectiveRole(companyId, opts.actorUserId));
+    const conds = await visibilityConds(companyId, opts.actorUserId, role);
+    conds.push(eq(hubItems.sourceType, opts.sourceType));
+    conds.push(eq(hubItems.sourceId, opts.sourceId));
     if (opts.status !== "any") {
       conds.push(eq(hubItems.status, opts.status ?? "open"));
     }
@@ -1443,9 +1486,20 @@ export function hubItemsService(db: Db) {
     };
   };
 
+  const reconcileRuntimeDecision: SourceReconciler = async (companyId, sourceId) => {
+    const row = await db
+      .select()
+      .from(agentRuntimeDecisions)
+      .where(and(eq(agentRuntimeDecisions.id, sourceId), eq(agentRuntimeDecisions.companyId, companyId)))
+      .limit(1)
+      .then((r) => r[0] ?? null);
+    return runtimeDecisionSourceSnapshot(row);
+  };
+
   const SOURCE_RECONCILERS: Record<string, SourceReconciler> = {
     approval: reconcileApproval,
     heartbeat_run: reconcileHeartbeatRun,
+    runtime_decision: reconcileRuntimeDecision,
     join_request: reconcileJoinRequest,
     discussion: reconcileDiscussion,
     suggestion: reconcileSuggestion,
@@ -1650,6 +1704,7 @@ export function hubItemsService(db: Db) {
     resolveOwner,
     query,
     getVisible,
+    getVisibleBySource,
     applyPersonalState,
     getAudit,
     recordLifecycleAction,

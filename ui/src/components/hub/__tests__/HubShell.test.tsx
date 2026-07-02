@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { HubShell } from "../HubShell";
 import type { HubItemListRow } from "@/api/hub-items";
 import type { HubAutopilotActionsResponse, HubAutopilotPolicy, NotificationPreferences } from "@armyofagents/shared";
@@ -10,6 +11,42 @@ vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({
     selectedCompany: { id: "company-1", name: "Test Co", issuePrefix: "TC" },
   }),
+}));
+
+vi.mock("@/api/agent-runtime-decisions", () => ({
+  agentRuntimeDecisionsApi: {
+    detail: vi.fn().mockResolvedValue({
+      id: "decision-1",
+      hubItemId: "hub-runtime",
+      companyId: "company-1",
+      agentId: "agent-1",
+      runId: "run-1",
+      adapterType: "claude_local",
+      adapterSessionId: null,
+      kind: "permission",
+      status: "shown",
+      sourceRevision: 2,
+      nonce: "nonce-1",
+      title: "Allow command?",
+      summary: "Run tests",
+      promptText: "pnpm test:run",
+      toolName: "shell",
+      command: "pnpm test:run",
+      cwd: "C:/repo",
+      path: null,
+      networkTarget: null,
+      riskClass: "medium",
+      options: null,
+      timeoutPolicy: "deny",
+      expiresAt: null,
+      answeredAt: null,
+      relayedAt: null,
+      relayError: null,
+      createdAt: "2026-07-01T12:00:00.000Z",
+      updatedAt: "2026-07-01T12:00:00.000Z",
+    }),
+    answer: vi.fn().mockResolvedValue({}),
+  },
 }));
 
 const items: HubItemListRow[] = [
@@ -41,29 +78,34 @@ const items: HubItemListRow[] = [
 ];
 
 function renderShell(overrides: Partial<React.ComponentProps<typeof HubShell>> = {}) {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
   return render(
-    <MemoryRouter>
-      <HubShell
-        activeLane="waiting_on_you"
-        items={items}
-        counts={{ open: 1, unread: 1 }}
-        isLoading={false}
-        error={null}
-        selectedItemId={null}
-        onLaneChange={vi.fn()}
-        onSelectItem={vi.fn()}
-        onMarkRead={vi.fn()}
-        preferences={{
-          defaultLanding: "waiting_on_you",
-          visibleLanes: ["waiting_on_you", "suggestions"],
-          groupMode: "auto",
-          density: "comfortable",
-          showAutopilotEntry: true,
-          updatedAt: null,
-        }}
-        {...overrides}
-      />
-    </MemoryRouter>,
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>
+        <HubShell
+          activeLane="waiting_on_you"
+          items={items}
+          counts={{ open: 1, unread: 1 }}
+          isLoading={false}
+          error={null}
+          selectedItemId={null}
+          onLaneChange={vi.fn()}
+          onSelectItem={vi.fn()}
+          onMarkRead={vi.fn()}
+          preferences={{
+            defaultLanding: "waiting_on_you",
+            visibleLanes: ["waiting_on_you", "suggestions"],
+            groupMode: "auto",
+            density: "comfortable",
+            showAutopilotEntry: true,
+            updatedAt: null,
+          }}
+          {...overrides}
+        />
+      </MemoryRouter>
+    </QueryClientProvider>,
   );
 }
 
@@ -136,6 +178,24 @@ describe("HubShell", () => {
       "href",
       "/TC/approvals/approval-1",
     );
+  });
+
+  it("hides generic lifecycle actions for runtime decision prompts", async () => {
+    const runtimeItem: HubItemListRow = {
+      ...items[0],
+      id: "hub-runtime",
+      semanticType: "agent_runtime_decision",
+      title: "Allow command?",
+      summary: "Runtime permission",
+      sourceType: "runtime_decision",
+      sourceId: "decision-1",
+    };
+
+    renderShell({ items: [runtimeItem], selectedItemId: "hub-runtime" });
+
+    expect(await screen.findByRole("button", { name: /allow once/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^resolve$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^archive$/i })).not.toBeInTheDocument();
   });
 
   it("closes the viewer with a nullable selection", async () => {
