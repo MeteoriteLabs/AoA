@@ -341,4 +341,15 @@ describe("Marketplace (hub) — sections", () => {
     expect(screen.getByText("No matches.")).toBeInTheDocument();
     expect(screen.queryByTestId("marketplace-empty-plugin")).not.toBeInTheDocument();
   });
+
+  it("keeps 'No matches.' (not the empty hero) when a sub-filter empties a non-empty type", async () => {
+    const user = userEvent.setup();
+    // mockCatalog's plugin (github-issues) is a real third-party item but is not
+    // featured — the Featured sub-filter reduces the plugin list to zero.
+    renderMarketplace("/marketplace?type=plugin");
+    expect(screen.getByText("github-issues")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /featured$/i }));
+    expect(screen.getByText("No matches.")).toBeInTheDocument();
+    expect(screen.queryByTestId("marketplace-empty-plugin")).not.toBeInTheDocument();
+  });
 });

@@ -353,6 +353,13 @@ export default function Marketplace() {
     return out;
   }, [aoaItems]);
   const mainItems = useMemo(() => items.filter((i) => !isAoaItem(i)), [items]);
+  // Third-party count for the active type BEFORE search/sort filters. Distinguishes
+  // "no third-party items of this type exist" (show the AoA cross-sell) from "a
+  // search/sub-filter matched nothing" (show the generic "No matches.").
+  const mainTypeCount = useMemo(
+    () => (selectedType ? mainItems.filter((i) => i.type === selectedType).length : 0),
+    [mainItems, selectedType],
+  );
   const base = isAoaView ? aoaItems : mainItems;
   const mainPackages = useMemo(
     () => (packages ?? []).filter((p) => !isAoaPackage(p)),
@@ -553,7 +560,7 @@ export default function Marketplace() {
             Failed to load catalog.
           </div>
         ) : visible.length === 0 ? (
-          selectedType !== null && !isAoaView && !search.trim() ? (
+          selectedType !== null && !isAoaView && mainTypeCount === 0 ? (
             <TypeEmptyState
               type={selectedType}
               aoaCount={aoaByType[selectedType]}

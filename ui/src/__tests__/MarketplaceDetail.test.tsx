@@ -204,6 +204,44 @@ describe("MarketplaceDetail", () => {
     await waitFor(() => expect(screen.getByText("Install Slack")).toBeInTheDocument());
   });
 
+  it("primary breadcrumb links back to the AoA view for an AoA item", async () => {
+    // isAoaItem() keys off the github owner in source.url (not the id), so give
+    // code-review an aoa-curated source → AoA first-party. Opened from ?view=aoa,
+    // the breadcrumb must return to the AoA view, not Home (where it's hidden).
+    vi.mocked(marketplaceApi.getCatalog).mockResolvedValueOnce({
+      ...FULL_CATALOG,
+      items: FULL_CATALOG.items.map((item) =>
+        item.id === "skill:aoa-curated/code-review"
+          ? { ...item, source: { ...item.source, url: "https://github.com/aoa-curated/skills" } }
+          : item,
+      ),
+    });
+    const { container } = wrap("/marketplace/skill/aoa-curated/code-review");
+    await waitFor(() =>
+      expect(
+        screen.getAllByRole("heading", { level: 1, name: "Code Review" }).length,
+      ).toBeGreaterThanOrEqual(1),
+    );
+    const crumb = container.querySelector('a[href="/marketplace?view=aoa"]');
+    expect(crumb).toBeInTheDocument();
+    expect(crumb?.textContent).toMatch(/marketplace/i);
+    expect(crumb?.textContent).toMatch(/aoa/i);
+  });
+
+  it("primary breadcrumb links back to the type view for a non-AoA item", async () => {
+    vi.mocked(marketplaceApi.getCatalog).mockResolvedValueOnce(FULL_CATALOG);
+    const { container } = wrap("/marketplace/skill/community/example-author/quick-tip");
+    await waitFor(() =>
+      expect(
+        screen.getByRole("heading", { level: 1, name: "Quick Tip" }),
+      ).toBeInTheDocument(),
+    );
+    const crumb = container.querySelector('a[href="/marketplace?type=skill"]');
+    expect(crumb).toBeInTheDocument();
+    expect(crumb?.textContent).toMatch(/marketplace/i);
+    expect(crumb?.textContent).toMatch(/skills/i);
+  });
+
   it("renders 404 for unknown item id", async () => {
     vi.mocked(marketplaceApi.getCatalog).mockResolvedValueOnce(FULL_CATALOG);
     wrap("/marketplace/skill/nonexistent/item");

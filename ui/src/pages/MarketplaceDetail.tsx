@@ -132,10 +132,11 @@ export default function MarketplaceDetail() {
       <div className="mx-auto w-full max-w-[920px] px-4 py-6 sm:px-6 sm:py-7 md:px-10 md:py-9">
         <LobbyShellMobileMenuButton className="mb-4" />
         <Link
-          to="/marketplace"
+          to={backTo}
           className="mb-4 inline-flex items-center gap-1 text-[12px] text-very-dim hover:text-foreground"
         >
-          <ChevronLeft className="size-3.5" /> Marketplace · {itemType ? TYPE_LABELS_PLURAL[itemType] : ""}
+          <ChevronLeft className="size-3.5" /> Marketplace
+          {backLabel !== "marketplace" ? ` · ${backLabel}` : ""}
         </Link>
 
         {!itemType && (
