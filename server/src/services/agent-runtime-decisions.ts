@@ -11,7 +11,8 @@ import type {
 } from "@armyofagents/shared";
 import { RUNTIME_DECISION_PERMISSION_DECISIONS } from "@armyofagents/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
-import { redactSecretsInString } from "../redaction.js";
+import { logger } from "../middleware/logger.js";
+import { redactEventPayload, redactSecretsInString } from "../redaction.js";
 import { logActivity, type LogActivityInput } from "./activity-log.js";
 import { hubItemsService } from "./hub-items.js";
 
@@ -543,6 +544,7 @@ function resolveExplicitDefault(row: AgentRuntimeDecisionRow):
   const value = def.value;
   if (row.kind === "permission") {
     return typeof value === "string" &&
+      value !== "allow_always" &&
       (RUNTIME_DECISION_PERMISSION_DECISIONS as readonly string[]).includes(value)
       ? { decision: value as RuntimeDecisionPermissionDecision }
       : null;
@@ -648,9 +650,7 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
       runId: input.runId,
       adapterType: input.adapterType,
       adapterSessionId: input.adapterSessionId ?? null,
-      adapterSessionParams: input.adapterSessionParams
-        ? (redactJsonSecrets(input.adapterSessionParams) as Record<string, unknown>)
-        : null,
+      adapterSessionParams: redactEventPayload(input.adapterSessionParams ?? null),
       kind: input.kind,
       status: matchingTrustRule ? "answered" : "created",
       nonce: input.nonce,
@@ -963,9 +963,11 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
             runId: updated.runId,
             reason: updated.relayError ?? "runtime decision timeout policy cancelled the run",
           });
-        } catch {
-          // Run may already be gone (FK cascade / purge). The decision row is
-          // already flipped (durable effect); do not poison the batch.
+        } catch (err) {
+          // Run may already be gone (FK cascade / purge); the decision row is
+          // already flipped (durable effect). Log so a real DB failure during
+          // cancellation isn't masked, but don't poison the batch.
+          logger.warn({ err, runId: updated.runId }, "runtime decision timeout run cancellation failed");
         }
       }
       if (!outcome.parked) expired += 1;
