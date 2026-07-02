@@ -1,4 +1,8 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+
+// Module-level captured mocks — mirrors thread-scope-accept.test.ts (lines 3-12)
+const issueCreate = vi.fn();
+const memoryCreate = vi.fn();
 
 // drizzle operator + table mocks — same pattern as thread-scope-accept.test.ts
 vi.mock("drizzle-orm", () => {
@@ -34,14 +38,26 @@ vi.mock("@armyofagents/db", () => ({
 }));
 
 vi.mock("../services/issues.js", () => ({
-  issueService: () => ({ create: vi.fn() }),
+  issueService: () => ({ create: issueCreate }),
 }));
 
 vi.mock("../services/memory.js", () => ({
-  memoryService: () => ({ create: vi.fn() }),
+  memoryService: () => ({ create: memoryCreate }),
 }));
 
 import { threadScopeVersionService } from "../services/thread-scope-versions.js";
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  issueCreate.mockResolvedValue({
+    id: "task1",
+    assigneeAgentId: "agent-eng",
+    workMode: "planning",
+    sourceDiscussionId: "thread1",
+    scopeVersionId: "scope1",
+  });
+  memoryCreate.mockResolvedValue({ id: "memory1" });
+});
 
 /**
  * Build a db mock using the proven createSequenceDb pattern from
@@ -110,6 +126,84 @@ function createDraftDb(selectQueue: unknown[][], capturedInserts: unknown[]) {
   return dbObj;
 }
 
+/**
+ * Apply-path db mock (mirrors thread-scope-accept.test.ts createSequenceDb).
+ * applyAcceptedDraft select sequence:
+ *   [0] threadScopeVersions → version row (must have status:"draft")
+ *   [1] discussions         → thread row
+ *   [2] threadScopeItems    → accepted items array
+ *
+ * Transaction updates:
+ *   update(threadScopeItems).set({status:"applied",...}) → [appliedItem]
+ *   update(threadScopeVersions).set({status:"accepted",...}) → [acceptedVersion]
+ */
+function createApplyDb(
+  selectQueue: unknown[][],
+  updateQueue: unknown[][] = [],
+  insertQueue: unknown[][] = [],
+) {
+  let selectIdx = 0;
+  let updateIdx = 0;
+  let insertIdx = 0;
+  const capturedUpdates: unknown[] = [];
+  const capturedInserts: unknown[] = [];
+
+  function makeSelectChain() {
+    const rows = selectQueue[selectIdx++] ?? [];
+    const chain: any = {
+      from: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnThis(),
+      orderBy: vi.fn().mockReturnThis(),
+      limit: vi.fn().mockReturnThis(),
+      leftJoin: vi.fn().mockReturnThis(),
+      then: vi.fn((fn: (rows: unknown[]) => unknown) => Promise.resolve(fn(rows))),
+    };
+    return chain;
+  }
+
+  function makeUpdateChain() {
+    return {
+      set: vi.fn((data: unknown) => {
+        capturedUpdates.push(data);
+        return {
+          where: vi.fn(() => ({
+            returning: vi.fn().mockReturnThis(),
+            then: vi.fn((fn: (rows: unknown[]) => unknown) => {
+              const rows = updateQueue[updateIdx++] ?? [];
+              return Promise.resolve(fn(rows));
+            }),
+          })),
+        };
+      }),
+    };
+  }
+
+  function makeInsertChain() {
+    return {
+      values: vi.fn((data: unknown) => {
+        capturedInserts.push(data);
+        return {
+          returning: vi.fn().mockReturnThis(),
+          then: vi.fn((fn: (rows: unknown[]) => unknown) =>
+            Promise.resolve(fn(insertQueue[insertIdx++] ?? [])),
+          ),
+        };
+      }),
+    };
+  }
+
+  const dbObj: any = {
+    select: vi.fn(() => makeSelectChain()),
+    update: vi.fn(() => makeUpdateChain()),
+    insert: vi.fn(() => makeInsertChain()),
+    transaction: vi.fn(async (fn: (tx: any) => Promise<unknown>) => fn(dbObj)),
+    capturedUpdates,
+    capturedInserts,
+  };
+
+  return dbObj;
+}
+
 describe("createDraftFromThread — proposedTasks assignee", () => {
   it("seeds scope items with assigneeAgentId from proposedTasks", async () => {
     const capturedInserts: unknown[] = [];
@@ -164,5 +258,71 @@ describe("createDraftFromThread — proposedTasks assignee", () => {
     expect(task).toBeDefined();
     expect(task!.title).toBe("Build token endpoint");
     expect(task!.payload.assigneeAgentId).toBe("agent-eng");
+  });
+});
+
+describe("applyAcceptedDraft — Task 5 E2E: controller draft → applied tasks are assigned", () => {
+  it("applying a draft creates an issue assigned to the crew agent", async () => {
+    // Arrange: a draft version containing one accepted task_proposal item whose
+    // payload.assigneeAgentId = "agent-eng" — as produced by the Tasks 2-4 pipeline.
+    const draftVersion = {
+      id: "scope1",
+      companyId: "co1",
+      threadId: "thread1",
+      versionNumber: 1,
+      status: "draft",
+      sourceEndSeq: 1,
+    };
+    const thread = { id: "thread1", companyId: "co1", subtype: "normal", entrySeq: 1 };
+    const acceptedTask = {
+      id: "task-item",
+      kind: "task_proposal",
+      status: "accepted",
+      title: "Build token endpoint",
+      description: "Adjutant-proposed auth task",
+      sourceEntryIds: [],
+      payload: {
+        priority: "medium",
+        assigneeAgentId: "agent-eng",  // set by the Tasks 2-4 pipeline
+      },
+    };
+
+    // applyAcceptedDraft select sequence (matches the real code):
+    //   [0] threadScopeVersions → draftVersion (status:"draft" → enters the apply branch)
+    //   [1] discussions → thread
+    //   [2] threadScopeItems (status:accepted) → [acceptedTask]
+    // Transaction updates:
+    //   [0] item set applied  → [{ ...acceptedTask, status:"applied", resultIssueId:"task1" }]
+    //   [1] version set accepted → [{ ...draftVersion, status:"accepted" }]
+    const db = createApplyDb(
+      [
+        [draftVersion],
+        [thread],
+        [acceptedTask],
+      ],
+      [
+        [{ ...acceptedTask, status: "applied", resultIssueId: "task1" }],
+        [{ ...draftVersion, status: "accepted" }],
+      ],
+    );
+
+    // Act: drive the real applyAcceptedDraft path
+    const result = await (threadScopeVersionService(db) as any).applyAcceptedDraft(
+      "co1",
+      "thread1",
+      "scope1",
+      { userId: "u1", isHuman: true },
+    );
+
+    // Assert: apply succeeded
+    expect(result).toMatchObject({ ok: true, alreadyAccepted: false });
+
+    // Assert: issueService.create was called with assigneeAgentId: "agent-eng"
+    // This proves the full pipeline: compiler seeds payload → versions.ts reads it → issue lands assigned
+    expect(issueCreate).toHaveBeenCalledTimes(1);
+    expect(issueCreate).toHaveBeenCalledWith(
+      "co1",
+      expect.objectContaining({ assigneeAgentId: "agent-eng" }),
+    );
   });
 });
