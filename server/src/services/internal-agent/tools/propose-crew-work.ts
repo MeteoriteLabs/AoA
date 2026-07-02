@@ -12,56 +12,9 @@
 // (e.g. "Engineer"). Unknown roles resolve to undefined → task created
 // unassigned. lookup is company-scoped (kind='aoa').
 
-import { and, eq, ne } from "drizzle-orm";
-import { agents } from "@armyofagents/db";
 import type { AgentTool } from "../types.js";
 import { buildScopeDraftIdempotencyKey } from "./thread-action-keys.js";
-
-// ── Role → agent name map ────────────────────────────────────────────────────
-// Source of truth: ensure-*.ts files. Only crew AoA roles are listed here;
-// anything outside this map resolves as unassigned (no error).
-const ROLE_TO_AGENT_NAME: Record<string, string> = {
-  adjutant: "Adjutant",
-  engineer: "Engineer",
-  maker: "Maker", // legacy alias for Engineer
-  scout: "Scout",
-  planner: "Planner",
-  // dispatcher intentionally removed — Dispatcher is retired (Task 2.7).
-  // crew-task-service is the sole creator of crew work; work must not be
-  // assigned to the retired Dispatcher agent.
-  navigator: "Navigator",
-  router: "Navigator", // legacy alias for Navigator
-  memory_keeper: "Memory Keeper",
-  scribe: "Scribe",
-};
-
-/**
- * Resolve a role string → agent UUID for the given company.
- * Returns undefined when the role is unknown or no matching agent exists.
- */
-async function resolveRoleToAgentId(
-  db: { select: Function },
-  companyId: string,
-  role: string,
-): Promise<string | undefined> {
-  const agentName = ROLE_TO_AGENT_NAME[role.toLowerCase().trim()];
-  if (!agentName) return undefined;
-
-  const rows = await (db as any)
-    .select({ id: agents.id })
-    .from(agents)
-    .where(
-      and(
-        eq(agents.companyId, companyId),
-        eq(agents.kind, "aoa"),
-        eq(agents.name, agentName),
-        ne(agents.status, "terminated"),
-      ),
-    )
-    .limit(1);
-
-  return rows[0]?.id as string | undefined;
-}
+import { resolveRoleToAgentId } from "./crew-role-map.js";
 
 // ── Tool definition ──────────────────────────────────────────────────────────
 
