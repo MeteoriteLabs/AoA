@@ -35,6 +35,7 @@ function baseDecision(overrides: Record<string, unknown> = {}) {
     timeoutPolicy: "deny",
     decision: null,
     answerPayload: null,
+    answerIdempotencyKey: null,
     answeredByUserId: null,
     answeredAt: null,
     relayedAt: null,
@@ -320,6 +321,7 @@ describe("agentRuntimeDecisionService", () => {
       expect.objectContaining({
         status: "answered",
         decision: "allow_always",
+        answerIdempotencyKey: "answer-1",
         answeredByUserId: "founder-1",
         answeredAt: now(),
         sourceRevision: 3,
@@ -355,6 +357,37 @@ describe("agentRuntimeDecisionService", () => {
       }),
     );
     expect(result.status).toBe("answered");
+  });
+
+  it("replays an already answered prompt when the same idempotency key is retried", async () => {
+    const answered = baseDecision({
+      status: "answered",
+      decision: "allow_always",
+      answerIdempotencyKey: "answer-1",
+      answeredByUserId: "founder-1",
+      answeredAt: now(),
+      sourceRevision: 3,
+    });
+    const { service, repo, activityLogger, hubItems } = makeService({
+      getDecision: vi.fn(async () => answered),
+    });
+
+    const result = await service.answerPrompt({
+      companyId: "company-1",
+      decisionId: "decision-1",
+      actorUserId: "founder-1",
+      expectedSourceRevision: 2,
+      nonce: "nonce-1",
+      kind: "permission",
+      decision: "allow_always",
+      idempotencyKey: "answer-1",
+    });
+
+    expect(result).toBe(answered);
+    expect(repo.updateDecision).not.toHaveBeenCalled();
+    expect(repo.createTrustRule).not.toHaveBeenCalled();
+    expect(activityLogger).not.toHaveBeenCalled();
+    expect(hubItems.emit).not.toHaveBeenCalled();
   });
 
   it("rejects allow-always answers when the prompt has no concrete scope", async () => {

@@ -4332,6 +4332,7 @@ export function heartbeatService(db: Db) {
         finishedAt: new Date(),
         error: message,
       });
+      await cancelRuntimeDecisionPromptsForRun(failedRun ?? run, "run failed");
 
       if (failedRun) {
         await appendRunEvent(failedRun, seq++, {

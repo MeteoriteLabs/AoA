@@ -130,6 +130,7 @@ describe("hubItems schema", () => {
       "timeoutPolicy",
       "decision",
       "answerPayload",
+      "answerIdempotencyKey",
       "answeredByUserId",
       "answeredAt",
       "relayedAt",

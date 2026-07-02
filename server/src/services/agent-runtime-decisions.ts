@@ -159,6 +159,17 @@ function commandHash(command: string | null | undefined) {
   return redacted ? hashString(redacted) : null;
 }
 
+function jsonEquivalent(a: unknown, b: unknown) {
+  return JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+}
+
+function isIdempotentAnswerReplay(row: AgentRuntimeDecisionRow, input: AnswerPromptInput) {
+  if (!input.idempotencyKey || row.answerIdempotencyKey !== input.idempotencyKey) return false;
+  if (row.nonce !== input.nonce || row.kind !== input.kind) return false;
+  if (input.kind === "permission") return row.decision === input.decision;
+  return jsonEquivalent(row.answerPayload, input.answer);
+}
+
 function pathMatchesScope(path: string | null | undefined, scope: string | null) {
   if (!scope) return true;
   if (!path) return false;
@@ -262,6 +273,7 @@ function realRepo(db: Db): DecisionRepo {
             status: input.status,
             sourceRevision: input.sourceRevision,
             decision: input.decision ?? null,
+            answerIdempotencyKey: input.answerIdempotencyKey ?? null,
             answeredByUserId: input.answeredByUserId ?? null,
             answeredAt: input.answeredAt ?? null,
             updatedAt: new Date(),
@@ -518,7 +530,14 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
   }
 
   async function answerPrompt(input: AnswerPromptInput) {
-    const row = await loadActive(input.companyId, input.decisionId);
+    const row = await repo.getDecision(input.companyId, input.decisionId);
+    if (!row) throw notFound("Runtime decision prompt not found");
+    if (row.status === "answered" && isIdempotentAnswerReplay(row, input)) {
+      return row;
+    }
+    if (!ACTIVE_STATUSES.has(row.status as RuntimeDecisionStatus)) {
+      throw conflict("Runtime decision prompt is no longer actionable");
+    }
     assertAnswerMatches(row, input);
     if (input.kind === "permission" && input.decision === "allow_always" && !hasConcreteTrustScope(row)) {
       throw unprocessable("Allow always requires a concrete command, path, network, or risk scope");
@@ -527,6 +546,7 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
       status: "answered",
       decision: input.kind === "permission" ? input.decision : null,
       answerPayload: input.kind === "work_question" ? input.answer : null,
+      answerIdempotencyKey: input.idempotencyKey ?? null,
       answeredByUserId: input.actorUserId,
       answeredAt: now(),
       sourceRevision: row.sourceRevision + 1,

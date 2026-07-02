@@ -44,6 +44,7 @@ export const agentRuntimeDecisions = pgTable(
     timeoutPolicy: text("timeout_policy").notNull(),
     decision: text("decision"),
     answerPayload: jsonb("answer_payload").$type<Record<string, unknown>>(),
+    answerIdempotencyKey: text("answer_idempotency_key"),
     answeredByUserId: text("answered_by_user_id"),
     answeredAt: timestamp("answered_at", { withTimezone: true }),
     relayedAt: timestamp("relayed_at", { withTimezone: true }),
