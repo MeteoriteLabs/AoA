@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { RuntimeDecisionCancelledError } from "../services/agent-runtime-decisions.js";
 import { createHeartbeatRuntimeDecisionBroker } from "../services/heartbeat.js";
 
 const run = {
@@ -208,5 +209,37 @@ describe("heartbeat runtime decision broker", () => {
         timeoutPolicy: "park_run",
       }),
     );
+  });
+
+  it("propagates runtime decision cancellation without marking relay failure", async () => {
+    const created = decisionRow();
+    const cancelled = decisionRow({ status: "cancelled", sourceRevision: 1, relayError: "run cancelled" });
+    const cancelError = new RuntimeDecisionCancelledError(cancelled as never);
+    const runtimeDecisions = {
+      createPrompt: vi.fn().mockResolvedValue({ decision: created, hubItem: { id: "hub-1" } }),
+      waitForAnswer: vi.fn().mockRejectedValue(cancelError),
+      markRelayed: vi.fn(),
+      markRelayFailed: vi.fn(),
+    };
+    const broker = createHeartbeatRuntimeDecisionBroker({
+      run,
+      agent,
+      runtime,
+      runtimeDecisions,
+      appendRunEvent: vi.fn().mockResolvedValue(undefined),
+      markRunWaiting: vi.fn().mockResolvedValue(undefined),
+      clearRunWaiting: vi.fn().mockResolvedValue(undefined),
+      pollIntervalMs: 0,
+    });
+
+    await expect(
+      broker.requestPermission({
+        nonce: "nonce-1",
+        title: "Allow command?",
+      }),
+    ).rejects.toBe(cancelError);
+
+    expect(runtimeDecisions.markRelayed).not.toHaveBeenCalled();
+    expect(runtimeDecisions.markRelayFailed).not.toHaveBeenCalled();
   });
 });

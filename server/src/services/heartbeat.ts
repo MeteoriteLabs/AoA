@@ -69,7 +69,11 @@ import {
   cancelCrewRunsForAgent,
   cancelCrewRunsForCompany,
 } from "./crew-cancellation.js";
-import { agentRuntimeDecisionService, type AgentRuntimeDecisionRow } from "./agent-runtime-decisions.js";
+import {
+  agentRuntimeDecisionService,
+  RuntimeDecisionCancelledError,
+  type AgentRuntimeDecisionRow,
+} from "./agent-runtime-decisions.js";
 
 export {
   cancelCrewRunsForAgent,
@@ -4307,7 +4311,13 @@ export function heartbeatService(db: Db) {
         .catch((err) => logger.warn({ err, adapterType: agent.adapterType }, "quota refresh after heartbeat failed"));
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unknown adapter failure";
-      logger.error({ err, runId }, "heartbeat execution failed");
+      const runtimeDecisionCancelled = err instanceof RuntimeDecisionCancelledError;
+      const terminalStatus: "failed" | "cancelled" = runtimeDecisionCancelled ? "cancelled" : "failed";
+      if (runtimeDecisionCancelled) {
+        logger.info({ err, runId }, "heartbeat execution cancelled");
+      } else {
+        logger.error({ err, runId }, "heartbeat execution failed");
+      }
 
       let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
       if (handle) {
@@ -4318,9 +4328,9 @@ export function heartbeatService(db: Db) {
         }
       }
 
-      const failedRun = await setRunStatus(run.id, "failed", {
+      const failedRun = await setRunStatus(run.id, terminalStatus, {
         error: message,
-        errorCode: "adapter_failed",
+        errorCode: runtimeDecisionCancelled ? "cancelled" : "adapter_failed",
         finishedAt: new Date(),
         stdoutExcerpt: sanitizeForDb(stdoutExcerpt),
         stderrExcerpt: sanitizeForDb(stderrExcerpt),
@@ -4328,11 +4338,11 @@ export function heartbeatService(db: Db) {
         logSha256: logSummary?.sha256,
         logCompressed: logSummary?.compressed ?? false,
       });
-      await setWakeupStatus(run.wakeupRequestId, "failed", {
+      await setWakeupStatus(run.wakeupRequestId, terminalStatus, {
         finishedAt: new Date(),
         error: message,
       });
-      await cancelRuntimeDecisionPromptsForRun(failedRun ?? run, "run failed");
+      await cancelRuntimeDecisionPromptsForRun(failedRun ?? run, `run ${terminalStatus}`);
 
       if (failedRun) {
         await appendRunEvent(failedRun, seq++, {
@@ -4366,14 +4376,14 @@ export function heartbeatService(db: Db) {
         }
       }
 
-      await finalizeAgentStatus(agent.id, "failed");
+      await finalizeAgentStatus(agent.id, terminalStatus);
 
       // ── V2: Run summary comments for crash path (Decision #88) ──────
       if (failedRun) {
         await createRunSummaryComment({
           agent,
           run: failedRun,
-          outcome: "failed",
+          outcome: terminalStatus,
           adapterResult: {
             exitCode: null,
             signal: null,
@@ -4388,7 +4398,7 @@ export function heartbeatService(db: Db) {
       // P2-T2: surface thread-linked deliverable failures as a visible chat
       // card (not a silent `failed`). Best-effort — must never mask the
       // original failure or throw out of the catch.
-      if (presenceThreadId && issueContext?.id) {
+      if (!runtimeDecisionCancelled && presenceThreadId && issueContext?.id) {
         try {
           await postCrewFailureCard(db, {
             threadId: presenceThreadId,

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   agentRuntimeDecisionService,
+  RuntimeDecisionCancelledError,
   runtimeDecisionSourceSnapshot,
 } from "../services/agent-runtime-decisions.js";
 
@@ -468,6 +469,38 @@ describe("agentRuntimeDecisionService", () => {
     expect(hubItems.emit).not.toHaveBeenCalled();
   });
 
+  it("replays an already relayed prompt when the same idempotency key is retried", async () => {
+    const relayed = baseDecision({
+      status: "relayed",
+      decision: "allow_once",
+      answerIdempotencyKey: "answer-1",
+      answeredByUserId: "founder-1",
+      answeredAt: now(),
+      relayedAt: now(),
+      sourceRevision: 4,
+    });
+    const { service, repo, activityLogger, hubItems } = makeService({
+      getDecision: vi.fn(async () => relayed),
+    });
+
+    const result = await service.answerPrompt({
+      companyId: "company-1",
+      decisionId: "decision-1",
+      actorUserId: "founder-1",
+      expectedSourceRevision: 2,
+      nonce: "nonce-1",
+      kind: "permission",
+      decision: "allow_once",
+      idempotencyKey: "answer-1",
+    });
+
+    expect(result).toBe(relayed);
+    expect(repo.updateDecision).not.toHaveBeenCalled();
+    expect(repo.createTrustRule).not.toHaveBeenCalled();
+    expect(activityLogger).not.toHaveBeenCalled();
+    expect(hubItems.emit).not.toHaveBeenCalled();
+  });
+
   it("rejects allow-always answers when the prompt has no concrete scope", async () => {
     const unscoped = baseDecision({
       command: null,
@@ -610,6 +643,22 @@ describe("agentRuntimeDecisionService", () => {
     );
     expect(hubItems.emit).toHaveBeenCalled();
     expect(result.status).toBe("relay_failed");
+  });
+
+  it("throws a runtime cancellation sentinel when a waited prompt is cancelled", async () => {
+    const cancelled = baseDecision({ status: "cancelled", sourceRevision: 3, relayError: "run cancelled" });
+    const { service } = makeService({
+      getDecision: vi.fn(async () => cancelled),
+    });
+
+    await expect(
+      service.waitForAnswer({
+        companyId: "company-1",
+        decisionId: "decision-1",
+        pollIntervalMs: 0,
+        timeoutMs: 1,
+      }),
+    ).rejects.toBeInstanceOf(RuntimeDecisionCancelledError);
   });
 
   it("expires due prompts with bounded batch behavior", async () => {

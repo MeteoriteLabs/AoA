@@ -31,6 +31,16 @@ const TERMINAL_STATUSES = new Set<RuntimeDecisionStatus>([
 export type AgentRuntimeDecisionRow = typeof agentRuntimeDecisions.$inferSelect;
 export type AgentRuntimeTrustRuleRow = typeof agentRuntimeTrustRules.$inferSelect;
 
+export class RuntimeDecisionCancelledError extends Error {
+  readonly decision: AgentRuntimeDecisionRow;
+
+  constructor(decision: AgentRuntimeDecisionRow) {
+    super(decision.relayError ?? "Runtime decision prompt was cancelled");
+    this.name = "RuntimeDecisionCancelledError";
+    this.decision = decision;
+  }
+}
+
 type CreatePromptInput = {
   companyId: string;
   agentId: string;
@@ -554,7 +564,7 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
   async function answerPrompt(input: AnswerPromptInput) {
     const row = await repo.getDecision(input.companyId, input.decisionId);
     if (!row) throw notFound("Runtime decision prompt not found");
-    if (row.status === "answered" && isIdempotentAnswerReplay(row, input)) {
+    if ((row.status === "answered" || row.status === "relayed") && isIdempotentAnswerReplay(row, input)) {
       return row;
     }
     if (!ACTIVE_STATUSES.has(row.status as RuntimeDecisionStatus)) {
@@ -617,6 +627,9 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
       const row = await repo.getDecision(input.companyId, input.decisionId);
       if (!row) throw notFound("Runtime decision prompt not found");
       if (row.status === "answered") return row;
+      if (row.status === "cancelled") {
+        throw new RuntimeDecisionCancelledError(row);
+      }
       if (TERMINAL_STATUSES.has(row.status as RuntimeDecisionStatus)) {
         throw conflict("Runtime decision prompt is no longer actionable");
       }
