@@ -82,6 +82,10 @@ function makeService(
     revokeTrustRule: vi.fn(async () => baseTrustRule({ enabled: false })),
     markTrustRuleUsed: vi.fn(async () => {}),
     updateDecision: vi.fn(async (_id, patch) => baseDecision(patch as Record<string, unknown>)),
+    answerWithTrustRule: vi.fn(async (_id, patch) => ({
+      decision: baseDecision(patch as Record<string, unknown>),
+      rule: baseTrustRule(),
+    })),
     listDueForExpiry: vi.fn(async () => []),
     ...repoOverrides,
   };
@@ -521,7 +525,7 @@ describe("agentRuntimeDecisionService", () => {
     expect(repo.updateDecision).not.toHaveBeenCalled();
   });
 
-  it("answers permission prompts by moving to answered with incremented source revision", async () => {
+  it("answers allow_always via the transactional trust-rule path with incremented source revision", async () => {
     const { service, repo, activityLogger } = makeService();
 
     const result = await service.answerPrompt({
@@ -535,7 +539,7 @@ describe("agentRuntimeDecisionService", () => {
       idempotencyKey: "answer-1",
     });
 
-    expect(repo.updateDecision).toHaveBeenCalledWith(
+    expect(repo.answerWithTrustRule).toHaveBeenCalledWith(
       "decision-1",
       expect.objectContaining({
         status: "answered",
@@ -549,7 +553,21 @@ describe("agentRuntimeDecisionService", () => {
         sourceRevision: 2,
         statuses: ["created", "shown", "relay_failed"],
       }),
+      expect.objectContaining({
+        companyId: "company-1",
+        agentId: "agent-1",
+        adapterType: "claude_local",
+        toolName: "shell",
+        commandHash: "command-hash-1",
+        riskClass: "medium",
+        enabled: true,
+        createdByUserId: "founder-1",
+        expiresAt: new Date("2026-09-29T12:00:00.000Z"), // now (2026-07-01 12:00) + 90 days
+      }),
     );
+    // allow_always never touches the non-transactional answer/rule writes.
+    expect(repo.updateDecision).not.toHaveBeenCalled();
+    expect(repo.createTrustRule).not.toHaveBeenCalled();
     expect(activityLogger).toHaveBeenCalledWith(
       expect.objectContaining({
         companyId: "company-1",
@@ -562,20 +580,52 @@ describe("agentRuntimeDecisionService", () => {
         runId: "11111111-1111-4111-8111-111111111111",
       }),
     );
-    expect(repo.updateDecision.mock.invocationCallOrder[0]).toBeLessThan(
+    expect(repo.answerWithTrustRule.mock.invocationCallOrder[0]).toBeLessThan(
       activityLogger.mock.invocationCallOrder[0],
     );
-    expect(repo.createTrustRule).toHaveBeenCalledWith(
-      expect.objectContaining({
-        companyId: "company-1",
-        agentId: "agent-1",
-        adapterType: "claude_local",
-        toolName: "shell",
-        commandHash: "command-hash-1",
-        createdByUserId: "founder-1",
-      }),
-    );
     expect(result.status).toBe("answered");
+  });
+
+  it("allow_always answers + creates a 90-day trust rule atomically", async () => {
+    const row = baseDecision({ status: "shown", kind: "permission", sourceRevision: 2, riskClass: "medium" });
+    const answerWithTrustRule = vi.fn(async (_id, patch) => ({
+      decision: baseDecision(patch as Record<string, unknown>),
+      rule: baseTrustRule(),
+    }));
+    const { service } = makeService({ getDecision: vi.fn(async () => row), answerWithTrustRule });
+    await service.answerPrompt({
+      companyId: "company-1", decisionId: row.id, actorUserId: "founder-1",
+      expectedSourceRevision: 2, nonce: "nonce-1", kind: "permission", decision: "allow_always",
+    });
+    const trustArg = answerWithTrustRule.mock.calls[0][3];
+    expect(trustArg).toEqual(expect.objectContaining({
+      companyId: "company-1", adapterType: "claude_local", riskClass: "medium", enabled: true,
+      expiresAt: new Date("2026-09-29T12:00:00.000Z"), // now (2026-07-01 12:00) + 90 days
+    }));
+  });
+
+  it("does not use the transactional path for allow_once / deny", async () => {
+    const row = baseDecision({ status: "shown", kind: "permission", sourceRevision: 2 });
+    const answerWithTrustRule = vi.fn();
+    const updateDecision = vi.fn(async (_id, patch) => baseDecision(patch as Record<string, unknown>));
+    const { service } = makeService({ getDecision: vi.fn(async () => row), answerWithTrustRule, updateDecision });
+    await service.answerPrompt({
+      companyId: "company-1", decisionId: row.id, actorUserId: "founder-1",
+      expectedSourceRevision: 2, nonce: "nonce-1", kind: "permission", decision: "allow_once",
+    });
+    expect(answerWithTrustRule).not.toHaveBeenCalled();
+    expect(updateDecision).toHaveBeenCalled();
+  });
+
+  it("surfaces trust-rule failure without emitting success (rollback)", async () => {
+    const row = baseDecision({ status: "shown", kind: "permission", sourceRevision: 2 });
+    const answerWithTrustRule = vi.fn(async () => { throw new Error("insert failed"); });
+    const { service, hubItems } = makeService({ getDecision: vi.fn(async () => row), answerWithTrustRule });
+    await expect(service.answerPrompt({
+      companyId: "company-1", decisionId: row.id, actorUserId: "founder-1",
+      expectedSourceRevision: 2, nonce: "nonce-1", kind: "permission", decision: "allow_always",
+    })).rejects.toThrow("insert failed");
+    expect(hubItems.emit).not.toHaveBeenCalled();
   });
 
   it("replays an already answered prompt when the same idempotency key is retried", async () => {
@@ -694,7 +744,7 @@ describe("agentRuntimeDecisionService", () => {
 
   it("returns conflict without answer side effects when the guarded answer update loses a race", async () => {
     const { service, repo, activityLogger, hubItems } = makeService({
-      updateDecision: vi.fn(async () => null),
+      answerWithTrustRule: vi.fn(async () => ({ decision: null, rule: null })),
     });
 
     await expect(
@@ -709,10 +759,11 @@ describe("agentRuntimeDecisionService", () => {
       }),
     ).rejects.toMatchObject({ status: 409 });
 
-    expect(repo.updateDecision).toHaveBeenCalledWith(
+    expect(repo.answerWithTrustRule).toHaveBeenCalledWith(
       "decision-1",
       expect.objectContaining({ status: "answered", sourceRevision: 3 }),
       expect.objectContaining({ sourceRevision: 2, statuses: ["created", "shown", "relay_failed"] }),
+      expect.objectContaining({ enabled: true, createdByUserId: "founder-1" }),
     );
     expect(activityLogger).not.toHaveBeenCalledWith(
       expect.objectContaining({ action: "runtime_decision.answered" }),

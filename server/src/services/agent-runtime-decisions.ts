@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, asc, eq, inArray, lte, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, lte, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { agentRuntimeDecisions, agentRuntimeTrustRules } from "@armyofagents/db";
 import type {
@@ -37,6 +37,28 @@ function defaultTtlMs(kind: RuntimeDecisionKind) {
 
 export function defaultTimeoutPolicy(kind: RuntimeDecisionKind): RuntimeDecisionTimeoutPolicy {
   return kind === "permission" ? "deny" : "park_run";
+}
+
+const TRUST_RULE_DEFAULT_TTL_MS = 90 * 24 * 60 * 60 * 1000; // 90 days
+
+function buildTrustRuleInsert(
+  row: AgentRuntimeDecisionRow,
+  actorUserId: string,
+  nowDate: Date,
+): typeof agentRuntimeTrustRules.$inferInsert {
+  return {
+    companyId: row.companyId,
+    agentId: row.agentId,
+    adapterType: row.adapterType,
+    toolName: row.toolName,
+    commandHash: row.commandHash,
+    pathScope: row.path,
+    networkScope: row.networkTarget,
+    riskClass: row.riskClass,
+    enabled: true,
+    expiresAt: new Date(nowDate.getTime() + TRUST_RULE_DEFAULT_TTL_MS),
+    createdByUserId: actorUserId,
+  };
 }
 
 function isVisibleTimeoutFollowUp(row: AgentRuntimeDecisionRow) {
@@ -136,6 +158,12 @@ type DecisionRepo = {
     patch: Partial<typeof agentRuntimeDecisions.$inferInsert>,
     guard?: { sourceRevision?: number; statuses?: RuntimeDecisionStatus[] },
   ): Promise<AgentRuntimeDecisionRow | null>;
+  answerWithTrustRule(
+    decisionId: string,
+    patch: Partial<typeof agentRuntimeDecisions.$inferInsert>,
+    guard: { sourceRevision: number; statuses: RuntimeDecisionStatus[] },
+    trustRule: typeof agentRuntimeTrustRules.$inferInsert,
+  ): Promise<{ decision: AgentRuntimeDecisionRow | null; rule: AgentRuntimeTrustRuleRow | null }>;
   listDueForExpiry(input: { companyId?: string; now: Date; limit: number }): Promise<AgentRuntimeDecisionRow[]>;
 };
 
@@ -408,6 +436,60 @@ function realRepo(db: Db): DecisionRepo {
         .returning()
         .then((rows) => rows[0] ?? null);
     },
+    async answerWithTrustRule(decisionId, patch, guard, trustRule) {
+      return db.transaction(async (tx) => {
+        const conditions = [
+          eq(agentRuntimeDecisions.id, decisionId),
+          eq(agentRuntimeDecisions.sourceRevision, guard.sourceRevision),
+          inArray(agentRuntimeDecisions.status, guard.statuses),
+        ];
+        const [decision] = await tx
+          .update(agentRuntimeDecisions)
+          .set({ ...patch, updatedAt: new Date() })
+          .where(and(...conditions))
+          .returning();
+        if (!decision) return { decision: null, rule: null };
+        const scopeConds = [
+          eq(agentRuntimeTrustRules.companyId, trustRule.companyId),
+          eq(agentRuntimeTrustRules.adapterType, trustRule.adapterType),
+          eq(agentRuntimeTrustRules.enabled, true),
+          trustRule.agentId
+            ? eq(agentRuntimeTrustRules.agentId, trustRule.agentId)
+            : isNull(agentRuntimeTrustRules.agentId),
+          trustRule.toolName
+            ? eq(agentRuntimeTrustRules.toolName, trustRule.toolName)
+            : isNull(agentRuntimeTrustRules.toolName),
+          trustRule.commandHash
+            ? eq(agentRuntimeTrustRules.commandHash, trustRule.commandHash)
+            : isNull(agentRuntimeTrustRules.commandHash),
+          trustRule.pathScope
+            ? eq(agentRuntimeTrustRules.pathScope, trustRule.pathScope)
+            : isNull(agentRuntimeTrustRules.pathScope),
+          trustRule.networkScope
+            ? eq(agentRuntimeTrustRules.networkScope, trustRule.networkScope)
+            : isNull(agentRuntimeTrustRules.networkScope),
+          trustRule.riskClass
+            ? eq(agentRuntimeTrustRules.riskClass, trustRule.riskClass)
+            : isNull(agentRuntimeTrustRules.riskClass),
+        ];
+        const [existing] = await tx
+          .select()
+          .from(agentRuntimeTrustRules)
+          .where(and(...scopeConds))
+          .limit(1);
+        let rule: AgentRuntimeTrustRuleRow;
+        if (existing) {
+          [rule] = await tx
+            .update(agentRuntimeTrustRules)
+            .set({ expiresAt: trustRule.expiresAt, enabled: true, updatedAt: new Date() })
+            .where(eq(agentRuntimeTrustRules.id, existing.id))
+            .returning();
+        } else {
+          [rule] = await tx.insert(agentRuntimeTrustRules).values(trustRule).returning();
+        }
+        return { decision, rule };
+      });
+    },
     async listDueForExpiry(input) {
       const conditions = [
         inArray(agentRuntimeDecisions.status, ["created", "shown"]),
@@ -613,7 +695,7 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
       networkScope: input.networkScope ?? null,
       riskClass: input.riskClass ?? null,
       enabled: true,
-      expiresAt: input.expiresAt ?? null,
+      expiresAt: input.expiresAt ?? new Date(now().getTime() + TRUST_RULE_DEFAULT_TTL_MS),
       createdByUserId: input.createdByUserId,
     });
     await activityLogger({
@@ -700,7 +782,7 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
     if (input.kind === "permission" && input.decision === "allow_always" && !hasConcreteTrustScope(row)) {
       throw unprocessable("Allow always requires a concrete command, path, network, or risk scope");
     }
-    const answered = await repo.updateDecision(row.id, {
+    const answerPatch: Partial<typeof agentRuntimeDecisions.$inferInsert> = {
       status: "answered",
       decision: input.kind === "permission" ? input.decision : null,
       answerPayload: input.kind === "work_question" ? input.answer : null,
@@ -708,10 +790,39 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
       answeredByUserId: input.actorUserId,
       answeredAt: now(),
       sourceRevision: row.sourceRevision + 1,
-    }, {
+    };
+    const guard = {
       sourceRevision: row.sourceRevision,
-      statuses: ["created", "shown", "relay_failed"],
-    });
+      statuses: ["created", "shown", "relay_failed"] as RuntimeDecisionStatus[],
+    };
+
+    let answered: AgentRuntimeDecisionRow | null;
+    if (input.kind === "permission" && input.decision === "allow_always") {
+      const trustRule = buildTrustRuleInsert(row, input.actorUserId, now());
+      const result = await repo.answerWithTrustRule(row.id, answerPatch, guard, trustRule);
+      answered = result.decision;
+      if (answered && result.rule) {
+        await activityLogger({
+          companyId: input.companyId,
+          actorType: "user",
+          actorId: input.actorUserId,
+          action: "runtime_decision_trust_rule.created",
+          entityType: "agent_runtime_trust_rule",
+          entityId: result.rule.id,
+          details: {
+            agentId: result.rule.agentId,
+            adapterType: result.rule.adapterType,
+            toolName: result.rule.toolName,
+            pathScope: result.rule.pathScope,
+            networkScope: result.rule.networkScope,
+            riskClass: result.rule.riskClass,
+            expiresAt: result.rule.expiresAt?.toISOString() ?? null,
+          },
+        });
+      }
+    } else {
+      answered = await repo.updateDecision(row.id, answerPatch, guard);
+    }
     if (!answered) throw conflict("Runtime decision prompt was already answered");
     await activityLogger({
       companyId: row.companyId,
@@ -729,19 +840,6 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
         idempotencyKey: input.idempotencyKey ?? null,
       },
     });
-    if (input.kind === "permission" && input.decision === "allow_always") {
-      await createTrustRule({
-        companyId: row.companyId,
-        agentId: row.agentId,
-        adapterType: row.adapterType,
-        toolName: row.toolName,
-        commandHash: row.commandHash,
-        pathScope: row.path,
-        networkScope: row.networkTarget,
-        riskClass: row.riskClass,
-        createdByUserId: input.actorUserId,
-      });
-    }
     await emitHubItem(answered);
     return answered;
   }
