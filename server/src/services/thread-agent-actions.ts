@@ -27,6 +27,7 @@ import { threadScopeVersionService } from "./thread-scope-versions.js";
 import { artifactService } from "./artifacts.js";
 import { threadService, parseMentions, processMentions } from "./threads.js";
 import { buildConveneWakeupDedupKey } from "./internal-agent/tools/thread-action-keys.js";
+import { resolveRoleToAgentId } from "./internal-agent/tools/crew-role-map.js";
 import { logger } from "../middleware/logger.js";
 import { isUniqueViolation } from "./db-errors.js";
 
@@ -706,6 +707,23 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
 
           if (action.actionType === "create_scope_draft") {
             const payload = asRecord(action.payload);
+
+            // Resolve each proposed task's assigneeRole → crew agentId (server-side;
+            // the controller tool drops this in controller mode). Unknown/missing roles
+            // resolve to null (unassigned task — not an error). (W1a Task 4)
+            const rawTasks = (asArray(payload.proposedTasks) ?? []) as Array<{ title?: unknown; assigneeRole?: unknown }>;
+            const proposedTasks = await Promise.all(
+              rawTasks
+                .filter((t) => typeof t?.title === "string" && (t.title as string).trim().length > 0)
+                .map(async (t) => ({
+                  title: t.title as string,
+                  assigneeAgentId:
+                    typeof t.assigneeRole === "string"
+                      ? (await resolveRoleToAgentId(actionDb as unknown as { select: Function }, input.companyId, t.assigneeRole)) ?? null
+                      : null,
+                })),
+            );
+
             const draft = await scopeVersionCommitter.createDraftFromThread(
               input.companyId,
               input.threadId,
@@ -715,6 +733,7 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
                 assumptions: asArray(payload.assumptions),
                 decisions: asArray(payload.decisions),
                 openQuestions: asArray(payload.openQuestions),
+                ...(proposedTasks.length > 0 ? { proposedTasks } : {}),
               },
             );
             // A-M7: record the draft this batch just produced so a SUBSEQUENT scope-coupled

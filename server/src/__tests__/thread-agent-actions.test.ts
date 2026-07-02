@@ -1,5 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+// Task 4: mock crew-role-map so tests can control resolveRoleToAgentId without
+// hitting the DB. The default mock resolves to undefined (no agent); individual
+// tests override with mockResolvedValueOnce / mockResolvedValue as needed.
+const { mockResolveRoleToAgentId } = vi.hoisted(() => ({
+  mockResolveRoleToAgentId: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock("../services/internal-agent/tools/crew-role-map.js", () => ({
+  resolveRoleToAgentId: mockResolveRoleToAgentId,
+}));
+
 // Review fix (f): the post_reply commit now runs mention processing on the
 // committed entry (mirroring the non-gated post-entry-tool path). Mock
 // ../services/threads.js so the real (pure) parseMentions runs but
@@ -110,6 +120,8 @@ describe("threadAgentActionService", () => {
     vi.restoreAllMocks();
     mockProcessMentions.mockClear();
     mockProcessMentions.mockResolvedValue(undefined);
+    mockResolveRoleToAgentId.mockClear();
+    mockResolveRoleToAgentId.mockResolvedValue(undefined);
   });
 
   it("returns the existing row when a duplicate propose hits the idempotency conflict", async () => {
@@ -654,6 +666,52 @@ describe("threadAgentActionService", () => {
       status: "committed",
       committedScopeVersionId: "scope-version-1",
     }));
+  });
+
+  it("create_scope_draft resolves assigneeRole and forwards proposedTasks", async () => {
+    // Task 4: the handler must resolve each proposedTask's assigneeRole → crew agentId
+    // (via resolveRoleToAgentId) and forward proposedTasks into createDraftFromThread.
+    const action = {
+      ...baseAction,
+      actionType: "create_scope_draft",
+      payload: {
+        summary: "S",
+        proposedTasks: [{ title: "X", assigneeRole: "engineer" }],
+      },
+    };
+    const db = createSequenceDb({ selects: [[action]], updates: [[{ ...action, status: "committed" }]] });
+    const createDraftFromThread = vi.fn().mockResolvedValue({
+      status: "created",
+      version: { id: "v1" },
+    });
+    // Mock resolver returns "agent-eng" for "engineer"
+    mockResolveRoleToAgentId.mockResolvedValueOnce("agent-eng");
+
+    const result = await threadAgentActionService(db as never, {
+      compareFreshnessSnapshot: vi.fn().mockResolvedValue({ fresh: true }),
+      discussions: { addEntry: vi.fn() },
+      scopeVersions: { createDraftFromThread },
+    }).commitThreadAgentActions({
+      companyId: "company-1",
+      threadId: "thread-1",
+      runId: "run-1",
+    });
+
+    expect(result).toEqual({ committed: 1, suppressed: 0, blocked: 0, failed: 0, lostRace: 0 });
+    expect(mockResolveRoleToAgentId).toHaveBeenCalledWith(
+      expect.anything(),
+      "company-1",
+      "engineer",
+    );
+    expect(createDraftFromThread).toHaveBeenCalledWith(
+      "company-1",
+      "thread-1",
+      { agentId: "agent-1", isHuman: false },
+      expect.objectContaining({
+        summary: "S",
+        proposedTasks: [{ title: "X", assigneeAgentId: "agent-eng" }],
+      }),
+    );
   });
 
   it("commits a fresh add_scope_item as a draft scope item", async () => {
