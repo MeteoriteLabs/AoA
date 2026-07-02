@@ -1253,6 +1253,17 @@ describe("agentRuntimeDecisionService", () => {
     expect(arg.adapterSessionParams).toEqual({ token: "***REDACTED***", mode: "run" });
   });
 
+  it("rejects re-driving a consumed decision (stale upsert fallback)", async () => {
+    const consumed = baseDecision({ status: "relayed", sourceRevision: 4 });
+    const { service } = makeService({ createDecision: vi.fn(async () => consumed) });
+    await expect(service.createPrompt({
+      companyId: "company-1", agentId: "agent-1",
+      runId: "11111111-1111-4111-8111-111111111111",
+      adapterType: "claude_local", kind: "permission", nonce: "nonce-1",
+      title: "Allow?", timeoutPolicy: "deny",
+    })).rejects.toThrow(/already consumed/i);
+  });
+
   it("keeps sweeping after runCanceller throws for one run", async () => {
     const rows = [
       baseDecision({ id: "due-0", runId: "run-a", status: "shown", timeoutPolicy: "cancel_run", sourceRevision: 1 }),

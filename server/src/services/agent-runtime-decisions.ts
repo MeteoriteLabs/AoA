@@ -674,6 +674,9 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
       answeredByUserId: matchingTrustRule?.createdByUserId ?? null,
       answeredAt: matchingTrustRule ? nowDate : null,
     });
+    if (!matchingTrustRule && (TERMINAL_STATUSES.has(created.status as RuntimeDecisionStatus) || created.status === "answered")) {
+      throw conflict("Runtime decision prompt already consumed for this nonce");
+    }
     if (matchingTrustRule) {
       await repo.markTrustRuleUsed({ ruleId: matchingTrustRule.id, usedAt: now() });
     }
