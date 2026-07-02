@@ -633,6 +633,7 @@ export function threadScopeVersionService(db: Db) {
         assumptions?: unknown[];
         decisions?: unknown[];
         openQuestions?: unknown[];
+        proposedTasks?: Array<{ title: string; assigneeAgentId?: string | null }>;
       },
     ) => {
       const [thread] = await db
@@ -753,6 +754,7 @@ export function threadScopeVersionService(db: Db) {
           contentType: attachment.assetContentType ?? attachment.artifactType ?? null,
           kind: attachment.artifactId ? "artifact" : "asset",
         })),
+        proposedTasks: input.proposedTasks,
       });
 
       const versionNumber = latest ? latest.versionNumber + 1 : 1;
