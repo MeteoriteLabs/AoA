@@ -142,6 +142,8 @@ type ScopeVersionCommitService = {
       assumptions?: unknown[];
       decisions?: unknown[];
       openQuestions?: unknown[];
+      // W1a: Adjutant-supplied tasks (role-resolved to assigneeAgentId) forwarded to the compiler.
+      proposedTasks?: Array<{ title: string; assigneeAgentId?: string | null }>;
     },
   ) => Promise<{ status: string; version?: { id: string } }>;
 };
