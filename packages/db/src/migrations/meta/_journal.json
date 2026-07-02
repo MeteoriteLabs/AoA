@@ -1142,6 +1142,13 @@
       "when": 1782985054844,
       "tag": "0162_absent_marten_broadcloak",
       "breakpoints": true
+    },
+    {
+      "idx": 163,
+      "version": "7",
+      "when": 1782995975534,
+      "tag": "0163_demonic_marauders",
+      "breakpoints": true
     }
   ]
 }

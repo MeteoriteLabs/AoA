@@ -69,6 +69,10 @@ export const agentRuntimeDecisions = pgTable(
       table.agentId,
       table.createdAt,
     ),
+    statusExpiryIdx: index("agent_runtime_decisions_status_expiry_idx").on(
+      table.status,
+      table.expiresAt,
+    ),
     sourceUniqueIdx: uniqueIndex("agent_runtime_decisions_source_unique_idx")
       .on(table.sourceUniqueKey)
       .where(sql`source_unique_key is not null`),
