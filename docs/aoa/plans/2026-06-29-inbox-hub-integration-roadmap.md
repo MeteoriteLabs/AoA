@@ -1,6 +1,6 @@
 # Inbox Hub Integration Roadmap
 
-**Status:** Active integration roadmap; W1b/W1c/W1d merged in PR #244, final cutover merged in PR #246, W2 Layer 3 merged in PR #248, W3 Autopilot merged in PR #249, W4a Steward foundation merged in PR #256, W5 runtime decision routing planning active on `codex/w5-runtime-decision-routing`
+**Status:** Active integration roadmap; W1b/W1c/W1d merged in PR #244, final cutover merged in PR #246, W2 Layer 3 merged in PR #248, W3 Autopilot merged in PR #249, W4a Steward foundation merged in PR #256, W5a runtime decision core (+ hardening) merged in PR #259. Next: W5b first real adapter bridge (gated on a per-adapter hook feasibility spike).
 **Date:** 2026-06-29
 **Type:** Integration roadmap / planning spine
 **Design authority:** `docs/aoa/plans/2026-06-26-inbox-hub-master-scope.md`
@@ -84,9 +84,15 @@ Completed W4 foundation:
 
 Active next:
 
-- **W5 runtime decision routing:** plan created at
-  `docs/aoa/plans/2026-07-01-w5-runtime-decision-routing-plan.md` on
-  `codex/w5-runtime-decision-routing`.
+- **W5a runtime decision core:** merged in PR #259 (plan:
+  `docs/aoa/plans/2026-07-01-w5-runtime-decision-routing-plan.md`; post-review
+  hardening plan: `docs/aoa/plans/2026-07-02-w5a-hardening-plan.md`). Ships the
+  durable runtime-decision core, hub viewer, heartbeat broker, timeout/sweep,
+  and scoped trust rules — intentionally **inert** (no adapter bridge yet).
+- **W5b first real adapter bridge:** next. **Gated on a per-adapter hook
+  feasibility spike** — the W5a feasibility matrix found no verified blocking
+  permission/work-question hook in the installed CLIs as of 2026-07-01, so W5b
+  must begin with investigation, not implementation.
 
 ---
 
@@ -110,8 +116,8 @@ These stay in separate focused PRs:
 - **W4:** merged in PR #256; Steward crew
   agent, deterministic curation worker, narrow curation write tool, UI
   explanation surfaces, and focused acceptance coverage.
-- **W5:** runtime decision routing and per-adapter bridges, planned in
-  `docs/aoa/plans/2026-07-01-w5-runtime-decision-routing-plan.md`.
+- **W5a:** runtime decision core merged in PR #259; per-adapter bridges (W5b+)
+  planned in `docs/aoa/plans/2026-07-01-w5-runtime-decision-routing-plan.md`.
 
 The roadmap tracks these later workstreams only as dependency boundaries. They
 need their own investigation, implementation plans, tests, and PRs.
@@ -348,9 +354,23 @@ Autopilot policy.
 W5 routes org-agent permission prompts and substantive work questions into
 Waiting on you and relays answers back to blocked runs.
 
-Current status: planned in
-`docs/aoa/plans/2026-07-01-w5-runtime-decision-routing-plan.md` on
-`codex/w5-runtime-decision-routing`. Implementation has not started.
+Current status: **W5a merged in PR #259** (plan:
+`docs/aoa/plans/2026-07-01-w5-runtime-decision-routing-plan.md`; hardening plan:
+`docs/aoa/plans/2026-07-02-w5a-hardening-plan.md`). W5a shipped the durable
+runtime-decision core, hub viewer, heartbeat broker, timeout/watchdog + sweep,
+and scoped allow-always trust rules, plus a post-review hardening pass
+(non-null default expiry — permission 1h / work-question 24h; `continue_with_default`;
+key-aware secret redaction; atomic allow-always with scope dedup + 90-day expiry;
+resilient bounded sweep + `(status, expires_at)` index; nonce-replay guard).
+Answering is **founder-only**. **No adapter bridge shipped — the feature is
+intentionally inert** until a real adapter is wired in W5b.
+
+W5b (first real adapter bridge) has **not started** and must begin with a
+per-adapter hook feasibility spike: the W5a feasibility matrix
+(`2026-07-01-w5-runtime-decision-routing-plan.md`) recorded that no installed CLI
+(claude_local, codex_local, opencode_local, etc.) exposed a verified blocking
+permission/work-question hook as of 2026-07-01. W5b starts with proving that hook
+for one adapter, behind a feature flag — not with implementation.
 
 Dependency boundary: W5 requires a per-adapter feasibility matrix first. Start
 with one adapter behind a feature flag. W1a reserves the type; W1b can render a

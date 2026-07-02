@@ -62,6 +62,37 @@ adapter stays unsupported for W5a.
 | `acpx_local` | Defaults permission mode to approve-all/approve-reads/deny-all. | Unknown/no proven blocking bridge. | Unknown. | Unknown. | Adapter session support must be checked. | Unknown. | Existing permission mode behavior. | Leave unsupported in W5a. |
 | `cursor`, `cursor_cloud`, `gemini_local`, `pi_local`, `openclaw`, `openclaw_gateway`, `hermes_local`, `process`, `http` | No confirmed structured runtime prompt interception in the inspected surfaces. | Unknown. | Unknown. | Unknown. | Adapter registry/session-management check required before bridge. | Unknown. | Existing unattended behavior, or unsupported notice if no unattended mode exists. | Matrix-only until adapter-specific contract exists. |
 
+### W5b feasibility update — 2026-07-03 (claude_local: BLOCKED → FEASIBLE)
+
+The W5a matrix marked `claude_local` "permission hook not proven" because it only
+inspected top-level CLI `--help` flags. A follow-up docs-authoritative spike
+(2026-07-03) found the viable path is **not a CLI flag** — it is a **`PreToolUse`
+HTTP hook** configured via `settings.json` (loaded with `--settings <file>`):
+
+- **Permission hook:** ✅ **FEASIBLE.** A `PreToolUse` HTTP hook POSTs
+  `{tool_name, tool_input, session_id, cwd, ...}` to an external URL, **blocks
+  synchronously** (default 600s, configurable) and returns
+  `{ hookSpecificOutput: { permissionDecision: "allow" | "deny" | "ask" } }`; the
+  run **resumes in the same session**. CLI-compatible (no SDK needed → fits the
+  CLI-only architecture, Decision #91). The cleaner Agent-SDK `canUseTool`
+  callback is **SDK-only** and therefore out of scope for AoA.
+- **Work-question hook:** ❌ still no clean CLI interception (`AskUserQuestion` is
+  SDK-oriented). **W5b first bridge = permission prompts only; work-questions
+  deferred.**
+- **Resumable relay:** ✅ the hook block-and-return IS the resume; no run restart.
+- **First action (revised):** W5b spawns bridged `claude_local` runs **without**
+  `--dangerously-skip-permissions`, injects a per-run `settings.json` `PreToolUse`
+  HTTP hook (authenticated, run-bound) → hook endpoint calls
+  `runtimeDecisionBroker.requestPermission(...)` → blocks on W5a `waitForAnswer`.
+- **Open constraints for the plan:** hook timeout ↔ prompt expiry reconciliation
+  (600s block bound vs the 1h W5a default; deny-on-timeout); per-run auth token so
+  the hook endpoint correlates hook→run→nonce and rejects spoofed calls; feature
+  flag `runtimeDecisionRoutingEnabled` (default off). Detailed in
+  `docs/aoa/plans/2026-07-03-w5b-first-adapter-runtime-bridge-plan.md`.
+
+Sources: Claude Code docs — Hooks Reference, Agent SDK Permissions/Hooks, Headless
+mode (code.claude.com/docs), verified against installed CLI `2.1.126`.
+
 ## PR Strategy
 
 Recommended split:
