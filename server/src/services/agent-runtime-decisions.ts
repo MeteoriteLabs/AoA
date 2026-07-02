@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, eq, inArray, lte, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, lte, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { agentRuntimeDecisions, agentRuntimeTrustRules } from "@armyofagents/db";
 import type {
@@ -418,6 +418,7 @@ function realRepo(db: Db): DecisionRepo {
         .select()
         .from(agentRuntimeDecisions)
         .where(and(...conditions))
+        .orderBy(asc(agentRuntimeDecisions.expiresAt))
         .limit(input.limit);
     },
   };
