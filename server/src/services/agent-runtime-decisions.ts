@@ -137,6 +137,17 @@ function safeText(value: string | null | undefined): string | null {
   return redactSecretsInString(value);
 }
 
+function redactJsonSecrets(value: unknown): unknown {
+  if (typeof value === "string") return redactSecretsInString(value);
+  if (Array.isArray(value)) return value.map((item) => redactJsonSecrets(item));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, redactJsonSecrets(item)]),
+    );
+  }
+  return value;
+}
+
 function promptHash(input: Pick<CreatePromptInput, "kind" | "title" | "summary" | "promptText" | "command">) {
   return hashString(JSON.stringify({
       kind: input.kind,
@@ -459,7 +470,7 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
       path: safeText(input.path),
       networkTarget: safeText(input.networkTarget),
       riskClass: input.riskClass ?? null,
-      options: input.options ?? null,
+      options: input.options ? redactJsonSecrets(input.options) as Array<Record<string, unknown>> : null,
       expiresAt: input.expiresAt ?? null,
       timeoutPolicy: input.timeoutPolicy,
       decision: matchingTrustRule ? "allow_always" : null,
@@ -754,23 +765,26 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
     const active = await repo.listActiveForRun({ companyId: input.companyId, runId: input.runId });
     let cancelled = 0;
     for (const row of active) {
-      await activityLogger({
-        companyId: row.companyId,
-        actorType: "system",
-        actorId: "runtime_decision_run_cleanup",
-        action: "runtime_decision.cancelled",
-        entityType: "agent_runtime_decision",
-        entityId: row.id,
-        agentId: row.agentId,
-        runId: row.runId,
-        details: { sourceRevision: row.sourceRevision, reason: input.reason },
-      });
       const updated = await repo.updateDecision(row.id, {
         status: "cancelled",
         relayError: safeText(input.reason),
         sourceRevision: row.sourceRevision + 1,
+      }, {
+        sourceRevision: row.sourceRevision,
+        statuses: ["created", "shown", "answered", "relay_failed"],
       });
       if (!updated) continue;
+      await activityLogger({
+        companyId: updated.companyId,
+        actorType: "system",
+        actorId: "runtime_decision_run_cleanup",
+        action: "runtime_decision.cancelled",
+        entityType: "agent_runtime_decision",
+        entityId: updated.id,
+        agentId: updated.agentId,
+        runId: updated.runId,
+        details: { sourceRevision: row.sourceRevision, reason: input.reason },
+      });
       await emitHubItem(updated);
       cancelled += 1;
     }

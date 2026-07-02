@@ -140,6 +140,48 @@ describe("agentRuntimeDecisionService", () => {
     expect(result.hubItem).toMatchObject({ id: "hub-1" });
   });
 
+  it("redacts secret-bearing option payloads before persisting prompts", async () => {
+    const { service, repo } = makeService();
+
+    await service.createPrompt({
+      companyId: "company-1",
+      agentId: "agent-1",
+      runId: "11111111-1111-4111-8111-111111111111",
+      adapterType: "claude_local",
+      kind: "work_question",
+      nonce: "nonce-options",
+      title: "Need a choice",
+      options: [
+        {
+          label: "Use token",
+          value: "sk-ant-abc123DEF456ghi789",
+          nested: {
+            command: "AOA_API_KEY=sk-ant-abc123DEF456ghi789 pnpm test:run",
+            unchanged: 42,
+            values: ["safe", "sk-ant-abc123DEF456ghi789"],
+          },
+        },
+      ],
+      timeoutPolicy: "park_run",
+    });
+
+    expect(repo.createDecision).toHaveBeenCalledWith(
+      expect.objectContaining({
+        options: [
+          {
+            label: "Use token",
+            value: "***REDACTED***",
+            nested: {
+              command: "AOA_API_KEY=***REDACTED*** pnpm test:run",
+              unchanged: 42,
+              values: ["safe", "***REDACTED***"],
+            },
+          },
+        ],
+      }),
+    );
+  });
+
   it("auto-answers matching allow-always trust rules for permission prompts", async () => {
     const { service, repo } = makeService({
       listTrustRules: vi.fn(async () => [baseTrustRule()]),
@@ -800,6 +842,7 @@ describe("agentRuntimeDecisionService", () => {
     const active = baseDecision({ id: "active-1", status: "shown", sourceRevision: 4 });
     const { service, repo, hubItems, activityLogger } = makeService({
       listActiveForRun: vi.fn(async () => [active]),
+      updateDecision: vi.fn(async (_id, patch) => baseDecision({ id: "active-1", ...(patch as Record<string, unknown>) })),
     });
 
     const result = await service.cancelActiveForRun({
@@ -826,9 +869,43 @@ describe("agentRuntimeDecisionService", () => {
         relayError: "run cancelled",
         sourceRevision: 5,
       }),
+      expect.objectContaining({
+        sourceRevision: 4,
+        statuses: ["created", "shown", "answered", "relay_failed"],
+      }),
     );
     expect(hubItems.emit).toHaveBeenCalled();
     expect(result.cancelled).toBe(1);
+  });
+
+  it("skips cancellation side effects when an active prompt finalized concurrently", async () => {
+    const active = baseDecision({ id: "active-1", status: "answered", sourceRevision: 4 });
+    const { service, repo, hubItems, activityLogger } = makeService({
+      listActiveForRun: vi.fn(async () => [active]),
+      updateDecision: vi.fn(async () => null),
+    });
+
+    const result = await service.cancelActiveForRun({
+      companyId: "company-1",
+      runId: "11111111-1111-4111-8111-111111111111",
+      reason: "run cancelled",
+    });
+
+    expect(repo.updateDecision).toHaveBeenCalledWith(
+      "active-1",
+      expect.objectContaining({
+        status: "cancelled",
+        relayError: "run cancelled",
+        sourceRevision: 5,
+      }),
+      expect.objectContaining({
+        sourceRevision: 4,
+        statuses: ["created", "shown", "answered", "relay_failed"],
+      }),
+    );
+    expect(activityLogger).not.toHaveBeenCalled();
+    expect(hubItems.emit).not.toHaveBeenCalled();
+    expect(result.cancelled).toBe(0);
   });
 
   it("reports relay_failed prompts as non-terminal and relayed prompts as terminal for hub reconciliation", () => {
