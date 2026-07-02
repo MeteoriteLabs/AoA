@@ -299,7 +299,9 @@ function RuntimeDecisionPanel({ item }: { item: HubItemListRow }) {
     return <section className="mt-5 border-t border-border pt-4 text-sm text-muted-foreground">Decision details unavailable.</section>;
   }
 
-  const disabled = answerMutation.isPending || detail.status !== "created" && detail.status !== "shown" && detail.status !== "relay_failed";
+  const disabled =
+    answerMutation.isPending ||
+    (detail.status !== "created" && detail.status !== "shown" && detail.status !== "relay_failed");
   const submitPermission = (decision: "allow_once" | "allow_always" | "deny") => {
     answerMutation.mutate({
       kind: "permission",

@@ -56,6 +56,7 @@ import { notificationPreferencesService } from "./notification-preferences.js";
 import { orgHierarchyService } from "./org-hierarchy.js";
 import { permissionService } from "./permissions.js";
 import { publishLiveEvent } from "./live-events.js";
+import { runtimeDecisionSourceSnapshot } from "./agent-runtime-decisions.js";
 
 // Semantic types that resolve to a given lane (lane is derived, not a column).
 function semanticTypesForLane(lane: HubLane): HubSemanticType[] {
@@ -1487,30 +1488,12 @@ export function hubItemsService(db: Db) {
 
   const reconcileRuntimeDecision: SourceReconciler = async (companyId, sourceId) => {
     const row = await db
-      .select({
-        title: agentRuntimeDecisions.title,
-        status: agentRuntimeDecisions.status,
-        summary: agentRuntimeDecisions.summary,
-        promptText: agentRuntimeDecisions.promptText,
-        relayError: agentRuntimeDecisions.relayError,
-        timeoutPolicy: agentRuntimeDecisions.timeoutPolicy,
-        sourceRevision: agentRuntimeDecisions.sourceRevision,
-      })
+      .select()
       .from(agentRuntimeDecisions)
       .where(and(eq(agentRuntimeDecisions.id, sourceId), eq(agentRuntimeDecisions.companyId, companyId)))
       .limit(1)
       .then((r) => r[0] ?? null);
-    if (!row) return { terminal: true, summary: null, permissionRevision: null };
-    const visibleTimeoutFollowUp =
-      row.status === "cancelled" && (row.timeoutPolicy === "park_run" || row.timeoutPolicy === "escalate");
-    return {
-      terminal: ["relayed", "expired", "cancelled"].includes(row.status) && !visibleTimeoutFollowUp,
-      title: row.title,
-      summary: visibleTimeoutFollowUp
-        ? row.relayError ?? row.summary ?? row.promptText ?? null
-        : row.summary ?? row.promptText ?? row.relayError ?? null,
-      permissionRevision: String(row.sourceRevision),
-    };
+    return runtimeDecisionSourceSnapshot(row);
   };
 
   const SOURCE_RECONCILERS: Record<string, SourceReconciler> = {

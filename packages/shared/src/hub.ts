@@ -23,6 +23,9 @@ export type HubItemPriority = (typeof HUB_ITEM_PRIORITIES)[number];
 export const RUNTIME_DECISION_KINDS = ["permission", "work_question"] as const;
 export type RuntimeDecisionKind = (typeof RUNTIME_DECISION_KINDS)[number];
 
+// NOTE: "shown" is reserved for W5b founder-seen tracking. W5a never sets it
+// (no adapter bridge marks a prompt as shown yet); it stays in the enum so the
+// contract is stable when W5b wires it. Do not remove without updating guards.
 export const RUNTIME_DECISION_STATUSES = [
   "created",
   "shown",
