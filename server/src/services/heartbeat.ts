@@ -276,7 +276,7 @@ export function createHeartbeatRuntimeDecisionBroker(
       riskClass: prompt.riskClass,
       options: prompt.options,
       expiresAt: normalizeRuntimeDecisionExpiresAt(prompt.expiresAt),
-      timeoutPolicy: prompt.timeoutPolicy ?? "deny",
+      timeoutPolicy: prompt.timeoutPolicy ?? (kind === "permission" ? "deny" : "park_run"),
     });
 
     await input.appendRunEvent({

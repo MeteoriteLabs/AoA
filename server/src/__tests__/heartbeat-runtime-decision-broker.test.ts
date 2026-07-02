@@ -165,4 +165,48 @@ describe("heartbeat runtime decision broker", () => {
       relayError: "adapter channel closed",
     });
   });
+
+  it("defaults work-question prompts to park_run instead of the permission deny policy", async () => {
+    const created = decisionRow({ kind: "work_question", timeoutPolicy: "park_run" });
+    const answered = decisionRow({
+      kind: "work_question",
+      status: "answered",
+      sourceRevision: 1,
+      answerPayload: { choice: "ship it" },
+    });
+    const relayed = decisionRow({
+      kind: "work_question",
+      status: "relayed",
+      sourceRevision: 2,
+      answerPayload: { choice: "ship it" },
+    });
+    const runtimeDecisions = {
+      createPrompt: vi.fn().mockResolvedValue({ decision: created, hubItem: { id: "hub-1" } }),
+      waitForAnswer: vi.fn().mockResolvedValue(answered),
+      markRelayed: vi.fn().mockResolvedValue(relayed),
+      markRelayFailed: vi.fn(),
+    };
+    const broker = createHeartbeatRuntimeDecisionBroker({
+      run,
+      agent,
+      runtime,
+      runtimeDecisions,
+      appendRunEvent: vi.fn().mockResolvedValue(undefined),
+      markRunWaiting: vi.fn().mockResolvedValue(undefined),
+      clearRunWaiting: vi.fn().mockResolvedValue(undefined),
+      pollIntervalMs: 0,
+    });
+
+    await broker.askWorkQuestion({
+      nonce: "question-1",
+      title: "Pick a release path",
+    });
+
+    expect(runtimeDecisions.createPrompt).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "work_question",
+        timeoutPolicy: "park_run",
+      }),
+    );
+  });
 });

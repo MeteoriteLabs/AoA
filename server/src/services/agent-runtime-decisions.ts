@@ -173,9 +173,19 @@ function isIdempotentAnswerReplay(row: AgentRuntimeDecisionRow, input: AnswerPro
 function pathMatchesScope(path: string | null | undefined, scope: string | null) {
   if (!scope) return true;
   if (!path) return false;
-  const normalizedPath = path.replace(/\\/g, "/").replace(/\/+$/, "");
-  const normalizedScope = scope.replace(/\\/g, "/").replace(/\/+$/, "");
+  const normalizedPath = normalizePathForScopeMatch(path);
+  const normalizedScope = normalizePathForScopeMatch(scope);
+  if (!normalizedPath || !normalizedScope) return false;
   return normalizedPath === normalizedScope || normalizedPath.startsWith(`${normalizedScope}/`);
+}
+
+function normalizePathForScopeMatch(value: string) {
+  const segments = value
+    .replace(/\\/g, "/")
+    .split("/")
+    .filter((segment) => segment.length > 0 && segment !== ".");
+  if (segments.some((segment) => segment === "..")) return null;
+  return segments.join("/").replace(/\/+$/, "");
 }
 
 function networkMatchesScope(networkTarget: string | null | undefined, scope: string | null) {
@@ -257,6 +267,7 @@ function realRepo(db: Db): DecisionRepo {
         .onConflictDoUpdate({
           target: agentRuntimeDecisions.sourceUniqueKey,
           targetWhere: sql`source_unique_key is not null`,
+          setWhere: sql`${agentRuntimeDecisions.status} in ('created', 'shown', 'relay_failed')`,
           set: {
             title: input.title,
             summary: input.summary ?? null,
@@ -280,7 +291,18 @@ function realRepo(db: Db): DecisionRepo {
           },
         })
         .returning()
-        .then((rows) => rows[0]);
+        .then(async (rows) => {
+          if (rows[0]) return rows[0];
+          if (!input.sourceUniqueKey) {
+            throw new Error("Runtime decision conflict fallback requires source_unique_key");
+          }
+          return db
+            .select()
+            .from(agentRuntimeDecisions)
+            .where(eq(agentRuntimeDecisions.sourceUniqueKey, input.sourceUniqueKey))
+            .limit(1)
+            .then((existing) => existing[0]);
+        });
     },
     async getDecision(companyId, decisionId) {
       return db

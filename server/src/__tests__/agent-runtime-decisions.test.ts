@@ -171,6 +171,52 @@ describe("agentRuntimeDecisionService", () => {
     expect(result.decision.status).toBe("answered");
   });
 
+  it("guards nonce replay upserts to preserve already answered or terminal prompts", async () => {
+    let conflictConfig: Record<string, unknown> | null = null;
+    const db = {
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn(() => ({
+            then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve([]).then(resolve),
+          })),
+        })),
+      })),
+      insert: vi.fn(() => ({
+        values: vi.fn(() => ({
+          onConflictDoUpdate: vi.fn((config) => {
+            conflictConfig = config;
+            return {
+              returning: () => Promise.resolve([baseDecision()]),
+            };
+          }),
+        })),
+      })),
+    };
+    const hubItems = { emit: vi.fn(async () => ({ id: "hub-1", version: 0 })) };
+    const service = agentRuntimeDecisionService(db as never, {
+      hubItems: hubItems as never,
+      activityLogger: vi.fn(async () => {}),
+      now,
+    });
+
+    await service.createPrompt({
+      companyId: "company-1",
+      agentId: "agent-1",
+      runId: "11111111-1111-4111-8111-111111111111",
+      adapterType: "claude_local",
+      kind: "permission",
+      nonce: "nonce-replay",
+      title: "Allow shell command?",
+      toolName: "shell",
+      command: "pnpm test:run",
+      timeoutPolicy: "deny",
+    });
+
+    expect(conflictConfig).toEqual(expect.objectContaining({
+      setWhere: expect.anything(),
+    }));
+  });
+
   it("matches allow-always path scopes across Windows and POSIX separators", async () => {
     const { service, repo } = makeService({
       listTrustRules: vi.fn(async () => [
@@ -199,6 +245,38 @@ describe("agentRuntimeDecisionService", () => {
       expect.objectContaining({
         status: "answered",
         decision: "allow_always",
+      }),
+    );
+  });
+
+  it("does not match allow-always path scopes when the prompt path traverses outside the scope", async () => {
+    const { service, repo } = makeService({
+      listTrustRules: vi.fn(async () => [
+        baseTrustRule({
+          toolName: "edit",
+          pathScope: "/repo/src",
+          riskClass: null,
+        }),
+      ]),
+    });
+
+    await service.createPrompt({
+      companyId: "company-1",
+      agentId: "agent-1",
+      runId: "11111111-1111-4111-8111-111111111111",
+      adapterType: "claude_local",
+      kind: "permission",
+      nonce: "nonce-traversal-path",
+      title: "Allow file edit?",
+      toolName: "edit",
+      path: "/repo/src/../secrets.env",
+      timeoutPolicy: "deny",
+    });
+
+    expect(repo.createDecision).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "created",
+        decision: null,
       }),
     );
   });
