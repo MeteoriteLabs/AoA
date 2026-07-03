@@ -304,6 +304,13 @@ export interface AdapterExecutionContext {
    * Unset → adapter runs without the permission bridge (existing behavior).
    */
   runtimeHookBridge?: RuntimeHookBridgeSpec;
+  /**
+   * Per-run hook bearer token — SECRET. Passed to the spawned child via
+   * AOA_RUNTIME_HOOK_TOKEN env var only. Never placed in ctx.context, ctx.config,
+   * or logged meta (onMeta logs context + redacted env; the key-name "TOKEN"
+   * is caught by redactEnvForLogs). Sibling of authToken, not nested in context.
+   */
+  runtimeHookToken?: string;
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onMeta?: (meta: AdapterInvocationMeta) => Promise<void>;
   authToken?: string;
