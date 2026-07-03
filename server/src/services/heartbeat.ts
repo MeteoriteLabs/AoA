@@ -144,6 +144,16 @@ import {
 import { productivityReviewService } from "./productivity-review.js";
 import { recoveryService } from "./recovery/service.js";
 import type { ServerAdapterModule } from "../adapters/types.js";
+import {
+  mintRuntimeHookToken,
+  registerRuntimeHook,
+  deregisterRuntimeHook,
+} from "./runtime-hook-registry.js";
+import {
+  RUNTIME_HOOK_BLOCK_TIMEOUT_SEC,
+  RUNTIME_HOOK_PATH,
+} from "@armyofagents/adapter-utils";
+import { resolveRuntimeDecisionRoutingEnabled } from "./runtime-decision-routing-flag.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 export const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
@@ -359,10 +369,85 @@ export function createHeartbeatRuntimeDecisionBroker(
     }
   }
 
+  function isTimeoutError(error: unknown): boolean {
+    // agent-runtime-decisions.waitForAnswer throws conflict("Timed out ...")
+    // (HttpError 409) when its bounded wait elapses.
+    return (
+      error instanceof HttpError &&
+      error.status === 409 &&
+      error.message.startsWith("Timed out waiting for runtime decision answer")
+    );
+  }
+
   return {
     async requestPermission(prompt) {
       const created = await createPrompt("permission", prompt);
       const relayed = await waitAndRelay(created);
+      if (!relayed.decision) throw conflict("Permission runtime decision was answered without a decision");
+      return {
+        kind: "permission",
+        decisionId: created.id,
+        decision: relayed.decision as AdapterRuntimePermissionDecision,
+        sourceRevision: relayed.sourceRevision,
+      };
+    },
+    async requestPermissionBounded(prompt, timeoutMs) {
+      const created = await createPrompt("permission", prompt);
+      let answered: AgentRuntimeDecisionRow;
+      try {
+        answered = await input.runtimeDecisions.waitForAnswer({
+          companyId: input.run.companyId,
+          decisionId: created.id,
+          timeoutMs,
+        });
+      } catch (error) {
+        if (isTimeoutError(error)) {
+          // CRITICAL INVARIANT: do NOT call markRelayed on timeout. Leave the
+          // row for the W5a expiry sweep. Because waitForAnswer settles exactly
+          // once and markRelayed is only reached on the success branch below, a
+          // late answer after this return can never trigger a stale relay.
+          await input.appendRunEvent({
+            eventType: "runtime_decision.prompt_timed_out",
+            stream: "system",
+            level: "warn",
+            message: "runtime decision prompt timed out",
+            payload: { decisionId: created.id, kind: "permission", timeoutMs },
+          });
+          return { timedOut: true };
+        }
+        // RuntimeDecisionCancelledError (and any other error) → propagate.
+        throw error;
+      }
+
+      await input.appendRunEvent({
+        eventType: "runtime_decision.prompt_answered",
+        stream: "system",
+        level: "info",
+        message: "runtime decision prompt answered",
+        payload: {
+          decisionId: answered.id,
+          kind: answered.kind,
+          sourceRevision: answered.sourceRevision,
+        },
+      });
+
+      const relayed = await input.runtimeDecisions.markRelayed({
+        companyId: input.run.companyId,
+        decisionId: created.id,
+      });
+      await input.appendRunEvent({
+        eventType: "runtime_decision.relayed",
+        stream: "system",
+        level: "info",
+        message: "runtime decision answer relayed",
+        payload: {
+          decisionId: relayed.id,
+          kind: relayed.kind,
+          sourceRevision: relayed.sourceRevision,
+        },
+      });
+      await input.clearRunWaiting(relayed);
+
       if (!relayed.decision) throw conflict("Permission runtime decision was answered without a decision");
       return {
         kind: "permission",
@@ -3978,20 +4063,70 @@ export function heartbeatService(db: Db) {
         },
       });
 
-      const adapterResult = await adapter.execute({
-        runId: run.id,
-        agent,
-        runtime: runtimeForAdapter,
-        config: runScopedConfig,
-        context,
-        executionTarget,
-        runtimeCommandSpec,
-        onLog: onLogWithOutput,
-        onMeta: onAdapterMeta,
-        authToken: authToken ?? undefined,
-        runtimeDecisionBroker,
-        onSpawn,
+      // ── W5b: per-agent runtime-decision routing bridge ───────────────────
+      const bridged = resolveRuntimeDecisionRoutingEnabled({
+        agentRuntimeConfig: agent.runtimeConfig,
+        instanceEnv: process.env,
+        adapterType: agent.adapterType ?? "",
+        executionTargetType: executionTarget.type,
       });
+
+      let runtimeHookToken: string | undefined;
+      if (bridged) {
+        const selfBaseUrl =
+          process.env.AOA_API_URL?.trim() ||
+          `http://127.0.0.1:${process.env.PORT ?? "3100"}`;
+        runtimeHookToken = mintRuntimeHookToken();
+        // TTL is a leaked-entry backstop only — the primary cleanup is `deregisterRuntimeHook`
+        // in the finally block below. The TTL must cover the entire possible run duration so
+        // multi-tool or long-running agents are never denied mid-run because the registry
+        // entry expired. Since we don't have the exact adapter timeout in scope here, we use
+        // a generous 24-hour safety-net constant; the finally block handles normal cleanup.
+        const RUNTIME_HOOK_REGISTRY_MAX_TTL_SEC = 24 * 60 * 60; // 24 h backstop
+        registerRuntimeHook(runtimeHookToken, {
+          broker: runtimeDecisionBroker,
+          companyId: run.companyId,
+          agentId: agent.id,
+          runId: run.id,
+          expiresAt: new Date(Date.now() + RUNTIME_HOOK_REGISTRY_MAX_TTL_SEC * 1000),
+        });
+      }
+
+      let adapterResult: Awaited<ReturnType<typeof adapter.execute>>;
+      try {
+        adapterResult = await adapter.execute({
+          runId: run.id,
+          agent,
+          runtime: runtimeForAdapter,
+          config: runScopedConfig,
+          context,
+          executionTarget,
+          runtimeCommandSpec,
+          onLog: onLogWithOutput,
+          onMeta: onAdapterMeta,
+          authToken: authToken ?? undefined,
+          runtimeDecisionBroker,
+          ...(bridged && runtimeHookToken != null
+            ? {
+                runtimeHookBridge: {
+                  enabled: true,
+                  selfBaseUrl:
+                    process.env.AOA_API_URL?.trim() ||
+                    `http://127.0.0.1:${process.env.PORT ?? "3100"}`,
+                  path: RUNTIME_HOOK_PATH,
+                  timeoutSec: RUNTIME_HOOK_BLOCK_TIMEOUT_SEC,
+                },
+                runtimeHookToken,
+              }
+            : {}),
+          onSpawn,
+        });
+      } finally {
+        if (bridged && runtimeHookToken != null) {
+          deregisterRuntimeHook(runtimeHookToken);
+        }
+      }
+
       await livePreviewDetection.flush();
 
       // ── Persist adapter-managed runtime services (gated) ───────────

@@ -86,6 +86,7 @@ import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
 import { workspaceGitRoutes } from "./routes/workspace-git.js";
 import { filesystemRoutes } from "./routes/filesystem.js";
 import { createPreviewRouter } from "./routes/preview.js";
+import { runtimeHooksRoutes } from "./routes/runtime-hooks.js";
 import { adapterRoutes } from "./routes/adapters.js";
 import { pluginRoutes, pluginCompanySettingsRoutes } from "./routes/plugins.js";
 import { companyPluginRoutes } from "./routes/company-plugins.js";
@@ -512,6 +513,14 @@ export async function createApp(
   });
 
   app.use("/api", api);
+
+  // W5b PreToolUse permission bridge (outside /api). The claude-local adapter's
+  // hook POSTs here with a per-run bearer token. MUST mount AFTER express.json()
+  // (body needed) and BEFORE the /_plugins static handler and the SPA/static
+  // catch-all below — otherwise the SPA fallthrough (regex /^(?!\/api\/).*/)
+  // would swallow /internal/... and return index.html instead of JSON. The
+  // router self-registers the full RUNTIME_HOOK_PATH, so mount at root.
+  app.use(runtimeHooksRoutes(db));
 
   // Plugin UI static assets (outside /api prefix)
   const pluginDir = path.resolve(

@@ -244,7 +244,35 @@ export interface AdapterRuntimeWorkQuestionAnswer {
 
 export interface AdapterRuntimeDecisionBroker {
   requestPermission(input: AdapterRuntimePermissionPrompt): Promise<AdapterRuntimePermissionAnswer>;
+  /**
+   * Timeout-aware permission request. Resolves with the answer when a human
+   * responds within `timeoutMs`, or `{ timedOut: true }` when the wait elapses.
+   *
+   * CRITICAL: On timeout the underlying decision row is NOT marked relayed — a
+   * late answer arriving after the CLI hook gave up must never produce a stale
+   * "relayed" state. The W5a expiry sweep reconciles the row via its expiresAt.
+   * This is why callers MUST use this method (not a naive Promise.race over
+   * requestPermission, whose underlying wait polls indefinitely).
+   */
+  requestPermissionBounded(
+    prompt: AdapterRuntimePermissionPrompt,
+    timeoutMs: number,
+  ): Promise<AdapterRuntimePermissionAnswer | { timedOut: true }>;
   askWorkQuestion(input: AdapterRuntimeWorkQuestionPrompt): Promise<AdapterRuntimeWorkQuestionAnswer>;
+}
+
+/**
+ * Non-secret configuration the adapter needs to wire up the PreToolUse hook
+ * HTTP callback. Contains only plain strings safe to log. The per-run bearer
+ * token is injected via env (RUNTIME_HOOK_TOKEN) and MUST NOT appear here —
+ * AdapterExecutionContext.context and config fields are persisted into run
+ * events, so secrets must never flow through this struct.
+ */
+export interface RuntimeHookBridgeSpec {
+  enabled: boolean;
+  selfBaseUrl: string;
+  path: string;
+  timeoutSec: number;
 }
 
 export interface AdapterExecutionContext {
@@ -268,6 +296,21 @@ export interface AdapterExecutionContext {
    * local behavior.
    */
   runtimeDecisionBroker?: AdapterRuntimeDecisionBroker;
+  /**
+   * Non-secret hook bridge config for wiring the adapter's PreToolUse HTTP
+   * callback. Carries only plain strings (base URL, path, timeout) — MUST NOT
+   * contain the per-run bearer token. The token is passed to the adapter via
+   * env (RUNTIME_HOOK_TOKEN) because context/config are persisted into run events.
+   * Unset → adapter runs without the permission bridge (existing behavior).
+   */
+  runtimeHookBridge?: RuntimeHookBridgeSpec;
+  /**
+   * Per-run hook bearer token — SECRET. Passed to the spawned child via
+   * AOA_RUNTIME_HOOK_TOKEN env var only. Never placed in ctx.context, ctx.config,
+   * or logged meta (onMeta logs context + redacted env; the key-name "TOKEN"
+   * is caught by redactEnvForLogs). Sibling of authToken, not nested in context.
+   */
+  runtimeHookToken?: string;
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onMeta?: (meta: AdapterInvocationMeta) => Promise<void>;
   authToken?: string;

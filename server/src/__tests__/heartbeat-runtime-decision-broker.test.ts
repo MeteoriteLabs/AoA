@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { RuntimeDecisionCancelledError } from "../services/agent-runtime-decisions.js";
 import { createHeartbeatRuntimeDecisionBroker } from "../services/heartbeat.js";
+import { conflict } from "../errors.js";
+import { RUNTIME_HOOK_BLOCK_TIMEOUT_SEC } from "@armyofagents/adapter-utils";
 
 const run = {
   id: "33333333-3333-3333-3333-333333333333",
@@ -274,5 +276,148 @@ describe("heartbeat runtime decision broker", () => {
 
     expect(runtimeDecisions.markRelayed).toHaveBeenCalledWith({ companyId: run.companyId, decisionId: created.id });
     expect(runtimeDecisions.markRelayFailed).not.toHaveBeenCalled();
+  });
+});
+
+describe("heartbeat runtime decision broker — requestPermissionBounded", () => {
+  const TIMEOUT_MS = RUNTIME_HOOK_BLOCK_TIMEOUT_SEC * 1000;
+
+  it("returns the answer and relays it when answered before timeout", async () => {
+    const created = decisionRow();
+    const answered = decisionRow({ status: "answered", sourceRevision: 1, decision: "allow_once" });
+    const relayed = decisionRow({ status: "relayed", sourceRevision: 2, decision: "allow_once" });
+    const runtimeDecisions = {
+      createPrompt: vi.fn().mockResolvedValue({ decision: created, hubItem: { id: "hub-1" } }),
+      waitForAnswer: vi.fn().mockResolvedValue(answered),
+      markRelayed: vi.fn().mockResolvedValue(relayed),
+      markRelayFailed: vi.fn(),
+    };
+    const clearRunWaiting = vi.fn().mockResolvedValue(undefined);
+    const broker = createHeartbeatRuntimeDecisionBroker({
+      run,
+      agent,
+      runtime,
+      runtimeDecisions,
+      appendRunEvent: vi.fn().mockResolvedValue(undefined),
+      markRunWaiting: vi.fn().mockResolvedValue(undefined),
+      clearRunWaiting,
+      pollIntervalMs: 0,
+    });
+
+    const result = await broker.requestPermissionBounded(
+      { nonce: "nonce-1", title: "Allow command?" },
+      TIMEOUT_MS,
+    );
+
+    expect(result).toEqual({
+      kind: "permission",
+      decisionId: created.id,
+      decision: "allow_once",
+      sourceRevision: 2,
+    });
+    // waitForAnswer must be called WITH a timeoutMs (bounded wait)
+    expect(runtimeDecisions.waitForAnswer).toHaveBeenCalledWith({
+      companyId: run.companyId,
+      decisionId: created.id,
+      timeoutMs: TIMEOUT_MS,
+    });
+    expect(runtimeDecisions.markRelayed).toHaveBeenCalledWith({ companyId: run.companyId, decisionId: created.id });
+    expect(clearRunWaiting).toHaveBeenCalledWith(relayed);
+  });
+
+  it("returns { timedOut: true } and does NOT call markRelayed when waitForAnswer times out", async () => {
+    const created = decisionRow();
+    const runtimeDecisions = {
+      createPrompt: vi.fn().mockResolvedValue({ decision: created, hubItem: { id: "hub-1" } }),
+      // Mirrors agent-runtime-decisions.waitForAnswer's timeout throw
+      waitForAnswer: vi.fn().mockRejectedValue(conflict("Timed out waiting for runtime decision answer")),
+      markRelayed: vi.fn(),
+      markRelayFailed: vi.fn(),
+    };
+    const clearRunWaiting = vi.fn().mockResolvedValue(undefined);
+    const broker = createHeartbeatRuntimeDecisionBroker({
+      run,
+      agent,
+      runtime,
+      runtimeDecisions,
+      appendRunEvent: vi.fn().mockResolvedValue(undefined),
+      markRunWaiting: vi.fn().mockResolvedValue(undefined),
+      clearRunWaiting,
+      pollIntervalMs: 0,
+    });
+
+    const result = await broker.requestPermissionBounded(
+      { nonce: "nonce-1", title: "Allow command?" },
+      TIMEOUT_MS,
+    );
+
+    expect(result).toEqual({ timedOut: true });
+    // CRITICAL INVARIANT: never relay after timeout (no stale "relayed").
+    expect(runtimeDecisions.markRelayed).not.toHaveBeenCalled();
+    expect(runtimeDecisions.markRelayFailed).not.toHaveBeenCalled();
+    // The row is intentionally left for the W5a sweep to reconcile — do not clear waiting.
+    expect(clearRunWaiting).not.toHaveBeenCalled();
+  });
+
+  it("does not relay even if a late answer arrives after a timedOut return", async () => {
+    // Simulate: first bounded call times out; the same broker instance is not
+    // re-invoked, and a subsequent (late) resolution of waitForAnswer must not
+    // reach markRelayed. Because waitForAnswer resolves/throws exactly once and
+    // markRelayed is only called synchronously on the success branch, a late
+    // answer can never trigger a relay. We assert markRelayed stays untouched.
+    const created = decisionRow();
+    const runtimeDecisions = {
+      createPrompt: vi.fn().mockResolvedValue({ decision: created, hubItem: { id: "hub-1" } }),
+      waitForAnswer: vi.fn().mockRejectedValue(conflict("Timed out waiting for runtime decision answer")),
+      markRelayed: vi.fn(),
+      markRelayFailed: vi.fn(),
+    };
+    const broker = createHeartbeatRuntimeDecisionBroker({
+      run,
+      agent,
+      runtime,
+      runtimeDecisions,
+      appendRunEvent: vi.fn().mockResolvedValue(undefined),
+      markRunWaiting: vi.fn().mockResolvedValue(undefined),
+      clearRunWaiting: vi.fn().mockResolvedValue(undefined),
+      pollIntervalMs: 0,
+    });
+
+    const result = await broker.requestPermissionBounded(
+      { nonce: "nonce-1", title: "Allow command?" },
+      TIMEOUT_MS,
+    );
+    expect(result).toEqual({ timedOut: true });
+
+    // Let any pending microtasks flush — a late answer must still not relay.
+    await Promise.resolve();
+    expect(runtimeDecisions.markRelayed).not.toHaveBeenCalled();
+  });
+
+  it("rethrows RuntimeDecisionCancelledError (caller maps to deny)", async () => {
+    const created = decisionRow();
+    const cancelled = decisionRow({ status: "cancelled", sourceRevision: 1, relayError: "run cancelled" });
+    const cancelError = new RuntimeDecisionCancelledError(cancelled as never);
+    const runtimeDecisions = {
+      createPrompt: vi.fn().mockResolvedValue({ decision: created, hubItem: { id: "hub-1" } }),
+      waitForAnswer: vi.fn().mockRejectedValue(cancelError),
+      markRelayed: vi.fn(),
+      markRelayFailed: vi.fn(),
+    };
+    const broker = createHeartbeatRuntimeDecisionBroker({
+      run,
+      agent,
+      runtime,
+      runtimeDecisions,
+      appendRunEvent: vi.fn().mockResolvedValue(undefined),
+      markRunWaiting: vi.fn().mockResolvedValue(undefined),
+      clearRunWaiting: vi.fn().mockResolvedValue(undefined),
+      pollIntervalMs: 0,
+    });
+
+    await expect(
+      broker.requestPermissionBounded({ nonce: "nonce-1", title: "Allow command?" }, TIMEOUT_MS),
+    ).rejects.toBe(cancelError);
+    expect(runtimeDecisions.markRelayed).not.toHaveBeenCalled();
   });
 });

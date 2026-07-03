@@ -40,6 +40,10 @@ import {
   isClaudeMaxTurnsResult,
   isClaudeUnknownSessionError,
 } from "./parse.js";
+import {
+  buildPreToolUseSettings,
+  writeRuntimeHookSettingsFile,
+} from "./runtime-hook-settings.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const AOA_SKILLS_CANDIDATES = [
@@ -308,7 +312,7 @@ export async function runClaudeLogin(input: {
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
-  const { runId, agent, runtime, config, context, onLog, onMeta, authToken, onSpawn } = ctx;
+  const { runId, agent, runtime, config, context, onLog, onMeta, authToken, onSpawn, runtimeHookBridge, runtimeHookToken } = ctx;
   const executionTarget = ctx.executionTarget ?? { type: "local" as const };
   const isRemoteExecutionTarget = adapterExecutionTargetIsRemote(executionTarget);
 
@@ -354,6 +358,33 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const billingType = resolveClaudeBillingType(env);
   const dbSkills = (context.skills as Array<{ key: string; name: string; markdown: string; files?: Array<{ path: string; content: string }> }> | undefined) ?? [];
   const skillsDir = await buildSkillsDir(dbSkills.length > 0 ? dbSkills : undefined);
+
+  // --- Runtime hook bridge (Task 6) ---
+  // bridged = true when caller explicitly sets runtimeHookBridge.enabled
+  const bridged = runtimeHookBridge?.enabled === true;
+  // forwarderPath: hook-forward.mjs lives alongside execute.ts/execute.js in src/server or dist/server
+  const forwarderPath = path.resolve(__moduleDir, "hook-forward.mjs");
+  let hookSettingsTmpDir: string | null = null;
+  let hookSettingsFilePath: string | null = null;
+  if (bridged) {
+    const endpointUrl = runtimeHookBridge!.selfBaseUrl + runtimeHookBridge!.path;
+    const hookSettings = buildPreToolUseSettings({
+      endpointUrl,
+      timeoutSec: runtimeHookBridge!.timeoutSec,
+      forwarderPath,
+    });
+    hookSettingsTmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-runtime-hooks-"));
+    hookSettingsFilePath = await writeRuntimeHookSettingsFile(hookSettingsTmpDir, hookSettings);
+    // Inject hook env vars into the child process env.
+    // AOA_RUNTIME_HOOK_TOKEN is redacted in onMeta by its key name ("TOKEN" matches SENSITIVE_ENV_KEY).
+    // AOA_RUNTIME_HOOK_URL is a plain non-secret URL; redacted by value if it looks like a secret (it doesn't).
+    env.AOA_RUNTIME_HOOK_URL = endpointUrl;
+    if (runtimeHookToken) {
+      env.AOA_RUNTIME_HOOK_TOKEN = runtimeHookToken;
+    }
+  }
+  // ------------------------------------
+
   const executionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
   const preparedRuntime = await prepareAdapterExecutionTargetRuntime({
     target: executionTarget,
@@ -442,10 +473,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     context,
   });
 
-  const buildClaudeArgs = (resumeSessionId: string | null) => {
+  const buildClaudeArgs = async (resumeSessionId: string | null) => {
     const args = ["--print", "-", "--output-format", "stream-json", "--verbose"];
     if (resumeSessionId) args.push("--resume", resumeSessionId);
-    if (dangerouslySkipPermissions) args.push("--dangerously-skip-permissions");
+    if (hookSettingsFilePath) {
+      // Bridged mode: wire the PreToolUse hook via --settings.
+      // --dangerously-skip-permissions and --settings must never coexist: skip-permissions bypasses
+      // all tool approval, defeating the permission bridge entirely.
+      args.push("--settings", hookSettingsFilePath);
+    } else if (dangerouslySkipPermissions) {
+      // Unbridged: honor config.dangerouslySkipPermissions as before.
+      args.push("--dangerously-skip-permissions");
+    }
     if (chrome) args.push("--chrome");
     if (model && !isBedrockAuth(env)) args.push("--model", model);
     if (effort) args.push("--effort", effort);
@@ -460,7 +499,58 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (skillsArg) {
       args.push("--add-dir", skillsArg);
     }
-    if (extraArgs.length > 0) args.push(...extraArgs);
+    if (extraArgs.length > 0) {
+      if (hookSettingsFilePath) {
+        // Bridged mode: strip bypass flags that defeat the PreToolUse hook.
+        // These flags would re-enable Claude's permission bypass, making the
+        // hook's deny decisions ineffective.
+        const BYPASS_FLAGS = new Set([
+          "--dangerously-skip-permissions",
+          "--allow-dangerously-skip-permissions",
+        ]);
+        const BYPASS_PERMISSION_MODE_VALUES = new Set(["bypassPermissions", "dontAsk"]);
+        const stripped: string[] = [];
+        const filteredArgs: string[] = [];
+        let i = 0;
+        while (i < extraArgs.length) {
+          const arg = extraArgs[i];
+          if (BYPASS_FLAGS.has(arg)) {
+            stripped.push(arg);
+            i++;
+          } else if (arg === "--permission-mode" && i + 1 < extraArgs.length) {
+            const value = extraArgs[i + 1];
+            if (BYPASS_PERMISSION_MODE_VALUES.has(value)) {
+              stripped.push(`${arg} ${value}`);
+              i += 2;
+            } else {
+              filteredArgs.push(arg, value);
+              i += 2;
+            }
+          } else if (arg.startsWith("--permission-mode=")) {
+            const value = arg.slice("--permission-mode=".length);
+            if (BYPASS_PERMISSION_MODE_VALUES.has(value)) {
+              stripped.push(arg);
+              i++;
+            } else {
+              filteredArgs.push(arg);
+              i++;
+            }
+          } else {
+            filteredArgs.push(arg);
+            i++;
+          }
+        }
+        if (stripped.length > 0) {
+          await onLog(
+            "stderr",
+            `[aoa] WARNING: bridged mode — stripped bypass flag(s) from extraArgs that would defeat the PreToolUse permission hook: ${stripped.join(", ")}\n`,
+          );
+        }
+        if (filteredArgs.length > 0) args.push(...filteredArgs);
+      } else {
+        args.push(...extraArgs);
+      }
+    }
     return args;
   };
 
@@ -481,7 +571,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   };
 
   const runAttempt = async (resumeSessionId: string | null) => {
-    const args = buildClaudeArgs(resumeSessionId);
+    const args = await buildClaudeArgs(resumeSessionId);
     if (onMeta) {
       await onMeta({
         adapterType: "claude_local",
@@ -644,5 +734,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     return toAdapterResult(initial, { fallbackSessionId: runtimeSessionId || runtime.sessionId });
   } finally {
     fs.rm(skillsDir, { recursive: true, force: true }).catch(() => {});
+    if (hookSettingsTmpDir) {
+      fs.rm(hookSettingsTmpDir, { recursive: true, force: true }).catch(() => {});
+    }
   }
 }

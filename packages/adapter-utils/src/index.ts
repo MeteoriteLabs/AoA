@@ -17,6 +17,7 @@ export type {
   AdapterModelProfileDefinition,
   AdapterExecutionContext,
   McpBridgeSpec,
+  RuntimeHookBridgeSpec,
   AdapterRuntimeDecisionBroker,
   AdapterRuntimeDecisionPromptBase,
   AdapterRuntimeDecisionTimeoutPolicy,
@@ -135,3 +136,7 @@ export {
   resolveSessionCompactionPolicy,
   hasSessionCompactionThresholds,
 } from "./session-compaction.js";
+export {
+  RUNTIME_HOOK_BLOCK_TIMEOUT_SEC,
+  RUNTIME_HOOK_PATH,
+} from "./runtime-hooks.js";
