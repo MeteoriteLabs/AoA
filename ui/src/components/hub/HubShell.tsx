@@ -135,7 +135,11 @@ export function HubShell({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [notificationPanelOpen, setNotificationPanelOpen] = useState(false);
   const [mobileRailOpen, setMobileRailOpen] = useState(false);
-  const { isMobile } = useBreakpoint();
+  // Gate the resizable Group on the SAME 1024px boundary the rest of this
+  // component uses via `lg:` (HubRail `hidden lg:block`, rail dialog `lg:hidden`).
+  // `isMobile` is <640px only, which would mount the horizontal split in the
+  // 640-1023px tablet band while the inline rail is still hidden.
+  const { isDesktopUp } = useBreakpoint();
   const { defaultLayout, onLayoutChanged } = useDefaultLayout({
     id: "aoa:hub:panel-sizes",
     storage: localStorage,
@@ -251,7 +255,7 @@ export function HubShell({
   };
 
   const listSection = (
-        <section className="flex min-h-0 min-w-0 flex-1 flex-col border-r border-border">
+        <section className="flex min-h-0 min-w-0 flex-1 flex-col">
           <div className="flex h-12 items-center justify-between gap-3 border-b border-border px-4">
             <div className="flex min-w-0 items-center gap-2">
               <Button
@@ -762,7 +766,7 @@ export function HubShell({
           />
         </div>
       ) : null}
-      {isMobile ? (
+      {!isDesktopUp ? (
         <main className="flex min-w-0 flex-1 flex-col">
           {listSection}
           {viewer}

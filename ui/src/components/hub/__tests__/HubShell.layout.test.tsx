@@ -5,15 +5,17 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { HubItemListRow } from "@/api/hub-items";
 
 // --- Mock the breakpoint hook so we can drive the desktop/mobile branch ---
-const breakpointState = { isMobile: false };
+// Drive on `tier` so we can represent the tablet band (isMobile=false AND
+// isDesktopUp=false) that the shell must NOT mount the resizable Group in.
+const breakpointState = { tier: "desktop" as "mobile" | "tablet" | "desktop" };
 vi.mock("@/lib/useBreakpoint", () => ({
   useBreakpoint: () => ({
-    tier: breakpointState.isMobile ? "mobile" : "desktop",
-    isMobile: breakpointState.isMobile,
-    isTablet: false,
-    isDesktopUp: !breakpointState.isMobile,
+    tier: breakpointState.tier,
+    isMobile: breakpointState.tier === "mobile",
+    isTablet: breakpointState.tier === "tablet",
+    isDesktopUp: breakpointState.tier === "desktop",
     isWide: false,
-    useDrawerSessions: breakpointState.isMobile,
+    useDrawerSessions: breakpointState.tier !== "desktop",
   }),
 }));
 
@@ -103,7 +105,7 @@ function renderShell(overrides: Partial<React.ComponentProps<typeof HubShell>> =
 
 describe("HubShell layout", () => {
   beforeEach(() => {
-    breakpointState.isMobile = false;
+    breakpointState.tier = "desktop";
   });
 
   afterEach(() => {
@@ -130,7 +132,7 @@ describe("HubShell layout", () => {
   });
 
   it("does not mount the resizable group on mobile and keeps the stacked layout", () => {
-    breakpointState.isMobile = true;
+    breakpointState.tier = "mobile";
     renderShell();
 
     expect(screen.queryByTestId("hub-panel-group")).not.toBeInTheDocument();
@@ -143,8 +145,20 @@ describe("HubShell layout", () => {
     expect(screen.getByRole("complementary", { name: /hub viewer/i })).toBeInTheDocument();
   });
 
+  it("does not mount the resizable group in the tablet band (640-1023px) — stacks instead", () => {
+    // Regression guard: the shell gates on isDesktopUp (>=1024), NOT isMobile
+    // (<640). At the tablet tier the inline rail is still hidden (lg:), so the
+    // horizontal resizable split must NOT mount.
+    breakpointState.tier = "tablet";
+    renderShell();
+
+    expect(screen.queryByTestId("hub-panel-group")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("hub-list-panel")).not.toBeInTheDocument();
+    expect(screen.getByText("Review hire approval")).toBeInTheDocument();
+  });
+
   it("renders the mobile lane dialog without the resizable group when the rail is opened", async () => {
-    breakpointState.isMobile = true;
+    breakpointState.tier = "mobile";
     const { default: userEvent } = await import("@testing-library/user-event");
     const user = userEvent.setup();
     renderShell();
