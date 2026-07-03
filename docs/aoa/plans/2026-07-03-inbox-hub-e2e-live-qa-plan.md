@@ -20,6 +20,14 @@
 - **Two founders:** the sweep uses the single `local_trusted` synthetic board user for founder actions. RBAC scenarios (§9) that need a non-founder are BLOCKED-documented (local_trusted has no second human) unless run in an `authenticated` instance — noted in that scenario.
 - **Never fix inline.** See Bug Protocol.
 
+### Verified mechanisms (from plan review — use these exact paths)
+- **Company create/PATCH:** `POST /api/companies`, `PATCH /api/companies/:id` accepts `requireBoardApprovalForNewAgents` (`companies.ts:126/165`; default = `deploymentMode!=="local_trusted"` at `:134`). Onboarding via `Lobby.tsx openOnboarding()`.
+- **Agent create:** `POST /api/companies/:cid/agents` accepts `adapterType` + `runtimeConfig.runtimeDecisionRoutingEnabled` (`agents.ts:1198`). **Runtime toggle is API-only — no UI toggle** → Phase 1.3 must seed agents via API.
+- **Runtime-decision answer (Phase 6 — CONFIRMED UI-DRIVABLE):** `RuntimeDecisionPanel` in `HubViewer.tsx:260-370` renders **Allow once / Allow always / Deny** (permission) and a textarea+Send (work_question); wired to `POST /api/companies/:cid/agent-runtime-decisions/:id/answer` (`agent-runtime-decisions.ts:113`). Trust-rule list/revoke API at `agent-runtime-decisions.ts:30-37`. The `viewerKind:"reserved"` label is a taxonomy marker, NOT a blocker.
+- **Snooze IS implemented** (matrix "future" was WRONG): `HubViewer.tsx:194-196` button + `hub-items.ts:273-278` `snooze()`/`unsnooze()`. Test it in Phase 2 (added below).
+- **Thread autonomy:** `threads.ts:171-177` `setAutonomyLevel()` PATCH.
+- **Hub route:** `/<prefix>/inbox-hub/:lane/:itemId` lanes `waiting|notifications|suggestions`, legacy `/inbox`→redirect (`App.tsx:209-211`, `InboxHub.tsx:32-42,113`).
+
 ---
 
 ## Bug Protocol
@@ -102,9 +110,9 @@ pnpm start   # or the correct prod/serve script from package.json (NOT the dev w
 ```
 Run in background. Expected: log shows server listening on 3399 + embedded PG on 54399 + migrations applied.
 
-- [ ] **Step 2: Health check.**
+- [ ] **Step 2: Health check.** (Verified route: `/api/health` — `server/src/app.ts:254`, `server/src/routes/health.ts`. Start script: `node dist/index.js` = `pnpm --filter @armyofagents/server start` after `pnpm -r build`; honors PORT/AOA_CONFIG/AOA_INSTANCE_ID/AOA_RUNTIME_DECISION_ROUTING — `server/src/config.ts:33-74`. Config shape in 0.2 confirmed: `deploymentMode` + `database.embedded.{port,dataDir}`.)
 ```bash
-curl -s http://localhost:3399/api/health || curl -s http://localhost:3399/healthz
+curl -s http://localhost:3399/api/health
 ```
 Expected: 200 / ok JSON. If not, tail the server log, fix the launch (not the product), retry.
 
@@ -178,6 +186,10 @@ These use **seeded hub items** so we exercise the shell deterministically. Seed 
 - [ ] On a seeded/real **notification** item: click Resolve → item leaves Open list, toast appears with **Undo**. Click Undo (within deadline) → item returns to Open. (matrix §2.3)
 - [ ] Archive a different item → moves to Archived tab. Undo from there → back to Open.
 - [ ] Evidence: `SHOT-2.4-resolve-undo.png`. Result.
+
+### Task 2.4b: Snooze (CONFIRMED implemented)
+- [ ] On an open item, click **Snooze** (`HubViewer.tsx:194`), pick a future time. Assert item hides from Open; reappears at/after the snooze time (or via unsnooze). (`hub-items.ts:273-278`)
+- [ ] Evidence: `SHOT-2.4b-snooze.png`. Result.
 
 ### Task 2.5: Claim / release
 - [ ] On a board-owned item (an approval), click Claim → shows current-user avatar / claimedBy. Release → back to pool. (matrix §2.3)
@@ -253,9 +265,9 @@ Requires the discussion→scope-draft pipeline. **Extraction is off by default +
 ### Task 5.3: extraction_failed
 - [ ] In a discussion, submit an entry with extraction enabled but a broken CLI/config → assert `extraction_failed` notification + actionable guidance copy (classified `not_installed`/`not_authed`/etc., matrix §5.2). Result.
 
-### Task 5.4: Preferences — quiet hours + digest
-- [ ] Settings → Notifications: enable **Quiet hours** covering "now"; trigger a notification; assert it's suppressed/deferred per policy. Enable **daily digest**; assert digest batching config persists. (matrix §5.1) (If the Notifications settings UI isn't built yet — matrix flags it "future W2 task" — mark BLOCKED with the file evidence.)
-- [ ] Evidence + result.
+### Task 5.4: Preferences — quiet hours + digest  ⚠️ LIKELY BLOCKED (no settings UI)
+- [ ] Plan review found **no Notifications settings UI** (quiet hours / digest are fetched at `InboxHub.tsx:156-157,708` but not configurable in-app). First: confirm there's genuinely no Settings→Notifications tab (`SettingsLayout`). If confirmed → mark **BLOCKED (no UI)** and exercise the mechanism via the `notification_preferences` API/side-door if one exists (`GET/PUT /api/companies/:cid/notification-preferences` — verify), else record as a coverage gap → candidate for the W2 backlog. Do NOT count as a product bug (it's unbuilt UI, not broken UI).
+- [ ] Evidence: the file check + any side-door result. Result line (BLOCKED expected).
 
 ---
 
@@ -306,8 +318,8 @@ This is the "create a task, run the relevant one, watch the permission come in, 
 
 ## Phase 7 — Suggestions lane
 
-### Task 7.1: suggestion / proactive / stale_work
-- [ ] Trigger the suggestion engine (Home load + it runs; or wait for the 4h proactive cycle — side-door: invoke the suggestion service via API/worker if exposed). Assert items land in the **Suggestions** lane across categories (goal_gap, pipeline_bottleneck, stale_work, etc.). (matrix §1.2, §6)
+### Task 7.1: suggestion / proactive / stale_work  (trigger is side-door, not a UI button)
+- [ ] Plan review: no on-demand "generate suggestions" UI button found — the engine runs on **Home load + 4h cycle**. So the trigger is: load Home (natural) OR invoke the suggestion service via API/worker if exposed (verify a route exists; if not, rely on Home-load). Assert items land in the **Suggestions** lane across categories (goal_gap, pipeline_bottleneck, stale_work, etc.). (matrix §1.2, §6)
 - [ ] For a suggestion with an action affordance (e.g., "Create routine", "Pause agent"), click it → assert the action fires. Note any category whose card has NO action (the "suggestion categories not fully implemented in UI" dead-end). (matrix §3 dead-ends)
 - [ ] Evidence: `SHOT-7.1-suggestions.png`. Result.
 
@@ -315,13 +327,13 @@ This is the "create a task, run the relevant one, watch the permission come in, 
 
 ## Phase 8 — Autopilot (W3), Steward curation (W4), Org reporting (W6)
 
-### Task 8.1: Steward curation metadata
-- [ ] Set an item `priority: urgent` and/or `slaAt` near-future (side-door PATCH or a naturally-urgent item). Assert the card shows the curation reason ("Urgent priority is set" / "SLA is due in N minutes"). (matrix §6.2, `hub-curation.ts`)
+### Task 8.1: Steward curation metadata  (observe-only; setting fields is side-door)
+- [ ] No confirmed UI to set `priority`/`slaAt` on a hub item. Observe curation reasons on a **naturally** urgent/SLA item if one arises; otherwise set the fields via a side-door (`hub-curation` write path / direct SQL on the `notifications` row) and assert the card shows "Urgent priority is set" / "SLA is due in N minutes" (`hub-curation.ts:83`). (matrix §6.2)
 - [ ] Evidence + result.
 
-### Task 8.2: Autopilot rules (if UI exists)
-- [ ] Settings → Autopilot: if the UI exists (matrix flags it "future"), configure a rule (semanticType→resolve) + set mode `drive`; trigger a matching item; assert auto-resolution + an audit/undo entry. If no UI → BLOCKED with file evidence. (matrix §6.1)
-- [ ] Result.
+### Task 8.2: Autopilot rules  ⚠️ LIKELY BLOCKED (no settings UI)
+- [ ] Plan review found backend (`hub-autopilot.ts` service + route) but **no Autopilot settings UI**. Confirm no Settings tab; if confirmed → mark **BLOCKED (no UI)**, optionally exercise the rule engine via the `hub-autopilot` API side-door to prove the backend auto-resolves + audits, and record the missing UI as a W3 backlog candidate. Not a product bug. (matrix §6.1)
+- [ ] Result (BLOCKED expected).
 
 ### Task 8.3: Org reporting (W6)
 - [ ] W6 is API-level (matrix §6.3 — "not yet UI-integrated"). Confirm via `GET /api/companies/:cid/org-hierarchy` (or the real route) that org agents resolve to a first-human ancestor. Mark as API-verified (not a UI scenario).
