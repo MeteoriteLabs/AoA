@@ -37,6 +37,15 @@ vi.mock("../services/threads.js", () => ({
   threadService: vi.fn(() => ({ advancePhase: vi.fn() })),
 }));
 
+// W2: the create_scope_draft handler awaits extract-then-scope before compiling.
+// Mock it so the real helper never runs against this file's sequence DBs.
+const { mockExtractThreadEntriesAwait } = vi.hoisted(() => ({
+  mockExtractThreadEntriesAwait: vi.fn().mockResolvedValue({ attempted: 0, failed: 0, truncated: false, deadlineHit: false }),
+}));
+vi.mock("../services/extraction.js", () => ({
+  extractionService: () => ({ extractThreadEntriesAwait: mockExtractThreadEntriesAwait }),
+}));
+
 import {
   reapStaleThreadAgentActions,
   threadAgentActionService,
@@ -660,7 +669,9 @@ describe("threadAgentActionService", () => {
       "company-1",
       "thread-1",
       { agentId: "agent-1", isHuman: false },
-      { summary: "Scope summary", assumptions: ["A"], decisions: ["D"], openQuestions: ["Q"] },
+      // W2: the controller path always compiles with suppressFallbackTask (extraction
+      // ran first — an empty compile must not synthesize a fake card).
+      { summary: "Scope summary", assumptions: ["A"], decisions: ["D"], openQuestions: ["Q"], suppressFallbackTask: true },
     );
     expect(db.__updateSets).toContainEqual(expect.objectContaining({
       status: "committed",

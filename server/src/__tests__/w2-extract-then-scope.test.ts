@@ -1,0 +1,177 @@
+// W2 Task 4 — the controller `create_scope_draft` handler runs extract-then-scope:
+//   (a) extractionService.extractThreadEntriesAwait is AWAITED BEFORE createDraftFromThread,
+//       with (companyId, threadId);
+//   (b) createDraftFromThread receives suppressFallbackTask: true (an extracted-and-empty
+//       thread must never show a fake card — D6);
+//   (c) extraction REJECTING does not block the draft (defense-in-depth: the helper never
+//       throws by contract, but the handler must not depend on that).
+//
+// Mock stack mirrors w1b-auto-accept.test.ts (same handler under test).
+
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const { mockResolveScopeAutoAcceptGate, mockDispatchCreatedCrewTasks } = vi.hoisted(() => ({
+  mockResolveScopeAutoAcceptGate: vi.fn(),
+  mockDispatchCreatedCrewTasks: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock("../services/crew-task-service.js", () => ({
+  resolveScopeAutoAcceptGate: mockResolveScopeAutoAcceptGate,
+  dispatchCreatedCrewTasks: mockDispatchCreatedCrewTasks,
+  resolveCreationGate: vi.fn(),
+}));
+
+const { mockPreflightCrewDispatch } = vi.hoisted(() => ({
+  mockPreflightCrewDispatch: vi.fn().mockResolvedValue({ allowed: true }),
+}));
+vi.mock("../services/crew-budget.js", () => ({
+  preflightCrewDispatch: mockPreflightCrewDispatch,
+}));
+
+const { mockResolveRoleToAgentId } = vi.hoisted(() => ({
+  mockResolveRoleToAgentId: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock("../services/internal-agent/tools/crew-role-map.js", () => ({
+  resolveRoleToAgentId: mockResolveRoleToAgentId,
+}));
+
+vi.mock("../services/threads.js", () => ({
+  parseMentions: (_text: string) => [],
+  processMentions: vi.fn().mockResolvedValue(undefined),
+  threadService: vi.fn(() => ({ advancePhase: vi.fn() })),
+}));
+
+const { mockApprovalCreate, mockEmitHubItem, mockBuildApprovalHubEmit } = vi.hoisted(() => ({
+  mockApprovalCreate: vi.fn().mockResolvedValue({ id: "ap-w2-1", companyId: "company-w2", type: "crew_dispatch" }),
+  mockEmitHubItem: vi.fn().mockResolvedValue(undefined),
+  mockBuildApprovalHubEmit: vi.fn().mockReturnValue({ semanticType: "approval_request" }),
+}));
+vi.mock("../services/approvals.js", () => ({
+  approvalService: () => ({ create: mockApprovalCreate }),
+}));
+vi.mock("../services/hub-source-producers.js", () => ({
+  emitHubItem: mockEmitHubItem,
+  buildApprovalHubEmit: mockBuildApprovalHubEmit,
+}));
+
+// W2: the handler awaits extraction before compiling the draft.
+const { mockExtractThreadEntriesAwait } = vi.hoisted(() => ({
+  mockExtractThreadEntriesAwait: vi.fn().mockResolvedValue({ attempted: 2, failed: 0, truncated: false, deadlineHit: false }),
+}));
+vi.mock("../services/extraction.js", () => ({
+  extractionService: () => ({ extractThreadEntriesAwait: mockExtractThreadEntriesAwait }),
+}));
+
+import { threadAgentActionService } from "../services/thread-agent-actions.js";
+
+const COMPANY_ID = "company-w2";
+const THREAD_ID = "thread-w2";
+const VERSION_ID = "sv-w2-1";
+const AGENT_ID = "agent-controller-1";
+
+const scopeDraftAction = {
+  id: "action-w2-1",
+  companyId: COMPANY_ID,
+  threadId: THREAD_ID,
+  runId: "run-w2",
+  agentId: AGENT_ID,
+  actionType: "create_scope_draft",
+  status: "proposed",
+  payload: { summary: "W2 test scope" },
+  idempotencyKey: "run-w2:create_scope_draft:1",
+  freshness: { latestHumanSeq: 1 },
+};
+
+const draftReturn = {
+  status: "created",
+  version: { id: VERSION_ID },
+};
+
+/**
+ * Sequence DB mirroring w1b-auto-accept.test.ts:
+ *   select[0] — the ready action row
+ *   select[1] — discussions.autonomyLevel (thread)
+ *   select[2] — internalAgentConfig.autonomyLevel (company)
+ *   select[3] — threadScopeItems (task_proposal drafts)
+ * plus a chained update (mark action committed).
+ */
+function makeDb() {
+  let selectIdx = 0;
+  const selects = [
+    [scopeDraftAction],
+    [{ autonomyLevel: 0 }], // thread → Manual (keep W1b out of the way)
+    [{ autonomyLevel: 0 }],
+    [],
+  ];
+  const chain = (rows: () => unknown[]): Record<string, unknown> => {
+    const c: Record<string, unknown> = {};
+    for (const m of ["from", "where", "orderBy", "limit", "values", "set", "onConflictDoNothing", "returning", "leftJoin"]) {
+      c[m] = (_arg?: unknown) => c;
+    }
+    c.then = (resolve: (rows: unknown[]) => unknown) => Promise.resolve(resolve(rows()));
+    return c;
+  };
+  const db = {
+    select: () => chain(() => selects[selectIdx++] ?? []),
+    insert: () => chain(() => []),
+    update: () => chain(() => [{ ...scopeDraftAction, status: "committed" }]),
+    transaction: async (fn: (tx: unknown) => unknown) => fn(db),
+  };
+  return db;
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  mockResolveScopeAutoAcceptGate.mockReturnValue("draft_only");
+  mockExtractThreadEntriesAwait.mockResolvedValue({ attempted: 2, failed: 0, truncated: false, deadlineHit: false });
+});
+
+describe("W2: create_scope_draft runs extract-then-scope", () => {
+  it("(a) awaits extractThreadEntriesAwait(companyId, threadId) BEFORE createDraftFromThread", async () => {
+    const db = makeDb();
+    const createDraftFromThread = vi.fn().mockResolvedValue(draftReturn);
+
+    await threadAgentActionService(db as never, {
+      compareFreshnessSnapshot: vi.fn().mockResolvedValue({ fresh: true }),
+      discussions: { addEntry: vi.fn() },
+      scopeVersions: { createDraftFromThread, createOutputItem: vi.fn() },
+    }).commitThreadAgentActions({ companyId: COMPANY_ID, threadId: THREAD_ID, runId: "run-w2" });
+
+    expect(mockExtractThreadEntriesAwait).toHaveBeenCalledTimes(1);
+    expect(mockExtractThreadEntriesAwait).toHaveBeenCalledWith(COMPANY_ID, THREAD_ID);
+    expect(createDraftFromThread).toHaveBeenCalledTimes(1);
+    // Order: extraction strictly before the draft compile.
+    const extractOrder = mockExtractThreadEntriesAwait.mock.invocationCallOrder[0];
+    const draftOrder = createDraftFromThread.mock.invocationCallOrder[0];
+    expect(extractOrder).toBeLessThan(draftOrder);
+  });
+
+  it("(b) createDraftFromThread receives suppressFallbackTask: true", async () => {
+    const db = makeDb();
+    const createDraftFromThread = vi.fn().mockResolvedValue(draftReturn);
+
+    await threadAgentActionService(db as never, {
+      compareFreshnessSnapshot: vi.fn().mockResolvedValue({ fresh: true }),
+      discussions: { addEntry: vi.fn() },
+      scopeVersions: { createDraftFromThread, createOutputItem: vi.fn() },
+    }).commitThreadAgentActions({ companyId: COMPANY_ID, threadId: THREAD_ID, runId: "run-w2" });
+
+    const optionsArg = createDraftFromThread.mock.calls[0][3] as Record<string, unknown>;
+    expect(optionsArg.suppressFallbackTask).toBe(true);
+  });
+
+  it("(c) extraction REJECTING does not block the draft — still compiled, action still commits", async () => {
+    mockExtractThreadEntriesAwait.mockRejectedValue(new Error("extraction exploded"));
+    const db = makeDb();
+    const createDraftFromThread = vi.fn().mockResolvedValue(draftReturn);
+
+    const result = await threadAgentActionService(db as never, {
+      compareFreshnessSnapshot: vi.fn().mockResolvedValue({ fresh: true }),
+      discussions: { addEntry: vi.fn() },
+      scopeVersions: { createDraftFromThread, createOutputItem: vi.fn() },
+    }).commitThreadAgentActions({ companyId: COMPANY_ID, threadId: THREAD_ID, runId: "run-w2" });
+
+    expect(createDraftFromThread).toHaveBeenCalledTimes(1);
+    expect(result.committed).toBe(1);
+    expect(result.failed).toBe(0);
+  });
+});

@@ -34,6 +34,7 @@ import { preflightCrewDispatch } from "./crew-budget.js";
 import { approvalService } from "./approvals.js";
 import { buildApprovalHubEmit, emitHubItem } from "./hub-source-producers.js";
 import { logActivity } from "./activity-log.js";
+import { extractionService } from "./extraction.js";
 import { logger } from "../middleware/logger.js";
 import { isUniqueViolation } from "./db-errors.js";
 
@@ -150,6 +151,9 @@ type ScopeVersionCommitService = {
       openQuestions?: unknown[];
       // W1a: Adjutant-supplied tasks (role-resolved to assigneeAgentId) forwarded to the compiler.
       proposedTasks?: Array<{ title: string; assigneeAgentId?: string | null }>;
+      // W2: extraction already ran (extract-then-scope) — zero-item compiles must not
+      // synthesize the fallback task card (no fake card, D6).
+      suppressFallbackTask?: boolean;
     },
   ) => Promise<{ status: string; version?: { id: string } }>;
   // W1b: per-item apply (version-preserving). Memory candidates stay draft for the founder (D12).
@@ -741,6 +745,26 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
                 })),
             );
 
+            // W2 (D6 extract-then-scope): run keyless CLI extraction over the thread's
+            // never-extracted entries and WAIT, so the draft compiles from real items.
+            // Best-effort — extraction failure (CLI missing/not authed/timeout) must never
+            // block draft creation; the compiler then sees zero items and, because we pass
+            // suppressFallbackTask below, emits NO fake card (D6). The helper itself is
+            // bounded (25-entry cap + 180s wall-clock deadline) and never throws; the
+            // try/catch is defense-in-depth.
+            try {
+              const extraction = await extractionService(
+                actionDb as unknown as import("@armyofagents/db").Db,
+              ).extractThreadEntriesAwait(input.companyId, input.threadId);
+              log.info(
+                { threadId: input.threadId, ...extraction },
+                "extract-then-scope completed before draft compile",
+              );
+            } catch (err) {
+              log.warn({ err, threadId: input.threadId },
+                "extract-then-scope failed — compiling draft from existing items only");
+            }
+
             const draft = await scopeVersionCommitter.createDraftFromThread(
               input.companyId,
               input.threadId,
@@ -751,6 +775,8 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
                 decisions: asArray(payload.decisions),
                 openQuestions: asArray(payload.openQuestions),
                 ...(proposedTasks.length > 0 ? { proposedTasks } : {}),
+                // W2: extraction already ran — an empty compile must not invent a fake card.
+                suppressFallbackTask: true,
               },
             );
 

@@ -50,6 +50,16 @@ vi.mock("../services/hub-source-producers.js", () => ({
   buildApprovalHubEmit: mockBuildApprovalHubEmit,
 }));
 
+// W2: the create_scope_draft handler awaits extract-then-scope before compiling.
+// Mock it so these W1b tests stay focused on the auto-accept gates (and so the
+// sequence DB's select queue isn't consumed by the real helper's selection query).
+const { mockExtractThreadEntriesAwait } = vi.hoisted(() => ({
+  mockExtractThreadEntriesAwait: vi.fn().mockResolvedValue({ attempted: 0, failed: 0, truncated: false, deadlineHit: false }),
+}));
+vi.mock("../services/extraction.js", () => ({
+  extractionService: () => ({ extractThreadEntriesAwait: mockExtractThreadEntriesAwait }),
+}));
+
 import { threadAgentActionService } from "../services/thread-agent-actions.js";
 
 // Shared IDs
