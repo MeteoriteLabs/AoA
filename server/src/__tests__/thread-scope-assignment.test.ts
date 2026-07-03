@@ -471,4 +471,60 @@ describe("applyAcceptedDraft — Task 5 E2E: controller draft → applied tasks 
     );
     expect(decrementSet).toBeDefined();
   });
+
+  it("Codex #270 P2 (round 7): an accepted DECISION card (no result entity) still resolves its source item", async () => {
+    const draftVersion = {
+      id: "scope1",
+      companyId: "co1",
+      threadId: "thread1",
+      versionNumber: 1,
+      status: "draft",
+      sourceEndSeq: 1,
+    };
+    const thread = { id: "thread1", companyId: "co1", subtype: "normal", entrySeq: 1 };
+    const acceptedDecision = {
+      id: "decision-item",
+      kind: "decision", // non-entity kind: apply produces NO resultIssueId/resultMemoryId
+      status: "accepted",
+      title: "Codex-first for extraction",
+      description: "decision from extraction",
+      sourceEntryIds: [],
+      extractedItemId: "xi-2",
+      payload: {},
+    };
+
+    // Update order: resolver-update (returning → decrement), decrement, item, version.
+    const db = createApplyDb(
+      [[draftVersion], [thread], [acceptedDecision]],
+      [
+        [{ id: "xi-2" }],
+        [],
+        [{ ...acceptedDecision }],
+        [{ ...draftVersion, status: "accepted" }],
+      ],
+    );
+
+    const result = await (threadScopeVersionService(db) as any).applyAcceptedDraft(
+      "co1",
+      "thread1",
+      "scope1",
+      { userId: "u1", isHuman: true },
+    );
+    expect(result).toMatchObject({ ok: true, alreadyAccepted: false });
+
+    // No task/memory created — but the source item is resolved (approved, no links),
+    // so it can't be approved later into duplicate memory and the badge clears.
+    expect(issueCreate).not.toHaveBeenCalled();
+    expect(memoryCreate).not.toHaveBeenCalled();
+    const resolveSet = (db.capturedUpdates as Array<Record<string, unknown>>).find(
+      (u) => u.status === "approved" && "resultTaskId" in u,
+    );
+    expect(resolveSet).toBeDefined();
+    expect(resolveSet!.resultTaskId).toBeNull();
+    expect(resolveSet!.resultMemoryId).toBeNull();
+    const decrementSet = (db.capturedUpdates as Array<Record<string, unknown>>).find(
+      (u) => "pendingItemCount" in u,
+    );
+    expect(decrementSet).toBeDefined();
+  });
 });

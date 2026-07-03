@@ -1336,10 +1336,12 @@ export function threadScopeVersionService(db: Db) {
             status = "applied";
           }
 
-          // Codex #270 P2 (round 5): a card that originated from an extracted item
-          // resolves its source on apply — otherwise the item stays pending
-          // (approve-able into a duplicate task) with a stale pendingItemCount badge.
-          if (item.extractedItemId && (resultIssueId || resultMemoryId)) {
+          // Codex #270 P2 (rounds 5+7): ANY accepted card that originated from an
+          // extracted item resolves its source on apply — including non-entity kinds
+          // (decision, source_signal) that produce no resultIssueId/resultMemoryId.
+          // An accepted decision card whose source item stayed pending would keep a
+          // stale badge and allow a later duplicate approval into memory.
+          if (item.extractedItemId) {
             await resolveSourceExtractedItem(tx as unknown as Pick<Db, "update">, {
               companyId,
               extractedItemId: item.extractedItemId,
@@ -1560,9 +1562,10 @@ export function threadScopeVersionService(db: Db) {
           artifactLinkId = link?.id;
         }
 
-        // Codex #270 P2 (round 5): resolve the source extracted item on apply — same
-        // rationale as the applyAcceptedDraft path (duplicate-approve + stale badge).
-        if (item.extractedItemId && (resultIssueId || resultMemoryId)) {
+        // Codex #270 P2 (rounds 5+7): resolve the source extracted item on apply —
+        // same rationale as the applyAcceptedDraft path (duplicate-approve + stale
+        // badge). Kind-agnostic: null results are recorded as approved-without-links.
+        if (item.extractedItemId) {
           await resolveSourceExtractedItem(tx as unknown as Pick<Db, "update">, {
             companyId,
             extractedItemId: item.extractedItemId,
