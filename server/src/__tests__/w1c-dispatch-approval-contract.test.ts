@@ -6,6 +6,11 @@
 // requestedBy* are null (system-originated dispatch gate, not agent-work-review).
 
 import { describe, expect, it } from "vitest";
+import {
+  APPROVAL_TYPES,
+  CREATABLE_APPROVAL_TYPES,
+  createApprovalSchema,
+} from "@armyofagents/shared";
 
 /**
  * The exact object the Assist branch passes to approvalService.create(companyId, data).
@@ -58,5 +63,25 @@ describe("W1c crew_dispatch approval contract", () => {
     expect(data.payload.threadId).toBe("t1");
     expect(data.payload.scopeVersionId).toBe("sv1");
     expect(data.payload.taskIds).toEqual(["i1", "i2"]);
+  });
+});
+
+describe("crew_dispatch is system-internal — not externally creatable (Codex #267 P1)", () => {
+  it("is a known approval type (read/list/filter) but NOT in the creatable set", () => {
+    expect(APPROVAL_TYPES).toContain("crew_dispatch"); // clients can read/filter it
+    expect(CREATABLE_APPROVAL_TYPES).not.toContain("crew_dispatch"); // external create is blocked
+  });
+
+  it("createApprovalSchema (HTTP route + MCP create-approval) REJECTS type=crew_dispatch", () => {
+    const res = createApprovalSchema.safeParse({
+      type: "crew_dispatch",
+      payload: { taskIds: ["out-of-scope-1"] },
+    });
+    expect(res.success).toBe(false);
+  });
+
+  it("createApprovalSchema still ACCEPTS a legitimately-creatable type", () => {
+    const res = createApprovalSchema.safeParse({ type: "hire_agent", payload: {} });
+    expect(res.success).toBe(true);
   });
 });

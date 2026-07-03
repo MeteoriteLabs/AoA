@@ -260,3 +260,44 @@ describe("approvalService.reject — crew_dispatch branch", () => {
     expect(mocks.preflightCrewDispatch).not.toHaveBeenCalled();
   });
 });
+
+describe("approvalService.resubmit — crew_dispatch is not resubmittable (Codex #267 P1)", () => {
+  it("throws for a crew_dispatch approval and never writes a new payload", async () => {
+    // getExistingApproval returns a revision_requested crew_dispatch; the guard throws
+    // before any UPDATE, so a caller cannot re-open the caller-controlled-taskIds vector.
+    const existing = {
+      id: "ap1",
+      companyId: COMPANY,
+      status: "revision_requested",
+      type: "crew_dispatch",
+      payload: { taskIds: ["t1"] },
+    };
+    let approvalsUpdated = false;
+    const db = {
+      select: () => {
+        const chain: Record<string, unknown> = {};
+        chain.from = () => chain;
+        chain.where = () => chain;
+        chain.limit = () => Promise.resolve([existing]);
+        chain.then = (resolve: (rows: unknown[]) => unknown) => resolve([existing]);
+        return chain;
+      },
+      update: () => ({
+        set: () => ({
+          where: () => {
+            approvalsUpdated = true;
+            return { returning: () => ({ then: (r: (rows: unknown[]) => unknown) => r([existing]) }) };
+          },
+        }),
+      }),
+      insert: () => ({ values: () => ({ returning: () => Promise.resolve([]) }) }),
+      delete: () => ({ where: () => Promise.resolve() }),
+    } as any;
+
+    const svc = approvalService(db);
+    await expect(
+      svc.resubmit("ap1", COMPANY, { taskIds: ["out-of-scope-1"] }),
+    ).rejects.toThrow(/cannot be resubmitted/i);
+    expect(approvalsUpdated).toBe(false);
+  });
+});

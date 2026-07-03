@@ -266,6 +266,12 @@ export function approvalService(db: Db) {
       if (existing.status !== "revision_requested") {
         throw unprocessable("Only revision requested approvals can be resubmitted");
       }
+      // Codex #267 P1: crew_dispatch is system-internal. Resubmit rewrites payload, so
+      // allowing it would re-open the caller-controlled-taskIds dispatch vector even
+      // though creation is already blocked. Only the system sets a crew_dispatch payload.
+      if (existing.type === "crew_dispatch") {
+        throw unprocessable("System-internal crew_dispatch approvals cannot be resubmitted");
+      }
 
       const now = new Date();
       return db
