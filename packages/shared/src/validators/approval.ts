@@ -1,8 +1,11 @@
 import { z } from "zod";
-import { APPROVAL_TYPES } from "../constants.js";
+import { CREATABLE_APPROVAL_TYPES } from "../constants.js";
 
 export const createApprovalSchema = z.object({
-  type: z.enum(APPROVAL_TYPES),
+  // Only externally-creatable types — `crew_dispatch` is system-internal (see
+  // CREATABLE_APPROVAL_TYPES). Both the HTTP route and the MCP create-approval tool
+  // validate against this, so neither can create a caller-controlled crew_dispatch.
+  type: z.enum(CREATABLE_APPROVAL_TYPES),
   requestedByAgentId: z.string().uuid().optional().nullable(),
   payload: z.record(z.unknown()),
   issueIds: z.array(z.string().uuid()).optional(),

@@ -36,6 +36,20 @@ vi.mock("../services/threads.js", () => ({
   threadService: vi.fn(() => ({ advancePhase: vi.fn() })),
 }));
 
+// Mock approvalService.create + hub emit so the Assist branch's approval-enqueue is observable.
+const { mockApprovalCreate, mockEmitHubItem, mockBuildApprovalHubEmit } = vi.hoisted(() => ({
+  mockApprovalCreate: vi.fn().mockResolvedValue({ id: "ap-w1c-1", companyId: "company-w1b", type: "crew_dispatch" }),
+  mockEmitHubItem: vi.fn().mockResolvedValue(undefined),
+  mockBuildApprovalHubEmit: vi.fn().mockReturnValue({ semanticType: "approval_request" }),
+}));
+vi.mock("../services/approvals.js", () => ({
+  approvalService: () => ({ create: mockApprovalCreate }),
+}));
+vi.mock("../services/hub-source-producers.js", () => ({
+  emitHubItem: mockEmitHubItem,
+  buildApprovalHubEmit: mockBuildApprovalHubEmit,
+}));
+
 import { threadAgentActionService } from "../services/thread-agent-actions.js";
 
 // Shared IDs
@@ -150,6 +164,8 @@ describe("W1b: autonomy-gated auto-accept of controller scope drafts", () => {
     vi.clearAllMocks();
     mockDispatchCreatedCrewTasks.mockResolvedValue(undefined);
     mockPreflightCrewDispatch.mockResolvedValue({ allowed: true });
+    mockApprovalCreate.mockResolvedValue({ id: "ap-w1c-1", companyId: COMPANY_ID, type: "crew_dispatch" });
+    mockEmitHubItem.mockResolvedValue(undefined);
     createOutputItemOk.mockResolvedValue({
       ok: true,
       item: { id: TASK_ITEM_ID, status: "applied" },
@@ -230,6 +246,44 @@ describe("W1b: autonomy-gated auto-accept of controller scope drafts", () => {
     }
 
     // No dispatch at Assist
+    expect(mockDispatchCreatedCrewTasks).not.toHaveBeenCalled();
+
+    // W1c: Assist enqueues a dispatch approval instead of dispatching.
+    expect(mockApprovalCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it("Assist (autonomy 1): enqueues ONE crew_dispatch approval (requestedBy* null, payload.taskIds) + emits a hub item", async () => {
+    mockResolveScopeAutoAcceptGate.mockReturnValue("accept_apply");
+
+    const db = makeDb({ threadAutonomy: 1, companyAutonomy: 0, taskItems: [taskItemRow] });
+    const createOutputItem = vi.fn().mockResolvedValue({
+      ok: true,
+      item: { id: TASK_ITEM_ID, status: "applied" },
+      createdTask: { id: "issue-created-1", assigneeAgentId: "agent-eng", workMode: "planning" },
+    });
+
+    await threadAgentActionService(db as never, {
+      compareFreshnessSnapshot: vi.fn().mockResolvedValue({ fresh: true }),
+      discussions: { addEntry: vi.fn() },
+      scopeVersions: {
+        createDraftFromThread: vi.fn().mockResolvedValue(draftReturn),
+        createOutputItem,
+      },
+    }).commitThreadAgentActions({ companyId: COMPANY_ID, threadId: THREAD_ID, runId: "run-w1b" });
+
+    expect(mockApprovalCreate).toHaveBeenCalledTimes(1);
+    const [companyArg, dataArg] = mockApprovalCreate.mock.calls[0];
+    expect(companyArg).toBe(COMPANY_ID);
+    expect(dataArg).toMatchObject({
+      type: "crew_dispatch",
+      status: "pending",
+      requestedByAgentId: null,
+      requestedByUserId: null,
+    });
+    expect(dataArg.payload).toMatchObject({ threadId: THREAD_ID });
+    expect(dataArg.payload.taskIds).toEqual(["issue-created-1"]);
+    expect(mockBuildApprovalHubEmit).toHaveBeenCalledTimes(1);
+    expect(mockEmitHubItem).toHaveBeenCalledTimes(1);
     expect(mockDispatchCreatedCrewTasks).not.toHaveBeenCalled();
   });
 

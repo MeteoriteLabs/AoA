@@ -31,6 +31,9 @@ import { buildConveneWakeupDedupKey } from "./internal-agent/tools/thread-action
 import { resolveRoleToAgentId } from "./internal-agent/tools/crew-role-map.js";
 import { resolveScopeAutoAcceptGate, dispatchCreatedCrewTasks } from "./crew-task-service.js";
 import { preflightCrewDispatch } from "./crew-budget.js";
+import { approvalService } from "./approvals.js";
+import { buildApprovalHubEmit, emitHubItem } from "./hub-source-producers.js";
+import { logActivity } from "./activity-log.js";
 import { logger } from "../middleware/logger.js";
 import { isUniqueViolation } from "./db-errors.js";
 
@@ -812,6 +815,56 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
                     }
                     if (gate === "accept_apply_dispatch" && createdTasks.length > 0) {
                       await dispatchCreatedCrewTasks(actionDb as unknown as import("@armyofagents/db").Db, input.companyId, createdTasks);
+                    }
+                    // W1c: Assist auto-creates the tasks as 'planning' but does not
+                    // dispatch — instead enqueue ONE crew-dispatch approval into the
+                    // Inbox. Approving it (via /approvals) flips these tasks to
+                    // 'standard' and dispatches them (approvals.ts crew_dispatch branch).
+                    // system-originated: requestedBy* = null so the approve route's
+                    // generic requester-wakeup + trust-score bump do not fire.
+                    if (gate === "accept_apply" && createdTasks.length > 0) {
+                      const created = await approvalService(
+                        actionDb as unknown as import("@armyofagents/db").Db,
+                      ).create(input.companyId, {
+                        type: "crew_dispatch",
+                        status: "pending",
+                        requestedByAgentId: null,
+                        requestedByUserId: null,
+                        payload: {
+                          threadId: input.threadId,
+                          scopeVersionId: draft.version.id,
+                          taskIds: createdTasks.map((t) => t.id),
+                          proposedByAgentId: action.agentId ?? null,
+                        },
+                        decisionNote: null,
+                        decidedByUserId: null,
+                        decidedAt: null,
+                        updatedAt: new Date(),
+                      });
+                      if (created) {
+                        await emitHubItem(
+                          actionDb as unknown as import("@armyofagents/db").Db,
+                          buildApprovalHubEmit(created),
+                        );
+                        // Codex #267 P2: this Assist path creates the approval directly,
+                        // bypassing the /approvals route's approval.created activity write.
+                        // Log it here so system-created crew_dispatch approvals are audited
+                        // like route-created ones.
+                        await logActivity(actionDb as unknown as import("@armyofagents/db").Db, {
+                          companyId: input.companyId,
+                          actorType: action.agentId ? "agent" : "system",
+                          actorId: action.agentId ?? "system",
+                          agentId: action.agentId ?? null,
+                          action: "approval.created",
+                          entityType: "approval",
+                          entityId: created.id,
+                          details: {
+                            type: "crew_dispatch",
+                            taskIds: createdTasks.map((t) => t.id),
+                            source: "assist_auto_apply",
+                          },
+                        });
+                      }
                     }
                   }
                 }

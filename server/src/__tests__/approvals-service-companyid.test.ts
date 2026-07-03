@@ -14,11 +14,23 @@ vi.mock("@armyofagents/db", () => ({
   agents: makeTableProxy("agents"),
   companies: makeTableProxy("companies"),
   notifications: makeTableProxy("notifications"),
+  issues: makeTableProxy("issues"),
   // org hierarchy reads — defensive stubs in case service init touches them.
   agentProjects: makeTableProxy("agent_projects"),
   projects: makeTableProxy("projects"),
 }));
 vi.mock("drizzle-orm", () => drizzleOperatorStubs());
+
+// approvals.js now imports crew-budget.js + crew-task-service.js (the W1c
+// crew_dispatch approve() branch). Mock them so their transitive @armyofagents/db
+// imports (e.g. memoryItems) never load under this test's partial db mock. The
+// crew_dispatch path is never exercised here (types are "test"/"hire_agent").
+vi.mock("../services/crew-budget.js", () => ({
+  preflightCrewDispatch: vi.fn(),
+}));
+vi.mock("../services/crew-task-service.js", () => ({
+  dispatchCreatedCrewTasks: vi.fn(),
+}));
 
 // Service uses agentService internally (for hire_agent payloads). We never
 // hit those paths in this test (type is "test" not "hire_agent"), but the
