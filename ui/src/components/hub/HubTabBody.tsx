@@ -1,6 +1,7 @@
 import { Loader2 } from "lucide-react";
 import { TaskDetail } from "@/components/TaskDetail";
 import { ThreadDetail } from "@/pages/ThreadDetail";
+import { ApprovalDetailCore } from "@/components/approval/ApprovalDetailCore";
 import { BrowserViewer } from "@/components/viewers/BrowserViewer";
 import { BudgetCapsSection } from "@/components/settings/sections/BudgetCapsSection";
 import type { HubItemListRow } from "@/api/hub-items";
@@ -10,6 +11,7 @@ import { HUB_TABPANEL_ID } from "./HubTabStrip";
 import { RuntimeDecisionPanel } from "./RuntimeDecisionPanel";
 import {
   browserTab,
+  type HubApprovalPayload,
   type HubBrowserPayload,
   type HubRuntimeDecisionPayload,
   type HubTab,
@@ -39,10 +41,11 @@ interface HubTabBodyProps {
  *
  * Live-wired kinds: home (placeholder stub, E2 swaps in the real HubHomeTab),
  * task, task_output, thread (D2 — hosts embedded ThreadDetail by prop id),
- * browser, budget, runtime_decision (needs `resolveHubItem`; placeholder until
- * the parent supplies it in E2/G1). Kinds without a dedicated hub payload
- * (artifact, memory) or not yet built (approval, join_request, agent, run,
- * suggestion, marketplace_op, reminder, routine) fall through to
+ * approval (D3 — hosts embedded ApprovalDetailCore by prop id), browser, budget,
+ * runtime_decision (needs `resolveHubItem`; placeholder until the parent
+ * supplies it in E2/G1). Kinds without a dedicated hub payload (artifact,
+ * memory) or not yet built (join_request, agent, run, suggestion,
+ * marketplace_op, reminder, routine) fall through to
  * {@link TabLoadingPlaceholder} — never to `null` — so the panel still renders
  * while Phase D/E wires them.
  */
@@ -105,6 +108,22 @@ function HubTabBodyContent({ tab, companyId, onOpenTab, resolveHubItem }: HubTab
       return <TaskOutputViewer issueId={payload.issueId} embedded />;
     }
 
+    case "approval": {
+      const payload = tab.payload as HubApprovalPayload | undefined;
+      if (!payload) return <TabLoadingPlaceholder kind={tab.kind} />;
+      // D3: host the full approval body by prop id. `embedded` drops route/page
+      // couplings (company route-sync, breadcrumbs, `?resolved=approved` banner,
+      // post-action navigation); `onOpenTab` lets linked task / hired agent
+      // links spawn sibling hub tabs instead of navigating away.
+      return (
+        <ApprovalDetailCore
+          approvalId={payload.approvalId}
+          embedded
+          onOpenTab={onOpenTab}
+        />
+      );
+    }
+
     case "browser": {
       const payload = tab.payload as HubBrowserPayload | undefined;
       return <BrowserViewer key={tab.key} initialUrl={payload?.url ?? "about:blank"} />;
@@ -138,7 +157,6 @@ function HubTabBodyContent({ tab, companyId, onOpenTab, resolveHubItem }: HubTab
     case "artifact":
     case "memory":
     // Not-yet-built kinds — Phase D/E wire these.
-    case "approval":
     case "join_request":
     case "agent":
     case "run":

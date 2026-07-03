@@ -8,6 +8,7 @@ import {
   approvalTab,
   browserTab,
   budgetTab,
+  joinRequestTab,
   notificationTab,
   runtimeDecisionTab,
   taskTab,
@@ -41,6 +42,22 @@ vi.mock("@/pages/ThreadDetail", () => ({
         data-embedded={String(props.embedded)}
       >
         ThreadDetail
+      </div>
+    );
+  },
+}));
+
+const approvalCoreSpy = vi.fn();
+vi.mock("@/components/approval/ApprovalDetailCore", () => ({
+  ApprovalDetailCore: (props: Record<string, unknown>) => {
+    approvalCoreSpy(props);
+    return (
+      <div
+        data-testid="mock-approval-core"
+        data-approval-id={String(props.approvalId)}
+        data-embedded={String(props.embedded)}
+      >
+        ApprovalDetailCore
       </div>
     );
   },
@@ -197,8 +214,20 @@ describe("HubTabBody", () => {
     expect(screen.getByTestId("mock-budget")).toBeInTheDocument();
   });
 
-  it("renders a placeholder (not null) for an unwired kind like approval", () => {
-    const { container } = renderBody(approvalTab("approval-1", "Review hire"));
+  it("renders ApprovalDetailCore embedded with the payload approvalId for an approval tab", () => {
+    const onOpenTab = vi.fn();
+    renderBody(approvalTab("approval-1", "Review hire"), onOpenTab);
+    const el = screen.getByTestId("mock-approval-core");
+    expect(el).toHaveAttribute("data-approval-id", "approval-1");
+    expect(el).toHaveAttribute("data-embedded", "true");
+    // onOpenTab is threaded through so linked task / hired agent links open
+    // sibling hub tabs instead of navigating.
+    const props = approvalCoreSpy.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    expect(props.onOpenTab).toBe(onOpenTab);
+  });
+
+  it("renders a placeholder (not null) for an unwired kind like join_request", () => {
+    const { container } = renderBody(joinRequestTab("jr-1", "Join request"));
     const root = container.querySelector(`#${HUB_TABPANEL_ID}`);
     expect(root).not.toBeNull();
     // The tab chrome + panel still render with a preparing-viewer placeholder.
