@@ -426,12 +426,36 @@ export function hubItemsService(db: Db) {
     // Idempotent upsert, gated to STILL-OPEN rows: a re-emit refreshes the
     // denormalized fields ONLY while the item is open — it never resurrects a
     // resolved/archived item nor clobbers fields under an in-flight action.
+    //
+    // Storm guard (change detection): the UPDATE additionally fires only when a
+    // meaningful field actually differs. Without this, every re-emit rewrote the
+    // row (deliveredAt is always-new) and published hub.item.changed +
+    // hub.counts.changed — and because GET /sidebar-badges scan-materializes
+    // legacy alerts on read while the client refetches badges on exactly those
+    // events, one open browser tab + one failed latest-run turned into a
+    // self-sustaining ~125Hz client<->server feedback storm (millions of no-op
+    // row rewrites). deliveredAt is deliberately EXCLUDED from the check: it is
+    // `?? new Date()` and would defeat it.
     const inserted = await conn
       .insert(hubItems)
       .values(values)
       .onConflictDoUpdate({
         target: hubItems.sourceUniqueKey,
-        setWhere: sql`${hubItems.status} = 'open'`,
+        setWhere: sql`${hubItems.status} = 'open' AND (
+          ${hubItems.title} IS DISTINCT FROM ${values.title}
+          OR ${hubItems.message} IS DISTINCT FROM ${values.message}
+          OR ${hubItems.summary} IS DISTINCT FROM ${values.summary}
+          OR ${hubItems.relatedEntityType} IS DISTINCT FROM ${values.relatedEntityType}
+          OR ${hubItems.relatedEntityId} IS DISTINCT FROM ${values.relatedEntityId}
+          OR ${hubItems.deliveryAttempts} IS DISTINCT FROM ${values.deliveryAttempts}
+          OR ${hubItems.deliveryError} IS DISTINCT FROM ${values.deliveryError}
+          OR ${hubItems.priority} IS DISTINCT FROM ${values.priority}
+          OR ${hubItems.userId} IS DISTINCT FROM ${values.userId}
+          OR ${hubItems.ownerUserId} IS DISTINCT FROM ${values.ownerUserId}
+          OR ${hubItems.ownerPool} IS DISTINCT FROM ${values.ownerPool}
+          OR ${hubItems.slaAt} IS DISTINCT FROM ${values.slaAt}
+          OR ${hubItems.sourcePermissionRevision} IS DISTINCT FROM ${values.sourcePermissionRevision}
+        )`,
         set: {
           title: values.title,
           message: values.message,
@@ -453,9 +477,11 @@ export function hubItemsService(db: Db) {
         },
       })
       .returning();
-    // A conflict on a NON-open row updates nothing (setWhere false) → RETURNING
-    // is empty; re-select the existing row so callers always get the current item.
+    // A conflict where setWhere is false — the row is NON-open, or nothing
+    // meaningful changed — updates nothing → RETURNING is empty; re-select the
+    // existing row so callers always get the current item.
     let row = inserted[0];
+    const changed = Boolean(row);
     if (!row) {
       row = await conn
         .select()
@@ -468,11 +494,16 @@ export function hubItemsService(db: Db) {
     // (empty RETURNING) and the re-select, `row` is undefined — never return an
     // id-less `{ lane }` object to callers (P2-5).
     if (!row) throw conflict("Hub item vanished during emit; retry.");
-    await invalidateCounterSnapshotsForCompany(a.companyId);
-    await queueDigestDeliveries(conn, row, !a.executor);
-    if (!a.executor) {
-      publishHubItemChanged(row, "created");
-      publishHubCountsChanged(a.companyId, "item_changed");
+    // Side-effects only when the emit actually inserted or changed something —
+    // a no-op re-emit must not invalidate counters, queue digests, or publish
+    // live events (the storm guard above).
+    if (changed) {
+      await invalidateCounterSnapshotsForCompany(a.companyId);
+      await queueDigestDeliveries(conn, row, !a.executor);
+      if (!a.executor) {
+        publishHubItemChanged(row, "created");
+        publishHubCountsChanged(a.companyId, "item_changed");
+      }
     }
     return { ...row, lane: laneForSemanticType(a.semanticType) };
   }

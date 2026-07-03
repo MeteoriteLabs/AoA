@@ -126,6 +126,44 @@ describe.skipIf(process.platform === "win32")("hubItems.emit — real DB", () =>
     expect(firstRow<{ n: number }>(open).n).toBe(1);
   });
 
+  it("an identical re-emit is a true no-op: the row is not rewritten (storm guard)", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const { companyId, founderId } = await seedCompanyWithFounder();
+    const svc = hubItemsService(db);
+    const args = {
+      companyId,
+      semanticType: "run_failed" as const,
+      sourceType: "heartbeat_run",
+      sourceId: "hbr-noop-1",
+      title: "Scout run failed",
+      summary: "exit 1",
+      priority: "high" as const,
+      ownerUserId: founderId,
+    };
+    const first = await svc.emit(args);
+    // xmin changes on ANY row rewrite — capture it, re-emit identical content,
+    // and assert the tuple was NOT touched (change-detection setWhere skipped
+    // the UPDATE; without it, `deliveredAt = now()` rewrote the row every time
+    // and fed the sidebar-badges scan-on-read feedback storm).
+    const before = firstRow<{ x: string }>(
+      await db.execute(sql`SELECT xmin::text AS x FROM notifications WHERE id = ${first.id}`),
+    );
+    const second = await svc.emit(args);
+    expect(second.id).toBe(first.id);
+    const after = firstRow<{ x: string }>(
+      await db.execute(sql`SELECT xmin::text AS x FROM notifications WHERE id = ${first.id}`),
+    );
+    expect(after.x).toBe(before.x); // tuple untouched
+    // A REAL change still updates the row.
+    const third = await svc.emit({ ...args, summary: "exit 1 (retried, still failing)" });
+    expect(third.id).toBe(first.id);
+    const changed = firstRow<{ x: string; summary: string }>(
+      await db.execute(sql`SELECT xmin::text AS x, summary FROM notifications WHERE id = ${first.id}`),
+    );
+    expect(changed.x).not.toBe(before.x);
+    expect(changed.summary).toContain("retried");
+  });
+
   it("an agent-sourced emit resolves the owner to the first human ancestor (W6)", async () => {
     if (setupError) throw new Error(String(setupError));
     const { companyId, founderId } = await seedCompanyWithFounder();
