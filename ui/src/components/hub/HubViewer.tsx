@@ -97,13 +97,14 @@ export function HubViewer({
           : "flex min-h-[320px] w-full shrink-0 flex-col border-t border-border bg-bg lg:h-full lg:w-[360px] lg:border-l lg:border-t-0"
       }
     >
-      <div className="flex h-12 items-center justify-between border-b border-border px-4">
-        <div role="tablist" aria-label="Hub item viewer" className="flex min-w-0 items-center gap-2">
+      {/* 42px header — matches the rail header and the viewer tab strip. */}
+      <div className="flex h-[42px] shrink-0 items-center justify-between border-b border-border px-4">
+        <div role="tablist" aria-label="Hub item viewer" className="flex h-full min-w-0 items-center gap-2">
           <button
             type="button"
             role="tab"
             aria-selected="true"
-            className="inline-flex min-w-0 items-center gap-2 border-b-2 border-brand px-1 py-3 text-sm font-medium"
+            className="inline-flex h-full min-w-0 items-center gap-2 border-b-2 border-brand px-1 text-sm font-medium"
           >
             <Icon className="size-4 shrink-0" aria-hidden="true" />
             <span className="truncate">{entry.label}</span>

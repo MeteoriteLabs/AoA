@@ -31,6 +31,8 @@ import { HOME_TAB, type HubTab } from "./hubViewerModel";
 
 const EMPTY_BULK_IDS = new Set<string>();
 const noop = () => {};
+/** Persisted icon-only state for the hub lane rail (Discussions-rail pattern). */
+const RAIL_COLLAPSED_KEY = "aoa:hub:rail-collapsed";
 const DEFAULT_PREFERENCES: HubPreferences = {
   defaultLanding: "home",
   visibleLanes: ["waiting_on_you", "notifications", "suggestions"],
@@ -166,6 +168,24 @@ export function HubShell({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [notificationPanelOpen, setNotificationPanelOpen] = useState(false);
   const [mobileRailOpen, setMobileRailOpen] = useState(false);
+  const [railCollapsed, setRailCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem(RAIL_COLLAPSED_KEY) === "true";
+    } catch {
+      return false;
+    }
+  });
+  const toggleRailCollapsed = () => {
+    setRailCollapsed((value) => {
+      const next = !value;
+      try {
+        localStorage.setItem(RAIL_COLLAPSED_KEY, String(next));
+      } catch {
+        // Persistence is best-effort.
+      }
+      return next;
+    });
+  };
   // Gate the resizable Group on the SAME 1024px boundary the rest of this
   // component uses via `lg:` (HubRail `hidden lg:block`, rail dialog `lg:hidden`).
   // `isMobile` is <640px only, which would mount the horizontal split in the
@@ -286,7 +306,8 @@ export function HubShell({
 
   const listSection = (
         <section className="flex min-h-0 min-w-0 flex-1 flex-col">
-          <div className="flex h-12 items-center justify-between gap-3 border-b border-border px-4">
+          {/* 42px header — matches the rail header and the viewer tab strip. */}
+          <div className="flex h-[42px] shrink-0 items-center justify-between gap-3 border-b border-border px-4">
             <div className="flex min-w-0 items-center gap-2">
               <Button
                 type="button"
@@ -791,6 +812,8 @@ export function HubShell({
           counts={counts}
           visibleLanes={preferences.visibleLanes}
           onLaneChange={handleLaneChange}
+          collapsed={railCollapsed}
+          onToggleCollapsed={toggleRailCollapsed}
         />
       </div>
       {mobileRailOpen ? (
@@ -827,7 +850,7 @@ export function HubShell({
       ) : (
         <Group
           orientation="horizontal"
-          className="flex min-w-0 flex-1 overflow-hidden rounded-xl border border-border bg-background shadow-sm"
+          className="flex min-w-0 flex-1"
           defaultLayout={defaultLayout}
           onLayoutChanged={onLayoutChanged}
           data-testid="hub-panel-group"
@@ -836,19 +859,21 @@ export function HubShell({
             id="hub-list"
             defaultSize="38%"
             minSize="24%"
-            className="flex min-w-0 flex-col overflow-hidden"
+            className="flex min-w-0 flex-col overflow-hidden rounded-xl border border-border bg-background shadow-sm"
             data-testid="hub-list-panel"
           >
             {listSection}
           </Panel>
+          {/* Transparent resize gutter — the tray shows through, so the list and
+              viewer read as separate floating islands (Discussions pattern). */}
           <Separator
-            className="w-1.5 shrink-0 cursor-col-resize bg-border/40 transition-colors hover:bg-brand/50"
+            className="w-2 shrink-0 cursor-col-resize bg-transparent transition-colors hover:bg-border/70"
             data-testid="hub-panel-separator"
           />
           <Panel
             id="hub-viewer"
             minSize="30%"
-            className="flex min-w-0 flex-col overflow-hidden"
+            className="flex min-w-0 flex-col overflow-hidden rounded-xl border border-border bg-background shadow-sm"
             data-testid="hub-viewer-panel"
           >
             {viewer}
