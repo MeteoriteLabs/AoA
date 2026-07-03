@@ -138,6 +138,20 @@ export interface DriveCodexAppServerInput {
 const DECLINE = { decision: "decline" } as const;
 
 /**
+ * codex 0.130 app-server REQUIRES `params.clientInfo` on `initialize` —
+ * live-verified: omitting params → -32600 "missing field `params`";
+ * `params:{}` → "missing field `clientInfo`"; name+version required, title
+ * optional. Same shape the Task-1 spike proved live (appserver-spike.test.ts).
+ */
+const INITIALIZE_PARAMS = {
+  clientInfo: {
+    name: "aoa-codex-local",
+    title: "AoA codex_local runtime-decision bridge",
+    version: "1.0.0",
+  },
+} as const;
+
+/**
  * Replicates `execute.ts` `canResumeSession` (~line 348): resumable only when
  * the stored cwd is empty OR resolves to the same path as the run cwd.
  */
@@ -302,7 +316,7 @@ export async function driveCodexAppServer(
   }
 
   // --- Lifecycle: initialize → initialized ----------------------------------
-  await client.request("initialize");
+  await client.request("initialize", INITIALIZE_PARAMS);
   client.notify("initialized");
 
   // --- Resume decision (mirrors execute.ts) ----------------------------------

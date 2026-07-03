@@ -67,6 +67,25 @@ describe("appserver JSON-RPC client (W5c Task 2)", () => {
     await expect(p2).resolves.toEqual({ two: true });
   });
 
+  it("request with no params still puts a `params` key ({}) on the wire; notify without params omits it", () => {
+    // codex app-server's request envelope REQUIRES the `params` field
+    // (omitted → -32600 "missing field `params`", live-verified on 0.130).
+    // JSON.stringify drops undefined values, so request() must default to {}.
+    // The paramless `initialized` NOTIFICATION is accepted as-is — notify()
+    // must NOT gain a params default.
+    const h = makeHarness();
+    void h.client.request("x");
+    h.client.notify("initialized");
+
+    const frames = h.writtenFrames();
+    expect(frames).toHaveLength(2);
+    expect(Object.prototype.hasOwnProperty.call(frames[0], "params")).toBe(true);
+    expect(frames[0].params).toEqual({});
+    expect(frames[0]).toMatchObject({ jsonrpc: "2.0", id: 1, method: "x" });
+    expect(Object.prototype.hasOwnProperty.call(frames[1], "params")).toBe(false);
+    expect(frames[1]).toMatchObject({ jsonrpc: "2.0", method: "initialized" });
+  });
+
   it("rejects a request whose response carries an error", async () => {
     const h = makeHarness();
     const p = h.client.request("thread/start", {});

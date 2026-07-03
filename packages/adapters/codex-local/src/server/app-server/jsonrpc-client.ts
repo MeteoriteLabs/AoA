@@ -214,7 +214,10 @@ export function createJsonRpcClient(opts: CreateJsonRpcClientOptions): JsonRpcCl
     const id = nextId++;
     return new Promise<unknown>((resolve, reject) => {
       pending.set(id, { resolve, reject });
-      enqueueWrite({ jsonrpc: "2.0", id, method, params });
+      // codex app-server's request envelope REQUIRES the `params` field
+      // (omitted → -32600 "missing field `params`"). JSON.stringify drops
+      // undefined values, so default to {} to keep the key on the wire.
+      enqueueWrite({ jsonrpc: "2.0", id, method, params: params ?? {} });
     });
   };
 
