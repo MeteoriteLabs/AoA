@@ -225,6 +225,27 @@ export async function driveCodexAppServer(
     resolveTurn();
   };
 
+  // --- Unexpected-close unwind (SECURITY / no-hang) --------------------------
+  // If the transport closes while the turn is still unresolved — the classic
+  // "run cancelled mid-approval" path (heartbeat.cancelRun signals the tracked
+  // child → child dies → jsonrpc-client.close() rejects all pending requests +
+  // fires onClose) — a terminal turn/completed | turn/failed NOTIFICATION will
+  // NEVER arrive. Without this hook the driver would wait for `turnDone` until
+  // the timeout fires (or forever when timeoutSec === 0). Settle a SYNTHESIZED
+  // turn/failed so the drive() promise resolves promptly.
+  //
+  // Double-settle safety: settleTurn is idempotent (`turnResolved`). If a real
+  // terminal notification already resolved the turn, this close hook is a no-op;
+  // if the close beats a late terminal notification, the later notification is
+  // still routed to the accumulator but settleTurn ignores the second call.
+  client.onClose(() => {
+    if (turnResolved) return;
+    accumulator.onNotification("turn/failed", {
+      turn: { error: { message: "app-server closed" } },
+    });
+    settleTurn();
+  });
+
   // --- fileChange path tracking (run-local) ---------------------------------
   // The `item/fileChange/requestApproval` server request carries only itemId (no
   // path). The path/diff arrive on the item/started + item/completed frames for

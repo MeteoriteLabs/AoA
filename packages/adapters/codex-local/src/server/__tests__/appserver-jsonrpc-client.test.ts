@@ -190,6 +190,38 @@ describe("appserver JSON-RPC client (W5c Task 2)", () => {
     expect(h.stdout.listenerCount("data")).toBe(0);
   });
 
+  it("stdin write-after-close: respond/notify/respondError are swallowed (no throw, no write)", () => {
+    // W5c Task 8 (#6): after close, an outstanding approval that resolves late
+    // (or any driver notify) must not throw an unhandled error or write to a
+    // torn-down stdin. enqueueWrite early-returns when closed.
+    const h = makeHarness();
+    h.client.close();
+    const framesBefore = h.writtenFrames().length;
+    expect(() => h.client.respond(7, { decision: "accept" })).not.toThrow();
+    expect(() => h.client.notify("turn/started", { x: 1 })).not.toThrow();
+    expect(() =>
+      h.client.respondError(9, { code: -32000, message: "x" }),
+    ).not.toThrow();
+    // No new frame was written after close.
+    expect(h.writtenFrames().length).toBe(framesBefore);
+  });
+
+  it("close() fires registered onClose callbacks exactly once (idempotent)", () => {
+    // W5c Task 8 (#2): the driver relies on onClose to unwind an unresolved turn.
+    const h = makeHarness();
+    const cb = vi.fn();
+    h.client.onClose(cb);
+    h.client.close();
+    h.client.close(); // second close is a no-op
+    expect(cb).toHaveBeenCalledTimes(1);
+  });
+
+  it("request-after-close rejects immediately (no hang)", async () => {
+    const h = makeHarness();
+    h.client.close();
+    await expect(h.client.request("initialize", {})).rejects.toThrow(/closed/);
+  });
+
   it("serializes writes and defers the next until 'drain' when write() returns false", async () => {
     const stdin = new PassThrough();
     const stdout = new PassThrough();
