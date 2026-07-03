@@ -1,0 +1,62 @@
+// W1c contract test — pins the wire shape the Assist branch passes to
+// approvalService.create(companyId, data). If the handler shape changes, update
+// BOTH this and thread-agent-actions.ts — the crew_dispatch approve() side-effect
+// (approvals.ts) depends on `payload.threadId` + `payload.taskIds`, and the approve
+// ROUTE skips its generic requester-wakeup + trust-score bump only because
+// requestedBy* are null (system-originated dispatch gate, not agent-work-review).
+
+import { describe, expect, it } from "vitest";
+
+/**
+ * The exact object the Assist branch passes to approvalService.create(companyId, data).
+ * Mirrors server/src/services/thread-agent-actions.ts.
+ */
+function buildCrewDispatchApprovalData(args: {
+  threadId: string;
+  scopeVersionId: string;
+  taskIds: string[];
+  proposedByAgentId: string | null;
+}) {
+  return {
+    type: "crew_dispatch" as const,
+    status: "pending" as const,
+    requestedByAgentId: null,
+    requestedByUserId: null,
+    payload: {
+      threadId: args.threadId,
+      scopeVersionId: args.scopeVersionId,
+      taskIds: args.taskIds,
+      proposedByAgentId: args.proposedByAgentId,
+    },
+    decisionNote: null,
+    decidedByUserId: null,
+    decidedAt: null,
+  };
+}
+
+describe("W1c crew_dispatch approval contract", () => {
+  it("is system-originated (no requester) so the approve route skips requester-wakeup + trust-score", () => {
+    const data = buildCrewDispatchApprovalData({
+      threadId: "t1",
+      scopeVersionId: "sv1",
+      taskIds: ["i1", "i2"],
+      proposedByAgentId: "adjutant",
+    });
+    expect(data.requestedByAgentId).toBeNull();
+    expect(data.requestedByUserId).toBeNull();
+  });
+
+  it("carries the thread + version + task ids the approve() side-effect needs", () => {
+    const data = buildCrewDispatchApprovalData({
+      threadId: "t1",
+      scopeVersionId: "sv1",
+      taskIds: ["i1", "i2"],
+      proposedByAgentId: null,
+    });
+    expect(data.type).toBe("crew_dispatch");
+    expect(data.status).toBe("pending");
+    expect(data.payload.threadId).toBe("t1");
+    expect(data.payload.scopeVersionId).toBe("sv1");
+    expect(data.payload.taskIds).toEqual(["i1", "i2"]);
+  });
+});
