@@ -9,6 +9,7 @@ import {
   type AdapterExecutionContext,
   type AdapterExecutionResult,
   type AdapterRuntimeCommandSpec,
+  type UsageSummary,
 } from "@armyofagents/adapter-utils";
 import {
   asString,
@@ -25,33 +26,62 @@ import {
   applyAoaWorkspaceEnv,
 } from "@armyofagents/adapter-utils/server-utils";
 import { parseCodexJsonl, createCodexSessionIdCapture, isCodexUnknownSessionError } from "./parse.js";
+import { stripCodexRolloutNoise } from "./parse-shared.js";
 import { isCodexLocalFastModeSupported, CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS } from "../index.js";
 import { prepareManagedCodexHome } from "./codex-home.js";
 import { writeCodexMcpConfigToml } from "./codex-config-toml.js";
+import {
+  runAppServerTurn as realRunAppServerTurn,
+  type RunAppServerTurnInput,
+} from "./execute-app-server.js";
+import type { DriverResult } from "./app-server/driver.js";
+
+/**
+ * Injectable dependency for the BRIDGED (supervised) path so the routing can be
+ * unit-tested WITHOUT a real `codex app-server` process. Defaults to the real
+ * `runAppServerTurn`. `execute` takes an optional 2nd `deps` param (compatible
+ * with `ServerAdapterModule.execute`, which only reads the first arg).
+ */
+export interface CodexExecuteDeps {
+  runAppServerTurn: (input: RunAppServerTurnInput) => Promise<DriverResult>;
+}
+
+const defaultCodexExecuteDeps: CodexExecuteDeps = {
+  runAppServerTurn: realRunAppServerTurn,
+};
+
+/**
+ * Neutral intermediate shared by BOTH the `codex exec` path and the bridged
+ * `codex app-server` path. `buildAdapterExecutionResult` reproduces the WHOLE
+ * `AdapterExecutionResult` from this + run-invariant closure state, so exec
+ * stays byte-identical and the bridged path fills the same fields.
+ */
+interface CodexResultIntermediate {
+  timedOut: boolean;
+  exitCode: number | null;
+  signal: string | null;
+  sessionId: string | null;
+  summary: string | null;
+  usage: UsageSummary | undefined;
+  errorMessage: string | null;
+  errorCode: string | null;
+  stdoutForResultJson: string;
+  stderrForResultJson: string;
+  outputFiles: AdapterExecutionResult["outputFiles"];
+  /**
+   * Mirrors `toResult`'s `clearSessionOnMissingSession` INTENT: set true only
+   * when a resume was expected-missing. The builder still ANDs it with
+   * `!sessionId` (a fresh id is never wiped) exactly as the old code did.
+   */
+  clearSessionOnMissingSession: boolean;
+}
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const AOA_SKILLS_CANDIDATES = [
   path.resolve(__moduleDir, "../../skills"),         // published: <pkg>/dist/server/ -> <pkg>/skills/
   path.resolve(__moduleDir, "../../../../../skills"), // dev: src/server/ -> repo root/skills/
 ];
-const CODEX_ROLLOUT_NOISE_RE =
-  /^\d{4}-\d{2}-\d{2}T[^\s]+\s+ERROR\s+codex_core::rollout::list:\s+state db missing rollout path for thread\s+[a-z0-9-]+$/i;
 const REMOTE_CODEX_HOME_DIR_NAME = ".aoa-codex-home";
-
-function stripCodexRolloutNoise(text: string): string {
-  const parts = text.split(/\r?\n/);
-  const kept: string[] = [];
-  for (const part of parts) {
-    const trimmed = part.trim();
-    if (!trimmed) {
-      kept.push(part);
-      continue;
-    }
-    if (CODEX_ROLLOUT_NOISE_RE.test(trimmed)) continue;
-    kept.push(part);
-  }
-  return kept.join("\n");
-}
 
 function firstNonEmptyLine(text: string): string {
   return (
@@ -168,7 +198,10 @@ async function ensureCodexSkillsInjected(onLog: AdapterExecutionContext["onLog"]
   }
 }
 
-export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+export async function execute(
+  ctx: AdapterExecutionContext,
+  deps: CodexExecuteDeps = defaultCodexExecuteDeps,
+): Promise<AdapterExecutionResult> {
   const { runId, agent, runtime, config, context, onLog, onMeta, authToken, onSpawn } = ctx;
   const executionTarget = ctx.executionTarget ?? { type: "local" as const };
 
@@ -496,23 +529,28 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   };
 
-  const toResult = (
-    attempt: { proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string }; rawStderr: string; parsed: ReturnType<typeof parseCodexJsonl>; liveSessionId: string | null },
-    clearSessionOnMissingSession = false,
+  // ── Shared result builder ────────────────────────────────────────────────
+  // Reproduces the FULL AdapterExecutionResult from the neutral intermediate,
+  // reproducing EVERY field the old `toResult` set — plus `errorCode` and
+  // `outputFiles`. Used by BOTH the exec path (byte-identical output) and the
+  // bridged app-server path. The timeout branch is preserved EXACTLY: minimal
+  // shape, and `clearSession` is the raw `clearSessionOnMissingSession` (NOT
+  // ANDed with `!sessionId`), matching the old timeout branch.
+  const buildAdapterExecutionResult = (
+    intermediate: CodexResultIntermediate,
   ): AdapterExecutionResult => {
-    if (attempt.proc.timedOut) {
+    if (intermediate.timedOut) {
       return {
-        exitCode: attempt.proc.exitCode,
-        signal: attempt.proc.signal,
+        exitCode: intermediate.exitCode,
+        signal: intermediate.signal,
         timedOut: true,
         errorMessage: `Timed out after ${timeoutSec}s`,
-        clearSession: clearSessionOnMissingSession,
+        clearSession: intermediate.clearSessionOnMissingSession,
         executionCwd: cwd,
       };
     }
 
-    const resolvedSessionId =
-      attempt.parsed.sessionId ?? attempt.liveSessionId ?? runtimeSessionId ?? runtime.sessionId ?? null;
+    const resolvedSessionId = intermediate.sessionId;
     const resolvedSessionParams = resolvedSessionId
       ? ({
         sessionId: resolvedSessionId,
@@ -522,22 +560,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
       } as Record<string, unknown>)
       : null;
-    const parsedError = typeof attempt.parsed.errorMessage === "string" ? attempt.parsed.errorMessage.trim() : "";
-    const stderrLine = firstNonEmptyLine(attempt.proc.stderr);
-    const fallbackErrorMessage =
-      parsedError ||
-      stderrLine ||
-      `Codex exited with code ${attempt.proc.exitCode ?? -1}`;
 
     return {
-      exitCode: attempt.proc.exitCode,
-      signal: attempt.proc.signal,
+      exitCode: intermediate.exitCode,
+      signal: intermediate.signal,
       timedOut: false,
-      errorMessage:
-        (attempt.proc.exitCode ?? 0) === 0
-          ? null
-          : fallbackErrorMessage,
-      usage: attempt.parsed.usage,
+      errorMessage: intermediate.errorMessage,
+      errorCode: intermediate.errorCode,
+      usage: intermediate.usage,
       sessionId: resolvedSessionId,
       sessionParams: resolvedSessionParams,
       sessionDisplayId: resolvedSessionId,
@@ -547,13 +577,183 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       costUsd: null,
       executionCwd: cwd,
       resultJson: {
-        stdout: attempt.proc.stdout,
-        stderr: attempt.proc.stderr,
+        stdout: intermediate.stdoutForResultJson,
+        stderr: intermediate.stderrForResultJson,
       },
-      summary: attempt.parsed.summary,
-      clearSession: Boolean(clearSessionOnMissingSession && !resolvedSessionId),
+      summary: intermediate.summary,
+      outputFiles: intermediate.outputFiles,
+      clearSession: Boolean(
+        intermediate.clearSessionOnMissingSession && !resolvedSessionId,
+      ),
     };
   };
+
+  // ── EXEC-path intermediate mapping ────────────────────────────────────────
+  // Fills the neutral intermediate from a `codex exec` attempt + parsed JSONL.
+  // errorCode/outputFiles are null/none for the exec path (parseCodexJsonl does
+  // not surface them), so its resulting AdapterExecutionResult is byte-identical
+  // to the pre-refactor `toResult` output (errorCode:null is an absent key at
+  // the persistence layer; outputFiles was already undefined before).
+  const execAttemptToIntermediate = (
+    attempt: { proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string }; rawStderr: string; parsed: ReturnType<typeof parseCodexJsonl>; liveSessionId: string | null },
+    clearSessionOnMissingSession = false,
+  ): CodexResultIntermediate => {
+    if (attempt.proc.timedOut) {
+      return {
+        timedOut: true,
+        exitCode: attempt.proc.exitCode,
+        signal: attempt.proc.signal,
+        sessionId: null,
+        summary: null,
+        usage: undefined,
+        errorMessage: `Timed out after ${timeoutSec}s`,
+        errorCode: null,
+        stdoutForResultJson: "",
+        stderrForResultJson: "",
+        outputFiles: undefined,
+        clearSessionOnMissingSession,
+      };
+    }
+
+    const resolvedSessionId =
+      attempt.parsed.sessionId ?? attempt.liveSessionId ?? runtimeSessionId ?? runtime.sessionId ?? null;
+    const parsedError = typeof attempt.parsed.errorMessage === "string" ? attempt.parsed.errorMessage.trim() : "";
+    const stderrLine = firstNonEmptyLine(attempt.proc.stderr);
+    const fallbackErrorMessage =
+      parsedError ||
+      stderrLine ||
+      `Codex exited with code ${attempt.proc.exitCode ?? -1}`;
+
+    return {
+      timedOut: false,
+      exitCode: attempt.proc.exitCode,
+      signal: attempt.proc.signal,
+      sessionId: resolvedSessionId,
+      summary: attempt.parsed.summary,
+      usage: attempt.parsed.usage,
+      errorMessage: (attempt.proc.exitCode ?? 0) === 0 ? null : fallbackErrorMessage,
+      // parseCodexJsonl surfaces no error code; keep exec byte-identical.
+      errorCode: null,
+      stdoutForResultJson: attempt.proc.stdout,
+      stderrForResultJson: attempt.proc.stderr,
+      // parseCodexJsonl surfaces no output-file hints on the exec path.
+      outputFiles: undefined,
+      clearSessionOnMissingSession,
+    };
+  };
+
+  // ── BRIDGED-path intermediate mapping ─────────────────────────────────────
+  // Fills the neutral intermediate from the driver's DriverResult + accumulator.
+  // A single supervised turn has no OS exit code / signal (the app-server child
+  // is long-lived), so those are null. stdout/stderr for resultJson are empty
+  // (the transcript is streamed via onLog; the raw JSON-RPC frames are not the
+  // exec stdout). summary/usage/errorMessage/errorCode/outputFiles come from the
+  // accumulator; sessionId/timedOut/clearSession come from the driver.
+  const bridgedResultToIntermediate = (result: DriverResult): CodexResultIntermediate => {
+    const rawUsage = result.usage;
+    const usage: UsageSummary | undefined =
+      rawUsage && typeof rawUsage === "object"
+        ? {
+            inputTokens: asNumber((rawUsage as Record<string, unknown>).inputTokens, 0),
+            outputTokens: asNumber((rawUsage as Record<string, unknown>).outputTokens, 0),
+            cachedInputTokens: asNumber(
+              (rawUsage as Record<string, unknown>).cachedInputTokens,
+              0,
+            ),
+          }
+        : undefined;
+    const rawOutputFiles = Array.isArray((result as Record<string, unknown>).outputFiles)
+      ? ((result as Record<string, unknown>).outputFiles as unknown[])
+      : [];
+    // outputFiles are best-effort OUTPUT-DETECTION HINTS, not a security surface:
+    // the cwd trust boundary is enforced at APPROVAL time by the approval bridge
+    // (validatePathInRoot declines out-of-tree writes before they apply), so a
+    // path reaching here was already gated. We only NORMALIZE to absolute
+    // (idempotent for the absolute paths codex emits) so heartbeat's output
+    // detection gets a consistent shape — we do not re-validate here.
+    const outputFiles = rawOutputFiles
+      .map((entry) => (typeof entry === "string" ? entry : ""))
+      .filter((p): p is string => p.length > 0)
+      .map((p) => ({ path: path.resolve(cwd, p) }));
+
+    return {
+      timedOut: result.timedOut,
+      // A supervised turn is not an OS process exit — no code/signal apply. Use a
+      // 0/1 sentinel because heartbeat's outcome classifier reads exitCode===0 (+
+      // no errorMessage) as success and nonzero/errorMessage as failure; timedOut
+      // routes through the timeout branch, so null there.
+      exitCode: result.timedOut ? null : result.errorMessage ? 1 : 0,
+      signal: null,
+      sessionId: result.sessionId,
+      summary: typeof result.summary === "string" ? result.summary : null,
+      usage,
+      errorMessage: result.errorMessage,
+      errorCode: result.errorCode,
+      stdoutForResultJson: "",
+      stderrForResultJson: "",
+      outputFiles: outputFiles.length > 0 ? outputFiles : undefined,
+      clearSessionOnMissingSession: result.clearSession,
+    };
+  };
+
+  // ── Path selection ────────────────────────────────────────────────────────
+  // Branch on the EXPLICIT routing flag (a non-secret boolean resolved
+  // server-side) AND a local execution target — NOT on `runtimeDecisionBroker`
+  // presence (the broker is passed on EVERY run; routing on it is a miswire).
+  const routingEnabled = ctx.runtimeDecisionRoutingEnabled === true;
+  const bridged = routingEnabled && executionTarget.type === "local";
+
+  if (routingEnabled && executionTarget.type !== "local") {
+    await onLog(
+      "stderr",
+      `[aoa] Runtime-decision routing is enabled but execution target is ` +
+        `"${executionTarget.type}"; supervision needs a local target — running the ` +
+        `standard codex exec path unsupervised.\n`,
+    );
+  }
+
+  if (bridged) {
+    if (bypass) {
+      // NEVER bypass approvals/sandbox when supervised — the whole point of the
+      // bridge is human gating. Ignore the flag and warn.
+      await onLog(
+        "stderr",
+        `[aoa] Ignoring config.dangerouslyBypassApprovalsAndSandbox on the ` +
+          `supervised (runtime-decision) codex path — approvals are human-gated.\n`,
+      );
+    }
+
+    if (onMeta) {
+      await onMeta({
+        adapterType: "codex_local",
+        command,
+        cwd,
+        commandNotes: [...commandNotes, "Runtime-decision bridge: codex app-server"],
+        commandArgs: [`${command}`, "app-server"],
+        env: redactEnvForLogs(env),
+        prompt,
+        context,
+      });
+    }
+
+    const driverResult = await deps.runAppServerTurn({
+      runId,
+      command,
+      cwd,
+      env,
+      prompt,
+      timeoutSec,
+      graceSec,
+      session: sessionId ? { sessionId, cwd: runtimeSessionCwd || cwd } : undefined,
+      broker: ctx.runtimeDecisionBroker,
+      onSpawn,
+      onWarn: (message) => {
+        void onLog("stderr", `${message}\n`);
+      },
+    });
+
+    return buildAdapterExecutionResult(bridgedResultToIntermediate(driverResult));
+  }
 
   const initial = await runAttempt(sessionId);
   if (
@@ -567,8 +767,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       `[aoa] Codex resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
     );
     const retry = await runAttempt(null);
-    return toResult(retry, true);
+    return buildAdapterExecutionResult(execAttemptToIntermediate(retry, true));
   }
 
-  return toResult(initial);
+  return buildAdapterExecutionResult(execAttemptToIntermediate(initial));
 }

@@ -996,3 +996,79 @@ This decision applies to `claude_local` only. Other adapters (`codex_local`, etc
 Design reviewed: staff-eng plan review, Codex plan review, and a live proof-of-concept spike (2026-07-03) confirming `PreToolUse` fires and the command forwarder correctly fail-closes before implementation.
 
 **Key files:** `server/src/services/heartbeat/runtime-hooks.ts` (token registry + endpoint), `server/src/adapters/claude-local.ts` (hook injection), `packages/adapters/src/claude-local/hook-forward.mjs` (command forwarder). Plan: `docs/aoa/plans/2026-07-03-w5b-first-adapter-runtime-bridge-plan.md`.
+
+## Decision #106 — W5c: `codex_local` runtime permission bridge via `app-server` (2026-07-03)
+
+**Status:** Locked 2026-07-03.
+
+### What this is
+
+W5c extends the W5b (Decision #105) human-in-the-loop **permission** bridge to `codex_local`. When enabled, a **supervised** codex run that proposes a risky shell command **or** a file-change patch pauses, surfaces an approval in the AoA Hub ("Waiting on you"), and waits for the founder to **allow or deny** before the CLI proceeds — **fail-closed** on timeout/error. W5b is the sibling decision; the two share the same broker, gate resolver, 5-minute SLA, and permission-only scope.
+
+### Dual-path, supervision-gated
+
+`codex_local` keeps **two** execution paths:
+
+- **Unsupervised (default):** the existing `codex exec` one-shot spawn — unchanged. `exec` has no blocking approve/deny callback, so it cannot host the bridge.
+- **Supervised (opt-in):** a long-lived `codex app-server` child speaking **JSON-RPC 2.0 over stdio**. This is the only codex mode that exposes a blocking approval callback (`item/commandExecution/requestApproval`, `item/fileChange/requestApproval`). Approval policy `untrusted` — auto-approves benign commands, prompts for risky commands + file changes (see `docs/adapters/codex-appserver-protocol.md`).
+
+Supervision is chosen **per run** by the gate below; nothing else about the exec path changes.
+
+### In-process JSON-RPC bridge — no token / registry / HTTP
+
+Unlike W5b (out-of-process `PreToolUse` hook → HTTP callback → per-run bearer token → in-process registry → command forwarder), the codex approval request arrives **in-process** on the adapter's own JSON-RPC read loop. W5c therefore needs **NO HTTP endpoint, NO per-run token, NO registry, and NO forwarder.** The approval-bridge function receives the request frame directly and calls the broker in-process. The claude-only hook/token/registry/forwarder machinery is **untouched** — it is only gated `claude_local`-only in heartbeat and is never reached by codex runs.
+
+### Tracked-child via `spawnTrackedChild` is mandatory (the blocker fix)
+
+The app-server child **must** be spawned through the shared `spawnTrackedChild()` (extracted from `runChildProcess`) so it registers in the **same** `runningProcesses` Map as exec runs. Without this, a supervised run blocked on a pending approval would be (a) **uncancellable** — `heartbeat.cancelRun` couldn't find its PID/PGID — and (b) **wrongly reaped** by the orphan-run sweeper at ~5 min. The 300s approval SLA coincides with the reap threshold, so the shared registration + `runningProcesses.has()` skip is what protects a legitimately-waiting run from being killed while the founder decides. `spawnTrackedChild` also preserves `unsetEnvKeys: ["OPENAI_API_KEY"]` — no key leak, no accidental billing switch.
+
+### Decision enum map (codex v2, fail-closed)
+
+The broker's tri-state outcome maps to codex v2 camelCase `ReviewDecision` enums:
+
+- `allow_once` → `accept`
+- `allow_always` → `acceptForSession` (approve + remember for the session)
+- `deny` / timeout / thrown (incl. `RuntimeDecisionCancelledError`) / cancel → `decline`
+
+`decline` is a valid **universal deny** even when omitted from the request's advertised `availableDecisions` (live-confirmed in Task 1). Every non-affirmative outcome resolves to `decline` — fail-safe deny.
+
+### File-change trust boundary — decline out-of-tree writes
+
+The `item/fileChange/requestApproval` frame carries **no path** (only `itemId`); the path arrives on the preceding `item/started` frame. The driver correlates `itemId → paths` and the approval bridge **declines OUT-OF-TREE (path-escape) writes WITHOUT surfacing them** — an out-of-tree write must never reach the founder as an approvable prompt. Correlation is string-level only (no `fs`/`stat`/`readlink`). File-change is **NOT descoped**: Task 1 confirmed it fires under the `untrusted` policy, so the bridge ships **command + file-change**.
+
+### 5-minute SLA + escalate-visible
+
+Reuses the W5b block timeout `RUNTIME_HOOK_BLOCK_TIMEOUT_SEC=300` and `timeoutPolicy: "escalate"`. On timeout the broker returns **deny** (fail-closed) and never marks the decision relayed; the hub row stays **visible** so the founder can see what happened. Overnight/away runs are handled by trust rules + keeping unsupervised agents on the default path — not by extending the timeout.
+
+### Permission-only — `work_question` deferred
+
+W5c covers permission prompts only. The codex `item/tool/requestUserInput` "ask the human a question" frame is **deferred** (same as W5b's `AskUserQuestion` deferral) and noted for a future workstream.
+
+### Cross-path session resume
+
+Supervision is decided per run, so a stored session id may have been created by the `exec` path and later hit by the `app-server` driver (or vice-versa). The driver **attempts `thread/resume` and falls back to a fresh `thread/start` on an unknown-session error** — toggling supervision at worst starts a **new** thread; it never errors the run. `clearSession` is set only when a resume was expected-missing AND no replacement id was obtained (mirrors the exec path).
+
+### Cancel → teardown
+
+A run cancelled mid-approval throws `RuntimeDecisionCancelledError` → the bridge returns `decline`, the tracked child is signalled via `runningProcesses` (SIGTERM→SIGKILL), and the driver's `onClose` hook unwinds the turn — no hang.
+
+### Gating and opt-in — default OFF
+
+Routing is **off by default**. The shared resolver `resolveRuntimeDecisionRoutingEnabled` now allow-lists **both** `claude_local` and `codex_local`, gated identically by all four conditions:
+
+1. **Instance kill-switch env:** `AOA_RUNTIME_DECISION_ROUTING=1` (anything else → off)
+2. **Adapter allow-list:** `adapterType ∈ {claude_local, codex_local}`
+3. **Local execution target:** `executionTarget.type === "local"`
+4. **Per-agent opt-in:** `runtimeConfig.runtimeDecisionRoutingEnabled === true`
+
+Only when all four hold does a codex run take the supervised `app-server` path.
+
+### CI honesty
+
+The full supervised loop is proved by a **guarded live spike** (`AOA_CODEX_APPSERVER_LIVE=1`) and an e2e spec that **SKIPS in CI** (codex is not authed on the runners) — the same posture as W5b.
+
+### Review trail
+
+Design reviewed: W5c plan (staff-eng + Codex review) plus the Task 1 live `app-server` spike (codex-cli 0.130.0, ChatGPT auth) confirming command + file-change approvals fire and `decline` is a universal deny before implementation.
+
+**Key files:** `packages/adapter-utils/src/server-utils.ts` (`spawnTrackedChild`), `packages/adapters/codex-local/src/server/execute-app-server.ts` (dual-path spawn), `packages/adapters/codex-local/src/server/app-server/` (`driver.ts`, `approval-bridge.ts`, `jsonrpc-client.ts`, `parse-events.ts`), `server/src/services/runtime-decision-routing-flag.ts` (allow-list). Protocol: `docs/adapters/codex-appserver-protocol.md`. Board-operator guide: `docs/adapters/codex-local.md` § Runtime-decision bridge (W5c). Plan: `docs/aoa/plans/2026-07-03-w5c-codex-app-server-bridge-plan.md`.

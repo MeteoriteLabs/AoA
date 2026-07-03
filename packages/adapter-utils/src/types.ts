@@ -297,6 +297,21 @@ export interface AdapterExecutionContext {
    */
   runtimeDecisionBroker?: AdapterRuntimeDecisionBroker;
   /**
+   * NON-SECRET plain boolean: whether runtime-decision routing (human approval
+   * supervision) is enabled for THIS run, per the Task 6 allow-list resolver
+   * (env kill-switch + adapter allow-list + local target + per-agent opt-in).
+   *
+   * Adapters branch on THIS flag — not on `runtimeDecisionBroker != null`. The
+   * broker is passed on EVERY run (so its mere presence says nothing about
+   * whether supervision is active); routing on broker-presence is a miswire.
+   * codex_local uses this to switch to its in-process app-server approval
+   * bridge; claude_local additionally receives the HTTP hook machinery.
+   *
+   * Safe to include in logged meta (contains no secret). Unset/false → adapter
+   * takes its existing, unsupervised path.
+   */
+  runtimeDecisionRoutingEnabled?: boolean;
+  /**
    * Non-secret hook bridge config for wiring the adapter's PreToolUse HTTP
    * callback. Carries only plain strings (base URL, path, timeout) — MUST NOT
    * contain the per-run bearer token. The token is passed to the adapter via
