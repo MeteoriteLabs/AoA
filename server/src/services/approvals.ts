@@ -183,13 +183,26 @@ export function approvalService(db: Db) {
           // todo). If they moved it off todo before approving — backlog/in_progress/
           // in_review/blocked/done/cancelled — or already flipped it to standard, leave it
           // as-is; approving a stale approval must not resurrect parked/terminal work
-          // (Codex #267 P2). dispatchCreatedCrewTasks has no status info, so gate here.
+          // (Codex #267 P2). Cheap in-memory pre-filter; the guarded UPDATE below is the
+          // authoritative check.
           if (t.workMode !== "planning" || t.status !== "todo") continue;
-          // Raw flip (no issueService.update wake side-effect) — dispatch is explicit below.
-          await db
+          // Guard the flip on the CURRENT row state (TOCTOU, Codex #267 P2): the WHERE
+          // re-checks planning+todo, so a concurrent founder move between the SELECT and
+          // this UPDATE misses (0 rows) and the task is neither flipped nor dispatched.
+          // Raw update (no issueService.update wake side-effect) — dispatch is explicit below.
+          const flipped = (await db
             .update(issues)
             .set({ workMode: "standard", updatedAt: new Date() })
-            .where(and(eq(issues.id, t.id), eq(issues.companyId, companyId)));
+            .where(
+              and(
+                eq(issues.id, t.id),
+                eq(issues.companyId, companyId),
+                eq(issues.workMode, "planning"),
+                eq(issues.status, "todo"),
+              ),
+            )
+            .returning({ id: issues.id })) as Array<{ id: string }>;
+          if (flipped.length === 0) continue; // moved concurrently — do not dispatch
           // Codex #267 P2: this raw flip bypasses issueService's issue.updated activity, and
           // crew_dispatch approvals aren't linked via issue_approvals, so the generic
           // approval.approved log carries no task ids. Log the planning→standard dispatch

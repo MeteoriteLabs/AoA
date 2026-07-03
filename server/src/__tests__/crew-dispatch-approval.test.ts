@@ -76,7 +76,14 @@ const THREAD = "thread-1";
  * read (returns taskRows). update() is observed via `issueUpdateSets`, which
  * records the .set() payload for every UPDATE targeting the issues table.
  */
-function makeDb(updatedApproval: unknown, taskRows: unknown[]) {
+function makeDb(
+  updatedApproval: unknown,
+  taskRows: unknown[],
+  opts: { issuesFlipReturnsEmpty?: boolean } = {},
+) {
+  // When true, the guarded issues UPDATE matches 0 rows — simulates a concurrent founder
+  // move between the SELECT and the UPDATE (TOCTOU). The task must then NOT be dispatched.
+  const issuesFlipReturnsEmpty = opts.issuesFlipReturnsEmpty ?? false;
   // The pre-update `existing` row carries the SAME payload as the updated row (the
   // status flip does not touch payload). approve() reads threadId/taskIds from
   // `existing` for the pre-flip preflight, so mirror the payload here.
@@ -115,12 +122,21 @@ function makeDb(updatedApproval: unknown, taskRows: unknown[]) {
       update: (table: { _?: { name?: string } }) => ({
         set: (values: Record<string, unknown>) => ({
           where: () => {
-            if (table?._?.name === "issues") issueUpdateSets.push(values);
             if (table?._?.name === "approvals") state.approvalsUpdated = true;
+            // The guarded issues UPDATE returns the flipped row(s); [] means it matched
+            // nothing (concurrent move) and the code must skip dispatch for that task.
+            const rows =
+              table?._?.name === "approvals"
+                ? [updatedApproval]
+                : table?._?.name === "issues"
+                  ? issuesFlipReturnsEmpty
+                    ? []
+                    : [{ id: "flipped" }]
+                  : [];
+            if (table?._?.name === "issues" && rows.length > 0) issueUpdateSets.push(values);
             return {
               returning: () => ({
-                then: (resolve: (rows: unknown[]) => unknown) =>
-                  resolve(table?._?.name === "approvals" ? [updatedApproval] : []),
+                then: (resolve: (r: unknown[]) => unknown) => resolve(rows),
               }),
             };
           },
@@ -273,6 +289,26 @@ describe("approvalService.approve — crew_dispatch branch", () => {
       { id: "t1", assigneeAgentId: "agent-1", workMode: "standard" },
     ]);
     expect(mocks.logActivity).toHaveBeenCalledTimes(1);
+  });
+
+  it("(e) Codex #267 P2 TOCTOU: a task moved concurrently (guarded UPDATE matches 0 rows) is NOT dispatched", async () => {
+    mocks.preflightCrewDispatch.mockResolvedValue({ allowed: true });
+
+    // The task passes the in-memory pre-filter (planning+todo in the SELECT), but the
+    // guarded UPDATE matches 0 rows (founder moved it between SELECT and UPDATE) →
+    // the code must neither log nor dispatch it.
+    const { db } = makeDb(
+      approvedRow({ threadId: THREAD, taskIds: ["t1"] }),
+      [{ id: "t1", assigneeAgentId: "agent-1", workMode: "planning", status: "todo" }],
+      { issuesFlipReturnsEmpty: true },
+    );
+
+    const svc = approvalService(db);
+    await svc.approve("ap1", COMPANY, "user-A", "go");
+
+    // Nothing dispatched, nothing logged — the concurrent move won the race.
+    expect(mocks.dispatchCreatedCrewTasks).toHaveBeenCalledWith(db, COMPANY, []);
+    expect(mocks.logActivity).not.toHaveBeenCalled();
   });
 });
 
