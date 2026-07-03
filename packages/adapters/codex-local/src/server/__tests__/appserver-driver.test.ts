@@ -373,4 +373,150 @@ describe("driveCodexAppServer (W5c Task 3)", () => {
     fake.deliverNotification("turn/completed", {});
     await promise;
   });
+
+  // --- fileChange approval enrichment (W5c path-map) -------------------------
+  // The `item/fileChange/requestApproval` server request carries ONLY
+  // { threadId, turnId, itemId, startedAtMs, reason?, grantRoot? } — NO path.
+  // The path/diff arrive on the item/started + item/completed frames for the
+  // same itemId (params.item.changes[].path). The driver must track itemId→paths
+  // and ENRICH the approval params (`item.changes[].path`) before dispatch, so
+  // the bridge's cwd trust boundary can validate the target.
+
+  it("fileChange approval: item/started supplies path → onServerApproval gets enriched params", async () => {
+    const fake = makeFakeClient();
+    const { acc } = makeAccumulator();
+    const onServerApproval = vi.fn(async (_method: string, _params: unknown) => "accept" as const);
+
+    const promise = driveCodexAppServer({ ...baseInput(fake, acc), onServerApproval });
+    const { turn } = await driveHandshake(fake, "thread-fc1");
+    resolveReq(turn, { turn: { id: "t1" } });
+
+    // item/started for the fileChange item (itemId X, path src/x.ts).
+    fake.deliverNotification("item/started", {
+      item: {
+        type: "fileChange",
+        id: "call_X",
+        changes: [{ path: "src/x.ts", kind: { type: "add" }, diff: "hi\n" }],
+        status: "inProgress",
+      },
+    });
+
+    // Server asks for approval — carries itemId but NO path.
+    await fake.serverRequest(11, "item/fileChange/requestApproval", {
+      threadId: "thread-fc1",
+      turnId: "t1",
+      itemId: "call_X",
+      startedAtMs: 123,
+      reason: null,
+      grantRoot: null,
+    });
+
+    // onServerApproval received ENRICHED params: item.changes[0].path present,
+    // original fields preserved.
+    expect(onServerApproval).toHaveBeenCalledTimes(1);
+    const [method, params] = onServerApproval.mock.calls[0];
+    expect(method).toBe("item/fileChange/requestApproval");
+    const p = params as {
+      itemId: string;
+      turnId: string;
+      item: { changes: Array<{ path: string }> };
+    };
+    expect(p.itemId).toBe("call_X");
+    expect(p.turnId).toBe("t1");
+    expect(p.item.changes[0].path).toBe("src/x.ts");
+    expect(fake.responses).toContainEqual({ id: 11, result: { decision: "accept" } });
+
+    fake.deliverNotification("turn/completed", {});
+    await promise;
+  });
+
+  it("fileChange approval: item/completed refines the path (last-write-wins)", async () => {
+    const fake = makeFakeClient();
+    const { acc } = makeAccumulator();
+    const onServerApproval = vi.fn(async (_method: string, _params: unknown) => "accept" as const);
+
+    const promise = driveCodexAppServer({ ...baseInput(fake, acc), onServerApproval });
+    const { turn } = await driveHandshake(fake, "thread-fc2");
+    resolveReq(turn, { turn: { id: "t1" } });
+
+    fake.deliverNotification("item/started", {
+      item: {
+        type: "fileChange",
+        id: "call_Y",
+        changes: [{ path: "old/path.ts", kind: { type: "add" } }],
+      },
+    });
+    // item/completed refines to a new path.
+    fake.deliverNotification("item/completed", {
+      item: {
+        type: "fileChange",
+        id: "call_Y",
+        changes: [{ path: "new/path.ts", kind: { type: "add" } }],
+        status: "completed",
+      },
+    });
+
+    await fake.serverRequest(12, "item/fileChange/requestApproval", {
+      itemId: "call_Y",
+      turnId: "t1",
+    });
+
+    const [, params] = onServerApproval.mock.calls[0];
+    const p = params as { item: { changes: Array<{ path: string }> } };
+    expect(p.item.changes[0].path).toBe("new/path.ts");
+
+    fake.deliverNotification("turn/completed", {});
+    await promise;
+  });
+
+  it("fileChange approval: unknown itemId → params pass through WITHOUT synthesized path", async () => {
+    const fake = makeFakeClient();
+    const { acc } = makeAccumulator();
+    const onServerApproval = vi.fn(async (_method: string, _params: unknown) => "decline" as const);
+
+    const promise = driveCodexAppServer({ ...baseInput(fake, acc), onServerApproval });
+    const { turn } = await driveHandshake(fake, "thread-fc3");
+    resolveReq(turn, { turn: { id: "t1" } });
+
+    // No item/started for this itemId — nothing captured.
+    await fake.serverRequest(13, "item/fileChange/requestApproval", {
+      itemId: "call_UNKNOWN",
+      turnId: "t1",
+    });
+
+    const [, params] = onServerApproval.mock.calls[0];
+    // No `item` synthesized → bridge will fail-closed on "no change paths".
+    expect(params).toEqual({ itemId: "call_UNKNOWN", turnId: "t1" });
+    expect((params as { item?: unknown }).item).toBeUndefined();
+
+    fake.deliverNotification("turn/completed", {});
+    await promise;
+  });
+
+  it("command approval: params pass through UNCHANGED (no enrichment)", async () => {
+    const fake = makeFakeClient();
+    const { acc } = makeAccumulator();
+    const onServerApproval = vi.fn(async (_method: string, _params: unknown) => "accept" as const);
+
+    const promise = driveCodexAppServer({ ...baseInput(fake, acc), onServerApproval });
+    const { turn } = await driveHandshake(fake, "thread-cmd");
+    resolveReq(turn, { turn: { id: "t1" } });
+
+    // Even if a fileChange item with the same-ish id was captured, command
+    // approvals must never be enriched.
+    fake.deliverNotification("item/started", {
+      item: { type: "fileChange", id: "call_cmd", changes: [{ path: "x.ts" }] },
+    });
+
+    const cmdParams = { itemId: "call_cmd", command: "ls", cwd: "/work/proj" };
+    await fake.serverRequest(14, "item/commandExecution/requestApproval", cmdParams);
+
+    const [method, params] = onServerApproval.mock.calls[0];
+    expect(method).toBe("item/commandExecution/requestApproval");
+    expect(params).toEqual(cmdParams);
+    expect((params as { item?: unknown }).item).toBeUndefined();
+
+    fake.deliverNotification("turn/completed", {});
+    await promise;
+  });
 });

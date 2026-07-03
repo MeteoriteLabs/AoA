@@ -167,6 +167,34 @@ function isUnknownSessionRejection(err: unknown): boolean {
   return isCodexUnknownSessionError(message, "");
 }
 
+const FILE_CHANGE_APPROVAL_METHOD = "item/fileChange/requestApproval";
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
+}
+
+/**
+ * If this `item/started` | `item/completed` notification carries a fileChange
+ * item, return `[itemId, paths]`; otherwise null. A fileChange item is one whose
+ * `type === "fileChange"` OR (defensively) that carries a `changes[]` array —
+ * so we still capture even if a codex version omits/renames the type tag.
+ */
+function readFileChangeItem(params: unknown): { itemId: string; paths: string[] } | null {
+  const item = asRecord(asRecord(params)?.item);
+  if (!item) return null;
+  const changes = Array.isArray(item.changes) ? item.changes : null;
+  const isFileChange = item.type === "fileChange" || changes != null;
+  if (!isFileChange || changes == null) return null;
+  const itemId = typeof item.id === "string" ? item.id : null;
+  if (!itemId) return null;
+  const paths: string[] = [];
+  for (const change of changes) {
+    const p = asRecord(change)?.path;
+    if (typeof p === "string" && p.length > 0) paths.push(p);
+  }
+  return { itemId, paths };
+}
+
 export async function driveCodexAppServer(
   input: DriveCodexAppServerInput,
 ): Promise<DriverResult> {
@@ -197,8 +225,20 @@ export async function driveCodexAppServer(
     resolveTurn();
   };
 
+  // --- fileChange path tracking (run-local) ---------------------------------
+  // The `item/fileChange/requestApproval` server request carries only itemId (no
+  // path). The path/diff arrive on the item/started + item/completed frames for
+  // the same itemId. We record itemId → change paths here (last-write-wins:
+  // item/completed refines item/started) so the approval can be ENRICHED before
+  // it reaches the bridge (whose cwd trust boundary reads item.changes[].path).
+  const fileChangePaths = new Map<string, string[]>();
+
   // --- Notification routing: accumulator + turn-terminal watch ---------------
   registerNotificationHandler((method, params) => {
+    if (method === "item/started" || method === "item/completed") {
+      const fc = readFileChangeItem(params);
+      if (fc) fileChangePaths.set(fc.itemId, fc.paths);
+    }
     accumulator.onNotification(method, params);
     if (method === "turn/completed" || method === "turn/failed") {
       settleTurn();
@@ -210,13 +250,30 @@ export async function driveCodexAppServer(
     let decision: string;
     try {
       if (!onServerApproval) throw new Error("no approval bridge");
-      decision = await onServerApproval(method, params);
+      decision = await onServerApproval(method, enrichApprovalParams(method, params));
     } catch {
       client.respond(id, DECLINE);
       return;
     }
     client.respond(id, { decision });
   });
+
+  // Enrich ONLY a fileChange approval whose itemId we captured a path for,
+  // merging `item: { changes: [{ path }] }` into the params (preserving all
+  // original fields). NON-fileChange methods and unknown itemIds pass through
+  // unchanged (an unknown itemId → the bridge fail-closes on "no change paths").
+  function enrichApprovalParams(method: string, params: unknown): unknown {
+    if (method !== FILE_CHANGE_APPROVAL_METHOD) return params;
+    const rec = asRecord(params);
+    const itemId = rec && typeof rec.itemId === "string" ? rec.itemId : null;
+    if (!itemId) return params;
+    const paths = fileChangePaths.get(itemId);
+    if (!paths || paths.length === 0) return params;
+    return {
+      ...(rec ?? {}),
+      item: { changes: paths.map((p) => ({ path: p })) },
+    };
+  }
 
   // --- Lifecycle: initialize → initialized ----------------------------------
   await client.request("initialize");
