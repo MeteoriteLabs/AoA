@@ -473,7 +473,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     context,
   });
 
-  const buildClaudeArgs = (resumeSessionId: string | null) => {
+  const buildClaudeArgs = async (resumeSessionId: string | null) => {
     const args = ["--print", "-", "--output-format", "stream-json", "--verbose"];
     if (resumeSessionId) args.push("--resume", resumeSessionId);
     if (hookSettingsFilePath) {
@@ -499,7 +499,58 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (skillsArg) {
       args.push("--add-dir", skillsArg);
     }
-    if (extraArgs.length > 0) args.push(...extraArgs);
+    if (extraArgs.length > 0) {
+      if (hookSettingsFilePath) {
+        // Bridged mode: strip bypass flags that defeat the PreToolUse hook.
+        // These flags would re-enable Claude's permission bypass, making the
+        // hook's deny decisions ineffective.
+        const BYPASS_FLAGS = new Set([
+          "--dangerously-skip-permissions",
+          "--allow-dangerously-skip-permissions",
+        ]);
+        const BYPASS_PERMISSION_MODE_VALUES = new Set(["bypassPermissions", "dontAsk"]);
+        const stripped: string[] = [];
+        const filteredArgs: string[] = [];
+        let i = 0;
+        while (i < extraArgs.length) {
+          const arg = extraArgs[i];
+          if (BYPASS_FLAGS.has(arg)) {
+            stripped.push(arg);
+            i++;
+          } else if (arg === "--permission-mode" && i + 1 < extraArgs.length) {
+            const value = extraArgs[i + 1];
+            if (BYPASS_PERMISSION_MODE_VALUES.has(value)) {
+              stripped.push(`${arg} ${value}`);
+              i += 2;
+            } else {
+              filteredArgs.push(arg, value);
+              i += 2;
+            }
+          } else if (arg.startsWith("--permission-mode=")) {
+            const value = arg.slice("--permission-mode=".length);
+            if (BYPASS_PERMISSION_MODE_VALUES.has(value)) {
+              stripped.push(arg);
+              i++;
+            } else {
+              filteredArgs.push(arg);
+              i++;
+            }
+          } else {
+            filteredArgs.push(arg);
+            i++;
+          }
+        }
+        if (stripped.length > 0) {
+          await onLog(
+            "stderr",
+            `[aoa] WARNING: bridged mode — stripped bypass flag(s) from extraArgs that would defeat the PreToolUse permission hook: ${stripped.join(", ")}\n`,
+          );
+        }
+        if (filteredArgs.length > 0) args.push(...filteredArgs);
+      } else {
+        args.push(...extraArgs);
+      }
+    }
     return args;
   };
 
@@ -520,7 +571,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   };
 
   const runAttempt = async (resumeSessionId: string | null) => {
-    const args = buildClaudeArgs(resumeSessionId);
+    const args = await buildClaudeArgs(resumeSessionId);
     if (onMeta) {
       await onMeta({
         adapterType: "claude_local",

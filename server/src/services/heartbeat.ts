@@ -4077,12 +4077,18 @@ export function heartbeatService(db: Db) {
           process.env.AOA_API_URL?.trim() ||
           `http://127.0.0.1:${process.env.PORT ?? "3100"}`;
         runtimeHookToken = mintRuntimeHookToken();
+        // TTL is a leaked-entry backstop only — the primary cleanup is `deregisterRuntimeHook`
+        // in the finally block below. The TTL must cover the entire possible run duration so
+        // multi-tool or long-running agents are never denied mid-run because the registry
+        // entry expired. Since we don't have the exact adapter timeout in scope here, we use
+        // a generous 24-hour safety-net constant; the finally block handles normal cleanup.
+        const RUNTIME_HOOK_REGISTRY_MAX_TTL_SEC = 24 * 60 * 60; // 24 h backstop
         registerRuntimeHook(runtimeHookToken, {
           broker: runtimeDecisionBroker,
           companyId: run.companyId,
           agentId: agent.id,
           runId: run.id,
-          expiresAt: new Date(Date.now() + (RUNTIME_HOOK_BLOCK_TIMEOUT_SEC + 60) * 1000),
+          expiresAt: new Date(Date.now() + RUNTIME_HOOK_REGISTRY_MAX_TTL_SEC * 1000),
         });
       }
 

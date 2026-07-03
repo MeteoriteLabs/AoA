@@ -307,6 +307,160 @@ console.log(JSON.stringify({ type: "result", subtype: "success", session_id: "s1
     }
   });
 
+  it("bridged: strips --dangerously-skip-permissions from extraArgs", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-claude-hooks-strip-dsp-"));
+    const workspace = path.join(root, "workspace");
+    const commandBase = path.join(root, "agent");
+    const capturePath = path.join(root, "capture.json");
+    await fs.mkdir(workspace, { recursive: true });
+    const commandPath = await writeFakeClaudeCommand(commandBase);
+
+    try {
+      const result = await execute({
+        ...makeBaseContext(commandPath, capturePath, workspace),
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: { AOA_TEST_CAPTURE_PATH: capturePath },
+          promptTemplate: "strip test",
+          timeoutSec: 10,
+          graceSec: 1,
+          extraArgs: ["--dangerously-skip-permissions"],
+        },
+        runtimeHookBridge: HOOK_BRIDGE_SPEC,
+        runtimeHookToken: HOOK_TOKEN,
+      });
+
+      expect(result.exitCode).toBe(0);
+
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as {
+        argv: string[];
+      };
+
+      // Bypass flag must be stripped in bridged mode
+      expect(capture.argv).not.toContain("--dangerously-skip-permissions");
+      // --settings must still be present (bridge is wired)
+      expect(capture.argv).toContain("--settings");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("bridged: strips --permission-mode bypassPermissions (two-token form) from extraArgs", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-claude-hooks-strip-pm-"));
+    const workspace = path.join(root, "workspace");
+    const commandBase = path.join(root, "agent");
+    const capturePath = path.join(root, "capture.json");
+    await fs.mkdir(workspace, { recursive: true });
+    const commandPath = await writeFakeClaudeCommand(commandBase);
+
+    try {
+      const result = await execute({
+        ...makeBaseContext(commandPath, capturePath, workspace),
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: { AOA_TEST_CAPTURE_PATH: capturePath },
+          promptTemplate: "strip test",
+          timeoutSec: 10,
+          graceSec: 1,
+          extraArgs: ["--permission-mode", "bypassPermissions"],
+        },
+        runtimeHookBridge: HOOK_BRIDGE_SPEC,
+        runtimeHookToken: HOOK_TOKEN,
+      });
+
+      expect(result.exitCode).toBe(0);
+
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as {
+        argv: string[];
+      };
+
+      // Both flag and value tokens must be stripped
+      expect(capture.argv).not.toContain("--permission-mode");
+      expect(capture.argv).not.toContain("bypassPermissions");
+      // --settings must still be present
+      expect(capture.argv).toContain("--settings");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("bridged: preserves --permission-mode plan (benign value) in extraArgs", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-claude-hooks-keep-pm-"));
+    const workspace = path.join(root, "workspace");
+    const commandBase = path.join(root, "agent");
+    const capturePath = path.join(root, "capture.json");
+    await fs.mkdir(workspace, { recursive: true });
+    const commandPath = await writeFakeClaudeCommand(commandBase);
+
+    try {
+      const result = await execute({
+        ...makeBaseContext(commandPath, capturePath, workspace),
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: { AOA_TEST_CAPTURE_PATH: capturePath },
+          promptTemplate: "strip test",
+          timeoutSec: 10,
+          graceSec: 1,
+          extraArgs: ["--permission-mode", "plan"],
+        },
+        runtimeHookBridge: HOOK_BRIDGE_SPEC,
+        runtimeHookToken: HOOK_TOKEN,
+      });
+
+      expect(result.exitCode).toBe(0);
+
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as {
+        argv: string[];
+      };
+
+      // Benign --permission-mode value must be preserved
+      const pmIdx = capture.argv.indexOf("--permission-mode");
+      expect(pmIdx).toBeGreaterThanOrEqual(0);
+      expect(capture.argv[pmIdx + 1]).toBe("plan");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("unbridged: --dangerously-skip-permissions in extraArgs is preserved (unchanged behavior)", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-claude-hooks-unbridged-dsp-"));
+    const workspace = path.join(root, "workspace");
+    const commandBase = path.join(root, "agent");
+    const capturePath = path.join(root, "capture.json");
+    await fs.mkdir(workspace, { recursive: true });
+    const commandPath = await writeFakeClaudeCommand(commandBase);
+
+    try {
+      const result = await execute({
+        ...makeBaseContext(commandPath, capturePath, workspace),
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: { AOA_TEST_CAPTURE_PATH: capturePath },
+          promptTemplate: "strip test",
+          timeoutSec: 10,
+          graceSec: 1,
+          extraArgs: ["--dangerously-skip-permissions"],
+        },
+        // No runtimeHookBridge → unbridged; bypass flags must NOT be stripped
+      });
+
+      expect(result.exitCode).toBe(0);
+
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as {
+        argv: string[];
+      };
+
+      // In unbridged mode, --dangerously-skip-permissions in extraArgs is kept
+      expect(capture.argv).toContain("--dangerously-skip-permissions");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("unbridged: runtimeHookBridge.enabled === false means no hook injection", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-claude-hooks-disabled-"));
     const workspace = path.join(root, "workspace");
