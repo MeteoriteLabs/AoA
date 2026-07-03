@@ -243,7 +243,7 @@ export function HubShell({
   };
 
   return (
-    <div className="flex h-[calc(100vh-96px)] min-h-[520px] flex-col overflow-hidden border-y border-border bg-bg text-text lg:flex-row">
+    <div className="flex h-full flex-col overflow-hidden bg-bg text-text lg:flex-row">
       <div className="hidden lg:block">
         <HubRail
           activeLane={activeLane}
