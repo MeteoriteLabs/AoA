@@ -91,6 +91,11 @@ Grouped into workstreams. Most of the "hard" machinery already exists and needs 
 - Wire **Assist** to auto-create + auto-assign and raise a **dispatch approval** into the Inbox (D1, D8); **Drive** to auto-dispatch; **Manual** to propose-only.
 - Verify the scope-apply path stamps crew assignees.
 
+**STATUS (2026-07-03):**
+- **W1a SHIPPED** (PR #265) — controller `create_scope_draft` resolves `assigneeRole`→crew agent + forwards `proposedTasks` → compiler emits assigned task_proposal items (D1 dedup). Crew board auto-populates *assigned*.
+- **W1b SHIPPED** (PR #265) — autonomy-gated auto-accept: Manual=draft / Assist=auto-create+assign `planning` (no dispatch) / Drive=`standard`+dispatch. Drive dispatch runs `preflightCrewDispatch` (budget/pause hard-stop; blocked → draft left for manual). Memory stays founder-gated (D12).
+- **W1c BUILT** (branch `feat/w1c-inbox-dispatch-approval`, stacked on #265) — Assist raises a `crew_dispatch` Inbox approval; approving flips the parked `planning` tasks → `standard` + dispatches them (same preflight; blocked → throws + rolls back, approval stays pending); rejecting leaves them parked. Reuses `approvalService` + the generic `approval_request` hub item (no new UI). Tasks-only (memory stays separately gated, D12).
+
 ### W2 — Extraction-then-scope + kill the stub
 - Adjutant scoping triggers extraction first (D6), so scope drafts compile from real items.
 - Remove/replace `titleForGeneratedTask` + `memoryCandidateTitle` placeholders (`thread-scope-draft-compiler.ts:94-106`); derive from summary or suppress the synthetic item when there are zero real items. Update the pinning test (`thread-scope-draft-compiler.test.ts:56`).
