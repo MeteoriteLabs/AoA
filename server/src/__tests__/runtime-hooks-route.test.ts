@@ -226,6 +226,37 @@ describe("runtime-hooks route — decision mapping", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Adapter session gone: registered → deregistered → route must deny without
+// calling the broker (the run ended before the hook arrived).
+// ---------------------------------------------------------------------------
+
+describe("runtime-hooks route — adapter session gone", () => {
+  it("deregistered token → 200 deny, broker never called", async () => {
+    // Simulate: heartbeat registered the token when the run started, then
+    // deregistered it when the run ended. A late hook POST with that token
+    // must be denied (resolveRuntimeHook returns null) and must never reach
+    // the broker's requestPermissionBounded.
+    const bounded = vi.fn();
+    const token = register({ broker: makeBroker(bounded) });
+
+    // Run ends → heartbeat calls deregisterRuntimeHook.
+    deregisterRuntimeHook(token);
+    // Remove from cleanup list since we already deregistered.
+    const idx = registeredTokens.indexOf(token);
+    if (idx !== -1) registeredTokens.splice(idx, 1);
+
+    const res = await request(makeApp())
+      .post(RUNTIME_HOOK_PATH)
+      .set("Authorization", `Bearer ${token}`)
+      .send(BASE_BODY);
+
+    expect(res.status).toBe(200);
+    expect(res.body.hookSpecificOutput.permissionDecision).toBe("deny");
+    expect(bounded).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Route-mount test: not swallowed by a static/SPA fallthrough
 // ---------------------------------------------------------------------------
 
