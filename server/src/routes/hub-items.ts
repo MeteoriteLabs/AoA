@@ -110,6 +110,9 @@ export function hubItemRoutes(db: Db) {
       await emitOpenApprovalHubItems(db, companyId, query.limit);
       await reconcileRuntimeDecisionHubItems(companyId);
     }
+    if (!query.lane || query.lane === "notifications") {
+      await svc.reconcile(companyId, { sourceType: "heartbeat_run" });
+    }
     if (!query.lane || query.lane === "suggestions") {
       await emitStaleWorkHubItems(db, companyId, query.limit);
     }

@@ -34,6 +34,7 @@ import { logger } from "../middleware/logger.js";
 import { publishLiveEvent, threadWorkingAgents, broadcastThreadPresence } from "./live-events.js";
 import { postCrewFailureCard } from "./crew-failure-card.js";
 import { relayCrewResult } from "./crew-result-relay.js";
+import { buildTerminalRunHubEmit, emitHubItem } from "./hub-source-producers.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
 import { logActivity } from "./activity-log.js";
 import { getServerAdapter, runningProcesses } from "../adapters/index.js";
@@ -1681,6 +1682,35 @@ export function heartbeatService(db: Db) {
           finishedAt: updated.finishedAt ? new Date(updated.finishedAt).toISOString() : null,
         },
       });
+
+      // BUG-5: event-driven run_complete / run_failed hub items at the single
+      // terminal-status chokepoint. Failures route through the SAME builder as
+      // the legacy sidebar-badges scan (byte-identical rows → the change-aware
+      // emit dedupes instead of ping-ponging). Best-effort try/catch mirrors
+      // relayCrewResult: a hub failure (e.g. resolveOwner "no human owner")
+      // must NEVER fail a run.
+      if (["succeeded", "failed", "timed_out"].includes(updated.status)) {
+        try {
+          const agentRow = await db
+            .select({ name: agents.name })
+            .from(agents)
+            .where(eq(agents.id, updated.agentId))
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
+          const emitArgs = buildTerminalRunHubEmit({
+            id: updated.id,
+            companyId: updated.companyId,
+            agentId: updated.agentId,
+            agentName: agentRow?.name ?? null,
+            status: updated.status,
+            error: updated.error ?? null,
+            updatedAt: updated.updatedAt,
+          });
+          if (emitArgs) await emitHubItem(db, emitArgs);
+        } catch (err) {
+          logger.warn({ err, runId: updated.id }, "terminal-run hub emit failed (non-fatal)");
+        }
+      }
     }
 
     return updated;

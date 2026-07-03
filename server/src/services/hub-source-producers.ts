@@ -201,6 +201,34 @@ export function buildFailedRunHubEmit(run: FailedRunLike): EmitArgs {
   };
 }
 
+export function buildCompletedRunHubEmit(run: FailedRunLike): EmitArgs {
+  const agentName = run.agentName?.trim() || "Agent";
+  return {
+    companyId: run.companyId,
+    semanticType: "run_complete",
+    sourceType: "heartbeat_run",
+    sourceId: run.id,
+    title: `${agentName} run complete`,
+    summary: "Run finished successfully",
+    sourceActorType: "agent",
+    sourceActorId: run.agentId,
+    priority: "normal",
+    sourcePermissionRevision: sourceRevision(run.updatedAt),
+  };
+}
+
+const TERMINAL_FAILED_STATUSES: ReadonlySet<string> = new Set(["failed", "timed_out"]);
+
+// Maps a terminal heartbeat run to its hub emit. Cancelled/queued/running -> null
+// (cancellation is founder-initiated; no notification). MUST route failures
+// through buildFailedRunHubEmit so the event emit and the legacy sidebar-badges
+// scan produce byte-identical rows for the same run (change-aware emit no-ops).
+export function buildTerminalRunHubEmit(run: FailedRunLike): EmitArgs | null {
+  if (run.status === "succeeded") return buildCompletedRunHubEmit(run);
+  if (TERMINAL_FAILED_STATUSES.has(run.status)) return buildFailedRunHubEmit(run);
+  return null;
+}
+
 export function buildBudgetAlertHubEmit(alert: BudgetAlertLike): EmitArgs {
   return {
     companyId: alert.companyId,

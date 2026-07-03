@@ -36,6 +36,14 @@ vi.mock("../services/hub-source-producers.js", () => ({
   emitHubItem,
 }));
 
+// The producers module is mocked above for the materializer-scan tests; the
+// builder unit tests below need the REAL implementations. `vi.importActual`
+// bypasses that mock — and its only runtime dependency (./hub-items.js) is
+// stubbed here so the heavy hub-items module graph never loads.
+vi.mock("../services/hub-items.js", () => ({
+  hubItemsService: vi.fn(() => ({ emit: vi.fn() })),
+}));
+
 vi.mock("drizzle-orm", () => ({
   and: (...args: unknown[]) => ({ and: args }),
   desc: (...args: unknown[]) => ({ desc: args }),
@@ -86,6 +94,10 @@ vi.mock("@armyofagents/db", () => ({
 import { emitOpenApprovalHubItems } from "../services/hub-approval-requests.js";
 import { emitLegacyAlertHubItems } from "../services/hub-legacy-alerts.js";
 import { emitStaleWorkHubItems } from "../services/hub-stale-work.js";
+
+const producers = (await vi.importActual(
+  "../services/hub-source-producers.js",
+)) as typeof import("../services/hub-source-producers.js");
 
 function makeSelectDb(rows: Array<Record<string, unknown>>) {
   const limits: number[] = [];
@@ -219,4 +231,69 @@ describe("hub source materializers", () => {
       sourceId: "co-1",
     });
   });
+});
+
+// BUG-5: terminal-run hub emit builders (REAL implementations via importActual).
+describe("terminal-run hub emit builders", () => {
+  const baseRun = {
+    id: "run-1",
+    companyId: "co-1",
+    agentId: "agent-1",
+    agentName: "Scout",
+    status: "succeeded",
+    error: null,
+    updatedAt: new Date("2026-06-30T00:00:00Z"),
+  };
+
+  it("buildCompletedRunHubEmit shapes a normal-priority run_complete item", () => {
+    expect(producers.buildCompletedRunHubEmit(baseRun)).toStrictEqual({
+      companyId: "co-1",
+      semanticType: "run_complete",
+      sourceType: "heartbeat_run",
+      sourceId: "run-1",
+      title: "Scout run complete",
+      summary: "Run finished successfully",
+      sourceActorType: "agent",
+      sourceActorId: "agent-1",
+      priority: "normal",
+      sourcePermissionRevision: "2026-06-30T00:00:00.000Z",
+    });
+  });
+
+  it("buildCompletedRunHubEmit falls back to 'Agent' for a missing/blank agent name", () => {
+    expect(producers.buildCompletedRunHubEmit({ ...baseRun, agentName: null }).title).toBe(
+      "Agent run complete",
+    );
+    expect(producers.buildCompletedRunHubEmit({ ...baseRun, agentName: "   " }).title).toBe(
+      "Agent run complete",
+    );
+  });
+
+  it("buildTerminalRunHubEmit routes succeeded through buildCompletedRunHubEmit", () => {
+    expect(producers.buildTerminalRunHubEmit(baseRun)).toStrictEqual(
+      producers.buildCompletedRunHubEmit(baseRun),
+    );
+  });
+
+  it.each(["failed", "timed_out"])(
+    "PARITY: buildTerminalRunHubEmit(%s) deep-equals buildFailedRunHubEmit for the same run",
+    (status) => {
+      // The event producer and the legacy sidebar-badges scan MUST emit
+      // byte-identical rows for the same run — any drift would ping-pong the
+      // change-aware upsert between the two producers (mini feedback storm).
+      const run = { ...baseRun, status, error: "boom" };
+      const viaTerminal = producers.buildTerminalRunHubEmit(run);
+      expect(viaTerminal).not.toBeNull();
+      expect(viaTerminal).toStrictEqual(producers.buildFailedRunHubEmit(run));
+      expect(viaTerminal!.semanticType).toBe("run_failed");
+      expect(viaTerminal!.priority).toBe("high");
+    },
+  );
+
+  it.each(["cancelled", "running", "queued", "scheduled_retry"])(
+    "buildTerminalRunHubEmit(%s) emits nothing (null)",
+    (status) => {
+      expect(producers.buildTerminalRunHubEmit({ ...baseRun, status })).toBeNull();
+    },
+  );
 });

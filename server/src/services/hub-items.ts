@@ -35,11 +35,14 @@ import {
 import type { UserRole } from "@armyofagents/shared";
 
 // Heartbeat-backed hub items are actionable while the source run is live, or
-// while it is the latest failed/timed-out run for its agent.
+// while it is the latest failed/timed-out run for its agent. "succeeded" is
+// included so a run_complete item stays open while it is the agent's LATEST
+// run; the existing isSuperseded rule closes it when a newer run lands (BUG-5).
 const HEARTBEAT_ACTIONABLE_STATUSES: ReadonlySet<string> = new Set([
   "queued",
   "scheduled_retry",
   "running",
+  "succeeded",
   "failed",
   "timed_out",
 ]);
