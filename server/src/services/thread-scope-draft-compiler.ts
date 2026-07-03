@@ -67,6 +67,12 @@ type CompileInput = {
   /** Adjutant-supplied tasks (already role-resolved). When present + non-empty,
    *  these become the task_proposal items and suppress the synthetic placeholder. */
   proposedTasks?: Array<{ title: string; assigneeAgentId?: string | null }>;
+  /** W2 (D6): when the caller ran extraction first (Adjutant extract-then-scope) and
+   *  there are still zero real actionable items, suppress the synthetic fallback task —
+   *  an extracted-and-empty thread must never show a fake card. Default false: the human
+   *  create-draft route (which does not run extraction synchronously) keeps ONE honest
+   *  fallback card whose title derives from the actual content. */
+  suppressFallbackTask?: boolean;
 };
 
 function cleanText(value: string | null | undefined): string {
@@ -94,18 +100,40 @@ function entryIds(entries: ScopeCompilerEntry[]): string[] {
   return entries.map((entry) => entry.id);
 }
 
+/** Word-boundary truncation where maxLength bounds the WHOLE result, ellipsis included.
+ *  (truncateAtWord appends "..." AFTER cutting at maxLength — fine for summaries, but it
+ *  overshoots the <= 80 title contract and hard-cuts mid-word at small maxLength.) */
+function truncateTitleAtWord(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value;
+  const room = maxLength - 3; // reserve space for "..."
+  const slice = value.slice(0, room + 1);
+  const lastSpace = slice.lastIndexOf(" ");
+  const head = lastSpace > 0 ? slice.slice(0, lastSpace) : slice.slice(0, room);
+  return `${head.replace(/[\s,;:]+$/g, "")}...`;
+}
+
+/** W2 (D6): titles derive from the actual discussion content — the hardcoded
+ *  keyword-stub placeholder titles are dead. Eng-review D3: use the
+ *  LONGEST non-empty entry (most content-bearing; greetings can't win), first sentence,
+ *  word-truncated to 80 chars. Callers guarantee entries is non-empty (Place-2 requires
+ *  scopedEntries.length > 0). Interim only — the locked end-state is agent-authored
+ *  titles everywhere (human create-draft button → "Ask Adjutant to scope", queued). */
+function derivedTitleFromEntries(entries: ScopeCompilerEntry[], fallback: string): string {
+  let longest = "";
+  for (const entry of entries) {
+    const text = cleanText(entry.rawContent);
+    if (text.length > longest.length) longest = text;
+  }
+  const sentence = longest ? firstSentence(longest) : "";
+  return sentence ? truncateTitleAtWord(sentence, 80) : fallback;
+}
+
 function titleForGeneratedTask(entries: ScopeCompilerEntry[]): string {
-  const combined = entries.map((entry) => cleanText(entry.rawContent)).join(" ").toLowerCase();
-  if (combined.includes("scope")) return "Implement real multi-message scope generation";
-  if (combined.includes("crew")) return "Implement crew discussion roundtable flow";
-  return "Turn discussion into a scoped work package";
+  return derivedTitleFromEntries(entries, "Scope work from this discussion");
 }
 
 function memoryCandidateTitle(entries: ScopeCompilerEntry[]): string {
-  const combined = entries.map((entry) => cleanText(entry.rawContent)).join(" ");
-  if (/decision rule/i.test(combined)) return "Decision rule from scoped discussion";
-  if (/durable memory/i.test(combined)) return "Durable memory from scoped discussion";
-  return "Scoped discussion memory";
+  return derivedTitleFromEntries(entries, "Decision from this discussion");
 }
 
 function shouldSynthesizeMemoryCandidate(input: {
@@ -303,8 +331,15 @@ export function compileThreadScopeDraft(input: CompileInput): CompiledThreadScop
   const hasGeneratedWorkItem = items.some(
     (item) => item.kind !== "artifact_link" && item.kind !== "source_signal",
   );
-  // Place 2: placeholder synthesis — guarded by !useProposedTasks.
-  if (scopedEntries.length > 0 && !hasGeneratedWorkItem && !useProposedTasks) {
+  // Place 2: fallback-task synthesis — title derived from content (W2 killed the keyword
+  // stubs). Suppressed when proposedTasks exist (W1a) OR when the caller ran extraction
+  // first and found nothing actionable (W2 suppressFallbackTask — no fake card, D6).
+  if (
+    scopedEntries.length > 0 &&
+    !hasGeneratedWorkItem &&
+    !useProposedTasks &&
+    !input.suppressFallbackTask
+  ) {
     items.push({
       kind: "task_proposal",
       title: titleForGeneratedTask(scopedEntries),
