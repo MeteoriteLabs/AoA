@@ -387,6 +387,17 @@ describe.skipIf(process.platform === "win32")("W2 integration: extract-then-scop
       extractionStatus: "skipped",
       // ZERO extracted items — eligible for extract-then-scope.
     });
+    // Codex #270 P2: an AGENT-authored entry (skipped, zero items) must be EXCLUDED
+    // from extract-then-scope — scoping derives work from the founder's instructions,
+    // not crew chatter. Seeded before the action so the freshness snapshot covers it.
+    const agentEntryId = randomUUID();
+    await db.execute(sql`
+      INSERT INTO discussion_entries
+        (id, discussion_id, input_type, raw_content, created_by, seq, extraction_status, author_agent_id)
+      VALUES
+        (${agentEntryId}, ${threadId}, 'agent', 'A long crew reply that must never be extracted for scoping.', 'crew', 2, 'skipped', ${agentId})
+    `);
+    await db.execute(sql`UPDATE discussions SET entry_seq = 2 WHERE id = ${threadId}`);
     await setThreadAutonomy(threadId, 0); // Manual
 
     const runId = await seedRun(companyId);
@@ -459,6 +470,17 @@ describe.skipIf(process.platform === "win32")("W2 integration: extract-then-scop
     expect(["skipped", "failed"]).toContain(String(entryRow.extraction_status));
     expect(entryRow.extraction_error).toBeTruthy();
     expect(String(entryRow.extraction_error)).toMatch(/No extraction engine available/);
+
+    // Codex #270 P2 (real SQL proof): the agent-authored entry was NEVER attempted —
+    // status untouched and no extractionError recorded (the human entry above got one).
+    const [agentRow] = rowsOf(
+      await db.execute(sql`
+        SELECT extraction_status, source_info->>'extractionError' AS extraction_error
+        FROM discussion_entries WHERE id = ${agentEntryId}
+      `),
+    );
+    expect(String(agentRow.extraction_status)).toBe("skipped");
+    expect(agentRow.extraction_error).toBeNull();
   }, 120_000);
 
   // ── Case 3: human default derives the fallback card from entry content ───────

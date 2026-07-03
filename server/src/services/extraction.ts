@@ -563,10 +563,14 @@ export function extractionService(db: Db) {
       const now = opts?.now ?? Date.now;
       const startedAt = now();
       try {
-        // Eligible: prose entries never extracted — status pending/skipped/failed AND no
-        // existing extracted items. Entries with items are a founder-review surface;
-        // deleting/re-extracting them is reprocess-only semantics (discussions.ts).
-        // LEFT JOIN + isNull keeps only zero-item entries, so join duplication is moot.
+        // Eligible: HUMAN prose entries never extracted — status pending/skipped/failed
+        // AND no existing extracted items. Entries with items are a founder-review
+        // surface; deleting/re-extracting them is reprocess-only semantics
+        // (discussions.ts). Codex #270 P2: agent/system entries are excluded too —
+        // scoping must derive work from the founder's instructions, not crew chatter
+        // (same human discriminator as crew-task-service: authorAgentId IS NULL +
+        // inputType not agent/system/scope_proposal). LEFT JOIN + isNull keeps only
+        // zero-item entries, so join duplication is moot.
         const rows = (await db
           .select({ id: discussionEntries.id, extractionStatus: discussionEntries.extractionStatus })
           .from(discussionEntries)
@@ -576,6 +580,9 @@ export function extractionService(db: Db) {
           )
           .where(and(
             eq(discussionEntries.discussionId, discussionId),
+            isNull(discussionEntries.authorAgentId),
+            ne(discussionEntries.inputType, "agent"),
+            ne(discussionEntries.inputType, "system"),
             ne(discussionEntries.inputType, "scope_proposal"),
             inArray(discussionEntries.extractionStatus, ["pending", "skipped", "failed"]),
             isNull(discussionExtractedItems.id),
