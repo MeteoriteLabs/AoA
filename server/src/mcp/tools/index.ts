@@ -1,4 +1,4 @@
-import { APPROVAL_STATUSES, APPROVAL_TYPES, ISSUE_STATUSES, type McpActorType } from "@armyofagents/shared";
+import { APPROVAL_STATUSES, APPROVAL_TYPES, CREATABLE_APPROVAL_TYPES, ISSUE_STATUSES, type McpActorType } from "@armyofagents/shared";
 import { readToolHandlers } from "./read-tools.js";
 import { writeToolHandlers } from "./write-tools.js";
 import { documentToolHandlers } from "./document-tools.js";
@@ -452,7 +452,10 @@ export const TOOL_DEFINITIONS = [
     inputSchema: {
       type: "object",
       properties: {
-        type: { type: "string", enum: [...APPROVAL_TYPES] },
+        // Advertise only externally-creatable types — crew_dispatch is system-internal
+        // and rejected by createApprovalSchema at runtime (list/filter still uses the full
+        // APPROVAL_TYPES set). Keeps the listTools schema honest for MCP clients.
+        type: { type: "string", enum: [...CREATABLE_APPROVAL_TYPES] },
         requestedByAgentId: { type: "string" },
         payload: { type: "object" },
         issueIds: { type: "array", items: { type: "string" } },

@@ -5,6 +5,7 @@ import { notFound, unprocessable } from "../errors.js";
 import { agentService } from "./agents.js";
 import { preflightCrewDispatch } from "./crew-budget.js";
 import { dispatchCreatedCrewTasks } from "./crew-task-service.js";
+import { logActivity } from "./activity-log.js";
 
 export function approvalService(db: Db) {
   const agentsSvc = agentService(db);
@@ -178,6 +179,24 @@ export function approvalService(db: Db) {
             .update(issues)
             .set({ workMode: "standard", updatedAt: new Date() })
             .where(and(eq(issues.id, t.id), eq(issues.companyId, companyId)));
+          // Codex #267 P2: this raw flip bypasses issueService's issue.updated activity, and
+          // crew_dispatch approvals aren't linked via issue_approvals, so the generic
+          // approval.approved log carries no task ids. Log the planning→standard dispatch
+          // per task so the mutation is auditable (repo rule: mutating actions are logged).
+          await logActivity(db, {
+            companyId,
+            actorType: "user",
+            actorId: decidedByUserId,
+            action: "crew_dispatch.task_dispatched",
+            entityType: "issue",
+            entityId: t.id,
+            details: {
+              approvalId: id,
+              fromWorkMode: "planning",
+              toWorkMode: "standard",
+              assigneeAgentId: t.assigneeAgentId,
+            },
+          });
           toDispatch.push({ id: t.id, assigneeAgentId: t.assigneeAgentId, workMode: "standard" });
         }
 

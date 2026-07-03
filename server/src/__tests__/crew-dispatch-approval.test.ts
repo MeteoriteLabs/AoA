@@ -45,6 +45,7 @@ vi.mock("../services/agents.js", () => ({
 const mocks = vi.hoisted(() => ({
   preflightCrewDispatch: vi.fn(),
   dispatchCreatedCrewTasks: vi.fn(),
+  logActivity: vi.fn(),
 }));
 
 vi.mock("../services/crew-budget.js", () => ({
@@ -52,6 +53,11 @@ vi.mock("../services/crew-budget.js", () => ({
 }));
 vi.mock("../services/crew-task-service.js", () => ({
   dispatchCreatedCrewTasks: mocks.dispatchCreatedCrewTasks,
+}));
+// approve()'s crew_dispatch branch logs each planning→standard dispatch (Codex #267 P2).
+// Mock it (logActivity imports activityLog from the mocked db, which this test doesn't stub).
+vi.mock("../services/activity-log.js", () => ({
+  logActivity: mocks.logActivity,
 }));
 
 import { approvalService } from "../services/approvals.js";
@@ -142,6 +148,8 @@ beforeEach(() => {
   mocks.preflightCrewDispatch.mockReset();
   mocks.dispatchCreatedCrewTasks.mockReset();
   mocks.dispatchCreatedCrewTasks.mockResolvedValue(undefined);
+  mocks.logActivity.mockReset();
+  mocks.logActivity.mockResolvedValue(undefined);
 });
 
 describe("approvalService.approve — crew_dispatch branch", () => {
@@ -180,6 +188,14 @@ describe("approvalService.approve — crew_dispatch branch", () => {
       { id: "t1", assigneeAgentId: "agent-1", workMode: "standard" },
       { id: "t2", assigneeAgentId: "agent-2", workMode: "standard" },
     ]);
+
+    // Codex #267 P2: each planning→standard dispatch is activity-logged for audit
+    expect(mocks.logActivity).toHaveBeenCalledTimes(2);
+    expect(mocks.logActivity.mock.calls[0][1]).toMatchObject({
+      action: "crew_dispatch.task_dispatched",
+      entityType: "issue",
+      entityId: "t1",
+    });
   });
 
   it("(b) preflight blocked: approve() throws and does NOT dispatch", async () => {
