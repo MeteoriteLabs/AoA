@@ -155,7 +155,9 @@ async function driveHandshake(
   if (opts.resumeId) {
     const resume = await fake.waitForRequest("thread/resume");
     if (opts.resumeUnknown) {
-      rejectReq(resume, new Error("thread 019f-abcd not found"));
+      // The REAL codex 0.130 thread/resume rejection text (live-captured) so the
+      // resume-unknown test exercises the production regex against wire text.
+      rejectReq(resume, new Error("no rollout found for thread id 019f-abcd"));
       const start = await fake.waitForRequest("thread/start");
       resolveReq(start, { thread: { id: threadId } });
     } else {

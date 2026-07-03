@@ -5,6 +5,7 @@ import {
   type AppServerAccumulator,
   type NeutralIntermediate,
 } from "../app-server/driver.js";
+import { isCodexUnknownSessionError } from "../parse.js";
 
 /**
  * W5c Task 8 — comprehensive failure-mode + cancel→teardown tests for the
@@ -430,5 +431,34 @@ describe("driveCodexAppServer failure modes (W5c Task 8)", () => {
     await Promise.resolve();
     // No response was recorded because the client is closed (guarded write).
     expect(fake.responses.some((r) => r.id === 30)).toBe(false);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// BUG-1 secondary: the REAL codex 0.130 app-server rejection texts must classify
+// as unknown-session so the driver's resume→fresh-thread fallback fires instead
+// of rethrowing and failing the run (protocol doc §8b). Live-captured:
+//   turn/start      → "thread not found: <uuid>"
+//   thread/resume   → "no rollout found for thread id <uuid>"
+// Neither matches the pre-existing alternations (`thread .* not found` needs
+// text BETWEEN "thread" and "not found").
+// -----------------------------------------------------------------------------
+describe("isCodexUnknownSessionError — real codex 0.130 app-server texts (BUG-1)", () => {
+  it("classifies turn/start's 'thread not found: <id>' as unknown-session", () => {
+    expect(
+      isCodexUnknownSessionError(
+        "thread not found: 00000000-0000-0000-0000-000000000000",
+        "",
+      ),
+    ).toBe(true);
+  });
+
+  it("classifies thread/resume's 'no rollout found for thread id <id>' as unknown-session", () => {
+    expect(
+      isCodexUnknownSessionError(
+        "no rollout found for thread id 00000000-0000-0000-0000-000000000000",
+        "",
+      ),
+    ).toBe(true);
   });
 });
