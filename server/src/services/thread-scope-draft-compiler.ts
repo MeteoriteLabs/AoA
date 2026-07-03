@@ -3,6 +3,10 @@ export type ScopeCompilerEntry = {
   seq: number;
   inputType: string;
   rawContent: string | null;
+  /** Set when a crew/org agent authored the entry — excluded from the derived-title
+   *  pool (titles derive from what HUMANS wrote; agent text is agent-authored elsewhere).
+   *  Optional: callers passing full discussion_entries rows carry it automatically. */
+  authorAgentId?: string | null;
 };
 
 export type ScopeCompilerExtractedItem = {
@@ -118,9 +122,20 @@ function truncateTitleAtWord(value: string, maxLength: number): string {
  *  word-truncated to 80 chars. Callers guarantee entries is non-empty (Place-2 requires
  *  scopedEntries.length > 0). Interim only — the locked end-state is agent-authored
  *  titles everywhere (human create-draft button → "Ask Adjutant to scope", queued). */
+/** T6 review: the title pool is HUMAN prose only. Without this, a crew scope_proposal
+ *  (raw JSON wire blob — routinely the longest entry) or a long agent reply would win
+ *  the longest-entry contest and put JSON/agent text on the Tasks board. Mirrors the
+ *  human-entry discriminator in crew-task-service.ts (authorAgentId null + inputType
+ *  not agent/system/scope_proposal). */
+function isHumanProseEntry(entry: ScopeCompilerEntry): boolean {
+  if (entry.authorAgentId) return false;
+  return entry.inputType !== "agent" && entry.inputType !== "system" && entry.inputType !== "scope_proposal";
+}
+
 function derivedTitleFromEntries(entries: ScopeCompilerEntry[], fallback: string): string {
   let longest = "";
   for (const entry of entries) {
+    if (!isHumanProseEntry(entry)) continue;
     const text = cleanText(entry.rawContent);
     if (text.length > longest.length) longest = text;
   }

@@ -515,3 +515,70 @@ describe("compileThreadScopeDraft — derived fallback titles + suppressFallback
     expect(tasks.map((t) => t.title)).toContain("Real extracted task");
   });
 });
+
+describe("compileThreadScopeDraft — derived-title pool is HUMAN prose only (T6 review)", () => {
+  const base = {
+    threadTitle: "Auth rewrite",
+    summaryText: "Migrate auth to JWT",
+    extractedItems: [],
+    attachments: [],
+  };
+
+  it("a longer scope_proposal JSON entry cannot become the title — longest HUMAN entry wins", () => {
+    const out = compileThreadScopeDraft({
+      ...base,
+      entries: [
+        { id: "e1", seq: 1, inputType: "write", rawContent: "We need to rebuild the billing retry queue." },
+        {
+          id: "e2",
+          seq: 2,
+          inputType: "scope_proposal",
+          rawContent:
+            '{"summary":"E2E fake scope from thread discussion with a very long JSON wire payload that would easily win a longest-entry contest","proposedTasks":[{"title":"X"}]}',
+        },
+      ],
+    });
+    const tasks = out.items.filter((i) => i.kind === "task_proposal");
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0].title).toBe("We need to rebuild the billing retry queue.");
+    expect(tasks[0].title).not.toMatch(/^\{/);
+  });
+
+  it("agent-authored entries (inputType 'agent' or authorAgentId set) are excluded from the title pool", () => {
+    const out = compileThreadScopeDraft({
+      ...base,
+      entries: [
+        { id: "e1", seq: 1, inputType: "write", rawContent: "Fix the webhook retries." },
+        {
+          id: "e2",
+          seq: 2,
+          inputType: "agent",
+          rawContent: "As an agent I have produced a much longer reply that would otherwise win the longest-entry contest easily.",
+        },
+        {
+          id: "e3",
+          seq: 3,
+          inputType: "write",
+          authorAgentId: "agent-scout",
+          rawContent: "Another long agent-authored message routed through a human-looking input type that must also not win here.",
+        },
+      ],
+    });
+    const tasks = out.items.filter((i) => i.kind === "task_proposal");
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0].title).toBe("Fix the webhook retries.");
+  });
+
+  it("no human prose at all → static fallback title (never JSON, never agent text)", () => {
+    const out = compileThreadScopeDraft({
+      ...base,
+      entries: [
+        { id: "e1", seq: 1, inputType: "agent", rawContent: "Agent-only chatter in this thread." },
+        { id: "e2", seq: 2, inputType: "scope_proposal", rawContent: '{"summary":"json blob"}' },
+      ],
+    });
+    const tasks = out.items.filter((i) => i.kind === "task_proposal");
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0].title).toBe("Scope work from this discussion");
+  });
+});
