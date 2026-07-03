@@ -149,14 +149,16 @@ test.describe("Team AoA Tasks — crew assignment via scope draft", () => {
       // The task card must be visible on the board
       await expect(page.getByText(taskTitle)).toBeVisible({ timeout: 15_000 });
 
-      // The assigned crew agent's name must appear on the card (CardMetaRow renders
-      // ownerAgentName when the agent is resolved from crewAgents prop)
-      await expect(page.getByTestId(`kanban-card-${created.createdTask!.id}`)).toBeVisible({
+      // The assigned crew agent's name must appear on the card. CardMetaRow renders
+      // ownerAgentName in a dedicated span (testid kanban-card-owner-name); assert on
+      // that specifically — a bare getByText("Engineer") is a strict-mode violation
+      // because the card also carries the name via the avatar title and the standard
+      // footer's Identity label.
+      const card = page.getByTestId(`kanban-card-${created.createdTask!.id}`);
+      await expect(card).toBeVisible({ timeout: 15_000 });
+      await expect(card.getByTestId("kanban-card-owner-name")).toHaveText(engineer!.name, {
         timeout: 15_000,
       });
-      await expect(
-        page.getByTestId(`kanban-card-${created.createdTask!.id}`).getByText(engineer!.name),
-      ).toBeVisible({ timeout: 15_000 });
     },
   );
 });

@@ -68,14 +68,27 @@ async function seedCompanyAndAgent(label: string): Promise<{
 }> {
   const company = await companyService(db).create({ name: `W1b ${label} Co` } as never);
   const companyId = company.id;
-  const [eng] = rowsOf(
+  // companyService.create() auto-seeds the AoA crew (incl. 'Engineer'); a second INSERT
+  // would violate agents_aoa_name_per_company_idx. Reuse the seeded Engineer — the same
+  // row resolveRoleToAgentId resolves for assigneeRole='engineer'. Fall back to an INSERT
+  // only if a future create() stops seeding crew.
+  let engRows = rowsOf(
     await db.execute(sql`
-      INSERT INTO agents (id, company_id, name, kind, status)
-      VALUES (gen_random_uuid(), ${companyId}, 'Engineer', 'aoa', 'idle')
-      RETURNING id
+      SELECT id FROM agents
+      WHERE company_id = ${companyId} AND kind = 'aoa' AND name = 'Engineer' AND status <> 'terminated'
+      LIMIT 1
     `),
   );
-  return { companyId, agentId: String(eng.id) };
+  if (engRows.length === 0) {
+    engRows = rowsOf(
+      await db.execute(sql`
+        INSERT INTO agents (id, company_id, name, kind, status)
+        VALUES (gen_random_uuid(), ${companyId}, 'Engineer', 'aoa', 'idle')
+        RETURNING id
+      `),
+    );
+  }
+  return { companyId, agentId: String(engRows[0].id) };
 }
 
 /**
@@ -189,7 +202,10 @@ afterAll(async () => {
 
 // ── test suite ────────────────────────────────────────────────────────────────
 
-describe.skipIf(process.platform === "win32")("W1b integration: autonomy-gated auto-accept", () => {
+// Windows-skip: CI's `runneradmin` account can't start embedded-postgres (Issue #114).
+// Local Windows CAN, so `AOA_INTEG_FORCE_WINDOWS=1` force-runs it for pre-push validation.
+const SKIP_WIN = process.platform === "win32" && process.env.AOA_INTEG_FORCE_WINDOWS !== "1";
+describe.skipIf(SKIP_WIN)("W1b integration: autonomy-gated auto-accept", () => {
 
   // ── Case 1: Manual (autonomyLevel=0) ─────────────────────────────────────
 
@@ -441,6 +457,88 @@ describe.skipIf(process.platform === "win32")("W1b integration: autonomy-gated a
     }
 
     // ── No-strand invariant: version is still 'draft' (NOT 'accepted') ────────
+    const [versionRow] = rowsOf(
+      await db.execute(sql`
+        SELECT status FROM thread_scope_versions WHERE id = ${scopeVersionId}
+      `),
+    );
+    expect(String(versionRow.status)).toBe("draft");
+  });
+
+  // ── Case 4: Drive (autonomyLevel=2) but the crew dispatch preflight BLOCKS ──
+  //
+  // Codex #265 P1: a paused thread (crew_paused=true, a founder kill-switch that
+  // preflightCrewDispatch reports as `thread_paused`) must stop the Drive path from
+  // applying OR dispatching. The draft is committed but left for manual accept:
+  // zero issues rows, zero wakeup rows, task item stays 'draft', version stays 'draft'.
+
+  it("Drive but preflight-blocked (thread paused): commits draft, creates NO issues and NO wakeup, leaves items draft", async () => {
+    if (setupError) throw new Error(String(setupError));
+
+    const { companyId, agentId } = await seedCompanyAndAgent("DrivePaused");
+    const { threadId } = await seedThreadWithInsight(companyId);
+    await setThreadAutonomy(threadId, 2);
+    // Founder pause → preflightCrewDispatch returns { allowed:false, reasonCode:'thread_paused' }.
+    await db.execute(sql`UPDATE discussions SET crew_paused = true WHERE id = ${threadId}`);
+
+    const snap = await captureFreshnessSnapshot(db as never, threadId);
+    const runId = await seedRun(companyId);
+    const actionId = randomUUID();
+
+    await db.execute(sql`
+      INSERT INTO thread_agent_actions
+        (id, company_id, thread_id, run_id, agent_id, action_type, status, payload, idempotency_key, freshness)
+      VALUES
+        (${actionId}, ${companyId}, ${threadId}, ${runId}, ${agentId}, 'create_scope_draft', 'ready',
+         ${JSON.stringify({
+           summary: "Auth scope",
+           proposedTasks: [{ title: "Build token endpoint", assigneeRole: "engineer" }],
+         })}::jsonb,
+         ${`k:w1b:drive-paused:${actionId}`},
+         ${JSON.stringify(snap)}::jsonb)
+    `);
+
+    const svc = threadAgentActionService(db);
+    const commitResult = await svc.commitThreadAgentActions({ companyId, threadId, runId });
+    // Action still commits (the draft was created); only the auto-accept was skipped.
+    expect(commitResult.committed).toBe(1);
+    expect(commitResult.failed).toBe(0);
+
+    const [actionRow] = rowsOf(
+      await db.execute(sql`
+        SELECT status, committed_scope_version_id FROM thread_agent_actions WHERE id = ${actionId}
+      `),
+    );
+    expect(String(actionRow.status)).toBe("committed");
+    const scopeVersionId = String(actionRow.committed_scope_version_id);
+
+    // ── Blocked: NO issues rows (nothing applied) ────────────────────────────
+    const issueRows = rowsOf(
+      await db.execute(sql`
+        SELECT id FROM issues WHERE source_discussion_id = ${threadId}
+      `),
+    );
+    expect(issueRows).toHaveLength(0);
+
+    // ── Blocked: NO wakeup rows ──────────────────────────────────────────────
+    const wakeupRows = rowsOf(
+      await db.execute(sql`
+        SELECT id FROM agent_wakeup_requests WHERE agent_id = ${agentId}
+      `),
+    );
+    expect(wakeupRows).toHaveLength(0);
+
+    // ── Draft left for manual accept: task item stays 'draft', version stays 'draft' ──
+    const taskItems = rowsOf(
+      await db.execute(sql`
+        SELECT status, result_issue_id FROM thread_scope_items
+        WHERE scope_version_id = ${scopeVersionId} AND kind = 'task_proposal'
+      `),
+    );
+    expect(taskItems).toHaveLength(1);
+    expect(String(taskItems[0].status)).toBe("draft");
+    expect(taskItems[0].result_issue_id).toBeNull();
+
     const [versionRow] = rowsOf(
       await db.execute(sql`
         SELECT status FROM thread_scope_versions WHERE id = ${scopeVersionId}

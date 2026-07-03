@@ -12,6 +12,15 @@ vi.mock("../services/crew-task-service.js", () => ({
   resolveCreationGate: vi.fn(),
 }));
 
+// Mock crew-budget — preflightCrewDispatch gates the Drive auto-dispatch (budget/pause).
+// Default allowed; individual tests override to simulate a hard-stop/paused block.
+const { mockPreflightCrewDispatch } = vi.hoisted(() => ({
+  mockPreflightCrewDispatch: vi.fn().mockResolvedValue({ allowed: true }),
+}));
+vi.mock("../services/crew-budget.js", () => ({
+  preflightCrewDispatch: mockPreflightCrewDispatch,
+}));
+
 // Mock crew-role-map so resolveRoleToAgentId doesn't hit DB.
 const { mockResolveRoleToAgentId } = vi.hoisted(() => ({
   mockResolveRoleToAgentId: vi.fn().mockResolvedValue(undefined),
@@ -140,6 +149,7 @@ describe("W1b: autonomy-gated auto-accept of controller scope drafts", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockDispatchCreatedCrewTasks.mockResolvedValue(undefined);
+    mockPreflightCrewDispatch.mockResolvedValue({ allowed: true });
     createOutputItemOk.mockResolvedValue({
       ok: true,
       item: { id: TASK_ITEM_ID, status: "applied" },
@@ -267,6 +277,82 @@ describe("W1b: autonomy-gated auto-accept of controller scope drafts", () => {
       COMPANY_ID,
       [createdTask],
     );
+  });
+
+  it("Drive (autonomy 2) but preflight BLOCKED (budget hard-stop / paused thread): no apply, no dispatch — draft left for manual accept", async () => {
+    // Codex #265 P1: the Drive auto-dispatch path must honor the same budget/pause
+    // hard-stop as crewTaskService.approveAndDispatch. When preflightCrewDispatch
+    // reports !allowed, we neither apply (create standard tasks) nor dispatch — the
+    // draft stays for the founder to accept manually.
+    mockResolveScopeAutoAcceptGate.mockReturnValue("accept_apply_dispatch");
+    mockPreflightCrewDispatch.mockResolvedValue({
+      allowed: false,
+      reason: "Company monthly budget exhausted",
+      reasonCode: "budget_exhausted",
+    });
+
+    const db = makeDb({ threadAutonomy: 2, companyAutonomy: 0, taskItems: [taskItemRow] });
+    const createOutputItem = vi.fn();
+
+    await threadAgentActionService(db as never, {
+      compareFreshnessSnapshot: vi.fn().mockResolvedValue({ fresh: true }),
+      discussions: { addEntry: vi.fn() },
+      scopeVersions: {
+        createDraftFromThread: vi.fn().mockResolvedValue(draftReturn),
+        createOutputItem,
+      },
+    }).commitThreadAgentActions({
+      companyId: COMPANY_ID,
+      threadId: THREAD_ID,
+      runId: "run-w1b",
+    });
+
+    // Preflight ran with the thread/company context…
+    expect(mockPreflightCrewDispatch).toHaveBeenCalledTimes(1);
+    expect(mockPreflightCrewDispatch.mock.calls[0][1]).toMatchObject({
+      companyId: COMPANY_ID,
+      threadId: THREAD_ID,
+    });
+    // …and because it blocked, the draft was left untouched: no apply, no dispatch.
+    expect(createOutputItem).not.toHaveBeenCalled();
+    expect(mockDispatchCreatedCrewTasks).not.toHaveBeenCalled();
+  });
+
+  it("Assist (autonomy 1): preflight NOT consulted (planning tasks consume no budget; dispatch deferred to founder approval)", async () => {
+    // Assist creates planning-mode tasks and never dispatches, so the budget/pause
+    // preflight is deferred to the W1c founder-approval step. Applying planning tasks
+    // must not be gated by a company budget hard-stop.
+    mockResolveScopeAutoAcceptGate.mockReturnValue("accept_apply");
+    mockPreflightCrewDispatch.mockResolvedValue({
+      allowed: false,
+      reason: "Company monthly budget exhausted",
+      reasonCode: "budget_exhausted",
+    });
+
+    const db = makeDb({ threadAutonomy: 1, companyAutonomy: 0, taskItems: [taskItemRow] });
+    const createOutputItem = vi.fn().mockResolvedValue({
+      ok: true,
+      item: { id: TASK_ITEM_ID, status: "applied" },
+      createdTask: { id: "issue-created-1", assigneeAgentId: "agent-eng", workMode: "planning" },
+    });
+
+    await threadAgentActionService(db as never, {
+      compareFreshnessSnapshot: vi.fn().mockResolvedValue({ fresh: true }),
+      discussions: { addEntry: vi.fn() },
+      scopeVersions: {
+        createDraftFromThread: vi.fn().mockResolvedValue(draftReturn),
+        createOutputItem,
+      },
+    }).commitThreadAgentActions({
+      companyId: COMPANY_ID,
+      threadId: THREAD_ID,
+      runId: "run-w1b",
+    });
+
+    // Preflight is NOT called at Assist (no dispatch) — apply proceeds regardless of budget.
+    expect(mockPreflightCrewDispatch).not.toHaveBeenCalled();
+    expect(createOutputItem).toHaveBeenCalledTimes(1);
+    expect(mockDispatchCreatedCrewTasks).not.toHaveBeenCalled();
   });
 
   it("effectiveAutonomy: thread.autonomyLevel takes precedence over company autonomyLevel", async () => {

@@ -30,6 +30,7 @@ import { threadService, parseMentions, processMentions } from "./threads.js";
 import { buildConveneWakeupDedupKey } from "./internal-agent/tools/thread-action-keys.js";
 import { resolveRoleToAgentId } from "./internal-agent/tools/crew-role-map.js";
 import { resolveScopeAutoAcceptGate, dispatchCreatedCrewTasks } from "./crew-task-service.js";
+import { preflightCrewDispatch } from "./crew-budget.js";
 import { logger } from "../middleware/logger.js";
 import { isUniqueViolation } from "./db-errors.js";
 
@@ -762,28 +763,56 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
                 const gate = resolveScopeAutoAcceptGate(effectiveAutonomy);
 
                 if (gate !== "draft_only") {
-                  const dispatchMode = gate === "accept_apply_dispatch" ? "standard" : "planning";
-                  // Apply ONLY task_proposal items, one-by-one via createOutputItem (version-preserving).
-                  // memory_candidate/decision items stay draft → founder-gated (D12). NOT applyAcceptedDraft (it closes
-                  // the version and would strand un-accepted memory items).
-                  const taskItems = (await actionDb.select({ id: threadScopeItems.id })
-                    .from(threadScopeItems)
-                    .where(and(
-                      eq(threadScopeItems.scopeVersionId, draft.version.id),
-                      eq(threadScopeItems.kind, "task_proposal"),
-                      eq(threadScopeItems.status, "draft"),
-                    ))) as Array<{ id: string }>;
-                  const createdTasks: Array<{ id: string; assigneeAgentId: string | null; workMode: string | null }> = [];
-                  for (const { id: itemId } of taskItems) {
-                    const res = await scopeVersionCommitter.createOutputItem?.(
-                      input.companyId, input.threadId, draft.version.id, itemId,
-                      { agentId: action.agentId ?? undefined, isHuman: false },
-                      { dispatchMode },
+                  // Codex #265 P1: the Drive gate applies AND dispatches real crew work in one
+                  // shot, so it must honor the same budget hard-stop + thread pause/disable
+                  // preflight as crewTaskService.approveAndDispatch. When blocked, we neither
+                  // apply nor dispatch — the created draft is left for the founder to accept
+                  // manually (identical to the draft_only outcome). Assist (accept_apply →
+                  // planning tasks, no dispatch) consumes no budget and defers its dispatch gate
+                  // to the founder's W1c approval, so it is exempt from the preflight here.
+                  let driveBlocked = false;
+                  if (gate === "accept_apply_dispatch") {
+                    const preflight = await preflightCrewDispatch(
+                      actionDb as unknown as import("@armyofagents/db").Db,
+                      {
+                        companyId: input.companyId,
+                        agentId: action.agentId ?? "",
+                        threadId: input.threadId,
+                      },
                     );
-                    if (res?.ok && res.createdTask) createdTasks.push(res.createdTask);
+                    if (!preflight.allowed) {
+                      driveBlocked = true;
+                      log.info(
+                        { threadId: input.threadId, versionId: draft.version.id, reasonCode: preflight.reasonCode },
+                        "W1b Drive auto-dispatch blocked by preflight — draft left for manual accept",
+                      );
+                    }
                   }
-                  if (gate === "accept_apply_dispatch" && createdTasks.length > 0) {
-                    await dispatchCreatedCrewTasks(actionDb as unknown as import("@armyofagents/db").Db, input.companyId, createdTasks);
+
+                  if (!driveBlocked) {
+                    const dispatchMode = gate === "accept_apply_dispatch" ? "standard" : "planning";
+                    // Apply ONLY task_proposal items, one-by-one via createOutputItem (version-preserving).
+                    // memory_candidate/decision items stay draft → founder-gated (D12). NOT applyAcceptedDraft (it closes
+                    // the version and would strand un-accepted memory items).
+                    const taskItems = (await actionDb.select({ id: threadScopeItems.id })
+                      .from(threadScopeItems)
+                      .where(and(
+                        eq(threadScopeItems.scopeVersionId, draft.version.id),
+                        eq(threadScopeItems.kind, "task_proposal"),
+                        eq(threadScopeItems.status, "draft"),
+                      ))) as Array<{ id: string }>;
+                    const createdTasks: Array<{ id: string; assigneeAgentId: string | null; workMode: string | null }> = [];
+                    for (const { id: itemId } of taskItems) {
+                      const res = await scopeVersionCommitter.createOutputItem?.(
+                        input.companyId, input.threadId, draft.version.id, itemId,
+                        { agentId: action.agentId ?? undefined, isHuman: false },
+                        { dispatchMode },
+                      );
+                      if (res?.ok && res.createdTask) createdTasks.push(res.createdTask);
+                    }
+                    if (gate === "accept_apply_dispatch" && createdTasks.length > 0) {
+                      await dispatchCreatedCrewTasks(actionDb as unknown as import("@armyofagents/db").Db, input.companyId, createdTasks);
+                    }
                   }
                 }
               } catch (err) {

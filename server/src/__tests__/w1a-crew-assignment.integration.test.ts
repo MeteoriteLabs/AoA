@@ -104,16 +104,27 @@ beforeAll(async () => {
       VALUES (gen_random_uuid(), ${threadId}, 'write', 'let us scope the auth work', 'human-user', 1)
     `);
 
-    // Seed the crew Engineer agent (kind='aoa', name='Engineer').
-    // resolveRoleToAgentId looks for: companyId match, kind='aoa', name='Engineer', status != 'terminated'.
-    const [eng] = rowsOf(
+    // Reuse the crew Engineer that companyService.create() auto-seeds (kind='aoa',
+    // name='Engineer'); a second INSERT would violate agents_aoa_name_per_company_idx.
+    // resolveRoleToAgentId resolves to this same row (companyId, kind='aoa',
+    // name='Engineer', status != 'terminated'). Fall back to INSERT only if not seeded.
+    let engRows = rowsOf(
       await db.execute(sql`
-        INSERT INTO agents (id, company_id, name, kind, status)
-        VALUES (gen_random_uuid(), ${companyId}, 'Engineer', 'aoa', 'idle')
-        RETURNING id
+        SELECT id FROM agents
+        WHERE company_id = ${companyId} AND kind = 'aoa' AND name = 'Engineer' AND status <> 'terminated'
+        LIMIT 1
       `),
     );
-    agentId = String(eng.id);
+    if (engRows.length === 0) {
+      engRows = rowsOf(
+        await db.execute(sql`
+          INSERT INTO agents (id, company_id, name, kind, status)
+          VALUES (gen_random_uuid(), ${companyId}, 'Engineer', 'aoa', 'idle')
+          RETURNING id
+        `),
+      );
+    }
+    agentId = String(engRows[0].id);
   } catch (err) {
     setupError = err;
     // eslint-disable-next-line no-console
@@ -134,7 +145,10 @@ afterAll(async () => {
   }
 }, 60_000);
 
-describe.skipIf(process.platform === "win32")("W1a integration: controller scope draft → apply → assigned crew task", () => {
+// Windows-skip: CI's `runneradmin` account can't start embedded-postgres (Issue #114).
+// Local Windows CAN, so `AOA_INTEG_FORCE_WINDOWS=1` force-runs it for pre-push validation.
+const SKIP_WIN = process.platform === "win32" && process.env.AOA_INTEG_FORCE_WINDOWS !== "1";
+describe.skipIf(SKIP_WIN)("W1a integration: controller scope draft → apply → assigned crew task", () => {
   async function captureSnapshot(tid: string): Promise<ThreadFreshnessSnapshot> {
     return captureFreshnessSnapshot(db as never, tid);
   }
