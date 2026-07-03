@@ -60,24 +60,53 @@ export function approvalService(db: Db) {
       // every caller; a throw after the flip would strand the approval when there is no
       // wrapping txn (tasks stuck in planning, approval closed). Payload is immutable
       // across the status flip, so reading it from `existing` is equivalent to `updated`.
-      let crewDispatchThreadId: string | null = null;
-      let crewDispatchTaskIds: string[] = [];
+      let crewDispatchCandidates: Array<{
+        id: string;
+        assigneeAgentId: string | null;
+        workMode: string | null;
+        status: string | null;
+      }> = [];
       if (existing.type === "crew_dispatch") {
         const payload = existing.payload as Record<string, unknown>;
-        crewDispatchThreadId = typeof payload.threadId === "string" ? payload.threadId : null;
-        crewDispatchTaskIds = Array.isArray(payload.taskIds)
+        const crewDispatchThreadId = typeof payload.threadId === "string" ? payload.threadId : null;
+        const crewDispatchTaskIds = Array.isArray(payload.taskIds)
           ? payload.taskIds.filter((x): x is string => typeof x === "string")
           : [];
         if (crewDispatchThreadId && crewDispatchTaskIds.length > 0) {
-          const preflight = await preflightCrewDispatch(db, {
-            companyId,
-            agentId: "",
-            threadId: crewDispatchThreadId,
-          });
-          if (!preflight.allowed) {
-            throw unprocessable(
-              `Cannot dispatch crew work: ${preflight.reason ?? preflight.reasonCode}`,
-            );
+          const tasks = (await db
+            .select({
+              id: issues.id,
+              assigneeAgentId: issues.assigneeAgentId,
+              workMode: issues.workMode,
+              status: issues.status,
+            })
+            .from(issues)
+            .where(and(eq(issues.companyId, companyId), inArray(issues.id, crewDispatchTaskIds)))) as Array<{
+            id: string;
+            assigneeAgentId: string | null;
+            workMode: string | null;
+            status: string | null;
+          }>;
+          // Only tasks still parked in their created state (planning + todo) are dispatch
+          // candidates — anything the founder already flipped/moved is left alone
+          // (Codex #267 P2; the guarded UPDATE below is the authoritative re-check).
+          crewDispatchCandidates = tasks.filter(
+            (t) => t.workMode === "planning" && t.status === "todo",
+          );
+          // Codex #267 P2: skip the preflight when nothing remains dispatchable —
+          // approving a stale approval is then a pure no-op close, and a paused thread
+          // or budget hard-stop must not leave it stuck pending.
+          if (crewDispatchCandidates.length > 0) {
+            const preflight = await preflightCrewDispatch(db, {
+              companyId,
+              agentId: "",
+              threadId: crewDispatchThreadId,
+            });
+            if (!preflight.allowed) {
+              throw unprocessable(
+                `Cannot dispatch crew work: ${preflight.reason ?? preflight.reasonCode}`,
+              );
+            }
           }
         }
       }
@@ -155,37 +184,14 @@ export function approvalService(db: Db) {
 
       // W1c: crew-dispatch approval side-effect. The budget/pause preflight already ran
       // BEFORE the status flip above (so a blocked dispatch can never close the approval,
-      // regardless of whether the caller wraps approve() in a txn). Here we only flip the
-      // still-'planning' tasks to 'standard' and dispatch them.
-      if (updated.type === "crew_dispatch" && crewDispatchThreadId && crewDispatchTaskIds.length > 0) {
-        const tasks = (await db
-          .select({
-            id: issues.id,
-            assigneeAgentId: issues.assigneeAgentId,
-            workMode: issues.workMode,
-            status: issues.status,
-          })
-          .from(issues)
-          .where(and(eq(issues.companyId, companyId), inArray(issues.id, crewDispatchTaskIds)))) as Array<{
-          id: string;
-          assigneeAgentId: string | null;
-          workMode: string | null;
-          status: string | null;
-        }>;
-
-        // Eng-review finding A: dispatch ONLY the tasks this approval flips
-        // planning→standard. A task the founder already flipped to 'standard'
-        // (and thus already dispatched) is skipped, so approving never enqueues a
-        // duplicate wakeup for it. This approval owns only its own parked tasks.
+      // regardless of whether the caller wraps approve() in a txn), and the candidate set
+      // (payload tasks still parked as planning + todo) was computed there too. Here we
+      // flip the candidates to 'standard' and dispatch them. Eng-review finding A: only
+      // the tasks THIS approval flips are dispatched — anything the founder already
+      // flipped/moved is skipped, so approving never enqueues a duplicate wakeup.
+      if (updated.type === "crew_dispatch" && crewDispatchCandidates.length > 0) {
         const toDispatch: Array<{ id: string; assigneeAgentId: string | null; workMode: string | null }> = [];
-        for (const t of tasks) {
-          // Only dispatch a task the founder left parked in its created state (planning +
-          // todo). If they moved it off todo before approving — backlog/in_progress/
-          // in_review/blocked/done/cancelled — or already flipped it to standard, leave it
-          // as-is; approving a stale approval must not resurrect parked/terminal work
-          // (Codex #267 P2). Cheap in-memory pre-filter; the guarded UPDATE below is the
-          // authoritative check.
-          if (t.workMode !== "planning" || t.status !== "todo") continue;
+        for (const t of crewDispatchCandidates) {
           // Guard the flip on the CURRENT row state (TOCTOU, Codex #267 P2): the WHERE
           // re-checks planning+todo, so a concurrent founder move between the SELECT and
           // this UPDATE misses (0 rows) and the task is neither flipped nor dispatched.

@@ -232,7 +232,7 @@ describe("approvalService.approve — crew_dispatch branch", () => {
 
     const { db, issueUpdateSets, state } = makeDb(
       approvedRow({ threadId: THREAD, taskIds: ["t1"] }),
-      [{ id: "t1", assigneeAgentId: "agent-1", workMode: "planning" }],
+      [{ id: "t1", assigneeAgentId: "agent-1", workMode: "planning", status: "todo" }],
     );
 
     const svc = approvalService(db);
@@ -317,6 +317,36 @@ describe("approvalService.approve — crew_dispatch branch", () => {
 
     // Nothing dispatched, nothing logged — the concurrent move won the race.
     expect(mocks.dispatchCreatedCrewTasks).toHaveBeenCalledWith(db, COMPANY, []);
+    expect(mocks.logActivity).not.toHaveBeenCalled();
+  });
+
+  it("(f) Codex #267 P2: a stale approval (no dispatchable tasks) skips preflight and closes as a no-op", async () => {
+    // The preflight WOULD block — but it must not even run, because every payload task
+    // was already handled (flipped to standard / moved off todo). Approving the stale
+    // approval is a pure no-op close and must succeed even when paused/over budget.
+    mocks.preflightCrewDispatch.mockResolvedValue({
+      allowed: false,
+      reason: "Crew budget reached",
+      reasonCode: "budget_exhausted",
+    });
+
+    const taskRows = [
+      { id: "t1", assigneeAgentId: "agent-1", workMode: "standard", status: "in_progress" },
+      { id: "t2", assigneeAgentId: "agent-2", workMode: "planning", status: "cancelled" },
+    ];
+    const { db, issueUpdateSets, state } = makeDb(
+      approvedRow({ threadId: THREAD, taskIds: ["t1", "t2"] }),
+      taskRows,
+    );
+
+    const svc = approvalService(db);
+    const result = await svc.approve("ap1", COMPANY, "user-A", "stale close");
+
+    expect((result as { status?: string } | null)?.status).toBe("approved");
+    expect(state.approvalsUpdated).toBe(true); // approval closed
+    expect(mocks.preflightCrewDispatch).not.toHaveBeenCalled(); // gate skipped — no-op
+    expect(issueUpdateSets).toHaveLength(0); // no task touched
+    expect(mocks.dispatchCreatedCrewTasks).not.toHaveBeenCalled();
     expect(mocks.logActivity).not.toHaveBeenCalled();
   });
 });
