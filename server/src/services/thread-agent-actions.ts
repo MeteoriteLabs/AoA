@@ -11,6 +11,7 @@ import {
   discussionEntries,
   discussionEntryAttachments,
   discussions,
+  internalAgentConfig,
   internalAgentRuns,
   threadAgentActions,
   threadOrchestrationState,
@@ -28,6 +29,7 @@ import { artifactService } from "./artifacts.js";
 import { threadService, parseMentions, processMentions } from "./threads.js";
 import { buildConveneWakeupDedupKey } from "./internal-agent/tools/thread-action-keys.js";
 import { resolveRoleToAgentId } from "./internal-agent/tools/crew-role-map.js";
+import { resolveScopeAutoAcceptGate, dispatchCreatedCrewTasks } from "./crew-task-service.js";
 import { logger } from "../middleware/logger.js";
 import { isUniqueViolation } from "./db-errors.js";
 
@@ -146,6 +148,15 @@ type ScopeVersionCommitService = {
       proposedTasks?: Array<{ title: string; assigneeAgentId?: string | null }>;
     },
   ) => Promise<{ status: string; version?: { id: string } }>;
+  // W1b: per-item apply (version-preserving). Memory candidates stay draft for the founder (D12).
+  createOutputItem?: (
+    companyId: string,
+    threadId: string,
+    scopeVersionId: string,
+    itemId: string,
+    actor: { userId?: string; agentId?: string; isHuman?: boolean },
+    options?: { dispatchMode?: "standard" | "planning"; memoryStatus?: "approved" | "pending" },
+  ) => Promise<{ ok: boolean; createdTask?: { id: string; assigneeAgentId: string | null; workMode: string | null } | undefined } | undefined>;
 };
 
 type ArtifactCommitService = {
@@ -738,6 +749,49 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
                 ...(proposedTasks.length > 0 ? { proposedTasks } : {}),
               },
             );
+
+            // W1b: autonomy-gated auto-accept of the freshly-created draft.
+            if (draft.status === "created" && draft.version?.id) {
+              try {
+                // effectiveAutonomy = thread.autonomyLevel ?? company.autonomyLevel (mirror controller-adjutant-runner)
+                const [threadRow] = (await actionDb.select({ autonomyLevel: discussions.autonomyLevel })
+                  .from(discussions).where(eq(discussions.id, input.threadId)).limit(1)) as Array<{ autonomyLevel: number | null }>;
+                const [cfg] = (await actionDb.select({ autonomyLevel: internalAgentConfig.autonomyLevel })
+                  .from(internalAgentConfig).where(eq(internalAgentConfig.companyId, input.companyId)).limit(1)) as Array<{ autonomyLevel: number }>;
+                const effectiveAutonomy = threadRow?.autonomyLevel != null ? threadRow.autonomyLevel : (cfg?.autonomyLevel ?? 0);
+                const gate = resolveScopeAutoAcceptGate(effectiveAutonomy);
+
+                if (gate !== "draft_only") {
+                  const dispatchMode = gate === "accept_apply_dispatch" ? "standard" : "planning";
+                  // Apply ONLY task_proposal items, one-by-one via createOutputItem (version-preserving).
+                  // memory_candidate/decision items stay draft → founder-gated (D12). NOT applyAcceptedDraft (it closes
+                  // the version and would strand un-accepted memory items).
+                  const taskItems = (await actionDb.select({ id: threadScopeItems.id })
+                    .from(threadScopeItems)
+                    .where(and(
+                      eq(threadScopeItems.scopeVersionId, draft.version.id),
+                      eq(threadScopeItems.kind, "task_proposal"),
+                      eq(threadScopeItems.status, "draft"),
+                    ))) as Array<{ id: string }>;
+                  const createdTasks: Array<{ id: string; assigneeAgentId: string | null; workMode: string | null }> = [];
+                  for (const { id: itemId } of taskItems) {
+                    const res = await scopeVersionCommitter.createOutputItem?.(
+                      input.companyId, input.threadId, draft.version.id, itemId,
+                      { agentId: action.agentId ?? undefined, isHuman: false },
+                      { dispatchMode },
+                    );
+                    if (res?.ok && res.createdTask) createdTasks.push(res.createdTask);
+                  }
+                  if (gate === "accept_apply_dispatch" && createdTasks.length > 0) {
+                    await dispatchCreatedCrewTasks(actionDb as unknown as import("@armyofagents/db").Db, input.companyId, createdTasks);
+                  }
+                }
+              } catch (err) {
+                log.warn({ err, threadId: input.threadId, versionId: draft.version?.id },
+                  "W1b auto-accept failed — draft left for manual accept");
+              }
+            }
+
             // A-M7: record the draft this batch just produced so a SUBSEQUENT scope-coupled
             // sibling (which will reuse this exact draft) is not falsely suppressed as
             // newer_scope_version against the shared, pre-batch snapshot.
