@@ -75,6 +75,30 @@ const DEFAULT_AUTOPILOT_POLICY: HubAutopilotPolicy = {
 };
 const DEFAULT_AUTOPILOT_ACTIONS: HubAutopilotActionsResponse = { items: [] };
 
+/** Bound for the opened-item preview cache (deliberate, like useHubTabs' 12-tab cap). */
+export const OPENED_ITEM_CACHE_MAX = 24;
+
+/**
+ * The ONLY insert path for the opened-item cache — used by BOTH writers (the
+ * deep-link hydration effect and handleOpenItem) so the cache stays bounded to
+ * the most recent {@link OPENED_ITEM_CACHE_MAX} rows. Recency = insertion
+ * order (string keys preserve it; hub item ids are uuids, never integer-like).
+ * Re-inserting the exact cached reference is a no-op (React bails out, so
+ * repeated row clicks don't churn state); a changed row for a cached id
+ * refreshes both its data and its recency.
+ */
+export function insertOpenedItem(
+  cache: Record<string, HubItemListRow>,
+  item: HubItemListRow,
+): Record<string, HubItemListRow> {
+  if (cache[item.id] === item) return cache;
+  const entries = Object.entries(cache).filter(([id]) => id !== item.id);
+  entries.push([item.id, item]);
+  return Object.fromEntries(
+    entries.slice(Math.max(0, entries.length - OPENED_ITEM_CACHE_MAX)),
+  );
+}
+
 export function InboxHub() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -98,8 +122,11 @@ export function InboxHub() {
   // Rows opened as tabs are cached here so runtime_decision / notification bodies
   // (which resolve their hub item by id) keep working after a lane switch, and so
   // deep-linked items from another lane / resolved history can resolve at all.
+  // Bounded: every write goes through insertOpenedItem (most recent 24 rows).
   const [openedItemCache, setOpenedItemCache] = useState<Record<string, HubItemListRow>>({});
-  const deepLinkHandledRef = useRef(false);
+  // Per-itemId guard (not a boolean): a later deep-link to a DIFFERENT item in
+  // the same SPA session must hydrate too; the same item stays fire-once.
+  const deepLinkHandledRef = useRef<string | null>(null);
   const [undoAction, setUndoAction] = useState<{
     label: string;
     itemId: string;
@@ -509,19 +536,26 @@ export function InboxHub() {
   // the loaded lane (hidden / resolved / other lane), hydrate it once so the
   // reading pane can still preview it.
   useEffect(() => {
-    if (deepLinkHandledRef.current) return;
     const itemId = params.itemId;
     if (!itemId || !selectedCompanyId) return;
-    if (items.some((item) => item.id === itemId) || openedItemCache[itemId]) {
-      deepLinkHandledRef.current = true;
+    if (deepLinkHandledRef.current === itemId) return;
+    const listItem = items.find((item) => item.id === itemId);
+    if (listItem || openedItemCache[itemId]) {
+      // Cache the list-found row BEFORE marking handled: a later list refetch
+      // that drops the item must not leave this deep-link unhydratable forever
+      // (guard says handled + cache empty = no preview and no re-fetch).
+      if (listItem) {
+        setOpenedItemCache((cache) => insertOpenedItem(cache, listItem));
+      }
+      deepLinkHandledRef.current = itemId;
       return;
     }
-    deepLinkHandledRef.current = true;
+    deepLinkHandledRef.current = itemId;
     let cancelled = false;
     hubItemsApi
       .getOne(selectedCompanyId, itemId)
       .then((item) => {
-        if (!cancelled) setOpenedItemCache((cache) => ({ ...cache, [item.id]: item }));
+        if (!cancelled) setOpenedItemCache((cache) => insertOpenedItem(cache, item));
       })
       .catch(() => {
         // Stale / hidden deep link — leave the reading pane empty.
@@ -618,7 +652,7 @@ export function InboxHub() {
   // item's entity as a dedicated tab (and keep it selected). Cache the row so its
   // tab body can resolve it by id even after a later lane switch.
   const handleOpenItem = (item: HubItemListRow) => {
-    setOpenedItemCache((cache) => (cache[item.id] ? cache : { ...cache, [item.id]: item }));
+    setOpenedItemCache((cache) => insertOpenedItem(cache, item));
     handleSelectItem(item.id);
     openTab(hubTabForItem(item));
   };

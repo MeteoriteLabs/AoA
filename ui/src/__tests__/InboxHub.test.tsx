@@ -7,11 +7,11 @@ import type {
 } from "@armyofagents/shared";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { hubItemsApi } from "@/api/hub-items";
 import { agentRuntimeDecisionsApi } from "@/api/agent-runtime-decisions";
-import { InboxHub } from "../pages/InboxHub";
+import { InboxHub, insertOpenedItem, OPENED_ITEM_CACHE_MAX } from "../pages/InboxHub";
 
 const mockPushToast = vi.hoisted(() => vi.fn());
 const liveHubItemCallbacks = vi.hoisted(() => new Set<(itemId: string) => void>());
@@ -23,6 +23,20 @@ function LocationProbe() {
       {location.pathname}
       {location.search}
     </output>
+  );
+}
+
+/** Test-only SPA navigation buttons: navigate without remounting the router. */
+function DeepLinkNav({ targets }: { targets: string[] }) {
+  const navigate = useNavigate();
+  return (
+    <>
+      {targets.map((target) => (
+        <button key={target} type="button" onClick={() => navigate(target)}>
+          nav:{target}
+        </button>
+      ))}
+    </>
   );
 }
 
@@ -124,13 +138,14 @@ vi.mock("@/api/agent-runtime-decisions", () => ({
   },
 }));
 
-function renderPage(initialEntry: string) {
+function renderPage(initialEntry: string, navTargets: string[] = []) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
   return render(
     <QueryClientProvider client={client}>
       <MemoryRouter initialEntries={[initialEntry]}>
+        {navTargets.length > 0 ? <DeepLinkNav targets={navTargets} /> : null}
         <Routes>
           <Route path="/:companyPrefix/inbox" element={<><InboxHub /><LocationProbe /></>} />
           <Route path="/:companyPrefix/inbox/new" element={<><InboxHub /><LocationProbe /></>} />
@@ -1028,5 +1043,85 @@ describe("InboxHub page", () => {
       });
     });
     expect(await screen.findByText(/second approval/i)).toBeInTheDocument();
+  });
+
+  it("hydrates a second deep-link to a different item in the same SPA session", async () => {
+    vi.mocked(hubItemsApi.getOne).mockImplementation(async (_companyId, itemId) =>
+      hubItem({
+        id: itemId,
+        title: itemId === "hub-a" ? "Deep item A" : "Deep item B",
+      }),
+    );
+
+    renderPage("/P4/inbox/waiting/hub-a", ["/P4/inbox/waiting/hub-b"]);
+
+    expect(await screen.findByRole("heading", { name: /deep item a/i })).toBeInTheDocument();
+    expect(hubItemsApi.getOne).toHaveBeenCalledWith("company-1", "hub-a");
+
+    // SPA navigation (no remount) to a SECOND deep-linked item: a boolean
+    // handled-guard makes this second hydration impossible — the guard must be
+    // per-itemId.
+    fireEvent.click(screen.getByRole("button", { name: "nav:/P4/inbox/waiting/hub-b" }));
+
+    expect(await screen.findByRole("heading", { name: /deep item b/i })).toBeInTheDocument();
+    expect(hubItemsApi.getOne).toHaveBeenCalledWith("company-1", "hub-b");
+  });
+
+  it("caches a deep-linked list item so the preview survives a refetch that drops it", async () => {
+    vi.mocked(hubItemsApi.list)
+      .mockResolvedValueOnce(hubList([hubItem({ id: "hub-1", title: "Listed deep item" })]))
+      .mockResolvedValue(hubList([]));
+
+    renderPage("/P4/inbox/waiting");
+
+    // Select the item AFTER the list loads → the deep-link effect takes the
+    // found-in-list branch (no getOne fetch).
+    fireEvent.click(await screen.findByRole("button", { name: /listed deep item/i }));
+    expect(await screen.findByRole("heading", { name: /listed deep item/i })).toBeInTheDocument();
+    expect(hubItemsApi.getOne).not.toHaveBeenCalled();
+
+    // Scope change → fresh list query that DROPS the item. The found branch
+    // must have cached the row: the per-item guard says "handled", so without
+    // that cache write this preview is gone and unhydratable forever.
+    fireEvent.click(screen.getByRole("button", { name: /^resolved$/i }));
+    await screen.findByText(/no open items in this lane/i);
+
+    expect(screen.getByRole("heading", { name: /listed deep item/i })).toBeInTheDocument();
+    expect(hubItemsApi.getOne).not.toHaveBeenCalled();
+  });
+});
+
+describe("insertOpenedItem (bounded opened-item cache)", () => {
+  it("keeps only the most recent OPENED_ITEM_CACHE_MAX entries", () => {
+    let cache: Record<string, HubListItem> = {};
+    for (let i = 0; i < 30; i += 1) {
+      cache = insertOpenedItem(cache, hubItem({ id: `hub-${i}` }));
+    }
+    expect(Object.keys(cache)).toHaveLength(OPENED_ITEM_CACHE_MAX);
+    // 30 inserts, cap 24: hub-0..hub-5 (oldest) evicted, hub-6..hub-29 kept.
+    expect(cache["hub-5"]).toBeUndefined();
+    expect(cache["hub-6"]).toBeDefined();
+    expect(cache["hub-29"]).toBeDefined();
+  });
+
+  it("re-inserting the same cached reference is a no-op (no state churn)", () => {
+    const row = hubItem({ id: "hub-1" });
+    const cache = insertOpenedItem({}, row);
+    expect(insertOpenedItem(cache, row)).toBe(cache);
+  });
+
+  it("re-inserting an updated row for a cached id refreshes data and recency", () => {
+    let cache: Record<string, HubListItem> = {};
+    for (let i = 0; i < OPENED_ITEM_CACHE_MAX; i += 1) {
+      cache = insertOpenedItem(cache, hubItem({ id: `hub-${i}` }));
+    }
+    // Refresh the oldest entry, then insert one more: the refreshed entry
+    // survives and the now-oldest (hub-1) is evicted instead.
+    cache = insertOpenedItem(cache, hubItem({ id: "hub-0", title: "Refreshed" }));
+    cache = insertOpenedItem(cache, hubItem({ id: "hub-new" }));
+    expect(Object.keys(cache)).toHaveLength(OPENED_ITEM_CACHE_MAX);
+    expect(cache["hub-0"]?.title).toBe("Refreshed");
+    expect(cache["hub-1"]).toBeUndefined();
+    expect(cache["hub-new"]).toBeDefined();
   });
 });
