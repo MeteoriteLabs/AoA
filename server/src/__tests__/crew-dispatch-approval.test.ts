@@ -157,8 +157,8 @@ describe("approvalService.approve — crew_dispatch branch", () => {
     mocks.preflightCrewDispatch.mockResolvedValue({ allowed: true });
 
     const taskRows = [
-      { id: "t1", assigneeAgentId: "agent-1", workMode: "planning" },
-      { id: "t2", assigneeAgentId: "agent-2", workMode: "planning" },
+      { id: "t1", assigneeAgentId: "agent-1", workMode: "planning", status: "todo" },
+      { id: "t2", assigneeAgentId: "agent-2", workMode: "planning", status: "todo" },
     ];
     const { db, issueUpdateSets } = makeDb(
       approvedRow({ threadId: THREAD, taskIds: ["t1", "t2"] }),
@@ -228,8 +228,8 @@ describe("approvalService.approve — crew_dispatch branch", () => {
     mocks.preflightCrewDispatch.mockResolvedValue({ allowed: true });
 
     const taskRows = [
-      { id: "t1", assigneeAgentId: "agent-1", workMode: "planning" },
-      { id: "t2", assigneeAgentId: "agent-2", workMode: "standard" }, // already dispatched
+      { id: "t1", assigneeAgentId: "agent-1", workMode: "planning", status: "todo" },
+      { id: "t2", assigneeAgentId: "agent-2", workMode: "standard", status: "in_progress" }, // already dispatched
     ];
     const { db, issueUpdateSets } = makeDb(
       approvedRow({ threadId: THREAD, taskIds: ["t1", "t2"] }),
@@ -248,6 +248,31 @@ describe("approvalService.approve — crew_dispatch branch", () => {
     expect(mocks.dispatchCreatedCrewTasks).toHaveBeenCalledWith(db, COMPANY, [
       { id: "t1", assigneeAgentId: "agent-1", workMode: "standard" },
     ]);
+  });
+
+  it("(d) Codex #267 P2: a planning task the founder moved off 'todo' is NOT flipped or dispatched", async () => {
+    mocks.preflightCrewDispatch.mockResolvedValue({ allowed: true });
+
+    // t1 still parked (planning+todo) → dispatched. t2 still planning but moved to
+    // cancelled → must be skipped (approving a stale approval must not resurrect it).
+    const taskRows = [
+      { id: "t1", assigneeAgentId: "agent-1", workMode: "planning", status: "todo" },
+      { id: "t2", assigneeAgentId: "agent-2", workMode: "planning", status: "cancelled" },
+    ];
+    const { db, issueUpdateSets } = makeDb(
+      approvedRow({ threadId: THREAD, taskIds: ["t1", "t2"] }),
+      taskRows,
+    );
+
+    const svc = approvalService(db);
+    await svc.approve("ap1", COMPANY, "user-A", "go");
+
+    // only t1 flipped + dispatched; the cancelled t2 is left untouched
+    expect(issueUpdateSets).toHaveLength(1);
+    expect(mocks.dispatchCreatedCrewTasks).toHaveBeenCalledWith(db, COMPANY, [
+      { id: "t1", assigneeAgentId: "agent-1", workMode: "standard" },
+    ]);
+    expect(mocks.logActivity).toHaveBeenCalledTimes(1);
   });
 });
 

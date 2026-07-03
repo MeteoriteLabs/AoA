@@ -159,12 +159,18 @@ export function approvalService(db: Db) {
       // still-'planning' tasks to 'standard' and dispatch them.
       if (updated.type === "crew_dispatch" && crewDispatchThreadId && crewDispatchTaskIds.length > 0) {
         const tasks = (await db
-          .select({ id: issues.id, assigneeAgentId: issues.assigneeAgentId, workMode: issues.workMode })
+          .select({
+            id: issues.id,
+            assigneeAgentId: issues.assigneeAgentId,
+            workMode: issues.workMode,
+            status: issues.status,
+          })
           .from(issues)
           .where(and(eq(issues.companyId, companyId), inArray(issues.id, crewDispatchTaskIds)))) as Array<{
           id: string;
           assigneeAgentId: string | null;
           workMode: string | null;
+          status: string | null;
         }>;
 
         // Eng-review finding A: dispatch ONLY the tasks this approval flips
@@ -173,7 +179,12 @@ export function approvalService(db: Db) {
         // duplicate wakeup for it. This approval owns only its own parked tasks.
         const toDispatch: Array<{ id: string; assigneeAgentId: string | null; workMode: string | null }> = [];
         for (const t of tasks) {
-          if (t.workMode !== "planning") continue; // already dispatched elsewhere — leave it
+          // Only dispatch a task the founder left parked in its created state (planning +
+          // todo). If they moved it off todo before approving — backlog/in_progress/
+          // in_review/blocked/done/cancelled — or already flipped it to standard, leave it
+          // as-is; approving a stale approval must not resurrect parked/terminal work
+          // (Codex #267 P2). dispatchCreatedCrewTasks has no status info, so gate here.
+          if (t.workMode !== "planning" || t.status !== "todo") continue;
           // Raw flip (no issueService.update wake side-effect) — dispatch is explicit below.
           await db
             .update(issues)
