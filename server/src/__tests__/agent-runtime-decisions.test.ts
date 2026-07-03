@@ -91,6 +91,7 @@ function makeService(
   };
   const hubItems = {
     emit: vi.fn(async () => ({ id: "hub-1", version: 0 })),
+    reconcile: vi.fn(async () => ({ healed: 1, closed: 1, refreshed: 0 })),
   };
   const activityLogger = vi.fn(async () => {});
   const runCanceller = depOverrides.runCanceller ?? vi.fn(async () => {});
@@ -246,7 +247,10 @@ describe("agentRuntimeDecisionService", () => {
         })),
       })),
     };
-    const hubItems = { emit: vi.fn(async () => ({ id: "hub-1", version: 0 })) };
+    const hubItems = {
+      emit: vi.fn(async () => ({ id: "hub-1", version: 0 })),
+      reconcile: vi.fn(async () => ({ healed: 0, closed: 0, refreshed: 0 })),
+    };
     const service = agentRuntimeDecisionService(db as never, {
       hubItems: hubItems as never,
       activityLogger: vi.fn(async () => {}),
@@ -292,7 +296,10 @@ describe("agentRuntimeDecisionService", () => {
         })),
       })),
     };
-    const hubItems = { emit: vi.fn(async () => ({ id: "hub-1", version: 0 })) };
+    const hubItems = {
+      emit: vi.fn(async () => ({ id: "hub-1", version: 0 })),
+      reconcile: vi.fn(async () => ({ healed: 0, closed: 0, refreshed: 0 })),
+    };
     const service = agentRuntimeDecisionService(db as never, {
       hubItems: hubItems as never,
       activityLogger: vi.fn(async () => {}),
@@ -1113,21 +1120,62 @@ describe("agentRuntimeDecisionService", () => {
   });
 
   it("reports runtime decision source terminality for hub reconciliation", () => {
+    // BUG-2 (2026-07-04): cancelled prompts with park_run/escalate timeout
+    // policies used to be carved OUT of `terminal` (isVisibleTimeoutFollowUp),
+    // keeping the waiting-lane hub item open forever — phantom answerable
+    // items, inflated badge, 409s on action. Terminality now tracks
+    // TERMINAL_STATUSES exactly; escalate-visibility moved to a
+    // notifications-lane `agent_error` follow-up item (Decisions #105/#106,
+    // mechanism amended 2026-07-04). The parked/escalate assertions below are
+    // deliberately INVERTED from the pre-fix behavior — not a regression.
+
+    // Gone source → terminal.
     expect(runtimeDecisionSourceSnapshot(null)).toMatchObject({ terminal: true });
+
+    // Non-terminal: still answerable / relay retryable.
+    expect(runtimeDecisionSourceSnapshot(baseDecision({ status: "created" }))).toMatchObject({
+      terminal: false,
+    });
+    expect(runtimeDecisionSourceSnapshot(baseDecision({ status: "shown" }))).toMatchObject({
+      terminal: false,
+    });
+    expect(runtimeDecisionSourceSnapshot(baseDecision({ status: "answered" }))).toMatchObject({
+      terminal: false,
+    });
     expect(runtimeDecisionSourceSnapshot(baseDecision({ status: "relay_failed" }))).toMatchObject({
       terminal: false,
       permissionRevision: "2",
     });
+
+    // Terminal: relayed / expired / cancelled — regardless of timeout policy.
+    expect(runtimeDecisionSourceSnapshot(baseDecision({ status: "relayed" }))).toMatchObject({
+      terminal: true,
+    });
+    expect(runtimeDecisionSourceSnapshot(baseDecision({ status: "expired" }))).toMatchObject({
+      terminal: true,
+    });
+    // INVERTED (BUG-2): parked timeout is terminal now; the relayError summary
+    // branch is retained so pre-close refreshes still surface the timeout text.
     expect(runtimeDecisionSourceSnapshot(baseDecision({
       status: "cancelled",
       timeoutPolicy: "park_run",
       relayError: "timeout policy parked the run",
       summary: "Original question",
     }))).toMatchObject({
-      terminal: false,
+      terminal: true,
       summary: "timeout policy parked the run",
     });
-    expect(runtimeDecisionSourceSnapshot(baseDecision({ status: "relayed" }))).toMatchObject({
+    // INVERTED (BUG-2): escalate — the policy live prompts actually use
+    // (runtime-hook-bridge) — is terminal too; visibility = agent_error item.
+    expect(runtimeDecisionSourceSnapshot(baseDecision({
+      status: "cancelled",
+      timeoutPolicy: "escalate",
+      relayError: "timeout policy escalated the run",
+    }))).toMatchObject({
+      terminal: true,
+      summary: "timeout policy escalated the run",
+    });
+    expect(runtimeDecisionSourceSnapshot(baseDecision({ status: "cancelled", timeoutPolicy: "deny" }))).toMatchObject({
       terminal: true,
     });
     expect(runtimeDecisionSourceSnapshot(baseDecision({ status: "cancelled", timeoutPolicy: "cancel_run" }))).toMatchObject({
@@ -1262,6 +1310,132 @@ describe("agentRuntimeDecisionService", () => {
       adapterType: "claude_local", kind: "permission", nonce: "nonce-1",
       title: "Allow?", timeoutPolicy: "deny",
     })).rejects.toThrow(/already consumed/i);
+  });
+
+  it("closes the projected hub item after relay (emit first, then reconcile)", async () => {
+    // BUG-2 push-close: every terminal transition reconciles its own hub item
+    // instead of waiting for the next GET-path sweep. Emit MUST come first so
+    // the final relayError/summary lands on the still-open row before the
+    // close archives it.
+    const answered = baseDecision({ status: "answered", sourceRevision: 3 });
+    const { service, hubItems } = makeService({
+      getDecision: vi.fn(async () => answered),
+    });
+
+    await service.markRelayed({ companyId: "company-1", decisionId: "decision-1" });
+
+    expect(hubItems.reconcile).toHaveBeenCalledTimes(1);
+    expect(hubItems.reconcile).toHaveBeenCalledWith("company-1", {
+      sourceType: "runtime_decision",
+      sourceId: "decision-1",
+    });
+    expect(hubItems.emit.mock.invocationCallOrder[0]).toBeLessThan(
+      hubItems.reconcile.mock.invocationCallOrder[0],
+    );
+  });
+
+  it("expire with escalate emits the agent_error follow-up, closes the item, and cancels the run", async () => {
+    const due = baseDecision({ id: "due-esc", status: "shown", timeoutPolicy: "escalate", sourceRevision: 5 });
+    const { service, hubItems, runCanceller } = makeService({
+      listDueForExpiry: vi.fn(async () => [due]),
+      updateDecision: vi.fn(async (_id, patch) => baseDecision({ id: "due-esc", ...(patch as Record<string, unknown>) })),
+    });
+
+    await service.expireDuePrompts({ companyId: "company-1", limit: 10 });
+
+    // Escalate-visible (D105/D106 amendment): the waiting-lane item closes, so
+    // WHAT HAPPENED surfaces as a notifications-lane agent_error item.
+    expect(hubItems.emit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        semanticType: "agent_error",
+        sourceType: "runtime_decision",
+        sourceId: "due-esc",
+        title: "Permission request timed out: Allow command?",
+        summary: "timeout policy escalated the run",
+        relatedEntityType: "heartbeat_run",
+        relatedEntityId: "11111111-1111-4111-8111-111111111111",
+        sourceActorType: "agent",
+        sourceActorId: "agent-1",
+        priority: "high",
+      }),
+    );
+    expect(hubItems.reconcile).toHaveBeenCalledWith("company-1", {
+      sourceType: "runtime_decision",
+      sourceId: "due-esc",
+    });
+    // Order: decision-item emit → agent_error follow-up → close.
+    const emitOrders = hubItems.emit.mock.invocationCallOrder;
+    expect(emitOrders[0]).toBeLessThan(emitOrders[1]);
+    expect(emitOrders[1]).toBeLessThan(hubItems.reconcile.mock.invocationCallOrder[0]);
+    expect(runCanceller).toHaveBeenCalledWith({
+      companyId: "company-1",
+      runId: "11111111-1111-4111-8111-111111111111",
+      reason: "timeout policy escalated the run",
+    });
+  });
+
+  it("expire with deny emits no agent_error follow-up and the close is a safe no-op", async () => {
+    const due = baseDecision({ id: "due-deny", kind: "permission", timeoutPolicy: "deny", status: "shown", sourceRevision: 5 });
+    const answeredRow = baseDecision({
+      id: "due-deny",
+      status: "answered",
+      decision: "deny",
+      answeredAt: now(),
+      sourceRevision: 6,
+    });
+    const { service, hubItems, runCanceller } = makeService({
+      listDueForExpiry: vi.fn(async () => [due]),
+      updateDecision: vi.fn(async () => answeredRow),
+    });
+
+    await service.expireDuePrompts({ companyId: "company-1", limit: 10 });
+
+    // No escalate-visible follow-up on a deny answer.
+    expect(hubItems.emit).toHaveBeenCalledTimes(1);
+    expect(hubItems.emit).not.toHaveBeenCalledWith(
+      expect.objectContaining({ semanticType: "agent_error" }),
+    );
+    // The unconditional close call happens, but it CANNOT archive anything:
+    // "answered" is non-terminal, so the real reconcile refreshes at most.
+    expect(hubItems.reconcile).toHaveBeenCalledWith("company-1", {
+      sourceType: "runtime_decision",
+      sourceId: "due-deny",
+    });
+    expect(runtimeDecisionSourceSnapshot(answeredRow as never).terminal).toBe(false);
+    expect(runCanceller).not.toHaveBeenCalled();
+  });
+
+  it("cancelActiveForRun closes each cancelled prompt and survives one close rejection", async () => {
+    const rows = [
+      baseDecision({ id: "active-1", status: "shown", sourceRevision: 4 }),
+      baseDecision({ id: "active-2", status: "answered", sourceRevision: 2 }),
+    ];
+    const { service, hubItems } = makeService({
+      listActiveForRun: vi.fn(async () => rows),
+      updateDecision: vi.fn(async (id, patch) => baseDecision({ id, ...(patch as Record<string, unknown>) })),
+    });
+    // First close fails (e.g. transient DB error) — best-effort: the decision
+    // flips are durable and the GET-path sweep heals the hub item later.
+    hubItems.reconcile
+      .mockRejectedValueOnce(new Error("reconcile unavailable"))
+      .mockResolvedValueOnce({ healed: 1, closed: 1, refreshed: 0 });
+
+    const result = await service.cancelActiveForRun({
+      companyId: "company-1",
+      runId: "11111111-1111-4111-8111-111111111111",
+      reason: "run cancelled",
+    });
+
+    expect(hubItems.reconcile).toHaveBeenCalledTimes(2);
+    expect(hubItems.reconcile).toHaveBeenNthCalledWith(1, "company-1", {
+      sourceType: "runtime_decision",
+      sourceId: "active-1",
+    });
+    expect(hubItems.reconcile).toHaveBeenNthCalledWith(2, "company-1", {
+      sourceType: "runtime_decision",
+      sourceId: "active-2",
+    });
+    expect(result.cancelled).toBe(2);
   });
 
   it("keeps sweeping after runCanceller throws for one run", async () => {

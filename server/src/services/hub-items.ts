@@ -1555,7 +1555,13 @@ export function hubItemsService(db: Db) {
         ? "stale_work"
         : opts.sourceType === "discussion"
           ? "discussion_pending"
-          : null;
+          // The expiry path emits an `agent_error` follow-up with the SAME
+          // sourceType/sourceId as the waiting-lane item (BUG-2, D105/D106
+          // amendment). Scope the sweep to the decision item's semanticType so
+          // it never instantly archives that follow-up.
+          : opts.sourceType === "runtime_decision"
+            ? "agent_runtime_decision"
+            : null;
 
     const conditions = [
       eq(hubItems.companyId, companyId),
@@ -1588,17 +1594,20 @@ export function hubItemsService(db: Db) {
         // concurrent user action bumps the version → this UPDATE 409s; we swallow
         // it and let the next sweep reconcile (sources stay truth).
         try {
-          await runTransaction(async (tx) => {
-            await applyGuardedTransition(tx, item, "archived", {
+          const closedItem = await runTransaction(async (tx) =>
+            applyGuardedTransition(tx, item, "archived", {
               actorType: "system",
               actorId: "reconciler",
               action: "reconcile_close",
               authorityBasis: "system_reconciliation",
               reason: `source ${opts.sourceType} is gone/terminal`,
               sourceRevision: snap.permissionRevision,
-            });
-          });
+            }),
+          );
           closed += 1;
+          // Realtime close (BUG-2): push the archive so the item leaves the
+          // open lane without a hub reload.
+          publishHubItemChanged(closedItem, "archived");
         } catch (err) {
           // 409 from a concurrent action → skip; anything else rethrows.
           if (!(err instanceof Error) || (err as { status?: number }).status !== 409) throw err;
@@ -1667,6 +1676,8 @@ export function hubItemsService(db: Db) {
       `[hub.reconcile] company=${companyId} source=${opts.sourceType} healed=${healed} (closed=${closed} refreshed=${refreshed})`,
     );
     if (healed > 0) await invalidateCounterSnapshotsForCompany(companyId);
+    // ONE counts broadcast per sweep, not per closed row (badge refetch fan-in).
+    if (closed > 0) publishHubCountsChanged(companyId, "item_changed");
     return { healed, closed, refreshed };
   }
 

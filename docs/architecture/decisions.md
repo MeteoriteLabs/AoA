@@ -975,6 +975,8 @@ The endpoint always returns HTTP 200 with a valid `{"decision":"allow"|"deny"}` 
 
 Block timeout: **5 minutes** (`RUNTIME_HOOK_BLOCK_TIMEOUT_SEC=300`). When a pending permission times out on the server side, the route returns **deny** to the CLI (anti-hang) via `requestPermissionBounded`, which on timeout terminates the wait without later marking the decision relayed. The prompt's `timeoutPolicy="escalate"` keeps missed/timed-out prompts **visible** in the hub so the founder can see what happened.
 
+> **Amendment (2026-07-04, BUG-2):** the escalate-visible *mechanism* changed; the *intent* (founder can see what happened) is preserved. Keeping the `agent_runtime_decision` item open in Waiting-on-you forever produced phantom answerable items, an inflated badge, and 409s on action. Now the waiting_on_you item **archives on every terminal transition** (relayed/expired/cancelled — push-close via the version-guarded reconciler), and visibility moves to a **notifications-lane `agent_error` follow-up item** ("Permission request timed out: …") plus the archived row remaining inspectable via status filter/audit trail.
+
 Overnight / away scenarios are handled by **trust rules (allow-always) and keeping unsupervised agents on bypass** — not by extending the timeout. Extending the timeout beyond 5 min risks hanging a run indefinitely.
 
 ### Gating and opt-in
@@ -1039,6 +1041,8 @@ The `item/fileChange/requestApproval` frame carries **no path** (only `itemId`);
 ### 5-minute SLA + escalate-visible
 
 Reuses the W5b block timeout `RUNTIME_HOOK_BLOCK_TIMEOUT_SEC=300` and `timeoutPolicy: "escalate"`. On timeout the broker returns **deny** (fail-closed) and never marks the decision relayed; the hub row stays **visible** so the founder can see what happened. Overnight/away runs are handled by trust rules + keeping unsupervised agents on the default path — not by extending the timeout.
+
+> **Amendment (2026-07-04, BUG-2):** escalate-visible mechanism amended, same as Decision #105: the waiting_on_you `agent_runtime_decision` item archives on terminal transition (it no longer lingers as a phantom answerable item); visibility moves to a notifications-lane `agent_error` follow-up item + the audit trail/status filter.
 
 ### Permission-only — `work_question` deferred
 

@@ -168,7 +168,7 @@ type DecisionRepo = {
   listDueForExpiry(input: { companyId?: string; now: Date; limit: number }): Promise<AgentRuntimeDecisionRow[]>;
 };
 
-type HubItemsApi = Pick<ReturnType<typeof hubItemsService>, "emit">;
+type HubItemsApi = Pick<ReturnType<typeof hubItemsService>, "emit" | "reconcile">;
 
 type ServiceDeps = {
   repo?: DecisionRepo;
@@ -516,7 +516,13 @@ export function runtimeDecisionSourceSnapshot(row: AgentRuntimeDecisionRow | nul
   if (!row) return { terminal: true, summary: null, permissionRevision: null };
   const status = row.status as RuntimeDecisionStatus;
   return {
-    terminal: TERMINAL_STATUSES.has(status) && !isVisibleTimeoutFollowUp(row),
+    // BUG-2 (2026-07-04): terminality tracks TERMINAL_STATUSES exactly. The old
+    // isVisibleTimeoutFollowUp carve-out kept parked/escalated timeouts open in
+    // Waiting-on-you forever (phantom answerable items). Escalate-visibility
+    // (Decisions #105/#106, mechanism amended) now lives in a notifications-lane
+    // agent_error follow-up emitted by expireDuePrompts; the follow-up summary
+    // branch below is kept so pre-close refreshes still surface the timeout text.
+    terminal: TERMINAL_STATUSES.has(status),
     title: row.title,
     summary: isVisibleTimeoutFollowUp(row)
       ? row.relayError ?? row.summary ?? row.promptText ?? null
@@ -634,6 +640,24 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
       priority: decision.status === "relay_failed" ? "urgent" : "high",
       sourcePermissionRevision: String(decision.sourceRevision),
     });
+  }
+
+  // BUG-2 push-close: archive the projected waiting-lane hub item on every
+  // terminal transition (relayed / expired / cancelled) instead of waiting for
+  // the next GET-path sweep. Always call AFTER emitHubItem — emit refreshes the
+  // final relayError onto the still-open row; the close does not depend on emit
+  // side-effects (emit() is change-aware and skips no-op side-effects).
+  async function closeProjectedHubItem(decision: AgentRuntimeDecisionRow) {
+    try {
+      await hub.reconcile(decision.companyId, {
+        sourceType: SOURCE_TYPE,
+        sourceId: decision.id,
+      });
+    } catch (err) {
+      // Best-effort: the decision flip is already durable; the GET-path sweep
+      // reconciles on the next read. Never poison the terminal transition.
+      logger.warn({ err, decisionId: decision.id }, "runtime decision hub-item close failed");
+    }
   }
 
   async function createPrompt(input: CreatePromptInput) {
@@ -920,6 +944,7 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
       details: { sourceRevision: row.sourceRevision },
     });
     await emitHubItem(relayed);
+    await closeProjectedHubItem(relayed);
     return relayed;
   }
 
@@ -956,6 +981,26 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
         details: { sourceRevision: row.sourceRevision, timeoutPolicy: row.timeoutPolicy },
       });
       await emitHubItem(updated);
+      if (outcome.parked) {
+        // Escalate-visible (Decisions #105/#106): the waiting-lane item closes, so
+        // surface WHAT HAPPENED as a notifications-lane item instead.
+        await hub.emit({
+          companyId: updated.companyId,
+          semanticType: "agent_error",
+          sourceType: SOURCE_TYPE,
+          sourceId: updated.id,
+          title: `Permission request timed out: ${updated.title}`,
+          summary: updated.relayError ?? "timeout policy parked the run",
+          relatedEntityType: "heartbeat_run",
+          relatedEntityId: updated.runId,
+          sourceActorType: "agent",
+          sourceActorId: updated.agentId,
+          priority: "high",
+        });
+      }
+      // Deny-timeout flips to "answered" (non-terminal) — the close is a safe
+      // no-op there (reconcile refreshes, never archives a live source).
+      await closeProjectedHubItem(updated);
       if (outcome.cancelsRun) {
         try {
           await runCanceller?.({
@@ -1000,6 +1045,7 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
         details: { sourceRevision: row.sourceRevision, reason: input.reason },
       });
       await emitHubItem(updated);
+      await closeProjectedHubItem(updated);
       cancelled += 1;
     }
     return { cancelled };
