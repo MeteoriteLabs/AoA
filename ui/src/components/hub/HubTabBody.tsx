@@ -2,12 +2,15 @@ import { Loader2 } from "lucide-react";
 import { TaskDetail } from "@/components/TaskDetail";
 import { BrowserViewer } from "@/components/viewers/BrowserViewer";
 import { BudgetCapsSection } from "@/components/settings/sections/BudgetCapsSection";
+import type { HubItemListRow } from "@/api/hub-items";
 import type { IssueContextBundle } from "@/api/issues";
 import { TaskOutputViewer } from "../threads/TaskOutputViewer";
 import { HUB_TABPANEL_ID } from "./HubTabStrip";
+import { RuntimeDecisionPanel } from "./RuntimeDecisionPanel";
 import {
   browserTab,
   type HubBrowserPayload,
+  type HubRuntimeDecisionPayload,
   type HubTab,
   type HubTabKind,
   type HubTaskPayload,
@@ -17,6 +20,13 @@ interface HubTabBodyProps {
   tab: HubTab;
   companyId: string | undefined;
   onOpenTab: (tab: HubTab) => void;
+  /**
+   * Resolves a hub item id back to its full {@link HubItemListRow}. The
+   * runtime_decision tab payload only carries `{ hubItemId }`, but
+   * {@link RuntimeDecisionPanel} needs the full row. The parent (E2/G1) supplies
+   * this; when absent, the runtime_decision tab falls back to a placeholder.
+   */
+  resolveHubItem?: (hubItemId: string) => HubItemListRow | undefined;
 }
 
 /**
@@ -26,13 +36,14 @@ interface HubTabBodyProps {
  * rather than the legacy fixed 360px HubViewer aside (A2 review).
  *
  * Live-wired kinds: home (placeholder stub, E2 swaps in the real HubHomeTab),
- * task, task_output, browser, budget. Kinds without a dedicated hub payload
- * (artifact, memory) or not yet built (approval, join_request, thread,
- * runtime_decision, agent, run, suggestion, marketplace_op, reminder, routine)
- * fall through to {@link TabLoadingPlaceholder} — never to `null` — so the panel
+ * task, task_output, browser, budget, runtime_decision (needs `resolveHubItem`;
+ * placeholder until the parent supplies it in E2/G1). Kinds without a dedicated
+ * hub payload (artifact, memory) or not yet built (approval, join_request,
+ * thread, agent, run, suggestion, marketplace_op, reminder, routine) fall
+ * through to {@link TabLoadingPlaceholder} — never to `null` — so the panel
  * still renders while Phase D/E wires them.
  */
-export function HubTabBody({ tab, companyId, onOpenTab }: HubTabBodyProps) {
+export function HubTabBody({ tab, companyId, onOpenTab, resolveHubItem }: HubTabBodyProps) {
   return (
     <div
       id={HUB_TABPANEL_ID}
@@ -41,12 +52,17 @@ export function HubTabBody({ tab, companyId, onOpenTab }: HubTabBodyProps) {
       data-testid="hub-tab-body"
       data-tab-kind={tab.kind}
     >
-      <HubTabBodyContent tab={tab} companyId={companyId} onOpenTab={onOpenTab} />
+      <HubTabBodyContent
+        tab={tab}
+        companyId={companyId}
+        onOpenTab={onOpenTab}
+        resolveHubItem={resolveHubItem}
+      />
     </div>
   );
 }
 
-function HubTabBodyContent({ tab, onOpenTab }: HubTabBodyProps) {
+function HubTabBodyContent({ tab, onOpenTab, resolveHubItem }: HubTabBodyProps) {
   switch (tab.kind) {
     case "home":
       return <HubHomePlaceholder />;
@@ -80,6 +96,20 @@ function HubTabBodyContent({ tab, onOpenTab }: HubTabBodyProps) {
     case "notification":
       return <HubNotificationBody tab={tab} />;
 
+    case "runtime_decision": {
+      // The runtime_decision tab payload only carries `{ hubItemId }`, but
+      // RuntimeDecisionPanel needs the full HubItemListRow. The parent supplies
+      // `resolveHubItem` (E2/G1); until then, fall back to the placeholder.
+      const payload = tab.payload as HubRuntimeDecisionPayload | undefined;
+      const item = payload && resolveHubItem ? resolveHubItem(payload.hubItemId) : undefined;
+      if (!item) return <TabLoadingPlaceholder kind={tab.kind} />;
+      return (
+        <div className="h-full w-full overflow-auto p-5" data-testid="hub-runtime-decision-body">
+          <RuntimeDecisionPanel item={item} />
+        </div>
+      );
+    }
+
     // `artifact` and `memory` are declared kinds but the hub tab model has no
     // HubArtifactPayload / HubMemoryPayload yet (no artifactId / memoryId /
     // companyId to feed ArtifactAttachmentViewer or MemoryLinkedViewer).
@@ -91,7 +121,6 @@ function HubTabBodyContent({ tab, onOpenTab }: HubTabBodyProps) {
     case "approval":
     case "join_request":
     case "thread":
-    case "runtime_decision":
     case "agent":
     case "run":
     case "suggestion":

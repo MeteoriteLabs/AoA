@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
+import type { HubItemListRow } from "@/api/hub-items";
 import { HubTabBody } from "../HubTabBody";
 import { HUB_TABPANEL_ID } from "../HubTabStrip";
 import {
@@ -8,6 +9,7 @@ import {
   browserTab,
   budgetTab,
   notificationTab,
+  runtimeDecisionTab,
   taskTab,
   type HubTab,
 } from "../hubViewerModel";
@@ -51,11 +53,61 @@ vi.mock("../TaskOutputViewer", () => ({
   ),
 }));
 
-function renderBody(tab: HubTab, onOpenTab = vi.fn()) {
+// RuntimeDecisionPanel is exercised in its own suite; here we only assert the
+// tab body renders it (given a resolver) vs. falling back to the placeholder.
+const runtimeDecisionPanelSpy = vi.fn();
+vi.mock("../RuntimeDecisionPanel", () => ({
+  RuntimeDecisionPanel: (props: Record<string, unknown>) => {
+    runtimeDecisionPanelSpy(props);
+    const item = props.item as HubItemListRow;
+    return <div data-testid="mock-runtime-decision" data-item-id={item.id} />;
+  },
+}));
+
+function renderBody(
+  tab: HubTab,
+  onOpenTab = vi.fn(),
+  resolveHubItem?: (hubItemId: string) => HubItemListRow | undefined,
+) {
   const utils = render(
-    <HubTabBody tab={tab} companyId="company-1" onOpenTab={onOpenTab} />,
+    <HubTabBody
+      tab={tab}
+      companyId="company-1"
+      onOpenTab={onOpenTab}
+      resolveHubItem={resolveHubItem}
+    />,
   );
   return { ...utils, onOpenTab };
+}
+
+function runtimeDecisionItem(id: string): HubItemListRow {
+  return {
+    id,
+    companyId: "company-1",
+    semanticType: "agent_runtime_decision",
+    lane: "waiting_on_you",
+    status: "open",
+    priority: "normal",
+    title: "Runtime decision",
+    summary: null,
+    sourceType: "agent_runtime_decision",
+    sourceId: "decision-1",
+    ownerUserId: null,
+    ownerPool: "board",
+    claimedByUserId: null,
+    claimedAt: null,
+    version: 0,
+    createdAt: "2026-07-01T00:00:00Z",
+    updatedAt: "2026-07-01T00:00:00Z",
+    readAt: null,
+    snoozedUntil: null,
+    dismissedAt: null,
+    groupKey: null,
+    groupLabel: null,
+    groupCount: null,
+    scopeKey: null,
+    slaAt: null,
+  };
 }
 
 describe("HubTabBody", () => {
@@ -130,5 +182,31 @@ describe("HubTabBody", () => {
     renderBody(notificationTab("hub-item-1", "Budget nearing cap"));
     expect(screen.getByText("Budget nearing cap")).toBeInTheDocument();
     expect(screen.getByText(/no dedicated viewer/i)).toBeInTheDocument();
+  });
+
+  it("renders RuntimeDecisionPanel for a runtime_decision tab when resolveHubItem returns an item", () => {
+    const item = runtimeDecisionItem("hub-runtime-9");
+    const resolveHubItem = vi.fn().mockReturnValue(item);
+    renderBody(runtimeDecisionTab("hub-runtime-9", "Allow command?"), vi.fn(), resolveHubItem);
+
+    expect(resolveHubItem).toHaveBeenCalledWith("hub-runtime-9");
+    const el = screen.getByTestId("mock-runtime-decision");
+    expect(el).toHaveAttribute("data-item-id", "hub-runtime-9");
+    // The panel received the full resolved row, not just the id.
+    const props = runtimeDecisionPanelSpy.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    expect(props.item).toBe(item);
+  });
+
+  it("falls back to the placeholder for a runtime_decision tab without a resolveHubItem", () => {
+    renderBody(runtimeDecisionTab("hub-runtime-9", "Allow command?"));
+    expect(screen.queryByTestId("mock-runtime-decision")).toBeNull();
+    expect(screen.getByText(/preparing viewer/i)).toBeInTheDocument();
+  });
+
+  it("falls back to the placeholder when resolveHubItem returns undefined", () => {
+    const resolveHubItem = vi.fn().mockReturnValue(undefined);
+    renderBody(runtimeDecisionTab("hub-runtime-missing"), vi.fn(), resolveHubItem);
+    expect(screen.queryByTestId("mock-runtime-decision")).toBeNull();
+    expect(screen.getByText(/preparing viewer/i)).toBeInTheDocument();
   });
 });
