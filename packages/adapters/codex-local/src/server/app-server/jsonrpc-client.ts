@@ -32,6 +32,7 @@ type Writable = {
 type Readable = {
   on(event: "data", listener: (chunk: unknown) => void): unknown;
   on(event: string, listener: (...args: unknown[]) => void): unknown;
+  off?(event: "data", listener: (chunk: unknown) => void): unknown;
 };
 
 /** A decoded JSON-RPC message. */
@@ -239,6 +240,10 @@ export function createJsonRpcClient(opts: CreateJsonRpcClientOptions): JsonRpcCl
   function close(err?: Error): void {
     if (closed) return;
     closed = true;
+    // Detach the stdout reader so the transport is self-contained on close
+    // (matters for a long-lived injected stream; the real child stream is torn
+    // down with the process). `onChunk` also early-returns once `closed`.
+    opts.stdout.off?.("data", onChunk);
     const rejection = err ?? new Error("JSON-RPC client closed");
     for (const [, entry] of pending) {
       entry.reject(rejection);

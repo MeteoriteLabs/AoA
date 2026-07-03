@@ -183,6 +183,13 @@ describe("appserver JSON-RPC client (W5c Task 2)", () => {
     await expect(p2).rejects.toThrow();
   });
 
+  it("close() detaches the stdout data listener (no retention on a long-lived stream)", () => {
+    const h = makeHarness();
+    expect(h.stdout.listenerCount("data")).toBe(1);
+    h.client.close();
+    expect(h.stdout.listenerCount("data")).toBe(0);
+  });
+
   it("serializes writes and defers the next until 'drain' when write() returns false", async () => {
     const stdin = new PassThrough();
     const stdout = new PassThrough();
