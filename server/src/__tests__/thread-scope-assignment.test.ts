@@ -261,6 +261,64 @@ describe("createDraftFromThread — proposedTasks assignee", () => {
   });
 });
 
+describe("createDraftFromThread — suppressFallbackTask forwarding (W2)", () => {
+  const thread = {
+    id: "t1",
+    companyId: "co1",
+    subtype: "normal",
+    entrySeq: 1,
+    title: "T",
+    summaryText: null,
+  };
+  const entry = { id: "e1", seq: 1, inputType: "write", rawContent: "Rework the billing retry queue." };
+
+  function draftDb(capturedInserts: unknown[]) {
+    return createDraftDb(
+      [
+        [thread],  // discussions
+        [],        // threadScopeVersions (no latest)
+        [entry],   // discussionEntries
+        [],        // discussionExtractedItems
+        [],        // discussionEntryAttachments
+      ],
+      capturedInserts,
+    );
+  }
+
+  it("suppressFallbackTask: true reaches the compiler — zero task_proposal items inserted", async () => {
+    const capturedInserts: unknown[] = [];
+    await threadScopeVersionService(draftDb(capturedInserts)).createDraftFromThread(
+      "co1",
+      "t1",
+      { agentId: "adj" },
+      { summary: "Auth work", suppressFallbackTask: true },
+    );
+
+    const itemsInsert = capturedInserts.find((v) => Array.isArray(v)) as Array<{ kind: string }> | undefined;
+    const tasks = (itemsInsert ?? []).filter((i) => i.kind === "task_proposal");
+    expect(tasks).toHaveLength(0);
+  });
+
+  it("default (flag absent): the derived-title fallback task still synthesizes (human route unchanged)", async () => {
+    const capturedInserts: unknown[] = [];
+    await threadScopeVersionService(draftDb(capturedInserts)).createDraftFromThread(
+      "co1",
+      "t1",
+      { agentId: "adj" },
+      { summary: "Auth work" },
+    );
+
+    const itemsInsert = capturedInserts.find((v) => Array.isArray(v)) as Array<{
+      kind: string;
+      title: string;
+    }> | undefined;
+    const tasks = (itemsInsert ?? []).filter((i) => i.kind === "task_proposal");
+    expect(tasks).toHaveLength(1);
+    // Derived from the entry content (W2 killed the keyword stubs).
+    expect(tasks[0].title).toBe("Rework the billing retry queue.");
+  });
+});
+
 describe("applyAcceptedDraft — Task 5 E2E: controller draft → applied tasks are assigned", () => {
   it("applying a draft creates an issue assigned to the crew agent", async () => {
     // Arrange: a draft version containing one accepted task_proposal item whose

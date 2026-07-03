@@ -635,6 +635,10 @@ export function threadScopeVersionService(db: Db) {
         decisions?: unknown[];
         openQuestions?: unknown[];
         proposedTasks?: Array<{ title: string; assigneeAgentId?: string | null }>;
+        /** W2 (D6): set by the Adjutant extract-then-scope path — extraction already ran,
+         *  so a zero-item compile must emit NO synthetic fallback task (no fake card).
+         *  Absent/false on the human create-draft route (derived-title fallback kept). */
+        suppressFallbackTask?: boolean;
       },
     ) => {
       const [thread] = await db
@@ -756,6 +760,7 @@ export function threadScopeVersionService(db: Db) {
           kind: attachment.artifactId ? "artifact" : "asset",
         })),
         proposedTasks: input.proposedTasks,
+        suppressFallbackTask: input.suppressFallbackTask,
       });
 
       const versionNumber = latest ? latest.versionNumber + 1 : 1;
