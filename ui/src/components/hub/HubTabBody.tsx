@@ -1,5 +1,6 @@
 import { Loader2 } from "lucide-react";
 import { TaskDetail } from "@/components/TaskDetail";
+import { ThreadDetail } from "@/pages/ThreadDetail";
 import { BrowserViewer } from "@/components/viewers/BrowserViewer";
 import { BudgetCapsSection } from "@/components/settings/sections/BudgetCapsSection";
 import type { HubItemListRow } from "@/api/hub-items";
@@ -14,6 +15,7 @@ import {
   type HubTab,
   type HubTabKind,
   type HubTaskPayload,
+  type HubThreadPayload,
 } from "./hubViewerModel";
 
 interface HubTabBodyProps {
@@ -36,12 +38,13 @@ interface HubTabBodyProps {
  * rather than the legacy fixed 360px HubViewer aside (A2 review).
  *
  * Live-wired kinds: home (placeholder stub, E2 swaps in the real HubHomeTab),
- * task, task_output, browser, budget, runtime_decision (needs `resolveHubItem`;
- * placeholder until the parent supplies it in E2/G1). Kinds without a dedicated
- * hub payload (artifact, memory) or not yet built (approval, join_request,
- * thread, agent, run, suggestion, marketplace_op, reminder, routine) fall
- * through to {@link TabLoadingPlaceholder} — never to `null` — so the panel
- * still renders while Phase D/E wires them.
+ * task, task_output, thread (D2 — hosts embedded ThreadDetail by prop id),
+ * browser, budget, runtime_decision (needs `resolveHubItem`; placeholder until
+ * the parent supplies it in E2/G1). Kinds without a dedicated hub payload
+ * (artifact, memory) or not yet built (approval, join_request, agent, run,
+ * suggestion, marketplace_op, reminder, routine) fall through to
+ * {@link TabLoadingPlaceholder} — never to `null` — so the panel still renders
+ * while Phase D/E wires them.
  */
 export function HubTabBody({ tab, companyId, onOpenTab, resolveHubItem }: HubTabBodyProps) {
   return (
@@ -62,10 +65,27 @@ export function HubTabBody({ tab, companyId, onOpenTab, resolveHubItem }: HubTab
   );
 }
 
-function HubTabBodyContent({ tab, onOpenTab, resolveHubItem }: HubTabBodyProps) {
+function HubTabBodyContent({ tab, companyId, onOpenTab, resolveHubItem }: HubTabBodyProps) {
   switch (tab.kind) {
     case "home":
       return <HubHomePlaceholder />;
+
+    case "thread": {
+      const payload = tab.payload as HubThreadPayload | undefined;
+      if (!payload) return <TabLoadingPlaceholder kind={tab.kind} />;
+      // D2: host the full ThreadDetail by prop id + company. `embedded` drops
+      // the page chrome (left rail, breadcrumbs) but keeps the thread fully live.
+      // `onOpenTab` is intentionally NOT threaded: ThreadDetail opens its
+      // internal links in its own right-side viewer, so thread-internal links do
+      // not (yet) spawn sibling hub tabs. Wiring that hand-off is a later phase.
+      return (
+        <ThreadDetail
+          discussionId={payload.discussionId}
+          companyId={companyId}
+          embedded
+        />
+      );
+    }
 
     case "task": {
       const payload = tab.payload as HubTaskPayload | undefined;
@@ -120,7 +140,6 @@ function HubTabBodyContent({ tab, onOpenTab, resolveHubItem }: HubTabBodyProps) 
     // Not-yet-built kinds — Phase D/E wire these.
     case "approval":
     case "join_request":
-    case "thread":
     case "agent":
     case "run":
     case "suggestion":

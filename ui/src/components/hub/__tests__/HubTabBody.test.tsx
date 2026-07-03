@@ -11,6 +11,7 @@ import {
   notificationTab,
   runtimeDecisionTab,
   taskTab,
+  threadTab,
   type HubTab,
 } from "../hubViewerModel";
 
@@ -24,6 +25,22 @@ vi.mock("@/components/TaskDetail", () => ({
     return (
       <div data-testid="mock-task-detail" data-issue-id={String(props.issueId)}>
         TaskDetail
+      </div>
+    );
+  },
+}));
+
+const threadDetailSpy = vi.fn();
+vi.mock("@/pages/ThreadDetail", () => ({
+  ThreadDetail: (props: Record<string, unknown>) => {
+    threadDetailSpy(props);
+    return (
+      <div
+        data-testid="mock-thread-detail"
+        data-discussion-id={String(props.discussionId)}
+        data-embedded={String(props.embedded)}
+      >
+        ThreadDetail
       </div>
     );
   },
@@ -135,6 +152,16 @@ describe("HubTabBody", () => {
     renderBody(taskTab("issue-42", "Ship it"));
     const el = screen.getByTestId("mock-task-detail");
     expect(el).toHaveAttribute("data-issue-id", "issue-42");
+  });
+
+  it("renders ThreadDetail with the payload discussionId + embedded for a thread tab", () => {
+    renderBody(threadTab("disc-77", "Sprint planning"));
+    const el = screen.getByTestId("mock-thread-detail");
+    expect(el).toHaveAttribute("data-discussion-id", "disc-77");
+    expect(el).toHaveAttribute("data-embedded", "true");
+    // The hosting company id is threaded through so the thread query resolves.
+    const props = threadDetailSpy.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    expect(props.companyId).toBe("company-1");
   });
 
   it("threads onOpenTab into TaskDetail's handoff callback", () => {
