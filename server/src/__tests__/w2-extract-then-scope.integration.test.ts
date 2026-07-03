@@ -368,6 +368,37 @@ describe.skipIf(process.platform === "win32")("W2 integration: extract-then-scop
       `),
     );
     expect(String(entryRow.extraction_status)).toBe("pending");
+
+    // ── Codex #270 P2 (round 5), real-SQL proof: applying the card RESOLVES its
+    // source extracted item — no duplicate-approve path, no stale pending badge. ──
+    await db.execute(sql`UPDATE discussions SET pending_item_count = 1 WHERE id = ${threadId}`);
+    const [cardRow] = rowsOf(
+      await db.execute(sql`
+        SELECT id, extracted_item_id FROM thread_scope_items
+        WHERE scope_version_id = ${scopeVersionId} AND kind = 'task_proposal'
+      `),
+    );
+    expect(cardRow.extracted_item_id).toBeTruthy(); // the card carries its origin
+    const applyResult = await threadScopeVersionService(db).createOutputItem(
+      companyId,
+      threadId,
+      scopeVersionId,
+      String(cardRow.id),
+      { userId: "founder-user", isHuman: true },
+      {},
+    );
+    expect(applyResult.ok).toBe(true);
+    const [sourceItem] = rowsOf(
+      await db.execute(sql`
+        SELECT status, result_task_id FROM discussion_extracted_items WHERE id = ${String(cardRow.extracted_item_id)}
+      `),
+    );
+    expect(String(sourceItem.status)).toBe("approved"); // no longer approve-able → no duplicate
+    expect(sourceItem.result_task_id).toBeTruthy();     // linked to the created task
+    const [threadRow2] = rowsOf(
+      await db.execute(sql`SELECT pending_item_count FROM discussions WHERE id = ${threadId}`),
+    );
+    expect(Number(threadRow2.pending_item_count)).toBe(0); // badge decremented
   }, 60_000);
 
   // ── Case 2: Adjutant path, extraction attempted-and-failed → zero-card draft ──

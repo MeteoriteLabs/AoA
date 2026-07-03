@@ -411,4 +411,64 @@ describe("applyAcceptedDraft — Task 5 E2E: controller draft → applied tasks 
       expect.objectContaining({ assigneeAgentId: "agent-eng" }),
     );
   });
+
+  it("Codex #270 P2 (round 5): applying a card that came from an extracted item RESOLVES the source item", async () => {
+    const draftVersion = {
+      id: "scope1",
+      companyId: "co1",
+      threadId: "thread1",
+      versionNumber: 1,
+      status: "draft",
+      sourceEndSeq: 1,
+    };
+    const thread = { id: "thread1", companyId: "co1", subtype: "normal", entrySeq: 1 };
+    const acceptedTask = {
+      id: "task-item",
+      kind: "task_proposal",
+      status: "accepted",
+      title: "Build token endpoint",
+      description: "from extraction",
+      sourceEntryIds: [],
+      extractedItemId: "xi-1", // ← the card ORIGINATED from an extracted item
+      payload: { priority: "medium" },
+    };
+
+    // Update order in the apply loop for one extracted-item-backed task:
+    //   [0] resolveSourceExtractedItem UPDATE (returning [{id}] → triggers decrement)
+    //   [1] discussions pendingItemCount decrement
+    //   [2] scope item set applied
+    //   [3] version set accepted
+    const db = createApplyDb(
+      [[draftVersion], [thread], [acceptedTask]],
+      [
+        [{ id: "xi-1" }],
+        [],
+        [{ ...acceptedTask, status: "applied", resultIssueId: "task1" }],
+        [{ ...draftVersion, status: "accepted" }],
+      ],
+    );
+
+    const result = await (threadScopeVersionService(db) as any).applyAcceptedDraft(
+      "co1",
+      "thread1",
+      "scope1",
+      { userId: "u1", isHuman: true },
+    );
+    expect(result).toMatchObject({ ok: true, alreadyAccepted: false });
+
+    // The source extracted item was resolved: approved + linked to the created task —
+    // it can no longer be approved later into a DUPLICATE task.
+    const resolveSet = (db.capturedUpdates as Array<Record<string, unknown>>).find(
+      (u) => u.status === "approved" && "resultTaskId" in u,
+    );
+    expect(resolveSet).toBeDefined();
+    expect(resolveSet!.resultTaskId).toBe("task1");
+    expect(resolveSet!.resultMemoryId).toBeNull();
+
+    // And the discussion's pending badge was decremented (GREATEST-guarded).
+    const decrementSet = (db.capturedUpdates as Array<Record<string, unknown>>).find(
+      (u) => "pendingItemCount" in u,
+    );
+    expect(decrementSet).toBeDefined();
+  });
 });

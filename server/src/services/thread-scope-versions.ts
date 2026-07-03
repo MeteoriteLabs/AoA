@@ -379,6 +379,45 @@ async function isScopeDraftStaleForOutputs(
 
 type ScopeDraftWriteDb = Pick<Db, "insert">;
 type ScopeDirectFinalizeDb = Pick<Db, "select" | "update">;
+/** Codex #270 P2 (round 5): applying a scope card that ORIGINATED from an extracted
+ *  item must RESOLVE that source item. Otherwise it stays 'pending' in the founder's
+ *  review queue — approve-able later into a DUPLICATE task — and holds a stale
+ *  pendingItemCount badge. Mirrors the human approve flow (discussions.ts approveItems:
+ *  status→'approved' + result linkage + GREATEST-guarded decrement). The UPDATE is
+ *  guarded to pending/edited so an already-resolved item is never double-counted.
+ */
+async function resolveSourceExtractedItem(
+  tx: Pick<Db, "update">,
+  input: {
+    extractedItemId: string;
+    threadId: string;
+    resultTaskId?: string | null;
+    resultMemoryId?: string | null;
+  },
+): Promise<void> {
+  const updated = (await tx
+    .update(discussionExtractedItems)
+    .set({
+      status: "approved",
+      resultTaskId: input.resultTaskId ?? null,
+      resultMemoryId: input.resultMemoryId ?? null,
+    })
+    .where(and(
+      eq(discussionExtractedItems.id, input.extractedItemId),
+      inArray(discussionExtractedItems.status, ["pending", "edited"]),
+    ))
+    .returning({ id: discussionExtractedItems.id })) as Array<{ id: string }>;
+  if (updated.length > 0) {
+    await tx
+      .update(discussions)
+      .set({
+        pendingItemCount: sql`GREATEST(${discussions.pendingItemCount} - 1, 0)`,
+        updatedAt: new Date(),
+      })
+      .where(eq(discussions.id, input.threadId));
+  }
+}
+
 type ScopeItemReviewStatus = "draft" | "accepted" | "rejected";
 
 const REVIEWABLE_SCOPE_ITEM_STATUSES = new Set(["draft", "accepted", "rejected"]);
@@ -1282,6 +1321,18 @@ export function threadScopeVersionService(db: Db) {
             status = "applied";
           }
 
+          // Codex #270 P2 (round 5): a card that originated from an extracted item
+          // resolves its source on apply — otherwise the item stays pending
+          // (approve-able into a duplicate task) with a stale pendingItemCount badge.
+          if (item.extractedItemId && (resultIssueId || resultMemoryId)) {
+            await resolveSourceExtractedItem(tx as unknown as Pick<Db, "update">, {
+              extractedItemId: item.extractedItemId,
+              threadId: version.threadId,
+              resultTaskId: resultIssueId,
+              resultMemoryId,
+            });
+          }
+
           const [updatedItem] = await tx
             .update(threadScopeItems)
             .set({
@@ -1491,6 +1542,17 @@ export function threadScopeVersionService(db: Db) {
             createdBy: actor.userId ?? actor.agentId ?? "system",
           }).returning();
           artifactLinkId = link?.id;
+        }
+
+        // Codex #270 P2 (round 5): resolve the source extracted item on apply — same
+        // rationale as the applyAcceptedDraft path (duplicate-approve + stale badge).
+        if (item.extractedItemId && (resultIssueId || resultMemoryId)) {
+          await resolveSourceExtractedItem(tx as unknown as Pick<Db, "update">, {
+            extractedItemId: item.extractedItemId,
+            threadId: version.threadId,
+            resultTaskId: resultIssueId,
+            resultMemoryId,
+          });
         }
 
         const [updatedItem] = await tx
