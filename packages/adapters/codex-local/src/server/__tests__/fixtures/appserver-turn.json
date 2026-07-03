@@ -1,5 +1,5 @@
 {
-  "policy": "on-request",
+  "policy": "untrusted",
   "threadId": "019f27ad-3ace-7f91-bcad-71473313ccaf",
   "frames": [
     {
