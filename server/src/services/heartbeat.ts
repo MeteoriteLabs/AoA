@@ -4071,8 +4071,16 @@ export function heartbeatService(db: Db) {
         executionTargetType: executionTarget.type,
       });
 
+      // W5c: only claude_local uses the out-of-process PreToolUse HTTP hook
+      // (token + registry + runtimeHookBridge). codex_local drives its approvals
+      // IN-PROCESS via the app-server JSON-RPC callback and needs NO token,
+      // registry entry, or HTTP bridge — it reads the broker off ctx directly.
+      // The `bridged` value already covers BOTH adapters (Task 6 allow-list); we
+      // only gate the *hook-token machinery* to claude_local here.
+      const usesHttpHookBridge = bridged && agent.adapterType === "claude_local";
+
       let runtimeHookToken: string | undefined;
-      if (bridged) {
+      if (usesHttpHookBridge) {
         const selfBaseUrl =
           process.env.AOA_API_URL?.trim() ||
           `http://127.0.0.1:${process.env.PORT ?? "3100"}`;
@@ -4106,7 +4114,11 @@ export function heartbeatService(db: Db) {
           onMeta: onAdapterMeta,
           authToken: authToken ?? undefined,
           runtimeDecisionBroker,
-          ...(bridged && runtimeHookToken != null
+          // Non-secret plain boolean — safe in logged meta. codex_local reads
+          // this to route its in-process app-server approval bridge; claude_local
+          // additionally receives the HTTP hook machinery below.
+          runtimeDecisionRoutingEnabled: bridged,
+          ...(usesHttpHookBridge && runtimeHookToken != null
             ? {
                 runtimeHookBridge: {
                   enabled: true,
@@ -4122,7 +4134,7 @@ export function heartbeatService(db: Db) {
           onSpawn,
         });
       } finally {
-        if (bridged && runtimeHookToken != null) {
+        if (usesHttpHookBridge && runtimeHookToken != null) {
           deregisterRuntimeHook(runtimeHookToken);
         }
       }
