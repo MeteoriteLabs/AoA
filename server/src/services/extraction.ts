@@ -17,6 +17,11 @@ export type { ExtractedItem, ExtractedItemType } from "./extraction-parser.js";
 // the unit tests pin against the real values (no silent caps).
 export const MAX_EXTRACT_ENTRIES_PER_SCOPE = 25;
 export const EXTRACT_SCOPE_DEADLINE_MS = 180_000; // eng-review D2 — see W2 plan
+/** The extractor's own "trivially short" threshold (Codex #270 P2, round 8): entries
+ *  under this are PERMANENTLY non-extractable ("ok", "thanks") — extract-then-scope
+ *  must neither attempt them nor let them cap the draft range, or a short greeting at
+ *  the head of the unscoped range wedges scoping for the whole thread forever. */
+export const MIN_EXTRACTABLE_CONTENT_LENGTH = 10;
 
 const EXTRACTION_PROMPT_TEMPLATE = `You are extracting structured items from a founder's discussion entry — raw notes, meeting summaries, brainstorming, or pasted conversations.
 
@@ -299,7 +304,7 @@ export function extractionService(db: Db) {
         }
 
         // 3. Skip trivially short content
-        if (!entry.rawContent || entry.rawContent.trim().length < 10) {
+        if (!entry.rawContent || entry.rawContent.trim().length < MIN_EXTRACTABLE_CONTENT_LENGTH) {
           log.info("Content too short — skipping extraction");
           await db
             .update(discussionEntries)
@@ -626,6 +631,11 @@ export function extractionService(db: Db) {
             ne(discussionEntries.inputType, "scope_proposal"),
             inArray(discussionEntries.extractionStatus, ["pending", "skipped", "failed"]),
             isNull(discussionExtractedItems.id),
+            // Codex #270 P2 (round 8): trivially-short entries are PERMANENTLY
+            // non-extractable (the extractor skips them by design) — exclude them here
+            // so they are never attempted and can never trip the first-failure range
+            // cap. They sit inside the draft range harmlessly (no work to lose).
+            sql`LENGTH(TRIM(COALESCE(${discussionEntries.rawContent}, ''))) >= ${MIN_EXTRACTABLE_CONTENT_LENGTH}`,
           ))
           .orderBy(asc(discussionEntries.seq))) as Array<{ id: string; seq: number; extractionStatus: string }>;
 
