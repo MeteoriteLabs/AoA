@@ -233,6 +233,10 @@ export function ApprovalDetailCore({ approvalId, embedded = false, onOpenTab }: 
       onOpenTab!(resolvedCta.tab());
       return;
     }
+    // Never route-navigate away from a hub tab. When embedded with no sibling-tab
+    // target (the rare null-tab "Back to approvals" fallback), do nothing rather
+    // than escaping the hub. Route mode keeps the navigation.
+    if (embedded) return;
     navigate(resolvedCta.to);
   };
 
