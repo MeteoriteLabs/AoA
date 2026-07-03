@@ -247,6 +247,20 @@ export interface AdapterRuntimeDecisionBroker {
   askWorkQuestion(input: AdapterRuntimeWorkQuestionPrompt): Promise<AdapterRuntimeWorkQuestionAnswer>;
 }
 
+/**
+ * Non-secret configuration the adapter needs to wire up the PreToolUse hook
+ * HTTP callback. Contains only plain strings safe to log. The per-run bearer
+ * token is injected via env (RUNTIME_HOOK_TOKEN) and MUST NOT appear here —
+ * AdapterExecutionContext.context and config fields are persisted into run
+ * events, so secrets must never flow through this struct.
+ */
+export interface RuntimeHookBridgeSpec {
+  enabled: boolean;
+  selfBaseUrl: string;
+  path: string;
+  timeoutSec: number;
+}
+
 export interface AdapterExecutionContext {
   runId: string;
   agent: AdapterAgent;
@@ -268,6 +282,14 @@ export interface AdapterExecutionContext {
    * local behavior.
    */
   runtimeDecisionBroker?: AdapterRuntimeDecisionBroker;
+  /**
+   * Non-secret hook bridge config for wiring the adapter's PreToolUse HTTP
+   * callback. Carries only plain strings (base URL, path, timeout) — MUST NOT
+   * contain the per-run bearer token. The token is passed to the adapter via
+   * env (RUNTIME_HOOK_TOKEN) because context/config are persisted into run events.
+   * Unset → adapter runs without the permission bridge (existing behavior).
+   */
+  runtimeHookBridge?: RuntimeHookBridgeSpec;
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onMeta?: (meta: AdapterInvocationMeta) => Promise<void>;
   authToken?: string;
