@@ -33,6 +33,23 @@ vi.mock("@/context/CompanyContext", () => ({
   }),
 }));
 
+// react-resizable-panels can't measure size under the JSDOM ResizeObserver stub,
+// so (like every other panel-using suite in this repo) mock it with plain divs.
+vi.mock("react-resizable-panels", () => ({
+  Group: ({ children, ...props }: any) => (
+    <div data-testid={props["data-testid"]} role="group">
+      {children}
+    </div>
+  ),
+  Panel: ({ children, ...props }: any) => (
+    <div data-testid={props["data-testid"]} data-panel-id={props.id}>
+      {children}
+    </div>
+  ),
+  Separator: ({ ...props }: any) => <div data-testid={props["data-testid"]} />,
+  useDefaultLayout: () => ({ defaultLayout: undefined, onLayoutChanged: vi.fn() }),
+}));
+
 vi.mock("@/context/BreadcrumbContext", () => ({
   useBreadcrumbs: () => ({ setBreadcrumbs: vi.fn() }),
 }));

@@ -1,5 +1,7 @@
 import { Menu, Settings, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { Group, Panel, Separator, useDefaultLayout } from "react-resizable-panels";
+import { useBreakpoint } from "@/lib/useBreakpoint";
 import type { HubAuditRow, HubItemListRow } from "@/api/hub-items";
 import type {
   HubAutopilotAction,
@@ -133,6 +135,12 @@ export function HubShell({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [notificationPanelOpen, setNotificationPanelOpen] = useState(false);
   const [mobileRailOpen, setMobileRailOpen] = useState(false);
+  const { isMobile } = useBreakpoint();
+  const { defaultLayout, onLayoutChanged } = useDefaultLayout({
+    id: "aoa:hub:panel-sizes",
+    storage: localStorage,
+    panelIds: ["hub-list", "hub-viewer"],
+  });
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const keyboardSelectedItemId = useRef<string | null>(selectedItemId);
   const selectedItem = items.find((item) => item.id === selectedItemId) ?? null;
@@ -242,44 +250,8 @@ export function HubShell({
     });
   };
 
-  return (
-    <div className="flex h-full flex-col overflow-hidden bg-bg text-text lg:flex-row">
-      <div className="hidden lg:block">
-        <HubRail
-          activeLane={activeLane}
-          counts={counts}
-          visibleLanes={preferences.visibleLanes}
-          onLaneChange={handleLaneChange}
-        />
-      </div>
-      {mobileRailOpen ? (
-        <div
-          role="dialog"
-          aria-label="Hub lanes"
-          className="border-b border-border bg-bg lg:hidden"
-        >
-          <div className="flex h-11 items-center justify-between border-b border-border px-3">
-            <span className="text-sm font-semibold">Hub lanes</span>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              aria-label="Close hub lanes"
-              onClick={() => setMobileRailOpen(false)}
-            >
-              <X className="size-4" aria-hidden="true" />
-            </Button>
-          </div>
-          <HubRail
-            activeLane={activeLane}
-            counts={counts}
-            visibleLanes={preferences.visibleLanes}
-            onLaneChange={handleLaneChange}
-          />
-        </div>
-      ) : null}
-      <main className="flex min-w-0 flex-1 flex-col lg:flex-row">
-        <section className="flex min-h-0 min-w-0 flex-1 flex-col border-r border-border lg:max-w-[480px] lg:flex-[0_0_38%]">
+  const listSection = (
+        <section className="flex min-h-0 min-w-0 flex-1 flex-col border-r border-border">
           <div className="flex h-12 items-center justify-between gap-3 border-b border-border px-4">
             <div className="flex min-w-0 items-center gap-2">
               <Button
@@ -738,6 +710,9 @@ export function HubShell({
             />
           )}
         </section>
+  );
+
+  const viewer = (
         <HubViewer
           item={selectedItem}
           undoAction={null}
@@ -749,7 +724,80 @@ export function HubShell({
           auditRows={auditRows}
           auditLoading={auditLoading}
         />
-      </main>
+  );
+
+  return (
+    <div className="flex h-full flex-col overflow-hidden bg-bg text-text lg:flex-row">
+      <div className="hidden lg:block">
+        <HubRail
+          activeLane={activeLane}
+          counts={counts}
+          visibleLanes={preferences.visibleLanes}
+          onLaneChange={handleLaneChange}
+        />
+      </div>
+      {mobileRailOpen ? (
+        <div
+          role="dialog"
+          aria-label="Hub lanes"
+          className="border-b border-border bg-bg lg:hidden"
+        >
+          <div className="flex h-11 items-center justify-between border-b border-border px-3">
+            <span className="text-sm font-semibold">Hub lanes</span>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              aria-label="Close hub lanes"
+              onClick={() => setMobileRailOpen(false)}
+            >
+              <X className="size-4" aria-hidden="true" />
+            </Button>
+          </div>
+          <HubRail
+            activeLane={activeLane}
+            counts={counts}
+            visibleLanes={preferences.visibleLanes}
+            onLaneChange={handleLaneChange}
+          />
+        </div>
+      ) : null}
+      {isMobile ? (
+        <main className="flex min-w-0 flex-1 flex-col">
+          {listSection}
+          {viewer}
+        </main>
+      ) : (
+        <Group
+          orientation="horizontal"
+          className="flex min-w-0 flex-1"
+          defaultLayout={defaultLayout}
+          onLayoutChanged={onLayoutChanged}
+          data-testid="hub-panel-group"
+        >
+          <Panel
+            id="hub-list"
+            defaultSize="38%"
+            minSize="24%"
+            className="flex min-w-0 flex-col overflow-hidden"
+            data-testid="hub-list-panel"
+          >
+            {listSection}
+          </Panel>
+          <Separator
+            className="w-1 shrink-0 bg-border transition-colors hover:bg-border-strong"
+            data-testid="hub-panel-separator"
+          />
+          <Panel
+            id="hub-viewer"
+            minSize="30%"
+            className="flex min-w-0 flex-col overflow-hidden"
+            data-testid="hub-viewer-panel"
+          >
+            {viewer}
+          </Panel>
+        </Group>
+      )}
     </div>
   );
 }
