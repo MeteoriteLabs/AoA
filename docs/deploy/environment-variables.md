@@ -190,5 +190,7 @@ These are read by tests and dev scripts; you should not need to set them in prod
 | `AOA_ACCEPTANCE_CLI` | Selects the real CLI binary in acceptance/integration tests |
 | `AOA_PI_COMMAND` | Overrides the `pi` adapter binary in adapter-model tests |
 | `AOA_TEST_CODEX_MODEL` | Codex model override for live crew e2e tests |
+| `AOA_CODEX_APPSERVER_LIVE` | Enables the guarded live `codex app-server` approval-loop harness (`appserver-spike.test.ts`); unset ⇒ that test skips. W5c |
+| `AOA_E2E_RUNTIME_DECISION_BRIDGE_CODEX` | Opt-in flag for the guarded codex_local runtime-decision-bridge e2e (`runtime-decision-bridge-codex.spec.ts`); unset ⇒ skipped. W5c |
 | `AOA_TEST_COMPANY_ID` / `AOA_TEST_THREAD_ID` | Seed IDs for the bridge stdout-purity test |
 | `AOA_TEST_DATABASE_URL` | Postgres URL for tests that need a real DB connection |
