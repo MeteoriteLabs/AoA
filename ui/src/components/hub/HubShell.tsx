@@ -22,9 +22,12 @@ import type {
 import { DEFAULT_NOTIFICATION_PREFERENCES, isFounderGatedAutopilotType } from "@armyofagents/shared";
 import { Button } from "@/components/ui/button";
 import { HubHome } from "./HubHome";
+import { HubHomeTab } from "./HubHomeTab";
 import { HubList } from "./HubList";
 import { HubRail, type HubRailLane } from "./HubRail";
-import { HubViewer } from "./HubViewer";
+import { HubTabBody } from "./HubTabBody";
+import { HubTabStrip } from "./HubTabStrip";
+import { HOME_TAB, type HubTab } from "./hubViewerModel";
 
 const EMPTY_BULK_IDS = new Set<string>();
 const noop = () => {};
@@ -52,6 +55,24 @@ interface HubShellProps {
   isLoading: boolean;
   error: unknown;
   selectedItemId: string | null;
+  /** The selected hub item resolved by the parent (loaded list OR deep-link
+   *  hydration), used as the Home tab's reading-pane preview. */
+  selectedItem: HubItemListRow | null;
+  /** Concrete company id for the embedded viewers hosted in tabs (D2-review
+   *  seam: an embedded ThreadDetail with an undefined companyId would hang). */
+  companyId: string | undefined;
+  /** Open hub tabs (Home first, non-closeable) + the active tab key. */
+  tabs: HubTab[];
+  activeTabKey: string | null;
+  /** Open a prebuilt tab (linked-entity hand-offs from inside a hosted viewer). */
+  onOpenTab: (tab: HubTab) => void;
+  /** Row-click "open": select the item + open its entity as a tab. */
+  onOpenItem: (item: HubItemListRow) => void;
+  onCloseTab: (key: string) => void;
+  onActivateTab: (key: string) => void;
+  onAddBrowserTab: () => void;
+  /** Resolve a hub item id → full row for the runtime_decision tab body. */
+  resolveHubItem: (hubItemId: string) => HubItemListRow | undefined;
   historyStatus: Extract<HubItemStatus, "open" | "resolved" | "archived">;
   auditRows: HubAuditRow[];
   auditLoading: boolean;
@@ -96,6 +117,16 @@ export function HubShell({
   isLoading,
   error,
   selectedItemId,
+  selectedItem,
+  companyId,
+  tabs,
+  activeTabKey,
+  onOpenTab,
+  onOpenItem,
+  onCloseTab,
+  onActivateTab,
+  onAddBrowserTab,
+  resolveHubItem,
   historyStatus = "open",
   auditRows = [],
   auditLoading = false,
@@ -147,7 +178,6 @@ export function HubShell({
   });
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const keyboardSelectedItemId = useRef<string | null>(selectedItemId);
-  const selectedItem = items.find((item) => item.id === selectedItemId) ?? null;
   const showHome = activeLane === null;
   const selectedCount = selectedBulkIds.size;
 
@@ -716,18 +746,41 @@ export function HubShell({
         </section>
   );
 
+  const activeTab = tabs.find((tab) => tab.key === activeTabKey) ?? tabs[0] ?? HOME_TAB;
   const viewer = (
-        <HubViewer
-          item={selectedItem}
-          undoAction={null}
-          onClose={handleViewerClose}
-          onMarkUnread={onMarkUnread}
-          onDismiss={onDismiss}
-          onSnooze={onSnooze}
-          onLifecycleAction={onLifecycleAction}
-          auditRows={auditRows}
-          auditLoading={auditLoading}
-        />
+        <div
+          className="flex min-h-0 min-w-0 flex-1 flex-col bg-bg"
+          data-testid="hub-tabbed-viewer"
+        >
+          <HubTabStrip
+            tabs={tabs}
+            activeKey={activeTabKey}
+            onActivate={onActivateTab}
+            onClose={onCloseTab}
+            onAddBrowser={onAddBrowserTab}
+          />
+          <div className="min-h-0 min-w-0 flex-1">
+            <HubTabBody
+              tab={activeTab}
+              companyId={companyId}
+              onOpenTab={onOpenTab}
+              resolveHubItem={resolveHubItem}
+              homeContent={
+                <HubHomeTab
+                  selectedItem={selectedItem}
+                  auditRows={auditRows}
+                  auditLoading={auditLoading}
+                  onOpenFull={onOpenItem}
+                  onClose={handleViewerClose}
+                  onMarkUnread={onMarkUnread}
+                  onDismiss={onDismiss}
+                  onSnooze={onSnooze}
+                  onLifecycleAction={onLifecycleAction}
+                />
+              }
+            />
+          </div>
+        </div>
   );
 
   return (

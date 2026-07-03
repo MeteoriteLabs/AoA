@@ -16,6 +16,12 @@ interface HubListProps {
   groupMode?: HubGroupMode;
   density?: HubDensity;
   onSelectItem: (itemId: string) => void;
+  /**
+   * Row-click "open" gesture: selects the item AND opens its entity as a tab.
+   * When omitted, a click falls back to {@link onSelectItem} (select only).
+   * Keyboard j/k navigation always uses {@link onSelectItem} (preview, no tab).
+   */
+  onOpenItem?: (item: HubItemListRow) => void;
   onMarkRead: (itemId: string) => void;
   onToggleBulkItem: (itemId: string) => void;
   onLoadMore?: () => void;
@@ -39,6 +45,7 @@ export function HubList({
   groupMode = "auto",
   density = "comfortable",
   onSelectItem,
+  onOpenItem,
   onMarkRead,
   onToggleBulkItem,
   onLoadMore,
@@ -139,7 +146,8 @@ export function HubList({
           type="button"
           data-hub-row-id={item.id}
           onClick={() => {
-            onSelectItem(item.id);
+            if (onOpenItem) onOpenItem(item);
+            else onSelectItem(item.id);
             if (!item.readAt) onMarkRead(item.id);
           }}
           className="min-w-0 text-left"

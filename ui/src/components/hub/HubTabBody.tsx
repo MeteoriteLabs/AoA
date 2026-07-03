@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { Loader2 } from "lucide-react";
 import { TaskDetail } from "@/components/TaskDetail";
 import { ThreadDetail } from "@/pages/ThreadDetail";
@@ -35,6 +36,12 @@ interface HubTabBodyProps {
    * this; when absent, the runtime_decision tab falls back to a placeholder.
    */
   resolveHubItem?: (hubItemId: string) => HubItemListRow | undefined;
+  /**
+   * Body for the non-closeable `home` tab. HubShell supplies the real
+   * {@link HubHomeTab} (reading pane over the center-list selection); when
+   * absent the built-in placeholder renders.
+   */
+  homeContent?: ReactNode;
 }
 
 /**
@@ -54,7 +61,13 @@ interface HubTabBodyProps {
  * {@link TabLoadingPlaceholder} — never to `null` — so the panel still renders
  * while Phase D/E wires them.
  */
-export function HubTabBody({ tab, companyId, onOpenTab, resolveHubItem }: HubTabBodyProps) {
+export function HubTabBody({
+  tab,
+  companyId,
+  onOpenTab,
+  resolveHubItem,
+  homeContent,
+}: HubTabBodyProps) {
   return (
     <div
       id={HUB_TABPANEL_ID}
@@ -68,15 +81,22 @@ export function HubTabBody({ tab, companyId, onOpenTab, resolveHubItem }: HubTab
         companyId={companyId}
         onOpenTab={onOpenTab}
         resolveHubItem={resolveHubItem}
+        homeContent={homeContent}
       />
     </div>
   );
 }
 
-function HubTabBodyContent({ tab, companyId, onOpenTab, resolveHubItem }: HubTabBodyProps) {
+function HubTabBodyContent({
+  tab,
+  companyId,
+  onOpenTab,
+  resolveHubItem,
+  homeContent,
+}: HubTabBodyProps) {
   switch (tab.kind) {
     case "home":
-      return <HubHomePlaceholder />;
+      return <>{homeContent ?? <HubHomePlaceholder />}</>;
 
     case "thread": {
       const payload = tab.payload as HubThreadPayload | undefined;

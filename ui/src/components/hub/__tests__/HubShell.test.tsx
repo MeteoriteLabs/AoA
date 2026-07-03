@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { HubShell } from "../HubShell";
+import { HOME_TAB } from "../hubViewerModel";
 import type { HubItemListRow } from "@/api/hub-items";
 import type { HubAutopilotActionsResponse, HubAutopilotPolicy, NotificationPreferences } from "@armyofagents/shared";
 
@@ -98,29 +99,48 @@ function renderShell(overrides: Partial<React.ComponentProps<typeof HubShell>> =
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
+  const merged = {
+    activeLane: "waiting_on_you" as const,
+    items,
+    counts: { open: 1, unread: 1 },
+    isLoading: false,
+    error: null,
+    selectedItemId: null as string | null,
+    onLaneChange: vi.fn(),
+    onSelectItem: vi.fn(),
+    onMarkRead: vi.fn(),
+    preferences: {
+      defaultLanding: "waiting_on_you" as const,
+      visibleLanes: ["waiting_on_you", "suggestions"] as ("waiting_on_you" | "notifications" | "suggestions")[],
+      groupMode: "auto" as const,
+      density: "comfortable" as const,
+      showAutopilotEntry: true,
+      updatedAt: null,
+    },
+    ...overrides,
+  };
+  // The parent (InboxHub) now resolves `selectedItem`; mirror that here so a test
+  // that passes `selectedItemId` still gets the Home-tab reading pane.
+  const derivedSelectedItem =
+    (merged.items ?? items).find((item) => item.id === merged.selectedItemId) ?? null;
+  const finalProps = {
+    // New tabbed-viewer props default to a Home-only tab set; overridable per test.
+    companyId: "company-1" as string | undefined,
+    tabs: [HOME_TAB],
+    activeTabKey: "home" as string | null,
+    selectedItem: derivedSelectedItem,
+    onOpenTab: vi.fn(),
+    onOpenItem: vi.fn(),
+    onCloseTab: vi.fn(),
+    onActivateTab: vi.fn(),
+    onAddBrowserTab: vi.fn(),
+    resolveHubItem: (id: string) => (merged.items ?? items).find((item) => item.id === id),
+    ...merged,
+  };
   return render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter>
-        <HubShell
-          activeLane="waiting_on_you"
-          items={items}
-          counts={{ open: 1, unread: 1 }}
-          isLoading={false}
-          error={null}
-          selectedItemId={null}
-          onLaneChange={vi.fn()}
-          onSelectItem={vi.fn()}
-          onMarkRead={vi.fn()}
-          preferences={{
-            defaultLanding: "waiting_on_you",
-            visibleLanes: ["waiting_on_you", "suggestions"],
-            groupMode: "auto",
-            density: "comfortable",
-            showAutopilotEntry: true,
-            updatedAt: null,
-          }}
-          {...overrides}
-        />
+        <HubShell {...finalProps} />
       </MemoryRouter>
     </QueryClientProvider>,
   );
@@ -176,25 +196,27 @@ describe("HubShell", () => {
     expect(screen.getByRole("complementary", { name: /hub viewer/i })).toBeInTheDocument();
   });
 
-  it("opens a viewer tab when an item is selected", async () => {
+  it("selects the item into the reading pane when a row is clicked", async () => {
     const user = userEvent.setup();
     const onSelectItem = vi.fn();
     renderShell({ onSelectItem });
 
     await user.click(screen.getByRole("button", { name: /review hire approval/i }));
 
+    // Single-click previews (reading pane); dedicated tabs open via "Open full".
     expect(onSelectItem).toHaveBeenCalledWith("hub-1");
   });
 
-  it("renders the selected item viewer with a full-page link", () => {
-    renderShell({ selectedItemId: "hub-1" });
+  it("renders the selected item in the Home reading pane and opens it full via a tab", async () => {
+    const user = userEvent.setup();
+    const onOpenItem = vi.fn();
+    renderShell({ selectedItemId: "hub-1", onOpenItem });
 
     expect(screen.getByRole("complementary", { name: /hub viewer/i })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /approval/i })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /open full/i })).toHaveAttribute(
-      "href",
-      "/TC/approvals/approval-1",
-    );
+    // "Open full" is now a tab-opening button (not a route link).
+    await user.click(screen.getByRole("button", { name: /open full/i }));
+    expect(onOpenItem).toHaveBeenCalledWith(expect.objectContaining({ id: "hub-1" }));
   });
 
   it("hides generic lifecycle actions for runtime decision prompts", async () => {

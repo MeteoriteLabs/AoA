@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   useInfiniteQuery,
   useMutation,
@@ -20,6 +20,9 @@ import type {
 import { DEFAULT_NOTIFICATION_PREFERENCES } from "@armyofagents/shared";
 import { hubItemsApi, type HubItemListRow, type HubListResponse } from "@/api/hub-items";
 import { HubShell } from "@/components/hub/HubShell";
+import { hubTabForItem } from "@/components/hub/hubRegistry";
+import { browserTab } from "@/components/hub/hubViewerModel";
+import { useHubTabs } from "@/components/hub/useHubTabs";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
 import { useLiveUpdates } from "@/context/LiveUpdatesProvider";
@@ -88,6 +91,15 @@ export function InboxHub() {
   const markingReadItemIds = useRef(new Set<string>());
   const notificationPreferencesRef = useRef<NotificationPreferences | null>(null);
   const hubMutations = useHubItemMutations(selectedCompanyId);
+  // Tabbed right-panel viewer (Home + entity + browser tabs), persisted per company.
+  const { tabs, activeKey, openTab, closeTab, activateTab } = useHubTabs(
+    selectedCompanyId ?? undefined,
+  );
+  // Rows opened as tabs are cached here so runtime_decision / notification bodies
+  // (which resolve their hub item by id) keep working after a lane switch, and so
+  // deep-linked items from another lane / resolved history can resolve at all.
+  const [openedItemCache, setOpenedItemCache] = useState<Record<string, HubItemListRow>>({});
+  const deepLinkHandledRef = useRef(false);
   const [undoAction, setUndoAction] = useState<{
     label: string;
     itemId: string;
@@ -478,11 +490,52 @@ export function InboxHub() {
     () => (activeLane ? (listQuery.data?.pages.flatMap((page) => page.items) ?? []) : []),
     [activeLane, listQuery.data],
   );
+  // `selectedItemId` gates the center-list highlight, so it stays validated
+  // against the loaded lane. `selectedItem` (the Home preview) additionally
+  // falls back to the opened-item cache so a deep-linked / cross-lane item still
+  // previews. `:itemId` remains a HUB-ITEM id — never an entity id.
   const selectedItemId =
     params.itemId && items.some((item) => item.id === params.itemId)
       ? params.itemId
       : null;
-  const selectedItem = items.find((item) => item.id === selectedItemId) ?? null;
+  const selectedItem =
+    (params.itemId
+      ? items.find((item) => item.id === params.itemId) ?? openedItemCache[params.itemId]
+      : undefined) ?? null;
+
+  // Deep link (`/inbox/:lane/:itemId`) selects the item into the Home reading
+  // pane. Single-click / deep-link PREVIEW (no auto-tab); dedicated tabs open on
+  // "Open full" / in-viewer links / the + browser button. If the item isn't in
+  // the loaded lane (hidden / resolved / other lane), hydrate it once so the
+  // reading pane can still preview it.
+  useEffect(() => {
+    if (deepLinkHandledRef.current) return;
+    const itemId = params.itemId;
+    if (!itemId || !selectedCompanyId) return;
+    if (items.some((item) => item.id === itemId) || openedItemCache[itemId]) {
+      deepLinkHandledRef.current = true;
+      return;
+    }
+    deepLinkHandledRef.current = true;
+    let cancelled = false;
+    hubItemsApi
+      .getOne(selectedCompanyId, itemId)
+      .then((item) => {
+        if (!cancelled) setOpenedItemCache((cache) => ({ ...cache, [item.id]: item }));
+      })
+      .catch(() => {
+        // Stale / hidden deep link — leave the reading pane empty.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [params.itemId, selectedCompanyId, items, openedItemCache]);
+
+  const resolveHubItem = useCallback(
+    (id: string): HubItemListRow | undefined =>
+      items.find((item) => item.id === id) ?? openedItemCache[id],
+    [items, openedItemCache],
+  );
   const auditQuery = useQuery({
     queryKey:
       selectedCompanyId && selectedItem
@@ -559,6 +612,19 @@ export function InboxHub() {
       return;
     }
     navigate(`${lanePath}/${itemId}${location.search}`);
+  };
+
+  // "Open full" (from the Home reading pane) + linked-entity hand-offs: open the
+  // item's entity as a dedicated tab (and keep it selected). Cache the row so its
+  // tab body can resolve it by id even after a later lane switch.
+  const handleOpenItem = (item: HubItemListRow) => {
+    setOpenedItemCache((cache) => (cache[item.id] ? cache : { ...cache, [item.id]: item }));
+    handleSelectItem(item.id);
+    openTab(hubTabForItem(item));
+  };
+
+  const handleAddBrowserTab = () => {
+    openTab(browserTab("about:blank", "Browser"));
   };
 
   const handleLoadMore = () => {
@@ -690,6 +756,16 @@ export function InboxHub() {
       isLoading={activeLane ? listQuery.isLoading : countsQuery.isLoading}
       error={listQuery.error ?? countsQuery.error}
       selectedItemId={selectedItemId}
+      selectedItem={selectedItem}
+      companyId={selectedCompanyId ?? undefined}
+      tabs={tabs}
+      activeTabKey={activeKey}
+      onOpenTab={openTab}
+      onOpenItem={handleOpenItem}
+      onCloseTab={closeTab}
+      onActivateTab={activateTab}
+      onAddBrowserTab={handleAddBrowserTab}
+      resolveHubItem={resolveHubItem}
       historyStatus={historyStatus}
       auditRows={auditQuery.data ?? []}
       auditLoading={auditQuery.isLoading}

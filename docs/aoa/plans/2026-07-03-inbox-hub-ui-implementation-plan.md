@@ -210,6 +210,33 @@ Persist stores `{kind, key, title, payload}` (payload is already plain-serializa
 
 ---
 
+## Implementation decision — reading-pane model (E2/G1, 2026-07-04)
+
+The three-panel shell landed as **rail | center list | right tabbed viewer** with an
+**email-client interaction**, not "every click opens a tab":
+
+- **Single-click a row / deep-link `/inbox/:lane/:itemId`** → the item previews in the
+  **Home reading pane** (right panel, Home tab): `HubViewer` in `variant="tab"` fill mode,
+  carrying its why / meta / audit / lifecycle actions (dismiss/snooze/resolve/archive/
+  claim/release/mark-unread) and the runtime-decision panel. No auto-tab (so keyboard j/k
+  and history triage don't spawn tabs). This is why the existing InboxHub "viewer" +
+  runtime-decision + audit tests keep passing unchanged.
+- **"Open full" (in the reading pane) / linked entities inside a hosted viewer / the `+`
+  button** → open **dedicated closeable tabs** hosting the real detail viewers
+  (`ApprovalDetailCore` / `ThreadDetail` / `AgentDetailContainer` / `RunDetailContainer` /
+  `TaskDetail` / `RuntimeDecisionPanel` / `BrowserViewer`). Home is non-closeable.
+- Deep-link hydrates a hidden/resolved/cross-lane item via `hubItemsApi.getOne` so the
+  reading pane can still preview it; `:itemId` stays a **hub-item id** (never an entity id).
+- `HubList` gained an optional `onOpenItem` (click-opens-tab) that is intentionally **not
+  wired** yet — it's the one-line seam to flip to "single-click opens a tab" if the founder
+  prefers that after the live look. **Flag this choice to the user at G2.**
+
+## Deferred UX polish (from D2/D4/E1 reviews — later phase, non-blocking)
+- **Run tab agentId (E1 gap):** `run_failed`/`run_complete` items carry `run.id` but NOT the agent id on `HubItemListRow` (server sets `sourceActorId: run.agentId`). So `hubTabForItem` falls back to `notificationTab` for runs. To open a real Run tab from the inbox, surface `sourceActorId` (or `relatedEntityId=agentId`) on the UI row + have `hubTabForItem` use it in `runTab(runId, agentId)`. Small UI-type add if the server already returns `sourceActorId`.
+- **Thread `entryId` anchor:** `HubThreadPayload.entryId` is carried but `ThreadDetail` has no prop to scroll/highlight the entry — wire it or drop the field.
+- **Agent-tab Runs list:** inside the embedded agent tab, the `RunsTab` run rows are `<Link>`s that route-navigate away — thread `onOpenTab(runTab(runId, agentId))` into `RunsTab` when embedded so a run opens as a sibling hub tab.
+- **Agent-tab hero KPIs:** the container drops the `to:` deep-links on "Tasks (wk)"/"Last run" KPIs — re-add as `onOpenTab(taskTab/runTab)` when embedded.
+
 ## Review corrections (Codex + staff-eng, folded 2026-07-04)
 
 Read alongside the task. The two P1s (A2 panels API, D4 run fetch) are already fixed inline above.

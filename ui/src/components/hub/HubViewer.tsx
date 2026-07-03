@@ -26,6 +26,18 @@ interface HubViewerProps {
     item: HubItemListRow,
     action: "resolve" | "archive" | "claim" | "release",
   ) => void;
+  /**
+   * When provided, the "Open full" affordance calls this instead of navigating
+   * to a route. The tabbed hub uses it to open the item's entity as a sibling
+   * tab (HubHomeTab). When absent, "Open full" falls back to the route `<Link>`.
+   */
+  onOpenFull?: (item: HubItemListRow) => void;
+  /**
+   * `"aside"` (default): the legacy fixed-width right rail (`lg:w-[360px]`,
+   * `border-l`), used standalone. `"tab"`: fills its container (`h-full w-full`,
+   * no fixed width / border) so it can host the Home tab inside the tabbed viewer.
+   */
+  variant?: "aside" | "tab";
   undoAction?: { label: string; onUndo: () => void } | null;
   auditRows?: HubAuditRow[];
   auditLoading?: boolean;
@@ -38,10 +50,13 @@ export function HubViewer({
   onDismiss,
   onSnooze,
   onLifecycleAction,
+  onOpenFull,
+  variant = "aside",
   undoAction,
   auditRows = [],
   auditLoading = false,
 }: HubViewerProps) {
+  const isTab = variant === "tab";
   const headingRef = useRef<HTMLHeadingElement | null>(null);
 
   useEffect(() => {
@@ -52,7 +67,11 @@ export function HubViewer({
     return (
       <aside
         aria-label="Hub viewer"
-        className="hidden h-full w-[360px] shrink-0 items-center justify-center border-l border-border bg-bg p-6 text-center text-sm text-muted-foreground lg:flex"
+        className={
+          isTab
+            ? "flex h-full w-full flex-col items-center justify-center bg-bg p-6 text-center text-sm text-muted-foreground"
+            : "hidden h-full w-[360px] shrink-0 items-center justify-center border-l border-border bg-bg p-6 text-center text-sm text-muted-foreground lg:flex"
+        }
       >
         Select an item to review details.
       </aside>
@@ -72,7 +91,11 @@ export function HubViewer({
   return (
     <aside
       aria-label="Hub viewer"
-      className="flex min-h-[320px] w-full shrink-0 flex-col border-t border-border bg-bg lg:h-full lg:w-[360px] lg:border-l lg:border-t-0"
+      className={
+        isTab
+          ? "flex h-full min-h-0 w-full flex-col bg-bg"
+          : "flex min-h-[320px] w-full shrink-0 flex-col border-t border-border bg-bg lg:h-full lg:w-[360px] lg:border-l lg:border-t-0"
+      }
     >
       <div className="flex h-12 items-center justify-between border-b border-border px-4">
         <div role="tablist" aria-label="Hub item viewer" className="flex min-w-0 items-center gap-2">
@@ -237,7 +260,17 @@ export function HubViewer({
             </Button>
           ) : null}
         </div>
-        {fullLink ? (
+        {onOpenFull ? (
+          <Button
+            type="button"
+            variant="secondary"
+            className="w-full"
+            onClick={() => onOpenFull(item)}
+          >
+            <ExternalLink className="size-4" aria-hidden="true" />
+            Open full
+          </Button>
+        ) : fullLink ? (
           <Button asChild variant="secondary" className="w-full">
             <Link to={fullLink}>
               <ExternalLink className="size-4" aria-hidden="true" />

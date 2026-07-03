@@ -42,6 +42,7 @@ vi.mock("@/context/CompanyContext", () => ({
 }));
 
 import { HubShell } from "../HubShell";
+import { HOME_TAB } from "../hubViewerModel";
 
 const items: HubItemListRow[] = [
   {
@@ -85,6 +86,16 @@ function renderShell(overrides: Partial<React.ComponentProps<typeof HubShell>> =
           isLoading={false}
           error={null}
           selectedItemId={null}
+          selectedItem={null}
+          companyId="company-1"
+          tabs={[HOME_TAB]}
+          activeTabKey="home"
+          onOpenTab={vi.fn()}
+          onOpenItem={vi.fn()}
+          onCloseTab={vi.fn()}
+          onActivateTab={vi.fn()}
+          onAddBrowserTab={vi.fn()}
+          resolveHubItem={() => undefined}
           onLaneChange={vi.fn()}
           onSelectItem={vi.fn()}
           onMarkRead={vi.fn()}
