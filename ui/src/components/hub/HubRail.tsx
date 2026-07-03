@@ -31,7 +31,7 @@ export function HubRail({ activeLane, counts, visibleLanes, onLaneChange }: HubR
   return (
     <nav
       aria-label="Hub lanes"
-      className="flex h-full w-16 shrink-0 flex-col items-center gap-2 border-r border-border bg-bg py-3"
+      className="flex h-full w-16 shrink-0 flex-col items-center gap-2 rounded-xl border border-border bg-background py-3 shadow-sm"
     >
       {visibleRailLanes.map(({ lane, label, icon: Icon }) => {
         const active = activeLane === lane;

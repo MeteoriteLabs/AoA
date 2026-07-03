@@ -784,7 +784,7 @@ export function HubShell({
   );
 
   return (
-    <div className="flex h-full flex-col overflow-hidden bg-bg text-text lg:flex-row">
+    <div className="flex h-full flex-col overflow-hidden bg-muted/30 text-text lg:flex-row lg:gap-2 lg:p-2">
       <div className="hidden lg:block">
         <HubRail
           activeLane={activeLane}
@@ -827,7 +827,7 @@ export function HubShell({
       ) : (
         <Group
           orientation="horizontal"
-          className="flex min-w-0 flex-1"
+          className="flex min-w-0 flex-1 overflow-hidden rounded-xl border border-border bg-background shadow-sm"
           defaultLayout={defaultLayout}
           onLayoutChanged={onLayoutChanged}
           data-testid="hub-panel-group"
@@ -842,7 +842,7 @@ export function HubShell({
             {listSection}
           </Panel>
           <Separator
-            className="w-1 shrink-0 bg-border transition-colors hover:bg-border-strong"
+            className="w-1.5 shrink-0 cursor-col-resize bg-border/40 transition-colors hover:bg-brand/50"
             data-testid="hub-panel-separator"
           />
           <Panel
