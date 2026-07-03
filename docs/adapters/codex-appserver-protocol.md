@@ -65,6 +65,14 @@ Under `untrusted`, prompting the model to write a file in `cwd` fires:
 - The actual patch/diff is delivered separately on the `item/started` /
   `item/completed` frames for the `fileChange` item (`params.item.changes[]` with
   `{ path, kind: { type: "add"|... }, diff }`) and on `turn/diff/updated`.
+- **Implementation implication (path correlation):** because the approval params
+  carry NO path, the driver must maintain an `itemId → paths` map from the
+  `item/started` (and `item/completed`) fileChange frames — `item/started` for the
+  fileChange item arrives BEFORE its `requestApproval` (verified in the fixture:
+  started #69 → requestApproval #71 → completed #76) — and enrich the approval's
+  `params.item.changes` from that map before handing it to the approval bridge, so
+  the bridge can enforce the cwd trust boundary. A fileChange approval whose itemId
+  has no captured path fails closed (decline).
 
 Not descoped — the bridge ships **command + file-change**.
 
