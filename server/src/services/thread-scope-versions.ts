@@ -93,6 +93,7 @@ export type CreateScopeOutputOptions = {
     layer?: string | null;
     departmentId?: string | null;
   }) => Promise<void>;
+  dispatchMode?: "standard" | "planning";
 };
 
 function asPayload(value: unknown): Record<string, unknown> {
@@ -1432,7 +1433,7 @@ export function threadScopeVersionService(db: Db) {
             scopeVersionId: version.id,
             originKind: "crew_thread",
             status: "todo",
-            workMode: "planning",
+            workMode: options.dispatchMode ?? "planning",
             contextBundle: buildScopeTaskContextBundle({ version, item, payload, relatedItems }),
           } as any);
           resultIssueId = created.id;
