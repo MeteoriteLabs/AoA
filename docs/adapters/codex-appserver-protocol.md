@@ -198,6 +198,30 @@ A server **request** is distinguished from a **notification** by the presence of
 
 ---
 
+## 8b. Cross-path session resume (supervision toggle)
+
+Supervision is decided **per run**, so a stored session id may have been created
+by the legacy `codex exec` path and later encountered by the `app-server` driver
+(or vice-versa). The driver (`app-server/driver.ts`) does **not** force a resume
+of a possibly-non-portable id: it **attempts `thread/resume` and falls back to a
+fresh `thread/start` on an unknown-session error** (`isCodexUnknownSessionError`,
+same detector the `exec` path uses).
+
+- If the id is portable across the two spawn modes, `thread/resume` just works and
+  the turn continues on the stored thread.
+- If it is **not** portable, codex returns an unknown-session error and the driver
+  starts a fresh thread, capturing the new id. `clearSession` is set **only** when
+  the resume was expected-missing **and no replacement id was obtained** (mirrors
+  `execute.ts` `toResult`: `clearSessionOnMissingSession && !resolvedSessionId`) —
+  a freshly created thread id is never wiped.
+
+Net effect: toggling supervision at worst starts a **new** thread; it never
+errors the run. Portability itself is not proved here — the guarded live harness
+(`AOA_CODEX_APPSERVER_LIVE=1`) can confirm it later; this note documents the
+safe-by-construction fallback the driver relies on.
+
+---
+
 ## 9. Reproduce
 
 ```
