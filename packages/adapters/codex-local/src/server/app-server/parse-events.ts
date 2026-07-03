@@ -70,6 +70,10 @@ export function createAppServerResultAccumulator(): AppServerAccumulator {
     const item = parseObject(p.item);
     const itemType = asString(item.type, "");
 
+    // item.type vocabulary is PROTOCOL-DRIVEN, not a house style: the app-server
+    // emits `agentMessage` (camelCase) but `reasoning`/`tool_result`/
+    // `mcp_tool_call`/`fileChange` (snake_case). Do NOT "normalize" the casing —
+    // changing tool_result → toolResult here silently breaks the mcp-only gate.
     if (itemType === "agentMessage") {
       const itemId = asString(item.id, "");
       if (itemId) {
