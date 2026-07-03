@@ -76,6 +76,10 @@ beforeAll(async () => {
       password: "test",
       port: PORT,
       persistent: false,
+      // Force UTF-8 so migration SQL containing non-Latin1 chars (e.g. '→' in a
+      // comment) applies. Without this, initdb inherits the host locale (WIN1252 on
+      // Windows) and the `postgres` DB rejects those bytes.
+      initdbFlags: ["--encoding=UTF8", "--locale=C"],
     });
     await pg.initialise();
     await pg.start();
@@ -146,9 +150,9 @@ afterAll(async () => {
 }, 60_000);
 
 // Windows-skip: CI's `runneradmin` account can't start embedded-postgres (Issue #114).
-// Local Windows CAN, so `AOA_INTEG_FORCE_WINDOWS=1` force-runs it for pre-push validation.
-const SKIP_WIN = process.platform === "win32" && process.env.AOA_INTEG_FORCE_WINDOWS !== "1";
-describe.skipIf(SKIP_WIN)("W1a integration: controller scope draft → apply → assigned crew task", () => {
+// To run locally on Windows, temporarily flip this to `describe.skipIf(false)` — the
+// UTF-8 initdbFlags above make the cluster locale-safe.
+describe.skipIf(process.platform === "win32")("W1a integration: controller scope draft → apply → assigned crew task", () => {
   async function captureSnapshot(tid: string): Promise<ThreadFreshnessSnapshot> {
     return captureFreshnessSnapshot(db as never, tid);
   }
@@ -231,17 +235,14 @@ describe.skipIf(SKIP_WIN)("W1a integration: controller scope draft → apply →
     );
     expect(acceptResult.ok).toBe(true);
 
-    // ── Step 4: apply the accepted draft → creates a real issues row ──────────
-    const applyResult = await scopeSvc.applyAcceptedDraft(
-      companyId,
-      threadId,
-      scopeVersionId,
-      { userId: "founder-user", isHuman: true },
-    );
-    expect(applyResult.ok).toBe(true);
-    expect((applyResult as any).createdTasks).toHaveLength(1);
+    // ── Step 4: acceptDraft is ONE-STEP accept+apply — internally it calls
+    // applyAcceptedDraft (thread-scope-versions.ts:1621), so it already created the
+    // issue and returned createdTasks. A second applyAcceptedDraft here would no-op
+    // (the version is no longer 'draft' → early-returns createdTasks: []), so assert
+    // on the acceptDraft result directly.
+    expect((acceptResult as any).createdTasks).toHaveLength(1);
 
-    const createdTask = (applyResult as any).createdTasks[0];
+    const createdTask = (acceptResult as any).createdTasks[0];
     expect(createdTask.assigneeAgentId).toBe(agentId);
 
     // Read the actual issues row from the DB to confirm both fields.

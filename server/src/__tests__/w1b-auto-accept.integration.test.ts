@@ -174,6 +174,10 @@ beforeAll(async () => {
       password: "test",
       port: PORT,
       persistent: false,
+      // Force UTF-8 so migration SQL containing non-Latin1 chars (e.g. '→' in a
+      // comment) applies. Without this, initdb inherits the host locale (WIN1252 on
+      // Windows) and the `postgres` DB rejects those bytes.
+      initdbFlags: ["--encoding=UTF8", "--locale=C"],
     });
     await pg.initialise();
     await pg.start();
@@ -203,9 +207,9 @@ afterAll(async () => {
 // ── test suite ────────────────────────────────────────────────────────────────
 
 // Windows-skip: CI's `runneradmin` account can't start embedded-postgres (Issue #114).
-// Local Windows CAN, so `AOA_INTEG_FORCE_WINDOWS=1` force-runs it for pre-push validation.
-const SKIP_WIN = process.platform === "win32" && process.env.AOA_INTEG_FORCE_WINDOWS !== "1";
-describe.skipIf(SKIP_WIN)("W1b integration: autonomy-gated auto-accept", () => {
+// To run locally on Windows, temporarily flip this to `describe.skipIf(false)` — the
+// UTF-8 initdbFlags above make the cluster locale-safe.
+describe.skipIf(process.platform === "win32")("W1b integration: autonomy-gated auto-accept", () => {
 
   // ── Case 1: Manual (autonomyLevel=0) ─────────────────────────────────────
 
@@ -321,7 +325,7 @@ describe.skipIf(SKIP_WIN)("W1b integration: autonomy-gated auto-accept", () => {
     const wakeupRows = rowsOf(
       await db.execute(sql`
         SELECT id FROM agent_wakeup_requests
-        WHERE agent_id = ${agentId} AND issue_id = ${issueId}
+        WHERE agent_id = ${agentId} AND payload->>'issueId' = ${issueId}
       `),
     );
     expect(wakeupRows).toHaveLength(0);
@@ -427,7 +431,7 @@ describe.skipIf(SKIP_WIN)("W1b integration: autonomy-gated auto-accept", () => {
     const wakeupRows = rowsOf(
       await db.execute(sql`
         SELECT id FROM agent_wakeup_requests
-        WHERE agent_id = ${agentId} AND issue_id = ${issueId}
+        WHERE agent_id = ${agentId} AND payload->>'issueId' = ${issueId}
       `),
     );
     expect(wakeupRows.length).toBeGreaterThanOrEqual(1);
