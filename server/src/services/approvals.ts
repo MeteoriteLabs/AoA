@@ -216,6 +216,10 @@ export function approvalService(db: Db) {
         }
       }
 
+      // W1c: crew_dispatch reject is intentionally a NO-OP on the tasks. Auto-created
+      // tasks stay on the Crew Board as 'planning' (parked) — the founder can flip them
+      // to Standard or delete them later. Rejecting only closes the dispatch approval.
+
       return updated;
     },
 

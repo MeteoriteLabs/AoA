@@ -224,3 +224,29 @@ describe("approvalService.approve — crew_dispatch branch", () => {
     ]);
   });
 });
+
+describe("approvalService.reject — crew_dispatch branch", () => {
+  it("reject: does NOT flip workMode and does NOT dispatch (tasks stay parked as planning)", async () => {
+    const rejectedRow = {
+      id: "ap1",
+      companyId: COMPANY,
+      type: "crew_dispatch",
+      status: "rejected",
+      payload: { threadId: THREAD, taskIds: ["t1"] },
+    };
+    const { db, issueUpdateSets } = makeDb(rejectedRow, [
+      { id: "t1", assigneeAgentId: "agent-1", workMode: "planning" },
+    ]);
+
+    const svc = approvalService(db);
+    const result = await svc.reject("ap1", COMPANY, "user-A", "not now");
+
+    expect(result).not.toBeNull();
+    expect((result as { status?: string }).status).toBe("rejected");
+    // No task mutation and no dispatch — reject only closes the approval; the parked
+    // planning tasks are left for the founder to flip/delete later.
+    expect(issueUpdateSets).toHaveLength(0);
+    expect(mocks.dispatchCreatedCrewTasks).not.toHaveBeenCalled();
+    expect(mocks.preflightCrewDispatch).not.toHaveBeenCalled();
+  });
+});
