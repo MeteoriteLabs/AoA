@@ -269,8 +269,13 @@ export async function driveCodexAppServer(
     if (!itemId) return params;
     const paths = fileChangePaths.get(itemId);
     if (!paths || paths.length === 0) return params;
+    // Intentionally REPLACE any `params.item` with our tracked paths: the approval
+    // frame carries no path (only itemId), and the bridge consumes ONLY
+    // `item.changes[].path` (+ top-level reason/cwd, preserved by the spread). If a
+    // future codex version starts populating `item` on the approval frame, the
+    // tracked-from-frames paths remain the authoritative source for the boundary.
     return {
-      ...(rec ?? {}),
+      ...rec,
       item: { changes: paths.map((p) => ({ path: p })) },
     };
   }

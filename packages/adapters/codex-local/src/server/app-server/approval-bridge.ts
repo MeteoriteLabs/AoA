@@ -165,7 +165,10 @@ function buildFileChangePrompt(
     summary: `Agent wants to modify ${validated.length} file(s)${summaryReason}`,
     promptText: `Allow this file change?\n\n${displayPath ?? "(no path)"}${extra}`,
     path: displayPath,
-    cwd: path.resolve(String(p.cwd ?? "")) || null,
+    // Mirror buildCommandPrompt: an absent codex cwd yields null (not the server
+    // process dir). The fileChange approval frame carries no cwd anyway; the trust
+    // boundary uses deps.cwd, so this field is audit-only.
+    cwd: safeStr(p.cwd),
     riskClass: "filesystem",
     timeoutPolicy: "escalate",
     // Audit metadata: carry BOTH the raw and normalized path for every change.
