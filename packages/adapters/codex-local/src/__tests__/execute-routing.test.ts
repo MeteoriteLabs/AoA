@@ -240,11 +240,11 @@ describe("codex execute — runtime-decision path routing", () => {
         { runAppServerTurn },
       );
       expect(runAppServerTurn).toHaveBeenCalledTimes(1);
-      // The bridged runner receives NO bypass flag — the app-server path never
-      // forwards it (approvals stay human-gated), and a warning is emitted.
+      // The behavioral guarantee that bypass is ignored: a warning is emitted on
+      // the bridged path. (The runner hard-codes approvalPolicy "untrusted"
+      // internally — verified where the real runner drives the client, not here
+      // where it is stubbed; RunAppServerTurnInput has no bypass field to inspect.)
       expect(logs.join("")).toContain("Ignoring config.dangerouslyBypassApprovalsAndSandbox");
-      const passed = runAppServerTurn.mock.calls[0][0] as unknown as Record<string, unknown>;
-      expect(passed.dangerouslyBypassApprovalsAndSandbox).toBeUndefined();
     });
   });
 });
@@ -275,7 +275,8 @@ describe("codex execute — result assembly parity", () => {
       // new fields reproduced by the shared builder
       expect(result.errorCode).toBe("turn_failed");
       expect(result.errorMessage).toBe("boom");
-      expect(result.outputFiles).toEqual([{ path: "out/x.txt" }]);
+      // execute.ts normalizes hint paths to absolute (path.resolve(cwd, p)).
+      expect(result.outputFiles).toEqual([{ path: path.resolve(workspace, "out/x.txt") }]);
       // a supervised turn is not an OS process → signal is null (present, preserved)
       expect(result.signal).toBeNull();
       expect(result.usage).toEqual({ inputTokens: 5, outputTokens: 7, cachedInputTokens: 2 });

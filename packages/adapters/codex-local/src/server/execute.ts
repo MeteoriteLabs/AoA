@@ -681,14 +681,23 @@ export async function execute(
     const rawOutputFiles = Array.isArray((result as Record<string, unknown>).outputFiles)
       ? ((result as Record<string, unknown>).outputFiles as unknown[])
       : [];
+    // outputFiles are best-effort OUTPUT-DETECTION HINTS, not a security surface:
+    // the cwd trust boundary is enforced at APPROVAL time by the approval bridge
+    // (validatePathInRoot declines out-of-tree writes before they apply), so a
+    // path reaching here was already gated. We only NORMALIZE to absolute
+    // (idempotent for the absolute paths codex emits) so heartbeat's output
+    // detection gets a consistent shape — we do not re-validate here.
     const outputFiles = rawOutputFiles
       .map((entry) => (typeof entry === "string" ? entry : ""))
       .filter((p): p is string => p.length > 0)
-      .map((p) => ({ path: p }));
+      .map((p) => ({ path: path.resolve(cwd, p) }));
 
     return {
       timedOut: result.timedOut,
-      // A supervised turn is not an OS process exit — no code/signal apply.
+      // A supervised turn is not an OS process exit — no code/signal apply. Use a
+      // 0/1 sentinel because heartbeat's outcome classifier reads exitCode===0 (+
+      // no errorMessage) as success and nonzero/errorMessage as failure; timedOut
+      // routes through the timeout branch, so null there.
       exitCode: result.timedOut ? null : result.errorMessage ? 1 : 0,
       signal: null,
       sessionId: result.sessionId,

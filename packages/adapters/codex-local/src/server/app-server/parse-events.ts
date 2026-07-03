@@ -62,7 +62,10 @@ export function createAppServerResultAccumulator(): AppServerAccumulator {
   let errorMessage: string | null = null;
   let errorCode: string | null = null;
 
-  // --- output files (raw hints; Task 7 normalizes/validates against cwd) -----
+  // --- output files (raw path hints for output detection) --------------------
+  // Collected raw here. The cwd TRUST BOUNDARY is enforced separately at approval
+  // time (approval-bridge validatePathInRoot); execute.ts normalizes these to
+  // absolute for heartbeat's output detection. Not a security surface here.
   const outputFiles: string[] = [];
 
   const handleItemCompleted = (params: unknown): void => {
@@ -115,7 +118,8 @@ export function createAppServerResultAccumulator(): AppServerAccumulator {
     }
 
     if (itemType === "fileChange") {
-      // Best-effort raw path hint — normalization/validation is Task 7's job.
+      // Best-effort raw path hint. The cwd trust boundary is enforced at approval
+      // time (approval-bridge); execute.ts normalizes these to absolute.
       const changes = Array.isArray(item.changes) ? item.changes : [];
       for (const change of changes) {
         const rec = parseObject(change);
