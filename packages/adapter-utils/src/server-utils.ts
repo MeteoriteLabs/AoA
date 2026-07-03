@@ -299,6 +299,82 @@ export function mergeChildEnv(
   return merged;
 }
 
+// ---------------------------------------------------------------------------
+// spawnTrackedChild — single source of truth for spawning a child that is
+// registered in `runningProcesses` (so heartbeat.cancelRun + reapOrphanedRuns
+// can find it), inherits the same env-strip / spawn flags, and offers a
+// SIGTERM→SIGKILL terminate(). Both the `exec` path (runChildProcess, layered
+// collect-to-EOF on top) and the long-lived codex app-server driver spawn
+// through this so their children share ONE registration + kill semantics.
+// ---------------------------------------------------------------------------
+
+export interface TrackedChildHandle {
+  child: ChildProcess;
+  pid: number | null;
+  pgid: number | null;
+  startedAt: Date;
+  /** SIGTERM then, after graceSec, SIGKILL. Idempotent; safe after close. */
+  terminate(): void;
+}
+
+export interface SpawnTrackedChildOptions {
+  cwd: string;
+  env: Record<string, string>;
+  graceSec: number;
+  /** Keys to strip from the inherited parent env unless `env` set them. */
+  unsetEnvKeys?: string[];
+  /** stdio layout; drivers use ["pipe","pipe","pipe"] to keep JSON-RPC bidirectional. */
+  stdio?: import("node:child_process").StdioOptions;
+  shell?: boolean;
+}
+
+export function spawnTrackedChild(
+  runId: string,
+  command: string,
+  args: string[],
+  opts: SpawnTrackedChildOptions,
+): TrackedChildHandle {
+  const mergedEnv = ensurePathInEnv(mergeChildEnv(process.env, opts.env, opts.unsetEnvKeys));
+  const child = spawn(command, args, {
+    cwd: opts.cwd,
+    env: mergedEnv,
+    // Windows requires shell:true to execute .cmd wrappers for npm-installed CLIs.
+    // The `command` value comes from trusted adapter configuration, not user input.
+    shell: opts.shell ?? process.platform === "win32",
+    // detached:true on POSIX puts the child in its own process group (pgid === pid),
+    // so signalRunningProcess can address the whole group via process.kill(-pgid, signal)
+    // and reap any subprocesses spawned by the child.
+    detached: process.platform !== "win32",
+    stdio: opts.stdio ?? ["pipe", "pipe", "pipe"],
+  }) as ChildProcessWithEvents;
+
+  const pid = child.pid ?? null;
+  const pgid = resolveProcessGroupId(child);
+  const startedAt = new Date();
+
+  runningProcesses.set(runId, { child, graceSec: opts.graceSec, processGroupId: pgid });
+
+  child.on("close", () => {
+    runningProcesses.delete(runId);
+  });
+  child.on("error", () => {
+    runningProcesses.delete(runId);
+  });
+
+  const terminate = (): void => {
+    // Signal the group/child now; escalate to SIGKILL after the grace window
+    // ONLY if the process is still registered (i.e. it hasn't already closed).
+    signalRunningProcess({ child, processGroupId: pgid }, "SIGTERM");
+    setTimeout(() => {
+      if (runningProcesses.has(runId)) {
+        signalRunningProcess({ child, processGroupId: pgid }, "SIGKILL");
+      }
+    }, Math.max(1, opts.graceSec) * 1000);
+  };
+
+  return { child, pid, pgid, startedAt, terminate };
+}
+
 export async function runChildProcess(
   runId: string,
   command: string,
@@ -325,30 +401,28 @@ export async function runChildProcess(
   const onLogError = opts.onLogError ?? ((err, id, msg) => console.warn({ err, runId: id }, msg));
 
   return new Promise<RunProcessResult>((resolve, reject) => {
+    // Same merged env spawnTrackedChild will build — captured here only so the
+    // ENOENT error message can report the effective PATH (kept identical to the
+    // pre-refactor behavior).
     const mergedEnv = ensurePathInEnv(mergeChildEnv(process.env, opts.env, opts.unsetEnvKeys));
-    const child = spawn(command, args, {
+    // spawnTrackedChild owns spawn flags, the env-strip, the runningProcesses
+    // registration/deregistration, and the SIGTERM→SIGKILL escalation. The exec
+    // path layers stdin-write / stdout-capture / close-resolve on top; net
+    // behavior is unchanged (stdio matches the pre-refactor exec layout).
+    const handle = spawnTrackedChild(runId, command, args, {
       cwd: opts.cwd,
-      env: mergedEnv,
-      // Windows requires shell:true to execute .cmd wrappers for npm-installed CLIs.
-      // The `command` value comes from trusted adapter configuration, not user input.
-      shell: opts.shell ?? process.platform === "win32",
-      // detached:true on POSIX puts the child in its own process group (pgid === pid),
-      // so signalRunningProcess can address the whole group via process.kill(-pgid, signal)
-      // and reap any subprocesses spawned by the child.
-      detached: process.platform !== "win32",
+      env: opts.env,
+      graceSec: opts.graceSec,
+      unsetEnvKeys: opts.unsetEnvKeys,
+      shell: opts.shell,
       stdio: [opts.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
-    }) as ChildProcessWithEvents;
-
-    // Capture process metadata immediately after spawn, before stdin write.
-    const spawnedPid = child.pid ?? null;
-    const spawnedPgid = resolveProcessGroupId(child);
-    const spawnedAt = new Date();
-
-    runningProcesses.set(runId, { child, graceSec: opts.graceSec, processGroupId: spawnedPgid });
+    });
+    const child = handle.child as ChildProcessWithEvents;
+    const spawnedPgid = handle.pgid;
 
     // Notify caller before writing stdin so they can persist the PID/PGID.
     if (opts.onSpawn) {
-      opts.onSpawn(spawnedPid, spawnedPgid, spawnedAt);
+      opts.onSpawn(handle.pid, spawnedPgid, handle.startedAt);
     }
 
     if (opts.stdin != null && child.stdin) {
@@ -373,10 +447,8 @@ export async function runChildProcess(
       opts.timeoutSec > 0
         ? setTimeout(() => {
             timedOut = true;
-            signalRunningProcess({ child, processGroupId: spawnedPgid }, "SIGTERM");
-            setTimeout(() => {
-              signalRunningProcess({ child, processGroupId: spawnedPgid }, "SIGKILL");
-            }, Math.max(1, opts.graceSec) * 1000);
+            // Reuse the tracked handle's SIGTERM→SIGKILL escalation.
+            handle.terminate();
           }, opts.timeoutSec * 1000)
         : null;
 
@@ -398,7 +470,7 @@ export async function runChildProcess(
 
     child.on("error", (err: Error) => {
       if (timeout) clearTimeout(timeout);
-      runningProcesses.delete(runId);
+      // runningProcesses.delete already handled by spawnTrackedChild's error listener.
       const errno = (err as NodeJS.ErrnoException).code;
       const pathValue = mergedEnv.PATH ?? mergedEnv.Path ?? "";
       const msg =
@@ -410,7 +482,7 @@ export async function runChildProcess(
 
     child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
       if (timeout) clearTimeout(timeout);
-      runningProcesses.delete(runId);
+      // runningProcesses.delete already handled by spawnTrackedChild's close listener.
       void logChain.finally(() => {
         resolve({
           exitCode: code,
