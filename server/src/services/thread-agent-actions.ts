@@ -770,15 +770,14 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
                   { threadId: input.threadId, ...extraction },
                   "extract-then-scope completed before draft compile",
                 );
-                // Codex #270 P1: a truncated pass (count cap / deadline) only processed
-                // entries up to lastAttemptedSeq — cap the draft's range there so the
-                // unprocessed tail stays in the NEXT scope's range instead of being
-                // silently consumed by this draft's sourceEndSeq accounting.
-                if (
-                  (extraction.truncated || extraction.deadlineHit) &&
-                  extraction.lastAttemptedSeq != null
-                ) {
-                  sourceEndSeqOverride = extraction.lastAttemptedSeq;
+                // Codex #270 P1+P2 (rounds 3-6): the helper folds every range signal —
+                // count-cap/deadline truncation AND the first entry whose extraction did
+                // not complete — into rangeEndCap. Cap the draft's range there so
+                // unprocessed/failed entries stay in the NEXT scope's range (an
+                // all-failed pass caps below the start -> no_entries -> no draft, and
+                // everything stays retryable).
+                if (extraction.rangeEndCap != null) {
+                  sourceEndSeqOverride = extraction.rangeEndCap;
                 }
               } catch (err) {
                 log.warn({ err, threadId: input.threadId },

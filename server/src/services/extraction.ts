@@ -560,9 +560,16 @@ export function extractionService(db: Db) {
       failed: number;
       truncated: boolean;
       deadlineHit: boolean;
-      /** Highest entry seq actually attempted (null when none) — a truncated pass caps
-       *  the draft's sourceEndSeq here so unprocessed entries stay in the next range. */
+      /** Highest entry seq actually attempted (null when none). */
       lastAttemptedSeq: number | null;
+      /** Codex #270 P2 (round 6): the seq the DRAFT RANGE must end at, or null for no
+       *  cap. Folds three signals: count-cap / deadline truncation (cap at the last
+       *  attempted entry) AND the first attempted entry whose extraction did NOT end
+       *  'completed' (cap just BEFORE it — a failed entry must stay in the NEXT scope's
+       *  range and be retried; an accepted draft over it would silently omit its work).
+       *  All-failed passes cap below the range start -> the compile yields no_entries ->
+       *  no draft is minted and every entry stays retryable. */
+      rangeEndCap: number | null;
     }> => {
       const log = logger.child({ service: "extraction", discussionId, companyId, mode: "scope-await" });
       const extractOne =
@@ -639,6 +646,7 @@ export function extractionService(db: Db) {
         // were never extracted and MUST stay in the NEXT scope's range, not be silently
         // consumed by this draft's range accounting.
         let lastAttemptedSeq: number | null = null;
+        let firstFailedSeq: number | null = null;
         for (const row of selected) {
           // Eng-review D2: wall-clock deadline — a hung-but-installed CLI must never turn
           // one scoping pass into a ~50-minute controller-pipeline stall. Compile with
@@ -664,15 +672,42 @@ export function extractionService(db: Db) {
             attempted += 1;
             lastAttemptedSeq = row.seq;
             await extractOne(companyId, row.id);
+            // Codex #270 P2 (round 6): extractFromDiscussionEntry handles its own
+            // errors internally (marks the entry failed/skipped and RESOLVES), so a
+            // clean await is not success. Re-read the outcome: anything other than
+            // 'completed' means this entry's content was NOT captured — record the
+            // first such seq so the draft range is capped just before it.
+            if (firstFailedSeq == null) {
+              const [after] = (await db
+                .select({ extractionStatus: discussionEntries.extractionStatus })
+                .from(discussionEntries)
+                .where(eq(discussionEntries.id, row.id))
+                .limit(1)) as Array<{ extractionStatus: string }>;
+              if (after && after.extractionStatus !== "completed") {
+                firstFailedSeq = row.seq;
+                failed += 1;
+                log.warn(
+                  { entryId: row.id, seq: row.seq, status: after.extractionStatus },
+                  "extract-then-scope entry did not complete — capping draft range before it",
+                );
+              }
+            }
           } catch (err) {
             failed += 1;
+            if (firstFailedSeq == null) firstFailedSeq = row.seq;
             log.warn({ err, entryId: row.id }, "extract-then-scope entry failed (best-effort)");
           }
         }
-        return { attempted, failed, truncated, deadlineHit, lastAttemptedSeq };
+        // Fold the cap signals: truncation/deadline cap at the last attempted entry;
+        // a mid-pass failure caps just BEFORE the first non-completed entry. Min wins.
+        const caps: number[] = [];
+        if ((truncated || deadlineHit) && lastAttemptedSeq != null) caps.push(lastAttemptedSeq);
+        if (firstFailedSeq != null) caps.push(firstFailedSeq - 1);
+        const rangeEndCap = caps.length > 0 ? Math.min(...caps) : null;
+        return { attempted, failed, truncated, deadlineHit, lastAttemptedSeq, rangeEndCap };
       } catch (err) {
         log.warn({ err }, "extract-then-scope selection failed (best-effort) — compiling without");
-        return { attempted: 0, failed: 0, truncated: false, deadlineHit: false, lastAttemptedSeq: null };
+        return { attempted: 0, failed: 0, truncated: false, deadlineHit: false, lastAttemptedSeq: null, rangeEndCap: null };
       }
     },
 

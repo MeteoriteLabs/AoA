@@ -54,7 +54,7 @@ vi.mock("../services/hub-source-producers.js", () => ({
 // Mock it so these W1b tests stay focused on the auto-accept gates (and so the
 // sequence DB's select queue isn't consumed by the real helper's selection query).
 const { mockExtractThreadEntriesAwait } = vi.hoisted(() => ({
-  mockExtractThreadEntriesAwait: vi.fn().mockResolvedValue({ attempted: 0, failed: 0, truncated: false, deadlineHit: false }),
+  mockExtractThreadEntriesAwait: vi.fn().mockResolvedValue({ attempted: 0, failed: 0, truncated: false, deadlineHit: false, lastAttemptedSeq: null, rangeEndCap: null }),
 }));
 vi.mock("../services/extraction.js", () => ({
   extractionService: () => ({ extractThreadEntriesAwait: mockExtractThreadEntriesAwait }),

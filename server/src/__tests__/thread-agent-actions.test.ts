@@ -40,7 +40,7 @@ vi.mock("../services/threads.js", () => ({
 // W2: the create_scope_draft handler awaits extract-then-scope before compiling.
 // Mock it so the real helper never runs against this file's sequence DBs.
 const { mockExtractThreadEntriesAwait } = vi.hoisted(() => ({
-  mockExtractThreadEntriesAwait: vi.fn().mockResolvedValue({ attempted: 0, failed: 0, truncated: false, deadlineHit: false }),
+  mockExtractThreadEntriesAwait: vi.fn().mockResolvedValue({ attempted: 0, failed: 0, truncated: false, deadlineHit: false, lastAttemptedSeq: null, rangeEndCap: null }),
 }));
 vi.mock("../services/extraction.js", () => ({
   extractionService: () => ({ extractThreadEntriesAwait: mockExtractThreadEntriesAwait }),

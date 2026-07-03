@@ -55,7 +55,7 @@ vi.mock("../services/hub-source-producers.js", () => ({
 
 // W2: the handler awaits extraction before compiling the draft.
 const { mockExtractThreadEntriesAwait } = vi.hoisted(() => ({
-  mockExtractThreadEntriesAwait: vi.fn().mockResolvedValue({ attempted: 2, failed: 0, truncated: false, deadlineHit: false, lastAttemptedSeq: 2 }),
+  mockExtractThreadEntriesAwait: vi.fn().mockResolvedValue({ attempted: 2, failed: 0, truncated: false, deadlineHit: false, lastAttemptedSeq: 2, rangeEndCap: null }),
 }));
 vi.mock("../services/extraction.js", () => ({
   extractionService: () => ({ extractThreadEntriesAwait: mockExtractThreadEntriesAwait }),
@@ -122,7 +122,7 @@ function makeDb() {
 beforeEach(() => {
   vi.clearAllMocks();
   mockResolveScopeAutoAcceptGate.mockReturnValue("draft_only");
-  mockExtractThreadEntriesAwait.mockResolvedValue({ attempted: 2, failed: 0, truncated: false, deadlineHit: false, lastAttemptedSeq: 2 });
+  mockExtractThreadEntriesAwait.mockResolvedValue({ attempted: 2, failed: 0, truncated: false, deadlineHit: false, lastAttemptedSeq: 2, rangeEndCap: null });
 });
 
 describe("W2: create_scope_draft runs extract-then-scope", () => {
@@ -187,7 +187,7 @@ describe("W2: create_scope_draft runs extract-then-scope", () => {
 
   it("(f) Codex #270 P1: a truncated extraction pass caps the draft range at lastAttemptedSeq", async () => {
     mockExtractThreadEntriesAwait.mockResolvedValue({
-      attempted: 25, failed: 0, truncated: true, deadlineHit: false, lastAttemptedSeq: 7,
+      attempted: 25, failed: 0, truncated: true, deadlineHit: false, lastAttemptedSeq: 7, rangeEndCap: 7,
     });
     const db = makeDb();
     const createDraftFromThread = vi.fn().mockResolvedValue(draftReturn);

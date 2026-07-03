@@ -20,6 +20,7 @@ import { issueService } from "./issues.js";
 import { MAX_CONTEXT_BUNDLE_ITEMS } from "./issue-context-bundles.js";
 import { memoryService } from "./memory.js";
 import { compileThreadScopeDraft } from "./thread-scope-draft-compiler.js";
+import { hubItemsService } from "./hub-items.js";
 
 export type DerivedThreadStage = {
   stage: ThreadDerivedStage;
@@ -389,6 +390,7 @@ type ScopeDirectFinalizeDb = Pick<Db, "select" | "update">;
 async function resolveSourceExtractedItem(
   tx: Pick<Db, "update">,
   input: {
+    companyId: string;
     extractedItemId: string;
     threadId: string;
     resultTaskId?: string | null;
@@ -415,6 +417,19 @@ async function resolveSourceExtractedItem(
         updatedAt: new Date(),
       })
       .where(eq(discussions.id, input.threadId));
+    // Codex #270 P2 (round 6): reconcile the discussion's pending-review hub item
+    // immediately — the human approveItems flow does the same after this decrement.
+    // Otherwise a last-item apply leaves a stale "Review N pending items" Inbox row
+    // until an unrelated sweep runs. Best-effort: a reconcile hiccup must not fail
+    // the apply (the sweeper heals; sources stay truth).
+    try {
+      await hubItemsService(tx as unknown as Db).reconcile(input.companyId, {
+        sourceType: "discussion",
+        sourceId: input.threadId,
+      });
+    } catch {
+      /* sweeper heals */
+    }
   }
 }
 
@@ -1326,6 +1341,7 @@ export function threadScopeVersionService(db: Db) {
           // (approve-able into a duplicate task) with a stale pendingItemCount badge.
           if (item.extractedItemId && (resultIssueId || resultMemoryId)) {
             await resolveSourceExtractedItem(tx as unknown as Pick<Db, "update">, {
+              companyId,
               extractedItemId: item.extractedItemId,
               threadId: version.threadId,
               resultTaskId: resultIssueId,
@@ -1548,6 +1564,7 @@ export function threadScopeVersionService(db: Db) {
         // rationale as the applyAcceptedDraft path (duplicate-approve + stale badge).
         if (item.extractedItemId && (resultIssueId || resultMemoryId)) {
           await resolveSourceExtractedItem(tx as unknown as Pick<Db, "update">, {
+            companyId,
             extractedItemId: item.extractedItemId,
             threadId: version.threadId,
             resultTaskId: resultIssueId,

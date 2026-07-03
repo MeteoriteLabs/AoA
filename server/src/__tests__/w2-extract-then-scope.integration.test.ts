@@ -9,10 +9,11 @@
  *       entry that already has extracted items COMPLETELY untouched (its
  *       extraction_status is unchanged — the founder-review-surface guard on real SQL).
  *   - Case 2 (Adjutant path, extraction attempted-and-failed): with zero extracted
- *       items and no usable extraction engine, the commit still succeeds, a scope
- *       version exists, and it contains ZERO task_proposal / memory_candidate items
- *       (suppressFallbackTask — no fake card). The entry provably went through the
- *       attempt (sourceInfo.extractionError is recorded by the failed attempt).
+ *       items and no usable extraction engine, the commit still succeeds but NO
+ *       draft is minted (round-6 P2: a failed entry caps the range below its seq →
+ *       no_entries) — the failed entry stays retryable by the next scoping pass and
+ *       its content can never be consumed by an accepted range. The entry provably
+ *       went through the attempt (sourceInfo.extractionError is recorded).
  *   - Case 3 (human default): createDraftFromThread called directly (no
  *       suppressFallbackTask) still synthesizes exactly ONE fallback task_proposal
  *       whose title is DERIVED from the actual entry content — the keyword stubs
@@ -403,7 +404,7 @@ describe.skipIf(process.platform === "win32")("W2 integration: extract-then-scop
 
   // ── Case 2: Adjutant path, extraction attempted-and-failed → zero-card draft ──
 
-  it("Adjutant path: extraction attempted with no usable engine → zero-card draft, no fake card", async () => {
+  it("Adjutant path: extraction attempted with no usable engine → NO draft; entries stay retryable (round-6 P2)", async () => {
     if (setupError) throw new Error(String(setupError));
 
     const { companyId, agentId } = await seedCompanyAndAgent("NoEngine");
@@ -456,30 +457,18 @@ describe.skipIf(process.platform === "win32")("W2 integration: extract-then-scop
       `),
     );
     expect(String(actionRow.status)).toBe("committed");
-    expect(actionRow.committed_scope_version_id).toBeTruthy();
-    const scopeVersionId = String(actionRow.committed_scope_version_id);
 
-    // The scope version exists (draft) …
-    const [versionRow] = rowsOf(
+    // Round-6 P2: the FAILED entry caps the range below its own seq → the compile
+    // yields no_entries → NO draft is minted at all. The failed entry's content is
+    // never consumed by an acceptable range, so the next scoping pass (after the
+    // founder fixes the CLI) retries it cleanly. No draft ⇒ no fake card, trivially.
+    expect(actionRow.committed_scope_version_id).toBeNull();
+    const versions = rowsOf(
       await db.execute(sql`
-        SELECT status FROM thread_scope_versions WHERE id = ${scopeVersionId}
+        SELECT id FROM thread_scope_versions WHERE thread_id = ${threadId}
       `),
     );
-    expect(String(versionRow.status)).toBe("draft");
-
-    // … and it carries ZERO task_proposal AND zero memory_candidate items:
-    // suppressFallbackTask killed the fake card, and the neutral text never
-    // tripped the intent-gated memory candidate.
-    const items = rowsOf(
-      await db.execute(sql`
-        SELECT kind, title FROM thread_scope_items WHERE scope_version_id = ${scopeVersionId}
-      `),
-    );
-    expect(items.filter((item) => String(item.kind) === "task_proposal")).toHaveLength(0);
-    expect(items.filter((item) => String(item.kind) === "memory_candidate")).toHaveLength(0);
-    for (const item of items) {
-      expect(String(item.title)).not.toMatch(DEAD_PLACEHOLDER_RE);
-    }
+    expect(versions).toHaveLength(0);
 
     // The entry was ATTEMPTED. Proof: the attempt recorded an extractionError in
     // source_info (it was NULL at seed time — only extractFromDiscussionEntry's

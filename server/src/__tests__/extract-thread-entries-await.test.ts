@@ -93,17 +93,20 @@ type EntryRow = { id: string; seq: number; extractionStatus: string };
  */
 function makeDb(
   rows: EntryRow[],
-  opts: { selectRejects?: boolean; versionRows?: Array<{ sourceEndSeq: number }> } = {},
+  opts: { selectRejects?: boolean; versionRows?: Array<{ sourceEndSeq: number }>; entryOutcomes?: string[] } = {},
 ) {
   const events: string[] = [];
   const updateSets: Array<Record<string, unknown>> = [];
 
-  // The method issues TWO selects, in order: [0] the accepted/completed
-  // scope-version bound (round-4 P1 — start after the last scoped seq),
-  // [1] the entry eligibility query.
+  // Select order: [0] the accepted/completed scope-version bound (round-4 P1),
+  // [1] the entry eligibility query, [2..] per-attempted-entry outcome re-queries
+  // (round-6 P2 — the helper re-reads extraction_status after each extractOne while
+  // no failure has been seen; default outcome 'completed', override via
+  // opts.entryOutcomes consumed in call order).
   const selectQueue: unknown[][] = [opts.versionRows ?? [], rows];
   let selectIdx = 0;
   let selectCalls = 0;
+  let outcomeIdx = 0;
 
   const db = {
     select: () => {
@@ -117,11 +120,16 @@ function makeDb(
       chain.then = (
         resolve: (v: unknown) => unknown,
         reject?: (e: unknown) => unknown,
-      ) =>
-        (opts.selectRejects
-          ? Promise.reject(new Error("select boom"))
-          : Promise.resolve(selectQueue[selectIdx++] ?? [])
-        ).then(resolve, reject);
+      ) => {
+        if (opts.selectRejects) {
+          return Promise.reject(new Error("select boom")).then(resolve, reject);
+        }
+        if (selectIdx < selectQueue.length) {
+          return Promise.resolve(selectQueue[selectIdx++]).then(resolve, reject);
+        }
+        const status = opts.entryOutcomes?.[outcomeIdx++] ?? "completed";
+        return Promise.resolve([{ extractionStatus: status }]).then(resolve, reject);
+      };
       return chain;
     },
     get __selectCalls() {
@@ -170,7 +178,7 @@ describe("extractionService.extractThreadEntriesAwait", () => {
       { extractOne },
     );
 
-    expect(result).toEqual({ attempted: 3, failed: 0, truncated: false, deadlineHit: false, lastAttemptedSeq: 3 });
+    expect(result).toEqual({ attempted: 3, failed: 0, truncated: false, deadlineHit: false, lastAttemptedSeq: 3, rangeEndCap: null });
     expect(extractOne).toHaveBeenCalledTimes(3);
     expect(extractOne.mock.calls).toEqual([
       [COMPANY, "e1"],
@@ -194,7 +202,7 @@ describe("extractionService.extractThreadEntriesAwait", () => {
       { extractOne },
     );
 
-    expect(result).toEqual({ attempted: 3, failed: 0, truncated: false, deadlineHit: false, lastAttemptedSeq: 3 });
+    expect(result).toEqual({ attempted: 3, failed: 0, truncated: false, deadlineHit: false, lastAttemptedSeq: 3, rangeEndCap: null });
     // Exactly two flips (e2 + e3) — the already-pending e1 gets none.
     expect(updateSets).toEqual([
       { extractionStatus: "pending", extractionRunId: null },
@@ -262,7 +270,9 @@ describe("extractionService.extractThreadEntriesAwait", () => {
     );
 
     // e2 was attempted (counter increments before the call) AND counted failed.
-    expect(result).toEqual({ attempted: 3, failed: 1, truncated: false, deadlineHit: false, lastAttemptedSeq: 3 });
+    // e2's throw is a failure → the range caps just BEFORE it (round-6 P2): an
+    // accepted draft must never cover an entry whose content was not captured.
+    expect(result).toEqual({ attempted: 3, failed: 1, truncated: false, deadlineHit: false, lastAttemptedSeq: 3, rangeEndCap: 1 });
     expect(extractOne).toHaveBeenCalledTimes(3);
     expect(events).toEqual(["extract:e1", "extract:e3"]);
   });
@@ -289,6 +299,7 @@ describe("extractionService.extractThreadEntriesAwait", () => {
       // Codex #270 P1: the capped pass reports the highest seq it processed so the
       // draft's sourceEndSeq is capped there and the tail stays in the NEXT range.
       lastAttemptedSeq: MAX_EXTRACT_ENTRIES_PER_SCOPE,
+      rangeEndCap: MAX_EXTRACT_ENTRIES_PER_SCOPE,
     });
     expect(extractOne).toHaveBeenCalledTimes(MAX_EXTRACT_ENTRIES_PER_SCOPE);
     // The row past the cap is never touched.
@@ -319,7 +330,7 @@ describe("extractionService.extractThreadEntriesAwait", () => {
       { extractOne, now },
     );
 
-    expect(result).toEqual({ attempted: 1, failed: 0, truncated: false, deadlineHit: true, lastAttemptedSeq: 1 });
+    expect(result).toEqual({ attempted: 1, failed: 0, truncated: false, deadlineHit: true, lastAttemptedSeq: 1, rangeEndCap: 1 });
     expect(extractOne).toHaveBeenCalledTimes(1);
     expect(extractOne).toHaveBeenCalledWith(COMPANY, "e1");
     expect(events).toEqual(["extract:e1"]);
@@ -335,7 +346,7 @@ describe("extractionService.extractThreadEntriesAwait", () => {
       { extractOne },
     );
 
-    expect(result).toEqual({ attempted: 0, failed: 0, truncated: false, deadlineHit: false, lastAttemptedSeq: null });
+    expect(result).toEqual({ attempted: 0, failed: 0, truncated: false, deadlineHit: false, lastAttemptedSeq: null, rangeEndCap: null });
     expect(extractOne).not.toHaveBeenCalled();
   });
 
@@ -356,9 +367,31 @@ describe("extractionService.extractThreadEntriesAwait", () => {
       { extractOne },
     );
 
-    expect(db.__selectCalls).toBe(2);
-    expect(result).toEqual({ attempted: 2, failed: 0, truncated: false, deadlineHit: false, lastAttemptedSeq: 5 });
+    expect(db.__selectCalls).toBe(4); // bound + entries + 2 outcome re-queries
+    expect(result).toEqual({ attempted: 2, failed: 0, truncated: false, deadlineHit: false, lastAttemptedSeq: 5, rangeEndCap: null });
     expect(updateSets).toHaveLength(1); // only the skipped e5 flips
     expect(events).toEqual(["extract:e4", "flip", "extract:e5"]);
+  });
+
+  it("(i) round-6 P2: an entry whose extraction ends failed/skipped caps the range BEFORE it", async () => {
+    const rows: EntryRow[] = [
+      { id: "e1", seq: 1, extractionStatus: "pending" },
+      { id: "e2", seq: 2, extractionStatus: "pending" },
+      { id: "e3", seq: 3, extractionStatus: "pending" },
+    ];
+    // extractOne resolves cleanly for all (the extractor swallows its own errors);
+    // the OUTCOME re-query reports e2 ended 'failed'.
+    const { db, events } = makeDb(rows, { entryOutcomes: ["completed", "failed"] });
+    const extractOne = makeExtractOne(events);
+
+    const result = await extractionService(db).extractThreadEntriesAwait(
+      COMPANY,
+      THREAD,
+      { extractOne },
+    );
+
+    // All three attempted (best-effort continues), but the draft range must end at
+    // seq 1 — e2's content was never captured and must stay in the NEXT scope's range.
+    expect(result).toEqual({ attempted: 3, failed: 1, truncated: false, deadlineHit: false, lastAttemptedSeq: 3, rangeEndCap: 1 });
   });
 });
