@@ -832,4 +832,110 @@ describe.skipIf(process.platform === "win32")("W2 integration: extract-then-scop
     expect(cards).toHaveLength(1);
     expect(String(cards[0].title)).toBe("Rework the ingestion retry queue");
   }, 120_000);
+
+  // ── Case 7: a no-op commit does not absorb the idempotency key forever (Codex #270 round-10 P2) ──
+  //
+  // Production scope-draft keys are run-INDEPENDENT and turn-anchored: the same
+  // thread/agent/turn/summary always derives the SAME key. A create_scope_draft
+  // that committed WITHOUT minting a draft (extraction found no CLI → no_entries/
+  // no_items) used to occupy that key as a terminal committed row — a later
+  // same-turn re-proposal (founder fixed the CLI, no new human entry) collided
+  // with it and was silently swallowed: the draft could never be re-attempted.
+  // Now the collide path REVIVES a no-op committed create_scope_draft to
+  // proposed (fresh freshness, committedAt shed), and the retry drains normally.
+  it("Adjutant path: same-key re-proposal after a no-op commit revives the action — retry drafts for real", async () => {
+    if (setupError) throw new Error(String(setupError));
+
+    const { companyId, agentId } = await seedCompanyAndAgent("KeyRevive");
+    await forceUnsupportedExtractionCli(companyId);
+    const { threadId, entryId } = await seedThreadWithEntry(companyId, {
+      text: "Stand up the churn-alert pipeline this sprint.",
+      extractionStatus: "pending",
+    });
+    await setThreadAutonomy(threadId, 0);
+    const svc = threadAgentActionService(db);
+    // Production-style stable key: run-independent, turn-anchored (thread-action-keys.ts).
+    const stableKey = `${threadId}:create_scope_draft:${agentId}:${entryId}:samehash`;
+
+    // Attempt 1: propose → seal (simulated, Decision #99) → commit. Extraction has
+    // no engine → the failure caps the range → NO draft; the action commits as a no-op.
+    const runId1 = await seedRun(companyId);
+    const snap1 = await captureFreshnessSnapshot(db as never, threadId);
+    const proposed1 = (await svc.proposeThreadAction({
+      companyId,
+      threadId,
+      runId: runId1,
+      agentId,
+      actionType: "create_scope_draft",
+      payload: { summary: "Churn-alert scope" },
+      idempotencyKey: stableKey,
+      freshness: snap1 as never,
+    })) as { id: string };
+    await db.execute(sql`
+      UPDATE thread_agent_actions SET status = 'ready' WHERE id = ${proposed1.id}
+    `);
+    const first = await svc.commitThreadAgentActions({ companyId, threadId, runId: runId1 });
+    expect(first.committed).toBe(1);
+    const [afterFirst] = rowsOf(
+      await db.execute(sql`
+        SELECT status, committed_scope_version_id FROM thread_agent_actions WHERE id = ${proposed1.id}
+      `),
+    );
+    expect(String(afterFirst.status)).toBe("committed");
+    expect(afterFirst.committed_scope_version_id).toBeNull();
+
+    // Founder fixes extraction; no new human entry → the SAME key is re-derived.
+    await db.execute(sql`
+      UPDATE discussion_entries SET extraction_status = 'completed' WHERE id = ${entryId}
+    `);
+    await db.execute(sql`
+      INSERT INTO discussion_extracted_items (id, discussion_entry_id, type, title, status)
+      VALUES (gen_random_uuid(), ${entryId}, 'task', 'Stand up the churn-alert pipeline', 'pending')
+    `);
+
+    // Attempt 2: SAME key. The collide path must revive the no-op row, not swallow it.
+    const runId2 = await seedRun(companyId);
+    const snap2 = await captureFreshnessSnapshot(db as never, threadId);
+    const proposed2 = (await svc.proposeThreadAction({
+      companyId,
+      threadId,
+      runId: runId2,
+      agentId,
+      actionType: "create_scope_draft",
+      payload: { summary: "Churn-alert scope" },
+      idempotencyKey: stableKey,
+      freshness: snap2 as never,
+    })) as { id: string; status: string };
+    expect(proposed2.id).toBe(proposed1.id); // same row — revived, not duplicated
+    expect(String(proposed2.status)).toBe("proposed");
+    const [revivedRow] = rowsOf(
+      await db.execute(sql`
+        SELECT status, committed_at FROM thread_agent_actions WHERE id = ${proposed1.id}
+      `),
+    );
+    expect(String(revivedRow.status)).toBe("proposed");
+    expect(revivedRow.committed_at).toBeNull();
+
+    // Seal + drain: this time the draft mints for real, with the real card.
+    await db.execute(sql`
+      UPDATE thread_agent_actions SET status = 'ready' WHERE id = ${proposed1.id}
+    `);
+    const second = await svc.commitThreadAgentActions({ companyId, threadId, runId: runId2 });
+    expect(second.committed).toBe(1);
+    const [afterSecond] = rowsOf(
+      await db.execute(sql`
+        SELECT status, committed_scope_version_id FROM thread_agent_actions WHERE id = ${proposed1.id}
+      `),
+    );
+    expect(String(afterSecond.status)).toBe("committed");
+    expect(afterSecond.committed_scope_version_id).toBeTruthy();
+    const cards7 = rowsOf(
+      await db.execute(sql`
+        SELECT title FROM thread_scope_items
+        WHERE scope_version_id = ${String(afterSecond.committed_scope_version_id)} AND kind = 'task_proposal'
+      `),
+    );
+    expect(cards7).toHaveLength(1);
+    expect(String(cards7[0].title)).toBe("Stand up the churn-alert pipeline");
+  }, 120_000);
 });

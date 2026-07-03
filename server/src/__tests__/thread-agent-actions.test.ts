@@ -200,6 +200,58 @@ describe("threadAgentActionService", () => {
     expect(db.__updateSets[1]).toMatchObject({ status: "proposed", blockedReason: null, freshness: freshSnap });
   });
 
+  it("re-propose of a NO-OP committed create_scope_draft (null version) revives it to proposed (Codex #270 round 10)", async () => {
+    // A create_scope_draft that committed without minting a draft (no_entries/no_items —
+    // e.g. extraction found no CLI) is a no-op: nothing for idempotency to protect. Its
+    // run-independent, turn-anchored key would otherwise absorb every same-turn
+    // re-proposal, so the draft could never be re-attempted after the founder fixes
+    // extraction (until a new human entry moves the turn anchor).
+    const freshSnap = { threadId: "thread-1", entrySeq: 7, latestScopeVersionId: null };
+    const existing = {
+      ...baseAction, id: "exn", runId: "run-1", actionType: "create_scope_draft",
+      status: "committed", committedScopeVersionId: null, committedAt: new Date("2026-07-01"),
+      freshness: { threadId: "thread-1", entrySeq: 3, latestScopeVersionId: null },
+    };
+    const db = createSequenceDb({ selects: [[thread], [existing]], inserts: [[]], updates: [[], [{ ...existing, status: "proposed", committedAt: null, freshness: freshSnap }]] });
+    const res = (await threadAgentActionService(db as never).proposeThreadAction({
+      companyId: "company-1", threadId: "thread-1", runId: "run-2", agentId: null,
+      actionType: "create_scope_draft", payload: { summary: "retry after CLI fix" }, idempotencyKey: existing.idempotencyKey, freshness: freshSnap,
+    })) as { id: string; status: string };
+    expect(res.status).toBe("proposed");
+    // Revived in-flight: freshness re-stamped AND the stale committedAt shed.
+    expect(db.__updateSets[1]).toMatchObject({ status: "proposed", blockedReason: null, freshness: freshSnap, committedAt: null });
+  });
+
+  it("does NOT revive a committed create_scope_draft that HAS a version id (real commits stay terminal)", async () => {
+    // Draft-minting and existing_draft commits both record the version id — those are
+    // real effects and the idempotency key must keep absorbing same-turn re-proposals.
+    const existing = {
+      ...baseAction, id: "exv", runId: "run-1", actionType: "create_scope_draft",
+      status: "committed", committedScopeVersionId: "v1",
+    };
+    const db = createSequenceDb({ selects: [[thread], [existing]], inserts: [[]], updates: [[]] }); // only the key append; NO revive
+    const res = (await threadAgentActionService(db as never).proposeThreadAction({
+      companyId: "company-1", threadId: "thread-1", runId: "run-2", agentId: null,
+      actionType: "create_scope_draft", payload: { summary: "same turn" }, idempotencyKey: existing.idempotencyKey, freshness: { entrySeq: 1 },
+    })) as { id: string; status: string };
+    expect(res.status).toBe("committed"); // unchanged — not revived
+    expect(db.__updateSets).toHaveLength(1); // only the outbox key append
+  });
+
+  it("does NOT revive a committed NON-create_scope_draft row with a null version (no-op revive stays scoped)", async () => {
+    // A committed post_reply/convene_agent has real side-effects that are NOT recorded
+    // in committedScopeVersionId — reviving one would replay them (duplicate reply /
+    // duplicate wakeup). The no-op revive fires for create_scope_draft ONLY.
+    const existing = { ...baseAction, id: "exr", runId: "run-1", status: "committed", committedScopeVersionId: null };
+    const db = createSequenceDb({ selects: [[thread], [existing]], inserts: [[]], updates: [[]] }); // only the key append; NO revive
+    const res = (await threadAgentActionService(db as never).proposeThreadAction({
+      companyId: "company-1", threadId: "thread-1", runId: "run-2", agentId: "agent-1",
+      actionType: "post_reply", payload: { rawContent: "Hello" }, idempotencyKey: existing.idempotencyKey, freshness: { latestHumanSeq: 1 },
+    })) as { id: string; status: string };
+    expect(res.status).toBe("committed"); // unchanged — not revived
+    expect(db.__updateSets).toHaveLength(1); // only the outbox key append
+  });
+
   it("does NOT revive a blocked_policy row blocked for a NON-run_not_sealed reason (revive stays narrow)", async () => {
     // Only GC-terminalized (run_not_sealed) blocks are revivable; a genuine policy block stays terminal.
     const existing = { ...baseAction, id: "exp", runId: "run-1", status: "blocked_policy", blockedReason: "some_policy" };

@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, lt, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, lt, notInArray, or, sql } from "drizzle-orm";
 import type {
   ThreadAgentActionStatus,
   ThreadAgentActionType,
@@ -88,6 +88,9 @@ type ThreadActionRow = {
   freshness: ThreadFreshnessSnapshot;
   attemptCount?: number;
   maxAttempts?: number;
+  // Null on a NO-OP create_scope_draft commit (no_entries/no_items) — the
+  // discriminator the round-10 no-op revive keys on.
+  committedScopeVersionId?: string | null;
 };
 
 export type ProposeThreadActionInput = {
@@ -417,10 +420,20 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
       // key-set — without re-stamping freshness here it would carry the FAILED run's stale snapshot and
       // wrongly suppress a scope-coupled action as newer_scope_version even though THIS run saw the new
       // scope (Codex round-8; same class as the suppressed_stale revive + the #202 re-home freshness fix).
+      // Codex #270 P2 (round 10): a create_scope_draft that committed WITHOUT minting a
+      // draft (no_entries / no_items — e.g. extraction found no usable CLI) is a NO-OP
+      // commit: there is no effect for idempotency to protect. Its run-independent,
+      // turn-anchored key would otherwise absorb every same-turn re-proposal, so the
+      // draft could never be re-attempted after the founder fixes extraction (until a
+      // new human entry moves the turn anchor). Draft-minting AND existing_draft
+      // commits both record the version id → non-null → stay terminal.
       const reviveFrom =
         existing &&
         (existing.status === "suppressed_stale" ||
-          (existing.status === "blocked_policy" && existing.blockedReason === "run_not_sealed"))
+          (existing.status === "blocked_policy" && existing.blockedReason === "run_not_sealed") ||
+          (existing.status === "committed" &&
+            existing.actionType === "create_scope_draft" &&
+            existing.committedScopeVersionId == null))
           ? existing.status
           : null;
       if (existing && reviveFrom) {
@@ -430,9 +443,22 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
             status: "proposed",
             blockedReason: null,
             freshness: input.freshness ?? existing.freshness,
+            // A revived no-op commit sheds its committedAt so the row reads as
+            // genuinely in-flight again (committedScopeVersionId is already null).
+            ...(reviveFrom === "committed" ? { committedAt: null } : {}),
             updatedAt: new Date(),
           })
-          .where(and(eq(threadAgentActions.id, existing.id), eq(threadAgentActions.status, reviveFrom)))
+          .where(
+            and(
+              eq(threadAgentActions.id, existing.id),
+              eq(threadAgentActions.status, reviveFrom),
+              // TOCTOU discipline: re-assert the no-op discriminator INSIDE the
+              // guarded UPDATE — never revive a committed row that has a version.
+              ...(reviveFrom === "committed"
+                ? [isNull(threadAgentActions.committedScopeVersionId)]
+                : []),
+            ),
+          )
           .returning();
         if (revived) return revived;
       }
