@@ -25,6 +25,11 @@ export interface HubItemListRow {
   summary: string | null;
   sourceType: string | null;
   sourceId: string | null;
+  // Server-persisted, canonical target entity for deep-links (hub-items.ts row
+  // spread, ~408-409/438-439). PREFER these over parsing composite sourceIds —
+  // a generic `split(":")[0]` is wrong for several types (e.g. marketplace_op).
+  relatedEntityId?: string | null;
+  relatedEntityType?: string | null;
   ownerUserId: string | null;
   ownerPool: string | null;
   claimedByUserId: string | null;

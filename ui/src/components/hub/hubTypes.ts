@@ -1,6 +1,7 @@
 import type { HubItemListRow } from "@/api/hub-items";
 import type { HubGroupMode, HubLane, HubSemanticType } from "@armyofagents/shared";
 import type { LucideIcon } from "lucide-react";
+import type { HubTabKind } from "./hubViewerModel";
 
 export type HubViewerKind =
   | "approval"
@@ -17,6 +18,19 @@ export interface HubRegistryEntry {
   icon: LucideIcon;
   viewerKind: HubViewerKind;
   fullLink: (item: HubItemListRow) => string | null;
+  /**
+   * Which viewer-tab kind this semantic type opens when its row is clicked.
+   * Static per type (per the tabbed-architecture doc §2 table); `hubTabForItem`
+   * refines it where a single semantic type spans two entity kinds (e.g. a
+   * `mention` on a task vs a thread).
+   */
+  tabKind: HubTabKind;
+  /**
+   * Resolve the TARGET entity id for the tab. ALWAYS prefers the
+   * server-persisted `relatedEntityId`; falls back to a per-semanticType parse
+   * of the composite `sourceId` (never a generic `split(":")[0]`).
+   */
+  resolveTabId: (item: HubItemListRow) => string;
 }
 
 export type HubListEntry =
