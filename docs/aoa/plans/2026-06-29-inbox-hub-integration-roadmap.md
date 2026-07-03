@@ -1,6 +1,6 @@
 # Inbox Hub Integration Roadmap
 
-**Status:** Active integration roadmap; W1b/W1c/W1d merged in PR #244, final cutover merged in PR #246, W2 Layer 3 merged in PR #248, W3 Autopilot merged in PR #249, W4a Steward foundation merged in PR #256, W5a runtime decision core (+ hardening) merged in PR #259, W5b first real adapter bridge (`claude_local`, PreToolUse hook) merged in PR #264. Next: W5c second adapter bridge (`codex_local`) — feasibility GO-WITH-MODE-CHANGE (requires exec→app-server re-platform; gated on a live spike).
+**Status:** Active integration roadmap; W1b/W1c/W1d merged in PR #244, final cutover merged in PR #246, W2 Layer 3 merged in PR #248, W3 Autopilot merged in PR #249, W4a Steward foundation merged in PR #256, W5a runtime decision core (+ hardening) merged in PR #259, W5b first real adapter bridge (`claude_local`, PreToolUse hook) merged in PR #264, W5c second adapter bridge (`codex_local`, app-server re-platform, command + file-change) merged in PR #268 (Decision #106). **W5 runtime decision routing is complete across the two primary adapters.** Remaining W5 follow-ups (deferred, unscheduled): work_question routing, remote targets, opencode/gemini/cursor bridge feasibility.
 **Date:** 2026-06-29
 **Type:** Integration roadmap / planning spine
 **Design authority:** `docs/aoa/plans/2026-06-26-inbox-hub-master-scope.md`
@@ -91,13 +91,21 @@ Active next:
   Decision #105). Permission prompts route to the hub via a `PreToolUse` hook +
   fail-closed command forwarder; per-agent flag + instance kill-switch +
   local-target guard, default OFF. Spike-proven on Claude Code 2.1.126.
-- **W5c second adapter bridge (`codex_local`):** next. Feasibility (2026-07-03) =
-  **GO-WITH-MODE-CHANGE.** Codex 0.130 exposes a blocking approve/deny callback
-  (`item/commandExecution/requestApproval` over JSON-RPC) **only in `app-server`/
-  `mcp-server` mode, not in the `codex exec` mode AoA uses today** — so W5c is a
-  **spawn-mode re-platform** of the codex_local adapter (exec→app-server: new
-  event-stream parsing, session/usage/summary recovery, resume mapping) plus the
-  approval bridge. Larger than W5b; gated on a live app-server spike.
+- **W5c second adapter bridge (`codex_local`):** **merged in PR #268**
+  (plan: `docs/aoa/plans/2026-07-03-w5c-codex-app-server-bridge-plan.md`,
+  Decision #106). Dual-path: supervised runs re-platform to `codex app-server`
+  (JSON-RPC over stdio, **in-process** approval callback — no HTTP/token/registry;
+  the claude-only W5b machinery untouched), unsupervised runs keep `codex exec`
+  byte-identical. Command **and file-change** approvals (out-of-tree writes
+  declined at a cwd trust boundary), fail-closed v2 decision map, tracked child
+  in `runningProcesses` via the new shared `spawnTrackedChild()` (cancellable +
+  un-reaped while blocked on the 300s approval SLA). Same four-condition gate as
+  W5b (allow-list + env kill-switch + local target + per-agent flag), default OFF.
+  Live-spike-proven on codex-cli 0.130 (guarded harness `AOA_CODEX_APPSERVER_LIVE=1`;
+  guarded e2e `AOA_E2E_RUNTIME_DECISION_BRIDGE_CODEX=1` — both skip in CI).
+  Deferred: work_question (`item/tool/requestUserInput`), remote targets, other
+  adapters (opencode/gemini/cursor feasibility unknown), live cross-path resume
+  portability confirmation.
 
 ---
 
@@ -377,22 +385,28 @@ default OFF; permission-only (`work_question` deferred). Spike-proven on Claude
 Code 2.1.126 (finding: `PermissionRequest` is not a firing event → `PreToolUse`
 with a scoped matcher is the mechanism).
 
-**W5c (`codex_local`) is next — feasibility GO-WITH-MODE-CHANGE (2026-07-03).**
-Codex 0.130 exposes a real blocking approve/deny callback
-(`item/commandExecution/requestApproval` / `item/fileChange/requestApproval` over
-JSON-RPC) **only in `app-server`/`mcp-server` mode — NOT in the `codex exec`
-mode AoA runs today**. So W5c is a **spawn-mode re-platform** of the codex_local
-adapter (`exec --json` → `app-server`: new `item/*`/`turn/*` event-stream
-parsing, session-id/usage/summary recovery, resume mapping) plus the approval
-bridge onto `runtimeDecisionBroker.requestPermissionBounded`. This is materially
-larger than W5b (which was an additive hook file). Permission-only (defer
-work_question, same as W5b). Gated on a **live `app-server` spike** (confirm the
-method names/payloads on 0.130, an approval-forcing policy, and JSONL parity).
-The original W5a "BLOCKED for codex" was only true for `exec` mode.
+**W5c (`codex_local`) merged in PR #268** (Decision #106, plan:
+`docs/aoa/plans/2026-07-03-w5c-codex-app-server-bridge-plan.md`). The predicted
+spawn-mode re-platform shipped as a **dual-path**: supervised runs drive
+`codex app-server` (JSON-RPC over stdio) through a new shared `spawnTrackedChild()`
+(registered in `runningProcesses` — cancellable + un-reaped while blocked on the
+300s approval SLA) with the approval callback arriving **in-process** (no
+HTTP/token/registry; the claude-only W5b machinery only gated, untouched);
+unsupervised runs keep `codex exec` byte-identical. Ships **command +
+file-change** approvals (file-change paths correlated `itemId → item/started`,
+out-of-tree writes declined at a cwd trust boundary before ever prompting),
+fail-closed v2 decision map (`allow_once→accept`, `allow_always→acceptForSession`,
+everything else→`decline`). Same four-condition gate as W5b, default OFF.
+Live-spike-proven on codex-cli 0.130; protocol reference:
+`docs/adapters/codex-appserver-protocol.md`. Deferred: work_question
+(`item/tool/requestUserInput`), remote targets, opencode/gemini/cursor
+feasibility, live cross-path resume portability confirmation.
 
 Dependency boundary: W5 requires a per-adapter feasibility matrix first. Start
 with one adapter behind a feature flag. W1a reserves the type; W1b can render a
-reserved/empty-state path but does not build bridges.
+reserved/empty-state path but does not build bridges. (Satisfied: claude_local
+W5b + codex_local W5c are live behind the shared flag; remaining adapters need
+their own feasibility checks before any bridge work.)
 
 ---
 
