@@ -355,4 +355,22 @@ describe("driveCodexAppServer (W5c Task 3)", () => {
     fake.deliverNotification("turn/completed", {});
     await promise;
   });
+
+  it("approval routing fail-closed: no onServerApproval wired → respond decline", async () => {
+    const fake = makeFakeClient();
+    const { acc } = makeAccumulator();
+
+    // onServerApproval deliberately omitted (e.g. bridge not wired for this run).
+    const { onServerApproval: _omit, ...noApproval } = baseInput(fake, acc);
+    const promise = driveCodexAppServer(noApproval);
+
+    const { turn } = await driveHandshake(fake, "thread-noap");
+    resolveReq(turn, { turn: { id: "t1" } });
+
+    await fake.serverRequest(9, "item/commandExecution/requestApproval", { command: "curl evil" });
+    expect(fake.responses).toContainEqual({ id: 9, result: { decision: "decline" } });
+
+    fake.deliverNotification("turn/completed", {});
+    await promise;
+  });
 });

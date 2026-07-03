@@ -287,6 +287,11 @@ export async function driveCodexAppServer(
     .catch((err) => {
       // A turn/start rejection means the turn will never complete — settle so we
       // don't hang; the accumulator surfaces the error if it was notified.
+      // NOTE (seam contract for the Task 4 accumulator): if the server ALSO emits
+      // a real turn/failed notification, the accumulator observes two terminal
+      // events (one real, one synthesized here). settleTurn() is idempotent so the
+      // driver never double-resolves, but result() must be idempotent/last-wins
+      // over terminal turn events.
       accumulator.onNotification("turn/failed", {
         turn: { error: { message: err instanceof Error ? err.message : String(err) } },
       });
