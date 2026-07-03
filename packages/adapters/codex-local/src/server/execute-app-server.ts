@@ -38,7 +38,7 @@ import {
 } from "./app-server/driver.js";
 import { createAppServerResultAccumulator as realCreateAccumulator } from "./app-server/parse-events.js";
 import { handleApprovalRequest } from "./app-server/approval-bridge.js";
-import { stripCodexRolloutNoise } from "./execute.js";
+import { stripCodexRolloutNoise } from "./parse-shared.js";
 import { appendWithCap } from "@armyofagents/adapter-utils/server-utils";
 
 /** Cap total forwarded bridged-stderr so a chatty session can't grow logs without bound. */

@@ -161,6 +161,31 @@ export function liftOutputRefs(text: string): LiftedOutputRef[] | null {
   }
 }
 
+const CODEX_ROLLOUT_NOISE_RE =
+  /^\d{4}-\d{2}-\d{2}T[^\s]+\s+ERROR\s+codex_core::rollout::list:\s+state db missing rollout path for thread\s+[a-z0-9-]+$/i;
+
+/**
+ * Strip codex's benign "state db missing rollout path" stderr noise lines.
+ * Shared by BOTH stderr paths (exec: runChildProcess capture in execute.ts;
+ * app-server: spawnAppServerClient onStderr in execute-app-server.ts) so their
+ * logging matches. Lives here — not in execute.ts — to avoid an
+ * execute ↔ execute-app-server module cycle.
+ */
+export function stripCodexRolloutNoise(text: string): string {
+  const parts = text.split(/\r?\n/);
+  const kept: string[] = [];
+  for (const part of parts) {
+    const trimmed = part.trim();
+    if (!trimmed) {
+      kept.push(part);
+      continue;
+    }
+    if (CODEX_ROLLOUT_NOISE_RE.test(trimmed)) continue;
+    kept.push(part);
+  }
+  return kept.join("\n");
+}
+
 export function parseActionConfirmation(item: Record<string, unknown>): CodexParsedChunk | null {
   const text = normalizeToolResultText(item);
   const confirmPayload = extractConfirmPayload(text);

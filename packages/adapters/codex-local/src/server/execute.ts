@@ -26,6 +26,7 @@ import {
   applyAoaWorkspaceEnv,
 } from "@armyofagents/adapter-utils/server-utils";
 import { parseCodexJsonl, createCodexSessionIdCapture, isCodexUnknownSessionError } from "./parse.js";
+import { stripCodexRolloutNoise } from "./parse-shared.js";
 import { isCodexLocalFastModeSupported, CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS } from "../index.js";
 import { prepareManagedCodexHome } from "./codex-home.js";
 import { writeCodexMcpConfigToml } from "./codex-config-toml.js";
@@ -80,24 +81,7 @@ const AOA_SKILLS_CANDIDATES = [
   path.resolve(__moduleDir, "../../skills"),         // published: <pkg>/dist/server/ -> <pkg>/skills/
   path.resolve(__moduleDir, "../../../../../skills"), // dev: src/server/ -> repo root/skills/
 ];
-const CODEX_ROLLOUT_NOISE_RE =
-  /^\d{4}-\d{2}-\d{2}T[^\s]+\s+ERROR\s+codex_core::rollout::list:\s+state db missing rollout path for thread\s+[a-z0-9-]+$/i;
 const REMOTE_CODEX_HOME_DIR_NAME = ".aoa-codex-home";
-
-export function stripCodexRolloutNoise(text: string): string {
-  const parts = text.split(/\r?\n/);
-  const kept: string[] = [];
-  for (const part of parts) {
-    const trimmed = part.trim();
-    if (!trimmed) {
-      kept.push(part);
-      continue;
-    }
-    if (CODEX_ROLLOUT_NOISE_RE.test(trimmed)) continue;
-    kept.push(part);
-  }
-  return kept.join("\n");
-}
 
 function firstNonEmptyLine(text: string): string {
   return (
