@@ -52,6 +52,35 @@ export function approvalService(db: Db) {
         throw unprocessable("Only pending or revision requested approvals can be approved");
       }
 
+      // W1c: for a crew_dispatch approval, run the budget/pause preflight BEFORE the
+      // status flip. approve() is called both inside a txn (HTTP route) AND directly
+      // without one (MCP approval tool — server/src/mcp/tools/approval-tools.ts). Gating
+      // before the UPDATE keeps "blocked → approval stays pending, retryable" true for
+      // every caller; a throw after the flip would strand the approval when there is no
+      // wrapping txn (tasks stuck in planning, approval closed). Payload is immutable
+      // across the status flip, so reading it from `existing` is equivalent to `updated`.
+      let crewDispatchThreadId: string | null = null;
+      let crewDispatchTaskIds: string[] = [];
+      if (existing.type === "crew_dispatch") {
+        const payload = existing.payload as Record<string, unknown>;
+        crewDispatchThreadId = typeof payload.threadId === "string" ? payload.threadId : null;
+        crewDispatchTaskIds = Array.isArray(payload.taskIds)
+          ? payload.taskIds.filter((x): x is string => typeof x === "string")
+          : [];
+        if (crewDispatchThreadId && crewDispatchTaskIds.length > 0) {
+          const preflight = await preflightCrewDispatch(db, {
+            companyId,
+            agentId: "",
+            threadId: crewDispatchThreadId,
+          });
+          if (!preflight.allowed) {
+            throw unprocessable(
+              `Cannot dispatch crew work: ${preflight.reason ?? preflight.reasonCode}`,
+            );
+          }
+        }
+      }
+
       const now = new Date();
       const updated = await db
         .update(approvals)
@@ -123,56 +152,36 @@ export function approvalService(db: Db) {
         }
       }
 
-      // W1c: crew-dispatch approval. On approve, flip the payload's planning tasks to
-      // 'standard' and dispatch them — gated by the SAME budget/pause preflight as the
-      // Drive path. A blocked preflight throws: the route runs approve() inside a
-      // transaction, so the throw rolls the status flip back (approval stays pending,
-      // founder gets the reason and retries after resolving budget/unpausing).
-      if (updated.type === "crew_dispatch") {
-        const payload = updated.payload as Record<string, unknown>;
-        const threadId = typeof payload.threadId === "string" ? payload.threadId : null;
-        const taskIds = Array.isArray(payload.taskIds)
-          ? payload.taskIds.filter((x): x is string => typeof x === "string")
-          : [];
+      // W1c: crew-dispatch approval side-effect. The budget/pause preflight already ran
+      // BEFORE the status flip above (so a blocked dispatch can never close the approval,
+      // regardless of whether the caller wraps approve() in a txn). Here we only flip the
+      // still-'planning' tasks to 'standard' and dispatch them.
+      if (updated.type === "crew_dispatch" && crewDispatchThreadId && crewDispatchTaskIds.length > 0) {
+        const tasks = (await db
+          .select({ id: issues.id, assigneeAgentId: issues.assigneeAgentId, workMode: issues.workMode })
+          .from(issues)
+          .where(and(eq(issues.companyId, companyId), inArray(issues.id, crewDispatchTaskIds)))) as Array<{
+          id: string;
+          assigneeAgentId: string | null;
+          workMode: string | null;
+        }>;
 
-        if (threadId && taskIds.length > 0) {
-          const preflight = await preflightCrewDispatch(db, {
-            companyId,
-            agentId: "",
-            threadId,
-          });
-          if (!preflight.allowed) {
-            throw unprocessable(
-              `Cannot dispatch crew work: ${preflight.reason ?? preflight.reasonCode}`,
-            );
-          }
-
-          const tasks = (await db
-            .select({ id: issues.id, assigneeAgentId: issues.assigneeAgentId, workMode: issues.workMode })
-            .from(issues)
-            .where(and(eq(issues.companyId, companyId), inArray(issues.id, taskIds)))) as Array<{
-            id: string;
-            assigneeAgentId: string | null;
-            workMode: string | null;
-          }>;
-
-          // Eng-review finding A: dispatch ONLY the tasks this approval flips
-          // planning→standard. A task the founder already flipped to 'standard'
-          // (and thus already dispatched) is skipped, so approving never enqueues a
-          // duplicate wakeup for it. This approval owns only its own parked tasks.
-          const toDispatch: Array<{ id: string; assigneeAgentId: string | null; workMode: string | null }> = [];
-          for (const t of tasks) {
-            if (t.workMode !== "planning") continue; // already dispatched elsewhere — leave it
-            // Raw flip (no issueService.update wake side-effect) — dispatch is explicit below.
-            await db
-              .update(issues)
-              .set({ workMode: "standard", updatedAt: new Date() })
-              .where(and(eq(issues.id, t.id), eq(issues.companyId, companyId)));
-            toDispatch.push({ id: t.id, assigneeAgentId: t.assigneeAgentId, workMode: "standard" });
-          }
-
-          await dispatchCreatedCrewTasks(db, companyId, toDispatch);
+        // Eng-review finding A: dispatch ONLY the tasks this approval flips
+        // planning→standard. A task the founder already flipped to 'standard'
+        // (and thus already dispatched) is skipped, so approving never enqueues a
+        // duplicate wakeup for it. This approval owns only its own parked tasks.
+        const toDispatch: Array<{ id: string; assigneeAgentId: string | null; workMode: string | null }> = [];
+        for (const t of tasks) {
+          if (t.workMode !== "planning") continue; // already dispatched elsewhere — leave it
+          // Raw flip (no issueService.update wake side-effect) — dispatch is explicit below.
+          await db
+            .update(issues)
+            .set({ workMode: "standard", updatedAt: new Date() })
+            .where(and(eq(issues.id, t.id), eq(issues.companyId, companyId)));
+          toDispatch.push({ id: t.id, assigneeAgentId: t.assigneeAgentId, workMode: "standard" });
         }
+
+        await dispatchCreatedCrewTasks(db, companyId, toDispatch);
       }
 
       return updated;

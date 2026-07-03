@@ -71,12 +71,15 @@ const THREAD = "thread-1";
  * records the .set() payload for every UPDATE targeting the issues table.
  */
 function makeDb(updatedApproval: unknown, taskRows: unknown[]) {
+  // The pre-update `existing` row carries the SAME payload as the updated row (the
+  // status flip does not touch payload). approve() reads threadId/taskIds from
+  // `existing` for the pre-flip preflight, so mirror the payload here.
   const existingApproval = {
     id: "ap1",
     companyId: COMPANY,
     status: "pending",
     type: "crew_dispatch",
-    payload: {},
+    payload: (updatedApproval as { payload?: Record<string, unknown> } | undefined)?.payload ?? {},
   };
 
   // getExistingApproval reads first, then the branch reads issues.
@@ -94,6 +97,7 @@ function makeDb(updatedApproval: unknown, taskRows: unknown[]) {
   };
 
   const issueUpdateSets: Array<Record<string, unknown>> = [];
+  const state = { approvalsUpdated: false };
 
   return {
     db: {
@@ -106,6 +110,7 @@ function makeDb(updatedApproval: unknown, taskRows: unknown[]) {
         set: (values: Record<string, unknown>) => ({
           where: () => {
             if (table?._?.name === "issues") issueUpdateSets.push(values);
+            if (table?._?.name === "approvals") state.approvalsUpdated = true;
             return {
               returning: () => ({
                 then: (resolve: (rows: unknown[]) => unknown) =>
@@ -121,6 +126,7 @@ function makeDb(updatedApproval: unknown, taskRows: unknown[]) {
       delete: () => ({ where: () => Promise.resolve() }),
     } as any,
     issueUpdateSets,
+    state,
   };
 }
 
@@ -183,7 +189,7 @@ describe("approvalService.approve — crew_dispatch branch", () => {
       reasonCode: "budget_exhausted",
     });
 
-    const { db, issueUpdateSets } = makeDb(
+    const { db, issueUpdateSets, state } = makeDb(
       approvedRow({ threadId: THREAD, taskIds: ["t1"] }),
       [{ id: "t1", assigneeAgentId: "agent-1", workMode: "planning" }],
     );
@@ -194,7 +200,11 @@ describe("approvalService.approve — crew_dispatch branch", () => {
       /Cannot dispatch crew work/,
     );
 
-    expect(issueUpdateSets).toHaveLength(0); // no flip
+    // Codex #267 P1: the preflight gates BEFORE the status flip, so a blocked dispatch
+    // never closes the approval — it stays pending + retryable for EVERY caller
+    // (the MCP approval tool calls approve() without a wrapping transaction).
+    expect(state.approvalsUpdated).toBe(false); // status NOT flipped to approved
+    expect(issueUpdateSets).toHaveLength(0); // no task flip
     expect(mocks.dispatchCreatedCrewTasks).not.toHaveBeenCalled();
   });
 

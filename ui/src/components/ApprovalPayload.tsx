@@ -1,13 +1,15 @@
-import { UserPlus, Lightbulb, ShieldCheck } from "lucide-react";
+import { UserPlus, Lightbulb, ShieldCheck, Send } from "lucide-react";
 
 export const typeLabel: Record<string, string> = {
   hire_agent: "Hire Agent",
   approve_ceo_strategy: "Director Strategy",
+  crew_dispatch: "Dispatch Crew Tasks",
 };
 
 export const typeIcon: Record<string, typeof UserPlus> = {
   hire_agent: UserPlus,
   approve_ceo_strategy: Lightbulb,
+  crew_dispatch: Send,
 };
 
 export const defaultTypeIcon = ShieldCheck;
