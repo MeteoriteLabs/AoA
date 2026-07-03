@@ -159,6 +159,31 @@ describe("W2: create_scope_draft runs extract-then-scope", () => {
     expect(optionsArg.suppressFallbackTask).toBe(true);
   });
 
+  it("(d) Codex #270 P1: freshness is RE-CHECKED after the awaited extraction — a thread that moved on suppresses the action instead of minting a stale draft", async () => {
+    const db = makeDb();
+    const createDraftFromThread = vi.fn().mockResolvedValue(draftReturn);
+    // Fresh at the pre-commit check (before extraction), STALE after the await —
+    // a founder posted a newer human entry while extraction ran.
+    const compareFreshnessSnapshot = vi
+      .fn()
+      .mockResolvedValueOnce({ fresh: true })
+      .mockResolvedValueOnce({ fresh: false, reason: "newer_human_entry" });
+
+    const result = await threadAgentActionService(db as never, {
+      compareFreshnessSnapshot,
+      discussions: { addEntry: vi.fn() },
+      scopeVersions: { createDraftFromThread, createOutputItem: vi.fn() },
+    }).commitThreadAgentActions({ companyId: COMPANY_ID, threadId: THREAD_ID, runId: "run-w2" });
+
+    // Extraction ran (the wait is exactly where the world moved on) …
+    expect(mockExtractThreadEntriesAwait).toHaveBeenCalledTimes(1);
+    // … but the draft was NOT minted, and the action is suppressed like any stale action.
+    expect(createDraftFromThread).not.toHaveBeenCalled();
+    expect(result.suppressed).toBe(1);
+    expect(result.committed).toBe(0);
+    expect(compareFreshnessSnapshot).toHaveBeenCalledTimes(2);
+  });
+
   it("(c) extraction REJECTING does not block the draft — still compiled, action still commits", async () => {
     mockExtractThreadEntriesAwait.mockRejectedValue(new Error("extraction exploded"));
     const db = makeDb();

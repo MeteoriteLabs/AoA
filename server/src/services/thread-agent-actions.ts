@@ -765,6 +765,27 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
                 "extract-then-scope failed — compiling draft from existing items only");
             }
 
+            // Codex #270 P1: the awaited extraction above can run for minutes — long
+            // enough for a founder to add newer human entries. The per-action freshness
+            // re-check ran BEFORE that wait, so re-run it here: a thread that moved on
+            // must suppress this action (same terminal outcome as the pre-commit check),
+            // not mint a draft covering input the proposing run never saw.
+            const postExtractionFreshness = await compare(
+              actionDb,
+              input.threadId,
+              action.freshness,
+              action.actionType,
+              batchProducedScopeVersionId,
+            );
+            if (!postExtractionFreshness.fresh) {
+              await updateActionStatus(actionDb, action.id, {
+                status: "suppressed_stale",
+                blockedReason: postExtractionFreshness.reason,
+              });
+              result.suppressed += 1;
+              continue;
+            }
+
             const draft = await scopeVersionCommitter.createDraftFromThread(
               input.companyId,
               input.threadId,
