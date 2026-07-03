@@ -64,6 +64,9 @@ type CompileInput = {
   entries: ScopeCompilerEntry[];
   extractedItems: ScopeCompilerExtractedItem[];
   attachments?: ScopeCompilerAttachment[];
+  /** Adjutant-supplied tasks (already role-resolved). When present + non-empty,
+   *  these become the task_proposal items and suppress the synthetic placeholder. */
+  proposedTasks?: Array<{ title: string; assigneeAgentId?: string | null }>;
 };
 
 function cleanText(value: string | null | undefined): string {
@@ -200,6 +203,20 @@ function mapExtractedItem(item: ScopeCompilerExtractedItem): CompiledScopeItem {
   };
 }
 
+function proposedTaskItems(
+  proposedTasks: Array<{ title: string; assigneeAgentId?: string | null }>,
+  entries: ScopeCompilerEntry[],
+): CompiledScopeItem[] {
+  const sourceEntryIds = entryIds(entries);
+  return proposedTasks.map((t) => ({
+    kind: "task_proposal" as const,
+    title: cleanText(t.title),
+    description: null,
+    sourceEntryIds,
+    payload: { priority: "medium", assigneeAgentId: t.assigneeAgentId ?? null },
+  }));
+}
+
 function compileAttachmentItem(attachment: ScopeCompilerAttachment): CompiledScopeItem {
   if (attachment.kind === "artifact" && attachment.artifactId) {
     return {
@@ -268,8 +285,17 @@ export function compileThreadScopeDraft(input: CompileInput): CompiledThreadScop
   const combined = scopedEntries.map((entry) => cleanText(entry.rawContent)).join(" ");
   const lower = combined.toLowerCase();
 
+  // D1: when proposedTasks are present + non-empty, they are the ONLY source of
+  // task_proposal items — extracted task_proposals AND the placeholder are suppressed.
+  const useProposedTasks = Boolean(input.proposedTasks && input.proposedTasks.length > 0);
+
+  // Place 1: extracted-item mapping — skip items that would emit task_proposal when useProposedTasks.
+  const extractedCompiled = input.extractedItems
+    .map(mapExtractedItem)
+    .filter((it) => !(useProposedTasks && it.kind === "task_proposal"));
+
   const items = [
-    ...input.extractedItems.map(mapExtractedItem),
+    ...extractedCompiled,
     ...(input.attachments ?? []).map(compileAttachmentItem),
     ...compileUrlSignalItems(scopedEntries),
   ];
@@ -277,7 +303,8 @@ export function compileThreadScopeDraft(input: CompileInput): CompiledThreadScop
   const hasGeneratedWorkItem = items.some(
     (item) => item.kind !== "artifact_link" && item.kind !== "source_signal",
   );
-  if (scopedEntries.length > 0 && !hasGeneratedWorkItem) {
+  // Place 2: placeholder synthesis — guarded by !useProposedTasks.
+  if (scopedEntries.length > 0 && !hasGeneratedWorkItem && !useProposedTasks) {
     items.push({
       kind: "task_proposal",
       title: titleForGeneratedTask(scopedEntries),
@@ -285,6 +312,11 @@ export function compileThreadScopeDraft(input: CompileInput): CompiledThreadScop
       payload: { priority: "medium" },
       sourceEntryIds: allEntryIds,
     });
+  }
+
+  // Place 3: emit proposed tasks when useProposedTasks.
+  if (useProposedTasks) {
+    items.push(...proposedTaskItems(input.proposedTasks!, scopedEntries));
   }
 
   if (scopedEntries.length > 0 && shouldSynthesizeMemoryCandidate({ lower, items })) {

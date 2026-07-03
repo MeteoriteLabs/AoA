@@ -93,6 +93,7 @@ export type CreateScopeOutputOptions = {
     layer?: string | null;
     departmentId?: string | null;
   }) => Promise<void>;
+  dispatchMode?: "standard" | "planning";
 };
 
 function asPayload(value: unknown): Record<string, unknown> {
@@ -633,6 +634,7 @@ export function threadScopeVersionService(db: Db) {
         assumptions?: unknown[];
         decisions?: unknown[];
         openQuestions?: unknown[];
+        proposedTasks?: Array<{ title: string; assigneeAgentId?: string | null }>;
       },
     ) => {
       const [thread] = await db
@@ -753,6 +755,7 @@ export function threadScopeVersionService(db: Db) {
           contentType: attachment.assetContentType ?? attachment.artifactType ?? null,
           kind: attachment.artifactId ? "artifact" : "asset",
         })),
+        proposedTasks: input.proposedTasks,
       });
 
       const versionNumber = latest ? latest.versionNumber + 1 : 1;
@@ -1430,7 +1433,7 @@ export function threadScopeVersionService(db: Db) {
             scopeVersionId: version.id,
             originKind: "crew_thread",
             status: "todo",
-            workMode: "planning",
+            workMode: options.dispatchMode ?? "planning",
             contextBundle: buildScopeTaskContextBundle({ version, item, payload, relatedItems }),
           } as any);
           resultIssueId = created.id;

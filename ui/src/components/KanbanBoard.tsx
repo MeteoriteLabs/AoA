@@ -396,7 +396,12 @@ function CardMetaRow({
         <span className="inline-flex items-center gap-1 min-w-0 max-w-[120px]">
           <AgentAvatar name={ownerAgentName ?? "Agent"} size={18} />
           {ownerAgentName ? (
-            <span className="text-[11px] text-muted-foreground truncate">{ownerAgentName}</span>
+            <span
+              className="text-[11px] text-muted-foreground truncate"
+              data-testid="kanban-card-owner-name"
+            >
+              {ownerAgentName}
+            </span>
           ) : (
             <span className="text-[10px] text-muted-foreground/70 font-mono truncate">
               {issue.assigneeAgentId!.slice(0, 8)}

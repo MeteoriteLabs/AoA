@@ -1216,4 +1216,73 @@ describe("threadScopeVersionService.acceptDraft", () => {
 
     expect(issueCreate).not.toHaveBeenCalled();
   });
+
+  it("passes workMode:'standard' to issueService.create when dispatchMode:'standard' is given", async () => {
+    const draftTask = {
+      id: "task-item",
+      kind: "task_proposal",
+      status: "draft",
+      title: "Standard dispatch task",
+      description: "Should be dispatched immediately",
+      payload: { priority: "medium" },
+    };
+    const db = createSequenceDb([
+      [draftVersion],
+      [thread],
+      [draftTask],
+      [],
+      [{ ...draftTask, status: "applied", resultIssueId: "task1" }],
+    ], [
+      [{ ...draftTask, status: "applied", resultIssueId: "task1" }],
+      [{ ...draftVersion, status: "accepted" }],
+    ]);
+
+    await threadScopeVersionService(db).createOutputItem(
+      "co1",
+      "thread1",
+      "scope1",
+      "task-item",
+      { userId: "u1", isHuman: true },
+      { dispatchMode: "standard" },
+    );
+
+    expect(issueCreate).toHaveBeenCalledWith(
+      "co1",
+      expect.objectContaining({ workMode: "standard" }),
+    );
+  });
+
+  it("defaults workMode to 'planning' when dispatchMode is not given (regression)", async () => {
+    const draftTask = {
+      id: "task-item",
+      kind: "task_proposal",
+      status: "draft",
+      title: "Planning dispatch task",
+      description: "Should stay in planning mode",
+      payload: { priority: "medium" },
+    };
+    const db = createSequenceDb([
+      [draftVersion],
+      [thread],
+      [draftTask],
+      [],
+      [{ ...draftTask, status: "applied", resultIssueId: "task1" }],
+    ], [
+      [{ ...draftTask, status: "applied", resultIssueId: "task1" }],
+      [{ ...draftVersion, status: "accepted" }],
+    ]);
+
+    await threadScopeVersionService(db).createOutputItem(
+      "co1",
+      "thread1",
+      "scope1",
+      "task-item",
+      { userId: "u1", isHuman: true },
+    );
+
+    expect(issueCreate).toHaveBeenCalledWith(
+      "co1",
+      expect.objectContaining({ workMode: "planning" }),
+    );
+  });
 });

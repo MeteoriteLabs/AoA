@@ -55,6 +55,22 @@ export function resolveCreationGate(
   return typeof autonomy === "number" && autonomy >= 2 ? "auto_approve" : "await_human";
 }
 
+/**
+ * 3-way autonomy gate for controller scope-draft auto-accept (W1b).
+ * - >= 2 (Drive)  → "accept_apply_dispatch": create+assign tasks AND dispatch
+ * - == 1 (Assist) → "accept_apply": create+assign tasks (board populates), NO dispatch
+ * - else (Manual/null) → "draft_only": leave the draft for the founder
+ * Pure — no I/O. Separate from resolveCreationGate so Path A's binary contract is untouched.
+ */
+export function resolveScopeAutoAcceptGate(
+  autonomy: number | null | undefined,
+): "draft_only" | "accept_apply" | "accept_apply_dispatch" {
+  if (typeof autonomy !== "number") return "draft_only";
+  if (autonomy >= 2) return "accept_apply_dispatch";
+  if (autonomy === 1) return "accept_apply";
+  return "draft_only";
+}
+
 // ─── Dispatch helper ────────────────────────────────────────────────────────────
 
 /**
