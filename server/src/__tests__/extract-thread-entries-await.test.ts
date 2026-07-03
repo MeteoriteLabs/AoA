@@ -15,6 +15,8 @@
 //   (f) deadline (eng-review D2): injectable clock past EXTRACT_SCOPE_DEADLINE_MS
 //       after the first entry → attempted=1, deadlineHit: true.
 //   (g) selection failure → resolves with zeros (the method NEVER throws).
+//   (h) round-4 P1: the accepted/completed scope-version bound query runs first
+//       (the SQL gte(seq, minSeq) itself is integration-covered).
 //
 // Mock style mirrors crew-dispatch-approval.test.ts: makeTableProxy +
 // drizzleOperatorStubs for the schema/operator ESM cycle, a hand-rolled db
@@ -33,6 +35,7 @@ vi.mock("@armyofagents/db", () => ({
   discussionEntries: makeTableProxy("discussion_entries"),
   discussionExtractedItems: makeTableProxy("discussion_extracted_items"),
   internalAgentConfig: makeTableProxy("internal_agent_config"),
+  threadScopeVersions: makeTableProxy("thread_scope_versions"),
 }));
 vi.mock("drizzle-orm", () => drizzleOperatorStubs());
 
@@ -88,26 +91,41 @@ type EntryRow = { id: string; seq: number; extractionStatus: string };
  * shared ordered `events` log (the extractOne test double pushes
  * "extract:<id>" into the same log, so flip-before-extract is assertable).
  */
-function makeDb(rows: EntryRow[], opts: { selectRejects?: boolean } = {}) {
+function makeDb(
+  rows: EntryRow[],
+  opts: { selectRejects?: boolean; versionRows?: Array<{ sourceEndSeq: number }> } = {},
+) {
   const events: string[] = [];
   const updateSets: Array<Record<string, unknown>> = [];
 
+  // The method issues TWO selects, in order: [0] the accepted/completed
+  // scope-version bound (round-4 P1 — start after the last scoped seq),
+  // [1] the entry eligibility query.
+  const selectQueue: unknown[][] = [opts.versionRows ?? [], rows];
+  let selectIdx = 0;
+  let selectCalls = 0;
+
   const db = {
     select: () => {
+      selectCalls += 1;
       const chain: Record<string, unknown> = {};
       chain.from = () => chain;
       chain.leftJoin = () => chain;
       chain.where = () => chain;
       chain.orderBy = () => chain;
+      chain.limit = () => chain;
       chain.then = (
         resolve: (v: unknown) => unknown,
         reject?: (e: unknown) => unknown,
       ) =>
         (opts.selectRejects
           ? Promise.reject(new Error("select boom"))
-          : Promise.resolve(rows)
+          : Promise.resolve(selectQueue[selectIdx++] ?? [])
         ).then(resolve, reject);
       return chain;
+    },
+    get __selectCalls() {
+      return selectCalls;
     },
     update: (table: { _?: { name?: string } }) => ({
       set: (values: Record<string, unknown>) => ({
@@ -319,5 +337,28 @@ describe("extractionService.extractThreadEntriesAwait", () => {
 
     expect(result).toEqual({ attempted: 0, failed: 0, truncated: false, deadlineHit: false, lastAttemptedSeq: null });
     expect(extractOne).not.toHaveBeenCalled();
+  });
+
+  it("(h) Codex #270 round-4 P1: the scope-version bound query runs BEFORE the entry query and does not disturb processing", async () => {
+    // With a mocked db the SQL lower bound itself is integration-covered (Case 4);
+    // this pins the two-query shape: [0] accepted/completed scope bound,
+    // [1] entries — and that an existing accepted version doesn't break the flow.
+    const rows: EntryRow[] = [
+      { id: "e4", seq: 4, extractionStatus: "pending" },
+      { id: "e5", seq: 5, extractionStatus: "skipped" },
+    ];
+    const { db, events, updateSets } = makeDb(rows, { versionRows: [{ sourceEndSeq: 3 }] });
+    const extractOne = makeExtractOne(events);
+
+    const result = await extractionService(db).extractThreadEntriesAwait(
+      COMPANY,
+      THREAD,
+      { extractOne },
+    );
+
+    expect(db.__selectCalls).toBe(2);
+    expect(result).toEqual({ attempted: 2, failed: 0, truncated: false, deadlineHit: false, lastAttemptedSeq: 5 });
+    expect(updateSets).toHaveLength(1); // only the skipped e5 flips
+    expect(events).toEqual(["extract:e4", "flip", "extract:e5"]);
   });
 });

@@ -520,4 +520,96 @@ describe.skipIf(process.platform === "win32")("W2 integration: extract-then-scop
       expect(String(item.title)).not.toMatch(DEAD_PLACEHOLDER_RE);
     }
   }, 60_000);
+
+  // ── Case 4: extraction is bounded to the UNSCOPED range (Codex #270 round-4 P1) ──
+  //
+  // A thread already has an ACCEPTED scope over seq 1 whose entry is still
+  // 'skipped' with zero items (human-created / pre-W2 / proposedTasks-path scopes
+  // all leave exactly this). The new tail (seq 2) carries a real pending item.
+  // Extract-then-scope must: (1) NEVER touch the already-scoped entry 1 (no budget
+  // burn, no flip, no extractionError), and (2) mint the new draft over the tail —
+  // sourceStartSeq 2, with the tail's real card. Without the bound, the old prefix
+  // could consume the cap and a truncated lastAttemptedSeq <= sourceEndSeq(accepted)
+  // would collapse the new range into no_entries (action commits, NO draft).
+  it("Adjutant path: already-scoped skipped entries are excluded; the new tail still drafts", async () => {
+    if (setupError) throw new Error(String(setupError));
+
+    const { companyId, agentId } = await seedCompanyAndAgent("ScopedPrefix");
+    await forceUnsupportedExtractionCli(companyId);
+    // Entry 1: skipped, zero items — but ALREADY covered by an accepted scope.
+    const { threadId, entryId: oldEntryId } = await seedThreadWithEntry(companyId, {
+      text: "old already-scoped instructions that were never extracted",
+      extractionStatus: "skipped",
+    });
+    await db.execute(sql`
+      INSERT INTO thread_scope_versions
+        (id, company_id, thread_id, version_number, status, source_start_seq, source_end_seq, summary, created_by)
+      VALUES
+        (gen_random_uuid(), ${companyId}, ${threadId}, 1, 'accepted', 1, 1, 'v1 accepted scope', 'integration-test')
+    `);
+    // Entry 2: the new tail — human, with a real pending extracted item.
+    const tailEntryId = randomUUID();
+    await db.execute(sql`
+      INSERT INTO discussion_entries (id, discussion_id, input_type, raw_content, created_by, seq, extraction_status)
+      VALUES (${tailEntryId}, ${threadId}, 'write', 'Now build the export pipeline.', 'human-user', 2, 'completed')
+    `);
+    await db.execute(sql`
+      INSERT INTO discussion_extracted_items (id, discussion_entry_id, type, title, status)
+      VALUES (gen_random_uuid(), ${tailEntryId}, 'task', 'Build the export pipeline', 'pending')
+    `);
+    await db.execute(sql`UPDATE discussions SET entry_seq = 2 WHERE id = ${threadId}`);
+    await setThreadAutonomy(threadId, 0);
+
+    const runId = await seedRun(companyId);
+    const actionId = await seedScopeDraftAction({
+      companyId,
+      threadId,
+      runId,
+      agentId,
+      payload: { summary: "Tail scope" },
+      keyPrefix: "scoped-prefix",
+    });
+
+    const commitResult = await threadAgentActionService(db).commitThreadAgentActions({
+      companyId,
+      threadId,
+      runId,
+    });
+    expect(commitResult.committed).toBe(1);
+    expect(commitResult.failed).toBe(0);
+
+    // (1) The already-scoped entry was NEVER touched by extract-then-scope.
+    const [oldRow] = rowsOf(
+      await db.execute(sql`
+        SELECT extraction_status, source_info->>'extractionError' AS extraction_error
+        FROM discussion_entries WHERE id = ${oldEntryId}
+      `),
+    );
+    expect(String(oldRow.extraction_status)).toBe("skipped");
+    expect(oldRow.extraction_error).toBeNull();
+
+    // (2) A NEW draft exists over the tail range with the tail's real card.
+    const [actionRow] = rowsOf(
+      await db.execute(sql`
+        SELECT committed_scope_version_id FROM thread_agent_actions WHERE id = ${actionId}
+      `),
+    );
+    expect(actionRow.committed_scope_version_id).toBeTruthy();
+    const scopeVersionId = String(actionRow.committed_scope_version_id);
+    const [versionRow] = rowsOf(
+      await db.execute(sql`
+        SELECT status, source_start_seq, source_end_seq FROM thread_scope_versions WHERE id = ${scopeVersionId}
+      `),
+    );
+    expect(String(versionRow.status)).toBe("draft");
+    expect(Number(versionRow.source_start_seq)).toBe(2);
+    expect(Number(versionRow.source_end_seq)).toBe(2);
+    const taskItems = rowsOf(
+      await db.execute(sql`
+        SELECT title FROM thread_scope_items WHERE scope_version_id = ${scopeVersionId} AND kind = 'task_proposal'
+      `),
+    );
+    expect(taskItems).toHaveLength(1);
+    expect(String(taskItems[0].title)).toBe("Build the export pipeline");
+  }, 120_000);
 });

@@ -1,6 +1,6 @@
-import { eq, and, desc, gt, sql, ne, isNull, asc, inArray } from "drizzle-orm";
+import { eq, and, desc, gt, gte, sql, ne, isNull, asc, inArray } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { debriefs, briefs, briefItems, projects, discussions, discussionEntries, discussionExtractedItems, internalAgentConfig } from "@armyofagents/db";
+import { debriefs, briefs, briefItems, projects, discussions, discussionEntries, discussionExtractedItems, internalAgentConfig, threadScopeVersions } from "@armyofagents/db";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
 import { parseExtractedItems, type ExtractedItem, type ExtractedItemType } from "./extraction-parser.js";
@@ -571,6 +571,26 @@ export function extractionService(db: Db) {
       const now = opts?.now ?? Date.now;
       const startedAt = now();
       try {
+        // Codex #270 P1 (round 4): bound the selection to the UNSCOPED source range.
+        // Entries already covered by an accepted/completed scope version can legally
+        // still be skipped-with-no-items (human-created scopes, pre-W2 drafts, and the
+        // proposedTasks path which skips extraction). Without this lower bound the
+        // 25-entry/deadline budget burns on that old prefix, and worse: a truncated
+        // pass could report lastAttemptedSeq <= latest.sourceEndSeq, capping the new
+        // draft's range BELOW its sourceStartSeq -> no_entries -> the action commits
+        // with no draft covering the new tail. Mirrors createDraftFromThread's
+        // "next range starts after the last accepted/completed sourceEndSeq".
+        const [scopedThrough] = (await db
+          .select({ sourceEndSeq: threadScopeVersions.sourceEndSeq })
+          .from(threadScopeVersions)
+          .where(and(
+            eq(threadScopeVersions.threadId, discussionId),
+            inArray(threadScopeVersions.status, ["accepted", "completed"]),
+          ))
+          .orderBy(desc(threadScopeVersions.sourceEndSeq))
+          .limit(1)) as Array<{ sourceEndSeq: number }>;
+        const minSeq = (scopedThrough?.sourceEndSeq ?? 0) + 1;
+
         // Eligible: HUMAN prose entries never extracted — status pending/skipped/failed
         // AND no existing extracted items. Entries with items are a founder-review
         // surface; deleting/re-extracting them is reprocess-only semantics
@@ -592,6 +612,7 @@ export function extractionService(db: Db) {
           )
           .where(and(
             eq(discussionEntries.discussionId, discussionId),
+            gte(discussionEntries.seq, minSeq),
             isNull(discussionEntries.authorAgentId),
             ne(discussionEntries.inputType, "agent"),
             ne(discussionEntries.inputType, "system"),
