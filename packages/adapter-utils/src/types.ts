@@ -244,6 +244,20 @@ export interface AdapterRuntimeWorkQuestionAnswer {
 
 export interface AdapterRuntimeDecisionBroker {
   requestPermission(input: AdapterRuntimePermissionPrompt): Promise<AdapterRuntimePermissionAnswer>;
+  /**
+   * Timeout-aware permission request. Resolves with the answer when a human
+   * responds within `timeoutMs`, or `{ timedOut: true }` when the wait elapses.
+   *
+   * CRITICAL: On timeout the underlying decision row is NOT marked relayed — a
+   * late answer arriving after the CLI hook gave up must never produce a stale
+   * "relayed" state. The W5a expiry sweep reconciles the row via its expiresAt.
+   * This is why callers MUST use this method (not a naive Promise.race over
+   * requestPermission, whose underlying wait polls indefinitely).
+   */
+  requestPermissionBounded(
+    prompt: AdapterRuntimePermissionPrompt,
+    timeoutMs: number,
+  ): Promise<AdapterRuntimePermissionAnswer | { timedOut: true }>;
   askWorkQuestion(input: AdapterRuntimeWorkQuestionPrompt): Promise<AdapterRuntimeWorkQuestionAnswer>;
 }
 

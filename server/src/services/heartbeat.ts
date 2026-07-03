@@ -359,10 +359,85 @@ export function createHeartbeatRuntimeDecisionBroker(
     }
   }
 
+  function isTimeoutError(error: unknown): boolean {
+    // agent-runtime-decisions.waitForAnswer throws conflict("Timed out ...")
+    // (HttpError 409) when its bounded wait elapses.
+    return (
+      error instanceof HttpError &&
+      error.status === 409 &&
+      error.message.startsWith("Timed out waiting for runtime decision answer")
+    );
+  }
+
   return {
     async requestPermission(prompt) {
       const created = await createPrompt("permission", prompt);
       const relayed = await waitAndRelay(created);
+      if (!relayed.decision) throw conflict("Permission runtime decision was answered without a decision");
+      return {
+        kind: "permission",
+        decisionId: created.id,
+        decision: relayed.decision as AdapterRuntimePermissionDecision,
+        sourceRevision: relayed.sourceRevision,
+      };
+    },
+    async requestPermissionBounded(prompt, timeoutMs) {
+      const created = await createPrompt("permission", prompt);
+      let answered: AgentRuntimeDecisionRow;
+      try {
+        answered = await input.runtimeDecisions.waitForAnswer({
+          companyId: input.run.companyId,
+          decisionId: created.id,
+          timeoutMs,
+        });
+      } catch (error) {
+        if (isTimeoutError(error)) {
+          // CRITICAL INVARIANT: do NOT call markRelayed on timeout. Leave the
+          // row for the W5a expiry sweep. Because waitForAnswer settles exactly
+          // once and markRelayed is only reached on the success branch below, a
+          // late answer after this return can never trigger a stale relay.
+          await input.appendRunEvent({
+            eventType: "runtime_decision.prompt_timed_out",
+            stream: "system",
+            level: "warn",
+            message: "runtime decision prompt timed out",
+            payload: { decisionId: created.id, kind: "permission", timeoutMs },
+          });
+          return { timedOut: true };
+        }
+        // RuntimeDecisionCancelledError (and any other error) → propagate.
+        throw error;
+      }
+
+      await input.appendRunEvent({
+        eventType: "runtime_decision.prompt_answered",
+        stream: "system",
+        level: "info",
+        message: "runtime decision prompt answered",
+        payload: {
+          decisionId: answered.id,
+          kind: answered.kind,
+          sourceRevision: answered.sourceRevision,
+        },
+      });
+
+      const relayed = await input.runtimeDecisions.markRelayed({
+        companyId: input.run.companyId,
+        decisionId: created.id,
+      });
+      await input.appendRunEvent({
+        eventType: "runtime_decision.relayed",
+        stream: "system",
+        level: "info",
+        message: "runtime decision answer relayed",
+        payload: {
+          decisionId: relayed.id,
+          kind: relayed.kind,
+          sourceRevision: relayed.sourceRevision,
+        },
+      });
+      await input.clearRunWaiting(relayed);
+
       if (!relayed.decision) throw conflict("Permission runtime decision was answered without a decision");
       return {
         kind: "permission",
