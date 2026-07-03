@@ -555,7 +555,15 @@ export function extractionService(db: Db) {
         /** Injectable clock for the deadline unit test. Defaults to Date.now. */
         now?: () => number;
       },
-    ): Promise<{ attempted: number; failed: number; truncated: boolean; deadlineHit: boolean }> => {
+    ): Promise<{
+      attempted: number;
+      failed: number;
+      truncated: boolean;
+      deadlineHit: boolean;
+      /** Highest entry seq actually attempted (null when none) — a truncated pass caps
+       *  the draft's sourceEndSeq here so unprocessed entries stay in the next range. */
+      lastAttemptedSeq: number | null;
+    }> => {
       const log = logger.child({ service: "extraction", discussionId, companyId, mode: "scope-await" });
       const extractOne =
         opts?.extractOne ??
@@ -572,7 +580,11 @@ export function extractionService(db: Db) {
         // inputType not agent/system/scope_proposal). LEFT JOIN + isNull keeps only
         // zero-item entries, so join duplication is moot.
         const rows = (await db
-          .select({ id: discussionEntries.id, extractionStatus: discussionEntries.extractionStatus })
+          .select({
+            id: discussionEntries.id,
+            seq: discussionEntries.seq,
+            extractionStatus: discussionEntries.extractionStatus,
+          })
           .from(discussionEntries)
           .leftJoin(
             discussionExtractedItems,
@@ -587,7 +599,7 @@ export function extractionService(db: Db) {
             inArray(discussionEntries.extractionStatus, ["pending", "skipped", "failed"]),
             isNull(discussionExtractedItems.id),
           ))
-          .orderBy(asc(discussionEntries.seq))) as Array<{ id: string; extractionStatus: string }>;
+          .orderBy(asc(discussionEntries.seq))) as Array<{ id: string; seq: number; extractionStatus: string }>;
 
         const truncated = rows.length > MAX_EXTRACT_ENTRIES_PER_SCOPE;
         const selected = rows.slice(0, MAX_EXTRACT_ENTRIES_PER_SCOPE);
@@ -601,11 +613,19 @@ export function extractionService(db: Db) {
         let failed = 0;
         let attempted = 0;
         let deadlineHit = false;
+        // Codex #270 P1: track the highest seq actually attempted so a truncated pass
+        // (cap or deadline) can cap the draft's sourceEndSeq — entries past this seq
+        // were never extracted and MUST stay in the NEXT scope's range, not be silently
+        // consumed by this draft's range accounting.
+        let lastAttemptedSeq: number | null = null;
         for (const row of selected) {
           // Eng-review D2: wall-clock deadline — a hung-but-installed CLI must never turn
           // one scoping pass into a ~50-minute controller-pipeline stall. Compile with
           // whatever was extracted so far; the founder gets an honest answer in minutes.
-          if (now() - startedAt > EXTRACT_SCOPE_DEADLINE_MS) {
+          // The FIRST entry always runs (attempted > 0 guard): it keeps the invariant
+          // "truncated/deadlineHit ⇒ lastAttemptedSeq != null" that the sourceEndSeq
+          // capping relies on, and one entry is bounded by the extractor's own timeout.
+          if (attempted > 0 && now() - startedAt > EXTRACT_SCOPE_DEADLINE_MS) {
             deadlineHit = true;
             log.warn(
               { attempted, remaining: selected.length - attempted, deadlineMs: EXTRACT_SCOPE_DEADLINE_MS },
@@ -621,16 +641,17 @@ export function extractionService(db: Db) {
                 .where(eq(discussionEntries.id, row.id));
             }
             attempted += 1;
+            lastAttemptedSeq = row.seq;
             await extractOne(companyId, row.id);
           } catch (err) {
             failed += 1;
             log.warn({ err, entryId: row.id }, "extract-then-scope entry failed (best-effort)");
           }
         }
-        return { attempted, failed, truncated, deadlineHit };
+        return { attempted, failed, truncated, deadlineHit, lastAttemptedSeq };
       } catch (err) {
         log.warn({ err }, "extract-then-scope selection failed (best-effort) — compiling without");
-        return { attempted: 0, failed: 0, truncated: false, deadlineHit: false };
+        return { attempted: 0, failed: 0, truncated: false, deadlineHit: false, lastAttemptedSeq: null };
       }
     },
 

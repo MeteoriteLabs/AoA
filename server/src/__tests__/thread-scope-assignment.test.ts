@@ -299,6 +299,34 @@ describe("createDraftFromThread — suppressFallbackTask forwarding (W2)", () =>
     expect(tasks).toHaveLength(0);
   });
 
+  it("sourceEndSeqOverride caps the recorded range (Codex #270 P1 — truncated extraction must not consume unprocessed entries)", async () => {
+    const capturedInserts: unknown[] = [];
+    const wideThread = { ...thread, entrySeq: 5 };
+    const db = createDraftDb(
+      [
+        [wideThread], // discussions — thread has advanced to seq 5
+        [],           // threadScopeVersions (no latest)
+        [entry],      // discussionEntries (the range-bounded fetch)
+        [],           // discussionExtractedItems
+        [],           // discussionEntryAttachments
+      ],
+      capturedInserts,
+    );
+
+    await threadScopeVersionService(db).createDraftFromThread(
+      "co1",
+      "t1",
+      { agentId: "adj" },
+      { summary: "Auth work", suppressFallbackTask: true, sourceEndSeqOverride: 2 },
+    );
+
+    // The version row records the CAPPED end — entries 3..5 stay in the NEXT
+    // scope's range (sourceStartSeq = sourceEndSeq + 1) instead of being consumed.
+    const versionInsert = capturedInserts.find((v) => !Array.isArray(v)) as Record<string, unknown>;
+    expect(versionInsert).toBeDefined();
+    expect(versionInsert.sourceEndSeq).toBe(2);
+  });
+
   it("default (flag absent): the derived-title fallback task still synthesizes (human route unchanged)", async () => {
     const capturedInserts: unknown[] = [];
     await threadScopeVersionService(draftDb(capturedInserts)).createDraftFromThread(

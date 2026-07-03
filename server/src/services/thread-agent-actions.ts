@@ -154,6 +154,9 @@ type ScopeVersionCommitService = {
       // W2: extraction already ran (extract-then-scope) — zero-item compiles must not
       // synthesize the fallback task card (no fake card, D6).
       suppressFallbackTask?: boolean;
+      // Codex #270 P1: a truncated extraction pass caps the draft's range at the last
+      // processed entry so the unprocessed tail stays in the next scope's range.
+      sourceEndSeqOverride?: number;
     },
   ) => Promise<{ status: string; version?: { id: string } }>;
   // W1b: per-item apply (version-preserving). Memory candidates stay draft for the founder (D12).
@@ -752,38 +755,57 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
             // suppressFallbackTask below, emits NO fake card (D6). The helper itself is
             // bounded (25-entry cap + 180s wall-clock deadline) and never throws; the
             // try/catch is defense-in-depth.
-            try {
-              const extraction = await extractionService(
-                actionDb as unknown as import("@armyofagents/db").Db,
-              ).extractThreadEntriesAwait(input.companyId, input.threadId);
-              log.info(
-                { threadId: input.threadId, ...extraction },
-                "extract-then-scope completed before draft compile",
-              );
-            } catch (err) {
-              log.warn({ err, threadId: input.threadId },
-                "extract-then-scope failed — compiling draft from existing items only");
-            }
+            //
+            // Codex #270 P2: SKIPPED when the Adjutant supplied proposedTasks — those
+            // already define the draft's work (the compiler suppresses extracted task
+            // cards under D1 anyway), so extracting here would only persist pending
+            // task items a founder could later approve into DUPLICATE tasks.
+            let sourceEndSeqOverride: number | undefined;
+            if (proposedTasks.length === 0) {
+              try {
+                const extraction = await extractionService(
+                  actionDb as unknown as import("@armyofagents/db").Db,
+                ).extractThreadEntriesAwait(input.companyId, input.threadId);
+                log.info(
+                  { threadId: input.threadId, ...extraction },
+                  "extract-then-scope completed before draft compile",
+                );
+                // Codex #270 P1: a truncated pass (count cap / deadline) only processed
+                // entries up to lastAttemptedSeq — cap the draft's range there so the
+                // unprocessed tail stays in the NEXT scope's range instead of being
+                // silently consumed by this draft's sourceEndSeq accounting.
+                if (
+                  (extraction.truncated || extraction.deadlineHit) &&
+                  extraction.lastAttemptedSeq != null
+                ) {
+                  sourceEndSeqOverride = extraction.lastAttemptedSeq;
+                }
+              } catch (err) {
+                log.warn({ err, threadId: input.threadId },
+                  "extract-then-scope failed — compiling draft from existing items only");
+              }
 
-            // Codex #270 P1: the awaited extraction above can run for minutes — long
-            // enough for a founder to add newer human entries. The per-action freshness
-            // re-check ran BEFORE that wait, so re-run it here: a thread that moved on
-            // must suppress this action (same terminal outcome as the pre-commit check),
-            // not mint a draft covering input the proposing run never saw.
-            const postExtractionFreshness = await compare(
-              actionDb,
-              input.threadId,
-              action.freshness,
-              action.actionType,
-              batchProducedScopeVersionId,
-            );
-            if (!postExtractionFreshness.fresh) {
-              await updateActionStatus(actionDb, action.id, {
-                status: "suppressed_stale",
-                blockedReason: postExtractionFreshness.reason,
-              });
-              result.suppressed += 1;
-              continue;
+              // Codex #270 P1: the awaited extraction above can run for minutes — long
+              // enough for a founder to add newer human entries. The per-action freshness
+              // re-check ran BEFORE that wait, so re-run it here: a thread that moved on
+              // must suppress this action (same terminal outcome as the pre-commit check),
+              // not mint a draft covering input the proposing run never saw. (Tied to the
+              // extraction branch — the proposedTasks path performs no comparable wait.)
+              const postExtractionFreshness = await compare(
+                actionDb,
+                input.threadId,
+                action.freshness,
+                action.actionType,
+                batchProducedScopeVersionId,
+              );
+              if (!postExtractionFreshness.fresh) {
+                await updateActionStatus(actionDb, action.id, {
+                  status: "suppressed_stale",
+                  blockedReason: postExtractionFreshness.reason,
+                });
+                result.suppressed += 1;
+                continue;
+              }
             }
 
             const draft = await scopeVersionCommitter.createDraftFromThread(
@@ -796,8 +818,10 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
                 decisions: asArray(payload.decisions),
                 openQuestions: asArray(payload.openQuestions),
                 ...(proposedTasks.length > 0 ? { proposedTasks } : {}),
-                // W2: extraction already ran — an empty compile must not invent a fake card.
+                // W2: extraction already ran (or proposedTasks define the work) — an
+                // empty compile must not invent a fake card.
                 suppressFallbackTask: true,
+                ...(sourceEndSeqOverride != null ? { sourceEndSeqOverride } : {}),
               },
             );
 

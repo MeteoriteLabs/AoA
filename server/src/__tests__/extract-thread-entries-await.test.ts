@@ -77,7 +77,7 @@ import {
 const COMPANY = "company-1";
 const THREAD = "thread-1";
 
-type EntryRow = { id: string; extractionStatus: string };
+type EntryRow = { id: string; seq: number; extractionStatus: string };
 
 /**
  * Build a mock db for an extractThreadEntriesAwait run.
@@ -139,9 +139,9 @@ beforeEach(() => {
 describe("extractionService.extractThreadEntriesAwait", () => {
   it("(a) attempts every row the eligibility select returns, in order", async () => {
     const rows: EntryRow[] = [
-      { id: "e1", extractionStatus: "pending" },
-      { id: "e2", extractionStatus: "pending" },
-      { id: "e3", extractionStatus: "pending" },
+      { id: "e1", seq: 1, extractionStatus: "pending" },
+      { id: "e2", seq: 2, extractionStatus: "pending" },
+      { id: "e3", seq: 3, extractionStatus: "pending" },
     ];
     const { db, events } = makeDb(rows);
     const extractOne = makeExtractOne(events);
@@ -152,7 +152,7 @@ describe("extractionService.extractThreadEntriesAwait", () => {
       { extractOne },
     );
 
-    expect(result).toEqual({ attempted: 3, failed: 0, truncated: false, deadlineHit: false });
+    expect(result).toEqual({ attempted: 3, failed: 0, truncated: false, deadlineHit: false, lastAttemptedSeq: 3 });
     expect(extractOne).toHaveBeenCalledTimes(3);
     expect(extractOne.mock.calls).toEqual([
       [COMPANY, "e1"],
@@ -163,9 +163,9 @@ describe("extractionService.extractThreadEntriesAwait", () => {
 
   it("(b) flips skipped/failed rows to pending (runId cleared) BEFORE extractOne; pending rows get no flip", async () => {
     const rows: EntryRow[] = [
-      { id: "e1", extractionStatus: "pending" },
-      { id: "e2", extractionStatus: "skipped" },
-      { id: "e3", extractionStatus: "failed" },
+      { id: "e1", seq: 1, extractionStatus: "pending" },
+      { id: "e2", seq: 2, extractionStatus: "skipped" },
+      { id: "e3", seq: 3, extractionStatus: "failed" },
     ];
     const { db, events, updateSets } = makeDb(rows);
     const extractOne = makeExtractOne(events);
@@ -176,7 +176,7 @@ describe("extractionService.extractThreadEntriesAwait", () => {
       { extractOne },
     );
 
-    expect(result).toEqual({ attempted: 3, failed: 0, truncated: false, deadlineHit: false });
+    expect(result).toEqual({ attempted: 3, failed: 0, truncated: false, deadlineHit: false, lastAttemptedSeq: 3 });
     // Exactly two flips (e2 + e3) — the already-pending e1 gets none.
     expect(updateSets).toEqual([
       { extractionStatus: "pending", extractionRunId: null },
@@ -195,9 +195,9 @@ describe("extractionService.extractThreadEntriesAwait", () => {
 
   it("(c) serial: extractOne is awaited one at a time, in row order", async () => {
     const rows: EntryRow[] = [
-      { id: "e1", extractionStatus: "pending" },
-      { id: "e2", extractionStatus: "pending" },
-      { id: "e3", extractionStatus: "pending" },
+      { id: "e1", seq: 1, extractionStatus: "pending" },
+      { id: "e2", seq: 2, extractionStatus: "pending" },
+      { id: "e3", seq: 3, extractionStatus: "pending" },
     ];
     const { db } = makeDb(rows);
 
@@ -226,9 +226,9 @@ describe("extractionService.extractThreadEntriesAwait", () => {
 
   it("(d) best-effort: one entry rejecting does not stop the rest; the method never rejects", async () => {
     const rows: EntryRow[] = [
-      { id: "e1", extractionStatus: "pending" },
-      { id: "e2", extractionStatus: "pending" },
-      { id: "e3", extractionStatus: "pending" },
+      { id: "e1", seq: 1, extractionStatus: "pending" },
+      { id: "e2", seq: 2, extractionStatus: "pending" },
+      { id: "e3", seq: 3, extractionStatus: "pending" },
     ];
     const { db, events } = makeDb(rows);
     const inner = makeExtractOne(events);
@@ -244,7 +244,7 @@ describe("extractionService.extractThreadEntriesAwait", () => {
     );
 
     // e2 was attempted (counter increments before the call) AND counted failed.
-    expect(result).toEqual({ attempted: 3, failed: 1, truncated: false, deadlineHit: false });
+    expect(result).toEqual({ attempted: 3, failed: 1, truncated: false, deadlineHit: false, lastAttemptedSeq: 3 });
     expect(extractOne).toHaveBeenCalledTimes(3);
     expect(events).toEqual(["extract:e1", "extract:e3"]);
   });
@@ -252,7 +252,7 @@ describe("extractionService.extractThreadEntriesAwait", () => {
   it("(e) cap: eligible > MAX_EXTRACT_ENTRIES_PER_SCOPE → only the cap attempted, truncated: true", async () => {
     const rows: EntryRow[] = Array.from(
       { length: MAX_EXTRACT_ENTRIES_PER_SCOPE + 1 },
-      (_v, i) => ({ id: `e${i + 1}`, extractionStatus: "pending" }),
+      (_v, i) => ({ id: `e${i + 1}`, seq: i + 1, extractionStatus: "pending" }),
     );
     const { db, events } = makeDb(rows);
     const extractOne = makeExtractOne(events);
@@ -268,6 +268,9 @@ describe("extractionService.extractThreadEntriesAwait", () => {
       failed: 0,
       truncated: true,
       deadlineHit: false,
+      // Codex #270 P1: the capped pass reports the highest seq it processed so the
+      // draft's sourceEndSeq is capped there and the tail stays in the NEXT range.
+      lastAttemptedSeq: MAX_EXTRACT_ENTRIES_PER_SCOPE,
     });
     expect(extractOne).toHaveBeenCalledTimes(MAX_EXTRACT_ENTRIES_PER_SCOPE);
     // The row past the cap is never touched.
@@ -276,19 +279,20 @@ describe("extractionService.extractThreadEntriesAwait", () => {
 
   it("(f) deadline (eng-review D2): clock past EXTRACT_SCOPE_DEADLINE_MS after entry 1 → stop, deadlineHit: true", async () => {
     const rows: EntryRow[] = [
-      { id: "e1", extractionStatus: "pending" },
-      { id: "e2", extractionStatus: "pending" },
-      { id: "e3", extractionStatus: "pending" },
+      { id: "e1", seq: 1, extractionStatus: "pending" },
+      { id: "e2", seq: 2, extractionStatus: "pending" },
+      { id: "e3", seq: 3, extractionStatus: "pending" },
     ];
     const { db, events } = makeDb(rows);
     const extractOne = makeExtractOne(events);
 
-    // Scripted clock: startedAt=0; pre-entry-1 check=1ms (under the deadline);
-    // every later check is past the deadline.
+    // Scripted clock: startedAt=0; every subsequent read is past the deadline.
+    // The FIRST entry still runs (the deadline is only checked once attempted > 0 —
+    // the invariant "deadlineHit => lastAttemptedSeq != null" that sourceEndSeq
+    // capping relies on), then the pre-entry-2 check trips.
     const now = vi
       .fn<() => number>()
       .mockReturnValueOnce(0)
-      .mockReturnValueOnce(1)
       .mockReturnValue(EXTRACT_SCOPE_DEADLINE_MS + 1);
 
     const result = await extractionService(db).extractThreadEntriesAwait(
@@ -297,7 +301,7 @@ describe("extractionService.extractThreadEntriesAwait", () => {
       { extractOne, now },
     );
 
-    expect(result).toEqual({ attempted: 1, failed: 0, truncated: false, deadlineHit: true });
+    expect(result).toEqual({ attempted: 1, failed: 0, truncated: false, deadlineHit: true, lastAttemptedSeq: 1 });
     expect(extractOne).toHaveBeenCalledTimes(1);
     expect(extractOne).toHaveBeenCalledWith(COMPANY, "e1");
     expect(events).toEqual(["extract:e1"]);
@@ -313,7 +317,7 @@ describe("extractionService.extractThreadEntriesAwait", () => {
       { extractOne },
     );
 
-    expect(result).toEqual({ attempted: 0, failed: 0, truncated: false, deadlineHit: false });
+    expect(result).toEqual({ attempted: 0, failed: 0, truncated: false, deadlineHit: false, lastAttemptedSeq: null });
     expect(extractOne).not.toHaveBeenCalled();
   });
 });

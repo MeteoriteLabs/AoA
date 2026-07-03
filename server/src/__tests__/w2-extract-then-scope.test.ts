@@ -55,7 +55,7 @@ vi.mock("../services/hub-source-producers.js", () => ({
 
 // W2: the handler awaits extraction before compiling the draft.
 const { mockExtractThreadEntriesAwait } = vi.hoisted(() => ({
-  mockExtractThreadEntriesAwait: vi.fn().mockResolvedValue({ attempted: 2, failed: 0, truncated: false, deadlineHit: false }),
+  mockExtractThreadEntriesAwait: vi.fn().mockResolvedValue({ attempted: 2, failed: 0, truncated: false, deadlineHit: false, lastAttemptedSeq: 2 }),
 }));
 vi.mock("../services/extraction.js", () => ({
   extractionService: () => ({ extractThreadEntriesAwait: mockExtractThreadEntriesAwait }),
@@ -122,7 +122,7 @@ function makeDb() {
 beforeEach(() => {
   vi.clearAllMocks();
   mockResolveScopeAutoAcceptGate.mockReturnValue("draft_only");
-  mockExtractThreadEntriesAwait.mockResolvedValue({ attempted: 2, failed: 0, truncated: false, deadlineHit: false });
+  mockExtractThreadEntriesAwait.mockResolvedValue({ attempted: 2, failed: 0, truncated: false, deadlineHit: false, lastAttemptedSeq: 2 });
 });
 
 describe("W2: create_scope_draft runs extract-then-scope", () => {
@@ -157,6 +157,63 @@ describe("W2: create_scope_draft runs extract-then-scope", () => {
 
     const optionsArg = createDraftFromThread.mock.calls[0][3] as Record<string, unknown>;
     expect(optionsArg.suppressFallbackTask).toBe(true);
+  });
+
+  it("(e) Codex #270 P2: proposedTasks present → extraction is SKIPPED entirely (the Adjutant already articulated the work; no duplicate pending items)", async () => {
+    const db = makeDb();
+    const createDraftFromThread = vi.fn().mockResolvedValue(draftReturn);
+    // The action carries proposedTasks — patch the fixture payload for this run.
+    scopeDraftAction.payload = {
+      summary: "W2 test scope",
+      proposedTasks: [{ title: "Build token endpoint", assigneeRole: "engineer" }],
+    } as never;
+
+    try {
+      await threadAgentActionService(db as never, {
+        compareFreshnessSnapshot: vi.fn().mockResolvedValue({ fresh: true }),
+        discussions: { addEntry: vi.fn() },
+        scopeVersions: { createDraftFromThread, createOutputItem: vi.fn() },
+      }).commitThreadAgentActions({ companyId: COMPANY_ID, threadId: THREAD_ID, runId: "run-w2" });
+    } finally {
+      scopeDraftAction.payload = { summary: "W2 test scope" } as never; // restore fixture
+    }
+
+    expect(mockExtractThreadEntriesAwait).not.toHaveBeenCalled();
+    expect(createDraftFromThread).toHaveBeenCalledTimes(1);
+    const optionsArg = createDraftFromThread.mock.calls[0][3] as Record<string, unknown>;
+    expect(optionsArg.suppressFallbackTask).toBe(true);
+    expect(Array.isArray(optionsArg.proposedTasks)).toBe(true);
+  });
+
+  it("(f) Codex #270 P1: a truncated extraction pass caps the draft range at lastAttemptedSeq", async () => {
+    mockExtractThreadEntriesAwait.mockResolvedValue({
+      attempted: 25, failed: 0, truncated: true, deadlineHit: false, lastAttemptedSeq: 7,
+    });
+    const db = makeDb();
+    const createDraftFromThread = vi.fn().mockResolvedValue(draftReturn);
+
+    await threadAgentActionService(db as never, {
+      compareFreshnessSnapshot: vi.fn().mockResolvedValue({ fresh: true }),
+      discussions: { addEntry: vi.fn() },
+      scopeVersions: { createDraftFromThread, createOutputItem: vi.fn() },
+    }).commitThreadAgentActions({ companyId: COMPANY_ID, threadId: THREAD_ID, runId: "run-w2" });
+
+    const optionsArg = createDraftFromThread.mock.calls[0][3] as Record<string, unknown>;
+    expect(optionsArg.sourceEndSeqOverride).toBe(7);
+  });
+
+  it("(g) a clean (non-truncated) extraction pass does NOT cap the range", async () => {
+    const db = makeDb();
+    const createDraftFromThread = vi.fn().mockResolvedValue(draftReturn);
+
+    await threadAgentActionService(db as never, {
+      compareFreshnessSnapshot: vi.fn().mockResolvedValue({ fresh: true }),
+      discussions: { addEntry: vi.fn() },
+      scopeVersions: { createDraftFromThread, createOutputItem: vi.fn() },
+    }).commitThreadAgentActions({ companyId: COMPANY_ID, threadId: THREAD_ID, runId: "run-w2" });
+
+    const optionsArg = createDraftFromThread.mock.calls[0][3] as Record<string, unknown>;
+    expect(optionsArg.sourceEndSeqOverride).toBeUndefined();
   });
 
   it("(d) Codex #270 P1: freshness is RE-CHECKED after the awaited extraction — a thread that moved on suppresses the action instead of minting a stale draft", async () => {

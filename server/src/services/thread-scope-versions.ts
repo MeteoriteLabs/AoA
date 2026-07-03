@@ -639,6 +639,12 @@ export function threadScopeVersionService(db: Db) {
          *  so a zero-item compile must emit NO synthetic fallback task (no fake card).
          *  Absent/false on the human create-draft route (derived-title fallback kept). */
         suppressFallbackTask?: boolean;
+        /** Codex #270 P1: when a truncated extraction pass (count cap / deadline) only
+         *  processed entries up to some seq, the draft's range must END there — entries
+         *  past it were never extracted and belong to the NEXT scope's range
+         *  (sourceStartSeq = sourceEndSeq + 1). Without this cap they would be silently
+         *  consumed by this draft's range accounting and never scoped. */
+        sourceEndSeqOverride?: number;
       },
     ) => {
       const [thread] = await db
@@ -663,7 +669,15 @@ export function threadScopeVersionService(db: Db) {
         latest && ["accepted", "completed"].includes(latest.status)
           ? latest.sourceEndSeq + 1
           : 1;
-      const sourceEndSeq = thread.entrySeq ?? 0;
+      // Codex #270 P1: a truncated extraction pass caps the range at the last entry it
+      // actually processed — the unprocessed tail stays in the NEXT scope's range
+      // (sourceStartSeq = sourceEndSeq + 1) instead of being silently consumed. Clamped
+      // to the live entrySeq defensively (an override can never widen the range).
+      const liveEndSeq = thread.entrySeq ?? 0;
+      const sourceEndSeq =
+        input.sourceEndSeqOverride != null
+          ? Math.min(input.sourceEndSeqOverride, liveEndSeq)
+          : liveEndSeq;
 
       if (sourceEndSeq < sourceStartSeq) {
         return { status: "no_entries" as const, sourceStartSeq, sourceEndSeq };
