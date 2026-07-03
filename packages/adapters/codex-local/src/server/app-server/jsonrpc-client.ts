@@ -279,6 +279,15 @@ export interface SpawnAppServerClientOptions {
   /** Strip the ambient OPENAI_API_KEY (unless the overlay set its own). */
   unsetEnvKeys?: string[];
   shell?: boolean;
+  /**
+   * Best-effort stderr sink. The child's stderr pipe is ALWAYS drained (the
+   * listener existing is what prevents the child from blocking once the OS pipe
+   * buffer fills — see the drain wiring below); this callback merely forwards the
+   * drained chunks. It carries NO Codex semantics (no noise-stripping) — the
+   * bridged runner layers that on top. A throwing callback must NOT break the
+   * drain (it is wrapped in try/catch).
+   */
+  onStderr?: (chunk: string) => void;
 }
 
 export interface SpawnedAppServerClient {
@@ -323,6 +332,21 @@ export function spawnAppServerClient(
   }
   // Swallow stdin EPIPE — the child may exit before we finish a write.
   stdin.on("error", () => {});
+
+  // ALWAYS drain stderr. `codex app-server` writes to stderr during normal
+  // operation; because a supervised turn is long-lived (blocks up to the 300s
+  // approval SLA), an unconsumed stderr pipe fills the OS buffer (~64KB) and then
+  // BLOCKS the child on its next stderr write → the turn deadlocks and degrades
+  // to a timeout. The LISTENER EXISTING is what drains the pipe; forwarding via
+  // `onStderr` is best-effort (a throwing callback must not break the drain).
+  // Transport-pure: no Codex noise-stripping here — the bridged runner layers it.
+  handle.child.stderr?.on("data", (chunk: unknown) => {
+    try {
+      opts.onStderr?.(String(chunk));
+    } catch {
+      // best-effort forward; the drain is the invariant, not the forward.
+    }
+  });
 
   const client = createJsonRpcClient({
     stdin: stdin as unknown as Writable,

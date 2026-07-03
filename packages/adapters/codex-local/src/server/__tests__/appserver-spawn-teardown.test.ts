@@ -51,4 +51,46 @@ describe("spawnAppServerClient teardown (W5c Task 8 #7)", () => {
     // The client closed too → a late request rejects (no hang).
     await expect(spawned.client.request("initialize", {})).rejects.toThrow();
   });
+
+  it("attaches a stderr drain listener at spawn (deadlock fix — I1)", async () => {
+    // I1: `codex app-server` writes to stderr during normal operation. Because a
+    // supervised turn is long-lived (blocks up to the 300s approval SLA), an
+    // UNCONSUMED stderr pipe fills the OS buffer (~64KB) and then BLOCKS the child
+    // on its next stderr write → the turn deadlocks and degrades to a timeout.
+    // The fix: spawnAppServerClient ALWAYS attaches a `data` listener to the
+    // child's stderr (the listener EXISTING is what drains the pipe). This asserts
+    // that wiring directly — the load-bearing property of the fix — and that a
+    // provided `onStderr` receives the drained bytes.
+    const runId = `appserver-stderr-drain-${Date.now()}`;
+    const chunks: string[] = [];
+    const spawned = spawnAppServerClient({
+      runId,
+      command: process.execPath, // node, in place of `codex`
+      cwd: os.tmpdir(),
+      env: {},
+      graceSec: 1,
+      shell: false,
+      onStderr: (chunk) => {
+        chunks.push(chunk);
+      },
+    });
+
+    // The drain listener EXISTING is what prevents the deadlock. This is the
+    // direct proof of the fix — regardless of what the fake child writes.
+    expect(spawned.child.stderr?.listenerCount("data")).toBeGreaterThanOrEqual(1);
+
+    // node errors on the missing "app-server" script and writes a diagnostic to
+    // stderr before exiting — exercising the drain + forward path end-to-end.
+    await new Promise<void>((resolve) => {
+      spawned.child.on("close", () => resolve());
+      spawned.child.on("error", () => resolve());
+    });
+    await new Promise((r) => setTimeout(r, 20));
+
+    // The child wrote its "Cannot find module" diagnostic to stderr → drained +
+    // forwarded to onStderr (best-effort; proves the wiring carries bytes).
+    expect(chunks.join("").length).toBeGreaterThan(0);
+
+    spawned.client.close();
+  });
 });

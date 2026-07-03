@@ -172,6 +172,19 @@ export function createAppServerResultAccumulator(): AppServerAccumulator {
           return;
         }
 
+        case "turn/completed": {
+          // A completed turn SUCCEEDED. `turn/failed` is the real failure
+          // terminal and does NOT emit `turn/completed` (the driver settles on
+          // the first terminal — they are mutually exclusive). Clear any
+          // transient `error` frame accumulated earlier in the turn (e.g. a
+          // willRetry stream error that recovered) so bridgedResultToIntermediate
+          // does not map a stale errorMessage to exitCode:1 and misclassify a
+          // successful turn as failed. (M1)
+          errorMessage = null;
+          errorCode = null;
+          return;
+        }
+
         case "turn/failed": {
           const p = parseObject(params);
           // Live shape: params.turn.error.{message,code}. The driver also

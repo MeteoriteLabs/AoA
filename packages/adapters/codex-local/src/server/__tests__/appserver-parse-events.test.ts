@@ -204,6 +204,23 @@ describe("createAppServerResultAccumulator — errors", () => {
     });
     expect(acc.result().errorMessage).toBe("turn/start rejected: boom");
   });
+
+  it("clears a transient error when the turn later completes (recovered = success)", () => {
+    // A turn may emit a transient `error` (willRetry) frame, recover, and then
+    // settle on `turn/completed`. That is a SUCCESSFUL turn — the accumulated
+    // errorMessage/errorCode must be cleared so bridgedResultToIntermediate does
+    // NOT map it to exitCode:1 and misclassify the turn as failed. (M1)
+    const acc = createAppServerResultAccumulator();
+    acc.onNotification("error", {
+      message: "stream disconnected",
+      willRetry: true,
+      code: "stream_error",
+    });
+    acc.onNotification("turn/completed", { turn: {} });
+    const out = acc.result();
+    expect(out.errorMessage).toBeNull();
+    expect(out.errorCode).toBeNull();
+  });
 });
 
 describe("createAppServerResultAccumulator — idempotency", () => {

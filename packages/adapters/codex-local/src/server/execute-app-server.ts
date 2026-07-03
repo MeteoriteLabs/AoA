@@ -38,6 +38,11 @@ import {
 } from "./app-server/driver.js";
 import { createAppServerResultAccumulator as realCreateAccumulator } from "./app-server/parse-events.js";
 import { handleApprovalRequest } from "./app-server/approval-bridge.js";
+import { stripCodexRolloutNoise } from "./execute.js";
+import { appendWithCap } from "@armyofagents/adapter-utils/server-utils";
+
+/** Cap total forwarded bridged-stderr so a chatty session can't grow logs without bound. */
+const APP_SERVER_STDERR_FORWARD_CAP = 32 * 1024;
 
 /** Injectable dependency set (defaults to the real app-server implementations). */
 export interface RunAppServerTurnDeps {
@@ -121,12 +126,37 @@ export async function runAppServerTurn(
     serverRequestHandler = handler;
   };
 
+  // Bridged-stderr forwarding: strip Codex rollout noise (parity with the exec
+  // path) and forward via onWarn, capping total length so a chatty supervised
+  // session can't grow logs without bound (mirrors the exec path's appendWithCap
+  // spirit). The DRAIN itself lives in spawnAppServerClient (I1) — this is only
+  // the best-effort forward on top of it.
+  let forwardedStderr = "";
+  const forwardStderr = onWarn
+    ? (chunk: string): void => {
+        const cleaned = stripCodexRolloutNoise(chunk);
+        if (!cleaned.trim()) return;
+        const before = forwardedStderr;
+        forwardedStderr = appendWithCap(
+          forwardedStderr,
+          cleaned,
+          APP_SERVER_STDERR_FORWARD_CAP,
+        );
+        // Only emit while under the cap — once saturated we stop forwarding new
+        // lines (the pipe is still drained by the transport listener regardless).
+        if (forwardedStderr.length > before.length) {
+          onWarn(`[aoa] codex app-server stderr: ${cleaned.trim()}`);
+        }
+      }
+    : undefined;
+
   const spawned = deps.spawnAppServerClient({
     runId,
     command,
     cwd,
     env,
     graceSec,
+    onStderr: forwardStderr,
     // Preserve the env-strip on the bridged path too — the ambient server
     // OPENAI_API_KEY must never reach a supervised codex run and flip billing.
     // (spawnAppServerClient also defaults this; we pass it explicitly so the

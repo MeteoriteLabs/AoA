@@ -84,7 +84,7 @@ const CODEX_ROLLOUT_NOISE_RE =
   /^\d{4}-\d{2}-\d{2}T[^\s]+\s+ERROR\s+codex_core::rollout::list:\s+state db missing rollout path for thread\s+[a-z0-9-]+$/i;
 const REMOTE_CODEX_HOME_DIR_NAME = ".aoa-codex-home";
 
-function stripCodexRolloutNoise(text: string): string {
+export function stripCodexRolloutNoise(text: string): string {
   const parts = text.split(/\r?\n/);
   const kept: string[] = [];
   for (const part of parts) {
