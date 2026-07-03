@@ -227,13 +227,7 @@ export function browserTab(url: string, title?: string): ThreadViewerTab {
   };
 }
 
-export function ensureTab(tabs: ThreadViewerTab[], tab: ThreadViewerTab): ThreadViewerTab[] {
-  return tabs.some((existing) => existing.key === tab.key) ? tabs : [...tabs, tab];
-}
-
-export function closeTab(tabs: ThreadViewerTab[], key: string): ThreadViewerTab[] {
-  return tabs.filter((tab) => tab.key !== key || !tab.closeable);
-}
+export { ensureTab, closeTab } from "../../lib/viewer-tabs";
 
 export function extractThreadUrls(values: string[]): string[] {
   const seen = new Set<string>();
