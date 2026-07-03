@@ -11,6 +11,12 @@ Harness: `packages/adapters/codex-local/src/server/__tests__/appserver-spike.tes
 (live half gated on `AOA_CODEX_APPSERVER_LIVE=1`; parser half always-on).
 Raw captured turn stream: `.../__tests__/fixtures/appserver-turn.json`.
 
+**See also:** the architectural rationale + gating live in **Decision #106**
+(`docs/architecture/decisions.md`); the board-operator / adapter-developer how-to
+(turn supervision on, approval UX, security posture) lives in
+`docs/adapters/codex-local.md` § *Runtime-decision bridge (W5c)*. This document is
+the low-level wire-protocol reference the bridge is built on.
+
 ---
 
 ## 1. Transport & handshake
