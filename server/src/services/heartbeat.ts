@@ -144,6 +144,16 @@ import {
 import { productivityReviewService } from "./productivity-review.js";
 import { recoveryService } from "./recovery/service.js";
 import type { ServerAdapterModule } from "../adapters/types.js";
+import {
+  mintRuntimeHookToken,
+  registerRuntimeHook,
+  deregisterRuntimeHook,
+} from "./runtime-hook-registry.js";
+import {
+  RUNTIME_HOOK_BLOCK_TIMEOUT_SEC,
+  RUNTIME_HOOK_PATH,
+} from "@armyofagents/adapter-utils";
+import { resolveRuntimeDecisionRoutingEnabled } from "./runtime-decision-routing-flag.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 export const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1;
@@ -4053,20 +4063,64 @@ export function heartbeatService(db: Db) {
         },
       });
 
-      const adapterResult = await adapter.execute({
-        runId: run.id,
-        agent,
-        runtime: runtimeForAdapter,
-        config: runScopedConfig,
-        context,
-        executionTarget,
-        runtimeCommandSpec,
-        onLog: onLogWithOutput,
-        onMeta: onAdapterMeta,
-        authToken: authToken ?? undefined,
-        runtimeDecisionBroker,
-        onSpawn,
+      // ── W5b: per-agent runtime-decision routing bridge ───────────────────
+      const bridged = resolveRuntimeDecisionRoutingEnabled({
+        agentRuntimeConfig: agent.runtimeConfig,
+        instanceEnv: process.env,
+        adapterType: agent.adapterType ?? "",
+        executionTargetType: executionTarget.type,
       });
+
+      let runtimeHookToken: string | undefined;
+      if (bridged) {
+        const selfBaseUrl =
+          process.env.AOA_API_URL?.trim() ||
+          `http://127.0.0.1:${process.env.PORT ?? "3100"}`;
+        runtimeHookToken = mintRuntimeHookToken();
+        registerRuntimeHook(runtimeHookToken, {
+          broker: runtimeDecisionBroker,
+          companyId: run.companyId,
+          agentId: agent.id,
+          runId: run.id,
+          expiresAt: new Date(Date.now() + (RUNTIME_HOOK_BLOCK_TIMEOUT_SEC + 60) * 1000),
+        });
+      }
+
+      let adapterResult: Awaited<ReturnType<typeof adapter.execute>>;
+      try {
+        adapterResult = await adapter.execute({
+          runId: run.id,
+          agent,
+          runtime: runtimeForAdapter,
+          config: runScopedConfig,
+          context,
+          executionTarget,
+          runtimeCommandSpec,
+          onLog: onLogWithOutput,
+          onMeta: onAdapterMeta,
+          authToken: authToken ?? undefined,
+          runtimeDecisionBroker,
+          ...(bridged && runtimeHookToken != null
+            ? {
+                runtimeHookBridge: {
+                  enabled: true,
+                  selfBaseUrl:
+                    process.env.AOA_API_URL?.trim() ||
+                    `http://127.0.0.1:${process.env.PORT ?? "3100"}`,
+                  path: RUNTIME_HOOK_PATH,
+                  timeoutSec: RUNTIME_HOOK_BLOCK_TIMEOUT_SEC,
+                },
+                runtimeHookToken,
+              }
+            : {}),
+          onSpawn,
+        });
+      } finally {
+        if (bridged && runtimeHookToken != null) {
+          deregisterRuntimeHook(runtimeHookToken);
+        }
+      }
+
       await livePreviewDetection.flush();
 
       // ── Persist adapter-managed runtime services (gated) ───────────
