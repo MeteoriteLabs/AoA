@@ -941,3 +941,58 @@ The embedding write path had **never executed end-to-end** — no CI lane set `A
 3. **Don't bind a `Date` into a raw `db.execute(sql\`…\`)` template** (drizzle-postgres-js execute throws `ERR_INVALID_ARG_TYPE`), and **don't write a pgvector value via a dynamic `.set({[col]: number[]})`** (bypasses the customType → array mis-binds). Write vectors as `.set({[col]: sql\`\${toVectorString(v)}::vector\`})` with a query-builder WHERE (typed `eq`/`ne`/`gt` convert `Date`+uuid correctly).
 
 **CI:** a new required `e2e-pgvector` lane (`pgvector/pgvector:pg16` + `AOA_E2E_PGVECTOR=1`, wired into `ci-required`) now exercises the embedding **write + retrieval** path, including the first cosine-distance ranking assertion (`tests/e2e/semantic-retrieval.spec.ts`). Plan: `docs/aoa/plans/2026-06-27-embedding-pgvector-timestamp-fix-and-retrieval-tests.md`.
+
+---
+
+## Decision #105 — W5b: `claude_local` runtime permission bridge (2026-07-03)
+
+**Status:** Locked 2026-07-03.
+
+### What this is
+
+W5b wires the previously inert W5a runtime-decision broker to a **live `claude_local` run**. When enabled, risky tool calls from a running Claude Code process are intercepted and routed to the human-decision hub so a founder can **allow or deny** them in real time before the CLI proceeds. This is **permission prompts only** — the `work_question` kind is **deferred** because `AskUserQuestion` is Claude Code SDK-only and AoA is CLI-only per Decision #91; there is no CLI hook that intercepts it.
+
+### Hook mechanism
+
+The interception uses a **`PreToolUse` hook** configured in a per-run `settings.json` written by heartbeat and passed via `--settings`. The hook `matcher` is scoped to the set of permission-requiring tools (`Bash|Write|Edit|MultiEdit|NotebookEdit|WebFetch`) so benign read-only tools (Read, Grep, Glob, etc.) never prompt.
+
+**Spike finding (2026-07-03, Claude Code 2.1.126):** `PermissionRequest` is **NOT** a firing hook event in the current Claude Code CLI. `PreToolUse` is the working hook. Any future migration to a native permission hook would require a fresh spike and a follow-up decision.
+
+### Transport: command forwarder (not native HTTP hook)
+
+The forwarder is a `type:"command"` hook (`hook-forward.mjs`), **not** native `type:"http"`. This is deliberate:
+
+- Native HTTP hooks in Claude Code are **fail-OPEN** on non-2xx responses, timeouts, and connection failures — the CLI continues executing the tool call even when the hook server is unreachable.
+- A command forwarder is **fail-CLOSED**: it emits `{"decision":"deny"}` on any error (network failure, timeout, bad auth, server error). This enforces fail-safe-deny — a founder away from the hub cannot accidentally approve a risky action by being absent.
+
+### Endpoint and authentication
+
+The hook calls `POST /internal/runtime-hooks/permission-request` on the existing Express server. The endpoint is authenticated by a **per-run bearer token** minted by heartbeat at spawn time and stored in an **in-process registry** (single-process assumption: the adapter execute path runs in the same Node process as the Express server; multi-process deployments would require DB-backed token storage, which is a follow-up). The token travels from heartbeat to the CLI **via environment variable only** (`AOA_RUNTIME_HOOK_TOKEN`) and is redacted in all log output. It never appears in `context`, adapter config, or metadata.
+
+The endpoint always returns HTTP 200 with a valid `{"decision":"allow"|"deny"}` JSON body — fail-safe deny on every error/auth path, so the CLI always gets a parseable decision.
+
+### Timeout and SLA
+
+Block timeout: **5 minutes** (`RUNTIME_HOOK_BLOCK_TIMEOUT_SEC=300`). When a pending permission times out on the server side, the route returns **deny** to the CLI (anti-hang) via `requestPermissionBounded`, which on timeout terminates the wait without later marking the decision relayed. The prompt's `timeoutPolicy="escalate"` keeps missed/timed-out prompts **visible** in the hub so the founder can see what happened.
+
+Overnight / away scenarios are handled by **trust rules (allow-always) and keeping unsupervised agents on bypass** — not by extending the timeout. Extending the timeout beyond 5 min risks hanging a run indefinitely.
+
+### Gating and opt-in
+
+Routing is **off by default** (bypass mode, unchanged). It activates only when all three conditions hold:
+
+1. **Per-agent opt-in:** `runtimeConfig.runtimeDecisionRoutingEnabled = true`
+2. **Instance kill-switch env:** `AOA_RUNTIME_DECISION_ROUTING=1`
+3. **Local execution target:** `executionTarget.type === "local"` (Docker and remote sandbox adapters cannot reach `127.0.0.1` and must not use this bridge)
+
+When the bridge is active, `--dangerously-skip-permissions` is **omitted** from the CLI invocation. The two options are mutually exclusive and never coexist.
+
+### Scope guard
+
+This decision applies to `claude_local` only. Other adapters (`codex_local`, etc.) are follow-up bridges, each gated on their own hook spike — some adapters may never qualify due to the absence of a suitable hook mechanism.
+
+### Review trail
+
+Design reviewed: staff-eng plan review, Codex plan review, and a live proof-of-concept spike (2026-07-03) confirming `PreToolUse` fires and the command forwarder correctly fail-closes before implementation.
+
+**Key files:** `server/src/services/heartbeat/runtime-hooks.ts` (token registry + endpoint), `server/src/adapters/claude-local.ts` (hook injection), `packages/adapters/src/claude-local/hook-forward.mjs` (command forwarder). Plan: `docs/aoa/plans/2026-07-03-w5b-first-adapter-runtime-bridge-plan.md`.
