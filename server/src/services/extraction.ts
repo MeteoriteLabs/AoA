@@ -1,4 +1,4 @@
-import { eq, and, desc, gt, sql } from "drizzle-orm";
+import { eq, and, desc, gt, sql, ne, isNull, asc, inArray } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { debriefs, briefs, briefItems, projects, discussions, discussionEntries, discussionExtractedItems, internalAgentConfig } from "@armyofagents/db";
 import { logger } from "../middleware/logger.js";
@@ -12,6 +12,11 @@ import { buildDiscussionPendingHubEmit, emitHubItem } from "./hub-source-produce
 // continue to work unchanged after the move to extraction-parser.ts.
 export { parseExtractedItems } from "./extraction-parser.js";
 export type { ExtractedItem, ExtractedItemType } from "./extraction-parser.js";
+
+// W2 (extract-then-scope) bounds for `extractThreadEntriesAwait`. Exported so
+// the unit tests pin against the real values (no silent caps).
+export const MAX_EXTRACT_ENTRIES_PER_SCOPE = 25;
+export const EXTRACT_SCOPE_DEADLINE_MS = 180_000; // eng-review D2 — see W2 plan
 
 const EXTRACTION_PROMPT_TEMPLATE = `You are extracting structured items from a founder's discussion entry — raw notes, meeting summaries, brainstorming, or pasted conversations.
 
@@ -531,6 +536,94 @@ export function extractionService(db: Db) {
           type: "discussion.extraction.failed",
           payload: { discussionId, entryId, error: err instanceof Error ? err.message : String(err) },
         });
+      }
+    },
+
+    /** W2 (D6 extract-then-scope): extract the thread's never-extracted entries and WAIT.
+     *  Selection is conservative — entries with any existing extracted items are left
+     *  alone (a founder may be mid-review; reprocess semantics stay in reprocessAllEntries).
+     *  Serial (one CLI at a time), best-effort per entry, capped by COUNT
+     *  (MAX_EXTRACT_ENTRIES_PER_SCOPE) and by WALL-CLOCK (eng-review D2:
+     *  EXTRACT_SCOPE_DEADLINE_MS — a hung CLI must not stall the controller pipeline
+     *  for ~50 min; give an honest answer within minutes). Never throws. */
+    extractThreadEntriesAwait: async (
+      companyId: string,
+      discussionId: string,
+      opts?: {
+        /** Injectable extractor (tests). Defaults to the sibling extractFromDiscussionEntry. */
+        extractOne?: (companyId: string, entryId: string) => Promise<unknown>;
+        /** Injectable clock for the deadline unit test. Defaults to Date.now. */
+        now?: () => number;
+      },
+    ): Promise<{ attempted: number; failed: number; truncated: boolean; deadlineHit: boolean }> => {
+      const log = logger.child({ service: "extraction", discussionId, companyId, mode: "scope-await" });
+      const extractOne =
+        opts?.extractOne ??
+        ((c: string, e: string) => extractionService(db).extractFromDiscussionEntry(c, e));
+      const now = opts?.now ?? Date.now;
+      const startedAt = now();
+      try {
+        // Eligible: prose entries never extracted — status pending/skipped/failed AND no
+        // existing extracted items. Entries with items are a founder-review surface;
+        // deleting/re-extracting them is reprocess-only semantics (discussions.ts).
+        // LEFT JOIN + isNull keeps only zero-item entries, so join duplication is moot.
+        const rows = (await db
+          .select({ id: discussionEntries.id, extractionStatus: discussionEntries.extractionStatus })
+          .from(discussionEntries)
+          .leftJoin(
+            discussionExtractedItems,
+            eq(discussionExtractedItems.discussionEntryId, discussionEntries.id),
+          )
+          .where(and(
+            eq(discussionEntries.discussionId, discussionId),
+            ne(discussionEntries.inputType, "scope_proposal"),
+            inArray(discussionEntries.extractionStatus, ["pending", "skipped", "failed"]),
+            isNull(discussionExtractedItems.id),
+          ))
+          .orderBy(asc(discussionEntries.seq))) as Array<{ id: string; extractionStatus: string }>;
+
+        const truncated = rows.length > MAX_EXTRACT_ENTRIES_PER_SCOPE;
+        const selected = rows.slice(0, MAX_EXTRACT_ENTRIES_PER_SCOPE);
+        if (truncated) {
+          log.warn(
+            { eligible: rows.length, cap: MAX_EXTRACT_ENTRIES_PER_SCOPE },
+            "extract-then-scope truncated eligible entries at cap",
+          );
+        }
+
+        let failed = 0;
+        let attempted = 0;
+        let deadlineHit = false;
+        for (const row of selected) {
+          // Eng-review D2: wall-clock deadline — a hung-but-installed CLI must never turn
+          // one scoping pass into a ~50-minute controller-pipeline stall. Compile with
+          // whatever was extracted so far; the founder gets an honest answer in minutes.
+          if (now() - startedAt > EXTRACT_SCOPE_DEADLINE_MS) {
+            deadlineHit = true;
+            log.warn(
+              { attempted, remaining: selected.length - attempted, deadlineMs: EXTRACT_SCOPE_DEADLINE_MS },
+              "extract-then-scope deadline hit — compiling with items extracted so far",
+            );
+            break;
+          }
+          try {
+            if (row.extractionStatus !== "pending") {
+              // extractFromDiscussionEntry only claims 'pending' rows.
+              await db.update(discussionEntries)
+                .set({ extractionStatus: "pending", extractionRunId: null })
+                .where(eq(discussionEntries.id, row.id));
+            }
+            attempted += 1;
+            await extractOne(companyId, row.id);
+          } catch (err) {
+            failed += 1;
+            log.warn({ err, entryId: row.id }, "extract-then-scope entry failed (best-effort)");
+          }
+        }
+        return { attempted, failed, truncated, deadlineHit };
+      } catch (err) {
+        log.warn({ err }, "extract-then-scope selection failed (best-effort) — compiling without");
+        return { attempted: 0, failed: 0, truncated: false, deadlineHit: false };
       }
     },
 
