@@ -184,58 +184,40 @@ function asNonEmptyString(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
-export function AgentDetail() {
-  const { companyPrefix, agentId, tab: urlTab, runId: urlRunId } = useParams<{
-    companyPrefix?: string;
-    agentId: string;
-    tab?: string;
-    runId?: string;
-  }>();
-  const { companies, selectedCompanyId, setSelectedCompanyId } = useCompany();
-  const { openNewIssue } = useDialog();
-  const { setBreadcrumbs } = useBreadcrumbs();
-  const queryClient = useQueryClient();
-  const navigate = useNavigate();
-  const { pushToast } = useToast();
-  const [actionError, setActionError] = useState<string | null>(null);
-  const [moreOpen, setMoreOpen] = useState(false);
-  const [terminateConfirmOpen, setTerminateConfirmOpen] = useState(false);
-  // Pending in-app navigation held back by the unsaved-changes guard.
-  const activeView = urlRunId ? "runs" as AgentDetailView : parseAgentDetailView(urlTab ?? null);
-  const [configDirty, setConfigDirty] = useState(false);
-  const [configSaving, setConfigSaving] = useState(false);
-  const saveConfigActionRef = useRef<(() => void) | null>(null);
-  const cancelConfigActionRef = useRef<(() => void) | null>(null);
-  const [instrDirty, setInstrDirty] = useState(false);
-  const [instrSaving, setInstrSaving] = useState(false);
-  const saveInstrActionRef = useRef<(() => void) | null>(null);
-  const cancelInstrActionRef = useRef<(() => void) | null>(null);
-  const { isMobile } = useSidebar();
-  const routeAgentRef = agentId ?? "";
-  const routeCompanyId = useMemo(() => {
-    if (!companyPrefix) return null;
-    const requestedPrefix = companyPrefix.toUpperCase();
-    return companies.find((company) => company.issuePrefix.toUpperCase() === requestedPrefix)?.id ?? null;
-  }, [companies, companyPrefix]);
-  const lookupCompanyId = routeCompanyId ?? selectedCompanyId ?? undefined;
-  const canFetchAgent = routeAgentRef.length > 0 && (isUuidLike(routeAgentRef) || Boolean(lookupCompanyId));
-  const setSaveConfigAction = useCallback((fn: (() => void) | null) => { saveConfigActionRef.current = fn; }, []);
-  const setCancelConfigAction = useCallback((fn: (() => void) | null) => { cancelConfigActionRef.current = fn; }, []);
-  const setSaveInstrAction = useCallback((fn: (() => void) | null) => { saveInstrActionRef.current = fn; }, []);
-  const setCancelInstrAction = useCallback((fn: (() => void) | null) => { cancelInstrActionRef.current = fn; }, []);
+/**
+ * Shared agent-detail data orchestration. Runs the six queries the detail page
+ * needs (agent, runtimeState, heartbeats, all-issues, all-agents, trustScore)
+ * and derives the assigned-issues / org / mobile-live-run views from them.
+ *
+ * Consumed by both the route page ({@link AgentDetail}, keyed on the URL param)
+ * and the Inbox Hub tab host ({@link AgentDetailContainer}, keyed on a prop).
+ * The hook itself reads no route state — the caller resolves `agentRef` +
+ * `lookupCompanyId` from wherever it lives.
+ */
+export function useAgentDetailData({
+  agentRef,
+  lookupCompanyId,
+  selectedCompanyId,
+}: {
+  agentRef: string;
+  lookupCompanyId: string | undefined;
+  selectedCompanyId: string | null;
+}) {
+  const canFetchAgent =
+    agentRef.length > 0 && (isUuidLike(agentRef) || Boolean(lookupCompanyId));
 
   const { data: agent, isLoading, error } = useQuery({
-    queryKey: [...queryKeys.agents.detail(routeAgentRef), lookupCompanyId ?? null],
-    queryFn: () => agentsApi.get(routeAgentRef, lookupCompanyId),
+    queryKey: [...queryKeys.agents.detail(agentRef), lookupCompanyId ?? null],
+    queryFn: () => agentsApi.get(agentRef, lookupCompanyId),
     enabled: canFetchAgent,
   });
   const resolvedCompanyId = agent?.companyId ?? selectedCompanyId;
-  const canonicalAgentRef = agent ? agentRouteRef(agent) : routeAgentRef;
-  const agentLookupRef = agent?.id ?? routeAgentRef;
+  const canonicalAgentRef = agent ? agentRouteRef(agent) : agentRef;
+  const agentLookupRef = agent?.id ?? agentRef;
   const resolvedAgentId = agent?.id ?? null;
 
   const { data: runtimeState } = useQuery({
-    queryKey: queryKeys.agents.runtimeState(resolvedAgentId ?? routeAgentRef),
+    queryKey: queryKeys.agents.runtimeState(resolvedAgentId ?? agentRef),
     queryFn: () => agentsApi.runtimeState(resolvedAgentId!, resolvedCompanyId ?? undefined),
     enabled: Boolean(resolvedAgentId),
   });
@@ -272,10 +254,80 @@ export function AgentDetail() {
     .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
   const reportsToAgent = (allAgents ?? []).find((a) => a.id === agent?.reportsTo);
   const directReports = (allAgents ?? []).filter((a) => a.reportsTo === agent?.id && a.status !== "terminated");
-  const mobileLiveRun = useMemo(
-    () => (heartbeats ?? []).find((r) => r.status === "running" || r.status === "queued") ?? null,
-    [heartbeats],
-  );
+  const mobileLiveRun = (heartbeats ?? []).find((r) => r.status === "running" || r.status === "queued") ?? null;
+
+  return {
+    agent,
+    isLoading,
+    error,
+    resolvedCompanyId,
+    canonicalAgentRef,
+    agentLookupRef,
+    resolvedAgentId,
+    runtimeState,
+    heartbeats,
+    assignedIssues,
+    reportsToAgent: reportsToAgent ?? null,
+    directReports,
+    trustScore,
+    mobileLiveRun,
+  };
+}
+
+export function AgentDetail() {
+  const { companyPrefix, agentId, tab: urlTab, runId: urlRunId } = useParams<{
+    companyPrefix?: string;
+    agentId: string;
+    tab?: string;
+    runId?: string;
+  }>();
+  const { companies, selectedCompanyId, setSelectedCompanyId } = useCompany();
+  const { openNewIssue } = useDialog();
+  const { setBreadcrumbs } = useBreadcrumbs();
+  const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  const { pushToast } = useToast();
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [terminateConfirmOpen, setTerminateConfirmOpen] = useState(false);
+  // Pending in-app navigation held back by the unsaved-changes guard.
+  const activeView = urlRunId ? "runs" as AgentDetailView : parseAgentDetailView(urlTab ?? null);
+  const [configDirty, setConfigDirty] = useState(false);
+  const [configSaving, setConfigSaving] = useState(false);
+  const saveConfigActionRef = useRef<(() => void) | null>(null);
+  const cancelConfigActionRef = useRef<(() => void) | null>(null);
+  const [instrDirty, setInstrDirty] = useState(false);
+  const [instrSaving, setInstrSaving] = useState(false);
+  const saveInstrActionRef = useRef<(() => void) | null>(null);
+  const cancelInstrActionRef = useRef<(() => void) | null>(null);
+  const { isMobile } = useSidebar();
+  const routeAgentRef = agentId ?? "";
+  const routeCompanyId = useMemo(() => {
+    if (!companyPrefix) return null;
+    const requestedPrefix = companyPrefix.toUpperCase();
+    return companies.find((company) => company.issuePrefix.toUpperCase() === requestedPrefix)?.id ?? null;
+  }, [companies, companyPrefix]);
+  const lookupCompanyId = routeCompanyId ?? selectedCompanyId ?? undefined;
+  const setSaveConfigAction = useCallback((fn: (() => void) | null) => { saveConfigActionRef.current = fn; }, []);
+  const setCancelConfigAction = useCallback((fn: (() => void) | null) => { cancelConfigActionRef.current = fn; }, []);
+  const setSaveInstrAction = useCallback((fn: (() => void) | null) => { saveInstrActionRef.current = fn; }, []);
+  const setCancelInstrAction = useCallback((fn: (() => void) | null) => { cancelInstrActionRef.current = fn; }, []);
+
+  const {
+    agent,
+    isLoading,
+    error,
+    resolvedCompanyId,
+    canonicalAgentRef,
+    agentLookupRef,
+    runtimeState,
+    heartbeats,
+    assignedIssues,
+    reportsToAgent,
+    directReports,
+    trustScore,
+    mobileLiveRun,
+  } = useAgentDetailData({ agentRef: routeAgentRef, lookupCompanyId, selectedCompanyId });
 
   useEffect(() => {
     if (!agent) return;
@@ -700,7 +752,7 @@ function SummaryRow({ label, children }: { label: string; children: React.ReactN
 
 /* ---- Agent Overview (main single-page view) ---- */
 
-function AgentOverview({
+export function AgentOverview({
   agent,
   runs,
   assignedIssues,
@@ -931,7 +983,7 @@ function CostsSection({
 
 /* ---- Agent Configure Page ---- */
 
-function AgentConfigurePage({
+export function AgentConfigurePage({
   agent,
   agentId,
   companyId,
@@ -1439,7 +1491,7 @@ function RunListItem({ run, isSelected, agentId }: { run: HeartbeatRun; isSelect
   );
 }
 
-function RunsTab({
+export function RunsTab({
   runs,
   companyId,
   agentId,
@@ -1598,7 +1650,14 @@ function RunsTab({
 
 /* ---- Run Detail (expanded) ---- */
 
-function RunDetail({ run, agentRouteId, adapterType }: { run: HeartbeatRun; agentRouteId: string; adapterType: string }) {
+/**
+ * Full run-detail panel (status, metrics, session, touched tasks, log viewer).
+ * Exported so the Inbox Hub `run` tab (RunDetailContainer, D4b) can host it by
+ * id — the route page's RunsTab still renders it inline. It reads
+ * `run.companyId`/`run.agentId` internally; `agentRouteId` is used only for
+ * resume/retry navigation, and `adapterType` selects the transcript parser.
+ */
+export function RunDetail({ run, agentRouteId, adapterType }: { run: HeartbeatRun; agentRouteId: string; adapterType: string }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const metrics = runMetrics(run);

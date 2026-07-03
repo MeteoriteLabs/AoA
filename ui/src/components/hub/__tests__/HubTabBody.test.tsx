@@ -5,11 +5,13 @@ import { HubTabBody } from "../HubTabBody";
 import { HUB_TABPANEL_ID } from "../HubTabStrip";
 import {
   HOME_TAB,
+  agentTab,
   approvalTab,
   browserTab,
   budgetTab,
   joinRequestTab,
   notificationTab,
+  runTab,
   runtimeDecisionTab,
   taskTab,
   threadTab,
@@ -85,6 +87,37 @@ vi.mock("../TaskOutputViewer", () => ({
       TaskOutputViewer
     </div>
   ),
+}));
+
+// D4 containers are exercised in their own suites; here we stub them to simple
+// divs and only assert HubTabBody's switch routes to them with the right props.
+const agentContainerSpy = vi.fn();
+vi.mock("../../agent-detail/AgentDetailContainer", () => ({
+  AgentDetailContainer: (props: Record<string, unknown>) => {
+    agentContainerSpy(props);
+    return (
+      <div
+        data-testid="mock-agent-container"
+        data-agent-id={String(props.agentId)}
+        data-company-id={String(props.companyId)}
+      />
+    );
+  },
+}));
+
+const runContainerSpy = vi.fn();
+vi.mock("../../agent-detail/RunDetailContainer", () => ({
+  RunDetailContainer: (props: Record<string, unknown>) => {
+    runContainerSpy(props);
+    return (
+      <div
+        data-testid="mock-run-container"
+        data-run-id={String(props.runId)}
+        data-agent-id={String(props.agentId)}
+        data-company-id={String(props.companyId)}
+      />
+    );
+  },
 }));
 
 // RuntimeDecisionPanel is exercised in its own suite; here we only assert the
@@ -263,6 +296,37 @@ describe("HubTabBody", () => {
     const resolveHubItem = vi.fn().mockReturnValue(undefined);
     renderBody(runtimeDecisionTab("hub-runtime-missing"), vi.fn(), resolveHubItem);
     expect(screen.queryByTestId("mock-runtime-decision")).toBeNull();
+    expect(screen.getByText(/preparing viewer/i)).toBeInTheDocument();
+  });
+
+  // ── D4a/D4b: agent + run tabs are now live-wired (no longer placeholders) ──
+
+  it("routes an agent tab to AgentDetailContainer with agentId + companyId (D4a)", () => {
+    renderBody(agentTab("agent-42", "Worker"));
+    const el = screen.getByTestId("mock-agent-container");
+    expect(el).toHaveAttribute("data-agent-id", "agent-42");
+    expect(el).toHaveAttribute("data-company-id", "company-1");
+    expect(screen.queryByText(/preparing viewer/i)).toBeNull();
+  });
+
+  it("routes a run tab to RunDetailContainer with runId + agentId + companyId (D4b)", () => {
+    renderBody(runTab("run-7", "agent-42", "Run 7"));
+    const el = screen.getByTestId("mock-run-container");
+    expect(el).toHaveAttribute("data-run-id", "run-7");
+    expect(el).toHaveAttribute("data-agent-id", "agent-42");
+    expect(el).toHaveAttribute("data-company-id", "company-1");
+    expect(screen.queryByText(/preparing viewer/i)).toBeNull();
+  });
+
+  it("falls back to the placeholder for an agent tab with no payload", () => {
+    renderBody({ key: "agent:x", kind: "agent", title: "Agent", closeable: true });
+    expect(screen.queryByTestId("mock-agent-container")).toBeNull();
+    expect(screen.getByText(/preparing viewer/i)).toBeInTheDocument();
+  });
+
+  it("falls back to the placeholder for a run tab with no payload", () => {
+    renderBody({ key: "run:x", kind: "run", title: "Run", closeable: true });
+    expect(screen.queryByTestId("mock-run-container")).toBeNull();
     expect(screen.getByText(/preparing viewer/i)).toBeInTheDocument();
   });
 });

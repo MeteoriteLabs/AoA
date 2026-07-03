@@ -7,12 +7,16 @@ import { BudgetCapsSection } from "@/components/settings/sections/BudgetCapsSect
 import type { HubItemListRow } from "@/api/hub-items";
 import type { IssueContextBundle } from "@/api/issues";
 import { TaskOutputViewer } from "../threads/TaskOutputViewer";
+import { AgentDetailContainer } from "../agent-detail/AgentDetailContainer";
+import { RunDetailContainer } from "../agent-detail/RunDetailContainer";
 import { HUB_TABPANEL_ID } from "./HubTabStrip";
 import { RuntimeDecisionPanel } from "./RuntimeDecisionPanel";
 import {
   browserTab,
+  type HubAgentPayload,
   type HubApprovalPayload,
   type HubBrowserPayload,
+  type HubRunPayload,
   type HubRuntimeDecisionPayload,
   type HubTab,
   type HubTabKind,
@@ -42,9 +46,10 @@ interface HubTabBodyProps {
  * Live-wired kinds: home (placeholder stub, E2 swaps in the real HubHomeTab),
  * task, task_output, thread (D2 — hosts embedded ThreadDetail by prop id),
  * approval (D3 — hosts embedded ApprovalDetailCore by prop id), browser, budget,
- * runtime_decision (needs `resolveHubItem`; placeholder until the parent
- * supplies it in E2/G1). Kinds without a dedicated hub payload (artifact,
- * memory) or not yet built (join_request, agent, run, suggestion,
+ * agent (D4a — hosts AgentDetailContainer by prop id), run (D4b — hosts
+ * RunDetailContainer by runId+agentId), runtime_decision (needs `resolveHubItem`;
+ * placeholder until the parent supplies it in E2/G1). Kinds without a dedicated
+ * hub payload (artifact, memory) or not yet built (join_request, suggestion,
  * marketplace_op, reminder, routine) fall through to
  * {@link TabLoadingPlaceholder} — never to `null` — so the panel still renders
  * while Phase D/E wires them.
@@ -132,6 +137,31 @@ function HubTabBodyContent({ tab, companyId, onOpenTab, resolveHubItem }: HubTab
     case "budget":
       return <BudgetCapsSection />;
 
+    case "agent": {
+      // D4a: host the full agent-detail chrome by prop id. The container
+      // replicates the route page's data orchestration (useAgentDetailData) but
+      // drops route-only chrome (breadcrumbs, URL tab routing, unsaved-changes
+      // cross-page guard).
+      const payload = tab.payload as HubAgentPayload | undefined;
+      if (!payload) return <TabLoadingPlaceholder kind={tab.kind} />;
+      return <AgentDetailContainer agentId={payload.agentId} companyId={companyId} />;
+    }
+
+    case "run": {
+      // D4b: host a single heartbeat run by prop id. The payload carries BOTH
+      // runId + agentId (no fetch-by-id endpoint for a run), so the container
+      // fetches the agent's run list and finds the row.
+      const payload = tab.payload as HubRunPayload | undefined;
+      if (!payload) return <TabLoadingPlaceholder kind={tab.kind} />;
+      return (
+        <RunDetailContainer
+          runId={payload.runId}
+          agentId={payload.agentId}
+          companyId={companyId}
+        />
+      );
+    }
+
     case "notification":
       return <HubNotificationBody tab={tab} />;
 
@@ -158,8 +188,6 @@ function HubTabBodyContent({ tab, companyId, onOpenTab, resolveHubItem }: HubTab
     case "memory":
     // Not-yet-built kinds — Phase D/E wire these.
     case "join_request":
-    case "agent":
-    case "run":
     case "suggestion":
     case "marketplace_op":
     case "reminder":
