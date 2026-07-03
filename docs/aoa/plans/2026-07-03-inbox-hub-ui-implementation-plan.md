@@ -200,7 +200,9 @@ Persist stores `{kind, key, title, payload}` (payload is already plain-serializa
 ## Phase G — Integration + verification
 
 ### Task G1 — Wire it all + remove dead code
-- [ ] `HubShell` right panel = `<HubTabStrip .../>` + `<HubTabBody tab={activeTab} onOpenTab={openTab}/>`; `InboxHub` provides `useHubTabs`. Home tab default. Remove the old single-item `HubViewer` aside + its navigate-away button.
+- [ ] `HubShell` right panel = `<HubTabStrip .../>` + `<HubTabBody tab={activeTab} onOpenTab={openTab} companyId={selectedCompanyId} resolveHubItem={...}/>`; `InboxHub` provides `useHubTabs`. Home tab default. Remove the old single-item `HubViewer` aside + its navigate-away button.
+- [ ] **D2-review seam (must-do):** `HubTabBody` MUST be passed a concrete `companyId`. If it's `undefined`, an embedded `ThreadDetail` falls back to context which on the Inbox route can be undefined → the thread query stays disabled and the tab shows a skeleton forever with no error. Add a test asserting the hub passes a real `companyId`.
+- [ ] Wire `resolveHubItem` (the D1 prop): supply `(hubItemId) => loadedItems.find(...) ?? getOne(...)` so `runtime_decision`/`notification` tabs resolve their hub item.
 - [ ] **Full typecheck:** `pnpm --filter @armyofagents/ui typecheck`. **Unit:** `pnpm test:run` for all new suites + the existing hub/threads suites (no regression). Commit.
 
 ### Task G2 — Live UI verification (the "you check it" step)
