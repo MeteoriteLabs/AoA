@@ -64,3 +64,26 @@ Actual: Notifications lane shows only the codex run_failed item; no run_complete
 Impact: founder gets no positive confirmation a run finished via the hub.
 Evidence: GET hub-items?lane=notifications → only [('run_failed','open')] after a succeeded claude run.
 Suspected file: heartbeat run-completion → notification emit path (only failure path wired, or success emit gated). Verify whether run_complete is intentionally suppressed for non-terminal task outcomes (run succeeded but task stayed in_progress, not done).
+
+---
+
+# Resolution log (2026-07-04, live-verified on qa-inbox-e2e :3399)
+
+| Bug | Fix commit | Live verification |
+|---|---|---|
+| BUG-1 codex handshake | `0ac91a759` (+`eb0aa4bbb` resume-regex) | codex runs no longer die at 250ms; `AOA_CODEX_APPSERVER_LIVE=1` spike passes the full blocking-approval loop (21s, decline+accept). NEW downstream finding: BUG-6 below. |
+| BUG-2 stale runtime-decision items | `650412410` | ANSWER: item ff75a0ec archived on Allow-once via the hub UI. EXPIRE: decision 6bbcf9ff → cancelled at SLA, item 67f236b7 archived, "Permission request timed out" agent_error follow-up appeared in Notifications (amended D105/D106 escalate-visible mechanism). CANCEL: run-cancel → item 5bc314e4 archived in ~3s, open decisions 0. Boot reconcile also closed 6 stale QA-era items (8→2 open). |
+| BUG-3 request storm | `f3368867c` (root cause: change-aware emit) | 0 fetches / 6s idle with the hub open (was ~750/sec); no ERR_INSUFFICIENT_RESOURCES all session. |
+| BUG-4 SPA 404 | `637d66d1f` | /QAL/inbox/waiting, /QAL/home, /QAL/inbox hard-load 200 html (browser deep-link nav used throughout this verification); /api/nope 404 JSON; /assets/deadbeef.js 404. |
+| BUG-5 no run_complete | `da9de0159` | "Scout-Codex run complete" appeared in Notifications event-driven (no sidebar-badges load); second run's item superseded the first (noise valve). Claude-path identical chokepoint (setRunStatus, adapter-agnostic). |
+
+## BUG-6 (NEW, found during verification) — codex supervised turn completes empty (no model output)
+
+Severity: MAJOR (codex_local runtime-decision path produces no work product)
+Repro: dispatch any task to a codex_local agent with runtimeDecisionRoutingEnabled on qa-inbox-e2e. The run survives the handshake (BUG-1 fixed), engages the supervised path, and "succeeds" in ~7s with exitCode 0 — but with zero turn items, Tokens N/A, no assistant message, no command execution, task left in_progress ("recovery handoff" comment).
+Evidence: managed-home rollouts `~/.codex/aoa-instances/<cid>/sessions/2026/07/04/rollout-*-{04-36-34,04-44-18}-*.jsonl` — session_meta + instructions + user message (task text PRESENT, verified `whoami`/`Flow A2` in blob) then `task_complete` immediately, no items between. The gated live spike (same CLI, same 0.130, `~/.codex` home) passes with real model turns — so driver + CLI are fine.
+Leading hypotheses (in order):
+1. Stale managed-home auth: `~/.codex/aoa-instances/<cid>/auth.json` is a copy dated Jun 24 (codex rotates tokens in its own home; the copy never refreshes) → model call fails.
+2. Failure masking: `parse-events.ts` turn/completed handler clears accumulated `error` frames (the M1 rule) — if codex emits an error event then still sends turn/completed, the run misclassifies as success (exitCode 0). The masking would hide hypothesis 1.
+Suggested next steps: re-copy fresh auth.json (or refresh-on-stale in prepareManagedCodexHome), add turn-items==0 && no-error → suspicious-run classification, and only clear errors on turn/completed when at least one item completed (tighten M1).
+Also observed (minor): POST /heartbeat-runs/:id/cancel returned the run but the status flip required a second cancel ~5min later (first cancel tore down the decision prompts — BUG-2 close fired — but the run row stayed `running`, blocking the queued next run under the concurrency clamp).
