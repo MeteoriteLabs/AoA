@@ -112,6 +112,13 @@ function makeDb(
   const issueUpdateSets: Array<Record<string, unknown>> = [];
   const state = { approvalsUpdated: false };
 
+  // approve() pre-filters to planning+todo tasks, then UPDATEs each in order. The guarded
+  // UPDATE RETURNs the current { id, assigneeAgentId }, which approve() uses for dispatch —
+  // so pop the dispatchable rows in order to mirror the current assignee.
+  const dispatchable = (taskRows as Array<{ id: string; assigneeAgentId: string | null; workMode?: string; status?: string }>)
+    .filter((t) => t.workMode === "planning" && t.status === "todo");
+  let flipIdx = 0;
+
   return {
     db: {
       select: () => {
@@ -125,13 +132,15 @@ function makeDb(
             if (table?._?.name === "approvals") state.approvalsUpdated = true;
             // The guarded issues UPDATE returns the flipped row(s); [] means it matched
             // nothing (concurrent move) and the code must skip dispatch for that task.
+            const flipRow = dispatchable[flipIdx];
+            if (table?._?.name === "issues") flipIdx += 1;
             const rows =
               table?._?.name === "approvals"
                 ? [updatedApproval]
                 : table?._?.name === "issues"
-                  ? issuesFlipReturnsEmpty
+                  ? issuesFlipReturnsEmpty || !flipRow
                     ? []
-                    : [{ id: "flipped" }]
+                    : [{ id: flipRow.id, assigneeAgentId: flipRow.assigneeAgentId }]
                   : [];
             if (table?._?.name === "issues" && rows.length > 0) issueUpdateSets.push(values);
             return {

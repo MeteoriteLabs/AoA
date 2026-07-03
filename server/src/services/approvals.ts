@@ -201,8 +201,15 @@ export function approvalService(db: Db) {
                 eq(issues.status, "todo"),
               ),
             )
-            .returning({ id: issues.id })) as Array<{ id: string }>;
+            .returning({ id: issues.id, assigneeAgentId: issues.assigneeAgentId })) as Array<{
+            id: string;
+            assigneeAgentId: string | null;
+          }>;
           if (flipped.length === 0) continue; // moved concurrently — do not dispatch
+          // Codex #267 P2: dispatch to the CURRENT assignee returned by the guarded UPDATE,
+          // not the (possibly stale) SELECT snapshot — a founder may have reassigned the task
+          // between the SELECT and this UPDATE, and we must wake the agent it belongs to now.
+          const assigneeAgentId = flipped[0].assigneeAgentId;
           // Codex #267 P2: this raw flip bypasses issueService's issue.updated activity, and
           // crew_dispatch approvals aren't linked via issue_approvals, so the generic
           // approval.approved log carries no task ids. Log the planning→standard dispatch
@@ -218,10 +225,10 @@ export function approvalService(db: Db) {
               approvalId: id,
               fromWorkMode: "planning",
               toWorkMode: "standard",
-              assigneeAgentId: t.assigneeAgentId,
+              assigneeAgentId,
             },
           });
-          toDispatch.push({ id: t.id, assigneeAgentId: t.assigneeAgentId, workMode: "standard" });
+          toDispatch.push({ id: t.id, assigneeAgentId, workMode: "standard" });
         }
 
         await dispatchCreatedCrewTasks(db, companyId, toDispatch);

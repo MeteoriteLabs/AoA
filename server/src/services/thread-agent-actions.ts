@@ -33,6 +33,7 @@ import { resolveScopeAutoAcceptGate, dispatchCreatedCrewTasks } from "./crew-tas
 import { preflightCrewDispatch } from "./crew-budget.js";
 import { approvalService } from "./approvals.js";
 import { buildApprovalHubEmit, emitHubItem } from "./hub-source-producers.js";
+import { logActivity } from "./activity-log.js";
 import { logger } from "../middleware/logger.js";
 import { isUniqueViolation } from "./db-errors.js";
 
@@ -845,6 +846,24 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
                           actionDb as unknown as import("@armyofagents/db").Db,
                           buildApprovalHubEmit(created),
                         );
+                        // Codex #267 P2: this Assist path creates the approval directly,
+                        // bypassing the /approvals route's approval.created activity write.
+                        // Log it here so system-created crew_dispatch approvals are audited
+                        // like route-created ones.
+                        await logActivity(actionDb as unknown as import("@armyofagents/db").Db, {
+                          companyId: input.companyId,
+                          actorType: action.agentId ? "agent" : "system",
+                          actorId: action.agentId ?? "system",
+                          agentId: action.agentId ?? null,
+                          action: "approval.created",
+                          entityType: "approval",
+                          entityId: created.id,
+                          details: {
+                            type: "crew_dispatch",
+                            taskIds: createdTasks.map((t) => t.id),
+                            source: "assist_auto_apply",
+                          },
+                        });
                       }
                     }
                   }
