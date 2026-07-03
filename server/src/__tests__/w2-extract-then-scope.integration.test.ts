@@ -938,4 +938,124 @@ describe.skipIf(process.platform === "win32")("W2 integration: extract-then-scop
     expect(cards7).toHaveLength(1);
     expect(String(cards7[0].title)).toBe("Stand up the churn-alert pipeline");
   }, 120_000);
+
+  // ── Case 8: an in-flight extraction caps the range — its items are never orphaned (Codex #270 round-11 P2) ──
+  //
+  // A background worker has CLAIMED entry 2 (`processing`, fresh
+  // sourceInfo.extractionClaimedAt, zero items) when scoping runs. The draft must
+  // stop at entry 1: consuming entry 2 would strand the items the worker writes
+  // seconds later below the next sourceStartSeq — invisible to every future scope
+  // draft. After the worker finishes, the next pass drafts entry 2's items normally.
+  it("Adjutant path: a fresh in-flight entry caps the draft range; its items scope on the NEXT pass", async () => {
+    if (setupError) throw new Error(String(setupError));
+
+    const { companyId, agentId } = await seedCompanyAndAgent("InFlight");
+    await forceUnsupportedExtractionCli(companyId);
+    // Entry 1: captured — completed with a real pending item.
+    const { threadId } = await seedThreadWithEntry(companyId, {
+      text: "Refit the auth flow for the SSO rollout.",
+      extractionStatus: "completed",
+      item: { type: "task", title: "Refit the auth flow" },
+    });
+    // Entry 2: claimed by a live background worker — processing, FRESH stamp, no items.
+    const inFlightEntryId = randomUUID();
+    await db.execute(sql`
+      INSERT INTO discussion_entries
+        (id, discussion_id, input_type, raw_content, created_by, seq, extraction_status, source_info)
+      VALUES
+        (${inFlightEntryId}, ${threadId}, 'write', 'Also draft the SSO comms plan for customers.', 'human-user', 2, 'processing',
+         jsonb_build_object('extractionClaimedAt', ${Date.now()}::bigint))
+    `);
+    await db.execute(sql`UPDATE discussions SET entry_seq = 2 WHERE id = ${threadId}`);
+    await setThreadAutonomy(threadId, 0);
+
+    const runId = await seedRun(companyId);
+    const actionId = await seedScopeDraftAction({
+      companyId,
+      threadId,
+      runId,
+      agentId,
+      payload: { summary: "SSO scope" },
+      keyPrefix: "in-flight-1",
+    });
+    const first = await threadAgentActionService(db).commitThreadAgentActions({
+      companyId,
+      threadId,
+      runId,
+    });
+    expect(first.committed).toBe(1);
+
+    // Draft covers ONLY entry 1 — the in-flight entry stays out of the range …
+    const [actionRow] = rowsOf(
+      await db.execute(sql`
+        SELECT committed_scope_version_id FROM thread_agent_actions WHERE id = ${actionId}
+      `),
+    );
+    expect(actionRow.committed_scope_version_id).toBeTruthy();
+    const v1Id = String(actionRow.committed_scope_version_id);
+    const [v1Row] = rowsOf(
+      await db.execute(sql`
+        SELECT source_start_seq, source_end_seq FROM thread_scope_versions WHERE id = ${v1Id}
+      `),
+    );
+    expect(Number(v1Row.source_start_seq)).toBe(1);
+    expect(Number(v1Row.source_end_seq)).toBe(1);
+    // … and its claim was NOT disturbed (the owner is alive).
+    const [inFlightRow] = rowsOf(
+      await db.execute(sql`
+        SELECT extraction_status FROM discussion_entries WHERE id = ${inFlightEntryId}
+      `),
+    );
+    expect(String(inFlightRow.extraction_status)).toBe("processing");
+
+    // The worker finishes (completed + items) and the founder accepts draft v1.
+    await db.execute(sql`
+      UPDATE discussion_entries SET extraction_status = 'completed' WHERE id = ${inFlightEntryId}
+    `);
+    await db.execute(sql`
+      INSERT INTO discussion_extracted_items (id, discussion_entry_id, type, title, status)
+      VALUES (gen_random_uuid(), ${inFlightEntryId}, 'task', 'Draft the SSO comms plan', 'pending')
+    `);
+    await db.execute(sql`
+      UPDATE thread_scope_versions SET status = 'accepted' WHERE id = ${v1Id}
+    `);
+
+    // Next pass: the tail drafts over exactly seq 2 with the worker's item — not orphaned.
+    const runId2 = await seedRun(companyId);
+    const action2Id = await seedScopeDraftAction({
+      companyId,
+      threadId,
+      runId: runId2,
+      agentId,
+      payload: { summary: "SSO scope tail" },
+      keyPrefix: "in-flight-2",
+    });
+    const second = await threadAgentActionService(db).commitThreadAgentActions({
+      companyId,
+      threadId,
+      runId: runId2,
+    });
+    expect(second.committed).toBe(1);
+    const [action2Row] = rowsOf(
+      await db.execute(sql`
+        SELECT committed_scope_version_id FROM thread_agent_actions WHERE id = ${action2Id}
+      `),
+    );
+    expect(action2Row.committed_scope_version_id).toBeTruthy();
+    const v2Id = String(action2Row.committed_scope_version_id);
+    const [v2Row] = rowsOf(
+      await db.execute(sql`
+        SELECT source_start_seq, source_end_seq FROM thread_scope_versions WHERE id = ${v2Id}
+      `),
+    );
+    expect(Number(v2Row.source_start_seq)).toBe(2);
+    expect(Number(v2Row.source_end_seq)).toBe(2);
+    const cards8 = rowsOf(
+      await db.execute(sql`
+        SELECT title FROM thread_scope_items WHERE scope_version_id = ${v2Id} AND kind = 'task_proposal'
+      `),
+    );
+    expect(cards8).toHaveLength(1);
+    expect(String(cards8[0].title)).toBe("Draft the SSO comms plan");
+  }, 120_000);
 });

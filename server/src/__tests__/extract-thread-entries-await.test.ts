@@ -80,7 +80,7 @@ import {
 const COMPANY = "company-1";
 const THREAD = "thread-1";
 
-type EntryRow = { id: string; seq: number; extractionStatus: string };
+type EntryRow = { id: string; seq: number; extractionStatus: string; claimedAtMs?: string | null };
 
 /**
  * Build a mock db for an extractThreadEntriesAwait run.
@@ -393,5 +393,92 @@ describe("extractionService.extractThreadEntriesAwait", () => {
     // All three attempted (best-effort continues), but the draft range must end at
     // seq 1 — e2's content was never captured and must stay in the NEXT scope's range.
     expect(result).toEqual({ attempted: 3, failed: 1, truncated: false, deadlineHit: false, lastAttemptedSeq: 3, rangeEndCap: 1 });
+  });
+
+  it("(j) round-11 P2: a FRESH in-flight `processing` row is never attempted and caps the range before it", async () => {
+    // A background worker (Scribe drain / reprocess) owns e2 — attempting it would
+    // double-extract, but consuming it in the draft range would orphan the items it
+    // produces seconds later (they'd land below the next sourceStartSeq forever).
+    const rows: EntryRow[] = [
+      { id: "e1", seq: 1, extractionStatus: "pending" },
+      { id: "e2", seq: 2, extractionStatus: "processing", claimedAtMs: String(Date.now()) },
+      { id: "e3", seq: 3, extractionStatus: "pending" },
+    ];
+    const { db, events } = makeDb(rows);
+    const extractOne = makeExtractOne(events);
+
+    const result = await extractionService(db).extractThreadEntriesAwait(
+      COMPANY,
+      THREAD,
+      { extractOne },
+    );
+
+    // e1 + e3 attempted (e3's extraction is durable — its items compile NEXT pass);
+    // e2 untouched; the range caps at seq 1 so e2's future items stay scopeable.
+    expect(result.attempted).toBe(2);
+    expect(result.rangeEndCap).toBe(1);
+    expect(extractOne.mock.calls.map((c) => c[1])).toEqual(["e1", "e3"]);
+    expect(events).not.toContain("extract:e2");
+  });
+
+  it("(k) round-11 P2: an in-flight row at the range HEAD caps to 0 — no draft this pass, nothing consumed", async () => {
+    const rows: EntryRow[] = [
+      { id: "e1", seq: 1, extractionStatus: "processing", claimedAtMs: String(Date.now()) },
+      { id: "e2", seq: 2, extractionStatus: "pending" },
+    ];
+    const { db, events, updateSets } = makeDb(rows);
+    const extractOne = makeExtractOne(events);
+
+    const result = await extractionService(db).extractThreadEntriesAwait(
+      COMPANY,
+      THREAD,
+      { extractOne },
+    );
+
+    // Cap 0 < sourceStartSeq → the caller's createDraftFromThread returns no_entries;
+    // the in-flight e1 is never flipped (its owner's claim is intact).
+    expect(result.rangeEndCap).toBe(0);
+    expect(result.attempted).toBe(1); // e2 still pre-extracted for the next pass
+    expect(updateSets).toHaveLength(0); // e1 (processing) untouched, e2 already pending
+    expect(events).not.toContain("extract:e1");
+  });
+
+  it("(l) round-11 P2: a STALE `processing` claim (crashed worker) is re-claimed and attempted — no permanent cap", async () => {
+    const staleClaim = String(Date.now() - 11 * 60_000); // past EXTRACTION_PROCESSING_STALE_MS
+    const rows: EntryRow[] = [
+      { id: "e1", seq: 1, extractionStatus: "processing", claimedAtMs: staleClaim },
+    ];
+    const { db, events, updateSets } = makeDb(rows);
+    const extractOne = makeExtractOne(events);
+
+    const result = await extractionService(db).extractThreadEntriesAwait(
+      COMPANY,
+      THREAD,
+      { extractOne },
+    );
+
+    // Re-claimed like a failed entry: flipped to pending (guarded on the selected
+    // status) then extracted — a zombie row can never cap scoping forever.
+    expect(result).toEqual({ attempted: 1, failed: 0, truncated: false, deadlineHit: false, lastAttemptedSeq: 1, rangeEndCap: null });
+    expect(updateSets).toEqual([{ extractionStatus: "pending", extractionRunId: null }]);
+    expect(events).toEqual(["flip", "extract:e1"]);
+  });
+
+  it("(m) round-11 P2: a `processing` row with NO claim stamp (pre-stamp deploy) counts as stale — re-claimed", async () => {
+    const rows: EntryRow[] = [
+      { id: "e1", seq: 1, extractionStatus: "processing", claimedAtMs: null },
+    ];
+    const { db, events } = makeDb(rows);
+    const extractOne = makeExtractOne(events);
+
+    const result = await extractionService(db).extractThreadEntriesAwait(
+      COMPANY,
+      THREAD,
+      { extractOne },
+    );
+
+    expect(result.attempted).toBe(1);
+    expect(result.rangeEndCap).toBeNull();
+    expect(events).toContain("extract:e1");
   });
 });
