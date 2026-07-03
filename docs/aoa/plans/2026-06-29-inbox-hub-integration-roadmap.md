@@ -1,6 +1,6 @@
 # Inbox Hub Integration Roadmap
 
-**Status:** Active integration roadmap; W1b/W1c/W1d merged in PR #244, final cutover merged in PR #246, W2 Layer 3 merged in PR #248, W3 Autopilot merged in PR #249, W4a Steward foundation merged in PR #256, W5a runtime decision core (+ hardening) merged in PR #259. Next: W5b first real adapter bridge (gated on a per-adapter hook feasibility spike).
+**Status:** Active integration roadmap; W1b/W1c/W1d merged in PR #244, final cutover merged in PR #246, W2 Layer 3 merged in PR #248, W3 Autopilot merged in PR #249, W4a Steward foundation merged in PR #256, W5a runtime decision core (+ hardening) merged in PR #259, W5b first real adapter bridge (`claude_local`, PreToolUse hook) merged in PR #264. Next: W5c second adapter bridge (`codex_local`) — feasibility GO-WITH-MODE-CHANGE (requires exec→app-server re-platform; gated on a live spike).
 **Date:** 2026-06-29
 **Type:** Integration roadmap / planning spine
 **Design authority:** `docs/aoa/plans/2026-06-26-inbox-hub-master-scope.md`
@@ -84,15 +84,20 @@ Completed W4 foundation:
 
 Active next:
 
-- **W5a runtime decision core:** merged in PR #259 (plan:
-  `docs/aoa/plans/2026-07-01-w5-runtime-decision-routing-plan.md`; post-review
-  hardening plan: `docs/aoa/plans/2026-07-02-w5a-hardening-plan.md`). Ships the
-  durable runtime-decision core, hub viewer, heartbeat broker, timeout/sweep,
-  and scoped trust rules — intentionally **inert** (no adapter bridge yet).
-- **W5b first real adapter bridge:** next. **Gated on a per-adapter hook
-  feasibility spike** — the W5a feasibility matrix found no verified blocking
-  permission/work-question hook in the installed CLIs as of 2026-07-01, so W5b
-  must begin with investigation, not implementation.
+- **W5a runtime decision core:** merged in PR #259 (durable runtime-decision
+  core, hub viewer, heartbeat broker, timeout/sweep, scoped trust rules — inert).
+- **W5b first real adapter bridge (`claude_local`):** **merged in PR #264**
+  (plan: `docs/aoa/plans/2026-07-03-w5b-first-adapter-runtime-bridge-plan.md`,
+  Decision #105). Permission prompts route to the hub via a `PreToolUse` hook +
+  fail-closed command forwarder; per-agent flag + instance kill-switch +
+  local-target guard, default OFF. Spike-proven on Claude Code 2.1.126.
+- **W5c second adapter bridge (`codex_local`):** next. Feasibility (2026-07-03) =
+  **GO-WITH-MODE-CHANGE.** Codex 0.130 exposes a blocking approve/deny callback
+  (`item/commandExecution/requestApproval` over JSON-RPC) **only in `app-server`/
+  `mcp-server` mode, not in the `codex exec` mode AoA uses today** — so W5c is a
+  **spawn-mode re-platform** of the codex_local adapter (exec→app-server: new
+  event-stream parsing, session/usage/summary recovery, resume mapping) plus the
+  approval bridge. Larger than W5b; gated on a live app-server spike.
 
 ---
 
@@ -362,15 +367,28 @@ and scoped allow-always trust rules, plus a post-review hardening pass
 (non-null default expiry — permission 1h / work-question 24h; `continue_with_default`;
 key-aware secret redaction; atomic allow-always with scope dedup + 90-day expiry;
 resilient bounded sweep + `(status, expires_at)` index; nonce-replay guard).
-Answering is **founder-only**. **No adapter bridge shipped — the feature is
-intentionally inert** until a real adapter is wired in W5b.
+Answering is **founder-only**.
 
-W5b (first real adapter bridge) has **not started** and must begin with a
-per-adapter hook feasibility spike: the W5a feasibility matrix
-(`2026-07-01-w5-runtime-decision-routing-plan.md`) recorded that no installed CLI
-(claude_local, codex_local, opencode_local, etc.) exposed a verified blocking
-permission/work-question hook as of 2026-07-01. W5b starts with proving that hook
-for one adapter, behind a feature flag — not with implementation.
+**W5b (`claude_local`) merged in PR #264** (Decision #105): permission prompts
+route to the hub via a `PreToolUse` hook + a fail-closed `type:"command"`
+forwarder; per-agent `runtimeConfig.runtimeDecisionRoutingEnabled` + instance
+kill-switch `AOA_RUNTIME_DECISION_ROUTING` + `executionTarget==="local"` guard,
+default OFF; permission-only (`work_question` deferred). Spike-proven on Claude
+Code 2.1.126 (finding: `PermissionRequest` is not a firing event → `PreToolUse`
+with a scoped matcher is the mechanism).
+
+**W5c (`codex_local`) is next — feasibility GO-WITH-MODE-CHANGE (2026-07-03).**
+Codex 0.130 exposes a real blocking approve/deny callback
+(`item/commandExecution/requestApproval` / `item/fileChange/requestApproval` over
+JSON-RPC) **only in `app-server`/`mcp-server` mode — NOT in the `codex exec`
+mode AoA runs today**. So W5c is a **spawn-mode re-platform** of the codex_local
+adapter (`exec --json` → `app-server`: new `item/*`/`turn/*` event-stream
+parsing, session-id/usage/summary recovery, resume mapping) plus the approval
+bridge onto `runtimeDecisionBroker.requestPermissionBounded`. This is materially
+larger than W5b (which was an additive hook file). Permission-only (defer
+work_question, same as W5b). Gated on a **live `app-server` spike** (confirm the
+method names/payloads on 0.130, an approval-forcing policy, and JSONL parity).
+The original W5a "BLOCKED for codex" was only true for `exec` mode.
 
 Dependency boundary: W5 requires a per-adapter feasibility matrix first. Start
 with one adapter behind a feature flag. W1a reserves the type; W1b can render a
