@@ -64,6 +64,7 @@ type EmbeddedPostgresCtor = new (opts: {
   password: string;
   port: number;
   persistent: boolean;
+  initdbFlags?: string[];
 }) => EmbeddedPostgresInstance;
 
 let pg: EmbeddedPostgresInstance | null = null;
@@ -102,6 +103,11 @@ beforeAll(async () => {
       password: "test",
       port: PORT,
       persistent: false,
+      // Force UTF-8 so migration SQL containing non-Latin1 chars (e.g. '→' in a
+      // comment) applies. Without this, initdb inherits the host locale (WIN1252
+      // on Windows) and the `postgres` DB rejects those bytes. Matches the newer
+      // integration suites (w1c/w2); no-op on Linux CI, which is UTF-8 already.
+      initdbFlags: ["--encoding=UTF8", "--locale=C"],
     });
     await pg.initialise();
     await pg.start();
@@ -1108,9 +1114,23 @@ describe.skipIf(process.platform === "win32")("thread-commit idempotency (real D
       `),
     );
     const tM7Id = String(tM7.id);
+    // W2 (extract-then-scope): create_scope_draft now runs CLI extraction over
+    // never-extracted entries first. On a CLI-less box (CI) that attempt FAILS,
+    // the failure caps the draft range below its start, and no draft is minted —
+    // which would break this test's real assertion (freshness-gate mechanics,
+    // not extraction). Seed the entry already-captured: extraction completed +
+    // a pending extracted item, so the compile has a real card and extraction
+    // finds nothing eligible to attempt.
+    const [m7Entry] = rowsOf(
+      await db.execute(sql`
+        INSERT INTO discussion_entries (id, discussion_id, input_type, raw_content, author_agent_id, created_by, seq, extraction_status)
+        VALUES (gen_random_uuid(), ${tM7Id}, 'write', 'we should ship X', NULL, 'human-user', 1, 'completed')
+        RETURNING id
+      `),
+    );
     await db.execute(sql`
-      INSERT INTO discussion_entries (id, discussion_id, input_type, raw_content, author_agent_id, created_by, seq)
-      VALUES (gen_random_uuid(), ${tM7Id}, 'write', 'we should ship X', NULL, 'human-user', 1)
+      INSERT INTO discussion_extracted_items (id, discussion_entry_id, type, title, status)
+      VALUES (gen_random_uuid(), ${String(m7Entry.id)}, 'task', 'ship X', 'pending')
     `);
 
     // Shared snapshot captured at run start: NO scope version exists yet → latestScopeVersionId = null.

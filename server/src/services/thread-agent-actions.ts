@@ -775,7 +775,11 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
                 // not complete — into rangeEndCap. Cap the draft's range there so
                 // unprocessed/failed entries stay in the NEXT scope's range (an
                 // all-failed pass caps below the start -> no_entries -> no draft, and
-                // everything stays retryable).
+                // everything stays retryable). Round 9: if the capped range holds only
+                // permanently non-extractable entries (e.g. a short "ok" prefix before
+                // the first failure), the zero-item compile returns no_items instead of
+                // minting an EMPTY draft that would block later passes behind
+                // existing_draft.
                 if (extraction.rangeEndCap != null) {
                   sourceEndSeqOverride = extraction.rangeEndCap;
                 }

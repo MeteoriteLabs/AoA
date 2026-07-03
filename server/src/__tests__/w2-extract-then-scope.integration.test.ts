@@ -715,4 +715,121 @@ describe.skipIf(process.platform === "win32")("W2 integration: extract-then-scop
     expect(taskItems).toHaveLength(1);
     expect(String(taskItems[0].title)).toBe("Ship the billing exporter");
   }, 120_000);
+
+  // ── Case 6: an empty draft is never minted ahead of a failed entry (Codex #270 round-9 P2) ──
+  //
+  // Range head = short "ok" (permanently non-extractable, round 8) + a real entry
+  // whose extraction attempt finds no engine. The failure caps the range just past
+  // the short prefix — before this fix that minted a ZERO-CARD draft over "ok"
+  // alone, and every later scope pass bounced off existing_draft until a human
+  // rejected the empty draft. Now the zero-item compile returns no_items: NO
+  // draft, the real entry stays retryable, and the next successful pass drafts
+  // the FULL range (both entries) with the real card.
+  it("Adjutant path: short prefix + failed entry mints NO empty draft — the next pass drafts the full range", async () => {
+    if (setupError) throw new Error(String(setupError));
+
+    const { companyId, agentId } = await seedCompanyAndAgent("EmptyDraft");
+    await forceUnsupportedExtractionCli(companyId);
+    // Entry 1: trivially short — excluded from extraction eligibility (round 8).
+    const { threadId, entryId: shortEntryId } = await seedThreadWithEntry(companyId, {
+      text: "ok",
+      extractionStatus: "skipped",
+    });
+    // Entry 2: real content, never extracted — the no-engine attempt will fail.
+    const tailEntryId = randomUUID();
+    await db.execute(sql`
+      INSERT INTO discussion_entries (id, discussion_id, input_type, raw_content, created_by, seq, extraction_status)
+      VALUES (${tailEntryId}, ${threadId}, 'write', 'Rework the ingestion retry queue.', 'human-user', 2, 'pending')
+    `);
+    await db.execute(sql`UPDATE discussions SET entry_seq = 2 WHERE id = ${threadId}`);
+    await setThreadAutonomy(threadId, 0);
+
+    const runId = await seedRun(companyId);
+    await seedScopeDraftAction({
+      companyId,
+      threadId,
+      runId,
+      agentId,
+      payload: { summary: "Ingestion scope" },
+      keyPrefix: "empty-draft-1",
+    });
+    const first = await threadAgentActionService(db).commitThreadAgentActions({
+      companyId,
+      threadId,
+      runId,
+    });
+    expect(first.committed).toBe(1);
+    expect(first.failed).toBe(0);
+
+    // NO scope version exists — the zero-card draft was refused, not minted.
+    const versions = rowsOf(
+      await db.execute(sql`SELECT id FROM thread_scope_versions WHERE thread_id = ${threadId}`),
+    );
+    expect(versions).toHaveLength(0);
+    // The real entry was attempted (extractionError recorded) and stays retryable;
+    // the short one was never touched.
+    const [tailRow] = rowsOf(
+      await db.execute(sql`
+        SELECT extraction_status, source_info->>'extractionError' AS extraction_error
+        FROM discussion_entries WHERE id = ${tailEntryId}
+      `),
+    );
+    expect(["skipped", "failed"]).toContain(String(tailRow.extraction_status));
+    expect(tailRow.extraction_error).toBeTruthy();
+    const [shortRow] = rowsOf(
+      await db.execute(sql`
+        SELECT extraction_status, source_info->>'extractionError' AS extraction_error
+        FROM discussion_entries WHERE id = ${shortEntryId}
+      `),
+    );
+    expect(String(shortRow.extraction_status)).toBe("skipped");
+    expect(shortRow.extraction_error).toBeNull();
+
+    // Recovery: extraction later succeeds (simulated: entry completed + real item).
+    // Before the fix this pass hit existing_draft on the stranded empty draft.
+    await db.execute(sql`
+      UPDATE discussion_entries SET extraction_status = 'completed' WHERE id = ${tailEntryId}
+    `);
+    await db.execute(sql`
+      INSERT INTO discussion_extracted_items (id, discussion_entry_id, type, title, status)
+      VALUES (gen_random_uuid(), ${tailEntryId}, 'task', 'Rework the ingestion retry queue', 'pending')
+    `);
+    const runId2 = await seedRun(companyId);
+    const action2Id = await seedScopeDraftAction({
+      companyId,
+      threadId,
+      runId: runId2,
+      agentId,
+      payload: { summary: "Ingestion scope" },
+      keyPrefix: "empty-draft-2",
+    });
+    const second = await threadAgentActionService(db).commitThreadAgentActions({
+      companyId,
+      threadId,
+      runId: runId2,
+    });
+    expect(second.committed).toBe(1);
+
+    const [action2Row] = rowsOf(
+      await db.execute(sql`
+        SELECT committed_scope_version_id FROM thread_agent_actions WHERE id = ${action2Id}
+      `),
+    );
+    expect(action2Row.committed_scope_version_id).toBeTruthy();
+    const scopeVersionId = String(action2Row.committed_scope_version_id);
+    const [versionRow] = rowsOf(
+      await db.execute(sql`
+        SELECT source_start_seq, source_end_seq FROM thread_scope_versions WHERE id = ${scopeVersionId}
+      `),
+    );
+    expect(Number(versionRow.source_start_seq)).toBe(1);
+    expect(Number(versionRow.source_end_seq)).toBe(2);
+    const cards = rowsOf(
+      await db.execute(sql`
+        SELECT title FROM thread_scope_items WHERE scope_version_id = ${scopeVersionId} AND kind = 'task_proposal'
+      `),
+    );
+    expect(cards).toHaveLength(1);
+    expect(String(cards[0].title)).toBe("Rework the ingestion retry queue");
+  }, 120_000);
 });

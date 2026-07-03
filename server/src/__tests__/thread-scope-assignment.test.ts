@@ -285,30 +285,43 @@ describe("createDraftFromThread — suppressFallbackTask forwarding (W2)", () =>
     );
   }
 
-  it("suppressFallbackTask: true reaches the compiler — zero task_proposal items inserted", async () => {
+  it("suppressFallbackTask + zero compiled items → no_items, NO draft inserted (Codex #270 round-9 P2)", async () => {
     const capturedInserts: unknown[] = [];
-    await threadScopeVersionService(draftDb(capturedInserts)).createDraftFromThread(
+    const result = await threadScopeVersionService(draftDb(capturedInserts)).createDraftFromThread(
       "co1",
       "t1",
       { agentId: "adj" },
       { summary: "Auth work", suppressFallbackTask: true },
     );
 
-    const itemsInsert = capturedInserts.find((v) => Array.isArray(v)) as Array<{ kind: string }> | undefined;
-    const tasks = (itemsInsert ?? []).filter((i) => i.kind === "task_proposal");
-    expect(tasks).toHaveLength(0);
+    // An empty draft has nothing to accept but blocks later passes behind
+    // existing_draft — the zero-item compile must refuse to mint one.
+    expect(result.status).toBe("no_items");
+    expect(capturedInserts).toHaveLength(0);
   });
 
   it("sourceEndSeqOverride caps the recorded range (Codex #270 P1 — truncated extraction must not consume unprocessed entries)", async () => {
     const capturedInserts: unknown[] = [];
     const wideThread = { ...thread, entrySeq: 5 };
+    // A real pending item on the in-range entry: the compile yields one card, so
+    // the round-9 no_items guard stays out of the way of this test's assertion.
+    const extractedItem = {
+      id: "x1",
+      discussionEntryId: "e1",
+      type: "task",
+      title: "Rework the billing retry queue",
+      description: null,
+      status: "pending",
+      resultTaskId: null,
+      resultMemoryId: null,
+    };
     const db = createDraftDb(
       [
-        [wideThread], // discussions — thread has advanced to seq 5
-        [],           // threadScopeVersions (no latest)
-        [entry],      // discussionEntries (the range-bounded fetch)
-        [],           // discussionExtractedItems
-        [],           // discussionEntryAttachments
+        [wideThread],      // discussions — thread has advanced to seq 5
+        [],                // threadScopeVersions (no latest)
+        [entry],           // discussionEntries (the range-bounded fetch)
+        [extractedItem],   // discussionExtractedItems
+        [],                // discussionEntryAttachments
       ],
       capturedInserts,
     );

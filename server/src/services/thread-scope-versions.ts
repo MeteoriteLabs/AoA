@@ -831,6 +831,17 @@ export function threadScopeVersionService(db: Db) {
         suppressFallbackTask: input.suppressFallbackTask,
       });
 
+      // Codex #270 P2 (round 9): with fallback synthesis suppressed, a zero-item
+      // compile must NOT mint a draft. An empty draft has nothing to accept, yet
+      // it blocks every later scope pass behind existing_draft until a human
+      // rejects it — reachable when the capped range holds only permanently
+      // non-extractable entries (e.g. a failure cap landing just past a short
+      // "ok" prefix). Refusing keeps the range open: failed entries stay
+      // retryable and the next successful pass drafts over the full range.
+      if (input.suppressFallbackTask && compiled.items.length === 0) {
+        return { status: "no_items" as const, sourceStartSeq, sourceEndSeq };
+      }
+
       const versionNumber = latest ? latest.versionNumber + 1 : 1;
       const work = async (tx: ScopeDraftWriteDb) => {
         const [version] = await tx
