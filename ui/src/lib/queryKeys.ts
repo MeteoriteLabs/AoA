@@ -130,6 +130,8 @@ export const queryKeys = {
       },
     ) => ["hub-items", companyId, opts ?? {}] as const,
     counts: (companyId: string) => ["hub-items", companyId, "counts"] as const,
+    hiddenCount: (companyId: string, lane: string) =>
+      ["hub-items", companyId, "hidden-count", lane] as const,
     audit: (companyId: string, itemId: string) =>
       ["hub-items", companyId, itemId, "audit"] as const,
     preferences: (companyId: string) => ["hub-items", companyId, "preferences"] as const,

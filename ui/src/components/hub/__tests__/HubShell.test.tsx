@@ -146,6 +146,65 @@ function renderShell(overrides: Partial<React.ComponentProps<typeof HubShell>> =
   );
 }
 
+/**
+ * Waiting-lane chip harness: the "N hidden" affordance only surfaces on the
+ * waiting lane's OPEN history view, so pin those defaults here and let each test
+ * vary hiddenCount / showHidden / handlers.
+ */
+function chipProps(overrides: Partial<React.ComponentProps<typeof HubShell>> = {}) {
+  return {
+    activeLane: "waiting_on_you" as const,
+    historyStatus: "open" as const,
+    items,
+    counts: { open: 1, unread: 1 },
+    isLoading: false,
+    error: null,
+    selectedItemId: null as string | null,
+    selectedItem: null as HubItemListRow | null,
+    companyId: "company-1" as string | undefined,
+    tabs: [HOME_TAB],
+    activeTabKey: "home" as string | null,
+    onLaneChange: vi.fn(),
+    onSelectItem: vi.fn(),
+    onMarkRead: vi.fn(),
+    onOpenTab: vi.fn(),
+    onOpenItem: vi.fn(),
+    onCloseTab: vi.fn(),
+    onActivateTab: vi.fn(),
+    onAddBrowserTab: vi.fn(),
+    onHistoryStatusChange: vi.fn(),
+    resolveHubItem: (id: string) => items.find((item) => item.id === id),
+    preferences: {
+      defaultLanding: "waiting_on_you" as const,
+      visibleLanes: ["waiting_on_you", "notifications", "suggestions"] as (
+        | "waiting_on_you"
+        | "notifications"
+        | "suggestions"
+      )[],
+      groupMode: "auto" as const,
+      density: "comfortable" as const,
+      showAutopilotEntry: true,
+      updatedAt: null,
+    },
+    ...overrides,
+  } as React.ComponentProps<typeof HubShell>;
+}
+
+function chipShell(overrides: Partial<React.ComponentProps<typeof HubShell>> = {}) {
+  return <HubShell {...chipProps(overrides)} />;
+}
+
+function renderChip(overrides: Partial<React.ComponentProps<typeof HubShell>> = {}) {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>{chipShell(overrides)}</MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
+
 function notificationPreferences(
   overrides: Partial<NotificationPreferences> = {},
 ): NotificationPreferences {
@@ -500,6 +559,71 @@ describe("HubShell", () => {
     expect(onUpdateNotificationPreferences).toHaveBeenCalledWith({
       quietHours: { enabled: true, start: "18:00", end: "09:00", timezone: "UTC" },
     });
+  });
+
+  it("shows the 'N hidden' chip on the waiting lane only when there are hidden rows", () => {
+    const { rerender, container } = renderChip({ hiddenCount: 2 });
+    expect(screen.getByRole("button", { name: /2 hidden/i })).toBeInTheDocument();
+
+    // Zero hidden + not revealed → no chip.
+    rerender(chipShell({ hiddenCount: 0, showHidden: false }));
+    expect(screen.queryByRole("button", { name: /hidden/i })).not.toBeInTheDocument();
+    // Silence unused-var lint on container.
+    expect(container).toBeTruthy();
+  });
+
+  it("does not show the hidden chip outside the waiting lane's open view", () => {
+    renderChip({ hiddenCount: 3, activeLane: "notifications" });
+    expect(screen.queryByRole("button", { name: /hidden/i })).not.toBeInTheDocument();
+  });
+
+  it("toggles the hidden reveal when the chip is clicked", async () => {
+    const user = userEvent.setup();
+    const onToggleHidden = vi.fn();
+    renderChip({ hiddenCount: 1, onToggleHidden });
+
+    await user.click(screen.getByRole("button", { name: /1 hidden/i }));
+    expect(onToggleHidden).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the chip visible (as 'Hide dismissed') while revealed even at zero count", () => {
+    renderChip({ hiddenCount: 0, showHidden: true });
+    expect(screen.getByRole("button", { name: /hide dismissed/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /hide dismissed/i })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+  });
+
+  it("renders a dismissed badge + Undismiss action on a hidden row and calls onUndismiss", async () => {
+    const user = userEvent.setup();
+    const onUndismiss = vi.fn();
+    renderChip({
+      hiddenCount: 1,
+      showHidden: true,
+      onUndismiss,
+      items: [{ ...items[0], id: "hub-hidden", dismissedAt: "2026-07-01T00:00:00Z" }],
+    });
+
+    expect(screen.getByText("dismissed")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /undismiss/i }));
+    expect(onUndismiss).toHaveBeenCalledWith("hub-hidden");
+  });
+
+  it("renders a snoozed badge + Unsnooze action on a future-snoozed hidden row", async () => {
+    const user = userEvent.setup();
+    const onUnsnooze = vi.fn();
+    const future = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+    renderChip({
+      hiddenCount: 1,
+      showHidden: true,
+      onUnsnooze,
+      items: [{ ...items[0], id: "hub-snoozed", snoozedUntil: future }],
+    });
+
+    expect(screen.getByText("snoozed")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /unsnooze/i }));
+    expect(onUnsnooze).toHaveBeenCalledWith("hub-snoozed");
   });
 
   it("focuses search when slash is pressed outside an editable field", async () => {

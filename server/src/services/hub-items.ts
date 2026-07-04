@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNotNull, isNull, lt, lte, or, sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import type { Db } from "@armyofagents/db";
 import {
@@ -1735,6 +1735,73 @@ export function hubItemsService(db: Db) {
     return { open: row?.open ?? 0, unread: row?.unread ?? 0 };
   }
 
+  // Per-lane count of OPEN items this principal has personally hidden
+  // (dismissed OR actively snoozed) — the inverse of the `counts` filter, which
+  // subtracts exactly these rows. Powers the waiting-lane "N hidden" chip (the
+  // dismiss-hole safety net now that /approvals is out of the nav). Kept as a
+  // dedicated lane-scoped query rather than widening the `{open,unread}` snapshot
+  // cache: the cache is company/user-global and typed `{open,unread}`, whereas
+  // this is lane-scoped and personal — the cheaper, lower-risk path. Runs off the
+  // same partial `hub_items_open_idx` and reuses the exact RBAC scope `counts`
+  // builds, so it can never disagree with the list. Per-actor by construction
+  // (hub_item_user_state keyed by principalId) → only the current user's rows.
+  async function hiddenCount(
+    companyId: string,
+    actorUserId: string,
+    lane: HubLane,
+    role?: UserRole,
+  ): Promise<number> {
+    const effectiveRole =
+      role ?? (await permissionService(db).getEffectiveRole(companyId, actorUserId));
+
+    const conds = [eq(hubItems.companyId, companyId), eq(hubItems.status, "open")];
+
+    if (effectiveRole !== "founder") {
+      const ownedCond = eq(hubItems.ownerUserId, actorUserId);
+      if (effectiveRole === "team_lead") {
+        const leadDepts = await permissionService(db).getTeamLeadDepartments(
+          companyId,
+          actorUserId,
+        );
+        const scopeCond = leadDepts.length > 0 ? inArray(hubItems.scopeKey, leadDepts) : undefined;
+        conds.push(scopeCond ? or(ownedCond, scopeCond)! : ownedCond);
+      } else {
+        conds.push(ownedCond);
+      }
+    }
+
+    // Lane filter (derived from semanticType — no lane column), mirroring `query`.
+    conds.push(inArray(hubItems.semanticType, semanticTypesForLane(lane)));
+
+    // Hidden = dismissed OR still-active snooze for THIS principal. The inner-join
+    // is deliberate: rows with no user-state row (or a state row that is neither
+    // dismissed nor snoozed) are visible, not hidden. Use Drizzle operators (not a
+    // raw `sql` Date interpolation) so the postgres driver serializes the Date —
+    // `counts` does the same via `lte(snoozedUntil, now)`.
+    const now = new Date();
+    conds.push(
+      or(
+        isNotNull(hubItemUserState.dismissedAt),
+        and(isNotNull(hubItemUserState.snoozedUntil), gt(hubItemUserState.snoozedUntil, now)),
+      )!,
+    );
+
+    const [row] = await db
+      .select({ hidden: sql<number>`count(*)::int` })
+      .from(hubItems)
+      .innerJoin(
+        hubItemUserState,
+        and(
+          eq(hubItemUserState.hubItemId, hubItems.id),
+          eq(hubItemUserState.principalType, "user"),
+          eq(hubItemUserState.principalId, actorUserId),
+        ),
+      )
+      .where(and(...conds));
+
+    return row?.hidden ?? 0;
+  }
+
   // Public surface (declared last so every const above has evaluated).
   return {
     emit,
@@ -1750,5 +1817,6 @@ export function hubItemsService(db: Db) {
     bulkAction,
     reconcile,
     counts,
+    hiddenCount,
   };
 }

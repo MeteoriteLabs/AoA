@@ -142,6 +142,9 @@ export function InboxHub() {
   const [searchText, setSearchText] = useState("");
   const [debouncedSearchText, setDebouncedSearchText] = useState("");
   const [optimisticPreferences, setOptimisticPreferences] = useState<HubPreferences | null>(null);
+  // Waiting-lane dismiss-hole safety net: reveal the current user's personally
+  // hidden (dismissed/snoozed) OPEN rows when the "N hidden" chip is toggled on.
+  const [showHidden, setShowHidden] = useState(false);
 
   const laneSlug = params.lane ?? null;
   const activeLane = laneSlug ? SLUG_TO_LANE[laneSlug] ?? null : null;
@@ -414,6 +417,11 @@ export function InboxHub() {
     return () => window.clearTimeout(timer);
   }, [searchText]);
 
+  // The hidden-reveal toggle only applies to the waiting lane's OPEN history view
+  // (dismiss/snooze are personal decision-lane triage). Elsewhere it stays off.
+  const hiddenRevealActive =
+    showHidden && activeLane === "waiting_on_you" && historyStatus === "open";
+
   const listOptions = useMemo(
     () =>
       activeLane
@@ -422,17 +430,35 @@ export function InboxHub() {
             status: historyStatus,
             q: debouncedSearchText || undefined,
             groupMode: preferences.groupMode,
+            ...(hiddenRevealActive
+              ? { includeDismissed: true, includeSnoozed: true }
+              : {}),
             limit: 50,
           }
         : undefined,
-    [activeLane, debouncedSearchText, historyStatus, preferences.groupMode],
+    [activeLane, debouncedSearchText, historyStatus, preferences.groupMode, hiddenRevealActive],
   );
+
+  // Per-user, lane-scoped count of dismissed/snoozed OPEN items (the "N hidden"
+  // chip). Waiting-lane only; a separate cheap query (never touches the counts
+  // snapshot cache). Sits under the ["hub-items", cid] prefix so the live
+  // hub.item.changed invalidation refreshes it.
+  const hiddenCountQuery = useQuery({
+    queryKey:
+      selectedCompanyId
+        ? queryKeys.hubItems.hiddenCount(selectedCompanyId, "waiting_on_you")
+        : ["hub-items", "hidden-count", "none"],
+    queryFn: () => hubItemsApi.hiddenCount(selectedCompanyId!, "waiting_on_you"),
+    enabled: !!selectedCompanyId && activeLane === "waiting_on_you",
+  });
+  const hiddenCount = hiddenCountQuery.data?.hiddenOpen ?? 0;
 
   // Reset the bulk selection on any list-scope change. Page accumulation resets
   // for free: the query key includes lane/search/status, so useInfiniteQuery
   // starts a fresh page-1 fetch whenever the scope changes.
   useEffect(() => {
     setSelectedBulkIds(new Set());
+    setShowHidden(false);
   }, [activeLane, debouncedSearchText, historyStatus]);
 
   // Pages accumulate in the react-query cache (no useState mirror). v5's default
@@ -685,6 +711,14 @@ export function InboxHub() {
     hubMutations.markUnread.mutate(itemId);
   };
 
+  const handleUndismiss = (itemId: string) => {
+    hubMutations.undismiss.mutate(itemId);
+  };
+
+  const handleUnsnooze = (itemId: string) => {
+    hubMutations.unsnooze.mutate(itemId);
+  };
+
   const handleDismiss = (itemId: string) => {
     hubMutations.dismiss.mutate(itemId);
     setUndoAction({ label: "dismiss", itemId, restore: { kind: "undismiss" } });
@@ -806,6 +840,11 @@ export function InboxHub() {
       selectedBulkIds={selectedBulkIds}
       bulkMessage={bulkMessage}
       searchText={searchText}
+      hiddenCount={hiddenCount}
+      showHidden={hiddenRevealActive}
+      onToggleHidden={() => setShowHidden((value) => !value)}
+      onUndismiss={handleUndismiss}
+      onUnsnooze={handleUnsnooze}
       hasMore={listQuery.hasNextPage}
       isLoadingMore={listQuery.isFetchingNextPage}
       preferences={preferences}

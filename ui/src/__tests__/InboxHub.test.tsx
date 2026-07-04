@@ -88,6 +88,7 @@ vi.mock("@/api/hub-items", () => ({
     list: vi.fn().mockResolvedValue({ items: [], nextCursor: null, totalKnown: null }),
     getOne: vi.fn().mockResolvedValue({}),
     counts: vi.fn().mockResolvedValue({ open: 0, unread: 0 }),
+    hiddenCount: vi.fn().mockResolvedValue({ hiddenOpen: 0 }),
     markRead: vi.fn().mockResolvedValue({}),
     markUnread: vi.fn().mockResolvedValue({}),
     snooze: vi.fn().mockResolvedValue({}),
@@ -167,6 +168,7 @@ beforeEach(() => {
   vi.mocked(hubItemsApi.list).mockResolvedValue(hubList([]));
   vi.mocked(hubItemsApi.getOne).mockResolvedValue(hubItem());
   vi.mocked(hubItemsApi.counts).mockResolvedValue({ open: 0, unread: 0 });
+  vi.mocked(hubItemsApi.hiddenCount).mockResolvedValue({ hiddenOpen: 0 });
   vi.mocked(hubItemsApi.markRead).mockResolvedValue({});
   vi.mocked(hubItemsApi.markUnread).mockResolvedValue({});
   vi.mocked(hubItemsApi.snooze).mockResolvedValue({});
@@ -770,9 +772,14 @@ describe("InboxHub page", () => {
   });
 
   it("viewer resolves an item and can undo the server-backed action", async () => {
-    vi.mocked(hubItemsApi.list).mockResolvedValue(hubList([hubItem()]));
+    // Use a NON-mirrored notifications-lane type: the mirror model (Task 1)
+    // hides Resolve/Archive on source-backed decision items (approval_request),
+    // so the generic resolve→undo flow is exercised on run_failed instead.
+    vi.mocked(hubItemsApi.list).mockResolvedValue(
+      hubList([hubItem({ semanticType: "run_failed", lane: "notifications", ownerPool: null })]),
+    );
 
-    renderPage("/P4/inbox-hub/waiting/hub-1");
+    renderPage("/P4/inbox-hub/notifications/hub-1");
 
     fireEvent.click(await screen.findByRole("button", { name: /^resolve$/i }));
     fireEvent.click(await screen.findByRole("button", { name: /undo resolve/i }));
@@ -790,11 +797,14 @@ describe("InboxHub page", () => {
   });
 
   it("keeps server undo reachable after the resolved item leaves the active list", async () => {
+    // Non-mirrored type (see above): Resolve stays available on run_failed.
     vi.mocked(hubItemsApi.list)
-      .mockResolvedValueOnce(hubList([hubItem()]))
+      .mockResolvedValueOnce(
+        hubList([hubItem({ semanticType: "run_failed", lane: "notifications", ownerPool: null })]),
+      )
       .mockResolvedValue(hubList([]));
 
-    renderPage("/P4/inbox-hub/waiting/hub-1");
+    renderPage("/P4/inbox-hub/notifications/hub-1");
 
     fireEvent.click(await screen.findByRole("button", { name: /^resolve$/i }));
     fireEvent.click(await screen.findByRole("button", { name: /undo resolve/i }));
@@ -985,6 +995,63 @@ describe("InboxHub page", () => {
         limit: 50,
       });
     });
+  });
+
+  it("shows the 'N hidden' chip on the waiting lane and toggles the reveal query", async () => {
+    vi.mocked(hubItemsApi.hiddenCount).mockResolvedValue({ hiddenOpen: 2 });
+    vi.mocked(hubItemsApi.list).mockResolvedValue(hubList([hubItem()]));
+
+    renderPage("/P4/inbox-hub/waiting");
+
+    // The chip renders from the lane-scoped hidden-count query.
+    const chip = await screen.findByRole("button", { name: /2 hidden/i });
+    expect(hubItemsApi.hiddenCount).toHaveBeenCalledWith("company-1", "waiting_on_you");
+
+    // Toggling it on re-issues the list query WITH includeDismissed+includeSnoozed.
+    fireEvent.click(chip);
+    await waitFor(() => {
+      expect(hubItemsApi.list).toHaveBeenLastCalledWith("company-1", {
+        lane: "waiting_on_you",
+        status: "open",
+        groupMode: "auto",
+        includeDismissed: true,
+        includeSnoozed: true,
+        limit: 50,
+      });
+    });
+  });
+
+  it("restores a hidden dismissed row via Undismiss from the revealed list", async () => {
+    vi.mocked(hubItemsApi.hiddenCount).mockResolvedValue({ hiddenOpen: 1 });
+    // First page (open only) is empty; once revealed, the dismissed row appears.
+    vi.mocked(hubItemsApi.list).mockImplementation(async (_cid, opts) =>
+      opts?.includeDismissed
+        ? hubList([hubItem({ id: "hub-hidden", title: "Hidden approval", dismissedAt: "2026-07-01T00:00:00.000Z" })])
+        : hubList([]),
+    );
+
+    renderPage("/P4/inbox-hub/waiting");
+
+    fireEvent.click(await screen.findByRole("button", { name: /1 hidden/i }));
+
+    // The revealed row shows a dismissed badge + an Undismiss action.
+    expect(await screen.findByText("dismissed")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /undismiss/i }));
+
+    await waitFor(() => {
+      expect(hubItemsApi.undismiss).toHaveBeenCalledWith("company-1", "hub-hidden");
+    });
+  });
+
+  it("does not fetch the hidden count outside the waiting lane", async () => {
+    renderPage("/P4/inbox-hub/notifications");
+
+    await screen.findByRole("navigation", { name: /hub lanes/i });
+    // Give effects a tick; the waiting-only query must stay disabled.
+    await waitFor(() => {
+      expect(hubItemsApi.list).toHaveBeenCalled();
+    });
+    expect(hubItemsApi.hiddenCount).not.toHaveBeenCalled();
   });
 
   it("optimistically applies hub preference lane visibility changes", async () => {

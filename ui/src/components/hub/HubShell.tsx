@@ -1,6 +1,7 @@
-import { Menu, Settings, X } from "lucide-react";
+import { EyeOff, Menu, Settings, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Group, Panel, Separator, useDefaultLayout } from "react-resizable-panels";
+import { cn } from "@/lib/utils";
 import { useBreakpoint } from "@/lib/useBreakpoint";
 import type { HubAuditRow, HubItemListRow } from "@/api/hub-items";
 import type {
@@ -81,6 +82,17 @@ interface HubShellProps {
   selectedBulkIds: Set<string>;
   bulkMessage: string | null;
   searchText?: string;
+  /** Waiting-lane dismiss-hole safety net: count of the current user's hidden
+   *  (dismissed/snoozed) OPEN rows; the "N hidden" chip renders when > 0. */
+  hiddenCount?: number;
+  /** Whether the hidden rows are currently revealed (chip toggled on). */
+  showHidden?: boolean;
+  /** Toggle the hidden-reveal (includeDismissed + includeSnoozed) list query. */
+  onToggleHidden?: () => void;
+  /** Restore a personally-dismissed hidden row. */
+  onUndismiss?: (itemId: string) => void;
+  /** Restore a personally-snoozed hidden row. */
+  onUnsnooze?: (itemId: string) => void;
   hasMore?: boolean;
   isLoadingMore?: boolean;
   preferences?: HubPreferences;
@@ -135,6 +147,11 @@ export function HubShell({
   selectedBulkIds = EMPTY_BULK_IDS,
   bulkMessage = null,
   searchText = "",
+  hiddenCount = 0,
+  showHidden = false,
+  onToggleHidden = noop,
+  onUndismiss = noop,
+  onUnsnooze = noop,
   hasMore = false,
   isLoadingMore = false,
   preferences = DEFAULT_PREFERENCES,
@@ -200,6 +217,13 @@ export function HubShell({
   const keyboardSelectedItemId = useRef<string | null>(selectedItemId);
   const showHome = activeLane === null;
   const selectedCount = selectedBulkIds.size;
+  // The "N hidden" chip is the dismiss-hole safety net: only the waiting lane's
+  // OPEN view, and only when the toggle is already on OR the current user has
+  // hidden rows to reveal (so toggling off never strands the affordance).
+  const showHiddenChip =
+    activeLane === "waiting_on_you" &&
+    historyStatus === "open" &&
+    (showHidden || hiddenCount > 0);
 
   useEffect(() => {
     keyboardSelectedItemId.current = selectedItemId;
@@ -707,6 +731,24 @@ export function HubShell({
               />
             </div>
           ) : null}
+          {showHiddenChip ? (
+            <div className="border-b border-border px-4 py-2">
+              <button
+                type="button"
+                aria-pressed={showHidden}
+                onClick={onToggleHidden}
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-card",
+                  showHidden && "border-brand/60 bg-brand/10 text-brand",
+                )}
+              >
+                <EyeOff className="size-3" aria-hidden="true" />
+                {showHidden
+                  ? "Hide dismissed"
+                  : `${hiddenCount} hidden`}
+              </button>
+            </div>
+          ) : null}
           {!showHome && selectedCount > 0 ? (
             <div className="flex h-11 items-center justify-between gap-3 border-b border-border bg-card px-4 text-xs">
               <span className="text-muted-foreground">{selectedCount} selected</span>
@@ -762,6 +804,8 @@ export function HubShell({
               onMarkRead={onMarkRead}
               onToggleBulkItem={onToggleBulkItem}
               onLoadMore={onLoadMore}
+              onUndismiss={onUndismiss}
+              onUnsnooze={onUnsnooze}
             />
           )}
         </section>

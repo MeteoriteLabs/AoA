@@ -1,6 +1,6 @@
 import { Router, type Request } from "express";
 import type { Db } from "@armyofagents/db";
-import type { UserRole, ListHubItemsQuery } from "@armyofagents/shared";
+import type { UserRole, ListHubItemsQuery, HubLane } from "@armyofagents/shared";
 import {
   listHubItemsQuery,
   hubActionSchema,
@@ -144,6 +144,24 @@ export function hubItemRoutes(db: Db) {
     await evaluateAutopilotRefresh(companyId, 25);
     const result = await counterSnapshots.getOrRefresh({ companyId, userId, role });
     res.json(result);
+  });
+
+  // GET hidden-count — per-lane count of OPEN items THIS user has personally
+  // dismissed/snoozed. Powers the waiting-lane "N hidden" chip (the dismiss-hole
+  // safety net). Lane-scoped + per-actor; never touches the {open,unread} snapshot
+  // cache. Defaults to the waiting lane (the only lane that surfaces the chip).
+  router.get("/companies/:companyId/hub-items/hidden-count", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const userId = requireBoardUserId(req);
+    const role = await resolveRole(req, companyId, userId);
+    const laneParam = typeof req.query.lane === "string" ? req.query.lane : undefined;
+    const lane: HubLane =
+      laneParam === "notifications" || laneParam === "suggestions"
+        ? laneParam
+        : "waiting_on_you";
+    const hiddenOpen = await svc.hiddenCount(companyId, userId, lane, role);
+    res.json({ hiddenOpen });
   });
 
   // GET item — RBAC-scoped hydration route for realtime toasts/viewers. Live
