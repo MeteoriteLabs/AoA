@@ -134,6 +134,13 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
   // presence pattern (heartbeat.ts:2608-2616 add / :4117-4124 remove).
   let presenceThreadId: string | null = null;
   let presenceAgentName: string | null = null;
+  // W3a (P1 fix): `const agent` is scoped INSIDE the try, so the catch block
+  // cannot read `agent.name`/`agent.runtimeConfig` (TS2304). Capture the two
+  // fields the FAILURE loopback needs into function-scope locals right after the
+  // agent row loads, and have the catch wiring use THESE (never `agent`). Do NOT
+  // widen the `agent` const itself — the success wiring stays in the try scope.
+  let outcomeAgentName: string | undefined;
+  let outcomeAgentRuntimeConfig: Record<string, unknown> | null | undefined;
   try {
     const agent = await db.select().from(agents).where(eq(agents.id, agentId)).then((r: any[]) => r[0] ?? null);
     if (!agent) {
@@ -144,6 +151,12 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
       // that doesn't exist anymore — orphan wakeup).
       return { status: "failed", errorMessage: "aoa agent missing", runId };
     }
+
+    // W3a (P1 fix): capture the two fields the FAILURE loopback (in the catch,
+    // where `agent` is out of scope) needs, so it can card + summarize without a
+    // TS2304. The SUCCESS wiring below still uses `agent` directly (in scope).
+    outcomeAgentName = agent.name;
+    outcomeAgentRuntimeConfig = agent.runtimeConfig as Record<string, unknown> | null | undefined;
 
     const inserted = await db.insert(internalAgentRuns).values({
       companyId: payload.companyId, agentId, // Finding R1: per-agent attribution
@@ -774,6 +787,35 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
           .where(eq(internalAgentRuns.id, runId));
       } catch { /* swallow */ }
     }
+
+    // W3a: crew FAILURE loopback — post "… could not complete …" into the
+    // originating thread (crew_thread-origin only) + a failure run-summary
+    // comment on the task. postCrewRunFailure fetches the issue itself, gates
+    // the card on originKind==="crew_thread", and isolates each sub-step. Uses
+    // the CAPTURED function-scope locals (NOT `agent`, which is out of scope in
+    // this catch — the P1 fix). Best-effort: never mask the original error.
+    if (payload.issueId && runId) {
+      try {
+        const { postCrewRunFailure } = await import("./crew-run-outcome.js");
+        await postCrewRunFailure(db, {
+          companyId: payload.companyId,
+          issueId: payload.issueId,
+          agentId,
+          agentName: outcomeAgentName ?? "Crew agent",
+          runtimeConfig: outcomeAgentRuntimeConfig ?? null,
+          startedAtMs: startedAt,
+          nowMs: Date.now(),
+          errorMessage: errMessage,
+          runId,
+        });
+      } catch (loopbackErr) {
+        log.warn(
+          { err: loopbackErr, issueId: payload.issueId },
+          "W3a crew failure loopback failed (non-fatal)",
+        );
+      }
+    }
+
     // Release a TASK this run checked out if a mid-run failure terminated the run
     // BEFORE the success-path release guard (e.g. runtime secret resolution, a
     // shell-unsafe model, a context/bundle error — all of which throw between

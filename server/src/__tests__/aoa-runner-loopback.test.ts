@@ -11,8 +11,10 @@
 
 import { describe, expect, it, vi } from "vitest";
 import {
+  postCrewRunFailure,
   postCrewRunSuccess,
   resolveCrewRunSummaryArgs,
+  type CrewFailureIssueRow,
 } from "../services/internal-agent/aoa-agents/crew-run-outcome.js";
 
 describe("resolveCrewRunSummaryArgs (crew run → run-summary input)", () => {
@@ -155,5 +157,118 @@ describe("postCrewRunSuccess (composed success side-effect)", () => {
 
     expect(result).toEqual({ relayed: true, summarized: false });
     expect(relay).toHaveBeenCalledTimes(1);
+  });
+});
+
+const failureInput = {
+  companyId: "co-1",
+  issueId: "task-1",
+  agentId: "agent-1",
+  agentName: "Engineer",
+  runtimeConfig: {} as Record<string, unknown>,
+  startedAtMs: 1_000,
+  nowMs: 3_000,
+  errorMessage: "boom",
+  runId: "run-1",
+};
+
+const crewThreadIssue: CrewFailureIssueRow = {
+  title: "Ship the widget",
+  originKind: "crew_thread",
+  sourceDiscussionId: "disc-1",
+};
+
+describe("postCrewRunFailure (composed failure side-effect)", () => {
+  const db = {} as never;
+
+  it("crew_thread issue → BOTH failure card AND summary post ({carded:true, summarized:true})", async () => {
+    const fetchIssue = vi.fn(async () => crewThreadIssue);
+    const failureCard = vi.fn(async () => undefined);
+    const summarize = vi.fn(async () => ({ posted: true }));
+
+    const result = await postCrewRunFailure(db, failureInput, {
+      fetchIssue,
+      failureCard,
+      summarize,
+    });
+
+    expect(result).toEqual({ carded: true, summarized: true });
+    expect(failureCard).toHaveBeenCalledTimes(1);
+    expect(failureCard).toHaveBeenCalledWith(db, {
+      threadId: "disc-1",
+      companyId: "co-1",
+      issueId: "task-1",
+      agentId: "agent-1",
+      agentName: "Engineer",
+      taskTitle: "Ship the widget",
+      error: "boom",
+    });
+    // The summary receives failure-mapped args: outcome:"failed", the error,
+    // and (usage unreliable on a thrown run) null cost.
+    const summaryArgs = summarize.mock.calls[0][1];
+    expect(summaryArgs).toMatchObject({
+      companyId: "co-1",
+      issueId: "task-1",
+      agentName: "Engineer",
+      outcome: "failed",
+      errorMessage: "boom",
+      costUsd: null,
+      inputTokens: null,
+      outputTokens: null,
+      detectedFiles: [],
+    });
+  });
+
+  it("non-crew_thread issue → failure card SKIPPED, summary STILL posts ({carded:false, summarized:true})", async () => {
+    const fetchIssue = vi.fn(async () => ({
+      title: "Manual task",
+      originKind: "manual",
+      sourceDiscussionId: null,
+    }));
+    const failureCard = vi.fn(async () => undefined);
+    const summarize = vi.fn(async () => ({ posted: true }));
+
+    const result = await postCrewRunFailure(db, failureInput, {
+      fetchIssue,
+      failureCard,
+      summarize,
+    });
+
+    expect(result).toEqual({ carded: false, summarized: true });
+    expect(failureCard).not.toHaveBeenCalled();
+    expect(summarize).toHaveBeenCalledTimes(1);
+  });
+
+  it("fetchIssue returns null → no card, summary still posts ({carded:false, summarized:true})", async () => {
+    const fetchIssue = vi.fn(async () => null);
+    const failureCard = vi.fn(async () => undefined);
+    const summarize = vi.fn(async () => ({ posted: true }));
+
+    const result = await postCrewRunFailure(db, failureInput, {
+      fetchIssue,
+      failureCard,
+      summarize,
+    });
+
+    expect(result).toEqual({ carded: false, summarized: true });
+    expect(failureCard).not.toHaveBeenCalled();
+    expect(summarize).toHaveBeenCalledTimes(1);
+  });
+
+  it("failure card THROW is isolated — the summary still posts ({carded:false, summarized:true})", async () => {
+    const fetchIssue = vi.fn(async () => crewThreadIssue);
+    const failureCard = vi.fn(async () => {
+      throw new Error("card down");
+    });
+    const summarize = vi.fn(async () => ({ posted: true }));
+
+    const result = await postCrewRunFailure(db, failureInput, {
+      fetchIssue,
+      failureCard,
+      summarize,
+    });
+
+    expect(result).toEqual({ carded: false, summarized: true });
+    expect(summarize).toHaveBeenCalledTimes(1);
   });
 });
