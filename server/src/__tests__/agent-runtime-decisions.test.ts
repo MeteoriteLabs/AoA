@@ -89,6 +89,7 @@ function makeService(
       rule: baseTrustRule(),
     })),
     listDueForExpiry: vi.fn(async () => []),
+    listStrandedAnswers: vi.fn(async () => []),
     ...repoOverrides,
   };
   const hubItems = {
@@ -810,6 +811,126 @@ describe("agentRuntimeDecisionService", () => {
     );
   });
 
+  // R2 answer-time liveness gate (safety fix): answering a decision whose run
+  // already went terminal must NOT record a forever-stalled "answered" ghost.
+  // Instead the decision is cancelled honestly and the founder gets a 409.
+  it.each(["cancelled", "failed", "timed_out", "succeeded"] as const)(
+    "409s + cancels the decision when answering a %s run (dead-run guard)",
+    async (terminalStatus) => {
+      const shown = baseDecision({ status: "shown", sourceRevision: 2 });
+      const { service, repo, hubItems, activityLogger } = makeService({
+        getDecision: vi.fn(async () => shown),
+        getRunStatus: vi.fn(async () => terminalStatus as string | null),
+      });
+
+      await expect(
+        service.answerPrompt({
+          companyId: "company-1",
+          decisionId: "decision-1",
+          actorUserId: "founder-1",
+          expectedSourceRevision: 2,
+          nonce: "nonce-1",
+          kind: "permission",
+          decision: "allow_once",
+        }),
+      ).rejects.toMatchObject({
+        status: 409,
+        message: "run ended before the answer could be delivered",
+      });
+
+      // The decision was flipped to cancelled (not answered) with the honest error.
+      expect(repo.updateDecision).toHaveBeenCalledWith(
+        "decision-1",
+        expect.objectContaining({
+          status: "cancelled",
+          relayError: "run ended before the answer could be delivered",
+          expiresAt: null,
+          sourceRevision: 3,
+        }),
+        expect.objectContaining({
+          sourceRevision: 2,
+          statuses: ["answered", "relay_failed"],
+        }),
+      );
+      // The answer itself was never recorded.
+      expect(repo.updateDecision).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ status: "answered" }),
+        expect.anything(),
+      );
+      // Hub item is refreshed then archived (emit before reconcile-close).
+      expect(hubItems.emit).toHaveBeenCalled();
+      expect(hubItems.reconcile).toHaveBeenCalledWith("company-1", {
+        sourceType: "runtime_decision",
+        sourceId: "decision-1",
+      });
+      expect(activityLogger).toHaveBeenCalledWith(
+        expect.objectContaining({ action: "runtime_decision.cancelled" }),
+      );
+    },
+  );
+
+  it("409s + cancels the decision when the run row is missing on answer (getRunStatus → null)", async () => {
+    const shown = baseDecision({ status: "shown", sourceRevision: 2 });
+    const { service, repo } = makeService({
+      getDecision: vi.fn(async () => shown),
+      getRunStatus: vi.fn(async () => null),
+    });
+
+    await expect(
+      service.answerPrompt({
+        companyId: "company-1",
+        decisionId: "decision-1",
+        actorUserId: "founder-1",
+        expectedSourceRevision: 2,
+        nonce: "nonce-1",
+        kind: "permission",
+        decision: "allow_once",
+      }),
+    ).rejects.toMatchObject({
+      status: 409,
+      message: "run ended before the answer could be delivered",
+    });
+
+    expect(repo.updateDecision).toHaveBeenCalledWith(
+      "decision-1",
+      expect.objectContaining({ status: "cancelled", sourceRevision: 3 }),
+      expect.objectContaining({ statuses: ["answered", "relay_failed"] }),
+    );
+  });
+
+  it("still relays a live-run answer without the dead-run guard tripping", async () => {
+    const shown = baseDecision({ status: "shown", sourceRevision: 2 });
+    const { service, repo } = makeService({
+      getDecision: vi.fn(async () => shown),
+      // default getRunStatus → "running"; assert it explicitly for clarity.
+      getRunStatus: vi.fn(async () => "running" as string | null),
+    });
+
+    const result = await service.answerPrompt({
+      companyId: "company-1",
+      decisionId: "decision-1",
+      actorUserId: "founder-1",
+      expectedSourceRevision: 2,
+      nonce: "nonce-1",
+      kind: "permission",
+      decision: "allow_once",
+    });
+
+    // Records the answer normally — no cancellation.
+    expect(repo.updateDecision).toHaveBeenCalledWith(
+      "decision-1",
+      expect.objectContaining({ status: "answered", decision: "allow_once", sourceRevision: 3 }),
+      expect.objectContaining({ sourceRevision: 2, statuses: ["created", "shown", "relay_failed"] }),
+    );
+    expect(repo.updateDecision).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ status: "cancelled" }),
+      expect.anything(),
+    );
+    expect(result.status).toBe("answered");
+  });
+
   it("returns conflict without answer side effects when the guarded answer update loses a race", async () => {
     const { service, repo, activityLogger, hubItems } = makeService({
       answerWithTrustRule: vi.fn(async () => ({ decision: null, rule: null })),
@@ -1516,5 +1637,80 @@ describe("agentRuntimeDecisionService", () => {
     );
     const result = await service.expireDuePrompts({ limit: 100 });
     expect(result.processed).toBe(2);
+  });
+
+  // R2 stranded-answer sweep (P3-4): answered/relay_failed decisions whose run
+  // went terminal before relay are invisible to expireDuePrompts (created/shown
+  // only). The dedicated sweeper cancels + closes each so the waiting-lane item
+  // does not linger forever as an un-relayable ghost.
+  it("sweeps a stranded answered-with-dead-run decision: cancel + close", async () => {
+    const stranded = baseDecision({ id: "stranded-1", status: "answered", sourceRevision: 3 });
+    const { service, repo, hubItems, activityLogger } = makeService({
+      listStrandedAnswers: vi.fn(async () => [stranded]),
+      updateDecision: vi.fn(async (id, patch) => baseDecision({ id, ...(patch as Record<string, unknown>) })),
+    });
+
+    const result = await service.sweepStrandedAnswers({ companyId: "company-1", limit: 100 });
+
+    expect(repo.listStrandedAnswers).toHaveBeenCalledWith({ companyId: "company-1", limit: 100 });
+    expect(repo.updateDecision).toHaveBeenCalledWith(
+      "stranded-1",
+      expect.objectContaining({
+        status: "cancelled",
+        relayError: "answer was never picked up by the run",
+        expiresAt: null,
+        sourceRevision: 4,
+      }),
+      expect.objectContaining({
+        sourceRevision: 3,
+        statuses: ["answered", "relay_failed"],
+      }),
+    );
+    // emit refreshes the row, then the reconcile-close archives the hub item.
+    expect(hubItems.emit).toHaveBeenCalled();
+    expect(hubItems.reconcile).toHaveBeenCalledWith("company-1", {
+      sourceType: "runtime_decision",
+      sourceId: "stranded-1",
+    });
+    expect(hubItems.emit.mock.invocationCallOrder[0]).toBeLessThan(
+      hubItems.reconcile.mock.invocationCallOrder[0],
+    );
+    expect(activityLogger).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "runtime_decision.cancelled" }),
+    );
+    expect(result).toEqual({ cancelled: 1, processed: 1 });
+  });
+
+  it("sweeps a stranded relay_failed-with-dead-run decision too", async () => {
+    const stranded = baseDecision({ id: "stranded-rf", status: "relay_failed", sourceRevision: 5 });
+    const { service, repo } = makeService({
+      listStrandedAnswers: vi.fn(async () => [stranded]),
+      updateDecision: vi.fn(async (id, patch) => baseDecision({ id, ...(patch as Record<string, unknown>) })),
+    });
+
+    const result = await service.sweepStrandedAnswers({ limit: 100 });
+
+    expect(repo.updateDecision).toHaveBeenCalledWith(
+      "stranded-rf",
+      expect.objectContaining({ status: "cancelled", sourceRevision: 6 }),
+      expect.objectContaining({ statuses: ["answered", "relay_failed"] }),
+    );
+    expect(result).toEqual({ cancelled: 1, processed: 1 });
+  });
+
+  it("sweep counts a lost guarded update as processed-but-not-cancelled", async () => {
+    const stranded = baseDecision({ id: "stranded-race", status: "answered", sourceRevision: 3 });
+    const { service, hubItems, activityLogger } = makeService({
+      listStrandedAnswers: vi.fn(async () => [stranded]),
+      updateDecision: vi.fn(async () => null), // concurrent relay/cancel won.
+    });
+
+    const result = await service.sweepStrandedAnswers({ limit: 100 });
+
+    // Guarded update returned null → no emit, no close, no audit for this row.
+    expect(hubItems.emit).not.toHaveBeenCalled();
+    expect(hubItems.reconcile).not.toHaveBeenCalled();
+    expect(activityLogger).not.toHaveBeenCalled();
+    expect(result).toEqual({ cancelled: 0, processed: 1 });
   });
 });

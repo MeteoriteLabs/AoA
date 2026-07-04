@@ -180,6 +180,15 @@ type DecisionRepo = {
     trustRule: typeof agentRuntimeTrustRules.$inferInsert,
   ): Promise<{ decision: AgentRuntimeDecisionRow | null; rule: AgentRuntimeTrustRuleRow | null }>;
   listDueForExpiry(input: { companyId?: string; now: Date; limit: number }): Promise<AgentRuntimeDecisionRow[]>;
+  /**
+   * R2 stranded-answer sweep (P3-4): decisions in status answered/relay_failed
+   * whose heartbeat run has already gone terminal. These are invisible to
+   * listDueForExpiry (hard-scoped to created/shown) — the answer can never be
+   * relayed because the run is dead, so the sweeper cancels + closes them. A
+   * missing run row (INNER JOIN drops it) is covered by cancelActiveForRun on
+   * the deleting side, so this only needs the terminal-run rows.
+   */
+  listStrandedAnswers(input: { companyId?: string; limit: number }): Promise<AgentRuntimeDecisionRow[]>;
 };
 
 type HubItemsApi = Pick<ReturnType<typeof hubItemsService>, "emit" | "reconcile">;
@@ -526,6 +535,21 @@ function realRepo(db: Db): DecisionRepo {
         .orderBy(asc(agentRuntimeDecisions.expiresAt))
         .limit(input.limit);
     },
+    async listStrandedAnswers(input) {
+      const conditions = [
+        inArray(agentRuntimeDecisions.status, ["answered", "relay_failed"]),
+        inArray(heartbeatRuns.status, [...TERMINAL_RUN_STATUSES]),
+      ];
+      if (input.companyId) conditions.push(eq(agentRuntimeDecisions.companyId, input.companyId));
+      return db
+        .select()
+        .from(agentRuntimeDecisions)
+        .innerJoin(heartbeatRuns, eq(agentRuntimeDecisions.runId, heartbeatRuns.id))
+        .where(and(...conditions))
+        .orderBy(asc(agentRuntimeDecisions.answeredAt))
+        .limit(input.limit)
+        .then((rows) => rows.map((row) => row.agent_runtime_decisions));
+    },
   };
 }
 
@@ -680,6 +704,39 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
       // reconciles on the next read. Never poison the terminal transition.
       logger.warn({ err, decisionId: decision.id }, "runtime decision hub-item close failed");
     }
+  }
+
+  // R2 safety: flip a stranded decision (answer against a dead run, or an
+  // answered/relay_failed row the sweep found orphaned) to cancelled with an
+  // honest relayError, then close its projected waiting-lane hub item. Used by
+  // both the answerPrompt liveness gate and sweepStrandedAnswers. The status
+  // guard admits answered/relay_failed only (the two non-terminal stall states);
+  // a concurrent cancel/relay wins and this no-ops.
+  async function cancelStrandedDecision(row: AgentRuntimeDecisionRow, relayError: string) {
+    const cancelled = await repo.updateDecision(row.id, {
+      status: "cancelled",
+      relayError: safeText(relayError),
+      expiresAt: null,
+      sourceRevision: row.sourceRevision + 1,
+    }, {
+      sourceRevision: row.sourceRevision,
+      statuses: ["answered", "relay_failed"],
+    });
+    if (!cancelled) return null;
+    await activityLogger({
+      companyId: cancelled.companyId,
+      actorType: "system",
+      actorId: "runtime_decision_stranded_answer",
+      action: "runtime_decision.cancelled",
+      entityType: "agent_runtime_decision",
+      entityId: cancelled.id,
+      agentId: cancelled.agentId,
+      runId: cancelled.runId,
+      details: { sourceRevision: row.sourceRevision, relayError, priorStatus: row.status },
+    });
+    await emitHubItem(cancelled);
+    await closeProjectedHubItem(cancelled);
+    return cancelled;
   }
 
   async function createPrompt(input: CreatePromptInput) {
@@ -841,6 +898,17 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
     assertAnswerMatches(row, input);
     if (input.kind === "permission" && input.decision === "allow_always" && !hasConcreteTrustScope(row)) {
       throw unprocessable("Allow always requires a concrete command, path, network, or risk scope");
+    }
+    // R2 answer-time liveness gate (safety fix): the answer is relayed to the
+    // run in-band by the broker (heartbeat waitAndRelay). If the run already
+    // went terminal (or its row is gone), recording "answered" would mint a
+    // forever-stalled ghost — non-terminal, invisible to the expiry sweep, never
+    // relayable. Instead, cancel the decision honestly and 409 so the founder
+    // sees a real error rather than a phantom "answered" item.
+    const runStatus = await repo.getRunStatus(row.runId);
+    if (runStatus == null || TERMINAL_RUN_STATUSES.has(runStatus)) {
+      await cancelStrandedDecision(row, "run ended before the answer could be delivered");
+      throw conflict("run ended before the answer could be delivered");
     }
     const answerPatch: Partial<typeof agentRuntimeDecisions.$inferInsert> = {
       status: "answered",
@@ -1084,6 +1152,22 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
     return { cancelled };
   }
 
+  // R2 stranded-answer sweep (P3-4): a decision that reached answered/relay_failed
+  // but whose run went terminal before the broker could relay is invisible to the
+  // expiry sweep (listDueForExpiry is hard-scoped to created/shown). Select those
+  // rows joined to a terminal run and cancel + close each, so the founder's
+  // waiting-lane item does not linger forever as an un-relayable ghost. Runs next
+  // to expireDuePrompts on the same 30s interval.
+  async function sweepStrandedAnswers(input: { companyId?: string; limit: number }) {
+    const stranded = await repo.listStrandedAnswers({ companyId: input.companyId, limit: input.limit });
+    let cancelled = 0;
+    for (const row of stranded) {
+      const result = await cancelStrandedDecision(row, "answer was never picked up by the run");
+      if (result) cancelled += 1;
+    }
+    return { cancelled, processed: stranded.length };
+  }
+
   return {
     createPrompt,
     createTrustRule,
@@ -1095,6 +1179,7 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
     markRelayFailed,
     markRelayed,
     expireDuePrompts,
+    sweepStrandedAnswers,
     cancelActiveForRun,
     emitHubItemForPrompt: emitHubItem,
   };
