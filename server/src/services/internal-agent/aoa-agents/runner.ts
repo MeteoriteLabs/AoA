@@ -500,6 +500,12 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
         db,
         agent: { id: agent.id, name: agent.name },
         payload,
+        // Controller-mode fake turns queue real create_scope_draft actions; the
+        // seal (below) and direct-run commit then treat them exactly like a real
+        // agent's tool calls — no fake-specific bookkeeping anywhere downstream.
+        runId,
+        discussionRunMode,
+        threadFreshness,
       })) ??
       (await adapter.execute({
         runId: runId ?? `aoa-${agentId}`,
