@@ -26,6 +26,7 @@ const mocks = vi.hoisted(() => ({
   },
   hubItems: {
     counts: vi.fn(),
+    reconcile: vi.fn().mockResolvedValue({ healed: 0, closed: 0, refreshed: 0 }),
   },
   permissions: {
     getEffectiveRole: vi.fn(),

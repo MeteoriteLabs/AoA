@@ -15,6 +15,7 @@ import {
 import { emitOpenApprovalHubItems } from "../services/hub-approval-requests.js";
 import { emitStaleWorkHubItems } from "../services/hub-stale-work.js";
 import { emitLegacyAlertHubItems } from "../services/hub-legacy-alerts.js";
+import { logger } from "../middleware/logger.js";
 import { assertCompanyAccess } from "./authz.js";
 
 function hasImplicitFounderAuthority(req: Request): boolean {
@@ -73,7 +74,14 @@ export function sidebarBadgeRoutes(db: Db) {
       // utilization stays >= 80%; pair it with a reconcile so clearing/raising the
       // budget (or spend dropping below 80%) closes the item on the very next page
       // load without visiting the Inbox — and heals a stale % in place otherwise.
-      await hubItems.reconcile(companyId, { sourceType: "company_budget" });
+      // Best-effort: this is background maintenance, not badge data — a reconcile
+      // failure must never 500 the hot sidebar-badges route (the Inbox GET path
+      // reconciles too, as a backstop).
+      try {
+        await hubItems.reconcile(companyId, { sourceType: "company_budget" });
+      } catch (err) {
+        logger.warn({ err, companyId }, "sidebar-badges budget reconcile failed (best-effort)");
+      }
       await emitStaleWorkHubItems(db, companyId, null);
       const role = await resolveHubBadgeRole(req, companyId, req.actor.userId);
       const hubCounts = await counterSnapshots.getOrRefresh({

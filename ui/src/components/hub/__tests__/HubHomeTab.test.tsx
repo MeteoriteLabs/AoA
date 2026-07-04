@@ -74,7 +74,16 @@ describe("HubHomeTab", () => {
     const user = userEvent.setup();
     const onDismiss = vi.fn();
     const onLifecycleAction = vi.fn();
-    renderHome({ selectedItem: item, onDismiss, onLifecycleAction });
+    // Use a NON-mirrored item: Resolve/Archive are hidden for source-mirrored
+    // types (approval_request/join_request/agent_runtime_decision, D107) — a
+    // run_failed notification still exposes the full lifecycle-action set.
+    const notMirrored: HubItemListRow = {
+      ...item,
+      semanticType: "run_failed",
+      lane: "notifications",
+      sourceType: "heartbeat_run",
+    };
+    renderHome({ selectedItem: notMirrored, onDismiss, onLifecycleAction });
 
     await user.click(screen.getByRole("button", { name: /^dismiss$/i }));
     expect(onDismiss).toHaveBeenCalledWith("hub-1");

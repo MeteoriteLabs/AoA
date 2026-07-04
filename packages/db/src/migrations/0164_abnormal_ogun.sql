@@ -58,4 +58,4 @@ SET "dedupe_key" = "category" || ':' || md5(coalesce("action_payload"::text, 'nu
 WHERE "status" = 'pending' AND "dedupe_key" IS NULL;
 --> statement-breakpoint
 -- 4. Create the partial unique index (now safe — no pending dup violations remain).
-CREATE UNIQUE INDEX "suggestions_pending_dedupe_idx" ON "suggestions" USING btree ("company_id","dedupe_key") WHERE status = 'pending' AND dedupe_key IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS "suggestions_pending_dedupe_idx" ON "suggestions" USING btree ("company_id","dedupe_key") WHERE status = 'pending' AND dedupe_key IS NOT NULL;
