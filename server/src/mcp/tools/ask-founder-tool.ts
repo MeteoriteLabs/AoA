@@ -82,15 +82,17 @@ export async function handleAskFounder(
     });
     return ok({ answered: true, answer: answered.answerPayload });
   } catch (e) {
-    // On cancel OR the bounded block timing out, return a NON-error graceful
-    // result so the model STOPS gracefully instead of retry-looping. Any OTHER
-    // error is a real failure — rethrow.
-    if (e instanceof RuntimeDecisionCancelledError) {
-      return ok({ answered: false, status: "parked", note: "parked for founder" });
-    }
-    if (e instanceof Error && /timed out/i.test(e.message)) {
-      return ok({ answered: false, status: "parked", note: "parked for founder" });
-    }
+    // Every terminal NON-answer outcome parks gracefully so the model STOPS
+    // (never retry-loops): a cancel (RuntimeDecisionCancelledError — e.g. the run
+    // went terminal and cancelActiveForRun cancelled this decision), the bounded
+    // block timing out ("Timed out…"), OR the decision reaching a terminal
+    // non-answered status while we polled ("… no longer actionable" — a benign
+    // relayed/expired race). "park_run" means there is no safe default answer, so
+    // any of these is a "no answer, stop here" — not a hard error. Any OTHER error
+    // (e.g. notFound, a DB fault) is a real failure — rethrow.
+    const parked = ok({ answered: false, status: "parked", note: "parked for founder" });
+    if (e instanceof RuntimeDecisionCancelledError) return parked;
+    if (e instanceof Error && /timed out|no longer actionable/i.test(e.message)) return parked;
     throw e;
   }
 }

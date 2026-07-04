@@ -126,6 +126,26 @@ describe("ask_founder tool", () => {
     expect((res as any).data.status).toBe("parked");
   });
 
+  it("returns parked when the decision is no longer actionable (terminal race)", async () => {
+    // waitForAnswer throws conflict("Runtime decision prompt is no longer
+    // actionable") if the row hit a terminal non-answered status (relayed/expired)
+    // while we polled. That is a benign "no answer" outcome under park_run — the
+    // model must STOP, not surface a hard error.
+    const getById = vi.fn().mockResolvedValue({ adapterType: "codex_local" });
+    createPrompt.mockResolvedValue({ decision: { id: "d1" } });
+    waitForAnswer.mockRejectedValue(
+      new Error("Runtime decision prompt is no longer actionable"),
+    );
+
+    const res = await handleAskFounder(
+      makeCtx({ source: "agent", agentId: "agent-1", runId: "run-1" }, getById),
+      { question: "Ship it?" },
+    );
+
+    expect(res.ok).toBe(true);
+    expect((res as any).data.status).toBe("parked");
+  });
+
   it("propagates a terminal-run 409 from createPrompt (zombie guard)", async () => {
     const getById = vi.fn().mockResolvedValue({ adapterType: "codex_local" });
     const conflictErr = Object.assign(new Error("run is terminal"), { status: 409 });
