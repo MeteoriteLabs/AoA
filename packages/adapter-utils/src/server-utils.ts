@@ -47,6 +47,40 @@ export function resolveProcessGroupId(child: ChildProcess): number | null {
 }
 
 /**
+ * Hard-kill a Windows process TREE via `taskkill /PID <pid> /T /F`.
+ *
+ * On Windows the supervised CLI is a grandchild: heartbeat spawns children with
+ * `shell: true` (to run .cmd wrappers), so the direct `child` is the cmd.exe
+ * wrapper and the real agent CLI is a grandchild. `child.kill()` only signals the
+ * wrapper, orphaning the CLI (which keeps the inherited stdio pipes open, so the
+ * adapter `await` never resolves). `taskkill /T` addresses the whole tree.
+ *
+ * Fire-and-forget (no shell — the args are fixed, not user input). `/F` is a hard
+ * TerminateProcess with no graceful window; that matches the previous behavior
+ * (`child.kill` was already a hard TerminateProcess on Windows). A missing pid
+ * (already-exited tree) exits taskkill with code 128 — swallowed here; the
+ * `error` listener swallows a spawn failure (e.g. taskkill not on PATH) so a
+ * cancel can never crash the server. Returns true when a taskkill was launched.
+ */
+function killWindowsProcessTree(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    const killer = spawn("taskkill", ["/PID", String(pid), "/T", "/F"], {
+      // No shell: fixed args, avoids any quoting/injection surface.
+      shell: false,
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    // Swallow a spawn failure (ENOENT if taskkill is somehow missing) and the
+    // exit-128 "process not found" case — both are fire-and-forget no-ops.
+    killer.on("error", () => {});
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Signal a running process or its process group.
  *
  * POSIX with a valid processGroupId:
@@ -57,12 +91,12 @@ export function resolveProcessGroupId(child: ChildProcess): number | null {
  *   re-parented to init).
  *
  * Windows:
- *   uses Node's child.kill(signal). This signals ONLY the spawned
- *   child — any subprocesses the child spawned become orphans. This
- *   is a known limitation (Paperclip has the same behavior). To
- *   propagate kills to the whole tree on Windows, AoA would need to
- *   shell out to `taskkill /PID <pid> /T /F`. Tracked as a follow-up
- *   if Windows-deployment process-tree leaks become a real concern.
+ *   shells out to `taskkill /PID <pid> /T /F` to hard-kill the ENTIRE process
+ *   tree (parent + grandchildren). Windows has no graceful signal, so BOTH the
+ *   TERM and KILL escalation steps map to the same forceful taskkill — a
+ *   cancelled agent CLI gets no graceful-shutdown window (it never got one:
+ *   child.kill was already TerminateProcess). Falls back to child.kill only when
+ *   there is no pid (spawn failed) — nothing else to address.
  *
  * Caller is responsible for the SIGTERM → SIGKILL escalation timer.
  *
@@ -72,7 +106,20 @@ export function signalRunningProcess(
   running: Pick<RunningProcess, "child" | "processGroupId">,
   signal: NodeJS.Signals,
 ): void {
-  if (process.platform !== "win32" && running.processGroupId && running.processGroupId > 0) {
+  if (process.platform === "win32") {
+    // Tree-kill via taskkill for both TERM and KILL requests. If there is no
+    // pid (spawn never succeeded) fall through to the direct child.kill below.
+    const pid = running.child.pid;
+    if (typeof pid === "number" && pid > 0) {
+      killWindowsProcessTree(pid);
+      return;
+    }
+    if (!running.child.killed) {
+      running.child.kill(signal);
+    }
+    return;
+  }
+  if (running.processGroupId && running.processGroupId > 0) {
     try {
       process.kill(-running.processGroupId, signal);
       return;

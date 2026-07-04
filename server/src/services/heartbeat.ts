@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, gt, inArray, lte, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, lte, ne, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import {
   agents,
@@ -149,6 +149,7 @@ import {
   mintRuntimeHookToken,
   registerRuntimeHook,
   deregisterRuntimeHook,
+  deregisterRuntimeHooksForRun,
 } from "./runtime-hook-registry.js";
 import {
   RUNTIME_HOOK_BLOCK_TIMEOUT_SEC,
@@ -163,6 +164,44 @@ export const MAX_TURN_CONTINUATION_RETRY_REASON = "max_turn_continuation";
 export const MAX_TURN_CONTINUATION_WAKE_REASON = "max_turn_continuation_retry";
 export const MAX_TURN_CONTINUATION_MAX_ATTEMPTS = 2;
 export const MAX_TURN_CONTINUATION_DELAY_MS = 1_000;
+// R1 zombie-run teardown: once a run reaches one of these statuses it is final.
+// setRunStatus latches on them so a zombie hook POST (markRunWaiting → 'running')
+// or a late adapter completion cannot resurrect a cancelled/failed run. The only
+// writes allowed after a terminal transition are metadata-only patches that keep
+// the SAME status (e.g. the cancelled→cancelled usageJson/excerpt persistence in
+// the completion + error paths).
+export const TERMINAL_RUN_STATUSES = ["succeeded", "failed", "cancelled", "timed_out"] as const;
+
+export function isTerminalRunStatus(status: string): boolean {
+  return (TERMINAL_RUN_STATUSES as readonly string[]).includes(status);
+}
+
+/**
+ * Pure decision for the setRunStatus terminal-latch fallback branch (R1).
+ *
+ * Called only when the guarded conditional UPDATE matched no row — i.e. the run
+ * is already terminal (or missing). Given the requested status, the patch, and
+ * the current (terminal) status, decide what write to apply:
+ *
+ *   - `"metadata"`: strip `status` from the patch and apply the remaining fields
+ *     WITHOUT changing status, and WITHOUT re-firing the live event / terminal
+ *     hub emit. Covers BOTH the legitimate cancelled→cancelled metadata write
+ *     (usageJson / log excerpts persist — P2-1) and the blocked cancelled→running
+ *     / cancelled→failed resurrection (status stays terminal).
+ *   - `"noop"`: a pure status flip against a terminal row with no other fields —
+ *     nothing to persist.
+ *
+ * Never returns "write": once the row is terminal, the status is latched.
+ */
+export function resolveTerminalLatchFallback(
+  patch: Record<string, unknown> | undefined,
+): { action: "metadata"; metadataPatch: Record<string, unknown> } | { action: "noop" } {
+  const metadataPatch: Record<string, unknown> = patch ? { ...patch } : {};
+  delete metadataPatch.status;
+  if (Object.keys(metadataPatch).length === 0) return { action: "noop" };
+  return { action: "metadata", metadataPatch };
+}
+
 const HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS = 500;
 // AoA canonical names. Existing rows still using the legacy paperclip-
 // names are read transparently via the helpers below; writes only emit
@@ -1659,12 +1698,51 @@ export function heartbeatService(db: Db) {
     status: string,
     patch?: Partial<typeof heartbeatRuns.$inferInsert>,
   ) {
+    // R1 terminal-status latch. The status write is guarded to NOT overwrite a
+    // row that is already terminal — a conditional UPDATE that only matches rows
+    // whose current status is NOT one of TERMINAL_RUN_STATUSES. This is the
+    // atomic check: a live run (running/queued/…) matches and transitions
+    // normally; a run that a concurrent cancel already flipped to terminal does
+    // NOT match, so the status is never resurrected.
     const updated = await db
       .update(heartbeatRuns)
       .set({ status, ...patch, updatedAt: new Date() })
-      .where(eq(heartbeatRuns.id, runId))
+      .where(
+        and(
+          eq(heartbeatRuns.id, runId),
+          notInArray(heartbeatRuns.status, TERMINAL_RUN_STATUSES as unknown as string[]),
+        ),
+      )
       .returning()
       .then((rows) => rows[0] ?? null);
+
+    if (!updated) {
+      // Guard miss: either the row is gone, or it is already terminal. Read it.
+      const current = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (!current) return null;
+
+      // The row is terminal. Apply a metadata-only patch (status stripped) and
+      // SKIP the live-event + terminal hub emit. This keeps the legitimate
+      // cancelled→cancelled metadata writes (usageJson / log excerpts) working
+      // (P2-1) while blocking cancelled→running / cancelled→failed resurrection.
+      const fallback = resolveTerminalLatchFallback(patch as Record<string, unknown> | undefined);
+      if (fallback.action === "noop") {
+        // Pure status flip against a terminal row (no metadata) — nothing to do.
+        return current;
+      }
+      const patched = await db
+        .update(heartbeatRuns)
+        .set({ ...fallback.metadataPatch, updatedAt: new Date() })
+        .where(eq(heartbeatRuns.id, runId))
+        .returning()
+        .then((rows) => rows[0] ?? current);
+      return patched;
+    }
 
     if (updated) {
       publishLiveEvent({
@@ -2229,7 +2307,10 @@ export function heartbeatService(db: Db) {
       }
       await finalizeAgentStatus(run.agentId, "failed");
       await startNextQueuedRunForAgent(run.agentId);
-      runningProcesses.delete(run.id);
+      // No runningProcesses.delete here: this branch is guarded by
+      // `if (runningProcesses.has(run.id)) continue` above, so there is nothing
+      // to delete. Deregistration is owned by spawnTrackedChild's close/error
+      // listeners (R1 zombie-run teardown).
       reaped.push(run.id);
     }
 
@@ -5544,7 +5625,20 @@ export function heartbeatService(db: Db) {
         await releaseIssueExecutionAndPromote(cancelled);
       }
 
-      runningProcesses.delete(run.id);
+      // R1 zombie-run teardown: purge any W5b PreToolUse hook tokens for this run
+      // NOW. If the CLI's process survived the SIGTERM/taskkill (grandchild
+      // orphan), the adapter `await` stays pending and its finally-block
+      // deregisterRuntimeHook never runs — the token would otherwise stay valid
+      // for its 24h TTL and keep resolving a live broker for zombie hook POSTs.
+      // Deregistering by runId closes that window immediately (codex_local uses no
+      // HTTP hook, so this is a 0-entry no-op there).
+      deregisterRuntimeHooksForRun(run.id);
+
+      // R1 zombie-run teardown: do NOT eagerly delete the runningProcesses entry
+      // here. The eager delete made the SIGKILL grace-escalation timer above a
+      // no-op (its `runningProcesses.has(run.id)` guard always missed), so a CLI
+      // that ignored SIGTERM was never force-killed. Deregistration is owned by
+      // spawnTrackedChild's close/error listeners; the escalation timer now fires.
       await finalizeAgentStatus(run.agentId, "cancelled");
       await startNextQueuedRunForAgent(run.agentId);
       return cancelled;
@@ -5582,7 +5676,8 @@ export function heartbeatService(db: Db) {
             "heartbeat.cancel: signaling SIGTERM",
           );
           signalRunningProcess(running, "SIGTERM");
-          runningProcesses.delete(run.id);
+          // R1: deregistration is owned by spawnTrackedChild's close/error
+          // listeners — no eager delete (see cancelRun).
         }
         await releaseIssueExecutionAndPromote(run);
       }
@@ -5627,7 +5722,7 @@ export function heartbeatService(db: Db) {
               "heartbeat.cancel: signaling SIGTERM",
             );
             signalRunningProcess(running, "SIGTERM");
-            runningProcesses.delete(run.id);
+            // R1: deregistration owned by spawnTrackedChild close/error listeners.
           }
           await releaseIssueExecutionAndPromote(run);
         }
@@ -5664,7 +5759,7 @@ export function heartbeatService(db: Db) {
             "heartbeat.cancel: signaling SIGTERM",
           );
           signalRunningProcess(running, "SIGTERM");
-          runningProcesses.delete(run.id);
+          // R1: deregistration owned by spawnTrackedChild close/error listeners.
         }
         await releaseIssueExecutionAndPromote(run);
       }

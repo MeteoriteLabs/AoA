@@ -77,6 +77,8 @@ function makeService(
     createDecision: vi.fn(async (input) => baseDecision(input as Record<string, unknown>)),
     getDecision: vi.fn(async () => baseDecision()),
     listActiveForRun: vi.fn(async () => []),
+    // R1 zombie-decision guard: default to a live run so createPrompt tests pass.
+    getRunStatus: vi.fn(async () => "running" as string | null),
     listTrustRules: vi.fn(async () => []),
     createTrustRule: vi.fn(async (input) => baseTrustRule(input as Record<string, unknown>)),
     revokeTrustRule: vi.fn(async () => baseTrustRule({ enabled: false })),
@@ -150,6 +152,55 @@ describe("agentRuntimeDecisionService", () => {
       }),
     );
     expect(result.hubItem).toMatchObject({ id: "hub-1" });
+  });
+
+  // R1 zombie-decision guard: a terminal (or missing) run must not mint a NEW
+  // runtime decision. createPrompt loads the run status first and throws
+  // conflict("run is terminal"), which the hook route's catch maps to a DENY.
+  it.each(["cancelled", "failed", "timed_out", "succeeded"] as const)(
+    "throws conflict when the run is already %s (no decision minted, no hub emit)",
+    async (terminalStatus) => {
+      const { service, repo, hubItems } = makeService({
+        getRunStatus: vi.fn(async () => terminalStatus as string | null),
+      });
+
+      await expect(
+        service.createPrompt({
+          companyId: "company-1",
+          agentId: "agent-1",
+          runId: "11111111-1111-4111-8111-111111111111",
+          adapterType: "claude_local",
+          kind: "permission",
+          nonce: "nonce-terminal",
+          title: "Allow shell command?",
+          timeoutPolicy: "deny",
+        }),
+      ).rejects.toMatchObject({ status: 409, message: "run is terminal" });
+
+      expect(repo.createDecision).not.toHaveBeenCalled();
+      expect(hubItems.emit).not.toHaveBeenCalled();
+    },
+  );
+
+  it("throws conflict when the run row is missing (getRunStatus → null)", async () => {
+    const { service, repo } = makeService({
+      getRunStatus: vi.fn(async () => null),
+    });
+
+    await expect(
+      service.createPrompt({
+        companyId: "company-1",
+        agentId: "agent-1",
+        runId: "11111111-1111-4111-8111-111111111111",
+        adapterType: "claude_local",
+        kind: "work_question",
+        nonce: "nonce-missing",
+        title: "Need input",
+        timeoutPolicy: "park_run",
+      }),
+    ).rejects.toMatchObject({ status: 409, message: "run is terminal" });
+
+    expect(repo.createDecision).not.toHaveBeenCalled();
   });
 
   it("redacts secret-bearing option payloads before persisting prompts", async () => {
@@ -232,6 +283,11 @@ describe("agentRuntimeDecisionService", () => {
       select: vi.fn(() => ({
         from: vi.fn(() => ({
           where: vi.fn(() => ({
+            // getRunStatus (R1 guard) reads heartbeatRuns via .limit(1) → live run.
+            limit: vi.fn(() => ({
+              then: (resolve: (rows: unknown[]) => unknown) =>
+                Promise.resolve([{ status: "running" }]).then(resolve),
+            })),
             then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve([]).then(resolve),
           })),
         })),
@@ -281,6 +337,11 @@ describe("agentRuntimeDecisionService", () => {
       select: vi.fn(() => ({
         from: vi.fn(() => ({
           where: vi.fn(() => ({
+            // getRunStatus (R1 guard) reads heartbeatRuns via .limit(1) → live run.
+            limit: vi.fn(() => ({
+              then: (resolve: (rows: unknown[]) => unknown) =>
+                Promise.resolve([{ status: "running" }]).then(resolve),
+            })),
             then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve([]).then(resolve),
           })),
         })),

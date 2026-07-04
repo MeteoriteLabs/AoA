@@ -41,6 +41,7 @@ vi.mock("@armyofagents/db", () => {
   return {
     agentRuntimeDecisions: makeTable("agent_runtime_decisions"),
     agentRuntimeTrustRules: makeTable("agent_runtime_trust_rules"),
+    heartbeatRuns: makeTable("heartbeat_runs"),
   };
 });
 

@@ -116,6 +116,12 @@ function makeInMemoryRepo() {
       );
     },
 
+    // R1 zombie-decision guard: these integration tests exercise a LIVE run, so
+    // report "running" — createPrompt only refuses on terminal/missing runs.
+    async getRunStatus(_runId: string): Promise<string | null> {
+      return "running";
+    },
+
     async listTrustRules(input: {
       companyId: string;
       adapterType?: string;

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { and, asc, eq, inArray, isNull, lte, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { agentRuntimeDecisions, agentRuntimeTrustRules } from "@armyofagents/db";
+import { agentRuntimeDecisions, agentRuntimeTrustRules, heartbeatRuns } from "@armyofagents/db";
 import type {
   RuntimeDecisionDetail,
   RuntimeDecisionKind,
@@ -31,6 +31,14 @@ const TERMINAL_STATUSES = new Set<RuntimeDecisionStatus>([
 
 const PERMISSION_DEFAULT_TTL_MS = 60 * 60 * 1000; // 1h
 const WORK_QUESTION_DEFAULT_TTL_MS = 24 * 60 * 60 * 1000; // 24h
+
+// R1 zombie-decision guard: heartbeat run statuses that are final. A terminal
+// (or missing) run must never mint a NEW runtime decision — a zombie CLI whose
+// process survived a cancel would otherwise POST to the hook route and create
+// endless decisions that later expire into agent_error noise. Kept in sync with
+// heartbeat.TERMINAL_RUN_STATUSES (duplicated to avoid a service→service import
+// cycle with the heavy heartbeat module).
+const TERMINAL_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
 
 function defaultTtlMs(kind: RuntimeDecisionKind) {
   return kind === "permission" ? PERMISSION_DEFAULT_TTL_MS : WORK_QUESTION_DEFAULT_TTL_MS;
@@ -150,6 +158,12 @@ type DecisionRepo = {
   createDecision(input: typeof agentRuntimeDecisions.$inferInsert): Promise<AgentRuntimeDecisionRow>;
   getDecision(companyId: string, decisionId: string): Promise<AgentRuntimeDecisionRow | null>;
   listActiveForRun(input: { companyId: string; runId: string }): Promise<AgentRuntimeDecisionRow[]>;
+  /**
+   * R1 zombie-decision guard: the current status of the run a prompt is being
+   * raised for. Returns null when the run row is missing. createPrompt refuses
+   * to mint a decision against a terminal (or missing) run.
+   */
+  getRunStatus(runId: string): Promise<string | null>;
   listTrustRules(input: { companyId: string; adapterType?: string; includeDisabled?: boolean }): Promise<AgentRuntimeTrustRuleRow[]>;
   createTrustRule(input: typeof agentRuntimeTrustRules.$inferInsert): Promise<AgentRuntimeTrustRuleRow>;
   revokeTrustRule(input: { companyId: string; ruleId: string }): Promise<AgentRuntimeTrustRuleRow | null>;
@@ -392,6 +406,14 @@ function realRepo(db: Db): DecisionRepo {
             inArray(agentRuntimeDecisions.status, ["created", "shown", "answered", "relay_failed"]),
           ),
         );
+    },
+    async getRunStatus(runId) {
+      return db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .limit(1)
+        .then((rows) => rows[0]?.status ?? null);
     },
     async listTrustRules(input) {
       const conditions = [
@@ -661,6 +683,17 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
   }
 
   async function createPrompt(input: CreatePromptInput) {
+    // R1 zombie-decision guard: refuse to mint a decision for a run that is
+    // already terminal (or whose row is gone). A zombie CLI that survived a
+    // cancel POSTs to the hook route → this createPrompt; throwing conflict here
+    // makes the hook route's catch map it to a DENY, so the zombie's tools are
+    // refused instead of minting decisions that later expire into agent_error
+    // noise (and cannot resurrect the run — the setRunStatus latch blocks that).
+    const runStatus = await repo.getRunStatus(input.runId);
+    if (runStatus == null || TERMINAL_RUN_STATUSES.has(runStatus)) {
+      throw conflict("run is terminal");
+    }
+
     const nowDate = now();
     const matchingTrustRule = input.kind === "permission"
       ? (await repo.listTrustRules({ companyId: input.companyId, adapterType: input.adapterType }))
