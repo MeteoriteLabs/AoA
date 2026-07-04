@@ -68,6 +68,14 @@ export function RuntimeDecisionPanel({ item }: { item: HubItemListRow }) {
       nonce: detail.nonce,
     });
   };
+  const submitQuestionOption = (value: string) => {
+    answerMutation.mutate({
+      kind: "work_question",
+      answer: { value },
+      expectedSourceRevision: detail.sourceRevision,
+      nonce: detail.nonce,
+    });
+  };
 
   return (
     <section className="mt-5 border-t border-border pt-4" aria-label="Runtime decision">
@@ -94,6 +102,20 @@ export function RuntimeDecisionPanel({ item }: { item: HubItemListRow }) {
           <Button type="button" size="sm" variant="secondary" disabled={disabled} onClick={() => submitPermission("deny")}>
             Deny
           </Button>
+        </div>
+      ) : detail.options && detail.options.length > 0 ? (
+        <div className="mt-4 grid gap-2">
+          {detail.options.map((opt) => (
+            <Button
+              key={opt.value}
+              type="button"
+              size="sm"
+              disabled={disabled}
+              onClick={() => submitQuestionOption(opt.value)}
+            >
+              {opt.label}
+            </Button>
+          ))}
         </div>
       ) : (
         <div className="mt-4 grid gap-2">

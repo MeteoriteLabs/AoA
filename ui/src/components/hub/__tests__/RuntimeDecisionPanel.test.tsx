@@ -126,6 +126,37 @@ describe("RuntimeDecisionPanel", () => {
     expect(screen.getByRole("button", { name: /send answer/i })).toBeInTheDocument();
   });
 
+  it("renders option buttons and posts {answer:{value}} for a work_question with options", async () => {
+    const { fireEvent } = await import("@testing-library/react");
+    detailSpy.mockResolvedValueOnce(
+      permissionDetail({
+        kind: "work_question",
+        options: [
+          { label: "Approve", value: "approve" },
+          { label: "Hold", value: "hold" },
+        ] as any,
+      }),
+    );
+    answerSpy.mockResolvedValueOnce(permissionDetail({ kind: "work_question" }));
+    renderPanel(runtimeDecisionItem());
+
+    const approve = await screen.findByRole("button", { name: /approve/i });
+    expect(screen.getByRole("button", { name: /hold/i })).toBeInTheDocument();
+    // No free-text box when options are present.
+    expect(screen.queryByLabelText(/work question answer/i)).not.toBeInTheDocument();
+
+    fireEvent.click(approve);
+    await waitFor(() => expect(answerSpy).toHaveBeenCalledTimes(1));
+    const payload = answerSpy.mock.calls[0][2];
+    expect(payload).toMatchObject({ kind: "work_question", answer: { value: "approve" } });
+  });
+
+  it("still renders the free-text box when a work_question has no options", async () => {
+    detailSpy.mockResolvedValueOnce(permissionDetail({ kind: "work_question", options: null }));
+    renderPanel(runtimeDecisionItem());
+    expect(await screen.findByLabelText(/work question answer/i)).toBeInTheDocument();
+  });
+
   it("shows an unavailable message when the item has no source id", () => {
     renderPanel(runtimeDecisionItem({ sourceId: null }));
     expect(screen.getByText(/runtime decision source is unavailable/i)).toBeInTheDocument();
