@@ -147,6 +147,29 @@ export function isFounderGatedAutopilotType(type: HubSemanticType): boolean {
   return (HUB_AUTOPILOT_FOUNDER_GATED_TYPES as readonly string[]).includes(type);
 }
 
+// Mirror model (R3 + H1, 2026-07-04): these types are a MIRROR of a backing
+// source decision — a hub item leaves the waiting lane ONLY when its source is
+// decided (approve/reject an approval, decide a runtime prompt). Manual
+// resolve/archive on the shared hub row is therefore server-rejected while the
+// source is still pending; the item would otherwise hide a live, undecided
+// decision from every board user with zero effect on the source. Personal
+// dismiss/snooze stay allowed (per-user visibility, safety-netted by the source
+// reconciler + timeout policy). NOTE the two source classes use DIFFERENT
+// pending checks server-side (see recordLifecycleAction in hub-items.ts):
+// approval_request/join_request block via the source reconciler's `terminal`
+// snapshot; agent_runtime_decision blocks ONLY while its status ∈ {created,
+// shown} (answered/relay_failed stay clearable so the dead-run stall sweep can
+// close them).
+export const HUB_SOURCE_MIRRORED_TYPES = [
+  "approval_request",
+  "join_request",
+  "agent_runtime_decision",
+] as const satisfies readonly HubSemanticType[];
+
+export function isSourceMirroredType(type: HubSemanticType): boolean {
+  return (HUB_SOURCE_MIRRORED_TYPES as readonly string[]).includes(type);
+}
+
 // Owner pool sentinel for authority-gated items with no single natural owner.
 export const HUB_OWNER_POOLS = ["board"] as const;
 export type HubOwnerPool = (typeof HUB_OWNER_POOLS)[number];

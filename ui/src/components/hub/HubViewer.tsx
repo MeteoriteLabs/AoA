@@ -12,6 +12,7 @@ import {
 import { useEffect, useRef } from "react";
 import { Link } from "@/lib/router";
 import type { HubAuditRow, HubItemListRow } from "@/api/hub-items";
+import { HUB_SOURCE_MIRRORED_TYPES } from "@armyofagents/shared";
 import { Button } from "@/components/ui/button";
 import { HUB_REGISTRY } from "./hubRegistry";
 import { RuntimeDecisionPanel } from "./RuntimeDecisionPanel";
@@ -86,7 +87,16 @@ export function HubViewer({
     item.curationPriorityReason,
   ].filter((reason): reason is string => Boolean(reason));
   const isRuntimeDecision = item.semanticType === "agent_runtime_decision";
-  const showLifecycleActions = !isRuntimeDecision;
+  // Mirror model (R3 + H1): resolve/archive on a source-backed decision item is
+  // server-rejected while the source is still pending — the item mirrors a live
+  // decision and leaves the lane only when the source is decided. Hide those two
+  // affordances for OPEN mirrored types (approval_request / join_request /
+  // agent_runtime_decision) so users are steered to the embedded approve/reject
+  // or decision panel; personal Dismiss/Snooze stay available (per-user hiding).
+  // Runtime decisions additionally have no generic Claim/Release surface.
+  const isMirrored = (HUB_SOURCE_MIRRORED_TYPES as readonly string[]).includes(item.semanticType);
+  const showResolveArchive = !(isRuntimeDecision || (isMirrored && item.status === "open"));
+  const showClaimRelease = !isRuntimeDecision;
 
   return (
     <aside
@@ -216,7 +226,7 @@ export function HubViewer({
             <Clock3 className="size-4" aria-hidden="true" />
             Snooze
           </Button>
-          {showLifecycleActions ? (
+          {showResolveArchive ? (
             <>
               <Button
                 type="button"
@@ -238,7 +248,7 @@ export function HubViewer({
               </Button>
             </>
           ) : null}
-          {showLifecycleActions && item.ownerPool === "board" && !item.claimedByUserId ? (
+          {showClaimRelease && item.ownerPool === "board" && !item.claimedByUserId ? (
             <Button
               type="button"
               variant="secondary"
@@ -249,7 +259,7 @@ export function HubViewer({
               Claim
             </Button>
           ) : null}
-          {showLifecycleActions && item.claimedByUserId ? (
+          {showClaimRelease && item.claimedByUserId ? (
             <Button
               type="button"
               variant="secondary"

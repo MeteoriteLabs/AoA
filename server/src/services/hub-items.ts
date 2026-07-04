@@ -25,14 +25,22 @@ import type {
   HubOwnerPool,
   HubUserStateInput,
   NotificationPreferences,
-  ActivityActorType,
 } from "@armyofagents/shared";
 import {
   HUB_SEMANTIC_TYPES,
+  HUB_SOURCE_MIRRORED_TYPES,
   laneForSemanticType,
   authorityForSemanticType,
 } from "@armyofagents/shared";
 import type { UserRole } from "@armyofagents/shared";
+
+// Mirror-model guard (R3 + H1): a runtime-decision hub item is manually
+// clearable ONLY once its backing decision has left the answerable window.
+// {created, shown} = the founder can still decide it → block resolve/archive.
+// {answered, relay_failed} are deliberately NOT in this set so the dead-run
+// stall rows Task 5 sweeps stay clearable (using the reconciler's generic
+// `terminal` flag here would block them and collide with Task 5).
+const RUNTIME_DECISION_ANSWERABLE_STATUSES: ReadonlySet<string> = new Set(["created", "shown"]);
 
 // Heartbeat-backed hub items are actionable while the source run is live, or
 // while it is the latest failed/timed-out run for its agent. "succeeded" is
@@ -518,9 +526,10 @@ export function hubItemsService(db: Db) {
   // (TDZ at reconcile()-call time). Function declarations hoist; consts do not.
 
   // Version-guarded status transition + audit row, written in ONE transaction.
-  // Shared by recordAndAct (manual) and reconcile (system) so a system transition
-  // and a concurrent user action can't lost-update each other — both go through
-  // the same `version`-guarded UPDATE. Throws `conflict` (409) on a version miss.
+  // Used by reconcile (system close) so a system transition and a concurrent
+  // user action (via recordLifecycleAction, which shares the same `version`-
+  // guarded UPDATE idiom) can't lost-update each other. Throws `conflict` (409)
+  // on a version miss.
   async function applyGuardedTransition(
     tx: Db,
     item: { id: string; companyId: string; status: string; version: number; resolvedAt: Date | null; archivedAt: Date | null },
@@ -877,6 +886,43 @@ export function hubItemsService(db: Db) {
       .orderBy(desc(hubAudit.createdAt));
   }
 
+  // Mirror-model source-class predicate (R3 + H1): does this semantic type
+  // mirror a backing source decision (approval / join request / runtime prompt)?
+  function isSourceMirroredHubType(semanticType: string | null): boolean {
+    return semanticType != null && (HUB_SOURCE_MIRRORED_TYPES as readonly string[]).includes(semanticType);
+  }
+
+  // Returns true when the mirrored item's source is STILL PENDING (→ block
+  // resolve/archive). SOURCE_RECONCILERS is referenced at call time (assigned
+  // before any exported method runs), mirroring how reconcile() consumes it.
+  async function isMirroredSourcePending(
+    companyId: string,
+    semanticType: string,
+    sourceType: string | null,
+    sourceId: string,
+  ): Promise<boolean> {
+    // agent_runtime_decision: bespoke check on the answerable window. Do NOT use
+    // the reconciler's `terminal` flag — answered/relay_failed stay clearable.
+    if (semanticType === "agent_runtime_decision") {
+      const row = await db
+        .select({ status: agentRuntimeDecisions.status })
+        .from(agentRuntimeDecisions)
+        .where(
+          and(eq(agentRuntimeDecisions.id, sourceId), eq(agentRuntimeDecisions.companyId, companyId)),
+        )
+        .limit(1)
+        .then((r) => r[0] ?? null);
+      if (!row) return false; // gone source → fail-open (allow clear)
+      return RUNTIME_DECISION_ANSWERABLE_STATUSES.has(row.status);
+    }
+    // approval_request / join_request: block while the source reconciler reports
+    // non-terminal. Missing reconciler or gone source → fail-open (allow).
+    const reconciler = sourceType ? SOURCE_RECONCILERS[sourceType] : undefined;
+    if (!reconciler) return false;
+    const snapshot = await reconciler(companyId, sourceId);
+    return snapshot.terminal === false;
+  }
+
   // Action with optimistic concurrency + audit-before-side-effect (§5/§6/§10).
   async function recordLifecycleAction(args: {
     companyId: string;
@@ -923,6 +969,44 @@ export function hubItemsService(db: Db) {
       throw conflict("This item is no longer open. Reload and retry.", {
         currentVersion: current.version,
       });
+    }
+
+    // Mirror-model guard (R3 + H1): resolve/archive on a source-backed decision
+    // item whose source is still pending is a MIRROR violation — it hides a live,
+    // undecided decision from every board user with zero effect on the source.
+    // Reject; the founder must decide at the source (approve/reject the approval,
+    // answer the runtime prompt) or use personal Dismiss (per-user, safety-netted).
+    // TWO source classes, DIFFERENT pending checks (P1-3):
+    //  - approval_request / join_request → block while the source reconciler
+    //    reports non-terminal (still pending). A terminal or gone source →
+    //    allow (fail-open; QA seed rows + already-decided rows stay cleanable).
+    //  - agent_runtime_decision → block ONLY while status ∈ {created, shown}.
+    //    answered/relay_failed rows MUST stay clearable (they're the dead-run
+    //    stall rows Task 5 sweeps) — do NOT use the reconciler's generic
+    //    `terminal` flag here, which marks them non-terminal and would collide.
+    // dismiss/snooze (personal state) and claim/release never reach this guard.
+    if (
+      (args.action === "resolve" || args.action === "archive") &&
+      isSourceMirroredHubType(current.semanticType) &&
+      current.semanticType &&
+      current.sourceId
+    ) {
+      const stillPending = await isMirroredSourcePending(
+        current.companyId,
+        current.semanticType,
+        current.sourceType,
+        current.sourceId,
+      );
+      if (stillPending) {
+        throw conflict(
+          "Decide it at the source — approve/reject the approval or answer the runtime prompt (or Dismiss it for yourself). It cannot be resolved or archived while the decision is still pending.",
+          {
+            sourceStillPending: true,
+            sourceType: current.sourceType,
+            sourceId: current.sourceId,
+          },
+        );
+      }
     }
 
     if (
@@ -1250,101 +1334,10 @@ export function hubItemsService(db: Db) {
     return { bulkId, summary, results };
   }
 
-  async function recordAndAct(args: {
-    companyId: string;
-    hubItemId: string;
-    action: string;
-    expectedVersion: number;
-    actorType: ActivityActorType;
-    actorId: string;
-    actorIsFounder: boolean; // route resolves via permissionService (founder OR board)
-    authorityBasis?: string;
-    reason?: string;
-    idempotencyKey?: string;
-    nextStatus: "resolved" | "archived" | "snoozed";
-    // EXTERNAL/irreversible source-API relay; runs AFTER commit.
-    sideEffect?: () => Promise<{ irreversibleSideEffects?: unknown; relayResult?: unknown }>;
-  }) {
-    const action = args.nextStatus === "resolved" ? "resolve" : "archive";
-    const result = await recordLifecycleAction({
-      companyId: args.companyId,
-      hubItemId: args.hubItemId,
-      action,
-      expectedVersion: args.expectedVersion,
-      actorType: args.actorType,
-      actorId: args.actorId,
-      actorIsFounder: args.actorIsFounder,
-      authorityBasis: args.authorityBasis,
-      reason: args.reason,
-      idempotencyKey: args.idempotencyKey,
-      sideEffect: args.sideEffect,
-    });
-    return result.item;
-
-    const current = await db
-      .select()
-      .from(hubItems)
-      .where(and(eq(hubItems.id, args.hubItemId), eq(hubItems.companyId, args.companyId)))
-      .limit(1)
-      .then((r) => r[0]);
-    if (!current) throw notFound("Hub item not found");
-
-    // AUTHORITY gate (§7): gated by the item TYPE's authority, not by ownership.
-    // An Owner who lacks Authority is rejected HERE (the action layer), not just
-    // at render — they must Route/Escalate instead.
-    if (
-      authorityForSemanticType(current.semanticType as HubSemanticType) === "founder" &&
-      !args.actorIsFounder
-    ) {
-      throw forbidden("This decision requires founder/board authority — route or escalate it.");
-    }
-
-    // Phase 1 — atomic DB transaction: idempotency + version-guarded transition +
-    // immutable audit. The audit is DURABLE before any external side-effect.
-    const committed = await db.transaction(async (txRaw) => {
-      const tx = txRaw as unknown as Db;
-      if (args.idempotencyKey) {
-        const dup = await tx
-          .select({ id: hubAudit.id })
-          .from(hubAudit)
-          .where(
-            and(
-              eq(hubAudit.companyId, args.companyId),
-              eq(hubAudit.idempotencyKey, args.idempotencyKey),
-            ),
-          )
-          .limit(1)
-          .then((r) => r[0]);
-        if (dup) return { item: current, replayed: true as const };
-      }
-      // Guard on the CLIENT's expectedVersion: a stale token (≠ current.version)
-      // misses the WHERE and yields a 409 — same idiom as the agents.ts UPDATE.
-      // priorState records `current` (the true prior state) regardless of guard.
-      const updated = await applyGuardedTransition(
-        tx,
-        current,
-        args.nextStatus,
-        {
-          actorType: args.actorType,
-          actorId: args.actorId,
-          action: args.action,
-          authorityBasis: args.authorityBasis ?? null,
-          reason: args.reason ?? null,
-          idempotencyKey: args.idempotencyKey ?? null,
-        },
-        args.expectedVersion,
-      );
-      return { item: updated, replayed: false as const };
-    });
-    if (committed.replayed) return committed.item; // no second side-effect on replay
-
-    // Phase 2 — EXTERNAL/irreversible source-API side-effect AFTER commit. The
-    // audit row is already durable, so a relay/source failure is recoverable (the
-    // sweeper reconciles), NEVER an erased decision record. DB-only effects belong
-    // inside Phase 1's transaction instead.
-    await args.sideEffect?.();
-    return committed.item;
-  }
+  // NOTE: the former `recordAndAct` wrapper was an unreachable duplicate of
+  // `recordLifecycleAction` (its body `return`ed after delegating, leaving ~62
+  // dead lines) — deleted 2026-07-04 (R3). All production callers and tests use
+  // `recordLifecycleAction` directly.
 
   // ── Reconciliation sweeper (sources = truth) ────────────────────────────────
 
@@ -1755,7 +1748,6 @@ export function hubItemsService(db: Db) {
     recordLifecycleAction,
     undoAction,
     bulkAction,
-    recordAndAct,
     reconcile,
     counts,
   };

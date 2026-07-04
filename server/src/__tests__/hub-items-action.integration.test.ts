@@ -1,7 +1,11 @@
 /**
- * W1a Task 7 — `hubItems.recordAndAct` optimistic-concurrency + audit-before-
- * side-effect real-DB integration. Embedded-postgres (mirrors w6). Skipped on
- * Windows (Issue #114); Linux CI is the authoritative gate.
+ * W1a Task 7 — `hubItems.recordLifecycleAction` optimistic-concurrency +
+ * audit-before-side-effect real-DB integration. Embedded-postgres (mirrors w6).
+ * Skipped on Windows (Issue #114); Linux CI is the authoritative gate.
+ *
+ * (Migrated 2026-07-04 from the deleted `recordAndAct` wrapper to
+ * `recordLifecycleAction` — same semantics; the return shape is now
+ * {item, auditId, undoDeadline} instead of the bare item.)
  *
  * Asserts: stale expectedVersion → 409 (no transition); an Owner lacking founder
  * authority acting on an approval_request → 403; a fresh version transitions
@@ -86,7 +90,7 @@ async function activityCount(companyId: string, hubItemId: string, action: strin
   return firstRow<{ n: number }>(res).n;
 }
 
-describe.skipIf(process.platform === "win32")("hubItems.recordAndAct — real DB", () => {
+describe.skipIf(process.platform === "win32")("hubItems.recordLifecycleAction — real DB", () => {
   it("setup harness boots", () => {
     if (setupError) throw new Error(String(setupError));
     expect(db).toBeTruthy();
@@ -99,15 +103,14 @@ describe.skipIf(process.platform === "win32")("hubItems.recordAndAct — real DB
     const item = await svc.emit({ companyId, semanticType: "run_failed", sourceType: "heartbeat_run", sourceId: "stale-1", title: "x", ownerUserId: founderId });
     let caught: unknown;
     try {
-      await svc.recordAndAct({
+      await svc.recordLifecycleAction({
         companyId,
         hubItemId: item.id,
-        action: "dismiss",
+        action: "archive",
         expectedVersion: item.version + 5, // stale
         actorType: "user",
         actorId: founderId,
         actorIsFounder: true,
-        nextStatus: "archived",
       });
     } catch (e) {
       caught = e;
@@ -129,15 +132,14 @@ describe.skipIf(process.platform === "win32")("hubItems.recordAndAct — real DB
     const item = await svc.emit({ companyId, semanticType: "approval_request", sourceType: "approval", sourceId: "appr-403", title: "Approve", ownerUserId: founderId });
     let caught: unknown;
     try {
-      await svc.recordAndAct({
+      await svc.recordLifecycleAction({
         companyId,
         hubItemId: item.id,
-        action: "approve",
+        action: "resolve",
         expectedVersion: item.version,
         actorType: "user",
         actorId: founderId,
         actorIsFounder: false, // owner but NOT founder authority
-        nextStatus: "resolved",
       });
     } catch (e) {
       caught = e;
@@ -154,7 +156,7 @@ describe.skipIf(process.platform === "win32")("hubItems.recordAndAct — real DB
     const item = await svc.emit({ companyId, semanticType: "run_failed", sourceType: "heartbeat_run", sourceId: "ok-1", title: "x", ownerUserId: founderId });
 
     const order: string[] = [];
-    const result = await svc.recordAndAct({
+    const result = await svc.recordLifecycleAction({
       companyId,
       hubItemId: item.id,
       action: "resolve",
@@ -162,7 +164,6 @@ describe.skipIf(process.platform === "win32")("hubItems.recordAndAct — real DB
       actorType: "user",
       actorId: founderId,
       actorIsFounder: true,
-      nextStatus: "resolved",
       sideEffect: async () => {
         // At side-effect time the audit row must already be committed.
         order.push(`audit=${await auditCount(companyId, item.id)}`);
@@ -171,8 +172,8 @@ describe.skipIf(process.platform === "win32")("hubItems.recordAndAct — real DB
       },
     });
 
-    expect(result.status).toBe("resolved");
-    expect(result.version).toBe(item.version + 1);
+    expect(result.item.status).toBe("resolved");
+    expect(result.item.version).toBe(item.version + 1);
     // Side-effect saw exactly one durable audit row already present.
     expect(order).toEqual(["audit=1", "side-effect"]);
 
@@ -195,7 +196,7 @@ describe.skipIf(process.platform === "win32")("hubItems.recordAndAct — real DB
     const key = `idem-key-${Math.random()}`;
     let sideEffects = 0;
     const doAct = (expectedVersion: number) =>
-      svc.recordAndAct({
+      svc.recordLifecycleAction({
         companyId,
         hubItemId: item.id,
         action: "resolve",
@@ -204,7 +205,6 @@ describe.skipIf(process.platform === "win32")("hubItems.recordAndAct — real DB
         actorId: founderId,
         actorIsFounder: true,
         idempotencyKey: key,
-        nextStatus: "resolved",
         sideEffect: async () => {
           sideEffects += 1;
           return {};

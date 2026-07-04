@@ -259,3 +259,179 @@ describe("hubItems lifecycle query semantics", () => {
     });
   });
 });
+
+// ── Mirror-model manual-lifecycle guard (R3 + H1) ───────────────────────────
+//
+// resolve/archive on a still-pending source-backed decision item is
+// server-rejected (409); items leave the waiting lane only when the source is
+// decided. TWO source classes with DIFFERENT pending checks:
+//   - approval_request / join_request → block while the SOURCE reconciler
+//     reports non-terminal (pending). terminal/gone source → allow (fail-open).
+//   - agent_runtime_decision → block ONLY while decision.status ∈ {created,
+//     shown}; answered/relay_failed rows MUST stay clearable (Task 5 sweep).
+// dismiss/snooze/claim/release are unaffected.
+
+// A select() mock that returns a DIFFERENT result set per call, in sequence:
+// call 1 = the hub item (`current`), call 2 = the backing source row.
+function makeSequencedDb(sequence: unknown[][]) {
+  let i = 0;
+  const db = {
+    select: vi.fn(() => {
+      const rows = sequence[Math.min(i, sequence.length - 1)] ?? [];
+      i += 1;
+      return makeSelectChain(rows, { where: [] });
+    }),
+    transaction: vi.fn((callback: (tx: unknown) => Promise<unknown>) =>
+      callback({
+        update: vi.fn(() => makeUpdateChain([{ status: "resolved", version: 2 }])),
+        insert: vi
+          .fn()
+          .mockReturnValueOnce(
+            makeInsertChain([{ id: "audit-1", undoDeadline: new Date("2026-06-30T10:00:08.000Z") }]),
+          )
+          .mockReturnValueOnce(makeInsertChain([])),
+      }),
+    ),
+  };
+  return db;
+}
+
+function openHubItem(over: Record<string, unknown> = {}) {
+  return {
+    id: "hub-1",
+    companyId: "company-1",
+    semanticType: "approval_request",
+    sourceType: "approval",
+    sourceId: "src-1",
+    status: "open",
+    version: 1,
+    resolvedAt: null,
+    archivedAt: null,
+    claimedByUserId: null,
+    claimedAt: null,
+    ownerPool: null,
+    ...over,
+  };
+}
+
+async function catchStatus(fn: () => Promise<unknown>): Promise<number | "ok"> {
+  try {
+    await fn();
+    return "ok";
+  } catch (e) {
+    return (e as { status?: number }).status ?? -1;
+  }
+}
+
+describe("hubItems mirror-model lifecycle guard (R3 + H1)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockPerms.getEffectiveRole.mockResolvedValue("founder");
+    mockPerms.getTeamLeadDepartments.mockResolvedValue([]);
+  });
+
+  const founderArgs = {
+    companyId: "company-1",
+    hubItemId: "hub-1",
+    expectedVersion: 1,
+    actorType: "user" as const,
+    actorId: "founder-1",
+    actorIsFounder: true,
+    authorityBasis: "founder",
+  };
+
+  it.each(["resolve", "archive"] as const)(
+    "%s on an OPEN approval_request whose source is PENDING → 409",
+    async (action) => {
+      const db = makeSequencedDb([
+        [openHubItem({ semanticType: "approval_request", sourceType: "approval" })],
+        [{ status: "pending", decisionNote: null, updatedAt: new Date() }],
+      ]);
+      const svc = hubItemsService(db as never);
+      expect(await catchStatus(() => svc.recordLifecycleAction({ ...founderArgs, action }))).toBe(409);
+    },
+  );
+
+  it("resolve on an approval_request whose source is DECIDED (row still open) → allowed", async () => {
+    const db = makeSequencedDb([
+      [openHubItem({ semanticType: "approval_request", sourceType: "approval" })],
+      [{ status: "approved", decisionNote: "ok", updatedAt: new Date() }],
+    ]);
+    const svc = hubItemsService(db as never);
+    expect(await catchStatus(() => svc.recordLifecycleAction({ ...founderArgs, action: "resolve" }))).toBe("ok");
+  });
+
+  it("archive on an approval_request whose source ROW IS GONE → allowed (fail-open)", async () => {
+    const db = makeSequencedDb([
+      [openHubItem({ semanticType: "approval_request", sourceType: "approval" })],
+      [], // reconciler → terminal:true
+    ]);
+    const svc = hubItemsService(db as never);
+    expect(await catchStatus(() => svc.recordLifecycleAction({ ...founderArgs, action: "archive" }))).toBe("ok");
+  });
+
+  it("archive on an OPEN join_request whose source is PENDING → 409", async () => {
+    const db = makeSequencedDb([
+      [openHubItem({ semanticType: "join_request", sourceType: "join_request" })],
+      [{ requestType: "agent", status: "pending_approval", agentName: "Scout", requestEmailSnapshot: null, adapterType: "claude_local", updatedAt: new Date() }],
+    ]);
+    const svc = hubItemsService(db as never);
+    expect(await catchStatus(() => svc.recordLifecycleAction({ ...founderArgs, action: "archive" }))).toBe(409);
+  });
+
+  it("archive on a join_request whose source is SETTLED → allowed", async () => {
+    const db = makeSequencedDb([
+      [openHubItem({ semanticType: "join_request", sourceType: "join_request" })],
+      [{ requestType: "agent", status: "approved", agentName: "Scout", requestEmailSnapshot: null, adapterType: "claude_local", updatedAt: new Date() }],
+    ]);
+    const svc = hubItemsService(db as never);
+    expect(await catchStatus(() => svc.recordLifecycleAction({ ...founderArgs, action: "archive" }))).toBe("ok");
+  });
+
+  it.each(["created", "shown"] as const)(
+    "resolve on a %s agent_runtime_decision item → 409",
+    async (status) => {
+      const db = makeSequencedDb([
+        [openHubItem({ semanticType: "agent_runtime_decision", sourceType: "runtime_decision" })],
+        [{ status }],
+      ]);
+      const svc = hubItemsService(db as never);
+      expect(await catchStatus(() => svc.recordLifecycleAction({ ...founderArgs, action: "resolve" }))).toBe(409);
+    },
+  );
+
+  it("archive on an ANSWERED agent_runtime_decision item → ALLOWED (Task 5 collision guard)", async () => {
+    const db = makeSequencedDb([
+      [openHubItem({ semanticType: "agent_runtime_decision", sourceType: "runtime_decision" })],
+      [{ status: "answered" }],
+    ]);
+    const svc = hubItemsService(db as never);
+    expect(await catchStatus(() => svc.recordLifecycleAction({ ...founderArgs, action: "archive" }))).toBe("ok");
+  });
+
+  it("resolve on a relay_failed agent_runtime_decision item → ALLOWED (dead-run stall stays clearable)", async () => {
+    const db = makeSequencedDb([
+      [openHubItem({ semanticType: "agent_runtime_decision", sourceType: "runtime_decision" })],
+      [{ status: "relay_failed" }],
+    ]);
+    const svc = hubItemsService(db as never);
+    expect(await catchStatus(() => svc.recordLifecycleAction({ ...founderArgs, action: "resolve" }))).toBe("ok");
+  });
+
+  it("claim/release on a pending approval_request are UNAFFECTED by the guard", async () => {
+    // claim requires ownerPool='board'; release requires an existing claimant.
+    const claimDb = makeSequencedDb([
+      [openHubItem({ semanticType: "approval_request", sourceType: "approval", ownerPool: "board" })],
+    ]);
+    const svc = hubItemsService(claimDb as never);
+    // The guard is scoped to resolve|archive — claim reaches the claim branch, not
+    // a source lookup (a single hub-item select, no 409 from the mirror guard).
+    expect(await catchStatus(() => svc.recordLifecycleAction({ ...founderArgs, action: "claim" }))).toBe("ok");
+
+    const releaseDb = makeSequencedDb([
+      [openHubItem({ semanticType: "approval_request", sourceType: "approval", claimedByUserId: "founder-1" })],
+    ]);
+    const svc2 = hubItemsService(releaseDb as never);
+    expect(await catchStatus(() => svc2.recordLifecycleAction({ ...founderArgs, action: "release" }))).toBe("ok");
+  });
+});

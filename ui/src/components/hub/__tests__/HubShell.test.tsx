@@ -237,6 +237,51 @@ describe("HubShell", () => {
     expect(screen.queryByRole("button", { name: /^archive$/i })).not.toBeInTheDocument();
   });
 
+  it("hides Resolve/Archive for an open approval_request (mirror model) but keeps Dismiss/Snooze", () => {
+    // items[0] is an OPEN approval_request — a source-backed decision. The mirror
+    // model (R3 + H1) forbids manual resolve/archive while the source is pending,
+    // so the viewer must not offer those affordances; personal Dismiss/Snooze stay.
+    renderShell({ selectedItemId: "hub-1" });
+
+    expect(screen.queryByRole("button", { name: /^resolve$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^archive$/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^dismiss$/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^snooze$/i })).toBeInTheDocument();
+  });
+
+  it("hides Resolve/Archive for an open join_request (mirror model)", () => {
+    const joinItem: HubItemListRow = {
+      ...items[0],
+      id: "hub-join",
+      semanticType: "join_request",
+      sourceType: "join_request",
+      sourceId: "join-1",
+      title: "Agent wants to join",
+    };
+    renderShell({ items: [joinItem], selectedItemId: "hub-join" });
+
+    expect(screen.queryByRole("button", { name: /^resolve$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^archive$/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^dismiss$/i })).toBeInTheDocument();
+  });
+
+  it("still offers Resolve/Archive for a non-mirrored notifications item (run_failed)", () => {
+    const runItem: HubItemListRow = {
+      ...items[0],
+      id: "hub-run",
+      semanticType: "run_failed",
+      lane: "notifications",
+      sourceType: "heartbeat_run",
+      sourceId: "run-1",
+      ownerPool: null,
+      title: "Run failed",
+    };
+    renderShell({ items: [runItem], selectedItemId: "hub-run" });
+
+    expect(screen.getByRole("button", { name: /^resolve$/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^archive$/i })).toBeInTheDocument();
+  });
+
   it("closes the viewer with a nullable selection", async () => {
     const user = userEvent.setup();
     const onSelectItem = vi.fn();

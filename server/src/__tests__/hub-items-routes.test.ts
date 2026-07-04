@@ -10,7 +10,6 @@ const mockSvc = vi.hoisted(() => ({
   query: vi.fn(),
   counts: vi.fn(),
   getVisible: vi.fn(),
-  recordAndAct: vi.fn(),
   applyPersonalState: vi.fn(),
   recordLifecycleAction: vi.fn(),
   undoAction: vi.fn(),
@@ -310,6 +309,34 @@ describe("hub-items routes", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(409);
     expect(res.body.details).toEqual({ currentVersion: 3 });
+  });
+
+  it("(b') POST archive on a still-pending mirrored item surfaces the mirror-guard 409", async () => {
+    // Mirror model (R3 + H1): the service rejects resolve/archive while the
+    // source is undecided; the route must forward that 409 + details verbatim.
+    mockPerms.isFounder.mockResolvedValue(true);
+    mockSvc.recordLifecycleAction.mockRejectedValue(
+      new HttpError(409, "Decide it at the source — approve/reject the approval or answer the runtime prompt.", {
+        sourceStillPending: true,
+        sourceType: "approval",
+        sourceId: "approval-1",
+      }),
+    );
+    const app = createApp(boardActor());
+
+    const res = await request(app)
+      .post(`/api/companies/${COMPANY_A}/hub-items/${ITEM_ID}/action`)
+      .send({ action: "archive", expectedVersion: 1 });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.details).toEqual({
+      sourceStillPending: true,
+      sourceType: "approval",
+      sourceId: "approval-1",
+    });
+    expect(mockSvc.recordLifecycleAction).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "archive" }),
+    );
   });
 
   it("(c) POST action on a founder-authority item by a non-founder → 403", async () => {
