@@ -136,6 +136,50 @@ describe("ask_founder tool", () => {
     ]);
   });
 
+  it("marks the decision relayed after a successful answer (terminalizes -> hub item closes)", async () => {
+    const getById = vi.fn().mockResolvedValue({ adapterType: "codex_local" });
+    createPrompt.mockResolvedValue({ decision: { id: "d1" } });
+    waitForAnswer.mockResolvedValue({ answerPayload: { text: "yes" } });
+    markRelayed.mockResolvedValue({ id: "d1", status: "relayed" });
+
+    const res = await handleAskFounder(
+      makeCtx({ source: "agent", agentId: "agent-1", runId: "run-1" }, getById),
+      { question: "Ship it?" },
+    );
+
+    expect(markRelayed).toHaveBeenCalledWith({ companyId: "co-1", decisionId: "d1" });
+    expect((res as any).data).toEqual({ answered: true, answer: { text: "yes" } });
+  });
+
+  it("does NOT mark relayed on a parked (cancelled) outcome", async () => {
+    const getById = vi.fn().mockResolvedValue({ adapterType: "codex_local" });
+    createPrompt.mockResolvedValue({ decision: { id: "d1" } });
+    waitForAnswer.mockRejectedValue(new FakeCancelledError());
+
+    const res = await handleAskFounder(
+      makeCtx({ source: "agent", agentId: "agent-1", runId: "run-1" }, getById),
+      { question: "Ship it?" },
+    );
+
+    expect(markRelayed).not.toHaveBeenCalled();
+    expect((res as any).data.status).toBe("parked");
+  });
+
+  it("still returns the answer if markRelayed loses a race (answer is durable)", async () => {
+    const getById = vi.fn().mockResolvedValue({ adapterType: "codex_local" });
+    createPrompt.mockResolvedValue({ decision: { id: "d1" } });
+    waitForAnswer.mockResolvedValue({ answerPayload: { value: "a" } });
+    markRelayed.mockRejectedValue(new FakeCancelledError());
+
+    const res = await handleAskFounder(
+      makeCtx({ source: "agent", agentId: "agent-1", runId: "run-1" }, getById),
+      { question: "Pick?" },
+    );
+
+    expect((res as any).ok).toBe(true);
+    expect((res as any).data).toEqual({ answered: true, answer: { value: "a" } });
+  });
+
   it("returns a graceful parked result (NOT isError) when the wait is cancelled", async () => {
     const getById = vi.fn().mockResolvedValue({ adapterType: "codex_local" });
     createPrompt.mockResolvedValue({ decision: { id: "d1" } });

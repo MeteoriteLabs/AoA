@@ -307,11 +307,11 @@ describe.skipIf(
     const res = await p;
     expect(res).toEqual({ ok: true, data: { answered: true, answer: { text: "A" } } });
 
-    // The decision is durably answered.
+    // The decision is durably answered, then relayed so its hub item closes.
     const [after] = rowsOf(
       await db.execute(sql`SELECT status, answer_payload FROM agent_runtime_decisions WHERE id = ${decisionId}`),
     );
-    expect(String(after.status)).toBe("answered");
+    expect(String(after.status)).toBe("relayed");
     expect(after.answer_payload).toEqual({ text: "A" });
   });
 
@@ -511,5 +511,66 @@ describe.skipIf(
       `),
     );
     expect(decisions).toHaveLength(0);
+  });
+  it("Scenario 7 - an answered work_question closes its hub item (leaves waiting_on_you)", async () => {
+    if (setupError) throw new Error(String(setupError));
+
+    const { companyId, agentId } = await seedCompanyAndAgent("S7");
+    const runId = await seedHeartbeatRun(companyId, agentId, "running");
+    const ctx = buildAgentCtx(companyId, agentId, runId);
+    const svc = agentRuntimeDecisionService(db);
+
+    const p = handleAskFounder(ctx, { question: "Ship v1 now?" });
+
+    const decision = await waitForWorkQuestionDecision(companyId, runId);
+    const decisionId = String(decision.id);
+
+    const hubBefore = await findHubRowForDecision(companyId, decisionId);
+    expect(hubBefore.length).toBeGreaterThanOrEqual(1);
+    expect(String(hubBefore[0].status)).toBe("open");
+
+    const openCount = async () =>
+      Number(
+        rowsOf(
+          await db.execute(sql`
+            SELECT COUNT(*)::int AS n FROM notifications
+            WHERE company_id = ${companyId}
+              AND source_type = 'runtime_decision'
+              AND status = 'open'
+          `),
+        )[0].n,
+      );
+    const waitingOpenBefore = await openCount();
+    expect(waitingOpenBefore).toBeGreaterThanOrEqual(1);
+
+    await svc.answerPrompt({
+      companyId,
+      decisionId,
+      actorUserId: "local-board",
+      expectedSourceRevision: Number(decision.source_revision),
+      nonce: String(decision.nonce),
+      kind: "work_question",
+      answer: { text: "yes" },
+    });
+
+    const res = await p;
+    expect(res).toEqual({ ok: true, data: { answered: true, answer: { text: "yes" } } });
+
+    const [after] = rowsOf(
+      await db.execute(sql`SELECT status FROM agent_runtime_decisions WHERE id = ${decisionId}`),
+    );
+    expect(String(after.status)).toBe("relayed");
+
+    const hubAfter = rowsOf(
+      await db.execute(sql`
+        SELECT status FROM notifications
+        WHERE company_id = ${companyId} AND source_type = 'runtime_decision' AND source_id = ${decisionId}
+      `),
+    );
+    expect(hubAfter.length).toBeGreaterThanOrEqual(1);
+    expect(String(hubAfter[0].status)).not.toBe("open");
+
+    const waitingOpenAfter = await openCount();
+    expect(waitingOpenAfter).toBe(waitingOpenBefore - 1);
   });
 });

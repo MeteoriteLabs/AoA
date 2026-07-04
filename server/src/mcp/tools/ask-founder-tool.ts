@@ -90,6 +90,15 @@ export async function handleAskFounder(
       decisionId: decision.id,
       timeoutMs: WORK_QUESTION_BLOCK_TIMEOUT_MS,
     });
+    // An answered work_question is still an active status; relay terminalizes it
+    // so the projected waiting-lane hub item closes. The answer is already
+    // durable, so a relay race must not turn a real answer into a tool error.
+    try {
+      await svc.markRelayed({ companyId: ctx.companyId, decisionId: decision.id });
+    } catch {
+      // Best-effort terminalization. If cancellation/relay won the race, the
+      // item is closed by that terminal transition and the answer still returns.
+    }
     return ok({ answered: true, answer: answered.answerPayload });
   } catch (e) {
     // Every terminal NON-answer outcome parks gracefully so the model STOPS
