@@ -85,11 +85,21 @@ function renderPanel(item: HubItemListRow) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
-  return render(
+  const view = render(
     <QueryClientProvider client={queryClient}>
       <RuntimeDecisionPanel item={item} />
     </QueryClientProvider>,
   );
+  return {
+    ...view,
+    rerenderPanel(nextItem: HubItemListRow) {
+      view.rerender(
+        <QueryClientProvider client={queryClient}>
+          <RuntimeDecisionPanel item={nextItem} />
+        </QueryClientProvider>,
+      );
+    },
+  };
 }
 
 describe("RuntimeDecisionPanel", () => {
@@ -126,29 +136,97 @@ describe("RuntimeDecisionPanel", () => {
     expect(screen.getByRole("button", { name: /send answer/i })).toBeInTheDocument();
   });
 
-  it("renders option buttons and posts {answer:{value}} for a work_question with options", async () => {
+  it("renders option CARDS with description + rationale and posts {answer:{value}} on select", async () => {
     const { fireEvent } = await import("@testing-library/react");
     detailSpy.mockResolvedValueOnce(
       permissionDetail({
         kind: "work_question",
+        summary: "Deciding the launch segment before we build onboarding.",
+        promptText:
+          "Which customer segment should we prioritize for the v1 launch, given limited eng bandwidth?",
         options: [
-          { label: "Approve", value: "approve" },
-          { label: "Hold", value: "hold" },
+          {
+            label: "Founder-led SaaS",
+            value: "saas",
+            description: "Teams of 3-10 running AI + humans from one control room.",
+            rationale: "Highest willingness-to-pay; matches our current wedge.",
+          },
+          { label: "Agencies", value: "agencies" },
         ] as any,
       }),
     );
     answerSpy.mockResolvedValueOnce(permissionDetail({ kind: "work_question" }));
     renderPanel(runtimeDecisionItem());
 
-    const approve = await screen.findByRole("button", { name: /approve/i });
-    expect(screen.getByRole("button", { name: /hold/i })).toBeInTheDocument();
-    // No free-text box when options are present.
-    expect(screen.queryByLabelText(/work question answer/i)).not.toBeInTheDocument();
+    expect(await screen.findByText(/deciding the launch segment/i)).toBeInTheDocument();
+    expect(screen.getByText(/which customer segment should we prioritize/i)).toBeInTheDocument();
+    expect(screen.getByText("Founder-led SaaS")).toBeInTheDocument();
+    expect(screen.getByText(/teams of 3-10 running ai/i)).toBeInTheDocument();
+    expect(screen.getByText(/highest willingness-to-pay/i)).toBeInTheDocument();
+    expect(screen.getByText("Agencies")).toBeInTheDocument();
+    expect(screen.getByLabelText(/work question answer/i)).toBeInTheDocument();
 
-    fireEvent.click(approve);
+    fireEvent.click(screen.getByRole("radio", { name: /founder-led saas/i }));
+    fireEvent.click(screen.getByRole("button", { name: /send answer/i }));
     await waitFor(() => expect(answerSpy).toHaveBeenCalledTimes(1));
-    const payload = answerSpy.mock.calls[0][2];
-    expect(payload).toMatchObject({ kind: "work_question", answer: { value: "approve" } });
+    expect(answerSpy.mock.calls[0][2]).toMatchObject({
+      kind: "work_question",
+      answer: { value: "saas" },
+    });
+  });
+
+  it("posts free-text over a selected option when the user writes their own answer", async () => {
+    const { fireEvent } = await import("@testing-library/react");
+    detailSpy.mockResolvedValueOnce(
+      permissionDetail({
+        kind: "work_question",
+        options: [{ label: "A", value: "a" }] as any,
+      }),
+    );
+    answerSpy.mockResolvedValueOnce(permissionDetail({ kind: "work_question" }));
+    renderPanel(runtimeDecisionItem());
+
+    const box = await screen.findByLabelText(/work question answer/i);
+    fireEvent.click(screen.getByRole("radio", { name: "A" }));
+    fireEvent.change(box, { target: { value: "Neither - go SMB." } });
+    fireEvent.click(screen.getByRole("button", { name: /send answer/i }));
+    await waitFor(() => expect(answerSpy).toHaveBeenCalledTimes(1));
+    expect(answerSpy.mock.calls[0][2]).toMatchObject({
+      kind: "work_question",
+      answer: { text: "Neither - go SMB." },
+    });
+  });
+
+  it("clears draft answer state when switching to a different runtime decision", async () => {
+    const { fireEvent } = await import("@testing-library/react");
+    detailSpy
+      .mockResolvedValueOnce(
+        permissionDetail({
+          id: "decision-detail-1",
+          kind: "work_question",
+          promptText: "First question",
+          sourceRevision: 1,
+          options: [{ label: "First option", value: "first" }] as any,
+        }),
+      )
+      .mockResolvedValueOnce(
+        permissionDetail({
+          id: "decision-detail-2",
+          kind: "work_question",
+          promptText: "Second question",
+          sourceRevision: 1,
+          options: [{ label: "Second option", value: "second" }] as any,
+        }),
+      );
+    const view = renderPanel(runtimeDecisionItem({ sourceId: "decision-1" }));
+
+    fireEvent.click(await screen.findByRole("radio", { name: /first option/i }));
+    expect(screen.getByRole("button", { name: /send answer/i })).toBeEnabled();
+
+    view.rerenderPanel(runtimeDecisionItem({ sourceId: "decision-2" }));
+
+    expect(await screen.findByText(/second question/i)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: /send answer/i })).toBeDisabled());
   });
 
   it("still renders the free-text box when a work_question has no options", async () => {

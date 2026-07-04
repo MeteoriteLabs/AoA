@@ -1,14 +1,20 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { RuntimeDecisionDetail } from "@armyofagents/shared";
 import { agentRuntimeDecisionsApi } from "@/api/agent-runtime-decisions";
 import type { HubItemListRow } from "@/api/hub-items";
 import { Button } from "@/components/ui/button";
 import { queryKeys } from "@/lib/queryKeys";
 
+type RuntimeDecisionOption = NonNullable<RuntimeDecisionDetail["options"]>[number] & {
+  description?: string | null;
+  rationale?: string | null;
+};
+
 export function RuntimeDecisionPanel({ item }: { item: HubItemListRow }) {
   const queryClient = useQueryClient();
   const [answerText, setAnswerText] = useState("");
+  const [selectedValue, setSelectedValue] = useState<string | null>(null);
   const decisionId = item.sourceId;
   const detailQuery = useQuery({
     queryKey: decisionId
@@ -18,6 +24,10 @@ export function RuntimeDecisionPanel({ item }: { item: HubItemListRow }) {
     enabled: Boolean(decisionId),
   });
   const detail = detailQuery.data;
+  useEffect(() => {
+    setAnswerText("");
+    setSelectedValue(null);
+  }, [detail?.id, detail?.sourceRevision]);
   const answerMutation = useMutation({
     mutationFn: (payload: Parameters<typeof agentRuntimeDecisionsApi.answer>[2]) =>
       agentRuntimeDecisionsApi.answer(item.companyId, decisionId!, payload),
@@ -51,6 +61,8 @@ export function RuntimeDecisionPanel({ item }: { item: HubItemListRow }) {
   const disabled =
     answerMutation.isPending ||
     (detail.status !== "created" && detail.status !== "shown" && detail.status !== "relay_failed");
+  const options = (detail.options ?? []) as RuntimeDecisionOption[];
+  const canSubmitQuestion = Boolean(answerText.trim() || selectedValue);
   const submitPermission = (decision: "allow_once" | "allow_always" | "deny") => {
     answerMutation.mutate({
       kind: "permission",
@@ -59,19 +71,12 @@ export function RuntimeDecisionPanel({ item }: { item: HubItemListRow }) {
       nonce: detail.nonce,
     });
   };
-  const submitQuestion = () => {
-    if (!answerText.trim()) return;
+  const submitQuestionAnswer = () => {
+    const trimmedAnswer = answerText.trim();
+    if (!trimmedAnswer && !selectedValue) return;
     answerMutation.mutate({
       kind: "work_question",
-      answer: { text: answerText.trim() },
-      expectedSourceRevision: detail.sourceRevision,
-      nonce: detail.nonce,
-    });
-  };
-  const submitQuestionOption = (value: string) => {
-    answerMutation.mutate({
-      kind: "work_question",
-      answer: { value },
+      answer: trimmedAnswer ? { text: trimmedAnswer } : { value: selectedValue! },
       expectedSourceRevision: detail.sourceRevision,
       nonce: detail.nonce,
     });
@@ -87,8 +92,13 @@ export function RuntimeDecisionPanel({ item }: { item: HubItemListRow }) {
           {runtimeDecisionStatusLabel(detail.status)}
         </span>
       </div>
+      {detail.summary ? (
+        <div className="mt-4 rounded-md border border-border bg-muted/40 px-3 py-2 text-sm leading-6 text-text">
+          {detail.summary}
+        </div>
+      ) : null}
       {detail.promptText ? (
-        <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-text">{detail.promptText}</p>
+        <p className="mt-4 whitespace-pre-wrap text-base leading-7 text-text">{detail.promptText}</p>
       ) : null}
       <RuntimeDecisionFacts detail={detail} />
       {detail.kind === "permission" ? (
@@ -103,30 +113,57 @@ export function RuntimeDecisionPanel({ item }: { item: HubItemListRow }) {
             Deny
           </Button>
         </div>
-      ) : detail.options && detail.options.length > 0 ? (
-        <div className="mt-4 grid gap-2">
-          {detail.options.map((opt) => (
-            <Button
-              key={opt.value}
-              type="button"
-              size="sm"
-              disabled={disabled}
-              onClick={() => submitQuestionOption(opt.value)}
-            >
-              {opt.label}
-            </Button>
-          ))}
-        </div>
       ) : (
-        <div className="mt-4 grid gap-2">
-          <textarea
-            aria-label="Work question answer"
-            value={answerText}
-            disabled={disabled}
-            onChange={(event) => setAnswerText(event.target.value)}
-            className="min-h-24 resize-y rounded border border-border bg-bg p-2 text-sm"
-          />
-          <Button type="button" size="sm" disabled={disabled || !answerText.trim()} onClick={submitQuestion}>
+        <div className="mt-4 grid gap-4">
+          {options.length > 0 ? (
+            <fieldset className="grid gap-2" disabled={disabled}>
+              <legend className="sr-only">Work question options</legend>
+              {options.map((opt) => (
+                <label
+                  key={opt.value}
+                  className="flex cursor-pointer gap-3 rounded-md border border-border bg-bg p-3 text-sm transition-colors hover:bg-muted/30 has-[:checked]:border-primary has-[:checked]:bg-primary/5 has-[:disabled]:cursor-not-allowed has-[:disabled]:opacity-60"
+                >
+                  <input
+                    type="radio"
+                    name={`runtime-decision-${detail.id}-option`}
+                    value={opt.value}
+                    checked={selectedValue === opt.value}
+                    disabled={disabled}
+                    onChange={() => {
+                      setSelectedValue(opt.value);
+                      setAnswerText("");
+                    }}
+                    className="mt-1 h-4 w-4 shrink-0"
+                  />
+                  <span className="grid gap-1">
+                    <span className="font-semibold text-text">{opt.label}</span>
+                    {opt.description ? (
+                      <span className="leading-6 text-muted-foreground">{opt.description}</span>
+                    ) : null}
+                    {opt.rationale ? (
+                      <span className="leading-6 text-muted-foreground">Rationale: {opt.rationale}</span>
+                    ) : null}
+                  </span>
+                </label>
+              ))}
+            </fieldset>
+          ) : null}
+          <label className="grid gap-2 text-sm font-medium text-text">
+            <span>{options.length > 0 ? "Or write your own answer" : "Your answer"}</span>
+            <textarea
+              aria-label="Work question answer"
+              value={answerText}
+              disabled={disabled}
+              onChange={(event) => {
+                setAnswerText(event.target.value);
+                if (event.target.value.trim()) {
+                  setSelectedValue(null);
+                }
+              }}
+              className="min-h-24 resize-y rounded border border-border bg-bg p-2 text-sm"
+            />
+          </label>
+          <Button type="button" size="sm" disabled={disabled || !canSubmitQuestion} onClick={submitQuestionAnswer}>
             Send answer
           </Button>
         </div>
