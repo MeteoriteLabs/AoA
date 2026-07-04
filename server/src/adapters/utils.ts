@@ -24,6 +24,11 @@ export {
   ensureCommandResolvable,
 } from "@armyofagents/adapter-utils/server-utils";
 
+/** Strip non-Latin1 characters that crash WIN1252-encoded embedded Postgres on Windows. */
+export function sanitizeForDb(text: string): string {
+  return text.replace(/[^\x00-\xFF]/g, "");
+}
+
 // Re-export runChildProcess with the server's pino logger wired in.
 import { runChildProcess as _runChildProcess } from "@armyofagents/adapter-utils/server-utils";
 import type { RunProcessResult } from "@armyofagents/adapter-utils/server-utils";
