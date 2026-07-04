@@ -1054,11 +1054,12 @@ export const NOTIFICATION_TYPES = [
   // Phase 1 Phase E batch 3 (T23): new thread-coordination notifications
   // surfaced in Inbox. Backing payload still lives on the existing
   // notifications row shape (title/message/relatedEntityType/relatedEntityId).
-  "thread.scope_proposal_posted",
+  // NOTE: thread.scope_proposal_posted + thread.human_input_needed were REMOVED
+  // (Task 10, 2026-07-04) alongside their pruned hub semantic types — both had
+  // zero writers; the events never fired. Do NOT re-add without a real producer.
   "thread.artifact_needs_review",
   "thread.crew_failed",
   "thread.spinoff_suggested",
-  "thread.human_input_needed",
 ] as const;
 export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
 

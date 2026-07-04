@@ -20,7 +20,11 @@ import type {
   UpdateHubAutopilotPolicyInput,
   UpdateNotificationPreferencesInput,
 } from "@armyofagents/shared";
-import { DEFAULT_NOTIFICATION_PREFERENCES, isFounderGatedAutopilotType } from "@armyofagents/shared";
+import {
+  DEFAULT_NOTIFICATION_PREFERENCES,
+  isFounderGatedAutopilotType,
+  isInternalSemanticType,
+} from "@armyofagents/shared";
 import { Button } from "@/components/ui/button";
 import { HubHome } from "./HubHome";
 import { HubHomeTab } from "./HubHomeTab";
@@ -481,7 +485,12 @@ export function HubShell({
                   </select>
                 </label>
                 <div className="grid gap-2">
-                  {autopilotPolicy.rules.map((rule) => {
+                  {autopilotPolicy.rules
+                    // Hide internal-only sink types (legacy_other) from the
+                    // founder-facing rules list — they can never fire in a
+                    // fresh install (Task 10). The stored rule stays intact.
+                    .filter((rule) => !isInternalSemanticType(rule.semanticType))
+                    .map((rule) => {
                     const label = semanticTypeLabel(rule.semanticType);
                     const founderGated = isFounderGatedAutopilotType(rule.semanticType);
                     return (
@@ -585,7 +594,11 @@ export function HubShell({
                     ) : null}
                   </div>
                   <div className="grid gap-2">
-                    {notificationPreferences.rules.map((rule) => {
+                    {notificationPreferences.rules
+                      // Hide internal-only sink types (legacy_other) — see the
+                      // autopilot list above (Task 10).
+                      .filter((rule) => !isInternalSemanticType(rule.semanticType))
+                      .map((rule) => {
                       const label = semanticTypeLabel(rule.semanticType);
                       return (
                         <div key={rule.semanticType} className="grid gap-2 border-t border-border pt-2 first:border-t-0 first:pt-0">

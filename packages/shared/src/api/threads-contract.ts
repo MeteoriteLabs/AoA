@@ -77,12 +77,13 @@ export const CrewAdapterConfigSchema = z.object({
 export type CrewAdapterConfig = z.infer<typeof CrewAdapterConfigSchema>;
 
 // ---- Notification types (new Phase 1 types extending existing constants) ----
+// NOTE: thread.scope_proposal_posted + thread.human_input_needed were REMOVED
+// (Task 10, 2026-07-04) with their pruned hub semantic types — zero writers ever
+// shipped. Do NOT re-add without a real producer.
 export const NEW_NOTIFICATION_TYPES = [
-  "thread.scope_proposal_posted",
   "thread.artifact_needs_review",
   "thread.crew_failed",
   "thread.spinoff_suggested",
-  "thread.human_input_needed",
 ] as const;
 export const NewNotificationTypeSchema = z.enum(NEW_NOTIFICATION_TYPES);
 export type NewNotificationType = z.infer<typeof NewNotificationTypeSchema>;

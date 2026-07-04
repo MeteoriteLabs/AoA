@@ -71,6 +71,37 @@ type BudgetAlertLike = {
   updatedAt: SourceUpdatedAt;
 };
 
+// CLI extraction failure kinds classified by extraction-cli.ts. Mirror of the
+// UI's CliExtractionErrorKind (DiscussionDetail.tsx) — kept here so the hub
+// summary carries the SAME actionable guidance the founder sees in-thread.
+type ExtractionFailureKind =
+  | "not_installed"
+  | "not_authed"
+  | "timeout"
+  | "nonzero_exit"
+  | "unparseable";
+
+type ExtractionFailedLike = {
+  entryId: string;
+  discussionId: string;
+  companyId: string;
+  discussionTitle: string | null;
+  ownerUserId: string | null;
+  failureKind: ExtractionFailureKind | string | null;
+  failureMessage: string | null;
+  updatedAt: SourceUpdatedAt;
+};
+
+type RoutineFailedLike = {
+  runId: string;
+  routineId: string;
+  companyId: string;
+  routineName: string;
+  failureReason: string | null;
+  createdByUserId: string | null;
+  updatedAt: SourceUpdatedAt;
+};
+
 function spaced(value: string) {
   return value.replace(/_/g, " ");
 }
@@ -262,6 +293,81 @@ export function buildBudgetAlertHubEmit(alert: BudgetAlertLike): EmitArgs {
     ownerPool: "board",
     priority: alert.monthUtilizationPercent >= 100 ? "urgent" : "high",
     sourcePermissionRevision: sourceRevision(alert.updatedAt),
+  };
+}
+
+// Classified extraction-failure guidance for the hub summary. Mirrors the
+// in-thread copy in ui/src/pages/DiscussionDetail.tsx `extractionFailureMessage`
+// so the inbox signal and the DiscussionDetail affordance say the same thing.
+// Extraction is CLI-only (Decision #104, amended 2026-06-27): the guidance NEVER
+// points at a hosted key / Settings — the CLI kinds carry the actionable copy.
+export function formatExtractionFailureGuidance(
+  kind: ExtractionFailureKind | string | null,
+  message: string | null,
+): string {
+  switch (kind) {
+    case "not_installed":
+      // Prefer the server's CLI-specific message (e.g. "codex CLI not found")
+      // so codex-configured companies aren't told to fix Claude.
+      return message ?? "Extraction CLI not detected. Install your configured CLI and sign in.";
+    case "not_authed":
+      return message ?? "Extraction CLI is not logged in. Run its login flow.";
+    case "timeout":
+      return "Extraction timed out. Try Reprocess.";
+    case "nonzero_exit":
+    case "unparseable":
+      return `Extraction failed — try Reprocess.${message ? ` ${message}` : ""}`;
+    default:
+      // Legacy/unknown kind — surface the raw message with no Settings escape.
+      return message ?? "Extraction failed.";
+  }
+}
+
+// extraction_failed (Task 10, D3): sourceType "discussion_entry" (NOT
+// "discussion") so this never collides with the discussion_pending reconciler,
+// and sourceId = the raw entry id. relatedEntity = the discussion so
+// hubTabForItem resolves the thread tab (DiscussionDetail carries the reprocess
+// affordance). Owner = the discussion owner; priority high (a silently stalled
+// funnel is a first-week trust killer).
+export function buildExtractionFailedHubEmit(entry: ExtractionFailedLike): EmitArgs {
+  const title = entry.discussionTitle?.trim() || "Discussion";
+  return {
+    companyId: entry.companyId,
+    semanticType: "extraction_failed",
+    sourceType: "discussion_entry",
+    sourceId: entry.entryId,
+    title: `Extraction failed in ${title}`,
+    summary: formatExtractionFailureGuidance(entry.failureKind, entry.failureMessage),
+    ownerUserId: entry.ownerUserId,
+    relatedEntityType: "discussion",
+    relatedEntityId: entry.discussionId,
+    priority: "high",
+    sourcePermissionRevision: sourceRevision(entry.updatedAt),
+  };
+}
+
+// routine_outcome (Task 10, D3): FAILURE-ONLY. Routine SUCCESS is already
+// visible (execution issue → agent run → run_complete + the Routines page), so a
+// success emit would be pure spam. The uncovered signal is SILENT automation
+// failure (tick crashed before an issue, or the execution issue got
+// blocked/cancelled). sourceType "routine_run"; relatedEntity = the routine so
+// the /routines fullLink resolves; owner = the routine creator else the board
+// pool; priority high.
+export function buildRoutineFailedHubEmit(run: RoutineFailedLike): EmitArgs {
+  const name = run.routineName?.trim() || "Routine";
+  return {
+    companyId: run.companyId,
+    semanticType: "routine_outcome",
+    sourceType: "routine_run",
+    sourceId: run.runId,
+    title: `Routine failed: ${name}`,
+    summary: run.failureReason ?? "Routine run failed.",
+    ownerUserId: run.createdByUserId ?? undefined,
+    ownerPool: run.createdByUserId ? undefined : "board",
+    relatedEntityType: "routine",
+    relatedEntityId: run.routineId,
+    priority: "high",
+    sourcePermissionRevision: sourceRevision(run.updatedAt),
   };
 }
 

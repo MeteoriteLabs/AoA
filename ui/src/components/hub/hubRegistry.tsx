@@ -3,8 +3,6 @@ import {
   Bell,
   Bot,
   CheckSquare,
-  FileQuestion,
-  GitPullRequest,
   Lightbulb,
   MessageSquare,
   Rocket,
@@ -50,9 +48,8 @@ const firstSegment = (item: HubItemListRow): string =>
  * The whole sourceId, verbatim. Used by scan-materialized producers
  * (`hub-source-producers.ts`) whose sourceId IS the raw entity id
  * (run_failed→run.id, budget_alert→companyId, stale_work→issue.id,
- * reminder→reminder.id) and by the id-only source producers
- * (approval/join_request/discussion_pending/scope_proposal/human_input_needed/
- * extraction_failed/routine_outcome).
+ * reminder→reminder.id, extraction_failed→entry.id, routine_outcome→run.id) and
+ * by the id-only source producers (approval/join_request/discussion_pending).
  */
 const rawSource = (item: HubItemListRow): string => item.sourceId ?? "";
 
@@ -113,29 +110,9 @@ export const HUB_REGISTRY: Record<HubSemanticType, HubRegistryEntry> = {
     // hub-source-producers.ts:125-127 — sourceId IS the join_request id.
     resolveTabId: preferRelated(rawSource),
   },
-  human_input_needed: {
-    semanticType: "human_input_needed",
-    lane: HUB_SEMANTIC_TO_LANE.human_input_needed,
-    label: "Needs input",
-    icon: FileQuestion,
-    viewerKind: "discussion",
-    fullLink: sourceLink("/discussions"),
-    tabKind: "thread",
-    // notification-registry `thread.human_input_needed` → sourceType "discussion";
-    // sourceId is the discussion id (or the composite when relatedEntityId set).
-    resolveTabId: preferRelated(rawSource),
-  },
-  scope_proposal: {
-    semanticType: "scope_proposal",
-    lane: HUB_SEMANTIC_TO_LANE.scope_proposal,
-    label: "Scope proposal",
-    icon: GitPullRequest,
-    viewerKind: "discussion",
-    fullLink: sourceLink("/discussions"),
-    tabKind: "thread",
-    // notification-registry `thread.scope_proposal_posted` → discussion source.
-    resolveTabId: preferRelated(rawSource),
-  },
+  // NOTE: human_input_needed + scope_proposal entries were PRUNED (Task 10,
+  // 2026-07-04) — both were registry-only hub types with no live producer. The
+  // Record<HubSemanticType,…> type forces this cleanup at compile time.
   agent_runtime_decision: {
     semanticType: "agent_runtime_decision",
     lane: HUB_SEMANTIC_TO_LANE.agent_runtime_decision,

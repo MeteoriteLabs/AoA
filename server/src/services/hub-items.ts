@@ -12,6 +12,7 @@ import {
   heartbeatRuns,
   joinRequests,
   discussions,
+  discussionEntries,
   suggestions,
   issues,
   companies,
@@ -86,6 +87,20 @@ import { formatBudgetAlertSummary } from "./hub-source-producers.js";
 // Semantic types that resolve to a given lane (lane is derived, not a column).
 function semanticTypesForLane(lane: HubLane): HubSemanticType[] {
   return HUB_SEMANTIC_TYPES.filter((t) => laneForSemanticType(t) === lane);
+}
+
+// Fast membership check for decorateItem's P3-1 unknown-type strip (Task 10).
+const HUB_SEMANTIC_TYPE_SET: ReadonlySet<string> = new Set(HUB_SEMANTIC_TYPES);
+
+// P3-1 (Task 10) pure resolver: map a stored semanticType to its lane, degrading
+// null OR an unknown/pruned string (a leftover human_input_needed/scope_proposal
+// [SEED] row after the prune) to legacy_other's lane (notifications) — never
+// `undefined`. Exported so the strip is unit-testable without a DB.
+export function resolveLaneForStoredType(semanticType: string | null): HubLane | null {
+  if (!semanticType) return null;
+  return HUB_SEMANTIC_TYPE_SET.has(semanticType)
+    ? laneForSemanticType(semanticType as HubSemanticType)
+    : laneForSemanticType("legacy_other");
 }
 
 // ── Emit ────────────────────────────────────────────────────────────────────
@@ -211,13 +226,13 @@ export function hubItemsService(db: Db) {
     return [a.companyId, a.sourceType, a.sourceId, a.semanticType, a.scopeKey ?? ""].join(":");
   }
 
+  // P3-1 (Task 10): a row whose semanticType is null OR an unknown/pruned string
+  // (e.g. a leftover `human_input_needed`/`scope_proposal` [SEED] row after the
+  // prune) must NOT surface with `lane: undefined` in the lane-LESS reads (Home
+  // fetch, `q` search). Map an unknown non-null type to legacy_other's lane
+  // (notifications) — the internal catch-all sink — so it degrades cleanly.
   function decorateItem<T extends { semanticType: string | null }>(row: T) {
-    return {
-      ...row,
-      lane: row.semanticType
-        ? laneForSemanticType(row.semanticType as HubSemanticType)
-        : null,
-    };
+    return { ...row, lane: resolveLaneForStoredType(row.semanticType) };
   }
 
   function publishHubItemChanged(
@@ -1477,6 +1492,32 @@ export function hubItemsService(db: Db) {
     };
   };
 
+  // discussion_entry backs the extraction_failed item (Task 10, D3). It is
+  // terminal (→ close) once the entry recovers — extractionStatus is no longer
+  // 'failed' (reprocess resets to 'pending'; success sets 'completed') — or the
+  // entry is gone. Joined to discussions for the company scope (the entry table
+  // has no companyId column). Fail-open on a missing row (safe: close).
+  const reconcileDiscussionEntry: SourceReconciler = async (companyId, sourceId) => {
+    const row = await db
+      .select({
+        extractionStatus: discussionEntries.extractionStatus,
+        // discussion_entries has no updatedAt column — use createdAt as the
+        // (stable) permission revision anchor.
+        createdAt: discussionEntries.createdAt,
+      })
+      .from(discussionEntries)
+      .innerJoin(discussions, eq(discussionEntries.discussionId, discussions.id))
+      .where(and(eq(discussionEntries.id, sourceId), eq(discussions.companyId, companyId)))
+      .limit(1)
+      .then((r) => r[0] ?? null);
+    if (!row) return { terminal: true, summary: null, permissionRevision: null };
+    return {
+      terminal: row.extractionStatus !== "failed",
+      summary: null,
+      permissionRevision: row.createdAt ? new Date(row.createdAt).toISOString() : null,
+    };
+  };
+
   const reconcileSuggestion: SourceReconciler = async (companyId, sourceId) => {
     const row = await db
       .select({
@@ -1591,6 +1632,7 @@ export function hubItemsService(db: Db) {
     runtime_decision: reconcileRuntimeDecision,
     join_request: reconcileJoinRequest,
     discussion: reconcileDiscussion,
+    discussion_entry: reconcileDiscussionEntry,
     suggestion: reconcileSuggestion,
     issue: reconcileIssue,
     company_budget: reconcileCompanyBudget,
@@ -1622,10 +1664,13 @@ export function hubItemsService(db: Db) {
             ? "agent_runtime_decision"
             // company_budget carries exactly one semanticType (budget_alert);
             // scope for symmetry with the other multi-meaning sourceTypes (H3).
-            // (Task 10 adds another branch here for extraction_failed.)
             : opts.sourceType === "company_budget"
               ? "budget_alert"
-              : null;
+              // discussion_entry backs exactly the extraction_failed item
+              // (Task 10, D3); scope so the sweep only closes that row.
+              : opts.sourceType === "discussion_entry"
+                ? "extraction_failed"
+                : null;
 
     const conditions = [
       eq(hubItems.companyId, companyId),
