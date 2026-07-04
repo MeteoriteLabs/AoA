@@ -198,7 +198,7 @@ Three roles: `founder`, `team_lead`, `team_member`. Department-scoped. Additive 
 
 Requests with neither → 401. `local_trusted` MCP writes succeed without a Bearer token (loopback is the trust boundary). `cloud_auth` / `authenticated` deployments reject unauth'd MCP traffic.
 
-**Outbound (AoA as MCP server) — 34 tools total, RBAC-scoped:** Read (11), Write (8), Document (5), Approval (10). Also exposes 4 MCP resources. Full tool registry: `server/src/mcp/tools/index.ts`.
+**Outbound (AoA as MCP server) — 36 tools total, RBAC-scoped:** Read (11), Write (10), Document (5), Approval (10). Also exposes 4 MCP resources. Full tool registry: `server/src/mcp/tools/index.ts`. (Write (10) = the CRUD-write tools + `memory.write` + `ask_founder`, the blocking work_question caller; the separate `use_skill` skill tool is gated to board/commander and not counted in the RBAC-CRUD total.)
 
 ### Commander (Internal Agent)
 
