@@ -296,3 +296,198 @@ describe("readFakeCrewControl", () => {
     });
   });
 });
+
+describe("controller-mode Adjutant branch (fake-crew harness Path B)", () => {
+  function controlFileWith(adjutant: Record<string, unknown>): string {
+    const dir = mkdtempSync(join(tmpdir(), "aoa-fake-crew-ctl-"));
+    const file = join(dir, "control.json");
+    writeFileSync(file, JSON.stringify({ adjutant }));
+    return file;
+  }
+
+  const gatedArgsBase = {
+    db,
+    agent: { id: "agent-adj", name: "Adjutant" },
+    payload: {
+      companyId: "co-1",
+      source: "mention",
+      threadId: "thr-1",
+      effectiveAutonomy: 1,
+    },
+    runId: "run-1",
+    discussionRunMode: "controller_action_gate" as const,
+    threadFreshness: { latestHumanSeq: 3 },
+  };
+
+  it("queues create_scope_draft via proposeThreadAction + posts a visible confirmation entry", async () => {
+    const proposeThreadAction = vi.fn(async () => ({ id: "action-1" }));
+    const addEntry = vi.fn();
+    const proposeWork = vi.fn();
+    const loadLatestHumanEntry = vi.fn(async () => ({
+      id: "e-1",
+      rawContent: "please scope this into tracked tasks",
+      seq: 3,
+    }));
+    const file = controlFileWith({
+      mode: "controller_scope",
+      summary: "Token endpoint scope",
+      proposedTasks: [{ title: "Build token endpoint", assigneeRole: "engineer" }],
+    });
+
+    const result = await maybeExecuteFakeCrewTurn({
+      ...gatedArgsBase,
+      env: { AOA_E2E_FAKE_CREW_LLM: "1", AOA_E2E_FAKE_CREW_CONTROL: file } as NodeJS.ProcessEnv,
+      deps: { proposeThreadAction, addEntry, proposeWork, loadLatestHumanEntry },
+    });
+
+    expect(result).toMatchObject({ exitCode: 0, resultJson: { fakeCrewLlm: true, action: "queue_scope_draft" } });
+    expect(proposeThreadAction).toHaveBeenCalledTimes(1);
+    // The fake calls proposeThreadAction with buildFakeScopeDraftInput's output —
+    // the SAME shape the real tool produces (parity pinned in Task 1's tests).
+    const arg = proposeThreadAction.mock.calls[0][0] as Record<string, unknown>;
+    expect(arg).toMatchObject({
+      companyId: "co-1",
+      threadId: "thr-1",
+      runId: "run-1",
+      agentId: "agent-adj",
+      actionType: "create_scope_draft",
+      payload: {
+        summary: "Token endpoint scope",
+        proposedTasks: [{ title: "Build token endpoint", assigneeRole: "engineer" }],
+      },
+      freshness: { latestHumanSeq: 3 },
+    });
+    expect(typeof arg.idempotencyKey).toBe("string");
+    // The LEGACY path must not fire.
+    expect(proposeWork).not.toHaveBeenCalled();
+    // Visible confirmation entry for waitForVisibleAgentEntry in the e2e.
+    expect(addEntry).toHaveBeenCalledTimes(1);
+    const entry = addEntry.mock.calls[0][2] as { rawContent: string; authorAgentId: string };
+    expect(entry.authorAgentId).toBe("agent-adj");
+    expect(entry.rawContent).toMatch(/queued a scope draft/i);
+  });
+
+  it("falls back to LEGACY proposeWork when the run is NOT action-gated, even with control set", async () => {
+    const proposeThreadAction = vi.fn();
+    const proposeWork = vi.fn();
+    const loadLatestHumanEntry = vi.fn(async () => ({
+      id: "e-1",
+      rawContent: "please scope this into tracked tasks",
+      seq: 3,
+    }));
+    const file = controlFileWith({ mode: "controller_scope" });
+
+    await maybeExecuteFakeCrewTurn({
+      ...gatedArgsBase,
+      discussionRunMode: null,
+      runId: null,
+      env: { AOA_E2E_FAKE_CREW_LLM: "1", AOA_E2E_FAKE_CREW_CONTROL: file } as NodeJS.ProcessEnv,
+      deps: { proposeThreadAction, proposeWork, loadLatestHumanEntry, addEntry: vi.fn() },
+    });
+
+    expect(proposeThreadAction).not.toHaveBeenCalled();
+    expect(proposeWork).toHaveBeenCalledTimes(1); // legacy branch (wantsScope matches)
+  });
+
+  it("no control file → legacy behavior byte-for-byte (regression pin for existing CI specs)", async () => {
+    const proposeThreadAction = vi.fn();
+    const proposeWork = vi.fn();
+    const loadLatestHumanEntry = vi.fn(async () => ({
+      id: "e-1",
+      rawContent: "please scope this into tracked tasks",
+      seq: 3,
+    }));
+
+    await maybeExecuteFakeCrewTurn({
+      ...gatedArgsBase,
+      env: { AOA_E2E_FAKE_CREW_LLM: "1" } as NodeJS.ProcessEnv,
+      deps: { proposeThreadAction, proposeWork, loadLatestHumanEntry, addEntry: vi.fn() },
+    });
+
+    expect(proposeThreadAction).not.toHaveBeenCalled();
+    expect(proposeWork).toHaveBeenCalledTimes(1);
+  });
+
+  it("eng-review: gated + control but runId MISSING → legacy fallback (never half-queues)", async () => {
+    const proposeThreadAction = vi.fn();
+    const proposeWork = vi.fn();
+    const loadLatestHumanEntry = vi.fn(async () => ({
+      id: "e-1",
+      rawContent: "please scope this into tracked tasks",
+      seq: 3,
+    }));
+    const file = controlFileWith({ mode: "controller_scope" });
+
+    await maybeExecuteFakeCrewTurn({
+      ...gatedArgsBase,
+      runId: null, // gated run whose run-row insert failed
+      env: { AOA_E2E_FAKE_CREW_LLM: "1", AOA_E2E_FAKE_CREW_CONTROL: file } as NodeJS.ProcessEnv,
+      deps: { proposeThreadAction, proposeWork, loadLatestHumanEntry, addEntry: vi.fn() },
+    });
+
+    expect(proposeThreadAction).not.toHaveBeenCalled();
+    expect(proposeWork).toHaveBeenCalledTimes(1);
+  });
+
+  it("eng-review: control omits proposedTasks → shared defaults are queued", async () => {
+    const proposeThreadAction = vi.fn(async () => ({ id: "action-1" }));
+    const loadLatestHumanEntry = vi.fn(async () => ({
+      id: "e-1",
+      rawContent: "scope it",
+      seq: 3,
+    }));
+    const file = controlFileWith({ mode: "controller_scope", summary: "S" });
+
+    await maybeExecuteFakeCrewTurn({
+      ...gatedArgsBase,
+      env: { AOA_E2E_FAKE_CREW_LLM: "1", AOA_E2E_FAKE_CREW_CONTROL: file } as NodeJS.ProcessEnv,
+      deps: { proposeThreadAction, loadLatestHumanEntry, addEntry: vi.fn() },
+    });
+
+    const arg = proposeThreadAction.mock.calls[0][0] as { payload: { proposedTasks: Array<{ title: string }> } };
+    expect(arg.payload.proposedTasks).toEqual([
+      { title: "Clarify the accepted scope handoff", assigneeRole: "planner" },
+      { title: "Implement the scoped thread cycle", assigneeRole: "engineer" },
+    ]);
+  });
+
+  it("eng-review 1A: a FAILING confirmation entry does not sink the queued action (best-effort)", async () => {
+    const proposeThreadAction = vi.fn(async () => ({ id: "action-1" }));
+    const addEntry = vi.fn(async () => {
+      throw new Error("db blip");
+    });
+    const loadLatestHumanEntry = vi.fn(async () => ({
+      id: "e-1",
+      rawContent: "scope it",
+      seq: 3,
+    }));
+    const file = controlFileWith({ mode: "controller_scope" });
+
+    const result = await maybeExecuteFakeCrewTurn({
+      ...gatedArgsBase,
+      env: { AOA_E2E_FAKE_CREW_LLM: "1", AOA_E2E_FAKE_CREW_CONTROL: file } as NodeJS.ProcessEnv,
+      deps: { proposeThreadAction, addEntry, loadLatestHumanEntry },
+    });
+
+    // The action queued, the run result still reports success — the decoration
+    // failure is logged, not propagated (a failed run would never seal the action).
+    expect(proposeThreadAction).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ exitCode: 0, resultJson: { action: "queue_scope_draft" } });
+  });
+
+  it("non-Adjutant agents ignore controller_scope control (plain fake reply)", async () => {
+    const proposeThreadAction = vi.fn();
+    const addEntry = vi.fn();
+    const file = controlFileWith({ mode: "controller_scope" });
+
+    await maybeExecuteFakeCrewTurn({
+      ...gatedArgsBase,
+      agent: { id: "agent-scout", name: "Scout" },
+      env: { AOA_E2E_FAKE_CREW_LLM: "1", AOA_E2E_FAKE_CREW_CONTROL: file } as NodeJS.ProcessEnv,
+      deps: { proposeThreadAction, addEntry, loadLatestHumanEntry: vi.fn(async () => null) },
+    });
+
+    expect(proposeThreadAction).not.toHaveBeenCalled();
+    expect(addEntry).toHaveBeenCalledTimes(1); // Scout's normal fake reply
+  });
+});
