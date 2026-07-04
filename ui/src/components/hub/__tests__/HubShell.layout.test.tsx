@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { HubItemListRow } from "@/api/hub-items";
@@ -135,11 +135,12 @@ describe("HubShell layout", () => {
     expect(viewerPanel).toHaveAttribute("data-panel-id", "hub-viewer");
     expect(screen.getByTestId("hub-panel-separator")).toBeInTheDocument();
 
-    // The existing list + viewer content still renders inside the panels.
-    expect(listPanel).toContainElement(screen.getByText("Review hire approval"));
-    expect(viewerPanel).toContainElement(
-      screen.getByRole("complementary", { name: /hub viewer/i }),
-    );
+    // The lane row renders in the list panel. (The Home dashboard tab body also
+    // surfaces the top item in "Needs you most", so scope to the list panel.)
+    expect(within(listPanel).getByText("Review hire approval")).toBeInTheDocument();
+    // Tab-first: the viewer panel hosts the tabbed viewer (strip + tab body), not
+    // the deleted reading-pane `complementary` aside.
+    expect(viewerPanel).toContainElement(screen.getByTestId("hub-tabbed-viewer"));
   });
 
   it("does not mount the resizable group on mobile and keeps the stacked layout", () => {
@@ -151,9 +152,11 @@ describe("HubShell layout", () => {
     expect(screen.queryByTestId("hub-viewer-panel")).not.toBeInTheDocument();
     expect(screen.queryByTestId("hub-panel-separator")).not.toBeInTheDocument();
 
-    // Stacked list + viewer content is still present.
-    expect(screen.getByText("Review hire approval")).toBeInTheDocument();
-    expect(screen.getByRole("complementary", { name: /hub viewer/i })).toBeInTheDocument();
+    // Stacked list + tabbed viewer content is still present. The list ROW is a
+    // button (the dashboard's needs-you-most renders the title as plain text), so
+    // scope to the button to avoid the dashboard duplicate.
+    expect(screen.getByRole("button", { name: /review hire approval/i })).toBeInTheDocument();
+    expect(screen.getByTestId("hub-tabbed-viewer")).toBeInTheDocument();
   });
 
   it("does not mount the resizable group in the tablet band (640-1023px) — stacks instead", () => {
@@ -165,7 +168,9 @@ describe("HubShell layout", () => {
 
     expect(screen.queryByTestId("hub-panel-group")).not.toBeInTheDocument();
     expect(screen.queryByTestId("hub-list-panel")).not.toBeInTheDocument();
-    expect(screen.getByText("Review hire approval")).toBeInTheDocument();
+    // The list ROW is a button (see the mobile test) — the dashboard also renders
+    // the title as text, so scope to the button.
+    expect(screen.getByRole("button", { name: /review hire approval/i })).toBeInTheDocument();
   });
 
   it("renders the mobile lane dialog without the resizable group when the rail is opened", async () => {

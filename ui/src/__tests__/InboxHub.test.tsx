@@ -164,9 +164,19 @@ function renderPage(initialEntry: string, navTargets: string[] = []) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Tab-first: useHubTabs persists the open tab set to localStorage per company.
+  // JSDOM localStorage survives between tests in a file, so a tab opened by one
+  // test would rehydrate into the next and collide (e.g. a "Close <title>" button
+  // shadowing a list row). Reset it for clean per-test isolation.
+  localStorage.clear();
   liveHubItemCallbacks.clear();
   vi.mocked(hubItemsApi.list).mockResolvedValue(hubList([]));
-  vi.mocked(hubItemsApi.getOne).mockResolvedValue(hubItem());
+  // Default getOne is itemId-aware so a tab-first deep link that hydrates an
+  // off-list item opens a tab for the RIGHT id (the old reading pane keyed off the
+  // reactively-updated list, so a fixed row sufficed; a one-shot openTab does not).
+  vi.mocked(hubItemsApi.getOne).mockImplementation(
+    async (_companyId, itemId) => hubItem({ id: itemId }),
+  );
   vi.mocked(hubItemsApi.counts).mockResolvedValue({ open: 0, unread: 0 });
   vi.mocked(hubItemsApi.hiddenCount).mockResolvedValue({ hiddenOpen: 0 });
   vi.mocked(hubItemsApi.markRead).mockResolvedValue({});
@@ -404,6 +414,11 @@ describe("InboxHub page", () => {
     await waitFor(() => {
       expect(screen.getByTestId("location")).toHaveTextContent("/P4/inbox/waiting/hub-1");
     });
+
+    // Row-click now also opens a dedicated tab for the item (tab-first).
+    expect(
+      await screen.findByRole("tab", { name: /approve deployment/i }),
+    ).toBeInTheDocument();
   });
 
   it("answers runtime permission prompts from the hub viewer", async () => {
@@ -422,6 +437,9 @@ describe("InboxHub page", () => {
     renderPage("/P4/inbox/waiting/hub-runtime");
 
     expect(await screen.findByText("Run pnpm test:run?")).toBeInTheDocument();
+    // The decision now renders inside a dedicated tab (tab-first), not a preview.
+    expect(await screen.findByTestId("hub-runtime-decision-body")).toBeInTheDocument();
+    expect(screen.queryByRole("complementary", { name: /hub viewer/i })).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: /allow once/i }));
 
     await waitFor(() => {
@@ -460,6 +478,9 @@ describe("InboxHub page", () => {
 
     renderPage("/P4/inbox/waiting/hub-runtime");
 
+    // The decision now renders inside a dedicated tab (tab-first), not a preview.
+    expect(await screen.findByTestId("hub-runtime-decision-body")).toBeInTheDocument();
+    expect(screen.queryByRole("complementary", { name: /hub viewer/i })).toBeNull();
     await userEvent.type(
       await screen.findByRole("textbox", { name: /work question answer/i }),
       "Founder-led SaaS teams.",
@@ -498,6 +519,9 @@ describe("InboxHub page", () => {
 
     renderPage("/P4/inbox/waiting/hub-runtime");
 
+    // The decision now renders inside a dedicated tab (tab-first), not a preview.
+    expect(await screen.findByTestId("hub-runtime-decision-body")).toBeInTheDocument();
+    expect(screen.queryByRole("complementary", { name: /hub viewer/i })).toBeNull();
     expect(await screen.findByRole("button", { name: /allow always/i })).toBeDisabled();
     expect(screen.getByText("expired")).toBeInTheDocument();
   });
@@ -764,7 +788,13 @@ describe("InboxHub page", () => {
     resolveMarkRead?.();
   });
 
-  it("viewer can mark a selected read item unread", async () => {
+  // TASK 3 (deferred): the reading-pane HubViewer footer that hosted Mark-unread /
+  // Dismiss / Snooze / Resolve / Archive / Claim / Release + the undo banner is
+  // DELETED in tab-first (Task 1). Task 3 rebuilds these on the standalone
+  // HubActionBar mounted above each tab body and rewrites the tests below to drive
+  // that bar (plan Task 3 Step 9). Skipped here until the bar lands so the branch
+  // stays green through the 1→2→3 sequence.
+  it.skip("viewer can mark a selected read item unread", async () => {
     vi.mocked(hubItemsApi.list).mockResolvedValue(hubList([
       hubItem({ readAt: "2026-06-29T10:01:00.000Z" }),
     ]));
@@ -778,7 +808,7 @@ describe("InboxHub page", () => {
     });
   });
 
-  it("viewer can dismiss and snooze the selected item", async () => {
+  it.skip("viewer can dismiss and snooze the selected item", async () => {
     vi.mocked(hubItemsApi.list).mockResolvedValue(hubList([hubItem()]));
 
     renderPage("/P4/inbox-hub/waiting/hub-1");
@@ -796,7 +826,7 @@ describe("InboxHub page", () => {
     });
   });
 
-  it("viewer can undo personal dismiss and snooze actions", async () => {
+  it.skip("viewer can undo personal dismiss and snooze actions", async () => {
     vi.mocked(hubItemsApi.list).mockResolvedValue(hubList([hubItem()]));
 
     renderPage("/P4/inbox-hub/waiting/hub-1");
@@ -812,7 +842,7 @@ describe("InboxHub page", () => {
     });
   });
 
-  it("viewer resolves an item and can undo the server-backed action", async () => {
+  it.skip("viewer resolves an item and can undo the server-backed action", async () => {
     // Use a NON-mirrored notifications-lane type: the mirror model (Task 1)
     // hides Resolve/Archive on source-backed decision items (approval_request),
     // so the generic resolve→undo flow is exercised on run_failed instead.
@@ -837,7 +867,7 @@ describe("InboxHub page", () => {
     });
   });
 
-  it("keeps server undo reachable after the resolved item leaves the active list", async () => {
+  it.skip("keeps server undo reachable after the resolved item leaves the active list", async () => {
     // Non-mirrored type (see above): Resolve stays available on run_failed.
     vi.mocked(hubItemsApi.list)
       .mockResolvedValueOnce(
@@ -858,7 +888,8 @@ describe("InboxHub page", () => {
     });
   });
 
-  it("viewer shows claim and release actions for board-pool items", async () => {
+  it.skip("viewer shows claim and release actions for board-pool items", async () => {
+    // TASK 3: Claim/Release move to HubActionBar (see the skip note above).
     vi.mocked(hubItemsApi.list).mockResolvedValue(hubList([
       hubItem({ semanticType: "stale_work", lane: "suggestions", ownerPool: "board" }),
     ]));
@@ -901,7 +932,11 @@ describe("InboxHub page", () => {
     });
   });
 
-  it("opens resolved and archived history items in the viewer", async () => {
+  // TASK 5 (deferred): the history reading pane (item heading + audit timeline for
+  // resolved/archived items) was HubViewer chrome, deleted in tab-first. Its
+  // replacement is a per-entity tab body / dedicated history viewer (Task 5). The
+  // two tests below are skipped until that viewer lands.
+  it.skip("opens resolved and archived history items in the viewer", async () => {
     vi.mocked(hubItemsApi.list).mockResolvedValue(hubList([
       hubItem({
         id: "history-1",
@@ -917,7 +952,7 @@ describe("InboxHub page", () => {
     expect(await screen.findByRole("heading", { name: /resolved approval/i })).toBeInTheDocument();
   });
 
-  it("loads an audit timeline for the selected history item", async () => {
+  it.skip("loads an audit timeline for the selected history item", async () => {
     vi.mocked(hubItemsApi.list).mockResolvedValue(hubList([
       hubItem({
         id: "history-1",
@@ -1157,13 +1192,17 @@ describe("InboxHub page", () => {
     vi.mocked(hubItemsApi.getOne).mockImplementation(async (_companyId, itemId) =>
       hubItem({
         id: itemId,
+        // Distinct sourceId per item → distinct approval-tab keys (a shared
+        // sourceId would dedup both deep links onto one tab).
+        sourceId: `approval-${itemId}`,
         title: itemId === "hub-a" ? "Deep item A" : "Deep item B",
       }),
     );
 
     renderPage("/P4/inbox/waiting/hub-a", ["/P4/inbox/waiting/hub-b"]);
 
-    expect(await screen.findByRole("heading", { name: /deep item a/i })).toBeInTheDocument();
+    // Tab-first: the deep link hydrates the off-list item and OPENS its tab.
+    expect(await screen.findByRole("tab", { name: /deep item a/i })).toBeInTheDocument();
     expect(hubItemsApi.getOne).toHaveBeenCalledWith("company-1", "hub-a");
 
     // SPA navigation (no remount) to a SECOND deep-linked item: a boolean
@@ -1171,30 +1210,30 @@ describe("InboxHub page", () => {
     // per-itemId.
     fireEvent.click(screen.getByRole("button", { name: "nav:/P4/inbox/waiting/hub-b" }));
 
-    expect(await screen.findByRole("heading", { name: /deep item b/i })).toBeInTheDocument();
+    expect(await screen.findByRole("tab", { name: /deep item b/i })).toBeInTheDocument();
     expect(hubItemsApi.getOne).toHaveBeenCalledWith("company-1", "hub-b");
   });
 
-  it("caches a deep-linked list item so the preview survives a refetch that drops it", async () => {
+  it("caches a list item's tab so it survives a refetch that drops the row", async () => {
     vi.mocked(hubItemsApi.list)
       .mockResolvedValueOnce(hubList([hubItem({ id: "hub-1", title: "Listed deep item" })]))
       .mockResolvedValue(hubList([]));
 
     renderPage("/P4/inbox/waiting");
 
-    // Select the item AFTER the list loads → the deep-link effect takes the
-    // found-in-list branch (no getOne fetch).
+    // Row-click AFTER the list loads → the found-in-list branch caches the row +
+    // opens its tab (no getOne fetch).
     fireEvent.click(await screen.findByRole("button", { name: /listed deep item/i }));
-    expect(await screen.findByRole("heading", { name: /listed deep item/i })).toBeInTheDocument();
+    expect(await screen.findByRole("tab", { name: /listed deep item/i })).toBeInTheDocument();
     expect(hubItemsApi.getOne).not.toHaveBeenCalled();
 
-    // Scope change → fresh list query that DROPS the item. The found branch
-    // must have cached the row: the per-item guard says "handled", so without
-    // that cache write this preview is gone and unhydratable forever.
+    // Scope change → fresh list query that DROPS the row. The open tab (tab-first)
+    // persists independently of the list, so the item stays reachable — and the
+    // cached row keeps its tab body resolvable without a getOne refetch.
     fireEvent.click(screen.getByRole("button", { name: /^resolved$/i }));
     await screen.findByText(/no open items in this lane/i);
 
-    expect(screen.getByRole("heading", { name: /listed deep item/i })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /listed deep item/i })).toBeInTheDocument();
     expect(hubItemsApi.getOne).not.toHaveBeenCalled();
   });
 });

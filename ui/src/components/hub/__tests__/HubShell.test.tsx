@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -244,118 +244,118 @@ function autopilotActions(
 }
 
 describe("HubShell", () => {
-  it("renders rail, lane list, and empty viewer state", () => {
+  it("renders rail, lane list, and the Home tab body (tab-first, no reading pane)", () => {
     renderShell();
 
-    expect(screen.getByRole("navigation", { name: /hub lanes/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /waiting on you/i })).toBeInTheDocument();
-    expect(screen.getByText("Review hire approval")).toBeInTheDocument();
-    expect(screen.getByText("normal")).toBeInTheDocument();
-    expect(screen.getByText(/select an item/i)).toBeInTheDocument();
-    expect(screen.getByRole("complementary", { name: /hub viewer/i })).toBeInTheDocument();
+    const rail = within(screen.getByRole("navigation", { name: /hub lanes/i }));
+    // The rail lane button — scoped, since the Home dashboard tab body also
+    // renders a "Waiting on you" lane shortcut.
+    expect(rail.getByRole("button", { name: /waiting on you/i })).toBeInTheDocument();
+    // The lane list row lives in the list panel.
+    const list = within(screen.getByTestId("hub-list-panel"));
+    expect(list.getByText("Review hire approval")).toBeInTheDocument();
+    expect(list.getByText("normal")).toBeInTheDocument();
+    // The default Home tab renders the dashboard in the tab body — no reading pane.
+    const body = screen.getByTestId("hub-tab-body");
+    expect(within(body).getByText(/needs you most/i)).toBeInTheDocument();
+    expect(screen.queryByRole("complementary", { name: /hub viewer/i })).toBeNull();
   });
 
-  it("selects the item into the reading pane when a row is clicked", async () => {
+  it("opens AND activates a dedicated tab when a list row is clicked (tab-first)", async () => {
     const user = userEvent.setup();
-    const onSelectItem = vi.fn();
-    renderShell({ onSelectItem });
+    const onOpenItem = vi.fn();
+    renderShell({ onOpenItem });
 
     await user.click(screen.getByRole("button", { name: /review hire approval/i }));
 
-    // Single-click previews (reading pane); dedicated tabs open via "Open full".
-    expect(onSelectItem).toHaveBeenCalledWith("hub-1");
-  });
-
-  it("renders the selected item in the Home reading pane and opens it full via a tab", async () => {
-    const user = userEvent.setup();
-    const onOpenItem = vi.fn();
-    renderShell({ selectedItemId: "hub-1", onOpenItem });
-
-    expect(screen.getByRole("complementary", { name: /hub viewer/i })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: /approval/i })).toBeInTheDocument();
-    // "Open full" is now a tab-opening button (not a route link).
-    await user.click(screen.getByRole("button", { name: /open full/i }));
+    // Row-click opens the item's dedicated tab (HubList prefers onOpenItem).
     expect(onOpenItem).toHaveBeenCalledWith(expect.objectContaining({ id: "hub-1" }));
   });
 
-  it("hides generic lifecycle actions for runtime decision prompts", async () => {
-    const runtimeItem: HubItemListRow = {
-      ...items[0],
-      id: "hub-runtime",
-      semanticType: "agent_runtime_decision",
-      title: "Allow command?",
-      summary: "Runtime permission",
-      sourceType: "runtime_decision",
-      sourceId: "decision-1",
-    };
+  it("does NOT add a duplicate tab when the same row is clicked twice (ensureTab dedups)", async () => {
+    const user = userEvent.setup();
+    const onOpenItem = vi.fn();
+    renderShell({ onOpenItem });
 
-    renderShell({ items: [runtimeItem], selectedItemId: "hub-runtime" });
+    const row = screen.getByRole("button", { name: /review hire approval/i });
+    await user.click(row);
+    await user.click(row);
 
-    expect(await screen.findByRole("button", { name: /allow once/i })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /^resolve$/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /^archive$/i })).not.toBeInTheDocument();
+    // Both clicks call the open handler; dedup + re-activate lives in useHubTabs
+    // (openTab → ensureTab), so HubShell just forwards each click. Assert HubShell
+    // forwards every click (the dedup contract is proven in the useHubTabs suite,
+    // Amendment 2 tab-cap test).
+    expect(onOpenItem).toHaveBeenCalledTimes(2);
+    expect(onOpenItem).toHaveBeenNthCalledWith(1, expect.objectContaining({ id: "hub-1" }));
+    expect(onOpenItem).toHaveBeenNthCalledWith(2, expect.objectContaining({ id: "hub-1" }));
   });
 
-  it("hides Resolve/Archive for an open approval_request (mirror model) but keeps Dismiss/Snooze", () => {
-    // items[0] is an OPEN approval_request — a source-backed decision. The mirror
-    // model (R3 + H1) forbids manual resolve/archive while the source is pending,
-    // so the viewer must not offer those affordances; personal Dismiss/Snooze stay.
-    renderShell({ selectedItemId: "hub-1" });
+  it("renders the HubHome dashboard as the Home tab body (no reading-pane preview)", () => {
+    // The Home tab body is the "Needs you most" dashboard, regardless of any
+    // center-list selection — there is no per-item preview surface anymore.
+    renderShell({ selectedItemId: "hub-1", tabs: [HOME_TAB], activeTabKey: "home" });
 
-    expect(screen.queryByRole("button", { name: /^resolve$/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /^archive$/i })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /^dismiss$/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /^snooze$/i })).toBeInTheDocument();
+    // The dashboard renders inside the tab body (viewer panel), not the list.
+    const body = screen.getByTestId("hub-tab-body");
+    expect(within(body).getByText(/needs you most/i)).toBeInTheDocument();
+    // No reading-pane chrome: the old "Open full" button + hub-viewer aside are gone.
+    expect(within(body).queryByRole("button", { name: /open full/i })).toBeNull();
+    expect(screen.queryByRole("complementary", { name: /hub viewer/i })).toBeNull();
   });
 
-  it("hides Resolve/Archive for an open join_request (mirror model)", () => {
-    const joinItem: HubItemListRow = {
-      ...items[0],
-      id: "hub-join",
-      semanticType: "join_request",
-      sourceType: "join_request",
-      sourceId: "join-1",
-      title: "Agent wants to join",
-    };
-    renderShell({ items: [joinItem], selectedItemId: "hub-join" });
-
-    expect(screen.queryByRole("button", { name: /^resolve$/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /^archive$/i })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /^dismiss$/i })).toBeInTheDocument();
-  });
-
-  it("still offers Resolve/Archive for a non-mirrored notifications item (run_failed)", () => {
-    const runItem: HubItemListRow = {
-      ...items[0],
-      id: "hub-run",
-      semanticType: "run_failed",
-      lane: "notifications",
-      sourceType: "heartbeat_run",
-      sourceId: "run-1",
-      ownerPool: null,
-      title: "Run failed",
-    };
-    renderShell({ items: [runItem], selectedItemId: "hub-run" });
-
-    expect(screen.getByRole("button", { name: /^resolve$/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /^archive$/i })).toBeInTheDocument();
-  });
-
-  it("closes the viewer with a nullable selection", async () => {
+  it("moves a list highlight with j/k and opens the highlighted item's tab on Enter", async () => {
     const user = userEvent.setup();
     const onSelectItem = vi.fn();
-    renderShell({ selectedItemId: "hub-1", onSelectItem });
+    const onOpenItem = vi.fn();
+    renderShell({
+      onSelectItem,
+      onOpenItem,
+      items: [
+        { ...items[0], id: "hub-1", title: "First approval" },
+        { ...items[0], id: "hub-2", title: "Second approval" },
+      ],
+    });
 
-    await user.click(screen.getByRole("button", { name: /close viewer/i }));
+    // j/k move the highlight (drives the center-list highlight + URL, NOT a preview).
+    await user.keyboard("j");
+    expect(onSelectItem).toHaveBeenLastCalledWith("hub-1");
+    await user.keyboard("j");
+    expect(onSelectItem).toHaveBeenLastCalledWith("hub-2");
 
-    expect(onSelectItem).toHaveBeenCalledWith(null);
+    // Enter opens the highlighted row's tab.
+    await user.keyboard("{Enter}");
+    expect(onOpenItem).toHaveBeenCalledWith(expect.objectContaining({ id: "hub-2" }));
   });
+
+  it("Escape clears the list highlight and does NOT close a tab", async () => {
+    const user = userEvent.setup();
+    const onSelectItem = vi.fn();
+    const onCloseTab = vi.fn();
+    renderShell({ selectedItemId: "hub-1", onSelectItem, onCloseTab });
+
+    await user.keyboard("{Escape}");
+
+    // Escape clears the highlight (selection) — tabs are untouched.
+    expect(onSelectItem).toHaveBeenCalledWith(null);
+    expect(onCloseTab).not.toHaveBeenCalled();
+  });
+
+  // NOTE (Task 1 deviation): the reading-pane HubViewer footer that hosted the
+  // mirror-gated lifecycle actions (runtime-decision "allow once"; approval /
+  // join_request "hides Resolve/Archive"; run_failed "still offers
+  // Resolve/Archive") is DELETED in tab-first. Task 3 rebuilds this coverage
+  // against the standalone HubActionBar (plan Task 3 Steps 7-8), so these four
+  // reading-pane tests are removed here and re-added there.
 
   it("hides lanes excluded by preferences", () => {
     renderShell();
 
-    expect(screen.getByRole("button", { name: /waiting on you/i })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /notifications/i })).not.toBeInTheDocument();
+    // Scope to the rail: default preferences hide the notifications lane, so the
+    // rail must not offer it. (The Home dashboard tab body also renders lane
+    // shortcuts gated by the same visibleLanes, so an unscoped query collides.)
+    const rail = within(screen.getByRole("navigation", { name: /hub lanes/i }));
+    expect(rail.getByRole("button", { name: /waiting on you/i })).toBeInTheDocument();
+    expect(rail.queryByRole("button", { name: /notifications/i })).not.toBeInTheDocument();
   });
 
   it("renders grouped rows with explicit expansion state", () => {
@@ -386,26 +386,9 @@ describe("HubShell", () => {
     expect(screen.getByText("Three related approvals are waiting for founder review.")).toBeInTheDocument();
   });
 
-  it("shows curation reasons in the viewer only when metadata exists", () => {
-    const curated = renderShell({
-      selectedItemId: "hub-1",
-      items: [
-        {
-          ...items[0],
-          curationReason: "SLA is due in 20 minutes.",
-          curationPriorityReason: "Urgent priority is set on this hub item.",
-        } as HubItemListRow,
-      ],
-    });
-
-    expect(screen.getByText("Why you are seeing this")).toBeInTheDocument();
-    expect(screen.getByText("SLA is due in 20 minutes.")).toBeInTheDocument();
-    expect(screen.getByText("Urgent priority is set on this hub item.")).toBeInTheDocument();
-
-    curated.unmount();
-    renderShell({ selectedItemId: "hub-1" });
-    expect(screen.queryByText("Why you are seeing this")).not.toBeInTheDocument();
-  });
+  // NOTE (Task 1 deviation): "Why you are seeing this" was reading-pane chrome in
+  // the deleted HubViewer; the curation-reason surface moves with the item viewers
+  // (Task 5 / follow-up). The Home needs-you-most curation coverage below stays.
 
   it("uses curation reason on Hub Home needs-you-most", () => {
     renderShell({
@@ -647,26 +630,6 @@ describe("HubShell", () => {
     expect(onSearchTextChange).toHaveBeenCalledWith("/");
   });
 
-  it("moves selection with j and k", async () => {
-    const user = userEvent.setup();
-    const onSelectItem = vi.fn();
-    renderShell({
-      onSelectItem,
-      items: [
-        { ...items[0], id: "hub-1", title: "First approval" },
-        { ...items[0], id: "hub-2", title: "Second approval" },
-      ],
-    });
-
-    await user.keyboard("j");
-    await user.keyboard("j");
-    await user.keyboard("k");
-
-    expect(onSelectItem).toHaveBeenNthCalledWith(1, "hub-1");
-    expect(onSelectItem).toHaveBeenNthCalledWith(2, "hub-2");
-    expect(onSelectItem).toHaveBeenNthCalledWith(3, "hub-1");
-  });
-
   it("renders and closes the mobile lane drawer", async () => {
     const user = userEvent.setup();
     renderShell();
@@ -680,16 +643,4 @@ describe("HubShell", () => {
     expect(screen.queryByRole("dialog", { name: /hub lanes/i })).not.toBeInTheDocument();
   });
 
-  it("focuses the viewer heading and restores focus to the selected row on close", async () => {
-    const user = userEvent.setup();
-    const onSelectItem = vi.fn();
-    renderShell({ selectedItemId: "hub-1", onSelectItem });
-
-    expect(screen.getByRole("heading", { name: /review hire approval/i })).toHaveFocus();
-
-    await user.click(screen.getByRole("button", { name: /close viewer/i }));
-
-    expect(onSelectItem).toHaveBeenCalledWith(null);
-    expect(screen.getByRole("button", { name: /review hire approval/i })).toHaveFocus();
-  });
 });

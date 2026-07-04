@@ -27,7 +27,6 @@ import {
 } from "@armyofagents/shared";
 import { Button } from "@/components/ui/button";
 import { HubHome } from "./HubHome";
-import { HubHomeTab } from "./HubHomeTab";
 import { HubList } from "./HubList";
 import { HubRail, type HubRailLane } from "./HubRail";
 import { HubTabBody } from "./HubTabBody";
@@ -263,6 +262,17 @@ export function HubShell({
         return;
       }
 
+      if (event.key === "Enter" && activeLane && items.length > 0) {
+        const currentId = keyboardSelectedItemId.current ?? selectedItemId;
+        if (!currentId) return;
+        const target = items.find((item) => item.id === currentId);
+        if (target) {
+          event.preventDefault();
+          onOpenItem(target);
+        }
+        return;
+      }
+
       if ((event.key === "j" || event.key === "k") && activeLane && items.length > 0) {
         event.preventDefault();
         const visibleRowIds = getVisibleHubRowIds();
@@ -288,12 +298,7 @@ export function HubShell({
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [activeLane, items, mobileRailOpen, onSelectItem, selectedItemId, showHome]);
-
-  const handleViewerClose = () => {
-    if (selectedItemId) focusHubRow(selectedItemId);
-    onSelectItem(null);
-  };
+  }, [activeLane, items, mobileRailOpen, onOpenItem, onSelectItem, selectedItemId, showHome]);
 
   const handleLaneChange = (lane: HubRailLane) => {
     setMobileRailOpen(false);
@@ -795,17 +800,21 @@ export function HubShell({
               {bulkMessage}
             </div>
           ) : null}
+          {/* Tab-first: the "Needs you most" dashboard is hosted by the Home TAB
+              body (see `homeContent` below), so the list panel no longer renders a
+              second HubHome on Home (that double-rendered the dashboard). On Home
+              the list panel is a lightweight pointer to the dashboard tab; on an
+              active lane it shows the lane list. This keeps ONE dashboard surface. */}
           {showHome ? (
-            <HubHome
-              counts={counts}
-              items={homeItems ?? items}
-              visibleLanes={preferences.visibleLanes}
-              showAutopilotEntry={preferences.showAutopilotEntry}
-              autopilotPolicy={autopilotPolicy}
-              autopilotActions={autopilotActions.items}
-              onLaneChange={(lane: HubLane) => onLaneChange(lane)}
-              onUndoAutopilotAction={onUndoAutopilotAction}
-            />
+            <div
+              className="flex min-h-0 flex-1 items-center justify-center p-6 text-center"
+              data-testid="hub-list-home-hint"
+            >
+              <p className="max-w-xs text-sm text-muted-foreground">
+                Your attention and decision queue is in the Home tab. Pick a lane to
+                browse its items here.
+              </p>
+            </div>
           ) : (
             <HubList
               items={items}
@@ -817,6 +826,7 @@ export function HubShell({
               isLoadingMore={isLoadingMore}
               groupMode={preferences.groupMode}
               density={preferences.density}
+              onOpenItem={onOpenItem}
               onSelectItem={onSelectItem}
               onMarkRead={onMarkRead}
               onToggleBulkItem={onToggleBulkItem}
@@ -848,16 +858,15 @@ export function HubShell({
               onOpenTab={onOpenTab}
               resolveHubItem={resolveHubItem}
               homeContent={
-                <HubHomeTab
-                  selectedItem={selectedItem}
-                  auditRows={auditRows}
-                  auditLoading={auditLoading}
-                  onOpenFull={onOpenItem}
-                  onClose={handleViewerClose}
-                  onMarkUnread={onMarkUnread}
-                  onDismiss={onDismiss}
-                  onSnooze={onSnooze}
-                  onLifecycleAction={onLifecycleAction}
+                <HubHome
+                  counts={counts}
+                  items={homeItems ?? items}
+                  visibleLanes={preferences.visibleLanes}
+                  showAutopilotEntry={preferences.showAutopilotEntry}
+                  autopilotPolicy={autopilotPolicy}
+                  autopilotActions={autopilotActions.items}
+                  onLaneChange={(lane: HubLane) => onLaneChange(lane)}
+                  onUndoAutopilotAction={onUndoAutopilotAction}
                 />
               }
             />

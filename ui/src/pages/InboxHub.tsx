@@ -582,40 +582,54 @@ export function InboxHub() {
       ? items.find((item) => item.id === params.itemId) ?? openedItemCache[params.itemId]
       : undefined) ?? null;
 
-  // Deep link (`/inbox/:lane/:itemId`) selects the item into the Home reading
-  // pane. Single-click / deep-link PREVIEW (no auto-tab); dedicated tabs open on
-  // "Open full" / in-viewer links / the + browser button. If the item isn't in
-  // the loaded lane (hidden / resolved / other lane), hydrate it once so the
-  // reading pane can still preview it.
+  // Deep link (`/inbox/:lane/:itemId`) OPENS + activates the item's dedicated tab
+  // (tab-first, no preview). Prefer the lane's own row: if the item's lane is
+  // still loading, WAIT for it (opening a tab is a one-shot side-effect, unlike
+  // the old reactive reading pane — resolving off a half-loaded list would open
+  // the wrong-typed tab). Only when the item is genuinely NOT in the settled lane
+  // (hidden / resolved / other lane) do we hydrate it once via `getOne`, then open
+  // its tab. The `deepLinkHandledRef` guard keeps this idempotent so a later list
+  // refetch (or a manual tab close) never re-opens the tab for the same `:itemId`.
   useEffect(() => {
     const itemId = params.itemId;
     if (!itemId || !selectedCompanyId) return;
     if (deepLinkHandledRef.current === itemId) return;
     const listItem = items.find((item) => item.id === itemId);
-    if (listItem || openedItemCache[itemId]) {
-      // Cache the list-found row BEFORE marking handled: a later list refetch
-      // that drops the item must not leave this deep-link unhydratable forever
-      // (guard says handled + cache empty = no preview and no re-fetch).
-      if (listItem) {
-        setOpenedItemCache((cache) => insertOpenedItem(cache, listItem));
-      }
+    const cached = openedItemCache[itemId];
+    if (listItem || cached) {
+      const row = listItem ?? cached;
+      if (listItem) setOpenedItemCache((cache) => insertOpenedItem(cache, listItem));
       deepLinkHandledRef.current = itemId;
+      if (row) openTab(hubTabForItem(row));
       return;
     }
+    // The item's lane is still loading — defer so the lane row (correct entity
+    // type) wins over a redundant getOne hydrate.
+    if (activeLane && listQuery.isLoading) return;
     deepLinkHandledRef.current = itemId;
     let cancelled = false;
     hubItemsApi
       .getOne(selectedCompanyId, itemId)
       .then((item) => {
-        if (!cancelled) setOpenedItemCache((cache) => insertOpenedItem(cache, item));
+        if (cancelled) return;
+        setOpenedItemCache((cache) => insertOpenedItem(cache, item));
+        openTab(hubTabForItem(item));
       })
       .catch(() => {
-        // Stale / hidden deep link — leave the reading pane empty.
+        // Stale / hidden deep link — no tab to open.
       });
     return () => {
       cancelled = true;
     };
-  }, [params.itemId, selectedCompanyId, items, openedItemCache]);
+  }, [
+    params.itemId,
+    selectedCompanyId,
+    items,
+    openedItemCache,
+    openTab,
+    activeLane,
+    listQuery.isLoading,
+  ]);
 
   const resolveHubItem = useCallback(
     (id: string): HubItemListRow | undefined =>
