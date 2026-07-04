@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { HubTab, HubTabKind } from "./hubViewerModel";
+import { HUB_TABS_MAX } from "./useHubTabs";
 
 /** Id of the viewer body panel each tab controls (for `aria-controls`). */
 export const HUB_TABPANEL_ID = "hub-tabpanel";
@@ -173,6 +174,15 @@ export function HubTabStrip({
           <Plus className="size-3.5" aria-hidden />
         </button>
       </div>
+      {tabs.length >= HUB_TABS_MAX ? (
+        <span
+          className="ml-2 shrink-0 rounded border border-border px-1.5 py-0.5 text-[10px] uppercase text-muted-foreground"
+          title={`Tab limit reached: the oldest tab is closed when you open a new one (max ${HUB_TABS_MAX}).`}
+          data-testid="hub-tab-cap"
+        >
+          {HUB_TABS_MAX} max
+        </span>
+      ) : null}
     </div>
   );
 }

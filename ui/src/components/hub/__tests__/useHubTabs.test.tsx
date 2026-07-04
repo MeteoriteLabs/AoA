@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import { useHubTabs, HUB_TABS_MAX } from "../useHubTabs";
-import { HOME_TAB, approvalTab, taskTab, type HubTab } from "../hubViewerModel";
+import { HOME_TAB, approvalTab, browserTab, taskTab, type HubTab } from "../hubViewerModel";
 
 const storageKey = (companyId: string) => `aoa:hub:tabs:${companyId}`;
 
@@ -34,6 +34,20 @@ describe("useHubTabs", () => {
       "task:t1",
     ]);
     expect(result.current.activeKey).toBe("approval:a1");
+  });
+
+  it("evicts the OLDEST closeable tab when opening past HUB_TABS_MAX (length stays <= 12)", () => {
+    const { result } = renderHook(() => useHubTabs("company-cap"));
+
+    for (let i = 0; i < 13; i += 1) {
+      act(() => result.current.openTab(browserTab(`https://x/${i}`, `T${i}`)));
+    }
+
+    expect(result.current.tabs.length).toBe(HUB_TABS_MAX);
+    expect(result.current.tabs[0].key).toBe("home");
+    const keys = result.current.tabs.map((t) => t.key);
+    expect(keys).not.toContain(browserTab("https://x/0", "T0").key);
+    expect(keys).toContain(browserTab("https://x/12", "T12").key);
   });
 
   it("closing the active tab re-activates next.at(-1)", () => {

@@ -2,13 +2,21 @@ import { describe, expect, it, vi } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { HubTabStrip, HUB_TABPANEL_ID } from "../HubTabStrip";
-import { HOME_TAB, approvalTab, threadTab, type HubTab } from "../hubViewerModel";
+import { HOME_TAB, approvalTab, browserTab, threadTab, type HubTab } from "../hubViewerModel";
+import { HUB_TABS_MAX } from "../useHubTabs";
 
 const TABS: HubTab[] = [
   HOME_TAB,
   approvalTab("approval-1", "Review hire"),
   threadTab("thread-1", "Roadmap thread"),
 ];
+
+function tabsAtCapacity() {
+  const closeables = Array.from({ length: HUB_TABS_MAX - 1 }, (_, i) =>
+    browserTab(`https://x/${i}`, `T${i}`),
+  );
+  return [HOME_TAB, ...closeables];
+}
 
 function renderStrip(overrides: Partial<React.ComponentProps<typeof HubTabStrip>> = {}) {
   const props = {
@@ -106,5 +114,13 @@ describe("HubTabStrip", () => {
     await user.click(screen.getByRole("button", { name: /roadmap thread/i }));
 
     expect(props.onActivate).toHaveBeenCalledWith("thread:thread-1");
+  });
+
+  it("shows a '12 max' indicator only when at capacity", () => {
+    const { rerender, props } = renderStrip({ tabs: [HOME_TAB], activeKey: "home" });
+    expect(screen.queryByText(/12 max/i)).toBeNull();
+
+    rerender(<HubTabStrip {...props} tabs={tabsAtCapacity()} />);
+    expect(screen.getByText(/12 max/i)).toBeInTheDocument();
   });
 });
