@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, lt, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, lt, notInArray, or, sql } from "drizzle-orm";
 import type {
   ThreadAgentActionStatus,
   ThreadAgentActionType,
@@ -34,6 +34,7 @@ import { preflightCrewDispatch } from "./crew-budget.js";
 import { approvalService } from "./approvals.js";
 import { buildApprovalHubEmit, emitHubItem } from "./hub-source-producers.js";
 import { logActivity } from "./activity-log.js";
+import { extractionService } from "./extraction.js";
 import { logger } from "../middleware/logger.js";
 import { isUniqueViolation } from "./db-errors.js";
 
@@ -87,6 +88,9 @@ type ThreadActionRow = {
   freshness: ThreadFreshnessSnapshot;
   attemptCount?: number;
   maxAttempts?: number;
+  // Null on a NO-OP create_scope_draft commit (no_entries/no_items) — the
+  // discriminator the round-10 no-op revive keys on.
+  committedScopeVersionId?: string | null;
 };
 
 export type ProposeThreadActionInput = {
@@ -150,6 +154,12 @@ type ScopeVersionCommitService = {
       openQuestions?: unknown[];
       // W1a: Adjutant-supplied tasks (role-resolved to assigneeAgentId) forwarded to the compiler.
       proposedTasks?: Array<{ title: string; assigneeAgentId?: string | null }>;
+      // W2: extraction already ran (extract-then-scope) — zero-item compiles must not
+      // synthesize the fallback task card (no fake card, D6).
+      suppressFallbackTask?: boolean;
+      // Codex #270 P1: a truncated extraction pass caps the draft's range at the last
+      // processed entry so the unprocessed tail stays in the next scope's range.
+      sourceEndSeqOverride?: number;
     },
   ) => Promise<{ status: string; version?: { id: string } }>;
   // W1b: per-item apply (version-preserving). Memory candidates stay draft for the founder (D12).
@@ -410,10 +420,20 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
       // key-set — without re-stamping freshness here it would carry the FAILED run's stale snapshot and
       // wrongly suppress a scope-coupled action as newer_scope_version even though THIS run saw the new
       // scope (Codex round-8; same class as the suppressed_stale revive + the #202 re-home freshness fix).
+      // Codex #270 P2 (round 10): a create_scope_draft that committed WITHOUT minting a
+      // draft (no_entries / no_items — e.g. extraction found no usable CLI) is a NO-OP
+      // commit: there is no effect for idempotency to protect. Its run-independent,
+      // turn-anchored key would otherwise absorb every same-turn re-proposal, so the
+      // draft could never be re-attempted after the founder fixes extraction (until a
+      // new human entry moves the turn anchor). Draft-minting AND existing_draft
+      // commits both record the version id → non-null → stay terminal.
       const reviveFrom =
         existing &&
         (existing.status === "suppressed_stale" ||
-          (existing.status === "blocked_policy" && existing.blockedReason === "run_not_sealed"))
+          (existing.status === "blocked_policy" && existing.blockedReason === "run_not_sealed") ||
+          (existing.status === "committed" &&
+            existing.actionType === "create_scope_draft" &&
+            existing.committedScopeVersionId == null))
           ? existing.status
           : null;
       if (existing && reviveFrom) {
@@ -423,9 +443,22 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
             status: "proposed",
             blockedReason: null,
             freshness: input.freshness ?? existing.freshness,
+            // A revived no-op commit sheds its committedAt so the row reads as
+            // genuinely in-flight again (committedScopeVersionId is already null).
+            ...(reviveFrom === "committed" ? { committedAt: null } : {}),
             updatedAt: new Date(),
           })
-          .where(and(eq(threadAgentActions.id, existing.id), eq(threadAgentActions.status, reviveFrom)))
+          .where(
+            and(
+              eq(threadAgentActions.id, existing.id),
+              eq(threadAgentActions.status, reviveFrom),
+              // TOCTOU discipline: re-assert the no-op discriminator INSIDE the
+              // guarded UPDATE — never revive a committed row that has a version.
+              ...(reviveFrom === "committed"
+                ? [isNull(threadAgentActions.committedScopeVersionId)]
+                : []),
+            ),
+          )
           .returning();
         if (revived) return revived;
       }
@@ -741,6 +774,69 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
                 })),
             );
 
+            // W2 (D6 extract-then-scope): run keyless CLI extraction over the thread's
+            // never-extracted entries and WAIT, so the draft compiles from real items.
+            // Best-effort — extraction failure (CLI missing/not authed/timeout) must never
+            // block draft creation; the compiler then sees zero items and, because we pass
+            // suppressFallbackTask below, emits NO fake card (D6). The helper itself is
+            // bounded (25-entry cap + 180s wall-clock deadline) and never throws; the
+            // try/catch is defense-in-depth.
+            //
+            // Codex #270 P2: SKIPPED when the Adjutant supplied proposedTasks — those
+            // already define the draft's work (the compiler suppresses extracted task
+            // cards under D1 anyway), so extracting here would only persist pending
+            // task items a founder could later approve into DUPLICATE tasks.
+            let sourceEndSeqOverride: number | undefined;
+            if (proposedTasks.length === 0) {
+              try {
+                const extraction = await extractionService(
+                  actionDb as unknown as import("@armyofagents/db").Db,
+                ).extractThreadEntriesAwait(input.companyId, input.threadId);
+                log.info(
+                  { threadId: input.threadId, ...extraction },
+                  "extract-then-scope completed before draft compile",
+                );
+                // Codex #270 P1+P2 (rounds 3-6): the helper folds every range signal —
+                // count-cap/deadline truncation AND the first entry whose extraction did
+                // not complete — into rangeEndCap. Cap the draft's range there so
+                // unprocessed/failed entries stay in the NEXT scope's range (an
+                // all-failed pass caps below the start -> no_entries -> no draft, and
+                // everything stays retryable). Round 9: if the capped range holds only
+                // permanently non-extractable entries (e.g. a short "ok" prefix before
+                // the first failure), the zero-item compile returns no_items instead of
+                // minting an EMPTY draft that would block later passes behind
+                // existing_draft.
+                if (extraction.rangeEndCap != null) {
+                  sourceEndSeqOverride = extraction.rangeEndCap;
+                }
+              } catch (err) {
+                log.warn({ err, threadId: input.threadId },
+                  "extract-then-scope failed — compiling draft from existing items only");
+              }
+
+              // Codex #270 P1: the awaited extraction above can run for minutes — long
+              // enough for a founder to add newer human entries. The per-action freshness
+              // re-check ran BEFORE that wait, so re-run it here: a thread that moved on
+              // must suppress this action (same terminal outcome as the pre-commit check),
+              // not mint a draft covering input the proposing run never saw. (Tied to the
+              // extraction branch — the proposedTasks path performs no comparable wait.)
+              const postExtractionFreshness = await compare(
+                actionDb,
+                input.threadId,
+                action.freshness,
+                action.actionType,
+                batchProducedScopeVersionId,
+              );
+              if (!postExtractionFreshness.fresh) {
+                await updateActionStatus(actionDb, action.id, {
+                  status: "suppressed_stale",
+                  blockedReason: postExtractionFreshness.reason,
+                });
+                result.suppressed += 1;
+                continue;
+              }
+            }
+
             const draft = await scopeVersionCommitter.createDraftFromThread(
               input.companyId,
               input.threadId,
@@ -751,6 +847,10 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
                 decisions: asArray(payload.decisions),
                 openQuestions: asArray(payload.openQuestions),
                 ...(proposedTasks.length > 0 ? { proposedTasks } : {}),
+                // W2: extraction already ran (or proposedTasks define the work) — an
+                // empty compile must not invent a fake card.
+                suppressFallbackTask: true,
+                ...(sourceEndSeqOverride != null ? { sourceEndSeqOverride } : {}),
               },
             );
 

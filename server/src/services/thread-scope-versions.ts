@@ -20,6 +20,7 @@ import { issueService } from "./issues.js";
 import { MAX_CONTEXT_BUNDLE_ITEMS } from "./issue-context-bundles.js";
 import { memoryService } from "./memory.js";
 import { compileThreadScopeDraft } from "./thread-scope-draft-compiler.js";
+import { hubItemsService } from "./hub-items.js";
 
 export type DerivedThreadStage = {
   stage: ThreadDerivedStage;
@@ -379,6 +380,59 @@ async function isScopeDraftStaleForOutputs(
 
 type ScopeDraftWriteDb = Pick<Db, "insert">;
 type ScopeDirectFinalizeDb = Pick<Db, "select" | "update">;
+/** Codex #270 P2 (round 5): applying a scope card that ORIGINATED from an extracted
+ *  item must RESOLVE that source item. Otherwise it stays 'pending' in the founder's
+ *  review queue — approve-able later into a DUPLICATE task — and holds a stale
+ *  pendingItemCount badge. Mirrors the human approve flow (discussions.ts approveItems:
+ *  status→'approved' + result linkage + GREATEST-guarded decrement). The UPDATE is
+ *  guarded to pending/edited so an already-resolved item is never double-counted.
+ */
+async function resolveSourceExtractedItem(
+  tx: Pick<Db, "update">,
+  input: {
+    companyId: string;
+    extractedItemId: string;
+    threadId: string;
+    resultTaskId?: string | null;
+    resultMemoryId?: string | null;
+  },
+): Promise<void> {
+  const updated = (await tx
+    .update(discussionExtractedItems)
+    .set({
+      status: "approved",
+      resultTaskId: input.resultTaskId ?? null,
+      resultMemoryId: input.resultMemoryId ?? null,
+    })
+    .where(and(
+      eq(discussionExtractedItems.id, input.extractedItemId),
+      inArray(discussionExtractedItems.status, ["pending", "edited"]),
+    ))
+    .returning({ id: discussionExtractedItems.id })) as Array<{ id: string }>;
+  if (updated.length > 0) {
+    await tx
+      .update(discussions)
+      .set({
+        pendingItemCount: sql`GREATEST(${discussions.pendingItemCount} - 1, 0)`,
+        updatedAt: new Date(),
+      })
+      .where(eq(discussions.id, input.threadId));
+    // Codex #270 P2 (round 6): reconcile the discussion's pending-review hub item
+    // immediately — the human approveItems flow does the same after this decrement.
+    // Otherwise a last-item apply leaves a stale "Review N pending items" Inbox row
+    // until an unrelated sweep runs. Best-effort: a reconcile hiccup must not fail
+    // the apply (the sweeper heals; sources stay truth).
+    try {
+      await hubItemsService(tx as unknown as Db).reconcile(input.companyId, {
+        sourceType: "discussion",
+        sourceId: input.threadId,
+      });
+    } catch {
+      /* sweeper heals */
+    }
+  }
+}
+
 type ScopeItemReviewStatus = "draft" | "accepted" | "rejected";
 
 const REVIEWABLE_SCOPE_ITEM_STATUSES = new Set(["draft", "accepted", "rejected"]);
@@ -635,6 +689,16 @@ export function threadScopeVersionService(db: Db) {
         decisions?: unknown[];
         openQuestions?: unknown[];
         proposedTasks?: Array<{ title: string; assigneeAgentId?: string | null }>;
+        /** W2 (D6): set by the Adjutant extract-then-scope path — extraction already ran,
+         *  so a zero-item compile must emit NO synthetic fallback task (no fake card).
+         *  Absent/false on the human create-draft route (derived-title fallback kept). */
+        suppressFallbackTask?: boolean;
+        /** Codex #270 P1: when a truncated extraction pass (count cap / deadline) only
+         *  processed entries up to some seq, the draft's range must END there — entries
+         *  past it were never extracted and belong to the NEXT scope's range
+         *  (sourceStartSeq = sourceEndSeq + 1). Without this cap they would be silently
+         *  consumed by this draft's range accounting and never scoped. */
+        sourceEndSeqOverride?: number;
       },
     ) => {
       const [thread] = await db
@@ -659,7 +723,15 @@ export function threadScopeVersionService(db: Db) {
         latest && ["accepted", "completed"].includes(latest.status)
           ? latest.sourceEndSeq + 1
           : 1;
-      const sourceEndSeq = thread.entrySeq ?? 0;
+      // Codex #270 P1: a truncated extraction pass caps the range at the last entry it
+      // actually processed — the unprocessed tail stays in the NEXT scope's range
+      // (sourceStartSeq = sourceEndSeq + 1) instead of being silently consumed. Clamped
+      // to the live entrySeq defensively (an override can never widen the range).
+      const liveEndSeq = thread.entrySeq ?? 0;
+      const sourceEndSeq =
+        input.sourceEndSeqOverride != null
+          ? Math.min(input.sourceEndSeqOverride, liveEndSeq)
+          : liveEndSeq;
 
       if (sourceEndSeq < sourceStartSeq) {
         return { status: "no_entries" as const, sourceStartSeq, sourceEndSeq };
@@ -756,7 +828,19 @@ export function threadScopeVersionService(db: Db) {
           kind: attachment.artifactId ? "artifact" : "asset",
         })),
         proposedTasks: input.proposedTasks,
+        suppressFallbackTask: input.suppressFallbackTask,
       });
+
+      // Codex #270 P2 (round 9): with fallback synthesis suppressed, a zero-item
+      // compile must NOT mint a draft. An empty draft has nothing to accept, yet
+      // it blocks every later scope pass behind existing_draft until a human
+      // rejects it — reachable when the capped range holds only permanently
+      // non-extractable entries (e.g. a failure cap landing just past a short
+      // "ok" prefix). Refusing keeps the range open: failed entries stay
+      // retryable and the next successful pass drafts over the full range.
+      if (input.suppressFallbackTask && compiled.items.length === 0) {
+        return { status: "no_items" as const, sourceStartSeq, sourceEndSeq };
+      }
 
       const versionNumber = latest ? latest.versionNumber + 1 : 1;
       const work = async (tx: ScopeDraftWriteDb) => {
@@ -1263,6 +1347,21 @@ export function threadScopeVersionService(db: Db) {
             status = "applied";
           }
 
+          // Codex #270 P2 (rounds 5+7): ANY accepted card that originated from an
+          // extracted item resolves its source on apply — including non-entity kinds
+          // (decision, source_signal) that produce no resultIssueId/resultMemoryId.
+          // An accepted decision card whose source item stayed pending would keep a
+          // stale badge and allow a later duplicate approval into memory.
+          if (item.extractedItemId) {
+            await resolveSourceExtractedItem(tx as unknown as Pick<Db, "update">, {
+              companyId,
+              extractedItemId: item.extractedItemId,
+              threadId: version.threadId,
+              resultTaskId: resultIssueId,
+              resultMemoryId,
+            });
+          }
+
           const [updatedItem] = await tx
             .update(threadScopeItems)
             .set({
@@ -1472,6 +1571,19 @@ export function threadScopeVersionService(db: Db) {
             createdBy: actor.userId ?? actor.agentId ?? "system",
           }).returning();
           artifactLinkId = link?.id;
+        }
+
+        // Codex #270 P2 (rounds 5+7): resolve the source extracted item on apply —
+        // same rationale as the applyAcceptedDraft path (duplicate-approve + stale
+        // badge). Kind-agnostic: null results are recorded as approved-without-links.
+        if (item.extractedItemId) {
+          await resolveSourceExtractedItem(tx as unknown as Pick<Db, "update">, {
+            companyId,
+            extractedItemId: item.extractedItemId,
+            threadId: version.threadId,
+            resultTaskId: resultIssueId,
+            resultMemoryId,
+          });
         }
 
         const [updatedItem] = await tx

@@ -66,6 +66,7 @@ Default autonomy is **Assist**. Example: a founder migrates auth to JWT.
 | D14 | Dead-code cleanup | **Full batch**, but **each removal verified 100% safe** (no live usage) before deleting |
 | D15 | Quality bar | **Unit + E2E + live-verified** per piece (matches AoA CI gates) |
 | D16 | Settings surface | New **Discussions section**: default autonomy dial · routing behavior + threshold · crew on/off · memory-extraction toggle · extraction-trigger preference |
+| D17 | Task naming | **All task titles are agent-authored.** Crew paths already are (proposedTasks / extracted items / no card). The human "Create scope draft" button's derived title (longest entry's first sentence, W2 interim) is a stopgap — the button becomes **"Ask Adjutant to scope"** (async crew run → agent-named draft). Sequenced AFTER the fake-crew-harness CI follow-up (filed during W1c) that unblocks its e2e story. (Locked at W2 eng-review, 2026-07-03) |
 
 ---
 
@@ -99,6 +100,8 @@ Grouped into workstreams. Most of the "hard" machinery already exists and needs 
 ### W2 — Extraction-then-scope + kill the stub
 - Adjutant scoping triggers extraction first (D6), so scope drafts compile from real items.
 - Remove/replace `titleForGeneratedTask` + `memoryCandidateTitle` placeholders (`thread-scope-draft-compiler.ts:94-106`); derive from summary or suppress the synthetic item when there are zero real items. Update the pinning test (`thread-scope-draft-compiler.test.ts:56`).
+
+**STATUS (2026-07-03): SHIPPED** (branch `feat/w2-extract-then-scope`) — Controller `create_scope_draft` awaits `extractionService.extractThreadEntriesAwait` before compiling: conservative selection (never-extracted entries only — pending/skipped/failed with ZERO items; entries a founder may be mid-review on are untouched; reprocess keeps its delete+re-extract semantics), serial, 25-entry cap + 180s wall-clock deadline (eng-review D2), best-effort/never-throws. The compile then passes `suppressFallbackTask: true` — an extracted-and-empty thread shows **no fake card**. The keyword-stub titles are dead everywhere; the human create-draft route (no synchronous extraction) keeps one fallback card titled from the longest entry's first sentence (≤80) as the D17 interim.
 
 ### W3 — Execution loop (compose existing machinery into `runAoaAgent`)
 - **Writable worktree:** compose `resolveThreadDeliverableWorkspace` / `realizeExecutionWorkspace` into the crew runner for `software_development` tasks, one repo per task (D4-execution). Populate `paperclipWorkspace.cwd` so the adapter runs in the worktree.

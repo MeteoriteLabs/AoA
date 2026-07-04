@@ -53,7 +53,8 @@ describe("compileThreadScopeDraft", () => {
       expect.arrayContaining([
         expect.objectContaining({
           kind: "task_proposal",
-          title: expect.stringMatching(/scope generation/i),
+          // W2: derived from the LONGEST entry (entry-3), first sentence, <= 80 chars.
+          title: expect.stringMatching(/^Memory must be retrievable/),
           sourceEntryIds: ["entry-1", "entry-2", "entry-3"],
         }),
         expect.objectContaining({
@@ -304,7 +305,9 @@ describe("compileThreadScopeDraft", () => {
         }),
         expect.objectContaining({
           kind: "memory_candidate",
-          title: expect.stringMatching(/decision rule|durable memory/i),
+          // W2: synthesized memory-candidate titles derive from content too (longest
+          // entry = entry-2, first sentence, <= 80) — the keyword stubs are dead.
+          title: expect.stringMatching(/^Now please scope this discussion/),
           payload: expect.objectContaining({
             layer: "domain",
             category: "decision",
@@ -365,12 +368,17 @@ describe("compileThreadScopeDraft — proposedTasks", () => {
     expect(tasks.map((t) => t.title)).not.toContain("Implement real multi-message scope generation");
   });
 
-  it("falls back to extracted-item compilation when proposedTasks is absent", () => {
+  it("falls back to a content-derived task when proposedTasks is absent (W2 — stub dead)", () => {
     const out = compileThreadScopeDraft(base); // no proposedTasks
-    // no extracted items + text contains 'scope' → legacy placeholder still fires
+    // no extracted items → ONE fallback task whose title derives from the entry
+    // content. The text contains 'scope' — the OLD keyword stub would have fired
+    // its placeholder title here; that stub is dead.
     const tasks = out.items.filter((i) => i.kind === "task_proposal");
     expect(tasks).toHaveLength(1);
-    expect(tasks[0].title).toBe("Implement real multi-message scope generation");
+    expect(tasks[0].title).toBe("let's scope the auth work");
+    expect(tasks[0].title).not.toMatch(
+      /Implement real multi-message|Implement crew discussion|Turn discussion into/,
+    );
   });
 
   it("D1 dedup: proposedTasks suppress extracted task_proposals but keep decisions/memory", () => {
@@ -389,5 +397,188 @@ describe("compileThreadScopeDraft — proposedTasks", () => {
     expect(tasks[0].payload.assigneeAgentId).toBe("agent-eng");
     // the extracted decision survives
     expect(out.items.some((i) => i.kind === "decision" && i.title === "Use JWT")).toBe(true);
+  });
+});
+
+describe("compileThreadScopeDraft — derived fallback titles + suppressFallbackTask (W2)", () => {
+  it("derives the fallback task title from entry content — the keyword stubs are dead", () => {
+    // Entry text deliberately contains 'scope' — the OLD stub would have returned
+    // its keyword placeholder. The derived title must come from the actual
+    // content instead.
+    const result = compileThreadScopeDraft({
+      threadTitle: "Auth planning",
+      summaryText: null,
+      entries: [
+        {
+          id: "e1",
+          seq: 1,
+          inputType: "write",
+          rawContent: "We need to scope the auth token endpoint rewrite before Friday.",
+        },
+      ],
+      extractedItems: [],
+    });
+    const tasks = result.items.filter((i) => i.kind === "task_proposal");
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0].title).toBe("We need to scope the auth token endpoint rewrite before Friday.");
+    expect(tasks[0].title).not.toMatch(
+      /Implement real multi-message|Implement crew discussion|Turn discussion into/,
+    );
+  });
+
+  it("truncates long derived titles at a word boundary (<= 80 chars)", () => {
+    const long =
+      "Rebuild the entire authentication and authorization pipeline including refresh token rotation, session revocation lists, and audit logging for every login path.";
+    const result = compileThreadScopeDraft({
+      threadTitle: "Auth rebuild",
+      summaryText: null,
+      entries: [{ id: "e1", seq: 1, inputType: "write", rawContent: long }],
+      extractedItems: [],
+    });
+    const task = result.items.find((i) => i.kind === "task_proposal")!;
+    expect(task.title.length).toBeLessThanOrEqual(80);
+    expect(task.title.startsWith("Rebuild the entire authentication")).toBe(true);
+  });
+
+  it("derives from the LONGEST entry — a short greeting first entry cannot become the title (eng-review D3)", () => {
+    const result = compileThreadScopeDraft({
+      threadTitle: "Billing retries",
+      summaryText: null,
+      entries: [
+        { id: "e1", seq: 1, inputType: "write", rawContent: "Hey team, quick one." },
+        {
+          id: "e2",
+          seq: 2,
+          inputType: "write",
+          rawContent: "We need to rebuild the billing retry queue with dead-letter handling.",
+        },
+      ],
+      extractedItems: [],
+    });
+    const task = result.items.find((i) => i.kind === "task_proposal")!;
+    expect(task.title).toBe("We need to rebuild the billing retry queue with dead-letter handling.");
+    expect(task.title).not.toMatch(/Hey team/);
+  });
+
+  it("suppressFallbackTask: the intent-gated memory candidate still emits (it is derived, not fake)", () => {
+    // Entry carries explicit durable-memory + decision intent — shouldSynthesizeMemoryCandidate
+    // fires. suppressFallbackTask kills only the fallback TASK card, never the intent-derived
+    // memory candidate (D6 targets fake cards; this one is authored by the user's own words).
+    const result = compileThreadScopeDraft({
+      threadTitle: "Extraction policy",
+      summaryText: null,
+      entries: [
+        {
+          id: "e1",
+          seq: 1,
+          inputType: "write",
+          rawContent: "Save this to durable memory: our decision rule is codex-first for extraction.",
+        },
+      ],
+      extractedItems: [],
+      suppressFallbackTask: true,
+    });
+    expect(result.items.filter((i) => i.kind === "task_proposal")).toHaveLength(0);
+    expect(result.items.filter((i) => i.kind === "memory_candidate")).toHaveLength(1);
+  });
+
+  it("suppressFallbackTask: zero real items → NO synthetic task card at all", () => {
+    const result = compileThreadScopeDraft({
+      threadTitle: "Crew scoping",
+      summaryText: null,
+      entries: [
+        { id: "e1", seq: 1, inputType: "write", rawContent: "let us scope the crew work" },
+      ],
+      extractedItems: [],
+      suppressFallbackTask: true,
+    });
+    expect(result.items.filter((i) => i.kind === "task_proposal")).toHaveLength(0);
+  });
+
+  it("suppressFallbackTask does NOT suppress real extracted items or proposedTasks", () => {
+    const result = compileThreadScopeDraft({
+      threadTitle: "Real work",
+      summaryText: null,
+      entries: [{ id: "e1", seq: 1, inputType: "write", rawContent: "scope this" }],
+      extractedItems: [
+        {
+          id: "x1",
+          discussionEntryId: "e1",
+          type: "task",
+          title: "Real extracted task",
+          status: "pending",
+        },
+      ],
+      suppressFallbackTask: true,
+    });
+    const tasks = result.items.filter((i) => i.kind === "task_proposal");
+    expect(tasks.map((t) => t.title)).toContain("Real extracted task");
+  });
+});
+
+describe("compileThreadScopeDraft — derived-title pool is HUMAN prose only (T6 review)", () => {
+  const base = {
+    threadTitle: "Auth rewrite",
+    summaryText: "Migrate auth to JWT",
+    extractedItems: [],
+    attachments: [],
+  };
+
+  it("a longer scope_proposal JSON entry cannot become the title — longest HUMAN entry wins", () => {
+    const out = compileThreadScopeDraft({
+      ...base,
+      entries: [
+        { id: "e1", seq: 1, inputType: "write", rawContent: "We need to rebuild the billing retry queue." },
+        {
+          id: "e2",
+          seq: 2,
+          inputType: "scope_proposal",
+          rawContent:
+            '{"summary":"E2E fake scope from thread discussion with a very long JSON wire payload that would easily win a longest-entry contest","proposedTasks":[{"title":"X"}]}',
+        },
+      ],
+    });
+    const tasks = out.items.filter((i) => i.kind === "task_proposal");
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0].title).toBe("We need to rebuild the billing retry queue.");
+    expect(tasks[0].title).not.toMatch(/^\{/);
+  });
+
+  it("agent-authored entries (inputType 'agent' or authorAgentId set) are excluded from the title pool", () => {
+    const out = compileThreadScopeDraft({
+      ...base,
+      entries: [
+        { id: "e1", seq: 1, inputType: "write", rawContent: "Fix the webhook retries." },
+        {
+          id: "e2",
+          seq: 2,
+          inputType: "agent",
+          rawContent: "As an agent I have produced a much longer reply that would otherwise win the longest-entry contest easily.",
+        },
+        {
+          id: "e3",
+          seq: 3,
+          inputType: "write",
+          authorAgentId: "agent-scout",
+          rawContent: "Another long agent-authored message routed through a human-looking input type that must also not win here.",
+        },
+      ],
+    });
+    const tasks = out.items.filter((i) => i.kind === "task_proposal");
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0].title).toBe("Fix the webhook retries.");
+  });
+
+  it("no human prose at all → static fallback title (never JSON, never agent text)", () => {
+    const out = compileThreadScopeDraft({
+      ...base,
+      entries: [
+        { id: "e1", seq: 1, inputType: "agent", rawContent: "Agent-only chatter in this thread." },
+        { id: "e2", seq: 2, inputType: "scope_proposal", rawContent: '{"summary":"json blob"}' },
+      ],
+    });
+    const tasks = out.items.filter((i) => i.kind === "task_proposal");
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0].title).toBe("Scope work from this discussion");
   });
 });
