@@ -79,6 +79,19 @@ const DEFAULT_AUTOPILOT_ACTIONS: HubAutopilotActionsResponse = { items: [] };
 export const OPENED_ITEM_CACHE_MAX = 24;
 
 /**
+ * "Needs you most" (HubHome) reads items[0]. On Home (`activeLane===null`) the
+ * lane list query is disabled, so without a dedicated fetch the card is
+ * permanently empty. This stable options object drives a small waiting-lane
+ * preview page (the decision lane) with a stable query key. Module-level so the
+ * reference — and therefore the query key — stays stable across renders.
+ */
+export const HOME_PREVIEW_OPTIONS = {
+  lane: "waiting_on_you",
+  status: "open",
+  limit: 5,
+} as const;
+
+/**
  * The ONLY insert path for the opened-item cache — used by BOTH writers (the
  * deep-link hydration effect and handleOpenItem) so the cache stays bounded to
  * the most recent {@link OPENED_ITEM_CACHE_MAX} rows. Recency = insertion
@@ -453,6 +466,19 @@ export function InboxHub() {
   });
   const hiddenCount = hiddenCountQuery.data?.hiddenOpen ?? 0;
 
+  // "Needs you most" Home preview: a small waiting-lane page fetched ONLY on Home
+  // (activeLane===null), where the lane list query is disabled. Distinct query
+  // key from any lane's infinite query, under the ["hub-items", cid] prefix so the
+  // live hub.item.changed invalidation refreshes it.
+  const homePreviewQuery = useQuery({
+    queryKey: selectedCompanyId
+      ? queryKeys.hubItems.homePreview(selectedCompanyId)
+      : ["hub-items", "home-preview", "none"],
+    queryFn: () => hubItemsApi.list(selectedCompanyId!, HOME_PREVIEW_OPTIONS),
+    enabled: !!selectedCompanyId && !activeLane,
+  });
+  const homeItems = homePreviewQuery.data?.items ?? [];
+
   // Reset the bulk selection on any list-scope change. Page accumulation resets
   // for free: the query key includes lane/search/status, so useInfiniteQuery
   // starts a fresh page-1 fetch whenever the scope changes.
@@ -820,9 +846,14 @@ export function InboxHub() {
     <HubShell
       activeLane={activeLane}
       items={items}
+      homeItems={homeItems}
       counts={countsQuery.data ?? { open: 0, unread: 0 }}
-      isLoading={activeLane ? listQuery.isLoading : countsQuery.isLoading}
-      error={listQuery.error ?? countsQuery.error}
+      isLoading={
+        activeLane
+          ? listQuery.isLoading
+          : countsQuery.isLoading || homePreviewQuery.isLoading
+      }
+      error={listQuery.error ?? countsQuery.error ?? homePreviewQuery.error}
       selectedItemId={selectedItemId}
       selectedItem={selectedItem}
       companyId={selectedCompanyId ?? undefined}

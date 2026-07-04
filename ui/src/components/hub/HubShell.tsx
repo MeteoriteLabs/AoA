@@ -54,6 +54,9 @@ const EMPTY_AUTOPILOT_ACTIONS: { items: HubAutopilotActionRow[] } = { items: [] 
 interface HubShellProps {
   activeLane: HubRailLane;
   items: HubItemListRow[];
+  /** Home-only "Needs you most" preview rows (a small waiting-lane page). Fed to
+   *  HubHome when no lane is active; `items` stays empty on Home. */
+  homeItems?: HubItemListRow[];
   counts: { open: number; unread: number };
   isLoading: boolean;
   error: unknown;
@@ -127,6 +130,7 @@ interface HubShellProps {
 export function HubShell({
   activeLane,
   items,
+  homeItems,
   counts,
   isLoading,
   error,
@@ -781,7 +785,7 @@ export function HubShell({
           {showHome ? (
             <HubHome
               counts={counts}
-              items={items}
+              items={homeItems ?? items}
               visibleLanes={preferences.visibleLanes}
               showAutopilotEntry={preferences.showAutopilotEntry}
               autopilotPolicy={autopilotPolicy}

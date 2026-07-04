@@ -132,6 +132,11 @@ export const queryKeys = {
     counts: (companyId: string) => ["hub-items", companyId, "counts"] as const,
     hiddenCount: (companyId: string, lane: string) =>
       ["hub-items", companyId, "hidden-count", lane] as const,
+    // "Needs you most" Home preview: a small waiting-lane page fetched when no
+    // lane is active. Distinct key from the lane infinite-query so the two caches
+    // never collide; sits under the ["hub-items", cid] prefix for live refresh.
+    homePreview: (companyId: string) =>
+      ["hub-items", companyId, "home-preview"] as const,
     audit: (companyId: string, itemId: string) =>
       ["hub-items", companyId, itemId, "audit"] as const,
     preferences: (companyId: string) => ["hub-items", companyId, "preferences"] as const,

@@ -184,18 +184,36 @@ describe("hubTabForItem", () => {
     expect(tab.kind).toBe("notification");
   });
 
-  it("opens a run tab when relatedEntityType=agent supplies the agentId", () => {
+  it("opens a run tab keyed on the RUN id (sourceId), with the agentId from relatedEntity", () => {
+    // hub-source-producers sets sourceId = run.id AND relatedEntityId = run.agentId.
+    // The run tab MUST be runTab(runId=run.id, agentId), NOT runTab(agentId, agentId):
+    // the tab key is `run:<runId>` and the payload carries both ids distinctly.
     const tab = hubTabForItem(
       row({
         semanticType: "run_failed",
         sourceId: "run-42",
-        relatedEntityId: "run-42",
+        relatedEntityId: "agent-7",
         relatedEntityType: "agent",
       }),
     );
-    // relatedEntityId is preferred for BOTH ids here; this asserts the run
-    // factory is reached (kind=run) when an agent id is present.
     expect(tab.kind).toBe("run");
+    // Keyed on the RUN id — never the agent id.
+    expect(tab.key).toBe("run:run-42");
+    expect(tab.payload).toEqual({ runId: "run-42", agentId: "agent-7" });
+  });
+
+  it("opens a run tab for run_complete with the same run/agent id split", () => {
+    const tab = hubTabForItem(
+      row({
+        semanticType: "run_complete",
+        sourceId: "run-99",
+        relatedEntityId: "agent-3",
+        relatedEntityType: "agent",
+      }),
+    );
+    expect(tab.kind).toBe("run");
+    expect(tab.key).toBe("run:run-99");
+    expect(tab.payload).toEqual({ runId: "run-99", agentId: "agent-3" });
   });
 
   it("opens a marketplace_op tab keyed on the operation id", () => {

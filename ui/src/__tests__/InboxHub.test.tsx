@@ -508,6 +508,47 @@ describe("InboxHub page", () => {
     expect(await screen.findByText(/Autopilot/i)).toBeInTheDocument();
   });
 
+  it("fetches a waiting-lane preview on Home and surfaces it as 'Needs you most'", async () => {
+    // On Home (no active lane) the lane list query is disabled; the dedicated
+    // home-preview fetch must fill the "Needs you most" card.
+    vi.mocked(hubItemsApi.list).mockImplementation(async (_cid, opts) =>
+      opts?.lane === "waiting_on_you" && opts?.limit === 5
+        ? hubList([hubItem({ id: "hub-needs", title: "Decide the deployment" })])
+        : hubList([]),
+    );
+
+    renderPage("/P4/inbox-hub");
+
+    // The preview page is requested with the stable HOME_PREVIEW_OPTIONS.
+    await waitFor(() => {
+      expect(hubItemsApi.list).toHaveBeenCalledWith("company-1", {
+        lane: "waiting_on_you",
+        status: "open",
+        limit: 5,
+      });
+    });
+    // Its top item appears in the "Needs you most" card (no longer the empty copy).
+    expect(await screen.findByText("Decide the deployment")).toBeInTheDocument();
+    expect(
+      screen.queryByText(/Nothing needs attention right now/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not fetch the Home preview once a lane is active", async () => {
+    renderPage("/P4/inbox-hub/waiting");
+
+    await screen.findByRole("navigation", { name: /hub lanes/i });
+    await waitFor(() => {
+      expect(hubItemsApi.list).toHaveBeenCalled();
+    });
+    // Every list call on the waiting lane uses limit 50 — the home preview
+    // (limit 5) query must stay disabled outside Home.
+    expect(hubItemsApi.list).not.toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({ limit: 5 }),
+    );
+  });
+
   it("bridges realtime hub item changes to hydrated toasts", async () => {
     vi.mocked(hubItemsApi.getOne).mockResolvedValue(
       hubItem({ title: "Authorized row title", version: 7 }),

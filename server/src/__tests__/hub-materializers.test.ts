@@ -255,9 +255,27 @@ describe("terminal-run hub emit builders", () => {
       summary: "Run finished successfully",
       sourceActorType: "agent",
       sourceActorId: "agent-1",
+      relatedEntityType: "agent",
+      relatedEntityId: "agent-1",
       priority: "normal",
       sourcePermissionRevision: "2026-06-30T00:00:00.000Z",
     });
+  });
+
+  it("both run producers carry the owning agent as relatedEntity (run-tab id split)", () => {
+    // The run viewer tab is runTab(runId=sourceId, agentId=relatedEntityId); the
+    // agentId is surfaced via relatedEntity, NOT the source unique key (so the
+    // change-aware upsert never re-keys the row).
+    const failed = producers.buildFailedRunHubEmit({ ...baseRun, status: "failed" });
+    expect(failed.relatedEntityType).toBe("agent");
+    expect(failed.relatedEntityId).toBe("agent-1");
+    // sourceId stays the RUN id — distinct from the agent id.
+    expect(failed.sourceId).toBe("run-1");
+
+    const completed = producers.buildCompletedRunHubEmit(baseRun);
+    expect(completed.relatedEntityType).toBe("agent");
+    expect(completed.relatedEntityId).toBe("agent-1");
+    expect(completed.sourceId).toBe("run-1");
   });
 
   it("buildCompletedRunHubEmit falls back to 'Agent' for a missing/blank agent name", () => {

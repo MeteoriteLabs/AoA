@@ -196,6 +196,11 @@ export function buildFailedRunHubEmit(run: FailedRunLike): EmitArgs {
     summary: run.error ?? `Latest run status: ${run.status}`,
     sourceActorType: "agent",
     sourceActorId: run.agentId,
+    // The run viewer tab is keyed on runTab(runId=sourceId, agentId). Persist the
+    // owning agentId as the related entity so hubTabForItem can build that tab;
+    // relatedEntity is NOT part of sourceUniqueKey, so this never re-keys the row.
+    relatedEntityType: "agent",
+    relatedEntityId: run.agentId,
     priority: "high",
     sourcePermissionRevision: sourceRevision(run.updatedAt),
   };
@@ -212,6 +217,9 @@ export function buildCompletedRunHubEmit(run: FailedRunLike): EmitArgs {
     summary: "Run finished successfully",
     sourceActorType: "agent",
     sourceActorId: run.agentId,
+    // See buildFailedRunHubEmit: the run tab needs the agentId via relatedEntity.
+    relatedEntityType: "agent",
+    relatedEntityId: run.agentId,
     priority: "normal",
     sourcePermissionRevision: sourceRevision(run.updatedAt),
   };

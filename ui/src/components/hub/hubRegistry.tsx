@@ -351,10 +351,15 @@ export function hubTabForItem(item: HubItemListRow): HubTab {
     case "task":
       return id ? taskTab(id, title) : notificationTab(item.id, title);
     case "run": {
-      // A run tab needs the owning agentId. Prefer relatedEntityType="agent";
-      // otherwise there is no agent id on the row → degrade to notification.
+      // A run tab needs BOTH the runId and the owning agentId. The run producers
+      // (hub-source-producers.ts) set sourceId = run.id AND relatedEntityId =
+      // run.agentId, so resolveTabId's preferRelated would hand back the AGENT id
+      // for `id` — wrong for the run slot. Build runTab explicitly from the raw
+      // sourceId (the run id) and relatedEntityId (the agent id); if either is
+      // missing there is no run/agent id on the row → degrade to notification.
+      const runId = rawSource(item) || null;
       const agentId = item.relatedEntityType === "agent" ? item.relatedEntityId : null;
-      if (id && agentId) return runTab(id, agentId, title);
+      if (runId && agentId) return runTab(runId, agentId, title);
       return notificationTab(item.id, title);
     }
     case "budget":
