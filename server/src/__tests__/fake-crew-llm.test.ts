@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  buildFakeScopeDraftInput,
   isFakeCrewLlmEnabled,
   maybeExecuteFakeCrewTurn,
 } from "../services/internal-agent/aoa-agents/fake-crew-llm.js";
+import { buildScopeDraftIdempotencyKey } from "../services/internal-agent/tools/thread-action-keys.js";
 
 const db = {} as never;
 
@@ -175,6 +177,80 @@ describe("fake crew LLM e2e harness", () => {
           expect.objectContaining({ assigneeRole: "engineer" }),
         ]),
       }),
+    );
+  });
+});
+
+describe("buildFakeScopeDraftInput — key/payload parity with propose_crew_work", () => {
+  it("derives the BYTE-IDENTICAL turn-anchored key the real tool would", () => {
+    const input = buildFakeScopeDraftInput({
+      companyId: "co-1",
+      threadId: "thr-1",
+      runId: "run-1",
+      agentId: "agent-adj",
+      summary: "Auth scope",
+      proposedTasks: [{ title: "Build token endpoint", assigneeRole: "engineer" }],
+      threadFreshness: { latestHumanSeq: 7 },
+    });
+
+    expect(input).toMatchObject({
+      companyId: "co-1",
+      threadId: "thr-1",
+      runId: "run-1",
+      agentId: "agent-adj",
+      actionType: "create_scope_draft",
+      payload: {
+        summary: "Auth scope",
+        proposedTasks: [{ title: "Build token endpoint", assigneeRole: "engineer" }],
+      },
+      freshness: { latestHumanSeq: 7 },
+    });
+    // The tool derives its key from the RAW proposedTasks + turnAnchor (propose-crew-work.ts:132-141).
+    // The fake MUST match byte-for-byte, or the same-turn re-proposal dedupe silently breaks.
+    expect(input.idempotencyKey).toBe(
+      buildScopeDraftIdempotencyKey({
+        threadId: "thr-1",
+        agentId: "agent-adj",
+        summary: "Auth scope",
+        proposedTasks: [{ title: "Build token endpoint", assigneeRole: "engineer" }],
+        turnAnchor: "7",
+      }),
+    );
+  });
+
+  it("null freshness → noanchor key + empty freshness (snapshot_unavailable contract)", () => {
+    const input = buildFakeScopeDraftInput({
+      companyId: "co-1",
+      threadId: "thr-1",
+      runId: "run-1",
+      agentId: null,
+      summary: "S",
+      proposedTasks: [{ title: "T" }],
+      threadFreshness: null,
+    });
+    expect(input.freshness).toEqual({});
+    expect(input.idempotencyKey).toBe(
+      buildScopeDraftIdempotencyKey({
+        threadId: "thr-1",
+        agentId: null,
+        summary: "S",
+        proposedTasks: [{ title: "T" }],
+        turnAnchor: null,
+      }),
+    );
+  });
+
+  it("eng-review-fix-4: passes RAW proposedTasks to the key builder (empty assigneeRole ≠ dropped)", () => {
+    // The tool feeds the raw tasks to buildScopeDraftIdempotencyKey (propose-crew-work.ts:136);
+    // an assigneeRole:"" must produce the tool's key, NOT a mapped-to-null variant. Regression
+    // pin for the challenger's finding 4.
+    const raw = [{ title: "T", assigneeRole: "" }];
+    const input = buildFakeScopeDraftInput({
+      companyId: "co-1", threadId: "thr-1", runId: "run-1", agentId: "a",
+      summary: "S", proposedTasks: raw, threadFreshness: { latestHumanSeq: 2 },
+    });
+    expect(input.idempotencyKey).toBe(
+      buildScopeDraftIdempotencyKey({ threadId: "thr-1", agentId: "a", summary: "S", proposedTasks: raw, turnAnchor: "2" }),
     );
   });
 });

@@ -2,6 +2,7 @@ import { and, desc, eq, isNull, ne } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { discussionEntries } from "@armyofagents/db";
 import type { AdapterExecutionResult } from "../../../adapters/types.js";
+import { buildScopeDraftIdempotencyKey } from "../tools/thread-action-keys.js";
 
 export interface FakeCrewAgent {
   id: string;
@@ -49,6 +50,65 @@ export interface FakeCrewDeps {
     proposedTasks: Array<{ title: string; assigneeRole?: string }>;
     createdBy: { agentId: string };
   }) => Promise<unknown>;
+}
+
+export interface FakeScopeDraftContext {
+  companyId: string;
+  threadId: string;
+  runId: string;
+  agentId: string | null;
+  summary: string;
+  proposedTasks: Array<{ title: string; assigneeRole?: string }>;
+  threadFreshness: { latestHumanSeq?: number } | null;
+}
+
+export interface FakeScopeDraftInput {
+  companyId: string;
+  threadId: string;
+  runId: string;
+  agentId: string | null;
+  actionType: "create_scope_draft";
+  payload: Record<string, unknown>;
+  idempotencyKey: string;
+  freshness: Record<string, unknown>;
+}
+
+/**
+ * Build the EXACT `proposeThreadAction` input the real propose_crew_work tool
+ * produces in controller mode (propose-crew-work.ts:118-144). The fake calls
+ * proposeThreadAction with this — no production tool refactor (eng-review D5).
+ *
+ * Parity contract: the idempotency KEY must be byte-identical to the tool's, so
+ * BOTH derive it from the RAW proposedTasks (NOT a mapped copy — mapping would
+ * turn assigneeRole:"" into null and change the key; challenger finding 4) and
+ * the same turnAnchor (latestHumanSeq → String, or null). The parity unit test
+ * pins this; drift is caught there, not by a shared helper.
+ */
+export function buildFakeScopeDraftInput(ctx: FakeScopeDraftContext): FakeScopeDraftInput {
+  const latestHumanSeq = ctx.threadFreshness?.latestHumanSeq;
+  return {
+    companyId: ctx.companyId,
+    threadId: ctx.threadId,
+    runId: ctx.runId,
+    agentId: ctx.agentId,
+    actionType: "create_scope_draft",
+    payload: {
+      summary: ctx.summary,
+      proposedTasks: ctx.proposedTasks.map((task) => ({
+        title: task.title,
+        ...(task.assigneeRole ? { assigneeRole: task.assigneeRole } : {}),
+      })),
+    },
+    // RAW tasks to the key builder — mirrors propose-crew-work.ts:136 exactly.
+    idempotencyKey: buildScopeDraftIdempotencyKey({
+      threadId: ctx.threadId,
+      agentId: ctx.agentId,
+      summary: ctx.summary,
+      proposedTasks: ctx.proposedTasks,
+      turnAnchor: latestHumanSeq != null ? String(latestHumanSeq) : null,
+    }),
+    freshness: ctx.threadFreshness ?? {},
+  };
 }
 
 export function isFakeCrewLlmEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
