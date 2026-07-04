@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { defineConfig } from "@playwright/test";
 import { FAKE_CLAUDE_CONTROL_PATH, FAKE_CLAUDE_INVOCATIONS_PATH } from "./helpers/fake-claude";
 import { FAKE_CODEX_CONTROL_PATH, FAKE_CODEX_INVOCATIONS_PATH } from "./helpers/fake-codex";
+import { FAKE_CREW_CONTROL_PATH } from "./helpers/fake-crew-control";
 import { FAKE_EMBEDDER_CONTROL_PATH } from "./helpers/fake-embedder";
 
 // Windows runner can't start embedded-postgres because GitHub's Windows
@@ -31,6 +32,21 @@ const BASE_URL = `http://127.0.0.1:${PORT}`;
 const AOA_HOME = WINDOWS_WITH_EMBEDDED_POSTGRES
   ? ""
   : fs.mkdtempSync(path.join(os.tmpdir(), "aoa-e2e-home-"));
+
+// UNCONDITIONAL startup cleanup (eng-review fix 2): delete any leftover
+// fake-crew control file from a prior run that died on a signal (afterEach
+// doesn't run on SIGKILL/Ctrl-C, and os.tmpdir() persists across local runs).
+// Unlike the fake-claude control (which only affects specs that script it),
+// this control file changes the DEFAULT Adjutant behavior — a stale file
+// silently rewires the controller-mode branch for legacy specs that never
+// touch it (e.g. full-discussion-to-workspace-cycle waits 75s for a
+// scope-proposal-card the controller branch never emits). Runs once at config
+// load, before any worker/server launches, so no spec inherits a stale file.
+try {
+  fs.unlinkSync(FAKE_CREW_CONTROL_PATH);
+} catch {
+  /* absent — fine */
+}
 
 // Commander viewer e2e (commander-viewer.spec.ts): resolve `claude` to the
 // deterministic fake CLI. cli-mode.ts looks the binary up via `which`/`where`
@@ -111,6 +127,7 @@ export default defineConfig({
           AOA_VITE_HMR_PORT: String(PORT + 10_000),
           AOA_E2E_FAKE_AWS_SECRETS_MANAGER: "1",
           AOA_E2E_FAKE_CREW_LLM: "1",
+          AOA_E2E_FAKE_CREW_CONTROL: FAKE_CREW_CONTROL_PATH,
           AOA_THREAD_EVENT_DEBOUNCE_MS: "250",
           // Pin e2e marketplace data to the copied bundled fixture. The
           // service falls back to bundled data when the CDN cannot be reached.

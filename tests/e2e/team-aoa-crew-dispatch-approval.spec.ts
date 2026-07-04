@@ -16,10 +16,11 @@
  * "create_scope_draft" → committed by runner/sweep/orchestration). The manual
  * `scope-versions/draft` + per-item `/create` REST path that the sibling
  * team-aoa-crew-assignment.spec.ts uses does NOT run the Assist auto-accept gate,
- * so it never produces the approval. The fake-crew LLM harness
- * (AOA_E2E_FAKE_CREW_LLM=1) also bypasses this path — it calls the legacy
- * `crewTaskService.proposeWork` directly, not `propose_crew_work`. Therefore this
- * spec drives a real crew turn, gated behind AOA_E2E_REAL_CREW_FLOW=1 exactly like
+ * so it never produces the approval. The fake-crew harness now ALSO covers this
+ * path in normal CI via its controller-mode turn (see
+ * team-aoa-crew-dispatch-approval-ci.spec.ts) — this spec remains the
+ * LIVE-fidelity soak (real CLI, real MCP bridge, real tool registry gating),
+ * gated behind AOA_E2E_REAL_CREW_FLOW=1 exactly like
  * real-crew-discussion-flow.spec.ts, and is skipped in normal CI.
  *
  * Company/agent/thread REST seeding + `jsonOrThrow` are reused verbatim from the
