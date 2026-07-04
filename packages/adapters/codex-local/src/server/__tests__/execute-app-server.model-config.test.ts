@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { runAppServerTurn } from "../execute-app-server.js";
+import { runAppServerTurn, type RunAppServerTurnDeps } from "../execute-app-server.js";
 
 let home: string;
 beforeEach(async () => {
@@ -31,7 +31,12 @@ function fakeDeps() {
       onNotification: vi.fn(),
       result: () => ({ summary: "ok", usage: null, errorMessage: null, errorCode: null }),
     })),
-  };
+    // Loose test double — the mocks intentionally implement only the surface
+    // runAppServerTurn exercises here (client.close, terminate, drive result,
+    // accumulator). Cast to the full deps type rather than stubbing ChildProcess
+    // / the whole JsonRpcClient. (Fixes a typecheck/build error: SpawnedAppServerClient
+    // requires a `child` field this mock omits.)
+  } as unknown as RunAppServerTurnDeps;
 }
 
 const baseInput = () => ({
