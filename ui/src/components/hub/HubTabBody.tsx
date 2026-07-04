@@ -12,6 +12,13 @@ import { AgentDetailContainer } from "../agent-detail/AgentDetailContainer";
 import { RunDetailContainer } from "../agent-detail/RunDetailContainer";
 import { HUB_TABPANEL_ID } from "./HubTabStrip";
 import { RuntimeDecisionPanel } from "./RuntimeDecisionPanel";
+import { GenericNotificationBody } from "./viewers/GenericNotificationBody";
+import { JoinRequestBody } from "./viewers/JoinRequestBody";
+import { MarketplaceOpBody } from "./viewers/MarketplaceOpBody";
+import { ReminderBody } from "./viewers/ReminderBody";
+import { RoutineBody } from "./viewers/RoutineBody";
+import { SuggestionBody } from "./viewers/SuggestionBody";
+import { UnlinkableEntityBody } from "./viewers/UnlinkableEntityBody";
 import {
   browserTab,
   type HubAgentPayload,
@@ -37,6 +44,12 @@ interface HubTabBodyProps {
    */
   resolveHubItem?: (hubItemId: string) => HubItemListRow | undefined;
   /**
+   * The active tab's resolved hub row. Placeholder viewer payloads often carry
+   * source ids instead of hub-item ids, so these content bodies render from the
+   * row the shell already resolved for the action bar.
+   */
+  activeItem?: HubItemListRow | null;
+  /**
    * Body for the non-closeable `home` tab. HubShell supplies the real
    * {@link HubHome}; when absent the built-in placeholder renders.
    */
@@ -49,22 +62,17 @@ interface HubTabBodyProps {
  * `aria-controls` resolves, and it fills the panel fluidly (`w-full h-full`)
  * rather than the legacy fixed 360px HubViewer aside (A2 review).
  *
- * Live-wired kinds: home (placeholder stub, E2 swaps in the real HubHome),
- * task, task_output, thread (D2 — hosts embedded ThreadDetail by prop id),
- * approval (D3 — hosts embedded ApprovalDetailCore by prop id), browser, budget,
- * agent (D4a — hosts AgentDetailContainer by prop id), run (D4b — hosts
- * RunDetailContainer by runId+agentId), runtime_decision (needs `resolveHubItem`;
- * placeholder until the parent supplies it in E2/G1). Kinds without a dedicated
- * hub payload (artifact, memory) or not yet built (join_request, suggestion,
- * marketplace_op, reminder, routine) fall through to
- * {@link TabLoadingPlaceholder} — never to `null` — so the panel still renders
- * while Phase D/E wires them.
- */
+ * Live-wired kinds: home, task, task_output, thread, approval, browser,
+ * budget, agent, run, runtime_decision, and row-backed content bodies for
+ * join_request, suggestion, marketplace_op, reminder, routine, artifact,
+ * memory, and generic notification when `activeItem` is available. Missing row
+ * context falls back to {@link TabLoadingPlaceholder} -- never to `null`. */
 export function HubTabBody({
   tab,
   companyId,
   onOpenTab,
   resolveHubItem,
+  activeItem,
   homeContent,
 }: HubTabBodyProps) {
   return (
@@ -80,6 +88,7 @@ export function HubTabBody({
         companyId={companyId}
         onOpenTab={onOpenTab}
         resolveHubItem={resolveHubItem}
+        activeItem={activeItem}
         homeContent={homeContent}
       />
     </div>
@@ -91,6 +100,7 @@ function HubTabBodyContent({
   companyId,
   onOpenTab,
   resolveHubItem,
+  activeItem,
   homeContent,
 }: HubTabBodyProps) {
   switch (tab.kind) {
@@ -182,7 +192,11 @@ function HubTabBodyContent({
     }
 
     case "notification":
-      return <HubNotificationBody tab={tab} />;
+      return activeItem ? (
+        <GenericNotificationBody item={activeItem} />
+      ) : (
+        <HubNotificationBody tab={tab} />
+      );
 
     case "runtime_decision": {
       // The runtime_decision tab payload only carries `{ hubItemId }`, but
@@ -198,20 +212,54 @@ function HubTabBodyContent({
       );
     }
 
-    // `artifact` and `memory` are declared kinds but the hub tab model has no
-    // HubArtifactPayload / HubMemoryPayload yet (no artifactId / memoryId /
-    // companyId to feed ArtifactAttachmentViewer or MemoryLinkedViewer).
-    // Placeholder rather than guess — real wiring lands in Phase D/E once the
-    // payloads + tab factories exist.
-    case "artifact":
-    case "memory":
-    // Not-yet-built kinds — Phase D/E wire these.
     case "join_request":
+      return activeItem ? (
+        <JoinRequestBody item={activeItem} />
+      ) : (
+        <TabLoadingPlaceholder kind={tab.kind} />
+      );
+
     case "suggestion":
-    case "marketplace_op":
+      return activeItem ? (
+        <SuggestionBody item={activeItem} />
+      ) : (
+        <TabLoadingPlaceholder kind={tab.kind} />
+      );
+
     case "reminder":
+      return activeItem ? (
+        <ReminderBody item={activeItem} />
+      ) : (
+        <TabLoadingPlaceholder kind={tab.kind} />
+      );
+
+    case "marketplace_op":
+      return activeItem ? (
+        <MarketplaceOpBody item={activeItem} />
+      ) : (
+        <TabLoadingPlaceholder kind={tab.kind} />
+      );
+
     case "routine":
-      return <TabLoadingPlaceholder kind={tab.kind} />;
+      return activeItem ? (
+        <RoutineBody item={activeItem} />
+      ) : (
+        <TabLoadingPlaceholder kind={tab.kind} />
+      );
+
+    case "artifact":
+      return activeItem ? (
+        <UnlinkableEntityBody item={activeItem} kind="artifact" />
+      ) : (
+        <TabLoadingPlaceholder kind={tab.kind} />
+      );
+
+    case "memory":
+      return activeItem ? (
+        <UnlinkableEntityBody item={activeItem} kind="memory" />
+      ) : (
+        <TabLoadingPlaceholder kind={tab.kind} />
+      );
 
     default:
       // Exhaustiveness guard: any new kind falls back to a placeholder, never null.

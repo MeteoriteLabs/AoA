@@ -199,7 +199,7 @@ describe("hubTabForItem", () => {
     expect(tab.kind).toBe("run");
     // Keyed on the RUN id — never the agent id.
     expect(tab.key).toBe("run:run-42");
-    expect(tab.payload).toEqual({ runId: "run-42", agentId: "agent-7" });
+    expect(tab.payload).toEqual({ runId: "run-42", agentId: "agent-7", hubItemId: "hub-1" });
   });
 
   it("opens a run tab for run_complete with the same run/agent id split", () => {
@@ -213,7 +213,7 @@ describe("hubTabForItem", () => {
     );
     expect(tab.kind).toBe("run");
     expect(tab.key).toBe("run:run-99");
-    expect(tab.payload).toEqual({ runId: "run-99", agentId: "agent-3" });
+    expect(tab.payload).toEqual({ runId: "run-99", agentId: "agent-3", hubItemId: "hub-1" });
   });
 
   it("opens a marketplace_op tab keyed on the operation id", () => {
@@ -222,5 +222,26 @@ describe("hubTabForItem", () => {
     );
     expect(tab.kind).toBe("marketplace_op");
     expect(tab.key).toBe("marketplace_op:op-123");
+  });
+
+  it("preserves the originating hub item id when two rows share one tab key", () => {
+    const first = hubTabForItem(
+      row({
+        id: "hub-market-1",
+        semanticType: "marketplace_op",
+        sourceId: "install_completed:op-123:user-7",
+      }),
+    );
+    const second = hubTabForItem(
+      row({
+        id: "hub-market-2",
+        semanticType: "marketplace_op",
+        sourceId: "install_completed:op-123:user-9",
+      }),
+    );
+
+    expect(first.key).toBe(second.key);
+    expect(first.payload).toMatchObject({ hubItemId: "hub-market-1" });
+    expect(second.payload).toMatchObject({ hubItemId: "hub-market-2" });
   });
 });

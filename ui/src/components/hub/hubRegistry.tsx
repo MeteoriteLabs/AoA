@@ -24,6 +24,7 @@ import {
   marketplaceOpTab,
   notificationTab,
   reminderTab,
+  routineTab,
   runtimeDecisionTab,
   runTab,
   suggestionTab,
@@ -312,21 +313,21 @@ export function hubTabForItem(item: HubItemListRow): HubTab {
 
   switch (entry.tabKind) {
     case "approval":
-      return id ? approvalTab(id, title) : notificationTab(item.id, title);
+      return id ? approvalTab(id, title, item.id) : notificationTab(item.id, title);
     case "join_request":
-      return id ? joinRequestTab(id, title) : notificationTab(item.id, title);
+      return id ? joinRequestTab(id, title, item.id) : notificationTab(item.id, title);
     case "thread": {
       // mention on a TASK (sourceType "issue") targets a task, not a thread.
       if (item.semanticType === "mention" && !item.relatedEntityId && item.sourceType === "issue") {
-        return id ? taskTab(id, title) : notificationTab(item.id, title);
+        return id ? taskTab(id, title, item.id) : notificationTab(item.id, title);
       }
-      return id ? threadTab(id, title) : notificationTab(item.id, title);
+      return id ? threadTab(id, title, undefined, item.id) : notificationTab(item.id, title);
     }
     case "runtime_decision":
       // Keyed on the HUB ITEM id — the panel fetches the decision from it.
       return runtimeDecisionTab(item.id, title);
     case "task":
-      return id ? taskTab(id, title) : notificationTab(item.id, title);
+      return id ? taskTab(id, title, item.id) : notificationTab(item.id, title);
     case "run": {
       // A run tab needs BOTH the runId and the owning agentId. The run producers
       // (hub-source-producers.ts) set sourceId = run.id AND relatedEntityId =
@@ -336,20 +337,19 @@ export function hubTabForItem(item: HubItemListRow): HubTab {
       // missing there is no run/agent id on the row → degrade to notification.
       const runId = rawSource(item) || null;
       const agentId = item.relatedEntityType === "agent" ? item.relatedEntityId : null;
-      if (runId && agentId) return runTab(runId, agentId, title);
+      if (runId && agentId) return runTab(runId, agentId, title, item.id);
       return notificationTab(item.id, title);
     }
     case "budget":
       return budgetTab(title);
     case "suggestion":
-      return id ? suggestionTab(id, title) : notificationTab(item.id, title);
+      return id ? suggestionTab(id, title, item.id) : notificationTab(item.id, title);
     case "marketplace_op":
-      return id ? marketplaceOpTab(id, title) : notificationTab(item.id, title);
+      return id ? marketplaceOpTab(id, title, item.id) : notificationTab(item.id, title);
     case "reminder":
-      return id ? reminderTab(id, title) : notificationTab(item.id, title);
+      return id ? reminderTab(id, title, item.id) : notificationTab(item.id, title);
     case "routine":
-      // No routine factory yet — fall back to a generic notification tab.
-      return notificationTab(item.id, title);
+      return id ? routineTab(id, title, item.id) : notificationTab(item.id, title);
     case "notification":
     default:
       return notificationTab(item.id, title);

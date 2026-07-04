@@ -36,6 +36,19 @@ describe("useHubTabs", () => {
     expect(result.current.activeKey).toBe("approval:a1");
   });
 
+  it("replaces a same-key row tab when the incoming payload carries a new hub item id", () => {
+    const { result } = renderHook(() => useHubTabs("c1"));
+    act(() => result.current.openTab(taskTab("task-1", "First row", "hub-task-1")));
+    act(() => result.current.openTab(taskTab("task-1", "Second row", "hub-task-2")));
+
+    expect(result.current.tabs.map((t) => t.key)).toEqual(["home", "task:task-1"]);
+    expect(result.current.activeKey).toBe("task:task-1");
+    expect(result.current.tabs[1]).toMatchObject({
+      title: "Second row",
+      payload: { issueId: "task-1", hubItemId: "hub-task-2" },
+    });
+  });
+
   it("evicts the OLDEST closeable tab when opening past HUB_TABS_MAX (length stays <= 12)", () => {
     const { result } = renderHook(() => useHubTabs("company-cap"));
 

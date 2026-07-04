@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import type { HubItemListRow } from "@/api/hub-items";
 import { HubTabBody } from "../HubTabBody";
 import { HUB_TABPANEL_ID } from "../HubTabStrip";
@@ -20,6 +21,12 @@ import {
 
 // ── Mock the heavy viewers as simple divs. Each records the props it received
 //    on a module-level spy so tests can assert what was threaded through. ──
+
+vi.mock("@/context/CompanyContext", () => ({
+  useCompany: () => ({
+    selectedCompany: null,
+  }),
+}));
 
 const taskDetailSpy = vi.fn();
 vi.mock("@/components/TaskDetail", () => ({
@@ -135,6 +142,7 @@ function renderBody(
   tab: HubTab,
   onOpenTab = vi.fn(),
   resolveHubItem?: (hubItemId: string) => HubItemListRow | undefined,
+  activeItem?: HubItemListRow | null,
 ) {
   const utils = render(
     <HubTabBody
@@ -142,6 +150,7 @@ function renderBody(
       companyId="company-1"
       onOpenTab={onOpenTab}
       resolveHubItem={resolveHubItem}
+      activeItem={activeItem}
     />,
   );
   return { ...utils, onOpenTab };
@@ -259,11 +268,31 @@ describe("HubTabBody", () => {
     expect(props.onOpenTab).toBe(onOpenTab);
   });
 
-  it("renders a placeholder (not null) for an unwired kind like join_request", () => {
+  it("renders JoinRequestBody for a join_request tab when the active item resolves", () => {
+    render(
+      <MemoryRouter>
+        <HubTabBody
+          tab={joinRequestTab("jr-1", "Join request")}
+          companyId="company-1"
+          onOpenTab={vi.fn()}
+          activeItem={{
+            ...runtimeDecisionItem("hub-jr"),
+            semanticType: "join_request",
+            sourceType: "join_request",
+            title: "Scout wants to join",
+            summary: "Requested by scout@example.com",
+          }}
+        />
+      </MemoryRouter>,
+    );
+    expect(screen.getByRole("heading", { name: /scout wants to join/i })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /approve/i })).toBeInTheDocument();
+  });
+
+  it("falls back to the placeholder for a join_request tab with no active item", () => {
     const { container } = renderBody(joinRequestTab("jr-1", "Join request"));
     const root = container.querySelector(`#${HUB_TABPANEL_ID}`);
     expect(root).not.toBeNull();
-    // The tab chrome + panel still render with a preparing-viewer placeholder.
     expect(screen.getByText(/preparing viewer/i)).toBeInTheDocument();
   });
 

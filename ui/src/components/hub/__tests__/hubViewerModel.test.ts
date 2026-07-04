@@ -10,6 +10,7 @@ import {
   marketplaceOpTab,
   notificationTab,
   reminderTab,
+  routineTab,
   runTab,
   runtimeDecisionTab,
   suggestionTab,
@@ -128,6 +129,21 @@ describe("hubViewerModel", () => {
       key: "reminder:rem-1",
       kind: "reminder",
       payload: { reminderId: "rem-1" },
+    });
+  });
+
+  it("builds a routine tab keyed by id", () => {
+    expect(routineTab("routine-1")).toMatchObject({
+      key: "routine:routine-1",
+      kind: "routine",
+      payload: { routineId: "routine-1" },
+    });
+  });
+
+  it("can carry the originating hub item id without changing the tab key", () => {
+    expect(taskTab("issue-1", "Task", "hub-1")).toMatchObject({
+      key: "task:issue-1",
+      payload: { issueId: "issue-1", hubItemId: "hub-1" },
     });
   });
 

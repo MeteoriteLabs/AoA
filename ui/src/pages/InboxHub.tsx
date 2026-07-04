@@ -638,10 +638,7 @@ export function InboxHub() {
   );
   const resolveHubItemForTab = useCallback(
     (tab: (typeof tabs)[number]): HubItemListRow | undefined => {
-      const hubItemId =
-        tab.kind === "runtime_decision" || tab.kind === "notification"
-          ? (tab.payload as { hubItemId?: string } | undefined)?.hubItemId
-          : undefined;
+      const hubItemId = (tab.payload as { hubItemId?: string } | undefined)?.hubItemId;
       if (hubItemId) return resolveHubItem(hubItemId);
 
       return [

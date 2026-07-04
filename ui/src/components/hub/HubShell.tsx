@@ -856,6 +856,7 @@ export function HubShell({
               companyId={companyId}
               onOpenTab={onOpenTab}
               resolveHubItem={resolveHubItem}
+              activeItem={activeBarItem}
               homeContent={
                 <HubHome
                   counts={counts}
@@ -974,11 +975,8 @@ function laneTitle(lane: HubLane | null) {
 }
 
 function hubItemIdForTab(tab: HubTab): string {
-  if (tab.kind === "runtime_decision" || tab.kind === "notification") {
-    const payload = tab.payload as { hubItemId?: string } | undefined;
-    return payload?.hubItemId ?? "";
-  }
-  return "";
+  const payload = tab.payload as { hubItemId?: string } | undefined;
+  return payload?.hubItemId ?? "";
 }
 
 function hubItemForTab(tab: HubTab, candidates: HubItemListRow[]): HubItemListRow | null {

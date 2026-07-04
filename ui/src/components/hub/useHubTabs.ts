@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { ensureTab, closeTab as closeTabHelper } from "../../lib/viewer-tabs";
+import { closeTab as closeTabHelper } from "../../lib/viewer-tabs";
 import { HOME_TAB, type HubTab } from "./hubViewerModel";
 
 /** Max open tabs INCLUDING the Home tab (Home + newest closeable are kept). */
@@ -66,6 +66,17 @@ function persist(companyId: string | undefined, tabs: HubTab[]): void {
   }
 }
 
+function hubItemIdForTab(tab: HubTab): string | undefined {
+  return (tab.payload as { hubItemId?: string } | undefined)?.hubItemId;
+}
+
+function upsertTab(tabs: HubTab[], tab: HubTab): HubTab[] {
+  const index = tabs.findIndex((existing) => existing.key === tab.key);
+  if (index === -1) return [...tabs, tab];
+  if (!hubItemIdForTab(tab)) return tabs;
+  return tabs.map((existing, existingIndex) => (existingIndex === index ? tab : existing));
+}
+
 /**
  * Tab manager for the Inbox hub (mirrors ThreadsWorkspace's tab state, hub-specific
  * re-activation). Home tab is always present + non-closeable; the open set persists
@@ -77,7 +88,7 @@ export function useHubTabs(companyId: string | undefined) {
 
   const openTab = useCallback((tab: HubTab) => {
     setTabs((current) => {
-      const next = ensureTab(current, tab);
+      const next = upsertTab(current, tab);
       return next.length > HUB_TABS_MAX ? normalize(next) : next;
     });
     setActiveKey(tab.key);
