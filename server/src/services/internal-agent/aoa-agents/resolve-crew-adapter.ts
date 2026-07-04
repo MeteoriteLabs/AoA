@@ -156,7 +156,9 @@ export async function resolveCommanderAdapterForCompany(db: Db, companyId: strin
  *    (provider-switching fix): an API-key-only Codex model (e.g.
  *    `gpt-5.3-codex`) persisted on a row 400s on a ChatGPT/subscription
  *    login. Backfill rewrites it to the validated default (`gpt-5.5`) so
- *    existing rows self-heal on boot.
+ *    existing rows self-heal on boot. An empty model on a ChatGPT/subscription
+ *    run is treated identically (codex falls back to the incompatible
+ *    gpt-5.3-codex without one).
  *
  * 4) **opencode_local crew agents pinned to the legacy bare codex model**
  *    (provider-switching fix): the previous opencode crew default seeded a
@@ -209,7 +211,13 @@ export function needsAdapterBackfill(
     if (opts?.isApiKeyAuth || hasOwnOpenAiKey(adapterConfig?.env)) return false;
     const model = typeof adapterConfig?.model === "string" ? adapterConfig.model : "";
     // A persisted codex model that a ChatGPT login would reject needs rewriting.
-    return model.length > 0 && !isCodexCompatibleModel(model);
+    // An EMPTY model also needs healing on a ChatGPT/subscription run: with no
+    // model, codex 0.130 falls back to gpt-5.3-codex and 400s → empty turn
+    // (BUG-6). isCodexCompatibleModel("") is false, so dropping the length gate
+    // heals both the empty and the non-empty-incompatible case; a compatible
+    // model (gpt-5.5, gpt-4o) still returns false. api-key/own-key runs already
+    // returned above, so gpt-5.3-codex stays valid there.
+    return !isCodexCompatibleModel(model);
   }
   // Case 4: opencode_local rows pinned to the legacy BARE codex model. OpenCode
   // ids are slash-format `provider/model`; the previous crew default seeded a
