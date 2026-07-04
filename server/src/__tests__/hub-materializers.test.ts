@@ -315,3 +315,54 @@ describe("terminal-run hub emit builders", () => {
     },
   );
 });
+
+// H3: the shared budget-alert summary formatter. It must be BYTE-IDENTICAL to
+// the producer's historical inline summary string for the same spend/budget —
+// that byte-identity is what keeps the change-aware upsert and the company_budget
+// reconciler's heal path from ping-ponging (a self-inflicted feedback storm).
+describe("formatBudgetAlertSummary (H3 storm-safe parity)", () => {
+  // Reconstructs the EXACT pre-H3 inline producer string:
+  //   `${alert.monthUtilizationPercent.toFixed(2)}% used (${spend}/${budget} cents)`
+  // where the sole caller (hub-legacy-alerts.ts) passed
+  //   monthUtilizationPercent = Number(((spend/budget)*100).toFixed(2)).
+  function oldProducerSummary(spendCents: number, budgetCents: number): string {
+    const monthUtilizationPercent = Number((((spendCents / budgetCents) * 100)).toFixed(2));
+    return `${monthUtilizationPercent.toFixed(2)}% used (${spendCents}/${budgetCents} cents)`;
+  }
+
+  it.each([
+    [8500, 10000], // 85.00% — the canonical test-instance value
+    [11109, 10000], // 111.09% — the QA over-budget freeze case (double-round parity)
+    [9999, 10000], // 99.99%
+    [8000, 10000], // 80.00% — the threshold boundary
+    [123, 10000], // 1.23% — low, exercises rounding
+    [10000, 30000], // 33.333...% — non-terminating → toFixed rounds identically
+  ])(
+    "matches the pre-H3 producer summary byte-for-byte (spend=%i budget=%i)",
+    (spend, budget) => {
+      expect(producers.formatBudgetAlertSummary(spend, budget)).toBe(
+        oldProducerSummary(spend, budget),
+      );
+    },
+  );
+
+  it("produces the exact documented shape", () => {
+    expect(producers.formatBudgetAlertSummary(8500, 10000)).toBe("85.00% used (8500/10000 cents)");
+  });
+
+  it("the producer summary flows through the shared formatter (single source of truth)", () => {
+    const emit = producers.buildBudgetAlertHubEmit({
+      companyId: "co-1",
+      monthSpendCents: 8500,
+      monthBudgetCents: 10000,
+      monthUtilizationPercent: 85,
+      updatedAt: new Date("2026-06-30T00:00:00Z"),
+    });
+    expect(emit.summary).toBe(producers.formatBudgetAlertSummary(8500, 10000));
+    expect(emit.summary).toBe("85.00% used (8500/10000 cents)");
+  });
+
+  it("never divides by zero: a cleared/zero budget yields 0.00%", () => {
+    expect(producers.formatBudgetAlertSummary(500, 0)).toBe("0.00% used (500/0 cents)");
+  });
+});

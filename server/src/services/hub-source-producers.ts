@@ -237,6 +237,20 @@ export function buildTerminalRunHubEmit(run: FailedRunLike): EmitArgs | null {
   return null;
 }
 
+// Shared budget-alert summary formatter (H3). BOTH the producer above and the
+// company_budget reconciler (hub-items.ts) format the summary through this ONE
+// function so the change-aware upsert and the reconcile heal path produce
+// byte-identical strings for the same spend/budget — that byte-identity is what
+// keeps them from ping-ponging (a self-inflicted feedback storm) as each side
+// re-emits. Recomputes the percentage from cents so callers never have to pass a
+// pre-rounded utilization: `pct.toFixed(2)` matches the producer's historical
+// `Number(((spend/budget)*100).toFixed(2)).toFixed(2)` (double-rounding a value
+// already at 2dp is idempotent). Zero/negative budget → 0.00% (never divide by 0).
+export function formatBudgetAlertSummary(spendCents: number, budgetCents: number): string {
+  const pct = budgetCents > 0 ? (spendCents / budgetCents) * 100 : 0;
+  return `${pct.toFixed(2)}% used (${spendCents}/${budgetCents} cents)`;
+}
+
 export function buildBudgetAlertHubEmit(alert: BudgetAlertLike): EmitArgs {
   return {
     companyId: alert.companyId,
@@ -244,7 +258,7 @@ export function buildBudgetAlertHubEmit(alert: BudgetAlertLike): EmitArgs {
     sourceType: "company_budget",
     sourceId: alert.companyId,
     title: "Budget approaching limit",
-    summary: `${alert.monthUtilizationPercent.toFixed(2)}% used (${alert.monthSpendCents}/${alert.monthBudgetCents} cents)`,
+    summary: formatBudgetAlertSummary(alert.monthSpendCents, alert.monthBudgetCents),
     ownerPool: "board",
     priority: alert.monthUtilizationPercent >= 100 ? "urgent" : "high",
     sourcePermissionRevision: sourceRevision(alert.updatedAt),

@@ -112,6 +112,10 @@ export function hubItemRoutes(db: Db) {
     }
     if (!query.lane || query.lane === "notifications") {
       await svc.reconcile(companyId, { sourceType: "heartbeat_run" });
+      // H3: close/heal the budget_alert item here too so hub-first users (who
+      // never hit the sidebar-badges scan) see it close on normalized spend and
+      // heal the stale % in place — mirrors the run_failed reconcile above.
+      await svc.reconcile(companyId, { sourceType: "company_budget" });
     }
     if (!query.lane || query.lane === "suggestions") {
       await emitStaleWorkHubItems(db, companyId, query.limit);

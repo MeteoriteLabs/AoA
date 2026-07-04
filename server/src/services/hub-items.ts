@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, inArray, isNotNull, isNull, lt, lte, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, lte, or, sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import type { Db } from "@armyofagents/db";
 import {
@@ -14,6 +14,8 @@ import {
   discussions,
   suggestions,
   issues,
+  companies,
+  costEvents,
 } from "@armyofagents/db";
 import type {
   HubCountsChangedLivePayload,
@@ -58,6 +60,13 @@ const APPROVAL_OPEN_STATUSES: ReadonlySet<string> = new Set(["pending", "revisio
 const STALE_WORK_STATUSES: ReadonlySet<string> = new Set(["todo", "in_progress"]);
 const STALE_WORK_THRESHOLD_MS = 24 * 60 * 60 * 1000;
 const HUB_UNDO_WINDOW_MS = 8_000;
+// budget_alert closes symmetric with the producer (hub-legacy-alerts.ts): the
+// budget_alert item fires at >= 80% utilization, so the reconciler closes it
+// (terminal) once utilization drops back below 80% (or the budget is unset).
+// Keep this in sync with hub-legacy-alerts.ts's BUDGET_WARNING_PERCENT — both
+// are the same 80% threshold; a shared export would create an import cycle
+// (hub-items <-> hub-source-producers <-> hub-legacy-alerts).
+const BUDGET_WARNING_PERCENT = 80;
 import { redactSecretsInString } from "../redaction.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { HttpError } from "../errors.js";
@@ -68,6 +77,11 @@ import { orgHierarchyService } from "./org-hierarchy.js";
 import { permissionService } from "./permissions.js";
 import { publishLiveEvent } from "./live-events.js";
 import { runtimeDecisionSourceSnapshot } from "./agent-runtime-decisions.js";
+// Shared budget-alert summary formatter (H3): the producer and this reconciler
+// MUST format the summary through the same function so heal writes are
+// byte-identical to producer emits (no ping-pong). Runtime-only usage keeps the
+// hub-source-producers <-> hub-items import cycle safe (no module-eval call).
+import { formatBudgetAlertSummary } from "./hub-source-producers.js";
 
 // Semantic types that resolve to a given lane (lane is derived, not a column).
 function semanticTypesForLane(lane: HubLane): HubSemanticType[] {
@@ -1523,6 +1537,54 @@ export function hubItemsService(db: Db) {
     return runtimeDecisionSourceSnapshot(row);
   };
 
+  // company_budget (H3): the budget_alert item's sourceId IS the companyId. The
+  // producer only re-fires while utilization stays >= 80%, so nothing ever closes
+  // the item when the budget is cleared/raised, spend resets on month rollover, or
+  // utilization simply drops — and the last-emitted "% used" freezes stale. This
+  // reconciler recomputes month-to-date utilization the SAME way the producer does
+  // (spend since the first of the current month / budgetMonthlyCents) and:
+  //   - terminal (close) when the company is gone, budget <= 0 (unset/cleared), or
+  //     utilization < 80% (symmetric with the >= 80% producer threshold; month
+  //     rollover closes naturally since cost_events spend resets).
+  //   - otherwise NON-terminal with summary = formatBudgetAlertSummary(...) so the
+  //     generic heal path refreshes a stale % IN PLACE. Because the producer and
+  //     this reconciler share that formatter, a steady-state summary is byte-
+  //     identical → the change-gated heal is a no-op (no write, no version bump).
+  // permissionRevision = companies.updatedAt (matches the producer's
+  // sourcePermissionRevision) so the strictly-newer revision compare only writes
+  // on real budget edits — returning now() here would force a write every sweep.
+  const reconcileCompanyBudget: SourceReconciler = async (companyId, sourceId) => {
+    const company = await db
+      .select({
+        budgetMonthlyCents: companies.budgetMonthlyCents,
+        updatedAt: companies.updatedAt,
+      })
+      .from(companies)
+      .where(eq(companies.id, sourceId))
+      .limit(1)
+      .then((r) => r[0] ?? null);
+    if (!company || company.budgetMonthlyCents <= 0) {
+      return { terminal: true, summary: null, permissionRevision: null };
+    }
+    const permissionRevision = company.updatedAt ? new Date(company.updatedAt).toISOString() : null;
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const [{ monthSpend }] = await db
+      .select({ monthSpend: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int` })
+      .from(costEvents)
+      .where(and(eq(costEvents.companyId, companyId), gte(costEvents.occurredAt, monthStart)));
+    const monthSpendCents = Number(monthSpend ?? 0);
+    const monthUtilizationPercent = (monthSpendCents / company.budgetMonthlyCents) * 100;
+    if (monthUtilizationPercent < BUDGET_WARNING_PERCENT) {
+      return { terminal: true, summary: null, permissionRevision };
+    }
+    return {
+      terminal: false,
+      summary: formatBudgetAlertSummary(monthSpendCents, company.budgetMonthlyCents),
+      permissionRevision,
+    };
+  };
+
   const SOURCE_RECONCILERS: Record<string, SourceReconciler> = {
     approval: reconcileApproval,
     heartbeat_run: reconcileHeartbeatRun,
@@ -1531,6 +1593,7 @@ export function hubItemsService(db: Db) {
     discussion: reconcileDiscussion,
     suggestion: reconcileSuggestion,
     issue: reconcileIssue,
+    company_budget: reconcileCompanyBudget,
   };
 
   // Sweep open hub items of `sourceType`: close terminal/gone-source items via the
@@ -1557,7 +1620,12 @@ export function hubItemsService(db: Db) {
           // it never instantly archives that follow-up.
           : opts.sourceType === "runtime_decision"
             ? "agent_runtime_decision"
-            : null;
+            // company_budget carries exactly one semanticType (budget_alert);
+            // scope for symmetry with the other multi-meaning sourceTypes (H3).
+            // (Task 10 adds another branch here for extraction_failed.)
+            : opts.sourceType === "company_budget"
+              ? "budget_alert"
+              : null;
 
     const conditions = [
       eq(hubItems.companyId, companyId),

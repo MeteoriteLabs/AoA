@@ -69,6 +69,11 @@ export function sidebarBadgeRoutes(db: Db) {
     if (req.actor.type === "board" && req.actor.userId) {
       await emitOpenApprovalHubItems(db, companyId);
       await emitLegacyAlertHubItems(db, companyId);
+      // H3: emitLegacyAlertHubItems only (re)fires the budget_alert while
+      // utilization stays >= 80%; pair it with a reconcile so clearing/raising the
+      // budget (or spend dropping below 80%) closes the item on the very next page
+      // load without visiting the Inbox — and heals a stale % in place otherwise.
+      await hubItems.reconcile(companyId, { sourceType: "company_budget" });
       await emitStaleWorkHubItems(db, companyId, null);
       const role = await resolveHubBadgeRole(req, companyId, req.actor.userId);
       const hubCounts = await counterSnapshots.getOrRefresh({
