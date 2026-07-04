@@ -707,6 +707,39 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
         })
         .where(eq(internalAgentRuns.id, runId));
     }
+
+    // W3a: crew result loopback + run-summary comment on task SUCCESS.
+    // relayCrewResult self-guards on originKind==="crew_thread" +
+    // sourceDiscussionId (so a non-discussion task is a no-op); the run-summary
+    // honors the autoRunSummary opt-out. postCrewRunSuccess isolates each
+    // sub-step (a relay failure still lets the summary post, and vice-versa).
+    // Safety here is PLACEMENT-gated, not guard-gated: the benign early
+    // `return { status: "succeeded", runId }` paths (entry-not-claimable,
+    // checkout-conflict) return BEFORE this point and correctly never relay.
+    // Best-effort: the whole call is try/caught so a loopback failure NEVER
+    // flips an already-succeeded run to failed.
+    if (runResult.status === "succeeded" && payload.issueId && runId) {
+      try {
+        const { postCrewRunSuccess } = await import("./crew-run-outcome.js");
+        await postCrewRunSuccess(db, {
+          companyId: payload.companyId,
+          issueId: payload.issueId,
+          agentName: agent.name,
+          runtimeConfig: agent.runtimeConfig as Record<string, unknown> | null,
+          startedAtMs: startedAt,
+          nowMs: Date.now(),
+          adapterUsage,
+          costCents: costCents ?? null,
+          runId,
+        });
+      } catch (loopbackErr) {
+        log.warn(
+          { err: loopbackErr, issueId: payload.issueId },
+          "W3a crew success loopback failed (non-fatal)",
+        );
+      }
+    }
+
     // Plan 3 Task 6 + T1.1: real cost accounting from adapter result.
     // Previously hardcoded to 0 tokens / $0 even when the adapter reported
     // real usage. Now uses the values returned in AdapterExecutionResult.
