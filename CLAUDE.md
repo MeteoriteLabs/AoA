@@ -131,6 +131,7 @@ Push-based agent execution. `heartbeat.wakeup()` → HeartbeatRun → adapter ex
 - **Goal status machine:** `planned → active → at_risk → achieved/cancelled` with `at_risk → active` recovery.
 - **Why/What/How context:** Agents receive Vision + Mission + Goal + Memory items + Task details.
 - **Agent hire approvals:** When `company.requireBoardApprovalForNewAgents` is true (default for `authenticated` mode), hires queue in Inbox. Agent created as `pending_approval`. In `local_trusted` mode new companies default to `false` (agent created `idle` directly). See `server/src/routes/agents.ts:784` and **Paperclip Divergence Points § D6** above.
+- **Inbox Hub:** tab-first, no reading-pane preview. Row-click/deep-link opens and activates a dedicated tab; Home is the attention dashboard. Non-home tabs get the contextual `HubActionBar`; tabs are capped at 12 (Home + 11 closeable). `ask_founder` work questions relay on successful answer so the waiting-lane item closes. See Decision #108.
 - **Concurrency clamp:** `HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1` (teaching default; teams opt-up per-agent). `HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 50` (v1.1 D5 raise from 10). See **Paperclip Divergence Points § D5** above.
 - **Run summary comments:** Auto-generated task comments after each heartbeat run (duration, token usage, cost, outcome, detected files). Uses `issue_comments` table. Opt-out via `runtimeConfig.autoRunSummary`. Files truncated to 10 + "+N more".
 
