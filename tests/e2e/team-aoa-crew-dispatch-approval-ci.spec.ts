@@ -12,6 +12,15 @@
  * Everything from proposeThreadAction onward is PRODUCTION code — only the LLM
  * turn is fake.
  *
+ * UI verification (not just REST): the spec drives + asserts the founder-visible
+ * surfaces — the Crew Board (`crew-board` / `kanban-card-*`) showing the
+ * agent-titled task, and the Approvals page showing the "Dispatch Crew Tasks"
+ * card, approved via a REAL Approve-button click → "Approval confirmed". Drive
+ * asserts the Approvals page stays empty (no human gate). Screenshots land in
+ * test-results/ui-proof/ as visual proof. (The crew Kanban card does not render
+ * a Planning pill — that parked/dispatched state lives in the approval flow, not
+ * on the board — so the flip is asserted via the approval UI + a REST backstop.)
+ *
  * Scope note (challenger finding 6): this spec asserts the planning→standard FLIP
  * (Assist) and standard-at-creation (Drive) — NOT the crew RUN that follows. A
  * fake crew turn never calls set_task_status, so a dispatched task trips the
@@ -47,6 +56,16 @@ type AgentRow = { id: string; name: string; kind: string };
 
 // Budget for the fake Adjutant turn to land (server warmup + wakeup + commit).
 const AGENT_TURN_TIMEOUT_MS = 120_000;
+
+// UI-proof screenshots land here so a human can eyeball the crew board + approval
+// surfaces the founder actually sees (not just the REST state underneath).
+const UI_PROOF_DIR = "test-results/ui-proof";
+
+/** Navigate to the crew board (AoA Tasks tab) and wait for it to render. */
+async function gotoCrewBoard(page: import("@playwright/test").Page, issuePrefix: string): Promise<void> {
+  await page.goto(`/${issuePrefix}/team?tab=aoa&aoaTab=tasks`);
+  await expect(page.getByTestId("crew-board")).toBeVisible({ timeout: 30_000 });
+}
 
 test.describe("Team AoA — fake-crew Assist crew_dispatch approval round-trip (CI)", () => {
   test.setTimeout(240_000);
@@ -130,8 +149,7 @@ test.describe("Team AoA — fake-crew Assist crew_dispatch approval round-trip (
     expect(taskIds.length, "crew_dispatch approval carries the created task ids").toBe(1);
     const dispatchedTaskId = taskIds[0];
 
-    // ── 5. The task exists on the crew board, parked as planning, with the
-    //       CONTROL-FILE title (agent-authored naming path, not a heuristic) ────
+    // Backstop (REST): the task is parked as planning with the agent-authored title.
     const before = await jsonOrThrow<CrewIssue[]>(
       await request.get(`/api/companies/${company.id}/issues?taskScope=crew`),
       "list crew issues (before)",
@@ -140,13 +158,52 @@ test.describe("Team AoA — fake-crew Assist crew_dispatch approval round-trip (
     expect(parked?.workMode).toBe("planning");
     expect(parked?.title).toBe("Implement the token endpoint");
 
-    // ── 6. Approve → planning→standard flip (dispatch side-effect) ────────────
-    await jsonOrThrow(
-      await request.post(`/api/approvals/${dispatchApproval.id}/approve`, {
-        data: { decisionNote: null },
-      }),
-      "approve crew_dispatch",
-    );
+    // ── 5. UI PROOF: the founder opens the Crew Board and SEES the task the
+    //       discussion produced — on the board, titled by the agent, assigned
+    //       to the Engineer. (The crew Kanban card does not surface a Planning
+    //       pill — that parked/dispatched distinction is shown via the approval
+    //       flow below, not on this board.) ──────────────────────────────────
+    await gotoCrewBoard(page, company.issuePrefix);
+    const parkedCard = page.getByTestId(`kanban-card-${dispatchedTaskId}`);
+    await expect(parkedCard).toBeVisible({ timeout: 30_000 });
+    await expect(parkedCard).toContainText("Implement the token endpoint");
+    await expect(parkedCard, "the crew task is assigned to the Engineer").toContainText("Engineer");
+    await page.screenshot({ path: `${UI_PROOF_DIR}/assist-1-crew-board.png`, fullPage: true });
+
+    // ── 6. UI PROOF: the founder approves the dispatch on the Approvals page
+    //       (a real button click, not a REST POST). ─────────────────────────────
+    await page.goto(`/${company.issuePrefix}/approvals`);
+    const dispatchLabel = page.getByText(/Dispatch Crew Tasks/i).first();
+    await expect(dispatchLabel, "the crew_dispatch approval is visible to the founder").toBeVisible({
+      timeout: 30_000,
+    });
+    await page.screenshot({ path: `${UI_PROOF_DIR}/assist-2-approval-visible.png`, fullPage: true });
+    // Open the approval (row/card), then click the real Approve button.
+    await dispatchLabel.click();
+    const approveButton = page.getByRole("button", { name: /^Approve$/i }).first();
+    await expect(approveButton, "an Approve button is presented to the founder").toBeVisible({
+      timeout: 15_000,
+    });
+    await approveButton.click();
+
+    // ── 7. UI PROOF: the founder sees the approval CONFIRMED — the crew tasks
+    //       were dispatched. ────────────────────────────────────────────────────
+    await expect(
+      page.getByText(/Approval confirmed/i),
+      "the founder sees the dispatch approval confirmed",
+    ).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText(/^approved$/i).first(), "the approval is badged approved").toBeVisible();
+    await page.screenshot({ path: `${UI_PROOF_DIR}/assist-3-approval-confirmed.png`, fullPage: true });
+
+    // The dispatched task remains on the crew board.
+    await gotoCrewBoard(page, company.issuePrefix);
+    const dispatchedCard = page.getByTestId(`kanban-card-${dispatchedTaskId}`);
+    await expect(dispatchedCard, "the dispatched task remains on the crew board").toBeVisible({
+      timeout: 30_000,
+    });
+    await page.screenshot({ path: `${UI_PROOF_DIR}/assist-4-crew-board-dispatched.png`, fullPage: true });
+
+    // Backstop (REST): confirm the workMode actually flipped standard.
     const after = await poll<CrewIssue[]>(
       async () =>
         jsonOrThrow<CrewIssue[]>(
@@ -232,7 +289,8 @@ test.describe("Team AoA — fake-crew Assist crew_dispatch approval round-trip (
       "drive-mode task created as standard",
       AGENT_TURN_TIMEOUT_MS,
     );
-    expect(issues.find((i) => i.title === "Ship the drive-mode task")?.workMode).toBe("standard");
+    const driveTask = issues.find((i) => i.title === "Ship the drive-mode task")!;
+    expect(driveTask.workMode).toBe("standard");
 
     const approvals = await jsonOrThrow<CrewDispatchApproval[]>(
       await request.get(`/api/companies/${company.id}/approvals?status=pending`),
@@ -242,5 +300,26 @@ test.describe("Team AoA — fake-crew Assist crew_dispatch approval round-trip (
       approvals.filter((a) => a.type === "crew_dispatch"),
       "Drive must NOT raise a crew_dispatch approval",
     ).toHaveLength(0);
+
+    // ── UI PROOF: the founder opens the Crew Board and SEES the Drive task
+    //     already on the board, correctly titled and assigned. ─────────────────
+    await gotoCrewBoard(page, company.issuePrefix);
+    const driveCard = page.getByTestId(`kanban-card-${driveTask.id}`);
+    await expect(driveCard).toBeVisible({ timeout: 30_000 });
+    await expect(driveCard).toContainText("Ship the drive-mode task");
+    await expect(driveCard, "the Drive crew task is assigned to the Engineer").toContainText("Engineer");
+    await page.screenshot({ path: `${UI_PROOF_DIR}/drive-crew-board.png`, fullPage: true });
+
+    // ── UI PROOF: no human gate at Drive — the Approvals page shows NO
+    //     crew_dispatch approval (the task dispatched without asking). ──────────
+    await page.goto(`/${company.issuePrefix}/approvals`);
+    await expect(page.getByRole("heading", { name: /Approvals/i }).first()).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(
+      page.getByText(/Dispatch Crew Tasks/i),
+      "Drive raises no crew_dispatch approval in the UI",
+    ).toHaveCount(0);
+    await page.screenshot({ path: `${UI_PROOF_DIR}/drive-approvals-empty.png`, fullPage: true });
   });
 });
