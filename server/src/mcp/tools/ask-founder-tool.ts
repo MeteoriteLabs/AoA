@@ -22,7 +22,15 @@ const askFounderSchema = z
   .object({
     question: z.string().trim().min(1),
     options: z
-      .array(z.object({ label: z.string().min(1), value: z.string().min(1) }))
+      .array(
+        z.object({
+          label: z.string().min(1),
+          value: z.string().min(1),
+          // Optional card detail rendered by the RuntimeDecisionPanel (D-tabbed).
+          description: z.string().min(1).optional(),
+          rationale: z.string().min(1).optional(),
+        }),
+      )
       .refine((opts) => new Set(opts.map((o) => o.value)).size === opts.length, {
         message: "option values must be unique",
       })

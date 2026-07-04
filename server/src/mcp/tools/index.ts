@@ -561,6 +561,8 @@ export const TOOL_DEFINITIONS = [
             properties: {
               label: { type: "string" },
               value: { type: "string" },
+              description: { type: "string" },
+              rationale: { type: "string" },
             },
             required: ["label", "value"],
           },

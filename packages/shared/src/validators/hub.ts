@@ -167,6 +167,11 @@ export const runtimeDecisionDetailSchema = z
           .object({
             label: z.string().min(1),
             value: z.string().min(1),
+            // Optional card detail (D-tabbed). Carried through the JSON options
+            // column; the RuntimeDecisionPanel renders them when present. The
+            // content source (asking agent / Commander) is a deferred follow-up.
+            description: z.string().min(1).optional(),
+            rationale: z.string().min(1).optional(),
           })
           .passthrough(),
       )

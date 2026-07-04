@@ -3,7 +3,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 // Real cancelled-error class (the tool catches it by instanceof). Defined inside
 // vi.hoisted so it exists when the hoisted vi.mock factory references it (a plain
 // top-level class would be in its temporal dead zone at hoist time).
-const { createPrompt, waitForAnswer, FakeCancelledError } = vi.hoisted(() => {
+const { createPrompt, waitForAnswer, markRelayed, FakeCancelledError } = vi.hoisted(() => {
   class FakeCancelledError extends Error {
     readonly decision: unknown;
     constructor() {
@@ -15,12 +15,13 @@ const { createPrompt, waitForAnswer, FakeCancelledError } = vi.hoisted(() => {
   return {
     createPrompt: vi.fn(),
     waitForAnswer: vi.fn(),
+    markRelayed: vi.fn(),
     FakeCancelledError,
   };
 });
 
 vi.mock("../services/agent-runtime-decisions.js", () => ({
-  agentRuntimeDecisionService: () => ({ createPrompt, waitForAnswer }),
+  agentRuntimeDecisionService: () => ({ createPrompt, waitForAnswer, markRelayed }),
   RuntimeDecisionCancelledError: FakeCancelledError,
 }));
 
@@ -42,6 +43,7 @@ function makeCtx(actor: Record<string, unknown>, getById = vi.fn()) {
 beforeEach(() => {
   createPrompt.mockReset();
   waitForAnswer.mockReset();
+  markRelayed.mockReset();
 });
 
 describe("ask_founder tool", () => {
@@ -67,6 +69,7 @@ describe("ask_founder tool", () => {
     const getById = vi.fn().mockResolvedValue({ adapterType: "codex_local" });
     createPrompt.mockResolvedValue({ decision: { id: "d1" } });
     waitForAnswer.mockResolvedValue({ answerPayload: { value: "yes" } });
+    markRelayed.mockResolvedValue({ id: "d1", status: "relayed" });
 
     const res = await handleAskFounder(
       makeCtx({ source: "agent", agentId: "agent-1", runId: "run-1" }, getById),
@@ -98,6 +101,7 @@ describe("ask_founder tool", () => {
     const getById = vi.fn().mockResolvedValue({ adapterType: "codex_local" });
     createPrompt.mockResolvedValue({ decision: { id: "d1" } });
     waitForAnswer.mockResolvedValue({ answerPayload: { text: "ok" } });
+    markRelayed.mockResolvedValue({ id: "d1", status: "relayed" });
 
     await handleAskFounder(
       makeCtx({ source: "agent", agentId: "agent-1", runId: "run-1" }, getById),
@@ -107,6 +111,29 @@ describe("ask_founder tool", () => {
     // Empty/whitespace context must not persist as an empty-string summary
     // (runtimeDecisionDetailSchema.summary is .min(1)).
     expect(createPrompt.mock.calls[0][0].summary).toBeNull();
+  });
+
+  it("passes option description + rationale through to createPrompt", async () => {
+    const getById = vi.fn().mockResolvedValue({ adapterType: "codex_local" });
+    createPrompt.mockResolvedValue({ decision: { id: "d1" } });
+    waitForAnswer.mockResolvedValue({ answerPayload: { value: "saas" } });
+    markRelayed.mockResolvedValue({ id: "d1", status: "relayed" });
+
+    await handleAskFounder(
+      makeCtx({ source: "agent", agentId: "agent-1", runId: "run-1" }, getById),
+      {
+        question: "Which segment?",
+        options: [
+          { label: "SaaS", value: "saas", description: "Founder-led.", rationale: "High WTP." },
+          { label: "Agencies", value: "agencies" },
+        ],
+      },
+    );
+
+    expect(createPrompt.mock.calls[0][0].options).toEqual([
+      { label: "SaaS", value: "saas", description: "Founder-led.", rationale: "High WTP." },
+      { label: "Agencies", value: "agencies" },
+    ]);
   });
 
   it("returns a graceful parked result (NOT isError) when the wait is cancelled", async () => {
