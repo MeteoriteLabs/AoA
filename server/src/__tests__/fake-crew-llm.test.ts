@@ -1,8 +1,12 @@
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   buildFakeScopeDraftInput,
   isFakeCrewLlmEnabled,
   maybeExecuteFakeCrewTurn,
+  readFakeCrewControl,
 } from "../services/internal-agent/aoa-agents/fake-crew-llm.js";
 import { buildScopeDraftIdempotencyKey } from "../services/internal-agent/tools/thread-action-keys.js";
 
@@ -252,5 +256,43 @@ describe("buildFakeScopeDraftInput — key/payload parity with propose_crew_work
     expect(input.idempotencyKey).toBe(
       buildScopeDraftIdempotencyKey({ threadId: "thr-1", agentId: "a", summary: "S", proposedTasks: raw, turnAnchor: "2" }),
     );
+  });
+});
+
+describe("readFakeCrewControl", () => {
+  it("returns null when the env var is unset (legacy behavior)", () => {
+    expect(readFakeCrewControl({} as NodeJS.ProcessEnv)).toBeNull();
+  });
+
+  it("returns null for a missing file or malformed JSON (never throws)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "aoa-fake-crew-ctl-"));
+    expect(
+      readFakeCrewControl({ AOA_E2E_FAKE_CREW_CONTROL: join(dir, "missing.json") } as NodeJS.ProcessEnv),
+    ).toBeNull();
+    const bad = join(dir, "bad.json");
+    writeFileSync(bad, "{not json");
+    expect(readFakeCrewControl({ AOA_E2E_FAKE_CREW_CONTROL: bad } as NodeJS.ProcessEnv)).toBeNull();
+  });
+
+  it("parses a controller_scope control", () => {
+    const dir = mkdtempSync(join(tmpdir(), "aoa-fake-crew-ctl-"));
+    const file = join(dir, "control.json");
+    writeFileSync(
+      file,
+      JSON.stringify({
+        adjutant: {
+          mode: "controller_scope",
+          summary: "Token endpoint scope",
+          proposedTasks: [{ title: "Build token endpoint", assigneeRole: "engineer" }],
+        },
+      }),
+    );
+    expect(readFakeCrewControl({ AOA_E2E_FAKE_CREW_CONTROL: file } as NodeJS.ProcessEnv)).toEqual({
+      adjutant: {
+        mode: "controller_scope",
+        summary: "Token endpoint scope",
+        proposedTasks: [{ title: "Build token endpoint", assigneeRole: "engineer" }],
+      },
+    });
   });
 });

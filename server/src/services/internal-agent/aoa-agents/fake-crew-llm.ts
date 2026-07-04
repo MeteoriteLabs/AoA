@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { and, desc, eq, isNull, ne } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { discussionEntries } from "@armyofagents/db";
@@ -109,6 +110,37 @@ export function buildFakeScopeDraftInput(ctx: FakeScopeDraftContext): FakeScopeD
     }),
     freshness: ctx.threadFreshness ?? {},
   };
+}
+
+export interface FakeCrewAdjutantControl {
+  mode?: string;
+  summary?: string;
+  proposedTasks?: Array<{ title: string; assigneeRole?: string }>;
+}
+
+export interface FakeCrewControl {
+  adjutant?: FakeCrewAdjutantControl;
+}
+
+/**
+ * Per-test scripting for the fake harness, mirroring the fake-claude control-file
+ * contract (tests/e2e/helpers/fake-claude.ts): AOA_E2E_FAKE_CREW_CONTROL points at
+ * a JSON file rewritten by specs before they trigger a crew turn; we read it FRESH
+ * on every turn. Absent env var, missing file, or malformed JSON all mean "no
+ * control" → the legacy fake branches run unchanged, so the pre-existing CI specs
+ * (full-discussion-to-workspace-cycle, onboarding-thread-pipeline,
+ * mention-autocomplete) are structurally unaffected.
+ */
+export function readFakeCrewControl(env: NodeJS.ProcessEnv = process.env): FakeCrewControl | null {
+  const controlPath = env.AOA_E2E_FAKE_CREW_CONTROL;
+  if (!controlPath) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(controlPath, "utf8")) as unknown;
+    if (!parsed || typeof parsed !== "object") return null;
+    return parsed as FakeCrewControl;
+  } catch {
+    return null;
+  }
 }
 
 export function isFakeCrewLlmEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
