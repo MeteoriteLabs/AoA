@@ -437,4 +437,61 @@ describe.skipIf(process.platform === "win32")("W3a integration: crew loopback + 
     expect(after.entrySeq).toBe(before.entrySeq + 1);
     expect(after.entryCount).toBe(before.entryCount + 1);
   }, 60_000);
+
+  // ── Case 5: cross-tenant failure loopback is blocked (code-review P2) ───────
+  // postCrewRunFailure runs from the runner's catch, reachable when checkout THROWS
+  // for a wakeup carrying a FOREIGN-company issueId. Prove the company-scoped fetch
+  // blocks the cross-tenant write on real Postgres: call with companyId=A but a
+  // company-B crew_thread issueId → ZERO new discussion_entries in B's thread AND
+  // ZERO new issue_comments on the B issue.
+  it("cross-tenant: postCrewRunFailure(companyA, foreign company-B issueId) writes NOTHING into company B", async () => {
+    if (setupError) throw new Error(String(setupError));
+
+    // Company A — the (attacker/bug) caller's company. Only its id is used.
+    const { companyId: companyA } = await seedCompanyAndEngineer("TenantA");
+
+    // Company B — the victim: a real crew_thread issue with a source thread.
+    const { companyId: companyB, engineerId: engineerB } =
+      await seedCompanyAndEngineer("TenantB");
+    const threadB = await seedThread(companyB);
+    const issueB = await seedIssue({
+      companyId: companyB,
+      title: "Company B private deliverable",
+      originKind: "crew_thread",
+      sourceDiscussionId: threadB,
+      assigneeAgentId: engineerB,
+    });
+
+    const beforeThread = await threadCounts(threadB);
+    const beforeEntries = await entriesFor(threadB);
+    const beforeComments = await commentsFor(issueB);
+    const startedAtMs = 5_000_000;
+
+    // Company A calls the failure loopback for company B's issueId.
+    const result = await postCrewRunFailure(db, {
+      companyId: companyA,
+      issueId: issueB,
+      agentId: randomUUID(),
+      agentName: "Attacker",
+      runtimeConfig: {},
+      startedAtMs,
+      nowMs: startedAtMs + 5_000,
+      errorMessage: "cross-tenant boom",
+      runId: randomUUID(),
+    });
+
+    // Company-scoped fetch resolved null → NEITHER sub-step fired.
+    expect(result).toEqual({ carded: false, summarized: false });
+
+    // (a) ZERO new discussion_entries in company B's thread.
+    const afterEntries = await entriesFor(threadB);
+    expect(afterEntries).toHaveLength(beforeEntries.length);
+    const afterThread = await threadCounts(threadB);
+    expect(afterThread.entrySeq).toBe(beforeThread.entrySeq);
+    expect(afterThread.entryCount).toBe(beforeThread.entryCount);
+
+    // (b) ZERO new issue_comments on the company B issue.
+    const afterComments = await commentsFor(issueB);
+    expect(afterComments).toHaveLength(beforeComments.length);
+  }, 60_000);
 });

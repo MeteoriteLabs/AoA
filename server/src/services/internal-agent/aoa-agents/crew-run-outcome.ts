@@ -23,7 +23,7 @@
  *   - crew-failure-card.js    (imports live-events.js + logger)
  * — and the runner dynamic-imports THIS module. No cycle.
  */
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { issues } from "@armyofagents/db";
 import { logger } from "../../../middleware/logger.js";
@@ -195,7 +195,7 @@ export interface CrewFailureIssueRow {
  * issue fetch + failure card + summary writer.
  */
 export interface CrewRunFailureDeps {
-  fetchIssue: (db: Db, issueId: string) => Promise<CrewFailureIssueRow | null>;
+  fetchIssue: (db: Db, companyId: string, issueId: string) => Promise<CrewFailureIssueRow | null>;
   failureCard: (
     db: Db,
     params: {
@@ -211,8 +211,19 @@ export interface CrewRunFailureDeps {
   summarize: (db: Db, input: PostRunSummaryCommentInput) => Promise<{ posted: boolean }>;
 }
 
-/** Default issue fetch: the exact select the failure card gate needs. */
-async function defaultFetchIssue(db: Db, issueId: string): Promise<CrewFailureIssueRow | null> {
+/**
+ * Default issue fetch: the exact select the failure card gate needs, COMPANY-SCOPED.
+ * The company filter is the tenant-isolation guard (code-review P2) — this failure
+ * loopback runs from the runner's catch, reachable when checkout THROWS for a wakeup
+ * carrying a FOREIGN-company issueId. Without the companyId predicate a foreign issue
+ * would resolve here and leak its company-B sourceDiscussionId / issue into the card +
+ * summary. `and(id, companyId)` → a foreign or deleted issue returns null.
+ */
+async function defaultFetchIssue(
+  db: Db,
+  companyId: string,
+  issueId: string,
+): Promise<CrewFailureIssueRow | null> {
   const [row] = await db
     .select({
       title: issues.title,
@@ -220,18 +231,28 @@ async function defaultFetchIssue(db: Db, issueId: string): Promise<CrewFailureIs
       sourceDiscussionId: issues.sourceDiscussionId,
     })
     .from(issues)
-    .where(eq(issues.id, issueId))
+    .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)))
     .limit(1);
   return row ?? null;
 }
 
 /**
- * FAILURE: fetch the issue → if it is crew_thread-origin with a source thread,
- * post the failure card ("… could not complete …") to that thread; THEN post a
- * failure run-summary comment on the task. Each sub-step best-effort + isolated
- * (a card failure still lets the summary post, and vice-versa). Usage/cost are
- * unreliable on a thrown run, so the summary carries undefined usage + null
- * cost. Returns which sub-steps posted (for the unit test). NEVER throws.
+ * FAILURE: fetch the issue COMPANY-SCOPED → if it resolves in-company AND is
+ * crew_thread-origin with a source thread, post the failure card ("… could not
+ * complete …") to that thread; THEN, still gated on that same in-company fetch,
+ * post a failure run-summary comment on the task. Each sub-step best-effort +
+ * isolated (a card failure still lets the summary post, and vice-versa).
+ *
+ * TENANT ISOLATION (code-review P2): this runs from the runner's catch, which is
+ * reachable when checkout THROWS — including its same-company assignee guard for a
+ * wakeup carrying a FOREIGN-company issueId. The fetch is company-filtered
+ * (`and(id, companyId)`), and BOTH the card AND the summary are gated on a non-null
+ * in-company issue. A foreign OR deleted issue → fetch returns null → NEITHER writes
+ * fire ({ carded:false, summarized:false }), so no cross-tenant card/comment can land.
+ * (A same-company DELETED issue also yields null → no summary, which is correct: there
+ * is nothing left to comment on.) Usage/cost are unreliable on a thrown run, so the
+ * summary carries undefined usage + null cost. Returns which sub-steps posted (for the
+ * unit test). NEVER throws.
  */
 export async function postCrewRunFailure(
   db: Db,
@@ -245,10 +266,26 @@ export async function postCrewRunFailure(
   let carded = false;
   let summarized = false;
 
+  // ── Company-scoped fetch: the tenant-isolation gate for BOTH sub-steps. ─────
+  // A foreign (or deleted) issueId → null → no card, no summary, no leak.
+  let issue: CrewFailureIssueRow | null = null;
+  try {
+    issue = await deps.fetchIssue(db, input.companyId, input.issueId);
+  } catch (err) {
+    log.warn(
+      { err, issueId: input.issueId, runId: input.runId },
+      "W3a crew failure issue fetch failed (non-fatal)",
+    );
+  }
+
+  // Foreign / deleted issue → do nothing (no card, no summary).
+  if (!issue) {
+    return { carded: false, summarized: false };
+  }
+
   // ── Sub-step 1: failure card into the originating thread (crew_thread only) ─
   try {
-    const issue = await deps.fetchIssue(db, input.issueId);
-    if (issue?.originKind === "crew_thread" && issue.sourceDiscussionId) {
+    if (issue.originKind === "crew_thread" && issue.sourceDiscussionId) {
       await deps.failureCard(db, {
         threadId: issue.sourceDiscussionId,
         companyId: input.companyId,
@@ -267,7 +304,7 @@ export async function postCrewRunFailure(
     );
   }
 
-  // ── Sub-step 2: failure run-summary comment on the task ────────────────────
+  // ── Sub-step 2: failure run-summary comment on the task (in-company only) ───
   try {
     const result = await deps.summarize(
       db,

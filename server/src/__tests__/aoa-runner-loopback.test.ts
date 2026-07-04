@@ -198,8 +198,8 @@ const crewThreadIssue: CrewFailureIssueRow = {
 describe("postCrewRunFailure (composed failure side-effect)", () => {
   const db = {} as never;
 
-  it("crew_thread issue → BOTH failure card AND summary post ({carded:true, summarized:true})", async () => {
-    const fetchIssue = vi.fn(async () => crewThreadIssue);
+  it("crew_thread issue (in-company) → BOTH failure card AND summary post ({carded:true, summarized:true})", async () => {
+    const fetchIssue = vi.fn(async (_db: never, _companyId: string, _issueId: string) => crewThreadIssue);
     const failureCard = vi.fn(async () => undefined);
     const summarize = vi.fn(async () => ({ posted: true }));
 
@@ -236,8 +236,8 @@ describe("postCrewRunFailure (composed failure side-effect)", () => {
     });
   });
 
-  it("non-crew_thread issue → failure card SKIPPED, summary STILL posts ({carded:false, summarized:true})", async () => {
-    const fetchIssue = vi.fn(async () => ({
+  it("non-crew_thread issue (in-company) → failure card SKIPPED, summary STILL posts ({carded:false, summarized:true})", async () => {
+    const fetchIssue = vi.fn(async (_db: never, _companyId: string, _issueId: string) => ({
       title: "Manual task",
       originKind: "manual",
       sourceDiscussionId: null,
@@ -256,8 +256,12 @@ describe("postCrewRunFailure (composed failure side-effect)", () => {
     expect(summarize).toHaveBeenCalledTimes(1);
   });
 
-  it("fetchIssue returns null → no card, summary still posts ({carded:false, summarized:true})", async () => {
-    const fetchIssue = vi.fn(async () => null);
+  it("fetchIssue returns null (foreign/deleted issue) → NEITHER card NOR summary ({carded:false, summarized:false})", async () => {
+    // TENANT ISOLATION (code-review P2): the company-scoped fetch returns null for a
+    // FOREIGN-company issueId (or a deleted issue). Both the card AND the summary are
+    // gated on the in-company fetch, so a null issue writes NOTHING — no cross-tenant
+    // card into company-B's thread, no cross-tenant comment on company-B's issue.
+    const fetchIssue = vi.fn(async (_db: never, _companyId: string, _issueId: string) => null);
     const failureCard = vi.fn(async () => undefined);
     const summarize = vi.fn(async () => ({ posted: true }));
 
@@ -267,13 +271,15 @@ describe("postCrewRunFailure (composed failure side-effect)", () => {
       summarize,
     });
 
-    expect(result).toEqual({ carded: false, summarized: true });
+    expect(result).toEqual({ carded: false, summarized: false });
     expect(failureCard).not.toHaveBeenCalled();
-    expect(summarize).toHaveBeenCalledTimes(1);
+    expect(summarize).not.toHaveBeenCalled();
+    // The fetch received the caller's companyId as the tenant predicate.
+    expect(fetchIssue).toHaveBeenCalledWith(db, "co-1", "task-1");
   });
 
   it("failure card THROW is isolated — the summary still posts ({carded:false, summarized:true})", async () => {
-    const fetchIssue = vi.fn(async () => crewThreadIssue);
+    const fetchIssue = vi.fn(async (_db: never, _companyId: string, _issueId: string) => crewThreadIssue);
     const failureCard = vi.fn(async () => {
       throw new Error("card down");
     });
