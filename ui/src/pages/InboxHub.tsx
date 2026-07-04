@@ -636,6 +636,23 @@ export function InboxHub() {
       items.find((item) => item.id === id) ?? openedItemCache[id],
     [items, openedItemCache],
   );
+  const resolveHubItemForTab = useCallback(
+    (tab: (typeof tabs)[number]): HubItemListRow | undefined => {
+      const hubItemId =
+        tab.kind === "runtime_decision" || tab.kind === "notification"
+          ? (tab.payload as { hubItemId?: string } | undefined)?.hubItemId
+          : undefined;
+      if (hubItemId) return resolveHubItem(hubItemId);
+
+      return [
+        ...(selectedItem ? [selectedItem] : []),
+        ...items,
+        ...homeItems,
+        ...Object.values(openedItemCache),
+      ].find((item) => hubTabForItem(item).key === tab.key);
+    },
+    [homeItems, items, openedItemCache, resolveHubItem, selectedItem],
+  );
   const auditQuery = useQuery({
     queryKey:
       selectedCompanyId && selectedItem
@@ -879,6 +896,7 @@ export function InboxHub() {
       onActivateTab={activateTab}
       onAddBrowserTab={handleAddBrowserTab}
       resolveHubItem={resolveHubItem}
+      resolveHubItemForTab={resolveHubItemForTab}
       historyStatus={historyStatus}
       auditRows={auditQuery.data ?? []}
       auditLoading={auditQuery.isLoading}

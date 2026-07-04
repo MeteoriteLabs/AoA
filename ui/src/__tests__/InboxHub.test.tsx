@@ -74,6 +74,10 @@ vi.mock("@/context/LiveUpdatesProvider", () => ({
       liveHubItemCallbacks.add(cb);
       return () => liveHubItemCallbacks.delete(cb);
     },
+    subscribeThread: vi.fn(),
+    unsubscribeThread: vi.fn(),
+    sendPresence: vi.fn(),
+    onReconnect: vi.fn(() => vi.fn()),
   }),
 }));
 
@@ -788,13 +792,9 @@ describe("InboxHub page", () => {
     resolveMarkRead?.();
   });
 
-  // TASK 3 (deferred): the reading-pane HubViewer footer that hosted Mark-unread /
-  // Dismiss / Snooze / Resolve / Archive / Claim / Release + the undo banner is
-  // DELETED in tab-first (Task 1). Task 3 rebuilds these on the standalone
-  // HubActionBar mounted above each tab body and rewrites the tests below to drive
-  // that bar (plan Task 3 Step 9). Skipped here until the bar lands so the branch
-  // stays green through the 1→2→3 sequence.
-  it.skip("viewer can mark a selected read item unread", async () => {
+  // Tab-first: these actions now live in the standalone HubActionBar mounted
+  // above each item tab body, not in the deleted reading-pane HubViewer footer.
+  it("viewer can mark a selected read item unread", async () => {
     vi.mocked(hubItemsApi.list).mockResolvedValue(hubList([
       hubItem({ readAt: "2026-06-29T10:01:00.000Z" }),
     ]));
@@ -808,7 +808,7 @@ describe("InboxHub page", () => {
     });
   });
 
-  it.skip("viewer can dismiss and snooze the selected item", async () => {
+  it("viewer can dismiss and snooze the selected item", async () => {
     vi.mocked(hubItemsApi.list).mockResolvedValue(hubList([hubItem()]));
 
     renderPage("/P4/inbox-hub/waiting/hub-1");
@@ -826,7 +826,39 @@ describe("InboxHub page", () => {
     });
   });
 
-  it.skip("viewer can undo personal dismiss and snooze actions", async () => {
+  it("targets the selected hub row when multiple rows map to the same entity tab", async () => {
+    vi.mocked(hubItemsApi.list).mockResolvedValue(
+      hubList([
+        hubItem({
+          id: "hub-mention-1",
+          semanticType: "mention",
+          lane: "notifications",
+          sourceType: "discussion",
+          sourceId: "thread-1:entry-1:user-1",
+          title: "First mention",
+        }),
+        hubItem({
+          id: "hub-mention-2",
+          semanticType: "mention",
+          lane: "notifications",
+          sourceType: "discussion",
+          sourceId: "thread-1:entry-2:user-2",
+          title: "Second mention",
+        }),
+      ]),
+    );
+
+    renderPage("/P4/inbox-hub/notifications");
+
+    fireEvent.click(await screen.findByRole("button", { name: /second mention/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /^dismiss$/i }));
+
+    await waitFor(() => {
+      expect(hubItemsApi.dismiss).toHaveBeenCalledWith("company-1", "hub-mention-2");
+    });
+  });
+
+  it("viewer can undo personal dismiss and snooze actions", async () => {
     vi.mocked(hubItemsApi.list).mockResolvedValue(hubList([hubItem()]));
 
     renderPage("/P4/inbox-hub/waiting/hub-1");
@@ -842,7 +874,7 @@ describe("InboxHub page", () => {
     });
   });
 
-  it.skip("viewer resolves an item and can undo the server-backed action", async () => {
+  it("viewer resolves an item and can undo the server-backed action", async () => {
     // Use a NON-mirrored notifications-lane type: the mirror model (Task 1)
     // hides Resolve/Archive on source-backed decision items (approval_request),
     // so the generic resolve→undo flow is exercised on run_failed instead.
@@ -867,7 +899,7 @@ describe("InboxHub page", () => {
     });
   });
 
-  it.skip("keeps server undo reachable after the resolved item leaves the active list", async () => {
+  it("keeps server undo reachable after the resolved item leaves the active list", async () => {
     // Non-mirrored type (see above): Resolve stays available on run_failed.
     vi.mocked(hubItemsApi.list)
       .mockResolvedValueOnce(
@@ -888,8 +920,8 @@ describe("InboxHub page", () => {
     });
   });
 
-  it.skip("viewer shows claim and release actions for board-pool items", async () => {
-    // TASK 3: Claim/Release move to HubActionBar (see the skip note above).
+  it("viewer shows claim and release actions for board-pool items", async () => {
+    // Claim/Release live in HubActionBar for board-pool items.
     vi.mocked(hubItemsApi.list).mockResolvedValue(hubList([
       hubItem({ semanticType: "stale_work", lane: "suggestions", ownerPool: "board" }),
     ]));

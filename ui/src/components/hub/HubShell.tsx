@@ -26,11 +26,13 @@ import {
   isInternalSemanticType,
 } from "@armyofagents/shared";
 import { Button } from "@/components/ui/button";
+import { HubActionBar } from "./HubActionBar";
 import { HubHome } from "./HubHome";
 import { HubList } from "./HubList";
 import { HubRail, type HubRailLane } from "./HubRail";
 import { HubTabBody } from "./HubTabBody";
 import { HubTabStrip } from "./HubTabStrip";
+import { hubTabForItem } from "./hubRegistry";
 import { HOME_TAB, type HubTab } from "./hubViewerModel";
 
 const EMPTY_BULK_IDS = new Set<string>();
@@ -82,6 +84,8 @@ interface HubShellProps {
   onAddBrowserTab: () => void;
   /** Resolve a hub item id → full row for the runtime_decision tab body. */
   resolveHubItem: (hubItemId: string) => HubItemListRow | undefined;
+  /** Resolve the active tab back to its originating hub row for action-bar targeting. */
+  resolveHubItemForTab?: (tab: HubTab) => HubItemListRow | undefined;
   historyStatus: Extract<HubItemStatus, "open" | "resolved" | "archived">;
   auditRows: HubAuditRow[];
   auditLoading: boolean;
@@ -148,6 +152,7 @@ export function HubShell({
   onActivateTab,
   onAddBrowserTab,
   resolveHubItem,
+  resolveHubItemForTab,
   historyStatus = "open",
   auditRows = [],
   auditLoading = false,
@@ -787,58 +792,42 @@ export function HubShell({
               </div>
             </div>
           ) : null}
-          {!showHome && undoAction ? (
-            <div className="flex h-11 items-center justify-between gap-3 border-b border-border bg-card px-4 text-xs">
-              <span className="truncate text-muted-foreground">{undoAction.label}</span>
-              <Button type="button" variant="ghost" size="sm" onClick={undoAction.onUndo}>
-                Undo {undoAction.label}
-              </Button>
-            </div>
-          ) : null}
           {!showHome && bulkMessage ? (
             <div role="status" className="border-b border-border bg-card px-4 py-2 text-xs text-muted-foreground">
               {bulkMessage}
             </div>
           ) : null}
-          {/* Tab-first: the "Needs you most" dashboard is hosted by the Home TAB
-              body (see `homeContent` below), so the list panel no longer renders a
-              second HubHome on Home (that double-rendered the dashboard). On Home
-              the list panel is a lightweight pointer to the dashboard tab; on an
-              active lane it shows the lane list. This keeps ONE dashboard surface. */}
-          {showHome ? (
-            <div
-              className="flex min-h-0 flex-1 items-center justify-center p-6 text-center"
-              data-testid="hub-list-home-hint"
-            >
-              <p className="max-w-xs text-sm text-muted-foreground">
-                Your attention and decision queue is in the Home tab. Pick a lane to
-                browse its items here.
-              </p>
-            </div>
-          ) : (
-            <HubList
-              items={items}
-              isLoading={isLoading}
-              error={error}
-              selectedItemId={selectedItemId}
-              selectedBulkIds={selectedBulkIds}
-              hasMore={hasMore}
-              isLoadingMore={isLoadingMore}
-              groupMode={preferences.groupMode}
-              density={preferences.density}
-              onOpenItem={onOpenItem}
-              onSelectItem={onSelectItem}
-              onMarkRead={onMarkRead}
-              onToggleBulkItem={onToggleBulkItem}
-              onLoadMore={onLoadMore}
-              onUndismiss={onUndismiss}
-              onUnsnooze={onUnsnooze}
-            />
-          )}
+          <HubList
+            items={items}
+            isLoading={isLoading}
+            error={error}
+            selectedItemId={selectedItemId}
+            selectedBulkIds={selectedBulkIds}
+            hasMore={hasMore}
+            isLoadingMore={isLoadingMore}
+            groupMode={preferences.groupMode}
+            density={preferences.density}
+            onOpenItem={onOpenItem}
+            onSelectItem={onSelectItem}
+            onMarkRead={onMarkRead}
+            onToggleBulkItem={onToggleBulkItem}
+            onLoadMore={onLoadMore}
+            onUndismiss={onUndismiss}
+            onUnsnooze={onUnsnooze}
+          />
         </section>
   );
 
   const activeTab = tabs.find((tab) => tab.key === activeTabKey) ?? tabs[0] ?? HOME_TAB;
+  const activeBarItem: HubItemListRow | null =
+    activeTab.kind === "home"
+      ? null
+      : resolveHubItemForTab?.(activeTab) ??
+        hubItemForTab(activeTab, [
+          ...(selectedItem ? [selectedItem] : []),
+          ...items,
+          ...(homeItems ?? []),
+        ]);
   const viewer = (
         <div
           className="flex min-h-0 min-w-0 flex-1 flex-col bg-bg"
@@ -851,6 +840,16 @@ export function HubShell({
             onClose={onCloseTab}
             onAddBrowser={onAddBrowserTab}
           />
+          {activeBarItem && activeTab.kind !== "home" ? (
+            <HubActionBar
+              item={activeBarItem}
+              onDismiss={onDismiss}
+              onSnooze={onSnooze}
+              onLifecycleAction={onLifecycleAction}
+              onMarkUnread={onMarkUnread}
+              undoAction={undoAction}
+            />
+          ) : null}
           <div className="min-h-0 min-w-0 flex-1">
             <HubTabBody
               tab={activeTab}
@@ -914,7 +913,14 @@ export function HubShell({
       ) : null}
       {!isDesktopUp ? (
         <main className="flex min-w-0 flex-1 flex-col">
-          {listSection}
+          {showHome ? null : listSection}
+          {viewer}
+        </main>
+      ) : showHome ? (
+        <main
+          className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-border bg-background shadow-sm"
+          data-testid="hub-viewer-panel"
+        >
           {viewer}
         </main>
       ) : (
@@ -965,6 +971,22 @@ function laneTitle(lane: HubLane | null) {
   if (lane === "notifications") return "Notifications";
   if (lane === "suggestions") return "Suggestions";
   return "Home";
+}
+
+function hubItemIdForTab(tab: HubTab): string {
+  if (tab.kind === "runtime_decision" || tab.kind === "notification") {
+    const payload = tab.payload as { hubItemId?: string } | undefined;
+    return payload?.hubItemId ?? "";
+  }
+  return "";
+}
+
+function hubItemForTab(tab: HubTab, candidates: HubItemListRow[]): HubItemListRow | null {
+  const hubItemId = hubItemIdForTab(tab);
+  if (hubItemId) {
+    return candidates.find((item) => item.id === hubItemId) ?? null;
+  }
+  return candidates.find((item) => hubTabForItem(item).key === tab.key) ?? null;
 }
 
 function semanticTypeLabel(value: string) {

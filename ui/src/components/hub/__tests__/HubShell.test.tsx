@@ -14,6 +14,10 @@ vi.mock("@/context/CompanyContext", () => ({
   }),
 }));
 
+vi.mock("@/context/BreadcrumbContext", () => ({
+  useBreadcrumbs: () => ({ setBreadcrumbs: vi.fn() }),
+}));
+
 // react-resizable-panels can't measure size under the JSDOM ResizeObserver stub,
 // so (like every other panel-using suite in this repo) mock it with plain divs.
 vi.mock("react-resizable-panels", () => ({
@@ -303,6 +307,16 @@ describe("HubShell", () => {
     expect(screen.queryByRole("complementary", { name: /hub viewer/i })).toBeNull();
   });
 
+  it("renders the Home dashboard full-width without the list panel or hint", () => {
+    renderShell({ activeLane: null, tabs: [HOME_TAB], activeTabKey: "home" });
+
+    expect(screen.queryByTestId("hub-list-panel")).toBeNull();
+    expect(screen.queryByTestId("hub-panel-separator")).toBeNull();
+    expect(screen.queryByTestId("hub-list-home-hint")).toBeNull();
+    expect(screen.getByTestId("hub-viewer-panel")).toBeInTheDocument();
+    expect(within(screen.getByTestId("hub-tab-body")).getByText(/needs you most/i)).toBeInTheDocument();
+  });
+
   it("moves a list highlight with j/k and opens the highlighted item's tab on Enter", async () => {
     const user = userEvent.setup();
     const onSelectItem = vi.fn();
@@ -340,12 +354,177 @@ describe("HubShell", () => {
     expect(onCloseTab).not.toHaveBeenCalled();
   });
 
-  // NOTE (Task 1 deviation): the reading-pane HubViewer footer that hosted the
-  // mirror-gated lifecycle actions (runtime-decision "allow once"; approval /
-  // join_request "hides Resolve/Archive"; run_failed "still offers
-  // Resolve/Archive") is DELETED in tab-first. Task 3 rebuilds this coverage
-  // against the standalone HubActionBar (plan Task 3 Steps 7-8), so these four
-  // reading-pane tests are removed here and re-added there.
+  it("mounts the slim action bar above the tab body for the active non-home tab", () => {
+    const approvalTab = {
+      key: "approval:approval-1",
+      kind: "approval" as const,
+      title: "Review hire approval",
+      closeable: true,
+      payload: { approvalId: "approval-1" },
+    };
+    renderShell({
+      selectedItemId: "hub-1",
+      tabs: [HOME_TAB, approvalTab],
+      activeTabKey: "approval:approval-1",
+    });
+
+    const bar = within(screen.getByTestId("hub-action-bar"));
+    expect(bar.getByRole("button", { name: /^dismiss$/i })).toBeInTheDocument();
+    expect(bar.getByRole("button", { name: /^snooze$/i })).toBeInTheDocument();
+    expect(bar.queryByRole("button", { name: /^resolve$/i })).toBeNull();
+    expect(bar.getByRole("button", { name: /route or delegate \(coming soon\)/i })).toBeDisabled();
+  });
+
+  it("does NOT render the action bar on the Home tab (dashboard is chrome-free)", () => {
+    renderShell({ selectedItemId: "hub-1", tabs: [HOME_TAB], activeTabKey: "home" });
+    expect(screen.queryByTestId("hub-action-bar")).toBeNull();
+  });
+
+  it("hides generic lifecycle actions for runtime decision prompts", async () => {
+    const runtimeItem = {
+      ...items[0],
+      id: "hub-runtime",
+      semanticType: "agent_runtime_decision",
+      sourceType: "runtime_decision",
+      sourceId: "decision-1",
+      title: "Allow command?",
+      ownerPool: "board",
+    } as HubItemListRow;
+    const runtimeTab = {
+      key: "runtime_decision:hub-runtime",
+      kind: "runtime_decision" as const,
+      title: "Allow command?",
+      closeable: true,
+      payload: { hubItemId: "hub-runtime" },
+    };
+    renderShell({
+      items: [runtimeItem],
+      selectedItemId: "hub-runtime",
+      tabs: [HOME_TAB, runtimeTab],
+      activeTabKey: "runtime_decision:hub-runtime",
+    });
+
+    const bar = within(screen.getByTestId("hub-action-bar"));
+    expect(bar.queryByRole("button", { name: /^resolve$/i })).toBeNull();
+    expect(bar.queryByRole("button", { name: /^archive$/i })).toBeNull();
+    expect(bar.queryByRole("button", { name: /^claim$/i })).toBeNull();
+    expect(
+      await within(screen.getByTestId("hub-runtime-decision-body")).findByRole("button", {
+        name: /allow once/i,
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it("hides Resolve/Archive for an open approval_request but keeps dismiss and snooze", () => {
+    const approvalTab = {
+      key: "approval:approval-1",
+      kind: "approval" as const,
+      title: "Review hire approval",
+      closeable: true,
+      payload: { approvalId: "approval-1" },
+    };
+    renderShell({
+      selectedItemId: "hub-1",
+      tabs: [HOME_TAB, approvalTab],
+      activeTabKey: "approval:approval-1",
+    });
+
+    const bar = within(screen.getByTestId("hub-action-bar"));
+    expect(bar.queryByRole("button", { name: /^resolve$/i })).toBeNull();
+    expect(bar.queryByRole("button", { name: /^archive$/i })).toBeNull();
+    expect(bar.getByRole("button", { name: /^dismiss$/i })).toBeInTheDocument();
+    expect(bar.getByRole("button", { name: /^snooze$/i })).toBeInTheDocument();
+  });
+
+  it("targets the active entity tab item instead of a stale selected row", async () => {
+    const user = userEvent.setup();
+    const onDismiss = vi.fn();
+    const approvalTab = {
+      key: "approval:approval-1",
+      kind: "approval" as const,
+      title: "First approval",
+      closeable: true,
+      payload: { approvalId: "approval-1" },
+    };
+    renderShell({
+      items: [
+        { ...items[0], id: "hub-1", title: "First approval", sourceId: "approval-1" },
+        { ...items[0], id: "hub-2", title: "Second approval", sourceId: "approval-2" },
+      ],
+      selectedItemId: "hub-2",
+      tabs: [HOME_TAB, approvalTab],
+      activeTabKey: "approval:approval-1",
+      onDismiss,
+    });
+
+    await user.click(
+      within(screen.getByTestId("hub-action-bar")).getByRole("button", {
+        name: /^dismiss$/i,
+      }),
+    );
+
+    expect(onDismiss).toHaveBeenCalledWith("hub-1");
+  });
+
+  it("hides Resolve/Archive for an open join_request but keeps dismiss and snooze", () => {
+    const joinItem = {
+      ...items[0],
+      id: "hub-join",
+      semanticType: "join_request",
+      sourceType: "join_request",
+      sourceId: "join-1",
+      title: "Join request",
+    } as HubItemListRow;
+    const joinTab = {
+      key: "join_request:join-1",
+      kind: "join_request" as const,
+      title: "Join request",
+      closeable: true,
+      payload: { joinRequestId: "join-1" },
+    };
+    renderShell({
+      items: [joinItem],
+      selectedItemId: "hub-join",
+      tabs: [HOME_TAB, joinTab],
+      activeTabKey: "join_request:join-1",
+    });
+
+    const bar = within(screen.getByTestId("hub-action-bar"));
+    expect(bar.queryByRole("button", { name: /^resolve$/i })).toBeNull();
+    expect(bar.queryByRole("button", { name: /^archive$/i })).toBeNull();
+    expect(bar.getByRole("button", { name: /^dismiss$/i })).toBeInTheDocument();
+    expect(bar.getByRole("button", { name: /^snooze$/i })).toBeInTheDocument();
+  });
+
+  it("still offers Resolve/Archive for a non-mirrored notifications item (run_failed)", () => {
+    const runItem = {
+      ...items[0],
+      id: "hub-run",
+      semanticType: "run_failed",
+      lane: "notifications",
+      sourceType: "heartbeat_run",
+      sourceId: "run-1",
+      title: "Run failed",
+      ownerPool: null,
+    } as HubItemListRow;
+    const runTab = {
+      key: "notification:hub-run",
+      kind: "notification" as const,
+      title: "Run failed",
+      closeable: true,
+      payload: { hubItemId: "hub-run" },
+    };
+    renderShell({
+      items: [runItem],
+      selectedItemId: "hub-run",
+      tabs: [HOME_TAB, runTab],
+      activeTabKey: "notification:hub-run",
+    });
+
+    const bar = within(screen.getByTestId("hub-action-bar"));
+    expect(bar.getByRole("button", { name: /^resolve$/i })).toBeInTheDocument();
+    expect(bar.getByRole("button", { name: /^archive$/i })).toBeInTheDocument();
+  });
 
   it("hides lanes excluded by preferences", () => {
     renderShell();

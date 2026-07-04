@@ -38,8 +38,7 @@ interface HubTabBodyProps {
   resolveHubItem?: (hubItemId: string) => HubItemListRow | undefined;
   /**
    * Body for the non-closeable `home` tab. HubShell supplies the real
-   * {@link HubHomeTab} (reading pane over the center-list selection); when
-   * absent the built-in placeholder renders.
+   * {@link HubHome}; when absent the built-in placeholder renders.
    */
   homeContent?: ReactNode;
 }
@@ -50,7 +49,7 @@ interface HubTabBodyProps {
  * `aria-controls` resolves, and it fills the panel fluidly (`w-full h-full`)
  * rather than the legacy fixed 360px HubViewer aside (A2 review).
  *
- * Live-wired kinds: home (placeholder stub, E2 swaps in the real HubHomeTab),
+ * Live-wired kinds: home (placeholder stub, E2 swaps in the real HubHome),
  * task, task_output, thread (D2 — hosts embedded ThreadDetail by prop id),
  * approval (D3 — hosts embedded ApprovalDetailCore by prop id), browser, budget,
  * agent (D4a — hosts AgentDetailContainer by prop id), run (D4b — hosts
@@ -241,7 +240,7 @@ function handleTaskHandoff(
   }
 }
 
-/** Placeholder home body. E2 replaces this with the real HubHomeTab. */
+/** Placeholder home body. E2 replaces this with the real HubHome. */
 function HubHomePlaceholder() {
   return (
     <div
