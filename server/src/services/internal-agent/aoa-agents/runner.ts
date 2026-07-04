@@ -721,34 +721,65 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
         .where(eq(internalAgentRuns.id, runId));
     }
 
-    // W3a: crew result loopback + run-summary comment on task SUCCESS.
-    // relayCrewResult self-guards on originKind==="crew_thread" +
-    // sourceDiscussionId (so a non-discussion task is a no-op); the run-summary
-    // honors the autoRunSummary opt-out. postCrewRunSuccess isolates each
-    // sub-step (a relay failure still lets the summary post, and vice-versa).
-    // Safety here is PLACEMENT-gated, not guard-gated: the benign early
-    // `return { status: "succeeded", runId }` paths (entry-not-claimable,
-    // checkout-conflict) return BEFORE this point and correctly never relay.
-    // Best-effort: the whole call is try/caught so a loopback failure NEVER
-    // flips an already-succeeded run to failed.
-    if (runResult.status === "succeeded" && payload.issueId && runId) {
+    // W3a: crew result loopback + run-summary comment on task outcome (SUCCESS
+    // AND non-throwing FAILURE). relayCrewResult / postCrewFailureCard self-guard
+    // on originKind==="crew_thread" + sourceDiscussionId (so a non-discussion
+    // task is a no-op); the run-summary honors the autoRunSummary opt-out. Both
+    // composed fns isolate each sub-step (a relay/card failure still lets the
+    // summary post, and vice-versa). Safety here is PLACEMENT-gated, not
+    // guard-gated: the benign early `return { status: "succeeded", runId }` paths
+    // (entry-not-claimable, checkout-conflict) return BEFORE this point.
+    //
+    // W3a holistic finding: buildAoaRunResultFromAdapter can yield
+    // status==="failed" WITHOUT throwing (adapter non-zero exit, non-null
+    // errorMessage, or a detected transport failure). That path writes the
+    // internal_agent_runs row 'failed' above then `return`s at the end of the try
+    // — it NEVER enters the catch, so the catch's postCrewRunFailure would miss
+    // it, leaving a silently-failed crew task with NO thread card + NO failure
+    // summary. Route it to postCrewRunFailure HERE using `agent` (in scope in the
+    // try; the catch uses the captured outcomeAgent* locals for THROWN failures).
+    // No double-fire: a run either returns normally (this block) OR throws to the
+    // catch — never both (the `return` below precedes the catch).
+    //
+    // resolveCrewOutcomeKind is the tested dispatch rule (succeeded→success,
+    // failed→failure). Best-effort: the whole call is try/caught so a loopback
+    // failure NEVER flips the run's already-decided status.
+    if (payload.issueId && runId) {
       try {
-        const { postCrewRunSuccess } = await import("./crew-run-outcome.js");
-        await postCrewRunSuccess(db, {
-          companyId: payload.companyId,
-          issueId: payload.issueId,
-          agentName: agent.name,
-          runtimeConfig: agent.runtimeConfig as Record<string, unknown> | null,
-          startedAtMs: startedAt,
-          nowMs: Date.now(),
-          adapterUsage,
-          costCents: costCents ?? null,
-          runId,
-        });
+        const { postCrewRunSuccess, postCrewRunFailure, resolveCrewOutcomeKind } =
+          await import("./crew-run-outcome.js");
+        if (resolveCrewOutcomeKind(runResult.status) === "success") {
+          await postCrewRunSuccess(db, {
+            companyId: payload.companyId,
+            issueId: payload.issueId,
+            agentName: agent.name,
+            runtimeConfig: agent.runtimeConfig as Record<string, unknown> | null,
+            startedAtMs: startedAt,
+            nowMs: Date.now(),
+            adapterUsage,
+            costCents: costCents ?? null,
+            runId,
+          });
+        } else {
+          // runResult.status === "failed" WITHOUT a throw — the adapter reported
+          // failure. Same loopback as the catch path (failure card + failure
+          // run-summary), but `agent` is in scope here so use it directly.
+          await postCrewRunFailure(db, {
+            companyId: payload.companyId,
+            issueId: payload.issueId,
+            agentId,
+            agentName: agent.name,
+            runtimeConfig: agent.runtimeConfig as Record<string, unknown> | null,
+            startedAtMs: startedAt,
+            nowMs: Date.now(),
+            errorMessage: runResult.errorMessage ?? "Run failed",
+            runId,
+          });
+        }
       } catch (loopbackErr) {
         log.warn(
           { err: loopbackErr, issueId: payload.issueId },
-          "W3a crew success loopback failed (non-fatal)",
+          "W3a crew outcome loopback failed (non-fatal)",
         );
       }
     }

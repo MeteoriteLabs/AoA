@@ -13,9 +13,26 @@ import { describe, expect, it, vi } from "vitest";
 import {
   postCrewRunFailure,
   postCrewRunSuccess,
+  resolveCrewOutcomeKind,
   resolveCrewRunSummaryArgs,
   type CrewFailureIssueRow,
 } from "../services/internal-agent/aoa-agents/crew-run-outcome.js";
+
+describe("resolveCrewOutcomeKind (runner dispatch: which loopback for which status)", () => {
+  // W3a holistic finding: the runner's SUCCESS wiring site now handles BOTH
+  // outcomes of a NON-THROWING completed run. This pins the dispatch rule that
+  // routes each status to its loopback: succeeded→postCrewRunSuccess,
+  // failed→postCrewRunFailure. The failure branch is what closes the
+  // silent-failure hole (adapter reports failure without throwing → the catch's
+  // failure loopback never runs, so this site must fire it instead).
+  it("succeeded → success (postCrewRunSuccess)", () => {
+    expect(resolveCrewOutcomeKind("succeeded")).toBe("success");
+  });
+
+  it("failed → failure (postCrewRunFailure) — the non-throw-failure route", () => {
+    expect(resolveCrewOutcomeKind("failed")).toBe("failure");
+  });
+});
 
 describe("resolveCrewRunSummaryArgs (crew run → run-summary input)", () => {
   it("maps runner locals to the shared helper's input (costCents → costUsd)", () => {

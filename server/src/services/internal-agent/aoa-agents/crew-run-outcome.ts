@@ -36,6 +36,24 @@ import {
 
 const log = logger.child({ svc: "crew-run-outcome" });
 
+/**
+ * W3a (holistic finding) — the DISPATCH rule the runner uses to pick which
+ * loopback fires for a completed (non-throwing) run: a `succeeded` run routes
+ * to postCrewRunSuccess, a `failed` run to postCrewRunFailure. The runner's
+ * SUCCESS wiring site (after the internal_agent_runs completion write) must
+ * handle BOTH statuses — an adapter can report a non-zero exit / errorMessage /
+ * transport failure and produce `runResult.status === "failed"` WITHOUT throwing,
+ * so it never reaches the catch (whose failure loopback is for THROWN failures).
+ * Before this rule the non-throw-failure path silently posted no failure card /
+ * summary. Pure + exported so the "which loopback for which status" decision is
+ * a tested unit (mirrors buildAoaRunResultFromAdapter's D4 philosophy).
+ */
+export function resolveCrewOutcomeKind(
+  status: "succeeded" | "failed",
+): "success" | "failure" {
+  return status === "succeeded" ? "success" : "failure";
+}
+
 export interface CrewRunSuccessInput {
   companyId: string;
   issueId: string;
