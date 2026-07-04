@@ -268,6 +268,12 @@ describe("HubTabBody", () => {
     expect(props.onOpenTab).toBe(onOpenTab);
   });
 
+  it("keeps hosting the embedded ApprovalDetailCore (no compact-body regression)", () => {
+    renderBody(approvalTab("approval-9", "Review hire"));
+    expect(screen.getByTestId("mock-approval-core")).toBeInTheDocument();
+    expect(screen.queryByTestId("hub-viewer-scaffold")).toBeNull();
+  });
+
   it("renders JoinRequestBody for a join_request tab when the active item resolves", () => {
     render(
       <MemoryRouter>
