@@ -187,6 +187,8 @@ These are read by tests and dev scripts; you should not need to set them in prod
 | `AOA_CONTEXT` | CLI context-file override |
 | `AOA_E2E_FAKE_AWS_SECRETS_MANAGER` | Playwright/vitest harness flag for the fake AWS Secrets Manager provider |
 | `AOA_E2E_PORT` / `AOA_E2E_SKIP_LLM` / `AOA_E2E_SKIP_MCP` | Playwright e2e harness — see `tests/README.md` |
+| `AOA_E2E_FAKE_CREW_LLM` | Playwright e2e harness flag (`=1`) that swaps the real crew CLI for the deterministic fake-crew harness (`fake-crew-llm.ts`). Never activates when `NODE_ENV=production`. |
+| `AOA_E2E_FAKE_CREW_CONTROL` | E2E only. Path to a JSON control file that scripts the fake-crew harness per test (e.g. the controller-mode Adjutant scope turn). Read fresh on every fake turn; absent/invalid ⇒ legacy fake behavior. Set by `tests/e2e/playwright.config.ts`. No effect unless `AOA_E2E_FAKE_CREW_LLM=1`. |
 | `AOA_ACCEPTANCE_CLI` | Selects the real CLI binary in acceptance/integration tests |
 | `AOA_PI_COMMAND` | Overrides the `pi` adapter binary in adapter-model tests |
 | `AOA_TEST_CODEX_MODEL` | Codex model override for live crew e2e tests |
