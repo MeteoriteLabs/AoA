@@ -4,6 +4,7 @@ import { writeToolHandlers } from "./write-tools.js";
 import { documentToolHandlers } from "./document-tools.js";
 import { approvalToolHandlers } from "./approval-tools.js";
 import { skillToolHandlers } from "./skill-tools.js";
+import { askFounderToolHandlers } from "./ask-founder-tool.js";
 import type { ToolHandler } from "./types.js";
 
 export {
@@ -21,6 +22,7 @@ export const toolHandlers: Record<string, ToolHandler> = {
   ...documentToolHandlers,
   ...approvalToolHandlers,
   ...skillToolHandlers,
+  ...askFounderToolHandlers,
 };
 
 /**
@@ -54,6 +56,11 @@ export const toolAllowedActors: Record<string, McpActorType[]> = {
   // (Critical Rule #6: founders approve identity/domain; this tool never bypasses that.)
   "memory.write": ALL_ACTORS,
   "use_skill": ["board", "commander"],  // HTTP MCP endpoint gate only: founder (board) + commander; worker agents + mcp excluded (skill markdown may contain company IP). Commander's CLI bridge dispatches via tool-registry and does NOT consult this map.
+  // ask_founder is org/heartbeat task-execution agents ONLY. The handler
+  // additionally requires an active runId; crew/internal-agent (whose question
+  // channel is the in-thread reply) are excluded by this actor gate. board/mcp/
+  // commander cannot call it.
+  "ask_founder": ["agent"],
 };
 
 export const TOOL_DEFINITIONS = [
@@ -533,6 +540,34 @@ export const TOOL_DEFINITIONS = [
         },
       },
       required: ["key"],
+    },
+  },
+  {
+    name: "ask_founder",
+    description:
+      "Ask the founder a question and block (up to ~5 min) for the answer. For " +
+      "org/heartbeat task-execution agents during an active run only. Surfaces in " +
+      "the Inbox as a question the founder answers (free-text, or one of your " +
+      "options). On timeout the run is parked and you get {answered:false, " +
+      "status:\"parked\"} — stop gracefully; do not retry.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        question: { type: "string" },
+        options: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              label: { type: "string" },
+              value: { type: "string" },
+            },
+            required: ["label", "value"],
+          },
+        },
+        context: { type: "string" },
+      },
+      required: ["question"],
     },
   },
 ];
