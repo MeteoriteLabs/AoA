@@ -44,8 +44,14 @@ test.describe("Inbox Hub W1b", () => {
     const selectedUrl = page.url();
     await page.goto(selectedUrl);
     await expect(page.getByRole("complementary", { name: /hub viewer/i })).toBeVisible();
-    await page.getByRole("link", { name: /open full/i }).click();
-    await expect(page).toHaveURL(new RegExp(`/approvals/${approval.id}`));
+    // The tabbed shell renders "Open full" as a <Button> (HubViewer.tsx:264-273,
+    // onOpenFull always supplied from HubShell.tsx:794) — NOT a link. Clicking it
+    // opens the approval as an in-hub tab (approval:<id>, embedding ApprovalDetailCore),
+    // it does not navigate to the /approvals/:id route.
+    await page.getByRole("button", { name: /open full/i }).click();
+    await expect(
+      page.locator(`[role="tab"][data-tab-id="approval:${approval.id}"]`),
+    ).toHaveAttribute("aria-selected", "true");
   });
 
   test("canonical route exposes notifications and suggestions lanes with legacy redirects", async ({

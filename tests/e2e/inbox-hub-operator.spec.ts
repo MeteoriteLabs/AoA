@@ -35,10 +35,17 @@ test.describe("Inbox Hub final operator flow", () => {
       "state",
     );
     await expect(page.getByRole("complementary", { name: /hub viewer/i })).toBeVisible();
-    await page.getByRole("link", { name: /open full/i }).click();
-    await expect(page).toHaveURL(new RegExp(`/approvals/${approval.id}`));
-
-    await page.goBack();
+    // "Open full" is a <Button> in the tabbed shell (HubViewer.tsx:264-273,
+    // onOpenFull always supplied from HubShell.tsx:794), not a link. Clicking it
+    // opens the approval as an in-hub tab (approval:<id>, embedding ApprovalDetailCore)
+    // — it does NOT navigate to /approvals/:id.
+    await page.getByRole("button", { name: /open full/i }).click();
+    await expect(
+      page.locator(`[role="tab"][data-tab-id="approval:${approval.id}"]`),
+    ).toHaveAttribute("aria-selected", "true");
+    // Switch back to the always-present Home tab to restore the reading pane, which
+    // hosts the resolve/archive lifecycle controls exercised below.
+    await page.getByRole("tab", { name: /^Home$/ }).click();
     await expect(page.getByRole("complementary", { name: /hub viewer/i })).toBeVisible();
     // Each lifecycle action (POST …/action, undo POST …/undo) invalidates the list
     // and remounts the viewer that holds these buttons; wait for each to settle so
