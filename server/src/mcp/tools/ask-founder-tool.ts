@@ -69,7 +69,9 @@ export async function handleAskFounder(
     nonce: randomUUID(),
     title: capped(parsed.question),
     promptText: parsed.question,
-    summary: parsed.context ?? null,
+    // Coerce empty/whitespace context → null so the stored summary is never an
+    // empty string (the shared runtimeDecisionDetailSchema.summary is .min(1)).
+    summary: parsed.context?.trim() || null,
     options: parsed.options ?? null,
     timeoutPolicy: "park_run",
   });

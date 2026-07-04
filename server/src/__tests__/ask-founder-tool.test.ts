@@ -94,6 +94,21 @@ describe("ask_founder tool", () => {
     expect((res as any).data).toEqual({ answered: true, answer: { value: "yes" } });
   });
 
+  it("coerces empty/whitespace context to a null summary (schema-honesty)", async () => {
+    const getById = vi.fn().mockResolvedValue({ adapterType: "codex_local" });
+    createPrompt.mockResolvedValue({ decision: { id: "d1" } });
+    waitForAnswer.mockResolvedValue({ answerPayload: { text: "ok" } });
+
+    await handleAskFounder(
+      makeCtx({ source: "agent", agentId: "agent-1", runId: "run-1" }, getById),
+      { question: "Ship it?", context: "   " },
+    );
+
+    // Empty/whitespace context must not persist as an empty-string summary
+    // (runtimeDecisionDetailSchema.summary is .min(1)).
+    expect(createPrompt.mock.calls[0][0].summary).toBeNull();
+  });
+
   it("returns a graceful parked result (NOT isError) when the wait is cancelled", async () => {
     const getById = vi.fn().mockResolvedValue({ adapterType: "codex_local" });
     createPrompt.mockResolvedValue({ decision: { id: "d1" } });
