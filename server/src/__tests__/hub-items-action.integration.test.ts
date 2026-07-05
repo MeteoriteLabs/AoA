@@ -83,10 +83,10 @@ async function auditCount(companyId: string, hubItemId: string): Promise<number>
   return firstRow<{ n: number }>(res).n;
 }
 
-async function seedPendingApproval(companyId: string, requestedByUserId: string): Promise<string> {
+async function seedApproval(companyId: string, requestedByUserId: string, status = "pending"): Promise<string> {
   return firstId(await db.execute(sql`
     INSERT INTO approvals (id, company_id, type, requested_by_user_id, status, payload, created_at, updated_at)
-    VALUES (gen_random_uuid(), ${companyId}, 'hire', ${requestedByUserId}, 'pending', '{}'::jsonb, now(), now())
+    VALUES (gen_random_uuid(), ${companyId}, 'hire', ${requestedByUserId}, ${status}, '{}'::jsonb, now(), now())
     RETURNING id
   `));
 }
@@ -136,8 +136,9 @@ describe.skipIf(process.platform === "win32")("hubItems.recordLifecycleAction �
     if (setupError) throw new Error(String(setupError));
     const { companyId, founderId } = await seedCompanyWithFounder();
     const svc = hubItemsService(db);
-    // approval_request → authority = founder.
-    const approvalId = await seedPendingApproval(companyId, founderId);
+    // approval_request → authority = founder. Use a terminal source row so this
+    // test isolates the authority guard instead of the pending-source mirror guard.
+    const approvalId = await seedApproval(companyId, founderId, "approved");
     const item = await svc.emit({ companyId, semanticType: "approval_request", sourceType: "approval", sourceId: approvalId, title: "Approve", ownerUserId: founderId });
     let caught: unknown;
     try {
