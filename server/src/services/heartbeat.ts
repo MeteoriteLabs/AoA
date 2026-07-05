@@ -43,7 +43,7 @@ import { getProviderStatus, type ProviderStatus } from "../adapters/provider-sta
 import { realProviderStatusDeps } from "../adapters/provider-status-deps.js";
 import { resolveRunScopedModel } from "./heartbeat-provider-resolution.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
-import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES } from "../adapters/utils.js";
+import { parseObject, asBoolean, asNumber, appendWithCap, MAX_EXCERPT_BYTES, sanitizeForDb } from "../adapters/utils.js";
 import { companySkillService } from "./company-skills.js";
 import type { RuntimeSkillEntry } from "./company-skills.js";
 import { buildPinnedMemorySkillEntries } from "./memory-skill-sync.js";
@@ -82,10 +82,6 @@ export {
   cancelCrewRunsForCompany,
 } from "./crew-cancellation.js";
 
-/** Strip non-Latin1 characters that crash WIN1252-encoded embedded Postgres on Windows. */
-function sanitizeForDb(text: string): string {
-  return text.replace(/[^\x00-\xFF]/g, "");
-}
 import { setSecretResolver } from "../adapters/api-common.js";
 import { secretService } from "./secrets.js";
 import {
@@ -95,7 +91,7 @@ import {
 } from "./heartbeat-session.js";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import { outputDetectionService } from "./output-detection.js";
-import { formatRunSummary } from "./run-summary.js";
+import { postRunSummaryComment } from "./run-summary-comment.js";
 import {
   buildWorkspaceReadyComment,
   cleanupExecutionWorkspaceArtifacts,
@@ -2360,19 +2356,20 @@ export function heartbeatService(db: Db) {
     detectedFiles: Array<{ path: string; type?: string }>;
   }) {
     const { agent, run, outcome, adapterResult, issueId, detectedFiles } = input;
-    if (!issueId) return;
-
-    // Check opt-out
-    const runtimeConfig = parseObject(agent.runtimeConfig);
-    if (runtimeConfig.autoRunSummary === false) return;
 
     const startedAt = run.startedAt ?? run.createdAt;
     const finishedAt = run.finishedAt ?? new Date();
     const durationMs = finishedAt.getTime() - startedAt.getTime();
 
-    const body = formatRunSummary({
+    // Delegates to the shared writer so heartbeat (ORG) and the crew runner use ONE
+    // implementation (opt-out check, formatRunSummary, issue_comments insert, issues.updatedAt).
+    await postRunSummaryComment(db, {
+      companyId: agent.companyId,
+      issueId,
       agentName: agent.name,
+      runtimeConfig: agent.runtimeConfig as Record<string, unknown> | null | undefined,
       outcome,
+      runId: run.id,
       durationMs,
       inputTokens: adapterResult.usage?.inputTokens ?? null,
       outputTokens: adapterResult.usage?.outputTokens ?? null,
@@ -2380,22 +2377,6 @@ export function heartbeatService(db: Db) {
       errorMessage: adapterResult.errorMessage ?? null,
       detectedFiles,
     });
-
-    try {
-      await db.insert(issueComments).values({
-        companyId: agent.companyId,
-        issueId,
-        authorAgentId: null,
-        authorUserId: null,
-        body: sanitizeForDb(body),
-      });
-      await db
-        .update(issues)
-        .set({ updatedAt: new Date() })
-        .where(eq(issues.id, issueId));
-    } catch (err) {
-      logger.warn({ err, runId: run.id, issueId }, "run summary comment creation failed (non-fatal)");
-    }
   }
 
   async function updateRuntimeState(
