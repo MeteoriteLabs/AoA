@@ -64,17 +64,18 @@ test.describe("Inbox Hub final operator flow", () => {
     });
     expect(approvalRes.ok(), await approvalRes.text()).toBeTruthy();
     const approval = (await approvalRes.json()) as { id: string };
+    const main = page.getByRole("main");
 
     await page.goto(`/${company.issuePrefix}/approvals/pending`);
     // 30s: the first navigation compiles the Approvals route chunk under vite-dev
     // on a cold CI runner (~8s), well past the default 5s assertion timeout.
-    await expect(page.getByRole("heading", { name: /Approvals/i })).toBeVisible({
+    await expect(main.getByRole("heading", { name: /Approvals/i })).toBeVisible({
       timeout: 30_000,
     });
     await page.goto(`/${company.issuePrefix}/approvals/all`);
     // 30s: the first navigation compiles the Approvals route chunk under vite-dev
     // on a cold CI runner (~8s), well past the default 5s assertion timeout.
-    await expect(page.getByRole("heading", { name: /Approvals/i })).toBeVisible({
+    await expect(main.getByRole("heading", { name: /Approvals/i })).toBeVisible({
       timeout: 30_000,
     });
     await page.goto(`/${company.issuePrefix}/approvals/${approval.id}`);
