@@ -1,11 +1,17 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 import { cleanupTestCompanies, seedCompany } from "./helpers/seed-company";
 import {
   markRuntimeDecisionRelayed,
   seedRuntimePermissionDecision,
 } from "./helpers/seed-runtime-decision";
+import { expectHubTabBody } from "./helpers/hub-tabs";
 
 const PREFIX = /^E2E-HUB-W5-/;
+const TITLE = "Allow deploy smoke command?";
+
+function runtimeDecisionRow(page: Page) {
+  return page.locator("button[data-hub-row-id]").filter({ hasText: TITLE });
+}
 
 test.describe("Inbox Hub W5 runtime decisions", () => {
   test.beforeEach(async ({ request }) => {
@@ -26,19 +32,18 @@ test.describe("Inbox Hub W5 runtime decisions", () => {
     const seeded = await seedRuntimePermissionDecision({
       companyId: company.id,
       agentId: agent.id,
-      title: "Allow deploy smoke command?",
+      title: TITLE,
       promptText: "The agent wants permission to run the deploy smoke command.",
       command: "pnpm test:run server/src/__tests__/agent-runtime-decisions.test.ts",
     });
 
     await page.goto(`/${company.issuePrefix}/inbox/waiting`);
-    await expect(page.getByText("Allow deploy smoke command?")).toBeVisible({
+    await expect(runtimeDecisionRow(page)).toBeVisible({
       timeout: 15_000,
     });
 
-    await page.getByRole("button", { name: /Allow deploy smoke command/i }).click();
-    const viewer = page.getByRole("complementary", { name: /hub viewer/i });
-    await expect(viewer).toBeVisible();
+    await runtimeDecisionRow(page).click();
+    await expectHubTabBody(page);
     await expect(page.getByRole("region", { name: /runtime decision/i })).toContainText(
       "created",
     );
@@ -63,7 +68,7 @@ test.describe("Inbox Hub W5 runtime decisions", () => {
       decisionId: seeded.decision.id,
     });
     await page.goto(`/${company.issuePrefix}/inbox/waiting`);
-    await expect(page.getByText("Allow deploy smoke command?")).toBeHidden({
+    await expect(runtimeDecisionRow(page)).toBeHidden({
       timeout: 10_000,
     });
   });

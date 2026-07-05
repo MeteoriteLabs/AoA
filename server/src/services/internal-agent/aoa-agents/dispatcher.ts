@@ -446,7 +446,27 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
           // It runs unconditionally, like inbox-routing.
           const isCommander = (w.runtimeConfig as Record<string, unknown> | null)?.aoa != null
             && ((w.runtimeConfig as { aoa?: { role?: unknown } }).aoa?.role === "lead");
-          if (!isInboxRouting && !isCommander) {
+          // Founder decision (2026-07-04): the company crew-autonomy dial gates
+          // agent-INITIATED work only (mentions, sweeps, phase-advance). Explicit
+          // founder/upstream authorization of a SPECIFIC task always dispatches —
+          // the authorization already happened upstream (crew_dispatch approval +
+          // planning→standard flip + preflightCrewDispatch for Assist;
+          // resolveScopeAutoAcceptGate≥2 for Drive; a direct founder assignment;
+          // dependency-unblock of already-scoped work). crewPaused stays the kill-
+          // switch (checked above, BEFORE this gate) and every other guard (thread-
+          // pause, spend/run-count brakes, budget hard-stop) still applies below.
+          //
+          // P1-2: there is NO single chokepoint to stamp — the PATCH /issues/:id
+          // reassign path builds its own wakeup (routes/issues.ts) and bypasses
+          // enqueueIssueAssigneeWakeup. So key the exemption on the wakeup PAYLOAD,
+          // not a stamp: a task-dispatch wakeup carries `payload.issueId` (string)
+          // AND `source` ∈ {assignment, automation} — the only two sources both the
+          // chokepoint (issue-assignee-wakeup.ts) and the PATCH-reassign path use.
+          // Mention/sweep wakeups use `thread_mention`/`sweep.*` and carry no
+          // issueId, so they stay gated (agent initiative).
+          const isTaskDispatch = typeof wkPayload.issueId === "string"
+            && (w.source === "assignment" || w.source === "automation");
+          if (!isInboxRouting && !isCommander && !isTaskDispatch) {
             // Plan 3 Task 4: autonomyLevel gate — agentic crew roles (router,
             // planner, dispatcher) require autonomyLevel ≥ 2. Core roles
             // (scribe, memory_keeper, curator) are always active (min = 0).

@@ -8,7 +8,9 @@ import { hubItemsService } from "../services/hub-items.js";
 import {
   buildApprovalHubEmit,
   buildDiscussionPendingHubEmit,
+  buildExtractionFailedHubEmit,
   buildJoinRequestHubEmit,
+  buildRoutineFailedHubEmit,
   buildStaleIssueHubEmit,
   buildSuggestionHubEmit,
 } from "../services/hub-source-producers.js";
@@ -233,6 +235,38 @@ async function insertIssue(
   }>(res);
 }
 
+async function insertDiscussionEntry(discussionId: string, extractionStatus: string) {
+  return firstId(
+    await db.execute(
+      sql`INSERT INTO discussion_entries (id, discussion_id, input_type, raw_content, extraction_status, created_by, created_at)
+          VALUES (gen_random_uuid(), ${discussionId}, 'paste', 'some notes to extract', ${extractionStatus}, 'founder', now())
+          RETURNING id`,
+    ),
+  );
+}
+
+async function insertRoutineWithRun(
+  companyId: string,
+  createdByUserId: string | null,
+  runStatus: string,
+) {
+  const routineId = firstId(
+    await db.execute(
+      sql`INSERT INTO routines (id, company_id, title, created_by_user_id, created_at, updated_at)
+          VALUES (gen_random_uuid(), ${companyId}, 'Weekly report', ${createdByUserId}, now(), now())
+          RETURNING id`,
+    ),
+  );
+  const runId = firstId(
+    await db.execute(
+      sql`INSERT INTO routine_runs (id, company_id, routine_id, source, status, failure_reason, created_at, updated_at)
+          VALUES (gen_random_uuid(), ${companyId}, ${routineId}, 'schedule', ${runStatus}, 'Execution issue moved to blocked', now(), now())
+          RETURNING id`,
+    ),
+  );
+  return { routineId, runId };
+}
+
 describe.skipIf(process.platform === "win32")("hub W1b source reconcilers", () => {
   it("setup harness boots", () => {
     if (setupError) throw new Error(String(setupError));
@@ -391,5 +425,76 @@ describe.skipIf(process.platform === "win32")("hub W1b source reconcilers", () =
 
     const { items: rows } = await svc.query(companyId, { actorUserId: founderId, role: "founder" });
     expect(rows.map((r) => r.semanticType)).toEqual(["mention"]);
+  });
+
+  // ── Task 10: extraction_failed (D3) ────────────────────────────────────────
+  it("emits extraction_failed on a failed entry and auto-archives it once the entry recovers", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const { companyId, founderId } = await seedCompanyWithFounder();
+    const discussion = await insertDiscussion(companyId, founderId, 0);
+    const entryId = await insertDiscussionEntry(discussion.id, "failed");
+    const svc = hubItemsService(db);
+
+    const row = await svc.emit(
+      buildExtractionFailedHubEmit({
+        entryId,
+        discussionId: discussion.id,
+        companyId,
+        discussionTitle: "Q3 planning",
+        ownerUserId: founderId,
+        failureKind: "not_installed",
+        failureMessage: "claude CLI not found",
+        updatedAt: new Date(),
+      }),
+    );
+    // keyed on the entry id + discussion_entry source (NOT discussion).
+    expect(row.semanticType).toBe("extraction_failed");
+    expect(row.sourceType).toBe("discussion_entry");
+    expect(row.sourceId).toBe(entryId);
+
+    let { items: rows } = await svc.query(companyId, {
+      actorUserId: founderId,
+      role: "founder",
+      lane: "notifications",
+    });
+    expect(rows.map((r) => r.semanticType)).toContain("extraction_failed");
+
+    // A successful reprocess resets the entry to 'pending' → reconciler terminal
+    // → the failure item auto-archives (matches the reprocess-success closer).
+    await db.execute(sql`UPDATE discussion_entries SET extraction_status = 'pending' WHERE id = ${entryId}`);
+    await svc.reconcile(companyId, { sourceType: "discussion_entry", sourceId: entryId });
+
+    rows = (await svc.query(companyId, { actorUserId: founderId, role: "founder" })).items;
+    expect(rows.map((r) => r.semanticType)).not.toContain("extraction_failed");
+  });
+
+  // ── Task 10: routine_outcome, failure-only (D3) ────────────────────────────
+  it("emits routine_outcome for a failed routine run and supersedes it when the routine recovers", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const { companyId, founderId } = await seedCompanyWithFounder();
+    const { routineId, runId } = await insertRoutineWithRun(companyId, founderId, "failed");
+    const svc = hubItemsService(db);
+
+    const row = await svc.emit(
+      buildRoutineFailedHubEmit({
+        runId,
+        routineId,
+        companyId,
+        routineName: "Weekly report",
+        failureReason: "Execution issue moved to blocked",
+        createdByUserId: founderId,
+        updatedAt: new Date(),
+      }),
+    );
+    expect(row.semanticType).toBe("routine_outcome");
+    expect(row.sourceType).toBe("routine_run");
+    expect(row.title).toBe("Routine failed: Weekly report");
+
+    const { items: rows } = await svc.query(companyId, {
+      actorUserId: founderId,
+      role: "founder",
+      lane: "notifications",
+    });
+    expect(rows.map((r) => r.semanticType)).toContain("routine_outcome");
   });
 });

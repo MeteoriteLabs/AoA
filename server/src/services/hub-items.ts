@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, lte, or, sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import type { Db } from "@armyofagents/db";
 import {
@@ -12,8 +12,11 @@ import {
   heartbeatRuns,
   joinRequests,
   discussions,
+  discussionEntries,
   suggestions,
   issues,
+  companies,
+  costEvents,
 } from "@armyofagents/db";
 import type {
   HubCountsChangedLivePayload,
@@ -25,21 +28,32 @@ import type {
   HubOwnerPool,
   HubUserStateInput,
   NotificationPreferences,
-  ActivityActorType,
 } from "@armyofagents/shared";
 import {
   HUB_SEMANTIC_TYPES,
+  HUB_SOURCE_MIRRORED_TYPES,
   laneForSemanticType,
   authorityForSemanticType,
 } from "@armyofagents/shared";
 import type { UserRole } from "@armyofagents/shared";
 
+// Mirror-model guard (R3 + H1): a runtime-decision hub item is manually
+// clearable ONLY once its backing decision has left the answerable window.
+// {created, shown} = the founder can still decide it → block resolve/archive.
+// {answered, relay_failed} are deliberately NOT in this set so the dead-run
+// stall rows Task 5 sweeps stay clearable (using the reconciler's generic
+// `terminal` flag here would block them and collide with Task 5).
+const RUNTIME_DECISION_ANSWERABLE_STATUSES: ReadonlySet<string> = new Set(["created", "shown"]);
+
 // Heartbeat-backed hub items are actionable while the source run is live, or
-// while it is the latest failed/timed-out run for its agent.
+// while it is the latest failed/timed-out run for its agent. "succeeded" is
+// included so a run_complete item stays open while it is the agent's LATEST
+// run; the existing isSuperseded rule closes it when a newer run lands (BUG-5).
 const HEARTBEAT_ACTIONABLE_STATUSES: ReadonlySet<string> = new Set([
   "queued",
   "scheduled_retry",
   "running",
+  "succeeded",
   "failed",
   "timed_out",
 ]);
@@ -47,6 +61,13 @@ const APPROVAL_OPEN_STATUSES: ReadonlySet<string> = new Set(["pending", "revisio
 const STALE_WORK_STATUSES: ReadonlySet<string> = new Set(["todo", "in_progress"]);
 const STALE_WORK_THRESHOLD_MS = 24 * 60 * 60 * 1000;
 const HUB_UNDO_WINDOW_MS = 8_000;
+// budget_alert closes symmetric with the producer (hub-legacy-alerts.ts): the
+// budget_alert item fires at >= 80% utilization, so the reconciler closes it
+// (terminal) once utilization drops back below 80% (or the budget is unset).
+// Keep this in sync with hub-legacy-alerts.ts's BUDGET_WARNING_PERCENT — both
+// are the same 80% threshold; a shared export would create an import cycle
+// (hub-items <-> hub-source-producers <-> hub-legacy-alerts).
+const BUDGET_WARNING_PERCENT = 80;
 import { redactSecretsInString } from "../redaction.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { HttpError } from "../errors.js";
@@ -57,10 +78,36 @@ import { orgHierarchyService } from "./org-hierarchy.js";
 import { permissionService } from "./permissions.js";
 import { publishLiveEvent } from "./live-events.js";
 import { runtimeDecisionSourceSnapshot } from "./agent-runtime-decisions.js";
+// Shared budget-alert summary formatter (H3): the producer and this reconciler
+// MUST format the summary through the same function so heal writes are
+// byte-identical to producer emits (no ping-pong). Runtime-only usage keeps the
+// hub-source-producers <-> hub-items import cycle safe (no module-eval call).
+import { formatBudgetAlertSummary } from "./hub-source-producers.js";
 
 // Semantic types that resolve to a given lane (lane is derived, not a column).
 function semanticTypesForLane(lane: HubLane): HubSemanticType[] {
   return HUB_SEMANTIC_TYPES.filter((t) => laneForSemanticType(t) === lane);
+}
+
+// Fast membership check for decorateItem's P3-1 unknown-type strip (Task 10).
+const HUB_SEMANTIC_TYPE_SET: ReadonlySet<string> = new Set(HUB_SEMANTIC_TYPES);
+
+// P3-1 (Task 10) pure resolver: map a stored semanticType to its lane, degrading
+// null OR an unknown/pruned string (a leftover human_input_needed/scope_proposal
+// [SEED] row after the prune) to legacy_other's lane (notifications) — never
+// `undefined`. Exported so the strip is unit-testable without a DB.
+export function resolveLaneForStoredType(semanticType: string | null): HubLane | null {
+  if (!semanticType) return null;
+  return HUB_SEMANTIC_TYPE_SET.has(semanticType)
+    ? laneForSemanticType(semanticType as HubSemanticType)
+    : laneForSemanticType("legacy_other");
+}
+
+export function normalizeStoredSemanticType(semanticType: string | null): HubSemanticType | null {
+  if (!semanticType) return null;
+  return HUB_SEMANTIC_TYPE_SET.has(semanticType)
+    ? semanticType as HubSemanticType
+    : "legacy_other";
 }
 
 // ── Emit ────────────────────────────────────────────────────────────────────
@@ -186,13 +233,14 @@ export function hubItemsService(db: Db) {
     return [a.companyId, a.sourceType, a.sourceId, a.semanticType, a.scopeKey ?? ""].join(":");
   }
 
+  // P3-1 (Task 10): a row whose semanticType is null OR an unknown/pruned string
+  // (e.g. a leftover `human_input_needed`/`scope_proposal` [SEED] row after the
+  // prune) must NOT surface with `lane: undefined` in the lane-LESS reads (Home
+  // fetch, `q` search). Map an unknown non-null type to legacy_other's lane
+  // (notifications) — the internal catch-all sink — so it degrades cleanly.
   function decorateItem<T extends { semanticType: string | null }>(row: T) {
-    return {
-      ...row,
-      lane: row.semanticType
-        ? laneForSemanticType(row.semanticType as HubSemanticType)
-        : null,
-    };
+    const semanticType = normalizeStoredSemanticType(row.semanticType);
+    return { ...row, semanticType, lane: resolveLaneForStoredType(row.semanticType) };
   }
 
   function publishHubItemChanged(
@@ -224,11 +272,11 @@ export function hubItemsService(db: Db) {
     } = {},
     groupMode: HubGroupMode = "auto",
   ): HubListRow {
+    const semanticType = normalizeStoredSemanticType(item.semanticType);
     return {
       ...item,
-      lane: item.semanticType
-        ? laneForSemanticType(item.semanticType as HubSemanticType)
-        : null,
+      semanticType,
+      lane: resolveLaneForStoredType(item.semanticType),
       readAt: state.readAt ?? null,
       snoozedUntil: state.snoozedUntil ?? null,
       dismissedAt: state.dismissedAt ?? null,
@@ -426,12 +474,36 @@ export function hubItemsService(db: Db) {
     // Idempotent upsert, gated to STILL-OPEN rows: a re-emit refreshes the
     // denormalized fields ONLY while the item is open — it never resurrects a
     // resolved/archived item nor clobbers fields under an in-flight action.
+    //
+    // Storm guard (change detection): the UPDATE additionally fires only when a
+    // meaningful field actually differs. Without this, every re-emit rewrote the
+    // row (deliveredAt is always-new) and published hub.item.changed +
+    // hub.counts.changed — and because GET /sidebar-badges scan-materializes
+    // legacy alerts on read while the client refetches badges on exactly those
+    // events, one open browser tab + one failed latest-run turned into a
+    // self-sustaining ~125Hz client<->server feedback storm (millions of no-op
+    // row rewrites). deliveredAt is deliberately EXCLUDED from the check: it is
+    // `?? new Date()` and would defeat it.
     const inserted = await conn
       .insert(hubItems)
       .values(values)
       .onConflictDoUpdate({
         target: hubItems.sourceUniqueKey,
-        setWhere: sql`${hubItems.status} = 'open'`,
+        setWhere: sql`${hubItems.status} = 'open' AND (
+          ${hubItems.title} IS DISTINCT FROM ${values.title}
+          OR ${hubItems.message} IS DISTINCT FROM ${values.message}
+          OR ${hubItems.summary} IS DISTINCT FROM ${values.summary}
+          OR ${hubItems.relatedEntityType} IS DISTINCT FROM ${values.relatedEntityType}
+          OR ${hubItems.relatedEntityId} IS DISTINCT FROM ${values.relatedEntityId}
+          OR ${hubItems.deliveryAttempts} IS DISTINCT FROM ${values.deliveryAttempts}
+          OR ${hubItems.deliveryError} IS DISTINCT FROM ${values.deliveryError}
+          OR ${hubItems.priority} IS DISTINCT FROM ${values.priority}
+          OR ${hubItems.userId} IS DISTINCT FROM ${values.userId}
+          OR ${hubItems.ownerUserId} IS DISTINCT FROM ${values.ownerUserId}
+          OR ${hubItems.ownerPool} IS DISTINCT FROM ${values.ownerPool}
+          OR ${hubItems.slaAt} IS DISTINCT FROM ${values.slaAt}
+          OR ${hubItems.sourcePermissionRevision} IS DISTINCT FROM ${values.sourcePermissionRevision}
+        )`,
         set: {
           title: values.title,
           message: values.message,
@@ -453,9 +525,11 @@ export function hubItemsService(db: Db) {
         },
       })
       .returning();
-    // A conflict on a NON-open row updates nothing (setWhere false) → RETURNING
-    // is empty; re-select the existing row so callers always get the current item.
+    // A conflict where setWhere is false — the row is NON-open, or nothing
+    // meaningful changed — updates nothing → RETURNING is empty; re-select the
+    // existing row so callers always get the current item.
     let row = inserted[0];
+    const changed = Boolean(row);
     if (!row) {
       row = await conn
         .select()
@@ -468,11 +542,16 @@ export function hubItemsService(db: Db) {
     // (empty RETURNING) and the re-select, `row` is undefined — never return an
     // id-less `{ lane }` object to callers (P2-5).
     if (!row) throw conflict("Hub item vanished during emit; retry.");
-    await invalidateCounterSnapshotsForCompany(a.companyId);
-    await queueDigestDeliveries(conn, row, !a.executor);
-    if (!a.executor) {
-      publishHubItemChanged(row, "created");
-      publishHubCountsChanged(a.companyId, "item_changed");
+    // Side-effects only when the emit actually inserted or changed something —
+    // a no-op re-emit must not invalidate counters, queue digests, or publish
+    // live events (the storm guard above).
+    if (changed) {
+      await invalidateCounterSnapshotsForCompany(a.companyId);
+      await queueDigestDeliveries(conn, row, !a.executor);
+      if (!a.executor) {
+        publishHubItemChanged(row, "created");
+        publishHubCountsChanged(a.companyId, "item_changed");
+      }
     }
     return { ...row, lane: laneForSemanticType(a.semanticType) };
   }
@@ -484,9 +563,10 @@ export function hubItemsService(db: Db) {
   // (TDZ at reconcile()-call time). Function declarations hoist; consts do not.
 
   // Version-guarded status transition + audit row, written in ONE transaction.
-  // Shared by recordAndAct (manual) and reconcile (system) so a system transition
-  // and a concurrent user action can't lost-update each other — both go through
-  // the same `version`-guarded UPDATE. Throws `conflict` (409) on a version miss.
+  // Used by reconcile (system close) so a system transition and a concurrent
+  // user action (via recordLifecycleAction, which shares the same `version`-
+  // guarded UPDATE idiom) can't lost-update each other. Throws `conflict` (409)
+  // on a version miss.
   async function applyGuardedTransition(
     tx: Db,
     item: { id: string; companyId: string; status: string; version: number; resolvedAt: Date | null; archivedAt: Date | null },
@@ -745,6 +825,7 @@ export function hubItemsService(db: Db) {
       hubItemId: args.hubItemId,
       actorUserId: args.actorUserId,
       role: args.role,
+      status: "any",
     });
     if (!visibleItem) throw notFound("Hub item not found");
 
@@ -843,6 +924,43 @@ export function hubItemsService(db: Db) {
       .orderBy(desc(hubAudit.createdAt));
   }
 
+  // Mirror-model source-class predicate (R3 + H1): does this semantic type
+  // mirror a backing source decision (approval / join request / runtime prompt)?
+  function isSourceMirroredHubType(semanticType: string | null): boolean {
+    return semanticType != null && (HUB_SOURCE_MIRRORED_TYPES as readonly string[]).includes(semanticType);
+  }
+
+  // Returns true when the mirrored item's source is STILL PENDING (→ block
+  // resolve/archive). SOURCE_RECONCILERS is referenced at call time (assigned
+  // before any exported method runs), mirroring how reconcile() consumes it.
+  async function isMirroredSourcePending(
+    companyId: string,
+    semanticType: string,
+    sourceType: string | null,
+    sourceId: string,
+  ): Promise<boolean> {
+    // agent_runtime_decision: bespoke check on the answerable window. Do NOT use
+    // the reconciler's `terminal` flag — answered/relay_failed stay clearable.
+    if (semanticType === "agent_runtime_decision") {
+      const row = await db
+        .select({ status: agentRuntimeDecisions.status })
+        .from(agentRuntimeDecisions)
+        .where(
+          and(eq(agentRuntimeDecisions.id, sourceId), eq(agentRuntimeDecisions.companyId, companyId)),
+        )
+        .limit(1)
+        .then((r) => r[0] ?? null);
+      if (!row) return false; // gone source → fail-open (allow clear)
+      return RUNTIME_DECISION_ANSWERABLE_STATUSES.has(row.status);
+    }
+    // approval_request / join_request: block while the source reconciler reports
+    // non-terminal. Missing reconciler or gone source → fail-open (allow).
+    const reconciler = sourceType ? SOURCE_RECONCILERS[sourceType] : undefined;
+    if (!reconciler) return false;
+    const snapshot = await reconciler(companyId, sourceId);
+    return snapshot.terminal === false;
+  }
+
   // Action with optimistic concurrency + audit-before-side-effect (§5/§6/§10).
   async function recordLifecycleAction(args: {
     companyId: string;
@@ -889,6 +1007,44 @@ export function hubItemsService(db: Db) {
       throw conflict("This item is no longer open. Reload and retry.", {
         currentVersion: current.version,
       });
+    }
+
+    // Mirror-model guard (R3 + H1): resolve/archive on a source-backed decision
+    // item whose source is still pending is a MIRROR violation — it hides a live,
+    // undecided decision from every board user with zero effect on the source.
+    // Reject; the founder must decide at the source (approve/reject the approval,
+    // answer the runtime prompt) or use personal Dismiss (per-user, safety-netted).
+    // TWO source classes, DIFFERENT pending checks (P1-3):
+    //  - approval_request / join_request → block while the source reconciler
+    //    reports non-terminal (still pending). A terminal or gone source →
+    //    allow (fail-open; QA seed rows + already-decided rows stay cleanable).
+    //  - agent_runtime_decision → block ONLY while status ∈ {created, shown}.
+    //    answered/relay_failed rows MUST stay clearable (they're the dead-run
+    //    stall rows Task 5 sweeps) — do NOT use the reconciler's generic
+    //    `terminal` flag here, which marks them non-terminal and would collide.
+    // dismiss/snooze (personal state) and claim/release never reach this guard.
+    if (
+      (args.action === "resolve" || args.action === "archive") &&
+      isSourceMirroredHubType(current.semanticType) &&
+      current.semanticType &&
+      current.sourceId
+    ) {
+      const stillPending = await isMirroredSourcePending(
+        current.companyId,
+        current.semanticType,
+        current.sourceType,
+        current.sourceId,
+      );
+      if (stillPending) {
+        throw conflict(
+          "Decide it at the source — approve/reject the approval or answer the runtime prompt (or Dismiss it for yourself). It cannot be resolved or archived while the decision is still pending.",
+          {
+            sourceStillPending: true,
+            sourceType: current.sourceType,
+            sourceId: current.sourceId,
+          },
+        );
+      }
     }
 
     if (
@@ -1216,101 +1372,10 @@ export function hubItemsService(db: Db) {
     return { bulkId, summary, results };
   }
 
-  async function recordAndAct(args: {
-    companyId: string;
-    hubItemId: string;
-    action: string;
-    expectedVersion: number;
-    actorType: ActivityActorType;
-    actorId: string;
-    actorIsFounder: boolean; // route resolves via permissionService (founder OR board)
-    authorityBasis?: string;
-    reason?: string;
-    idempotencyKey?: string;
-    nextStatus: "resolved" | "archived" | "snoozed";
-    // EXTERNAL/irreversible source-API relay; runs AFTER commit.
-    sideEffect?: () => Promise<{ irreversibleSideEffects?: unknown; relayResult?: unknown }>;
-  }) {
-    const action = args.nextStatus === "resolved" ? "resolve" : "archive";
-    const result = await recordLifecycleAction({
-      companyId: args.companyId,
-      hubItemId: args.hubItemId,
-      action,
-      expectedVersion: args.expectedVersion,
-      actorType: args.actorType,
-      actorId: args.actorId,
-      actorIsFounder: args.actorIsFounder,
-      authorityBasis: args.authorityBasis,
-      reason: args.reason,
-      idempotencyKey: args.idempotencyKey,
-      sideEffect: args.sideEffect,
-    });
-    return result.item;
-
-    const current = await db
-      .select()
-      .from(hubItems)
-      .where(and(eq(hubItems.id, args.hubItemId), eq(hubItems.companyId, args.companyId)))
-      .limit(1)
-      .then((r) => r[0]);
-    if (!current) throw notFound("Hub item not found");
-
-    // AUTHORITY gate (§7): gated by the item TYPE's authority, not by ownership.
-    // An Owner who lacks Authority is rejected HERE (the action layer), not just
-    // at render — they must Route/Escalate instead.
-    if (
-      authorityForSemanticType(current.semanticType as HubSemanticType) === "founder" &&
-      !args.actorIsFounder
-    ) {
-      throw forbidden("This decision requires founder/board authority — route or escalate it.");
-    }
-
-    // Phase 1 — atomic DB transaction: idempotency + version-guarded transition +
-    // immutable audit. The audit is DURABLE before any external side-effect.
-    const committed = await db.transaction(async (txRaw) => {
-      const tx = txRaw as unknown as Db;
-      if (args.idempotencyKey) {
-        const dup = await tx
-          .select({ id: hubAudit.id })
-          .from(hubAudit)
-          .where(
-            and(
-              eq(hubAudit.companyId, args.companyId),
-              eq(hubAudit.idempotencyKey, args.idempotencyKey),
-            ),
-          )
-          .limit(1)
-          .then((r) => r[0]);
-        if (dup) return { item: current, replayed: true as const };
-      }
-      // Guard on the CLIENT's expectedVersion: a stale token (≠ current.version)
-      // misses the WHERE and yields a 409 — same idiom as the agents.ts UPDATE.
-      // priorState records `current` (the true prior state) regardless of guard.
-      const updated = await applyGuardedTransition(
-        tx,
-        current,
-        args.nextStatus,
-        {
-          actorType: args.actorType,
-          actorId: args.actorId,
-          action: args.action,
-          authorityBasis: args.authorityBasis ?? null,
-          reason: args.reason ?? null,
-          idempotencyKey: args.idempotencyKey ?? null,
-        },
-        args.expectedVersion,
-      );
-      return { item: updated, replayed: false as const };
-    });
-    if (committed.replayed) return committed.item; // no second side-effect on replay
-
-    // Phase 2 — EXTERNAL/irreversible source-API side-effect AFTER commit. The
-    // audit row is already durable, so a relay/source failure is recoverable (the
-    // sweeper reconciles), NEVER an erased decision record. DB-only effects belong
-    // inside Phase 1's transaction instead.
-    await args.sideEffect?.();
-    return committed.item;
-  }
+  // NOTE: the former `recordAndAct` wrapper was an unreachable duplicate of
+  // `recordLifecycleAction` (its body `return`ed after delegating, leaving ~62
+  // dead lines) — deleted 2026-07-04 (R3). All production callers and tests use
+  // `recordLifecycleAction` directly.
 
   // ── Reconciliation sweeper (sources = truth) ────────────────────────────────
 
@@ -1436,6 +1501,32 @@ export function hubItemsService(db: Db) {
     };
   };
 
+  // discussion_entry backs the extraction_failed item (Task 10, D3). It is
+  // terminal (→ close) once the entry recovers — extractionStatus is no longer
+  // 'failed' (reprocess resets to 'pending'; success sets 'completed') — or the
+  // entry is gone. Joined to discussions for the company scope (the entry table
+  // has no companyId column). Fail-open on a missing row (safe: close).
+  const reconcileDiscussionEntry: SourceReconciler = async (companyId, sourceId) => {
+    const row = await db
+      .select({
+        extractionStatus: discussionEntries.extractionStatus,
+        // discussion_entries has no updatedAt column — use createdAt as the
+        // (stable) permission revision anchor.
+        createdAt: discussionEntries.createdAt,
+      })
+      .from(discussionEntries)
+      .innerJoin(discussions, eq(discussionEntries.discussionId, discussions.id))
+      .where(and(eq(discussionEntries.id, sourceId), eq(discussions.companyId, companyId)))
+      .limit(1)
+      .then((r) => r[0] ?? null);
+    if (!row) return { terminal: true, summary: null, permissionRevision: null };
+    return {
+      terminal: row.extractionStatus !== "failed",
+      summary: null,
+      permissionRevision: row.createdAt ? new Date(row.createdAt).toISOString() : null,
+    };
+  };
+
   const reconcileSuggestion: SourceReconciler = async (companyId, sourceId) => {
     const row = await db
       .select({
@@ -1496,14 +1587,64 @@ export function hubItemsService(db: Db) {
     return runtimeDecisionSourceSnapshot(row);
   };
 
+  // company_budget (H3): the budget_alert item's sourceId IS the companyId. The
+  // producer only re-fires while utilization stays >= 80%, so nothing ever closes
+  // the item when the budget is cleared/raised, spend resets on month rollover, or
+  // utilization simply drops — and the last-emitted "% used" freezes stale. This
+  // reconciler recomputes month-to-date utilization the SAME way the producer does
+  // (spend since the first of the current month / budgetMonthlyCents) and:
+  //   - terminal (close) when the company is gone, budget <= 0 (unset/cleared), or
+  //     utilization < 80% (symmetric with the >= 80% producer threshold; month
+  //     rollover closes naturally since cost_events spend resets).
+  //   - otherwise NON-terminal with summary = formatBudgetAlertSummary(...) so the
+  //     generic heal path refreshes a stale % IN PLACE. Because the producer and
+  //     this reconciler share that formatter, a steady-state summary is byte-
+  //     identical → the change-gated heal is a no-op (no write, no version bump).
+  // permissionRevision = companies.updatedAt (matches the producer's
+  // sourcePermissionRevision) so the strictly-newer revision compare only writes
+  // on real budget edits — returning now() here would force a write every sweep.
+  const reconcileCompanyBudget: SourceReconciler = async (companyId, sourceId) => {
+    const company = await db
+      .select({
+        budgetMonthlyCents: companies.budgetMonthlyCents,
+        updatedAt: companies.updatedAt,
+      })
+      .from(companies)
+      .where(eq(companies.id, sourceId))
+      .limit(1)
+      .then((r) => r[0] ?? null);
+    if (!company || company.budgetMonthlyCents <= 0) {
+      return { terminal: true, summary: null, permissionRevision: null };
+    }
+    const permissionRevision = company.updatedAt ? new Date(company.updatedAt).toISOString() : null;
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const [{ monthSpend }] = await db
+      .select({ monthSpend: sql<number>`coalesce(sum(${costEvents.costCents}), 0)::int` })
+      .from(costEvents)
+      .where(and(eq(costEvents.companyId, companyId), gte(costEvents.occurredAt, monthStart)));
+    const monthSpendCents = Number(monthSpend ?? 0);
+    const monthUtilizationPercent = (monthSpendCents / company.budgetMonthlyCents) * 100;
+    if (monthUtilizationPercent < BUDGET_WARNING_PERCENT) {
+      return { terminal: true, summary: null, permissionRevision };
+    }
+    return {
+      terminal: false,
+      summary: formatBudgetAlertSummary(monthSpendCents, company.budgetMonthlyCents),
+      permissionRevision,
+    };
+  };
+
   const SOURCE_RECONCILERS: Record<string, SourceReconciler> = {
     approval: reconcileApproval,
     heartbeat_run: reconcileHeartbeatRun,
     runtime_decision: reconcileRuntimeDecision,
     join_request: reconcileJoinRequest,
     discussion: reconcileDiscussion,
+    discussion_entry: reconcileDiscussionEntry,
     suggestion: reconcileSuggestion,
     issue: reconcileIssue,
+    company_budget: reconcileCompanyBudget,
   };
 
   // Sweep open hub items of `sourceType`: close terminal/gone-source items via the
@@ -1524,7 +1665,21 @@ export function hubItemsService(db: Db) {
         ? "stale_work"
         : opts.sourceType === "discussion"
           ? "discussion_pending"
-          : null;
+          // The expiry path emits an `agent_error` follow-up with the SAME
+          // sourceType/sourceId as the waiting-lane item (BUG-2, D105/D106
+          // amendment). Scope the sweep to the decision item's semanticType so
+          // it never instantly archives that follow-up.
+          : opts.sourceType === "runtime_decision"
+            ? "agent_runtime_decision"
+            // company_budget carries exactly one semanticType (budget_alert);
+            // scope for symmetry with the other multi-meaning sourceTypes (H3).
+            : opts.sourceType === "company_budget"
+              ? "budget_alert"
+              // discussion_entry backs exactly the extraction_failed item
+              // (Task 10, D3); scope so the sweep only closes that row.
+              : opts.sourceType === "discussion_entry"
+                ? "extraction_failed"
+                : null;
 
     const conditions = [
       eq(hubItems.companyId, companyId),
@@ -1557,17 +1712,20 @@ export function hubItemsService(db: Db) {
         // concurrent user action bumps the version → this UPDATE 409s; we swallow
         // it and let the next sweep reconcile (sources stay truth).
         try {
-          await runTransaction(async (tx) => {
-            await applyGuardedTransition(tx, item, "archived", {
+          const closedItem = await runTransaction(async (tx) =>
+            applyGuardedTransition(tx, item, "archived", {
               actorType: "system",
               actorId: "reconciler",
               action: "reconcile_close",
               authorityBasis: "system_reconciliation",
               reason: `source ${opts.sourceType} is gone/terminal`,
               sourceRevision: snap.permissionRevision,
-            });
-          });
+            }),
+          );
           closed += 1;
+          // Realtime close (BUG-2): push the archive so the item leaves the
+          // open lane without a hub reload.
+          publishHubItemChanged(closedItem, "archived");
         } catch (err) {
           // 409 from a concurrent action → skip; anything else rethrows.
           if (!(err instanceof Error) || (err as { status?: number }).status !== 409) throw err;
@@ -1636,6 +1794,8 @@ export function hubItemsService(db: Db) {
       `[hub.reconcile] company=${companyId} source=${opts.sourceType} healed=${healed} (closed=${closed} refreshed=${refreshed})`,
     );
     if (healed > 0) await invalidateCounterSnapshotsForCompany(companyId);
+    // ONE counts broadcast per sweep, not per closed row (badge refetch fan-in).
+    if (closed > 0) publishHubCountsChanged(companyId, "item_changed");
     return { healed, closed, refreshed };
   }
 
@@ -1697,6 +1857,73 @@ export function hubItemsService(db: Db) {
     return { open: row?.open ?? 0, unread: row?.unread ?? 0 };
   }
 
+  // Per-lane count of OPEN items this principal has personally hidden
+  // (dismissed OR actively snoozed) — the inverse of the `counts` filter, which
+  // subtracts exactly these rows. Powers the waiting-lane "N hidden" chip (the
+  // dismiss-hole safety net now that /approvals is out of the nav). Kept as a
+  // dedicated lane-scoped query rather than widening the `{open,unread}` snapshot
+  // cache: the cache is company/user-global and typed `{open,unread}`, whereas
+  // this is lane-scoped and personal — the cheaper, lower-risk path. Runs off the
+  // same partial `hub_items_open_idx` and reuses the exact RBAC scope `counts`
+  // builds, so it can never disagree with the list. Per-actor by construction
+  // (hub_item_user_state keyed by principalId) → only the current user's rows.
+  async function hiddenCount(
+    companyId: string,
+    actorUserId: string,
+    lane: HubLane,
+    role?: UserRole,
+  ): Promise<number> {
+    const effectiveRole =
+      role ?? (await permissionService(db).getEffectiveRole(companyId, actorUserId));
+
+    const conds = [eq(hubItems.companyId, companyId), eq(hubItems.status, "open")];
+
+    if (effectiveRole !== "founder") {
+      const ownedCond = eq(hubItems.ownerUserId, actorUserId);
+      if (effectiveRole === "team_lead") {
+        const leadDepts = await permissionService(db).getTeamLeadDepartments(
+          companyId,
+          actorUserId,
+        );
+        const scopeCond = leadDepts.length > 0 ? inArray(hubItems.scopeKey, leadDepts) : undefined;
+        conds.push(scopeCond ? or(ownedCond, scopeCond)! : ownedCond);
+      } else {
+        conds.push(ownedCond);
+      }
+    }
+
+    // Lane filter (derived from semanticType — no lane column), mirroring `query`.
+    conds.push(inArray(hubItems.semanticType, semanticTypesForLane(lane)));
+
+    // Hidden = dismissed OR still-active snooze for THIS principal. The inner-join
+    // is deliberate: rows with no user-state row (or a state row that is neither
+    // dismissed nor snoozed) are visible, not hidden. Use Drizzle operators (not a
+    // raw `sql` Date interpolation) so the postgres driver serializes the Date —
+    // `counts` does the same via `lte(snoozedUntil, now)`.
+    const now = new Date();
+    conds.push(
+      or(
+        isNotNull(hubItemUserState.dismissedAt),
+        and(isNotNull(hubItemUserState.snoozedUntil), gt(hubItemUserState.snoozedUntil, now)),
+      )!,
+    );
+
+    const [row] = await db
+      .select({ hidden: sql<number>`count(*)::int` })
+      .from(hubItems)
+      .innerJoin(
+        hubItemUserState,
+        and(
+          eq(hubItemUserState.hubItemId, hubItems.id),
+          eq(hubItemUserState.principalType, "user"),
+          eq(hubItemUserState.principalId, actorUserId),
+        ),
+      )
+      .where(and(...conds));
+
+    return row?.hidden ?? 0;
+  }
+
   // Public surface (declared last so every const above has evaluated).
   return {
     emit,
@@ -1710,8 +1937,8 @@ export function hubItemsService(db: Db) {
     recordLifecycleAction,
     undoAction,
     bulkAction,
-    recordAndAct,
     reconcile,
     counts,
+    hiddenCount,
   };
 }

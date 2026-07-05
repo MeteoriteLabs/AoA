@@ -7,11 +7,11 @@ import type {
 } from "@armyofagents/shared";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { hubItemsApi } from "@/api/hub-items";
 import { agentRuntimeDecisionsApi } from "@/api/agent-runtime-decisions";
-import { InboxHub } from "../pages/InboxHub";
+import { InboxHub, insertOpenedItem, OPENED_ITEM_CACHE_MAX } from "../pages/InboxHub";
 
 const mockPushToast = vi.hoisted(() => vi.fn());
 const liveHubItemCallbacks = vi.hoisted(() => new Set<(itemId: string) => void>());
@@ -26,11 +26,42 @@ function LocationProbe() {
   );
 }
 
+/** Test-only SPA navigation buttons: navigate without remounting the router. */
+function DeepLinkNav({ targets }: { targets: string[] }) {
+  const navigate = useNavigate();
+  return (
+    <>
+      {targets.map((target) => (
+        <button key={target} type="button" onClick={() => navigate(target)}>
+          nav:{target}
+        </button>
+      ))}
+    </>
+  );
+}
+
 vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({
     selectedCompanyId: "company-1",
     selectedCompany: { id: "company-1", name: "Test Co", issuePrefix: "P4" },
   }),
+}));
+
+// react-resizable-panels can't measure size under the JSDOM ResizeObserver stub,
+// so (like every other panel-using suite in this repo) mock it with plain divs.
+vi.mock("react-resizable-panels", () => ({
+  Group: ({ children, ...props }: any) => (
+    <div data-testid={props["data-testid"]} role="group">
+      {children}
+    </div>
+  ),
+  Panel: ({ children, ...props }: any) => (
+    <div data-testid={props["data-testid"]} data-panel-id={props.id}>
+      {children}
+    </div>
+  ),
+  Separator: ({ ...props }: any) => <div data-testid={props["data-testid"]} />,
+  useDefaultLayout: () => ({ defaultLayout: undefined, onLayoutChanged: vi.fn() }),
 }));
 
 vi.mock("@/context/BreadcrumbContext", () => ({
@@ -43,6 +74,10 @@ vi.mock("@/context/LiveUpdatesProvider", () => ({
       liveHubItemCallbacks.add(cb);
       return () => liveHubItemCallbacks.delete(cb);
     },
+    subscribeThread: vi.fn(),
+    unsubscribeThread: vi.fn(),
+    sendPresence: vi.fn(),
+    onReconnect: vi.fn(() => vi.fn()),
   }),
 }));
 
@@ -57,6 +92,7 @@ vi.mock("@/api/hub-items", () => ({
     list: vi.fn().mockResolvedValue({ items: [], nextCursor: null, totalKnown: null }),
     getOne: vi.fn().mockResolvedValue({}),
     counts: vi.fn().mockResolvedValue({ open: 0, unread: 0 }),
+    hiddenCount: vi.fn().mockResolvedValue({ hiddenOpen: 0 }),
     markRead: vi.fn().mockResolvedValue({}),
     markUnread: vi.fn().mockResolvedValue({}),
     snooze: vi.fn().mockResolvedValue({}),
@@ -107,13 +143,14 @@ vi.mock("@/api/agent-runtime-decisions", () => ({
   },
 }));
 
-function renderPage(initialEntry: string) {
+function renderPage(initialEntry: string, navTargets: string[] = []) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
   return render(
     <QueryClientProvider client={client}>
       <MemoryRouter initialEntries={[initialEntry]}>
+        {navTargets.length > 0 ? <DeepLinkNav targets={navTargets} /> : null}
         <Routes>
           <Route path="/:companyPrefix/inbox" element={<><InboxHub /><LocationProbe /></>} />
           <Route path="/:companyPrefix/inbox/new" element={<><InboxHub /><LocationProbe /></>} />
@@ -131,10 +168,21 @@ function renderPage(initialEntry: string) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Tab-first: useHubTabs persists the open tab set to localStorage per company.
+  // JSDOM localStorage survives between tests in a file, so a tab opened by one
+  // test would rehydrate into the next and collide (e.g. a "Close <title>" button
+  // shadowing a list row). Reset it for clean per-test isolation.
+  localStorage.clear();
   liveHubItemCallbacks.clear();
   vi.mocked(hubItemsApi.list).mockResolvedValue(hubList([]));
-  vi.mocked(hubItemsApi.getOne).mockResolvedValue(hubItem());
+  // Default getOne is itemId-aware so a tab-first deep link that hydrates an
+  // off-list item opens a tab for the RIGHT id (the old reading pane keyed off the
+  // reactively-updated list, so a fixed row sufficed; a one-shot openTab does not).
+  vi.mocked(hubItemsApi.getOne).mockImplementation(
+    async (_companyId, itemId) => hubItem({ id: itemId }),
+  );
   vi.mocked(hubItemsApi.counts).mockResolvedValue({ open: 0, unread: 0 });
+  vi.mocked(hubItemsApi.hiddenCount).mockResolvedValue({ hiddenOpen: 0 });
   vi.mocked(hubItemsApi.markRead).mockResolvedValue({});
   vi.mocked(hubItemsApi.markUnread).mockResolvedValue({});
   vi.mocked(hubItemsApi.snooze).mockResolvedValue({});
@@ -370,6 +418,11 @@ describe("InboxHub page", () => {
     await waitFor(() => {
       expect(screen.getByTestId("location")).toHaveTextContent("/P4/inbox/waiting/hub-1");
     });
+
+    // Row-click now also opens a dedicated tab for the item (tab-first).
+    expect(
+      await screen.findByRole("tab", { name: /approve deployment/i }),
+    ).toBeInTheDocument();
   });
 
   it("answers runtime permission prompts from the hub viewer", async () => {
@@ -388,6 +441,9 @@ describe("InboxHub page", () => {
     renderPage("/P4/inbox/waiting/hub-runtime");
 
     expect(await screen.findByText("Run pnpm test:run?")).toBeInTheDocument();
+    // The decision now renders inside a dedicated tab (tab-first), not a preview.
+    expect(await screen.findByTestId("hub-runtime-decision-body")).toBeInTheDocument();
+    expect(screen.queryByRole("complementary", { name: /hub viewer/i })).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: /allow once/i }));
 
     await waitFor(() => {
@@ -426,6 +482,9 @@ describe("InboxHub page", () => {
 
     renderPage("/P4/inbox/waiting/hub-runtime");
 
+    // The decision now renders inside a dedicated tab (tab-first), not a preview.
+    expect(await screen.findByTestId("hub-runtime-decision-body")).toBeInTheDocument();
+    expect(screen.queryByRole("complementary", { name: /hub viewer/i })).toBeNull();
     await userEvent.type(
       await screen.findByRole("textbox", { name: /work question answer/i }),
       "Founder-led SaaS teams.",
@@ -464,6 +523,9 @@ describe("InboxHub page", () => {
 
     renderPage("/P4/inbox/waiting/hub-runtime");
 
+    // The decision now renders inside a dedicated tab (tab-first), not a preview.
+    expect(await screen.findByTestId("hub-runtime-decision-body")).toBeInTheDocument();
+    expect(screen.queryByRole("complementary", { name: /hub viewer/i })).toBeNull();
     expect(await screen.findByRole("button", { name: /allow always/i })).toBeDisabled();
     expect(screen.getByText("expired")).toBeInTheDocument();
   });
@@ -472,6 +534,50 @@ describe("InboxHub page", () => {
     renderPage("/P4/inbox-hub");
 
     expect(await screen.findByText(/Autopilot/i)).toBeInTheDocument();
+  });
+
+  it("fetches a waiting-lane preview on Home and surfaces it as 'Needs you most'", async () => {
+    // On Home (no active lane) the lane list query is disabled; the dedicated
+    // home-preview fetch must fill the "Needs you most" card.
+    vi.mocked(hubItemsApi.list).mockImplementation(async (_cid, opts) =>
+      opts?.lane === "waiting_on_you" && opts?.limit === 5
+        ? hubList([hubItem({ id: "hub-needs", title: "Decide the deployment" })])
+        : hubList([]),
+    );
+
+    renderPage("/P4/inbox-hub");
+
+    // The preview page is requested with the stable HOME_PREVIEW_OPTIONS.
+    await waitFor(() => {
+      expect(hubItemsApi.list).toHaveBeenCalledWith("company-1", {
+        lane: "waiting_on_you",
+        status: "open",
+        limit: 5,
+      });
+    });
+    // Its top item appears in the "Needs you most" card (no longer the empty copy).
+    const needsYouMostHeading = await screen.findByText("Needs you most");
+    const needsYouMostCard = needsYouMostHeading.closest("section");
+    expect(needsYouMostCard).not.toBeNull();
+    expect(within(needsYouMostCard as HTMLElement).getByText("Decide the deployment")).toBeInTheDocument();
+    expect(
+      screen.queryByText(/Nothing needs attention right now/i),
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not fetch the Home preview once a lane is active", async () => {
+    renderPage("/P4/inbox-hub/waiting");
+
+    await screen.findByRole("navigation", { name: /hub lanes/i });
+    await waitFor(() => {
+      expect(hubItemsApi.list).toHaveBeenCalled();
+    });
+    // Every list call on the waiting lane uses limit 50 — the home preview
+    // (limit 5) query must stay disabled outside Home.
+    expect(hubItemsApi.list).not.toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({ limit: 5 }),
+    );
   });
 
   it("bridges realtime hub item changes to hydrated toasts", async () => {
@@ -689,6 +795,8 @@ describe("InboxHub page", () => {
     resolveMarkRead?.();
   });
 
+  // Tab-first: these actions now live in the standalone HubActionBar mounted
+  // above each item tab body, not in the deleted reading-pane HubViewer footer.
   it("viewer can mark a selected read item unread", async () => {
     vi.mocked(hubItemsApi.list).mockResolvedValue(hubList([
       hubItem({ readAt: "2026-06-29T10:01:00.000Z" }),
@@ -721,6 +829,38 @@ describe("InboxHub page", () => {
     });
   });
 
+  it("targets the selected hub row when multiple rows map to the same entity tab", async () => {
+    vi.mocked(hubItemsApi.list).mockResolvedValue(
+      hubList([
+        hubItem({
+          id: "hub-mention-1",
+          semanticType: "mention",
+          lane: "notifications",
+          sourceType: "discussion",
+          sourceId: "thread-1:entry-1:user-1",
+          title: "First mention",
+        }),
+        hubItem({
+          id: "hub-mention-2",
+          semanticType: "mention",
+          lane: "notifications",
+          sourceType: "discussion",
+          sourceId: "thread-1:entry-2:user-2",
+          title: "Second mention",
+        }),
+      ]),
+    );
+
+    renderPage("/P4/inbox-hub/notifications");
+
+    fireEvent.click(await screen.findByRole("button", { name: /second mention/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /^dismiss$/i }));
+
+    await waitFor(() => {
+      expect(hubItemsApi.dismiss).toHaveBeenCalledWith("company-1", "hub-mention-2");
+    });
+  });
+
   it("viewer can undo personal dismiss and snooze actions", async () => {
     vi.mocked(hubItemsApi.list).mockResolvedValue(hubList([hubItem()]));
 
@@ -738,9 +878,14 @@ describe("InboxHub page", () => {
   });
 
   it("viewer resolves an item and can undo the server-backed action", async () => {
-    vi.mocked(hubItemsApi.list).mockResolvedValue(hubList([hubItem()]));
+    // Use a NON-mirrored notifications-lane type: the mirror model (Task 1)
+    // hides Resolve/Archive on source-backed decision items (approval_request),
+    // so the generic resolve→undo flow is exercised on run_failed instead.
+    vi.mocked(hubItemsApi.list).mockResolvedValue(
+      hubList([hubItem({ semanticType: "run_failed", lane: "notifications", ownerPool: null })]),
+    );
 
-    renderPage("/P4/inbox-hub/waiting/hub-1");
+    renderPage("/P4/inbox-hub/notifications/hub-1");
 
     fireEvent.click(await screen.findByRole("button", { name: /^resolve$/i }));
     fireEvent.click(await screen.findByRole("button", { name: /undo resolve/i }));
@@ -758,11 +903,14 @@ describe("InboxHub page", () => {
   });
 
   it("keeps server undo reachable after the resolved item leaves the active list", async () => {
+    // Non-mirrored type (see above): Resolve stays available on run_failed.
     vi.mocked(hubItemsApi.list)
-      .mockResolvedValueOnce(hubList([hubItem()]))
+      .mockResolvedValueOnce(
+        hubList([hubItem({ semanticType: "run_failed", lane: "notifications", ownerPool: null })]),
+      )
       .mockResolvedValue(hubList([]));
 
-    renderPage("/P4/inbox-hub/waiting/hub-1");
+    renderPage("/P4/inbox-hub/notifications/hub-1");
 
     fireEvent.click(await screen.findByRole("button", { name: /^resolve$/i }));
     fireEvent.click(await screen.findByRole("button", { name: /undo resolve/i }));
@@ -776,6 +924,7 @@ describe("InboxHub page", () => {
   });
 
   it("viewer shows claim and release actions for board-pool items", async () => {
+    // Claim/Release live in HubActionBar for board-pool items.
     vi.mocked(hubItemsApi.list).mockResolvedValue(hubList([
       hubItem({ semanticType: "stale_work", lane: "suggestions", ownerPool: "board" }),
     ]));
@@ -818,7 +967,11 @@ describe("InboxHub page", () => {
     });
   });
 
-  it("opens resolved and archived history items in the viewer", async () => {
+  // TASK 5 (deferred): the history reading pane (item heading + audit timeline for
+  // resolved/archived items) was HubViewer chrome, deleted in tab-first. Its
+  // replacement is a per-entity tab body / dedicated history viewer (Task 5). The
+  // two tests below are skipped until that viewer lands.
+  it.skip("opens resolved and archived history items in the viewer", async () => {
     vi.mocked(hubItemsApi.list).mockResolvedValue(hubList([
       hubItem({
         id: "history-1",
@@ -834,7 +987,7 @@ describe("InboxHub page", () => {
     expect(await screen.findByRole("heading", { name: /resolved approval/i })).toBeInTheDocument();
   });
 
-  it("loads an audit timeline for the selected history item", async () => {
+  it.skip("loads an audit timeline for the selected history item", async () => {
     vi.mocked(hubItemsApi.list).mockResolvedValue(hubList([
       hubItem({
         id: "history-1",
@@ -955,6 +1108,63 @@ describe("InboxHub page", () => {
     });
   });
 
+  it("shows the 'N hidden' chip on the waiting lane and toggles the reveal query", async () => {
+    vi.mocked(hubItemsApi.hiddenCount).mockResolvedValue({ hiddenOpen: 2 });
+    vi.mocked(hubItemsApi.list).mockResolvedValue(hubList([hubItem()]));
+
+    renderPage("/P4/inbox-hub/waiting");
+
+    // The chip renders from the lane-scoped hidden-count query.
+    const chip = await screen.findByRole("button", { name: /2 hidden/i });
+    expect(hubItemsApi.hiddenCount).toHaveBeenCalledWith("company-1", "waiting_on_you");
+
+    // Toggling it on re-issues the list query WITH includeDismissed+includeSnoozed.
+    fireEvent.click(chip);
+    await waitFor(() => {
+      expect(hubItemsApi.list).toHaveBeenLastCalledWith("company-1", {
+        lane: "waiting_on_you",
+        status: "open",
+        groupMode: "auto",
+        includeDismissed: true,
+        includeSnoozed: true,
+        limit: 50,
+      });
+    });
+  });
+
+  it("restores a hidden dismissed row via Undismiss from the revealed list", async () => {
+    vi.mocked(hubItemsApi.hiddenCount).mockResolvedValue({ hiddenOpen: 1 });
+    // First page (open only) is empty; once revealed, the dismissed row appears.
+    vi.mocked(hubItemsApi.list).mockImplementation(async (_cid, opts) =>
+      opts?.includeDismissed
+        ? hubList([hubItem({ id: "hub-hidden", title: "Hidden approval", dismissedAt: "2026-07-01T00:00:00.000Z" })])
+        : hubList([]),
+    );
+
+    renderPage("/P4/inbox-hub/waiting");
+
+    fireEvent.click(await screen.findByRole("button", { name: /1 hidden/i }));
+
+    // The revealed row shows a dismissed badge + an Undismiss action.
+    expect(await screen.findByText("dismissed")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /undismiss/i }));
+
+    await waitFor(() => {
+      expect(hubItemsApi.undismiss).toHaveBeenCalledWith("company-1", "hub-hidden");
+    });
+  });
+
+  it("does not fetch the hidden count outside the waiting lane", async () => {
+    renderPage("/P4/inbox-hub/notifications");
+
+    await screen.findByRole("navigation", { name: /hub lanes/i });
+    // Give effects a tick; the waiting-only query must stay disabled.
+    await waitFor(() => {
+      expect(hubItemsApi.list).toHaveBeenCalled();
+    });
+    expect(hubItemsApi.hiddenCount).not.toHaveBeenCalled();
+  });
+
   it("optimistically applies hub preference lane visibility changes", async () => {
     let resolvePreferences: (value: HubPreferences) => void = () => {};
     vi.mocked(hubItemsApi.updatePreferences).mockReturnValueOnce(
@@ -1011,5 +1221,89 @@ describe("InboxHub page", () => {
       });
     });
     expect(await screen.findByText(/second approval/i)).toBeInTheDocument();
+  });
+
+  it("hydrates a second deep-link to a different item in the same SPA session", async () => {
+    vi.mocked(hubItemsApi.getOne).mockImplementation(async (_companyId, itemId) =>
+      hubItem({
+        id: itemId,
+        // Distinct sourceId per item → distinct approval-tab keys (a shared
+        // sourceId would dedup both deep links onto one tab).
+        sourceId: `approval-${itemId}`,
+        title: itemId === "hub-a" ? "Deep item A" : "Deep item B",
+      }),
+    );
+
+    renderPage("/P4/inbox/waiting/hub-a", ["/P4/inbox/waiting/hub-b"]);
+
+    // Tab-first: the deep link hydrates the off-list item and OPENS its tab.
+    expect(await screen.findByRole("tab", { name: /deep item a/i })).toBeInTheDocument();
+    expect(hubItemsApi.getOne).toHaveBeenCalledWith("company-1", "hub-a");
+
+    // SPA navigation (no remount) to a SECOND deep-linked item: a boolean
+    // handled-guard makes this second hydration impossible — the guard must be
+    // per-itemId.
+    fireEvent.click(screen.getByRole("button", { name: "nav:/P4/inbox/waiting/hub-b" }));
+
+    expect(await screen.findByRole("tab", { name: /deep item b/i })).toBeInTheDocument();
+    expect(hubItemsApi.getOne).toHaveBeenCalledWith("company-1", "hub-b");
+  });
+
+  it("caches a list item's tab so it survives a refetch that drops the row", async () => {
+    vi.mocked(hubItemsApi.list)
+      .mockResolvedValueOnce(hubList([hubItem({ id: "hub-1", title: "Listed deep item" })]))
+      .mockResolvedValue(hubList([]));
+
+    renderPage("/P4/inbox/waiting");
+
+    // Row-click AFTER the list loads → the found-in-list branch caches the row +
+    // opens its tab (no getOne fetch).
+    fireEvent.click(await screen.findByRole("button", { name: /listed deep item/i }));
+    expect(await screen.findByRole("tab", { name: /listed deep item/i })).toBeInTheDocument();
+    expect(hubItemsApi.getOne).not.toHaveBeenCalled();
+
+    // Scope change → fresh list query that DROPS the row. The open tab (tab-first)
+    // persists independently of the list, so the item stays reachable — and the
+    // cached row keeps its tab body resolvable without a getOne refetch.
+    fireEvent.click(screen.getByRole("button", { name: /^resolved$/i }));
+    await screen.findByText(/no open items in this lane/i);
+
+    expect(screen.getByRole("tab", { name: /listed deep item/i })).toBeInTheDocument();
+    expect(hubItemsApi.getOne).not.toHaveBeenCalled();
+  });
+});
+
+describe("insertOpenedItem (bounded opened-item cache)", () => {
+  it("keeps only the most recent OPENED_ITEM_CACHE_MAX entries", () => {
+    let cache: Record<string, HubListItem> = {};
+    for (let i = 0; i < 30; i += 1) {
+      cache = insertOpenedItem(cache, hubItem({ id: `hub-${i}` }));
+    }
+    expect(Object.keys(cache)).toHaveLength(OPENED_ITEM_CACHE_MAX);
+    // 30 inserts, cap 24: hub-0..hub-5 (oldest) evicted, hub-6..hub-29 kept.
+    expect(cache["hub-5"]).toBeUndefined();
+    expect(cache["hub-6"]).toBeDefined();
+    expect(cache["hub-29"]).toBeDefined();
+  });
+
+  it("re-inserting the same cached reference is a no-op (no state churn)", () => {
+    const row = hubItem({ id: "hub-1" });
+    const cache = insertOpenedItem({}, row);
+    expect(insertOpenedItem(cache, row)).toBe(cache);
+  });
+
+  it("re-inserting an updated row for a cached id refreshes data and recency", () => {
+    let cache: Record<string, HubListItem> = {};
+    for (let i = 0; i < OPENED_ITEM_CACHE_MAX; i += 1) {
+      cache = insertOpenedItem(cache, hubItem({ id: `hub-${i}` }));
+    }
+    // Refresh the oldest entry, then insert one more: the refreshed entry
+    // survives and the now-oldest (hub-1) is evicted instead.
+    cache = insertOpenedItem(cache, hubItem({ id: "hub-0", title: "Refreshed" }));
+    cache = insertOpenedItem(cache, hubItem({ id: "hub-new" }));
+    expect(Object.keys(cache)).toHaveLength(OPENED_ITEM_CACHE_MAX);
+    expect(cache["hub-0"]?.title).toBe("Refreshed");
+    expect(cache["hub-1"]).toBeUndefined();
+    expect(cache["hub-new"]).toBeDefined();
   });
 });

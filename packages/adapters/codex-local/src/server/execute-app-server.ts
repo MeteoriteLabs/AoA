@@ -40,6 +40,10 @@ import { createAppServerResultAccumulator as realCreateAccumulator } from "./app
 import { handleApprovalRequest } from "./app-server/approval-bridge.js";
 import { stripCodexRolloutNoise } from "./parse-shared.js";
 import { appendWithCap } from "@armyofagents/adapter-utils/server-utils";
+import {
+  clearCodexModelConfigToml,
+  writeCodexModelConfigToml,
+} from "./codex-config-toml.js";
 
 /** Cap total forwarded bridged-stderr so a chatty session can't grow logs without bound. */
 const APP_SERVER_STDERR_FORWARD_CAP = 32 * 1024;
@@ -75,6 +79,16 @@ export interface RunAppServerTurnInput {
   onWarn?: (message: string) => void;
   /** Injectable deps for tests; real app-server implementations by default. */
   deps?: RunAppServerTurnDeps;
+  /**
+   * Resolved codex-compatible chat model for the supervised path. When set (and
+   * managedCodexHome is provided), written into <managedCodexHome>/config.toml
+   * before spawn so a ChatGPT-auth account does not fall back to gpt-5.3-codex
+   * (which 400s → empty turn). Left undefined in api-key mode, where the
+   * compiled-in default is valid. (BUG-6 fix 1.)
+   */
+  model?: string;
+  /** The adapter-owned CODEX_HOME the app-server child reads config.toml from. */
+  managedCodexHome?: string;
 }
 
 /**
@@ -97,6 +111,8 @@ export async function runAppServerTurn(
     broker,
     onSpawn,
     onWarn,
+    model,
+    managedCodexHome,
     deps = defaultRunAppServerTurnDeps,
   } = input;
 
@@ -149,6 +165,18 @@ export async function runAppServerTurn(
         }
       }
     : undefined;
+
+  // BUG-6 fix 1: deliver the resolved chat model to the supervised path via the
+  // managed config.toml (codex app-server has no per-turn --model flag). API-key
+  // mode leaves model undefined, so clear any stale top-level model previously
+  // written for subscription auth while preserving the MCP bridge block.
+  if (managedCodexHome) {
+    if (model) {
+      await writeCodexModelConfigToml(managedCodexHome, model);
+    } else {
+      await clearCodexModelConfigToml(managedCodexHome);
+    }
+  }
 
   const spawned = deps.spawnAppServerClient({
     runId,

@@ -64,6 +64,7 @@ vi.mock("drizzle-orm", () => ({
   eq: (..._args: unknown[]) => "eq",
   gt: (..._args: unknown[]) => "gt",
   inArray: (..._args: unknown[]) => "inArray",
+  notInArray: (..._args: unknown[]) => "notInArray",
   isNull: (..._args: unknown[]) => "isNull",
   lte: (..._args: unknown[]) => "lte",
   ne: (..._args: unknown[]) => "ne",

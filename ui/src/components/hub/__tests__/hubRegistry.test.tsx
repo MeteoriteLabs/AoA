@@ -3,7 +3,7 @@ import {
   HUB_SEMANTIC_TO_LANE,
   HUB_SEMANTIC_TYPES,
 } from "@armyofagents/shared";
-import { HUB_REGISTRY, resolveHubEntry } from "../hubRegistry";
+import { HUB_REGISTRY, hubTabForItem, resolveHubEntry } from "../hubRegistry";
 
 describe("HUB_REGISTRY", () => {
   it("is total over HUB_SEMANTIC_TYPES", () => {
@@ -47,5 +47,23 @@ describe("HUB_REGISTRY", () => {
     expect(HUB_REGISTRY.suggestion.fullLink({ sourceId: "suggestion-1" } as never)).toBe(
       "/home",
     );
+  });
+
+  it("keeps runtime-decision agent errors out of discussion routes", () => {
+    const item = {
+      id: "hub-1",
+      semanticType: "agent_error",
+      sourceType: "runtime_decision",
+      sourceId: "decision-1",
+      relatedEntityType: "heartbeat_run",
+      relatedEntityId: "run-1",
+      title: "Permission request timed out",
+    } as never;
+
+    expect(HUB_REGISTRY.agent_error.fullLink(item)).toBeNull();
+    expect(hubTabForItem(item)).toMatchObject({
+      kind: "notification",
+      payload: { hubItemId: "hub-1" },
+    });
   });
 });

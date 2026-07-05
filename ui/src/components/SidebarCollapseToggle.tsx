@@ -43,7 +43,11 @@ export function SidebarCollapseToggle({
       title={label}
       aria-label={label}
       className={cn(
-        "absolute z-10 inline-flex size-[26px] items-center justify-center rounded-md",
+        "absolute inline-flex items-center justify-center rounded-md",
+        // Collapsed: a larger control lifted above the adjacent content rail
+        // (e.g. the Inbox hub lane rail) so the "Expand" affordance is findable
+        // and never visually absorbed into a neighbouring 56px icon rail.
+        collapsed ? "z-30 size-8" : "z-10 size-[26px]",
         "border border-border-strong bg-card-2 text-very-dim",
         "shadow-[0_2px_6px_rgba(0,0,0,0.4)]",
         "transition-[background,color,border-color,transform] duration-[120ms]",
@@ -51,9 +55,9 @@ export function SidebarCollapseToggle({
         "focus-visible:outline-none focus-visible:border-brand focus-visible:ring-[3px] focus-visible:ring-brand-focus-ring",
         className,
       )}
-      style={{ top, left: `calc(${sidebarWidth}px - 13px)` }}
+      style={{ top, left: `calc(${sidebarWidth}px - ${collapsed ? 16 : 13}px)` }}
     >
-      <Icon className="size-3.5" />
+      <Icon className={collapsed ? "size-4" : "size-3.5"} />
     </button>
   );
 }

@@ -177,6 +177,11 @@ function makeInMemoryRepo() {
         .map(clone);
     },
 
+    // R1 zombie-decision guard: this integration exercises a LIVE run.
+    async getRunStatus(_runId: string) {
+      return "running";
+    },
+
     async listTrustRules(input: {
       companyId: string;
       adapterType?: string;

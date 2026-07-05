@@ -230,4 +230,43 @@ describe.skipIf(process.platform === "win32")("hubItems.reconcile — real DB", 
     expect(await statusOf(itLive.id)).toBe("open");
     expect(res.closed).toBe(1);
   });
+
+  it("BUG-5: latest-succeeded run_complete SURVIVES reconcile; a newer run closes it with a reconcile_close audit row", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const { companyId, founderId } = await seedCompanyWithFounder();
+    const svc = hubItemsService(db);
+    const agentId = firstId(await db.execute(sql`INSERT INTO agents (id, company_id, name, kind, status, parent_type, parent_id) VALUES (gen_random_uuid(), ${companyId}, 'Completer', 'org', 'idle', 'user', ${founderId}) RETURNING id`));
+    const succeededRun = firstId(await db.execute(sql`INSERT INTO heartbeat_runs (id, company_id, agent_id, status, created_at) VALUES (gen_random_uuid(), ${companyId}, ${agentId}, 'succeeded', now() - interval '1 hour') RETURNING id`));
+
+    const item = await svc.emit({
+      companyId,
+      semanticType: "run_complete",
+      sourceType: "heartbeat_run",
+      sourceId: succeededRun,
+      title: "Completer run complete",
+      summary: "Run finished successfully",
+      ownerUserId: founderId,
+    });
+
+    // While it is the agent's LATEST run, the succeeded item survives the sweep
+    // ("succeeded" is in HEARTBEAT_ACTIONABLE_STATUSES).
+    const res1 = await svc.reconcile(companyId, { sourceType: "heartbeat_run" });
+    expect(res1.closed).toBe(0);
+    expect(await statusOf(item.id)).toBe("open");
+
+    // A newer run for the same agent supersedes it → closed via the
+    // version-guarded system path.
+    await db.execute(sql`INSERT INTO heartbeat_runs (id, company_id, agent_id, status, created_at) VALUES (gen_random_uuid(), ${companyId}, ${agentId}, 'running', now())`);
+    const res2 = await svc.reconcile(companyId, { sourceType: "heartbeat_run" });
+    expect(res2.closed).toBe(1);
+    expect(await statusOf(item.id)).toBe("archived");
+
+    const audit = await db.execute(
+      sql`SELECT actor_type, action, prior_state FROM hub_audit WHERE company_id = ${companyId} AND hub_item_id = ${item.id}`,
+    );
+    const arow = firstRow<{ actor_type: string; action: string; prior_state: { status: string } }>(audit);
+    expect(arow.actor_type).toBe("system");
+    expect(arow.action).toBe("reconcile_close");
+    expect(arow.prior_state.status).toBe("open");
+  });
 });

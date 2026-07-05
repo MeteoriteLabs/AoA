@@ -1,6 +1,6 @@
 ---
 title: MCP Server
-summary: AoA as an MCP server — 34 tools and 4 resources, RBAC-scoped
+summary: AoA as an MCP server — 36 tools and 4 resources, RBAC-scoped
 ---
 
 AoA exposes a JSON-RPC 2.0 MCP endpoint at `/companies/:companyId/mcp`. Agents, Commander, the board UI, and external MCP clients can call it to read and write company data.
@@ -46,18 +46,20 @@ Requests with neither → `401`. In `local_trusted` mode, writes from loopback s
 | `memory.search` | Multi-pathway retrieval (semantic + keyword + temporal). RRF + trust ranking, RBAC-scoped. Required: `query`. Optional: `layer`, `category`, `departmentId`, `projectId`, `limit` (1–50) |
 | `memory.get` | Fetch a single approved memory item. Returns `404` outside RBAC scope. Required: `id` |
 
-## Tools — Write (8)
+## Tools — Write (10)
 
 | Tool | Description |
 |------|-------------|
 | `debrief-push` | Push unstructured content into the Discussion pipeline for LLM extraction. Required: `content`. Optional: `title`, `departmentId`, `projectId`, `source` |
 | `suggest-memory` | Create a pending memory suggestion (awaits founder approval). Required: `title`, `content`, `category`. Optional: `layer`, `tags`, `departmentId`, `projectId`, `goalId`, `taskId` |
+| `memory.write` | Create a structured memory item and enqueue it for RAG embedding. Always `status='pending'` — the founder must approve before it enters the Knowledge Base (Critical Rule #6). Use for structured knowledge; use `debrief-push` for unstructured content needing extraction first. Required: `title`, `content`, `category`, `layer`, `sourceContext`. Optional: `tags`, `departmentId`, `projectId`, `goalId`, `taskId` |
 | `memory.retain` | Persist an observation to memory. When called by an agent with `scopeToSelf: true`, auto-approved into agent's personal scope. All other writes create a pending item (Critical Rule #6). Required: `title`, `content`, `category`, `layer`, `sourceContext`. Optional: `tags`, `departmentId`, `projectId`, `goalId`, `taskId`, `scopeToSelf` |
 | `update-task-status` | Update a task's status with permission checks. Required: `taskId`, `status` |
 | `create-task` | Create a task directly (RBAC-scoped). Does not route through Discussion. Required: `title`. Optional: `description`, `projectId`, `goalId`, `parentId`, `status`, `priority`, `assigneeAgentId`, `assigneeUserId`, `labelIds` |
 | `update-task` | Update task fields. Required: `taskId`. Optional: `title`, `description`, `projectId`, `goalId`, `status`, `priority`, `assigneeAgentId`, `assigneeUserId`, `labelIds` |
 | `add-task-comment` | Add a comment to a task. Required: `taskId`, `body` |
 | `attach-artifact-version` | Add an immutable version to an artifact. Required: `artifactId`, `sourceDetail`. Optional: `changelog`, `parentVersionId`, `content`, `fileUrl` |
+| `ask_founder` | Ask the founder a question and block (~5 min) for the answer. **Org/heartbeat task-execution agents during an active run ONLY** (`403` otherwise; crew/internal-agent are out of scope — their channel is the in-thread reply). Surfaces in the Inbox hub as a `work_question` the founder answers (free-text, or one of your `options`). On timeout the run is parked → returns `{answered:false, status:"parked"}` — stop gracefully, do not retry. Required: `question`. Optional: `options` (`[{label,value}]`, values unique), `context` |
 
 ## Tools — Document (5)
 

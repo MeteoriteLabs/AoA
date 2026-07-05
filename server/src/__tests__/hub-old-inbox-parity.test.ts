@@ -5,8 +5,8 @@ const oldInboxSources = [
   { name: "actionable approvals", semanticType: "approval_request", lane: "waiting_on_you" },
   { name: "pending join requests", semanticType: "join_request", lane: "waiting_on_you" },
   { name: "pending discussions", semanticType: "discussion_pending", lane: "waiting_on_you" },
-  { name: "thread.human_input_needed", semanticType: "human_input_needed", lane: "waiting_on_you" },
-  { name: "thread.scope_proposal_posted", semanticType: "scope_proposal", lane: "waiting_on_you" },
+  // NOTE: thread.human_input_needed + thread.scope_proposal_posted were PRUNED
+  // (Task 10, 2026-07-04) — registry-only types with no live producer.
   { name: "thread.artifact_needs_review", semanticType: "legacy_other", lane: "notifications" },
   { name: "thread.crew_failed", semanticType: "agent_error", lane: "notifications" },
   { name: "thread.spinoff_suggested", semanticType: "proactive", lane: "suggestions" },
@@ -29,7 +29,6 @@ const removedOldInboxSources = [
 const requiredW1Categories = [
   ["approvals", "approval_request", "waiting_on_you"],
   ["discussion pending review", "discussion_pending", "waiting_on_you"],
-  ["thread human input", "human_input_needed", "waiting_on_you"],
   ["failed runs", "run_failed", "notifications"],
   ["budget alert", "budget_alert", "notifications"],
   ["stale work", "stale_work", "suggestions"],

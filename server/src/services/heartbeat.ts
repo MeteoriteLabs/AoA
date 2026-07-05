@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, gt, inArray, lte, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, lte, ne, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import {
   agents,
@@ -34,6 +34,7 @@ import { logger } from "../middleware/logger.js";
 import { publishLiveEvent, threadWorkingAgents, broadcastThreadPresence } from "./live-events.js";
 import { postCrewFailureCard } from "./crew-failure-card.js";
 import { relayCrewResult } from "./crew-result-relay.js";
+import { buildTerminalRunHubEmit, emitHubItem } from "./hub-source-producers.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
 import { logActivity } from "./activity-log.js";
 import { getServerAdapter, runningProcesses } from "../adapters/index.js";
@@ -144,6 +145,7 @@ import {
   mintRuntimeHookToken,
   registerRuntimeHook,
   deregisterRuntimeHook,
+  deregisterRuntimeHooksForRun,
 } from "./runtime-hook-registry.js";
 import {
   RUNTIME_HOOK_BLOCK_TIMEOUT_SEC,
@@ -158,6 +160,71 @@ export const MAX_TURN_CONTINUATION_RETRY_REASON = "max_turn_continuation";
 export const MAX_TURN_CONTINUATION_WAKE_REASON = "max_turn_continuation_retry";
 export const MAX_TURN_CONTINUATION_MAX_ATTEMPTS = 2;
 export const MAX_TURN_CONTINUATION_DELAY_MS = 1_000;
+// R1 zombie-run teardown: once a run reaches one of these statuses it is final.
+// setRunStatus latches on them so a zombie hook POST (markRunWaiting → 'running')
+// or a late adapter completion cannot resurrect a cancelled/failed run. The only
+// writes allowed after a terminal transition are metadata-only patches that keep
+// the SAME status (e.g. the cancelled→cancelled usageJson/excerpt persistence in
+// the completion + error paths).
+export const TERMINAL_RUN_STATUSES = ["succeeded", "failed", "cancelled", "timed_out"] as const;
+
+export function isTerminalRunStatus(status: string): boolean {
+  return (TERMINAL_RUN_STATUSES as readonly string[]).includes(status);
+}
+
+/**
+ * Pure decision for the setRunStatus terminal-latch fallback branch (R1).
+ *
+ * Called only when the guarded conditional UPDATE matched no row — i.e. the run
+ * is already terminal (or missing). Given the requested status, the patch, and
+ * the current (terminal) status, decide what write to apply:
+ *
+ *   - `"metadata"`: strip `status` from the patch and apply the remaining fields
+ *     WITHOUT changing status, and WITHOUT re-firing the live event / terminal
+ *     hub emit. Covers BOTH the legitimate cancelled→cancelled metadata write
+ *     (usageJson / log excerpts persist — P2-1) and the blocked cancelled→running
+ *     / cancelled→failed resurrection (status stays terminal).
+ *   - `"noop"`: a pure status flip against a terminal row with no other fields —
+ *     nothing to persist.
+ *
+ * Never returns "write": once the row is terminal, the status is latched.
+ */
+const NON_CONTRADICTORY_TERMINAL_METADATA_KEYS = new Set([
+  "usageJson",
+  "stdoutExcerpt",
+  "stderrExcerpt",
+  "logBytes",
+  "logSha256",
+  "logCompressed",
+]);
+
+export function resolveTerminalLatchFallback(
+  patch: Record<string, unknown> | undefined,
+  context?: { requestedStatus?: string; currentStatus?: string | null },
+): { action: "metadata"; metadataPatch: Record<string, unknown> } | { action: "noop" } {
+  const metadataPatch: Record<string, unknown> = patch ? { ...patch } : {};
+  delete metadataPatch.status;
+  if (Object.keys(metadataPatch).length === 0) return { action: "noop" };
+
+  const requestedStatus = context?.requestedStatus;
+  const currentStatus = context?.currentStatus ?? null;
+  if (
+    requestedStatus &&
+    currentStatus &&
+    isTerminalRunStatus(requestedStatus) &&
+    isTerminalRunStatus(currentStatus) &&
+    requestedStatus !== currentStatus
+  ) {
+    const safePatch = Object.fromEntries(
+      Object.entries(metadataPatch).filter(([key]) => NON_CONTRADICTORY_TERMINAL_METADATA_KEYS.has(key)),
+    );
+    if (Object.keys(safePatch).length === 0) return { action: "noop" };
+    return { action: "metadata", metadataPatch: safePatch };
+  }
+
+  return { action: "metadata", metadataPatch };
+}
+
 const HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS = 500;
 // AoA canonical names. Existing rows still using the legacy paperclip-
 // names are read transparently via the helpers below; writes only emit
@@ -1654,12 +1721,54 @@ export function heartbeatService(db: Db) {
     status: string,
     patch?: Partial<typeof heartbeatRuns.$inferInsert>,
   ) {
+    // R1 terminal-status latch. The status write is guarded to NOT overwrite a
+    // row that is already terminal — a conditional UPDATE that only matches rows
+    // whose current status is NOT one of TERMINAL_RUN_STATUSES. This is the
+    // atomic check: a live run (running/queued/…) matches and transitions
+    // normally; a run that a concurrent cancel already flipped to terminal does
+    // NOT match, so the status is never resurrected.
     const updated = await db
       .update(heartbeatRuns)
       .set({ status, ...patch, updatedAt: new Date() })
-      .where(eq(heartbeatRuns.id, runId))
+      .where(
+        and(
+          eq(heartbeatRuns.id, runId),
+          notInArray(heartbeatRuns.status, TERMINAL_RUN_STATUSES as unknown as string[]),
+        ),
+      )
       .returning()
       .then((rows) => rows[0] ?? null);
+
+    if (!updated) {
+      // Guard miss: either the row is gone, or it is already terminal. Read it.
+      const current = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (!current) return null;
+
+      // The row is terminal. Apply a metadata-only patch (status stripped) and
+      // SKIP the live-event + terminal hub emit. This keeps the legitimate
+      // cancelled→cancelled metadata writes (usageJson / log excerpts) working
+      // (P2-1) while blocking cancelled→running / cancelled→failed resurrection.
+      const fallback = resolveTerminalLatchFallback(patch as Record<string, unknown> | undefined, {
+        requestedStatus: status,
+        currentStatus: current.status,
+      });
+      if (fallback.action === "noop") {
+        // Pure status flip against a terminal row (no metadata) — nothing to do.
+        return null;
+      }
+      await db
+        .update(heartbeatRuns)
+        .set({ ...fallback.metadataPatch, updatedAt: new Date() })
+        .where(eq(heartbeatRuns.id, runId))
+        .returning()
+        .then((rows) => rows[0] ?? current);
+      return null;
+    }
 
     if (updated) {
       publishLiveEvent({
@@ -1677,6 +1786,35 @@ export function heartbeatService(db: Db) {
           finishedAt: updated.finishedAt ? new Date(updated.finishedAt).toISOString() : null,
         },
       });
+
+      // BUG-5: event-driven run_complete / run_failed hub items at the single
+      // terminal-status chokepoint. Failures route through the SAME builder as
+      // the legacy sidebar-badges scan (byte-identical rows → the change-aware
+      // emit dedupes instead of ping-ponging). Best-effort try/catch mirrors
+      // relayCrewResult: a hub failure (e.g. resolveOwner "no human owner")
+      // must NEVER fail a run.
+      if (["succeeded", "failed", "timed_out"].includes(updated.status)) {
+        try {
+          const agentRow = await db
+            .select({ name: agents.name })
+            .from(agents)
+            .where(eq(agents.id, updated.agentId))
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
+          const emitArgs = buildTerminalRunHubEmit({
+            id: updated.id,
+            companyId: updated.companyId,
+            agentId: updated.agentId,
+            agentName: agentRow?.name ?? null,
+            status: updated.status,
+            error: updated.error ?? null,
+            updatedAt: updated.updatedAt,
+          });
+          if (emitArgs) await emitHubItem(db, emitArgs);
+        } catch (err) {
+          logger.warn({ err, runId: updated.id }, "terminal-run hub emit failed (non-fatal)");
+        }
+      }
     }
 
     return updated;
@@ -2195,7 +2333,10 @@ export function heartbeatService(db: Db) {
       }
       await finalizeAgentStatus(run.agentId, "failed");
       await startNextQueuedRunForAgent(run.agentId);
-      runningProcesses.delete(run.id);
+      // No runningProcesses.delete here: this branch is guarded by
+      // `if (runningProcesses.has(run.id)) continue` above, so there is nothing
+      // to delete. Deregistration is owned by spawnTrackedChild's close/error
+      // listeners (R1 zombie-run teardown).
       reaped.push(run.id);
     }
 
@@ -4255,7 +4396,7 @@ export function heartbeatService(db: Db) {
       );
 
       const liveness = classifyCompletedRunLiveness({ outcome });
-      await setRunStatus(run.id, status, {
+      const completedRun = await setRunStatus(run.id, status, {
         finishedAt: new Date(),
         livenessState: liveness.livenessState,
         livenessReason: liveness.livenessReason,
@@ -4272,6 +4413,13 @@ export function heartbeatService(db: Db) {
         logSha256: logSummary?.sha256,
         logCompressed: logSummary?.compressed ?? false,
       });
+      if (!completedRun) {
+        logger.info(
+          { runId: run.id, status },
+          "heartbeat completion lost terminal-status race; skipping completion side effects",
+        );
+        return;
+      }
 
       await setWakeupStatus(run.wakeupRequestId, outcome === "succeeded" ? "completed" : status, {
         finishedAt: new Date(),
@@ -4471,62 +4619,65 @@ export function heartbeatService(db: Db) {
         logSha256: logSummary?.sha256,
         logCompressed: logSummary?.compressed ?? false,
       });
+      if (!failedRun) {
+        logger.info(
+          { runId: run.id, terminalStatus },
+          "heartbeat failure lost terminal-status race; skipping failure side effects",
+        );
+        return;
+      }
       await setWakeupStatus(run.wakeupRequestId, terminalStatus, {
         finishedAt: new Date(),
         error: message,
       });
-      await cancelRuntimeDecisionPromptsForRun(failedRun ?? run, `run ${terminalStatus}`);
+      await cancelRuntimeDecisionPromptsForRun(failedRun, `run ${terminalStatus}`);
 
-      if (failedRun) {
-        await appendRunEvent(failedRun, seq++, {
-          eventType: "error",
-          stream: "system",
-          level: "error",
-          message,
+      await appendRunEvent(failedRun, seq++, {
+        eventType: "error",
+        stream: "system",
+        level: "error",
+        message,
+      });
+      await releaseIssueExecutionAndPromote(failedRun);
+
+      await updateRuntimeState(agent, failedRun, {
+        exitCode: null,
+        signal: null,
+        timedOut: false,
+        errorMessage: message,
+      }, {
+        legacySessionId: runtimeForAdapter.sessionId,
+      });
+
+      if (taskKey && (previousSessionParams || previousSessionDisplayId || taskSession)) {
+        await upsertTaskSession({
+          companyId: agent.companyId,
+          agentId: agent.id,
+          adapterType: agent.adapterType,
+          taskKey,
+          sessionParamsJson: previousSessionParams,
+          sessionDisplayId: previousSessionDisplayId,
+          lastRunId: failedRun.id,
+          lastError: message,
         });
-        await releaseIssueExecutionAndPromote(failedRun);
-
-        await updateRuntimeState(agent, failedRun, {
-          exitCode: null,
-          signal: null,
-          timedOut: false,
-          errorMessage: message,
-        }, {
-          legacySessionId: runtimeForAdapter.sessionId,
-        });
-
-        if (taskKey && (previousSessionParams || previousSessionDisplayId || taskSession)) {
-          await upsertTaskSession({
-            companyId: agent.companyId,
-            agentId: agent.id,
-            adapterType: agent.adapterType,
-            taskKey,
-            sessionParamsJson: previousSessionParams,
-            sessionDisplayId: previousSessionDisplayId,
-            lastRunId: failedRun.id,
-            lastError: message,
-          });
-        }
       }
 
       await finalizeAgentStatus(agent.id, terminalStatus);
 
       // ── V2: Run summary comments for crash path (Decision #88) ──────
-      if (failedRun) {
-        await createRunSummaryComment({
-          agent,
-          run: failedRun,
-          outcome: terminalStatus,
-          adapterResult: {
-            exitCode: null,
-            signal: null,
-            timedOut: false,
-            errorMessage: message,
-          },
-          issueId: readNonEmptyString(context.issueId),
-          detectedFiles: [],
-        });
-      }
+      await createRunSummaryComment({
+        agent,
+        run: failedRun,
+        outcome: terminalStatus,
+        adapterResult: {
+          exitCode: null,
+          signal: null,
+          timedOut: false,
+          errorMessage: message,
+        },
+        issueId: readNonEmptyString(context.issueId),
+        detectedFiles: [],
+      });
 
       // P2-T2: surface thread-linked deliverable failures as a visible chat
       // card (not a silent `failed`). Best-effort — must never mask the
@@ -5495,7 +5646,20 @@ export function heartbeatService(db: Db) {
         await releaseIssueExecutionAndPromote(cancelled);
       }
 
-      runningProcesses.delete(run.id);
+      // R1 zombie-run teardown: purge any W5b PreToolUse hook tokens for this run
+      // NOW. If the CLI's process survived the SIGTERM/taskkill (grandchild
+      // orphan), the adapter `await` stays pending and its finally-block
+      // deregisterRuntimeHook never runs — the token would otherwise stay valid
+      // for its 24h TTL and keep resolving a live broker for zombie hook POSTs.
+      // Deregistering by runId closes that window immediately (codex_local uses no
+      // HTTP hook, so this is a 0-entry no-op there).
+      deregisterRuntimeHooksForRun(run.id);
+
+      // R1 zombie-run teardown: do NOT eagerly delete the runningProcesses entry
+      // here. The eager delete made the SIGKILL grace-escalation timer above a
+      // no-op (its `runningProcesses.has(run.id)` guard always missed), so a CLI
+      // that ignored SIGTERM was never force-killed. Deregistration is owned by
+      // spawnTrackedChild's close/error listeners; the escalation timer now fires.
       await finalizeAgentStatus(run.agentId, "cancelled");
       await startNextQueuedRunForAgent(run.agentId);
       return cancelled;
@@ -5533,7 +5697,8 @@ export function heartbeatService(db: Db) {
             "heartbeat.cancel: signaling SIGTERM",
           );
           signalRunningProcess(running, "SIGTERM");
-          runningProcesses.delete(run.id);
+          // R1: deregistration is owned by spawnTrackedChild's close/error
+          // listeners — no eager delete (see cancelRun).
         }
         await releaseIssueExecutionAndPromote(run);
       }
@@ -5578,7 +5743,7 @@ export function heartbeatService(db: Db) {
               "heartbeat.cancel: signaling SIGTERM",
             );
             signalRunningProcess(running, "SIGTERM");
-            runningProcesses.delete(run.id);
+            // R1: deregistration owned by spawnTrackedChild close/error listeners.
           }
           await releaseIssueExecutionAndPromote(run);
         }
@@ -5615,7 +5780,7 @@ export function heartbeatService(db: Db) {
             "heartbeat.cancel: signaling SIGTERM",
           );
           signalRunningProcess(running, "SIGTERM");
-          runningProcesses.delete(run.id);
+          // R1: deregistration owned by spawnTrackedChild close/error listeners.
         }
         await releaseIssueExecutionAndPromote(run);
       }

@@ -91,20 +91,25 @@ describe("v2.5 internal agent constants", () => {
     expect(TRIGGER_SOURCES).toHaveLength(6);
   });
 
-  it("NOTIFICATION_TYPES has 17 values", () => {
-    // 12 pre-Phase-1 types + 5 new thread.* types added in Phase E batch 3
-    // (T23). Keep this assertion in sync with packages/shared/src/constants.ts
-    // so additions don't sneak in without test coverage.
-    expect(NOTIFICATION_TYPES).toHaveLength(17);
+  it("NOTIFICATION_TYPES has 15 values", () => {
+    // 12 pre-Phase-1 types + 3 remaining thread.* types (Phase E batch 3 / T23
+    // added 5; thread.scope_proposal_posted + thread.human_input_needed were
+    // PRUNED in Task 10, 2026-07-04). Keep this assertion in sync with
+    // packages/shared/src/constants.ts so changes don't sneak in untested.
+    expect(NOTIFICATION_TYPES).toHaveLength(15);
   });
 
-  it("NOTIFICATION_TYPES includes the 5 Phase 1 thread.* types", () => {
+  it("NOTIFICATION_TYPES includes the 3 retained Phase 1 thread.* types", () => {
     const set = new Set<string>(NOTIFICATION_TYPES);
-    expect(set.has("thread.scope_proposal_posted")).toBe(true);
     expect(set.has("thread.artifact_needs_review")).toBe(true);
     expect(set.has("thread.crew_failed")).toBe(true);
     expect(set.has("thread.spinoff_suggested")).toBe(true);
-    expect(set.has("thread.human_input_needed")).toBe(true);
+  });
+
+  it("NOTIFICATION_TYPES excludes the pruned Phase 1 thread.* types (Task 10)", () => {
+    const set = new Set<string>(NOTIFICATION_TYPES);
+    expect(set.has("thread.scope_proposal_posted")).toBe(false);
+    expect(set.has("thread.human_input_needed")).toBe(false);
   });
 
   it("IA_RUN_STATUSES has 3 values", () => {

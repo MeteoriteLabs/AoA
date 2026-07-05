@@ -6,7 +6,12 @@ import { publishLiveEvent } from "./live-events.js";
 import { parseExtractedItems, type ExtractedItem, type ExtractedItemType } from "./extraction-parser.js";
 import { resolveExtractionEngine, resolveCompanyCliTool } from "./extraction-engine.js";
 import { extractViaCli, CliExtractionError } from "./extraction-cli.js";
-import { buildDiscussionPendingHubEmit, emitHubItem } from "./hub-source-producers.js";
+import {
+  buildDiscussionPendingHubEmit,
+  buildExtractionFailedHubEmit,
+  emitHubItem,
+} from "./hub-source-producers.js";
+import { hubItemsService } from "./hub-items.js";
 
 // Re-export pure parser symbols so existing importers (`from "./extraction.js"`)
 // continue to work unchanged after the move to extraction-parser.ts.
@@ -122,6 +127,63 @@ async function resolveCliExtractionContext(
     .from(internalAgentConfig)
     .where(eq(internalAgentConfig.companyId, companyId));
   return { cliTool, codexModel: config?.model ?? null };
+}
+
+// Best-effort extraction_failed hub emit (Task 10, D3). Called at the two
+// terminal-failure sites; NEVER throws — a failed emit must not mask the fact
+// that we already marked the entry failed. Re-fetches the discussion for its
+// title/owner so the catch-site (where `discussion` is out of scope) can still
+// emit a well-formed item; a gone discussion just yields a generic title.
+async function emitExtractionFailureItem(
+  db: Db,
+  args: {
+    companyId: string;
+    discussionId: string;
+    entryId: string;
+    failureKind: string | null;
+    failureMessage: string | null;
+  },
+): Promise<void> {
+  try {
+    const [discussion] = await db
+      .select({ title: discussions.title, ownerUserId: discussions.ownerUserId })
+      .from(discussions)
+      .where(eq(discussions.id, args.discussionId));
+    await emitHubItem(
+      db,
+      buildExtractionFailedHubEmit({
+        entryId: args.entryId,
+        discussionId: args.discussionId,
+        companyId: args.companyId,
+        discussionTitle: discussion?.title ?? null,
+        ownerUserId: discussion?.ownerUserId ?? null,
+        failureKind: args.failureKind,
+        failureMessage: args.failureMessage,
+        updatedAt: new Date(),
+      }),
+    );
+  } catch (emitErr) {
+    logger.warn({ err: emitErr, entryId: args.entryId }, "extraction_failed hub emit failed");
+  }
+}
+
+// Best-effort archive of the extraction_failed hub item once the entry recovers
+// (reprocess reset to pending, or a successful extraction). Terminal is decided
+// by the discussion_entry reconciler (extractionStatus !== 'failed'). NEVER
+// throws — a stale failure item is not worth failing the recovery path.
+export async function closeExtractionFailedItem(
+  db: Db,
+  companyId: string,
+  entryId: string,
+): Promise<void> {
+  try {
+    await hubItemsService(db).reconcile(companyId, {
+      sourceType: "discussion_entry",
+      sourceId: entryId,
+    });
+  } catch (err) {
+    logger.warn({ err, entryId }, "closeExtractionFailedItem reconcile failed");
+  }
 }
 
 export function extractionService(db: Db) {
@@ -463,6 +525,15 @@ export function extractionService(db: Db) {
             type: "discussion.extraction.failed",
             payload: { discussionId, entryId, error: lastCliErr.message },
           });
+          // Inbox signal (Task 10, D3): the transient SSE above is not enough —
+          // a founder who walks away must learn extraction stalled.
+          await emitExtractionFailureItem(db, {
+            companyId,
+            discussionId,
+            entryId,
+            failureKind: lastCliErr.kind,
+            failureMessage: lastCliErr.message,
+          });
           return;
         }
 
@@ -536,6 +607,10 @@ export function extractionService(db: Db) {
             itemCount: extractedItems.length,
           },
         });
+
+        // A successful (re)extraction auto-archives any prior extraction_failed
+        // inbox item for this entry (Task 10, D3 — matches reconcile philosophy).
+        await closeExtractionFailedItem(db, companyId, entryId);
       } catch (err) {
         log.error({ err }, "Discussion entry extraction failed");
 
@@ -555,6 +630,14 @@ export function extractionService(db: Db) {
           companyId,
           type: "discussion.extraction.failed",
           payload: { discussionId, entryId, error: err instanceof Error ? err.message : String(err) },
+        });
+        // Inbox signal (Task 10, D3) — same rationale as the CLI-exhausted site.
+        await emitExtractionFailureItem(db, {
+          companyId,
+          discussionId,
+          entryId,
+          failureKind: null,
+          failureMessage: errMessage,
         });
       }
     },

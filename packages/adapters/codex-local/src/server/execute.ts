@@ -28,7 +28,8 @@ import {
 import { parseCodexJsonl, createCodexSessionIdCapture, isCodexUnknownSessionError } from "./parse.js";
 import { stripCodexRolloutNoise } from "./parse-shared.js";
 import { isCodexLocalFastModeSupported, CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS } from "../index.js";
-import { prepareManagedCodexHome } from "./codex-home.js";
+import { prepareManagedCodexHome, readSharedCodexModel } from "./codex-home.js";
+import { resolveCodexChatModel } from "./resolve-chat-model.js";
 import { writeCodexMcpConfigToml } from "./codex-config-toml.js";
 import {
   runAppServerTurn as realRunAppServerTurn,
@@ -736,6 +737,15 @@ export async function execute(
       });
     }
 
+    // BUG-6 fix 1: resolve a codex-compatible chat model and deliver it via the
+    // managed config.toml (writeCodexModelConfigToml, inside runAppServerTurn).
+    // Preserve api-key mode: a valid api-key model (gpt-5.3-codex) must not be
+    // forced/rewritten, so only resolve when the run is subscription auth.
+    const supervisedModel =
+      billingType === "subscription"
+        ? resolveCodexChatModel(model, await readSharedCodexModel(process.env))
+        : undefined;
+
     const driverResult = await deps.runAppServerTurn({
       runId,
       command,
@@ -750,6 +760,8 @@ export async function execute(
       onWarn: (message) => {
         void onLog("stderr", `${message}\n`);
       },
+      model: supervisedModel,
+      managedCodexHome,
     });
 
     return buildAdapterExecutionResult(bridgedResultToIntermediate(driverResult));

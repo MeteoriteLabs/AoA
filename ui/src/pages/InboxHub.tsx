@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   useInfiniteQuery,
   useMutation,
@@ -20,6 +20,9 @@ import type {
 import { DEFAULT_NOTIFICATION_PREFERENCES } from "@armyofagents/shared";
 import { hubItemsApi, type HubItemListRow, type HubListResponse } from "@/api/hub-items";
 import { HubShell } from "@/components/hub/HubShell";
+import { hubTabForItem } from "@/components/hub/hubRegistry";
+import { browserTab } from "@/components/hub/hubViewerModel";
+import { useHubTabs } from "@/components/hub/useHubTabs";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
 import { useLiveUpdates } from "@/context/LiveUpdatesProvider";
@@ -72,6 +75,48 @@ const DEFAULT_AUTOPILOT_POLICY: HubAutopilotPolicy = {
 };
 const DEFAULT_AUTOPILOT_ACTIONS: HubAutopilotActionsResponse = { items: [] };
 
+/** Bound for the opened-item preview cache (deliberate, like useHubTabs' 12-tab cap). */
+export const OPENED_ITEM_CACHE_MAX = 24;
+
+/**
+ * "Needs you most" (HubHome) reads items[0]. On Home (`activeLane===null`) the
+ * lane list query is disabled, so without a dedicated fetch the card is
+ * permanently empty. This stable options object drives a small waiting-lane
+ * preview page (the decision lane) with a stable query key. Module-level so the
+ * reference — and therefore the query key — stays stable across renders.
+ */
+export const HOME_PREVIEW_OPTIONS = {
+  lane: "waiting_on_you",
+  status: "open",
+  limit: 5,
+} as const;
+
+/**
+ * The ONLY insert path for the opened-item cache — used by BOTH writers (the
+ * deep-link hydration effect and handleOpenItem) so the cache stays bounded to
+ * the most recent {@link OPENED_ITEM_CACHE_MAX} rows. Recency = insertion
+ * order (string keys preserve it; hub item ids are uuids, never integer-like).
+ * Re-inserting the exact cached reference is a no-op (React bails out, so
+ * repeated row clicks don't churn state); a changed row for a cached id
+ * refreshes both its data and its recency.
+ */
+export function insertOpenedItem(
+  cache: Record<string, HubItemListRow>,
+  item: HubItemListRow,
+): Record<string, HubItemListRow> {
+  if (cache[item.id] === item) return cache;
+  const entries = Object.entries(cache).filter(([id]) => id !== item.id);
+  entries.push([item.id, item]);
+  return Object.fromEntries(
+    entries.slice(Math.max(0, entries.length - OPENED_ITEM_CACHE_MAX)),
+  );
+}
+
+interface OpenedItemCacheState {
+  companyId: string | null;
+  items: Record<string, HubItemListRow>;
+}
+
 export function InboxHub() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -85,9 +130,37 @@ export function InboxHub() {
   const queryClient = useQueryClient();
   const { onHubItemChanged } = useLiveUpdates();
   const { pushToast } = useToast();
+  const refreshAutopilotDashboard = useCallback(() => {
+    if (!selectedCompanyId) return;
+    void queryClient.invalidateQueries({
+      queryKey: queryKeys.hubItems.autopilotPolicy(selectedCompanyId),
+    });
+    void queryClient.invalidateQueries({
+      queryKey: queryKeys.hubItems.autopilotActions(selectedCompanyId),
+    });
+  }, [queryClient, selectedCompanyId]);
   const markingReadItemIds = useRef(new Set<string>());
   const notificationPreferencesRef = useRef<NotificationPreferences | null>(null);
   const hubMutations = useHubItemMutations(selectedCompanyId);
+  // Tabbed right-panel viewer (Home + entity + browser tabs), persisted per company.
+  const { tabs, activeKey, openTab, closeTab, activateTab } = useHubTabs(
+    selectedCompanyId ?? undefined,
+  );
+  // Rows opened as tabs are cached here so runtime_decision / notification bodies
+  // (which resolve their hub item by id) keep working after a lane switch, and so
+  // deep-linked items from another lane / resolved history can resolve at all.
+  // Bounded: every write goes through insertOpenedItem (most recent 24 rows).
+  const [openedItemCacheState, setOpenedItemCacheState] = useState<OpenedItemCacheState>({
+    companyId: selectedCompanyId ?? null,
+    items: {},
+  });
+  const openedItemCache =
+    openedItemCacheState.companyId === (selectedCompanyId ?? null)
+      ? openedItemCacheState.items
+      : {};
+  // Per-itemId guard (not a boolean): a later deep-link to a DIFFERENT item in
+  // the same SPA session must hydrate too; the same item stays fire-once.
+  const deepLinkHandledRef = useRef<string | null>(null);
   const [undoAction, setUndoAction] = useState<{
     label: string;
     itemId: string;
@@ -103,6 +176,26 @@ export function InboxHub() {
   const [searchText, setSearchText] = useState("");
   const [debouncedSearchText, setDebouncedSearchText] = useState("");
   const [optimisticPreferences, setOptimisticPreferences] = useState<HubPreferences | null>(null);
+  // Waiting-lane dismiss-hole safety net: reveal the current user's personally
+  // hidden (dismissed/snoozed) OPEN rows when the "N hidden" chip is toggled on.
+  const [showHidden, setShowHidden] = useState(false);
+
+  useEffect(() => {
+    const companyId = selectedCompanyId ?? null;
+    if (openedItemCacheState.companyId === companyId) return;
+    setOpenedItemCacheState({ companyId, items: {} });
+  }, [openedItemCacheState.companyId, selectedCompanyId]);
+
+  const cacheOpenedItem = useCallback((item: HubItemListRow) => {
+    const companyId = selectedCompanyId ?? null;
+    setOpenedItemCacheState((current) => ({
+      companyId,
+      items: insertOpenedItem(
+        current.companyId === companyId ? current.items : {},
+        item,
+      ),
+    }));
+  }, [selectedCompanyId]);
 
   const laneSlug = params.lane ?? null;
   const activeLane = laneSlug ? SLUG_TO_LANE[laneSlug] ?? null : null;
@@ -375,6 +468,11 @@ export function InboxHub() {
     return () => window.clearTimeout(timer);
   }, [searchText]);
 
+  // The hidden-reveal toggle only applies to the waiting lane's OPEN history view
+  // (dismiss/snooze are personal decision-lane triage). Elsewhere it stays off.
+  const hiddenRevealActive =
+    showHidden && activeLane === "waiting_on_you" && historyStatus === "open";
+
   const listOptions = useMemo(
     () =>
       activeLane
@@ -383,17 +481,53 @@ export function InboxHub() {
             status: historyStatus,
             q: debouncedSearchText || undefined,
             groupMode: preferences.groupMode,
+            ...(hiddenRevealActive
+              ? { includeDismissed: true, includeSnoozed: true }
+              : {}),
             limit: 50,
           }
         : undefined,
-    [activeLane, debouncedSearchText, historyStatus, preferences.groupMode],
+    [activeLane, debouncedSearchText, historyStatus, preferences.groupMode, hiddenRevealActive],
   );
+
+  // Per-user, lane-scoped count of dismissed/snoozed OPEN items (the "N hidden"
+  // chip). Waiting-lane only; a separate cheap query (never touches the counts
+  // snapshot cache). Sits under the ["hub-items", cid] prefix so the live
+  // hub.item.changed invalidation refreshes it.
+  const hiddenCountQuery = useQuery({
+    queryKey:
+      selectedCompanyId
+        ? queryKeys.hubItems.hiddenCount(selectedCompanyId, "waiting_on_you")
+        : ["hub-items", "hidden-count", "none"],
+    queryFn: () => hubItemsApi.hiddenCount(selectedCompanyId!, "waiting_on_you"),
+    enabled: !!selectedCompanyId && activeLane === "waiting_on_you",
+  });
+  const hiddenCount = hiddenCountQuery.data?.hiddenOpen ?? 0;
+
+  // "Needs you most" Home preview: a small waiting-lane page fetched ONLY on Home
+  // (activeLane===null), where the lane list query is disabled. Distinct query
+  // key from any lane's infinite query, under the ["hub-items", cid] prefix so the
+  // live hub.item.changed invalidation refreshes it.
+  const homePreviewQuery = useQuery({
+    queryKey: selectedCompanyId
+      ? queryKeys.hubItems.homePreview(selectedCompanyId)
+      : ["hub-items", "home-preview", "none"],
+    queryFn: () => hubItemsApi.list(selectedCompanyId!, HOME_PREVIEW_OPTIONS),
+    enabled: !!selectedCompanyId && !activeLane,
+  });
+  const homeItems = homePreviewQuery.data?.items ?? [];
+
+  useEffect(() => {
+    if (homePreviewQuery.status !== "success") return;
+    refreshAutopilotDashboard();
+  }, [homePreviewQuery.dataUpdatedAt, homePreviewQuery.status, refreshAutopilotDashboard]);
 
   // Reset the bulk selection on any list-scope change. Page accumulation resets
   // for free: the query key includes lane/search/status, so useInfiniteQuery
   // starts a fresh page-1 fetch whenever the scope changes.
   useEffect(() => {
     setSelectedBulkIds(new Set());
+    setShowHidden(false);
   }, [activeLane, debouncedSearchText, historyStatus]);
 
   // Pages accumulate in the react-query cache (no useState mirror). v5's default
@@ -413,6 +547,11 @@ export function InboxHub() {
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
   });
+
+  useEffect(() => {
+    if (listQuery.status !== "success") return;
+    refreshAutopilotDashboard();
+  }, [listQuery.dataUpdatedAt, listQuery.status, refreshAutopilotDashboard]);
 
   const markRead = useMutation({
     mutationFn: (itemId: string) => hubItemsApi.markRead(selectedCompanyId!, itemId),
@@ -478,11 +617,89 @@ export function InboxHub() {
     () => (activeLane ? (listQuery.data?.pages.flatMap((page) => page.items) ?? []) : []),
     [activeLane, listQuery.data],
   );
+  // `selectedItemId` gates the center-list highlight, so it stays validated
+  // against the loaded lane. `selectedItem` (the Home preview) additionally
+  // falls back to the opened-item cache so a deep-linked / cross-lane item still
+  // previews. `:itemId` remains a HUB-ITEM id — never an entity id.
   const selectedItemId =
     params.itemId && items.some((item) => item.id === params.itemId)
       ? params.itemId
       : null;
-  const selectedItem = items.find((item) => item.id === selectedItemId) ?? null;
+  const selectedItem =
+    (params.itemId
+      ? items.find((item) => item.id === params.itemId) ?? openedItemCache[params.itemId]
+      : undefined) ?? null;
+
+  // Deep link (`/inbox/:lane/:itemId`) OPENS + activates the item's dedicated tab
+  // (tab-first, no preview). Prefer the lane's own row: if the item's lane is
+  // still loading, WAIT for it (opening a tab is a one-shot side-effect, unlike
+  // the old reactive reading pane — resolving off a half-loaded list would open
+  // the wrong-typed tab). Only when the item is genuinely NOT in the settled lane
+  // (hidden / resolved / other lane) do we hydrate it once via `getOne`, then open
+  // its tab. The `deepLinkHandledRef` guard keeps this idempotent so a later list
+  // refetch (or a manual tab close) never re-opens the tab for the same `:itemId`.
+  useEffect(() => {
+    const itemId = params.itemId;
+    if (!itemId || !selectedCompanyId) return;
+    const deepLinkKey = `${selectedCompanyId}:${itemId}`;
+    if (deepLinkHandledRef.current === deepLinkKey) return;
+    const listItem = items.find((item) => item.id === itemId);
+    const cached = openedItemCache[itemId];
+    if (listItem || cached) {
+      const row = listItem ?? cached;
+      if (listItem) cacheOpenedItem(listItem);
+      deepLinkHandledRef.current = deepLinkKey;
+      if (row) openTab(hubTabForItem(row));
+      return;
+    }
+    // The item's lane is still loading — defer so the lane row (correct entity
+    // type) wins over a redundant getOne hydrate.
+    if (activeLane && listQuery.isLoading) return;
+    deepLinkHandledRef.current = deepLinkKey;
+    let cancelled = false;
+    hubItemsApi
+      .getOne(selectedCompanyId, itemId)
+      .then((item) => {
+        if (cancelled) return;
+        cacheOpenedItem(item);
+        openTab(hubTabForItem(item));
+      })
+      .catch(() => {
+        // Stale / hidden deep link — no tab to open.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    params.itemId,
+    selectedCompanyId,
+    items,
+    openedItemCache,
+    cacheOpenedItem,
+    openTab,
+    activeLane,
+    listQuery.isLoading,
+  ]);
+
+  const resolveHubItem = useCallback(
+    (id: string): HubItemListRow | undefined =>
+      items.find((item) => item.id === id) ?? openedItemCache[id],
+    [items, openedItemCache],
+  );
+  const resolveHubItemForTab = useCallback(
+    (tab: (typeof tabs)[number]): HubItemListRow | undefined => {
+      const hubItemId = (tab.payload as { hubItemId?: string } | undefined)?.hubItemId;
+      if (hubItemId) return resolveHubItem(hubItemId);
+
+      return [
+        ...(selectedItem ? [selectedItem] : []),
+        ...items,
+        ...homeItems,
+        ...Object.values(openedItemCache),
+      ].find((item) => hubTabForItem(item).key === tab.key);
+    },
+    [homeItems, items, openedItemCache, resolveHubItem, selectedItem],
+  );
   const auditQuery = useQuery({
     queryKey:
       selectedCompanyId && selectedItem
@@ -561,6 +778,19 @@ export function InboxHub() {
     navigate(`${lanePath}/${itemId}${location.search}`);
   };
 
+  // "Open full" (from the Home reading pane) + linked-entity hand-offs: open the
+  // item's entity as a dedicated tab (and keep it selected). Cache the row so its
+  // tab body can resolve it by id even after a later lane switch.
+  const handleOpenItem = (item: HubItemListRow) => {
+    cacheOpenedItem(item);
+    handleSelectItem(item.id);
+    openTab(hubTabForItem(item));
+  };
+
+  const handleAddBrowserTab = () => {
+    openTab(browserTab("about:blank", "Browser"));
+  };
+
   const handleLoadMore = () => {
     if (listQuery.hasNextPage && !listQuery.isFetchingNextPage) {
       void listQuery.fetchNextPage();
@@ -583,6 +813,14 @@ export function InboxHub() {
 
   const handleMarkUnread = (itemId: string) => {
     hubMutations.markUnread.mutate(itemId);
+  };
+
+  const handleUndismiss = (itemId: string) => {
+    hubMutations.undismiss.mutate(itemId);
+  };
+
+  const handleUnsnooze = (itemId: string) => {
+    hubMutations.unsnooze.mutate(itemId);
   };
 
   const handleDismiss = (itemId: string) => {
@@ -686,16 +924,37 @@ export function InboxHub() {
     <HubShell
       activeLane={activeLane}
       items={items}
+      homeItems={homeItems}
       counts={countsQuery.data ?? { open: 0, unread: 0 }}
-      isLoading={activeLane ? listQuery.isLoading : countsQuery.isLoading}
-      error={listQuery.error ?? countsQuery.error}
+      isLoading={
+        activeLane
+          ? listQuery.isLoading
+          : countsQuery.isLoading || homePreviewQuery.isLoading
+      }
+      error={listQuery.error ?? countsQuery.error ?? homePreviewQuery.error}
       selectedItemId={selectedItemId}
+      selectedItem={selectedItem}
+      companyId={selectedCompanyId ?? undefined}
+      tabs={tabs}
+      activeTabKey={activeKey}
+      onOpenTab={openTab}
+      onOpenItem={handleOpenItem}
+      onCloseTab={closeTab}
+      onActivateTab={activateTab}
+      onAddBrowserTab={handleAddBrowserTab}
+      resolveHubItem={resolveHubItem}
+      resolveHubItemForTab={resolveHubItemForTab}
       historyStatus={historyStatus}
       auditRows={auditQuery.data ?? []}
       auditLoading={auditQuery.isLoading}
       selectedBulkIds={selectedBulkIds}
       bulkMessage={bulkMessage}
       searchText={searchText}
+      hiddenCount={hiddenCount}
+      showHidden={hiddenRevealActive}
+      onToggleHidden={() => setShowHidden((value) => !value)}
+      onUndismiss={handleUndismiss}
+      onUnsnooze={handleUnsnooze}
       hasMore={listQuery.hasNextPage}
       isLoadingMore={listQuery.isFetchingNextPage}
       preferences={preferences}

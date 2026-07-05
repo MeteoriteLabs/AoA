@@ -26,8 +26,13 @@ Windows as `spawn("codex", ["app-server"], { shell: true, cwd, stdio: [pipe,pipe
 
 Client sequence:
 
-1. `initialize` (id=1) → wait for response.
-2. `initialized` notification (no id).
+1. `initialize` (id=1) `{ clientInfo: { name, version, title? } }` → wait for
+   response. `clientInfo` with `name` + `version` is REQUIRED (omitted `params`
+   → `-32600 "missing field 'params'"`; `params:{}` → `"missing field
+   'clientInfo'"`; `title` optional). More generally, the `params` field is
+   required on EVERY request envelope — the client defaults it to `{}`.
+2. `initialized` notification (no id). Paramless — accepted as-is; notifications
+   do NOT need a `params` default.
 3. `thread/start` (id=2) `{ cwd, approvalPolicy }` → response carries `result.thread.id`.
    (A `thread/started` notification also carries the id.)
 4. `turn/start` (id=N) `{ threadId, approvalPolicy, input: [{ type: "text", text }] }`.

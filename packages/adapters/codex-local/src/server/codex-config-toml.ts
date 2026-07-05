@@ -2,6 +2,37 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 /**
+ * Serialize ALL config.toml mutations for a given managed home. The home is
+ * per-COMPANY (`prepareManagedCodexHome(..., companyId, ...)`, execute.ts:318),
+ * so concurrent heartbeat runs in one company share `<home>/config.toml`. Both
+ * writers here do read-strip-rewrite; without serialization a concurrent
+ * MCP-write + model-write can each read before the other's write lands and drop
+ * the other's section — dropping the `model =` line silently re-introduces BUG-6
+ * under concurrency (Decision #5 allows up to 50 concurrent runs). This is an
+ * in-process, per-managed-home promise chain keyed by the resolved absolute path.
+ * The stored tail swallows errors so one failed write never wedges the chain; the
+ * caller still receives the real (possibly rejecting) promise.
+ */
+const configTomlWriteChains = new Map<string, Promise<unknown>>();
+function withCodexHomeConfigLock<T>(
+  managedHomeDir: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const key = path.resolve(managedHomeDir);
+  const prev = configTomlWriteChains.get(key) ?? Promise.resolve();
+  // Run fn AFTER prev settles (success OR failure): `.then(fn, fn)`.
+  const run = prev.then(fn, fn);
+  configTomlWriteChains.set(
+    key,
+    run.then(
+      () => {},
+      () => {},
+    ),
+  );
+  return run;
+}
+
+/**
  * Provider-neutral MCP bridge spec (same shape as the server's
  * buildMcpBridgeSpec / adapter-utils McpBridgeSpec). Local copy of the shape —
  * this package must not import from the server.
@@ -141,19 +172,98 @@ export async function writeCodexMcpConfigToml(
   spec: CodexMcpBridgeSpec,
   serverName = "aoa",
 ): Promise<void> {
-  await fs.mkdir(managedHomeDir, { recursive: true });
-  const target = path.join(managedHomeDir, "config.toml");
+  return withCodexHomeConfigLock(managedHomeDir, async () => {
+    await fs.mkdir(managedHomeDir, { recursive: true });
+    const target = path.join(managedHomeDir, "config.toml");
 
-  let existing = "";
-  try {
-    existing = await fs.readFile(target, "utf8");
-  } catch {
-    existing = "";
+    let existing = "";
+    try {
+      existing = await fs.readFile(target, "utf8");
+    } catch {
+      existing = "";
+    }
+
+    const preserved = stripAoaMcpBlocks(existing, serverName);
+    const block = renderMcpBlock(spec, serverName);
+    const body = preserved.trim().length > 0 ? `${preserved}\n\n${block}\n` : `${block}\n`;
+
+    await fs.writeFile(target, body, "utf8");
+  });
+}
+
+/**
+ * Strip any existing top-level `model = ...` line(s) from the config.toml body,
+ * BEFORE the first `[table]` header so we never touch a `[profiles.x]` /
+ * `[model_providers.x]` model key (mirrors readSharedCodexModel's top-level-only
+ * scan in codex-home.ts). Lines inside/after any table header are preserved.
+ */
+function stripTopLevelModelLine(existing: string): string {
+  const lines = existing.split(/\r?\n/);
+  const kept: string[] = [];
+  let inTable = false;
+  for (const line of lines) {
+    if (/^\s*\[[^\]]+\]\s*$/.test(line)) inTable = true;
+    if (!inTable && /^\s*model\s*=/.test(line)) continue;
+    kept.push(line);
   }
+  while (kept.length > 0 && kept[kept.length - 1].trim() === "") kept.pop();
+  return kept.join("\n");
+}
 
-  const preserved = stripAoaMcpBlocks(existing, serverName);
-  const block = renderMcpBlock(spec, serverName);
-  const body = preserved.trim().length > 0 ? `${preserved}\n\n${block}\n` : `${block}\n`;
+/**
+ * Write/merge a top-level `model = "<model>"` line into
+ * `<managedHomeDir>/config.toml` so a supervised `codex app-server` run (which
+ * has no per-turn --model CLI surface) uses the resolved chat model instead of
+ * codex's compiled-in default (gpt-5.3-codex, which 400s on a ChatGPT login).
+ *
+ * Idempotent + non-destructive: reads any existing config.toml, strips a prior
+ * top-level `model =` line, preserves everything else (incl. the MCP bridge
+ * block written by writeCodexMcpConfigToml), then prepends the fresh model line.
+ * auth.json is never touched.
+ */
+export async function writeCodexModelConfigToml(
+  managedHomeDir: string,
+  model: string,
+): Promise<void> {
+  return withCodexHomeConfigLock(managedHomeDir, async () => {
+    await fs.mkdir(managedHomeDir, { recursive: true });
+    const target = path.join(managedHomeDir, "config.toml");
 
-  await fs.writeFile(target, body, "utf8");
+    let existing = "";
+    try {
+      existing = await fs.readFile(target, "utf8");
+    } catch {
+      existing = "";
+    }
+
+    const preserved = stripTopLevelModelLine(existing);
+    const modelLine = `model = ${tomlString(model)}`;
+    const body =
+      preserved.trim().length > 0 ? `${modelLine}\n\n${preserved}\n` : `${modelLine}\n`;
+
+    await fs.writeFile(target, body, "utf8");
+  });
+}
+
+/**
+ * Remove a stale top-level `model = ...` line from managed CODEX_HOME while
+ * preserving all other config, notably the AoA MCP bridge block. Used by
+ * API-key auth mode where the adapter intentionally does not force a
+ * subscription-safe chat model.
+ */
+export async function clearCodexModelConfigToml(
+  managedHomeDir: string,
+): Promise<void> {
+  return withCodexHomeConfigLock(managedHomeDir, async () => {
+    const target = path.join(managedHomeDir, "config.toml");
+    const existing = await fs.readFile(target, "utf8").catch(() => "");
+    if (!existing) return;
+
+    const preserved = stripTopLevelModelLine(existing);
+    await fs.writeFile(
+      target,
+      preserved.trim().length > 0 ? `${preserved}\n` : "",
+      "utf8",
+    );
+  });
 }

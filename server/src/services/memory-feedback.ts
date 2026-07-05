@@ -184,19 +184,23 @@ async function createSuggestion(
 
   if (existingSuggestion) return;
 
-  await db.insert(suggestions).values({
-    companyId,
-    category: "pattern_detected",
-    actionType: "suggest_memory",
-    title: buildSuggestionTitle(pattern, agentName),
-    evidence: JSON.stringify(pattern.evidence.slice(0, 5)),
-    actionPayload: {
-      patternId,
-      patternType: pattern.patternType,
-      suggestedContent: buildSuggestedContent(pattern),
-      sourceAgentId: pattern.sourceAgentId,
-    },
-  });
+  await db
+    .insert(suggestions)
+    .values({
+      companyId,
+      category: "pattern_detected",
+      actionType: "suggest_memory",
+      dedupeKey: `pattern_detected:${patternId}`,
+      title: buildSuggestionTitle(pattern, agentName),
+      evidence: JSON.stringify(pattern.evidence.slice(0, 5)),
+      actionPayload: {
+        patternId,
+        patternType: pattern.patternType,
+        suggestedContent: buildSuggestedContent(pattern),
+        sourceAgentId: pattern.sourceAgentId,
+      },
+    })
+    .onConflictDoNothing();
 }
 
 // ── Service ─────────────────────────────────────────────────────────────

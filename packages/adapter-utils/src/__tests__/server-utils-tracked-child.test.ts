@@ -2,6 +2,8 @@ import os from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { runChildProcess, runningProcesses, spawnTrackedChild } from "../server-utils.js";
 
+const IS_WIN = process.platform === "win32";
+
 /**
  * Task 2 (W5c) — `spawnTrackedChild` is the single source of truth for spawning
  * a child that is REGISTERED in `runningProcesses` (so heartbeat.cancelRun and
@@ -104,59 +106,65 @@ describe("spawnTrackedChild (W5c Task 2)", () => {
     }
   });
 
-  it("terminate() signals the child and escalates SIGTERM→SIGKILL after graceSec", async () => {
-    vi.useFakeTimers();
-    try {
-      const runId = `tracked-terminate-${Date.now()}`;
-      // A long sleeper so the process is still registered when we terminate.
-      const handle = spawnTrackedChild(
-        runId,
-        process.execPath,
-        ["-e", "setTimeout(()=>{}, 60000)"],
-        { cwd: os.tmpdir(), env: {}, graceSec: 2, shell: false },
-      );
-      expect(runningProcesses.has(runId)).toBe(true);
+  // POSIX-only: this pins the SIGTERM→SIGKILL escalation + the still-registered
+  // grace-timer re-check. On Windows signalRunningProcess shells out to a
+  // taskkill /T /F subprocess instead of child.kill / process.kill (R1), and the
+  // module-namespace `spawn` cannot be spied in ESM — the Windows taskkill shape
+  // + escalation is covered exhaustively in server-utils-win32-taskkill.test.ts.
+  it.skipIf(IS_WIN)(
+    "terminate() signals the child and escalates SIGTERM→SIGKILL after graceSec (POSIX)",
+    async () => {
+      vi.useFakeTimers();
+      try {
+        const runId = `tracked-terminate-${Date.now()}`;
+        // A long sleeper so the process is still registered when we terminate.
+        const handle = spawnTrackedChild(
+          runId,
+          process.execPath,
+          ["-e", "setTimeout(()=>{}, 60000)"],
+          { cwd: os.tmpdir(), env: {}, graceSec: 2, shell: false },
+        );
+        expect(runningProcesses.has(runId)).toBe(true);
 
-      // Spy on the child's own kill (signalRunningProcess falls back to it, and
-      // on Windows there are no process groups so it is the sole path). On POSIX
-      // the group signal via process.kill(-pgid) may also fire; spy both so the
-      // assertion is cross-platform.
-      const childKill = vi.spyOn(handle.child, "kill").mockReturnValue(true);
-      const procKill = vi
-        .spyOn(process, "kill")
-        .mockImplementation(() => true as unknown as true);
-      const signals = () => [
-        ...childKill.mock.calls.map((c) => c[0]),
-        ...procKill.mock.calls.map((c) => c[1]),
-      ];
+        // Spy on the child's own kill (signalRunningProcess falls back to it) and
+        // process.kill (the group signal via process.kill(-pgid)).
+        const childKill = vi.spyOn(handle.child, "kill").mockReturnValue(true);
+        const procKill = vi
+          .spyOn(process, "kill")
+          .mockImplementation(() => true as unknown as true);
+        const signals = () => [
+          ...childKill.mock.calls.map((c) => c[0]),
+          ...procKill.mock.calls.map((c) => c[1]),
+        ];
 
-      handle.terminate();
-      expect(signals()).toContain("SIGTERM");
-      expect(signals()).not.toContain("SIGKILL");
+        handle.terminate();
+        expect(signals()).toContain("SIGTERM");
+        expect(signals()).not.toContain("SIGKILL");
 
-      // Advance past graceSec — child is still registered, so escalate.
-      vi.advanceTimersByTime(2000);
-      expect(signals()).toContain("SIGKILL");
+        // Advance past graceSec — child is still registered, so escalate.
+        vi.advanceTimersByTime(2000);
+        expect(signals()).toContain("SIGKILL");
 
-      // Idempotent + safe after close: simulate close deregistration then
-      // terminate again — a SIGTERM is sent but no further SIGKILL escalation
-      // fires because the row is gone.
-      runningProcesses.delete(runId);
-      const beforeKillCount = childKill.mock.calls.length + procKill.mock.calls.length;
-      handle.terminate();
-      vi.advanceTimersByTime(5000);
-      const afterKillCount = childKill.mock.calls.length + procKill.mock.calls.length;
-      // Exactly one more SIGTERM (no escalation).
-      expect(afterKillCount).toBe(beforeKillCount + 1);
+        // Idempotent + safe after close: simulate close deregistration then
+        // terminate again — a SIGTERM is sent but no further SIGKILL escalation
+        // fires because the row is gone.
+        runningProcesses.delete(runId);
+        const beforeKillCount = childKill.mock.calls.length + procKill.mock.calls.length;
+        handle.terminate();
+        vi.advanceTimersByTime(5000);
+        const afterKillCount = childKill.mock.calls.length + procKill.mock.calls.length;
+        // Exactly one more SIGTERM (no escalation).
+        expect(afterKillCount).toBe(beforeKillCount + 1);
 
-      procKill.mockRestore();
-      childKill.mockRestore();
-      // Actually kill the real sleeper so the test process can exit.
-      handle.child.kill("SIGKILL");
-    } finally {
-      vi.useRealTimers();
-    }
-  });
+        procKill.mockRestore();
+        childKill.mockRestore();
+        // Actually kill the real sleeper so the test process can exit.
+        handle.child.kill("SIGKILL");
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
 
   it("regression: runChildProcess (exec-style) still registers at spawn and deregisters on close", async () => {
     const runId = `exec-regression-${Date.now()}`;

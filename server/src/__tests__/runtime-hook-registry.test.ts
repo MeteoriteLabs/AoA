@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mintRuntimeHookToken, registerRuntimeHook, resolveRuntimeHook, deregisterRuntimeHook, pruneExpiredRuntimeHooks } from "../services/runtime-hook-registry.js";
+import { mintRuntimeHookToken, registerRuntimeHook, resolveRuntimeHook, deregisterRuntimeHook, deregisterRuntimeHooksForRun, pruneExpiredRuntimeHooks } from "../services/runtime-hook-registry.js";
 
 const entry = (over = {}) => ({ broker: {} as never, companyId: "c1", agentId: "a1", runId: "r1", expiresAt: new Date(Date.now() + 60_000), ...over });
 
@@ -31,5 +31,25 @@ describe("runtime-hook-registry", () => {
     pruneExpiredRuntimeHooks();
     expect(resolveRuntimeHook(live)).not.toBeNull();
     expect(resolveRuntimeHook(dead)).toBeNull();
+  });
+  // R1 zombie-run teardown: cancelRun purges ALL hook tokens for a runId so a
+  // zombie CLI whose process survived the kill can no longer resolve a broker.
+  it("deregisterRuntimeHooksForRun removes every token for the run and leaves others", () => {
+    const runToken1 = mintRuntimeHookToken();
+    const runToken2 = mintRuntimeHookToken();
+    const otherToken = mintRuntimeHookToken();
+    registerRuntimeHook(runToken1, entry({ runId: "run-zombie" }));
+    registerRuntimeHook(runToken2, entry({ runId: "run-zombie" }));
+    registerRuntimeHook(otherToken, entry({ runId: "run-other" }));
+
+    const removed = deregisterRuntimeHooksForRun("run-zombie");
+    expect(removed).toBe(2);
+    expect(resolveRuntimeHook(runToken1)).toBeNull();
+    expect(resolveRuntimeHook(runToken2)).toBeNull();
+    // A different run's token is untouched.
+    expect(resolveRuntimeHook(otherToken)).not.toBeNull();
+  });
+  it("deregisterRuntimeHooksForRun is a 0-entry no-op for a run with no HTTP hook (e.g. codex_local)", () => {
+    expect(deregisterRuntimeHooksForRun("run-never-registered")).toBe(0);
   });
 });

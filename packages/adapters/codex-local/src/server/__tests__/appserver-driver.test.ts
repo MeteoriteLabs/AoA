@@ -145,12 +145,19 @@ async function driveHandshake(
   opts: { resumeId?: string; resumeUnknown?: boolean } = {},
 ) {
   const init = await fake.waitForRequest("initialize");
+  // codex 0.130 REQUIRES params.clientInfo.{name,version} on initialize
+  // (live-verified: omitted params → -32600 "missing field `params`").
+  expect(init.params).toMatchObject({
+    clientInfo: { name: expect.any(String), version: expect.any(String) },
+  });
   resolveReq(init, { userAgent: "x" });
 
   if (opts.resumeId) {
     const resume = await fake.waitForRequest("thread/resume");
     if (opts.resumeUnknown) {
-      rejectReq(resume, new Error("thread 019f-abcd not found"));
+      // The REAL codex 0.130 thread/resume rejection text (live-captured) so the
+      // resume-unknown test exercises the production regex against wire text.
+      rejectReq(resume, new Error("no rollout found for thread id 019f-abcd"));
       const start = await fake.waitForRequest("thread/start");
       resolveReq(start, { thread: { id: threadId } });
     } else {
@@ -274,6 +281,9 @@ describe("driveCodexAppServer (W5c Task 3)", () => {
       });
 
       const init = await fake.waitForRequest("initialize");
+      expect(init.params).toMatchObject({
+        clientInfo: { name: expect.any(String), version: expect.any(String) },
+      });
       resolveReq(init, {});
       const start = await fake.waitForRequest("thread/start");
       resolveReq(start, { thread: { id: "thread-t" } });

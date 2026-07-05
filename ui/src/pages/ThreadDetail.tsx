@@ -195,13 +195,30 @@ function sourceSignalToAttachment(item: ThreadScopeItem): DiscussionEntryAttachm
 interface ThreadDetailProps {
   embedded?: boolean;
   onViewerWideChange?: (wide: boolean) => void;
+  /**
+   * D2 (Inbox Hub): when hosted inside a hub tab, the thread id is supplied by
+   * prop rather than the route. Takes precedence over `useParams`; when absent
+   * the component falls back to the route params (full-page + ThreadsWorkspace
+   * embedded usage unchanged).
+   */
+  discussionId?: string;
+  /** D2: prop-supplied company id (hub tab). Falls back to CompanyContext. */
+  companyId?: string;
 }
 
-export function ThreadDetail({ embedded = false, onViewerWideChange }: ThreadDetailProps = {}) {
+export function ThreadDetail({
+  embedded = false,
+  onViewerWideChange,
+  discussionId: discussionIdProp,
+  companyId: companyIdProp,
+}: ThreadDetailProps = {}) {
   void onViewerWideChange;
-  const { threadId, discussionId } = useParams<{ threadId?: string; discussionId?: string }>();
-  const resolvedId = threadId ?? discussionId;
-  const { selectedCompanyId } = useCompany();
+  const { threadId, discussionId: discussionIdParam } = useParams<{ threadId?: string; discussionId?: string }>();
+  // Prop wins over route params so the same component can be hosted in a hub tab.
+  const resolvedId = discussionIdProp ?? threadId ?? discussionIdParam;
+  const { selectedCompanyId: companyIdFromContext } = useCompany();
+  // Prefer the prop company id when the thread is hosted outside its route.
+  const selectedCompanyId = companyIdProp ?? companyIdFromContext;
   const { setBreadcrumbs, setSubtitle, setEntityColor } = useBreadcrumbs();
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
@@ -336,7 +353,9 @@ export function ThreadDetail({ embedded = false, onViewerWideChange }: ThreadDet
     openViewerTab(threadAttachmentToTab(attachment, entryId));
   }, [openViewerTab]);
 
-  // Live updates
+  // Live updates. D2: keep these fully live even when embedded (a hub tab IS the
+  // live thread — same as the ThreadsWorkspace pane). They key on `resolvedId`
+  // (prop-or-param) so a hub-hosted thread subscribes to the right room.
   const { connectionState, subscribeThread, unsubscribeThread, sendPresence, onReconnect } =
     useLiveUpdates();
 
@@ -348,6 +367,8 @@ export function ThreadDetail({ embedded = false, onViewerWideChange }: ThreadDet
 
   useEffect(() => {
     if (!resolvedId) return;
+    // Per-tab presence interval (8s). Accepted cost: each mounted thread tab
+    // heartbeats independently; a hub can host a few thread tabs concurrently.
     sendPresence(resolvedId);
     const id = window.setInterval(() => sendPresence(resolvedId), 8_000);
     return () => window.clearInterval(id);
@@ -664,20 +685,23 @@ export function ThreadDetail({ embedded = false, onViewerWideChange }: ThreadDet
     renameMutation.mutate(t);
   }
 
-  // Breadcrumbs
+  // Breadcrumbs — page chrome only. When embedded (ThreadsWorkspace pane or a
+  // hub tab) the host owns the breadcrumbs/subtitle/entity color, so we skip
+  // these setters entirely (mirrors the left-rail `!embedded` gate below).
   useEffect(() => {
+    if (embedded) return;
     setBreadcrumbs([
       { label: "Discussions", href: "/discussions" },
       { label: thread?.title ?? "Thread" },
     ]);
     setEntityColor("var(--entity-brief)");
     return () => { setSubtitle(null); setEntityColor(null); };
-  }, [thread?.title, setBreadcrumbs, setSubtitle, setEntityColor]);
+  }, [embedded, thread?.title, setBreadcrumbs, setSubtitle, setEntityColor]);
 
   useEffect(() => {
-    if (!thread) return;
+    if (embedded || !thread) return;
     setSubtitle(thread.pendingItemCount > 0 ? `${thread.pendingItemCount} items pending` : null);
-  }, [thread, setSubtitle]);
+  }, [embedded, thread, setSubtitle]);
 
   useEffect(() => {
     if (thread && centerHeadingRef.current) centerHeadingRef.current.focus();

@@ -65,8 +65,11 @@ export const HUB_SEMANTIC_TYPES = [
   "approval_request",
   "discussion_pending",
   "join_request",
-  "human_input_needed",   // thread.human_input_needed
-  "scope_proposal",       // thread.scope_proposal_posted
+  // NOTE: human_input_needed + scope_proposal were PRUNED (Task 10, 2026-07-04).
+  // Both were registry-only types with zero live producers: the crew-asks-a-
+  // human need is served by agent_runtime_decision(work_question) + thread
+  // @mentions, and the scope-decision surface is the crew_dispatch
+  // approval_request (W1c). Do NOT re-add without a real producer.
   "agent_runtime_decision", // reserved (W5)
   // notifications
   "run_failed",
@@ -90,8 +93,6 @@ export const HUB_SEMANTIC_TO_LANE: Record<HubSemanticType, HubLane> = {
   approval_request: "waiting_on_you",
   discussion_pending: "waiting_on_you",
   join_request: "waiting_on_you",
-  human_input_needed: "waiting_on_you",
-  scope_proposal: "waiting_on_you",
   agent_runtime_decision: "waiting_on_you",
   run_failed: "notifications",
   budget_alert: "notifications",
@@ -121,7 +122,7 @@ export const HUB_AUTHORITY_BY_TYPE: Record<HubSemanticType, HubAuthority> = {
   approval_request: "founder",
   join_request: "founder",
   agent_runtime_decision: "founder", // reserved; per-prompt tightening in W5
-  discussion_pending: "owner", human_input_needed: "owner", scope_proposal: "owner",
+  discussion_pending: "owner",
   run_failed: "owner", budget_alert: "owner", agent_error: "owner", mention: "owner",
   marketplace_op: "owner", run_complete: "owner", reminder: "owner",
   extraction_failed: "owner", routine_outcome: "owner", legacy_other: "owner",
@@ -145,6 +146,41 @@ export const HUB_AUTOPILOT_FOUNDER_GATED_TYPES = [
 
 export function isFounderGatedAutopilotType(type: HubSemanticType): boolean {
   return (HUB_AUTOPILOT_FOUNDER_GATED_TYPES as readonly string[]).includes(type);
+}
+
+// Mirror model (R3 + H1, 2026-07-04): these types are a MIRROR of a backing
+// source decision — a hub item leaves the waiting lane ONLY when its source is
+// decided (approve/reject an approval, decide a runtime prompt). Manual
+// resolve/archive on the shared hub row is therefore server-rejected while the
+// source is still pending; the item would otherwise hide a live, undecided
+// decision from every board user with zero effect on the source. Personal
+// dismiss/snooze stay allowed (per-user visibility, safety-netted by the source
+// reconciler + timeout policy). NOTE the two source classes use DIFFERENT
+// pending checks server-side (see recordLifecycleAction in hub-items.ts):
+// approval_request/join_request block via the source reconciler's `terminal`
+// snapshot; agent_runtime_decision blocks ONLY while its status ∈ {created,
+// shown} (answered/relay_failed stay clearable so the dead-run stall sweep can
+// close them).
+export const HUB_SOURCE_MIRRORED_TYPES = [
+  "approval_request",
+  "join_request",
+  "agent_runtime_decision",
+] as const satisfies readonly HubSemanticType[];
+
+export function isSourceMirroredType(type: HubSemanticType): boolean {
+  return (HUB_SOURCE_MIRRORED_TYPES as readonly string[]).includes(type);
+}
+
+// Internal-only semantic types (Task 10, 2026-07-04): the sink stays functional
+// for legacy/imported Paperclip-era notification rows (mapPersistedNotificationType
+// falls back to legacy_other), but a founder configuring notifications must NOT
+// see a toggle for a type that can never fire in a fresh AoA install. It stays a
+// full member of HUB_SEMANTIC_TYPES (parse stability, zod enum) — it is only
+// HIDDEN from the founder-facing settings rules lists.
+export const HUB_INTERNAL_SEMANTIC_TYPES = ["legacy_other"] as const satisfies readonly HubSemanticType[];
+
+export function isInternalSemanticType(type: HubSemanticType): boolean {
+  return (HUB_INTERNAL_SEMANTIC_TYPES as readonly string[]).includes(type);
 }
 
 // Owner pool sentinel for authority-gated items with no single natural owner.

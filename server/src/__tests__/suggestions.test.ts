@@ -95,12 +95,14 @@ function createSequenceDb(config: {
   let insertIdx = 0;
   let updateIdx = 0;
   const insertValues: unknown[] = [];
+  const updateSets: unknown[] = [];
 
   function makeChain(getResult: () => MockRow[]) {
     const chain: Record<string, unknown> = {};
-    for (const method of ["from", "where", "groupBy", "orderBy", "limit", "values", "set", "returning"]) {
+    for (const method of ["from", "where", "groupBy", "orderBy", "limit", "values", "set", "onConflictDoNothing", "returning"]) {
       chain[method] = (...args: unknown[]) => {
         if (method === "values") insertValues.push(args[0]);
+        if (method === "set") updateSets.push(args[0]);
         return chain;
       };
     }
@@ -114,6 +116,7 @@ function createSequenceDb(config: {
     update: (..._args: unknown[]) => makeChain(() => config.updates?.[updateIdx++] ?? []),
     transaction: async (callback: (tx: any) => unknown) => callback(db),
     __insertValues: insertValues,
+    __updateSets: updateSets,
   };
 
   return db;
@@ -179,7 +182,12 @@ describe("suggestionService", () => {
 
   it("does not create duplicate pending suggestions", async () => {
     const db = createSequenceDb({
-      selects: [[{ category: "goal_gap", actionPayload: { goalId: "goal-1" } }]],
+      // [0] self-heal pending scan (empty → no collapse), [1] existingPending
+      // pre-filter — an already-pending goal_gap:goal-1 finding.
+      selects: [
+        [],
+        [{ category: "goal_gap", dedupeKey: "goal_gap:goal-1", actionPayload: { goalId: "goal-1" } }],
+      ],
     });
 
     const svc = suggestionService(db as any);
@@ -187,6 +195,7 @@ describe("suggestionService", () => {
       {
         category: "goal_gap",
         actionType: "create_task",
+        dedupeKey: "goal_gap:goal-1",
         title: "gap",
         evidence: null,
         actionPayload: { goalId: "goal-1" },
@@ -263,7 +272,8 @@ describe("suggestionService", () => {
 
   it("runAllDetectors aggregates detector output", async () => {
     const db = createSequenceDb({
-      selects: [[]],
+      // [0] self-heal scan (empty), [1] existingPending pre-filter (empty).
+      selects: [[], []],
       inserts: [[]],
     });
 
@@ -312,7 +322,8 @@ describe("suggestionService", () => {
       updatedAt: new Date("2026-06-29T00:00:00Z"),
     };
     const db = createSequenceDb({
-      selects: [[]],
+      // [0] self-heal scan (empty), [1] existingPending pre-filter (empty).
+      selects: [[], []],
       inserts: [[insertedSuggestion]],
     });
 
@@ -345,7 +356,9 @@ describe("suggestionService", () => {
 
   it("runAllDetectors reconciles expired suggestion hub rows", async () => {
     const db = createSequenceDb({
-      selects: [[]],
+      // [0] self-heal scan (empty → no self-heal updates), [1] existingPending.
+      selects: [[], []],
+      // Only update issued: expireOldPendingSuggestions → one expired row.
       updates: [[{ id: "sug-expired" }]],
     });
 
@@ -407,5 +420,224 @@ describe("suggestionService", () => {
     const svc = suggestionService(db as any);
     await expect(svc.detectGoalGaps("co-1")).resolves.toEqual([]);
     await expect(svc.detectPatternDetected("co-1")).resolves.toEqual([]);
+  });
+
+  // ---- H4: stable per-finding dedupe key ------------------------------------
+
+  it("emits a stable dedupeKey per finding, identical across runs", async () => {
+    // Same inputs on two independent detector runs must yield byte-identical
+    // dedupe keys — that stability is what lets the DB partial-unique index and
+    // the in-memory pre-filter agree and reject the second insert.
+    const buildDb = () =>
+      createSequenceDb({
+        selects: [
+          [{ id: "dept-1", name: "Engineering" }], // departments
+          [], // approved domain rows
+          [], // approved identity rows (none → identity gap)
+          [], // stale rows
+          [], // approved memory rows (merge conflicts)
+        ],
+      });
+
+    const run1 = await suggestionService(buildDb() as any).detectMemoryGaps("co-1");
+    const run2 = await suggestionService(buildDb() as any).detectMemoryGaps("co-1");
+
+    const keys1 = run1.map((s) => (s as any).dedupeKey).sort();
+    const keys2 = run2.map((s) => (s as any).dedupeKey).sort();
+
+    expect(keys1).toEqual(keys2);
+    // Identity gap + missing-domain gap, both keyed deterministically.
+    expect(keys1).toContain("memory_gap:identity");
+    expect(keys1).toContain("memory_gap:domain:dept-1");
+  });
+
+  it("goal_gap and workload_balance dedupe keys are entity-scoped and stable", async () => {
+    // goal_gap:no_tasks:<goalId>
+    const goalDb = createSequenceDb({
+      selects: [
+        [{ id: "goal-1", title: "Ship v1", status: "active", updatedAt: new Date() }],
+        [], // issues linked to goals (none → no_tasks gap)
+      ],
+    });
+    const goalResult = await suggestionService(goalDb as any).detectGoalGaps("co-1");
+    expect(goalResult).toHaveLength(1);
+    expect((goalResult[0] as any).dedupeKey).toBe("goal_gap:no_tasks:goal-1");
+
+    // workload_balance:<sorted agent id pair> — order-independent.
+    const workloadDb = createSequenceDb({
+      selects: [
+        [
+          { assigneeAgentId: "agent-b", count: 9 },
+          { assigneeAgentId: "agent-a", count: 1 },
+        ],
+        [
+          { id: "agent-a", name: "A" },
+          { id: "agent-b", name: "B" },
+        ],
+      ],
+    });
+    const workloadResult = await suggestionService(workloadDb as any).detectWorkloadBalance("co-1");
+    expect(workloadResult).toHaveLength(1);
+    expect((workloadResult[0] as any).dedupeKey).toBe("workload_balance:agent-a:agent-b");
+  });
+
+  it("runAllDetectors self-heals a pre-existing pending duplicate pair and reconciles the loser", async () => {
+    // Two pending rows share the same finding (identity gap). Self-heal keeps
+    // the newest (dup-new, listed first because the scan is createdAt DESC),
+    // dismisses the older (dup-old), and reconciles dup-old's hub item in the
+    // same transaction.
+    const db = createSequenceDb({
+      selects: [
+        // [0] self-heal pending scan (createdAt DESC): newest first.
+        [
+          {
+            id: "dup-new",
+            category: "memory_gap",
+            dedupeKey: "memory_gap:identity",
+            actionPayload: { layer: "identity" },
+            createdAt: new Date("2026-07-03T00:00:00Z"),
+          },
+          {
+            id: "dup-old",
+            category: "memory_gap",
+            dedupeKey: "memory_gap:identity",
+            actionPayload: { layer: "identity" },
+            createdAt: new Date("2026-07-01T00:00:00Z"),
+          },
+        ],
+        // [1] existingPending pre-filter (survivor blocks re-insertion).
+        [{ category: "memory_gap", dedupeKey: "memory_gap:identity", actionPayload: { layer: "identity" } }],
+      ],
+      // Self-heal dismiss update (loser) — expireOldPendingSuggestions returns none.
+      updates: [[{ id: "dup-old" }], []],
+    });
+
+    const svc = suggestionService(db as any);
+    vi.spyOn(svc, "detectGoalGaps").mockResolvedValue([]);
+    vi.spyOn(svc, "detectPipelineBottlenecks").mockResolvedValue([]);
+    vi.spyOn(svc, "detectMemoryGaps").mockResolvedValue([]);
+    vi.spyOn(svc, "detectPatternDetected").mockResolvedValue([]);
+    vi.spyOn(svc, "detectBudgetOptimization").mockResolvedValue([]);
+    vi.spyOn(svc, "detectRecurringWork").mockResolvedValue([]);
+    vi.spyOn(svc, "detectRiskFlags").mockResolvedValue([]);
+    vi.spyOn(svc, "detectWorkloadBalance").mockResolvedValue([]);
+
+    await svc.runAllDetectors("co-1");
+
+    // The superseded loser's hub item is reconciled.
+    expect(mockReconcile).toHaveBeenCalledWith("co-1", {
+      sourceType: "suggestion",
+      sourceId: "dup-old",
+    });
+  });
+
+  it("runAllDetectors rewrites reconstructable legacy dedupe keys before pre-filtering", async () => {
+    const staleKey = "goal_gap:deadbeef";
+    const db = createSequenceDb({
+      selects: [
+        // [0] self-heal pending scan: a migration-era row carrying a key that
+        // does not match the runtime detector's explicit goal-gap key.
+        [
+          {
+            id: "legacy-goal-gap",
+            category: "goal_gap",
+            actionType: "create_task",
+            title: 'Goal "Launch" has no tasks yet',
+            dedupeKey: staleKey,
+            actionPayload: { goalId: "goal-1", title: "Kick off work for goal: Launch" },
+            createdAt: new Date("2026-07-01T00:00:00Z"),
+          },
+        ],
+        // [1] existingPending pre-filter sees the corrected key and blocks a
+        // duplicate detector insert.
+        [
+          {
+            category: "goal_gap",
+            actionType: "create_task",
+            title: 'Goal "Launch" has no tasks yet',
+            dedupeKey: "goal_gap:no_tasks:goal-1",
+            actionPayload: { goalId: "goal-1", title: "Kick off work for goal: Launch" },
+          },
+        ],
+      ],
+      // [0] keeper key rewrite, [1] expireOldPendingSuggestions returns none.
+      updates: [[{ id: "legacy-goal-gap" }], []],
+    });
+
+    const svc = suggestionService(db as any);
+    vi.spyOn(svc, "detectGoalGaps").mockResolvedValue([
+      {
+        category: "goal_gap",
+        actionType: "create_task",
+        dedupeKey: "goal_gap:no_tasks:goal-1",
+        title: 'Goal "Launch" has no tasks yet',
+        evidence: "No tasks are linked to this active goal.",
+        actionPayload: { goalId: "goal-1", title: "Kick off work for goal: Launch" },
+      } as any,
+    ]);
+    vi.spyOn(svc, "detectPipelineBottlenecks").mockResolvedValue([]);
+    vi.spyOn(svc, "detectMemoryGaps").mockResolvedValue([]);
+    vi.spyOn(svc, "detectPatternDetected").mockResolvedValue([]);
+    vi.spyOn(svc, "detectBudgetOptimization").mockResolvedValue([]);
+    vi.spyOn(svc, "detectRecurringWork").mockResolvedValue([]);
+    vi.spyOn(svc, "detectRiskFlags").mockResolvedValue([]);
+    vi.spyOn(svc, "detectWorkloadBalance").mockResolvedValue([]);
+
+    const result = await svc.runAllDetectors("co-1");
+
+    expect(result).toEqual({ detected: 1, created: 0 });
+    expect((db as any).__updateSets).toContainEqual(
+      expect.objectContaining({ dedupeKey: "goal_gap:no_tasks:goal-1" }),
+    );
+    expect((db as any).__insertValues).toHaveLength(0);
+  });
+
+  it("runAllDetectors compares detector keys against legacy payload fallback keys", async () => {
+    const payload = {
+      title: "Resolve bottleneck for: Ship checkout",
+      description: 'Investigate why "Ship checkout" is blocked and define the unblock step.',
+      goalId: "goal-1",
+      priority: "high",
+      status: "backlog",
+      source: "manual",
+    };
+    const db = createSequenceDb({
+      selects: [
+        [],
+        [
+          {
+            category: "pipeline_bottleneck",
+            actionType: "create_task",
+            title: 'Task "Ship checkout" has been blocked for 8 days',
+            dedupeKey: null,
+            actionPayload: payload,
+          },
+        ],
+      ],
+    });
+
+    const svc = suggestionService(db as any);
+    vi.spyOn(svc, "detectGoalGaps").mockResolvedValue([]);
+    vi.spyOn(svc, "detectPipelineBottlenecks").mockResolvedValue([
+      {
+        category: "pipeline_bottleneck",
+        actionType: "create_task",
+        dedupeKey: "pipeline_bottleneck:blocked:issue-1",
+        title: 'Task "Ship checkout" has been blocked for 8 days',
+        evidence: "The task has stayed blocked.",
+        actionPayload: payload,
+      } as any,
+    ]);
+    vi.spyOn(svc, "detectMemoryGaps").mockResolvedValue([]);
+    vi.spyOn(svc, "detectPatternDetected").mockResolvedValue([]);
+    vi.spyOn(svc, "detectBudgetOptimization").mockResolvedValue([]);
+    vi.spyOn(svc, "detectRecurringWork").mockResolvedValue([]);
+    vi.spyOn(svc, "detectRiskFlags").mockResolvedValue([]);
+    vi.spyOn(svc, "detectWorkloadBalance").mockResolvedValue([]);
+
+    const result = await svc.runAllDetectors("co-1");
+
+    expect(result).toEqual({ detected: 1, created: 0 });
+    expect((db as any).__insertValues).toHaveLength(0);
   });
 });

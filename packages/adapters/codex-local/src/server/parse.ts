@@ -170,7 +170,13 @@ export function isCodexUnknownSessionError(stdout: string, stderr: string): bool
     .map((line) => line.trim())
     .filter(Boolean)
     .join("\n");
-  return /unknown (session|thread)|session .* not found|thread .* not found|conversation .* not found|missing rollout path for thread|state db missing rollout path/i.test(
+  // `thread not found:` + `no rollout found for thread id` are the REAL codex
+  // 0.130 app-server rejection texts (turn/start + thread/resume, live-captured)
+  // — added as EXPLICIT alternations. Do NOT broaden `thread .* not found`:
+  // this function also classifies arbitrary run output on the exec path
+  // (execute.ts) and internal-agent CLI mode, so overmatching triggers spurious
+  // fresh-session retries.
+  return /unknown (session|thread)|session .* not found|thread .* not found|thread not found:|no rollout found for thread id|conversation .* not found|missing rollout path for thread|state db missing rollout path/i.test(
     haystack,
   );
 }

@@ -200,4 +200,75 @@ describe.skipIf(process.platform === "win32")("hubItems.counts — real DB", () 
     expect(asFounder).toEqual({ open: 0, unread: 0 });
     expect(asMember).toEqual({ open: 2, unread: 2 });
   });
+
+  // ── hiddenCount (Task 2 — the dismiss-hole safety net) ─────────────────────
+
+  it("hiddenCount returns the actor's dismissed + actively-snoozed OPEN items for the lane", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const { companyId, founderId } = await seedCompanyWithFounder();
+    const svc = hubItemsService(db);
+    // approval_request + join_request live in the waiting lane; mention too.
+    const dismissed = await svc.emit({ companyId, semanticType: "approval_request", sourceType: "approval", sourceId: "hc-dismissed", title: "dismissed", ownerUserId: founderId });
+    const snoozedFuture = await svc.emit({ companyId, semanticType: "approval_request", sourceType: "approval", sourceId: "hc-snoozed-future", title: "future", ownerUserId: founderId });
+    const snoozedPast = await svc.emit({ companyId, semanticType: "approval_request", sourceType: "approval", sourceId: "hc-snoozed-past", title: "past", ownerUserId: founderId });
+    // Still visible → NOT hidden.
+    await svc.emit({ companyId, semanticType: "approval_request", sourceType: "approval", sourceId: "hc-visible", title: "visible", ownerUserId: founderId });
+    await db.execute(sql`INSERT INTO hub_item_user_state (id, company_id, hub_item_id, principal_type, principal_id, dismissed_at) VALUES (gen_random_uuid(), ${companyId}, ${dismissed.id}, 'user', ${founderId}, now())`);
+    await db.execute(sql`INSERT INTO hub_item_user_state (id, company_id, hub_item_id, principal_type, principal_id, snoozed_until) VALUES (gen_random_uuid(), ${companyId}, ${snoozedFuture.id}, 'user', ${founderId}, now() + interval '1 day')`);
+    // A past-snooze row is no longer hidden (the item is visible again).
+    await db.execute(sql`INSERT INTO hub_item_user_state (id, company_id, hub_item_id, principal_type, principal_id, snoozed_until) VALUES (gen_random_uuid(), ${companyId}, ${snoozedPast.id}, 'user', ${founderId}, now() - interval '1 day')`);
+
+    const hidden = await svc.hiddenCount(companyId, founderId, "waiting_on_you", "founder");
+    expect(hidden).toBe(2); // the dismissed + the future-snoozed; past-snooze is visible again
+  });
+
+  it("hiddenCount is per-actor: another user's dismiss does not surface for me", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const { companyId, founderId } = await seedCompanyWithFounder();
+    const memberId = await seedMember(companyId, "team_member");
+    const svc = hubItemsService(db);
+    const item = await svc.emit({ companyId, semanticType: "approval_request", sourceType: "approval", sourceId: "hc-other-actor", title: "member-owned", ownerUserId: memberId });
+    // The FOUNDER dismisses it; the member (owner) must not see a hidden row.
+    await db.execute(sql`INSERT INTO hub_item_user_state (id, company_id, hub_item_id, principal_type, principal_id, dismissed_at) VALUES (gen_random_uuid(), ${companyId}, ${item.id}, 'user', ${founderId}, now())`);
+
+    const founderHidden = await svc.hiddenCount(companyId, founderId, "waiting_on_you", "founder");
+    const memberHidden = await svc.hiddenCount(companyId, memberId, "waiting_on_you", "team_member");
+    expect(founderHidden).toBe(1); // the founder hid it → the founder sees it as hidden
+    expect(memberHidden).toBe(0); // the owner never dismissed it → nothing hidden for them
+  });
+
+  it("hiddenCount is lane-scoped and excludes resolved/archived items", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const { companyId, founderId } = await seedCompanyWithFounder();
+    const svc = hubItemsService(db);
+    // A dismissed WAITING item, a dismissed NOTIFICATIONS item, and a dismissed
+    // but ARCHIVED waiting item.
+    const waiting = await svc.emit({ companyId, semanticType: "approval_request", sourceType: "approval", sourceId: "hc-lane-waiting", title: "waiting", ownerUserId: founderId });
+    const notif = await svc.emit({ companyId, semanticType: "run_failed", sourceType: "heartbeat_run", sourceId: "hc-lane-notif", title: "notif", ownerUserId: founderId });
+    const archived = await svc.emit({ companyId, semanticType: "approval_request", sourceType: "approval", sourceId: "hc-lane-archived", title: "archived", ownerUserId: founderId });
+    for (const id of [waiting.id, notif.id, archived.id]) {
+      await db.execute(sql`INSERT INTO hub_item_user_state (id, company_id, hub_item_id, principal_type, principal_id, dismissed_at) VALUES (gen_random_uuid(), ${companyId}, ${id}, 'user', ${founderId}, now())`);
+    }
+    await db.execute(sql`UPDATE notifications SET status = 'archived' WHERE id = ${archived.id}`);
+
+    const waitingHidden = await svc.hiddenCount(companyId, founderId, "waiting_on_you", "founder");
+    const notifHidden = await svc.hiddenCount(companyId, founderId, "notifications", "founder");
+    expect(waitingHidden).toBe(1); // only the still-open waiting item; archived excluded
+    expect(notifHidden).toBe(1); // the notifications-lane dismissed item counts for its lane
+  });
+
+  it("hiddenCount respects RBAC scope: a member counts only owned hidden items", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const { companyId, founderId } = await seedCompanyWithFounder();
+    const memberId = await seedMember(companyId, "team_member");
+    const svc = hubItemsService(db);
+    const ownedByMember = await svc.emit({ companyId, semanticType: "approval_request", sourceType: "approval", sourceId: "hc-rbac-member", title: "member", ownerUserId: memberId });
+    const ownedByFounder = await svc.emit({ companyId, semanticType: "approval_request", sourceType: "approval", sourceId: "hc-rbac-founder", title: "founder", ownerUserId: founderId });
+    // The member dismisses BOTH — but RBAC hides the founder-owned one from them.
+    await db.execute(sql`INSERT INTO hub_item_user_state (id, company_id, hub_item_id, principal_type, principal_id, dismissed_at) VALUES (gen_random_uuid(), ${companyId}, ${ownedByMember.id}, 'user', ${memberId}, now())`);
+    await db.execute(sql`INSERT INTO hub_item_user_state (id, company_id, hub_item_id, principal_type, principal_id, dismissed_at) VALUES (gen_random_uuid(), ${companyId}, ${ownedByFounder.id}, 'user', ${memberId}, now())`);
+
+    const memberHidden = await svc.hiddenCount(companyId, memberId, "waiting_on_you", "team_member");
+    expect(memberHidden).toBe(1); // only the member-owned hidden item is in RBAC scope
+  });
 });

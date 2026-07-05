@@ -67,6 +67,31 @@ export function deregisterRuntimeHook(token: string): void {
 }
 
 /**
+ * Remove ALL hook entries registered for the given run id. Called from
+ * heartbeat.cancelRun (R1 zombie-run teardown).
+ *
+ * Belt-and-suspenders: the primary cleanup is the deregisterRuntimeHook call in
+ * the adapter finally block. But a zombie CLI whose process survived the cancel
+ * keeps the adapter `await` pending, so that finally never runs and the hook
+ * token stays valid for its 24h TTL — long enough for the zombie to keep POSTing
+ * permission requests. Purging by runId on cancel closes that window immediately
+ * (any subsequent hook POST resolves no entry → the route denies).
+ *
+ * Returns the number of entries removed (0 when the run had no HTTP hook bridge,
+ * e.g. codex_local which drives approvals in-process).
+ */
+export function deregisterRuntimeHooksForRun(runId: string): number {
+  let removed = 0;
+  for (const [token, entry] of registry) {
+    if (entry.runId === runId) {
+      registry.delete(token);
+      removed += 1;
+    }
+  }
+  return removed;
+}
+
+/**
  * Resolve a token to its registered entry.
  *
  * Returns null (without throwing) for:

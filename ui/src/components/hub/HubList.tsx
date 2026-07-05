@@ -16,9 +16,26 @@ interface HubListProps {
   groupMode?: HubGroupMode;
   density?: HubDensity;
   onSelectItem: (itemId: string) => void;
+  /**
+   * Row-click "open" gesture: selects the item AND opens its entity as a tab.
+   * When omitted, a click falls back to {@link onSelectItem} (select only).
+   * Keyboard j/k navigation always uses {@link onSelectItem} (preview, no tab).
+   */
+  onOpenItem?: (item: HubItemListRow) => void;
   onMarkRead: (itemId: string) => void;
   onToggleBulkItem: (itemId: string) => void;
   onLoadMore?: () => void;
+  /** Restore a personally-dismissed hidden row (revealed via the "N hidden" chip). */
+  onUndismiss?: (itemId: string) => void;
+  /** Restore a personally-snoozed hidden row (revealed via the "N hidden" chip). */
+  onUnsnooze?: (itemId: string) => void;
+}
+
+/** A row is "hidden" when the current user dismissed it or has an active snooze. */
+function hiddenState(item: HubItemListRow): "dismissed" | "snoozed" | null {
+  if (item.dismissedAt) return "dismissed";
+  if (item.snoozedUntil && new Date(item.snoozedUntil).getTime() > Date.now()) return "snoozed";
+  return null;
 }
 
 function formatDate(value: string) {
@@ -39,9 +56,12 @@ export function HubList({
   groupMode = "auto",
   density = "comfortable",
   onSelectItem,
+  onOpenItem,
   onMarkRead,
   onToggleBulkItem,
   onLoadMore,
+  onUndismiss,
+  onUnsnooze,
 }: HubListProps) {
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set());
 
@@ -116,6 +136,7 @@ export function HubList({
     const entry = HUB_REGISTRY[item.semanticType];
     const Icon = entry.icon;
     const selected = selectedItemId === item.id;
+    const hidden = hiddenState(item);
     return (
       <div
         key={item.id}
@@ -123,6 +144,7 @@ export function HubList({
           "grid h-[92px] w-full grid-cols-[18px_28px_1fr_auto] gap-3 border-b border-border px-4 py-3 text-left transition-colors hover:bg-card",
           density === "compact" && "h-[76px] py-2",
           selected && "bg-card",
+          hidden && "opacity-70",
         )}
       >
         <input
@@ -139,7 +161,8 @@ export function HubList({
           type="button"
           data-hub-row-id={item.id}
           onClick={() => {
-            onSelectItem(item.id);
+            if (onOpenItem) onOpenItem(item);
+            else onSelectItem(item.id);
             if (!item.readAt) onMarkRead(item.id);
           }}
           className="min-w-0 text-left"
@@ -153,18 +176,37 @@ export function HubList({
           <span className="mt-1 block truncate text-xs text-muted-foreground">
             {item.summary ?? entry.label}
           </span>
-          <span className="mt-2 flex min-w-0 gap-1.5">
+          <span className="mt-2 flex min-w-0 items-center gap-1.5">
             <span className="inline-flex rounded border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground">
               {entry.label}
             </span>
             <span className="inline-flex rounded border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground">
               {item.priority}
             </span>
+            {hidden ? (
+              <span className="inline-flex rounded border border-border bg-muted/40 px-1.5 py-0.5 text-[11px] text-muted-foreground">
+                {hidden}
+              </span>
+            ) : null}
           </span>
         </button>
-        <span className="whitespace-nowrap text-xs text-muted-foreground">
-          {formatDate(item.createdAt)}
-        </span>
+        <div className="flex flex-col items-end justify-between gap-1">
+          <span className="whitespace-nowrap text-xs text-muted-foreground">
+            {formatDate(item.createdAt)}
+          </span>
+          {hidden ? (
+            <button
+              type="button"
+              onClick={() => {
+                if (hidden === "dismissed") onUndismiss?.(item.id);
+                else onUnsnooze?.(item.id);
+              }}
+              className="whitespace-nowrap rounded border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-card"
+            >
+              {hidden === "dismissed" ? "Undismiss" : "Unsnooze"}
+            </button>
+          ) : null}
+        </div>
       </div>
     );
   }

@@ -106,7 +106,7 @@ function createSequenceDb(config: {
 
   function makeChain(getResult: () => MockRow[]) {
     const chain: Record<string, unknown> = {};
-    for (const m of ["from", "where", "set", "values", "returning", "innerJoin", "leftJoin", "orderBy", "limit", "delete"]) {
+    for (const m of ["from", "where", "set", "values", "onConflictDoNothing", "returning", "innerJoin", "leftJoin", "orderBy", "limit", "delete"]) {
       chain[m] = (..._args: unknown[]) => chain;
     }
     chain.then = (resolve: (v: MockRow[]) => unknown) => Promise.resolve(resolve(getResult()));

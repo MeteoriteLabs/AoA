@@ -2,9 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   buildApprovalHubEmit,
   buildDiscussionPendingHubEmit,
+  buildExtractionFailedHubEmit,
   buildJoinRequestHubEmit,
+  buildRoutineFailedHubEmit,
   buildStaleIssueHubEmit,
   buildSuggestionHubEmit,
+  formatExtractionFailureGuidance,
 } from "../services/hub-source-producers.js";
 
 describe("hub source producers", () => {
@@ -158,5 +161,99 @@ describe("hub source producers", () => {
     } as never);
 
     expect(emit.sourcePermissionRevision).toBe(updatedAt);
+  });
+
+  it("maps a failed extraction to extraction_failed keyed on the entry id", () => {
+    const emit = buildExtractionFailedHubEmit({
+      entryId: "entry-1",
+      discussionId: "discussion-1",
+      companyId: "company-1",
+      discussionTitle: "Q3 planning",
+      ownerUserId: "user-1",
+      failureKind: "not_installed",
+      failureMessage: "codex CLI not found",
+      updatedAt: new Date("2026-07-04T00:00:00Z"),
+    });
+
+    expect(emit).toMatchObject({
+      companyId: "company-1",
+      semanticType: "extraction_failed",
+      // NOT "discussion" — avoids the discussion_pending-scoped reconciler.
+      sourceType: "discussion_entry",
+      sourceId: "entry-1",
+      ownerUserId: "user-1",
+      relatedEntityType: "discussion",
+      relatedEntityId: "discussion-1",
+      priority: "high",
+      title: "Extraction failed in Q3 planning",
+    });
+    // Summary carries the classified failure-type guidance, not the raw error.
+    expect(emit.summary).toBe("codex CLI not found");
+  });
+
+  it("falls back to a generic title and guidance when the discussion has no title", () => {
+    const emit = buildExtractionFailedHubEmit({
+      entryId: "entry-2",
+      discussionId: "discussion-2",
+      companyId: "company-1",
+      discussionTitle: null,
+      ownerUserId: null,
+      failureKind: null,
+      failureMessage: null,
+      updatedAt: "2026-07-04T00:00:00.000Z",
+    });
+
+    expect(emit.title).toBe("Extraction failed in Discussion");
+    expect(emit.summary).toBe("Extraction failed.");
+    expect(emit.sourcePermissionRevision).toBe("2026-07-04T00:00:00.000Z");
+  });
+
+  it("classifies extraction failure guidance by kind", () => {
+    expect(formatExtractionFailureGuidance("not_authed", null)).toContain("logged in");
+    expect(formatExtractionFailureGuidance("timeout", null)).toContain("timed out");
+    expect(formatExtractionFailureGuidance("nonzero_exit", "boom")).toContain("Reprocess");
+    // never points at a hosted key / Settings (Decision #104).
+    expect(formatExtractionFailureGuidance("not_installed", null)).not.toMatch(/settings|api key/i);
+  });
+
+  it("maps a failed routine run to routine_outcome keyed on the run id", () => {
+    const emit = buildRoutineFailedHubEmit({
+      runId: "run-1",
+      routineId: "routine-1",
+      companyId: "company-1",
+      routineName: "Weekly report",
+      failureReason: "Execution issue moved to blocked",
+      createdByUserId: "user-1",
+      updatedAt: new Date("2026-07-04T00:00:00Z"),
+    });
+
+    expect(emit).toMatchObject({
+      companyId: "company-1",
+      semanticType: "routine_outcome",
+      sourceType: "routine_run",
+      sourceId: "run-1",
+      relatedEntityType: "routine",
+      relatedEntityId: "routine-1",
+      ownerUserId: "user-1",
+      priority: "high",
+      title: "Routine failed: Weekly report",
+      summary: "Execution issue moved to blocked",
+    });
+  });
+
+  it("routes a failed routine with no creator to the board pool", () => {
+    const emit = buildRoutineFailedHubEmit({
+      runId: "run-2",
+      routineId: "routine-2",
+      companyId: "company-1",
+      routineName: "Nightly sweep",
+      failureReason: null,
+      createdByUserId: null,
+      updatedAt: new Date("2026-07-04T00:00:00Z"),
+    });
+
+    expect(emit.ownerPool).toBe("board");
+    expect(emit.ownerUserId).toBeUndefined();
+    expect(emit.summary).toBe("Routine run failed.");
   });
 });

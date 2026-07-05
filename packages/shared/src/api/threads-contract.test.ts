@@ -198,16 +198,21 @@ describe("threads API contract", () => {
   });
 
   describe("NewNotificationTypeSchema", () => {
-    it("accepts all 5 new thread notification types", () => {
+    it("accepts the 3 new thread notification types", () => {
       for (const t of [
-        "thread.scope_proposal_posted",
         "thread.artifact_needs_review",
         "thread.crew_failed",
         "thread.spinoff_suggested",
-        "thread.human_input_needed",
       ]) {
         expect(NewNotificationTypeSchema.parse(t)).toBe(t);
       }
+    });
+
+    // Pruned (Task 10, 2026-07-04): these two dotted event types were removed
+    // with their hub semantic types (zero writers ever shipped).
+    it("rejects the pruned thread notification types", () => {
+      expect(() => NewNotificationTypeSchema.parse("thread.scope_proposal_posted")).toThrow();
+      expect(() => NewNotificationTypeSchema.parse("thread.human_input_needed")).toThrow();
     });
   });
 });

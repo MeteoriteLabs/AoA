@@ -65,6 +65,42 @@ describe("resolve-crew-adapter (provider-switching fixes)", () => {
     expect(needsAdapterBackfill("codex_local", { model: "gpt-5.3-codex", env: {} })).toBe(true); // no opts → unchanged old behavior
   });
 
+  // BUG-6: an EMPTY persisted model on a ChatGPT/subscription codex_local run must
+  // also be healed — with no model, codex 0.130 falls back to the incompatible
+  // gpt-5.3-codex and 400s → empty turn. Case 3's length gate is dropped so the
+  // empty and non-empty-incompatible cases heal identically (isCodexCompatibleModel("")
+  // is false), while api-key/own-key runs still return false before the model check.
+  describe("needsAdapterBackfill — codex_local empty model (BUG-6 fix)", () => {
+    it("heals an EMPTY model on chatgpt-auth codex_local (subscription)", () => {
+      // No api-key auth, no own key, empty model → must backfill to the default.
+      expect(needsAdapterBackfill("codex_local", { model: "" })).toBe(true);
+      expect(needsAdapterBackfill("codex_local", {})).toBe(true);
+    });
+
+    it("does NOT heal an empty model when the run is api-key auth", () => {
+      expect(
+        needsAdapterBackfill("codex_local", { model: "" }, { isApiKeyAuth: true }),
+      ).toBe(false);
+    });
+
+    it("does NOT heal an empty model when the agent carries its own OPENAI_API_KEY", () => {
+      expect(
+        needsAdapterBackfill("codex_local", {
+          model: "",
+          env: { OPENAI_API_KEY: "sk-live" },
+        }),
+      ).toBe(false);
+    });
+
+    it("still heals a non-empty incompatible model (gpt-5.3-codex) — unchanged", () => {
+      expect(needsAdapterBackfill("codex_local", { model: "gpt-5.3-codex" })).toBe(true);
+    });
+
+    it("leaves a compatible model untouched (gpt-5.5)", () => {
+      expect(needsAdapterBackfill("codex_local", { model: "gpt-5.5" })).toBe(false);
+    });
+  });
+
   // Codex P2 (Case 4): the previous opencode crew default seeded a BARE
   // `gpt-5.3-codex` (API-key-only, 400s on a ChatGPT login). The corrected
   // default is the slash-format `openai/gpt-5.2-codex`. Existing rows must
