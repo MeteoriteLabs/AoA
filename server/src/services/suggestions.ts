@@ -149,6 +149,13 @@ function canonicalReconstructableDedupeKey(suggestion: {
   return null;
 }
 
+function fallbackDedupeKey(suggestion: {
+  category: string;
+  actionPayload?: Record<string, unknown> | null;
+}): string {
+  return `${suggestion.category}:${sha256Digest(suggestion.actionPayload ?? null)}`;
+}
+
 function resolveDedupeKey(suggestion: {
   category: string;
   actionType?: string | null;
@@ -161,7 +168,7 @@ function resolveDedupeKey(suggestion: {
   if (suggestion.dedupeKey && suggestion.dedupeKey.length > 0) {
     return suggestion.dedupeKey;
   }
-  return `${suggestion.category}:${sha256Digest(suggestion.actionPayload ?? null)}`;
+  return fallbackDedupeKey(suggestion);
 }
 
 function normalizeTaskTitle(title: string): string {
@@ -976,13 +983,19 @@ export function suggestionService(db: Db) {
       const existingPending = await db
         .select({
           category: suggestions.category,
+          actionType: suggestions.actionType,
+          title: suggestions.title,
           dedupeKey: suggestions.dedupeKey,
           actionPayload: suggestions.actionPayload,
         })
         .from(suggestions)
         .where(and(eq(suggestions.companyId, companyId), eq(suggestions.status, "pending")));
 
-      const existingKeys = new Set(existingPending.map((suggestion) => resolveDedupeKey(suggestion)));
+      const existingKeys = new Set<string>();
+      for (const suggestion of existingPending) {
+        existingKeys.add(resolveDedupeKey(suggestion));
+        existingKeys.add(fallbackDedupeKey(suggestion));
+      }
 
       const detectorResults = await Promise.all([
         service.detectGoalGaps(companyId),
@@ -998,8 +1011,10 @@ export function suggestionService(db: Db) {
       const detected = detectorResults.flat();
       const toInsert = detected.filter((suggestion) => {
         const key = resolveDedupeKey(suggestion);
-        if (existingKeys.has(key)) return false;
+        const fallbackKey = fallbackDedupeKey(suggestion);
+        if (existingKeys.has(key) || existingKeys.has(fallbackKey)) return false;
         existingKeys.add(key);
+        existingKeys.add(fallbackKey);
         return true;
       });
 

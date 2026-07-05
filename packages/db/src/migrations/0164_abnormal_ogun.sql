@@ -39,24 +39,64 @@
 -- for reconstructable detector families and leaves unreconstructable survivors
 -- NULL instead of writing a hash that runtime would later trust.
 
--- 1. Collapse existing pending duplicates (keep newest per company/category/payload).
+-- 1. Collapse existing pending duplicates (keep newest per company/canonical
+-- key). The partition key mirrors the canonical backfill below when possible,
+-- then falls back to the old category+payload duplicate identity.
+WITH ranked AS (
+  SELECT
+    "id",
+    row_number() OVER (
+      PARTITION BY
+        "company_id",
+        COALESCE(
+          CASE
+            WHEN "category" = 'goal_gap'
+              AND "action_type" = 'create_task'
+              AND "action_payload"->>'goalId' IS NOT NULL
+              AND coalesce("title", '') ILIKE '%has no tasks yet%'
+              THEN 'goal_gap:no_tasks:' || ("action_payload"->>'goalId')
+            WHEN "category" = 'goal_gap'
+              AND "action_type" = 'create_task'
+              AND "action_payload"->>'goalId' IS NOT NULL
+              AND coalesce("title", '') ILIKE '%looks stalled%'
+              THEN 'goal_gap:stalled:' || ("action_payload"->>'goalId')
+            WHEN "category" = 'memory_gap'
+              AND "action_type" = 'suggest_memory'
+              AND "action_payload"->>'layer' = 'identity'
+              THEN 'memory_gap:identity'
+            WHEN "category" = 'memory_gap'
+              AND "action_type" = 'suggest_memory'
+              AND "action_payload"->>'departmentId' IS NOT NULL
+              THEN 'memory_gap:domain:' || ("action_payload"->>'departmentId')
+            WHEN "category" = 'memory_gap'
+              AND "action_type" = 'archive_memory'
+              AND "action_payload"->>'memoryItemId' IS NOT NULL
+              THEN 'memory_gap:stale:' || ("action_payload"->>'memoryItemId')
+            WHEN "category" = 'pattern_detected'
+              AND "action_payload"->>'patternId' IS NOT NULL
+              THEN 'pattern_detected:' || ("action_payload"->>'patternId')
+            WHEN "category" = 'budget_optimization'
+              AND coalesce("title", '') ILIKE '%company budget%'
+              THEN 'budget_optimization:company'
+            ELSE NULL
+          END,
+          "category" || ':payload:' || coalesce("action_payload"::text, 'null')
+        )
+      ORDER BY "created_at" DESC, "id" DESC
+    ) AS rn
+  FROM "suggestions"
+  WHERE "status" = 'pending'
+)
 UPDATE "suggestions" AS s
 SET "status" = 'dismissed', "updated_at" = now()
-WHERE s."status" = 'pending'
-  AND EXISTS (
-    SELECT 1 FROM "suggestions" AS n
-    WHERE n."company_id" = s."company_id"
-      AND n."category" = s."category"
-      AND n."action_payload" IS NOT DISTINCT FROM s."action_payload"
-      AND n."status" = 'pending'
-      AND (n."created_at" > s."created_at" OR (n."created_at" = s."created_at" AND n."id" > s."id"))
-  );
+FROM ranked r
+WHERE s."id" = r."id" AND r.rn > 1;
 --> statement-breakpoint
 -- 1b. Archive already-materialized hub rows for suggestions this migration just
 -- dismissed. Runtime reconcile only sees rows it dismisses itself; migration-
 -- dismissed historical rows need the same source-row cleanup here.
 UPDATE "notifications" AS h
-SET "status" = 'archived', "updated_at" = now()
+SET "status" = 'archived', "archived_at" = COALESCE("archived_at", now())
 WHERE h."source_type" = 'suggestion'
   AND h."status" = 'open'
   AND EXISTS (

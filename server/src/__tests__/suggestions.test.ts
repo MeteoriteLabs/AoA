@@ -591,4 +591,53 @@ describe("suggestionService", () => {
     );
     expect((db as any).__insertValues).toHaveLength(0);
   });
+
+  it("runAllDetectors compares detector keys against legacy payload fallback keys", async () => {
+    const payload = {
+      title: "Resolve bottleneck for: Ship checkout",
+      description: 'Investigate why "Ship checkout" is blocked and define the unblock step.',
+      goalId: "goal-1",
+      priority: "high",
+      status: "backlog",
+      source: "manual",
+    };
+    const db = createSequenceDb({
+      selects: [
+        [],
+        [
+          {
+            category: "pipeline_bottleneck",
+            actionType: "create_task",
+            title: 'Task "Ship checkout" has been blocked for 8 days',
+            dedupeKey: null,
+            actionPayload: payload,
+          },
+        ],
+      ],
+    });
+
+    const svc = suggestionService(db as any);
+    vi.spyOn(svc, "detectGoalGaps").mockResolvedValue([]);
+    vi.spyOn(svc, "detectPipelineBottlenecks").mockResolvedValue([
+      {
+        category: "pipeline_bottleneck",
+        actionType: "create_task",
+        dedupeKey: "pipeline_bottleneck:blocked:issue-1",
+        title: 'Task "Ship checkout" has been blocked for 8 days',
+        evidence: "The task has stayed blocked.",
+        actionPayload: payload,
+      } as any,
+    ]);
+    vi.spyOn(svc, "detectMemoryGaps").mockResolvedValue([]);
+    vi.spyOn(svc, "detectPatternDetected").mockResolvedValue([]);
+    vi.spyOn(svc, "detectBudgetOptimization").mockResolvedValue([]);
+    vi.spyOn(svc, "detectRecurringWork").mockResolvedValue([]);
+    vi.spyOn(svc, "detectRiskFlags").mockResolvedValue([]);
+    vi.spyOn(svc, "detectWorkloadBalance").mockResolvedValue([]);
+
+    const result = await svc.runAllDetectors("co-1");
+
+    expect(result).toEqual({ detected: 1, created: 0 });
+    expect((db as any).__insertValues).toHaveLength(0);
+  });
 });
