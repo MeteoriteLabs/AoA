@@ -103,6 +103,13 @@ export function resolveLaneForStoredType(semanticType: string | null): HubLane |
     : laneForSemanticType("legacy_other");
 }
 
+export function normalizeStoredSemanticType(semanticType: string | null): HubSemanticType | null {
+  if (!semanticType) return null;
+  return HUB_SEMANTIC_TYPE_SET.has(semanticType)
+    ? semanticType as HubSemanticType
+    : "legacy_other";
+}
+
 // ── Emit ────────────────────────────────────────────────────────────────────
 
 export interface EmitArgs {
@@ -232,7 +239,8 @@ export function hubItemsService(db: Db) {
   // fetch, `q` search). Map an unknown non-null type to legacy_other's lane
   // (notifications) — the internal catch-all sink — so it degrades cleanly.
   function decorateItem<T extends { semanticType: string | null }>(row: T) {
-    return { ...row, lane: resolveLaneForStoredType(row.semanticType) };
+    const semanticType = normalizeStoredSemanticType(row.semanticType);
+    return { ...row, semanticType, lane: resolveLaneForStoredType(row.semanticType) };
   }
 
   function publishHubItemChanged(
@@ -264,8 +272,10 @@ export function hubItemsService(db: Db) {
     } = {},
     groupMode: HubGroupMode = "auto",
   ): HubListRow {
+    const semanticType = normalizeStoredSemanticType(item.semanticType);
     return {
       ...item,
+      semanticType,
       lane: resolveLaneForStoredType(item.semanticType),
       readAt: state.readAt ?? null,
       snoozedUntil: state.snoozedUntil ?? null,

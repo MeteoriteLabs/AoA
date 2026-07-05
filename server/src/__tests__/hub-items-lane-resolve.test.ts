@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveLaneForStoredType } from "../services/hub-items.js";
+import { normalizeStoredSemanticType, resolveLaneForStoredType } from "../services/hub-items.js";
 
 // P3-1 (Task 10): the read-side lane resolver must never return `undefined` for
 // a stray/pruned semanticType. The QA instance carries [SEED] rows of the pruned
@@ -28,5 +28,13 @@ describe("resolveLaneForStoredType (P3-1 unknown-type strip)", () => {
 
   it("degrades an arbitrary unknown/legacy string to the notifications lane", () => {
     expect(resolveLaneForStoredType("old.plugin.type")).toBe("notifications");
+  });
+
+  it("normalizes pruned and unknown stored semantic types to legacy_other for UI registry safety", () => {
+    expect(normalizeStoredSemanticType("human_input_needed")).toBe("legacy_other");
+    expect(normalizeStoredSemanticType("scope_proposal")).toBe("legacy_other");
+    expect(normalizeStoredSemanticType("old.plugin.type")).toBe("legacy_other");
+    expect(normalizeStoredSemanticType("run_failed")).toBe("run_failed");
+    expect(normalizeStoredSemanticType(null)).toBeNull();
   });
 });

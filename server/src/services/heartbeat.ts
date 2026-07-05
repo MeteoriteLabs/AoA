@@ -193,12 +193,39 @@ export function isTerminalRunStatus(status: string): boolean {
  *
  * Never returns "write": once the row is terminal, the status is latched.
  */
+const NON_CONTRADICTORY_TERMINAL_METADATA_KEYS = new Set([
+  "usageJson",
+  "stdoutExcerpt",
+  "stderrExcerpt",
+  "logBytes",
+  "logSha256",
+  "logCompressed",
+]);
+
 export function resolveTerminalLatchFallback(
   patch: Record<string, unknown> | undefined,
+  context?: { requestedStatus?: string; currentStatus?: string | null },
 ): { action: "metadata"; metadataPatch: Record<string, unknown> } | { action: "noop" } {
   const metadataPatch: Record<string, unknown> = patch ? { ...patch } : {};
   delete metadataPatch.status;
   if (Object.keys(metadataPatch).length === 0) return { action: "noop" };
+
+  const requestedStatus = context?.requestedStatus;
+  const currentStatus = context?.currentStatus ?? null;
+  if (
+    requestedStatus &&
+    currentStatus &&
+    isTerminalRunStatus(requestedStatus) &&
+    isTerminalRunStatus(currentStatus) &&
+    requestedStatus !== currentStatus
+  ) {
+    const safePatch = Object.fromEntries(
+      Object.entries(metadataPatch).filter(([key]) => NON_CONTRADICTORY_TERMINAL_METADATA_KEYS.has(key)),
+    );
+    if (Object.keys(safePatch).length === 0) return { action: "noop" };
+    return { action: "metadata", metadataPatch: safePatch };
+  }
+
   return { action: "metadata", metadataPatch };
 }
 
@@ -1730,7 +1757,10 @@ export function heartbeatService(db: Db) {
       // SKIP the live-event + terminal hub emit. This keeps the legitimate
       // cancelled→cancelled metadata writes (usageJson / log excerpts) working
       // (P2-1) while blocking cancelled→running / cancelled→failed resurrection.
-      const fallback = resolveTerminalLatchFallback(patch as Record<string, unknown> | undefined);
+      const fallback = resolveTerminalLatchFallback(patch as Record<string, unknown> | undefined, {
+        requestedStatus: status,
+        currentStatus: current.status,
+      });
       if (fallback.action === "noop") {
         // Pure status flip against a terminal row (no metadata) — nothing to do.
         return current;

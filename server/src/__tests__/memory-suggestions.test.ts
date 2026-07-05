@@ -354,6 +354,7 @@ describe("memoryService agent suggestions", () => {
     expect(captured.insertValues[0]).toEqual(expect.objectContaining({
       category: "agent_proposal",
       actionType: "archive_memory",
+      dedupeKey: "agent_proposal:archive_memory:mem-1:agent-1",
       relatedMemoryItemId: "mem-1",
       title: "Agent Atlas suggests archiving 'Old note'",
     }));

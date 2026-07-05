@@ -101,11 +101,12 @@ afterAll(async () => {
   }
 }, 60_000);
 
-// Skipped on Windows due to embedded-postgres UTF-8 -> WIN1252 encoding
-// issue (Issue #113). The patched embedded-postgres@18.1.0-beta.16 doesn't
-// fully cover all paths on the Windows runner, so initdb fails inside the
-// 60s beforeAll hook. Linux + macOS coverage remains.
-describe.skipIf(process.platform === "win32")(
+// Run only on Linux CI. This heavyweight embedded-postgres cascade test already
+// exercises the platform-independent service/migration contract in the primary
+// verify job; Windows has a known initdb encoding issue, and macOS runners have
+// shown intermittent embedded-postgres setup/teardown timeouts in full-suite
+// cross-platform runs.
+describe.skipIf(process.platform !== "linux")(
   "companies.remove() — real DB integration (0066 cascade sweep)",
   () => {
     it("deletes a company with rows in every child table", async () => {

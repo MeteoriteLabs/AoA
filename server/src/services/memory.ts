@@ -1281,6 +1281,7 @@ export function memoryService(db: Db) {
         reason: sourceContext,
         agentId,
       };
+      const dedupeKey = `agent_proposal:archive_memory:${memoryItemId}:${agentId}`;
 
       if (existing) {
         return db
@@ -1288,6 +1289,7 @@ export function memoryService(db: Db) {
           .set({
             title,
             actionPayload,
+            dedupeKey,
             updatedAt: new Date(),
           })
           .where(eq(suggestions.id, existing.id))
@@ -1303,6 +1305,7 @@ export function memoryService(db: Db) {
           actionType: "archive_memory",
           actionPayload,
           title,
+          dedupeKey,
           relatedMemoryItemId: memoryItemId,
         })
         .returning()

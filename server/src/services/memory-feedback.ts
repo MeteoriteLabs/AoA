@@ -188,6 +188,7 @@ async function createSuggestion(
     companyId,
     category: "pattern_detected",
     actionType: "suggest_memory",
+    dedupeKey: `pattern_detected:${patternId}`,
     title: buildSuggestionTitle(pattern, agentName),
     evidence: JSON.stringify(pattern.evidence.slice(0, 5)),
     actionPayload: {

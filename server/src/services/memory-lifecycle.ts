@@ -349,6 +349,7 @@ export function memoryLifecycleService(db: Db) {
           companyId,
           category: "memory_gap",
           actionType: "archive_memory",
+          dedupeKey: `memory_gap:stale:${item.id}`,
           title,
           evidence,
           status: "pending",

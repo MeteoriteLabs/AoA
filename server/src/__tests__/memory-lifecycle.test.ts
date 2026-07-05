@@ -69,21 +69,28 @@ function createSequenceDb(config: {
   const selects = config.selects ?? [];
   const updates = config.updates ?? [];
   const inserts = config.inserts ?? [];
+  const captured = {
+    insertValues: [] as unknown[],
+  };
 
   function makeChain(getResult: () => MockRow[]) {
     const chain: Record<string, unknown> = {};
     for (const m of ["from", "where", "set", "values", "returning", "innerJoin", "leftJoin", "orderBy", "limit"]) {
-      chain[m] = (..._args: unknown[]) => chain;
+      chain[m] = (...args: unknown[]) => {
+        if (m === "values") captured.insertValues.push(args[0]);
+        return chain;
+      };
     }
     chain.then = (resolve: (v: MockRow[]) => unknown) => Promise.resolve(resolve(getResult()));
     return chain;
   }
 
-  return {
+  const db = {
     select: (..._args: unknown[]) => makeChain(() => selects[selectIdx++] ?? []),
     update: (..._args: unknown[]) => makeChain(() => updates[updateIdx++] ?? []),
     insert: (..._args: unknown[]) => makeChain(() => inserts[insertIdx++] ?? []),
   };
+  return Object.assign(db, { captured });
 }
 
 describe("Memory Lifecycle Service", () => {
@@ -282,6 +289,12 @@ describe("Memory Lifecycle Service", () => {
       const count = await svc.flagStaleItems("co-1");
 
       expect(count).toBe(1);
+      expect(db.captured.insertValues[0]).toEqual(expect.objectContaining({
+        category: "memory_gap",
+        actionType: "archive_memory",
+        dedupeKey: "memory_gap:stale:stale-1",
+        relatedMemoryItemId: "stale-1",
+      }));
       // Flagging creates suggestions — does NOT create activity log entries
       expect(logActivity).not.toHaveBeenCalled();
     });

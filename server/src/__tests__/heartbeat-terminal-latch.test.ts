@@ -101,6 +101,31 @@ describe("resolveTerminalLatchFallback (setRunStatus latch)", () => {
     expect(result.metadataPatch.stdoutExcerpt).toBe("stdout");
   });
 
+  it("drops contradictory terminal metadata while preserving neutral run artifacts", () => {
+    const result = resolveTerminalLatchFallback(
+      {
+        status: "cancelled",
+        error: "cancelled after success",
+        errorCode: "cancelled",
+        finishedAt: new Date("2026-07-05T00:00:00.000Z"),
+        usageJson: { costUsd: 0.12 },
+        stdoutExcerpt: "final stdout",
+        stderrExcerpt: "final stderr",
+        logBytes: 123,
+      },
+      { requestedStatus: "cancelled", currentStatus: "succeeded" },
+    );
+
+    expect(result.action).toBe("metadata");
+    if (result.action !== "metadata") throw new Error("unreachable");
+    expect(result.metadataPatch).toEqual({
+      usageJson: { costUsd: 0.12 },
+      stdoutExcerpt: "final stdout",
+      stderrExcerpt: "final stderr",
+      logBytes: 123,
+    });
+  });
+
   it("is a no-op for a pure status flip against a terminal row (no metadata to persist)", () => {
     // clearRunWaiting on a live run passes the guard normally; but a bare status
     // flip with no other fields that reaches a terminal row has nothing to write.
