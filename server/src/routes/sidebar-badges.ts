@@ -82,6 +82,11 @@ export function sidebarBadgeRoutes(db: Db) {
       } catch (err) {
         logger.warn({ err, companyId }, "sidebar-badges budget reconcile failed (best-effort)");
       }
+      try {
+        await hubItems.reconcile(companyId, { sourceType: "heartbeat_run" });
+      } catch (err) {
+        logger.warn({ err, companyId }, "sidebar-badges heartbeat reconcile failed (best-effort)");
+      }
       await emitStaleWorkHubItems(db, companyId, null);
       const role = await resolveHubBadgeRole(req, companyId, req.actor.userId);
       const hubCounts = await counterSnapshots.getOrRefresh({

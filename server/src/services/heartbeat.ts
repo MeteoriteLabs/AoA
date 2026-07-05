@@ -4415,7 +4415,7 @@ export function heartbeatService(db: Db) {
       );
 
       const liveness = classifyCompletedRunLiveness({ outcome });
-      await setRunStatus(run.id, status, {
+      const completedRun = await setRunStatus(run.id, status, {
         finishedAt: new Date(),
         livenessState: liveness.livenessState,
         livenessReason: liveness.livenessReason,
@@ -4432,6 +4432,13 @@ export function heartbeatService(db: Db) {
         logSha256: logSummary?.sha256,
         logCompressed: logSummary?.compressed ?? false,
       });
+      if (!completedRun) {
+        logger.info(
+          { runId: run.id, status },
+          "heartbeat completion lost terminal-status race; skipping completion side effects",
+        );
+        return;
+      }
 
       await setWakeupStatus(run.wakeupRequestId, outcome === "succeeded" ? "completed" : status, {
         finishedAt: new Date(),
@@ -4631,62 +4638,65 @@ export function heartbeatService(db: Db) {
         logSha256: logSummary?.sha256,
         logCompressed: logSummary?.compressed ?? false,
       });
+      if (!failedRun) {
+        logger.info(
+          { runId: run.id, terminalStatus },
+          "heartbeat failure lost terminal-status race; skipping failure side effects",
+        );
+        return;
+      }
       await setWakeupStatus(run.wakeupRequestId, terminalStatus, {
         finishedAt: new Date(),
         error: message,
       });
-      await cancelRuntimeDecisionPromptsForRun(failedRun ?? run, `run ${terminalStatus}`);
+      await cancelRuntimeDecisionPromptsForRun(failedRun, `run ${terminalStatus}`);
 
-      if (failedRun) {
-        await appendRunEvent(failedRun, seq++, {
-          eventType: "error",
-          stream: "system",
-          level: "error",
-          message,
+      await appendRunEvent(failedRun, seq++, {
+        eventType: "error",
+        stream: "system",
+        level: "error",
+        message,
+      });
+      await releaseIssueExecutionAndPromote(failedRun);
+
+      await updateRuntimeState(agent, failedRun, {
+        exitCode: null,
+        signal: null,
+        timedOut: false,
+        errorMessage: message,
+      }, {
+        legacySessionId: runtimeForAdapter.sessionId,
+      });
+
+      if (taskKey && (previousSessionParams || previousSessionDisplayId || taskSession)) {
+        await upsertTaskSession({
+          companyId: agent.companyId,
+          agentId: agent.id,
+          adapterType: agent.adapterType,
+          taskKey,
+          sessionParamsJson: previousSessionParams,
+          sessionDisplayId: previousSessionDisplayId,
+          lastRunId: failedRun.id,
+          lastError: message,
         });
-        await releaseIssueExecutionAndPromote(failedRun);
-
-        await updateRuntimeState(agent, failedRun, {
-          exitCode: null,
-          signal: null,
-          timedOut: false,
-          errorMessage: message,
-        }, {
-          legacySessionId: runtimeForAdapter.sessionId,
-        });
-
-        if (taskKey && (previousSessionParams || previousSessionDisplayId || taskSession)) {
-          await upsertTaskSession({
-            companyId: agent.companyId,
-            agentId: agent.id,
-            adapterType: agent.adapterType,
-            taskKey,
-            sessionParamsJson: previousSessionParams,
-            sessionDisplayId: previousSessionDisplayId,
-            lastRunId: failedRun.id,
-            lastError: message,
-          });
-        }
       }
 
       await finalizeAgentStatus(agent.id, terminalStatus);
 
       // ── V2: Run summary comments for crash path (Decision #88) ──────
-      if (failedRun) {
-        await createRunSummaryComment({
-          agent,
-          run: failedRun,
-          outcome: terminalStatus,
-          adapterResult: {
-            exitCode: null,
-            signal: null,
-            timedOut: false,
-            errorMessage: message,
-          },
-          issueId: readNonEmptyString(context.issueId),
-          detectedFiles: [],
-        });
-      }
+      await createRunSummaryComment({
+        agent,
+        run: failedRun,
+        outcome: terminalStatus,
+        adapterResult: {
+          exitCode: null,
+          signal: null,
+          timedOut: false,
+          errorMessage: message,
+        },
+        issueId: readNonEmptyString(context.issueId),
+        detectedFiles: [],
+      });
 
       // P2-T2: surface thread-linked deliverable failures as a visible chat
       // card (not a silent `failed`). Best-effort — must never mask the

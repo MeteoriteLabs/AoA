@@ -129,6 +129,11 @@ describe("sidebar badge routes", () => {
     expect(mocks.emitOpenApprovalHubItems).toHaveBeenCalledWith(expect.anything(), "co-1");
     expect(mocks.emitLegacyAlertHubItems).toHaveBeenCalledWith(expect.anything(), "co-1");
     expect(mocks.emitStaleWorkHubItems).toHaveBeenCalledWith(expect.anything(), "co-1", null);
+    expect(mocks.hubItems.reconcile).toHaveBeenCalledWith("co-1", { sourceType: "company_budget" });
+    expect(mocks.hubItems.reconcile).toHaveBeenCalledWith("co-1", { sourceType: "heartbeat_run" });
+    expect(mocks.hubItems.reconcile.mock.invocationCallOrder[1]).toBeLessThan(
+      mocks.counterSnapshots.getOrRefresh.mock.invocationCallOrder[0],
+    );
     expect(mocks.counterSnapshots.getOrRefresh).toHaveBeenCalledWith({
       companyId: "co-1",
       userId: "user-1",
