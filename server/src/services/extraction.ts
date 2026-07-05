@@ -1,6 +1,6 @@
-import { eq, and, desc, gt, sql } from "drizzle-orm";
+import { eq, and, desc, gt, gte, sql, ne, isNull, asc, inArray } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { debriefs, briefs, briefItems, projects, discussions, discussionEntries, discussionExtractedItems, internalAgentConfig } from "@armyofagents/db";
+import { debriefs, briefs, briefItems, projects, discussions, discussionEntries, discussionExtractedItems, internalAgentConfig, threadScopeVersions } from "@armyofagents/db";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
 import { parseExtractedItems, type ExtractedItem, type ExtractedItemType } from "./extraction-parser.js";
@@ -17,6 +17,22 @@ import { hubItemsService } from "./hub-items.js";
 // continue to work unchanged after the move to extraction-parser.ts.
 export { parseExtractedItems } from "./extraction-parser.js";
 export type { ExtractedItem, ExtractedItemType } from "./extraction-parser.js";
+
+// W2 (extract-then-scope) bounds for `extractThreadEntriesAwait`. Exported so
+// the unit tests pin against the real values (no silent caps).
+export const MAX_EXTRACT_ENTRIES_PER_SCOPE = 25;
+export const EXTRACT_SCOPE_DEADLINE_MS = 180_000; // eng-review D2 — see W2 plan
+/** The extractor's own "trivially short" threshold (Codex #270 P2, round 8): entries
+ *  under this are PERMANENTLY non-extractable ("ok", "thanks") — extract-then-scope
+ *  must neither attempt them nor let them cap the draft range, or a short greeting at
+ *  the head of the unscoped range wedges scoping for the whole thread forever. */
+export const MIN_EXTRACTABLE_CONTENT_LENGTH = 10;
+/** Codex #270 P2 (round 11): a `processing` claim older than this is a crashed
+ *  worker's leftovers — extract-then-scope may re-claim it. Far above the
+ *  extractor's own per-entry CLI timeout, so a LIVE worker is never re-claimed;
+ *  low enough that a zombie row cannot cap scoping for long. The atomic claim
+ *  stamps sourceInfo.extractionClaimedAt (epoch ms) to make this measurable. */
+export const EXTRACTION_PROCESSING_STALE_MS = 10 * 60_000;
 
 const EXTRACTION_PROMPT_TEMPLATE = `You are extracting structured items from a founder's discussion entry — raw notes, meeting summaries, brainstorming, or pasted conversations.
 
@@ -326,9 +342,18 @@ export function extractionService(db: Db) {
         // (concurrent reprocess / reprocess-all) AND making the durable
         // sweeper (sub-agent #1) safe to run alongside the untouched
         // reprocess direct-call path.
+        //
+        // Codex #270 P2 (round 11): the claim also stamps
+        // sourceInfo.extractionClaimedAt (epoch ms, merged — transcription/MCP
+        // metadata preserved) so extract-then-scope can tell a LIVE in-flight
+        // claim (cap the draft range before it) from a crashed worker's zombie
+        // row (re-claimable after EXTRACTION_PROCESSING_STALE_MS).
         const claimed = await db
           .update(discussionEntries)
-          .set({ extractionStatus: "processing" })
+          .set({
+            extractionStatus: "processing",
+            sourceInfo: sql`COALESCE(${discussionEntries.sourceInfo}, '{}'::jsonb) || jsonb_build_object('extractionClaimedAt', ${Date.now()}::bigint)`,
+          })
           .where(
             and(
               eq(discussionEntries.id, entryId),
@@ -356,7 +381,7 @@ export function extractionService(db: Db) {
         }
 
         // 3. Skip trivially short content
-        if (!entry.rawContent || entry.rawContent.trim().length < 10) {
+        if (!entry.rawContent || entry.rawContent.trim().length < MIN_EXTRACTABLE_CONTENT_LENGTH) {
           log.info("Content too short — skipping extraction");
           await db
             .update(discussionEntries)
@@ -614,6 +639,226 @@ export function extractionService(db: Db) {
           failureKind: null,
           failureMessage: errMessage,
         });
+      }
+    },
+
+    /** W2 (D6 extract-then-scope): extract the thread's never-extracted entries and WAIT.
+     *  Selection is conservative — entries with any existing extracted items are left
+     *  alone (a founder may be mid-review; reprocess semantics stay in reprocessAllEntries).
+     *  Serial (one CLI at a time), best-effort per entry, capped by COUNT
+     *  (MAX_EXTRACT_ENTRIES_PER_SCOPE) and by WALL-CLOCK (eng-review D2:
+     *  EXTRACT_SCOPE_DEADLINE_MS — a hung CLI must not stall the controller pipeline
+     *  for ~50 min; give an honest answer within minutes). Never throws. */
+    extractThreadEntriesAwait: async (
+      companyId: string,
+      discussionId: string,
+      opts?: {
+        /** Injectable extractor (tests). Defaults to the sibling extractFromDiscussionEntry. */
+        extractOne?: (companyId: string, entryId: string) => Promise<unknown>;
+        /** Injectable clock for the deadline unit test. Defaults to Date.now. */
+        now?: () => number;
+      },
+    ): Promise<{
+      attempted: number;
+      failed: number;
+      truncated: boolean;
+      deadlineHit: boolean;
+      /** Highest entry seq actually attempted (null when none). */
+      lastAttemptedSeq: number | null;
+      /** Codex #270 P2 (round 6): the seq the DRAFT RANGE must end at, or null for no
+       *  cap. Folds three signals: count-cap / deadline truncation (cap at the last
+       *  attempted entry) AND the first attempted entry whose extraction did NOT end
+       *  'completed' (cap just BEFORE it — a failed entry must stay in the NEXT scope's
+       *  range and be retried; an accepted draft over it would silently omit its work).
+       *  All-failed passes cap below the range start -> the compile yields no_entries ->
+       *  no draft is minted and every entry stays retryable. */
+      rangeEndCap: number | null;
+    }> => {
+      const log = logger.child({ service: "extraction", discussionId, companyId, mode: "scope-await" });
+      const extractOne =
+        opts?.extractOne ??
+        ((c: string, e: string) => extractionService(db).extractFromDiscussionEntry(c, e));
+      const now = opts?.now ?? Date.now;
+      const startedAt = now();
+      try {
+        // Codex #270 P1 (round 4): bound the selection to the UNSCOPED source range.
+        // Entries already covered by an accepted/completed scope version can legally
+        // still be skipped-with-no-items (human-created scopes, pre-W2 drafts, and the
+        // proposedTasks path which skips extraction). Without this lower bound the
+        // 25-entry/deadline budget burns on that old prefix, and worse: a truncated
+        // pass could report lastAttemptedSeq <= latest.sourceEndSeq, capping the new
+        // draft's range BELOW its sourceStartSeq -> no_entries -> the action commits
+        // with no draft covering the new tail. Mirrors createDraftFromThread's
+        // "next range starts after the last accepted/completed sourceEndSeq".
+        const [scopedThrough] = (await db
+          .select({ sourceEndSeq: threadScopeVersions.sourceEndSeq })
+          .from(threadScopeVersions)
+          .where(and(
+            eq(threadScopeVersions.threadId, discussionId),
+            inArray(threadScopeVersions.status, ["accepted", "completed"]),
+          ))
+          .orderBy(desc(threadScopeVersions.sourceEndSeq))
+          .limit(1)) as Array<{ sourceEndSeq: number }>;
+        const minSeq = (scopedThrough?.sourceEndSeq ?? 0) + 1;
+
+        // Eligible: HUMAN prose entries never extracted — status pending/skipped/failed
+        // AND no existing extracted items. Entries with items are a founder-review
+        // surface; deleting/re-extracting them is reprocess-only semantics
+        // (discussions.ts). Codex #270 P2: agent/system entries are excluded too —
+        // scoping must derive work from the founder's instructions, not crew chatter
+        // (same human discriminator as crew-task-service: authorAgentId IS NULL +
+        // inputType not agent/system/scope_proposal). LEFT JOIN + isNull keeps only
+        // zero-item entries, so join duplication is moot.
+        const rows = (await db
+          .select({
+            id: discussionEntries.id,
+            seq: discussionEntries.seq,
+            extractionStatus: discussionEntries.extractionStatus,
+            // Codex #270 P2 (round 11): the atomic claim stamps this (epoch ms) so a
+            // LIVE in-flight claim is distinguishable from a crashed worker's zombie row.
+            claimedAtMs: sql<string | null>`${discussionEntries.sourceInfo}->>'extractionClaimedAt'`,
+          })
+          .from(discussionEntries)
+          .leftJoin(
+            discussionExtractedItems,
+            eq(discussionExtractedItems.discussionEntryId, discussionEntries.id),
+          )
+          .where(and(
+            eq(discussionEntries.discussionId, discussionId),
+            gte(discussionEntries.seq, minSeq),
+            isNull(discussionEntries.authorAgentId),
+            ne(discussionEntries.inputType, "agent"),
+            ne(discussionEntries.inputType, "system"),
+            ne(discussionEntries.inputType, "scope_proposal"),
+            // 'processing' is selected too (round 11) — partitioned below into
+            // in-flight (cap signal, never attempted) vs stale (re-claimed).
+            inArray(discussionEntries.extractionStatus, ["pending", "skipped", "failed", "processing"]),
+            isNull(discussionExtractedItems.id),
+            // Codex #270 P2 (round 8): trivially-short entries are PERMANENTLY
+            // non-extractable (the extractor skips them by design) — exclude them here
+            // so they are never attempted and can never trip the first-failure range
+            // cap. They sit inside the draft range harmlessly (no work to lose).
+            sql`LENGTH(TRIM(COALESCE(${discussionEntries.rawContent}, ''))) >= ${MIN_EXTRACTABLE_CONTENT_LENGTH}`,
+          ))
+          .orderBy(asc(discussionEntries.seq))) as Array<{
+            id: string; seq: number; extractionStatus: string; claimedAtMs: string | null;
+          }>;
+
+        // Codex #270 P2 (round 11): a FRESH `processing` row is in-flight — another
+        // worker (background drain / reprocess) owns it. Never attempt it (double
+        // extraction), but its content is not captured yet either, so the draft range
+        // must stop BEFORE it — otherwise the items it produces seconds later land
+        // below the next sourceStartSeq and are orphaned from every future scope
+        // draft. A claim past EXTRACTION_PROCESSING_STALE_MS — or with no stamp at
+        // all (pre-stamp deploys; all live claims stamp) — is a crashed worker's
+        // zombie row: re-claim and attempt it like a failed entry, so a stranded row
+        // can never cap scoping forever.
+        const nowMs = now();
+        const isInFlight = (r: { extractionStatus: string; claimedAtMs: string | null }) =>
+          r.extractionStatus === "processing" &&
+          r.claimedAtMs != null &&
+          nowMs - Number(r.claimedAtMs) < EXTRACTION_PROCESSING_STALE_MS;
+        const firstInFlightSeq = rows.find(isInFlight)?.seq ?? null;
+        const attemptable = rows.filter((r) => !isInFlight(r));
+
+        const truncated = attemptable.length > MAX_EXTRACT_ENTRIES_PER_SCOPE;
+        const selected = attemptable.slice(0, MAX_EXTRACT_ENTRIES_PER_SCOPE);
+        if (truncated) {
+          log.warn(
+            { eligible: attemptable.length, cap: MAX_EXTRACT_ENTRIES_PER_SCOPE },
+            "extract-then-scope truncated eligible entries at cap",
+          );
+        }
+
+        let failed = 0;
+        let attempted = 0;
+        let deadlineHit = false;
+        // Codex #270 P1: track the highest seq actually attempted so a truncated pass
+        // (cap or deadline) can cap the draft's sourceEndSeq — entries past this seq
+        // were never extracted and MUST stay in the NEXT scope's range, not be silently
+        // consumed by this draft's range accounting.
+        let lastAttemptedSeq: number | null = null;
+        let firstFailedSeq: number | null = null;
+        for (const row of selected) {
+          // Eng-review D2: wall-clock deadline — a hung-but-installed CLI must never turn
+          // one scoping pass into a ~50-minute controller-pipeline stall. Compile with
+          // whatever was extracted so far; the founder gets an honest answer in minutes.
+          // The FIRST entry always runs (attempted > 0 guard): it keeps the invariant
+          // "truncated/deadlineHit ⇒ lastAttemptedSeq != null" that the sourceEndSeq
+          // capping relies on, and one entry is bounded by the extractor's own timeout.
+          if (attempted > 0 && now() - startedAt > EXTRACT_SCOPE_DEADLINE_MS) {
+            deadlineHit = true;
+            log.warn(
+              { attempted, remaining: selected.length - attempted, deadlineMs: EXTRACT_SCOPE_DEADLINE_MS },
+              "extract-then-scope deadline hit — compiling with items extracted so far",
+            );
+            break;
+          }
+          try {
+            if (row.extractionStatus !== "pending") {
+              // extractFromDiscussionEntry only claims 'pending' rows. Guarded on the
+              // status we SELECTED (round 11): a re-claimed stale-`processing` row's
+              // zombie worker may land its terminal write between our select and this
+              // flip — the guard makes that a 0-row update instead of clobbering it
+              // (extractOne then finds nothing claimable, and the post-read below
+              // handles whatever status the zombie wrote: completed → its items
+              // compile normally; failed → caps the range like any failure).
+              await db.update(discussionEntries)
+                .set({ extractionStatus: "pending", extractionRunId: null })
+                .where(and(
+                  eq(discussionEntries.id, row.id),
+                  eq(discussionEntries.extractionStatus, row.extractionStatus),
+                ));
+            }
+            attempted += 1;
+            lastAttemptedSeq = row.seq;
+            await extractOne(companyId, row.id);
+            // Codex #270 P2 (round 6): extractFromDiscussionEntry handles its own
+            // errors internally (marks the entry failed/skipped and RESOLVES), so a
+            // clean await is not success. Re-read the outcome: anything other than
+            // 'completed' means this entry's content was NOT captured — record the
+            // first such seq so the draft range is capped just before it.
+            if (firstFailedSeq == null) {
+              const [after] = (await db
+                .select({ extractionStatus: discussionEntries.extractionStatus })
+                .from(discussionEntries)
+                .where(eq(discussionEntries.id, row.id))
+                .limit(1)) as Array<{ extractionStatus: string }>;
+              if (after && after.extractionStatus !== "completed") {
+                firstFailedSeq = row.seq;
+                failed += 1;
+                log.warn(
+                  { entryId: row.id, seq: row.seq, status: after.extractionStatus },
+                  "extract-then-scope entry did not complete — capping draft range before it",
+                );
+              }
+            }
+          } catch (err) {
+            failed += 1;
+            if (firstFailedSeq == null) firstFailedSeq = row.seq;
+            log.warn({ err, entryId: row.id }, "extract-then-scope entry failed (best-effort)");
+          }
+        }
+        // Fold the cap signals: truncation/deadline cap at the last attempted entry;
+        // a mid-pass failure caps just BEFORE the first non-completed entry; an
+        // in-flight (fresh `processing`) row caps just BEFORE it (round 11 — its
+        // items land after this pass and must stay in the NEXT scope's range).
+        // Min wins.
+        const caps: number[] = [];
+        if ((truncated || deadlineHit) && lastAttemptedSeq != null) caps.push(lastAttemptedSeq);
+        if (firstFailedSeq != null) caps.push(firstFailedSeq - 1);
+        if (firstInFlightSeq != null) {
+          caps.push(firstInFlightSeq - 1);
+          log.info(
+            { firstInFlightSeq },
+            "extract-then-scope: in-flight extraction ahead — capping draft range before it",
+          );
+        }
+        const rangeEndCap = caps.length > 0 ? Math.min(...caps) : null;
+        return { attempted, failed, truncated, deadlineHit, lastAttemptedSeq, rangeEndCap };
+      } catch (err) {
+        log.warn({ err }, "extract-then-scope selection failed (best-effort) — compiling without");
+        return { attempted: 0, failed: 0, truncated: false, deadlineHit: false, lastAttemptedSeq: null, rangeEndCap: null };
       }
     },
 

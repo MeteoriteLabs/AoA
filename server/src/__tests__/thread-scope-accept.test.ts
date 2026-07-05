@@ -1133,7 +1133,7 @@ describe("threadScopeVersionService.acceptDraft", () => {
       id: "task-item",
       kind: "task_proposal",
       status: "draft",
-      title: "Turn discussion into a scoped work package",
+      title: "Scope work from this discussion",
       description: "Synthetic fallback task",
       sourceEntryIds: manyEntryIds,
       payload: { priority: "medium" }, // no handoffRefs -> fallback refs generated

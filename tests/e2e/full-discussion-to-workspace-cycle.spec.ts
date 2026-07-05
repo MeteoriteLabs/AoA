@@ -68,11 +68,23 @@ test.describe("full discussion to workspace cycle", () => {
     await expect(page.getByRole("heading", { name: /Discussions/i }).first()).toBeVisible({ timeout: 10_000 });
 
     const threadTitle = `Full cycle scope ${Date.now()}`;
-    await createThreadFromUi(
-      page,
-      threadTitle,
-      "We need to plan a small software task from this messy discussion. The final handoff must include memory, evidence, and a workspace artifact.",
-    );
+    // W2: the compiler's fallback task title derives from the LONGEST non-empty entry
+    // in the scoped range (derivedTitleFromEntries: first sentence, word-truncated to
+    // 80 chars). The scoped range also contains fake-crew agent replies (~150 chars)
+    // and the scope_proposal JSON entry (~320 chars), so this seeded opener is
+    // deliberately padded to stay the longest entry — the derived task title is its
+    // first sentence, regardless of how the server pool is filtered.
+    const scopeOpener =
+      "We need to plan a small software task from this messy discussion. " +
+      "The final handoff must include memory, evidence, and a workspace artifact. " +
+      "The crew should read the entire back and forth before anything is dispatched, " +
+      "confirm the user need against the captured evidence, and keep the handoff deliberate. " +
+      "Nothing should move until the review is finished, the constraints are understood, " +
+      "and the founder has approved the draft in full. " +
+      "That inspection pass, not speed, is what makes this pipeline trustworthy for the whole founding team.";
+    // firstSentence(scopeOpener) — 64 chars, so no "..." truncation.
+    const derivedTaskTitle = "We need to plan a small software task from this messy discussion";
+    await createThreadFromUi(page, threadTitle, scopeOpener);
     const threadId = page.url().match(/\/discussions\/([^/?#]+)/)?.[1];
     expect(threadId).toBeTruthy();
 
@@ -118,6 +130,9 @@ test.describe("full discussion to workspace cycle", () => {
     expect(memoryItem, "scope draft should include a memory candidate").toBeTruthy();
     expect(taskItem!.payload).toMatchObject({ priority: expect.any(String) });
     expect(memoryItem!.payload).toMatchObject({ layer: expect.any(String), category: expect.any(String) });
+    // W2 contract: the fallback task title is the first sentence of the longest
+    // scoped entry (the padded opener above) — the keyword stubs are dead.
+    expect(taskItem!.title).toBe(derivedTaskTitle);
 
     await page
       .getByTestId(`scope-version-card-${taskItem!.id}`)
@@ -231,7 +246,7 @@ test.describe("full discussion to workspace cycle", () => {
     expect(confirmedArtifact.artifactId).toBeTruthy();
 
     await page.goto(`/${company.issuePrefix}/workspaces/${workspace.id}`);
-    await page.getByRole("button", { name: /Implement real multi-message scope generation/i }).click();
+    await page.getByRole("button", { name: derivedTaskTitle }).click();
     await expect(page.getByTestId("workspace-right-panel-expanded")).toBeVisible({ timeout: 10_000 });
     await expandSection(page, "process");
     await expect(page.getByTestId("process-section")).toContainText(processAgent.name);

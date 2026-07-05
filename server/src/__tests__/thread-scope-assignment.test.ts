@@ -261,6 +261,105 @@ describe("createDraftFromThread — proposedTasks assignee", () => {
   });
 });
 
+describe("createDraftFromThread — suppressFallbackTask forwarding (W2)", () => {
+  const thread = {
+    id: "t1",
+    companyId: "co1",
+    subtype: "normal",
+    entrySeq: 1,
+    title: "T",
+    summaryText: null,
+  };
+  const entry = { id: "e1", seq: 1, inputType: "write", rawContent: "Rework the billing retry queue." };
+
+  function draftDb(capturedInserts: unknown[]) {
+    return createDraftDb(
+      [
+        [thread],  // discussions
+        [],        // threadScopeVersions (no latest)
+        [entry],   // discussionEntries
+        [],        // discussionExtractedItems
+        [],        // discussionEntryAttachments
+      ],
+      capturedInserts,
+    );
+  }
+
+  it("suppressFallbackTask + zero compiled items → no_items, NO draft inserted (Codex #270 round-9 P2)", async () => {
+    const capturedInserts: unknown[] = [];
+    const result = await threadScopeVersionService(draftDb(capturedInserts)).createDraftFromThread(
+      "co1",
+      "t1",
+      { agentId: "adj" },
+      { summary: "Auth work", suppressFallbackTask: true },
+    );
+
+    // An empty draft has nothing to accept but blocks later passes behind
+    // existing_draft — the zero-item compile must refuse to mint one.
+    expect(result.status).toBe("no_items");
+    expect(capturedInserts).toHaveLength(0);
+  });
+
+  it("sourceEndSeqOverride caps the recorded range (Codex #270 P1 — truncated extraction must not consume unprocessed entries)", async () => {
+    const capturedInserts: unknown[] = [];
+    const wideThread = { ...thread, entrySeq: 5 };
+    // A real pending item on the in-range entry: the compile yields one card, so
+    // the round-9 no_items guard stays out of the way of this test's assertion.
+    const extractedItem = {
+      id: "x1",
+      discussionEntryId: "e1",
+      type: "task",
+      title: "Rework the billing retry queue",
+      description: null,
+      status: "pending",
+      resultTaskId: null,
+      resultMemoryId: null,
+    };
+    const db = createDraftDb(
+      [
+        [wideThread],      // discussions — thread has advanced to seq 5
+        [],                // threadScopeVersions (no latest)
+        [entry],           // discussionEntries (the range-bounded fetch)
+        [extractedItem],   // discussionExtractedItems
+        [],                // discussionEntryAttachments
+      ],
+      capturedInserts,
+    );
+
+    await threadScopeVersionService(db).createDraftFromThread(
+      "co1",
+      "t1",
+      { agentId: "adj" },
+      { summary: "Auth work", suppressFallbackTask: true, sourceEndSeqOverride: 2 },
+    );
+
+    // The version row records the CAPPED end — entries 3..5 stay in the NEXT
+    // scope's range (sourceStartSeq = sourceEndSeq + 1) instead of being consumed.
+    const versionInsert = capturedInserts.find((v) => !Array.isArray(v)) as Record<string, unknown>;
+    expect(versionInsert).toBeDefined();
+    expect(versionInsert.sourceEndSeq).toBe(2);
+  });
+
+  it("default (flag absent): the derived-title fallback task still synthesizes (human route unchanged)", async () => {
+    const capturedInserts: unknown[] = [];
+    await threadScopeVersionService(draftDb(capturedInserts)).createDraftFromThread(
+      "co1",
+      "t1",
+      { agentId: "adj" },
+      { summary: "Auth work" },
+    );
+
+    const itemsInsert = capturedInserts.find((v) => Array.isArray(v)) as Array<{
+      kind: string;
+      title: string;
+    }> | undefined;
+    const tasks = (itemsInsert ?? []).filter((i) => i.kind === "task_proposal");
+    expect(tasks).toHaveLength(1);
+    // Derived from the entry content (W2 killed the keyword stubs).
+    expect(tasks[0].title).toBe("Rework the billing retry queue.");
+  });
+});
+
 describe("applyAcceptedDraft — Task 5 E2E: controller draft → applied tasks are assigned", () => {
   it("applying a draft creates an issue assigned to the crew agent", async () => {
     // Arrange: a draft version containing one accepted task_proposal item whose
@@ -324,5 +423,121 @@ describe("applyAcceptedDraft — Task 5 E2E: controller draft → applied tasks 
       "co1",
       expect.objectContaining({ assigneeAgentId: "agent-eng" }),
     );
+  });
+
+  it("Codex #270 P2 (round 5): applying a card that came from an extracted item RESOLVES the source item", async () => {
+    const draftVersion = {
+      id: "scope1",
+      companyId: "co1",
+      threadId: "thread1",
+      versionNumber: 1,
+      status: "draft",
+      sourceEndSeq: 1,
+    };
+    const thread = { id: "thread1", companyId: "co1", subtype: "normal", entrySeq: 1 };
+    const acceptedTask = {
+      id: "task-item",
+      kind: "task_proposal",
+      status: "accepted",
+      title: "Build token endpoint",
+      description: "from extraction",
+      sourceEntryIds: [],
+      extractedItemId: "xi-1", // ← the card ORIGINATED from an extracted item
+      payload: { priority: "medium" },
+    };
+
+    // Update order in the apply loop for one extracted-item-backed task:
+    //   [0] resolveSourceExtractedItem UPDATE (returning [{id}] → triggers decrement)
+    //   [1] discussions pendingItemCount decrement
+    //   [2] scope item set applied
+    //   [3] version set accepted
+    const db = createApplyDb(
+      [[draftVersion], [thread], [acceptedTask]],
+      [
+        [{ id: "xi-1" }],
+        [],
+        [{ ...acceptedTask, status: "applied", resultIssueId: "task1" }],
+        [{ ...draftVersion, status: "accepted" }],
+      ],
+    );
+
+    const result = await (threadScopeVersionService(db) as any).applyAcceptedDraft(
+      "co1",
+      "thread1",
+      "scope1",
+      { userId: "u1", isHuman: true },
+    );
+    expect(result).toMatchObject({ ok: true, alreadyAccepted: false });
+
+    // The source extracted item was resolved: approved + linked to the created task —
+    // it can no longer be approved later into a DUPLICATE task.
+    const resolveSet = (db.capturedUpdates as Array<Record<string, unknown>>).find(
+      (u) => u.status === "approved" && "resultTaskId" in u,
+    );
+    expect(resolveSet).toBeDefined();
+    expect(resolveSet!.resultTaskId).toBe("task1");
+    expect(resolveSet!.resultMemoryId).toBeNull();
+
+    // And the discussion's pending badge was decremented (GREATEST-guarded).
+    const decrementSet = (db.capturedUpdates as Array<Record<string, unknown>>).find(
+      (u) => "pendingItemCount" in u,
+    );
+    expect(decrementSet).toBeDefined();
+  });
+
+  it("Codex #270 P2 (round 7): an accepted DECISION card (no result entity) still resolves its source item", async () => {
+    const draftVersion = {
+      id: "scope1",
+      companyId: "co1",
+      threadId: "thread1",
+      versionNumber: 1,
+      status: "draft",
+      sourceEndSeq: 1,
+    };
+    const thread = { id: "thread1", companyId: "co1", subtype: "normal", entrySeq: 1 };
+    const acceptedDecision = {
+      id: "decision-item",
+      kind: "decision", // non-entity kind: apply produces NO resultIssueId/resultMemoryId
+      status: "accepted",
+      title: "Codex-first for extraction",
+      description: "decision from extraction",
+      sourceEntryIds: [],
+      extractedItemId: "xi-2",
+      payload: {},
+    };
+
+    // Update order: resolver-update (returning → decrement), decrement, item, version.
+    const db = createApplyDb(
+      [[draftVersion], [thread], [acceptedDecision]],
+      [
+        [{ id: "xi-2" }],
+        [],
+        [{ ...acceptedDecision }],
+        [{ ...draftVersion, status: "accepted" }],
+      ],
+    );
+
+    const result = await (threadScopeVersionService(db) as any).applyAcceptedDraft(
+      "co1",
+      "thread1",
+      "scope1",
+      { userId: "u1", isHuman: true },
+    );
+    expect(result).toMatchObject({ ok: true, alreadyAccepted: false });
+
+    // No task/memory created — but the source item is resolved (approved, no links),
+    // so it can't be approved later into duplicate memory and the badge clears.
+    expect(issueCreate).not.toHaveBeenCalled();
+    expect(memoryCreate).not.toHaveBeenCalled();
+    const resolveSet = (db.capturedUpdates as Array<Record<string, unknown>>).find(
+      (u) => u.status === "approved" && "resultTaskId" in u,
+    );
+    expect(resolveSet).toBeDefined();
+    expect(resolveSet!.resultTaskId).toBeNull();
+    expect(resolveSet!.resultMemoryId).toBeNull();
+    const decrementSet = (db.capturedUpdates as Array<Record<string, unknown>>).find(
+      (u) => "pendingItemCount" in u,
+    );
+    expect(decrementSet).toBeDefined();
   });
 });
