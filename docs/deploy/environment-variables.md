@@ -91,6 +91,8 @@ For horizontally scaled deployments, local-file run logs require sticky routing 
 |----------|---------|-------------|
 | `AOA_MIGRATION_AUTO_APPLY` | `true` (embedded), `false` (external DB) | Apply pending Drizzle migrations automatically on boot |
 | `AOA_MIGRATION_PROMPT` | `true` | Prompt before applying migrations to a non-empty DB. Set to `never` in CI/dev-runner |
+| `AOA_EMBEDDED_POSTGRES_PORT` | (auto) | Override the embedded PostgreSQL port. Intended for isolated local/e2e instances that must avoid port collisions |
+| `AOA_EMBEDDED_POSTGRES_STRICT_PORT` | `false` | When truthy, fail startup instead of falling back to a random embedded PostgreSQL port if `AOA_EMBEDDED_POSTGRES_PORT` is unavailable |
 | `AOA_EMBEDDED_POSTGRES_VERBOSE` | `false` | Verbose logging from `embedded-postgres` (helpful for debugging boot issues) |
 
 ## Telemetry / feedback
@@ -187,6 +189,7 @@ These are read by tests and dev scripts; you should not need to set them in prod
 | `AOA_CONTEXT` | CLI context-file override |
 | `AOA_E2E_FAKE_AWS_SECRETS_MANAGER` | Playwright/vitest harness flag for the fake AWS Secrets Manager provider |
 | `AOA_E2E_PORT` / `AOA_E2E_SKIP_LLM` / `AOA_E2E_SKIP_MCP` | Playwright e2e harness — see `tests/README.md` |
+| `AOA_RUN_WIN_INTEGRATION` | Opt-in flag for real embedded-Postgres integration tests on Windows. Unset ⇒ Windows skips those tests |
 | `AOA_ACCEPTANCE_CLI` | Selects the real CLI binary in acceptance/integration tests |
 | `AOA_PI_COMMAND` | Overrides the `pi` adapter binary in adapter-model tests |
 | `AOA_TEST_CODEX_MODEL` | Codex model override for live crew e2e tests |

@@ -83,6 +83,14 @@ async function auditCount(companyId: string, hubItemId: string): Promise<number>
   return firstRow<{ n: number }>(res).n;
 }
 
+async function seedPendingApproval(companyId: string, requestedByUserId: string): Promise<string> {
+  return firstId(await db.execute(sql`
+    INSERT INTO approvals (id, company_id, type, requested_by_user_id, status, payload, created_at, updated_at)
+    VALUES (gen_random_uuid(), ${companyId}, 'hire', ${requestedByUserId}, 'pending', '{}'::jsonb, now(), now())
+    RETURNING id
+  `));
+}
+
 async function activityCount(companyId: string, hubItemId: string, action: string): Promise<number> {
   const res = await db.execute(
     sql`SELECT count(*)::int AS n FROM activity_log WHERE company_id = ${companyId} AND entity_type = 'hub_item' AND entity_id = ${hubItemId} AND action = ${action}`,
@@ -129,7 +137,8 @@ describe.skipIf(process.platform === "win32")("hubItems.recordLifecycleAction â€
     const { companyId, founderId } = await seedCompanyWithFounder();
     const svc = hubItemsService(db);
     // approval_request â†’ authority = founder.
-    const item = await svc.emit({ companyId, semanticType: "approval_request", sourceType: "approval", sourceId: "appr-403", title: "Approve", ownerUserId: founderId });
+    const approvalId = await seedPendingApproval(companyId, founderId);
+    const item = await svc.emit({ companyId, semanticType: "approval_request", sourceType: "approval", sourceId: approvalId, title: "Approve", ownerUserId: founderId });
     let caught: unknown;
     try {
       await svc.recordLifecycleAction({
