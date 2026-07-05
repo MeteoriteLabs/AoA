@@ -366,6 +366,9 @@ if (config.databaseUrl) {
   } else {
     const detectedPort = await detectPort(configuredPort);
     if (detectedPort !== configuredPort) {
+      if (process.env.AOA_EMBEDDED_POSTGRES_STRICT_PORT === "1") {
+        throw new Error(`Embedded PostgreSQL port ${configuredPort} is in use`);
+      }
       logger.warn(`Embedded PostgreSQL port is in use; using next free port (requestedPort=${configuredPort}, selectedPort=${detectedPort})`);
     }
     port = detectedPort;

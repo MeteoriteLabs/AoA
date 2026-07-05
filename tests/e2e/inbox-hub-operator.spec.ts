@@ -2,6 +2,7 @@ import { test, expect } from "@playwright/test";
 import { cleanupTestCompanies, seedCompany } from "./helpers/seed-company";
 import { seedHubItem } from "./helpers/seed-hub-item";
 import { clickHubAction } from "./helpers/hub-actions";
+import { expectActiveHubTab, expectHubTabBody, hubTabBody } from "./helpers/hub-tabs";
 
 test.describe("Inbox Hub final operator flow", () => {
   test.beforeEach(async ({ request }) => {
@@ -25,7 +26,7 @@ test.describe("Inbox Hub final operator flow", () => {
     await page.getByRole("navigation", { name: /hub lanes/i })
       .getByRole("button", { name: /waiting on you/i })
       .click();
-    await expect(page.getByText(/Review hire agent approval/i)).toBeVisible();
+    await expect(page.getByRole("button", { name: /Review hire agent approval/i })).toBeVisible();
 
     // Opening the item marks it read (PATCH …/state), which invalidates + remounts
     // the list/viewer; settle it before asserting the viewer opened.
@@ -34,29 +35,13 @@ test.describe("Inbox Hub final operator flow", () => {
       page.getByRole("button", { name: /Review hire agent approval/i }),
       "state",
     );
-    await expect(page.getByRole("complementary", { name: /hub viewer/i })).toBeVisible();
-    // "Open full" is a <Button> in the tabbed shell (HubViewer.tsx:264-273,
-    // onOpenFull always supplied from HubShell.tsx:794), not a link. Clicking it
-    // opens the approval as an in-hub tab (approval:<id>, embedding ApprovalDetailCore)
-    // — it does NOT navigate to /approvals/:id.
-    await page.getByRole("button", { name: /open full/i }).click();
+    await expectHubTabBody(page);
+    await expectActiveHubTab(page, /Review hire agent approval/i);
     await expect(
       page.locator(`[role="tab"][data-tab-id="approval:${approval.id}"]`),
     ).toHaveAttribute("aria-selected", "true");
-    // Switch back to the always-present Home tab to restore the reading pane, which
-    // hosts the resolve/archive lifecycle controls exercised below.
-    await page.getByRole("tab", { name: /^Home$/ }).click();
-    await expect(page.getByRole("complementary", { name: /hub viewer/i })).toBeVisible();
-    // Each lifecycle action (POST …/action, undo POST …/undo) invalidates the list
-    // and remounts the viewer that holds these buttons; wait for each to settle so
-    // the next control isn't detached mid-click.
-    await clickHubAction(page, page.getByRole("button", { name: /^resolve$/i }), "action");
-    await expect(page.getByRole("button", { name: /undo resolve/i })).toBeVisible();
-    await clickHubAction(page, page.getByRole("button", { name: /undo resolve/i }), "undo");
-    await expect(page.getByRole("button", { name: /^resolve$/i })).toBeVisible();
-
-    await clickHubAction(page, page.getByRole("button", { name: /^archive$/i }), "action");
-    await page.getByRole("button", { name: /^archived$/i }).click();
+    await page.getByRole("button", { name: /^approve$/i }).click();
+    await page.getByRole("button", { name: /^resolved$/i }).click();
     await expect(page.getByRole("button", { name: /Review hire agent approval/i })).toBeVisible();
   });
 
@@ -75,13 +60,13 @@ test.describe("Inbox Hub final operator flow", () => {
     await page.goto(`/${company.issuePrefix}/approvals/pending`);
     // 30s: the first navigation compiles the Approvals route chunk under vite-dev
     // on a cold CI runner (~8s), well past the default 5s assertion timeout.
-    await expect(page.getByRole("heading", { name: /Approvals/i })).toBeVisible({
+    await expect(page.getByRole("heading", { name: "Approvals", exact: true })).toBeVisible({
       timeout: 30_000,
     });
     await page.goto(`/${company.issuePrefix}/approvals/all`);
     // 30s: the first navigation compiles the Approvals route chunk under vite-dev
     // on a cold CI runner (~8s), well past the default 5s assertion timeout.
-    await expect(page.getByRole("heading", { name: /Approvals/i })).toBeVisible({
+    await expect(page.getByRole("heading", { name: "Approvals", exact: true })).toBeVisible({
       timeout: 30_000,
     });
     await page.goto(`/${company.issuePrefix}/approvals/${approval.id}`);
@@ -108,10 +93,9 @@ test.describe("Inbox Hub final operator flow", () => {
     await expect(page.getByRole("button", { name: /Mobile failed run notification/i })).toBeVisible();
 
     await page.getByRole("button", { name: /Mobile failed run notification/i }).click();
-    const viewer = page.getByRole("complementary", { name: /hub viewer/i });
-    await expect(viewer).toBeVisible();
-    const box = await viewer.boundingBox();
+    const body = hubTabBody(page);
+    await expect(body).toBeVisible();
+    const box = await body.boundingBox();
     expect(box?.width ?? 0).toBeGreaterThan(250);
-    await expect(page.getByRole("button", { name: /close viewer/i })).toBeVisible();
   });
 });

@@ -817,6 +817,7 @@ export function hubItemsService(db: Db) {
       hubItemId: args.hubItemId,
       actorUserId: args.actorUserId,
       role: args.role,
+      status: "any",
     });
     if (!visibleItem) throw notFound("Hub item not found");
 

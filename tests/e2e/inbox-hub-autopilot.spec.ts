@@ -47,7 +47,7 @@ async function seedTrustedHeartbeatRun(companyId: string) {
         companyId,
         agentId: agent.id,
         invocationSource: "e2e",
-        status: "completed",
+        status: "succeeded",
         startedAt: new Date(),
         finishedAt: new Date(),
       })

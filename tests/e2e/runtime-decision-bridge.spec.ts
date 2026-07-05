@@ -29,6 +29,7 @@
 
 import { test, expect } from "@playwright/test";
 import { cleanupTestCompanies, seedCompany } from "./helpers/seed-company";
+import { expectHubTabBody } from "./helpers/hub-tabs";
 
 // ---------------------------------------------------------------------------
 // Guard: skip the whole describe block unless explicitly opted in
@@ -113,8 +114,7 @@ test.describe("W5b runtime-decision bridge — full adapter loop", () => {
 
       // Open the decision viewer
       await decisionItem.click();
-      const viewer = page.getByRole("complementary", { name: /hub viewer/i });
-      await expect(viewer).toBeVisible();
+      await expectHubTabBody(page);
 
       // Answer allow_once
       const answerResponse = page.waitForResponse(
@@ -170,8 +170,7 @@ test.describe("W5b runtime-decision bridge — full adapter loop", () => {
       await expect(decisionItem).toBeVisible({ timeout: 30_000 });
 
       await decisionItem.click();
-      const viewer = page.getByRole("complementary", { name: /hub viewer/i });
-      await expect(viewer).toBeVisible();
+      await expectHubTabBody(page);
 
       // Answer deny
       const answerResponse = page.waitForResponse(

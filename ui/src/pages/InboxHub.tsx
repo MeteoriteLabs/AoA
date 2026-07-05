@@ -112,6 +112,11 @@ export function insertOpenedItem(
   );
 }
 
+interface OpenedItemCacheState {
+  companyId: string | null;
+  items: Record<string, HubItemListRow>;
+}
+
 export function InboxHub() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -125,6 +130,15 @@ export function InboxHub() {
   const queryClient = useQueryClient();
   const { onHubItemChanged } = useLiveUpdates();
   const { pushToast } = useToast();
+  const refreshAutopilotDashboard = useCallback(() => {
+    if (!selectedCompanyId) return;
+    void queryClient.invalidateQueries({
+      queryKey: queryKeys.hubItems.autopilotPolicy(selectedCompanyId),
+    });
+    void queryClient.invalidateQueries({
+      queryKey: queryKeys.hubItems.autopilotActions(selectedCompanyId),
+    });
+  }, [queryClient, selectedCompanyId]);
   const markingReadItemIds = useRef(new Set<string>());
   const notificationPreferencesRef = useRef<NotificationPreferences | null>(null);
   const hubMutations = useHubItemMutations(selectedCompanyId);
@@ -136,7 +150,14 @@ export function InboxHub() {
   // (which resolve their hub item by id) keep working after a lane switch, and so
   // deep-linked items from another lane / resolved history can resolve at all.
   // Bounded: every write goes through insertOpenedItem (most recent 24 rows).
-  const [openedItemCache, setOpenedItemCache] = useState<Record<string, HubItemListRow>>({});
+  const [openedItemCacheState, setOpenedItemCacheState] = useState<OpenedItemCacheState>({
+    companyId: selectedCompanyId ?? null,
+    items: {},
+  });
+  const openedItemCache =
+    openedItemCacheState.companyId === (selectedCompanyId ?? null)
+      ? openedItemCacheState.items
+      : {};
   // Per-itemId guard (not a boolean): a later deep-link to a DIFFERENT item in
   // the same SPA session must hydrate too; the same item stays fire-once.
   const deepLinkHandledRef = useRef<string | null>(null);
@@ -158,6 +179,23 @@ export function InboxHub() {
   // Waiting-lane dismiss-hole safety net: reveal the current user's personally
   // hidden (dismissed/snoozed) OPEN rows when the "N hidden" chip is toggled on.
   const [showHidden, setShowHidden] = useState(false);
+
+  useEffect(() => {
+    const companyId = selectedCompanyId ?? null;
+    if (openedItemCacheState.companyId === companyId) return;
+    setOpenedItemCacheState({ companyId, items: {} });
+  }, [openedItemCacheState.companyId, selectedCompanyId]);
+
+  const cacheOpenedItem = useCallback((item: HubItemListRow) => {
+    const companyId = selectedCompanyId ?? null;
+    setOpenedItemCacheState((current) => ({
+      companyId,
+      items: insertOpenedItem(
+        current.companyId === companyId ? current.items : {},
+        item,
+      ),
+    }));
+  }, [selectedCompanyId]);
 
   const laneSlug = params.lane ?? null;
   const activeLane = laneSlug ? SLUG_TO_LANE[laneSlug] ?? null : null;
@@ -479,6 +517,11 @@ export function InboxHub() {
   });
   const homeItems = homePreviewQuery.data?.items ?? [];
 
+  useEffect(() => {
+    if (homePreviewQuery.status !== "success") return;
+    refreshAutopilotDashboard();
+  }, [homePreviewQuery.dataUpdatedAt, homePreviewQuery.status, refreshAutopilotDashboard]);
+
   // Reset the bulk selection on any list-scope change. Page accumulation resets
   // for free: the query key includes lane/search/status, so useInfiniteQuery
   // starts a fresh page-1 fetch whenever the scope changes.
@@ -504,6 +547,11 @@ export function InboxHub() {
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
   });
+
+  useEffect(() => {
+    if (listQuery.status !== "success") return;
+    refreshAutopilotDashboard();
+  }, [listQuery.dataUpdatedAt, listQuery.status, refreshAutopilotDashboard]);
 
   const markRead = useMutation({
     mutationFn: (itemId: string) => hubItemsApi.markRead(selectedCompanyId!, itemId),
@@ -593,26 +641,27 @@ export function InboxHub() {
   useEffect(() => {
     const itemId = params.itemId;
     if (!itemId || !selectedCompanyId) return;
-    if (deepLinkHandledRef.current === itemId) return;
+    const deepLinkKey = `${selectedCompanyId}:${itemId}`;
+    if (deepLinkHandledRef.current === deepLinkKey) return;
     const listItem = items.find((item) => item.id === itemId);
     const cached = openedItemCache[itemId];
     if (listItem || cached) {
       const row = listItem ?? cached;
-      if (listItem) setOpenedItemCache((cache) => insertOpenedItem(cache, listItem));
-      deepLinkHandledRef.current = itemId;
+      if (listItem) cacheOpenedItem(listItem);
+      deepLinkHandledRef.current = deepLinkKey;
       if (row) openTab(hubTabForItem(row));
       return;
     }
     // The item's lane is still loading — defer so the lane row (correct entity
     // type) wins over a redundant getOne hydrate.
     if (activeLane && listQuery.isLoading) return;
-    deepLinkHandledRef.current = itemId;
+    deepLinkHandledRef.current = deepLinkKey;
     let cancelled = false;
     hubItemsApi
       .getOne(selectedCompanyId, itemId)
       .then((item) => {
         if (cancelled) return;
-        setOpenedItemCache((cache) => insertOpenedItem(cache, item));
+        cacheOpenedItem(item);
         openTab(hubTabForItem(item));
       })
       .catch(() => {
@@ -626,6 +675,7 @@ export function InboxHub() {
     selectedCompanyId,
     items,
     openedItemCache,
+    cacheOpenedItem,
     openTab,
     activeLane,
     listQuery.isLoading,
@@ -732,7 +782,7 @@ export function InboxHub() {
   // item's entity as a dedicated tab (and keep it selected). Cache the row so its
   // tab body can resolve it by id even after a later lane switch.
   const handleOpenItem = (item: HubItemListRow) => {
-    setOpenedItemCache((cache) => insertOpenedItem(cache, item));
+    cacheOpenedItem(item);
     handleSelectItem(item.id);
     openTab(hubTabForItem(item));
   };

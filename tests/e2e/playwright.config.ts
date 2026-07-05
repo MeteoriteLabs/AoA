@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -26,6 +27,35 @@ const WINDOWS_WITH_EMBEDDED_POSTGRES =
 // even when the dev server is running on :3100 in authenticated mode.
 const PORT = Number(process.env.AOA_E2E_PORT ?? 3199);
 const BASE_URL = `http://127.0.0.1:${PORT}`;
+const EPHEMERAL_PORT_MIN = 49_152;
+const EPHEMERAL_PORT_MAX = 65_535;
+async function pickAvailablePort(preferredPort: number): Promise<number> {
+  for (let port = preferredPort; port <= 65535; port += 1) {
+    const available = await new Promise<boolean>((resolve) => {
+      const server = net.createServer();
+      server.once("error", () => resolve(false));
+      server.once("listening", () => {
+        server.close(() => resolve(true));
+      });
+      server.listen(port, "127.0.0.1");
+    });
+    if (available) return port;
+  }
+  throw new Error(`No available e2e embedded Postgres port at or after ${preferredPort}`);
+}
+function parsePort(raw: string, name: string): number {
+  const port = Number(raw);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`${name}="${raw}" is not a valid TCP port`);
+  }
+  return port;
+}
+const E2E_DB_PORT = process.env.AOA_E2E_DB_PORT?.trim()
+  ? parsePort(process.env.AOA_E2E_DB_PORT, "AOA_E2E_DB_PORT")
+  : await pickAvailablePort(
+      EPHEMERAL_PORT_MIN + Math.floor(Math.random() * (EPHEMERAL_PORT_MAX - EPHEMERAL_PORT_MIN + 1)),
+    );
+process.env.AOA_E2E_DB_PORT = String(E2E_DB_PORT);
 // Skip the temp-dir setup on unsupported Windows embedded-postgres runs so we
 // don't pay setup cost when no tests will run.
 const AOA_HOME = WINDOWS_WITH_EMBEDDED_POSTGRES
@@ -92,7 +122,7 @@ export default defineConfig({
   webServer: WINDOWS_WITH_EMBEDDED_POSTGRES
     ? undefined
     : {
-        command: `pnpm aoa onboard --yes --run`,
+        command: `corepack pnpm@9.15.4 aoa onboard --yes --run`,
         url: `${BASE_URL}/api/health`,
         // Always boot a dedicated throwaway instance for e2e so browser tests
         // never attach to the developer's active AoA home/server.
@@ -108,6 +138,10 @@ export default defineConfig({
           AOA_BIND: "loopback",
           AOA_DEPLOYMENT_MODE: "local_trusted",
           AOA_DEPLOYMENT_EXPOSURE: "private",
+          COREPACK_ENABLE_DOWNLOAD_PROMPT: "0",
+          AOA_E2E_DB_PORT: String(E2E_DB_PORT),
+          AOA_EMBEDDED_POSTGRES_PORT: String(E2E_DB_PORT),
+          AOA_EMBEDDED_POSTGRES_STRICT_PORT: "1",
           AOA_VITE_HMR_PORT: String(PORT + 10_000),
           AOA_E2E_FAKE_AWS_SECRETS_MANAGER: "1",
           AOA_E2E_FAKE_CREW_LLM: "1",

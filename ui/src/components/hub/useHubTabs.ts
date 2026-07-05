@@ -85,6 +85,7 @@ function upsertTab(tabs: HubTab[], tab: HubTab): HubTab[] {
 export function useHubTabs(companyId: string | undefined) {
   const [tabs, setTabs] = useState<HubTab[]>(() => rehydrate(companyId));
   const [activeKey, setActiveKey] = useState<string | null>(HOME_TAB.key);
+  const [hydratedCompanyId, setHydratedCompanyId] = useState<string | undefined>(companyId);
 
   const openTab = useCallback((tab: HubTab) => {
     setTabs((current) => {
@@ -106,8 +107,16 @@ export function useHubTabs(companyId: string | undefined) {
   const activateTab = useCallback((key: string) => setActiveKey(key), []);
 
   useEffect(() => {
+    if (hydratedCompanyId === companyId) return;
+    setTabs(rehydrate(companyId));
+    setActiveKey(HOME_TAB.key);
+    setHydratedCompanyId(companyId);
+  }, [companyId, hydratedCompanyId]);
+
+  useEffect(() => {
+    if (hydratedCompanyId !== companyId) return;
     persist(companyId, tabs);
-  }, [companyId, tabs]);
+  }, [companyId, hydratedCompanyId, tabs]);
 
   return { tabs, activeKey, openTab, closeTab, activateTab };
 }

@@ -436,4 +436,37 @@ describe.skipIf(process.platform === "win32")("hubItems.recordLifecycleAction â€
     expect(row.read_at).toBeTruthy();
     expect(row.dismissed_at).toBeTruthy();
   });
+
+  it("personal read state can be applied to a visible resolved history item", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const { companyId, founderId } = await seedCompanyWithFounder();
+    const svc = hubItemsService(db);
+    const item = await svc.emit({
+      companyId,
+      semanticType: "join_request",
+      sourceType: "history",
+      sourceId: `resolved-state-${Math.random()}`,
+      title: "Resolved history item",
+      ownerUserId: founderId,
+    });
+
+    await svc.recordLifecycleAction({
+      companyId,
+      hubItemId: item.id,
+      action: "resolve",
+      expectedVersion: item.version,
+      actorType: "user",
+      actorId: founderId,
+      actorIsFounder: true,
+    });
+
+    const row = await svc.applyPersonalState({
+      companyId,
+      hubItemId: item.id,
+      actorUserId: founderId,
+      state: { kind: "read" },
+    });
+
+    expect(row.readAt).toBeTruthy();
+  });
 });

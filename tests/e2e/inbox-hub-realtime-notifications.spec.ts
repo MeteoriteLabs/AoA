@@ -5,6 +5,7 @@ import {
   ensureLocalBoardUser,
   seedNotificationDigestItem,
 } from "./helpers/seed-notification-digest";
+import { expectActiveHubTab } from "./helpers/hub-tabs";
 
 type DeliveryMode = "realtime" | "digest" | "silent";
 
@@ -21,7 +22,7 @@ test.describe("Inbox Hub realtime notifications", () => {
     await ensureLocalBoardUser();
 
     await installLiveSocketProbe(page, company.id);
-    await page.goto(`/${company.issuePrefix}/inbox/waiting`);
+    await page.goto(`/${company.issuePrefix}/inbox/notifications`);
     await expect(page.getByRole("navigation", { name: /hub lanes/i })).toBeVisible();
     await waitForLiveSocket(page, company.id);
 
@@ -32,54 +33,52 @@ test.describe("Inbox Hub realtime notifications", () => {
 
     const realtime = await seedRealtimeHubItem(company.id, {
       sourceId: "realtime",
-      title: "W2 realtime approval toast",
+      title: "W2 realtime reminder toast",
     });
     await publishHubItemChange(request, company.id, realtime);
-    await expect(toast(page, "W2 realtime approval toast")).toBeVisible({
+    await expect(toast(page, "W2 realtime reminder toast")).toBeVisible({
       timeout: 15_000,
     });
-    await page.goto(`/${company.issuePrefix}/inbox/waiting/${realtime.id}`);
-    await expect(page.getByRole("heading", { name: /W2 realtime approval toast/i })).toBeVisible({
-      timeout: 15_000,
-    });
+    await page.goto(`/${company.issuePrefix}/inbox/notifications/${realtime.id}`);
+    await expectActiveHubTab(page, /W2 realtime reminder toast/i);
     await dismissToasts(page);
 
     await openNotificationPreferences(page);
-    await page.getByLabel(/approval request delivery/i).selectOption("digest");
-    await expect(page.getByLabel(/approval request delivery/i)).toHaveValue("digest");
+    await page.getByLabel(/reminder delivery/i).selectOption("digest");
+    await expect(page.getByLabel(/reminder delivery/i)).toHaveValue("digest");
 
     const digest = await seedRealtimeHubItem(company.id, {
       sourceId: "digest",
-      title: "W2 digest approval summary",
+      title: "W2 digest reminder summary",
     });
     await seedNotificationDigestItem({
       companyId: company.id,
       hubItemId: digest.id,
-      semanticType: "approval_request",
+      semanticType: "reminder",
     });
     await publishHubItemChange(request, company.id, digest);
 
-    await expect(page.getByRole("button", { name: /W2 digest approval summary/i })).toBeVisible({
+    await expect(page.getByRole("button", { name: /W2 digest reminder summary/i })).toBeVisible({
       timeout: 15_000,
     });
-    await expect(toast(page, "W2 digest approval summary")).toHaveCount(0);
+    await expect(toast(page, "W2 digest reminder summary")).toHaveCount(0);
 
-    await page.getByLabel(/approval request delivery/i).selectOption("silent");
-    await expect(page.getByLabel(/approval request delivery/i)).toHaveValue("silent");
+    await page.getByLabel(/reminder delivery/i).selectOption("silent");
+    await expect(page.getByLabel(/reminder delivery/i)).toHaveValue("silent");
 
     const silent = await seedRealtimeHubItem(company.id, {
       sourceId: "silent",
-      title: "W2 silent approval hidden",
+      title: "W2 silent reminder hidden",
     });
     await publishHubItemChange(request, company.id, silent);
 
-    await expect(page.getByRole("button", { name: /W2 silent approval hidden/i })).toBeVisible({
+    await expect(page.getByRole("button", { name: /W2 silent reminder hidden/i })).toBeVisible({
       timeout: 15_000,
     });
-    await expect(toast(page, "W2 silent approval hidden")).toHaveCount(0);
-    await expect(page.getByText("W2 silent approval hidden")).toHaveCount(1);
+    await expect(toast(page, "W2 silent reminder hidden")).toHaveCount(0);
+    await expect(page.getByText("W2 silent reminder hidden")).toHaveCount(1);
 
-    await page.getByLabel(/approval request delivery/i).selectOption("realtime");
+    await page.getByLabel(/reminder delivery/i).selectOption("realtime");
     await updateNotificationPreferences(request, company.id, {
       deliveryMode: "realtime",
       quietHours: { enabled: true, start: "00:00", end: "00:00", timezone: "UTC" },
@@ -95,7 +94,7 @@ test.describe("Inbox Hub realtime notifications", () => {
     await seedNotificationDigestItem({
       companyId: company.id,
       hubItemId: quiet.id,
-      semanticType: "approval_request",
+      semanticType: "reminder",
     });
     await publishHubItemChange(request, company.id, quiet);
 
@@ -122,7 +121,7 @@ async function updateNotificationPreferences(
       data: {
         rules: [
           {
-            semanticType: "approval_request",
+            semanticType: "reminder",
             deliveryMode: options.deliveryMode,
             toastEnabled: true,
           },
@@ -141,7 +140,7 @@ async function seedRealtimeHubItem(
 ) {
   return seedHubItem({
     companyId,
-    semanticType: "approval_request",
+    semanticType: "reminder",
     sourceType: `w2-layer3-e2e-${input.sourceId}`,
     sourceId: input.sourceId,
     title: input.title,

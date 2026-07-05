@@ -123,6 +123,32 @@ describe("useHubTabs", () => {
     ]);
   });
 
+  it("rehydrates tabs per company without writing the previous company tabs to the new key", () => {
+    localStorage.setItem(
+      storageKey("c2"),
+      JSON.stringify({ version: 1, tabs: [HOME_TAB, taskTab("existing-c2")] }),
+    );
+    const { result, rerender } = renderHook(
+      ({ companyId }) => useHubTabs(companyId),
+      { initialProps: { companyId: "c1" } },
+    );
+
+    act(() => result.current.openTab(approvalTab("a1")));
+    expect(JSON.parse(localStorage.getItem(storageKey("c1"))!).tabs.map((t: HubTab) => t.key)).toEqual([
+      "home",
+      "approval:a1",
+    ]);
+
+    rerender({ companyId: "c2" });
+
+    expect(result.current.tabs.map((t) => t.key)).toEqual(["home", "task:existing-c2"]);
+    expect(result.current.activeKey).toBe("home");
+    expect(JSON.parse(localStorage.getItem(storageKey("c2"))!).tabs.map((t: HubTab) => t.key)).toEqual([
+      "home",
+      "task:existing-c2",
+    ]);
+  });
+
   it("does not persist when companyId is undefined", () => {
     const { result } = renderHook(() => useHubTabs(undefined));
     act(() => result.current.openTab(approvalTab("a1")));

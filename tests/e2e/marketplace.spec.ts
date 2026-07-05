@@ -20,8 +20,8 @@ import { seedCompany, cleanupTestCompanies } from "./helpers/seed-company";
  *   - /marketplace/:type redirects to /marketplace?type=:type; no separate h1
  *     per type — the active chip identifies the current filter.
  *
- * Catalog in the test instance comes from the bundled aoa-marketplace-snapshot.json
- * (2 items at time of writing: Slack plugin + template-skill).
+ * Catalog in the test instance falls back to the bundled
+ * aoa-marketplace-snapshot.json when the CDN is unavailable.
  *
  * Server boots in AOA_DEPLOYMENT_MODE=local_trusted — no auth header needed.
  */
@@ -196,7 +196,7 @@ test.describe("Marketplace UI", () => {
     // anthropic template-skill shows in the main/home view. Its CatalogCard
     // renders the name as an h3.
     await expect(
-      page.getByRole("heading", { name: "template-skill", level: 3 }).first(),
+      page.getByRole("heading", { name: "skills", level: 3 }).first(),
     ).toBeVisible();
   });
 
@@ -283,8 +283,10 @@ test.describe("Marketplace UI", () => {
     const skillsPill = page.getByRole("button", { name: /^skills/i });
     await expect(skillsPill).toHaveAttribute("data-active", "true");
 
-    // template-skill is the skill in the bundled snapshot
-    await expect(page.getByText("template-skill")).toBeVisible();
+    // writing-plans is a stable skill in the bundled snapshot.
+    await expect(
+      page.getByRole("heading", { name: "writing-plans", level: 3 }),
+    ).toBeVisible();
   });
 
   test("/marketplace/<unknown-type> redirects to the homepage", async ({

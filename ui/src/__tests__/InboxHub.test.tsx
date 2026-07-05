@@ -556,7 +556,10 @@ describe("InboxHub page", () => {
       });
     });
     // Its top item appears in the "Needs you most" card (no longer the empty copy).
-    expect(await screen.findByText("Decide the deployment")).toBeInTheDocument();
+    const needsYouMostHeading = await screen.findByText("Needs you most");
+    const needsYouMostCard = needsYouMostHeading.closest("section");
+    expect(needsYouMostCard).not.toBeNull();
+    expect(within(needsYouMostCard as HTMLElement).getByText("Decide the deployment")).toBeInTheDocument();
     expect(
       screen.queryByText(/Nothing needs attention right now/i),
     ).not.toBeInTheDocument();

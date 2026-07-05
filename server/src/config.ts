@@ -92,6 +92,16 @@ function parseTrustProxy(raw: string | undefined): boolean | number | string[] {
   );
 }
 
+function parseOptionalPortEnv(name: string): number | null {
+  const raw = process.env[name]?.trim();
+  if (!raw) return null;
+  const port = Number(raw);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`${name}="${raw}" is not a valid TCP port`);
+  }
+  return port;
+}
+
 export function loadConfig(): Config {
   const fileConfig = readConfigFile();
   const fileDatabaseMode =
@@ -238,7 +248,10 @@ export function loadConfig(): Config {
     embeddedPostgresDataDir: resolveHomeAwarePath(
       fileConfig?.database.embeddedPostgresDataDir ?? resolveDefaultEmbeddedPostgresDir(),
     ),
-    embeddedPostgresPort: fileConfig?.database.embeddedPostgresPort ?? 54329,
+    embeddedPostgresPort:
+      parseOptionalPortEnv("AOA_EMBEDDED_POSTGRES_PORT") ??
+      fileConfig?.database.embeddedPostgresPort ??
+      54329,
     databaseBackupEnabled,
     databaseBackupIntervalMinutes,
     databaseBackupRetentionDays,

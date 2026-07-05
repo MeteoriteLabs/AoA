@@ -2,13 +2,14 @@ import { test, expect } from "@playwright/test";
 import { cleanupTestCompanies, seedCompany } from "./helpers/seed-company";
 import { seedHubItem } from "./helpers/seed-hub-item";
 import { clickHubAction } from "./helpers/hub-actions";
+import { expectActiveHubTab, expectHubTabBody } from "./helpers/hub-tabs";
 
 test.describe("Inbox Hub W1b", () => {
   test.beforeEach(async ({ request }) => {
     await cleanupTestCompanies(request, /^E2E-HUB-/);
   });
 
-  test("founder opens hub, switches lanes, opens item, deep-links it, and opens full approval detail", async ({
+  test("founder opens hub, switches lanes, opens item, and deep-links its tab", async ({
     page,
     request,
   }) => {
@@ -28,7 +29,7 @@ test.describe("Inbox Hub W1b", () => {
     const laneNav = page.getByRole("navigation", { name: /hub lanes/i });
     await expect(laneNav).toBeVisible();
     await laneNav.getByRole("button", { name: /waiting on you/i }).click();
-    await expect(page.getByText(/Review hire agent approval/i)).toBeVisible();
+    await expect(page.getByRole("button", { name: /Review hire agent approval/i })).toBeVisible();
 
     // Opening the item marks it read (PATCH …/state) → list invalidation + remount;
     // settle it so the viewer/URL assertions and the deep-link goto below don't race
@@ -38,17 +39,14 @@ test.describe("Inbox Hub W1b", () => {
       page.getByRole("button", { name: /Review hire agent approval/i }),
       "state",
     );
-    await expect(page.getByRole("complementary", { name: /hub viewer/i })).toBeVisible();
+    await expectHubTabBody(page);
+    await expectActiveHubTab(page, /Review hire agent approval/i);
     await expect(page).toHaveURL(new RegExp(`/inbox/waiting/.+`));
 
     const selectedUrl = page.url();
     await page.goto(selectedUrl);
-    await expect(page.getByRole("complementary", { name: /hub viewer/i })).toBeVisible();
-    // The tabbed shell renders "Open full" as a <Button> (HubViewer.tsx:264-273,
-    // onOpenFull always supplied from HubShell.tsx:794) — NOT a link. Clicking it
-    // opens the approval as an in-hub tab (approval:<id>, embedding ApprovalDetailCore),
-    // it does not navigate to the /approvals/:id route.
-    await page.getByRole("button", { name: /open full/i }).click();
+    await expectHubTabBody(page);
+    await expectActiveHubTab(page, /Review hire agent approval/i);
     await expect(
       page.locator(`[role="tab"][data-tab-id="approval:${approval.id}"]`),
     ).toHaveAttribute("aria-selected", "true");
