@@ -720,7 +720,7 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
       sourceRevision: row.sourceRevision + 1,
     }, {
       sourceRevision: row.sourceRevision,
-      statuses: ["answered", "relay_failed"],
+      statuses: ["created", "shown", "answered", "relay_failed"],
     });
     if (!cancelled) return null;
     await activityLogger({

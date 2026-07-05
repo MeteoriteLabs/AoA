@@ -61,15 +61,18 @@ describe("runAppServerTurn — model config delivery", () => {
     expect(deps.spawnAppServerClient).toHaveBeenCalledTimes(1);
   });
 
-  it("does NOT write a config.toml when model is undefined (api-key mode preserved)", async () => {
+  it("clears a stale top-level model when model is undefined while preserving MCP config", async () => {
     const deps = fakeDeps();
+    await fs.writeFile(
+      path.join(home, "config.toml"),
+      'model = "gpt-5.5"\n\n[mcp_servers.aoa]\ncommand = "node"\n',
+      "utf8",
+    );
     await runAppServerTurn(
       { ...baseInput(), managedCodexHome: home, deps },
     );
-    const exists = await fs
-      .stat(path.join(home, "config.toml"))
-      .then(() => true)
-      .catch(() => false);
-    expect(exists).toBe(false);
+    const toml = await fs.readFile(path.join(home, "config.toml"), "utf8");
+    expect(toml).not.toContain('model = "gpt-5.5"');
+    expect(toml).toContain("[mcp_servers.aoa]");
   });
 });

@@ -101,11 +101,63 @@ function addDays(base: Date, days: number) {
  * the partial-unique key and the in-memory pre-filter key so the two never
  * disagree.
  */
+function canonicalReconstructableDedupeKey(suggestion: {
+  category: string;
+  actionType?: string | null;
+  title?: string | null;
+  actionPayload?: Record<string, unknown> | null;
+}): string | null {
+  const payload = suggestion.actionPayload ?? {};
+  const stringValue = (key: string) => {
+    const value = payload[key];
+    return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+  };
+
+  if (suggestion.category === "goal_gap" && suggestion.actionType === "create_task") {
+    const goalId = stringValue("goalId");
+    if (!goalId) return null;
+    const title = suggestion.title?.toLowerCase() ?? "";
+    if (title.includes("has no tasks yet")) return `goal_gap:no_tasks:${goalId}`;
+    if (title.includes("looks stalled")) return `goal_gap:stalled:${goalId}`;
+    return null;
+  }
+
+  if (suggestion.category === "memory_gap") {
+    if (suggestion.actionType === "suggest_memory") {
+      if (stringValue("layer") === "identity") return "memory_gap:identity";
+      const departmentId = stringValue("departmentId");
+      if (departmentId) return `memory_gap:domain:${departmentId}`;
+    }
+    if (suggestion.actionType === "archive_memory") {
+      const memoryItemId = stringValue("memoryItemId");
+      if (memoryItemId) return `memory_gap:stale:${memoryItemId}`;
+    }
+  }
+
+  if (suggestion.category === "pattern_detected") {
+    const patternId = stringValue("patternId");
+    if (patternId) return `pattern_detected:${patternId}`;
+  }
+
+  if (
+    suggestion.category === "budget_optimization" &&
+    suggestion.title?.toLowerCase().includes("company budget")
+  ) {
+    return "budget_optimization:company";
+  }
+
+  return null;
+}
+
 function resolveDedupeKey(suggestion: {
   category: string;
+  actionType?: string | null;
+  title?: string | null;
   dedupeKey?: string | null;
   actionPayload?: Record<string, unknown> | null;
 }): string {
+  const canonical = canonicalReconstructableDedupeKey(suggestion);
+  if (canonical) return canonical;
   if (suggestion.dedupeKey && suggestion.dedupeKey.length > 0) {
     return suggestion.dedupeKey;
   }
@@ -191,6 +243,8 @@ async function selfHealPendingDuplicates(db: Db, companyId: string): Promise<str
     .select({
       id: suggestions.id,
       category: suggestions.category,
+      actionType: suggestions.actionType,
+      title: suggestions.title,
       dedupeKey: suggestions.dedupeKey,
       actionPayload: suggestions.actionPayload,
       createdAt: suggestions.createdAt,
@@ -214,7 +268,7 @@ async function selfHealPendingDuplicates(db: Db, companyId: string): Promise<str
     const [keeper, ...losers] = rows;
     // Backfill dedupe_key on the keeper if it was NULL (legacy row) so the
     // partial unique index starts guarding it.
-    if (!keeper.dedupeKey) {
+    if (keeper.dedupeKey !== key) {
       await db
         .update(suggestions)
         .set({ dedupeKey: key, updatedAt: now })

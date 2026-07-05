@@ -244,3 +244,26 @@ export async function writeCodexModelConfigToml(
     await fs.writeFile(target, body, "utf8");
   });
 }
+
+/**
+ * Remove a stale top-level `model = ...` line from managed CODEX_HOME while
+ * preserving all other config, notably the AoA MCP bridge block. Used by
+ * API-key auth mode where the adapter intentionally does not force a
+ * subscription-safe chat model.
+ */
+export async function clearCodexModelConfigToml(
+  managedHomeDir: string,
+): Promise<void> {
+  return withCodexHomeConfigLock(managedHomeDir, async () => {
+    const target = path.join(managedHomeDir, "config.toml");
+    const existing = await fs.readFile(target, "utf8").catch(() => "");
+    if (!existing) return;
+
+    const preserved = stripTopLevelModelLine(existing);
+    await fs.writeFile(
+      target,
+      preserved.trim().length > 0 ? `${preserved}\n` : "",
+      "utf8",
+    );
+  });
+}

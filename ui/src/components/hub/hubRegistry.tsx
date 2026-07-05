@@ -77,6 +77,9 @@ const preferRelated =
     return fallback(item);
   };
 
+const isDiscussionBacked = (item: HubItemListRow): boolean =>
+  item.relatedEntityType === "discussion" || item.sourceType === "discussion";
+
 export const HUB_REGISTRY: Record<HubSemanticType, HubRegistryEntry> = {
   approval_request: {
     semanticType: "approval_request",
@@ -163,6 +166,7 @@ export const HUB_REGISTRY: Record<HubSemanticType, HubRegistryEntry> = {
     // "discussion"), NOT `/agents/all`. Deep-link to the thread via the resolved
     // entity id.
     fullLink: (item) => {
+      if (!isDiscussionBacked(item)) return null;
       const id = HUB_REGISTRY.agent_error.resolveTabId(item);
       return id ? `/discussions/${id}` : null;
     },
@@ -317,6 +321,9 @@ export function hubTabForItem(item: HubItemListRow): HubTab {
     case "join_request":
       return id ? joinRequestTab(id, title, item.id) : notificationTab(item.id, title);
     case "thread": {
+      if (item.semanticType === "agent_error" && !isDiscussionBacked(item)) {
+        return notificationTab(item.id, title);
+      }
       // mention on a TASK (sourceType "issue") targets a task, not a thread.
       if (item.semanticType === "mention" && !item.relatedEntityId && item.sourceType === "issue") {
         return id ? taskTab(id, title, item.id) : notificationTab(item.id, title);

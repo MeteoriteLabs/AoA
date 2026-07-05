@@ -849,7 +849,7 @@ describe("agentRuntimeDecisionService", () => {
         }),
         expect.objectContaining({
           sourceRevision: 2,
-          statuses: ["answered", "relay_failed"],
+          statuses: ["created", "shown", "answered", "relay_failed"],
         }),
       );
       // The answer itself was never recorded.
@@ -895,7 +895,7 @@ describe("agentRuntimeDecisionService", () => {
     expect(repo.updateDecision).toHaveBeenCalledWith(
       "decision-1",
       expect.objectContaining({ status: "cancelled", sourceRevision: 3 }),
-      expect.objectContaining({ statuses: ["answered", "relay_failed"] }),
+      expect.objectContaining({ statuses: ["created", "shown", "answered", "relay_failed"] }),
     );
   });
 
@@ -1663,7 +1663,7 @@ describe("agentRuntimeDecisionService", () => {
       }),
       expect.objectContaining({
         sourceRevision: 3,
-        statuses: ["answered", "relay_failed"],
+        statuses: ["created", "shown", "answered", "relay_failed"],
       }),
     );
     // emit refreshes the row, then the reconcile-close archives the hub item.
@@ -1693,7 +1693,7 @@ describe("agentRuntimeDecisionService", () => {
     expect(repo.updateDecision).toHaveBeenCalledWith(
       "stranded-rf",
       expect.objectContaining({ status: "cancelled", sourceRevision: 6 }),
-      expect.objectContaining({ statuses: ["answered", "relay_failed"] }),
+      expect.objectContaining({ statuses: ["created", "shown", "answered", "relay_failed"] }),
     );
     expect(result).toEqual({ cancelled: 1, processed: 1 });
   });

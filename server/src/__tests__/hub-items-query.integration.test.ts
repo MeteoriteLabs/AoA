@@ -239,4 +239,29 @@ describe.skipIf(process.platform === "win32")("hubItems.query — real DB", () =
       curationRevision: 2,
     });
   });
+
+  it("maps pruned stored semantic types to the legacy notifications lane in list rows", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const { companyId, founderId } = await seedCompanyWithFounder();
+    const svc = hubItemsService(db);
+    const item = await svc.emit({
+      companyId,
+      semanticType: "run_failed",
+      sourceType: "heartbeat_run",
+      sourceId: "run-pruned-type",
+      title: "pruned type row",
+      ownerUserId: founderId,
+    });
+    await db.execute(sql`
+      UPDATE notifications
+      SET semantic_type = 'human_input_needed'
+      WHERE id = ${item.id}
+    `);
+
+    const { items } = await svc.query(companyId, { actorUserId: founderId, role: "founder" });
+
+    expect(items[0].id).toBe(item.id);
+    expect(items[0].lane).toBe("notifications");
+    expect(items[0].lane).not.toBeUndefined();
+  });
 });

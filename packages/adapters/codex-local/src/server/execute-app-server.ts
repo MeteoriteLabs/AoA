@@ -40,7 +40,10 @@ import { createAppServerResultAccumulator as realCreateAccumulator } from "./app
 import { handleApprovalRequest } from "./app-server/approval-bridge.js";
 import { stripCodexRolloutNoise } from "./parse-shared.js";
 import { appendWithCap } from "@armyofagents/adapter-utils/server-utils";
-import { writeCodexModelConfigToml } from "./codex-config-toml.js";
+import {
+  clearCodexModelConfigToml,
+  writeCodexModelConfigToml,
+} from "./codex-config-toml.js";
 
 /** Cap total forwarded bridged-stderr so a chatty session can't grow logs without bound. */
 const APP_SERVER_STDERR_FORWARD_CAP = 32 * 1024;
@@ -164,11 +167,15 @@ export async function runAppServerTurn(
     : undefined;
 
   // BUG-6 fix 1: deliver the resolved chat model to the supervised path via the
-  // managed config.toml (codex app-server has no per-turn --model flag). Only
-  // when both are present — api-key mode leaves model undefined so the valid
-  // compiled-in default (or a per-agent config) is untouched.
-  if (model && managedCodexHome) {
-    await writeCodexModelConfigToml(managedCodexHome, model);
+  // managed config.toml (codex app-server has no per-turn --model flag). API-key
+  // mode leaves model undefined, so clear any stale top-level model previously
+  // written for subscription auth while preserving the MCP bridge block.
+  if (managedCodexHome) {
+    if (model) {
+      await writeCodexModelConfigToml(managedCodexHome, model);
+    } else {
+      await clearCodexModelConfigToml(managedCodexHome);
+    }
   }
 
   const spawned = deps.spawnAppServerClient({

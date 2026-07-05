@@ -95,12 +95,14 @@ function createSequenceDb(config: {
   let insertIdx = 0;
   let updateIdx = 0;
   const insertValues: unknown[] = [];
+  const updateSets: unknown[] = [];
 
   function makeChain(getResult: () => MockRow[]) {
     const chain: Record<string, unknown> = {};
     for (const method of ["from", "where", "groupBy", "orderBy", "limit", "values", "set", "onConflictDoNothing", "returning"]) {
       chain[method] = (...args: unknown[]) => {
         if (method === "values") insertValues.push(args[0]);
+        if (method === "set") updateSets.push(args[0]);
         return chain;
       };
     }
@@ -114,6 +116,7 @@ function createSequenceDb(config: {
     update: (..._args: unknown[]) => makeChain(() => config.updates?.[updateIdx++] ?? []),
     transaction: async (callback: (tx: any) => unknown) => callback(db),
     __insertValues: insertValues,
+    __updateSets: updateSets,
   };
 
   return db;
@@ -526,5 +529,66 @@ describe("suggestionService", () => {
       sourceType: "suggestion",
       sourceId: "dup-old",
     });
+  });
+
+  it("runAllDetectors rewrites reconstructable legacy dedupe keys before pre-filtering", async () => {
+    const staleKey = "goal_gap:deadbeef";
+    const db = createSequenceDb({
+      selects: [
+        // [0] self-heal pending scan: a migration-era row carrying a key that
+        // does not match the runtime detector's explicit goal-gap key.
+        [
+          {
+            id: "legacy-goal-gap",
+            category: "goal_gap",
+            actionType: "create_task",
+            title: 'Goal "Launch" has no tasks yet',
+            dedupeKey: staleKey,
+            actionPayload: { goalId: "goal-1", title: "Kick off work for goal: Launch" },
+            createdAt: new Date("2026-07-01T00:00:00Z"),
+          },
+        ],
+        // [1] existingPending pre-filter sees the corrected key and blocks a
+        // duplicate detector insert.
+        [
+          {
+            category: "goal_gap",
+            actionType: "create_task",
+            title: 'Goal "Launch" has no tasks yet',
+            dedupeKey: "goal_gap:no_tasks:goal-1",
+            actionPayload: { goalId: "goal-1", title: "Kick off work for goal: Launch" },
+          },
+        ],
+      ],
+      // [0] keeper key rewrite, [1] expireOldPendingSuggestions returns none.
+      updates: [[{ id: "legacy-goal-gap" }], []],
+    });
+
+    const svc = suggestionService(db as any);
+    vi.spyOn(svc, "detectGoalGaps").mockResolvedValue([
+      {
+        category: "goal_gap",
+        actionType: "create_task",
+        dedupeKey: "goal_gap:no_tasks:goal-1",
+        title: 'Goal "Launch" has no tasks yet',
+        evidence: "No tasks are linked to this active goal.",
+        actionPayload: { goalId: "goal-1", title: "Kick off work for goal: Launch" },
+      } as any,
+    ]);
+    vi.spyOn(svc, "detectPipelineBottlenecks").mockResolvedValue([]);
+    vi.spyOn(svc, "detectMemoryGaps").mockResolvedValue([]);
+    vi.spyOn(svc, "detectPatternDetected").mockResolvedValue([]);
+    vi.spyOn(svc, "detectBudgetOptimization").mockResolvedValue([]);
+    vi.spyOn(svc, "detectRecurringWork").mockResolvedValue([]);
+    vi.spyOn(svc, "detectRiskFlags").mockResolvedValue([]);
+    vi.spyOn(svc, "detectWorkloadBalance").mockResolvedValue([]);
+
+    const result = await svc.runAllDetectors("co-1");
+
+    expect(result).toEqual({ detected: 1, created: 0 });
+    expect((db as any).__updateSets).toContainEqual(
+      expect.objectContaining({ dedupeKey: "goal_gap:no_tasks:goal-1" }),
+    );
+    expect((db as any).__insertValues).toHaveLength(0);
   });
 });

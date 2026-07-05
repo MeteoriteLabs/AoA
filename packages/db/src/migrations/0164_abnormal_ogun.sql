@@ -35,6 +35,9 @@
 -- md5('null')). Rows the collapse already dismissed are left with a NULL
 -- dedupe_key (excluded from the index, harmless); the next detector pass's
 -- self-heal backfills any that later reappear.
+-- REVIEW FIX: the executable backfill below now prefers canonical runtime keys
+-- for reconstructable detector families and leaves unreconstructable survivors
+-- NULL instead of writing a hash that runtime would later trust.
 
 -- 1. Collapse existing pending duplicates (keep newest per company/category/payload).
 UPDATE "suggestions" AS s
@@ -49,12 +52,55 @@ WHERE s."status" = 'pending'
       AND (n."created_at" > s."created_at" OR (n."created_at" = s."created_at" AND n."id" > s."id"))
   );
 --> statement-breakpoint
+-- 1b. Archive already-materialized hub rows for suggestions this migration just
+-- dismissed. Runtime reconcile only sees rows it dismisses itself; migration-
+-- dismissed historical rows need the same source-row cleanup here.
+UPDATE "notifications" AS h
+SET "status" = 'archived', "updated_at" = now()
+WHERE h."source_type" = 'suggestion'
+  AND h."status" = 'open'
+  AND EXISTS (
+    SELECT 1 FROM "suggestions" AS s
+    WHERE s."id"::text = h."source_id"
+      AND s."status" = 'dismissed'
+  );
+--> statement-breakpoint
 -- 2. Add the column.
 ALTER TABLE "suggestions" ADD COLUMN "dedupe_key" text;--> statement-breakpoint
 -- 3. Backfill dedupe_key on the surviving pending rows (deterministic per
 --    category+payload) so the partial unique index guards them immediately.
 UPDATE "suggestions"
-SET "dedupe_key" = "category" || ':' || md5(coalesce("action_payload"::text, 'null'))
+SET "dedupe_key" = CASE
+  WHEN "category" = 'goal_gap'
+    AND "action_type" = 'create_task'
+    AND "action_payload"->>'goalId' IS NOT NULL
+    AND coalesce("title", '') ILIKE '%has no tasks yet%'
+    THEN 'goal_gap:no_tasks:' || ("action_payload"->>'goalId')
+  WHEN "category" = 'goal_gap'
+    AND "action_type" = 'create_task'
+    AND "action_payload"->>'goalId' IS NOT NULL
+    AND coalesce("title", '') ILIKE '%looks stalled%'
+    THEN 'goal_gap:stalled:' || ("action_payload"->>'goalId')
+  WHEN "category" = 'memory_gap'
+    AND "action_type" = 'suggest_memory'
+    AND "action_payload"->>'layer' = 'identity'
+    THEN 'memory_gap:identity'
+  WHEN "category" = 'memory_gap'
+    AND "action_type" = 'suggest_memory'
+    AND "action_payload"->>'departmentId' IS NOT NULL
+    THEN 'memory_gap:domain:' || ("action_payload"->>'departmentId')
+  WHEN "category" = 'memory_gap'
+    AND "action_type" = 'archive_memory'
+    AND "action_payload"->>'memoryItemId' IS NOT NULL
+    THEN 'memory_gap:stale:' || ("action_payload"->>'memoryItemId')
+  WHEN "category" = 'pattern_detected'
+    AND "action_payload"->>'patternId' IS NOT NULL
+    THEN 'pattern_detected:' || ("action_payload"->>'patternId')
+  WHEN "category" = 'budget_optimization'
+    AND coalesce("title", '') ILIKE '%company budget%'
+    THEN 'budget_optimization:company'
+  ELSE "dedupe_key"
+END
 WHERE "status" = 'pending' AND "dedupe_key" IS NULL;
 --> statement-breakpoint
 -- 4. Create the partial unique index (now safe — no pending dup violations remain).

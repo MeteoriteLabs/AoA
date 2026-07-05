@@ -266,9 +266,7 @@ export function hubItemsService(db: Db) {
   ): HubListRow {
     return {
       ...item,
-      lane: item.semanticType
-        ? laneForSemanticType(item.semanticType as HubSemanticType)
-        : null,
+      lane: resolveLaneForStoredType(item.semanticType),
       readAt: state.readAt ?? null,
       snoozedUntil: state.snoozedUntil ?? null,
       dismissedAt: state.dismissedAt ?? null,

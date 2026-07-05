@@ -63,9 +63,50 @@ const COLLAPSE_SQL = sql`
         AND (n."created_at" > s."created_at" OR (n."created_at" = s."created_at" AND n."id" > s."id"))
     )
 `;
+const ARCHIVE_DISMISSED_HUB_SQL = sql`
+  UPDATE "notifications" AS h
+  SET "status" = 'archived', "updated_at" = now()
+  WHERE h."source_type" = 'suggestion'
+    AND h."status" = 'open'
+    AND EXISTS (
+      SELECT 1 FROM "suggestions" AS s
+      WHERE s."id"::text = h."source_id"
+        AND s."status" = 'dismissed'
+    )
+`;
 const BACKFILL_SQL = sql`
   UPDATE "suggestions"
-  SET "dedupe_key" = "category" || ':' || md5(coalesce("action_payload"::text, 'null'))
+  SET "dedupe_key" = CASE
+    WHEN "category" = 'goal_gap'
+      AND "action_type" = 'create_task'
+      AND "action_payload"->>'goalId' IS NOT NULL
+      AND coalesce("title", '') ILIKE '%has no tasks yet%'
+      THEN 'goal_gap:no_tasks:' || ("action_payload"->>'goalId')
+    WHEN "category" = 'goal_gap'
+      AND "action_type" = 'create_task'
+      AND "action_payload"->>'goalId' IS NOT NULL
+      AND coalesce("title", '') ILIKE '%looks stalled%'
+      THEN 'goal_gap:stalled:' || ("action_payload"->>'goalId')
+    WHEN "category" = 'memory_gap'
+      AND "action_type" = 'suggest_memory'
+      AND "action_payload"->>'layer' = 'identity'
+      THEN 'memory_gap:identity'
+    WHEN "category" = 'memory_gap'
+      AND "action_type" = 'suggest_memory'
+      AND "action_payload"->>'departmentId' IS NOT NULL
+      THEN 'memory_gap:domain:' || ("action_payload"->>'departmentId')
+    WHEN "category" = 'memory_gap'
+      AND "action_type" = 'archive_memory'
+      AND "action_payload"->>'memoryItemId' IS NOT NULL
+      THEN 'memory_gap:stale:' || ("action_payload"->>'memoryItemId')
+    WHEN "category" = 'pattern_detected'
+      AND "action_payload"->>'patternId' IS NOT NULL
+      THEN 'pattern_detected:' || ("action_payload"->>'patternId')
+    WHEN "category" = 'budget_optimization'
+      AND coalesce("title", '') ILIKE '%company budget%'
+      THEN 'budget_optimization:company'
+    ELSE "dedupe_key"
+  END
   WHERE "status" = 'pending' AND "dedupe_key" IS NULL
 `;
 const CREATE_INDEX_SQL = sql`
@@ -141,10 +182,17 @@ describe.skipIf(process.platform === "win32")(
           (${newer}, ${companyId}, 'memory_gap', 'suggest_memory', ${payloadJson}::jsonb,
            'No identity memory exists yet', 'pending', NULL, now())
       `);
+      await db.execute(sql`
+        INSERT INTO notifications (company_id, user_id, type, title, source_type, source_id, semantic_type, status)
+        VALUES
+          (${companyId}, 'founder-1', 'suggestion', 'older hub row', 'suggestion', ${older}, 'suggestion', 'open'),
+          (${companyId}, 'founder-1', 'suggestion', 'newer hub row', 'suggestion', ${newer}, 'suggestion', 'open')
+      `);
 
       // A bare CREATE UNIQUE INDEX here would ABORT (two violating pending rows).
       // Replay the migration's ordered steps: collapse → backfill → index.
       await db.execute(COLLAPSE_SQL);
+      await db.execute(ARCHIVE_DISMISSED_HUB_SQL);
       await db.execute(BACKFILL_SQL);
       // Must NOT throw — the collapse eliminated the violation.
       await expect(db.execute(CREATE_INDEX_SQL)).resolves.toBeDefined();
@@ -164,6 +212,14 @@ describe.skipIf(process.platform === "win32")(
         WHERE company_id = ${companyId} AND id = ${older} AND status = 'dismissed'
       `);
       expect((dismissedRows as unknown as unknown[]).length).toBe(1);
+      const archivedRows = await db.execute(sql`
+        SELECT id FROM notifications
+        WHERE company_id = ${companyId}
+          AND source_type = 'suggestion'
+          AND source_id = ${older}
+          AND status = 'archived'
+      `);
+      expect((archivedRows as unknown as unknown[]).length).toBe(1);
 
       // The index now blocks a third identical pending insert.
       const third = "aaaaaaaa-0000-4000-8000-000000000003";

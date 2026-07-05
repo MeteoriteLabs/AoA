@@ -101,6 +101,7 @@ describe("agent_error", () => {
   it("no longer resolves fullLink to /agents/all — deep-links to the thread", () => {
     const item = row({
       semanticType: "agent_error",
+      relatedEntityType: "discussion",
       relatedEntityId: "discussion-77",
     });
     const link = HUB_REGISTRY.agent_error.fullLink(item);
