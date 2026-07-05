@@ -143,6 +143,21 @@ describe("HubShell layout", () => {
     expect(viewerPanel).toContainElement(screen.getByTestId("hub-tabbed-viewer"));
   });
 
+  it("mounts the same three-pane group on desktop Home", () => {
+    renderShell({
+      activeLane: null,
+      items: [],
+      homeItems: [{ ...items[0], id: "home-layout-1", title: "Home layout item" }],
+      tabs: [HOME_TAB],
+      activeTabKey: "home",
+    });
+
+    expect(screen.getByTestId("hub-panel-group")).toBeInTheDocument();
+    expect(screen.getByTestId("hub-list-panel")).toHaveAttribute("data-panel-id", "hub-list");
+    expect(screen.getByTestId("hub-viewer-panel")).toHaveAttribute("data-panel-id", "hub-viewer");
+    expect(screen.getByTestId("hub-panel-separator")).toBeInTheDocument();
+  });
+
   it("does not mount the resizable group on mobile and keeps the stacked layout", () => {
     breakpointState.tier = "mobile";
     renderShell();

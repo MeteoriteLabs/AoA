@@ -228,6 +228,7 @@ export function HubShell({
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const keyboardSelectedItemId = useRef<string | null>(selectedItemId);
   const showHome = activeLane === null;
+  const listItems = showHome ? (homeItems ?? []) : items;
   const selectedCount = selectedBulkIds.size;
   // The "N hidden" chip is the dismiss-hole safety net: only the waiting lane's
   // OPEN view, and only when the toggle is already on OR the current user has
@@ -798,7 +799,7 @@ export function HubShell({
             </div>
           ) : null}
           <HubList
-            items={items}
+            items={listItems}
             isLoading={isLoading}
             error={error}
             selectedItemId={selectedItemId}
@@ -914,14 +915,7 @@ export function HubShell({
       ) : null}
       {!isDesktopUp ? (
         <main className="flex min-w-0 flex-1 flex-col">
-          {showHome ? null : listSection}
-          {viewer}
-        </main>
-      ) : showHome ? (
-        <main
-          className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-border bg-background shadow-sm"
-          data-testid="hub-viewer-panel"
-        >
+          {listSection}
           {viewer}
         </main>
       ) : (

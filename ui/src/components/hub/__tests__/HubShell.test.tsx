@@ -307,14 +307,38 @@ describe("HubShell", () => {
     expect(screen.queryByRole("complementary", { name: /hub viewer/i })).toBeNull();
   });
 
-  it("renders the Home dashboard full-width without the list panel or hint", () => {
-    renderShell({ activeLane: null, tabs: [HOME_TAB], activeTabKey: "home" });
+  it("renders Home as a three-pane dashboard with a real attention list", () => {
+    renderShell({
+      activeLane: null,
+      items: [],
+      homeItems: [{ ...items[0], id: "home-hub-1", title: "Home queue approval" }],
+      tabs: [HOME_TAB],
+      activeTabKey: "home",
+    });
 
-    expect(screen.queryByTestId("hub-list-panel")).toBeNull();
-    expect(screen.queryByTestId("hub-panel-separator")).toBeNull();
+    const listPanel = screen.getByTestId("hub-list-panel");
+    expect(screen.getByTestId("hub-panel-group")).toBeInTheDocument();
+    expect(listPanel).toBeInTheDocument();
+    expect(screen.getByTestId("hub-panel-separator")).toBeInTheDocument();
     expect(screen.queryByTestId("hub-list-home-hint")).toBeNull();
     expect(screen.getByTestId("hub-viewer-panel")).toBeInTheDocument();
+    expect(within(listPanel).getByRole("button", { name: /home queue approval/i })).toBeInTheDocument();
     expect(within(screen.getByTestId("hub-tab-body")).getByText(/needs you most/i)).toBeInTheDocument();
+  });
+
+  it("keeps Home list controls reachable on mobile", async () => {
+    const user = userEvent.setup();
+    renderShell({
+      activeLane: null,
+      homeItems: [{ ...items[0], id: "home-mobile-1", title: "Home mobile queue" }],
+      tabs: [HOME_TAB],
+      activeTabKey: "home",
+    });
+
+    await user.click(screen.getByRole("button", { name: /hub settings/i }));
+    expect(screen.getByRole("combobox", { name: /default landing/i })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /open hub lanes/i }));
+    expect(screen.getByRole("dialog", { name: /hub lanes/i })).toBeInTheDocument();
   });
 
   it("moves a list highlight with j/k and opens the highlighted item's tab on Enter", async () => {
