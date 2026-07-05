@@ -1763,15 +1763,15 @@ export function heartbeatService(db: Db) {
       });
       if (fallback.action === "noop") {
         // Pure status flip against a terminal row (no metadata) — nothing to do.
-        return current;
+        return null;
       }
-      const patched = await db
+      await db
         .update(heartbeatRuns)
         .set({ ...fallback.metadataPatch, updatedAt: new Date() })
         .where(eq(heartbeatRuns.id, runId))
         .returning()
         .then((rows) => rows[0] ?? current);
-      return patched;
+      return null;
     }
 
     if (updated) {

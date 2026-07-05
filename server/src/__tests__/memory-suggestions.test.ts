@@ -82,7 +82,7 @@ function createSequenceDb(config: {
 
   const buildChain = (kind: "select" | "update" | "insert", getResult: () => MockRow[]) => {
     const chain: Record<string, any> = {};
-    for (const method of ["from", "where", "set", "values", "returning", "innerJoin", "leftJoin", "orderBy", "limit"]) {
+    for (const method of ["from", "where", "set", "values", "onConflictDoNothing", "returning", "innerJoin", "leftJoin", "orderBy", "limit"]) {
       chain[method] = (...args: unknown[]) => {
         if (method === "set") captured.updateSets.push(args[0]);
         if (method === "values") captured.insertValues.push(args[0]);
@@ -359,6 +359,38 @@ describe("memoryService agent suggestions", () => {
       title: "Agent Atlas suggests archiving 'Old note'",
     }));
     expect(captured.updateSets).toEqual([]);
+  });
+
+  it("returns the existing archive suggestion when a keyed insert loses a race", async () => {
+    const existingSuggestion = {
+      id: "sug-existing",
+      category: "agent_proposal",
+      actionType: "archive_memory",
+      dedupeKey: "agent_proposal:archive_memory:mem-1:agent-1",
+      relatedMemoryItemId: "mem-1",
+    };
+    const { db, captured } = createSequenceDb({
+      selects: [
+        [{ id: "mem-1", companyId: "co-1", title: "Old note", status: "approved" }],
+        [{ name: "Atlas" }],
+        [],
+        [existingSuggestion],
+      ],
+      inserts: [[]],
+    });
+    const svc = memoryService(db);
+
+    const suggestion = await svc.suggestArchive(
+      "co-1",
+      "mem-1",
+      "This knowledge is obsolete after the workflow change",
+      "agent-1",
+    );
+
+    expect(suggestion).toEqual(existingSuggestion);
+    expect(captured.insertValues[0]).toEqual(expect.objectContaining({
+      dedupeKey: "agent_proposal:archive_memory:mem-1:agent-1",
+    }));
   });
 
   it("approves a pending version and makes it current", async () => {

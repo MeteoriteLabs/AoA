@@ -345,17 +345,20 @@ export function memoryLifecycleService(db: Db) {
           ? `Never accessed since creation ${item.createdAt?.toISOString() ?? "unknown"}. Layer: ${item.layer}.`
           : `Last accessed: ${item.accessedAt!.toISOString()}. Layer: ${item.layer}.`;
 
-        await db.insert(suggestions).values({
-          companyId,
-          category: "memory_gap",
-          actionType: "archive_memory",
-          dedupeKey: `memory_gap:stale:${item.id}`,
-          title,
-          evidence,
-          status: "pending",
-          relatedMemoryItemId: item.id,
-          actionPayload: { memoryItemId: item.id },
-        });
+        await db
+          .insert(suggestions)
+          .values({
+            companyId,
+            category: "memory_gap",
+            actionType: "archive_memory",
+            dedupeKey: `memory_gap:stale:${item.id}`,
+            title,
+            evidence,
+            status: "pending",
+            relatedMemoryItemId: item.id,
+            actionPayload: { memoryItemId: item.id },
+          })
+          .onConflictDoNothing();
       }
 
       return itemsToFlag.length;

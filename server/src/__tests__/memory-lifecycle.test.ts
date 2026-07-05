@@ -75,7 +75,7 @@ function createSequenceDb(config: {
 
   function makeChain(getResult: () => MockRow[]) {
     const chain: Record<string, unknown> = {};
-    for (const m of ["from", "where", "set", "values", "returning", "innerJoin", "leftJoin", "orderBy", "limit"]) {
+    for (const m of ["from", "where", "set", "values", "onConflictDoNothing", "returning", "innerJoin", "leftJoin", "orderBy", "limit"]) {
       chain[m] = (...args: unknown[]) => {
         if (m === "values") captured.insertValues.push(args[0]);
         return chain;

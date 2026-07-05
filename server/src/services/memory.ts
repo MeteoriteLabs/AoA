@@ -1297,7 +1297,7 @@ export function memoryService(db: Db) {
           .then((rows) => rows[0]);
       }
 
-      return db
+      const inserted = await db
         .insert(suggestions)
         .values({
           companyId,
@@ -1308,7 +1308,22 @@ export function memoryService(db: Db) {
           dedupeKey,
           relatedMemoryItemId: memoryItemId,
         })
+        .onConflictDoNothing()
         .returning()
+        .then((rows) => rows[0] ?? null);
+
+      if (inserted) return inserted;
+
+      return db
+        .select()
+        .from(suggestions)
+        .where(
+          and(
+            eq(suggestions.companyId, companyId),
+            eq(suggestions.status, "pending"),
+            eq(suggestions.dedupeKey, dedupeKey),
+          ),
+        )
         .then((rows) => rows[0]);
     },
 
