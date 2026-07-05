@@ -43,6 +43,7 @@ import { secretService } from "./secrets.js";
 import { parseCron, validateCron } from "./cron.js";
 import { queueIssueAssignmentWakeup } from "./issue-assignment-wakeup.js";
 import { logActivity } from "./activity-log.js";
+import { buildRoutineFailedHubEmit, emitHubItem } from "./hub-source-producers.js";
 import {
   mergeRoutineRunPayload,
   resolveRoutineRunVariables,
@@ -546,6 +547,46 @@ export function routineService(db: Db) {
       .then((rows) => rows[0] ?? null);
   }
 
+  // Best-effort routine_outcome (FAILURE-ONLY) hub emit (Task 10, D3). A routine
+  // whose tick crashes before an issue exists — or whose execution issue is
+  // blocked/cancelled — otherwise tells no one (no agent run → no run_failed).
+  // NEVER throws; a missing routine yields a generic name. Success/skip/coalesce
+  // must NOT notify (they are covered by run_complete + the Routines page).
+  async function emitRoutineFailure(
+    run: typeof routineRuns.$inferSelect | null,
+    routine: { title?: string | null; createdByUserId?: string | null } | null,
+    executor: Db = db,
+  ): Promise<void> {
+    if (!run || run.status !== "failed") return;
+    try {
+      let name = routine?.title ?? null;
+      let createdByUserId = routine?.createdByUserId ?? null;
+      if (name == null) {
+        const loaded = await executor
+          .select({ title: routines.title, createdByUserId: routines.createdByUserId })
+          .from(routines)
+          .where(eq(routines.id, run.routineId))
+          .then((rows) => rows[0] ?? null);
+        name = loaded?.title ?? null;
+        createdByUserId = createdByUserId ?? loaded?.createdByUserId ?? null;
+      }
+      await emitHubItem(
+        executor,
+        buildRoutineFailedHubEmit({
+          runId: run.id,
+          routineId: run.routineId,
+          companyId: run.companyId,
+          routineName: name ?? "Routine",
+          failureReason: run.failureReason ?? null,
+          createdByUserId,
+          updatedAt: run.updatedAt ?? new Date(),
+        }),
+      );
+    } catch (err) {
+      logger.warn({ err, runId: run.id }, "routine_outcome hub emit failed");
+    }
+  }
+
   async function createWebhookSecret(
     companyId: string,
     routineId: string,
@@ -804,6 +845,9 @@ export function routineService(db: Db) {
           failureReason,
           completedAt: new Date(),
         }, txDb);
+        // Silent-automation-failure inbox signal (Task 10, D3): the tick crashed
+        // before an issue existed, so no agent run — nothing else notifies.
+        await emitRoutineFailure(failed, input.routine, txDb);
         await updateRoutineTouchedState({
           routineId: input.routine.id,
           triggerId: input.trigger?.id ?? null,
@@ -1485,11 +1529,16 @@ export function routineService(db: Db) {
         });
       }
       if (issue.status === "blocked" || issue.status === "cancelled") {
-        return finalizeRun(issue.originRunId, {
+        const failed = await finalizeRun(issue.originRunId, {
           status: "failed",
           failureReason: `Execution issue moved to ${issue.status}`,
           completedAt: new Date(),
         });
+        // Silent-automation-failure inbox signal (Task 10, D3): the routine's
+        // execution issue was blocked/cancelled — surface it (helper re-fetches
+        // the routine name/owner since none is loaded here).
+        await emitRoutineFailure(failed, null);
+        return failed;
       }
       return null;
     },

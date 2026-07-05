@@ -14,7 +14,6 @@ import {
   Puzzle,
   FolderGit2,
   LayoutList,
-  ShieldCheck,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@/lib/router";
@@ -137,7 +136,6 @@ export function Sidebar() {
           {/* WORK section — entityColor props removed (Decision A) */}
           <SidebarSection label="Work" collapsed={collapsed}>
             <SidebarNavItem to="/discussions" label="Discussions" icon={MessageSquare} badge={sidebarBadges?.pendingDiscussions} collapsed={collapsed} />
-            <SidebarNavItem to="/approvals/pending" label="Approvals" icon={ShieldCheck} collapsed={collapsed} />
             <SidebarNavItem to="/issues" label="Tasks" icon={CircleDot} collapsed={collapsed} />
             <SidebarNavItem to="/team?tab=aoa&aoaTab=tasks" label="Crew Board" icon={LayoutList} collapsed={collapsed} />
             <SidebarNavItem to="/agents/all" label="Agents" icon={Bot} collapsed={collapsed} />

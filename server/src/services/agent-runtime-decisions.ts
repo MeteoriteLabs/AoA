@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { and, asc, eq, inArray, isNull, lte, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { agentRuntimeDecisions, agentRuntimeTrustRules } from "@armyofagents/db";
+import { agentRuntimeDecisions, agentRuntimeTrustRules, heartbeatRuns } from "@armyofagents/db";
 import type {
   RuntimeDecisionDetail,
   RuntimeDecisionKind,
@@ -31,6 +31,14 @@ const TERMINAL_STATUSES = new Set<RuntimeDecisionStatus>([
 
 const PERMISSION_DEFAULT_TTL_MS = 60 * 60 * 1000; // 1h
 const WORK_QUESTION_DEFAULT_TTL_MS = 24 * 60 * 60 * 1000; // 24h
+
+// R1 zombie-decision guard: heartbeat run statuses that are final. A terminal
+// (or missing) run must never mint a NEW runtime decision — a zombie CLI whose
+// process survived a cancel would otherwise POST to the hook route and create
+// endless decisions that later expire into agent_error noise. Kept in sync with
+// heartbeat.TERMINAL_RUN_STATUSES (duplicated to avoid a service→service import
+// cycle with the heavy heartbeat module).
+const TERMINAL_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
 
 function defaultTtlMs(kind: RuntimeDecisionKind) {
   return kind === "permission" ? PERMISSION_DEFAULT_TTL_MS : WORK_QUESTION_DEFAULT_TTL_MS;
@@ -150,6 +158,12 @@ type DecisionRepo = {
   createDecision(input: typeof agentRuntimeDecisions.$inferInsert): Promise<AgentRuntimeDecisionRow>;
   getDecision(companyId: string, decisionId: string): Promise<AgentRuntimeDecisionRow | null>;
   listActiveForRun(input: { companyId: string; runId: string }): Promise<AgentRuntimeDecisionRow[]>;
+  /**
+   * R1 zombie-decision guard: the current status of the run a prompt is being
+   * raised for. Returns null when the run row is missing. createPrompt refuses
+   * to mint a decision against a terminal (or missing) run.
+   */
+  getRunStatus(runId: string): Promise<string | null>;
   listTrustRules(input: { companyId: string; adapterType?: string; includeDisabled?: boolean }): Promise<AgentRuntimeTrustRuleRow[]>;
   createTrustRule(input: typeof agentRuntimeTrustRules.$inferInsert): Promise<AgentRuntimeTrustRuleRow>;
   revokeTrustRule(input: { companyId: string; ruleId: string }): Promise<AgentRuntimeTrustRuleRow | null>;
@@ -166,9 +180,18 @@ type DecisionRepo = {
     trustRule: typeof agentRuntimeTrustRules.$inferInsert,
   ): Promise<{ decision: AgentRuntimeDecisionRow | null; rule: AgentRuntimeTrustRuleRow | null }>;
   listDueForExpiry(input: { companyId?: string; now: Date; limit: number }): Promise<AgentRuntimeDecisionRow[]>;
+  /**
+   * R2 stranded-answer sweep (P3-4): decisions in status answered/relay_failed
+   * whose heartbeat run has already gone terminal. These are invisible to
+   * listDueForExpiry (hard-scoped to created/shown) — the answer can never be
+   * relayed because the run is dead, so the sweeper cancels + closes them. A
+   * missing run row (INNER JOIN drops it) is covered by cancelActiveForRun on
+   * the deleting side, so this only needs the terminal-run rows.
+   */
+  listStrandedAnswers(input: { companyId?: string; limit: number }): Promise<AgentRuntimeDecisionRow[]>;
 };
 
-type HubItemsApi = Pick<ReturnType<typeof hubItemsService>, "emit">;
+type HubItemsApi = Pick<ReturnType<typeof hubItemsService>, "emit" | "reconcile">;
 
 type ServiceDeps = {
   repo?: DecisionRepo;
@@ -393,6 +416,14 @@ function realRepo(db: Db): DecisionRepo {
           ),
         );
     },
+    async getRunStatus(runId) {
+      return db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .limit(1)
+        .then((rows) => rows[0]?.status ?? null);
+    },
     async listTrustRules(input) {
       const conditions = [
         eq(agentRuntimeTrustRules.companyId, input.companyId),
@@ -504,6 +535,21 @@ function realRepo(db: Db): DecisionRepo {
         .orderBy(asc(agentRuntimeDecisions.expiresAt))
         .limit(input.limit);
     },
+    async listStrandedAnswers(input) {
+      const conditions = [
+        inArray(agentRuntimeDecisions.status, ["answered", "relay_failed"]),
+        inArray(heartbeatRuns.status, [...TERMINAL_RUN_STATUSES]),
+      ];
+      if (input.companyId) conditions.push(eq(agentRuntimeDecisions.companyId, input.companyId));
+      return db
+        .select()
+        .from(agentRuntimeDecisions)
+        .innerJoin(heartbeatRuns, eq(agentRuntimeDecisions.runId, heartbeatRuns.id))
+        .where(and(...conditions))
+        .orderBy(asc(agentRuntimeDecisions.answeredAt))
+        .limit(input.limit)
+        .then((rows) => rows.map((row) => row.agent_runtime_decisions));
+    },
   };
 }
 
@@ -516,7 +562,13 @@ export function runtimeDecisionSourceSnapshot(row: AgentRuntimeDecisionRow | nul
   if (!row) return { terminal: true, summary: null, permissionRevision: null };
   const status = row.status as RuntimeDecisionStatus;
   return {
-    terminal: TERMINAL_STATUSES.has(status) && !isVisibleTimeoutFollowUp(row),
+    // BUG-2 (2026-07-04): terminality tracks TERMINAL_STATUSES exactly. The old
+    // isVisibleTimeoutFollowUp carve-out kept parked/escalated timeouts open in
+    // Waiting-on-you forever (phantom answerable items). Escalate-visibility
+    // (Decisions #105/#106, mechanism amended) now lives in a notifications-lane
+    // agent_error follow-up emitted by expireDuePrompts; the follow-up summary
+    // branch below is kept so pre-close refreshes still surface the timeout text.
+    terminal: TERMINAL_STATUSES.has(status),
     title: row.title,
     summary: isVisibleTimeoutFollowUp(row)
       ? row.relayError ?? row.summary ?? row.promptText ?? null
@@ -636,7 +688,69 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
     });
   }
 
+  // BUG-2 push-close: archive the projected waiting-lane hub item on every
+  // terminal transition (relayed / expired / cancelled) instead of waiting for
+  // the next GET-path sweep. Always call AFTER emitHubItem — emit refreshes the
+  // final relayError onto the still-open row; the close does not depend on emit
+  // side-effects (emit() is change-aware and skips no-op side-effects).
+  async function closeProjectedHubItem(decision: AgentRuntimeDecisionRow) {
+    try {
+      await hub.reconcile(decision.companyId, {
+        sourceType: SOURCE_TYPE,
+        sourceId: decision.id,
+      });
+    } catch (err) {
+      // Best-effort: the decision flip is already durable; the GET-path sweep
+      // reconciles on the next read. Never poison the terminal transition.
+      logger.warn({ err, decisionId: decision.id }, "runtime decision hub-item close failed");
+    }
+  }
+
+  // R2 safety: flip a stranded decision (answer against a dead run, or an
+  // answered/relay_failed row the sweep found orphaned) to cancelled with an
+  // honest relayError, then close its projected waiting-lane hub item. Used by
+  // both the answerPrompt liveness gate and sweepStrandedAnswers. The status
+  // guard admits answered/relay_failed only (the two non-terminal stall states);
+  // a concurrent cancel/relay wins and this no-ops.
+  async function cancelStrandedDecision(row: AgentRuntimeDecisionRow, relayError: string) {
+    const cancelled = await repo.updateDecision(row.id, {
+      status: "cancelled",
+      relayError: safeText(relayError),
+      expiresAt: null,
+      sourceRevision: row.sourceRevision + 1,
+    }, {
+      sourceRevision: row.sourceRevision,
+      statuses: ["created", "shown", "answered", "relay_failed"],
+    });
+    if (!cancelled) return null;
+    await activityLogger({
+      companyId: cancelled.companyId,
+      actorType: "system",
+      actorId: "runtime_decision_stranded_answer",
+      action: "runtime_decision.cancelled",
+      entityType: "agent_runtime_decision",
+      entityId: cancelled.id,
+      agentId: cancelled.agentId,
+      runId: cancelled.runId,
+      details: { sourceRevision: row.sourceRevision, relayError, priorStatus: row.status },
+    });
+    await emitHubItem(cancelled);
+    await closeProjectedHubItem(cancelled);
+    return cancelled;
+  }
+
   async function createPrompt(input: CreatePromptInput) {
+    // R1 zombie-decision guard: refuse to mint a decision for a run that is
+    // already terminal (or whose row is gone). A zombie CLI that survived a
+    // cancel POSTs to the hook route → this createPrompt; throwing conflict here
+    // makes the hook route's catch map it to a DENY, so the zombie's tools are
+    // refused instead of minting decisions that later expire into agent_error
+    // noise (and cannot resurrect the run — the setRunStatus latch blocks that).
+    const runStatus = await repo.getRunStatus(input.runId);
+    if (runStatus == null || TERMINAL_RUN_STATUSES.has(runStatus)) {
+      throw conflict("run is terminal");
+    }
+
     const nowDate = now();
     const matchingTrustRule = input.kind === "permission"
       ? (await repo.listTrustRules({ companyId: input.companyId, adapterType: input.adapterType }))
@@ -785,6 +899,17 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
     if (input.kind === "permission" && input.decision === "allow_always" && !hasConcreteTrustScope(row)) {
       throw unprocessable("Allow always requires a concrete command, path, network, or risk scope");
     }
+    // R2 answer-time liveness gate (safety fix): the answer is relayed to the
+    // run in-band by the broker (heartbeat waitAndRelay). If the run already
+    // went terminal (or its row is gone), recording "answered" would mint a
+    // forever-stalled ghost — non-terminal, invisible to the expiry sweep, never
+    // relayable. Instead, cancel the decision honestly and 409 so the founder
+    // sees a real error rather than a phantom "answered" item.
+    const runStatus = await repo.getRunStatus(row.runId);
+    if (runStatus == null || TERMINAL_RUN_STATUSES.has(runStatus)) {
+      await cancelStrandedDecision(row, "run ended before the answer could be delivered");
+      throw conflict("run ended before the answer could be delivered");
+    }
     const answerPatch: Partial<typeof agentRuntimeDecisions.$inferInsert> = {
       status: "answered",
       decision: input.kind === "permission" ? input.decision : null,
@@ -920,6 +1045,7 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
       details: { sourceRevision: row.sourceRevision },
     });
     await emitHubItem(relayed);
+    await closeProjectedHubItem(relayed);
     return relayed;
   }
 
@@ -956,6 +1082,26 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
         details: { sourceRevision: row.sourceRevision, timeoutPolicy: row.timeoutPolicy },
       });
       await emitHubItem(updated);
+      if (outcome.parked) {
+        // Escalate-visible (Decisions #105/#106): the waiting-lane item closes, so
+        // surface WHAT HAPPENED as a notifications-lane item instead.
+        await hub.emit({
+          companyId: updated.companyId,
+          semanticType: "agent_error",
+          sourceType: SOURCE_TYPE,
+          sourceId: updated.id,
+          title: `Permission request timed out: ${updated.title}`,
+          summary: updated.relayError ?? "timeout policy parked the run",
+          relatedEntityType: "heartbeat_run",
+          relatedEntityId: updated.runId,
+          sourceActorType: "agent",
+          sourceActorId: updated.agentId,
+          priority: "high",
+        });
+      }
+      // Deny-timeout flips to "answered" (non-terminal) — the close is a safe
+      // no-op there (reconcile refreshes, never archives a live source).
+      await closeProjectedHubItem(updated);
       if (outcome.cancelsRun) {
         try {
           await runCanceller?.({
@@ -1000,9 +1146,26 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
         details: { sourceRevision: row.sourceRevision, reason: input.reason },
       });
       await emitHubItem(updated);
+      await closeProjectedHubItem(updated);
       cancelled += 1;
     }
     return { cancelled };
+  }
+
+  // R2 stranded-answer sweep (P3-4): a decision that reached answered/relay_failed
+  // but whose run went terminal before the broker could relay is invisible to the
+  // expiry sweep (listDueForExpiry is hard-scoped to created/shown). Select those
+  // rows joined to a terminal run and cancel + close each, so the founder's
+  // waiting-lane item does not linger forever as an un-relayable ghost. Runs next
+  // to expireDuePrompts on the same 30s interval.
+  async function sweepStrandedAnswers(input: { companyId?: string; limit: number }) {
+    const stranded = await repo.listStrandedAnswers({ companyId: input.companyId, limit: input.limit });
+    let cancelled = 0;
+    for (const row of stranded) {
+      const result = await cancelStrandedDecision(row, "answer was never picked up by the run");
+      if (result) cancelled += 1;
+    }
+    return { cancelled, processed: stranded.length };
   }
 
   return {
@@ -1016,6 +1179,7 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
     markRelayFailed,
     markRelayed,
     expireDuePrompts,
+    sweepStrandedAnswers,
     cancelActiveForRun,
     emitHubItemForPrompt: emitHubItem,
   };

@@ -88,11 +88,16 @@ vi.mock("@armyofagents/db", () => {
     internalAgentConfig: t("internal_agent_config"),
   };
 });
-// Kill-switch + cost-caps mocked to always pass: autonomy/effective dial is the
-// gate under test. autonomy.js is deliberately NOT mocked — isRoleActiveAtAutonomy
-// and ROLE_MIN_AUTONOMY are REAL so the dial math is genuinely exercised.
+// Cost-caps mocked to always pass: autonomy/effective dial is the gate under
+// test. autonomy.js is deliberately NOT mocked — isRoleActiveAtAutonomy and
+// ROLE_MIN_AUTONOMY are REAL so the dial math is genuinely exercised.
+// kill-switch uses the REAL trivial implementation (companyPaused || threadPaused)
+// so case (d) genuinely proves crewPaused blocks even an exempt task-dispatch
+// wakeup (the pause gate runs BEFORE the autonomy exemption). Cases (a)-(c) pass
+// crewPaused:false + no thread pause, so they are unaffected.
 vi.mock("../services/internal-agent/aoa-agents/kill-switch.js", () => ({
-  isCrewPaused: () => false,
+  isCrewPaused: (state: { companyPaused: boolean; threadPaused: boolean }) =>
+    state.companyPaused || state.threadPaused,
 }));
 vi.mock("../services/internal-agent/cost-caps.js", () => ({
   runRateExceeded: () => false,
@@ -365,6 +370,151 @@ describe("runAoaDispatch — role-activation gates on EFFECTIVE autonomy (C1/C2/
     const skipSet = (db._sets as any[]).find(skippedAutonomy);
     expect(skipSet).toBeDefined();
     expect(skipSet.finishedAt).toBeInstanceOf(Date);
+    expect(runAoaMock).not.toHaveBeenCalled();
+  });
+
+  // ── Founder decision (2026-07-04): explicit authorization overrides the dial ──
+  // The company crew-autonomy dial gates agent-INITIATED work only. A task-
+  // dispatch wakeup carries an explicit human/upstream authorization (crew_dispatch
+  // approve, planning→standard flip, direct assignment, dependency-unblock) and
+  // flows through enqueueIssueAssigneeWakeup / the PATCH-reassign path, which stamp
+  // `payload.issueId` (string) + `source` ∈ {assignment, automation}. The dispatcher
+  // exempts exactly that shape from the role-autonomy gate BEFORE it fires.
+  // crewPaused (kill-switch) + thread-pause + budget/run-count brakes stay in force.
+  //
+  // Select-slot order for an EXEMPT dispatch (no threadId → no threadRow/effective
+  // lookup; gate bypassed so resolveCrewRole/payload-role branch issues no select):
+  //   0 orphan, 1 pending, 2 wakeup, 3 companyConfig,
+  //   4 D3 spend-brake, 5 run-count brake, 6 agent-row, 7 Phase-4 reclaim.
+  //   returning: [0]=atomic claim, [1]=final status update.
+
+  // (a) crew_dispatch-approve shape: issueId + source "assignment" at company
+  // Manual(0), role=engineer (min 1). Pre-fix: skipped_autonomy (company 0 < 1).
+  // Post-fix: exempt → reaches dispatch, runAoaAgent IS called.
+  it("(a) exempt: issueId + source=assignment at company=Manual(0) + engineer → NOT skipped; runAoaAgent IS called", async () => {
+    const db = makeConcurrencyDb(
+      [
+        [], // 0 orphan
+        [], // 1 pending
+        // 2 Phase-3 wakeup: task-dispatch (assignment) — issueId present, NO threadId
+        [{ id: "w-asn", agentId: "a-asn", companyId: "co-asn", source: "assignment", runtimeConfig: { aoa: { role: "member" } }, payload: { issueId: "iss-1", role: "engineer" } }],
+        // 3 resolveCompanyConfig: company=Manual(0)
+        [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
+        // 4 D3 SPEND-brake count
+        [],
+        // 5 run-COUNT brake count
+        [],
+        // 6 agent-row model select
+        [{ runtimeConfig: { aoa: { role: "member" } }, adapterConfig: {} }],
+        // 7 Phase-4 reclaim-select
+        [],
+      ],
+      [
+        [{ id: "w-asn" }], // atomic claim RETURNING
+        [],                 // final status update
+      ],
+    );
+
+    await runAoaDispatch(db, { limiterMax: 2, staleMs: 600_000 });
+
+    expect((db._sets as any[]).some(skippedAutonomy)).toBe(false);
+    expect(runAoaMock).toHaveBeenCalledWith(
+      db,
+      "a-asn",
+      expect.objectContaining({ companyId: "co-asn", source: "assignment", wakeupId: "w-asn" }),
+    );
+  });
+
+  // (b) automation shape: issueId + source "automation" (crew_task_auto_approved,
+  // dependency-unblock) at company Manual(0) + engineer → exempt → dispatches.
+  it("(b) exempt: issueId + source=automation at company=Manual(0) + engineer → NOT skipped; runAoaAgent IS called", async () => {
+    const db = makeConcurrencyDb(
+      [
+        [], // 0 orphan
+        [], // 1 pending
+        // 2 Phase-3 wakeup: task-dispatch (automation) — issueId present, NO threadId
+        [{ id: "w-aut", agentId: "a-aut", companyId: "co-aut", source: "automation", runtimeConfig: { aoa: { role: "member" } }, payload: { issueId: "iss-2", role: "engineer" } }],
+        // 3 resolveCompanyConfig: company=Manual(0)
+        [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
+        // 4 D3 SPEND-brake count
+        [],
+        // 5 run-COUNT brake count
+        [],
+        // 6 agent-row model select
+        [{ runtimeConfig: { aoa: { role: "member" } }, adapterConfig: {} }],
+        // 7 Phase-4 reclaim-select
+        [],
+      ],
+      [
+        [{ id: "w-aut" }], // atomic claim RETURNING
+        [],                 // final status update
+      ],
+    );
+
+    await runAoaDispatch(db, { limiterMax: 2, staleMs: 600_000 });
+
+    expect((db._sets as any[]).some(skippedAutonomy)).toBe(false);
+    expect(runAoaMock).toHaveBeenCalledWith(
+      db,
+      "a-aut",
+      expect.objectContaining({ companyId: "co-aut", source: "automation", wakeupId: "w-aut" }),
+    );
+  });
+
+  // (c) GATE INTACT: an agent-INITIATED mention wake (source=thread_mention) with a
+  // min-1 role at company Manual(0) is NOT exempt (source not in {assignment,
+  // automation}; no issueId) → still skipped_autonomy. Also cover the belt-and-
+  // suspenders case where a mention payload happens to carry an issueId: the source
+  // gate alone keeps it gated.
+  it("(c) gate intact: thread_mention wake (min-1 role) at company=Manual(0) → still skipped_autonomy", async () => {
+    const db = makeConcurrencyDb(
+      [
+        [], // 0 orphan
+        [], // 1 pending
+        // 2 Phase-3 wakeup: a mention wake carrying an issueId but source=thread_mention.
+        // No threadId → gate reads company dial; source not exempt → stays gated.
+        [{ id: "w-men", agentId: "a-men", companyId: "co-men", source: "thread_mention", runtimeConfig: { aoa: { role: "member" } }, payload: { issueId: "iss-3", role: "engineer" } }],
+        // 3 resolveCompanyConfig: company=Manual(0)
+        [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
+        // 4 Phase-4 reclaim-select (early return at the autonomy gate)
+        [],
+      ],
+      [],
+    );
+
+    await runAoaDispatch(db, { limiterMax: 2, staleMs: 600_000 });
+
+    const skipSet = (db._sets as any[]).find(skippedAutonomy);
+    expect(skipSet).toBeDefined();
+    expect(skipSet.finishedAt).toBeInstanceOf(Date);
+    expect(runAoaMock).not.toHaveBeenCalled();
+  });
+
+  // (d) KILL-SWITCH still wins: crewPaused blocks even an exempt task-dispatch
+  // wakeup. The pause gate runs BEFORE the autonomy gate, so the exemption never
+  // gets a chance to run it. Assert skipped_paused (not skipped_autonomy) and no
+  // dispatch. Uses a per-test kill-switch mock so isCrewPaused returns true.
+  it("(d) crewPaused blocks the exempt wakeup too → skipped_paused; runAoaAgent NOT called", async () => {
+    const db = makeConcurrencyDb(
+      [
+        [], // 0 orphan
+        [], // 1 pending
+        // 2 Phase-3 wakeup: exempt-shaped (assignment + issueId) but company crewPaused
+        [{ id: "w-kill", agentId: "a-kill", companyId: "co-kill", source: "assignment", runtimeConfig: { aoa: { role: "member" } }, payload: { issueId: "iss-4", role: "engineer" } }],
+        // 3 resolveCompanyConfig: crewPaused=true
+        [{ autonomyLevel: 0, crewPaused: true, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
+        // 4 Phase-4 reclaim-select (early return at the pause gate)
+        [],
+      ],
+      [],
+    );
+
+    await runAoaDispatch(db, { limiterMax: 2, staleMs: 600_000 });
+
+    const sets = db._sets as any[];
+    // crewPaused → skipped_paused, NOT skipped_autonomy, NOT dispatch.
+    expect(sets.some((s: any) => s.status === "skipped_paused")).toBe(true);
+    expect(sets.some(skippedAutonomy)).toBe(false);
     expect(runAoaMock).not.toHaveBeenCalled();
   });
 });

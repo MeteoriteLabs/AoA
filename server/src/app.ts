@@ -107,6 +107,7 @@ import { pluginJobStore } from "./services/plugin-job-store.js";
 import { createPluginToolDispatcher } from "./services/plugin-tool-dispatcher.js";
 import { pluginLifecycleManager } from "./services/plugin-lifecycle.js";
 import { buildHostServices } from "./services/plugin-host-services.js";
+import { SPA_FALLBACK_ROUTE, spaFallbackHandler } from "./services/spa-fallback.js";
 import { createHostClientHandlers } from "@armyofagents/plugin-sdk";
 import { resolveAoaInstanceId } from "./home-paths.js";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
@@ -517,7 +518,7 @@ export async function createApp(
   // W5b PreToolUse permission bridge (outside /api). The claude-local adapter's
   // hook POSTs here with a per-run bearer token. MUST mount AFTER express.json()
   // (body needed) and BEFORE the /_plugins static handler and the SPA/static
-  // catch-all below — otherwise the SPA fallthrough (regex /^(?!\/api\/).*/)
+  // catch-all below — otherwise the SPA fallthrough (SPA_FALLBACK_ROUTE regex)
   // would swallow /internal/... and return index.html instead of JSON. The
   // router self-registers the full RUNTIME_HOOK_PATH, so mount at root.
   app.use(runtimeHooksRoutes(db));
@@ -547,11 +548,9 @@ export async function createApp(
   if (opts.uiMode === "static") {
     if (uiDistDir) {
       app.use(express.static(uiDistDir));
-      // Catch-all SPA route, but NOT for /api/* (those 404 above, or matched by api router).
-      // This prevents unmatched /api/foo from serving the SPA's index.html. Issue #116.
-      app.get(/^(?!\/api\/).*/, (_req, res) => {
-        res.sendFile(path.join(uiDistDir, "index.html"));
-      });
+      // Catch-all SPA route, but NOT for /api/* (those 404 above, or matched by api router)
+      // and NOT for /assets/* (a missing hashed bundle must 404 loudly). Issue #116, BUG-4.
+      app.get(SPA_FALLBACK_ROUTE, spaFallbackHandler(uiDistDir));
     } else {
       console.warn("[aoa] UI dist not found; running in API-only mode");
     }
@@ -574,7 +573,7 @@ export async function createApp(
     app.use(vite.middlewares);
     // Catch-all SPA route for Vite dev mode, but NOT for /api/* (those 404 above).
     // This prevents unmatched /api/foo from serving the SPA's index.html. Issue #116.
-    app.get(/^(?!\/api\/).*/, async (req, res, next) => {
+    app.get(SPA_FALLBACK_ROUTE, async (req, res, next) => {
       try {
         const templatePath = path.resolve(uiRoot, "index.html");
         const template = fs.readFileSync(templatePath, "utf-8");

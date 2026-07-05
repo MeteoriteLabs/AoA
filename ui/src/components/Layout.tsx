@@ -41,7 +41,10 @@ export function shouldUseFullBleedMain(pathname: string, companyPrefix?: string)
     section === "commander" ||
     // Threads continuum (§13) is an edge-to-edge resizable surface, like Workspace.
     section === "discussions" ||
-    section === "threads"
+    section === "threads" ||
+    // Inbox hub is an edge-to-edge attention/decision surface (left rail + panels).
+    section === "inbox" ||
+    section === "inbox-hub"
   );
 }
 

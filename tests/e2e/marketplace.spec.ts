@@ -20,8 +20,9 @@ import { seedCompany, cleanupTestCompanies } from "./helpers/seed-company";
  *   - /marketplace/:type redirects to /marketplace?type=:type; no separate h1
  *     per type — the active chip identifies the current filter.
  *
- * Catalog in the test instance comes from the bundled aoa-marketplace-snapshot.json
- * (2 items at time of writing: Slack plugin + template-skill).
+ * Catalog in the test instance falls back to the bundled
+ * aoa-marketplace-snapshot.json when the CDN is unavailable. The snapshot
+ * evolves, so UI assertions avoid hard-coding individual catalog item names.
  *
  * Server boots in AOA_DEPLOYMENT_MODE=local_trusted — no auth header needed.
  */
@@ -181,7 +182,7 @@ test.describe("Marketplace UI", () => {
     await cleanupTestCompanies(request, /^E2E-MKT-/);
   });
 
-  test("Marketplace home renders hero + at least one item card from the frozen fixture", async ({
+  test("Marketplace home renders hero + installable catalog cards", async ({
     page,
   }) => {
     await page.goto("/marketplace");
@@ -191,13 +192,9 @@ test.describe("Marketplace UI", () => {
       page.getByRole("heading", { level: 1, name: /marketplace/i }),
     ).toBeVisible({ timeout: 15_000 });
 
-    // Frozen fixture has 5 items (4 plugins + 1 skill). The 4 plugins are AoA
-    // first-party (MeteoriteLabs-owned) → segregated to the AoA view; only the
-    // anthropic template-skill shows in the main/home view. Its CatalogCard
-    // renders the name as an h3.
-    await expect(
-      page.getByRole("heading", { name: "template-skill", level: 3 }).first(),
-    ).toBeVisible();
+    // The bundled snapshot changes as the marketplace grows. Assert the stable
+    // card affordance instead of a specific catalog item name.
+    await expect(page.getByRole("button", { name: /^install$/i }).first()).toBeVisible();
   });
 
   test("Marketplace home renders type pills with labels and 'available' counts", async ({
@@ -269,7 +266,7 @@ test.describe("Marketplace UI", () => {
     ).toBeVisible();
   });
 
-  test("/marketplace/skill type-filter page renders 'Skills' heading", async ({
+  test("/marketplace/skill type-filter page activates Skills and renders installable cards", async ({
     page,
   }) => {
     // /marketplace/skill redirects → /marketplace?type=skill.
@@ -283,8 +280,7 @@ test.describe("Marketplace UI", () => {
     const skillsPill = page.getByRole("button", { name: /^skills/i });
     await expect(skillsPill).toHaveAttribute("data-active", "true");
 
-    // template-skill is the skill in the bundled snapshot
-    await expect(page.getByText("template-skill")).toBeVisible();
+    await expect(page.getByRole("button", { name: /^install$/i }).first()).toBeVisible();
   });
 
   test("/marketplace/<unknown-type> redirects to the homepage", async ({

@@ -1281,6 +1281,7 @@ export function memoryService(db: Db) {
         reason: sourceContext,
         agentId,
       };
+      const dedupeKey = `agent_proposal:archive_memory:${memoryItemId}:${agentId}`;
 
       if (existing) {
         return db
@@ -1288,6 +1289,7 @@ export function memoryService(db: Db) {
           .set({
             title,
             actionPayload,
+            dedupeKey,
             updatedAt: new Date(),
           })
           .where(eq(suggestions.id, existing.id))
@@ -1295,7 +1297,7 @@ export function memoryService(db: Db) {
           .then((rows) => rows[0]);
       }
 
-      return db
+      const inserted = await db
         .insert(suggestions)
         .values({
           companyId,
@@ -1303,9 +1305,25 @@ export function memoryService(db: Db) {
           actionType: "archive_memory",
           actionPayload,
           title,
+          dedupeKey,
           relatedMemoryItemId: memoryItemId,
         })
+        .onConflictDoNothing()
         .returning()
+        .then((rows) => rows[0] ?? null);
+
+      if (inserted) return inserted;
+
+      return db
+        .select()
+        .from(suggestions)
+        .where(
+          and(
+            eq(suggestions.companyId, companyId),
+            eq(suggestions.status, "pending"),
+            eq(suggestions.dedupeKey, dedupeKey),
+          ),
+        )
         .then((rows) => rows[0]);
     },
 

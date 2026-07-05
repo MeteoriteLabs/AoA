@@ -366,6 +366,9 @@ if (config.databaseUrl) {
   } else {
     const detectedPort = await detectPort(configuredPort);
     if (detectedPort !== configuredPort) {
+      if (process.env.AOA_EMBEDDED_POSTGRES_STRICT_PORT === "1") {
+        throw new Error(`Embedded PostgreSQL port ${configuredPort} is in use`);
+      }
       logger.warn(`Embedded PostgreSQL port is in use; using next free port (requestedPort=${configuredPort}, selectedPort=${detectedPort})`);
     }
     port = detectedPort;
@@ -1071,6 +1074,13 @@ setInterval(() => {
     });
     for (let batch = 0; batch < RUNTIME_DECISION_TIMEOUT_SWEEP_MAX_BATCHES; batch++) {
       const { processed } = await svc.expireDuePrompts({ limit: RUNTIME_DECISION_TIMEOUT_SWEEP_LIMIT });
+      if (processed < RUNTIME_DECISION_TIMEOUT_SWEEP_LIMIT) break;
+    }
+    // R2 stranded-answer sweep (P3-4): cancel + close answered/relay_failed
+    // decisions whose run went terminal before the answer could be relayed —
+    // invisible to expireDuePrompts (created/shown only).
+    for (let batch = 0; batch < RUNTIME_DECISION_TIMEOUT_SWEEP_MAX_BATCHES; batch++) {
+      const { processed } = await svc.sweepStrandedAnswers({ limit: RUNTIME_DECISION_TIMEOUT_SWEEP_LIMIT });
       if (processed < RUNTIME_DECISION_TIMEOUT_SWEEP_LIMIT) break;
     }
   })()

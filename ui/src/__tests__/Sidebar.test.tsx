@@ -121,12 +121,13 @@ describe("Sidebar — Phase E chrome", () => {
     expect(screen.getByText("Workspaces")).toBeInTheDocument();
   });
 
-  it("renders Approvals as a reachable work nav item", async () => {
+  it("does not render an Approvals nav item (hub is the queue; routes kept)", async () => {
     renderSidebar();
-    expect(await screen.findByRole("link", { name: /approvals/i })).toHaveAttribute(
-      "href",
-      "/P4/approvals/pending",
-    );
+    // Nav entry removed per founder decision — the Inbox hub is the single queue.
+    // The /approvals/:id routes survive (deep-link target), but no nav link points there.
+    await screen.findByRole("link", { name: /^Inbox/ });
+    expect(screen.queryByRole("link", { name: /approvals/i })).toBeNull();
+    expect(screen.queryByText("Approvals")).toBeNull();
   });
 
   it("renders Inbox as the single hub entry point", async () => {

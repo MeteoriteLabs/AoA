@@ -24,6 +24,7 @@ import { memoryFeedbackService } from "./memory-feedback.js";
 import { memoryService } from "./memory.js";
 import { buildSuggestionHubEmit, emitHubItem } from "./hub-source-producers.js";
 import { hubItemsService } from "./hub-items.js";
+import { sha256Digest } from "./feedback-redaction.js";
 
 const SUGGESTION_TTL_DAYS = 30;
 const BLOCKED_TASK_DAYS = 3;
@@ -91,15 +92,83 @@ function addDays(base: Date, days: number) {
   return new Date(base.getTime() + days * 24 * 60 * 60 * 1000);
 }
 
-function stableStringify(value: unknown): string {
-  if (Array.isArray(value)) {
-    return `[${value.map((item) => stableStringify(item)).join(",")}]`;
+/**
+ * Resolve the DB-level dedupe key for a suggestion. Prefers the stable
+ * per-finding `dedupeKey` a detector attached (e.g. `memory_gap:identity`);
+ * falls back to `${category}:<sha256(actionPayload)>` so any detector output
+ * without an explicit key still gets a deterministic identity that survives
+ * jsonb key-reordering (sha256Digest key-sorts before hashing). Used both as
+ * the partial-unique key and the in-memory pre-filter key so the two never
+ * disagree.
+ */
+function canonicalReconstructableDedupeKey(suggestion: {
+  category: string;
+  actionType?: string | null;
+  title?: string | null;
+  actionPayload?: Record<string, unknown> | null;
+}): string | null {
+  const payload = suggestion.actionPayload ?? {};
+  const stringValue = (key: string) => {
+    const value = payload[key];
+    return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+  };
+
+  if (suggestion.category === "goal_gap" && suggestion.actionType === "create_task") {
+    const goalId = stringValue("goalId");
+    if (!goalId) return null;
+    const title = suggestion.title?.toLowerCase() ?? "";
+    if (title.includes("has no tasks yet")) return `goal_gap:no_tasks:${goalId}`;
+    if (title.includes("looks stalled")) return `goal_gap:stalled:${goalId}`;
+    return null;
   }
-  if (value && typeof value === "object") {
-    const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b));
-    return `{${entries.map(([key, entry]) => `${JSON.stringify(key)}:${stableStringify(entry)}`).join(",")}}`;
+
+  if (suggestion.category === "memory_gap") {
+    if (suggestion.actionType === "suggest_memory") {
+      if (stringValue("layer") === "identity") return "memory_gap:identity";
+      const departmentId = stringValue("departmentId");
+      if (departmentId) return `memory_gap:domain:${departmentId}`;
+    }
+    if (suggestion.actionType === "archive_memory") {
+      const memoryItemId = stringValue("memoryItemId");
+      if (memoryItemId) return `memory_gap:stale:${memoryItemId}`;
+    }
   }
-  return JSON.stringify(value);
+
+  if (suggestion.category === "pattern_detected") {
+    const patternId = stringValue("patternId");
+    if (patternId) return `pattern_detected:${patternId}`;
+  }
+
+  if (
+    suggestion.category === "budget_optimization" &&
+    suggestion.title?.toLowerCase().includes("company budget")
+  ) {
+    return "budget_optimization:company";
+  }
+
+  return null;
+}
+
+function fallbackDedupeKey(suggestion: {
+  category: string;
+  actionPayload?: Record<string, unknown> | null;
+}): string {
+  return `${suggestion.category}:${sha256Digest(suggestion.actionPayload ?? null)}`;
+}
+
+function resolveDedupeKey(suggestion: {
+  category: string;
+  actionType?: string | null;
+  title?: string | null;
+  dedupeKey?: string | null;
+  actionPayload?: Record<string, unknown> | null;
+}): string {
+  const canonical = canonicalReconstructableDedupeKey(suggestion);
+  if (canonical) return canonical;
+  if (suggestion.dedupeKey && suggestion.dedupeKey.length > 0) {
+    return suggestion.dedupeKey;
+  }
+  return fallbackDedupeKey(suggestion);
 }
 
 function normalizeTaskTitle(title: string): string {
@@ -165,6 +234,66 @@ function rankByPriority() {
       else 9
     end
   `;
+}
+
+/**
+ * Runtime self-heal for pending duplicates that predate (or slip past) the
+ * partial unique index — e.g. rows minted by the old TOCTOU race, or legacy
+ * rows with a NULL dedupe_key that the index can't guard. Groups pending rows
+ * by their resolved dedupe key, keeps the NEWEST per group, dismisses the
+ * older ones, and backfills dedupe_key on every surviving pending row so the
+ * DB index can protect it going forward. Returns the ids of the superseded
+ * rows so the caller can reconcile their hub items in the same transaction.
+ */
+async function selfHealPendingDuplicates(db: Db, companyId: string): Promise<string[]> {
+  const pending = await db
+    .select({
+      id: suggestions.id,
+      category: suggestions.category,
+      actionType: suggestions.actionType,
+      title: suggestions.title,
+      dedupeKey: suggestions.dedupeKey,
+      actionPayload: suggestions.actionPayload,
+      createdAt: suggestions.createdAt,
+    })
+    .from(suggestions)
+    .where(and(eq(suggestions.companyId, companyId), eq(suggestions.status, "pending")))
+    .orderBy(desc(suggestions.createdAt));
+
+  const now = new Date();
+  const groups = new Map<string, typeof pending>();
+  for (const row of pending) {
+    const key = resolveDedupeKey(row);
+    const bucket = groups.get(key);
+    if (bucket) bucket.push(row);
+    else groups.set(key, [row]);
+  }
+
+  const supersededIds: string[] = [];
+  for (const [key, rows] of groups) {
+    // Rows are createdAt DESC — the first is the newest keeper.
+    const [keeper, ...losers] = rows;
+    // Backfill dedupe_key on the keeper if it was NULL (legacy row) so the
+    // partial unique index starts guarding it.
+    if (keeper.dedupeKey !== key) {
+      await db
+        .update(suggestions)
+        .set({ dedupeKey: key, updatedAt: now })
+        .where(eq(suggestions.id, keeper.id));
+    }
+    for (const loser of losers) {
+      supersededIds.push(loser.id);
+    }
+  }
+
+  if (supersededIds.length > 0) {
+    await db
+      .update(suggestions)
+      .set({ status: "dismissed", updatedAt: now })
+      .where(and(eq(suggestions.companyId, companyId), inArray(suggestions.id, supersededIds)));
+  }
+
+  return supersededIds;
 }
 
 async function expireOldPendingSuggestions(db: Db, companyId: string) {
@@ -235,6 +364,7 @@ export function suggestionService(db: Db) {
           detected.push({
             category: "goal_gap",
             actionType: "create_task",
+            dedupeKey: `goal_gap:no_tasks:${goal.id}`,
             title: `Goal "${goal.title}" has no tasks yet`,
             evidence: "No tasks are linked to this active goal.",
             actionPayload: {
@@ -254,6 +384,7 @@ export function suggestionService(db: Db) {
           detected.push({
             category: "goal_gap",
             actionType: "create_task",
+            dedupeKey: `goal_gap:stalled:${goal.id}`,
             title: `Goal "${goal.title}" looks stalled`,
             evidence: `The goal has ${count.open} open task(s) but none are in progress, and the goal has not changed for ${daysBetween(goal.updatedAt, now)} days.`,
             actionPayload: {
@@ -314,6 +445,7 @@ export function suggestionService(db: Db) {
         detected.push({
           category: "pipeline_bottleneck",
           actionType: "create_task",
+          dedupeKey: `pipeline_bottleneck:blocked:${issue.id}`,
           title: `Task "${issue.title}" has been blocked for ${blockedDays} days`,
           evidence: `The task has stayed blocked since ${issue.updatedAt.toISOString()}.`,
           actionPayload: {
@@ -335,6 +467,7 @@ export function suggestionService(db: Db) {
         detected.push({
           category: "pipeline_bottleneck",
           actionType: "create_task",
+          dedupeKey: `pipeline_bottleneck:overload:${assignment.assigneeAgentId}`,
           title: `${agentName} is carrying ${Number(assignment.count)} open tasks`,
           evidence: "High active workload on one agent can slow the pipeline.",
           actionPayload: {
@@ -414,6 +547,7 @@ export function suggestionService(db: Db) {
         detected.push({
           category: "memory_gap",
           actionType: "suggest_memory",
+          dedupeKey: "memory_gap:identity",
           title: "No identity memory exists yet",
           evidence: "Agents do not have durable identity guidance such as vision, mission, or company values.",
           actionPayload: {
@@ -433,6 +567,7 @@ export function suggestionService(db: Db) {
         detected.push({
           category: "memory_gap",
           actionType: "suggest_memory",
+          dedupeKey: `memory_gap:domain:${department.id}`,
           title: `No domain memory exists for ${department.name}`,
           evidence: `Department "${department.name}" has no approved domain-layer memory items.`,
           actionPayload: {
@@ -453,6 +588,7 @@ export function suggestionService(db: Db) {
         detected.push({
           category: "memory_gap",
           actionType: "archive_memory",
+          dedupeKey: `memory_gap:stale:${stale.id}`,
           title: `Memory item "${stale.title}" has not been accessed in ${daysUnused}+ days`,
           evidence: stale.accessedAt
             ? `Last accessed ${stale.accessedAt.toISOString()}.`
@@ -476,9 +612,11 @@ export function suggestionService(db: Db) {
 
       for (const conflict of conflicts.values()) {
         if (conflict.ids.length < 2 || conflict.contents.size < 2) continue;
+        const sortedIds = [...conflict.ids].sort();
         detected.push({
           category: "memory_gap",
           actionType: "merge_memory",
+          dedupeKey: `memory_gap:merge:${sha256Digest(sortedIds)}`,
           title: "Two memory items may conflict and need review",
           evidence: `Potential overlap across ${conflict.ids.length} domain memory items with the same title pattern.`,
           actionPayload: {
@@ -522,6 +660,7 @@ export function suggestionService(db: Db) {
       return patternRows.map((pattern) => ({
         category: "pattern_detected",
         actionType: "suggest_memory",
+        dedupeKey: `pattern_detected:${pattern.id}`,
         title: buildPatternSuggestionTitle(
           pattern.patternType,
           pattern.occurrenceCount,
@@ -571,6 +710,7 @@ export function suggestionService(db: Db) {
         detected.push({
           category: "budget_optimization",
           actionType: "create_task",
+          dedupeKey: "budget_optimization:company",
           title: "Monthly company budget is nearly exhausted",
           evidence: `Spend is ${companyRow.spentMonthlyCents} cents against a ${companyRow.budgetMonthlyCents}-cent monthly budget.`,
           actionPayload: {
@@ -589,6 +729,7 @@ export function suggestionService(db: Db) {
           detected.push({
             category: "budget_optimization",
             actionType: "create_task",
+            dedupeKey: `budget_optimization:agent_over:${agent.id}`,
             title: `${agent.name} is over budget`,
             evidence: `${agent.name} has spent ${agent.spentMonthlyCents} cents against a ${agent.budgetMonthlyCents}-cent budget.`,
             actionPayload: {
@@ -608,6 +749,7 @@ export function suggestionService(db: Db) {
           detected.push({
             category: "budget_optimization",
             actionType: "create_task",
+            dedupeKey: `budget_optimization:agent_underused:${agent.id}`,
             title: `${agent.name} appears underutilized`,
             evidence: `${agent.name} has used only ${agent.spentMonthlyCents} cents of budget and has been quiet for ${heartbeatAge} days.`,
             actionPayload: {
@@ -654,6 +796,7 @@ export function suggestionService(db: Db) {
         detected.push({
           category: "recurring_work",
           actionType: "create_task",
+          dedupeKey: `recurring_work:${sha256Digest(key)}`,
           title: `Similar task "${group.sample.title}" was created ${group.count} times recently`,
           evidence: `Repeated task signature: "${key}".`,
           actionPayload: {
@@ -676,6 +819,7 @@ export function suggestionService(db: Db) {
       const now = new Date();
       const overdueIssues = await db
         .select({
+          id: issues.id,
           title: issues.title,
           goalId: issues.goalId,
           projectId: issues.projectId,
@@ -702,6 +846,7 @@ export function suggestionService(db: Db) {
           detected.push({
             category: "risk_flag",
             actionType: "flag_risk",
+            dedupeKey: `risk_flag:goal:${issue.goalId}`,
             title: `Goal linked to overdue task "${issue.title}" should be marked at risk`,
             evidence: `Task due ${issue.dueDate?.toISOString() ?? "unknown"} is overdue.`,
             actionPayload: {
@@ -715,6 +860,7 @@ export function suggestionService(db: Db) {
         detected.push({
           category: "risk_flag",
           actionType: "create_task",
+          dedupeKey: `risk_flag:overdue:${issue.id}`,
           title: `Task "${issue.title}" is overdue`,
           evidence: `The due date ${issue.dueDate?.toISOString() ?? "unknown"} has passed.`,
           actionPayload: {
@@ -777,6 +923,7 @@ export function suggestionService(db: Db) {
         {
           category: "workload_balance",
           actionType: "create_task",
+          dedupeKey: `workload_balance:${[max.agentId, min.agentId].sort().join(":")}`,
           title: "Workload is uneven across agents",
           evidence: `${agentNameById.get(max.agentId) ?? "One agent"} has ${max.count} open tasks while ${agentNameById.get(min.agentId) ?? "another"} has ${min.count}.`,
           actionPayload: {
@@ -817,11 +964,17 @@ export function suggestionService(db: Db) {
 
     async runAllDetectors(companyId: string) {
       await db.transaction(async (tx) => {
-        const expired = await expireOldPendingSuggestions(tx as unknown as Db, companyId);
-        for (const suggestion of expired) {
-          await hubItemsService(tx as unknown as Db).reconcile(companyId, {
+        const txDb = tx as unknown as Db;
+        // Self-heal any residual pending duplicates (legacy TOCTOU-race rows or
+        // NULL-dedupe_key rows the DB index can't guard) BEFORE expiry, then
+        // reconcile every superseded/expired row's hub item in the same tx.
+        const superseded = await selfHealPendingDuplicates(txDb, companyId);
+        const expired = await expireOldPendingSuggestions(txDb, companyId);
+        const reconciledIds = [...superseded, ...expired.map((row) => row.id)];
+        for (const id of reconciledIds) {
+          await hubItemsService(txDb).reconcile(companyId, {
             sourceType: "suggestion",
-            sourceId: suggestion.id,
+            sourceId: id,
           });
         }
       });
@@ -830,14 +983,19 @@ export function suggestionService(db: Db) {
       const existingPending = await db
         .select({
           category: suggestions.category,
+          actionType: suggestions.actionType,
+          title: suggestions.title,
+          dedupeKey: suggestions.dedupeKey,
           actionPayload: suggestions.actionPayload,
         })
         .from(suggestions)
         .where(and(eq(suggestions.companyId, companyId), eq(suggestions.status, "pending")));
 
-      const existingKeys = new Set(
-        existingPending.map((suggestion) => `${suggestion.category}:${stableStringify(suggestion.actionPayload ?? null)}`),
-      );
+      const existingKeys = new Set<string>();
+      for (const suggestion of existingPending) {
+        existingKeys.add(resolveDedupeKey(suggestion));
+        existingKeys.add(fallbackDedupeKey(suggestion));
+      }
 
       const detectorResults = await Promise.all([
         service.detectGoalGaps(companyId),
@@ -852,23 +1010,35 @@ export function suggestionService(db: Db) {
 
       const detected = detectorResults.flat();
       const toInsert = detected.filter((suggestion) => {
-        const key = `${suggestion.category}:${stableStringify(suggestion.actionPayload ?? null)}`;
-        if (existingKeys.has(key)) return false;
+        const key = resolveDedupeKey(suggestion);
+        const fallbackKey = fallbackDedupeKey(suggestion);
+        if (existingKeys.has(key) || existingKeys.has(fallbackKey)) return false;
         existingKeys.add(key);
+        existingKeys.add(fallbackKey);
         return true;
       });
 
       if (toInsert.length > 0) {
         await db.transaction(async (tx) => {
+          // onConflictDoNothing on the pending partial-unique target: if a
+          // concurrent detector run inserted the same finding between our
+          // pre-filter read and this write, the race loser gets no row back and
+          // therefore emits no hub item. resolveDedupeKey guarantees every
+          // row carries a dedupe_key so the partial index applies.
           const inserted = await tx
             .insert(suggestions)
             .values(
               toInsert.map((suggestion) => ({
                 ...suggestion,
+                dedupeKey: resolveDedupeKey(suggestion),
                 companyId,
                 status: "pending",
               })),
             )
+            .onConflictDoNothing({
+              target: [suggestions.companyId, suggestions.dedupeKey],
+              where: sql`status = 'pending' AND dedupe_key IS NOT NULL`,
+            })
             .returning();
           for (const suggestion of inserted) {
             await emitHubItem(tx as unknown as Db, buildSuggestionHubEmit(suggestion));

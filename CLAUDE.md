@@ -131,6 +131,7 @@ Push-based agent execution. `heartbeat.wakeup()` → HeartbeatRun → adapter ex
 - **Goal status machine:** `planned → active → at_risk → achieved/cancelled` with `at_risk → active` recovery.
 - **Why/What/How context:** Agents receive Vision + Mission + Goal + Memory items + Task details.
 - **Agent hire approvals:** When `company.requireBoardApprovalForNewAgents` is true (default for `authenticated` mode), hires queue in Inbox. Agent created as `pending_approval`. In `local_trusted` mode new companies default to `false` (agent created `idle` directly). See `server/src/routes/agents.ts:784` and **Paperclip Divergence Points § D6** above.
+- **Inbox Hub:** tab-first, no reading-pane preview. Row-click/deep-link opens and activates a dedicated tab; Home is the attention dashboard. Non-home tabs get the contextual `HubActionBar`; tabs are capped at 12 (Home + 11 closeable). `ask_founder` work questions relay on successful answer so the waiting-lane item closes. See Decision #108.
 - **Concurrency clamp:** `HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = 1` (teaching default; teams opt-up per-agent). `HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 50` (v1.1 D5 raise from 10). See **Paperclip Divergence Points § D5** above.
 - **Run summary comments:** Auto-generated task comments after each heartbeat run (duration, token usage, cost, outcome, detected files). Uses `issue_comments` table. Opt-out via `runtimeConfig.autoRunSummary`. Files truncated to 10 + "+N more".
 
@@ -199,7 +200,7 @@ Three roles: `founder`, `team_lead`, `team_member`. Department-scoped. Additive 
 
 Requests with neither → 401. `local_trusted` MCP writes succeed without a Bearer token (loopback is the trust boundary). `cloud_auth` / `authenticated` deployments reject unauth'd MCP traffic.
 
-**Outbound (AoA as MCP server) — 34 tools total, RBAC-scoped:** Read (11), Write (8), Document (5), Approval (10). Also exposes 4 MCP resources. Full tool registry: `server/src/mcp/tools/index.ts`.
+**Outbound (AoA as MCP server) — 36 tools total, RBAC-scoped:** Read (11), Write (10), Document (5), Approval (10). Also exposes 4 MCP resources. Full tool registry: `server/src/mcp/tools/index.ts`. (Write (10) = the CRUD-write tools + `memory.write` + `ask_founder`, the blocking work_question caller; the separate `use_skill` skill tool is gated to board/commander and not counted in the RBAC-CRUD total.)
 
 ### Commander (Internal Agent)
 
@@ -209,7 +210,7 @@ Always-on AI assistant for coordination, proactive monitoring, and workflow mana
 - **Per-company config** (`internal_agent_config` table): executionMode, provider, model, autonomyLevel, enabledCapabilities (12 types), budget, proactive interval.
 - **Agent loop:** HTTP route → agentLoopService (conversation + user message persistence) → cliModeService (subprocess spawn + MCP bridge + stdout streaming) → SSE to UI.
 - **One persistent conversation** per user per company. History summarization for token management.
-- **Proactive checks:** default 4-hour interval. Scans blocked tasks, budget thresholds, stale work, dependency gaps, memory conflicts, workload imbalance. Results pushed to Inbox via notifications.
+- **Proactive checks:** the check functions (blocked tasks, budget thresholds, stale work, dependency gaps, memory conflicts, workload imbalance) are implemented and push to Inbox via notifications, but the periodic scheduler that runs them on an interval is **not yet wired** (the `proactiveIntervalMinutes` config exists; nothing reads it at runtime). Event-driven + chat coverage ships today; scheduled proactive scans are tracked for 1.1. (Verified 2026-07-04.)
 - **Event-driven:** listens to LiveEvents (heartbeat completion, activity changes, MCP inbound, discussion entry creation) with debouncing.
 - **Per-agent context mode** (`runtimeConfig.contextMode`): minimal / standard / full. Default: `standard`. Prevents token waste for simple adapters. (Decision #87)
 - **Session management (UI):** multi-chat sidebar (`ui/src/components/commander/`) with pin, archive, rename, hard-delete, and **drag-to-reorder**. Manual order overrides the default date groups (TODAY/YESTERDAY/…) — the first drag collapses the non-pinned list into one flat "Arranged" list; a Reset control restores recency. Persisted via `internal_agent_conversations.sort_order` (nullable; null = recency). Routes: `PATCH …/conversations/reorder`, `DELETE …/conversations/order` — both owner-scoped (a founder viewing others' chats can't clobber their order). DnD uses dnd-kit with Mouse + Touch (long-press) + Keyboard sensors.

@@ -1,6 +1,7 @@
 import { test, expect, type APIRequestContext, type Page } from "@playwright/test";
 import { cleanupTestCompanies, seedCompany } from "./helpers/seed-company";
 import { bumpHubItemVersionForTest, seedHubItem } from "./helpers/seed-hub-item";
+import { hubActionBar, hubTabBody } from "./helpers/hub-tabs";
 
 type SeededHubItem = Awaited<ReturnType<typeof seedHubItem>>;
 
@@ -18,7 +19,7 @@ async function act(
 }
 
 async function expandGroupIfNeeded(page: Page, rowName: RegExp, groupName: RegExp) {
-  const row = page.getByRole("button", { name: rowName });
+  const row = hubRow(page, rowName);
   try {
     await expect(row).toBeVisible({ timeout: 2_000 });
     return row;
@@ -36,6 +37,10 @@ async function expandGroupIfNeeded(page: Page, rowName: RegExp, groupName: RegEx
   return row;
 }
 
+function hubRow(page: Page, rowName: RegExp) {
+  return page.locator("button[data-hub-row-id]").filter({ hasText: rowName });
+}
+
 test.describe("Inbox Hub W1c lifecycle", () => {
   test.beforeEach(async ({ request }) => {
     await cleanupTestCompanies(request, /^E2E-HUB-W1C-/);
@@ -49,35 +54,36 @@ test.describe("Inbox Hub W1c lifecycle", () => {
 
     await seedHubItem({
       companyId: company.id,
-      semanticType: "approval_request",
+      semanticType: "join_request",
       sourceType: "w1c",
       sourceId: "read-toggle",
       title: "Read toggle approval",
     });
     await seedHubItem({
       companyId: company.id,
-      semanticType: "approval_request",
+      semanticType: "join_request",
       sourceType: "w1c",
       sourceId: "snooze",
       title: "Snooze deployment approval",
     });
     await seedHubItem({
       companyId: company.id,
-      semanticType: "approval_request",
+      semanticType: "join_request",
       sourceType: "w1c",
       sourceId: "dismiss",
       title: "Dismiss noisy approval",
     });
     await seedHubItem({
       companyId: company.id,
-      semanticType: "approval_request",
+      semanticType: "suggestion",
       sourceType: "w1c",
       sourceId: "resolve",
-      title: "Resolve launch approval",
+      title: "Resolve launch suggestion",
+      ownerPool: "board",
     });
     const historySeed = await seedHubItem({
       companyId: company.id,
-      semanticType: "approval_request",
+      semanticType: "join_request",
       sourceType: "w1c",
       sourceId: "history",
       title: "Resolved history approval",
@@ -85,7 +91,7 @@ test.describe("Inbox Hub W1c lifecycle", () => {
     await act(request, company.id, historySeed, "resolve");
     const claimSeed = await seedHubItem({
       companyId: company.id,
-      semanticType: "stale_work",
+      semanticType: "suggestion",
       sourceType: "w1c",
       sourceId: "claim",
       title: "Claim board-pool stale work",
@@ -93,23 +99,24 @@ test.describe("Inbox Hub W1c lifecycle", () => {
     });
 
     await page.goto(`/${company.issuePrefix}/inbox/waiting`);
-    await expandGroupIfNeeded(page, /Read toggle approval/i, /w1c/i);
+    const readRow = await expandGroupIfNeeded(page, /Read toggle approval/i, /w1c/i);
 
-    await page.getByRole("button", { name: /Read toggle approval/i }).click();
-    await expect(page.getByRole("button", { name: /mark unread/i })).toBeVisible();
-    await page.getByRole("button", { name: /mark unread/i }).click();
-    await expect(page.getByRole("button", { name: /mark unread/i })).toBeHidden();
+    await readRow.click();
+    await expect(hubActionBar(page).getByRole("button", { name: /mark unread/i })).toBeVisible();
+    await hubActionBar(page).getByRole("button", { name: /mark unread/i }).click();
+    await expect(hubActionBar(page).getByRole("button", { name: /mark unread/i })).toBeHidden();
 
-    await page.getByRole("button", { name: /Snooze deployment approval/i }).click();
-    await page.getByRole("button", { name: /^snooze$/i }).click();
+    await hubRow(page, /Snooze deployment approval/i).click();
+    await hubActionBar(page).getByRole("button", { name: /^snooze$/i }).click();
     await expect(page.getByRole("button", { name: /^Snooze deployment approval$/i })).toBeHidden();
 
-    await page.getByRole("button", { name: /Dismiss noisy approval/i }).click();
-    await page.getByRole("button", { name: /^dismiss$/i }).click();
+    await hubRow(page, /Dismiss noisy approval/i).click();
+    await hubActionBar(page).getByRole("button", { name: /^dismiss$/i }).click();
     await expect(page.getByRole("button", { name: /^Dismiss noisy approval$/i })).toBeHidden();
 
-    await page.getByRole("button", { name: /Resolve launch approval/i }).click();
-    await page.getByRole("button", { name: /^resolve$/i }).click();
+    await page.goto(`/${company.issuePrefix}/inbox/suggestions`);
+    await hubRow(page, /Resolve launch suggestion/i).click();
+    await hubActionBar(page).getByRole("button", { name: /^resolve$/i }).click();
     await expect(page.getByRole("button", { name: /undo resolve/i })).toBeVisible();
     await Promise.all([
       page.waitForResponse((response) =>
@@ -119,25 +126,25 @@ test.describe("Inbox Hub W1c lifecycle", () => {
       ),
       page.getByRole("button", { name: /undo resolve/i }).click(),
     ]);
-    await page.goto(`/${company.issuePrefix}/inbox/waiting`);
-    await expandGroupIfNeeded(page, /Resolve launch approval/i, /w1c/i);
-    await expect(page.getByRole("button", { name: /Resolve launch approval/i })).toBeVisible({
+    await page.goto(`/${company.issuePrefix}/inbox/suggestions`);
+    const restoredResolveRow = await expandGroupIfNeeded(page, /Resolve launch suggestion/i, /w1c/i);
+    await expect(restoredResolveRow).toBeVisible({
       timeout: 10_000,
     });
 
     await page.goto(`/${company.issuePrefix}/inbox/suggestions/${claimSeed.id}`);
-    await expect(page.getByRole("button", { name: /^claim$/i })).toBeVisible();
-    await page.getByRole("button", { name: /^claim$/i }).click();
-    await expect(page.getByRole("button", { name: /^release$/i })).toBeVisible();
-    await page.getByRole("button", { name: /^release$/i }).click();
-    await expect(page.getByRole("button", { name: /^claim$/i })).toBeVisible();
+    await expect(hubActionBar(page).getByRole("button", { name: /^claim$/i })).toBeVisible();
+    await hubActionBar(page).getByRole("button", { name: /^claim$/i }).click();
+    await expect(hubActionBar(page).getByRole("button", { name: /^release$/i })).toBeVisible();
+    await hubActionBar(page).getByRole("button", { name: /^release$/i }).click();
+    await expect(hubActionBar(page).getByRole("button", { name: /^claim$/i })).toBeVisible();
 
     await page.goto(`/${company.issuePrefix}/inbox/waiting`);
     await page.getByRole("button", { name: /^resolved$/i }).click();
-    await expandGroupIfNeeded(page, /Resolved history approval/i, /w1c/i);
+    const resolvedHistoryRow = await expandGroupIfNeeded(page, /Resolved history approval/i, /w1c/i);
     await expect(page.getByText("Resolved history approval")).toBeVisible();
-    await page.getByRole("button", { name: /Resolved history approval/i }).click();
-    await expect(page.getByRole("region", { name: /audit timeline/i })).toContainText(/resolve/i);
+    await resolvedHistoryRow.click();
+    await expect(hubTabBody(page)).toContainText("Resolved history approval");
   });
 
   test("bulk archive reports partial stale-version failure", async ({ page, request }) => {

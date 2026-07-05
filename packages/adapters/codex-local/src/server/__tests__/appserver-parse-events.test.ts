@@ -205,21 +205,56 @@ describe("createAppServerResultAccumulator — errors", () => {
     expect(acc.result().errorMessage).toBe("turn/start rejected: boom");
   });
 
-  it("clears a transient error when the turn later completes (recovered = success)", () => {
-    // A turn may emit a transient `error` (willRetry) frame, recover, and then
-    // settle on `turn/completed`. That is a SUCCESSFUL turn — the accumulated
-    // errorMessage/errorCode must be cleared so bridgedResultToIntermediate does
-    // NOT map it to exitCode:1 and misclassify the turn as failed. (M1)
+  it("clears a transient error when the turn recovered AND produced work (M1)", () => {
+    // A turn may emit a transient `error` (willRetry) frame, recover, produce a
+    // real agent message, and settle on `turn/completed`. That is a SUCCESSFUL
+    // turn — the accumulated errorMessage/errorCode must be cleared so
+    // bridgedResultToIntermediate does NOT map it to exitCode:1. (M1)
     const acc = createAppServerResultAccumulator();
     acc.onNotification("error", {
       message: "stream disconnected",
       willRetry: true,
       code: "stream_error",
     });
+    acc.onNotification("item/completed", {
+      item: { type: "agentMessage", id: "m1", text: "Done." },
+    });
     acc.onNotification("turn/completed", { turn: {} });
     const out = acc.result();
     expect(out.errorMessage).toBeNull();
     expect(out.errorCode).toBeNull();
+    expect(out.summary).toBe("Done.");
+  });
+
+  it("PRESERVES a fatal error on a ZERO-WORK completed turn (masked-400 guard, M1 hardened)", () => {
+    // The BUG-6 primary defect: a ChatGPT-auth 400 ends the turn with zero items
+    // but codex still emits turn/completed. A completed turn with NO work AND an
+    // error present is a masked fatal — the error must be PRESERVED so it maps to
+    // exitCode:1 (honest failure) instead of a false "succeeded".
+    const acc = createAppServerResultAccumulator();
+    acc.onNotification("error", {
+      message: "not supported when using Codex with a ChatGPT account",
+      code: "http_400",
+    });
+    acc.onNotification("turn/completed", { turn: {} });
+    const out = acc.result();
+    expect(out.errorMessage).toBe(
+      "not supported when using Codex with a ChatGPT account",
+    );
+    expect(out.errorCode).toBe("http_400");
+    expect(out.summary).toBe("");
+  });
+
+  it("clears the error when work came only from an outputFile (fileChange) — producedWork counts files", () => {
+    const acc = createAppServerResultAccumulator();
+    acc.onNotification("error", { message: "transient", code: "x" });
+    acc.onNotification("item/completed", {
+      item: { type: "fileChange", changes: [{ path: "/tmp/out.txt" }] },
+    });
+    acc.onNotification("turn/completed", { turn: {} });
+    const out = acc.result();
+    expect(out.errorMessage).toBeNull();
+    expect(out.outputFiles).toEqual(["/tmp/out.txt"]);
   });
 });
 

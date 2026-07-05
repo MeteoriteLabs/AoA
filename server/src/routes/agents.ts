@@ -54,6 +54,7 @@ import {
 } from "../services/default-agent-instructions.js";
 import { environmentRunOrchestrator } from "../services/environment-run-orchestrator.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
+import { buildApprovalHubEmit, emitHubItem } from "../services/hub-source-producers.js";
 import { logger } from "../middleware/logger.js";
 import { liveRunsForCompany, liveRunsForIssue } from "./agents-live-runs.js";
 import { getProviderStatus } from "../adapters/provider-status.js";
@@ -1157,6 +1158,20 @@ export function agentRoutes(db: Db) {
           agentId: actor.actorType === "agent" ? actor.actorId : null,
           userId: actor.actorType === "user" ? actor.actorId : null,
         });
+      }
+
+      // Materialize the hire approval as a hub item immediately (H2). The hire
+      // route has no surrounding tx, so this matches the approval-create's
+      // atomicity — the item appears on the very next hub read instead of
+      // waiting for the scan-on-read backstop. Best-effort: a hub failure must
+      // never fail the hire (the scan-on-read still fills the gap).
+      try {
+        await emitHubItem(db, buildApprovalHubEmit(approval));
+      } catch (err) {
+        logger.error(
+          { err, companyId, approvalId: approval.id },
+          "hire approval hub emit failed (scan-on-read backstop will fill it)",
+        );
       }
     }
 

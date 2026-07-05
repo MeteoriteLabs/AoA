@@ -1465,6 +1465,15 @@ export function discussionService(db: Db) {
           .set({ extractionStatus: "pending", extractionRunId: null })
           .where(eq(discussionEntries.id, entryId));
 
+        // Reprocess reset (Task 10, D3): the entry is no longer 'failed', so any
+        // extraction_failed inbox item for it is stale — archive it now (the
+        // discussion_entry reconciler is terminal for non-failed entries) rather
+        // than waiting for the async re-extraction to succeed.
+        await hubItemsService(tx as unknown as Db).reconcile(companyId, {
+          sourceType: "discussion_entry",
+          sourceId: entryId,
+        });
+
         // Update pending count on discussion
         if (deletedReviewableCount > 0) {
           await tx
@@ -1572,6 +1581,13 @@ export function discussionService(db: Db) {
             .update(discussionEntries)
             .set({ extractionStatus: "pending", extractionRunId: null })
             .where(eq(discussionEntries.id, entry.id));
+
+          // Reprocess reset (Task 10, D3): archive any stale extraction_failed
+          // inbox item for this entry (now non-failed → reconciler terminal).
+          await hubItemsService(tx as unknown as Db).reconcile(companyId, {
+            sourceType: "discussion_entry",
+            sourceId: entry.id,
+          });
 
           reprocessedCount++;
           entriesToTrigger.push(entry);

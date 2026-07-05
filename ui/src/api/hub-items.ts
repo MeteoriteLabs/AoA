@@ -25,6 +25,11 @@ export interface HubItemListRow {
   summary: string | null;
   sourceType: string | null;
   sourceId: string | null;
+  // Server-persisted, canonical target entity for deep-links (hub-items.ts row
+  // spread, ~408-409/438-439). PREFER these over parsing composite sourceIds —
+  // a generic `split(":")[0]` is wrong for several types (e.g. marketplace_op).
+  relatedEntityId?: string | null;
+  relatedEntityType?: string | null;
   ownerUserId: string | null;
   ownerPool: string | null;
   claimedByUserId: string | null;
@@ -209,6 +214,10 @@ export const hubItemsApi = {
     api.get<HubItemListRow>(`/companies/${companyId}/hub-items/${itemId}`),
   counts: (companyId: string) =>
     api.get<HubCounts>(`/companies/${companyId}/hub-items/counts`),
+  hiddenCount: (companyId: string, lane: HubLane) =>
+    api.get<{ hiddenOpen: number }>(
+      `/companies/${companyId}/hub-items/hidden-count?lane=${encodeURIComponent(lane)}`,
+    ),
   getPreferences: (companyId: string) =>
     api.get<HubPreferences>(`/companies/${companyId}/hub-items/preferences/me`),
   updatePreferences: (companyId: string, patch: UpdateHubPreferencesInput) =>

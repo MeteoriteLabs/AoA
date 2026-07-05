@@ -110,12 +110,6 @@ export const NOTIFICATION_REGISTRY = {
     semanticType: "mention",
     defaultSourceType: "discussion",
   },
-  "thread.scope_proposal_posted": {
-    status: "active",
-    type: "thread.scope_proposal_posted",
-    semanticType: "scope_proposal",
-    defaultSourceType: "discussion",
-  },
   "thread.artifact_needs_review": {
     status: "active",
     type: "thread.artifact_needs_review",
@@ -132,12 +126,6 @@ export const NOTIFICATION_REGISTRY = {
     status: "active",
     type: "thread.spinoff_suggested",
     semanticType: "suggestion",
-    defaultSourceType: "discussion",
-  },
-  "thread.human_input_needed": {
-    status: "active",
-    type: "thread.human_input_needed",
-    semanticType: "human_input_needed",
     defaultSourceType: "discussion",
   },
   internal_agent_proactive: {

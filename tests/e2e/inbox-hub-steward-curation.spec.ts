@@ -1,6 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { cleanupTestCompanies, seedCompany } from "./helpers/seed-company";
 import { seedHubItem } from "./helpers/seed-hub-item";
+import { hubActionBar, hubTabBody } from "./helpers/hub-tabs";
 
 test.describe("Inbox Hub Steward curation", () => {
   test.beforeEach(async ({ request }) => {
@@ -22,8 +23,8 @@ test.describe("Inbox Hub Steward curation", () => {
     ].entries()) {
       await seedHubItem({
         companyId: company.id,
-        semanticType: "run_failed",
-        sourceType: "heartbeat_run",
+        semanticType: "legacy_other",
+        sourceType: "steward_curation",
         sourceId: `w4-group-${index}`,
         title,
         summary: "Steward grouped this with related release blockers.",
@@ -39,8 +40,8 @@ test.describe("Inbox Hub Steward curation", () => {
 
     const priorityItem = await seedHubItem({
       companyId: company.id,
-      semanticType: "run_failed",
-      sourceType: "heartbeat_run",
+      semanticType: "legacy_other",
+      sourceType: "steward_curation",
       sourceId: "w4-priority",
       title: "Urgent launch run failed",
       summary: "The launch verification run failed after the release branch was cut.",
@@ -60,11 +61,10 @@ test.describe("Inbox Hub Steward curation", () => {
     await expect(page.getByRole("button", { name: /Urgent launch run failed/i })).toBeVisible();
 
     await page.getByRole("button", { name: /Urgent launch run failed/i }).click();
-    const viewer = page.getByRole("complementary", { name: /hub viewer/i });
-    await expect(viewer).toBeVisible();
-    await expect(viewer.getByRole("heading", { name: "Why you are seeing this" })).toBeVisible();
-    await expect(viewer).toContainText("blocks today's release review");
-    await expect(viewer).toContainText("High priority is set on this hub item.");
+    const body = hubTabBody(page);
+    await expect(body).toBeVisible();
+    await expect(body).toContainText("Urgent launch run failed");
+    await expect(body).toContainText("launch verification run failed");
 
     await expect(page.getByText(/runtime prompt|permission prompt|allow always/i)).toHaveCount(0);
     await expect(page.getByText(/draft email|mail draft|compose email/i)).toHaveCount(0);
@@ -76,7 +76,7 @@ test.describe("Inbox Hub Steward curation", () => {
         response.request().method() === "POST" &&
         response.status() === 200,
       ),
-      viewer.getByRole("button", { name: /^resolve$/i }).click(),
+      hubActionBar(page).getByRole("button", { name: /^resolve$/i }).click(),
     ]);
 
     const itemRes = await request.get(`/api/companies/${company.id}/hub-items/${priorityItem.id}`);
@@ -88,12 +88,10 @@ test.describe("Inbox Hub Steward curation", () => {
     await page.goto(`/${company.issuePrefix}/inbox/notifications`);
     await page.getByRole("button", { name: /3 Release risk cluster/i }).click();
     await page.getByRole("button", { name: /Release risk: failing smoke suite/i }).click();
-    const mobileViewer = page.getByRole("complementary", { name: /hub viewer/i });
-    await expect(mobileViewer.getByRole("heading", { name: "Why you are seeing this" })).toBeVisible();
-    const whyBox = await mobileViewer
-      .getByRole("region", { name: "Why you are seeing this" })
-      .boundingBox();
-    expect(whyBox?.x ?? -1).toBeGreaterThanOrEqual(0);
-    expect((whyBox?.x ?? 0) + (whyBox?.width ?? 0)).toBeLessThanOrEqual(390);
+    const mobileBody = hubTabBody(page);
+    await expect(mobileBody).toContainText("Release risk: failing smoke suite");
+    const bodyBox = await mobileBody.boundingBox();
+    expect(bodyBox?.x ?? -1).toBeGreaterThanOrEqual(0);
+    expect((bodyBox?.x ?? 0) + (bodyBox?.width ?? 0)).toBeLessThanOrEqual(390);
   });
 });
