@@ -25,6 +25,7 @@ import {
   EntryAutocompleteList,
   type EntrySuggestion,
 } from "./EntryAutocompleteList";
+import { FileArtifactUpload } from "./FileArtifactUpload";
 
 /* ─── Public types ─── */
 
@@ -43,6 +44,8 @@ export interface AssetRef {
   id: string;
   name: string;
   mimeType: string;
+  /** Set when this attachment is a tracked artifact (founder file-artifact upload). */
+  artifactId?: string;
 }
 export interface Mention {
   id: string;
@@ -52,6 +55,8 @@ export interface Mention {
 
 export interface EntryComposerProps {
   threadId: string;
+  /** Company scope — used by the founder file-artifact upload control. */
+  companyId: string;
   parentEntryId?: string | null;
   agents: AgentRef[];
   users: UserRef[];
@@ -119,6 +124,7 @@ function detectMentionToken(
 
 export function EntryComposer({
   threadId,
+  companyId,
   parentEntryId = null,
   agents,
   users,
@@ -435,6 +441,21 @@ export function EntryComposer({
             data-testid="entry-composer-file-input"
             aria-label="File attachment input"
           />
+
+          {/* Founder file-artifact upload (P1) — attach a file as a tracked
+              artifact, sitting beside the regular paperclip attach button. */}
+          <div className="shrink-0">
+            <FileArtifactUpload
+              companyId={companyId}
+              onUploaded={(artifact) =>
+                setAttachments((prev) => [
+                  ...prev,
+                  { id: artifact.id, name: artifact.title, mimeType: artifact.type, artifactId: artifact.id },
+                ])
+              }
+              disabled={disabled || isSubmitting}
+            />
+          </div>
 
           {/* Autocomplete dropdown */}
           {autocompleteOpen && (

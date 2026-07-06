@@ -130,7 +130,16 @@ vi.mock("@armyofagents/db", () => ({
     assetId: "dea_asset_id",
     artifactId: "dea_artifact_id",
   },
-  artifacts: { id: "artifacts_id", type: "artifacts_type", title: "artifacts_title" },
+  artifacts: { id: "artifacts_id", type: "artifacts_type", title: "artifacts_title", status: "artifacts_status", currentVersionId: "artifacts_current_version_id" },
+  artifactVersions: {
+    id: "artifact_versions_id",
+    artifactId: "artifact_versions_artifact_id",
+    storageKind: "artifact_versions_storage_kind",
+    filename: "artifact_versions_filename",
+    contentType: "artifact_versions_content_type",
+    byteSize: "artifact_versions_byte_size",
+    assetId: "artifact_versions_asset_id",
+  },
   assets: {
     id: "assets_id",
     contentType: "assets_content_type",

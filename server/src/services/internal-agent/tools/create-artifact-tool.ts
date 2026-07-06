@@ -1,5 +1,5 @@
-import { eq } from "drizzle-orm";
-import { discussionEntries } from "@armyofagents/db";
+import { and, eq } from "drizzle-orm";
+import { assets, discussionEntries } from "@armyofagents/db";
 import type { AgentTool } from "../types.js";
 import { buildArtifactCandidateIdempotencyKey } from "./thread-action-keys.js";
 
@@ -38,6 +38,10 @@ export function createArtifactTool(): AgentTool {
           description:
             "Entry ID to link this artifact to by updating its sourceInfo (optional)",
         },
+        assetId: {
+          type: "string",
+          description: "Existing asset id (from the assets store) to attach as an asset-backed version (optional; produces a file artifact)",
+        },
       },
       required: ["title", "type"],
     },
@@ -45,7 +49,7 @@ export function createArtifactTool(): AgentTool {
     requiredRole: "team_member",
     requiresConfirmation: false,
     execute: async (params: unknown, ctx) => {
-      const { title, type, content, fileRef, discussionId, attachToEntryId } =
+      const { title, type, content, fileRef, discussionId, attachToEntryId, assetId } =
         (params ?? {}) as Record<string, unknown>;
 
       if (ctx.discussionRunMode === "controller_action_gate") {
@@ -105,17 +109,35 @@ export function createArtifactTool(): AgentTool {
         };
       }
 
-      const result = await ctx.services.artifacts.create(
-        ctx.companyId,
-        ctx.agentId ?? "aoa-agent",
-        {
-          title: title as string,
-          type: (type as string) ?? "document",
-          source: "agent",
-          content: (content as string) ?? null,
-          fileUrl: (fileRef as string) ?? null,
-        },
-      );
+      let assetMeta: { contentType: string; byteSize: number; sha256: string; originalFilename: string | null } | null = null;
+      if (typeof assetId === "string" && assetId.length > 0) {
+        assetMeta = await ctx.db
+          .select({ contentType: assets.contentType, byteSize: assets.byteSize, sha256: assets.sha256, originalFilename: assets.originalFilename })
+          .from(assets)
+          .where(and(eq(assets.id, assetId), eq(assets.companyId, ctx.companyId)))
+          .then((rows: Array<{ contentType: string; byteSize: number; sha256: string; originalFilename: string | null }>) => rows[0] ?? null);
+        if (!assetMeta) {
+          return { success: false, data: null, summary: "Asset not found for this company", error: "ASSET_NOT_FOUND" };
+        }
+      }
+
+      const fname = assetMeta?.originalFilename ?? null;
+      const dot = fname ? fname.lastIndexOf(".") : -1;
+
+      const result = await ctx.services.artifacts.create(ctx.companyId, ctx.agentId ?? "aoa-agent", {
+        title: title as string,
+        type: (type as string) ?? "document",
+        source: "agent",
+        content: assetMeta ? null : ((content as string) ?? null),
+        fileUrl: (fileRef as string) ?? null,
+        storageKind: assetMeta ? "asset" : "inline",
+        assetId: assetMeta ? (assetId as string) : null,
+        filename: fname,
+        contentType: assetMeta?.contentType ?? null,
+        extension: dot > 0 && fname ? fname.slice(dot + 1) : null,
+        byteSize: assetMeta?.byteSize ?? null,
+        sha256: assetMeta?.sha256 ?? null,
+      });
 
       const artifactId = result.id;
       const versionId = (result.versions as Array<{ id: string }>)[0]?.id ?? null;

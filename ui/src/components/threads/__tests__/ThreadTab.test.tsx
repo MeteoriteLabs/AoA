@@ -37,7 +37,23 @@ vi.mock("../../../api/agents", () => ({
 
 vi.mock("../../../api/team", () => ({
   teamApi: {
-    get: vi.fn().mockResolvedValue({ members: [] }),
+    // Real TeamSummary always carries currentUser (non-optional) — useTeamAccess
+    // (now consumed by ThreadTab for the founder-gated artifact actions) reads
+    // currentUser.role/permissions, so the mock must include it.
+    get: vi.fn().mockResolvedValue({
+      currentUser: {
+        userId: "user-1",
+        role: "team_member",
+        permissions: {
+          canAssignTasks: false,
+          canInviteUsers: false,
+          canManageRoles: false,
+          canEditIdentityMemory: false,
+        },
+      },
+      members: [],
+      pendingInvites: [],
+    }),
   },
 }));
 

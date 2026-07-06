@@ -25,6 +25,7 @@ vi.mock("@armyofagents/db", () => {
     );
 
   return {
+    assets: makeTable(),
     issues: makeTable(),
     userRoles: makeTable(),
     projectGoals: makeTable(),

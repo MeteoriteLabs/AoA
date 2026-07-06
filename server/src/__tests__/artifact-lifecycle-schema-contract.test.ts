@@ -1,28 +1,68 @@
-import { describe, it, expect } from "vitest";
-import { artifactVersions } from "@armyofagents/db";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { describe, expect, it } from "vitest";
 
-/** Drizzle column names off a table object (mirrors threads-schema-contract.test.ts). */
-function getColumnNames(table: Record<string, unknown>): string[] {
-  return Object.keys(table).filter(
-    (key) =>
-      typeof table[key] === "object" &&
-      table[key] !== null &&
-      "name" in (table[key] as Record<string, unknown>),
-  );
+type DrizzleJournal = {
+  entries: Array<{ tag: string }>;
+};
+
+type DrizzleSnapshot = {
+  tables: Record<
+    string,
+    {
+      columns: Record<string, unknown>;
+      indexes: Record<string, unknown>;
+      foreignKeys: Record<string, unknown>;
+    }
+  >;
+};
+
+function latestSnapshot(): DrizzleSnapshot {
+  const metaDir = join(__dirname, "../../../packages/db/src/migrations/meta");
+  const journal = JSON.parse(
+    readFileSync(join(metaDir, "_journal.json"), "utf8"),
+  ) as DrizzleJournal;
+  const latest = journal.entries.at(-1);
+  if (!latest) throw new Error("No Drizzle migrations found");
+  return JSON.parse(
+    readFileSync(join(metaDir, `${latest.tag.split("_")[0]}_snapshot.json`), "utf8"),
+  ) as DrizzleSnapshot;
 }
 
-describe("artifact_versions — file-metadata columns (Artifact Lifecycle P1)", () => {
-  const cols = getColumnNames(artifactVersions);
+describe("artifact_versions file metadata schema", () => {
+  const artifactVersions = latestSnapshot().tables["public.artifact_versions"];
 
-  it("has the 7 additive file-metadata columns", () => {
-    for (const c of ["storageKind", "assetId", "filename", "contentType", "extension", "byteSize", "sha256"]) {
-      expect(cols, `missing column: ${c}`).toContain(c);
-    }
+  it("has additive file metadata columns", () => {
+    expect(Object.keys(artifactVersions.columns)).toEqual(
+      expect.arrayContaining([
+        "storage_kind",
+        "asset_id",
+        "filename",
+        "content_type",
+        "extension",
+        "byte_size",
+        "sha256",
+      ]),
+    );
   });
 
-  it("preserves the existing version columns", () => {
-    for (const c of ["id", "artifactId", "versionNumber", "source", "content", "fileUrl"]) {
-      expect(cols, `missing column: ${c}`).toContain(c);
-    }
+  it("preserves existing version columns", () => {
+    expect(Object.keys(artifactVersions.columns)).toEqual(
+      expect.arrayContaining([
+        "id",
+        "artifact_id",
+        "version_number",
+        "source",
+        "content",
+        "file_url",
+      ]),
+    );
+  });
+
+  it("indexes and constrains the optional asset reference", () => {
+    expect(Object.keys(artifactVersions.indexes)).toContain("artifact_versions_asset_idx");
+    expect(Object.keys(artifactVersions.foreignKeys)).toContain(
+      "artifact_versions_asset_id_assets_id_fk",
+    );
   });
 });

@@ -1,7 +1,17 @@
-import { eq, desc } from "drizzle-orm";
+import { eq, desc, and, ne } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { artifacts, artifactVersions, issues } from "@armyofagents/db";
+import { artifacts, artifactVersions, issues, assets } from "@armyofagents/db";
 import { badRequest } from "../errors.js";
+
+/** Tenant isolation: an asset backing a version must belong to the same company. */
+async function assertAssetOwned(db: Pick<Db, "select">, companyId: string, assetId: string | null | undefined) {
+  if (!assetId) return;
+  const [row] = await db
+    .select({ id: assets.id })
+    .from(assets)
+    .where(and(eq(assets.id, assetId), eq(assets.companyId, companyId)));
+  if (!row) throw badRequest("assetId does not belong to this company");
+}
 
 /** Fetch artifact row + its versions (newest first) */
 async function fetchWithVersions(db: Db, artifactId: string) {
@@ -23,12 +33,11 @@ async function fetchWithVersions(db: Db, artifactId: string) {
 
 export function artifactService(db: Db) {
   return {
-    list: async (companyId: string) => {
-      return db
-        .select()
-        .from(artifacts)
-        .where(eq(artifacts.companyId, companyId))
-        .orderBy(desc(artifacts.updatedAt));
+    list: async (companyId: string, opts?: { includeArchived?: boolean }) => {
+      const where = opts?.includeArchived
+        ? eq(artifacts.companyId, companyId)
+        : and(eq(artifacts.companyId, companyId), ne(artifacts.status, "archived"));
+      return db.select().from(artifacts).where(where).orderBy(desc(artifacts.updatedAt));
     },
 
     getById: async (id: string) => {
@@ -48,10 +57,22 @@ export function artifactService(db: Db) {
         content?: string | null;
         fileUrl?: string | null;
         sourceActionId?: string | null;
+        storageKind?: string | null;
+        assetId?: string | null;
+        filename?: string | null;
+        contentType?: string | null;
+        extension?: string | null;
+        byteSize?: number | null;
+        sha256?: string | null;
       },
     ) => {
-      const { source, sourceDetail, changelog, content, fileUrl, sourceActionId, ...artifactData } =
-        data;
+      const {
+        source, sourceDetail, changelog, content, fileUrl, sourceActionId,
+        storageKind, assetId, filename, contentType, extension, byteSize, sha256,
+        ...artifactData
+      } = data;
+
+      await assertAssetOwned(db, companyId, assetId);
 
       return db.transaction(async (tx) => {
         const [artifact] = await tx
@@ -70,6 +91,13 @@ export function artifactService(db: Db) {
               changelog: changelog ?? null,
               content: content ?? null,
               fileUrl: fileUrl ?? null,
+              storageKind: storageKind ?? "inline",
+              assetId: assetId ?? null,
+              filename: filename ?? null,
+              contentType: contentType ?? null,
+              extension: extension ?? null,
+              byteSize: byteSize ?? null,
+              sha256: sha256 ?? null,
             })
             .returning();
 
@@ -103,6 +131,26 @@ export function artifactService(db: Db) {
         .then((rows) => rows[0] ?? null);
     },
 
+    /** Soft-archive: reversible status flip to "archived" (default list excludes archived once Task 5 lands). */
+    archive: async (id: string) => {
+      return db
+        .update(artifacts)
+        .set({ status: "archived", updatedAt: new Date() })
+        .where(eq(artifacts.id, id))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+    },
+
+    /** Reverse of archive → "active". */
+    unarchive: async (id: string) => {
+      return db
+        .update(artifacts)
+        .set({ status: "active", updatedAt: new Date() })
+        .where(eq(artifacts.id, id))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+    },
+
     addVersion: async (
       artifactId: string,
       data: {
@@ -112,8 +160,21 @@ export function artifactService(db: Db) {
         parentVersionId?: string | null;
         content?: string | null;
         fileUrl?: string | null;
+        storageKind?: string | null;
+        assetId?: string | null;
+        filename?: string | null;
+        contentType?: string | null;
+        extension?: string | null;
+        byteSize?: number | null;
+        sha256?: string | null;
       },
     ) => {
+      if (data.assetId) {
+        const [art] = await db.select({ companyId: artifacts.companyId }).from(artifacts).where(eq(artifacts.id, artifactId));
+        if (!art) throw badRequest("artifact not found");
+        await assertAssetOwned(db, art.companyId, data.assetId);
+      }
+
       return db.transaction(async (tx) => {
         // Branching guard: a supplied parentVersionId MUST belong to THIS
         // artifact. The FK only constrains it to *some* artifact_versions row,
@@ -152,6 +213,13 @@ export function artifactService(db: Db) {
             parentVersionId: data.parentVersionId ?? null,
             content: data.content ?? null,
             fileUrl: data.fileUrl ?? null,
+            storageKind: data.storageKind ?? "inline",
+            assetId: data.assetId ?? null,
+            filename: data.filename ?? null,
+            contentType: data.contentType ?? null,
+            extension: data.extension ?? null,
+            byteSize: data.byteSize ?? null,
+            sha256: data.sha256 ?? null,
           })
           .returning();
 

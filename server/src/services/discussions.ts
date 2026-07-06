@@ -7,6 +7,7 @@ import {
   discussionAnnotations,
   discussionEntryAttachments,
   artifacts,
+  artifactVersions,
   assets,
   agents,
   projects,
@@ -492,6 +493,12 @@ export function discussionService(db: Db) {
         assetContentType: string | null;
         assetOriginalFilename: string | null;
         assetByteSize: number | null;
+        artifactStatus: string | null;
+        currentVersionStorageKind: string | null;
+        currentVersionFilename: string | null;
+        currentVersionContentType: string | null;
+        currentVersionByteSize: number | null;
+        currentVersionAssetId: string | null;
       }> = [];
 
       if (entryIds.length > 0) {
@@ -516,6 +523,12 @@ export function discussionService(db: Db) {
             assetContentType: assets.contentType,
             assetOriginalFilename: assets.originalFilename,
             assetByteSize: assets.byteSize,
+            artifactStatus: artifacts.status,
+            currentVersionStorageKind: artifactVersions.storageKind,
+            currentVersionFilename: artifactVersions.filename,
+            currentVersionContentType: artifactVersions.contentType,
+            currentVersionByteSize: artifactVersions.byteSize,
+            currentVersionAssetId: artifactVersions.assetId,
           })
           .from(discussionEntryAttachments)
           .leftJoin(
@@ -530,6 +543,13 @@ export function discussionService(db: Db) {
             and(
               eq(discussionEntryAttachments.assetId, assets.id),
               eq(assets.companyId, companyId),
+            ),
+          )
+          .leftJoin(
+            artifactVersions,
+            and(
+              eq(artifacts.currentVersionId, artifactVersions.id),
+              eq(artifactVersions.artifactId, artifacts.id),
             ),
           )
           .where(inArray(discussionEntryAttachments.discussionEntryId, entryIds));
@@ -570,6 +590,12 @@ export function discussionService(db: Db) {
           assetContentType: a.assetContentType,
           assetOriginalFilename: a.assetOriginalFilename,
           assetByteSize: a.assetByteSize,
+          artifactStatus: a.artifactStatus,
+          currentVersionStorageKind: a.currentVersionStorageKind,
+          currentVersionFilename: a.currentVersionFilename,
+          currentVersionContentType: a.currentVersionContentType,
+          currentVersionByteSize: a.currentVersionByteSize,
+          currentVersionAssetId: a.currentVersionAssetId,
         })),
       }));
 
