@@ -1,4 +1,4 @@
-﻿export const COMPANY_STATUSES = ["active", "paused", "archived"] as const;
+export const COMPANY_STATUSES = ["active", "paused", "archived"] as const;
 export type CompanyStatus = (typeof COMPANY_STATUSES)[number];
 
 export const DEPLOYMENT_MODES = ["local_trusted", "authenticated"] as const;
@@ -41,7 +41,7 @@ export type AgentAdapterType = (typeof AGENT_ADAPTER_TYPES)[number];
 
 // 3-tier model:
 //   - cxo:     apex executive. Apex CXO (no agent parent) is the de-facto
-//              "Chief of Staff" â€” computed live in the org-tree UI, not
+//              "Chief of Staff" — computed live in the org-tree UI, not
 //              stored. CXO agents bypass the canCreateAgents permission
 //              gate and load the 4-file `cxo/` onboarding bundle.
 //   - lead:    manages a team or function. Loads the 4-file `lead/`
@@ -164,7 +164,7 @@ export const APPROVAL_TYPES = ["hire_agent", "approve_ceo_strategy", "budget_ove
 export type ApprovalType = (typeof APPROVAL_TYPES)[number];
 
 // Types an external caller (HTTP route / MCP create-approval) may CREATE or RESUBMIT.
-// `crew_dispatch` is SYSTEM-INTERNAL â€” only the autonomy handler
+// `crew_dispatch` is SYSTEM-INTERNAL — only the autonomy handler
 // (server/src/services/thread-agent-actions.ts) creates it, directly via
 // approvalService.create() with system-controlled payload.taskIds. It must NOT be
 // externally creatable/resubmittable: its approve() side-effect dispatches every id in
@@ -284,7 +284,7 @@ export const LIVE_EVENT_TYPES = [
   "heartbeat.run.outputs_detected",
   "agent.status",
   "activity.logged",
-  // Thread chat experience Phase 5 (Task 5.6): a task's status changed â€”
+  // Thread chat experience Phase 5 (Task 5.6): a task's status changed —
   // company-broadcast (NOT a thread.* envelope event) so the kanban/Crew Board
   // can move the card live when a crew agent (or the founder) moves it.
   "issue.status_changed",
@@ -549,10 +549,10 @@ export const MEMORY_EXTRACTION_BATCH_STATUSES = [
 export type MemoryExtractionBatchStatus = (typeof MEMORY_EXTRACTION_BATCH_STATUSES)[number];
 
 // MCP actor types: controls which tools an actor can call.
-//   "board"     â€” founder session (existing)
-//   "agent"     â€” worker agent CLI subprocess (new)
-//   "commander" â€” internal-agent + sub-agents (new, when commander goes CLI)
-//   "mcp"       â€” external MCP API key (existing)
+//   "board"     — founder session (existing)
+//   "agent"     — worker agent CLI subprocess (new)
+//   "commander" — internal-agent + sub-agents (new, when commander goes CLI)
+//   "mcp"       — external MCP API key (existing)
 export const MCP_ACTOR_TYPES = ["board", "agent", "commander", "mcp"] as const;
 export type McpActorType = (typeof MCP_ACTOR_TYPES)[number];
 
@@ -657,7 +657,7 @@ export const PERMISSION_KEYS = [
 ] as const;
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
 
-// â”€â”€ RBAC â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── RBAC ───────────────────────────────────────────────────────────
 
 export const USER_ROLES = ["founder", "team_lead", "team_member"] as const;
 export type UserRole = (typeof USER_ROLES)[number];
@@ -674,7 +674,7 @@ export function roleAtLeast(userRole: string, required: string): boolean {
   return (ROLE_RANK[userRole] ?? 0) >= (ROLE_RANK[required] ?? 0);
 }
 
-// â”€â”€ Artifacts â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Artifacts ──────────────────────────────────────────────────────
 
 export const ARTIFACT_TYPES = [
   "document",
@@ -698,7 +698,7 @@ export const ARTIFACT_VERSION_SOURCES = [
 ] as const;
 export type ArtifactVersionSource = (typeof ARTIFACT_VERSION_SOURCES)[number];
 
-// â”€â”€ Suggestions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Suggestions ────────────────────────────────────────────────────
 
 export const SUGGESTION_CATEGORIES = [
   "goal_gap",
@@ -733,7 +733,7 @@ export const SUGGESTION_ACTION_TYPES = [
 ] as const;
 export type SuggestionActionType = (typeof SUGGESTION_ACTION_TYPES)[number];
 
-// â”€â”€ Memory Feedback Patterns â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Memory Feedback Patterns ────────────────────────────────────────
 
 export const MEMORY_FEEDBACK_PATTERN_TYPES = [
   "tone_correction",
@@ -753,7 +753,7 @@ export const MEMORY_FEEDBACK_PATTERN_STATUSES = [
 ] as const;
 export type MemoryFeedbackPatternStatus = (typeof MEMORY_FEEDBACK_PATTERN_STATUSES)[number];
 
-// â”€â”€ Detected Output Statuses â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Detected Output Statuses ────────────────────────────────────────
 
 export const DETECTED_OUTPUT_STATUSES = ["pending", "confirmed", "dismissed"] as const;
 export type DetectedOutputStatus = (typeof DETECTED_OUTPUT_STATUSES)[number];
@@ -761,7 +761,7 @@ export type DetectedOutputStatus = (typeof DETECTED_OUTPUT_STATUSES)[number];
 export const DETECTED_OUTPUT_SOURCES = ["diff", "hint", "both"] as const;
 export type DetectedOutputSource = (typeof DETECTED_OUTPUT_SOURCES)[number];
 
-// â”€â”€ Memory Item Versions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Memory Item Versions ────────────────────────────────────────────
 
 export const MEMORY_ITEM_VERSION_STATUSES = [
   "draft",
@@ -780,7 +780,7 @@ export const SEARCH_ENTITY_TYPES = [
 ] as const;
 export type SearchEntityType = (typeof SEARCH_ENTITY_TYPES)[number];
 
-// â”€â”€ Discussions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Discussions ─────────────────────────────────────────────────
 
 export const DISCUSSION_STATUSES = ["active", "archived"] as const;
 export type DiscussionStatus = (typeof DISCUSSION_STATUSES)[number];
@@ -788,13 +788,13 @@ export type DiscussionStatus = (typeof DISCUSSION_STATUSES)[number];
 export const DISCUSSION_SCOPE_TYPES = ["department", "project", "goal"] as const;
 export type DiscussionScopeType = (typeof DISCUSSION_SCOPE_TYPES)[number];
 
-// "write" kept for backward compat with existing entries â€” UI now uses "paste" for both paste and write.
+// "write" kept for backward compat with existing entries — UI now uses "paste" for both paste and write.
 // Phase 1 (Task A3): added "scope_proposal" (Adjutant posts a structured proposal
 // entry with a JSON payload of summary + proposedTasks; UI renders a special
 // card with CTAs) and "system" (used for crew/agent failure messages with retry
 // affordances; UI renders with a warning icon). The previously aliased
 // DISCUSSION_ENTRY_INPUT_TYPES_V2 export in packages/shared/src/api/threads-contract.ts
-// was dropped in this task â€” consumers should import this canonical constant.
+// was dropped in this task — consumers should import this canonical constant.
 export const DISCUSSION_ENTRY_INPUT_TYPES = [
   "paste",
   "write",
@@ -821,7 +821,7 @@ export type ExtractionItemType = (typeof EXTRACTION_ITEM_TYPES)[number];
 export const EXTRACTION_ITEM_STATUSES = ["pending", "approved", "rejected", "edited"] as const;
 export type ExtractionItemStatus = (typeof EXTRACTION_ITEM_STATUSES)[number];
 
-// â”€â”€ Threads (extends Discussions) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Threads (extends Discussions) ───────────────────────────────────────
 
 export const THREAD_ORIGIN_SOURCES = ["human", "agent", "external", "system"] as const;
 export type ThreadOriginSource = (typeof THREAD_ORIGIN_SOURCES)[number];
@@ -874,7 +874,7 @@ export type ThreadAgentActionType = (typeof THREAD_AGENT_ACTION_TYPES)[number];
 
 export const THREAD_AGENT_ACTION_STATUSES = [
   "proposed", // produced mid-run, NOT yet committable (Decision #99 producer gate)
-  "ready", // sealed: the producing run SUCCEEDED â€” the relay drains only this status
+  "ready", // sealed: the producing run SUCCEEDED — the relay drains only this status
   "committing", // a committer won the fenced CAS claim and is applying the side-effect
   "committed", // side-effect applied
   "suppressed_stale", // the world moved between propose and commit (freshness gate)
@@ -896,7 +896,7 @@ export type ThreadDerivedStage = (typeof THREAD_DERIVED_STAGES)[number];
 
 // Phase 1 (Task A2): canonicalized from legacy ["open", "private"] to the
 // 3-tier model used across the new thread coordination contract. Existing
-// rows defaulting to "open" are migrated to "company" (open â‰ˆ everyone with
+// rows defaulting to "open" are migrated to "company" (open ≈ everyone with
 // scope access, which is what the new "company" tier expresses). The
 // previously aliased THREAD_VISIBILITIES_V2 / ThreadVisibilityV2 exports in
 // packages/shared/src/api/threads-contract.ts were dropped as redundant.
@@ -921,7 +921,7 @@ export type ThreadRouterDecision = (typeof THREAD_ROUTER_DECISIONS)[number];
 export const THREAD_INBOX_STATUSES = ["pending", "attached", "dismissed"] as const;
 export type ThreadInboxStatus = (typeof THREAD_INBOX_STATUSES)[number];
 
-// â”€â”€ Internal Agent â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Internal Agent ──────────────────────────────────────────────
 
 export const AGENT_CAPABILITIES = [
   "discussion_processing",
@@ -943,7 +943,7 @@ export const AGENT_EXECUTION_MODES = ["api", "cli"] as const;
 export type AgentExecutionMode = (typeof AGENT_EXECUTION_MODES)[number];
 
 // NOTE: opencode is a first-class crew provider (resolveCrewAdapterFor handles it).
-// AGENT_MODELS_BY_PROVIDER below is dead/unused (no live consumer) â€” do not extend it.
+// AGENT_MODELS_BY_PROVIDER below is dead/unused (no live consumer) — do not extend it.
 export const AGENT_PROVIDERS = ["anthropic", "openai", "google", "opencode"] as const;
 export type AgentProvider = (typeof AGENT_PROVIDERS)[number];
 
@@ -999,7 +999,7 @@ export type IaConversationStatus = (typeof IA_CONVERSATION_STATUSES)[number];
 export const REMINDER_STATUSES = ["pending", "fired", "cancelled"] as const;
 export type ReminderStatus = (typeof REMINDER_STATUSES)[number];
 
-// â”€â”€ Commander Tool Permissions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Commander Tool Permissions ─────────────────────────────────────
 
 export interface CommanderToolPermission {
   enabled: boolean;            // whether the tool is available to Commander at all
@@ -1055,7 +1055,7 @@ export const NOTIFICATION_TYPES = [
   // surfaced in Inbox. Backing payload still lives on the existing
   // notifications row shape (title/message/relatedEntityType/relatedEntityId).
   // NOTE: thread.scope_proposal_posted + thread.human_input_needed were REMOVED
-  // (Task 10, 2026-07-04) alongside their pruned hub semantic types â€” both had
+  // (Task 10, 2026-07-04) alongside their pruned hub semantic types — both had
   // zero writers; the events never fired. Do NOT re-add without a real producer.
   "thread.artifact_needs_review",
   "thread.crew_failed",
@@ -1063,7 +1063,7 @@ export const NOTIFICATION_TYPES = [
 ] as const;
 export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
 
-// â”€â”€ Routines â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Routines ──────────────────────────────────────────────────────────
 
 export const RUN_LIVENESS_STATES = ["unknown", "advanced", "completed", "blocked", "needs_followup", "stalled"] as const;
 export type RunLivenessState = (typeof RUN_LIVENESS_STATES)[number];
