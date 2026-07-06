@@ -51,7 +51,7 @@ export interface FindSimilarScope {
   layer?: string;
 }
 
-// V2.6 multi-pathway retrieval — combines semantic + keyword + temporal
+// Multi-pathway retrieval: combines semantic + keyword + temporal
 // pathways via reciprocal rank fusion (RRF), then re-weights by trust
 // signals (validationCount, accessedAt, lastValidatedAt).
 //
@@ -508,7 +508,7 @@ export function memoryService(db: Db) {
     },
 
     /**
-     * V2.6 multi-pathway memory search.
+     * Multi-pathway memory search.
      *
      * Runs SEMANTIC + KEYWORD + TEMPORAL pathways in parallel against
      * memory_items, merges results via reciprocal rank fusion (RRF),
@@ -1497,7 +1497,7 @@ export function memoryService(db: Db) {
         .then((rows) => rows[0] ?? null),
 
     /**
-     * V2.6 Phase 3 — list memory_retrievals rows for an issue (across all
+     * List memory_retrievals rows for an issue (across all
      * its heartbeat runs), joined to memory_items so the UI can render the
      * item title/layer/category alongside the per-call audit metadata.
      *

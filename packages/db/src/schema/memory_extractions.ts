@@ -15,7 +15,7 @@ import { heartbeatRuns } from "./heartbeat_runs.js";
 import { memoryExtractionBatches } from "./memory_extraction_batches.js";
 
 /**
- * V2.6: extraction job tracking — bridges raw artifacts to memory_items.content.
+ * Extraction job tracking: bridges raw artifacts to memory_items.content.
  *
  * Flow:
  *   1. Founder uploads file → asset + artifact + memory_item (status=pending) created

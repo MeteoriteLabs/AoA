@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // ── DB / drizzle stubs ────────────────────────────────────────────────────────
 // Mirrors feedback-votes-service.test.ts so bundle service tests run without
-// importing real drizzle-orm (ESM cycle guard, per V2 test pattern in CLAUDE.md).
+// importing real drizzle-orm (ESM cycle guard, per shared test pattern in CLAUDE.md).
 
 vi.mock("drizzle-orm", () => ({
   and: vi.fn((...args: unknown[]) => ({ and: args })),

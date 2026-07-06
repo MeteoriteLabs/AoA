@@ -390,7 +390,7 @@ export function MemoryTree({
     ) {
       return null;
     }
-    // Active Context goal: scope (allows new subfolder in v2+).
+    // Active Context goal scope allows a new subfolder.
     // For v1 scope: show no kebab on goals (folders under goals not supported yet).
     if (node.key.startsWith("__goal-")) return null;
     // Department: scope

@@ -7,11 +7,11 @@ import {
 } from "@armyofagents/db";
 
 /**
- * Discussion Schema Contract Tests (V2.5 Session 1)
+ * Discussion Schema Contract Tests
  *
  * Verifies all 4 discussion tables have the required columns,
  * extraction tracking fields, conflict detection fields, and
- * annotation positioning fields per the v2.5 schema spec.
+ * annotation positioning fields per the discussion schema.
  */
 
 // Helper: get column names from a Drizzle table
@@ -141,7 +141,7 @@ describe("discussionExtractedItems table", () => {
     expect(cols).toContain("conflictsWith");
   });
 
-  it("has suggested goal field (new in v2.5)", () => {
+  it("has suggested goal field", () => {
     expect(cols).toContain("suggestedGoalId");
   });
 

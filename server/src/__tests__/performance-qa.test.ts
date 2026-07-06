@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 
 /**
- * V2 Performance QA Tests (Session 29)
+ * Performance QA Tests
  *
  * Validates performance contracts and targets:
  * - Memory search: <100ms for 10K items (contract test)
@@ -16,7 +16,7 @@ import { describe, it, expect } from "vitest";
  * a live database with 10K+ items.
  */
 
-describe("V2 Performance QA", () => {
+describe("Performance QA", () => {
   // ── Memory search performance contract ──────────────────────────────────────
 
   describe("Memory search performance", () => {

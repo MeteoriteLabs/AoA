@@ -12,7 +12,7 @@ import { describe, it, expect, vi } from "vitest";
 vi.setConfig({ testTimeout: 15000 });
 
 /**
- * Discussion Routes Contract Tests (V2.5 Session 5)
+ * Discussion Routes Contract Tests
  *
  * Verifies that the discussionRoutes factory returns an Express Router
  * with all 10 required endpoint paths registered per the API contract.

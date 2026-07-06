@@ -28,7 +28,7 @@ export const toolHandlers: Record<string, ToolHandler> = {
 /**
  * Per-tool actor-type gate.
  *
- * Tools NOT in this map are open to all actor types (existing pre-V2.6
+ * Tools NOT in this map are open to all actor types (existing
  * behavior). Tools listed here are restricted to the given actor sources.
  *
  * Used by mcp/server.ts at tool-dispatch time. A caller whose
@@ -186,7 +186,7 @@ export const TOOL_DEFINITIONS = [
       required: ["title", "content", "category"],
     },
   },
-  // V2.6: worker-facing memory tools — multi-pathway search, scope-checked
+  // Worker-facing memory tools: multi-pathway search, scope-checked
   // get, and self-scope-aware retain. See toolAllowedActors above for gating.
   {
     name: "memory.search",

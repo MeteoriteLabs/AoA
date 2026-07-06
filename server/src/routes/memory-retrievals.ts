@@ -5,7 +5,7 @@ import { assertCompanyAccess } from "./authz.js";
 import { loadOwnedConversation } from "./conversation-authz.js";
 
 /**
- * V2.6 Phase 3 — read-only API for memory_retrievals audit rows.
+ * Read-only API for memory_retrievals audit rows.
  *
  * Powers the workspace right-panel MemorySection so founders can see
  * exactly what memory each agent run actually queried + got back.

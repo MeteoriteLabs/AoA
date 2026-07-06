@@ -28,7 +28,7 @@ export type McpUserScope =
  *   - "board"     — board session cookie (founder/team_lead from browser)
  *   - "agent"     — short-lived run JWT issued to a CLI worker agent
  *   - "commander" — internal-agent JWT (reserved; only meaningful once
- *                   Commander goes CLI per V2.5 team-under-Commander work)
+ *                   reserved for Commander CLI work)
  *
  * Worker-tool gating (allowedActors) reads `source` to decide whether
  * a given tool is callable by the caller.

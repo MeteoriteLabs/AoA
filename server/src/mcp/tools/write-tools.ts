@@ -401,7 +401,7 @@ async function handleAttachArtifactVersion(
 }
 
 /**
- * V2.6 worker-facing memory.retain.
+ * Worker-facing memory.retain.
  *
  * Two distinct paths based on caller + scope:
  *
@@ -715,7 +715,7 @@ export const writeToolHandlers: Record<string, ToolHandler> = {
   "update-task": handleUpdateTask,
   "add-task-comment": handleAddTaskComment,
   "attach-artifact-version": handleAttachArtifactVersion,
-  // V2.6
+  // Worker-facing memory tools.
   "memory.retain": handleMemoryRetain,
   // Task 9 W3 — write+RAG-index (status always pending, Critical Rule #6)
   "memory.write": handleMemoryWrite,

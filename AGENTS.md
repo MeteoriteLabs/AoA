@@ -4,7 +4,7 @@ Guidance for human and AI contributors working in this repository.
 
 ## 1. Purpose
 
-AoA (Army of Agents) is a Hybrid Workforce Operating System for solo founders — built on Paperclip (open-source AI agent orchestration). The current implementation is **V2.5**.
+AoA (Army of Agents) is a Hybrid Workforce Operating System for solo founders — built on Paperclip (open-source AI agent orchestration). The current product line is version 1.
 
 ## 2. Read This First
 
@@ -29,7 +29,7 @@ Key doc paths:
 - `docs/architecture/decisions.md` — locked decisions (90+)
 - `docs/architecture/` — design system, memory, wire-compat, workspace decisions
 - `docs/api/` — REST + MCP API contracts
-- `docs/superpowers/` — session plans and design specs
+- `docs/archive/` — historical session logs, plans, and audits
 
 ## 4. Dev Setup (Auto DB)
 
@@ -82,7 +82,7 @@ pnpm dev
 4. **Naming map — UI says Task/Home/Budget/Team/Discussion, DB/API stay unchanged.**
    See `CLAUDE.md` §Naming Map for the full table. Never rename DB tables or API routes.
 
-5. **MCP inbound always routes through the Discussion pipeline.** Never create raw tasks from MCP input. (Decision #14)
+5. **MCP inbound follows revised Decision #14.** Authenticated MCP, board, and agent callers may create or update structured tasks directly when RBAC allows it. Use `debrief-push` for unstructured content that should enter the Discussion extraction pipeline. Anonymous MCP traffic is rejected outside `local_trusted`; loopback `local_trusted` traffic is treated as trusted board/agent context, not public anonymous input.
 
 6. **Drizzle ORM only.** Schema changes go in `packages/db/src/schema/`. Run `pnpm db:generate`. Never write raw SQL migration files. (Decision #19)
 
@@ -206,7 +206,7 @@ When adding endpoints:
 
 A change is done when all are true:
 
-1. Behavior matches `CLAUDE.md` and relevant V2.5 spec docs
+1. Behavior matches `CLAUDE.md` and relevant current product and architecture docs
 2. Typecheck, tests, and build pass
 3. Contracts are synced across db/shared/server/ui
 4. Docs updated when behavior or commands change

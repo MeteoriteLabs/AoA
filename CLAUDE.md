@@ -86,8 +86,9 @@ touching these areas, check against this list before porting.
 | Team | — | Was "Org" |
 | Discussion | `discussions` | Was "Debrief" |
 | Extracted Item | `discussion_extracted_items` | Was "Brief Item" |
+| Objectives | `goals` | UI route is `/objectives`; API routes stay `/goals` |
 
-Goals, Agents, Company, Settings, Activity, Inbox — UI label matches DB/API name.
+Agents, Company, Settings, Activity, Inbox — UI label matches DB/API name.
 
 ---
 
@@ -195,11 +196,12 @@ Three roles: `founder`, `team_lead`, `team_member`. Department-scoped. Additive 
 
 ### MCP (Bidirectional)
 
-**Inbound:** `/companies/:cid/mcp` JSON-RPC endpoint. Two actor types (`server/src/mcp/server.ts:146`):
+**Inbound:** `/companies/:cid/mcp` JSON-RPC endpoint. Three protocol actor sources (`server/src/mcp/server.ts`):
 - `mcp` — caller presented a Bearer token matching an `mcp_api_keys` row
 - `board` — caller has a valid board session (browser cookie in authenticated deployments, or synthetic `local-board` actor in `local_trusted` mode)
+- `agent` — caller presented an agent run JWT / agent key context during execution
 
-Requests with neither → 401. `local_trusted` MCP writes succeed without a Bearer token (loopback is the trust boundary). `cloud_auth` / `authenticated` deployments reject unauth'd MCP traffic.
+Requests with neither → 401 in authenticated deployments. `local_trusted` no-token loopback requests are treated as trusted board context, and requests carrying a valid run id may be treated as the running agent. `cloud_auth` / `authenticated` deployments reject unauth'd MCP traffic.
 
 **Outbound (AoA as MCP server) — 36 tools total, RBAC-scoped:** Read (11), Write (10), Document (5), Approval (10). Also exposes 4 MCP resources. Full tool registry: `server/src/mcp/tools/index.ts`. (Write (10) = the CRUD-write tools + `memory.write` + `ask_founder`, the blocking work_question caller; the separate `use_skill` skill tool is gated to board/commander and not counted in the RBAC-CRUD total.)
 
@@ -321,7 +323,7 @@ Windows e2e skip is implemented at playwright config level (`tests/e2e/playwrigh
 
 ## Database Schema
 
-All table definitions in `packages/db/src/schema/` (93 files). Schema changes use Drizzle ORM only — never raw SQL.
+All table definitions in `packages/db/src/schema/` (126 files). Schema changes use Drizzle ORM only — never raw SQL.
 
 ### Core / Company
 
@@ -375,6 +377,7 @@ All table definitions in `packages/db/src/schema/` (93 files). Schema changes us
 | `memory_assets` | File assets attached to memory items |
 | `memory_extractions` | LLM extraction records |
 | `memory_extraction_batches` | Batch extraction records |
+| `company_brain_edges` | Company knowledge graph edges used by brain/memory surfaces |
 
 ### Discussions
 
@@ -384,6 +387,11 @@ All table definitions in `packages/db/src/schema/` (93 files). Schema changes us
 | `discussion_entries` | Individual entries. `inputType`: paste/write/voice/mcp. `extractionStatus`. Entry-level scope override |
 | `discussion_extracted_items` | Extracted items: decision/task/insight/context/reference/preference. Approval workflow. `resultTaskId`, `resultMemoryId` |
 | `discussion_annotations` | Inline annotations. `anchorStart`/`anchorEnd` character offsets |
+| `threads` | Thread workspace metadata for the current Discussions UI |
+| `thread_scope_versions` | Immutable scope draft/version records for thread planning |
+| `thread_scope_items` | Per-item records within a thread scope version |
+| `thread_agent_actions` | Agent action records tied to thread orchestration |
+| `thread_orchestration_state` | Current orchestration state for thread/crew workflows |
 | `debriefs` | @deprecated — kept for rollback safety. New code uses `discussions` |
 | `briefs` | @deprecated — kept for rollback safety. New code uses `discussions` |
 | `brief_items` | @deprecated — replaced by `discussion_extracted_items` |
@@ -407,6 +415,8 @@ All table definitions in `packages/db/src/schema/` (93 files). Schema changes us
 | `project_workspaces` | Project-level workspace config |
 | `workspace_operations` | Workspace lifecycle operations log |
 | `workspace_runtime_services` | Dev server service definitions per workspace |
+| `environments` | Company-scoped execution environment definitions |
+| `environment_leases` | Runtime leases for environment-backed execution |
 
 ### Commander (Internal Agent)
 
@@ -417,8 +427,23 @@ All table definitions in `packages/db/src/schema/` (93 files). Schema changes us
 | `internal_agent_messages` | `role`: user/assistant/system/tool_call/tool_result. `toolCalls`/`toolResults` JSON. `pageContext`, `departmentContext` |
 | `internal_agent_runs` | `triggerType`: conversation/proactive/event/sub_agent. `toolsCalled`, `tokenUsage`, `costCents` |
 | `internal_agent_reminders` | Scheduled reminders. `triggerAt`, `status`: pending/fired/cancelled |
+| `internal_agent_runtime_approvals` | Runtime approval requests for governed Commander/tool actions |
+| `internal_agent_tool_trust_rules` | Trust rules for repeated runtime approval decisions |
 | `workflow_templates` | Reusable task chains. `steps` (JSON ordered array), `dependencies` (JSON fromStep/toStep), `instantiationCount` |
-| `notifications` | `type`: discussion.extraction_complete/failed, internal_agent.reminder/proactive/action_result. `readAt`, `dismissedAt` |
+| `notifications` / `hubItems` | Physical notifications table plus `hubItems` schema alias for the unified Inbox/Home item index |
+| `notification_preferences` | Per-user notification preferences |
+| `notification_digest_items` | Digest queue rows for grouped notification delivery |
+
+### Inbox Hub
+
+| Table | Purpose |
+|-------|---------|
+| `notifications` / `hubItems` | Unified Inbox/Home item index across approvals, runtime decisions, notifications, suggestions, and workflow events |
+| `hub_item_user_state` | Per-user read/hidden/dismissed state for hub items |
+| `hub_preferences` | Per-user hub grouping and display preferences |
+| `hub_counter_snapshots` | Cached counts for sidebar and hub badges |
+| `hub_audit` | Audit trail for hub item lifecycle/action handling |
+| `hub_autopilot_policies` | Autopilot policy records used by hub routing/automation |
 
 ### Teams
 
@@ -475,6 +500,8 @@ All table definitions in `packages/db/src/schema/` (93 files). Schema changes us
 | `mcp_api_keys` | MCP authentication keys |
 | `mcp_client_connections` | MCP client connection records |
 | `cli_auth_challenges` | CLI authentication challenges |
+| `runtime_provider_keys` | Runtime provider key metadata/bindings |
+| `github_installations` | GitHub App installation records for workspace/repo integrations |
 
 ### Feedback
 
@@ -514,28 +541,27 @@ Tests in `server/src/__tests__/`. Drizzle-orm ESM cycle workaround:
 - **Pure function tests:** Import and test directly (e.g., `formatRunSummary`, `detectToneCorrections`, `computeScore`).
 - **Service tests with mocks:** Mock `@armyofagents/db` and `drizzle-orm` with Proxy-based table stubs and no-op operators. Use sequence-based mock DBs (`createSequenceDb`) — each `select`/`update`/`insert` returns the next pre-configured result.
 - **Contract tests:** Verify API shapes, constants, and formulas without importing drizzle internals.
-- **QA suites:** `v2-memory-qa.test.ts`, `v2-artifacts-qa.test.ts`, `v2-integration-qa.test.ts`, `v2-edge-cases-qa.test.ts`, `v2-performance-qa.test.ts`.
+- **QA suites:** `memory-qa.test.ts`, `artifacts-qa.test.ts`, `integration-qa.test.ts`, `edge-cases-qa.test.ts`, `performance-qa.test.ts`.
 
 ---
 
 ## Sidebar Structure
 
 ```
-+ New Task / + Discussion
-Home, Inbox
-WORK: Discussions, Tasks, Agents, Goals
-DEPARTMENTS: [list] + New
-PROJECTS: [list] + New
-TEAM
-COMPANY: Vision & Mission, Memory, Budget, Activity, Settings
+Home, Inbox, Commander
+WORK: Discussions, Tasks, Crew Board, Agents, Routines, Workspaces
+COMPANY: Objectives, Memory, Team, Skills, Settings, Budget marker
+PLUGINS: dynamic plugin entries
 ```
+
+Compatibility routes: `/goals` redirects to the Objectives surface, and `/org` redirects to Team. DB/API names remain `goals` and `projects`/`agents`; only the UI label changes.
 
 ---
 
 ## File Structure
 
 ```
-packages/db/src/schema/    → Drizzle table definitions (93 files)
+packages/db/src/schema/    → Drizzle table definitions (126 files)
 packages/shared/src/       → Types, validators, constants
 server/src/services/       → Business logic (one file per domain)
 server/src/routes/         → Express route handlers (65+ files)
@@ -559,7 +585,7 @@ ui/src/lib/                → Shared utilities + constants
 | `docs/architecture/memory.md` | Memory UI layout, semantic retrieval config, feedback detector details |
 | `docs/architecture/wire-compat.md` | Wire protocol compatibility tracking |
 | `docs/architecture/workspace-decisions.md` | Workspace-specific architectural decisions |
-| `docs/api/` | REST API endpoint reference (per-domain) — includes `mcp.md` (34 MCP tools + 4 resources), `discussions.md`, `workflow-templates.md` |
+| `docs/api/` | REST API endpoint reference (per-domain) — includes `mcp.md` (36 MCP tools + 4 resources), `discussions.md`, `workflow-templates.md` |
 | `docs/adapters/` | Adapter authoring guide + per-adapter reference |
 | `docs/deploy/` | Deployment modes, env vars, database, Docker, distribution, telemetry |
 | `docs/guides/board-operator/` | How-tos for founders and team leads |

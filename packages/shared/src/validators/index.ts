@@ -111,7 +111,7 @@ export {
   type UpdateMemoryItem,
   type SuggestMemoryUpdate,
   type SuggestMemoryArchive,
-  // V2.6: memory infrastructure
+  // Memory infrastructure
   memoryProfileSchema,
   memoryWriteCapabilitiesSchema,
   createMemoryRelationSchema,

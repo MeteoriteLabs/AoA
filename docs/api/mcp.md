@@ -7,14 +7,15 @@ AoA exposes a JSON-RPC 2.0 MCP endpoint at `/companies/:companyId/mcp`. Agents, 
 
 ## Authentication
 
-Two actor types are accepted:
+Three actor types are accepted:
 
 | Actor | How it authenticates |
 |-------|---------------------|
 | `mcp` | `Authorization: Bearer <mcp_api_key>` matching an `mcp_api_keys` row |
 | `board` | Valid board session cookie (or synthetic `local-board` actor in `local_trusted` mode) |
+| `agent` | Agent run JWT or agent API key context during a heartbeat run |
 
-Requests with neither → `401`. In `local_trusted` mode, writes from loopback succeed without a token.
+Requests with neither → `401` in authenticated deployments. In `local_trusted` mode, no-token loopback requests are treated as trusted board context, and requests carrying a valid run id may be treated as the running agent.
 
 ## Tool Call Format
 
@@ -99,17 +100,20 @@ MCP resources are read via `resources/list` and `resources/read`. They are separ
 
 ## Actor Gate
 
-Most tools are open to all actor types. Three tools have explicit actor gates:
+Most tools are open to all authenticated protocol actors unless listed in the server's `toolAllowedActors` map. Actor gates are enforced before the tool handler runs; handlers still perform company, scope, and RBAC checks.
 
 | Tool | Allowed actors |
 |------|---------------|
 | `memory.search` | All actors (`board`, `agent`, `commander`, `mcp`) |
 | `memory.get` | All actors |
 | `memory.retain` | All actors — but agent + `scopeToSelf: true` auto-approves; all others create pending items |
+| `memory.write` | All actors — always creates pending memory, never auto-approves |
+| `use_skill` | `board`, `commander` |
+| `ask_founder` | `agent` only; the handler also requires an active heartbeat run |
 
 ## Key Behaviors
 
-- **`debrief-push` vs `create-task`:** Use `debrief-push` for unstructured content that needs LLM extraction into tasks + memory. Use `create-task` when the task title/fields are already known (Decision #14).
+- **`debrief-push` vs `create-task`:** Use `debrief-push` for unstructured content that needs extraction into tasks + memory. Use `create-task` when the task title/fields are already known. Revised Decision #14 allows authenticated direct task writes because RBAC is the quality gate; anonymous MCP traffic is rejected outside `local_trusted`.
 - **Memory write gate:** Agents cannot write memory directly to approved status except into their own personal scope via `memory.retain` + `scopeToSelf: true`. All other memory writes land in `pending` status awaiting founder review (Critical Rule #6).
 - **Artifact immutability:** `attach-artifact-version` and `upsert-task-document` always create new versions. Existing versions are never modified (Decisions #43, #45).
 - **RBAC enforcement:** All tools enforce company isolation. `team_member` actors see only their project-scoped data. Cross-company access returns `404`.

@@ -280,7 +280,7 @@ All neutrals carry a 30° hue undertone (warm) so they belong to the same family
 └────────────────────────────────────────────────────────────┘
 ```
 
-- **Primary sidebar** (always present): app navigation. ~200px expanded, ~48px collapsed. Sections: `+ New`, Home, Inbox, WORK (Discussions/Tasks/Agents/Goals), DEPARTMENTS, PROJECTS, TEAM, COMPANY (Vision, Memory, Budget, Activity, Settings).
+- **Primary sidebar** (always present): app navigation. ~200px expanded, ~48px collapsed. Current company shell sections: Home, Inbox, Commander; WORK (Discussions, Tasks, Crew Board, Agents, Routines, Workspaces); COMPANY (Objectives, Memory, Team, Skills, Settings) plus dynamic plugin entries. Budget and activity live inside Settings surfaces, with compatibility redirects from older routes.
 - **Secondary sidebar** (page-scoped, optional): used when a page has 4+ sub-sections or sub-views. ~200px expanded, ~48px collapsed. Section title in small-caps + items + counts.
 - **Page area**: flex-1, contains page header + content.
 

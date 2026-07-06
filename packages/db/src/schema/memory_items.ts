@@ -51,7 +51,7 @@ export const memoryItems = pgTable(
     departmentId: uuid("department_id").references(() => projects.id, { onDelete: "set null" }),
     projectId: uuid("project_id").references(() => projects.id, { onDelete: "set null" }),
     createdBy: text("created_by").notNull(),
-    // V2 fields
+    // Extended memory fields.
     layer: text("layer"),
     priority: integer("priority").notNull().default(0),
     visibility: text("visibility").notNull().default("scoped"),
@@ -63,21 +63,21 @@ export const memoryItems = pgTable(
     sourceContext: text("source_context"),
     accessedAt: timestamp("accessed_at", { withTimezone: true }),
     currentVersionId: uuid("current_version_id").references((): AnyPgColumn => memoryItemVersions.id, { onDelete: "set null" }),
-    // V2: Semantic retrieval — pgvector embedding (1536-dim, OpenAI text-embedding-3-small)
+    // Semantic retrieval: pgvector embedding (1536-dim, OpenAI text-embedding-3-small)
     embedding: vector("embedding"),
-    // V2: Retry persistence — prevents infinite retry loops for failed embeddings
+    // Retry persistence: prevents infinite retry loops for failed embeddings
     embeddingRetries: integer("embedding_retries").notNull().default(0),
-    // V2.6: agent-personal memory scope. Set when an agent retains an item to its own bucket.
+    // Agent-personal memory scope. Set when an agent retains an item to its own bucket.
     // Items with agentId set are visible only to that agent + founder/team_lead in that scope.
     agentId: uuid("agent_id").references(() => agents.id, { onDelete: "set null" }),
-    // V2.6: trust signal for retrieval ranking. Bumped on shownToAgent + founder validate +
+    // Trust signal for retrieval ranking. Bumped on shownToAgent + founder validate +
     // observer pattern confirmation. Default 1 (creation counts as one validation).
     validationCount: integer("validation_count").notNull().default(1),
     lastValidatedAt: timestamp("last_validated_at", { withTimezone: true }),
-    // V2.6: marks the item for eager skill-file delivery to scoped agents (Tier 1 push).
+    // Marks the item for eager skill-file delivery to scoped agents (Tier 1 push).
     // Materialized into the synthesized "company-knowledge" skill at run start.
     pinnedToSkill: boolean("pinned_to_skill").notNull().default(false),
-    // V2.6: tracks which file import job created this item (nullable — most items are not file-imported)
+    // Tracks which file import job created this item (nullable - most items are not file-imported)
     importJobId: uuid("import_job_id").references(() => fileImportJobs.id, {
       onDelete: "set null",
     }),
@@ -106,9 +106,9 @@ export const memoryItems = pgTable(
       table.layer,
       table.status,
     ),
-    // V2.6: scope by agent for agent-personal memory retrieval.
+    // Scope by agent for agent-personal memory retrieval.
     agentScopeIdx: index("memory_items_agent_scope_idx").on(table.companyId, table.agentId, table.status),
-    // V2.6: surface pinned items quickly for skill materialization.
+    // Surface pinned items quickly for skill materialization.
     pinnedSkillIdx: index("memory_items_pinned_skill_idx").on(table.companyId, table.pinnedToSkill, table.status),
     folderPathIdx: index("memory_items_folder_path_idx").on(
       table.companyId,

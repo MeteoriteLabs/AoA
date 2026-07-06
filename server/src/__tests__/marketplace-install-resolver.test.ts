@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 
-// Drizzle ESM cycle workaround (per CLAUDE.md V2 Test Patterns)
+// Drizzle ESM cycle workaround (per CLAUDE.md shared test patterns)
 vi.mock("@armyofagents/db", () => {
   const tableProxy = new Proxy({}, { get: () => Symbol("col") });
   return {

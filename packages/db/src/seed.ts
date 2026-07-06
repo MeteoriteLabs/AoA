@@ -53,7 +53,7 @@ const [goal] = await db
   .insert(goals)
   .values({
     companyId: company!.id,
-    title: "Ship V1",
+    title: "Ship first release",
     description: "Deliver first control plane release",
     level: "company",
     status: "active",

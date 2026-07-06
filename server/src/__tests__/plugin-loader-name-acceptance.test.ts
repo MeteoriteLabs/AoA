@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 
 // Mock drizzle-orm and @armyofagents/db to break the ESM cycle when importing
 // from plugin-loader (which transitively pulls in plugin-registry → drizzle).
-// See CLAUDE.md → V2 Test Patterns.
+// See CLAUDE.md shared test patterns.
 vi.mock("drizzle-orm", () => ({
   asc: vi.fn(),
   eq: vi.fn(),

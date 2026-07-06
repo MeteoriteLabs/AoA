@@ -10,7 +10,7 @@ import { companies } from "./companies.js";
 import { memoryItems } from "./memory_items.js";
 
 /**
- * V2.6: graph edges between memory items.
+ * Graph edges between memory items.
  *
  * Kinds:
  *   - supersedes      — newer item replaces older (older is auto-flagged in UI)

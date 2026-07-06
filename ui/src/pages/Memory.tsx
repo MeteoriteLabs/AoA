@@ -105,7 +105,7 @@ const CATEGORY_COLORS: Record<MemoryItemCategory, string> = {
   context: "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-300",
   insight: "bg-purple-100 text-purple-800 dark:bg-purple-900/40 dark:text-purple-300",
   preference: "bg-orange-100 text-orange-800 dark:bg-orange-900/40 dark:text-orange-300",
-  // V2.6: new categories.
+  // Extended memory categories.
   procedure: "bg-teal-100 text-teal-800 dark:bg-teal-900/40 dark:text-teal-300",
   policy: "bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-300",
 };

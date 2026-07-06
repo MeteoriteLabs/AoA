@@ -56,7 +56,7 @@ The export format is defined in:
 
 ## Deprecated Tables (Kept for Rollback Safety)
 
-These tables exist in the schema but are not used by new code. They are kept to allow rollback to V2.5-era behavior if needed.
+These tables exist in the schema but are not used by new code. They are kept to allow rollback to legacy Brief/Debrief behavior if needed.
 
 | Table | Replaced By | Status |
 |-------|-------------|--------|

@@ -41,7 +41,7 @@ export function memoryItemsSelection(hasVector?: boolean) {
     accessedAt: memoryItems.accessedAt,
     currentVersionId: memoryItems.currentVersionId,
     embeddingRetries: memoryItems.embeddingRetries,
-    // V2.6 (memory branch Phase 0): agent-personal scope + extraction tracking
+    // Agent-personal scope + extraction tracking
     agentId: memoryItems.agentId,
     validationCount: memoryItems.validationCount,
     lastValidatedAt: memoryItems.lastValidatedAt,
@@ -85,7 +85,7 @@ const MEMORY_COLUMN_MAP: Record<string, string> = {
   currentVersionId: "current_version_id",
   embedding: "embedding",
   embeddingRetries: "embedding_retries",
-  // V2.6 (memory branch Phase 0): agent-personal scope + extraction tracking
+  // Agent-personal scope + extraction tracking
   agentId: "agent_id",
   validationCount: "validation_count",
   lastValidatedAt: "last_validated_at",
