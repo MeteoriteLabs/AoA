@@ -1,8 +1,13 @@
 import { describe, it, expect, vi, beforeAll } from "vitest";
-import { screen } from "@testing-library/react";
+import { QueryClient } from "@tanstack/react-query";
+import { screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { renderWithProviders } from "../../../__tests__/test-utils";
 import { ThreadTab } from "../ThreadTab";
 import type { DiscussionEntry } from "../../../api/discussions";
+import { archiveArtifact, unarchiveArtifact } from "../../../api/artifacts";
+import { teamApi } from "../../../api/team";
+import { queryKeys } from "../../../lib/queryKeys";
 
 // jsdom does not implement scrollIntoView
 beforeAll(() => {
@@ -65,6 +70,11 @@ vi.mock("../../../api/assets", () => ({
       contentType: "text/plain",
     }),
   },
+}));
+
+vi.mock("../../../api/artifacts", () => ({
+  archiveArtifact: vi.fn().mockResolvedValue({ id: "artifact-1", status: "archived" }),
+  unarchiveArtifact: vi.fn().mockResolvedValue({ id: "artifact-1", status: "active" }),
 }));
 
 vi.mock("../../../api/auth", () => ({
@@ -246,5 +256,58 @@ describe("ThreadTab", () => {
         expect.objectContaining({ rawContent: "hello world", parentEntryId: null }),
       ),
     );
+  });
+
+  it("invalidates the discussion detail after archiving an inline artifact", async () => {
+    vi.mocked(teamApi.get).mockResolvedValueOnce({
+      currentUser: {
+        userId: "user-1",
+        role: "founder",
+        permissions: {
+          canAssignTasks: true,
+          canInviteUsers: true,
+          canManageRoles: true,
+          canEditIdentityMemory: true,
+        },
+      },
+      members: [],
+      pendingInvites: [],
+    });
+    const invalidateSpy = vi.spyOn(QueryClient.prototype, "invalidateQueries");
+    vi.mocked(archiveArtifact).mockClear();
+    vi.mocked(unarchiveArtifact).mockClear();
+    const user = userEvent.setup();
+
+    renderWithProviders(
+      <ThreadTab
+        threadId="thread-1"
+        companyId="comp-1"
+        entries={[
+          makeEntry({
+            attachments: [{
+              id: "attachment-1",
+              assetId: null,
+              artifactId: "artifact-1",
+              artifactType: "document",
+              artifactTitle: "Launch brief",
+              artifactStatus: "active",
+            }],
+          }),
+        ]}
+        isLoading={false}
+        isError={false}
+        onRetry={vi.fn()}
+      />,
+    );
+
+    await user.click(await screen.findByTestId("artifact-archive"));
+
+    await waitFor(() => expect(archiveArtifact).toHaveBeenCalledWith("artifact-1"));
+    expect(unarchiveArtifact).not.toHaveBeenCalled();
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["threads", "comp-1", "thread-1"] });
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: queryKeys.discussions.detail("comp-1", "thread-1"),
+    });
+    invalidateSpy.mockRestore();
   });
 });

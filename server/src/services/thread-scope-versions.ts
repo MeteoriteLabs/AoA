@@ -248,6 +248,20 @@ function scopeItemToHandoffRef(item: typeof threadScopeItems.$inferSelect): Scop
   const url = asString(payload.url);
 
   if (item.kind === "artifact_link" && item.artifactId) {
+    if (payload.storageKind === "asset" && assetId) {
+      return {
+        type: "asset",
+        id: assetId,
+        label: asString(payload.filename) ?? item.title,
+        metadata: {
+          contentType,
+          filename: asString(payload.filename),
+          artifactId: item.artifactId,
+          artifactVersionId: item.artifactVersionId ?? undefined,
+          scopeItemId: item.id,
+        },
+      };
+    }
     return {
       type: "artifact",
       id: item.artifactId,

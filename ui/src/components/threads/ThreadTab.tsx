@@ -201,6 +201,7 @@ export function ThreadTab({
 
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: ["threads", companyId, threadId] });
+    queryClient.invalidateQueries({ queryKey: queryKeys.discussions.detail(companyId, threadId) });
   };
 
   const addEntryMutation = useMutation({
@@ -237,11 +238,11 @@ export function ThreadTab({
   // surface at the artifact — no global toast double-report).
   const archiveArtifactMutation = useMutation({
     mutationFn: (artifactId: string) => archiveArtifact(artifactId),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["threads", companyId, threadId] }),
+    onSuccess: () => invalidate(),
   });
   const unarchiveArtifactMutation = useMutation({
     mutationFn: (artifactId: string) => unarchiveArtifact(artifactId),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["threads", companyId, threadId] }),
+    onSuccess: () => invalidate(),
   });
   // Return Promise<void> so the card's ArtifactActions can await it (busy-disable +
   // inline error). The mutation result is irrelevant to the card; a rejection

@@ -10,6 +10,7 @@ import {
   ensureTab,
   extractThreadUrls,
   extractUrlsFromThread,
+  scopeArtifactToTab,
   scopeItemToTab,
   threadAttachmentToTab,
 } from "../threadViewerModel";
@@ -104,6 +105,44 @@ describe("threadViewerModel", () => {
       key: "asset:asset-9",
       label: "deck.pdf",
       kind: "asset",
+    });
+  });
+
+  it("maps asset-backed scope artifact links to asset tabs", () => {
+    expect(scopeArtifactToTab({
+      id: "scope-item-artifact",
+      type: "artifact_link",
+      kind: "artifact_link",
+      scopeVersionId: "scope-version-1",
+      title: "Brand deck",
+      description: null,
+      status: "draft",
+      artifactId: "artifact-1",
+      artifactVersionId: "artifact-version-1",
+      payload: {
+        storageKind: "asset",
+        assetId: "asset-9",
+        filename: "deck.pdf",
+        contentType: "application/pdf",
+        byteSize: 2048,
+      },
+    })).toMatchObject({
+      key: "asset:asset-9",
+      label: "deck.pdf",
+      kind: "asset",
+      payload: {
+        attachment: {
+          id: "scope-item-artifact",
+          assetId: "asset-9",
+          artifactId: "artifact-1",
+          artifactTitle: "Brand deck",
+          currentVersionStorageKind: "asset",
+          currentVersionAssetId: "asset-9",
+          currentVersionFilename: "deck.pdf",
+          currentVersionContentType: "application/pdf",
+          currentVersionByteSize: 2048,
+        },
+      },
     });
   });
 

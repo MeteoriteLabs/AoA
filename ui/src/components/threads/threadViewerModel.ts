@@ -192,7 +192,34 @@ export function artifactRefTab(
 
 export function scopeArtifactToTab(item: ThreadViewerScopeItem): ThreadViewerTab | null {
   if (!item.artifactId) return null;
+  const payload = item.payload ?? {};
+  const assetId = stringPayload(payload.assetId);
+  if (payload.storageKind === "asset" && assetId) {
+    return threadAttachmentToTab({
+      id: item.id,
+      assetId,
+      artifactId: item.artifactId,
+      artifactType: stringPayload(payload.artifactType) ?? item.type,
+      artifactTitle: item.title,
+      assetContentType: stringPayload(payload.contentType),
+      assetOriginalFilename: stringPayload(payload.filename) ?? item.title,
+      assetByteSize: numberPayload(payload.byteSize),
+      currentVersionStorageKind: "asset",
+      currentVersionAssetId: assetId,
+      currentVersionFilename: stringPayload(payload.filename) ?? item.title,
+      currentVersionContentType: stringPayload(payload.contentType),
+      currentVersionByteSize: numberPayload(payload.byteSize),
+    });
+  }
   return artifactRefTab(item.artifactId, item.title, item.artifactVersionId, item.id);
+}
+
+function stringPayload(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function numberPayload(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 export function threadAttachmentToTab(
