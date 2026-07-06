@@ -1,4 +1,4 @@
-﻿---
+---
 title: Team and Organization
 summary: Team tabs, reporting hierarchy, humans, agent teams, and the Crew Board
 ---

@@ -1,4 +1,4 @@
-﻿---
+---
 title: Budget and Spend
 summary: Budget caps, spend views, provider quotas, incidents, and hard stops
 ---
