@@ -7,7 +7,7 @@ import type { RuntimeSkillEntry } from "./company-skills.js";
 const log = logger.child({ service: "memory-skill-sync" });
 
 /**
- * V2.6 Phase 2 — synthesize a `company-knowledge` skill from founder-pinned
+ * Synthesize a `company-knowledge` skill from founder-pinned
  * memory items, materialized into the agent's skill bundle alongside the
  * existing aoa + para-memory-files + team-coordinations skills.
  *

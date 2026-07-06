@@ -257,13 +257,7 @@ pnpm db:migrate       # Apply migrations
 
 ## Roadmap
 
-- Easier OpenClaw onboarding
-- Cloud agents (Cursor / e2b)
-- Marketplace package curation, updates, and admin polish
-- Easier agent configuration
-- Better support for harness engineering
-- Plugin system (knowledgebase, custom tracing, queues, etc.)
-- Better docs
+See [`docs/roadmap.md`](docs/roadmap.md) for planned work. `CLAUDE.md` remains the source of truth for shipped behavior.
 
 <br/>
 

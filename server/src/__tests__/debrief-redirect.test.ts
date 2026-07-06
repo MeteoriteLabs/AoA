@@ -13,7 +13,7 @@ import { describe, it, expect, vi } from "vitest";
 vi.setConfig({ testTimeout: 15000 });
 
 /**
- * Debrief Redirect Tests (V2.5 Session 6)
+ * Debrief Redirect Tests
  *
  * Verifies:
  * 1. debriefRoutes still exports a factory function (backward compat)
@@ -48,7 +48,7 @@ function mapMcpToDiscussion(body: {
   };
 }
 
-describe("debrief deprecation + redirect (V2.5 S6)", () => {
+describe("debrief deprecation + redirect", () => {
   it("debriefRoutes factory is still exported", async () => {
     const mod = await import("../routes/debriefs.js");
     expect(mod.debriefRoutes).toBeDefined();

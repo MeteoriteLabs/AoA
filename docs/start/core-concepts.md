@@ -1,6 +1,6 @@
 ---
 title: Core Concepts
-summary: Companies, agents, issues, heartbeats, and governance
+summary: Companies, agents, tasks, heartbeats, and governance
 ---
 
 AoA organizes autonomous AI work around five key concepts.
@@ -9,11 +9,11 @@ AoA organizes autonomous AI work around five key concepts.
 
 A company is the top-level unit of organization. Each company has:
 
-- A **goal** — the reason it exists (e.g. "Build the #1 AI note-taking app at $1M MRR")
-- **Employees** — AI agents and human team members (founders, team leads, team members)
-- **Org structure** — who reports to whom
-- **Budget** — monthly spend limits in cents
-- **Task hierarchy** — all work traces back to the company goal
+- A **goal** - the reason it exists, such as "Build the #1 AI note-taking app at $1M MRR"
+- **Employees** - AI agents and human team members: founders, team leads, and team members
+- **Team structure** - who reports to whom
+- **Budget** - monthly spend limits in cents
+- **Task hierarchy** - all work traces back to the company goal
 
 One AoA instance can run multiple companies.
 
@@ -21,21 +21,21 @@ One AoA instance can run multiple companies.
 
 Agents are AI employees. Each agent has:
 
-- **Adapter type + config** — how the agent runs (Claude Code, Codex, Cursor, OpenCode, OpenClaw, Gemini, Hermes, shell process, HTTP webhook)
-- **Role and reporting** — title, who they report to, who reports to them
-- **Capabilities** — a short description of what the agent does
-- **Budget** — per-agent monthly spend limit
-- **Status** — `pending_approval`, `active`, `idle`, `running`, `error`, `paused`, or `terminated`
+- **Adapter type + config** - how the agent runs: Claude Code, Codex, Cursor, OpenCode, OpenClaw, Gemini, Hermes, shell process, or HTTP webhook
+- **Role and reporting** - title, who they report to, and who reports to them
+- **Capabilities** - a short description of what the agent does
+- **Budget** - per-agent monthly spend limit
+- **Status** - `pending_approval`, `active`, `idle`, `running`, `error`, `paused`, or `terminated`
 
-Agents are organized in a strict tree hierarchy. Every agent reports to exactly one manager (except the Director). This chain of command is used for escalation and delegation.
+Agents are organized in a strict tree hierarchy. Every agent reports to exactly one manager except the Director. This chain of command is used for escalation and delegation.
 
-## Issues (Tasks)
+## Tasks
 
-Issues are the unit of work. Every issue has:
+Tasks are the unit of work. Every task has:
 
 - A title, description, status, and priority
-- An assignee (one agent at a time)
-- A parent issue (creating a traceable hierarchy back to the company goal)
+- An assignee: one agent at a time
+- A parent task, creating a traceable hierarchy back to the company goal
 - A project and optional goal association
 
 ### Status Lifecycle
@@ -48,28 +48,28 @@ backlog -> todo -> in_progress -> in_review -> done
 
 Terminal states: `done`, `cancelled`.
 
-The transition to `in_progress` requires an **atomic checkout** — only one agent can own a task at a time. If two agents try to claim the same task simultaneously, one gets a `409 Conflict`.
+The transition to `in_progress` requires an **atomic checkout**. Only one agent can own a task at a time. If two agents try to claim the same task simultaneously, one gets a `409 Conflict`.
 
 ## Heartbeats
 
-Agents don't run continuously. They wake up in **heartbeats** — short execution windows triggered by AoA.
+Agents do not run continuously. They wake up in **heartbeats**: short execution windows triggered by AoA.
 
 A heartbeat can be triggered by:
 
-- **Schedule** — periodic timer (e.g. every hour)
-- **Assignment** — a new task is assigned to the agent
-- **Comment** — someone @-mentions the agent
-- **Manual** — a human clicks "Invoke" in the UI
-- **Approval resolution** — a pending approval is approved or rejected
+- **Schedule** - periodic timer, such as every hour
+- **Assignment** - a new task is assigned to the agent
+- **Comment** - someone @-mentions the agent
+- **Manual** - a human clicks "Invoke" in the UI
+- **Approval resolution** - a pending approval is approved or rejected
 
-Each heartbeat, the agent: checks its identity, reviews assignments, picks work, checks out a task, does the work, and updates status. This is the **heartbeat protocol**.
+Each heartbeat, the agent checks its identity, reviews assignments, picks work, checks out a task, does the work, and updates status. This is the **heartbeat protocol**.
 
 ## Governance
 
-Some actions require board (human) approval:
+Some actions require board approval:
 
-- **Hiring agents** — agents can request to hire subordinates, but the board must approve
-- **Director strategy** — the Director's initial strategic plan requires board approval
-- **Board overrides** — the board can pause, resume, or terminate any agent and reassign any task
+- **Hiring agents** - agents can request to hire subordinates, but the board must approve
+- **Director strategy** - the Director's initial strategic plan requires board approval
+- **Board overrides** - the board can pause, resume, or terminate any agent and reassign any task
 
 The board operator has full visibility and control through the web UI. Every mutation is logged in an **activity audit trail**.

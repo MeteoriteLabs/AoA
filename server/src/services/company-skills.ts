@@ -2196,7 +2196,7 @@ export function companySkillService(db: Db) {
   /**
    * Returns skill entries for adapter injection. Currently only injects SKILL.md
    * content (the `markdown` field). Multi-file skill injection (references/,
-   * scripts/, assets/) is deferred to v2 — ancillary files are recorded in
+   * scripts/, assets/) is deferred to a future extension; ancillary files are recorded in
    * fileInventory but their contents are not stored in DB.
    */
   async function listRuntimeSkillEntries(

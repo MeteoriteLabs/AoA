@@ -1,11 +1,11 @@
 ---
-title: Issues (Tasks)
+title: Tasks API
 summary: Task CRUD, checkout/release, comments, attachments, documents, labels, and approvals
 ---
 
-Issues are the unit of work in AoA. The DB table and all routes use `issues`; the UI calls them "Tasks". They support hierarchical relationships, atomic checkout, comments, file attachments, inline documents, and labels.
+Tasks are the unit of work in AoA. The DB table and all routes use `issues`; the UI calls them "Tasks". They support hierarchical relationships, atomic checkout, comments, file attachments, inline documents, and labels.
 
-## List Issues
+## List Tasks
 
 ```
 GET /api/companies/{companyId}/issues

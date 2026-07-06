@@ -28,7 +28,7 @@ export interface MemoryItem {
   departmentId: string | null;
   projectId: string | null;
   createdBy: string;
-  // V2 fields
+  // Extended memory fields.
   layer: MemoryItemLayer | null;
   priority: number;
   visibility: MemoryItemVisibility;

@@ -1,4 +1,4 @@
-// Pure state logic for the Commander viewer panel (design 2026-06-11 v2 §4).
+// Pure state logic for the Commander viewer panel.
 // No React imports — unit-tested directly (pattern: commanderInputModel.ts).
 import type { CommanderOutputRef } from "@armyofagents/shared";
 

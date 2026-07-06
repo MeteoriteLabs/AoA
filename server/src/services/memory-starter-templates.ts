@@ -1,5 +1,5 @@
 /**
- * Memory Starter Templates — V2.6 Phase 4
+ * Memory Starter Templates
  *
  * Static, pre-built domain-layer memory items for 11 common department
  * function types. Founders can apply a template when their memory is empty

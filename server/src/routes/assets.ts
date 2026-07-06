@@ -130,7 +130,7 @@ export function assetRoutes(db: Db, storage: StorageService) {
     });
   });
 
-  // ── V2: General file upload (all types, 50MB) ────────────────────────
+  // ── General file upload (all types, 50MB) ─────────────────────────────
   const fileUpload = multer({
     storage: multer.memoryStorage(),
     limits: { fileSize: MAX_ASSET_FILE_BYTES, files: 1 },

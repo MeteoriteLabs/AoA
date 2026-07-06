@@ -11,10 +11,10 @@ import { projects } from "./projects.js";
 import { goals } from "./goals.js";
 
 /**
- * @deprecated V2.5 — Briefs are replaced by Discussion extracted items (discussion_extracted_items table).
+ * @deprecated Briefs are replaced by Discussion extracted items (discussion_extracted_items table).
  * This table is kept for backward compatibility and rollback safety.
  * Do NOT drop — keep for ≥1 month after migration, then archive with `_deprecated_` prefix.
- * See: docs/aoa/v2.5/v2_5_discussions_and_agent_rollout.md — Phase 4
+ * Kept for rollback safety; new code uses Discussions.
  */
 export const briefs = pgTable(
   "briefs",

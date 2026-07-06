@@ -8,7 +8,7 @@ import { memoryRetrievalsApi, type MemoryRetrievalRowApi } from "../../../api/me
 import { queryKeys } from "../../../lib/queryKeys";
 
 /**
- * V2.6 Phase 3 — workspace right-panel Memory section.
+ * Workspace right-panel Memory section.
  *
  * Reads memory_retrievals (audit log written by Phase 1's
  * recordMemoryRetrievals) and shows the founder what memory each

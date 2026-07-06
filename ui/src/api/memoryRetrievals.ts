@@ -2,7 +2,7 @@ import { api } from "./client";
 import type { MemoryRetrievalTrigger } from "@armyofagents/shared";
 
 /**
- * V2.6 Phase 3 — workspace MemorySection consumes this.
+ * Workspace MemorySection consumes this retrieval audit API.
  *
  * Each row is a memory_retrievals audit entry left-joined with the
  * source memory_item. Item fields are nullable because items can be

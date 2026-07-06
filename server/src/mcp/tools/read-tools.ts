@@ -166,7 +166,7 @@ async function handleGetTaskComment(
 }
 
 /**
- * V2.6 worker-facing memory search.
+ * Worker-facing memory search.
  *
  * Runs memorySvc.searchMultiPath (semantic + keyword + temporal +
  * RRF + trust weighting), then applies filterMemoryForScope to enforce
@@ -240,7 +240,7 @@ async function handleMemorySearch(
 }
 
 /**
- * V2.6 worker-facing memory get.
+ * Worker-facing memory get.
  *
  * Fetches one approved memory item by id. Returns 404 when:
  *   - the item doesn't exist
@@ -288,7 +288,7 @@ export const readToolHandlers: Record<string, ToolHandler> = {
   "get-heartbeat-context": handleGetHeartbeatContext,
   "list-task-comments": handleListTaskComments,
   "get-task-comment": handleGetTaskComment,
-  // V2.6
+  // Worker-facing memory tools.
   "memory.search": handleMemorySearch,
   "memory.get": handleMemoryGet,
 };

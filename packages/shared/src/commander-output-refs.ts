@@ -1,4 +1,4 @@
-// Commander viewer output refs (P1 design v2 §3a).
+// Commander viewer output refs.
 // A ref is a presentation pointer (ID + label) — never content, never a
 // capability grant. Computed in the MCP bridge, transported in the tool
 // result envelope, persisted on internal_agent_messages.output_refs.

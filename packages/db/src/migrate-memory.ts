@@ -1,5 +1,5 @@
 /**
- * V2 Data Migration: Memory Items
+ * Memory data migration
  *
  * Run AFTER applying Drizzle schema migrations (pnpm db:migrate).
  * Idempotent — safe to run multiple times.
@@ -11,7 +11,7 @@
  * 2. Creates initial memory_item_versions (version 1) for items
  *    that don't yet have a currentVersionId.
  *
- * Usage: DATABASE_URL=... tsx src/migrate-v2-memory.ts
+ * Usage: DATABASE_URL=... tsx src/migrate-memory.ts
  */
 
 import postgres from "postgres";
@@ -79,7 +79,7 @@ try {
     `;
   }
 
-  console.log("V2 memory migration complete");
+  console.log("Memory migration complete");
 } finally {
   await sql.end();
 }

@@ -10,9 +10,9 @@ import {
 } from "@armyofagents/db";
 
 /**
- * Internal Agent Schema Contract Tests (V2.5 Session 2)
+ * Internal Agent Schema Contract Tests
  *
- * Verifies all 7 new tables have the required columns per the v2.5 schema spec
+ * Verifies all 7 tables have the required columns per the internal-agent schema
  * (tables 5-11): internal agent config, conversations, messages, runs, reminders,
  * workflow templates, and notifications.
  */
