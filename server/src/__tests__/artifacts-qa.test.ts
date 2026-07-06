@@ -324,6 +324,29 @@ describe("Artifacts QA", () => {
 
   // ── Artifact-as-input ───────────────────────────────────────────────────────
 
+  describe("Artifact archive lifecycle", () => {
+    it("archives active artifacts", async () => {
+      const db = createTransactionDb({
+        updates: [[{ id: "art-1", status: "archived" }]],
+      });
+
+      const svc = artifactService(db as any);
+      const result = await svc.archive("art-1");
+
+      expect(result?.status).toBe("archived");
+    });
+
+    it("rejects archiving drafts so unarchive cannot promote them to active", async () => {
+      const db = createTransactionDb({
+        updates: [[]],
+        selects: [[{ status: "draft" }]],
+      });
+
+      const svc = artifactService(db as any);
+      await expect(svc.archive("art-draft")).rejects.toThrow("Only active artifacts can be archived");
+    });
+  });
+
   describe("Artifact-as-input (Decision #71)", () => {
     it("downstream tasks receive artifacts from dependency tasks", () => {
       // Artifact-as-input chain: spec → design → code → test

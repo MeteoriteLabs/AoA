@@ -8,7 +8,7 @@ import {
 } from "@armyofagents/shared";
 import { validate } from "../middleware/validate.js";
 import { artifactService, logActivity } from "../services/index.js";
-import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { assertRole } from "../middleware/rbac.js";
 import { registerIssueParamNormalizer } from "./issue-param-normalizer.js";
 
@@ -147,6 +147,7 @@ export function artifactRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+    assertBoard(req);
     await assertRole(db, req, existing.companyId, "founder");
 
     const updated = await svc.archive(id);
@@ -169,6 +170,7 @@ export function artifactRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+    assertBoard(req);
     await assertRole(db, req, existing.companyId, "founder");
 
     const updated = await svc.unarchive(id);

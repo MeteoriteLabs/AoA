@@ -14,6 +14,11 @@ import { GitBranch, GitCompareArrows, GitPullRequest, Eye, Terminal, X, RefreshC
 import { formatBytes, sourceLabel, fileIcon } from "./workspace-utils";
 import { resolveOutputViewer } from "./output-viewer-registry";
 import { WorkProductViewer } from "./WorkProductViewer";
+import {
+  assetUrlForArtifactVersion,
+  contentTypeForArtifactVersion,
+  filenameForArtifactVersion,
+} from "../viewers/artifact-version-viewer";
 import type { ArtifactWithVersions, ArtifactVersion, DetectedOutput, DetectedOutputForUI, TaskOutput } from "@armyofagents/shared";
 
 export type PreviewMode = "changes" | "preview" | "logs";
@@ -794,50 +799,6 @@ function extensionFromName(value: string | null | undefined): string {
   return dot === -1 ? "" : name.slice(dot + 1);
 }
 
-function contentTypeFromArtifactVersion(artifact: ArtifactWithVersions, version: ArtifactVersion): string {
-  const extension = extensionFromName(artifact.title) || extensionFromName(version.fileUrl);
-  switch (extension) {
-    case "png":
-      return "image/png";
-    case "jpg":
-    case "jpeg":
-      return "image/jpeg";
-    case "gif":
-      return "image/gif";
-    case "webp":
-      return "image/webp";
-    case "svg":
-      return "image/svg+xml";
-    case "pdf":
-      return "application/pdf";
-    case "mp4":
-      return "video/mp4";
-    case "webm":
-      return "video/webm";
-    case "mp3":
-      return "audio/mpeg";
-    case "wav":
-      return "audio/wav";
-    case "html":
-    case "htm":
-      return "text/html";
-    case "md":
-    case "mdx":
-      return "text/markdown";
-    case "json":
-      return "application/json";
-    case "csv":
-      return "text/csv";
-  }
-  if (artifact.type === "design" && version.fileUrl) return "image/png";
-  if (version.content !== null && version.content !== undefined) {
-    if (artifact.type === "code") return "text/plain";
-    if (artifact.type === "document") return "text/markdown";
-    return "text/plain";
-  }
-  return "application/octet-stream";
-}
-
 function ArtifactVersionPreviewView({
   artifact,
   version,
@@ -846,14 +807,13 @@ function ArtifactVersionPreviewView({
   version: ArtifactVersion;
 }) {
   const inlineContent = version.content ?? null;
-  const fileUrl = version.fileUrl;
-  const filename = artifact.title;
-  const contentType = contentTypeFromArtifactVersion(artifact, version);
+  const filename = filenameForArtifactVersion(artifact, version);
+  const contentType = contentTypeForArtifactVersion(artifact, version);
   const viewer = resolveOutputViewer({
     contentType,
     filename,
-    assetId: null,
-    assetUrl: fileUrl,
+    assetId: version.assetId,
+    assetUrl: assetUrlForArtifactVersion(version),
   });
 
   return (
@@ -1141,12 +1101,15 @@ function PreviewView({
     );
   }
 
-  const isImage = artifact.type === "design" || (version.fileUrl && /\.(png|jpg|jpeg|gif|svg|webp)$/i.test(version.fileUrl));
+  const assetUrl = assetUrlForArtifactVersion(version);
+  const filename = filenameForArtifactVersion(artifact, version);
+  const contentType = contentTypeForArtifactVersion(artifact, version);
+  const isImage = contentType.startsWith("image/");
 
-  if (isImage && version.fileUrl) {
+  if (isImage && assetUrl) {
     return (
       <div className="p-4" data-testid="preview-image">
-        <img src={version.fileUrl} alt={artifact.title} className="max-w-full rounded border border-border" />
+        <img src={assetUrl} alt={artifact.title} className="max-w-full rounded border border-border" />
       </div>
     );
   }
@@ -1161,16 +1124,16 @@ function PreviewView({
     );
   }
 
-  if (version.fileUrl) {
+  if (assetUrl) {
     return (
       <div className="flex items-center justify-center h-48" data-testid="preview-download">
         <a
-          href={version.fileUrl}
+          href={assetUrl}
           target="_blank"
           rel="noopener noreferrer"
           className="text-sm text-blue-500 hover:underline"
         >
-          Download {artifact.title} (v{version.versionNumber})
+          Download {filename} (v{version.versionNumber})
         </a>
       </div>
     );

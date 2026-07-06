@@ -131,14 +131,24 @@ export function artifactService(db: Db) {
         .then((rows) => rows[0] ?? null);
     },
 
-    /** Soft-archive: reversible status flip to "archived" (default list excludes archived once Task 5 lands). */
+    /** Soft-archive active artifacts only, so unarchive never promotes drafts. */
     archive: async (id: string) => {
-      return db
+      const [updated] = await db
         .update(artifacts)
         .set({ status: "archived", updatedAt: new Date() })
-        .where(eq(artifacts.id, id))
-        .returning()
-        .then((rows) => rows[0] ?? null);
+        .where(and(eq(artifacts.id, id), eq(artifacts.status, "active")))
+        .returning();
+      if (updated) return updated;
+
+      const [existing] = await db
+        .select({ status: artifacts.status })
+        .from(artifacts)
+        .where(eq(artifacts.id, id));
+      if (existing && existing.status !== "active") {
+        throw badRequest("Only active artifacts can be archived");
+      }
+
+      return null;
     },
 
     /** Reverse of archive → "active". */
