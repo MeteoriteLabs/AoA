@@ -199,8 +199,13 @@ export function threadAttachmentToTab(
   attachment: DiscussionEntryAttachment,
   entryId?: string,
 ): ThreadViewerTab {
-  const isArtifact = Boolean(attachment.artifactId);
+  const assetBackedArtifact =
+    attachment.currentVersionStorageKind === "asset" &&
+    Boolean(attachment.currentVersionAssetId);
+  const isArtifact = Boolean(attachment.artifactId) && !assetBackedArtifact;
+  const assetId = attachment.currentVersionAssetId ?? attachment.assetId ?? attachment.id;
   const title =
+    (assetBackedArtifact ? attachment.currentVersionFilename : null) ||
     attachment.artifactTitle ||
     attachment.assetOriginalFilename ||
     (isArtifact ? "Artifact" : "File");
@@ -208,7 +213,7 @@ export function threadAttachmentToTab(
   return {
     key: isArtifact
       ? `artifact:${attachment.artifactId}`
-      : `asset:${attachment.assetId ?? attachment.id}`,
+      : `asset:${assetId}`,
     label: title,
     kind: isArtifact ? "artifact" : "asset",
     closeable: true,

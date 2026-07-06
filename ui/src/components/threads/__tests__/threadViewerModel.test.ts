@@ -86,6 +86,27 @@ describe("threadViewerModel", () => {
     });
   });
 
+  it("maps asset-backed artifact attachments to asset tabs", () => {
+    const attachment: DiscussionEntryAttachment = {
+      id: "att-asset-artifact",
+      assetId: null,
+      artifactId: "artifact-1",
+      artifactType: "design",
+      artifactTitle: "Brand deck",
+      currentVersionStorageKind: "asset",
+      currentVersionAssetId: "asset-9",
+      currentVersionFilename: "deck.pdf",
+      currentVersionContentType: "application/pdf",
+      currentVersionByteSize: 2048,
+    };
+
+    expect(threadAttachmentToTab(attachment, "entry-1")).toMatchObject({
+      key: "asset:asset-9",
+      label: "deck.pdf",
+      kind: "asset",
+    });
+  });
+
   it("deduplicates tabs and allows closing the final Open tab", () => {
     const tabs = [createOpenTab()];
     const scopeTab = scopeItemToTab(item());

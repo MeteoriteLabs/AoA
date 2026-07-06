@@ -2176,9 +2176,16 @@ function formatDateTime(value: string | Date | null | undefined): string | null 
 }
 
 function AssetAttachmentViewer({ attachment }: { attachment: DiscussionEntryAttachment }) {
-  const assetId = attachment.assetId;
-  const filename = attachment.assetOriginalFilename || attachment.artifactTitle || "Attached file";
-  const contentType = attachment.assetContentType || "application/octet-stream";
+  const assetId = attachment.currentVersionAssetId ?? attachment.assetId;
+  const filename =
+    attachment.currentVersionFilename ||
+    attachment.assetOriginalFilename ||
+    attachment.artifactTitle ||
+    "Attached file";
+  const contentType =
+    attachment.currentVersionContentType ||
+    attachment.assetContentType ||
+    "application/octet-stream";
 
   if (!assetId) {
     return <CenteredMessage title="File unavailable" body="This attachment has no asset id." />;

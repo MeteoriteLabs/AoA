@@ -53,6 +53,7 @@ import {
 import {
   buildPostReplyIdempotencyKey,
   buildConveneWakeupDedupKey,
+  buildArtifactCandidateIdempotencyKey,
 } from "../services/internal-agent/tools/thread-action-keys.js";
 import { THREAD_AGENT_ACTION_STATUSES } from "@armyofagents/shared";
 
@@ -66,6 +67,22 @@ describe("thread-action status contract", () => {
     for (const s of ["proposed", "ready", "committing", "committed", "suppressed_stale", "blocked_policy", "failed"]) {
       expect(THREAD_AGENT_ACTION_STATUSES).toContain(s);
     }
+  });
+});
+
+describe("thread-action idempotency keys", () => {
+  it("discriminates asset-backed artifact candidates by assetId", () => {
+    const base = {
+      threadId: "thread-1",
+      agentId: "agent-1",
+      title: "Deck",
+      content: null,
+      fileRef: null,
+      turnAnchor: "4",
+    };
+    type AssetCandidateKeyInput = Parameters<typeof buildArtifactCandidateIdempotencyKey>[0] & { assetId: string };
+    expect(buildArtifactCandidateIdempotencyKey({ ...base, assetId: "asset-a" } as AssetCandidateKeyInput))
+      .not.toBe(buildArtifactCandidateIdempotencyKey({ ...base, assetId: "asset-b" } as AssetCandidateKeyInput));
   });
 });
 
@@ -1016,15 +1033,16 @@ describe("threadAgentActionService", () => {
     expect(createArtifact).toHaveBeenCalledWith(
       "company-1",
       "agent-1",
-      {
+      expect.objectContaining({
         title: "Onboarding plan",
         type: "document",
         source: "agent",
         content: "# Plan",
         fileUrl: null,
+        storageKind: "inline",
         // #197: the action id is stamped so the partial unique index dedups re-commits.
         sourceActionId: "action-1",
-      },
+      }),
     );
     expect(db.__insertValues).toContainEqual(expect.objectContaining({
       companyId: "company-1",
@@ -1041,6 +1059,72 @@ describe("threadAgentActionService", () => {
       committedScopeVersionId: "scope-version-1",
       committedScopeItemId: "scope-item-artifact",
     }));
+  });
+
+  it("commits an asset-backed create_artifact_candidate with preserved asset metadata", async () => {
+    const action = {
+      ...baseAction,
+      actionType: "create_artifact_candidate",
+      payload: {
+        title: "Brand deck",
+        artifactType: "design",
+        content: null,
+        fileRef: null,
+        discussionId: "thread-1",
+        storageKind: "asset",
+        assetId: "asset-1",
+        filename: "deck.pdf",
+        contentType: "application/pdf",
+        extension: "pdf",
+        byteSize: 1024,
+        sha256: "hash-1",
+      },
+    };
+    const db = createSequenceDb({
+      selects: [[action]],
+      inserts: [[{ id: "scope-item-artifact" }]],
+      updates: [[{ ...action, status: "committed" }]],
+    });
+    const createDraftFromThread = vi.fn().mockResolvedValue({
+      status: "existing_draft",
+      version: { id: "scope-version-1" },
+    });
+    const createArtifact = vi.fn().mockResolvedValue({
+      id: "artifact-1",
+      versions: [{ id: "artifact-version-1" }],
+    });
+
+    const result = await threadAgentActionService(db as never, {
+      compareFreshnessSnapshot: vi.fn().mockResolvedValue({ fresh: true }),
+      discussions: { addEntry: vi.fn() },
+      scopeVersions: { createDraftFromThread },
+      artifacts: { create: createArtifact },
+    }).commitThreadAgentActions({
+      companyId: "company-1",
+      threadId: "thread-1",
+      runId: "run-1",
+    });
+
+    expect(result).toEqual({ committed: 1, suppressed: 0, blocked: 0, failed: 0, lostRace: 0 });
+    expect(createArtifact).toHaveBeenCalledWith(
+      "company-1",
+      "agent-1",
+      expect.objectContaining({
+        title: "Brand deck",
+        type: "design",
+        source: "agent",
+        content: null,
+        fileUrl: null,
+        storageKind: "asset",
+        assetId: "asset-1",
+        filename: "deck.pdf",
+        contentType: "application/pdf",
+        extension: "pdf",
+        byteSize: 1024,
+        sha256: "hash-1",
+        sourceActionId: "action-1",
+      }),
+    );
   });
 
   it("converges (idempotent) when create_artifact_candidate raises the source_action_id unique violation (#197)", async () => {

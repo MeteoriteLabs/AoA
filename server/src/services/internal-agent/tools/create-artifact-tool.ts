@@ -52,6 +52,21 @@ export function createArtifactTool(): AgentTool {
       const { title, type, content, fileRef, discussionId, attachToEntryId, assetId } =
         (params ?? {}) as Record<string, unknown>;
 
+      let assetMeta: { contentType: string; byteSize: number; sha256: string; originalFilename: string | null } | null = null;
+      if (typeof assetId === "string" && assetId.length > 0) {
+        assetMeta = await ctx.db
+          .select({ contentType: assets.contentType, byteSize: assets.byteSize, sha256: assets.sha256, originalFilename: assets.originalFilename })
+          .from(assets)
+          .where(and(eq(assets.id, assetId), eq(assets.companyId, ctx.companyId)))
+          .then((rows: Array<{ contentType: string; byteSize: number; sha256: string; originalFilename: string | null }>) => rows[0] ?? null);
+        if (!assetMeta) {
+          return { success: false, data: null, summary: "Asset not found for this company", error: "ASSET_NOT_FOUND" };
+        }
+      }
+
+      const fname = assetMeta?.originalFilename ?? null;
+      const dot = fname ? fname.lastIndexOf(".") : -1;
+
       if (ctx.discussionRunMode === "controller_action_gate") {
         if (!ctx.runId) {
           return {
@@ -83,17 +98,25 @@ export function createArtifactTool(): AgentTool {
           payload: {
             title: title as string,
             artifactType: (type as string) ?? "document",
-            content: (content as string) ?? null,
-            fileRef: (fileRef as string) ?? null,
+            content: assetMeta ? null : ((content as string) ?? null),
+            fileRef: assetMeta ? null : ((fileRef as string) ?? null),
             discussionId: threadId,
             attachToEntryId: (attachToEntryId as string) ?? null,
+            storageKind: assetMeta ? "asset" : "inline",
+            assetId: assetMeta ? (assetId as string) : null,
+            filename: fname,
+            contentType: assetMeta?.contentType ?? null,
+            extension: dot > 0 && fname ? fname.slice(dot + 1) : null,
+            byteSize: assetMeta?.byteSize ?? null,
+            sha256: assetMeta?.sha256 ?? null,
           },
           idempotencyKey: buildArtifactCandidateIdempotencyKey({
             threadId,
             agentId: ctx.agentId,
             title: title as string,
-            content: (content as string) ?? null,
-            fileRef: (fileRef as string) ?? null,
+            content: assetMeta ? null : ((content as string) ?? null),
+            fileRef: assetMeta ? null : ((fileRef as string) ?? null),
+            assetId: assetMeta ? (assetId as string) : null,
             turnAnchor:
               ctx.threadFreshness?.latestHumanSeq != null
                 ? String(ctx.threadFreshness.latestHumanSeq)
@@ -108,21 +131,6 @@ export function createArtifactTool(): AgentTool {
           summary: "Queued artifact candidate for freshness-checked scope commit",
         };
       }
-
-      let assetMeta: { contentType: string; byteSize: number; sha256: string; originalFilename: string | null } | null = null;
-      if (typeof assetId === "string" && assetId.length > 0) {
-        assetMeta = await ctx.db
-          .select({ contentType: assets.contentType, byteSize: assets.byteSize, sha256: assets.sha256, originalFilename: assets.originalFilename })
-          .from(assets)
-          .where(and(eq(assets.id, assetId), eq(assets.companyId, ctx.companyId)))
-          .then((rows: Array<{ contentType: string; byteSize: number; sha256: string; originalFilename: string | null }>) => rows[0] ?? null);
-        if (!assetMeta) {
-          return { success: false, data: null, summary: "Asset not found for this company", error: "ASSET_NOT_FOUND" };
-        }
-      }
-
-      const fname = assetMeta?.originalFilename ?? null;
-      const dot = fname ? fname.lastIndexOf(".") : -1;
 
       const result = await ctx.services.artifacts.create(ctx.companyId, ctx.agentId ?? "aoa-agent", {
         title: title as string,
