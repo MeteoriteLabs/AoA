@@ -1,6 +1,7 @@
 import type { ThreadDerivedStage } from "@armyofagents/shared";
 import type { Db } from "@armyofagents/db";
 import {
+  artifactVersions,
   artifacts,
   assets,
   discussionEntries,
@@ -790,12 +791,19 @@ export function threadScopeVersionService(db: Db) {
             artifactType: artifacts.type,
             assetOriginalFilename: assets.originalFilename,
             assetContentType: assets.contentType,
+            artifactVersionStorageKind: artifactVersions.storageKind,
+            artifactVersionAssetId: artifactVersions.assetId,
+            artifactVersionFilename: artifactVersions.filename,
+            artifactVersionContentType: artifactVersions.contentType,
+            artifactVersionByteSize: artifactVersions.byteSize,
+            artifactVersionSha256: artifactVersions.sha256,
           })
           .from(discussionEntryAttachments)
           .leftJoin(artifacts, and(
             eq(discussionEntryAttachments.artifactId, artifacts.id),
             eq(artifacts.companyId, companyId),
           ))
+          .leftJoin(artifactVersions, eq(artifacts.currentVersionId, artifactVersions.id))
           .leftJoin(assets, and(
             eq(discussionEntryAttachments.assetId, assets.id),
             eq(assets.companyId, companyId),
@@ -836,9 +844,13 @@ export function threadScopeVersionService(db: Db) {
           entryId: attachment.discussionEntryId,
           artifactId: attachment.artifactId,
           artifactVersionId: attachment.artifactVersionId,
-          assetId: attachment.assetId,
-          title: attachment.artifactTitle ?? attachment.assetOriginalFilename ?? null,
-          contentType: attachment.assetContentType ?? attachment.artifactType ?? null,
+          assetId: attachment.artifactVersionAssetId ?? attachment.assetId,
+          title: attachment.artifactTitle ?? attachment.artifactVersionFilename ?? attachment.assetOriginalFilename ?? null,
+          contentType: attachment.artifactVersionContentType ?? attachment.assetContentType ?? attachment.artifactType ?? null,
+          storageKind: attachment.artifactVersionStorageKind,
+          filename: attachment.artifactVersionFilename,
+          byteSize: attachment.artifactVersionByteSize,
+          sha256: attachment.artifactVersionSha256,
           kind: attachment.artifactId ? "artifact" : "asset",
         })),
         proposedTasks: input.proposedTasks,

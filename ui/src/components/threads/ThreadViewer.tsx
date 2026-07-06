@@ -929,6 +929,27 @@ function buildScopeHandoffOptions(
     const url = payloadString(payload.url);
 
     if (kind === "artifact_link" && candidate.artifactId) {
+      if (payload.storageKind === "asset" && assetId) {
+        addHandoffOption(
+          options,
+          {
+            type: "asset",
+            id: assetId,
+            label: payloadString(payload.filename) ?? candidate.title,
+            metadata: {
+              contentType: contentType ?? undefined,
+              filename: payloadString(payload.filename) ?? undefined,
+              artifactId: candidate.artifactId,
+              artifactVersionId: candidate.artifactVersionId ?? undefined,
+              scopeItemId: candidate.id,
+            },
+          },
+          payloadString(payload.filename) ?? candidate.title,
+          contentType ?? "Uploaded artifact file",
+        );
+        continue;
+      }
+
       addHandoffOption(
         options,
         {

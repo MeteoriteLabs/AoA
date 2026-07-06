@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { artifacts, assets } from "@armyofagents/db";
+import { artifactVersions, artifacts, assets } from "@armyofagents/db";
 import { threadScopeVersionService } from "../services/thread-scope-versions.js";
 
 function createSequenceDb(selectQueue: any[][]) {
@@ -171,6 +171,12 @@ describe("threadScopeVersionService.createDraftFromThread", () => {
           artifactTitle: "Checkout mockup",
           assetOriginalFilename: null,
           assetContentType: null,
+          artifactVersionStorageKind: "asset",
+          artifactVersionAssetId: "asset-artifact-1",
+          artifactVersionFilename: "checkout-mockup.pdf",
+          artifactVersionContentType: "application/pdf",
+          artifactVersionByteSize: 1234,
+          artifactVersionSha256: "sha256-checkout",
         },
       ],
       [version],
@@ -192,7 +198,15 @@ describe("threadScopeVersionService.createDraftFromThread", () => {
           title: "Checkout mockup",
           artifactId: "artifact-1",
           artifactVersionId: "artifact-version-1",
-          payload: expect.objectContaining({ role: "reference" }),
+          payload: expect.objectContaining({
+            role: "reference",
+            contentType: "application/pdf",
+            storageKind: "asset",
+            assetId: "asset-artifact-1",
+            filename: "checkout-mockup.pdf",
+            byteSize: 1234,
+            sha256: "sha256-checkout",
+          }),
           sourceEntryIds: ["entry-1"],
         }),
       ]),
@@ -233,8 +247,11 @@ describe("threadScopeVersionService.createDraftFromThread", () => {
     );
 
     const attachmentSelect = db.__selectChains[4];
-    expect(attachmentSelect.leftJoin).toHaveBeenCalledTimes(2);
-    for (const [, joinCondition] of attachmentSelect.leftJoin.mock.calls) {
+    expect(attachmentSelect.leftJoin).toHaveBeenCalledTimes(3);
+    for (const [, joinCondition] of [
+      attachmentSelect.leftJoin.mock.calls[0],
+      attachmentSelect.leftJoin.mock.calls[2],
+    ]) {
       expect(joinCondition.queryChunks.length).toBeGreaterThan(1);
       expect(sqlConditionContainsColumn(joinCondition, "company_id")).toBe(true);
     }
@@ -274,6 +291,12 @@ describe("threadScopeVersionService.createDraftFromThread", () => {
           artifactType: null,
           assetOriginalFilename: null,
           assetContentType: null,
+          artifactVersionStorageKind: null,
+          artifactVersionAssetId: null,
+          artifactVersionFilename: null,
+          artifactVersionContentType: null,
+          artifactVersionByteSize: null,
+          artifactVersionSha256: null,
         },
       ],
       [version],
@@ -289,6 +312,12 @@ describe("threadScopeVersionService.createDraftFromThread", () => {
     const attachmentSelectShape = db.select.mock.calls[4]?.[0];
     expect(attachmentSelectShape.artifactId).toBe(artifacts.id);
     expect(attachmentSelectShape.assetId).toBe(assets.id);
+    expect(attachmentSelectShape.artifactVersionStorageKind).toBe(artifactVersions.storageKind);
+    expect(attachmentSelectShape.artifactVersionAssetId).toBe(artifactVersions.assetId);
+    expect(attachmentSelectShape.artifactVersionFilename).toBe(artifactVersions.filename);
+    expect(attachmentSelectShape.artifactVersionContentType).toBe(artifactVersions.contentType);
+    expect(attachmentSelectShape.artifactVersionByteSize).toBe(artifactVersions.byteSize);
+    expect(attachmentSelectShape.artifactVersionSha256).toBe(artifactVersions.sha256);
 
     const scopeItemInsert = db.insert.mock.results[1]?.value.values;
     const insertedItems = scopeItemInsert.mock.calls[0]?.[0] ?? [];

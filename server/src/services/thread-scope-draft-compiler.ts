@@ -32,6 +32,10 @@ export type ScopeCompilerAttachment = {
   assetId?: string | null;
   title?: string | null;
   contentType?: string | null;
+  storageKind?: string | null;
+  filename?: string | null;
+  byteSize?: number | null;
+  sha256?: string | null;
   kind: "artifact" | "asset";
 };
 
@@ -262,14 +266,23 @@ function proposedTaskItems(
 
 function compileAttachmentItem(attachment: ScopeCompilerAttachment): CompiledScopeItem {
   if (attachment.kind === "artifact" && attachment.artifactId) {
+    const payload: Record<string, unknown> = {
+      role: "reference",
+      contentType: attachment.contentType ?? null,
+    };
+    if (attachment.storageKind === "asset" && attachment.assetId) {
+      payload.storageKind = "asset";
+      payload.assetId = attachment.assetId;
+      payload.filename = attachment.filename ?? attachment.title ?? null;
+      payload.byteSize = attachment.byteSize ?? null;
+      payload.sha256 = attachment.sha256 ?? null;
+    }
+
     return {
       kind: "artifact_link",
       title: cleanText(attachment.title) || "Attached artifact",
       description: attachment.contentType ? `Attached ${attachment.contentType} artifact.` : "Attached artifact.",
-      payload: {
-        role: "reference",
-        contentType: attachment.contentType ?? null,
-      },
+      payload,
       sourceEntryIds: [attachment.entryId],
       artifactId: attachment.artifactId,
       artifactVersionId: attachment.artifactVersionId ?? null,
