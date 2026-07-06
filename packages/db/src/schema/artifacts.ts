@@ -10,6 +10,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { companies } from "./companies.js";
+import { assets } from "./assets.js";
 
 export const artifacts = pgTable(
   "artifacts",
@@ -50,10 +51,22 @@ export const artifactVersions = pgTable(
     parentVersionId: uuid("parent_version_id").references((): AnyPgColumn => artifactVersions.id, { onDelete: "set null" }),
     content: text("content"),
     fileUrl: text("file_url"),
+    // ── Artifact Lifecycle P1: file-backed versions ──────────────────────
+    // storageKind = "inline" (text content, today's model) or "asset" (file
+    // stored in `assets`). Purely additive — every existing row defaults to
+    // "inline", nothing migrates.
+    storageKind: text("storage_kind").notNull().default("inline"),
+    assetId: uuid("asset_id").references(() => assets.id, { onDelete: "set null" }),
+    filename: text("filename"),
+    contentType: text("content_type"),
+    extension: text("extension"),
+    byteSize: integer("byte_size"),
+    sha256: text("sha256"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
     artifactIdx: index("artifact_versions_artifact_idx").on(table.artifactId),
+    assetIdx: index("artifact_versions_asset_idx").on(table.assetId),
     artifactVersionUq: uniqueIndex("artifact_versions_artifact_version_uq").on(table.artifactId, table.versionNumber),
   }),
 );
