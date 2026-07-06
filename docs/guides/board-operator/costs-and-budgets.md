@@ -48,7 +48,7 @@ Common cost and budget routes:
 GET /api/companies/{companyId}/costs/summary
 GET /api/companies/{companyId}/costs/by-agent
 GET /api/companies/{companyId}/costs/by-project
-POST /api/companies/{companyId}/budget-policies
+POST /api/companies/{companyId}/budgets/policies
 GET /api/companies/{companyId}/quotas
 POST /api/companies/{companyId}/quotas/refresh
 ```

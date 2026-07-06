@@ -64,6 +64,14 @@ POST /api/companies/{companyId}/memory/folders
 PATCH /api/companies/{companyId}/memory/folders/{id}
 DELETE /api/companies/{companyId}/memory/folders/{id}
 
+GET /api/companies/{companyId}/memory/assets
+GET /api/companies/{companyId}/memory/assets/{id}
+GET /api/companies/{companyId}/memory/assets/{id}/content
+GET /api/companies/{companyId}/memory/assets/{id}/render
+POST /api/companies/{companyId}/memory/assets/upload
+PATCH /api/companies/{companyId}/memory/assets/{id}
+DELETE /api/companies/{companyId}/memory/assets/{id}
+
 POST /api/companies/{companyId}/memory/lifecycle/archive-expired
 POST /api/companies/{companyId}/memory/lifecycle/archive-working
 POST /api/companies/{companyId}/memory/lifecycle/flag-stale
@@ -72,7 +80,7 @@ GET /api/companies/{companyId}/issues/{issueId}/memory-retrievals
 GET /api/companies/{companyId}/conversations/{conversationId}/memory-retrievals
 ```
 
-Lifecycle routes are operational controls for expiry, working-memory archival, and stale-memory suggestion passes.
+Asset routes list, upload, stream, render, update, and delete files attached to memory items. Render currently supports DOCX assets; use `/content` for raw bytes. Lifecycle routes are operational controls for expiry, working-memory archival, and stale-memory suggestion passes.
 
 ## Embedding Re-index
 
