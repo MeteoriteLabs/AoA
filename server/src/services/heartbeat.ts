@@ -1337,7 +1337,7 @@ export function heartbeatService(db: Db) {
   ) {
     const itemLimit = CONTEXT_MODE_LIMITS[contextMode] ?? 10;
 
-    // Fetch company info (name/description — vision/mission added in V2)
+    // Fetch company info, including vision/mission when present.
     const company = await db
       .select({ name: companies.name, description: companies.description })
       .from(companies)
@@ -2346,7 +2346,7 @@ export function heartbeatService(db: Db) {
     return { reaped: reaped.length, runIds: reaped };
   }
 
-  // ── V2: Run summary comments (Decision #88) ─────────────────────
+  // ── Run summary comments (Decision #88) ─────────────────────────
   async function createRunSummaryComment(input: {
     agent: typeof agents.$inferSelect;
     run: typeof heartbeatRuns.$inferSelect;
@@ -3855,7 +3855,7 @@ export function heartbeatService(db: Db) {
         );
       }
 
-      // V2.6 Phase 2: synthesize a `company-knowledge` skill from founder-pinned
+      // Synthesize a `company-knowledge` skill from founder-pinned
       // memory items and inject it as a skill-shaped entry alongside the others.
       // Resolution: agent's memoryProfile.pinnedSkillItems config drives which
       // items get materialized (department inheritance + per-agent additions/
@@ -4490,7 +4490,7 @@ export function heartbeatService(db: Db) {
       }
       await finalizeAgentStatus(agent.id, outcome);
 
-      // ── V2: Agent output capture (Decision #67) ─────────────────────
+      // ── Agent output capture (Decision #67) ─────────────────────────
       // Runs AFTER the run is finalized — detection failures are non-fatal.
       let detectedFiles: Array<{ path: string; type?: string }> = [];
       const outputDetectionCwd = resolveOutputDetectionCwd({
@@ -4549,7 +4549,7 @@ export function heartbeatService(db: Db) {
         }
       }
 
-      // ── V2: Run summary comments (Decision #88) ─────────────────────
+      // ── Run summary comments (Decision #88) ─────────────────────────
       if (finalizedRun) {
         await createRunSummaryComment({
           agent,
@@ -4664,7 +4664,7 @@ export function heartbeatService(db: Db) {
 
       await finalizeAgentStatus(agent.id, terminalStatus);
 
-      // ── V2: Run summary comments for crash path (Decision #88) ──────
+      // ── Run summary comments for crash path (Decision #88) ──────────
       await createRunSummaryComment({
         agent,
         run: failedRun,

@@ -2,8 +2,8 @@
  * Teams QA — happy-path end-to-end sweep (Slice 9 / Task 9.3)
  *
  * Headline acceptance test for the entire Teams feature. Modeled after the
- * V2 QA suites (`v2-memory-qa.test.ts`, `v2-artifacts-qa.test.ts`,
- * `v2-integration-qa.test.ts`, etc.): a single sweep file that exercises
+ * The broad QA suites (`memory-qa.test.ts`, `artifacts-qa.test.ts`,
+ * `integration-qa.test.ts`, etc.): a single sweep file that exercises
  * the highest-value workflows end-to-end with mocked DB sequences.
  *
  * Five scenarios:

@@ -3,10 +3,10 @@
 Decisions made during product design and development. Do not relitigate unless explicitly reopened.
 
 **Numbering systems:**
-- `#N` — Core product decisions (V1 through V3)
-- `DA-N` — V2.5 Discussions & Internal Agent specific decisions
+- `#N` — Core product decisions and later amendments
+- `DA-N` — Discussions & Internal Agent specific decisions
 
-> **V2.5 note:** Some V1/V2 decisions were superseded or extended in V2.5. Where applicable, an `[Updated V2.5]` note is added.
+> **Version note:** Older decision entries used V-number labels for planning phases. AoA's current product line is version 1; this log now describes those entries by feature area where possible.
 
 ---
 
@@ -18,8 +18,8 @@ Decisions made during product design and development. Do not relitigate unless e
 | 2 | Dashboard → Home | Home is a starting point, not a data dashboard. |
 | 3 | Costs → Budget | Budget implies planning + control, not just tracking. |
 | 4 | Actor/Org → Team | Team naturally covers humans + agents. |
-| 5 | Review Pack → Brief | Brief is a structured review object. Clean, professional. **[Updated V2.5: Brief replaced by inline Discussion review — see DA-3, DA-9]** |
-| 6 | (new) Debrief | The action of capturing content. Pairs with Brief. **[Updated V2.5: Debrief replaced by Discussions — see DA-3]** |
+| 5 | Review Pack → Brief | Brief is a structured review object. Clean, professional. **[Updated: Brief replaced by inline Discussion review — see DA-3, DA-9]** |
+| 6 | (new) Debrief | The action of capturing content. Pairs with Brief. **[Updated: Debrief replaced by Discussions — see DA-3]** |
 | 7 | (new) Memory | Company knowledge store. More intuitive than "Knowledge Base." |
 | 8 | Goals stays Goals | No rename needed. Well understood. |
 | 9 | Projects stays Projects | Tried renaming, decided to keep alongside Departments. |
@@ -34,8 +34,8 @@ Decisions made during product design and development. Do not relitigate unless e
 | 11 | Departments + Projects coexist (same table, type field) | Departments are permanent orgs, Projects are temporary. Same mechanics, different lifespan. |
 | 12 | Vision & Mission are company-level text fields | Not goals, not memory items. Strategic anchors stored on companies table. |
 | 13 | Goals must belong to at least one department or project via `project_goals` join table | No floating company-level goals. Use existing many-to-many join table, NOT a new projectId column on goals. A goal CAN span multiple departments/projects. |
-| 14 | MCP inbound with authenticated write permission may create tasks directly; `debrief-push` remains for unstructured content | RBAC + per-user keys provide the quality gate that originally lived in the Discussion pipeline. **[Revised 2026-04-21 — see "Decision #14 (revised 2026-04-21)" entry below for full wording. Original V2.5 wording: "Debrief pipeline" → "Discussion pipeline." See DA-3.]** |
-| 15 | Memory is approval-gated | Founder is sole gatekeeper. Agents suggest, founder approves. **[Extended V2.5: see #52 for team lead extension]** |
+| 14 | MCP inbound with authenticated write permission may create tasks directly; `debrief-push` remains for unstructured content | RBAC + per-user keys provide the quality gate that originally lived in the Discussion pipeline. **[Revised 2026-04-21 — see "Decision #14 (revised 2026-04-21)" entry below for full wording. Original wording: "Debrief pipeline" → "Discussion pipeline." See DA-3.]** |
+| 15 | Memory is approval-gated | Founder is sole gatekeeper. Agents suggest, founder approves. **[Extended: see #52 for team lead extension]** |
 | 16 | Agents have read-only Memory access | Receive context at execution time, cannot write directly. |
 | 17 | Tasks don't care who does them | Same task model for humans and agents. Experience adapts. |
 | 18 | Agents can only self-transition: todo → in_progress → in_review | Only humans mark done/cancelled. Deliberate control point. |
@@ -56,12 +56,12 @@ Decisions made during product design and development. Do not relitigate unless e
 | 26 | Goals not in sidebar — inside department/project detail pages | Goals belong to their parent context, not global nav. |
 | 27 | Home screen is action-first, not information-first | Founder opens AoA to DO things, not LOOK at things. |
 | 28 | Home screen IS the onboarding | No separate wizard. Empty state guides setup. |
-| 29 | Debrief has paste/write in V1, voice in V2 | Voice recording adds complexity. Start with text input. **[Updated V2.5: Voice shipped in V2.5 via Whisper API]** |
+| 29 | Debrief has paste/write first, voice later | Voice recording adds complexity. Start with text input. **[Updated: Voice shipped via Whisper API]** |
 | 30 | Brief pipeline: artifact-first | All content stored as raw artifact before extraction. Original never lost. |
 | 31 | Department goals show activity metrics, not progress bars | Ongoing departments don't "progress" — they operate. |
 | 32 | Project goals show progress bars | Projects have endpoints and measurable completion. |
-| 33 | Suggestion engine: V1 has goal-gap nudges only | Full suggestion engine in V2. V1 keeps it simple. |
-| 34 | V1 is solo founder only (single user, no RBAC enforcement) | Multi-user and team permissions in V2. |
+| 33 | Suggestion engine starts with goal-gap nudges only | Full suggestion engine deferred. Keep the first release simple. |
+| 34 | Initial release is solo founder only (single user, no RBAC enforcement) | Multi-user and team permissions come later. |
 | 35 | Tasks and memory items CAN exist without a department/project | Not everything fits a department (e.g., legal, personal, strategic). Unscoped items live in global views. Founder assigns a department later if one gets created. |
 | 36 | LLM extraction prompt includes available departments for auto-suggestion | The extraction prompt is dynamically built with the company's department/project list. LLM suggests placement per item but sets null if no clear fit. Founder confirms during Brief review. |
 
@@ -71,15 +71,15 @@ Decisions made during product design and development. Do not relitigate unless e
 
 | # | Decision | Rationale |
 |---|----------|-----------|
-| 37 | V1 excludes: voice debrief, suggestion engine, templates, multi-user, autonomy tiers, automated workflows, analytics page, mobile | Focus on core loop: give work → execute → review → learn. |
-| 38 | Department templates are V2 | Need real usage data to make good templates. |
-| 39 | LLM preferences per task type are V2 | V1: founder picks one preferred LLM globally. |
-| 57 | V2 excludes: autonomy tiers, automated workflows, department blueprints, service connectors, hosted deployment, external publishing, meeting integration, mobile, multi-company, experiment system, cross-agent memory propagation | V2 focuses on intelligence + team + artifacts. Autonomy, integration, and scale are V3. |
-| 58 | V3 scope: 5 pillars — Autonomy (tiers, confidence, cross-agent learning), Workflows (pipeline templates, conversation-to-delivery), Connectors (GitHub/Figma/Linear/Slack bidirectional sync), Blueprints (department/project templates + ClipHub), Hosted (API adapters, cloud workspaces, BYOK/bundled). Plus: meeting integration, mobile, multi-company, analytics, experiment system | Full autonomy and scale. Founder shifts from operator to strategist. |
+| 37 | Initial release excludes: voice debrief, suggestion engine, templates, multi-user, autonomy tiers, automated workflows, analytics page, mobile | Focus on core loop: give work → execute → review → learn. |
+| 38 | Department templates are deferred | Need real usage data to make good templates. |
+| 39 | LLM preferences per task type are deferred | Founder starts with one preferred LLM globally. |
+| 57 | Deferred intelligence/team/artifact scope excludes: autonomy tiers, automated workflows, department blueprints, service connectors, hosted deployment, external publishing, meeting integration, mobile, multi-company, experiment system, cross-agent memory propagation | Focuses on intelligence + team + artifacts. Autonomy, integration, and scale are later. |
+| 58 | Later scale scope: 5 pillars — Autonomy (tiers, confidence, cross-agent learning), Workflows (pipeline templates, conversation-to-delivery), Connectors (GitHub/Figma/Linear/Slack bidirectional sync), Blueprints (department/project templates + ClipHub), Hosted (API adapters, cloud workspaces, BYOK/bundled). Plus: meeting integration, mobile, multi-company, analytics, experiment system | Full autonomy and scale. Founder shifts from operator to strategist. |
 
 ---
 
-## V2 Architecture
+## Intelligence, Memory, And Artifact Architecture
 
 | # | Decision | Rationale |
 |---|----------|-----------|
@@ -95,11 +95,11 @@ Decisions made during product design and development. Do not relitigate unless e
 | 49 | AoA as MCP server: expose read-only resources + limited write tools | External agents can query Tasks, Memory, Goals, Artifacts. Write access limited to Discussion push, memory suggestions, task status updates. |
 | 50 | Working memory auto-expires after 7 days | Prevents context bloat. Ephemeral by design. Founder can promote to domain layer if needed. |
 | 51 | Suggestion engine runs on-demand (Home load) + periodic (every 4 hours) | Real-time suggestions when founder looks, background pattern detection in between. Not a streaming system. |
-| 52 | Memory approval gate extends to team leads for V2 (extends #15) | Founder remains sole gatekeeper for identity + domain layers (per #15). Team leads can additionally approve active_context items for their departments. Working memory is auto-created (no approval needed). |
+| 52 | Memory approval gate extends to team leads (extends #15) | Founder remains sole gatekeeper for identity + domain layers (per #15). Team leads can additionally approve active_context items for their departments. Working memory is auto-created (no approval needed). |
 
 ---
 
-## V2 UX
+## Intelligence, Memory, And Artifact UX
 
 | # | Decision | Rationale |
 |---|----------|-----------|
@@ -116,16 +116,16 @@ Decisions made during product design and development. Do not relitigate unless e
 |---|----------|-----------|
 | 59 | Issues table gets `dueDate` field (nullable timestamp) | Referenced in Home screen ("tasks due today") and PRD but was missing from V1 schema. Needed for risk detection and sorting. |
 | 60 | Goal status machine: planned → active → at_risk → achieved/cancelled, with at_risk → active recovery | Standardized across all docs. "planned" not "draft". "achieved" not "completed". Recovery from at_risk allowed. |
-| 61 | Discussion scope fallback: item-level > entry-level > discussion-level > null | Clear resolution order when creating tasks from discussion approval. Founder's per-item override always wins. **[Updated V2.5: was "brief-level" → "entry-level" and "discussion-level" to match Discussions model]** |
+| 61 | Discussion scope fallback: item-level > entry-level > discussion-level > null | Clear resolution order when creating tasks from discussion approval. Founder's per-item override always wins. **[Updated: was "brief-level" → "entry-level" and "discussion-level" to match Discussions model]** |
 | 62 | Task can be blocked from any non-terminal status (backlog, todo, in_progress) | Dependencies can be added to tasks in any state. When unblocked, returns to previous status, not auto-promoted. |
 | 63 | Department deletion blocked if it has tasks or goals | Must reassign or cancel tasks/goals first. Memory items become unscoped (departmentId → null). Prevents orphaned work. |
-| 64 | Extraction failure: entry marked 'processing_failed', founder notified | Graceful degradation. Founder can retry or manually create work. Empty extraction creates empty extracted items (allowed). **[Updated V2.5: was "debrief" → "entry"]** |
+| 64 | Extraction failure: entry marked 'processing_failed', founder notified | Graceful degradation. Founder can retry or manually create work. Empty extraction creates empty extracted items (allowed). **[Updated: was "debrief" → "entry"]** |
 | 65 | Memory expiration: auto-archive (not delete), preserved in history | Working memory archived after 7 days. Active context archived when goal completes or expiresAt passes. "Show Archived" view available. |
-| 66 | V2 includes global search (cmd+K) across tasks, memory, artifacts, goals | PostgreSQL full-text search. RBAC-scoped. Results grouped by entity type. |
+| 66 | Global search (cmd+K) includes tasks, memory, artifacts, goals | PostgreSQL full-text search. RBAC-scoped. Results grouped by entity type. |
 
 ---
 
-## V2 Additions (March 2026 — Session 2)
+## Artifact And Search Additions (March 2026)
 
 | # | Decision | Rationale |
 |---|----------|-----------|
@@ -134,12 +134,12 @@ Decisions made during product design and development. Do not relitigate unless e
 | 69 | Review state supports extended refinement, not just approve/reject | Founder can add artifact versions while task is in_review. Downstream tasks stay blocked until approval. Review is a workspace, not just a gate. |
 | 70 | Adding artifact versions must be frictionless: drag-and-drop, paste content, MCP push | If it takes >2 clicks to push external work back to AoA, founder won't do it. AoA loses refinement history. |
 | 71 | Dependency task artifacts auto-included in downstream task context | When task depends on completed tasks, those tasks' artifacts are automatically part of the agent's context package. Enables artifact-driven pipelines. |
-| 72 | Department templates moved from V2 to V3 (as "Blueprints") | Needs more design work and real usage data. V3's ClipHub integration makes blueprints more powerful. |
-| 73 | Discussion is the universal intake for all content entering AoA | Meetings, conversations, voice notes, agent output, and external LLM work all enter through Discussions (or as artifact versions for existing artifacts). Decision #14 reinforced. **[Updated V2.5: was "Debrief" → "Discussion"]** |
+| 72 | Department templates moved later (as "Blueprints") | Needs more design work and real usage data. ClipHub integration makes blueprints more powerful. |
+| 73 | Discussion is the universal intake for all content entering AoA | Meetings, conversations, voice notes, agent output, and external LLM work all enter through Discussions (or as artifact versions for existing artifacts). Decision #14 reinforced. **[Updated: was "Debrief" → "Discussion"]** |
 
 ---
 
-## V3 Architecture
+## Later Architecture
 
 | # | Decision | Rationale |
 |---|----------|-----------|
@@ -155,18 +155,18 @@ Decisions made during product design and development. Do not relitigate unless e
 
 ---
 
-## V1 Implementation Fixes (March 2026)
+## Implementation Fixes (March 2026)
 
 | # | Decision | Rationale |
 |---|----------|-----------|
 | 83 | Windows path fix: use `fileURLToPath()` instead of `new URL().pathname` in db client | `new URL(..., import.meta.url).pathname` produces double drive letters on Windows (e.g., `/C:/C:/...`). Node's `fileURLToPath` handles cross-platform path resolution correctly. |
 | 84 | Activity log "issue" → "task" replacement uses display-layer mapping, not DB changes | ACTION_VERBS/ACTION_LABELS maps in UI components translate `issue.*` entity types to "task" text. `entityType` stays `issue` in DB — renaming would break existing activity rows. Fallback regex replaces `\bissue\b` with "task" for unmapped actions. |
-| 85 | Sidebar route roots must be registered for company prefix routing | `BOARD_ROUTE_ROOTS` set in `company-routes.ts` controls which paths get the company slug prefix (e.g., `/briefs` → `/SEAA/briefs`). Missing entries cause bare paths that 404. All V1 sidebar pages registered. |
+| 85 | Sidebar route roots must be registered for company prefix routing | `BOARD_ROUTE_ROOTS` set in `company-routes.ts` controls which paths get the company slug prefix (e.g., `/briefs` → `/SEAA/briefs`). Missing entries cause bare paths that 404. All first-release sidebar pages registered. |
 | 86 | Goal status transitions are validated server-side | Allowed transitions enforced in `goals.update()` with a defined map (e.g., `planned → active`, `active → at_risk → active`). Invalid transitions return 400. Prevents inconsistent state from UI bugs or API misuse. |
 
 ---
 
-## V2.5 Additions (March–April 2026)
+## Discussion And Commander Additions (March-April 2026)
 
 | # | Decision | Rationale |
 |---|----------|-----------|
@@ -174,13 +174,13 @@ Decisions made during product design and development. Do not relitigate unless e
 | 88 | Run summary comments auto-generated after each heartbeat run | Auto-generated task comments show duration, token usage, cost, outcome, and detected files. Uses existing `issue_comments` table. Opt-out via `runtimeConfig.autoRunSummary`. Files truncated to 10 shown + "+N more". |
 | 89 | _(not documented — referenced by count only)_ | — |
 | 90 | _(not documented — referenced by count only)_ | — |
-| 91 | AoA drops API adapters (`claude_api`, `openai_api`, `gemini_api`) in favor of CLI-only agent execution | Single-turn API adapters duplicated the multi-turn loop logic CLI adapters already handle correctly. Commander migrates to CLI default (`claude_cli` / `codex` / `opencode`) — no per-company LLM API key required. Data migration (heuristic D): `UPDATE internal_agent_config SET execution_mode='cli', cli_tool=COALESCE(cli_tool, 'claude_cli') WHERE execution_mode='api'`. `internal_agent_config.provider`/`.model` columns stay dormant for rollback safety. `server/src/services/internal-agent/providers/` is preserved as an internal SDK util for extraction + embeddings until the team-under-Commander architecture replaces it. V3 Hosted deployment revised to CLI-in-container. Per-turn run tracking / cost / token accounting / tool confirmations are deferred to the same future sprint. Sprint 2A (2026-04-24). Deferred follow-ups: (a) rehome ~14 non-API-mode tests from the deleted `v2.5-edge-cases-qa.test.ts` (discussion service, proactive checks, goal scope, reminders, approval double-protection) into domain-matching files; (b) add a behavioral agent-loop shell test to complement the import-level static guard; (c) delete or finish the orphaned `/internal-agent/confirm` stub route. |
+| 91 | AoA drops API adapters (`claude_api`, `openai_api`, `gemini_api`) in favor of CLI-only agent execution | Single-turn API adapters duplicated the multi-turn loop logic CLI adapters already handle correctly. Commander migrates to CLI default (`claude_cli` / `codex` / `opencode`) — no per-company LLM API key required. Data migration (heuristic D): `UPDATE internal_agent_config SET execution_mode='cli', cli_tool=COALESCE(cli_tool, 'claude_cli') WHERE execution_mode='api'`. `internal_agent_config.provider`/`.model` columns stay dormant for rollback safety. `server/src/services/internal-agent/providers/` is preserved as an internal SDK util for extraction + embeddings until the team-under-Commander architecture replaces it. Hosted deployment revised to CLI-in-container. Per-turn run tracking / cost / token accounting / tool confirmations are deferred to the same future sprint. Sprint 2A (2026-04-24). Deferred follow-ups: (a) rehome non-API-mode tests into domain-matching files; (b) add a behavioral agent-loop shell test to complement the import-level static guard; (c) delete or finish the orphaned `/internal-agent/confirm` stub route. |
 
 ---
 
-## V2.5 Discussions & Internal Agent Decisions (DA series)
+## Discussions & Internal Agent Decisions (DA series)
 
-These decisions were made during V2.5 design and are specific to the Discussions pipeline and Internal Agent features.
+These decisions are specific to the Discussions pipeline and Internal Agent features.
 
 ---
 
@@ -237,7 +237,7 @@ Right panel is the daily driver — always available, context-aware of current p
 
 **⚠️ Superseded by Decision #91 (Sprint 2A, 2026-04-24)**
 
-Original decision: API-based agent loop as default; CLI-based via MCP as optional power-user mode. V2.5 ships API mode only; CLI mode deferred to V3.
+Original decision: API-based agent loop as default; CLI-based via MCP as optional power-user mode. That decision shipped API mode only and deferred CLI mode.
 
 **What changed:** Decision #91 removed API-mode execution entirely. Every turn now routes through `cliModeService` regardless of the legacy `executionMode` column (kept dormant for rollback safety). The `executionMode` column on `internal_agent_config` is no longer read by the dispatch path. See `server/src/services/internal-agent/agent-loop.ts` for the code comment.
 
@@ -275,7 +275,7 @@ Extracted items appear below each Discussion entry. "Confirm All" for fast path.
 
 ---
 
-### DA-10: Sidebar Navigation Structure (V2.5)
+### DA-10: Sidebar Navigation Structure
 
 **Decision: Discussions replaces Briefs, ordered first under WORK**
 
@@ -306,11 +306,11 @@ All messages stored permanently. One primary conversation thread per user. Older
 
 ---
 
-### DA-13: Internal Agent Capabilities (V2.5 Scope — 12 capabilities)
+### DA-13: Internal Agent Capabilities (12 capabilities)
 
 Discussion processing, proactive suggestions, organizational queries, system actions, context briefing, memory management, conflict detection, budget awareness, workflow coaching, workflow discovery/SOP creation, cross-department coordination, department lead personas.
 
-**Deferred to V3:** Onboarding conversation, full autonomy tiers (V2.5 starts at Level 0 — always ask).
+**Deferred:** Onboarding conversation, full autonomy tiers. Current behavior starts at Level 0 — always ask.
 
 ---
 
@@ -346,7 +346,7 @@ Extraction needs thread context + system state awareness — exactly what the in
 
 ### DA-18: Internal Agent Settings
 
-**Decision: Settings section with execution mode, provider/model, autonomy level (V2.5: Level 0 only), enabled capabilities, notification preferences**
+**Decision: Settings section with execution mode, provider/model, autonomy level (Level 0 only), enabled capabilities, notification preferences**
 
 Settings persisted per company, not per user.
 
@@ -360,11 +360,11 @@ Default: creates new standalone Discussion. Processing happens async (no blockin
 
 ---
 
-### DA-20: Workflow/SOP System — Lightweight Templates in V2.5
+### DA-20: Workflow/SOP System — Lightweight Templates
 
 **Decision: Internal agent interviews founder to discover processes, creates reusable workflow templates**
 
-Templates are stored as ordered task chains with dependencies. Instantiation creates real tasks. Connection to V3 `pipeline_templates` — V2.5 ships a lighter version that may be pulled forward.
+Templates are stored as ordered task chains with dependencies. Instantiation creates real tasks. Connection to later `pipeline_templates` work is preserved; the current product ships a lighter version that may be pulled forward.
 
 ---
 
@@ -831,7 +831,7 @@ conflicts, no auto-merge").
 - **Scope = whole row.** The token guards the entire `agents` row (Skills vs
   Config conflicts included). False-positive 409s on non-overlapping fields are
   acceptable — a refetch resolves them. Field-level reconciliation via
-  `agent_config_revisions.changedKeys` is a possible v2, not now.
+  `agent_config_revisions.changedKeys` is a possible follow-up, not now.
 - **UI opt-in (first wave):** Skills tab + Config save send `agent.updatedAt`
   from the query cache; on 409 they invalidate/refetch and toast "changed
   elsewhere — reloaded, please redo." The Skills tab advances a

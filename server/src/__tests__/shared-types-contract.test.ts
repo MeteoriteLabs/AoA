@@ -33,7 +33,7 @@ import {
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
-describe("v2.5 discussion constants", () => {
+describe("discussion constants", () => {
   it("DISCUSSION_STATUSES has 2 values", () => {
     expect(DISCUSSION_STATUSES).toEqual(["active", "archived"]);
   });
@@ -66,7 +66,7 @@ describe("v2.5 discussion constants", () => {
   });
 });
 
-describe("v2.5 internal agent constants", () => {
+describe("internal agent constants", () => {
   it("AGENT_CAPABILITIES has 12 values", () => {
     expect(AGENT_CAPABILITIES).toHaveLength(12);
     expect(AGENT_CAPABILITIES).toContain("discussion_processing");
@@ -133,7 +133,7 @@ describe("v2.5 internal agent constants", () => {
   });
 });
 
-describe("v2.5 live event types", () => {
+describe("live event types", () => {
   it("includes all 6 new event types", () => {
     const newTypes = [
       "discussion.entry.created",

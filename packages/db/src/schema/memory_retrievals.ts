@@ -16,7 +16,7 @@ import { memoryItems } from "./memory_items.js";
 import { internalAgentConversations } from "./internal_agent.js";
 
 /**
- * V2.6: per-call audit log for memory retrievals.
+ * Per-call audit log for memory retrievals.
  *
  * One row per item returned from a retrieval call. Powers:
  *   - Workspace right-panel MemorySection (shows what an agent saw per run)

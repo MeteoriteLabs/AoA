@@ -57,7 +57,7 @@ export {
   MEMORY_ITEM_STATUSES,
   MEMORY_ITEM_LAYERS,
   MEMORY_ITEM_VISIBILITY,
-  // V2.6: memory infrastructure
+  // Memory infrastructure
   MEMORY_RELATION_KINDS,
   MEMORY_RETRIEVAL_TRIGGERS,
   MEMORY_EXTRACTION_INPUT_TYPES,
@@ -188,14 +188,14 @@ export {
   type ThreadAgentActionType,
   type ThreadAgentActionStatus,
   type ThreadDerivedStage,
-  // V2.5: Discussions
+  // Discussions
   DISCUSSION_STATUSES,
   DISCUSSION_SCOPE_TYPES,
   DISCUSSION_ENTRY_INPUT_TYPES,
   EXTRACTION_STATUSES,
   EXTRACTION_ITEM_TYPES,
   EXTRACTION_ITEM_STATUSES,
-  // V2.5: Threads (extends Discussions)
+  // Threads (extends Discussions)
   THREAD_ORIGIN_SOURCES,
   THREAD_ORIGIN_MEDIA,
   THREAD_INTENTS,
@@ -213,7 +213,7 @@ export {
   THREAD_LINK_KINDS,
   THREAD_ROUTER_DECISIONS,
   THREAD_INBOX_STATUSES,
-  // V2.5: Internal Agent
+  // Internal Agent
   AGENT_CAPABILITIES,
   AGENT_EXECUTION_MODES,
   AGENT_PROVIDERS,
@@ -236,14 +236,14 @@ export {
   type CommanderRuntimeApprovalStatus,
   type CommanderRuntimeApprovalDecision,
   type CommanderToolTrustScope,
-  // V2.5 types
+  // Discussion types
   type DiscussionStatus,
   type DiscussionScopeType,
   type DiscussionEntryInputType,
   type ExtractionStatus,
   type ExtractionItemType,
   type ExtractionItemStatus,
-  // V2.5: Threads types
+  // Thread types
   type ThreadOriginSource,
   type ThreadOriginMedium,
   type ThreadIntent,
@@ -726,7 +726,7 @@ export {
   type UpdateMemoryItem,
   type SuggestMemoryUpdate,
   type SuggestMemoryArchive,
-  // V2.6: memory infrastructure validators
+  // Memory infrastructure validators
   memoryProfileSchema,
   memoryWriteCapabilitiesSchema,
   createMemoryRelationSchema,

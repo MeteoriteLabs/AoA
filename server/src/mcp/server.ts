@@ -559,9 +559,9 @@ export function mcpServerRoutes(db: Db, deps: McpRouteDeps = {}) {
           res.status(400).json(jsonRpcError(requestBody.id ?? null, -32601, "Tool not found"));
           return;
         }
-        // V2.6: per-tool actor-type gate. Tools listed in toolAllowedActors
+        // Per-tool actor-type gate. Tools listed in toolAllowedActors
         // are restricted to the listed actor sources. Tools NOT in the map
-        // remain open to all authenticated actors (pre-V2.6 behavior).
+        // remain open to all authenticated actors.
         const allowed = toolAllowedActors[params.name];
         if (allowed && !allowed.includes(protocolActor.source)) {
           res.status(403).json(

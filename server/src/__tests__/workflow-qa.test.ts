@@ -42,7 +42,7 @@ const PROJECT_ID = "project-1";
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
-describe("v2.5 Workflow QA", () => {
+describe("Workflow QA", () => {
   // ── 1. Template creation: 5 steps + 4 dependencies stored correctly ─────
   it("create template with 5 steps and 4 dependencies stores correctly", async () => {
     const steps = [

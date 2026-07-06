@@ -61,7 +61,7 @@ export function debriefRoutes(db: Db) {
     res.status(201).json(debrief);
   });
 
-  // MCP inbound — external content now enters via Discussion pipeline (V2.5)
+  // MCP inbound: external content now enters via the Discussion pipeline.
   // Keeps old endpoint path for backward compatibility; creates discussion + entry instead of debrief
   router.post("/companies/:companyId/debriefs/mcp", validate(mcpDebriefSchema), async (req, res) => {
     res.set("X-Deprecated", "Use /discussions instead");

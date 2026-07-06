@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 /**
- * V2 Artifact QA Tests (Session 29)
+ * Artifact QA Tests
  *
  * Covers:
  * - Artifact branching with parentVersionId (founder-picked winner)
@@ -92,7 +92,7 @@ function createTransactionDb(config: {
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-describe("V2 Artifacts QA", () => {
+describe("Artifacts QA", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });

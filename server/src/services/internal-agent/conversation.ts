@@ -50,7 +50,7 @@ export function conversationService(db: Db) {
     async appendMessage(conversationId: string, message: MessageInput) {
       // Viewer refs: validate PER REF at the persistence boundary — one malformed
       // lifted ref must not erase the message's valid refs (T2 review). Message
-      // itself always saves (design v2 §6). mergeOutputRefs unifies the cap with
+      // itself always saves. mergeOutputRefs unifies the cap with
       // the design's created-first precedence AND dedupes (T7 review).
       let outputRefs: unknown = null;
       if (Array.isArray(message.outputRefs) && message.outputRefs.length > 0) {

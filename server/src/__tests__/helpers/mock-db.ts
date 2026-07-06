@@ -1,5 +1,5 @@
 /**
- * Shared mock DB helpers for v2.5 QA tests.
+ * Shared mock DB helpers for QA tests.
  *
  * Provides reusable sequence-based mock DB factories and common mock
  * table stubs to eliminate boilerplate across test files.

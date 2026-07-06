@@ -1,6 +1,6 @@
 // server/src/services/internal-agent/output-refs.ts
 //
-// Pure ref-builder for the Commander viewer (design v2 §3b).
+// Pure ref-builder for the Commander viewer.
 // Called from the MCP bridge with (toolName, args, structured ToolResult).
 // MUST NEVER THROW — a ref bug can't be allowed to fail a tool call.
 import {

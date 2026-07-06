@@ -288,11 +288,11 @@ export const LIVE_EVENT_TYPES = [
   // company-broadcast (NOT a thread.* envelope event) so the kanban/Crew Board
   // can move the card live when a crew agent (or the founder) moves it.
   "issue.status_changed",
-  // V2.5: Discussions
+  // Discussions
   "discussion.entry.created",
   "discussion.extraction.completed",
   "discussion.extraction.failed",
-  // V2.5: Internal Agent
+  // Internal Agent
   "internal_agent.greeting",
   "internal_agent.reminder",
   "internal_agent.notification",
@@ -324,7 +324,7 @@ export const LIVE_EVENT_TYPES = [
   // Marketplace update (M.4)
   "marketplace.update.completed",
   "marketplace.update.failed",
-  // V2.5: Threads lifecycle
+  // Threads lifecycle
   "thread.phase.changed",
   "thread.summary.updated",
   "thread.participant.changed",
@@ -391,7 +391,7 @@ export const MEMORY_ITEM_CATEGORIES = [
 ] as const;
 export type MemoryItemCategory = (typeof MEMORY_ITEM_CATEGORIES)[number];
 
-// V2.6: relations between memory items (graph edges).
+// Relations between memory items (graph edges).
 export const MEMORY_RELATION_KINDS = [
   "supersedes",
   "related_to",
@@ -506,7 +506,7 @@ export const COMPANY_BRAIN_EDGE_EDITABILITY_BY_KIND = {
   duplicate_of: "editable",
 } as const satisfies Record<CompanyBrainEdgeKind, CompanyBrainEdgeEditability>;
 
-// V2.6: per-call retrieval audit triggers.
+// Per-call retrieval audit triggers.
 export const MEMORY_RETRIEVAL_TRIGGERS = [
   "auto",                  // pre-run injection at heartbeat start
   "agent_search",          // worker agent called memory.search
@@ -517,7 +517,7 @@ export const MEMORY_RETRIEVAL_TRIGGERS = [
 ] as const;
 export type MemoryRetrievalTrigger = (typeof MEMORY_RETRIEVAL_TRIGGERS)[number];
 
-// V2.6: extraction pipeline input types.
+// Extraction pipeline input types.
 export const MEMORY_EXTRACTION_INPUT_TYPES = [
   "text",
   "pdf",
@@ -529,7 +529,7 @@ export const MEMORY_EXTRACTION_INPUT_TYPES = [
 ] as const;
 export type MemoryExtractionInputType = (typeof MEMORY_EXTRACTION_INPUT_TYPES)[number];
 
-// V2.6: extraction job status.
+// Extraction job status.
 export const MEMORY_EXTRACTION_STATUSES = [
   "queued",
   "running",
@@ -539,7 +539,7 @@ export const MEMORY_EXTRACTION_STATUSES = [
 ] as const;
 export type MemoryExtractionStatus = (typeof MEMORY_EXTRACTION_STATUSES)[number];
 
-// V2.6: extraction batch status (groups multi-file uploads).
+// Extraction batch status (groups multi-file uploads).
 export const MEMORY_EXTRACTION_BATCH_STATUSES = [
   "queued",
   "running",
@@ -548,7 +548,7 @@ export const MEMORY_EXTRACTION_BATCH_STATUSES = [
 ] as const;
 export type MemoryExtractionBatchStatus = (typeof MEMORY_EXTRACTION_BATCH_STATUSES)[number];
 
-// V2.6: MCP actor types — controls which tools an actor can call.
+// MCP actor types: controls which tools an actor can call.
 //   "board"     — founder session (existing)
 //   "agent"     — worker agent CLI subprocess (new)
 //   "commander" — internal-agent + sub-agents (new, when commander goes CLI)
@@ -556,7 +556,7 @@ export type MemoryExtractionBatchStatus = (typeof MEMORY_EXTRACTION_BATCH_STATUS
 export const MCP_ACTOR_TYPES = ["board", "agent", "commander", "mcp"] as const;
 export type McpActorType = (typeof MCP_ACTOR_TYPES)[number];
 
-// V2.6: per-agent memory profile — controls scope filtering and skill materialization.
+// Per-agent memory profile: controls scope filtering and skill materialization.
 // Stored under agent.runtimeConfig.memoryProfile. See memoryProfileSchema in validators/memory.ts.
 export const MEMORY_RECALL_BUDGETS = ["low", "mid", "high"] as const;
 export type MemoryRecallBudget = (typeof MEMORY_RECALL_BUDGETS)[number];
@@ -570,7 +570,7 @@ export const MEMORY_RECALL_BUDGET_LIMITS: Record<MemoryRecallBudget, number> = {
 export const MEMORY_SCOPE_FILTERS = ["self", "department", "all"] as const;
 export type MemoryScopeFilter = (typeof MEMORY_SCOPE_FILTERS)[number];
 
-// V2.6: future-reserved write capability scopes (curator-class agents).
+// Future-reserved write capability scopes (curator-class agents).
 export const MEMORY_WRITE_SCOPES = ["department", "task_chain", "active_context"] as const;
 export type MemoryWriteScope = (typeof MEMORY_WRITE_SCOPES)[number];
 
@@ -657,7 +657,7 @@ export const PERMISSION_KEYS = [
 ] as const;
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
 
-// ── V2: RBAC ───────────────────────────────────────────────────────────
+// ── RBAC ───────────────────────────────────────────────────────────
 
 export const USER_ROLES = ["founder", "team_lead", "team_member"] as const;
 export type UserRole = (typeof USER_ROLES)[number];
@@ -674,7 +674,7 @@ export function roleAtLeast(userRole: string, required: string): boolean {
   return (ROLE_RANK[userRole] ?? 0) >= (ROLE_RANK[required] ?? 0);
 }
 
-// ── V2: Artifacts ──────────────────────────────────────────────────────
+// ── Artifacts ──────────────────────────────────────────────────────
 
 export const ARTIFACT_TYPES = [
   "document",
@@ -701,7 +701,7 @@ export type ArtifactVersionSource = (typeof ARTIFACT_VERSION_SOURCES)[number];
 export const ARTIFACT_STORAGE_KINDS = ["inline", "asset"] as const;
 export type ArtifactStorageKind = (typeof ARTIFACT_STORAGE_KINDS)[number];
 
-// ── V2: Suggestions ────────────────────────────────────────────────────
+// ── Suggestions ────────────────────────────────────────────────────
 
 export const SUGGESTION_CATEGORIES = [
   "goal_gap",
@@ -736,7 +736,7 @@ export const SUGGESTION_ACTION_TYPES = [
 ] as const;
 export type SuggestionActionType = (typeof SUGGESTION_ACTION_TYPES)[number];
 
-// ── V2: Memory Feedback Patterns ────────────────────────────────────────
+// ── Memory Feedback Patterns ────────────────────────────────────────
 
 export const MEMORY_FEEDBACK_PATTERN_TYPES = [
   "tone_correction",
@@ -756,7 +756,7 @@ export const MEMORY_FEEDBACK_PATTERN_STATUSES = [
 ] as const;
 export type MemoryFeedbackPatternStatus = (typeof MEMORY_FEEDBACK_PATTERN_STATUSES)[number];
 
-// ── V2: Detected Output Statuses ────────────────────────────────────────
+// ── Detected Output Statuses ────────────────────────────────────────
 
 export const DETECTED_OUTPUT_STATUSES = ["pending", "confirmed", "dismissed"] as const;
 export type DetectedOutputStatus = (typeof DETECTED_OUTPUT_STATUSES)[number];
@@ -764,7 +764,7 @@ export type DetectedOutputStatus = (typeof DETECTED_OUTPUT_STATUSES)[number];
 export const DETECTED_OUTPUT_SOURCES = ["diff", "hint", "both"] as const;
 export type DetectedOutputSource = (typeof DETECTED_OUTPUT_SOURCES)[number];
 
-// ── V2: Memory Item Versions ────────────────────────────────────────────
+// ── Memory Item Versions ────────────────────────────────────────────
 
 export const MEMORY_ITEM_VERSION_STATUSES = [
   "draft",
@@ -783,7 +783,7 @@ export const SEARCH_ENTITY_TYPES = [
 ] as const;
 export type SearchEntityType = (typeof SEARCH_ENTITY_TYPES)[number];
 
-// ── V2.5: Discussions ─────────────────────────────────────────────────
+// ── Discussions ─────────────────────────────────────────────────
 
 export const DISCUSSION_STATUSES = ["active", "archived"] as const;
 export type DiscussionStatus = (typeof DISCUSSION_STATUSES)[number];
@@ -824,7 +824,7 @@ export type ExtractionItemType = (typeof EXTRACTION_ITEM_TYPES)[number];
 export const EXTRACTION_ITEM_STATUSES = ["pending", "approved", "rejected", "edited"] as const;
 export type ExtractionItemStatus = (typeof EXTRACTION_ITEM_STATUSES)[number];
 
-// ── V2.5: Threads (extends Discussions) ───────────────────────────────────────
+// ── Threads (extends Discussions) ───────────────────────────────────────
 
 export const THREAD_ORIGIN_SOURCES = ["human", "agent", "external", "system"] as const;
 export type ThreadOriginSource = (typeof THREAD_ORIGIN_SOURCES)[number];
@@ -924,7 +924,7 @@ export type ThreadRouterDecision = (typeof THREAD_ROUTER_DECISIONS)[number];
 export const THREAD_INBOX_STATUSES = ["pending", "attached", "dismissed"] as const;
 export type ThreadInboxStatus = (typeof THREAD_INBOX_STATUSES)[number];
 
-// ── V2.5: Internal Agent ──────────────────────────────────────────────
+// ── Internal Agent ──────────────────────────────────────────────
 
 export const AGENT_CAPABILITIES = [
   "discussion_processing",
@@ -1002,7 +1002,7 @@ export type IaConversationStatus = (typeof IA_CONVERSATION_STATUSES)[number];
 export const REMINDER_STATUSES = ["pending", "fired", "cancelled"] as const;
 export type ReminderStatus = (typeof REMINDER_STATUSES)[number];
 
-// ── V2.5: Commander Tool Permissions ─────────────────────────────────────
+// ── Commander Tool Permissions ─────────────────────────────────────
 
 export interface CommanderToolPermission {
   enabled: boolean;            // whether the tool is available to Commander at all

@@ -25,7 +25,7 @@ export const createMemoryItemSchema = z.object({
   departmentId: z.string().uuid().optional().nullable(),
   projectId: z.string().uuid().optional().nullable(),
   createdBy: z.string().min(1).optional(),
-  // V2 fields
+  // Extended memory fields.
   layer: z.enum(MEMORY_ITEM_LAYERS).optional().nullable(),
   priority: z.number().int().optional().default(0),
   visibility: z.enum(MEMORY_ITEM_VISIBILITY).optional().default("scoped"),
@@ -60,7 +60,7 @@ export const suggestMemoryArchiveSchema = z.object({
 
 export type SuggestMemoryArchive = z.infer<typeof suggestMemoryArchiveSchema>;
 
-// ── V2.6: per-agent memory profile (lives in agent.runtimeConfig.memoryProfile) ──
+// ── Per-agent memory profile (lives in agent.runtimeConfig.memoryProfile) ──
 
 /**
  * Future-reserved per-agent write capabilities. Default-safe (only personal scope).
@@ -120,7 +120,7 @@ export const memoryProfileSchema = z.object({
 
 export type MemoryProfile = z.infer<typeof memoryProfileSchema>;
 
-// ── V2.6: memory_relations CRUD ──
+// ── memory_relations CRUD ──
 
 export const createMemoryRelationSchema = z.object({
   fromItemId: z.string().uuid(),
@@ -130,7 +130,7 @@ export const createMemoryRelationSchema = z.object({
 
 export type CreateMemoryRelation = z.infer<typeof createMemoryRelationSchema>;
 
-// ── V2.6: memory_retrievals (server-side write only; no client create endpoint) ──
+// ── memory_retrievals (server-side write only; no client create endpoint) ──
 
 export const memoryRetrievalRowSchema = z.object({
   id: z.string().uuid(),
@@ -149,7 +149,7 @@ export const memoryRetrievalRowSchema = z.object({
 
 export type MemoryRetrievalRow = z.infer<typeof memoryRetrievalRowSchema>;
 
-// ── V2.6: memory_extractions / memory_extraction_batches ──
+// ── memory_extractions / memory_extraction_batches ──
 
 export const memoryExtractionProgressSchema = z.object({
   stage: z.string().optional(),

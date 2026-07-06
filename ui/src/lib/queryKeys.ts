@@ -176,13 +176,13 @@ export const queryKeys = {
         ["memory", companyId, id, "usage"] as const,
     versions: (companyId: string, id: string) => ["memory", companyId, id, "versions"] as const,
     semanticSearch: (companyId: string, q: string) => ["memory", companyId, "semantic-search", q] as const,
-    // V2.6 Phase 3
+    // Memory retrieval audit rows.
     retrievalsForIssue: (companyId: string, issueId: string) =>
       ["memory", companyId, "retrievals", "issue", issueId] as const,
     // Phase 7: Commander Memory cockpit card
     retrievalsForConversation: (companyId: string, conversationId: string) =>
       ["memory", companyId, "retrievals", "conversation", conversationId] as const,
-    // V2.6 Phase 4
+    // Memory starter templates.
     starterTemplates: (companyId: string) =>
       ["memory", companyId, "starter-templates"] as const,
     importJob: (companyId: string, jobId: string) =>

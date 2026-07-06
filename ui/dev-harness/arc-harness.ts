@@ -445,7 +445,7 @@ const SCENARIOS: Array<{
         { name: "feat/ci-pass", commits: 2, merged: false, status: "in_review", identifier: "AOA-30", title: "CI passing PR", pr: passingPr },
         { name: "feat/pr-only", commits: 2, merged: false, status: "in_progress", identifier: "AOA-31", title: "Open PR no CI", pr: plainPr },
         { name: "fix/conflict", commits: 1, merged: false, status: "blocked", identifier: "AOA-32", title: "Has conflicts", conflicts: true },
-        { name: "release/v2", commits: 1, merged: true, status: "done", identifier: "AOA-33", title: "Tagged release", tags: ["v2.0.0"] },
+        { name: "release/1.0", commits: 1, merged: true, status: "done", identifier: "AOA-33", title: "Tagged release", tags: ["v1.0.0"] },
       ],
       { spread: true },
     ),

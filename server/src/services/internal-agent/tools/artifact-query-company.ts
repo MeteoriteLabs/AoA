@@ -1,6 +1,6 @@
 // server/src/services/internal-agent/tools/artifact-query-company.ts
 //
-// Design 2026-06-11 v2 §3f — Commander previously had NO company-wide artifact
+// Commander previously had no company-wide artifact query; this tool fills that gap.
 // listing (query_artifacts is thread-scoped). category `query` confers no
 // capability (see authorize-tool.ts CAPABILITY_TO_CATEGORY), matching the
 // other read tools. Company scoping comes from ctx.companyId — never params.

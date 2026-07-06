@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 /**
- * V2 Edge Case QA Tests (Session 29)
+ * Edge Case QA Tests
  *
  * Covers:
  * - Trust score edge values (0, 1, exactly 20 tasks)
@@ -96,7 +96,7 @@ function createSequenceDb(config: {
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-describe("V2 Edge Cases QA", () => {
+describe("Edge Cases QA", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });

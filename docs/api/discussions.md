@@ -344,61 +344,68 @@ Discussion scope resolves in this order (Decision #61):
 3. Thread-level scope (`scopeType`/`scopeId` on the discussion)
 4. `null` (company-wide)
 
-## Extraction Engine Status
+## Thread Operations
 
-Returns the resolved extraction engine and its availability. Used by Settings to surface actionable setup copy when the CLI is not installed or authenticated. (Decision #104)
+The current Discussions UI is a Threads workspace. In addition to basic thread, entry, extraction, and scope-version routes, the server exposes thread operations for inbox intake, lifecycle, ownership, participation, routing, and crew workflow.
 
-```
-GET /api/companies/{companyId}/extraction/engine-status
-```
-
-Requires `founder` or `team_lead` role.
-
-Response:
-
-```json
-{
-  "engine": "cli",
-  "cli": { "available": true, "tool": "claude_cli" },
-  "apiKey": false
-}
-```
-
-| Field | Description |
-|-------|-------------|
-| `engine` | Resolved engine: `"cli"` \| `"api"` \| `"none"` |
-| `cli.available` | `true` if an extraction-capable CLI binary is on PATH |
-| `cli.tool` | The probed CLI tool key, e.g. `"claude_cli"` \| `"codex"` |
-| `apiKey` | `true` if at least one hosted provider key resolves for the company |
-
-## Memory Re-index Endpoints
-
-These endpoints manage the embedding queue for semantic memory search. The embedding worker uses `text-embedding-3-small` via the company's `llm:openai` Settings secret (falls back to `OPENAI_API_KEY`). Both routes require `founder` or `team_lead` role and log activity. (Decision #104)
-
-### Re-index Single Memory Item
+### Inbox Intake
 
 ```
-POST /api/companies/{companyId}/memory/{memoryItemId}/reindex
+GET /api/companies/{companyId}/discussions/inbox
+POST /api/companies/{companyId}/discussions/inbox
+POST /api/companies/{companyId}/discussions/inbox/{itemId}/triage
 ```
 
-Enqueues the specified memory item for re-embedding. Idempotent: if a live `pending` or `processing` queue row already exists for this item, no duplicate is created.
+Inbox items are unlisted inbound material that can become threads or be dismissed.
 
-Response `200`:
-
-```json
-{ "queued": true }
-```
-
-### Re-index All Failed Items
+### Lifecycle and Ownership
 
 ```
-POST /api/companies/{companyId}/memory/reindex-failed
+PATCH /api/companies/{companyId}/discussions/{threadId}/phase
+POST /api/companies/{companyId}/discussions/{threadId}/claim
+POST /api/companies/{companyId}/discussions/{threadId}/transfer
+POST /api/companies/{companyId}/discussions/{threadId}/share-token
+DELETE /api/companies/{companyId}/discussions/{threadId}/share-token
 ```
 
-Enqueues every memory item for this company whose latest `embedding_queue` row has `status = 'failed'`. Returns the count of rows newly enqueued.
+Lifecycle changes are company-scoped and then service-level thread RBAC applies. Share-token and crew-control actions are founder/board operations.
 
-Response `200`:
+### Participants, Routing, and Crew Controls
 
-```json
-{ "queued": 4 }
 ```
+POST /api/companies/{companyId}/discussions/{threadId}/participants
+POST /api/companies/{companyId}/discussions/{threadId}/crew/pause
+POST /api/companies/{companyId}/discussions/{threadId}/crew/resume
+```
+
+`autonomyLevel` accepts `0`, `1`, `2`, or `null`. It does not accept `3`.
+
+### Scope Item Workflow
+
+```
+POST /api/companies/{companyId}/discussions/{threadId}/spin-off
+POST /api/companies/{companyId}/discussions/{threadId}/scope-deps
+POST /api/companies/{companyId}/discussions/{threadId}/scope-deps/graduate
+PATCH /api/companies/{companyId}/discussions/{threadId}/items/{itemId}/routing
+```
+
+Spin-off accepts `scopeItemId` in the request body. Scope dependency routes wire extracted-item dependencies before creating work. Per-item routing lives under `/items/{itemId}/routing`.
+
+### Links, Proposals, and Catch-up
+
+```
+GET /api/companies/{companyId}/discussions/{threadId}/links
+POST /api/companies/{companyId}/discussions/{threadId}/links
+POST /api/companies/{companyId}/discussions/{threadId}/proposals/{proposalEntryId}/approve
+GET /api/companies/{companyId}/discussions/{threadId}/entries?sinceSeq={n}
+```
+
+`sinceSeq` returns catch-up entries ordered by sequence for clients that reconnect after missing live events.
+
+## Extraction Runtime
+
+Extraction is CLI-only. Discussion extraction, `debrief-push`, file import, and crew memory-extract tools all run through the same local CLI extraction path. AoA does not expose an extraction engine-status endpoint and does not fall back to hosted provider keys for extraction. Embeddings are the only hosted runtime API key use.
+
+Failures are stored on the entry and surfaced to the founder with actionable setup copy. Typical failure classes include missing CLI, unauthenticated CLI, timeout, nonzero exit, and unparseable output. Retry through the Discussion UI after fixing the local CLI problem.
+
+Memory embedding re-index routes are documented in `docs/api/memory.md`.

@@ -499,7 +499,7 @@ export function TaskDetail({ issueId, active, onDismiss, onOpenScopeHandoffItem 
     enabled: !!issueId && active,
   });
 
-  // Detected outputs from agent runs (V2 output capture)
+  // Detected outputs from agent runs.
   const { data: detectedOutputs } = useQuery({
     queryKey: queryKeys.detectedOutputs.byIssue(issueId!),
     queryFn: () => outputDetectionApi.listForIssue(issueId!),
@@ -856,7 +856,7 @@ export function TaskDetail({ issueId, active, onDismiss, onOpenScopeHandoffItem 
     },
   });
 
-  // Detected output confirm/dismiss mutations (V2)
+  // Detected output confirm/dismiss mutations.
   const confirmOutput = useMutation({
     mutationFn: (data: {
       runId: string;
@@ -1539,7 +1539,7 @@ export function TaskDetail({ issueId, active, onDismiss, onOpenScopeHandoffItem 
 
                 <Separator />
 
-                {/* V2: Review action bar — visible when task is in_review (Decisions #69, #70) */}
+                {/* Review action bar, visible when task is in_review (Decisions #69, #70). */}
                 {issue?.status === "in_review" && (
                   <div className="rounded-lg border border-amber-200 dark:border-amber-800/50 bg-amber-50/50 dark:bg-amber-900/10 p-3 space-y-2">
                     <div className="flex items-center gap-2 text-sm font-medium text-amber-700 dark:text-amber-400">
@@ -1685,7 +1685,7 @@ export function TaskDetail({ issueId, active, onDismiss, onOpenScopeHandoffItem 
                   </TabsContent>
 
                   <TabsContent value="artifacts">
-                    {/* V2: Detected Outputs from agent runs */}
+                    {/* Detected outputs from agent runs. */}
                     {pendingOutputs.length > 0 && (
                       <div className="mb-4 space-y-2">
                         <h4 className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">

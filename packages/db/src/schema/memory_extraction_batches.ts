@@ -9,7 +9,7 @@ import {
 import { companies } from "./companies.js";
 
 /**
- * V2.6: groups multiple extraction jobs from a single founder upload action.
+ * Groups multiple extraction jobs from a single founder upload action.
  *
  * When a founder drops 12 files into Memory, one batch row is created and 12
  * memory_extractions rows reference it. This lets the UI:

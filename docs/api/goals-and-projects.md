@@ -21,6 +21,8 @@ Query parameters:
 |-------|-------------|
 | `projectId` | Filter goals scoped to this project or department |
 
+Goals support both the legacy single `parentId` shape and the current DAG-style `parentIds` shape. `projectIds` records department/project membership.
+
 ### Get Goal
 
 ```
@@ -59,6 +61,15 @@ DELETE /api/goals/{goalId}
 ```
 
 Permanently removes the goal. Returns the deleted goal object. Requires `founder` or `team_lead` role.
+
+### Goal Tree and Parents
+
+```
+GET /api/companies/{companyId}/goals/tree
+PUT /api/goals/{goalId}/parents
+```
+
+The tree route returns the nested planning model used by the Objectives UI. Parent replacement enforces cycle prevention and scope integrity.
 
 ---
 
@@ -203,6 +214,19 @@ PATCH /api/projects/{projectId}/environment
 ```
 
 Pass `{ "env": null }` to clear all environment variables. Returns `{ env: { ... } }`.
+
+Company-scoped execution environments are separate from this legacy project environment map. See `docs/api/environments.md` for `/api/companies/{companyId}/environments`.
+
+---
+
+## Project Git
+
+```
+GET /api/companies/{companyId}/projects/{projectId}/git/graph
+GET /api/companies/{companyId}/projects/{projectId}/git/enrich
+```
+
+These routes power project git graph visualizations and enrichment.
 
 ---
 

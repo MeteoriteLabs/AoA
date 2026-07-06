@@ -1,10 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 /**
- * V2 Integration QA Tests (Session 29)
+ * Integration QA Tests
  *
  * Covers:
- * - Full debrief → brief → memory/task creation pipeline with V2 features
+ * - Full debrief -> brief -> memory/task creation pipeline
  * - Agent heartbeat → context assembly → run summary → trust score update
  * - Suggestion engine pattern detection → suggestion creation → acceptance
  * - RBAC enforcement
@@ -29,7 +29,7 @@ function buildRunInput(overrides: Partial<RunSummaryInput> = {}): RunSummaryInpu
   };
 }
 
-describe("V2 Integration QA", () => {
+describe("Integration QA", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -269,7 +269,7 @@ describe("V2 Integration QA", () => {
       expect(rolePermissions.team_lead.length).toBeLessThan(rolePermissions.founder.length);
     });
 
-    it("team_lead can approve active_context for their department (V2)", () => {
+    it("team_lead can approve active_context for their department", () => {
       const canApprove = (role: string, layer: string, userDeptId: string, itemDeptId: string): boolean => {
         if (role === "founder") return true;
         if (role === "team_lead" && layer === "active_context" && userDeptId === itemDeptId) return true;
@@ -304,7 +304,7 @@ describe("V2 Integration QA", () => {
       const sections = [
         "# Company: AoA",
         "## Department: Engineering",
-        "## Goal: Ship V2",
+        "## Goal: Ship current release",
         "## Previous Tasks (Dependencies)",
         "## Task: Implement feature",
         "## Artifacts",

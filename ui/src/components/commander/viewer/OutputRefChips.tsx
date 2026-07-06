@@ -1,4 +1,4 @@
-// Chip row under assistant bubbles (design v2 §4a). Chips are handles, not
+// Chip row under assistant bubbles. Chips are handles, not
 // previews — click opens the ref in the viewer panel.
 import { FileText } from "lucide-react";
 import type { CommanderOutputRef } from "@armyofagents/shared";

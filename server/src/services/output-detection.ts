@@ -16,7 +16,7 @@ import { getContentType } from "../mime-types.js";
 /** Max files to detect per run (prevents runaway storage consumption) */
 const MAX_FILES_PER_RUN = 20;
 
-/** Max file size to capture (50 MB per V2 spec) */
+/** Max file size to capture for detected outputs. */
 const MAX_FILE_BYTES = 50 * 1024 * 1024;
 
 /** Timeout for git commands */

@@ -115,7 +115,7 @@ import {
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
-describe("v2.5 Proactive Agent QA", () => {
+describe("Proactive Agent QA", () => {
   // ── 1. Morning digest: full digest with activity, tasks, reminders ───────
   it("morning digest: 5 overnight activities + 3 active tasks + 2 pending reminders produces full digest", async () => {
     const overnightActivity = [

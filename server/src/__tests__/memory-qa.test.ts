@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { makeTableProxy, drizzleOperatorStubs, mockDbCapabilities } from "./helpers/drizzle-mock.js";
 
 /**
- * V2 Memory QA Tests (Session 29)
+ * Memory QA Tests
  *
  * Covers:
  * - Layer inheritance (identity → domain → active_context → working)
@@ -143,7 +143,7 @@ function makeMockDb(rows: MockRow[] = []) {
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-describe("V2 Memory QA", () => {
+describe("Memory QA", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });

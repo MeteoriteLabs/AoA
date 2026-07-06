@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createDiscussionDb } from "./helpers/mock-db.js";
 
 /**
- * V2.5 Discussion Flow QA Tests
+ * Discussion Flow QA Tests
  *
  * Covers the full discussion pipeline:
  * - Create discussion → add entry → agent extracts → approve → tasks/memory created
@@ -236,7 +236,7 @@ const ACTOR = "user-1";
 
 // ── Tests ───────────────────────────────────────────────────────────────────
 
-describe("v2.5 Discussion Flow QA", () => {
+describe("Discussion Flow QA", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
