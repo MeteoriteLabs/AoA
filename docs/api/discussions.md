@@ -361,7 +361,7 @@ Inbox items are unlisted inbound material that can become threads or be dismisse
 ### Lifecycle and Ownership
 
 ```
-POST /api/companies/{companyId}/discussions/{threadId}/phase
+PATCH /api/companies/{companyId}/discussions/{threadId}/phase
 POST /api/companies/{companyId}/discussions/{threadId}/claim
 POST /api/companies/{companyId}/discussions/{threadId}/transfer
 POST /api/companies/{companyId}/discussions/{threadId}/share-token
@@ -373,9 +373,7 @@ Lifecycle changes are company-scoped and then service-level thread RBAC applies.
 ### Participants, Routing, and Crew Controls
 
 ```
-GET /api/companies/{companyId}/discussions/{threadId}/participants
 POST /api/companies/{companyId}/discussions/{threadId}/participants
-PATCH /api/companies/{companyId}/discussions/{threadId}/routing
 POST /api/companies/{companyId}/discussions/{threadId}/crew/pause
 POST /api/companies/{companyId}/discussions/{threadId}/crew/resume
 ```
@@ -385,20 +383,20 @@ POST /api/companies/{companyId}/discussions/{threadId}/crew/resume
 ### Scope Item Workflow
 
 ```
-POST /api/companies/{companyId}/discussions/{threadId}/scope-items/{itemId}/spin-off
-POST /api/companies/{companyId}/discussions/{threadId}/scope-items/{itemId}/dependencies
-POST /api/companies/{companyId}/discussions/{threadId}/scope-items/{itemId}/graduate-dependencies
-PATCH /api/companies/{companyId}/discussions/{threadId}/scope-items/{itemId}/routing
+POST /api/companies/{companyId}/discussions/{threadId}/spin-off
+POST /api/companies/{companyId}/discussions/{threadId}/scope-deps
+POST /api/companies/{companyId}/discussions/{threadId}/scope-deps/graduate
+PATCH /api/companies/{companyId}/discussions/{threadId}/items/{itemId}/routing
 ```
 
-These routes are used by scope drafts and crew routing. Approval can edit item fields and wire extracted-item dependencies before creating work.
+Spin-off accepts `scopeItemId` in the request body. Scope dependency routes wire extracted-item dependencies before creating work. Per-item routing lives under `/items/{itemId}/routing`.
 
 ### Links, Proposals, and Catch-up
 
 ```
 GET /api/companies/{companyId}/discussions/{threadId}/links
 POST /api/companies/{companyId}/discussions/{threadId}/links
-POST /api/companies/{companyId}/discussions/{threadId}/proposal-approval
+POST /api/companies/{companyId}/discussions/{threadId}/proposals/{proposalEntryId}/approve
 GET /api/companies/{companyId}/discussions/{threadId}/entries?sinceSeq={n}
 ```
 

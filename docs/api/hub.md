@@ -27,11 +27,12 @@ Common query parameters:
 
 | Param | Description |
 |-------|-------------|
-| `lane` | Hub lane, such as home, waiting, notifications, or suggestions |
+| `lane` | Hub lane: `waiting_on_you`, `notifications`, or `suggestions` |
 | `limit` | Page size, capped by the shared hub validator |
 | `cursor` | Pagination cursor |
 | `q` | Search text |
-| `includeHidden` | Include hidden/dismissed items when supported |
+| `includeDismissed` | Include personally dismissed items |
+| `includeSnoozed` | Include snoozed items |
 
 The route reconciles open approval, runtime-decision, and stale-work sources before returning rows. The response shape is:
 
@@ -59,13 +60,14 @@ Counts are scoped to the current user and company. Sidebar badges are the compac
 
 ```
 GET /api/companies/{companyId}/hub-items/{id}
-POST /api/companies/{companyId}/hub-items/{id}/actions
-POST /api/companies/{companyId}/hub-items/{id}/hide
-PATCH /api/companies/{companyId}/hub-items/{id}/claim
+POST /api/companies/{companyId}/hub-items/{id}/action
+PATCH /api/companies/{companyId}/hub-items/{id}/state
+POST /api/companies/{companyId}/hub-items/{id}/undo
 GET /api/companies/{companyId}/hub-items/{id}/audit
+POST /api/companies/{companyId}/hub-items/bulk-action
 ```
 
-Actions are source-aware. Runtime decisions, approvals, suggestions, and notifications each validate the source row before closing or updating the hub item.
+Actions are source-aware. Runtime decisions, approvals, suggestions, and notifications each validate the source row before closing or updating the hub item. Shared lifecycle actions use `/action`; personal visibility state uses `/state`; bulk operations use `/bulk-action`.
 
 Runtime decision answers require the backing source revision and nonce so stale browser tabs cannot answer old prompts.
 

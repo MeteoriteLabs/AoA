@@ -59,10 +59,10 @@ Memory edits use draft/publish/review semantics rather than mutating approved kn
 ## Folders, Assets, Lifecycle, and Retrievals
 
 ```
-GET /api/companies/{companyId}/memory-folders
-POST /api/companies/{companyId}/memory-folders
-PATCH /api/companies/{companyId}/memory-folders/{id}
-DELETE /api/companies/{companyId}/memory-folders/{id}
+GET /api/companies/{companyId}/memory/folders
+POST /api/companies/{companyId}/memory/folders
+PATCH /api/companies/{companyId}/memory/folders/{id}
+DELETE /api/companies/{companyId}/memory/folders/{id}
 
 POST /api/companies/{companyId}/memory/lifecycle/archive-expired
 POST /api/companies/{companyId}/memory/lifecycle/archive-working
@@ -95,4 +95,3 @@ Failed bulk requeue returns:
 ```
 
 `reindex-failed` and `reindex-all` are founder-only operational actions. They enqueue embedding work; they do not run hosted extraction.
-
