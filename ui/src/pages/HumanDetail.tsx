@@ -660,8 +660,8 @@ export function HumanDetail() {
           if (!open) resetProfileDraftFromMember();
         }}
       >
-        <DialogContent className="flex max-h-[90vh] overflow-hidden sm:max-w-3xl">
-          <DialogHeader>
+        <DialogContent className="flex max-h-[90vh] flex-col overflow-hidden sm:max-w-3xl">
+          <DialogHeader className="shrink-0">
             <DialogTitle>Edit Profile</DialogTitle>
             <DialogDescription className="sr-only">
               Update this person's company profile identity.
@@ -885,7 +885,7 @@ export function HumanDetail() {
               </Button>
             </div>
           </DialogBody>
-          <DialogFooter>
+          <DialogFooter className="shrink-0">
             <Button
               type="button"
               variant="outline"
