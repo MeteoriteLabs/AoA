@@ -13,6 +13,10 @@ async function assertAssetOwned(db: Pick<Db, "select">, companyId: string, asset
   if (!row) throw badRequest("assetId does not belong to this company");
 }
 
+function storageKindForVersion(storageKind: string | null | undefined, assetId: string | null | undefined) {
+  return assetId ? "asset" : (storageKind ?? "inline");
+}
+
 /** Fetch artifact row + its versions (newest first) */
 async function fetchWithVersions(db: Db, artifactId: string) {
   const artifact = await db
@@ -91,7 +95,7 @@ export function artifactService(db: Db) {
               changelog: changelog ?? null,
               content: content ?? null,
               fileUrl: fileUrl ?? null,
-              storageKind: storageKind ?? "inline",
+              storageKind: storageKindForVersion(storageKind, assetId),
               assetId: assetId ?? null,
               filename: filename ?? null,
               contentType: contentType ?? null,
@@ -233,7 +237,7 @@ export function artifactService(db: Db) {
             parentVersionId: data.parentVersionId ?? null,
             content: data.content ?? null,
             fileUrl: data.fileUrl ?? null,
-            storageKind: data.storageKind ?? "inline",
+            storageKind: storageKindForVersion(data.storageKind, data.assetId),
             assetId: data.assetId ?? null,
             filename: data.filename ?? null,
             contentType: data.contentType ?? null,

@@ -49,6 +49,7 @@ vi.mock("@armyofagents/db", () => {
     artifacts: makeTable("artifacts"),
     artifactVersions: makeTable("artifact_versions"),
     issues: makeTable("issues"),
+    assets: makeTable("assets"),
   };
 });
 
@@ -60,6 +61,7 @@ function createTransactionDb(config: {
   selects?: Record<string, unknown>[][];
   inserts?: Record<string, unknown>[][];
   updates?: Record<string, unknown>[][];
+  capturedValues?: unknown[];
 }) {
   let selectIdx = 0;
   let insertIdx = 0;
@@ -72,7 +74,10 @@ function createTransactionDb(config: {
   function makeChain(getResult: () => Record<string, unknown>[]) {
     const chain: Record<string, unknown> = {};
     for (const m of ["from", "where", "set", "values", "returning", "innerJoin", "leftJoin", "orderBy", "limit"]) {
-      chain[m] = (..._args: unknown[]) => chain;
+      chain[m] = (...args: unknown[]) => {
+        if (m === "values") config.capturedValues?.push(args[0]);
+        return chain;
+      };
     }
     chain.then = (resolve: (v: Record<string, unknown>[]) => unknown) => Promise.resolve(resolve(getResult()));
     return chain;
@@ -135,6 +140,36 @@ describe("Artifacts QA", () => {
       // Original version object should remain unchanged
       expect(existingVersion.content).toBe("Original content");
       expect(existingVersion.versionNumber).toBe(1);
+    });
+
+    it("infers asset storage when addVersion receives an assetId without storageKind", async () => {
+      const capturedValues: unknown[] = [];
+      const db = createTransactionDb({
+        selects: [[{ companyId: "co-1" }], [{ id: "asset-1" }], [{ versionNumber: 1 }]],
+        inserts: [[{
+          id: "ver-2",
+          artifactId: "art-1",
+          versionNumber: 2,
+          source: "founder",
+          assetId: "asset-1",
+          storageKind: "asset",
+        }]],
+        updates: [[]],
+        capturedValues,
+      });
+
+      const svc = artifactService(db as any);
+      await svc.addVersion("art-1", {
+        source: "founder",
+        assetId: "asset-1",
+        filename: "deck.pdf",
+        contentType: "application/pdf",
+      });
+
+      expect(capturedValues[0]).toMatchObject({
+        assetId: "asset-1",
+        storageKind: "asset",
+      });
     });
 
     it("version numbers are auto-incremented atomically", async () => {
@@ -298,6 +333,46 @@ describe("Artifacts QA", () => {
       });
 
       expect(result.versions).toHaveLength(1);
+    });
+
+    it("infers asset storage when create receives an assetId without storageKind", async () => {
+      const capturedValues: unknown[] = [];
+      const artifact = {
+        id: "art-new",
+        companyId: "co-1",
+        title: "Brand deck",
+        type: "design",
+      };
+      const version = {
+        id: "ver-1",
+        artifactId: "art-new",
+        versionNumber: 1,
+        source: "founder",
+        assetId: "asset-1",
+        storageKind: "asset",
+      };
+
+      const db = createTransactionDb({
+        selects: [[{ id: "asset-1" }]],
+        inserts: [[artifact], [version]],
+        updates: [[{ ...artifact, currentVersionId: "ver-1" }]],
+        capturedValues,
+      });
+
+      const svc = artifactService(db as any);
+      await svc.create("co-1", "user-1", {
+        title: "Brand deck",
+        type: "design",
+        source: "founder",
+        assetId: "asset-1",
+        filename: "deck.pdf",
+        contentType: "application/pdf",
+      });
+
+      expect(capturedValues[1]).toMatchObject({
+        assetId: "asset-1",
+        storageKind: "asset",
+      });
     });
 
     it("creates artifact without version when no source provided", async () => {
