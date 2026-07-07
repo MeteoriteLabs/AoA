@@ -6,7 +6,7 @@ test.describe("Human profile page", () => {
     await cleanupTestCompanies(request, /^E2E-Humans-/);
   });
 
-  test("renders profile fields, overview dashboard, and settings form", async ({ page, request }) => {
+  test("renders profile fields, overview dashboard, and profile edit modal", async ({ page, request }) => {
     const company = await seedCompany(request, `E2E-Humans-${Date.now()}`);
 
     const teamRes = await request.get(`/api/companies/${company.id}/team`);
@@ -42,11 +42,26 @@ test.describe("Human profile page", () => {
     await expect(main.getByText("Created Tasks").first()).toBeVisible();
     await expect(main.getByText("Activity")).toBeVisible();
 
-    await page.getByRole("button", { name: /edit/i }).click();
-    await expect(page.getByRole("region", { name: "Profile" })).toBeVisible({ timeout: 5_000 });
-    await expect(page.getByLabel("Display name")).toHaveValue("E2E Human");
-    await expect(page.getByLabel("Title")).toHaveValue("Founder Operator");
-    await expect(page.getByLabel("Location")).toHaveValue("Remote");
-    await expect(page.getByLabel("Timezone")).toHaveValue("UTC");
+    await page.goto(`/${company.issuePrefix}/team/${userId}/settings`);
+    await expect(main.getByText("Role & Department")).toBeVisible({ timeout: 10_000 });
+    await expect(main.getByRole("region", { name: "Profile" })).toHaveCount(0);
+
+    await page.getByRole("button", { name: "Edit Profile" }).click();
+    const dialog = page.getByRole("dialog", { name: "Edit Profile" });
+    await expect(dialog).toBeVisible({ timeout: 5_000 });
+    await expect(dialog.getByLabel("Display name")).toHaveValue("E2E Human");
+    await expect(dialog.getByLabel("Title")).toHaveValue("Founder Operator");
+    await expect(dialog.getByLabel("Location")).toHaveValue("Remote");
+    await expect(dialog.getByLabel("Timezone")).toHaveValue("UTC");
+
+    await dialog.getByLabel("Display name").fill("E2E Human Updated");
+    await dialog.getByLabel("Title").selectOption("Founder Partner");
+    await dialog.getByLabel("Timezone").selectOption("Asia/Kolkata");
+    await dialog.getByRole("button", { name: "Save Profile" }).click();
+
+    await expect(dialog).toBeHidden({ timeout: 10_000 });
+    await expect(main.getByRole("heading", { name: "E2E Human Updated" })).toBeVisible();
+    await expect(main.getByText("Founder Partner")).toBeVisible();
+    await expect(main.getByText("Asia/Kolkata")).toBeVisible();
   });
 });

@@ -247,6 +247,8 @@ describe("HumanDetail", () => {
     renderHumanDetail();
 
     expect(await screen.findByRole("heading", { name: "Ada Lovelace" })).toBeInTheDocument();
+    expect(screen.getByTestId("human-profile-avatar")).toHaveAttribute("data-shape", "squircle");
+    expect(screen.getByRole("button", { name: "Edit Profile" })).toBeInTheDocument();
     expect(screen.getByText("Product Lead")).toBeInTheDocument();
     expect(screen.getByText("Turns founder intent into shipped operating systems.")).toBeInTheDocument();
     expect(screen.getByText("London")).toBeInTheDocument();
@@ -267,26 +269,25 @@ describe("HumanDetail", () => {
     expect(activityApi.list).toHaveBeenCalledWith("company-1", { actorType: "user", actorId: "user-1" });
   });
 
-  it("saves profile form display fields", async () => {
+  it("opens a modal from the header and saves profile display fields", async () => {
     const user = userEvent.setup();
-    renderHumanDetail("/team/user-1/settings");
+    renderHumanDetail();
 
-    const profileSection = await screen.findByRole("region", { name: "Profile" });
-    await user.clear(within(profileSection).getByLabelText("Display name"));
-    await user.type(within(profileSection).getByLabelText("Display name"), "Ada Byron");
-    await user.clear(within(profileSection).getByLabelText("Title"));
-    await user.type(within(profileSection).getByLabelText("Title"), "Founder Partner");
-    await user.clear(within(profileSection).getByLabelText("Bio"));
-    await user.type(within(profileSection).getByLabelText("Bio"), "Builds the operating cadence.");
-    await user.clear(within(profileSection).getByLabelText("Location"));
-    await user.type(within(profileSection).getByLabelText("Location"), "San Francisco");
-    await user.clear(within(profileSection).getByLabelText("Timezone"));
-    await user.type(within(profileSection).getByLabelText("Timezone"), "America/Los_Angeles");
-    await user.clear(within(profileSection).getByLabelText("Social link label"));
-    await user.type(within(profileSection).getByLabelText("Social link label"), "Portfolio");
-    await user.clear(within(profileSection).getByLabelText("Social link URL"));
-    await user.type(within(profileSection).getByLabelText("Social link URL"), "https://ada.example.com");
-    await user.click(within(profileSection).getByRole("button", { name: "Save Profile" }));
+    await user.click(await screen.findByRole("button", { name: "Edit Profile" }));
+    const dialog = await screen.findByRole("dialog", { name: "Edit Profile" });
+    await user.clear(within(dialog).getByLabelText("Display name"));
+    await user.type(within(dialog).getByLabelText("Display name"), "Ada Byron");
+    await user.selectOptions(within(dialog).getByLabelText("Title"), "Founder Partner");
+    await user.clear(within(dialog).getByLabelText("Bio"));
+    await user.type(within(dialog).getByLabelText("Bio"), "Builds the operating cadence.");
+    await user.clear(within(dialog).getByLabelText("Location"));
+    await user.type(within(dialog).getByLabelText("Location"), "San Francisco");
+    await user.selectOptions(within(dialog).getByLabelText("Timezone"), "America/Los_Angeles");
+    await user.clear(within(dialog).getByLabelText("Social link label"));
+    await user.type(within(dialog).getByLabelText("Social link label"), "Portfolio");
+    await user.clear(within(dialog).getByLabelText("Social link URL"));
+    await user.type(within(dialog).getByLabelText("Social link URL"), "https://ada.example.com");
+    await user.click(within(dialog).getByRole("button", { name: "Save Profile" }));
 
     await waitFor(() => {
       expect(teamApi.updateProfile).toHaveBeenCalledWith("company-1", "user-1", {
@@ -300,12 +301,21 @@ describe("HumanDetail", () => {
     });
   });
 
+  it("keeps settings focused on operational role controls", async () => {
+    renderHumanDetail("/team/user-1/settings");
+
+    expect(await screen.findByText("Role & Department")).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Profile" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Edit Profile" })).toBeInTheDocument();
+  });
+
   it("keeps unsaved profile edits during a background member refetch", async () => {
     const user = userEvent.setup();
-    const { queryClient } = renderHumanDetail("/team/user-1/settings");
+    const { queryClient } = renderHumanDetail();
 
-    const profileSection = await screen.findByRole("region", { name: "Profile" });
-    const displayNameInput = within(profileSection).getByLabelText("Display name");
+    await user.click(await screen.findByRole("button", { name: "Edit Profile" }));
+    const dialog = await screen.findByRole("dialog", { name: "Edit Profile" });
+    const displayNameInput = within(dialog).getByLabelText("Display name");
     await user.clear(displayNameInput);
     await user.type(displayNameInput, "Ada Byron");
 
@@ -332,12 +342,13 @@ describe("HumanDetail", () => {
 
   it("uploads an avatar before saving the returned asset id and can remove it", async () => {
     const user = userEvent.setup();
-    renderHumanDetail("/team/user-1/settings");
+    renderHumanDetail();
 
-    const profileSection = await screen.findByRole("region", { name: "Profile" });
+    await user.click(await screen.findByRole("button", { name: "Edit Profile" }));
+    const dialog = await screen.findByRole("dialog", { name: "Edit Profile" });
     const file = new File(["avatar"], "avatar.png", { type: "image/png" });
-    await user.upload(within(profileSection).getByLabelText("Avatar image"), file);
-    await user.click(within(profileSection).getByRole("button", { name: "Upload Avatar" }));
+    await user.upload(within(dialog).getByLabelText("Avatar image"), file);
+    await user.click(within(dialog).getByRole("button", { name: "Upload Avatar" }));
 
     await waitFor(() => {
       expect(assetsApi.uploadImage).toHaveBeenCalledWith("company-1", file, "humans/avatars");
@@ -345,7 +356,7 @@ describe("HumanDetail", () => {
     });
 
     vi.mocked(teamApi.updateProfile).mockClear();
-    await user.click(within(profileSection).getByRole("button", { name: "Remove Avatar" }));
+    await user.click(within(dialog).getByRole("button", { name: "Remove Avatar" }));
 
     await waitFor(() => {
       expect(teamApi.updateProfile).toHaveBeenCalledWith("company-1", "user-1", { avatarAssetId: null });

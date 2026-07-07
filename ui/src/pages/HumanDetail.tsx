@@ -43,6 +43,15 @@ import { Identity } from "../components/Identity";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogBody,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Tabs } from "@/components/ui/tabs";
 import {
   Select,
@@ -85,6 +94,60 @@ const HUMAN_SOCIAL_LINK_TYPES: HumanSocialLinkType[] = [
   "medium",
   "other",
 ];
+
+const HUMAN_TITLE_OPTIONS = [
+  "Founder",
+  "Co-Founder",
+  "Founder Partner",
+  "Founder Operator",
+  "CEO",
+  "COO",
+  "CTO",
+  "CPO",
+  "Chief of Staff",
+  "General Manager",
+  "Team Lead",
+  "Product Lead",
+  "Engineering Lead",
+  "Design Lead",
+  "Marketing Lead",
+  "Sales Lead",
+  "Customer Success Lead",
+  "Operations Lead",
+  "Finance Lead",
+  "Legal Lead",
+  "People Lead",
+  "Product Manager",
+  "Engineer",
+  "Designer",
+  "Researcher",
+  "Analyst",
+  "Operator",
+  "Advisor",
+] as const;
+
+const FALLBACK_TIMEZONE_OPTIONS = [
+  "UTC",
+  "America/Los_Angeles",
+  "America/Denver",
+  "America/Chicago",
+  "America/New_York",
+  "America/Sao_Paulo",
+  "Europe/London",
+  "Europe/Berlin",
+  "Europe/Paris",
+  "Europe/Amsterdam",
+  "Asia/Dubai",
+  "Asia/Kolkata",
+  "Asia/Singapore",
+  "Asia/Tokyo",
+  "Australia/Sydney",
+] as const;
+
+function getTimezoneOptions(): string[] {
+  const supported = Intl.supportedValuesOf?.("timeZone") ?? [];
+  return Array.from(new Set(["UTC", ...FALLBACK_TIMEZONE_OPTIONS, ...supported])).sort((a, b) => a.localeCompare(b));
+}
 
 const FIELD_CLASS =
   "h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50";
@@ -280,6 +343,33 @@ export function HumanDetail() {
   const profileDraftSourceKeyRef = useRef<string | null>(null);
   const [avatarFile, setAvatarFile] = useState<File | null>(null);
   const [avatarFileDirty, setAvatarFileDirty] = useState(false);
+  const [profileDialogOpen, setProfileDialogOpen] = useState(false);
+  const timezoneOptions = useMemo(() => getTimezoneOptions(), []);
+  const titleOptions = useMemo(
+    () => Array.from(new Set([
+      ...HUMAN_TITLE_OPTIONS,
+      ...(member?.title ? [member.title] : []),
+      ...(profileDraft.title ? [profileDraft.title] : []),
+    ])).filter(Boolean).sort((a, b) => a.localeCompare(b)),
+    [member?.title, profileDraft.title],
+  );
+
+  const resetProfileDraftFromMember = useCallback(() => {
+    if (!member) return;
+    setProfileDraft({
+      displayName: member.displayName ?? null,
+      title: member.title ?? null,
+      bio: member.bio ?? null,
+      location: member.location ?? null,
+      timezone: member.timezone ?? null,
+      socialLinks: member.socialLinks.length > 0
+        ? member.socialLinks
+        : [{ type: "github", label: null, url: "" }],
+    });
+    setProfileDraftDirty(false);
+    setAvatarFile(null);
+    setAvatarFileDirty(false);
+  }, [member]);
 
   // Sync draft state when member loads
   useEffect(() => {
@@ -290,21 +380,9 @@ export function HumanDetail() {
       setDraftRole(member.role);
       setDraftDepartmentId(member.departmentId ?? "none");
       setDraftParentId(member.parentId ?? "none");
-      setProfileDraft({
-        displayName: member.displayName ?? null,
-        title: member.title ?? null,
-        bio: member.bio ?? null,
-        location: member.location ?? null,
-        timezone: member.timezone ?? null,
-        socialLinks: member.socialLinks.length > 0
-          ? member.socialLinks
-          : [{ type: "github", label: null, url: "" }],
-      });
-      setProfileDraftDirty(false);
-      setAvatarFile(null);
-      setAvatarFileDirty(false);
+      resetProfileDraftFromMember();
     }
-  }, [avatarFileDirty, member, profileDraftDirty, selectedCompanyId]);
+  }, [avatarFileDirty, member, profileDraftDirty, resetProfileDraftFromMember, selectedCompanyId]);
 
   // Permissions
   const currentUser = teamSummary?.currentUser;
@@ -412,6 +490,7 @@ export function HumanDetail() {
     mutationFn: (input: UpdateCompanyUserProfile) => teamApi.updateProfile(selectedCompanyId!, userId!, input),
     onSuccess: () => {
       setProfileDraftDirty(false);
+      setProfileDialogOpen(false);
       invalidateAll();
       pushToast({ title: "Profile saved", tone: "success" });
     },
@@ -507,9 +586,13 @@ export function HumanDetail() {
         </div>
 
         <div className="flex items-center gap-4">
-          <Avatar className="h-16 w-16 text-lg">
+          <Avatar
+            data-testid="human-profile-avatar"
+            shape="squircle"
+            className="h-16 w-16 border border-border bg-accent text-lg shadow-sm"
+          >
             {member.avatarUrl && <AvatarImage src={member.avatarUrl} alt={displayName} />}
-            <AvatarFallback>{initials}</AvatarFallback>
+            <AvatarFallback className="bg-accent text-foreground font-semibold">{initials}</AvatarFallback>
           </Avatar>
 
           <div className="flex-1 min-w-0">
@@ -557,14 +640,266 @@ export function HumanDetail() {
             )}
           </div>
 
-          <Link to={`/team/${userId}/settings`}>
-            <Button variant="ghost" size="sm" className="gap-1.5 shrink-0">
-              <Settings className="h-4 w-4" />
-              <span className="hidden sm:inline">Edit</span>
-            </Button>
-          </Link>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="gap-1.5 shrink-0"
+            aria-label="Edit Profile"
+            onClick={() => setProfileDialogOpen(true)}
+          >
+            <Settings className="h-4 w-4" />
+            <span className="hidden sm:inline">Edit Profile</span>
+            <span className="sm:hidden">Edit</span>
+          </Button>
         </div>
       </div>
+
+      <Dialog
+        open={profileDialogOpen}
+        onOpenChange={(open) => {
+          setProfileDialogOpen(open);
+          if (!open) resetProfileDraftFromMember();
+        }}
+      >
+        <DialogContent className="max-h-[90vh] overflow-hidden sm:max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>Edit Profile</DialogTitle>
+            <DialogDescription>
+              Update this person's company profile, identity details, and public work links.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogBody className="max-h-[calc(90vh-10rem)] space-y-5 overflow-y-auto">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+              <div className="flex items-center gap-3">
+                <Avatar
+                  shape="squircle"
+                  className="h-14 w-14 border border-border bg-accent text-base shadow-sm"
+                >
+                  {member.avatarUrl && <AvatarImage src={member.avatarUrl} alt={displayName} />}
+                  <AvatarFallback className="bg-accent text-foreground font-semibold">{initials}</AvatarFallback>
+                </Avatar>
+                <div>
+                  <p className="text-sm font-medium">{displayName}</p>
+                  <p className="text-xs text-muted-foreground">{member.email ?? "No email"}</p>
+                </div>
+              </div>
+              <div className="sm:ml-auto">
+                {!canEditProfile && <Badge variant="outline" className="text-[10px]">Read only</Badge>}
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+              <div className="space-y-1.5">
+                <label htmlFor="human-avatar" className="text-xs font-medium text-muted-foreground">Avatar image</label>
+                <input
+                  id="human-avatar"
+                  type="file"
+                  accept="image/*"
+                  className="block w-full text-sm text-muted-foreground file:mr-3 file:rounded-md file:border-0 file:bg-muted file:px-3 file:py-1.5 file:text-sm file:font-medium"
+                  disabled={!canEditProfile || avatarUploadMutation.isPending}
+                  onChange={(event) => {
+                    setAvatarFileDirty(true);
+                    setAvatarFile(event.target.files?.[0] ?? null);
+                  }}
+                />
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  className="gap-1.5"
+                  disabled={!canEditProfile || !avatarFile || avatarUploadMutation.isPending}
+                  onClick={() => avatarFile && avatarUploadMutation.mutate(avatarFile)}
+                >
+                  <Upload className="h-3.5 w-3.5" />
+                  {avatarUploadMutation.isPending ? "Uploading..." : "Upload Avatar"}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="gap-1.5"
+                  disabled={!canEditProfile || removeAvatarMutation.isPending}
+                  onClick={() => removeAvatarMutation.mutate()}
+                >
+                  <X className="h-3.5 w-3.5" />
+                  Remove Avatar
+                </Button>
+              </div>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-1.5">
+                <label htmlFor="human-display-name" className="text-xs font-medium text-muted-foreground">Display name</label>
+                <input
+                  id="human-display-name"
+                  className={FIELD_CLASS}
+                  value={profileDraft.displayName ?? ""}
+                  disabled={!canEditProfile || saveProfileMutation.isPending}
+                  onChange={(event) => {
+                    setProfileDraftDirty(true);
+                    setProfileDraft((current) => ({ ...current, displayName: event.target.value }));
+                  }}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label htmlFor="human-title" className="text-xs font-medium text-muted-foreground">Title</label>
+                <select
+                  id="human-title"
+                  className={FIELD_CLASS}
+                  value={profileDraft.title ?? ""}
+                  disabled={!canEditProfile || saveProfileMutation.isPending}
+                  onChange={(event) => {
+                    setProfileDraftDirty(true);
+                    setProfileDraft((current) => ({ ...current, title: event.target.value || null }));
+                  }}
+                >
+                  <option value="">No title</option>
+                  {titleOptions.map((title) => (
+                    <option key={title} value={title}>{title}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="space-y-1.5">
+                <label htmlFor="human-location" className="text-xs font-medium text-muted-foreground">Location</label>
+                <input
+                  id="human-location"
+                  className={FIELD_CLASS}
+                  value={profileDraft.location ?? ""}
+                  disabled={!canEditProfile || saveProfileMutation.isPending}
+                  onChange={(event) => {
+                    setProfileDraftDirty(true);
+                    setProfileDraft((current) => ({ ...current, location: event.target.value }));
+                  }}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label htmlFor="human-timezone" className="text-xs font-medium text-muted-foreground">Timezone</label>
+                <select
+                  id="human-timezone"
+                  className={FIELD_CLASS}
+                  value={profileDraft.timezone ?? ""}
+                  disabled={!canEditProfile || saveProfileMutation.isPending}
+                  onChange={(event) => {
+                    setProfileDraftDirty(true);
+                    setProfileDraft((current) => ({ ...current, timezone: event.target.value || null }));
+                  }}
+                >
+                  <option value="">No timezone</option>
+                  {timezoneOptions.map((timezone) => (
+                    <option key={timezone} value={timezone}>{timezone}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <label htmlFor="human-bio" className="text-xs font-medium text-muted-foreground">Bio</label>
+              <textarea
+                id="human-bio"
+                className={TEXTAREA_CLASS}
+                value={profileDraft.bio ?? ""}
+                disabled={!canEditProfile || saveProfileMutation.isPending}
+                onChange={(event) => {
+                  setProfileDraftDirty(true);
+                  setProfileDraft((current) => ({ ...current, bio: event.target.value }));
+                }}
+              />
+            </div>
+
+            <div className="space-y-3">
+              {(profileDraft.socialLinks ?? []).map((link, index) => (
+                <div key={index} className="grid gap-3 md:grid-cols-[150px_minmax(0,1fr)_minmax(0,2fr)_auto]">
+                  <div className="space-y-1.5">
+                    <label htmlFor={`human-social-type-${index}`} className="text-xs font-medium text-muted-foreground">Social link type</label>
+                    <select
+                      id={`human-social-type-${index}`}
+                      className={FIELD_CLASS}
+                      value={link.type}
+                      disabled={!canEditProfile || saveProfileMutation.isPending}
+                      onChange={(event) => updateSocialLink(index, { type: event.target.value as HumanSocialLinkType })}
+                    >
+                      {HUMAN_SOCIAL_LINK_TYPES.map((type) => (
+                        <option key={type} value={type}>{type}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <label htmlFor={`human-social-label-${index}`} className="text-xs font-medium text-muted-foreground">Social link label</label>
+                    <input
+                      id={`human-social-label-${index}`}
+                      className={FIELD_CLASS}
+                      value={link.label ?? ""}
+                      disabled={!canEditProfile || saveProfileMutation.isPending}
+                      onChange={(event) => updateSocialLink(index, { label: event.target.value })}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label htmlFor={`human-social-url-${index}`} className="text-xs font-medium text-muted-foreground">Social link URL</label>
+                    <input
+                      id={`human-social-url-${index}`}
+                      className={FIELD_CLASS}
+                      value={link.url}
+                      disabled={!canEditProfile || saveProfileMutation.isPending}
+                      onChange={(event) => updateSocialLink(index, { url: event.target.value })}
+                    />
+                  </div>
+                  <div className="flex items-end">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      disabled={!canEditProfile || saveProfileMutation.isPending}
+                      onClick={() => {
+                        setProfileDraftDirty(true);
+                        setProfileDraft((current) => ({
+                          ...current,
+                          socialLinks: (current.socialLinks ?? []).filter((_, i) => i !== index),
+                        }));
+                      }}
+                      aria-label="Remove social link"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                </div>
+              ))}
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={!canEditProfile || saveProfileMutation.isPending}
+                onClick={() => {
+                  setProfileDraftDirty(true);
+                  setProfileDraft((current) => ({
+                    ...current,
+                    socialLinks: [...(current.socialLinks ?? []), { type: "website", label: null, url: "" }],
+                  }));
+                }}
+              >
+                Add Social Link
+              </Button>
+            </div>
+          </DialogBody>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setProfileDialogOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              onClick={saveProfile}
+              disabled={!canEditProfile || saveProfileMutation.isPending}
+            >
+              {saveProfileMutation.isPending ? "Saving..." : "Save Profile"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Tabs */}
       <Tabs value={activeTab} onValueChange={handleTabChange}>
@@ -717,206 +1052,6 @@ export function HumanDetail() {
         {/* ── Settings Tab ── */}
         {activeTab === "settings" && (
           <div className="space-y-4 mt-4">
-            <section aria-label="Profile" className="rounded-xl border border-border bg-card p-5">
-              <div className="mb-4 flex items-center justify-between gap-3">
-                <h3 className="text-sm font-semibold">Profile</h3>
-                {!canEditProfile && <Badge variant="outline" className="text-[10px]">Read only</Badge>}
-              </div>
-              <div className="space-y-5">
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
-                  <div className="space-y-1.5">
-                    <label htmlFor="human-avatar" className="text-xs font-medium text-muted-foreground">Avatar image</label>
-                    <input
-                      id="human-avatar"
-                      type="file"
-                      accept="image/*"
-                      className="block w-full text-sm text-muted-foreground file:mr-3 file:rounded-md file:border-0 file:bg-muted file:px-3 file:py-1.5 file:text-sm file:font-medium"
-                      disabled={!canEditProfile || avatarUploadMutation.isPending}
-                      onChange={(event) => {
-                        setAvatarFileDirty(true);
-                        setAvatarFile(event.target.files?.[0] ?? null);
-                      }}
-                    />
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    <Button
-                      type="button"
-                      size="sm"
-                      className="gap-1.5"
-                      disabled={!canEditProfile || !avatarFile || avatarUploadMutation.isPending}
-                      onClick={() => avatarFile && avatarUploadMutation.mutate(avatarFile)}
-                    >
-                      <Upload className="h-3.5 w-3.5" />
-                      {avatarUploadMutation.isPending ? "Uploading..." : "Upload Avatar"}
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      className="gap-1.5"
-                      disabled={!canEditProfile || removeAvatarMutation.isPending}
-                      onClick={() => removeAvatarMutation.mutate()}
-                    >
-                      <X className="h-3.5 w-3.5" />
-                      Remove Avatar
-                    </Button>
-                  </div>
-                </div>
-
-                <div className="grid gap-4 md:grid-cols-2">
-                  <div className="space-y-1.5">
-                    <label htmlFor="human-display-name" className="text-xs font-medium text-muted-foreground">Display name</label>
-                    <input
-                      id="human-display-name"
-                      className={FIELD_CLASS}
-                      value={profileDraft.displayName ?? ""}
-                      disabled={!canEditProfile || saveProfileMutation.isPending}
-                      onChange={(event) => {
-                        setProfileDraftDirty(true);
-                        setProfileDraft((current) => ({ ...current, displayName: event.target.value }));
-                      }}
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <label htmlFor="human-title" className="text-xs font-medium text-muted-foreground">Title</label>
-                    <input
-                      id="human-title"
-                      className={FIELD_CLASS}
-                      value={profileDraft.title ?? ""}
-                      disabled={!canEditProfile || saveProfileMutation.isPending}
-                      onChange={(event) => {
-                        setProfileDraftDirty(true);
-                        setProfileDraft((current) => ({ ...current, title: event.target.value }));
-                      }}
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <label htmlFor="human-location" className="text-xs font-medium text-muted-foreground">Location</label>
-                    <input
-                      id="human-location"
-                      className={FIELD_CLASS}
-                      value={profileDraft.location ?? ""}
-                      disabled={!canEditProfile || saveProfileMutation.isPending}
-                      onChange={(event) => {
-                        setProfileDraftDirty(true);
-                        setProfileDraft((current) => ({ ...current, location: event.target.value }));
-                      }}
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <label htmlFor="human-timezone" className="text-xs font-medium text-muted-foreground">Timezone</label>
-                    <input
-                      id="human-timezone"
-                      className={FIELD_CLASS}
-                      value={profileDraft.timezone ?? ""}
-                      disabled={!canEditProfile || saveProfileMutation.isPending}
-                      onChange={(event) => {
-                        setProfileDraftDirty(true);
-                        setProfileDraft((current) => ({ ...current, timezone: event.target.value }));
-                      }}
-                    />
-                  </div>
-                </div>
-
-                <div className="space-y-1.5">
-                  <label htmlFor="human-bio" className="text-xs font-medium text-muted-foreground">Bio</label>
-                  <textarea
-                    id="human-bio"
-                    className={TEXTAREA_CLASS}
-                    value={profileDraft.bio ?? ""}
-                    disabled={!canEditProfile || saveProfileMutation.isPending}
-                    onChange={(event) => {
-                      setProfileDraftDirty(true);
-                      setProfileDraft((current) => ({ ...current, bio: event.target.value }));
-                    }}
-                  />
-                </div>
-
-                <div className="space-y-3">
-                  {(profileDraft.socialLinks ?? []).map((link, index) => (
-                    <div key={index} className="grid gap-3 md:grid-cols-[150px_minmax(0,1fr)_minmax(0,2fr)_auto]">
-                      <div className="space-y-1.5">
-                        <label htmlFor={`human-social-type-${index}`} className="text-xs font-medium text-muted-foreground">Social link type</label>
-                        <select
-                          id={`human-social-type-${index}`}
-                          className={FIELD_CLASS}
-                          value={link.type}
-                          disabled={!canEditProfile || saveProfileMutation.isPending}
-                          onChange={(event) => updateSocialLink(index, { type: event.target.value as HumanSocialLinkType })}
-                        >
-                          {HUMAN_SOCIAL_LINK_TYPES.map((type) => (
-                            <option key={type} value={type}>{type}</option>
-                          ))}
-                        </select>
-                      </div>
-                      <div className="space-y-1.5">
-                        <label htmlFor={`human-social-label-${index}`} className="text-xs font-medium text-muted-foreground">Social link label</label>
-                        <input
-                          id={`human-social-label-${index}`}
-                          className={FIELD_CLASS}
-                          value={link.label ?? ""}
-                          disabled={!canEditProfile || saveProfileMutation.isPending}
-                          onChange={(event) => updateSocialLink(index, { label: event.target.value })}
-                        />
-                      </div>
-                      <div className="space-y-1.5">
-                        <label htmlFor={`human-social-url-${index}`} className="text-xs font-medium text-muted-foreground">Social link URL</label>
-                        <input
-                          id={`human-social-url-${index}`}
-                          className={FIELD_CLASS}
-                          value={link.url}
-                          disabled={!canEditProfile || saveProfileMutation.isPending}
-                          onChange={(event) => updateSocialLink(index, { url: event.target.value })}
-                        />
-                      </div>
-                      <div className="flex items-end">
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          disabled={!canEditProfile || saveProfileMutation.isPending}
-                          onClick={() => {
-                            setProfileDraftDirty(true);
-                            setProfileDraft((current) => ({
-                              ...current,
-                              socialLinks: (current.socialLinks ?? []).filter((_, i) => i !== index),
-                            }));
-                          }}
-                          aria-label="Remove social link"
-                        >
-                          <X className="h-3.5 w-3.5" />
-                        </Button>
-                      </div>
-                    </div>
-                  ))}
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    disabled={!canEditProfile || saveProfileMutation.isPending}
-                    onClick={() => {
-                      setProfileDraftDirty(true);
-                      setProfileDraft((current) => ({
-                        ...current,
-                        socialLinks: [...(current.socialLinks ?? []), { type: "website", label: null, url: "" }],
-                      }));
-                    }}
-                  >
-                    Add Social Link
-                  </Button>
-                </div>
-
-                <Button
-                  type="button"
-                  onClick={saveProfile}
-                  disabled={!canEditProfile || saveProfileMutation.isPending}
-                  className="w-full sm:w-auto"
-                >
-                  {saveProfileMutation.isPending ? "Saving..." : "Save Profile"}
-                </Button>
-              </div>
-            </section>
-
             {/* Role & Department */}
             <div className="rounded-xl border border-border bg-card p-5">
               <h3 className="text-sm font-semibold mb-4">Role & Department</h3>
