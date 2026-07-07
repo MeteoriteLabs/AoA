@@ -29,8 +29,9 @@ import { Popover, PopoverContent, PopoverTrigger } from "../../ui/popover";
 import { ScrollArea } from "../../ui/scroll-area";
 import { useCommanderCockpitPrefs } from "../useCommanderCockpitPrefs";
 import {
-  mountableCards,
+  groupCardsBySection,
   selectVisibleCards,
+  selectVisibleSectionGroups,
   type CockpitCardDef,
 } from "./cockpitCardModel";
 import { CockpitSection } from "../../workspace/cockpit/CockpitSection";
@@ -137,6 +138,7 @@ export const COCKPIT_REGISTRY: CockpitCardRenderDef[] = [
     id: "pinned",
     title: "Pinned",
     defaultOn: true,
+    sectionId: "context",
     icon: Pin,
     summary: (d) => d.pinned.length > 0 ? `${d.pinned.length} pinned` : null,
     isActive: (d) => d.pinned.length > 0,
@@ -154,6 +156,7 @@ export const COCKPIT_REGISTRY: CockpitCardRenderDef[] = [
     id: "running",
     title: "Running now",
     defaultOn: true,
+    sectionId: "company_pulse",
     icon: Play,
     summary: (d) => d.running.length > 0 ? `${d.running.length} running` : null,
     isActive: (d) => d.running.length > 0,
@@ -165,6 +168,7 @@ export const COCKPIT_REGISTRY: CockpitCardRenderDef[] = [
     id: "review",
     title: "Review",
     defaultOn: true,
+    sectionId: "needs_me",
     icon: CheckCircle,
     summary: (d) => d.review.length > 0 ? `${d.review.length} in review` : null,
     isActive: (d) => d.review.length > 0,
@@ -176,6 +180,7 @@ export const COCKPIT_REGISTRY: CockpitCardRenderDef[] = [
     id: "myTasks",
     title: "My tasks",
     defaultOn: true,
+    sectionId: "my_work",
     icon: ClipboardList,
     summary: (d) => d.myTasks.length > 0 ? `${d.myTasks.length} tasks` : null,
     isActive: (d) => d.myTasks.length > 0,
@@ -187,6 +192,7 @@ export const COCKPIT_REGISTRY: CockpitCardRenderDef[] = [
     id: "today",
     title: "Today",
     defaultOn: true,
+    sectionId: "my_work",
     icon: Calendar,
     summary: (d) => {
       const total = d.today.reminders.length + d.today.dueTasks.length;
@@ -207,6 +213,7 @@ export const COCKPIT_REGISTRY: CockpitCardRenderDef[] = [
     id: "discussions",
     title: "Discussions",
     defaultOn: true,
+    sectionId: "active_with_me",
     icon: MessageSquare,
     summary: (d) => d.discussions.length > 0 ? `${d.discussions.length} active` : null,
     isActive: (d) => d.discussions.length > 0,
@@ -219,6 +226,7 @@ export const COCKPIT_REGISTRY: CockpitCardRenderDef[] = [
     id: "approvals",
     title: "Approvals",
     defaultOn: true,
+    sectionId: "needs_me",
     icon: CheckCircle2,
     summary: (d) => d.approvals.length > 0 ? `${d.approvals.length} pending` : null,
     isActive: (d) => d.approvals.length > 0,
@@ -236,6 +244,7 @@ export const COCKPIT_REGISTRY: CockpitCardRenderDef[] = [
     id: "goalsAtRisk",
     title: "Goals at risk",
     defaultOn: false,
+    sectionId: "company_pulse",
     icon: AlertTriangle,
     summary: (d) => d.goalsAtRisk.length > 0 ? `${d.goalsAtRisk.length} at risk` : null,
     isActive: (d) => d.goalsAtRisk.length > 0,
@@ -247,6 +256,7 @@ export const COCKPIT_REGISTRY: CockpitCardRenderDef[] = [
     id: "budgetPulse",
     title: "Budget pulse",
     defaultOn: false,
+    sectionId: "company_pulse",
     icon: DollarSign,
     summary: (d) => d.budgetPulse !== null ? `${Math.round(d.budgetPulse.percentUsed)}% used` : null,
     isActive: (d) => d.budgetPulse !== null,
@@ -256,6 +266,7 @@ export const COCKPIT_REGISTRY: CockpitCardRenderDef[] = [
     id: "doneToday",
     title: "Done today",
     defaultOn: false,
+    sectionId: "company_pulse",
     icon: CheckCircle2,
     summary: (d) => d.doneToday.length > 0 ? `${d.doneToday.length} completed` : null,
     isActive: (d) => d.doneToday.length > 0,
@@ -267,6 +278,7 @@ export const COCKPIT_REGISTRY: CockpitCardRenderDef[] = [
     id: "proactiveFindings",
     title: "Proactive findings",
     defaultOn: false,
+    sectionId: "needs_me",
     icon: Zap,
     summary: (d) => d.proactiveFindings.length > 0 ? `${d.proactiveFindings.length} findings` : null,
     isActive: (d) => d.proactiveFindings.length > 0,
@@ -282,6 +294,7 @@ export const COCKPIT_REGISTRY: CockpitCardRenderDef[] = [
     id: "teammatesActivity",
     title: "Teammates' activity",
     defaultOn: false,
+    sectionId: "company_pulse",
     icon: Users,
     summary: (d) => d.teammatesActivity.length > 0 ? `${d.teammatesActivity.length} updates` : null,
     isActive: (d) => d.teammatesActivity.length > 0,
@@ -301,6 +314,7 @@ export const COCKPIT_REGISTRY: CockpitCardRenderDef[] = [
     id: "memory",
     title: "Memory",
     defaultOn: false,
+    sectionId: "context",
     icon: Brain,
     summary: (_d) => null, // row count is fetched inside the card, not from cockpit batch
     isActive: (_d) => true, // always mount; card shows empty state when no conversation
@@ -326,8 +340,7 @@ function CockpitConfigPopover({
   setPrefs: ReturnType<typeof useCommanderCockpitPrefs>[1];
   registry: CockpitCardDef[];
 }) {
-  const defaultOnCards = registry.filter((c) => c.defaultOn);
-  const optInCards = registry.filter((c) => !c.defaultOn);
+  const groupedCards = groupCardsBySection(registry);
 
   return (
     <Popover>
@@ -342,36 +355,22 @@ function CockpitConfigPopover({
         </button>
       </PopoverTrigger>
       <PopoverContent align="end" className="p-2">
-        {/* Default-on cards — toggle via hidden list */}
         <p className="mb-1.5 px-1 text-[11px] font-medium text-muted-foreground">Show cards</p>
-        {defaultOnCards.map((card) => {
-          const isHidden = prefs.hidden.includes(card.id);
-          return (
-            <label
-              key={card.id}
-              className="flex cursor-pointer items-center gap-2 rounded-md px-1 py-1.5 text-xs hover:bg-muted/50"
-            >
-              <input
-                type="checkbox"
-                className="accent-brand"
-                checked={!isHidden}
-                onChange={() => {
-                  const next = isHidden
-                    ? prefs.hidden.filter((id) => id !== card.id)
-                    : [...prefs.hidden, card.id];
-                  setPrefs({ ...prefs, hidden: next });
-                }}
-              />
-              {card.title}
-            </label>
-          );
-        })}
-        {/* Opt-in cards — toggle via enabled list (only render section if any exist) */}
-        {optInCards.length > 0 && (
-          <>
-            <p className="mb-1.5 mt-2 px-1 text-[11px] font-medium text-muted-foreground">Optional</p>
-            {optInCards.map((card) => {
+        {groupedCards.map((group) => (
+          <div
+            key={group.section.id}
+            className="space-y-0.5"
+            data-testid={`cockpit-config-group-${group.section.id}`}
+          >
+            <p className="mb-1 mt-2 px-1 text-[11px] font-medium text-muted-foreground">
+              {group.section.title}
+            </p>
+            {group.cards.map((card) => {
+              const isDefault = card.defaultOn;
+              const isHidden = prefs.hidden.includes(card.id);
               const isEnabled = prefs.enabled.includes(card.id);
+              const checked = isDefault ? !isHidden : isEnabled;
+
               return (
                 <label
                   key={card.id}
@@ -380,20 +379,28 @@ function CockpitConfigPopover({
                   <input
                     type="checkbox"
                     className="accent-brand"
-                    checked={isEnabled}
+                    checked={checked}
                     onChange={() => {
-                      const next = isEnabled
+                      if (isDefault) {
+                        const nextHidden = isHidden
+                          ? prefs.hidden.filter((id) => id !== card.id)
+                          : [...prefs.hidden, card.id];
+                        setPrefs({ ...prefs, hidden: nextHidden });
+                        return;
+                      }
+
+                      const nextEnabled = isEnabled
                         ? prefs.enabled.filter((id) => id !== card.id)
                         : [...prefs.enabled, card.id];
-                      setPrefs({ ...prefs, enabled: next });
+                      setPrefs({ ...prefs, enabled: nextEnabled });
                     }}
                   />
                   {card.title}
                 </label>
               );
             })}
-          </>
-        )}
+          </div>
+        ))}
       </PopoverContent>
     </Popover>
   );
@@ -451,6 +458,13 @@ export function CommanderCockpitPanel({
   );
 
   const visible = selectVisibleCards({
+    registry: COCKPIT_REGISTRY,
+    hidden: prefs.hidden,
+    order: prefs.order,
+    active,
+    enabled: prefs.enabled,
+  });
+  const visibleGroups = selectVisibleSectionGroups({
     registry: COCKPIT_REGISTRY,
     hidden: prefs.hidden,
     order: prefs.order,
@@ -547,33 +561,44 @@ export function CommanderCockpitPanel({
             </CockpitSection>
           )}
 
-          {/* Phase 5B: Each active card wrapped in CockpitSection */}
-          {mountableCards(COCKPIT_REGISTRY, prefs.hidden, prefs.order, prefs.enabled)
-            .filter((c) => active[c.id])
-            .map((c) => (
-              <CockpitSection
-                key={c.id}
-                id={c.id}
-                title={c.title}
-                summary={c.summary(cockpitData)}
-                icon={c.icon}
-                open={cardExpanded[c.id] ?? true}
-                onOpenChange={(open) => setCardOpen(c.id, open)}
-              >
-                {/* Phase 3c/3d: companyId + pin/unpin/artifact callbacks threaded through.
-                    Phase 7: conversationId for the Memory card. */}
-                {c.render({
-                  data: cockpitData,
-                  companyId,
-                  conversationId,
-                  onOpenTask,
-                  onAsk,
-                  onOpenFullPage,
-                  onOpenArtifact,
-                  onPin: (entityType, entityId) => pin.mutate({ entityType, entityId }),
-                  onUnpin: (entityType, entityId) => unpin.mutate({ entityType, entityId }),
-                })}
-              </CockpitSection>
+          {/* Phase 1: Product groups around existing cards; cards stay collapsible. */}
+          {visibleGroups.map((group) => (
+            <section
+              key={group.section.id}
+              data-testid={`cockpit-group-${group.section.id}`}
+              className="space-y-1.5"
+            >
+              <div className="px-1 pt-1 text-[11px] font-semibold uppercase tracking-normal text-muted-foreground">
+                {group.section.title}
+              </div>
+              <div className="space-y-2">
+                {group.cards.map((c) => (
+                  <CockpitSection
+                    key={c.id}
+                    id={c.id}
+                    title={c.title}
+                    summary={c.summary(cockpitData)}
+                    icon={c.icon}
+                    open={cardExpanded[c.id] ?? true}
+                    onOpenChange={(open) => setCardOpen(c.id, open)}
+                  >
+                    {/* Phase 3c/3d: companyId + pin/unpin/artifact callbacks threaded through.
+                        Phase 7: conversationId for the Memory card. */}
+                    {c.render({
+                      data: cockpitData,
+                      companyId,
+                      conversationId,
+                      onOpenTask,
+                      onAsk,
+                      onOpenFullPage,
+                      onOpenArtifact,
+                      onPin: (entityType, entityId) => pin.mutate({ entityType, entityId }),
+                      onUnpin: (entityType, entityId) => unpin.mutate({ entityType, entityId }),
+                    })}
+                  </CockpitSection>
+                ))}
+              </div>
+            </section>
           ))}
 
           {visible.length === 0 && conversationRefs.length === 0 && (

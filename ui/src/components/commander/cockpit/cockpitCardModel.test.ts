@@ -1,7 +1,17 @@
 import { describe, it, expect } from "vitest";
-import { selectVisibleCards, type CockpitCardDef } from "./cockpitCardModel";
+import {
+  groupCardsBySection,
+  selectVisibleCards,
+  selectVisibleSectionGroups,
+  type CockpitCardDef,
+} from "./cockpitCardModel";
 
-const RUNNING_CARD: CockpitCardDef = { id: "running", title: "Running now", defaultOn: true };
+const RUNNING_CARD: CockpitCardDef = {
+  id: "running",
+  title: "Running now",
+  defaultOn: true,
+  sectionId: "company_pulse",
+};
 const REGISTRY = [RUNNING_CARD];
 
 describe("selectVisibleCards", () => {
@@ -22,8 +32,8 @@ describe("selectVisibleCards", () => {
   });
 
   it("order reorders multiple cards", () => {
-    const cardA: CockpitCardDef = { id: "a", title: "A", defaultOn: true };
-    const cardB: CockpitCardDef = { id: "b", title: "B", defaultOn: true };
+    const cardA: CockpitCardDef = { id: "a", title: "A", defaultOn: true, sectionId: "needs_me" };
+    const cardB: CockpitCardDef = { id: "b", title: "B", defaultOn: true, sectionId: "my_work" };
     const result = selectVisibleCards({
       registry: [cardA, cardB],
       hidden: [],
@@ -34,7 +44,7 @@ describe("selectVisibleCards", () => {
   });
 
   it("defaultOn=false excludes card even when active", () => {
-    const offCard: CockpitCardDef = { id: "off", title: "Off", defaultOn: false };
+    const offCard: CockpitCardDef = { id: "off", title: "Off", defaultOn: false, sectionId: "context" };
     const result = selectVisibleCards({
       registry: [offCard],
       hidden: [],
@@ -45,7 +55,7 @@ describe("selectVisibleCards", () => {
   });
 
   it("defaultOn=false card IS shown when its id is in enabled", () => {
-    const offCard: CockpitCardDef = { id: "off", title: "Off", defaultOn: false };
+    const offCard: CockpitCardDef = { id: "off", title: "Off", defaultOn: false, sectionId: "context" };
     const result = selectVisibleCards({
       registry: [offCard],
       hidden: [],
@@ -55,5 +65,46 @@ describe("selectVisibleCards", () => {
     });
     expect(result).toHaveLength(1);
     expect(result[0].id).toBe("off");
+  });
+});
+
+describe("Cockpit card sections", () => {
+  const SECTION_REGISTRY: CockpitCardDef[] = [
+    { id: "approvals", title: "Approvals", defaultOn: true, sectionId: "needs_me" },
+    { id: "myTasks", title: "My tasks", defaultOn: true, sectionId: "my_work" },
+    { id: "discussions", title: "Discussions", defaultOn: true, sectionId: "active_with_me" },
+    { id: "running", title: "Running now", defaultOn: true, sectionId: "company_pulse" },
+    { id: "pinned", title: "Pinned", defaultOn: true, sectionId: "context" },
+  ];
+
+  it("groups cards by the fixed cockpit section order", () => {
+    const result = groupCardsBySection(SECTION_REGISTRY);
+    expect(result.map((group) => group.section.id)).toEqual([
+      "needs_me",
+      "my_work",
+      "active_with_me",
+      "company_pulse",
+      "context",
+    ]);
+    expect(result[0].cards.map((card) => card.id)).toEqual(["approvals"]);
+  });
+
+  it("selects visible card groups and skips empty sections", () => {
+    const result = selectVisibleSectionGroups({
+      registry: SECTION_REGISTRY,
+      hidden: [],
+      order: [],
+      active: {
+        approvals: false,
+        myTasks: true,
+        discussions: false,
+        running: true,
+        pinned: false,
+      },
+      enabled: [],
+    });
+
+    expect(result.map((group) => group.section.id)).toEqual(["my_work", "company_pulse"]);
+    expect(result.flatMap((group) => group.cards.map((card) => card.id))).toEqual(["myTasks", "running"]);
   });
 });

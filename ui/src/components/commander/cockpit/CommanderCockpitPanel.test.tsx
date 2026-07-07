@@ -133,6 +133,52 @@ describe("CommanderCockpitPanel", () => {
     unmount();
   });
 
+  it("renders visible cards under product cockpit section headings", () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    queryClient.setQueryData(["cockpit", "comp-sections"], makeData({
+      approvals: [
+        { source: "approval", id: "approval-1", title: "Hire Atlas", subtitle: "hire agent" },
+      ],
+      myTasks: [
+        {
+          id: "task-1",
+          identifier: "AOA-1",
+          title: "Write plan",
+          status: "todo",
+          assigneeUserId: "u1",
+          assigneeAgentId: null,
+          dueDate: null,
+        },
+      ],
+      discussions: [
+        { id: "disc-1", title: "Pricing sync", pendingItemCount: 1, reason: "pending_items" },
+      ],
+      running: [makeRunItem({ id: "run-1", agentName: "Atlas", issueId: null })],
+      pinned: [
+        { entityType: "task", entityId: "task-1", title: "Write plan", status: "todo", identifier: "AOA-1" },
+      ],
+    }));
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <CommanderCockpitPanel companyId="comp-sections" onCollapse={vi.fn()} />
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByTestId("cockpit-group-needs_me")).toBeInTheDocument();
+    expect(screen.getByTestId("cockpit-group-my_work")).toBeInTheDocument();
+    expect(screen.getByTestId("cockpit-group-active_with_me")).toBeInTheDocument();
+    expect(screen.getByTestId("cockpit-group-company_pulse")).toBeInTheDocument();
+    expect(screen.getByTestId("cockpit-group-context")).toBeInTheDocument();
+    expect(screen.getByText("Needs Me")).toBeInTheDocument();
+    expect(screen.getByText("My Work")).toBeInTheDocument();
+    expect(screen.getByText("Active With Me")).toBeInTheDocument();
+    expect(screen.getByText("Company Pulse")).toBeInTheDocument();
+    expect(screen.getByText("Context")).toBeInTheDocument();
+  });
+
   it("⚙ config popover can hide the running card", async () => {
     const run = makeRunItem();
     const queryClient = new QueryClient({
@@ -160,6 +206,20 @@ describe("CommanderCockpitPanel", () => {
 
     // After hiding, the Running card should not be rendered
     expect(screen.queryByTestId("cockpit-card-running")).not.toBeInTheDocument();
+  });
+
+  it("config popover groups card toggles by cockpit section", () => {
+    renderPanel();
+
+    fireEvent.click(screen.getByRole("button", { name: /configure cockpit cards/i }));
+
+    expect(screen.getByTestId("cockpit-config-group-needs_me")).toBeInTheDocument();
+    expect(screen.getByTestId("cockpit-config-group-my_work")).toBeInTheDocument();
+    expect(screen.getByTestId("cockpit-config-group-active_with_me")).toBeInTheDocument();
+    expect(screen.getByTestId("cockpit-config-group-company_pulse")).toBeInTheDocument();
+    expect(screen.getByTestId("cockpit-config-group-context")).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: /approvals/i })).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: /my tasks/i })).toBeInTheDocument();
   });
 
   it("collapse button calls onCollapse", () => {

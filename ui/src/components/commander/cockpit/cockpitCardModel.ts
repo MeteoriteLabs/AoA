@@ -1,11 +1,32 @@
 // ui/src/components/commander/cockpit/cockpitCardModel.ts
 // Pure model — no React, no side effects, safe to unit-test in isolation.
 
+export type CockpitSectionId =
+  | "needs_me"
+  | "my_work"
+  | "active_with_me"
+  | "company_pulse"
+  | "context";
+
+export interface CockpitSectionDef {
+  id: CockpitSectionId;
+  title: string;
+}
+
+export const COCKPIT_SECTIONS: CockpitSectionDef[] = [
+  { id: "needs_me", title: "Needs Me" },
+  { id: "my_work", title: "My Work" },
+  { id: "active_with_me", title: "Active With Me" },
+  { id: "company_pulse", title: "Company Pulse" },
+  { id: "context", title: "Context" },
+];
+
 export interface CockpitCardDef {
   id: string;
   title: string;
   /** lucide icon name handled by the component; kept out of the pure model */
   defaultOn: boolean;
+  sectionId: CockpitSectionId;
 }
 
 export interface CockpitVisibilityInput<T extends CockpitCardDef = CockpitCardDef> {
@@ -46,4 +67,22 @@ export function mountableCards<T extends CockpitCardDef>(
 export function selectVisibleCards<T extends CockpitCardDef>(input: CockpitVisibilityInput<T>): T[] {
   const { registry, hidden, order, active, enabled } = input;
   return mountableCards(registry, hidden, order, enabled ?? []).filter((c) => active[c.id] === true);
+}
+
+export function groupCardsBySection<T extends CockpitCardDef>(cards: T[]): Array<{
+  section: CockpitSectionDef;
+  cards: T[];
+}> {
+  return COCKPIT_SECTIONS
+    .map((section) => ({
+      section,
+      cards: cards.filter((card) => card.sectionId === section.id),
+    }))
+    .filter((group) => group.cards.length > 0);
+}
+
+export function selectVisibleSectionGroups<T extends CockpitCardDef>(
+  input: CockpitVisibilityInput<T>,
+): Array<{ section: CockpitSectionDef; cards: T[] }> {
+  return groupCardsBySection(selectVisibleCards(input));
 }
