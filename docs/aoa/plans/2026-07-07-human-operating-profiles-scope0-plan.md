@@ -65,6 +65,7 @@ Use existing repo patterns instead of inventing new test infrastructure:
   - [ ] Assert avatar asset becomes `/api/assets/:assetId/content`.
   - [ ] Assert missing profile falls back to auth identity.
   - [ ] Assert avatar asset validation rejects cross-company assets and non-image assets.
+  - [ ] Assert member dependencies return the agent IDs inside each direct agent tree so the UI can show tasks the human is responsible for through those agents.
 - Team routes:
   - [ ] Add route tests near the style of `server/src/__tests__/routes-auth-profile.test.ts`.
   - [ ] Assert self profile update succeeds.
@@ -81,7 +82,7 @@ Use existing repo patterns instead of inventing new test infrastructure:
 - Human Detail UI:
   - [ ] Add `ui/src/pages/__tests__/HumanDetail.test.tsx` if no existing page test fits.
   - [ ] Assert profile fields render in the header/overview.
-  - [ ] Assert assigned tasks, created tasks, activity, authority, reports, and agents sections render empty/loading/data states.
+  - [ ] Assert assigned tasks, created tasks, responsible agent-tree tasks, activity, authority, reports, and agents sections render empty/loading/data states.
   - [ ] Assert settings profile controls are hidden/disabled when the current user cannot edit.
   - [ ] Assert avatar upload calls `assetsApi.uploadImage` with `humans/avatars` namespace and then patches the profile with `avatarAssetId`.
 - Hub Join Request UI:
@@ -90,6 +91,11 @@ Use existing repo patterns instead of inventing new test infrastructure:
   - [ ] Assert Approve calls `accessApi.approveJoinRequest(companyId, sourceId)`.
   - [ ] Assert Decline calls `accessApi.rejectJoinRequest(companyId, sourceId)`.
   - [ ] Assert relevant query invalidations and toasts fire on success/error.
+- E2E / smoke:
+  - [ ] Add `tests/e2e/human-profile.spec.ts` if the existing e2e helpers can seed a company/member cheaply.
+  - [ ] Cover the founder happy path: open Team -> Humans -> human detail, edit company profile fields, upload avatar, save, reload, and verify the header/profile card.
+  - [ ] Cover the operational dashboard smoke path: seeded assigned task, created task, agent-tree task, and activity row appear on the human detail page.
+  - [ ] Keep join request approve/decline as component/route tests unless an existing join-request e2e helper makes the full invite flow cheap and stable.
 
 ## Implementation Tasks
 
@@ -112,6 +118,7 @@ Use existing repo patterns instead of inventing new test infrastructure:
 - [ ] Add a unique index on `(companyId, userId)`.
 - [ ] Add company FK with cascade delete.
 - [ ] Add avatar asset FK with `set null`.
+- [ ] Store `socialLinks` as JSONB containing an array of `{ type, label, url }` records.
 - [ ] Export the table from `packages/db/src/schema/index.ts`.
 - [ ] Generate the Drizzle migration with `pnpm db:generate`.
 - [ ] Verify the generated migration contains only expected table/index/FK changes.
@@ -147,6 +154,7 @@ Use existing repo patterns instead of inventing new test infrastructure:
 - [ ] Add `PATCH /companies/:companyId/team/users/:userId/profile`.
 - [ ] Log `team.profile_updated` activity on mutation.
 - [ ] Extend `listTeam` and member detail responses to include company profile fields.
+- [ ] Extend member dependencies so each `agentTrees` item includes the agent IDs in that tree, not only the root ID and sub-agent count.
 
 ### 4. Add Created-By Task Filtering
 
@@ -181,6 +189,7 @@ Use existing repo patterns instead of inventing new test infrastructure:
 - [ ] Add TanStack queries for:
   - [ ] assigned tasks: `issuesApi.list(companyId, { assigneeUserId: userId, taskScope: "all" })`.
   - [ ] created tasks: `issuesApi.list(companyId, { createdByUserId: userId, taskScope: "all" })`.
+  - [ ] responsible agent tasks: one scoped query per direct agent-tree agent id, using `issuesApi.list(companyId, { assigneeAgentId, taskScope: "all" })`, merged and capped in the UI.
   - [ ] recent activity: `activityApi.list(companyId, { actorType: "user", actorId: userId })`.
 - [ ] Use distinct query keys so all-scope task lists do not poison the main task board cache.
 - [ ] Add a compact "Authority" section showing:
@@ -194,6 +203,10 @@ Use existing repo patterns instead of inventing new test infrastructure:
   - [ ] link rows to `/issues/:issueId`.
   - [ ] cap visible rows to a small number, with a "View all" link when there are more.
   - [ ] keep empty, loading, and error states clear.
+- [ ] Add "Agent Tasks" or "Responsible Agent Tasks" section:
+  - [ ] show tasks assigned to direct agents and sub-agents reporting through this human's direct agent trees.
+  - [ ] group or label rows by agent where possible.
+  - [ ] cap visible rows and provide a clear empty state.
 - [ ] Add "Recent Activity" section:
   - [ ] show action, entity type, timestamp, and any safe short detail already present.
   - [ ] link to issue pages when `entityType === "issue"`.
@@ -244,6 +257,7 @@ Use existing repo patterns instead of inventing new test infrastructure:
   - [ ] targeted team route/service tests for profile read/update and avatar validation.
   - [ ] targeted new/updated server tests for issue/activity filters.
   - [ ] targeted Human Detail UI test if added.
+  - [ ] `pnpm test:e2e -- tests/e2e/human-profile.spec.ts` when the e2e smoke is added.
 - [ ] Run full required checks before handoff:
   - [ ] `pnpm -r typecheck`
   - [ ] `pnpm test:run`
@@ -262,3 +276,23 @@ Use existing repo patterns instead of inventing new test infrastructure:
 ## Later Scope Handoff
 
 When Scope 0 is complete, revisit the master scope doc and choose Scope 1: Responsibilities, Capabilities, and Agent-Ready Profile Context. That is where structured responsibilities, capabilities, availability, working style, agent-readable summaries, visibility/review metadata, and profile review cadence should be designed and implemented.
+
+## Engineering Review
+
+**Status:** Reviewed on 2026-07-07 before implementation.
+
+**Findings resolved in this plan:**
+
+- Agent-responsible tasks were too ambiguous. The plan now requires member dependencies to expose agent IDs for each direct agent tree, and the UI must show tasks assigned to those agents/sub-agents.
+- E2E coverage was missing. The plan now includes a `tests/e2e/human-profile.spec.ts` smoke covering profile edit, avatar upload, reload persistence, and dashboard rows.
+- Social links needed a concrete storage shape. The plan now specifies JSONB array records with `{ type, label, url }`.
+
+**Coverage expected:**
+
+- Unit/contract: DB schema, shared validators, avatar fallback/format helpers if added.
+- Service: profile fallback, avatar validation, member dependencies, issue/activity filters.
+- Route/integration: profile update permission paths, activity logging, task/activity filter query behavior.
+- UI component/page: Human Detail rendering/edit states, avatar upload flow, Join Request inline actions.
+- E2E smoke: founder happy path for human profile edit/upload and operational dashboard visibility.
+
+**Unresolved decisions:** None blocking Scope 0.
