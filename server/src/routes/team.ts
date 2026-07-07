@@ -3,11 +3,13 @@ import type { Db } from "@armyofagents/db";
 import { logger } from "../middleware/logger.js";
 import { validate } from "../middleware/validate.js";
 import { accessService, logActivity, teamService } from "../services/index.js";
+import { forbidden } from "../errors.js";
 import { assertCompanyAccess } from "./authz.js";
 import {
   addMemberSchema,
   reassignAndRemoveSchema,
   transferAdminSchema,
+  updateCompanyUserProfileSchema,
   updateTeamMemberRoleSchema,
 } from "@armyofagents/shared";
 
@@ -87,6 +89,47 @@ export function teamRoutes(db: Db) {
 
     res.json({ ok: true });
   });
+
+  router.patch(
+    "/companies/:companyId/team/users/:userId/profile",
+    validate(updateCompanyUserProfileSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const userId = req.params.userId as string;
+      assertCompanyAccess(req, companyId);
+      if (req.actor.type !== "board" || !req.actor.userId) {
+        res.status(403).json({ error: "Board authentication required" });
+        return;
+      }
+
+      const actorUserId = req.actor.userId;
+      if (actorUserId !== userId) {
+        const [actorRole, isSystemAdmin] = await Promise.all([
+          team.getUserRole(companyId, actorUserId),
+          team.isCompanySystemAdmin(companyId, actorUserId),
+        ]);
+        if (actorRole.role !== "founder" && !isSystemAdmin) {
+          throw forbidden("Only founders or company system admins can edit another member's profile");
+        }
+      }
+
+      const profile = await team.updateCompanyUserProfile(companyId, userId, req.body, actorUserId);
+
+      await logActivity(db, {
+        companyId,
+        actorType: "user",
+        actorId: actorUserId,
+        action: "team.profile_updated",
+        entityType: "user_profile",
+        entityId: userId,
+        details: {
+          fields: Object.keys(req.body),
+        },
+      });
+
+      res.json({ profile });
+    },
+  );
 
   // POST /companies/:companyId/team/members — Direct add member
   router.post(
