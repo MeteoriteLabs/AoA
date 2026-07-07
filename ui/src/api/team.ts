@@ -1,11 +1,13 @@
 import type {
   AddMember,
+  CompanyUserProfile,
   MemberDependencies,
   TeamMemberSummary,
   TeamSummary,
   TransferAdmin,
   ReassignAndRemove,
   UpdateTeamMemberRole,
+  UpdateCompanyUserProfile,
 } from "@armyofagents/shared";
 import { api } from "./client";
 
@@ -16,6 +18,8 @@ export const teamApi = {
       `/companies/${companyId}/team/users/${userId}/role`,
       input,
     ),
+  updateProfile: (companyId: string, userId: string, input: UpdateCompanyUserProfile) =>
+    api.patch<{ profile: CompanyUserProfile }>(`/companies/${companyId}/team/users/${userId}/profile`, input),
   removeMember: (companyId: string, userId: string) =>
     api.delete<{ ok: true }>(`/companies/${companyId}/team/users/${userId}`),
   addMember: (companyId: string, input: AddMember) =>

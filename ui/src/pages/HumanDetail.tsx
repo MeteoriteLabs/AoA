@@ -11,10 +11,27 @@ import {
   Settings,
   Trash2,
   ChevronRight,
+  MapPin,
+  Clock,
+  Link as LinkIcon,
+  Activity,
+  Upload,
+  X,
 } from "lucide-react";
-import type { UserRole, Project } from "@armyofagents/shared";
+import type {
+  ActivityEvent,
+  HumanSocialLink,
+  HumanSocialLinkType,
+  Issue,
+  Project,
+  UpdateCompanyUserProfile,
+  UserRole,
+} from "@armyofagents/shared";
 import { teamApi } from "../api/team";
 import { projectsApi } from "../api/projects";
+import { issuesApi } from "../api/issues";
+import { activityApi } from "../api/activity";
+import { assetsApi } from "../api/assets";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToast } from "../context/ToastContext";
@@ -55,10 +72,146 @@ const TAB_ITEMS = [
   { value: "settings", label: "Settings" },
 ];
 
+const HUMAN_SOCIAL_LINK_TYPES: HumanSocialLinkType[] = [
+  "linkedin",
+  "github",
+  "x",
+  "instagram",
+  "facebook",
+  "substack",
+  "website",
+  "portfolio",
+  "youtube",
+  "medium",
+  "other",
+];
+
+const FIELD_CLASS =
+  "h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50";
+
+const TEXTAREA_CLASS =
+  "min-h-24 w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50";
+
 function deriveInitials(name: string): string {
   const parts = name.trim().split(/\s+/);
   if (parts.length >= 2) return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
   return name.slice(0, 2).toUpperCase();
+}
+
+function compactDate(value: Date | string | null | undefined): string {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+function displayIssueStatus(status: string): string {
+  return status.replace(/_/g, " ");
+}
+
+function displaySocialLabel(link: HumanSocialLink): string {
+  return link.label?.trim() || link.type[0].toUpperCase() + link.type.slice(1);
+}
+
+function activityTitle(event: ActivityEvent): string | null {
+  const title = event.details?.title;
+  const name = event.details?.name;
+  if (typeof title === "string" && title.trim()) return title;
+  if (typeof name === "string" && name.trim()) return name;
+  return null;
+}
+
+function TaskListSection({
+  title,
+  icon: Icon,
+  tasks,
+  isLoading,
+  empty,
+}: {
+  title: string;
+  icon: typeof ClipboardList;
+  tasks: Array<Issue & { responsibleAgentId?: string }>;
+  isLoading: boolean;
+  empty: string;
+}) {
+  const visible = tasks.slice(0, 5);
+  return (
+    <section className="rounded-xl border border-border bg-card p-4">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <h3 className="text-sm font-semibold flex items-center gap-2">
+          <Icon className="h-4 w-4" />
+          {title}
+        </h3>
+        {tasks.length > visible.length && (
+          <span className="text-xs text-muted-foreground">{tasks.length - visible.length} more</span>
+        )}
+      </div>
+      {isLoading ? (
+        <p className="text-sm text-muted-foreground">Loading...</p>
+      ) : visible.length === 0 ? (
+        <p className="text-sm text-muted-foreground">{empty}</p>
+      ) : (
+        <div className="space-y-1">
+          {visible.map((task) => (
+            <Link
+              key={task.id}
+              to={`/issues/${task.id}`}
+              className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-lg px-3 py-2 text-sm hover:bg-accent/50 transition-colors no-underline text-inherit"
+            >
+              <span className="min-w-0">
+                <span className="mr-2 text-xs font-medium text-muted-foreground">{task.identifier ?? `#${task.issueNumber ?? ""}`}</span>
+                <span className="font-medium">{task.title}</span>
+              </span>
+              <span className="flex items-center gap-2 text-xs text-muted-foreground">
+                <span className="capitalize">{displayIssueStatus(task.status)}</span>
+                <span>{compactDate(task.updatedAt)}</span>
+              </span>
+            </Link>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ActivitySection({ events, isLoading }: { events: ActivityEvent[]; isLoading: boolean }) {
+  const visible = events.slice(0, 6);
+  return (
+    <section className="rounded-xl border border-border bg-card p-4">
+      <h3 className="text-sm font-semibold flex items-center gap-2 mb-3">
+        <Activity className="h-4 w-4" />
+        Activity
+      </h3>
+      {isLoading ? (
+        <p className="text-sm text-muted-foreground">Loading...</p>
+      ) : visible.length === 0 ? (
+        <p className="text-sm text-muted-foreground">No recent activity by this person.</p>
+      ) : (
+        <div className="space-y-1">
+          {visible.map((event) => {
+            const label = activityTitle(event);
+            const body = (
+              <>
+                <span className="font-medium">{event.action}</span>
+                {label && <span className="truncate text-muted-foreground">{label}</span>}
+                <span className="ml-auto shrink-0 text-xs text-muted-foreground">{compactDate(event.createdAt)}</span>
+              </>
+            );
+            const className = "flex items-center gap-3 rounded-lg px-3 py-2 text-sm hover:bg-accent/50 transition-colors no-underline text-inherit";
+            return event.entityType === "issue" ? (
+              <Link key={event.id} to={`/issues/${event.entityId}`} className={className}>
+                {body}
+              </Link>
+            ) : (
+              <div key={event.id} className={className}>
+                {body}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
 }
 
 export function HumanDetail() {
@@ -92,7 +245,7 @@ export function HumanDetail() {
       ? queryKeys.team.summary(selectedCompanyId)
       : ["team", "none"],
     queryFn: () => teamApi.get(selectedCompanyId!),
-    enabled: Boolean(selectedCompanyId) && activeTab === "settings",
+    enabled: Boolean(selectedCompanyId),
   });
 
   // Departments (for settings tab)
@@ -107,6 +260,10 @@ export function HumanDetail() {
   const member = data?.member;
   const deps = data?.dependencies;
   const teamSummary = teamQuery.data;
+  const directAgentIds = useMemo(
+    () => Array.from(new Set((deps?.agentTrees ?? []).flatMap((tree) => tree.agentIds ?? [tree.rootAgentId]))),
+    [deps?.agentTrees],
+  );
   const departments = useMemo(
     () => (deptQuery.data ?? []).filter((p: Project) => p.type === "department"),
     [deptQuery.data],
@@ -116,6 +273,10 @@ export function HumanDetail() {
   const [draftRole, setDraftRole] = useState<UserRole>("team_member");
   const [draftDepartmentId, setDraftDepartmentId] = useState<string>("none");
   const [draftParentId, setDraftParentId] = useState<string>("none");
+  const [profileDraft, setProfileDraft] = useState<UpdateCompanyUserProfile>({
+    socialLinks: [],
+  });
+  const [avatarFile, setAvatarFile] = useState<File | null>(null);
 
   // Sync draft state when member loads
   useEffect(() => {
@@ -123,6 +284,17 @@ export function HumanDetail() {
       setDraftRole(member.role);
       setDraftDepartmentId(member.departmentId ?? "none");
       setDraftParentId(member.parentId ?? "none");
+      setProfileDraft({
+        displayName: member.displayName ?? null,
+        title: member.title ?? null,
+        bio: member.bio ?? null,
+        location: member.location ?? null,
+        timezone: member.timezone ?? null,
+        socialLinks: member.socialLinks.length > 0
+          ? member.socialLinks
+          : [{ type: "github", label: null, url: "" }],
+      });
+      setAvatarFile(null);
     }
   }, [member]);
 
@@ -134,8 +306,60 @@ export function HumanDetail() {
     [teamSummary?.members],
   );
   const isSelf = member?.isCurrentUser ?? false;
+  const canEditProfile = isSelf || canManageRoles || (currentUser?.isSystemAdmin ?? false);
   const selfFounderLock = isSelf && member?.role === "founder" && founderCount <= 1;
   const canRemove = canManageRoles && !isSelf && !(member?.role === "founder" && founderCount <= 1);
+
+  const manager = useMemo(
+    () => (member?.parentId ? (teamSummary?.members ?? []).find((m) => m.userId === member.parentId) : null),
+    [member?.parentId, teamSummary?.members],
+  );
+
+  const assignedTasksQuery = useQuery({
+    queryKey: selectedCompanyId && userId
+      ? ["team", selectedCompanyId, "human", userId, "assigned-tasks", "all"]
+      : ["team", "none", "human", "assigned-tasks"],
+    queryFn: () => issuesApi.list(selectedCompanyId!, { assigneeUserId: userId!, taskScope: "all" }),
+    enabled: Boolean(selectedCompanyId && userId) && activeTab === "overview",
+  });
+
+  const createdTasksQuery = useQuery({
+    queryKey: selectedCompanyId && userId
+      ? ["team", selectedCompanyId, "human", userId, "created-tasks", "all"]
+      : ["team", "none", "human", "created-tasks"],
+    queryFn: () => issuesApi.list(selectedCompanyId!, { createdByUserId: userId!, taskScope: "all" }),
+    enabled: Boolean(selectedCompanyId && userId) && activeTab === "overview",
+  });
+
+  const agentTasksQuery = useQuery({
+    queryKey: selectedCompanyId && userId
+      ? ["team", selectedCompanyId, "human", userId, "responsible-agent-tasks", directAgentIds]
+      : ["team", "none", "human", "responsible-agent-tasks"],
+    queryFn: async () => {
+      const taskLists = await Promise.all(
+        directAgentIds.map(async (agentId) => ({
+          agentId,
+          tasks: await issuesApi.list(selectedCompanyId!, { assigneeAgentId: agentId, taskScope: "all" }),
+        })),
+      );
+      const byId = new Map<string, Issue & { responsibleAgentId?: string }>();
+      for (const { agentId, tasks } of taskLists) {
+        for (const task of tasks) {
+          if (!byId.has(task.id)) byId.set(task.id, { ...task, responsibleAgentId: agentId });
+        }
+      }
+      return Array.from(byId.values());
+    },
+    enabled: Boolean(selectedCompanyId && userId) && activeTab === "overview" && directAgentIds.length > 0,
+  });
+
+  const activityQuery = useQuery({
+    queryKey: selectedCompanyId && userId
+      ? ["team", selectedCompanyId, "human", userId, "activity", "user"]
+      : ["team", "none", "human", "activity"],
+    queryFn: () => activityApi.list(selectedCompanyId!, { actorType: "user", actorId: userId! }),
+    enabled: Boolean(selectedCompanyId && userId) && activeTab === "overview",
+  });
 
   // Reports-to options: all members except self
   const reportsToOptions = useMemo(
@@ -176,6 +400,64 @@ export function HumanDetail() {
     onError: (err: Error) => pushToast({ title: "Save failed", body: err.message, tone: "error" }),
   });
 
+  const saveProfileMutation = useMutation({
+    mutationFn: (input: UpdateCompanyUserProfile) => teamApi.updateProfile(selectedCompanyId!, userId!, input),
+    onSuccess: () => {
+      invalidateAll();
+      pushToast({ title: "Profile saved", tone: "success" });
+    },
+    onError: (err: Error) => pushToast({ title: "Profile save failed", body: err.message, tone: "error" }),
+  });
+
+  const avatarUploadMutation = useMutation({
+    mutationFn: async (file: File) => {
+      const asset = await assetsApi.uploadImage(selectedCompanyId!, file, "humans/avatars");
+      return teamApi.updateProfile(selectedCompanyId!, userId!, { avatarAssetId: asset.assetId });
+    },
+    onSuccess: () => {
+      setAvatarFile(null);
+      invalidateAll();
+      pushToast({ title: "Avatar updated", tone: "success" });
+    },
+    onError: (err: Error) => pushToast({ title: "Avatar update failed", body: err.message, tone: "error" }),
+  });
+
+  const removeAvatarMutation = useMutation({
+    mutationFn: () => teamApi.updateProfile(selectedCompanyId!, userId!, { avatarAssetId: null }),
+    onSuccess: () => {
+      invalidateAll();
+      pushToast({ title: "Avatar removed", tone: "success" });
+    },
+    onError: (err: Error) => pushToast({ title: "Avatar remove failed", body: err.message, tone: "error" }),
+  });
+
+  const saveProfile = useCallback(() => {
+    const socialLinks = (profileDraft.socialLinks ?? [])
+      .map((link) => ({
+        type: link.type,
+        label: link.label?.trim() ? link.label.trim() : null,
+        url: link.url.trim(),
+      }))
+      .filter((link) => link.url.length > 0);
+
+    saveProfileMutation.mutate({
+      displayName: profileDraft.displayName?.trim() ? profileDraft.displayName.trim() : null,
+      title: profileDraft.title?.trim() ? profileDraft.title.trim() : null,
+      bio: profileDraft.bio?.trim() ? profileDraft.bio.trim() : null,
+      location: profileDraft.location?.trim() ? profileDraft.location.trim() : null,
+      timezone: profileDraft.timezone?.trim() ? profileDraft.timezone.trim() : null,
+      socialLinks,
+    });
+  }, [profileDraft, saveProfileMutation]);
+
+  const updateSocialLink = useCallback((index: number, patch: Partial<HumanSocialLink>) => {
+    setProfileDraft((current) => {
+      const links = [...(current.socialLinks ?? [])];
+      links[index] = { ...links[index], ...patch } as HumanSocialLink;
+      return { ...current, socialLinks: links };
+    });
+  }, []);
+
   useEffect(() => {
     setBreadcrumbs([
       { label: "Team", href: "/team" },
@@ -195,6 +477,10 @@ export function HumanDetail() {
 
   const displayName = member.displayName ?? member.email ?? member.userId.slice(0, 8);
   const initials = deriveInitials(displayName);
+  const headerMeta = [
+    member.location ? { icon: MapPin, label: member.location } : null,
+    member.timezone ? { icon: Clock, label: member.timezone } : null,
+  ].filter(Boolean) as Array<{ icon: typeof MapPin; label: string }>;
 
   return (
     <div className="space-y-6">
@@ -234,6 +520,30 @@ export function HumanDetail() {
             <p className="text-sm text-muted-foreground mt-0.5">
               {member.email ?? "No email"} · {member.departmentName ?? "No department"}
             </p>
+            {member.title && <p className="mt-2 text-sm font-medium text-foreground">{member.title}</p>}
+            {member.bio && <p className="mt-1 max-w-3xl text-sm text-muted-foreground">{member.bio}</p>}
+            {(headerMeta.length > 0 || member.socialLinks.length > 0) && (
+              <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                {headerMeta.map(({ icon: Icon, label }) => (
+                  <span key={label} className="inline-flex min-w-0 items-center gap-1 rounded-md border border-border px-2 py-1">
+                    <Icon className="h-3 w-3 shrink-0" />
+                    <span className="truncate">{label}</span>
+                  </span>
+                ))}
+                {member.socialLinks.map((social) => (
+                  <a
+                    key={`${social.type}-${social.url}`}
+                    href={social.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex min-w-0 items-center gap-1 rounded-md border border-border px-2 py-1 text-muted-foreground no-underline hover:text-foreground"
+                  >
+                    <LinkIcon className="h-3 w-3 shrink-0" />
+                    <span className="truncate">{displaySocialLabel(social)}</span>
+                  </a>
+                ))}
+              </div>
+            )}
           </div>
 
           <Link to={`/team/${userId}/settings`}>
@@ -266,6 +576,71 @@ export function HumanDetail() {
               <div className="rounded-lg border border-border bg-card">
                 <MetricCard icon={FileText} value={deps.createdTaskCount} label="Created Tasks" />
               </div>
+            </div>
+
+            <section className="rounded-xl border border-border bg-card p-4">
+              <h3 className="text-sm font-semibold flex items-center gap-2 mb-3">
+                <Shield className="h-4 w-4" />
+                Authority
+              </h3>
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <div>
+                  <p className="text-xs font-medium text-muted-foreground">Role</p>
+                  <p className="mt-1 text-sm">{ROLE_LABELS[member.role]}</p>
+                </div>
+                <div>
+                  <p className="text-xs font-medium text-muted-foreground">Department</p>
+                  <p className="mt-1 text-sm">{member.departmentName ?? "No department"}</p>
+                </div>
+                <div>
+                  <p className="text-xs font-medium text-muted-foreground">Reports to</p>
+                  <p className="mt-1 text-sm">{manager?.displayName ?? manager?.email ?? "No manager"}</p>
+                </div>
+                <div>
+                  <p className="text-xs font-medium text-muted-foreground">Access</p>
+                  <p className="mt-1 text-sm">{member.isSystemAdmin ? "System admin" : "Company member"}</p>
+                </div>
+              </div>
+              {member.permissions.length > 0 && (
+                <div className="mt-3 flex flex-wrap gap-1.5">
+                  {member.permissions.slice(0, 6).map((permission) => (
+                    <Badge key={permission} variant="outline" className="max-w-full truncate text-[10px]">
+                      {permission}
+                    </Badge>
+                  ))}
+                </div>
+              )}
+            </section>
+
+            <div className="grid gap-4 xl:grid-cols-2">
+              <TaskListSection
+                title="Assigned Tasks"
+                icon={ClipboardList}
+                tasks={assignedTasksQuery.data ?? []}
+                isLoading={assignedTasksQuery.isLoading}
+                empty="No tasks assigned directly to this person."
+              />
+              <TaskListSection
+                title="Created Tasks"
+                icon={FileText}
+                tasks={createdTasksQuery.data ?? []}
+                isLoading={createdTasksQuery.isLoading}
+                empty="No tasks created by this person."
+              />
+            </div>
+
+            <div className="grid gap-4 xl:grid-cols-2">
+              <TaskListSection
+                title="Responsible Agent Tasks"
+                icon={Bot}
+                tasks={agentTasksQuery.data ?? []}
+                isLoading={agentTasksQuery.isLoading}
+                empty="No active tasks assigned to this person's agent tree."
+              />
+              <ActivitySection
+                events={activityQuery.data ?? []}
+                isLoading={activityQuery.isLoading}
+              />
             </div>
 
             {/* Team Reports */}
@@ -331,6 +706,182 @@ export function HumanDetail() {
         {/* ── Settings Tab ── */}
         {activeTab === "settings" && (
           <div className="space-y-4 mt-4">
+            <section aria-label="Profile" className="rounded-xl border border-border bg-card p-5">
+              <div className="mb-4 flex items-center justify-between gap-3">
+                <h3 className="text-sm font-semibold">Profile</h3>
+                {!canEditProfile && <Badge variant="outline" className="text-[10px]">Read only</Badge>}
+              </div>
+              <div className="space-y-5">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+                  <div className="space-y-1.5">
+                    <label htmlFor="human-avatar" className="text-xs font-medium text-muted-foreground">Avatar image</label>
+                    <input
+                      id="human-avatar"
+                      type="file"
+                      accept="image/*"
+                      className="block w-full text-sm text-muted-foreground file:mr-3 file:rounded-md file:border-0 file:bg-muted file:px-3 file:py-1.5 file:text-sm file:font-medium"
+                      disabled={!canEditProfile || avatarUploadMutation.isPending}
+                      onChange={(event) => setAvatarFile(event.target.files?.[0] ?? null)}
+                    />
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="gap-1.5"
+                      disabled={!canEditProfile || !avatarFile || avatarUploadMutation.isPending}
+                      onClick={() => avatarFile && avatarUploadMutation.mutate(avatarFile)}
+                    >
+                      <Upload className="h-3.5 w-3.5" />
+                      {avatarUploadMutation.isPending ? "Uploading..." : "Upload Avatar"}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="gap-1.5"
+                      disabled={!canEditProfile || removeAvatarMutation.isPending}
+                      onClick={() => removeAvatarMutation.mutate()}
+                    >
+                      <X className="h-3.5 w-3.5" />
+                      Remove Avatar
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="space-y-1.5">
+                    <label htmlFor="human-display-name" className="text-xs font-medium text-muted-foreground">Display name</label>
+                    <input
+                      id="human-display-name"
+                      className={FIELD_CLASS}
+                      value={profileDraft.displayName ?? ""}
+                      disabled={!canEditProfile || saveProfileMutation.isPending}
+                      onChange={(event) => setProfileDraft((current) => ({ ...current, displayName: event.target.value }))}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label htmlFor="human-title" className="text-xs font-medium text-muted-foreground">Title</label>
+                    <input
+                      id="human-title"
+                      className={FIELD_CLASS}
+                      value={profileDraft.title ?? ""}
+                      disabled={!canEditProfile || saveProfileMutation.isPending}
+                      onChange={(event) => setProfileDraft((current) => ({ ...current, title: event.target.value }))}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label htmlFor="human-location" className="text-xs font-medium text-muted-foreground">Location</label>
+                    <input
+                      id="human-location"
+                      className={FIELD_CLASS}
+                      value={profileDraft.location ?? ""}
+                      disabled={!canEditProfile || saveProfileMutation.isPending}
+                      onChange={(event) => setProfileDraft((current) => ({ ...current, location: event.target.value }))}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label htmlFor="human-timezone" className="text-xs font-medium text-muted-foreground">Timezone</label>
+                    <input
+                      id="human-timezone"
+                      className={FIELD_CLASS}
+                      value={profileDraft.timezone ?? ""}
+                      disabled={!canEditProfile || saveProfileMutation.isPending}
+                      onChange={(event) => setProfileDraft((current) => ({ ...current, timezone: event.target.value }))}
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label htmlFor="human-bio" className="text-xs font-medium text-muted-foreground">Bio</label>
+                  <textarea
+                    id="human-bio"
+                    className={TEXTAREA_CLASS}
+                    value={profileDraft.bio ?? ""}
+                    disabled={!canEditProfile || saveProfileMutation.isPending}
+                    onChange={(event) => setProfileDraft((current) => ({ ...current, bio: event.target.value }))}
+                  />
+                </div>
+
+                <div className="space-y-3">
+                  {(profileDraft.socialLinks ?? []).map((link, index) => (
+                    <div key={index} className="grid gap-3 md:grid-cols-[150px_minmax(0,1fr)_minmax(0,2fr)_auto]">
+                      <div className="space-y-1.5">
+                        <label htmlFor={`human-social-type-${index}`} className="text-xs font-medium text-muted-foreground">Social link type</label>
+                        <select
+                          id={`human-social-type-${index}`}
+                          className={FIELD_CLASS}
+                          value={link.type}
+                          disabled={!canEditProfile || saveProfileMutation.isPending}
+                          onChange={(event) => updateSocialLink(index, { type: event.target.value as HumanSocialLinkType })}
+                        >
+                          {HUMAN_SOCIAL_LINK_TYPES.map((type) => (
+                            <option key={type} value={type}>{type}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="space-y-1.5">
+                        <label htmlFor={`human-social-label-${index}`} className="text-xs font-medium text-muted-foreground">Social link label</label>
+                        <input
+                          id={`human-social-label-${index}`}
+                          className={FIELD_CLASS}
+                          value={link.label ?? ""}
+                          disabled={!canEditProfile || saveProfileMutation.isPending}
+                          onChange={(event) => updateSocialLink(index, { label: event.target.value })}
+                        />
+                      </div>
+                      <div className="space-y-1.5">
+                        <label htmlFor={`human-social-url-${index}`} className="text-xs font-medium text-muted-foreground">Social link URL</label>
+                        <input
+                          id={`human-social-url-${index}`}
+                          className={FIELD_CLASS}
+                          value={link.url}
+                          disabled={!canEditProfile || saveProfileMutation.isPending}
+                          onChange={(event) => updateSocialLink(index, { url: event.target.value })}
+                        />
+                      </div>
+                      <div className="flex items-end">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          disabled={!canEditProfile || saveProfileMutation.isPending}
+                          onClick={() => setProfileDraft((current) => ({
+                            ...current,
+                            socialLinks: (current.socialLinks ?? []).filter((_, i) => i !== index),
+                          }))}
+                          aria-label="Remove social link"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={!canEditProfile || saveProfileMutation.isPending}
+                    onClick={() => setProfileDraft((current) => ({
+                      ...current,
+                      socialLinks: [...(current.socialLinks ?? []), { type: "website", label: null, url: "" }],
+                    }))}
+                  >
+                    Add Social Link
+                  </Button>
+                </div>
+
+                <Button
+                  type="button"
+                  onClick={saveProfile}
+                  disabled={!canEditProfile || saveProfileMutation.isPending}
+                  className="w-full sm:w-auto"
+                >
+                  {saveProfileMutation.isPending ? "Saving..." : "Save Profile"}
+                </Button>
+              </div>
+            </section>
+
             {/* Role & Department */}
             <div className="rounded-xl border border-border bg-card p-5">
               <h3 className="text-sm font-semibold mb-4">Role & Department</h3>
