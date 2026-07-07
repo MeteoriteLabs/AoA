@@ -661,17 +661,14 @@ export function HumanDetail() {
         }}
       >
         <DialogContent className="flex max-h-[90vh] flex-col overflow-hidden sm:max-w-3xl">
-          <DialogHeader className="shrink-0">
+          <DialogHeader className="shrink-0 px-6 pt-4 pb-2">
             <DialogTitle>Edit Profile</DialogTitle>
             <DialogDescription className="sr-only">
-              Update this person's company profile identity.
+              Update this person's profile details.
             </DialogDescription>
           </DialogHeader>
-          <DialogBody className="min-h-0 flex-1 space-y-5 overflow-y-auto">
+          <DialogBody className="min-h-0 flex-1 space-y-5 overflow-y-auto px-6 pt-2 pb-4">
             <div className="rounded-lg border border-border bg-muted/25 p-4">
-              <div className="mb-4">
-                <p className="text-sm font-semibold">Company profile identity</p>
-              </div>
               <div className="flex items-center gap-3">
                 <div className="relative shrink-0">
                   <Avatar
@@ -885,7 +882,7 @@ export function HumanDetail() {
               </Button>
             </div>
           </DialogBody>
-          <DialogFooter className="shrink-0">
+          <DialogFooter className="shrink-0 px-6">
             <Button
               type="button"
               variant="outline"

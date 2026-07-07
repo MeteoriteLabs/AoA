@@ -277,7 +277,7 @@ describe("HumanDetail", () => {
     await user.click(await screen.findByRole("button", { name: "Edit profile" }));
     const dialog = await screen.findByRole("dialog", { name: "Edit Profile" });
     expect(dialog).toHaveClass("flex-col");
-    expect(within(dialog).getByText("Company profile identity")).toBeInTheDocument();
+    expect(within(dialog).queryByText("Company profile identity")).not.toBeInTheDocument();
     expect(within(dialog).queryByText("Choose File")).not.toBeInTheDocument();
     expect(within(dialog).queryByText("Upload Avatar")).not.toBeInTheDocument();
     expect(within(dialog).queryByText("Remove Avatar")).not.toBeInTheDocument();
