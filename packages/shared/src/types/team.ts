@@ -1,5 +1,40 @@
 import type { PermissionKey, UserRole } from "../constants.js";
 
+export type HumanSocialLinkType =
+  | "linkedin"
+  | "github"
+  | "x"
+  | "instagram"
+  | "facebook"
+  | "substack"
+  | "website"
+  | "portfolio"
+  | "youtube"
+  | "medium"
+  | "other";
+
+export interface HumanSocialLink {
+  type: HumanSocialLinkType;
+  label: string | null;
+  url: string;
+}
+
+export interface CompanyUserProfile {
+  id: string;
+  companyId: string;
+  userId: string;
+  displayName: string | null;
+  title: string | null;
+  bio: string | null;
+  location: string | null;
+  timezone: string | null;
+  socialLinks: HumanSocialLink[];
+  avatarAssetId: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+  updatedByUserId: string | null;
+}
+
 export interface TeamPermissionSummary {
   canAssignTasks: boolean;
   canInviteUsers: boolean;
@@ -20,6 +55,12 @@ export interface TeamMemberSummary {
   email: string | null;
   displayName: string | null;
   avatarUrl: string | null;
+  title: string | null;
+  bio: string | null;
+  location: string | null;
+  timezone: string | null;
+  socialLinks: HumanSocialLink[];
+  avatarAssetId: string | null;
   role: UserRole;
   departmentId: string | null;
   departmentName: string | null;
@@ -64,7 +105,7 @@ export interface TransferAdminInput {
 
 export interface MemberDependencies {
   teamMembers: Array<{ userId: string; displayName: string | null; email: string | null; role: UserRole }>;
-  agentTrees: Array<{ rootAgentId: string; rootAgentName: string; subAgentCount: number }>;
+  agentTrees: Array<{ rootAgentId: string; rootAgentName: string; subAgentCount: number; agentIds: string[] }>;
   assignedTaskCount: number;
   createdTaskCount: number;
 }

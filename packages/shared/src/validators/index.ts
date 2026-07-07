@@ -304,10 +304,13 @@ export {
   addMemberSchema,
   transferAdminSchema,
   reassignAndRemoveSchema,
+  HUMAN_SOCIAL_LINK_TYPES,
+  updateCompanyUserProfileSchema,
   type UpdateTeamMemberRole,
   type AddMember,
   type TransferAdmin,
   type ReassignAndRemove,
+  type UpdateCompanyUserProfile,
 } from "./team.js";
 
 export {

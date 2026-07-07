@@ -1,5 +1,59 @@
 import { z } from "zod";
 import { USER_ROLES } from "../constants.js";
+import type { HumanSocialLinkType } from "../types/team.js";
+
+export const HUMAN_SOCIAL_LINK_TYPES = [
+  "linkedin",
+  "github",
+  "x",
+  "instagram",
+  "facebook",
+  "substack",
+  "website",
+  "portfolio",
+  "youtube",
+  "medium",
+  "other",
+] as const satisfies readonly HumanSocialLinkType[];
+
+const trimmedNullableString = (max: number) =>
+  z
+    .string()
+    .trim()
+    .min(1)
+    .max(max)
+    .nullable()
+    .optional();
+
+const socialLinkLabelSchema = z
+  .string()
+  .trim()
+  .max(80)
+  .nullable()
+  .optional()
+  .transform((value) => (value && value.length > 0 ? value : null));
+
+const humanSocialLinkSchema = z
+  .object({
+    type: z.enum(HUMAN_SOCIAL_LINK_TYPES),
+    label: socialLinkLabelSchema,
+    url: z.string().trim().url().max(2048),
+  })
+  .strict();
+
+export const updateCompanyUserProfileSchema = z
+  .object({
+    displayName: trimmedNullableString(120),
+    title: trimmedNullableString(160),
+    bio: trimmedNullableString(2000),
+    location: trimmedNullableString(120),
+    timezone: trimmedNullableString(80),
+    socialLinks: z.array(humanSocialLinkSchema).max(20).optional(),
+    avatarAssetId: z.string().uuid().nullable().optional(),
+  })
+  .strict();
+
+export type UpdateCompanyUserProfile = z.infer<typeof updateCompanyUserProfileSchema>;
 
 export const updateTeamMemberRoleSchema = z.object({
   role: z.enum(USER_ROLES),

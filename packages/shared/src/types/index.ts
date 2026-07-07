@@ -141,6 +141,9 @@ export type { McpApiKey, McpApiKeyCreated, McpClientConnection, McpStatus } from
 export type {
   TeamPermissionSummary,
   TeamCurrentUserSummary,
+  HumanSocialLinkType,
+  HumanSocialLink,
+  CompanyUserProfile,
   TeamMemberSummary,
   TeamInviteSummary,
   TeamSummary,

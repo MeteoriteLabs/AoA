@@ -18,6 +18,7 @@ export { projectGoals } from "./project_goals.js";
 export * from "./teams.js";
 export * from "./team_members.js";
 export * from "./team_coordinations.js";
+export * from "./company_user_profiles.js";
 export { sidebarPreferences } from "./sidebar_preferences.js";
 export { hubPreferences } from "./hub_preferences.js";
 export { hubAutopilotPolicies } from "./hub_autopilot_policies.js";
