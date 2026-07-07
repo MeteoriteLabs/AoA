@@ -306,13 +306,29 @@ inside the product.
 
 ## 11. Workstreams / Scopes
 
-### Scope 0 - Current Humans Page Operating Polish
+### Scope 0 - Human Profile Foundation + Operating Polish
 
-No major schema. Make the existing page useful as an operating surface.
+Add the first company-scoped profile foundation and make the existing page useful
+as an operating surface. This scope intentionally includes basic profile editing
+because name/avatar/title/bio/location/timezone/social links are part of the
+Human page's core enterprise identity surface.
 
 Candidate work:
 
+- Add `company_user_profiles` with company/user uniqueness.
+- Add company-scoped display name, upload-backed avatar asset, title/headline,
+  bio, location, timezone, and social links.
+- Use existing company-scoped image assets for avatar upload; render initials as
+  the deterministic default avatar when no uploaded/auth image exists.
+- Keep social links visible to all company members in Scope 0.
+- Add profile read/update API and shared validators/types.
+- Allow members to edit their own basic company profile fields.
+- Allow founder/system admin to edit any human's company profile fields.
+- Keep role, department, reports-to, offboarding, and admin transfer on existing
+  stricter role-management permissions.
 - Add assigned task and created task lists, not just counts.
+- Show directly assigned human tasks and tasks the human is responsible for
+  through their reporting/agent context where the existing model can support it.
 - Add recent activity for the selected human.
 - Add an authority/permissions panel.
 - Show manager, human reports, and direct agent reports more clearly.
@@ -323,6 +339,11 @@ Candidate work:
 
 Likely files:
 
+- `packages/db/src/schema/company_user_profiles.ts`
+- `packages/db/src/schema/index.ts`
+- generated Drizzle migration
+- `packages/shared/src/types/team.ts`
+- `packages/shared/src/validators/team.ts`
 - `ui/src/pages/HumanDetail.tsx`
 - `ui/src/components/team/HumansTab.tsx`
 - `ui/src/api/team.ts`
@@ -333,26 +354,26 @@ Likely files:
 Success signal:
 
 - A founder opening a human profile can understand what the person owns, what is
-  currently on their plate, and what authority they have.
+  currently on their plate, what profile identity is shown inside the company,
+  and what authority they have.
 
-### Scope 1 - Company-Scoped Human Profiles
+### Scope 1 - Responsibilities, Capabilities, and Agent-Ready Profile Context
 
-Add the first durable profile layer.
+Build on the Scope 0 profile foundation with richer operating profile data.
 
 Candidate work:
 
-- New company-scoped profile schema.
-- API for reading/updating profile fields.
-- UI Profile tab or Overview profile card.
-- Self-edit basic personal/company profile fields.
-- Founder edit company-scoped operating profile fields.
-- Social/profile links.
 - Capabilities and responsibilities.
+- Working style and preferred communication.
+- Availability/working hours.
+- Review areas and escalation notes.
+- Visibility/review metadata for future agent consumption.
 - Audit logging.
 
 Success signal:
 
-- Humans have rich company-scoped profiles without polluting global auth users.
+- Humans have structured operating profiles that can later be safely packaged
+  for Commander/agents.
 
 ### Scope 2 - Agent-Readable Human Context
 
@@ -466,4 +487,3 @@ Reason: Scope 0 gives immediate product value and forces a careful read of the
 existing Humans page, task filters, activity data, and permission model before
 committing to new schema. Scope 1 should follow only after Scope 0 confirms the
 operating-view shape.
-
