@@ -56,6 +56,7 @@ import type {
   CockpitData,
   CockpitDoneTodayItem,
   CockpitGoalsAtRiskItem,
+  CockpitInboxItem,
   CockpitNoteItem,
   CockpitPinnedItem,
   CockpitProactiveItem,
@@ -64,6 +65,7 @@ import type {
 } from "@armyofagents/shared";
 import { issueService } from "./issues.js";
 import { threadService } from "./threads.js";
+import { hubItemsService } from "./hub-items.js";
 import { memoryService } from "./memory.js";
 import { liveRunsForCompany } from "../routes/agents-live-runs.js";
 import { resolveCockpitScope, reviewFilterFor } from "./cockpit-scope.js";
@@ -677,6 +679,7 @@ export function cockpitService(db: Db) {
       const scope = await resolveCockpitScope(db, companyId, actor);
       const issueSvc = issueService(db);
       const threadSvc = threadService(db);
+      const hubSvc = hubItemsService(db);
 
       // Build the threadService Actor from scope (canonical visibility — Codex #3).
       const threadActor = {
@@ -687,7 +690,7 @@ export function cockpitService(db: Db) {
 
       const eod = endOfToday();
 
-      const [runRows, reviewRows, myTaskRows, remindersRows, dueTodayRows, stickyNoteRows, visibleThreads, approvalsItems, pinnedItems, goalsAtRiskItems, budgetPulseItem, doneTodayItems, proactiveFindingsItems, teammatesActivityItems] =
+      const [runRows, reviewRows, myTaskRows, remindersRows, dueTodayRows, stickyNoteRows, inboxResult, visibleThreads, approvalsItems, pinnedItems, goalsAtRiskItems, budgetPulseItem, doneTodayItems, proactiveFindingsItems, teammatesActivityItems] =
         await Promise.all([
           // ── 1. Running ────────────────────────────────────────────────────
           // Company-wide live runs (heartbeat + crew internal_agent runs).
@@ -799,6 +802,14 @@ export function cockpitService(db: Db) {
             .orderBy(desc(userNotes.updatedAt))
             .limit(5),
 
+          // 4d. Inbox: same RBAC-scoped hot set as the Inbox Hub.
+          hubSvc.query(companyId, {
+            actorUserId: scope.userId,
+            role: scope.role,
+            groupMode: "none",
+            limit: 5,
+          }),
+
           // Discussions: canonical visibility. threadService.list handles
           // participant + dept-role access internally.
           threadSvc.list(companyId, threadActor),
@@ -871,6 +882,19 @@ export function cockpitService(db: Db) {
         color: note.color as CockpitNoteItem["color"],
         updatedAt: note.updatedAt.toISOString(),
       }));
+      const inbox: CockpitInboxItem[] = inboxResult.items.map((item) => ({
+        id: item.id,
+        lane: item.lane,
+        priority: item.priority as CockpitInboxItem["priority"],
+        title: item.title,
+        summary: item.summary,
+        sourceType: item.sourceType,
+        sourceId: item.sourceId,
+        relatedEntityType: item.relatedEntityType,
+        relatedEntityId: item.relatedEntityId,
+        unread: item.readAt === null,
+        createdAt: item.createdAt.toISOString(),
+      }));
 
       // ── Map discussions: filter to needs-me ──────────────────────────────
       // "needs me" = pendingItemCount > 0 OR a pending/failed extraction entry.
@@ -902,7 +926,7 @@ export function cockpitService(db: Db) {
 
       // Determine the reason per discussion (prefer pending_items over extraction_failed
       // since pendingItemCount is the higher-signal indicator).
-      const discussionItems = [...needsMeIds].map((id) => {
+      const highSignalItems = [...needsMeIds].map((id) => {
         const t = threadById.get(id)!;
         const hasPending = (t.pendingItemCount ?? 0) > 0;
         return {
@@ -912,8 +936,22 @@ export function cockpitService(db: Db) {
           reason: hasPending
             ? ("pending_items" as const)
             : ("extraction_failed" as const),
+          entryCount: t.entryCount ?? 0,
+          lastEntryAt: t.lastEntryAt ? t.lastEntryAt.toISOString() : null,
         };
       });
+      const recentItems = visibleThreads
+        .filter((t) => t.status !== "archived" && !needsMeIds.has(t.id))
+        .slice(0, Math.max(0, 5 - highSignalItems.length))
+        .map((t) => ({
+          id: t.id,
+          title: t.title ?? null,
+          pendingItemCount: t.pendingItemCount ?? 0,
+          reason: "recent_activity" as const,
+          entryCount: t.entryCount ?? 0,
+          lastEntryAt: t.lastEntryAt ? t.lastEntryAt.toISOString() : null,
+        }));
+      const discussionItems = [...highSignalItems, ...recentItems].slice(0, 5);
 
       return {
         running,
@@ -921,6 +959,7 @@ export function cockpitService(db: Db) {
         myTasks,
         today: { reminders, dueTasks },
         stickyNotes,
+        inbox,
         discussions: discussionItems,
         approvals: approvalsItems,
         pinned: pinnedItems,

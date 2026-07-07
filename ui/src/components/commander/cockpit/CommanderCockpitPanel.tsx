@@ -8,6 +8,7 @@ import {
   CheckCircle2,
   ClipboardList,
   DollarSign,
+  Inbox,
   FileText,
   LayoutDashboard,
   MessageSquare,
@@ -41,6 +42,7 @@ import { CockpitReviewCard } from "./CockpitReviewCard";
 import { CockpitMyTasksCard } from "./CockpitMyTasksCard";
 import { CockpitTodayCard } from "./CockpitTodayCard";
 import { CockpitStickyNotesCard } from "./CockpitStickyNotesCard";
+import { CockpitInboxCard } from "./CockpitInboxCard";
 import { CockpitDiscussionsCard } from "./CockpitDiscussionsCard";
 import { CockpitApprovalsCard } from "./CockpitApprovalsCard";
 import { CockpitPinnedCard } from "./CockpitPinnedCard";
@@ -76,6 +78,7 @@ const EMPTY_DATA: CockpitData = {
   myTasks: [],
   today: { reminders: [], dueTasks: [] },
   stickyNotes: [],
+  inbox: [],
   discussions: [],
   // Phase 3c: approvals required by CockpitData type
   approvals: [],
@@ -165,6 +168,26 @@ export const COCKPIT_REGISTRY: CockpitCardRenderDef[] = [
     isActive: (d) => d.running.length > 0,
     render: ({ data, onOpenTask, onAsk }) => (
       <CockpitRunningCard runs={data.running} onOpenTask={onOpenTask} onAsk={onAsk} />
+    ),
+  },
+  {
+    id: "inbox",
+    title: "Inbox",
+    defaultOn: true,
+    sectionId: "needs_me",
+    icon: Inbox,
+    summary: (d) => {
+      const unread = d.inbox.filter((item) => item.unread).length;
+      if (unread > 0) return `${unread} unread`;
+      return d.inbox.length > 0 ? `${d.inbox.length} open` : null;
+    },
+    isActive: (d) => d.inbox.length > 0,
+    render: ({ data, onOpenFullPage, onAsk }) => (
+      <CockpitInboxCard
+        items={data.inbox}
+        onOpenFullPage={onOpenFullPage}
+        onAsk={onAsk}
+      />
     ),
   },
   {

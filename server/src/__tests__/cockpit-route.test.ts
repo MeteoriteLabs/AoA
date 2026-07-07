@@ -39,6 +39,7 @@ const COCKPIT_RESPONSE = {
   myTasks: [],
   today: { reminders: [], dueTasks: [] },
   stickyNotes: [],
+  inbox: [],
   discussions: [],
   approvals: [],
   pinned: [],

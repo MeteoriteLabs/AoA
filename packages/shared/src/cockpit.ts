@@ -72,11 +72,27 @@ export interface CockpitNoteItem {
   updatedAt: string;
 }
 
+export interface CockpitInboxItem {
+  id: string;
+  lane: "waiting_on_you" | "notifications" | "suggestions" | null;
+  priority: "low" | "normal" | "high" | "urgent";
+  title: string;
+  summary: string | null;
+  sourceType: string | null;
+  sourceId: string | null;
+  relatedEntityType: string | null;
+  relatedEntityId: string | null;
+  unread: boolean;
+  createdAt: string;
+}
+
 export interface CockpitDiscussionItem {
   id: string;
   title: string | null;
   pendingItemCount: number;
-  reason: "pending_items" | "extraction_failed";
+  reason: "pending_items" | "extraction_failed" | "recent_activity";
+  entryCount?: number;
+  lastEntryAt?: string | null;
 }
 
 export interface CockpitData {
@@ -89,6 +105,8 @@ export interface CockpitData {
   };
   /** Private user/company sticky notes for Commander Cockpit. */
   stickyNotes: CockpitNoteItem[];
+  /** RBAC-scoped hot Inbox/Hub items for daily triage. */
+  inbox: CockpitInboxItem[];
   discussions: CockpitDiscussionItem[];
   /** Unified approvals queue, per-role scoped (founder: all sources; lead: dept memory + own runtime; member: own runtime). */
   approvals: CockpitApprovalItem[];

@@ -10,7 +10,7 @@ import type { CockpitData, CommanderOutputRef } from "@armyofagents/shared";
 
 // Mock queryKeys and cockpitApi for the panel test (panel tests come later)
 vi.mock("../../../api/cockpit", () => ({
-  cockpitApi: { get: vi.fn().mockResolvedValue({ running: [], review: [], myTasks: [], today: { reminders: [], dueTasks: [] }, stickyNotes: [], discussions: [], approvals: [], pinned: [], goalsAtRisk: [], budgetPulse: null, doneToday: [], proactiveFindings: [], teammatesActivity: [] } satisfies CockpitData) },
+  cockpitApi: { get: vi.fn().mockResolvedValue({ running: [], review: [], myTasks: [], today: { reminders: [], dueTasks: [] }, stickyNotes: [], inbox: [], discussions: [], approvals: [], pinned: [], goalsAtRisk: [], budgetPulse: null, doneToday: [], proactiveFindings: [], teammatesActivity: [] } satisfies CockpitData) },
 }));
 vi.mock("../../../lib/queryKeys", () => ({
   queryKeys: { cockpit: (id: string) => ["cockpit", id] },
@@ -33,6 +33,7 @@ import { CockpitReviewCard } from "./CockpitReviewCard";
 import { CockpitMyTasksCard } from "./CockpitMyTasksCard";
 import { CockpitTodayCard } from "./CockpitTodayCard";
 import { CockpitStickyNotesCard } from "./CockpitStickyNotesCard";
+import { CockpitInboxCard } from "./CockpitInboxCard";
 import { CockpitDiscussionsCard } from "./CockpitDiscussionsCard";
 
 // ── Data factories ─────────────────────────────────────────────────────────
@@ -42,6 +43,7 @@ type TaskItem = CockpitData["review"][0];
 type ReminderItem = CockpitData["today"]["reminders"][0];
 type DiscussionItem = CockpitData["discussions"][0];
 type NoteItem = CockpitData["stickyNotes"][0];
+type InboxItem = CockpitData["inbox"][0];
 
 function makeRun(overrides?: Partial<RunItem>): RunItem {
   return { id: "run-1", agentName: "Atlas", status: "running", startedAt: null, issueId: "issue-1", ...overrides };
@@ -79,6 +81,23 @@ function makeNote(overrides?: Partial<NoteItem>): NoteItem {
   };
 }
 
+function makeInboxItem(overrides?: Partial<InboxItem>): InboxItem {
+  return {
+    id: "hub-1",
+    lane: "waiting_on_you",
+    priority: "urgent",
+    title: "Approve launch budget",
+    summary: "Budget change needs review",
+    sourceType: "approval",
+    sourceId: "approval-1",
+    relatedEntityType: "approval",
+    relatedEntityId: "approval-1",
+    unread: true,
+    createdAt: new Date().toISOString(),
+    ...overrides,
+  };
+}
+
 // ── Panel: card rendering from shared data ─────────────────────────────────
 
 describe("CommanderCockpitPanel with shared data", () => {
@@ -90,6 +109,7 @@ describe("CommanderCockpitPanel with shared data", () => {
       myTasks: [],
       today: { reminders: [], dueTasks: [] },
       stickyNotes: [],
+      inbox: [],
       discussions: [],
       approvals: [],
       pinned: [],
@@ -116,6 +136,7 @@ describe("CommanderCockpitPanel with shared data", () => {
       myTasks: [],
       today: { reminders: [], dueTasks: [] },
       stickyNotes: [],
+      inbox: [],
       discussions: [],
       approvals: [],
       pinned: [],
@@ -142,6 +163,7 @@ describe("CommanderCockpitPanel with shared data", () => {
       myTasks: [],
       today: { reminders: [], dueTasks: [] },
       stickyNotes: [],
+      inbox: [],
       discussions: [],
       approvals: [],
       pinned: [],
@@ -332,6 +354,31 @@ describe("CockpitStickyNotesCard", () => {
   });
 });
 
+describe("CockpitInboxCard", () => {
+  it("renders inbox items and opens the full inbox route", () => {
+    const onOpenFullPage = vi.fn();
+    render(
+      <CockpitInboxCard
+        items={[makeInboxItem()]}
+        onOpenFullPage={onOpenFullPage}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("Approve launch budget"));
+    expect(onOpenFullPage).toHaveBeenCalledWith("/inbox/waiting/hub-1");
+  });
+
+  it("sends inbox item context to Commander", () => {
+    const onAsk = vi.fn();
+    render(<CockpitInboxCard items={[makeInboxItem()]} onAsk={onAsk} />);
+
+    fireEvent.click(screen.getByLabelText("Ask Commander about this inbox item"));
+    expect(onAsk).toHaveBeenCalledWith(
+      "Use this inbox item as context: Approve launch budget - Budget change needs review",
+    );
+  });
+});
+
 describe("CockpitDiscussionsCard", () => {
   it("renders null when items is empty", () => {
     const { container } = render(<CockpitDiscussionsCard items={[]} />);
@@ -404,6 +451,7 @@ const EMPTY_COCKPIT: CockpitData = {
   myTasks: [],
   today: { reminders: [], dueTasks: [] },
   stickyNotes: [],
+  inbox: [],
   discussions: [],
   approvals: [],
   pinned: [],

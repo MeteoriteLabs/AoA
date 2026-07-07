@@ -1113,6 +1113,7 @@ export type {
   CockpitRunItem,
   CockpitReminderItem,
   CockpitNoteItem,
+  CockpitInboxItem,
   CockpitDiscussionItem,
   CockpitData,
   CockpitApprovalSource,
