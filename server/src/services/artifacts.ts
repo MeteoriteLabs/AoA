@@ -151,14 +151,24 @@ export function artifactService(db: Db) {
       return null;
     },
 
-    /** Reverse of archive → "active". */
+    /** Reverse archive only from archived state, so direct calls never promote drafts. */
     unarchive: async (id: string) => {
-      return db
+      const [updated] = await db
         .update(artifacts)
         .set({ status: "active", updatedAt: new Date() })
-        .where(eq(artifacts.id, id))
-        .returning()
-        .then((rows) => rows[0] ?? null);
+        .where(and(eq(artifacts.id, id), eq(artifacts.status, "archived")))
+        .returning();
+      if (updated) return updated;
+
+      const [existing] = await db
+        .select({ status: artifacts.status })
+        .from(artifacts)
+        .where(eq(artifacts.id, id));
+      if (existing && existing.status !== "archived") {
+        throw badRequest("Only archived artifacts can be unarchived");
+      }
+
+      return null;
     },
 
     addVersion: async (

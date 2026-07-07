@@ -74,6 +74,8 @@ export interface EntryComposerProps {
   }) => void | Promise<void>;
   /** Composer is disabled (offline, error, etc.) and visually shows it. */
   disabled?: boolean;
+  /** Founder-only control for creating tracked file artifacts. */
+  canCreateFileArtifacts?: boolean;
   /** Optional inline hint shown above the input (e.g. offline notice). */
   hint?: React.ReactNode;
   /** Placeholder override. */
@@ -131,6 +133,7 @@ export function EntryComposer({
   onUpload,
   onSubmit,
   disabled = false,
+  canCreateFileArtifacts = false,
   hint,
   placeholder,
   onCancelReply,
@@ -442,20 +445,20 @@ export function EntryComposer({
             aria-label="File attachment input"
           />
 
-          {/* Founder file-artifact upload (P1) — attach a file as a tracked
-              artifact, sitting beside the regular paperclip attach button. */}
-          <div className="shrink-0">
-            <FileArtifactUpload
-              companyId={companyId}
-              onUploaded={(artifact) =>
-                setAttachments((prev) => [
-                  ...prev,
-                  { id: artifact.id, name: artifact.title, mimeType: artifact.type, artifactId: artifact.id },
-                ])
-              }
-              disabled={disabled || isSubmitting}
-            />
-          </div>
+          {canCreateFileArtifacts ? (
+            <div className="shrink-0">
+              <FileArtifactUpload
+                companyId={companyId}
+                onUploaded={(artifact) =>
+                  setAttachments((prev) => [
+                    ...prev,
+                    { id: artifact.id, name: artifact.title, mimeType: artifact.type, artifactId: artifact.id },
+                  ])
+                }
+                disabled={disabled || isSubmitting}
+              />
+            </div>
+          ) : null}
 
           {/* Autocomplete dropdown */}
           {autocompleteOpen && (

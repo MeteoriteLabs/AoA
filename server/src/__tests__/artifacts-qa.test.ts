@@ -345,6 +345,27 @@ describe("Artifacts QA", () => {
       const svc = artifactService(db as any);
       await expect(svc.archive("art-draft")).rejects.toThrow("Only active artifacts can be archived");
     });
+
+    it("unarchives archived artifacts", async () => {
+      const db = createTransactionDb({
+        updates: [[{ id: "art-1", status: "active" }]],
+      });
+
+      const svc = artifactService(db as any);
+      const result = await svc.unarchive("art-1");
+
+      expect(result?.status).toBe("active");
+    });
+
+    it("rejects unarchiving drafts so direct calls cannot promote them", async () => {
+      const db = createTransactionDb({
+        updates: [[]],
+        selects: [[{ status: "draft" }]],
+      });
+
+      const svc = artifactService(db as any);
+      await expect(svc.unarchive("art-draft")).rejects.toThrow("Only archived artifacts can be unarchived");
+    });
   });
 
   describe("Artifact-as-input (Decision #71)", () => {

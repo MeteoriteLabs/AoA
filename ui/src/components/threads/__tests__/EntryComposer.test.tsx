@@ -140,6 +140,33 @@ describe("EntryComposer — submit", () => {
 });
 
 describe("EntryComposer — attachments", () => {
+  it("does not render the tracked file-artifact upload by default", () => {
+    renderWithProviders(
+      <EntryComposer
+        threadId="thread-1"
+        companyId="test-co"
+        agents={agents}
+        users={users}
+        onSubmit={vi.fn()}
+      />,
+    );
+    expect(screen.queryByTestId("file-artifact-upload")).not.toBeInTheDocument();
+  });
+
+  it("renders the tracked file-artifact upload when allowed", () => {
+    renderWithProviders(
+      <EntryComposer
+        threadId="thread-1"
+        companyId="test-co"
+        agents={agents}
+        users={users}
+        onSubmit={vi.fn()}
+        canCreateFileArtifacts
+      />,
+    );
+    expect(screen.getByTestId("file-artifact-upload")).toBeInTheDocument();
+  });
+
   it("renders an attachment preview after the file is uploaded", async () => {
     const upload = vi.fn().mockResolvedValue({
       id: "asset-1",

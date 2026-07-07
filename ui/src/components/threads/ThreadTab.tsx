@@ -469,6 +469,7 @@ export function ThreadTab({
         onUpload={handleUpload}
         onSubmit={handleComposerSubmit}
         disabled={isDisconnected || addEntryMutation.isPending}
+        canCreateFileArtifacts={canManageArtifacts}
         myInitials={myInitials}
         hint={
           isDisconnected

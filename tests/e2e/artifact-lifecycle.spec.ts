@@ -54,6 +54,12 @@ async function seedFileArtifactThread(request: APIRequestContext, companyId: str
     }),
     "create artifact",
   );
+  await jsonOrThrow(
+    await request.patch(`/api/artifacts/${artifact.id}`, {
+      data: { status: "active" },
+    }),
+    "activate artifact",
+  );
   const thread = await jsonOrThrow<{ id: string }>(
     await request.post(`/api/companies/${companyId}/discussions`, { data: { title } }),
     "create thread",

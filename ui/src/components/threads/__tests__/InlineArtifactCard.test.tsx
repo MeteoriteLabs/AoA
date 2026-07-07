@@ -146,6 +146,13 @@ describe("InlineArtifactCard", () => {
     );
     expect(screen.getByTestId("artifact-archive")).toBeInTheDocument();
   });
+  it("does not show lifecycle actions for draft artifacts", () => {
+    renderWithProviders(
+      <InlineArtifactCard attachments={[makeAttachment({ artifactId: "art-1", artifactStatus: "draft" })]} canManage onArchiveArtifact={vi.fn()} onUnarchiveArtifact={vi.fn()} />,
+    );
+    expect(screen.queryByTestId("artifact-archive")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("artifact-unarchive")).not.toBeInTheDocument();
+  });
   it("shows the unarchive action when the artifact is archived", () => {
     renderWithProviders(
       <InlineArtifactCard attachments={[makeAttachment({ artifactId: "art-1", artifactStatus: "archived" })]} canManage onArchiveArtifact={vi.fn()} onUnarchiveArtifact={vi.fn()} />,

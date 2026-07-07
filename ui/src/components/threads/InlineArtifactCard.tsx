@@ -81,11 +81,13 @@ function ArtifactActions({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const archived = status === "archived";
+  const active = status === "active";
   async function run(fn: ((id: string) => void | Promise<void>) | undefined) {
     if (!fn) return;
     setBusy(true); setError(null);
     try { await fn(artifactId); } catch { setError("Action failed."); } finally { setBusy(false); }
   }
+  if (!archived && !active) return null;
   return (
     <div className="flex items-center gap-2">
       {archived ? (
