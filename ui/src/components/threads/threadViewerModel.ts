@@ -194,7 +194,7 @@ export function scopeArtifactToTab(item: ThreadViewerScopeItem): ThreadViewerTab
   if (!item.artifactId) return null;
   const payload = item.payload ?? {};
   const assetId = stringPayload(payload.assetId);
-  if (payload.storageKind === "asset" && assetId) {
+  if (assetId) {
     return threadAttachmentToTab({
       id: item.id,
       assetId,

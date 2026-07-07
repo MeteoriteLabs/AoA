@@ -146,6 +146,29 @@ describe("threadViewerModel", () => {
     });
   });
 
+  it("maps scope artifact links with asset ids to asset tabs even without storage flags", () => {
+    expect(scopeArtifactToTab({
+      id: "scope-item-artifact",
+      type: "artifact_link",
+      kind: "artifact_link",
+      scopeVersionId: "scope-version-1",
+      title: "Brand deck",
+      description: null,
+      status: "draft",
+      artifactId: "artifact-1",
+      artifactVersionId: "artifact-version-1",
+      payload: {
+        assetId: "asset-9",
+        filename: "deck.pdf",
+        contentType: "application/pdf",
+      },
+    })).toMatchObject({
+      key: "asset:asset-9",
+      label: "deck.pdf",
+      kind: "asset",
+    });
+  });
+
   it("deduplicates tabs and allows closing the final Open tab", () => {
     const tabs = [createOpenTab()];
     const scopeTab = scopeItemToTab(item());
