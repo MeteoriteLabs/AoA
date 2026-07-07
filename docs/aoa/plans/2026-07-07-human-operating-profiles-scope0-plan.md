@@ -46,6 +46,51 @@ Key gaps this scope addresses:
 - [ ] Keep commits small and grouped by behavior.
 - [ ] Add route/service tests for backend contract changes, component/API tests for UI behavior, and full typecheck/build verification before handoff.
 
+## Test Matrix
+
+Use existing repo patterns instead of inventing new test infrastructure:
+
+- DB schema contracts:
+  - [ ] Add `packages/db/src/__tests__/company-user-profiles-schema.test.ts`.
+  - [ ] Follow the lightweight source-contract style used by `packages/db/src/__tests__/assets-cascade.test.ts`.
+  - [ ] Assert company FK cascade, avatar asset FK set-null, company/user unique index, and schema export.
+- Shared validators/types:
+  - [ ] Add or extend `packages/shared/src/__tests__/team-profile-schema.test.ts`.
+  - [ ] Assert valid profile update payloads pass.
+  - [ ] Assert empty/overlong display name, invalid timezone length, invalid social URL, and unsupported social link type fail.
+  - [ ] Assert social links are normalized/trimmable where the validator owns normalization.
+- Team service:
+  - [ ] Extend `server/src/__tests__/team-service.test.ts` or add `server/src/__tests__/team-profile-service.test.ts`.
+  - [ ] Assert profile display name overrides auth display/name in team summaries.
+  - [ ] Assert avatar asset becomes `/api/assets/:assetId/content`.
+  - [ ] Assert missing profile falls back to auth identity.
+  - [ ] Assert avatar asset validation rejects cross-company assets and non-image assets.
+- Team routes:
+  - [ ] Add route tests near the style of `server/src/__tests__/routes-auth-profile.test.ts`.
+  - [ ] Assert self profile update succeeds.
+  - [ ] Assert founder/system admin update of another member succeeds.
+  - [ ] Assert non-founder update of another member fails.
+  - [ ] Assert successful update logs `team.profile_updated`.
+- Task filters:
+  - [ ] Add focused tests for `createdByUserId` in issue route/service/client behavior.
+  - [ ] Verify `createdByUserId=me` uses board actor user id and rejects non-board actors.
+- Activity filters:
+  - [ ] Add focused tests for `actorType=user&actorId=<userId>`.
+  - [ ] Verify actor filters compose with existing entity filters.
+  - [ ] Verify hidden issue activity suppression remains intact.
+- Human Detail UI:
+  - [ ] Add `ui/src/pages/__tests__/HumanDetail.test.tsx` if no existing page test fits.
+  - [ ] Assert profile fields render in the header/overview.
+  - [ ] Assert assigned tasks, created tasks, activity, authority, reports, and agents sections render empty/loading/data states.
+  - [ ] Assert settings profile controls are hidden/disabled when the current user cannot edit.
+  - [ ] Assert avatar upload calls `assetsApi.uploadImage` with `humans/avatars` namespace and then patches the profile with `avatarAssetId`.
+- Hub Join Request UI:
+  - [ ] Update `ui/src/components/hub/viewers/__tests__/HubViewers.test.tsx`.
+  - [ ] Assert Approve/Decline are buttons, not links to the missing Team requests tab.
+  - [ ] Assert Approve calls `accessApi.approveJoinRequest(companyId, sourceId)`.
+  - [ ] Assert Decline calls `accessApi.rejectJoinRequest(companyId, sourceId)`.
+  - [ ] Assert relevant query invalidations and toasts fire on success/error.
+
 ## Implementation Tasks
 
 ### 1. Add Company-Scoped Human Profile Schema
