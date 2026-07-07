@@ -8,14 +8,14 @@ import {
   ClipboardList,
   FileText,
   Shield,
-  Settings,
   Trash2,
   ChevronRight,
   MapPin,
   Clock,
   Link as LinkIcon,
   Activity,
-  Upload,
+  Camera,
+  Pencil,
   X,
 } from "lucide-react";
 import type {
@@ -341,7 +341,7 @@ export function HumanDetail() {
   });
   const [profileDraftDirty, setProfileDraftDirty] = useState(false);
   const profileDraftSourceKeyRef = useRef<string | null>(null);
-  const [avatarFile, setAvatarFile] = useState<File | null>(null);
+  const avatarInputRef = useRef<HTMLInputElement | null>(null);
   const [avatarFileDirty, setAvatarFileDirty] = useState(false);
   const [profileDialogOpen, setProfileDialogOpen] = useState(false);
   const timezoneOptions = useMemo(() => getTimezoneOptions(), []);
@@ -367,7 +367,6 @@ export function HumanDetail() {
         : [{ type: "github", label: null, url: "" }],
     });
     setProfileDraftDirty(false);
-    setAvatarFile(null);
     setAvatarFileDirty(false);
   }, [member]);
 
@@ -503,7 +502,6 @@ export function HumanDetail() {
       return teamApi.updateProfile(selectedCompanyId!, userId!, { avatarAssetId: asset.assetId });
     },
     onSuccess: () => {
-      setAvatarFile(null);
       setAvatarFileDirty(false);
       invalidateAll();
       pushToast({ title: "Avatar updated", tone: "success" });
@@ -571,45 +569,57 @@ export function HumanDetail() {
     member.location ? { icon: MapPin, label: member.location } : null,
     member.timezone ? { icon: Clock, label: member.timezone } : null,
   ].filter(Boolean) as Array<{ icon: typeof MapPin; label: string }>;
+  const canRemoveAvatar = Boolean(member.avatarUrl) || avatarUploadMutation.isSuccess;
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="rounded-2xl border border-border bg-card p-5">
-        <div className="mb-3">
-          <Link to="/team?tab=humans">
-            <Button variant="ghost" size="sm" className="gap-1 text-muted-foreground -ml-2">
-              <ArrowLeft className="h-4 w-4" />
-              Back to Team
-            </Button>
-          </Link>
-        </div>
+      <Link to="/team?tab=humans" className="inline-flex no-underline">
+        <Button variant="ghost" size="sm" className="gap-1 text-muted-foreground -ml-2">
+          <ArrowLeft className="h-4 w-4" />
+          Back to Team
+        </Button>
+      </Link>
 
-        <div className="flex items-center gap-4">
+      {/* Header */}
+      <div className="relative rounded-2xl border border-border bg-card p-5 pr-16">
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          className="absolute right-4 top-4"
+          aria-label="Edit profile"
+          onClick={() => setProfileDialogOpen(true)}
+        >
+          <Pencil className="h-4 w-4" />
+        </Button>
+
+        <div className="grid gap-4 sm:grid-cols-[4rem_minmax(0,1fr)] sm:items-start">
           <Avatar
             data-testid="human-profile-avatar"
             shape="squircle"
-            className="h-16 w-16 border border-border bg-accent text-lg shadow-sm"
+            className="h-16 w-16 border border-border bg-accent text-lg shadow-sm sm:mt-1"
           >
             {member.avatarUrl && <AvatarImage src={member.avatarUrl} alt={displayName} />}
             <AvatarFallback className="bg-accent text-foreground font-semibold">{initials}</AvatarFallback>
           </Avatar>
 
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2 flex-wrap">
-              <h1 className="text-2xl font-bold truncate">{displayName}</h1>
-              <Badge variant="secondary" className={cn("border-0", ROLE_STYLES[member.role])}>
-                {ROLE_LABELS[member.role]}
-              </Badge>
-              {member.isSystemAdmin && (
-                <Badge variant="secondary" className="border-0 bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300">
-                  <Shield className="mr-1 h-3 w-3" />
-                  Admin
+          <div className="min-w-0">
+            <div className="flex min-w-0 flex-col gap-2 lg:flex-row lg:items-center">
+              <h1 className="min-w-0 text-2xl font-bold leading-tight">{displayName}</h1>
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge variant="secondary" className={cn("border-0", ROLE_STYLES[member.role])}>
+                  {ROLE_LABELS[member.role]}
                 </Badge>
-              )}
-              {member.isCurrentUser && (
-                <Badge variant="outline" className="text-[11px]">You</Badge>
-              )}
+                {member.isSystemAdmin && (
+                  <Badge variant="secondary" className="border-0 bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300">
+                    <Shield className="mr-1 h-3 w-3" />
+                    Admin
+                  </Badge>
+                )}
+                {member.isCurrentUser && (
+                  <Badge variant="outline" className="text-[11px]">You</Badge>
+                )}
+              </div>
             </div>
             <p className="text-sm text-muted-foreground mt-0.5">
               {member.email ?? "No email"} · {member.departmentName ?? "No department"}
@@ -640,18 +650,6 @@ export function HumanDetail() {
             )}
           </div>
 
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="gap-1.5 shrink-0"
-            aria-label="Edit Profile"
-            onClick={() => setProfileDialogOpen(true)}
-          >
-            <Settings className="h-4 w-4" />
-            <span className="hidden sm:inline">Edit Profile</span>
-            <span className="sm:hidden">Edit</span>
-          </Button>
         </div>
       </div>
 
@@ -662,70 +660,75 @@ export function HumanDetail() {
           if (!open) resetProfileDraftFromMember();
         }}
       >
-        <DialogContent className="max-h-[90vh] overflow-hidden sm:max-w-3xl">
+        <DialogContent className="flex max-h-[90vh] overflow-hidden sm:max-w-3xl">
           <DialogHeader>
             <DialogTitle>Edit Profile</DialogTitle>
-            <DialogDescription>
-              Update this person's company profile, identity details, and public work links.
+            <DialogDescription className="sr-only">
+              Update this person's company profile identity.
             </DialogDescription>
           </DialogHeader>
-          <DialogBody className="max-h-[calc(90vh-10rem)] space-y-5 overflow-y-auto">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+          <DialogBody className="min-h-0 flex-1 space-y-5 overflow-y-auto">
+            <div className="rounded-lg border border-border bg-muted/25 p-4">
+              <div className="mb-4">
+                <p className="text-sm font-semibold">Company profile identity</p>
+              </div>
               <div className="flex items-center gap-3">
-                <Avatar
-                  shape="squircle"
-                  className="h-14 w-14 border border-border bg-accent text-base shadow-sm"
-                >
-                  {member.avatarUrl && <AvatarImage src={member.avatarUrl} alt={displayName} />}
-                  <AvatarFallback className="bg-accent text-foreground font-semibold">{initials}</AvatarFallback>
-                </Avatar>
+                <div className="relative shrink-0">
+                  <Avatar
+                    shape="squircle"
+                    className="h-16 w-16 border border-border bg-accent text-lg shadow-sm"
+                  >
+                    {member.avatarUrl && <AvatarImage src={member.avatarUrl} alt={displayName} />}
+                    <AvatarFallback className="bg-accent text-foreground font-semibold">{initials}</AvatarFallback>
+                  </Avatar>
+                  <input
+                    ref={avatarInputRef}
+                    id="human-avatar"
+                    type="file"
+                    accept="image/*"
+                    className="sr-only"
+                    aria-label="Change avatar"
+                    disabled={!canEditProfile || avatarUploadMutation.isPending}
+                    onChange={(event) => {
+                      const file = event.target.files?.[0] ?? null;
+                      setAvatarFileDirty(true);
+                      if (file) avatarUploadMutation.mutate(file);
+                      event.target.value = "";
+                    }}
+                  />
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="icon-sm"
+                    className="absolute -bottom-2 -right-2 h-7 w-7 rounded-md border border-border shadow-sm"
+                    disabled={!canEditProfile || avatarUploadMutation.isPending}
+                    aria-label="Choose avatar image"
+                    onClick={() => avatarInputRef.current?.click()}
+                  >
+                    <Camera className="h-3.5 w-3.5" />
+                  </Button>
+                  {canRemoveAvatar && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-sm"
+                      className="absolute -left-2 -top-2 h-6 w-6 rounded-md border border-border bg-card shadow-sm"
+                      disabled={!canEditProfile || removeAvatarMutation.isPending}
+                      onClick={() => removeAvatarMutation.mutate()}
+                      aria-label="Remove avatar"
+                    >
+                      <X className="h-3 w-3" />
+                    </Button>
+                  )}
+                </div>
                 <div>
                   <p className="text-sm font-medium">{displayName}</p>
                   <p className="text-xs text-muted-foreground">{member.email ?? "No email"}</p>
                 </div>
-              </div>
-              <div className="sm:ml-auto">
-                {!canEditProfile && <Badge variant="outline" className="text-[10px]">Read only</Badge>}
-              </div>
-            </div>
-
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
-              <div className="space-y-1.5">
-                <label htmlFor="human-avatar" className="text-xs font-medium text-muted-foreground">Avatar image</label>
-                <input
-                  id="human-avatar"
-                  type="file"
-                  accept="image/*"
-                  className="block w-full text-sm text-muted-foreground file:mr-3 file:rounded-md file:border-0 file:bg-muted file:px-3 file:py-1.5 file:text-sm file:font-medium"
-                  disabled={!canEditProfile || avatarUploadMutation.isPending}
-                  onChange={(event) => {
-                    setAvatarFileDirty(true);
-                    setAvatarFile(event.target.files?.[0] ?? null);
-                  }}
-                />
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  type="button"
-                  size="sm"
-                  className="gap-1.5"
-                  disabled={!canEditProfile || !avatarFile || avatarUploadMutation.isPending}
-                  onClick={() => avatarFile && avatarUploadMutation.mutate(avatarFile)}
-                >
-                  <Upload className="h-3.5 w-3.5" />
-                  {avatarUploadMutation.isPending ? "Uploading..." : "Upload Avatar"}
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="gap-1.5"
-                  disabled={!canEditProfile || removeAvatarMutation.isPending}
-                  onClick={() => removeAvatarMutation.mutate()}
-                >
-                  <X className="h-3.5 w-3.5" />
-                  Remove Avatar
-                </Button>
+                <div className="ml-auto">
+                  {!canEditProfile && <Badge variant="outline" className="text-[10px]">Read only</Badge>}
+                  {avatarUploadMutation.isPending && <Badge variant="outline" className="text-[10px]">Uploading</Badge>}
+                </div>
               </div>
             </div>
 
@@ -812,7 +815,7 @@ export function HumanDetail() {
               {(profileDraft.socialLinks ?? []).map((link, index) => (
                 <div key={index} className="grid gap-3 md:grid-cols-[150px_minmax(0,1fr)_minmax(0,2fr)_auto]">
                   <div className="space-y-1.5">
-                    <label htmlFor={`human-social-type-${index}`} className="text-xs font-medium text-muted-foreground">Social link type</label>
+                    <label htmlFor={`human-social-type-${index}`} className="text-xs font-medium text-muted-foreground">Type</label>
                     <select
                       id={`human-social-type-${index}`}
                       className={FIELD_CLASS}
@@ -826,7 +829,7 @@ export function HumanDetail() {
                     </select>
                   </div>
                   <div className="space-y-1.5">
-                    <label htmlFor={`human-social-label-${index}`} className="text-xs font-medium text-muted-foreground">Social link label</label>
+                    <label htmlFor={`human-social-label-${index}`} className="text-xs font-medium text-muted-foreground">Label</label>
                     <input
                       id={`human-social-label-${index}`}
                       className={FIELD_CLASS}
@@ -836,7 +839,7 @@ export function HumanDetail() {
                     />
                   </div>
                   <div className="space-y-1.5">
-                    <label htmlFor={`human-social-url-${index}`} className="text-xs font-medium text-muted-foreground">Social link URL</label>
+                    <label htmlFor={`human-social-url-${index}`} className="text-xs font-medium text-muted-foreground">URL</label>
                     <input
                       id={`human-social-url-${index}`}
                       className={FIELD_CLASS}

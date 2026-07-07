@@ -46,7 +46,7 @@ test.describe("Human profile page", () => {
     await expect(main.getByText("Role & Department")).toBeVisible({ timeout: 10_000 });
     await expect(main.getByRole("region", { name: "Profile" })).toHaveCount(0);
 
-    await page.getByRole("button", { name: "Edit Profile" }).click();
+    await page.getByRole("button", { name: "Edit profile" }).click();
     const dialog = page.getByRole("dialog", { name: "Edit Profile" });
     await expect(dialog).toBeVisible({ timeout: 5_000 });
     await expect(dialog.getByLabel("Display name")).toHaveValue("E2E Human");
