@@ -10,7 +10,7 @@ import type { CockpitData, CommanderOutputRef } from "@armyofagents/shared";
 
 // Mock queryKeys and cockpitApi for the panel test (panel tests come later)
 vi.mock("../../../api/cockpit", () => ({
-  cockpitApi: { get: vi.fn().mockResolvedValue({ running: [], review: [], myTasks: [], today: { reminders: [], dueTasks: [] }, discussions: [], approvals: [], pinned: [], goalsAtRisk: [], budgetPulse: null, doneToday: [], proactiveFindings: [], teammatesActivity: [] } satisfies CockpitData) },
+  cockpitApi: { get: vi.fn().mockResolvedValue({ running: [], review: [], myTasks: [], today: { reminders: [], dueTasks: [] }, stickyNotes: [], discussions: [], approvals: [], pinned: [], goalsAtRisk: [], budgetPulse: null, doneToday: [], proactiveFindings: [], teammatesActivity: [] } satisfies CockpitData) },
 }));
 vi.mock("../../../lib/queryKeys", () => ({
   queryKeys: { cockpit: (id: string) => ["cockpit", id] },
@@ -32,6 +32,7 @@ import { CockpitRunningCard } from "./CockpitRunningCard";
 import { CockpitReviewCard } from "./CockpitReviewCard";
 import { CockpitMyTasksCard } from "./CockpitMyTasksCard";
 import { CockpitTodayCard } from "./CockpitTodayCard";
+import { CockpitStickyNotesCard } from "./CockpitStickyNotesCard";
 import { CockpitDiscussionsCard } from "./CockpitDiscussionsCard";
 
 // ── Data factories ─────────────────────────────────────────────────────────
@@ -40,6 +41,7 @@ type RunItem = CockpitData["running"][0];
 type TaskItem = CockpitData["review"][0];
 type ReminderItem = CockpitData["today"]["reminders"][0];
 type DiscussionItem = CockpitData["discussions"][0];
+type NoteItem = CockpitData["stickyNotes"][0];
 
 function makeRun(overrides?: Partial<RunItem>): RunItem {
   return { id: "run-1", agentName: "Atlas", status: "running", startedAt: null, issueId: "issue-1", ...overrides };
@@ -66,6 +68,17 @@ function makeDiscussion(overrides?: Partial<DiscussionItem>): DiscussionItem {
   return { id: "disc-1", title: "Sprint planning", pendingItemCount: 3, reason: "pending_items", ...overrides };
 }
 
+function makeNote(overrides?: Partial<NoteItem>): NoteItem {
+  return {
+    id: "note-1",
+    title: "Hiring",
+    body: "Ask Priya about design contractor availability",
+    color: "yellow",
+    updatedAt: new Date().toISOString(),
+    ...overrides,
+  };
+}
+
 // ── Panel: card rendering from shared data ─────────────────────────────────
 
 describe("CommanderCockpitPanel with shared data", () => {
@@ -76,6 +89,7 @@ describe("CommanderCockpitPanel with shared data", () => {
       review: [],
       myTasks: [],
       today: { reminders: [], dueTasks: [] },
+      stickyNotes: [],
       discussions: [],
       approvals: [],
       pinned: [],
@@ -101,6 +115,7 @@ describe("CommanderCockpitPanel with shared data", () => {
       review: [makeTask({ status: "in_review" })],
       myTasks: [],
       today: { reminders: [], dueTasks: [] },
+      stickyNotes: [],
       discussions: [],
       approvals: [],
       pinned: [],
@@ -119,13 +134,14 @@ describe("CommanderCockpitPanel with shared data", () => {
     expect(screen.getByTestId("cockpit-card-review")).toBeInTheDocument();
   });
 
-  it("renders 'All clear' when all slices are empty", () => {
+  it("renders the Sticky notes card even when all work slices are empty", () => {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     qc.setQueryData(["cockpit", "comp-1"], {
       running: [],
       review: [],
       myTasks: [],
       today: { reminders: [], dueTasks: [] },
+      stickyNotes: [],
       discussions: [],
       approvals: [],
       pinned: [],
@@ -141,7 +157,8 @@ describe("CommanderCockpitPanel with shared data", () => {
         <CommanderCockpitPanel companyId="comp-1" onCollapse={vi.fn()} />
       </QueryClientProvider>,
     );
-    expect(screen.getByText(/all clear/i)).toBeInTheDocument();
+    expect(screen.getByTestId("cockpit-card-stickyNotes")).toBeInTheDocument();
+    expect(screen.queryByText(/all clear/i)).not.toBeInTheDocument();
   });
 });
 
@@ -286,6 +303,35 @@ describe("CockpitReviewCard — Pin button", () => {
 
 // ── CockpitDiscussionsCard ─────────────────────────────────────────────────
 
+describe("CockpitStickyNotesCard", () => {
+  it("renders personal notes", () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <CockpitStickyNotesCard companyId="comp-1" items={[makeNote()]} />
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByText("Hiring")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("Ask Priya about design contractor availability")).toBeInTheDocument();
+  });
+
+  it("sends note context to Commander", () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const onAsk = vi.fn();
+    render(
+      <QueryClientProvider client={qc}>
+        <CockpitStickyNotesCard companyId="comp-1" items={[makeNote()]} onAsk={onAsk} />
+      </QueryClientProvider>,
+    );
+
+    fireEvent.click(screen.getByLabelText("Ask Commander about this note"));
+    expect(onAsk).toHaveBeenCalledWith(
+      "Use this note as context: Hiring - Ask Priya about design contractor availability",
+    );
+  });
+});
+
 describe("CockpitDiscussionsCard", () => {
   it("renders null when items is empty", () => {
     const { container } = render(<CockpitDiscussionsCard items={[]} />);
@@ -357,6 +403,7 @@ const EMPTY_COCKPIT: CockpitData = {
   review: [],
   myTasks: [],
   today: { reminders: [], dueTasks: [] },
+  stickyNotes: [],
   discussions: [],
   approvals: [],
   pinned: [],
@@ -379,9 +426,10 @@ describe("CommanderCockpitPanel — CockpitConversationZone integration", () => 
     expect(screen.queryByText(/all clear/i)).not.toBeInTheDocument();
   });
 
-  it("'All clear' appears when BOTH conversationRefs is empty AND all cards are empty", async () => {
+  it("shows Sticky notes when conversationRefs is empty and all work slices are empty", async () => {
     renderPanelWithRefs([], EMPTY_COCKPIT);
-    expect(await screen.findByText(/all clear/i)).toBeInTheDocument();
+    expect(await screen.findByTestId("cockpit-card-stickyNotes")).toBeInTheDocument();
+    expect(screen.queryByText(/all clear/i)).not.toBeInTheDocument();
   });
 
   it("zone title is shown in the panel", () => {

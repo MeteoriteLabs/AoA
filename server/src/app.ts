@@ -42,6 +42,7 @@ import { sidebarBadgeRoutes } from "./routes/sidebar-badges.js";
 import { sidebarPreferencesRoutes } from "./routes/sidebar-preferences.js";
 import { inboxDismissalRoutes } from "./routes/inbox-dismissals.js";
 import { userEntityPinRoutes } from "./routes/user-entity-pins.js";
+import { userNoteRoutes } from "./routes/user-notes.js";
 import { cockpitRoutes } from "./routes/cockpit.js";
 import { llmRoutes } from "./routes/llms.js";
 import { assetRoutes } from "./routes/assets.js";
@@ -345,6 +346,7 @@ export async function createApp(
   api.use(sidebarPreferencesRoutes(db));
   api.use(inboxDismissalRoutes(db));
   api.use(userEntityPinRoutes(db));
+  api.use(userNoteRoutes(db));
   api.use(
     accessRoutes(db, {
       deploymentMode: opts.deploymentMode,

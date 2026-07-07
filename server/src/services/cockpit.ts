@@ -47,6 +47,7 @@ import {
   joinRequests,
   notifications,
   userEntityPins,
+  userNotes,
   userRoles,
 } from "@armyofagents/db";
 import type {
@@ -55,6 +56,7 @@ import type {
   CockpitData,
   CockpitDoneTodayItem,
   CockpitGoalsAtRiskItem,
+  CockpitNoteItem,
   CockpitPinnedItem,
   CockpitProactiveItem,
   CockpitTaskItem,
@@ -685,7 +687,7 @@ export function cockpitService(db: Db) {
 
       const eod = endOfToday();
 
-      const [runRows, reviewRows, myTaskRows, remindersRows, dueTodayRows, visibleThreads, approvalsItems, pinnedItems, goalsAtRiskItems, budgetPulseItem, doneTodayItems, proactiveFindingsItems, teammatesActivityItems] =
+      const [runRows, reviewRows, myTaskRows, remindersRows, dueTodayRows, stickyNoteRows, visibleThreads, approvalsItems, pinnedItems, goalsAtRiskItems, budgetPulseItem, doneTodayItems, proactiveFindingsItems, teammatesActivityItems] =
         await Promise.all([
           // ── 1. Running ────────────────────────────────────────────────────
           // Company-wide live runs (heartbeat + crew internal_agent runs).
@@ -777,9 +779,28 @@ export function cockpitService(db: Db) {
               ),
             ),
 
-          // ── 5. Discussions: canonical visibility ──────────────────────────
-          // threadService.list handles participant + dept-role access internally.
-          // Do NOT hand-roll owner/dept scoping (Codex #3).
+          // 4c. Sticky notes: private human scratchpad for this user.
+          db
+            .select({
+              id: userNotes.id,
+              title: userNotes.title,
+              body: userNotes.body,
+              color: userNotes.color,
+              updatedAt: userNotes.updatedAt,
+            })
+            .from(userNotes)
+            .where(
+              and(
+                eq(userNotes.companyId, companyId),
+                eq(userNotes.userId, scope.userId),
+                isNull(userNotes.archivedAt),
+              ),
+            )
+            .orderBy(desc(userNotes.updatedAt))
+            .limit(5),
+
+          // Discussions: canonical visibility. threadService.list handles
+          // participant + dept-role access internally.
           threadSvc.list(companyId, threadActor),
 
           // ── 6. Approvals (Phase 3c): founder-only unified queue ───────────
@@ -843,6 +864,13 @@ export function cockpitService(db: Db) {
         triggerAt: r.triggerAt.toISOString(),
       }));
       const dueTasks = dueTodayRows.map(toTaskItem);
+      const stickyNotes: CockpitNoteItem[] = stickyNoteRows.map((note) => ({
+        id: note.id,
+        title: note.title,
+        body: note.body,
+        color: note.color as CockpitNoteItem["color"],
+        updatedAt: note.updatedAt.toISOString(),
+      }));
 
       // ── Map discussions: filter to needs-me ──────────────────────────────
       // "needs me" = pendingItemCount > 0 OR a pending/failed extraction entry.
@@ -892,6 +920,7 @@ export function cockpitService(db: Db) {
         review,
         myTasks,
         today: { reminders, dueTasks },
+        stickyNotes,
         discussions: discussionItems,
         approvals: approvalsItems,
         pinned: pinnedItems,

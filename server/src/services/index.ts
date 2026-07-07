@@ -23,6 +23,7 @@ export { hubAutopilotService } from "./hub-autopilot.js";
 export { hubCounterSnapshotsService } from "./hub-counter-snapshots.js";
 export { inboxDismissalService } from "./inbox-dismissals.js";
 export { userEntityPinService } from "./user-entity-pins.js";
+export { userNotesService } from "./user-notes.js";
 export { accessService } from "./access.js";
 export { teamService } from "./team.js";
 export { humanCapabilitiesService } from "./human-capabilities.js";

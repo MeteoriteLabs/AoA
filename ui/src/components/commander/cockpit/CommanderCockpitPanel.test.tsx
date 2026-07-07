@@ -26,6 +26,7 @@ vi.mock("../../../api/cockpit", () => ({
       review: [],
       myTasks: [],
       today: { reminders: [], dueTasks: [] },
+      stickyNotes: [],
       discussions: [],
       approvals: [],
       pinned: [],
@@ -56,6 +57,7 @@ function makeData(overrides?: Partial<CockpitData>): CockpitData {
     review: [],
     myTasks: [],
     today: { reminders: [], dueTasks: [] },
+    stickyNotes: [],
     discussions: [],
     // Phase 3c: required by CockpitData
     approvals: [],
@@ -114,7 +116,8 @@ describe("CommanderCockpitPanel", () => {
     expect(screen.queryByTestId("cockpit-card-running")).not.toBeInTheDocument();
     // "All clear" renders immediately since active is derived from the shared data
     // (no async onActiveChange self-report — derived synchronously from query data).
-    expect(await screen.findByText(/all clear/i)).toBeInTheDocument();
+    expect(await screen.findByTestId("cockpit-card-stickyNotes")).toBeInTheDocument();
+    expect(screen.queryByText(/all clear/i)).not.toBeInTheDocument();
   });
 
   it("with running runs → the Running card renders with cockpit-card-running testid", async () => {

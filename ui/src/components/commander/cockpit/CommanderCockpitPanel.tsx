@@ -18,6 +18,7 @@ import {
   Pin,
   Play,
   Settings2,
+  StickyNote,
   Users,
   Zap,
 } from "lucide-react";
@@ -39,6 +40,7 @@ import { CockpitRunningCard } from "./CockpitRunningCard";
 import { CockpitReviewCard } from "./CockpitReviewCard";
 import { CockpitMyTasksCard } from "./CockpitMyTasksCard";
 import { CockpitTodayCard } from "./CockpitTodayCard";
+import { CockpitStickyNotesCard } from "./CockpitStickyNotesCard";
 import { CockpitDiscussionsCard } from "./CockpitDiscussionsCard";
 import { CockpitApprovalsCard } from "./CockpitApprovalsCard";
 import { CockpitPinnedCard } from "./CockpitPinnedCard";
@@ -73,6 +75,7 @@ const EMPTY_DATA: CockpitData = {
   review: [],
   myTasks: [],
   today: { reminders: [], dueTasks: [] },
+  stickyNotes: [],
   discussions: [],
   // Phase 3c: approvals required by CockpitData type
   approvals: [],
@@ -206,6 +209,22 @@ export const COCKPIT_REGISTRY: CockpitCardRenderDef[] = [
         onOpenTask={onOpenTask}
         onAsk={onAsk}
         onPin={onPin}
+      />
+    ),
+  },
+  {
+    id: "stickyNotes",
+    title: "Sticky notes",
+    defaultOn: true,
+    sectionId: "my_work",
+    icon: StickyNote,
+    summary: (d) => d.stickyNotes.length > 0 ? `${d.stickyNotes.length} notes` : null,
+    isActive: (_d) => true,
+    render: ({ data, companyId, onAsk }) => (
+      <CockpitStickyNotesCard
+        companyId={companyId}
+        items={data.stickyNotes}
+        onAsk={onAsk}
       />
     ),
   },

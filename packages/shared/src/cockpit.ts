@@ -64,6 +64,14 @@ export interface CockpitReminderItem {
   triggerAt: string;
 }
 
+export interface CockpitNoteItem {
+  id: string;
+  title: string | null;
+  body: string;
+  color: "yellow" | "blue" | "green" | "pink";
+  updatedAt: string;
+}
+
 export interface CockpitDiscussionItem {
   id: string;
   title: string | null;
@@ -79,6 +87,8 @@ export interface CockpitData {
     reminders: CockpitReminderItem[];
     dueTasks: CockpitTaskItem[];
   };
+  /** Private user/company sticky notes for Commander Cockpit. */
+  stickyNotes: CockpitNoteItem[];
   discussions: CockpitDiscussionItem[];
   /** Unified approvals queue, per-role scoped (founder: all sources; lead: dept memory + own runtime; member: own runtime). */
   approvals: CockpitApprovalItem[];

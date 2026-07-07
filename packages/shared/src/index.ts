@@ -1044,6 +1044,11 @@ export {
   type CreateInboxDismissal,
   createUserEntityPinSchema,
   type CreateUserEntityPin,
+  createUserNoteSchema,
+  updateUserNoteSchema,
+  userNoteColorSchema,
+  type CreateUserNote,
+  type UpdateUserNote,
   listHubItemsQuery,
   hubActionSchema,
   hubUserStateSchema,
@@ -1107,6 +1112,7 @@ export type {
   CockpitTaskItem,
   CockpitRunItem,
   CockpitReminderItem,
+  CockpitNoteItem,
   CockpitDiscussionItem,
   CockpitData,
   CockpitApprovalSource,
@@ -1223,6 +1229,7 @@ export {
 export * from "./teams.js";
 export * from "./autonomy-levels.js";
 export * from "./inbound-routing.js";
+export * from "./user-notes.js";
 export * from "./commander-output-refs.js";
 export * from "./hub.js";
 export * from "./notification-registry.js";

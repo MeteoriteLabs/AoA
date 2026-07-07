@@ -27,6 +27,7 @@ export { notificationPreferences } from "./notification_preferences.js";
 export { notificationDigestItems } from "./notification_digest_items.js";
 export { inboxDismissals } from "./inbox_dismissals.js";
 export { userEntityPins } from "./user_entity_pins.js";
+export { userNotes } from "./user_notes.js";
 export { goals } from "./goals.js";
 export { goalParents } from "./goal_parents.js";
 export { issues } from "./issues.js";
