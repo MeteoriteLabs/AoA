@@ -63,12 +63,17 @@ function createSequenceDb(config: {
   const inserts = config.inserts ?? [];
   const updateSets: Record<string, unknown>[] = [];
   const insertValues: Record<string, unknown>[] = [];
+  const conflictUpdates: Record<string, unknown>[] = [];
 
   function makeChain(getResult: () => MockRow[]) {
     const chain: Record<string, unknown> = {};
-    for (const m of ["from", "where", "innerJoin", "leftJoin", "orderBy", "limit", "onConflictDoUpdate"]) {
+    for (const m of ["from", "where", "innerJoin", "leftJoin", "orderBy", "limit"]) {
       chain[m] = (..._args: unknown[]) => chain;
     }
+    chain.onConflictDoUpdate = (value: { set?: Record<string, unknown> }) => {
+      if (value.set) conflictUpdates.push(value.set);
+      return chain;
+    };
     chain.set = (value: Record<string, unknown>) => {
       updateSets.push(value);
       return chain;
@@ -93,6 +98,7 @@ function createSequenceDb(config: {
     _selectIdx: () => selectIdx,
     _updateSets: updateSets,
     _insertValues: insertValues,
+    _conflictUpdates: conflictUpdates,
   };
 }
 
@@ -188,6 +194,86 @@ describe("teamService profile updates", () => {
         avatarAssetId: "33333333-3333-4333-8333-333333333333",
       }, "actor-1"),
     ).rejects.toThrow("Avatar asset must be an image");
+  });
+
+  it("accepts same-company image avatar assets", async () => {
+    const db = createSequenceDb({
+      selects: [
+        [{ id: "mem-1", status: "active" }],
+        [{ id: "44444444-4444-4444-8444-444444444444", companyId: "company-1", contentType: "image/png" }],
+      ],
+      inserts: [
+        [{
+          id: "profile-1",
+          companyId: "company-1",
+          userId: "user-1",
+          displayName: null,
+          title: null,
+          bio: null,
+          location: null,
+          timezone: null,
+          socialLinks: [],
+          avatarAssetId: "44444444-4444-4444-8444-444444444444",
+          createdAt: new Date("2026-07-07T00:00:00.000Z"),
+          updatedAt: new Date("2026-07-07T00:00:00.000Z"),
+          updatedByUserId: "actor-1",
+        }],
+      ],
+    });
+
+    await expect(
+      teamService(db as any).updateCompanyUserProfile("company-1", "user-1", {
+        avatarAssetId: "44444444-4444-4444-8444-444444444444",
+      }, "actor-1"),
+    ).resolves.toMatchObject({
+      avatarAssetId: "44444444-4444-4444-8444-444444444444",
+      updatedByUserId: "actor-1",
+    });
+  });
+
+  it("sets updatedByUserId and updatedAt on profile upsert insert and update payloads", async () => {
+    const db = createSequenceDb({
+      selects: [
+        [{ id: "mem-1", status: "active" }],
+      ],
+      inserts: [
+        [{
+          id: "profile-1",
+          companyId: "company-1",
+          userId: "user-1",
+          displayName: "Profile Name",
+          title: "Operator",
+          bio: null,
+          location: null,
+          timezone: null,
+          socialLinks: [],
+          avatarAssetId: null,
+          createdAt: new Date("2026-07-07T00:00:00.000Z"),
+          updatedAt: new Date("2026-07-07T00:00:00.000Z"),
+          updatedByUserId: "actor-1",
+        }],
+      ],
+    });
+
+    await teamService(db as any).updateCompanyUserProfile("company-1", "user-1", {
+      displayName: "Profile Name",
+      title: "Operator",
+    }, "actor-1");
+
+    expect(db._insertValues[0]).toMatchObject({
+      companyId: "company-1",
+      userId: "user-1",
+      displayName: "Profile Name",
+      title: "Operator",
+      updatedByUserId: "actor-1",
+    });
+    expect(db._insertValues[0].updatedAt).toBeInstanceOf(Date);
+    expect(db._conflictUpdates[0]).toMatchObject({
+      displayName: "Profile Name",
+      title: "Operator",
+      updatedByUserId: "actor-1",
+    });
+    expect(db._conflictUpdates[0].updatedAt).toBeInstanceOf(Date);
   });
 });
 

@@ -1,6 +1,7 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { notFound } from "../errors.js";
 import { errorHandler } from "../middleware/index.js";
 
 const mockTeamService = vi.hoisted(() => ({
@@ -139,6 +140,32 @@ describe("team profile routes", () => {
 
     expect(res.status).toBe(403);
     expect(mockTeamService.updateCompanyUserProfile).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("returns 404 and does not log activity when the target user is not an active member", async () => {
+    mockTeamService.getUserRole.mockResolvedValueOnce({ role: "founder", projectId: null });
+    mockTeamService.updateCompanyUserProfile.mockRejectedValueOnce(notFound("Team member not found"));
+    const app = createApp({
+      type: "board",
+      userId: "founder-1",
+      source: "session",
+      companyIds: [companyId],
+      isInstanceAdmin: false,
+    });
+
+    const res = await request(app)
+      .patch(`/api/companies/${companyId}/team/users/inactive-user/profile`)
+      .send({ displayName: "Inactive" });
+
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe("Team member not found");
+    expect(mockTeamService.updateCompanyUserProfile).toHaveBeenCalledWith(
+      companyId,
+      "inactive-user",
+      { displayName: "Inactive" },
+      "founder-1",
+    );
     expect(mockLogActivity).not.toHaveBeenCalled();
   });
 
