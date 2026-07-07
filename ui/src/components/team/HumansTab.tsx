@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Users, UserPlus, Shield, ArrowRightLeft, RotateCw, X, Search, Mail } from "lucide-react";
-import type { TeamMemberSummary, TeamSummary, TeamPermissionSummary, UserRole } from "@armyofagents/shared";
+import type { JoinRequest, TeamMemberSummary, TeamSummary, TeamPermissionSummary, UserRole } from "@armyofagents/shared";
 import { useNavigate } from "@/lib/router";
+import { accessApi } from "../../api/access";
 import { teamApi } from "../../api/team";
 import { projectsApi } from "../../api/projects";
 import { useCompany } from "../../context/CompanyContext";
@@ -240,6 +241,96 @@ function InviteCard({
   );
 }
 
+function joinRequestLabel(request: JoinRequest) {
+  if (request.requestType === "agent") {
+    return request.agentName ?? request.requestEmailSnapshot ?? `Agent request ${request.id.slice(0, 8)}`;
+  }
+  return request.requestEmailSnapshot ?? request.requestingUserId ?? `Human request ${request.id.slice(0, 8)}`;
+}
+
+function JoinRequestCard({
+  request,
+  canManage,
+  onMutationSuccess,
+}: {
+  request: JoinRequest;
+  canManage: boolean;
+  onMutationSuccess: () => Promise<void>;
+}) {
+  const { selectedCompanyId } = useCompany();
+  const { pushToast } = useToast();
+  const label = joinRequestLabel(request);
+
+  const approveMutation = useMutation({
+    mutationFn: () => accessApi.approveJoinRequest(selectedCompanyId!, request.id),
+    onSuccess: async () => {
+      await onMutationSuccess();
+      pushToast({ title: "Join request approved", tone: "success" });
+    },
+    onError: (err: Error) => {
+      pushToast({ title: "Failed to approve request", body: err.message, tone: "error" });
+    },
+  });
+
+  const rejectMutation = useMutation({
+    mutationFn: () => accessApi.rejectJoinRequest(selectedCompanyId!, request.id),
+    onSuccess: async () => {
+      await onMutationSuccess();
+      pushToast({ title: "Join request declined", tone: "success" });
+    },
+    onError: (err: Error) => {
+      pushToast({ title: "Failed to decline request", body: err.message, tone: "error" });
+    },
+  });
+
+  const isMutating = approveMutation.isPending || rejectMutation.isPending;
+
+  return (
+    <div className="flex flex-col gap-3 rounded-lg border border-dashed border-border bg-card p-4">
+      <div className="flex items-start gap-3">
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-dashed border-border bg-muted text-muted-foreground">
+          <UserPlus className="h-4 w-4" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <span className="block truncate text-sm font-semibold">{label}</span>
+          <span className="text-xs text-muted-foreground">
+            {request.requestType === "agent" ? "Agent join request" : "Human join request"}
+          </span>
+        </div>
+      </div>
+
+      {request.capabilities && (
+        <p className="line-clamp-2 text-xs text-muted-foreground">{request.capabilities}</p>
+      )}
+
+      <div className="flex items-center justify-between border-t border-dashed border-border/50 pt-2.5">
+        <span className="text-[11px] text-muted-foreground">
+          Requested {new Date(request.createdAt).toLocaleDateString()}
+        </span>
+        {canManage && (
+          <div className="flex items-center gap-1.5">
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={isMutating}
+              onClick={() => rejectMutation.mutate()}
+            >
+              Decline
+            </Button>
+            <Button
+              size="sm"
+              disabled={isMutating}
+              onClick={() => approveMutation.mutate()}
+            >
+              Approve
+            </Button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function HumansTab({ teamSummary, highlightId, permissions, isSystemAdmin, onMutationSuccess }: HumansTabProps) {
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
@@ -254,6 +345,14 @@ export function HumansTab({ teamSummary, highlightId, permissions, isSystemAdmin
     enabled: Boolean(selectedCompanyId),
   });
 
+  const joinRequestsQuery = useQuery({
+    queryKey: selectedCompanyId
+      ? queryKeys.access.joinRequests(selectedCompanyId)
+      : ["access", "join-requests", "none"],
+    queryFn: () => accessApi.listJoinRequests(selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId && permissions.canInviteUsers),
+  });
+
   const departments = useMemo(
     () => (projects ?? []).filter((project) => project.type === "department"),
     [projects],
@@ -261,15 +360,16 @@ export function HumansTab({ teamSummary, highlightId, permissions, isSystemAdmin
 
   const members = teamSummary.members;
   const pendingInvites = teamSummary.pendingInvites;
+  const pendingJoinRequests = joinRequestsQuery.data ?? [];
 
   const founderCount = members.filter((m) => m.role === "founder").length;
   const teamLeadCount = members.filter((m) => m.role === "team_lead").length;
   const memberCount = members.filter((m) => m.role === "team_member").length;
-  const pendingCount = pendingInvites.length;
+  const pendingCount = pendingInvites.length + pendingJoinRequests.length;
 
-  const { filteredMembers, filteredInvites } = useMemo(() => {
+  const { filteredMembers, filteredInvites, filteredJoinRequests } = useMemo(() => {
     const showMembers = roleFilter !== "pending";
-    const showInvites = roleFilter === "all" || roleFilter === "pending";
+    const showPending = roleFilter === "all" || roleFilter === "pending";
     const roleToMatch = roleFilter !== "all" && roleFilter !== "pending" ? roleFilter : null;
 
     const fMembers = showMembers
@@ -286,19 +386,29 @@ export function HumansTab({ teamSummary, highlightId, permissions, isSystemAdmin
         })
       : [];
 
-    const fInvites = showInvites
+    const fInvites = showPending
       ? pendingInvites.filter((inv) => {
           if (!search) return true;
           return (inv.email ?? "").toLowerCase().includes(search.toLowerCase());
         })
       : [];
 
-    return { filteredMembers: fMembers, filteredInvites: fInvites };
-  }, [members, pendingInvites, roleFilter, search]);
+    const fJoinRequests = showPending
+      ? pendingJoinRequests.filter((request) => {
+          if (!search) return true;
+          const q = search.toLowerCase();
+          return joinRequestLabel(request).toLowerCase().includes(q);
+        })
+      : [];
+
+    return { filteredMembers: fMembers, filteredInvites: fInvites, filteredJoinRequests: fJoinRequests };
+  }, [members, pendingInvites, pendingJoinRequests, roleFilter, search]);
 
   const invalidateTeam = useCallback(async () => {
     if (selectedCompanyId) {
       await queryClient.invalidateQueries({ queryKey: queryKeys.team.summary(selectedCompanyId) });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.access.joinRequests(selectedCompanyId) });
+      await queryClient.invalidateQueries({ queryKey: ["hub-items", selectedCompanyId] });
     }
     onMutationSuccess?.();
   }, [queryClient, selectedCompanyId, onMutationSuccess]);
@@ -307,8 +417,8 @@ export function HumansTab({ teamSummary, highlightId, permissions, isSystemAdmin
     return <EmptyState icon={Users} message="Select a company to view team." />;
   }
 
-  const isEmpty = members.length === 0 && pendingInvites.length === 0;
-  const isFilteredEmpty = filteredMembers.length === 0 && filteredInvites.length === 0;
+  const isEmpty = members.length === 0 && pendingInvites.length === 0 && pendingJoinRequests.length === 0;
+  const isFilteredEmpty = filteredMembers.length === 0 && filteredInvites.length === 0 && filteredJoinRequests.length === 0;
 
   return (
     <TooltipProvider>
@@ -462,6 +572,14 @@ export function HumansTab({ teamSummary, highlightId, permissions, isSystemAdmin
               <InviteCard
                 key={invite.id}
                 invite={invite}
+                canManage={permissions.canInviteUsers}
+                onMutationSuccess={invalidateTeam}
+              />
+            ))}
+            {filteredJoinRequests.map((request) => (
+              <JoinRequestCard
+                key={request.id}
+                request={request}
                 canManage={permissions.canInviteUsers}
                 onMutationSuccess={invalidateTeam}
               />
