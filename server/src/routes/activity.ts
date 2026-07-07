@@ -29,6 +29,8 @@ export function activityRoutes(db: Db) {
     const filters = {
       companyId,
       agentId: req.query.agentId as string | undefined,
+      actorType: req.query.actorType as "agent" | "user" | "system" | "autonomy" | undefined,
+      actorId: req.query.actorId as string | undefined,
       entityType: req.query.entityType as string | undefined,
       entityId: req.query.entityId as string | undefined,
     };

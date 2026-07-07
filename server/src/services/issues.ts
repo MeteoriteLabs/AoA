@@ -112,6 +112,7 @@ export interface IssueFilters {
   status?: string;
   assigneeAgentId?: string;
   assigneeUserId?: string;
+  createdByUserId?: string;
   touchedByUserId?: string;
   unreadForUserId?: string;
   projectId?: string;
@@ -640,6 +641,9 @@ export function issueService(db: Db) {
       }
       if (filters?.assigneeUserId) {
         conditions.push(eq(issues.assigneeUserId, filters.assigneeUserId));
+      }
+      if (filters?.createdByUserId) {
+        conditions.push(eq(issues.createdByUserId, filters.createdByUserId));
       }
       if (touchedByUserId) {
         conditions.push(touchedByUserCondition(companyId, touchedByUserId));

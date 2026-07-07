@@ -5,6 +5,8 @@ import { activityLog, heartbeatRuns, issues } from "@armyofagents/db";
 export interface ActivityFilters {
   companyId: string;
   agentId?: string;
+  actorType?: "agent" | "user" | "system" | "autonomy";
+  actorId?: string;
   entityType?: string;
   entityId?: string;
 }
@@ -17,6 +19,12 @@ export function activityService(db: Db) {
 
       if (filters.agentId) {
         conditions.push(eq(activityLog.agentId, filters.agentId));
+      }
+      if (filters.actorType) {
+        conditions.push(eq(activityLog.actorType, filters.actorType));
+      }
+      if (filters.actorId) {
+        conditions.push(eq(activityLog.actorId, filters.actorId));
       }
       if (filters.entityType) {
         conditions.push(eq(activityLog.entityType, filters.entityType));
