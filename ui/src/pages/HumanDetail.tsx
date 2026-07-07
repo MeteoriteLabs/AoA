@@ -78,6 +78,7 @@ const ROLE_LABELS: Record<UserRole, string> = {
 
 const TAB_ITEMS = [
   { value: "overview", label: "Overview" },
+  { value: "roles", label: "Roles" },
   { value: "settings", label: "Settings" },
 ];
 
@@ -284,7 +285,7 @@ export function HumanDetail() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
-  const activeTab = tab === "settings" ? "settings" : "overview";
+  const activeTab = tab === "settings" || tab === "roles" ? tab : "overview";
 
   const handleTabChange = useCallback(
     (value: string) => {
@@ -311,13 +312,13 @@ export function HumanDetail() {
     enabled: Boolean(selectedCompanyId),
   });
 
-  // Departments (for settings tab)
+  // Departments (for role editing)
   const deptQuery = useQuery({
     queryKey: selectedCompanyId
       ? queryKeys.projects.list(selectedCompanyId)
       : ["projects", "none"],
     queryFn: () => projectsApi.list(selectedCompanyId!),
-    enabled: Boolean(selectedCompanyId) && activeTab === "settings",
+    enabled: Boolean(selectedCompanyId) && activeTab === "roles",
   });
 
   const member = data?.member;
@@ -480,7 +481,7 @@ export function HumanDetail() {
       }),
     onSuccess: () => {
       invalidateAll();
-      pushToast({ title: "Settings saved", tone: "success" });
+      pushToast({ title: "Role saved", tone: "success" });
     },
     onError: (err: Error) => pushToast({ title: "Save failed", body: err.message, tone: "error" }),
   });
@@ -924,40 +925,6 @@ export function HumanDetail() {
               </div>
             </div>
 
-            <section className="rounded-xl border border-border bg-card p-4">
-              <h3 className="text-sm font-semibold flex items-center gap-2 mb-3">
-                <Shield className="h-4 w-4" />
-                Authority
-              </h3>
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                <div>
-                  <p className="text-xs font-medium text-muted-foreground">Role</p>
-                  <p className="mt-1 text-sm">{ROLE_LABELS[member.role]}</p>
-                </div>
-                <div>
-                  <p className="text-xs font-medium text-muted-foreground">Department</p>
-                  <p className="mt-1 text-sm">{member.departmentName ?? "No department"}</p>
-                </div>
-                <div>
-                  <p className="text-xs font-medium text-muted-foreground">Reports to</p>
-                  <p className="mt-1 text-sm">{manager?.displayName ?? manager?.email ?? "No manager"}</p>
-                </div>
-                <div>
-                  <p className="text-xs font-medium text-muted-foreground">Access</p>
-                  <p className="mt-1 text-sm">{member.isSystemAdmin ? "System admin" : "Company member"}</p>
-                </div>
-              </div>
-              {member.permissions.length > 0 && (
-                <div className="mt-3 flex flex-wrap gap-1.5">
-                  {member.permissions.slice(0, 6).map((permission) => (
-                    <Badge key={permission} variant="outline" className="max-w-full truncate text-[10px]">
-                      {permission}
-                    </Badge>
-                  ))}
-                </div>
-              )}
-            </section>
-
             <div className="grid gap-4 xl:grid-cols-2">
               <TaskListSection
                 title="Assigned Tasks"
@@ -1049,14 +1016,72 @@ export function HumanDetail() {
           </div>
         )}
 
-        {/* ── Settings Tab ── */}
-        {activeTab === "settings" && (
+        {/* Roles Tab */}
+        {activeTab === "roles" && deps && (
           <div className="space-y-4 mt-4">
-            {/* Role & Department */}
+            <section className="rounded-xl border border-border bg-card p-4">
+              <h3 className="text-sm font-semibold flex items-center gap-2 mb-3">
+                <Shield className="h-4 w-4" />
+                Authority
+              </h3>
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <div>
+                  <p className="text-xs font-medium text-muted-foreground">Role</p>
+                  <p className="mt-1 text-sm">{ROLE_LABELS[member.role]}</p>
+                </div>
+                <div>
+                  <p className="text-xs font-medium text-muted-foreground">Department</p>
+                  <p className="mt-1 text-sm">{member.departmentName ?? "No department"}</p>
+                </div>
+                <div>
+                  <p className="text-xs font-medium text-muted-foreground">Reports to</p>
+                  <p className="mt-1 text-sm">{manager?.displayName ?? manager?.email ?? "No manager"}</p>
+                </div>
+                <div>
+                  <p className="text-xs font-medium text-muted-foreground">Access</p>
+                  <p className="mt-1 text-sm">{member.isSystemAdmin ? "System admin" : "Company member"}</p>
+                </div>
+              </div>
+              <div className="mt-3">
+                <p className="text-xs font-medium text-muted-foreground">Explicit grants</p>
+                {member.permissions.length > 0 ? (
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {member.permissions.slice(0, 6).map((permission) => (
+                      <Badge key={permission} variant="outline" className="max-w-full truncate text-[10px]">
+                        {permission}
+                      </Badge>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="mt-1 text-sm text-muted-foreground">No explicit grants</p>
+                )}
+              </div>
+            </section>
+
+            <section className="rounded-xl border border-border bg-card p-4">
+              <h3 className="text-sm font-semibold flex items-center gap-2 mb-3">
+                <Users className="h-4 w-4" />
+                Responsibilities
+              </h3>
+              <div className="grid gap-3 sm:grid-cols-3">
+                <div className="rounded-lg border border-border bg-muted/20 p-3">
+                  <p className="text-xs font-medium text-muted-foreground">Reports</p>
+                  <p className="mt-1 text-2xl font-semibold">{deps.teamMembers.length}</p>
+                </div>
+                <div className="rounded-lg border border-border bg-muted/20 p-3">
+                  <p className="text-xs font-medium text-muted-foreground">Agents</p>
+                  <p className="mt-1 text-2xl font-semibold">{deps.agentTrees.length}</p>
+                </div>
+                <div className="rounded-lg border border-border bg-muted/20 p-3">
+                  <p className="text-xs font-medium text-muted-foreground">Manager</p>
+                  <p className="mt-1 text-sm">{manager?.displayName ?? manager?.email ?? "No manager"}</p>
+                </div>
+              </div>
+            </section>
+
             <div className="rounded-xl border border-border bg-card p-5">
               <h3 className="text-sm font-semibold mb-4">Role & Department</h3>
               <div className="space-y-4 max-w-md">
-                {/* Role */}
                 <div className="space-y-1.5">
                   <label className="text-xs font-medium text-muted-foreground">Role</label>
                   <Select
@@ -1071,7 +1096,7 @@ export function HumanDetail() {
                     }}
                     disabled={!canManageRoles || selfFounderLock || saveMutation.isPending}
                   >
-                    <SelectTrigger className="w-full">
+                    <SelectTrigger className="w-full" aria-label="Role">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -1082,7 +1107,6 @@ export function HumanDetail() {
                   </Select>
                 </div>
 
-                {/* Department */}
                 <div className="space-y-1.5">
                   <label className="text-xs font-medium text-muted-foreground">Department</label>
                   <Select
@@ -1090,7 +1114,7 @@ export function HumanDetail() {
                     onValueChange={setDraftDepartmentId}
                     disabled={!canManageRoles || draftRole === "founder" || saveMutation.isPending}
                   >
-                    <SelectTrigger className="w-full">
+                    <SelectTrigger className="w-full" aria-label="Department">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -1104,7 +1128,6 @@ export function HumanDetail() {
                   </Select>
                 </div>
 
-                {/* Reports to */}
                 <div className="space-y-1.5">
                   <label className="text-xs font-medium text-muted-foreground">Reports to</label>
                   <Select
@@ -1112,7 +1135,7 @@ export function HumanDetail() {
                     onValueChange={setDraftParentId}
                     disabled={!canManageRoles || saveMutation.isPending}
                   >
-                    <SelectTrigger className="w-full">
+                    <SelectTrigger className="w-full" aria-label="Reports to">
                       <SelectValue placeholder="No manager" />
                     </SelectTrigger>
                     <SelectContent>
@@ -1127,7 +1150,6 @@ export function HumanDetail() {
                   </Select>
                 </div>
 
-                {/* Save button */}
                 <Button
                   onClick={() => saveMutation.mutate()}
                   disabled={!hasChanges || saveMutation.isPending}
@@ -1138,6 +1160,18 @@ export function HumanDetail() {
               </div>
             </div>
 
+            {!canManageRoles && (
+              <div className="rounded-xl border border-border bg-card p-4">
+                <p className="text-sm text-muted-foreground">
+                  You don't have permission to manage roles. Contact a founder or system admin.
+                </p>
+              </div>
+            )}
+          </div>
+        )}
+
+        {activeTab === "settings" && (
+          <div className="space-y-4 mt-4">
             {/* Danger Zone */}
             {canRemove && (
               <div className="rounded-xl border border-destructive/30 bg-card p-5">

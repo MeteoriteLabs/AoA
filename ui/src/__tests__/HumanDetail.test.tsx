@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { HumanDetail } from "../pages/HumanDetail";
 import { teamApi } from "../api/team";
@@ -136,6 +136,25 @@ const teamSummary = {
   pendingInvites: [],
 };
 
+const roleManagerTeamSummary = {
+  ...teamSummary,
+  currentUser: {
+    ...teamSummary.currentUser,
+    userId: "founder-1",
+    role: "founder",
+    departmentId: null,
+    permissions: {
+      ...teamSummary.currentUser.permissions,
+      canManageRoles: true,
+    },
+  },
+};
+
+async function chooseSelectOption(user: ReturnType<typeof userEvent.setup>, name: string, optionName: string | RegExp) {
+  await user.click(screen.getByRole("combobox", { name }));
+  await user.click(await screen.findByRole("option", { name: optionName }));
+}
+
 function issue(overrides: Partial<Record<string, unknown>>) {
   return {
     id: "issue-1",
@@ -178,6 +197,21 @@ function issue(overrides: Partial<Record<string, unknown>>) {
     ...overrides,
   };
 }
+
+beforeAll(() => {
+  if (!Element.prototype.hasPointerCapture) {
+    Element.prototype.hasPointerCapture = () => false;
+  }
+  if (!Element.prototype.setPointerCapture) {
+    Element.prototype.setPointerCapture = () => {};
+  }
+  if (!Element.prototype.releasePointerCapture) {
+    Element.prototype.releasePointerCapture = () => {};
+  }
+  if (!Element.prototype.scrollIntoView) {
+    Element.prototype.scrollIntoView = () => {};
+  }
+});
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -260,8 +294,7 @@ describe("HumanDetail", () => {
     expect(screen.getByText("Created by Ada")).toBeInTheDocument();
     expect(screen.getByText("Agent follow-up")).toBeInTheDocument();
     expect(screen.getByText("issue.created")).toBeInTheDocument();
-    expect(screen.getByText("Authority")).toBeInTheDocument();
-    expect(screen.getByText("Grace Founder")).toBeInTheDocument();
+    expect(screen.queryByText("Authority")).not.toBeInTheDocument();
 
     expect(issuesApi.list).toHaveBeenCalledWith("company-1", { assigneeUserId: "user-1", taskScope: "all" });
     expect(issuesApi.list).toHaveBeenCalledWith("company-1", { createdByUserId: "user-1", taskScope: "all" });
@@ -307,12 +340,98 @@ describe("HumanDetail", () => {
     });
   });
 
-  it("keeps settings focused on operational role controls", async () => {
+  it("renders authority and editable role controls in the roles tab", async () => {
+    const user = userEvent.setup();
+    vi.mocked(teamApi.get).mockResolvedValueOnce(roleManagerTeamSummary);
+    vi.mocked(teamApi.updateRole).mockResolvedValue({
+      role: "team_member",
+      projectId: null,
+      parentType: "user",
+      parentId: "founder-1",
+    });
+
+    renderHumanDetail("/team/user-1/roles");
+
+    expect(await screen.findByText("Authority")).toBeInTheDocument();
+    expect(screen.getByText("Role & Department")).toBeInTheDocument();
+    expect(screen.getAllByText("Team Lead").length).toBeGreaterThan(0);
+    expect(screen.getByText("Product")).toBeInTheDocument();
+    expect(screen.getAllByText("Grace Founder").length).toBeGreaterThan(0);
+    expect(screen.getByText("tasks.assign")).toBeInTheDocument();
+    expect(screen.getByText("Reports")).toBeInTheDocument();
+    expect(screen.getByText("Agents")).toBeInTheDocument();
+
+    await chooseSelectOption(user, "Role", "Team Member");
+    await chooseSelectOption(user, "Department", "No department");
+    await chooseSelectOption(user, "Reports to", /Grace Founder/);
+    await user.click(screen.getByRole("button", { name: "Save Changes" }));
+
+    await waitFor(() => {
+      expect(teamApi.updateRole).toHaveBeenCalledWith("company-1", "user-1", {
+        role: "team_member",
+        projectId: null,
+        parentType: "user",
+        parentId: "founder-1",
+      });
+    });
+    expect(pushToast).toHaveBeenCalledWith(expect.objectContaining({ title: "Role saved", tone: "success" }));
+  });
+
+  it("keeps settings focused on operational controls", async () => {
     renderHumanDetail("/team/user-1/settings");
 
-    expect(await screen.findByText("Role & Department")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Edit profile" })).toBeInTheDocument();
+    expect(screen.queryByText("Role & Department")).not.toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Profile" })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Edit profile" })).toBeInTheDocument();
+  });
+
+  it("clears department and manager drafts when founder is selected", async () => {
+    const user = userEvent.setup();
+    vi.mocked(teamApi.get).mockResolvedValueOnce(roleManagerTeamSummary);
+    vi.mocked(teamApi.updateRole).mockResolvedValue({
+      role: "founder",
+      projectId: null,
+      parentType: null,
+      parentId: null,
+    });
+
+    renderHumanDetail("/team/user-1/roles");
+
+    await screen.findByText("Role & Department");
+    await chooseSelectOption(user, "Role", "Founder");
+    await user.click(screen.getByRole("button", { name: "Save Changes" }));
+
+    await waitFor(() => {
+      expect(teamApi.updateRole).toHaveBeenCalledWith("company-1", "user-1", {
+        role: "founder",
+        projectId: null,
+        parentType: null,
+        parentId: null,
+      });
+    });
+  });
+
+  it("shows roles authority but disables editing for non-role-managers", async () => {
+    vi.mocked(teamApi.get).mockResolvedValueOnce({
+      ...teamSummary,
+      currentUser: {
+        ...teamSummary.currentUser,
+        role: "team_member",
+        permissions: {
+          canAssignTasks: false,
+          canInviteUsers: false,
+          canManageRoles: false,
+          canEditIdentityMemory: false,
+        },
+      },
+    });
+
+    renderHumanDetail("/team/user-1/roles");
+
+    expect(await screen.findByText("Authority")).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Role" })).toBeDisabled();
+    expect(screen.getByRole("combobox", { name: "Department" })).toBeDisabled();
+    expect(screen.getByRole("combobox", { name: "Reports to" })).toBeDisabled();
   });
 
   it("keeps unsaved profile edits during a background member refetch", async () => {

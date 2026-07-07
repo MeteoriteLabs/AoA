@@ -37,13 +37,13 @@ test.describe("Human profile page", () => {
     await expect(main.getByText("Remote")).toBeVisible();
     await expect(main.getByText("UTC")).toBeVisible();
     await expect(main.getByRole("link", { name: "Website" })).toHaveAttribute("href", "https://example.com");
-    await expect(main.getByText("Authority")).toBeVisible();
+    await expect(main.getByText("Authority")).toHaveCount(0);
     await expect(main.getByText("Assigned Tasks").first()).toBeVisible();
     await expect(main.getByText("Created Tasks").first()).toBeVisible();
     await expect(main.getByText("Activity")).toBeVisible();
 
     await page.goto(`/${company.issuePrefix}/team/${userId}/settings`);
-    await expect(main.getByText("Role & Department")).toBeVisible({ timeout: 10_000 });
+    await expect(main.getByText("Role & Department")).toHaveCount(0);
     await expect(main.getByRole("region", { name: "Profile" })).toHaveCount(0);
 
     await page.getByRole("button", { name: "Edit profile" }).click();
@@ -63,5 +63,52 @@ test.describe("Human profile page", () => {
     await expect(main.getByRole("heading", { name: "E2E Human Updated" })).toBeVisible();
     await expect(main.getByText("Founder Partner")).toBeVisible();
     await expect(main.getByText("Asia/Kolkata")).toBeVisible();
+
+    const departmentRes = await request.post(`/api/companies/${company.id}/projects`, {
+      data: {
+        name: `E2E Roles Dept ${Date.now()}`,
+        type: "department",
+        description: "Human roles E2E department",
+      },
+    });
+    expect(departmentRes.ok()).toBe(true);
+    const department = (await departmentRes.json()) as { id: string; name: string };
+
+    const memberRes = await request.post(`/api/companies/${company.id}/team/members`, {
+      data: {
+        name: "E2E Reports Human",
+        email: `reports-${Date.now()}@example.com`,
+        role: "team_member",
+        projectId: department.id,
+        parentType: "user",
+        parentId: userId,
+      },
+    });
+    expect(memberRes.ok()).toBe(true);
+    const added = (await memberRes.json()) as { userId: string };
+
+    await page.goto(`/${company.issuePrefix}/team/${added.userId}/roles`);
+    await expect(main.getByText("Authority")).toBeVisible({ timeout: 10_000 });
+    await expect(main.getByText("Responsibilities")).toBeVisible();
+    await expect(main.getByText("Role & Department")).toBeVisible();
+    await expect(main.getByText("Explicit grants", { exact: true })).toBeVisible();
+
+    await main.getByRole("combobox", { name: "Role" }).click();
+    await page.getByRole("option", { name: "Team Lead" }).click();
+    await main.getByRole("combobox", { name: "Department" }).click();
+    await page.getByRole("option", { name: department.name }).click();
+    await main.getByRole("combobox", { name: "Reports to" }).click();
+    await page.getByRole("option", { name: /E2E Human Updated/ }).click();
+    await main.getByRole("button", { name: "Save Changes" }).click();
+
+    await expect(page.getByText("Role saved")).toBeVisible({ timeout: 10_000 });
+    await page.reload();
+    await expect(main.getByText("Team Lead").first()).toBeVisible();
+    await expect(main.getByText(department.name).first()).toBeVisible();
+    await expect(main.getByText("E2E Human Updated").first()).toBeVisible();
+
+    await page.goto(`/${company.issuePrefix}/team/${added.userId}/settings`);
+    await expect(main.getByText("Role & Department")).toHaveCount(0);
+    await expect(main.getByRole("region", { name: "Profile" })).toHaveCount(0);
   });
 });
