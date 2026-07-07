@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  COMMANDER_INPUT_REF_DRAG_MIME,
+  appendCommanderInputRef,
   appendCommanderInputRefsToMessage,
   commanderInputRefKey,
+  encodeCommanderInputRefDragPayload,
   formatCommanderInputRefsBlock,
+  parseCommanderInputRefDragPayload,
   type CommanderInputRef,
 } from "../commander-input-refs.js";
 
@@ -30,5 +34,23 @@ describe("commander input refs", () => {
     expect(appendCommanderInputRefsToMessage("What changed?", [taskRef])).toContain(
       "What changed?\n\nReferenced context:",
     );
+  });
+
+  it("dedupes existing refs and reports the existing key", () => {
+    expect(appendCommanderInputRef([taskRef], taskRef)).toEqual({
+      refs: [taskRef],
+      added: false,
+      existingKey: "task:task-1",
+    });
+  });
+
+  it("encodes and parses drag payloads", () => {
+    const encoded = encodeCommanderInputRefDragPayload(taskRef, "Show this task");
+    expect(encoded).toContain(COMMANDER_INPUT_REF_DRAG_MIME);
+    expect(parseCommanderInputRefDragPayload(encoded)).toEqual({
+      ref: taskRef,
+      prompt: "Show this task",
+    });
+    expect(parseCommanderInputRefDragPayload("not-json")).toBeNull();
   });
 });

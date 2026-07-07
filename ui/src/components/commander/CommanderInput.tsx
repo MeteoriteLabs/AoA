@@ -6,6 +6,11 @@ import {
   useRef,
   useState,
 } from "react";
+import {
+  COMMANDER_INPUT_REF_DRAG_MIME,
+  parseCommanderInputRefDragPayload,
+  type CommanderInputRef,
+} from "@armyofagents/shared";
 import { cn } from "../../lib/utils";
 import { matchSlashToken } from "./skillPickerUtils";
 import {
@@ -56,6 +61,8 @@ interface CommanderInputProps {
   onKeyDown?: (e: React.KeyboardEvent<HTMLDivElement>) => void;
   /** Mirrors the old textarea onBlur (parent closes the picker on focus leaving the bar). */
   onBlur?: (e: React.FocusEvent<HTMLDivElement>) => void;
+  /** Accepts identity-preserving refs dropped from Commander Cockpit cards. */
+  onReferenceDrop?: (payload: { ref: CommanderInputRef; prompt?: string }) => void;
 }
 
 const EMPTY_SLASH: SlashState = { active: false, query: "" };
@@ -68,7 +75,7 @@ const EMPTY_SLASH: SlashState = { active: false, query: "" };
  */
 export const CommanderInput = forwardRef<CommanderInputHandle, CommanderInputProps>(
   function CommanderInput(
-    { disabled, placeholder, className, onSubmit, onEmptyChange, onSlashChange, onKeyDown, onBlur },
+    { disabled, placeholder, className, onSubmit, onEmptyChange, onSlashChange, onKeyDown, onBlur, onReferenceDrop },
     ref,
   ) {
     const rootRef = useRef<HTMLDivElement>(null);
@@ -77,6 +84,7 @@ export const CommanderInput = forwardRef<CommanderInputHandle, CommanderInputPro
     // toggle) so it survives re-renders — React owns the element's className and
     // would otherwise clobber an imperatively-added class on the next render.
     const [isEmpty, setIsEmpty] = useState(true);
+    const [dragActive, setDragActive] = useState(false);
 
     // Hover card for skill tokens (shows name + description + key on hover).
     const [hoverCard, setHoverCard] = useState<{
@@ -351,6 +359,30 @@ export const CommanderInput = forwardRef<CommanderInputHandle, CommanderInputPro
       [insertTextAtCaret, emitEmpty, emitSlash, readSlash],
     );
 
+    const handleDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+      if (disabledRef.current || !onReferenceDrop) return;
+      if (!Array.from(e.dataTransfer.types).includes(COMMANDER_INPUT_REF_DRAG_MIME)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "copy";
+      setDragActive(true);
+    }, [onReferenceDrop]);
+
+    const handleDragLeave = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+      if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+      setDragActive(false);
+    }, []);
+
+    const handleDrop = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+      if (disabledRef.current || !onReferenceDrop) return;
+      const payload = parseCommanderInputRefDragPayload(
+        e.dataTransfer.getData(COMMANDER_INPUT_REF_DRAG_MIME),
+      );
+      if (!payload) return;
+      e.preventDefault();
+      setDragActive(false);
+      onReferenceDrop(payload);
+    }, [onReferenceDrop]);
+
     // Caret moves (click / arrows) can change slash context without an input event.
     const handleSelectionShift = useCallback(() => {
       emitSlash(readSlash());
@@ -399,11 +431,15 @@ export const CommanderInput = forwardRef<CommanderInputHandle, CommanderInputPro
           onMouseOver={handleMouseOver}
           onMouseOut={handleMouseOut}
           onPaste={handlePaste}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
           onBlur={onBlur}
           className={cn(
             "commander-input w-full bg-transparent px-3 py-2 text-sm leading-5",
             "min-h-[36px] max-h-[140px]",
             isEmpty && "is-empty",
+            dragActive && "bg-brand/5 ring-2 ring-brand-focus-ring",
             disabled && "opacity-50 cursor-not-allowed",
             className,
           )}

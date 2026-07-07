@@ -4,6 +4,7 @@ import { MessageSquare, Plus, Save, Trash2 } from "lucide-react";
 import type { CockpitNoteItem, CommanderInputRef } from "@armyofagents/shared";
 import { userNotesApi } from "../../../api/user-notes";
 import { queryKeys } from "../../../lib/queryKeys";
+import { setCommanderRefDragData } from "./cockpitReferenceDrag";
 
 const noteColorClasses: Record<CockpitNoteItem["color"], string> = {
   yellow: "border-amber-200/70 bg-amber-50 text-amber-950 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-100",
@@ -17,6 +18,17 @@ function notePrompt(note: CockpitNoteItem) {
   const body = note.body.trim();
   if (title && body) return `Use this note as context: ${title} - ${body}`;
   return `Use this note as context: ${title || body}`;
+}
+
+function noteRef(note: CockpitNoteItem): CommanderInputRef {
+  const body = note.body.trim();
+  return {
+    v: 1,
+    kind: "note",
+    id: note.id,
+    label: note.title?.trim() || body.slice(0, 80) || "Untitled note",
+    detail: body.slice(0, 500),
+  };
 }
 
 export function CockpitStickyNotesCard({
@@ -109,6 +121,11 @@ export function CockpitStickyNotesCard({
               <li
                 key={note.id}
                 data-testid="cockpit-sticky-note-row"
+                draggable
+                onDragStart={(event) => {
+                  const liveNote = { ...note, body };
+                  setCommanderRefDragData(event.dataTransfer, noteRef(liveNote), notePrompt(liveNote));
+                }}
                 className={`rounded-md border p-2 ${noteColorClasses[note.color]}`}
               >
                 {note.title && (
@@ -132,14 +149,9 @@ export function CockpitStickyNotesCard({
                       title="Ask Commander about this note"
                       className="flex h-6 w-6 items-center justify-center rounded text-current opacity-70 hover:bg-background/60 hover:opacity-100"
                       onClick={() => {
-                        const prompt = notePrompt({ ...note, body });
-                        const ref: CommanderInputRef = {
-                          v: 1,
-                          kind: "note",
-                          id: note.id,
-                          label: note.title?.trim() || body.trim().slice(0, 80) || "Untitled note",
-                          detail: body.trim().slice(0, 500),
-                        };
+                        const liveNote = { ...note, body };
+                        const prompt = notePrompt(liveNote);
+                        const ref = noteRef(liveNote);
                         if (onReference) onReference(ref, prompt);
                         else onAsk(prompt);
                       }}

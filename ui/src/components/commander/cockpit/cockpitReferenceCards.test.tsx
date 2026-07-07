@@ -2,6 +2,10 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { CockpitData } from "@armyofagents/shared";
+import {
+  COMMANDER_INPUT_REF_DRAG_MIME,
+  parseCommanderInputRefDragPayload,
+} from "@armyofagents/shared";
 import { CockpitDiscussionsCard } from "./CockpitDiscussionsCard";
 import { CockpitInboxCard } from "./CockpitInboxCard";
 import { CockpitReviewCard } from "./CockpitReviewCard";
@@ -84,6 +88,28 @@ describe("Cockpit reference actions", () => {
       expect.objectContaining({ kind: "inbox", id: "hub-1", route: "/inbox/waiting/hub-1" }),
       expect.stringContaining("Approve launch budget"),
     );
+  });
+
+  it("writes an inbox reference drag payload from inbox rows", () => {
+    const setData = vi.fn();
+    render(<CockpitInboxCard items={[makeInboxItem()]} onAsk={vi.fn()} />);
+
+    const row = screen.getByText("Approve launch budget").closest("li");
+    expect(row).toHaveAttribute("draggable", "true");
+
+    fireEvent.dragStart(row!, {
+      dataTransfer: {
+        effectAllowed: "",
+        setData,
+      },
+    });
+
+    expect(setData).toHaveBeenCalledWith(COMMANDER_INPUT_REF_DRAG_MIME, expect.any(String));
+    const payload = parseCommanderInputRefDragPayload(setData.mock.calls[0][1]);
+    expect(payload).toEqual({
+      ref: expect.objectContaining({ kind: "inbox", id: "hub-1" }),
+      prompt: expect.stringContaining("Approve launch budget"),
+    });
   });
 
   it("adds a discussion reference from discussion rows", () => {

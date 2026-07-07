@@ -274,8 +274,8 @@ describe("CockpitDoneTodayCard", () => {
 describe("mountableCards — opt-in card enabled param", () => {
   // A minimal registry with one defaultOn card + one opt-in card.
   const registry: CockpitCardDef[] = [
-    { id: "running", title: "Running now", defaultOn: true, sectionId: "company_pulse" },
-    { id: "goalsAtRisk", title: "Goals at risk", defaultOn: false, sectionId: "company_pulse" },
+    { id: "running", title: "Running now", defaultOn: true, sectionId: "watch" },
+    { id: "goalsAtRisk", title: "Goals at risk", defaultOn: false, sectionId: "watch" },
   ];
 
   it("opt-in card is EXCLUDED when enabled is [] (default)", () => {

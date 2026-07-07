@@ -1,5 +1,22 @@
 import { MessageSquare } from "lucide-react";
 import type { CockpitRunItem, CommanderInputRef } from "@armyofagents/shared";
+import { setCommanderRefDragData } from "./cockpitReferenceDrag";
+
+function runPrompt(run: CockpitRunItem) {
+  return `What is ${run.agentName ?? "the agent"} working on right now? Is there anything I should know?`;
+}
+
+function runRef(run: CockpitRunItem): CommanderInputRef | null {
+  if (!run.issueId) return null;
+  return {
+    v: 1,
+    kind: "task",
+    id: run.issueId,
+    label: run.agentName ? `Run by ${run.agentName}` : "Running task",
+    route: `/issues/${run.issueId}`,
+    detail: `run=${run.id}; status=${run.status}`,
+  };
+}
 
 // Phase 5B: Internal <header> removed — title/icon/count now live in the
 // CockpitSection trigger in CommanderCockpitPanel. Card renders only body rows.
@@ -23,6 +40,11 @@ export function CockpitRunningCard({
         {runs.map((r) => (
           <li
             key={r.id}
+            draggable={Boolean(r.issueId)}
+            onDragStart={(event) => {
+              const ref = runRef(r);
+              if (ref) setCommanderRefDragData(event.dataTransfer, ref, runPrompt(r));
+            }}
             className="group flex items-center gap-1 truncate rounded px-1 py-1 text-xs hover:bg-muted/50"
           >
             <button
@@ -45,16 +67,10 @@ export function CockpitRunningCard({
                 aria-label="Ask Commander about this"
                 className="ml-1 hidden shrink-0 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground group-hover:flex"
                 onClick={() => {
-                  const prompt = `What is ${r.agentName ?? "the agent"} working on right now? Is there anything I should know?`;
-                  if (onReference && r.issueId) {
-                    onReference({
-                      v: 1,
-                      kind: "task",
-                      id: r.issueId,
-                      label: r.agentName ? `Run by ${r.agentName}` : "Running task",
-                      route: `/issues/${r.issueId}`,
-                      detail: `run=${r.id}; status=${r.status}`,
-                    }, prompt);
+                  const prompt = runPrompt(r);
+                  const ref = runRef(r);
+                  if (onReference && ref) {
+                    onReference(ref, prompt);
                     return;
                   }
                   onAsk(prompt);

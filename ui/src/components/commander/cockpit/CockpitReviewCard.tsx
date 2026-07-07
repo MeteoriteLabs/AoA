@@ -1,8 +1,23 @@
 import { MessageSquare, Pin } from "lucide-react";
 import type { CockpitPinnedEntityType, CockpitTaskItem, CommanderInputRef } from "@armyofagents/shared";
+import { setCommanderRefDragData } from "./cockpitReferenceDrag";
 
 // Phase 5B: Internal <header> removed — title/icon/count now live in the
 // CockpitSection trigger in CommanderCockpitPanel. Card renders only body rows.
+function taskRef(item: CockpitTaskItem): CommanderInputRef {
+  return {
+    v: 1,
+    kind: "task",
+    id: item.id,
+    label: item.identifier ? `${item.identifier} ${item.title}` : item.title,
+    route: `/issues/${item.id}`,
+    detail: `status=${item.status}`,
+  };
+}
+
+function reviewPrompt(item: CockpitTaskItem) {
+  return `About ${item.identifier ?? item.title} - what changed and should I approve it?`;
+}
 
 export function CockpitReviewCard({
   items,
@@ -25,6 +40,8 @@ export function CockpitReviewCard({
         {items.map((item) => (
           <li
             key={item.id}
+            draggable
+            onDragStart={(event) => setCommanderRefDragData(event.dataTransfer, taskRef(item), reviewPrompt(item))}
             className="group flex items-center gap-1 truncate rounded px-1 py-1 text-xs hover:bg-muted/50"
           >
             <button
@@ -45,15 +62,8 @@ export function CockpitReviewCard({
                 aria-label="Ask Commander about this"
                 className="ml-1 hidden shrink-0 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground group-hover:flex"
                 onClick={() => {
-                  const prompt = `About ${item.identifier ?? item.title} - what changed and should I approve it?`;
-                  const ref: CommanderInputRef = {
-                    v: 1,
-                    kind: "task",
-                    id: item.id,
-                    label: item.identifier ? `${item.identifier} ${item.title}` : item.title,
-                    route: `/issues/${item.id}`,
-                    detail: `status=${item.status}`,
-                  };
+                  const prompt = reviewPrompt(item);
+                  const ref = taskRef(item);
                   if (onReference) onReference(ref, prompt);
                   else onAsk(prompt);
                 }}

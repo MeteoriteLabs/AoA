@@ -23,6 +23,7 @@
 import { Check, ExternalLink, Loader2, MessageSquare, X } from "lucide-react";
 import type { CockpitApprovalItem, CommanderInputRef } from "@armyofagents/shared";
 import { Button } from "../../ui/button";
+import { setCommanderRefDragData } from "./cockpitReferenceDrag";
 import { useCockpitApprovalAction } from "./useCockpitApprovalAction";
 
 // Source chip label map — must include all CockpitApprovalSource values.
@@ -48,6 +49,22 @@ function fullPageRoute(item: CockpitApprovalItem): string {
   if (item.source === "runtime_tool_trust") return ""; // no full-page destination
   // discussion_item: navigate to the discussion thread
   return `/discussions/${item.discussionId ?? ""}`;
+}
+
+function approvalPrompt(item: CockpitApprovalItem) {
+  return `About the pending "${item.title}" ${SOURCE_LABELS[item.source].toLowerCase()} - should I approve or deny it?`;
+}
+
+function approvalRef(item: CockpitApprovalItem, route: string): CommanderInputRef {
+  return {
+    v: 1,
+    kind: "approval",
+    id: item.id,
+    label: item.title,
+    route: route || undefined,
+    detail: item.subtitle,
+    source: item.source,
+  };
 }
 
 // ── Row component ─────────────────────────────────────────────────────────────
@@ -80,7 +97,11 @@ function ApprovalRow({
   const route = fullPageRoute(item);
 
   return (
-    <li className="group flex flex-col gap-1 rounded px-1 py-1.5 text-xs hover:bg-muted/50">
+    <li
+      draggable
+      onDragStart={(event) => setCommanderRefDragData(event.dataTransfer, approvalRef(item, route), approvalPrompt(item))}
+      className="group flex flex-col gap-1 rounded px-1 py-1.5 text-xs hover:bg-muted/50"
+    >
       {/* Row header: title + source chip + ↗ (hidden when no route) */}
       <div className="flex items-center gap-1 truncate">
         <span className="min-w-0 flex-1 truncate font-medium">{item.title}</span>
@@ -174,16 +195,8 @@ function ApprovalRow({
             title="Ask Commander"
             className="ml-auto hidden shrink-0 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground group-hover:flex"
             onClick={() => {
-              const prompt = `About the pending "${item.title}" ${SOURCE_LABELS[item.source].toLowerCase()} - should I approve or deny it?`;
-              const ref: CommanderInputRef = {
-                v: 1,
-                kind: "approval",
-                id: item.id,
-                label: item.title,
-                route: route || undefined,
-                detail: item.subtitle,
-                source: item.source,
-              };
+              const prompt = approvalPrompt(item);
+              const ref = approvalRef(item, route);
               if (onReference) onReference(ref, prompt);
               else onAsk(prompt);
             }}

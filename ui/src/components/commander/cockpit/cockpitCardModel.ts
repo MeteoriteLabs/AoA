@@ -2,11 +2,11 @@
 // Pure model — no React, no side effects, safe to unit-test in isolation.
 
 export type CockpitSectionId =
-  | "needs_me"
+  | "triage"
   | "my_work"
-  | "active_with_me"
-  | "company_pulse"
-  | "context";
+  | "conversations"
+  | "watch"
+  | "memory_context";
 
 export interface CockpitSectionDef {
   id: CockpitSectionId;
@@ -14,11 +14,11 @@ export interface CockpitSectionDef {
 }
 
 export const COCKPIT_SECTIONS: CockpitSectionDef[] = [
-  { id: "needs_me", title: "Needs Me" },
+  { id: "triage", title: "Triage" },
   { id: "my_work", title: "My Work" },
-  { id: "active_with_me", title: "Active With Me" },
-  { id: "company_pulse", title: "Company Pulse" },
-  { id: "context", title: "Context" },
+  { id: "conversations", title: "Conversations" },
+  { id: "watch", title: "Watch" },
+  { id: "memory_context", title: "Memory & Context" },
 ];
 
 export interface CockpitCardDef {

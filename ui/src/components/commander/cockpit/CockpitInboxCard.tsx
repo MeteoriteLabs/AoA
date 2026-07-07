@@ -1,5 +1,9 @@
 import { ExternalLink, MessageSquare } from "lucide-react";
-import type { CockpitInboxItem, CommanderInputRef } from "@armyofagents/shared";
+import {
+  type CockpitInboxItem,
+  type CommanderInputRef,
+} from "@armyofagents/shared";
+import { setCommanderRefDragData } from "./cockpitReferenceDrag";
 
 const LANE_LABELS: Record<NonNullable<CockpitInboxItem["lane"]>, string> = {
   waiting_on_you: "Needs you",
@@ -19,6 +23,22 @@ function laneSlug(item: CockpitInboxItem) {
   if (item.lane === "notifications") return "notifications";
   if (item.lane === "suggestions") return "suggestions";
   return "all";
+}
+
+function inboxItemPrompt(item: CockpitInboxItem) {
+  return `Use this inbox item as context: ${item.title}${item.summary ? ` - ${item.summary}` : ""}`;
+}
+
+function inboxItemRef(item: CockpitInboxItem, href: string): CommanderInputRef {
+  return {
+    v: 1,
+    kind: "inbox",
+    id: item.id,
+    label: item.title,
+    route: href,
+    detail: item.summary,
+    source: item.sourceType ?? undefined,
+  };
 }
 
 export function CockpitInboxCard({
@@ -43,6 +63,12 @@ export function CockpitInboxCard({
           return (
             <li
               key={item.id}
+              draggable
+              onDragStart={(event) => {
+                const prompt = inboxItemPrompt(item);
+                const ref = inboxItemRef(item, href);
+                setCommanderRefDragData(event.dataTransfer, ref, prompt);
+              }}
               className="group flex flex-col gap-1 rounded px-1 py-1.5 text-xs hover:bg-muted/50"
             >
               <div className="flex items-center gap-1">
@@ -80,16 +106,8 @@ export function CockpitInboxCard({
                     title="Ask Commander"
                     className="hidden shrink-0 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground group-hover:flex"
                     onClick={() => {
-                      const prompt = `Use this inbox item as context: ${item.title}${item.summary ? ` - ${item.summary}` : ""}`;
-                      const ref: CommanderInputRef = {
-                        v: 1,
-                        kind: "inbox",
-                        id: item.id,
-                        label: item.title,
-                        route: href,
-                        detail: item.summary,
-                        source: item.sourceType ?? undefined,
-                      };
+                      const prompt = inboxItemPrompt(item);
+                      const ref = inboxItemRef(item, href);
                       if (onReference) onReference(ref, prompt);
                       else onAsk(prompt);
                     }}

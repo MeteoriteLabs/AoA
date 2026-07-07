@@ -1,5 +1,21 @@
 import { MessageSquare, Pin } from "lucide-react";
 import type { CockpitPinnedEntityType, CockpitReminderItem, CockpitTaskItem, CommanderInputRef } from "@armyofagents/shared";
+import { setCommanderRefDragData } from "./cockpitReferenceDrag";
+
+function taskRef(item: CockpitTaskItem): CommanderInputRef {
+  return {
+    v: 1,
+    kind: "task",
+    id: item.id,
+    label: item.identifier ? `${item.identifier} ${item.title}` : item.title,
+    route: `/issues/${item.id}`,
+    detail: `status=${item.status}`,
+  };
+}
+
+function dueTaskPrompt(item: CockpitTaskItem) {
+  return `${item.identifier ?? item.title} is due today - what's the current status and is there anything blocking it?`;
+}
 
 export function CockpitTodayCard({
   reminders,
@@ -60,6 +76,8 @@ export function CockpitTodayCard({
             {dueTasks.map((item) => (
               <li
                 key={item.id}
+                draggable
+                onDragStart={(event) => setCommanderRefDragData(event.dataTransfer, taskRef(item), dueTaskPrompt(item))}
                 className="group flex items-center gap-1 truncate rounded px-1 py-1 text-xs hover:bg-muted/50"
               >
                 <button
@@ -80,15 +98,8 @@ export function CockpitTodayCard({
                     aria-label="Ask Commander about this"
                     className="ml-1 hidden shrink-0 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground group-hover:flex"
                     onClick={() => {
-                      const prompt = `${item.identifier ?? item.title} is due today - what's the current status and is there anything blocking it?`;
-                      const ref: CommanderInputRef = {
-                        v: 1,
-                        kind: "task",
-                        id: item.id,
-                        label: item.identifier ? `${item.identifier} ${item.title}` : item.title,
-                        route: `/issues/${item.id}`,
-                        detail: `status=${item.status}`,
-                      };
+                      const prompt = dueTaskPrompt(item);
+                      const ref = taskRef(item);
                       if (onReference) onReference(ref, prompt);
                       else onAsk(prompt);
                     }}

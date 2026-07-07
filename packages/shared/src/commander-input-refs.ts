@@ -27,6 +27,20 @@ export interface CommanderInputRef {
   source?: string | null;
 }
 
+export interface AppendCommanderInputRefResult {
+  refs: CommanderInputRef[];
+  added: boolean;
+  existingKey?: string;
+}
+
+export interface CommanderInputRefDragPayload {
+  type: typeof COMMANDER_INPUT_REF_DRAG_MIME;
+  ref: CommanderInputRef;
+  prompt?: string;
+}
+
+export const COMMANDER_INPUT_REF_DRAG_MIME = "application/x-aoa-commander-ref";
+
 export const commanderInputRefSchema = z.object({
   v: z.literal(1),
   kind: z.enum(COMMANDER_INPUT_REF_KINDS),
@@ -65,6 +79,53 @@ export function commanderInputRefKindLabel(kind: CommanderInputRefKind): string 
       return "Agent";
     case "note":
       return "Note";
+  }
+}
+
+export function appendCommanderInputRef(
+  refs: readonly CommanderInputRef[],
+  ref: CommanderInputRef,
+): AppendCommanderInputRefResult {
+  const key = commanderInputRefKey(ref);
+  if (refs.some((item) => commanderInputRefKey(item) === key)) {
+    return { refs: [...refs], added: false, existingKey: key };
+  }
+  return {
+    refs: [...refs, ref].slice(-MAX_COMMANDER_INPUT_REFS),
+    added: true,
+  };
+}
+
+export function encodeCommanderInputRefDragPayload(
+  ref: CommanderInputRef,
+  prompt?: string,
+): string {
+  return JSON.stringify({
+    type: COMMANDER_INPUT_REF_DRAG_MIME,
+    ref,
+    ...(prompt ? { prompt } : {}),
+  } satisfies CommanderInputRefDragPayload);
+}
+
+export function parseCommanderInputRefDragPayload(
+  raw: string,
+): { ref: CommanderInputRef; prompt?: string } | null {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    const payload = z
+      .object({
+        type: z.literal(COMMANDER_INPUT_REF_DRAG_MIME),
+        ref: commanderInputRefSchema,
+        prompt: z.string().min(1).max(1000).optional(),
+      })
+      .safeParse(parsed);
+    if (!payload.success) return null;
+    return {
+      ref: payload.data.ref,
+      ...(payload.data.prompt ? { prompt: payload.data.prompt } : {}),
+    };
+  } catch {
+    return null;
   }
 }
 

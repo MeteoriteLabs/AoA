@@ -1,5 +1,6 @@
 import { MessageSquare, Pin } from "lucide-react";
 import type { CockpitPinnedEntityType, CockpitTaskItem, CommanderInputRef } from "@armyofagents/shared";
+import { setCommanderRefDragData } from "./cockpitReferenceDrag";
 
 /** Non-terminal statuses to show and their display labels */
 const STATUS_LABEL: Record<string, string> = {
@@ -8,6 +9,21 @@ const STATUS_LABEL: Record<string, string> = {
   in_progress: "In Progress",
   in_review: "In Review",
 };
+
+function taskRef(item: CockpitTaskItem): CommanderInputRef {
+  return {
+    v: 1,
+    kind: "task",
+    id: item.id,
+    label: item.identifier ? `${item.identifier} ${item.title}` : item.title,
+    route: `/issues/${item.id}`,
+    detail: `status=${item.status}`,
+  };
+}
+
+function taskPrompt(item: CockpitTaskItem) {
+  return `Give me a quick status on ${item.identifier ?? item.title} - what's the latest progress?`;
+}
 
 export function CockpitMyTasksCard({
   items,
@@ -45,6 +61,8 @@ export function CockpitMyTasksCard({
             {statusItems.map((item) => (
               <li
                 key={item.id}
+                draggable
+                onDragStart={(event) => setCommanderRefDragData(event.dataTransfer, taskRef(item), taskPrompt(item))}
                 className="group flex items-center gap-1 truncate rounded px-1 py-1 text-xs hover:bg-muted/50"
               >
                 <button
@@ -65,15 +83,8 @@ export function CockpitMyTasksCard({
                     aria-label="Ask Commander about this"
                     className="ml-1 hidden shrink-0 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground group-hover:flex"
                     onClick={() => {
-                      const prompt = `Give me a quick status on ${item.identifier ?? item.title} - what's the latest progress?`;
-                      const ref: CommanderInputRef = {
-                        v: 1,
-                        kind: "task",
-                        id: item.id,
-                        label: item.identifier ? `${item.identifier} ${item.title}` : item.title,
-                        route: `/issues/${item.id}`,
-                        detail: `status=${item.status}`,
-                      };
+                      const prompt = taskPrompt(item);
+                      const ref = taskRef(item);
                       if (onReference) onReference(ref, prompt);
                       else onAsk(prompt);
                     }}

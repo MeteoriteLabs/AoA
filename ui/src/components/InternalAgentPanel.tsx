@@ -73,6 +73,7 @@ import {
 import type { CommanderInputRef, CompanySkillListItem } from "@armyofagents/shared";
 import {
   MAX_COMMANDER_INPUT_REFS,
+  appendCommanderInputRef,
   appendCommanderInputRefsToMessage,
   commanderInputRefKey,
   commanderInputRefKindLabel,
@@ -118,6 +119,48 @@ export function createAbortCleanup(
   return () => {
     abortRef.current?.abort();
   };
+}
+
+export interface CommanderInputRefState {
+  refs: CommanderInputRef[];
+  duplicateKey: string | null;
+}
+
+export function buildCommanderInputRefState(
+  refs: readonly CommanderInputRef[],
+  ref: CommanderInputRef,
+): CommanderInputRefState {
+  const result = appendCommanderInputRef(refs, ref);
+  return {
+    refs: result.refs,
+    duplicateKey: result.added ? null : result.existingKey ?? commanderInputRefKey(ref),
+  };
+}
+
+export interface CommanderInputRefOpenDeps {
+  openPreview: (source: "center" | "right-panel") => void;
+  openTask: (issueId: string, title: string) => void;
+  openArtifact: (id: string, title: string) => void;
+  navigate: (href: string) => void;
+}
+
+export function openCommanderInputRef(
+  ref: CommanderInputRef,
+  deps: CommanderInputRefOpenDeps,
+): void {
+  if (ref.kind === "task") {
+    deps.openPreview("right-panel");
+    deps.openTask(ref.id, ref.label);
+    return;
+  }
+  if (ref.kind === "artifact") {
+    deps.openPreview("right-panel");
+    deps.openArtifact(ref.id, ref.label);
+    return;
+  }
+  if (ref.route) {
+    deps.navigate(ref.route);
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -406,6 +449,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
   // text). We only track empty-ness here to drive the Send button + placeholder.
   const [inputEmpty, setInputEmpty] = useState(true);
   const [inputRefs, setInputRefs] = useState<CommanderInputRef[]>([]);
+  const [duplicateInputRefKey, setDuplicateInputRefKey] = useState<string | null>(null);
   const [streaming, setStreamingLocal] = useState(false);
   // Task 9: skill picker. `skillPickerOpen` = opened via the `+` menu (shows
   // all skills). `slashActive`/`slashQuery` = opened via a `/token` typed in
@@ -740,21 +784,40 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
   );
 
   const addInputRef = useCallback((ref: CommanderInputRef, suggestedPrompt?: string) => {
-    setInputRefs((prev) => {
-      const key = commanderInputRefKey(ref);
-      const existing = prev.filter((item) => commanderInputRefKey(item) !== key);
-      return [...existing, ref].slice(-MAX_COMMANDER_INPUT_REFS);
-    });
-    if (suggestedPrompt) {
+    const next = buildCommanderInputRefState(inputRefs, ref);
+    setInputRefs(next.refs.slice(-MAX_COMMANDER_INPUT_REFS));
+    setDuplicateInputRefKey(next.duplicateKey);
+    if (suggestedPrompt && next.duplicateKey === null) {
       inputRef.current?.insertText(suggestedPrompt);
     }
     requestAnimationFrame(() => inputRef.current?.focus());
-  }, []);
+  }, [inputRefs]);
+
+  useEffect(() => {
+    if (!duplicateInputRefKey) return;
+    const timer = window.setTimeout(() => setDuplicateInputRefKey(null), 1200);
+    return () => window.clearTimeout(timer);
+  }, [duplicateInputRefKey]);
 
   const removeInputRef = useCallback((ref: CommanderInputRef) => {
     const key = commanderInputRefKey(ref);
     setInputRefs((prev) => prev.filter((item) => commanderInputRefKey(item) !== key));
+    setDuplicateInputRefKey((current) => (current === key ? null : current));
   }, []);
+
+  const handleOpenInputRef = useCallback(
+    (ref: CommanderInputRef) => {
+      openCommanderInputRef(ref, {
+        openPreview,
+        openTask: viewer.openTask,
+        openArtifact: (id, title) => {
+          viewer.openRef({ v: 1, kind: "artifact", id, title, action: "referenced" });
+        },
+        navigate,
+      });
+    },
+    [navigate, openPreview, viewer],
+  );
 
   const handleSend = useCallback(async () => {
     // Read the expanded directive text (skill tokens → full use_skill lines)
@@ -1520,12 +1583,25 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
               {inputRefs.map((ref) => (
                 <span
                   key={commanderInputRefKey(ref)}
-                  className="inline-flex max-w-full items-center gap-1 rounded-md border border-border bg-muted/60 px-2 py-1 text-[11px] text-foreground"
+                  className={cn(
+                    "inline-flex max-w-full items-center gap-1 rounded-md border bg-muted/60 px-2 py-1 text-[11px] text-foreground transition-colors",
+                    duplicateInputRefKey === commanderInputRefKey(ref)
+                      ? "border-brand bg-brand/10"
+                      : "border-border",
+                  )}
                 >
-                  <span className="shrink-0 font-medium text-muted-foreground">
-                    {commanderInputRefKindLabel(ref.kind)}
-                  </span>
-                  <span className="min-w-0 max-w-[170px] truncate">{ref.label}</span>
+                  <button
+                    type="button"
+                    aria-label={`Open ${ref.label} reference`}
+                    title="Open reference"
+                    className="inline-flex min-w-0 max-w-[220px] items-center gap-1 rounded text-left hover:text-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-focus-ring"
+                    onClick={() => handleOpenInputRef(ref)}
+                  >
+                    <span className="shrink-0 font-medium text-muted-foreground">
+                      {commanderInputRefKindLabel(ref.kind)}
+                    </span>
+                    <span className="min-w-0 truncate">{ref.label}</span>
+                  </button>
                   <button
                     type="button"
                     aria-label={`Remove ${ref.label} reference`}
@@ -1545,6 +1621,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
             placeholder="Ask the agent..."
             disabled={streaming}
             onSubmit={(text) => void submitCommanderInput(text)}
+            onReferenceDrop={({ ref, prompt }) => addInputRef(ref, prompt)}
             onEmptyChange={handleEmptyChange}
             onSlashChange={handleSlashChange}
             onKeyDown={handleKeyDown}

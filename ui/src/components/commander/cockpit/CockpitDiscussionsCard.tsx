@@ -1,5 +1,25 @@
 import { MessageSquare as MessageSquareIcon } from "lucide-react";
 import type { CockpitDiscussionItem, CommanderInputRef } from "@armyofagents/shared";
+import { setCommanderRefDragData } from "./cockpitReferenceDrag";
+
+function discussionTitle(item: CockpitDiscussionItem) {
+  return item.title ?? "Untitled discussion";
+}
+
+function discussionRef(item: CockpitDiscussionItem): CommanderInputRef {
+  return {
+    v: 1,
+    kind: "discussion",
+    id: item.id,
+    label: discussionTitle(item),
+    route: `/discussions/${item.id}`,
+    detail: `reason=${item.reason}; pending=${item.pendingItemCount}`,
+  };
+}
+
+function discussionPrompt(item: CockpitDiscussionItem) {
+  return `Summarize the discussion "${discussionTitle(item)}" and what action items are pending approval.`;
+}
 
 export function CockpitDiscussionsCard({
   items,
@@ -22,6 +42,8 @@ export function CockpitDiscussionsCard({
         {items.map((item) => (
           <li
             key={item.id}
+            draggable
+            onDragStart={(event) => setCommanderRefDragData(event.dataTransfer, discussionRef(item), discussionPrompt(item))}
             className="group flex items-center gap-1 truncate rounded px-1 py-1 text-xs hover:bg-muted/50"
           >
             <button
@@ -30,7 +52,7 @@ export function CockpitDiscussionsCard({
               onClick={() => onOpenFullPage?.(`/discussions/${item.id}`)}
             >
               <span className="truncate font-medium">
-                {item.title ?? "Untitled discussion"}
+                {discussionTitle(item)}
               </span>
               {item.reason === "extraction_failed" && (
                 <span className="ml-1 shrink-0 rounded bg-destructive/10 px-1 text-[10px] text-destructive">
@@ -49,16 +71,8 @@ export function CockpitDiscussionsCard({
                 aria-label="Ask Commander about this"
                 className="ml-1 hidden shrink-0 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground group-hover:flex"
                 onClick={() => {
-                  const title = item.title ?? "Untitled discussion";
-                  const prompt = `Summarize the discussion "${title}" and what action items are pending approval.`;
-                  const ref: CommanderInputRef = {
-                    v: 1,
-                    kind: "discussion",
-                    id: item.id,
-                    label: title,
-                    route: `/discussions/${item.id}`,
-                    detail: `reason=${item.reason}; pending=${item.pendingItemCount}`,
-                  };
+                  const prompt = discussionPrompt(item);
+                  const ref = discussionRef(item);
                   if (onReference) onReference(ref, prompt);
                   else onAsk(prompt);
                 }}
