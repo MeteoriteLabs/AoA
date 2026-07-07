@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { queryCompanyArtifactsTool } from "../tools/artifact-query-company.js";
 
 const rows = [
@@ -8,19 +8,25 @@ const rows = [
 ];
 
 function ctxWith(list: unknown[]) {
+  const listMock = vi.fn(async (companyId: string, opts?: { includeArchived?: boolean }) => {
+    if (companyId !== "c1") return [];
+    return opts?.includeArchived ? list : list.filter((row: any) => row.status !== "archived");
+  });
   return {
     companyId: "c1",
     userId: "u1",
     userRole: "founder",
-    services: { artifacts: { list: async (companyId: string) => (companyId === "c1" ? list : []) } },
+    services: { artifacts: { list: listMock } },
   } as any;
 }
 
 describe("query_company_artifacts", () => {
   it("lists company artifacts in tool-row shape", async () => {
-    const res = await queryCompanyArtifactsTool.execute({}, ctxWith(rows));
+    const ctx = ctxWith(rows);
+    const res = await queryCompanyArtifactsTool.execute({}, ctx);
     expect(res.success).toBe(true);
-    expect(res.data).toHaveLength(3);
+    expect(ctx.services.artifacts.list).toHaveBeenCalledWith("c1", { includeArchived: false });
+    expect(res.data).toHaveLength(2);
     expect((res.data as any[])[0]).toEqual({
       artifactId: "a1", title: "Plan", type: "document",
       currentVersionId: "v1", status: "active", updatedAt: "2026-06-10",
@@ -29,9 +35,25 @@ describe("query_company_artifacts", () => {
 
   it("filters by type and status", async () => {
     const byType = await queryCompanyArtifactsTool.execute({ type: "document" }, ctxWith(rows));
-    expect(byType.data).toHaveLength(2);
+    expect(byType.data).toHaveLength(1);
     const byStatus = await queryCompanyArtifactsTool.execute({ status: "draft" }, ctxWith(rows));
     expect(byStatus.data).toHaveLength(1);
+  });
+
+  it("includes archived rows when filtering for archived artifacts", async () => {
+    const ctx = ctxWith(rows);
+    const res = await queryCompanyArtifactsTool.execute({ status: "archived" }, ctx);
+    expect(ctx.services.artifacts.list).toHaveBeenCalledWith("c1", { includeArchived: true });
+    expect(res.data).toEqual([
+      {
+        artifactId: "a3",
+        title: "Notes",
+        type: "document",
+        currentVersionId: null,
+        status: "archived",
+        updatedAt: "2026-06-08",
+      },
+    ]);
   });
 
   it("caps limit at 50; limit 0 → default 20; negative → floor 1", async () => {
@@ -46,7 +68,7 @@ describe("query_company_artifacts", () => {
 
   it("ignores invalid filter values", async () => {
     const res = await queryCompanyArtifactsTool.execute({ type: "DROP TABLE" }, ctxWith(rows));
-    expect(res.data).toHaveLength(3);
+    expect(res.data).toHaveLength(2);
   });
 
   it("summary signals truncation when capped", async () => {
