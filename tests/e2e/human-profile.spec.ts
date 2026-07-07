@@ -90,18 +90,22 @@ test.describe("Human profile page", () => {
     await page.goto(`/${company.issuePrefix}/team/${added.userId}/roles`);
     await expect(main.getByText("Authority")).toBeVisible({ timeout: 10_000 });
     await expect(main.getByText("Responsibilities")).toBeVisible();
-    await expect(main.getByText("Role & Department")).toBeVisible();
+    await expect(main.getByText("Role & Department")).toHaveCount(0);
     await expect(main.getByText("Explicit grants", { exact: true })).toBeVisible();
 
-    await main.getByRole("combobox", { name: "Role" }).click();
+    await main.getByRole("button", { name: "Edit roles" }).click();
+    const rolesDialog = page.getByRole("dialog", { name: "Edit Roles" });
+    await expect(rolesDialog).toBeVisible({ timeout: 5_000 });
+    await rolesDialog.getByRole("combobox", { name: "Role" }).click();
     await page.getByRole("option", { name: "Team Lead" }).click();
-    await main.getByRole("combobox", { name: "Department" }).click();
+    await rolesDialog.getByRole("combobox", { name: "Department" }).click();
     await page.getByRole("option", { name: department.name }).click();
-    await main.getByRole("combobox", { name: "Reports to" }).click();
+    await rolesDialog.getByRole("combobox", { name: "Reports to" }).click();
     await page.getByRole("option", { name: /E2E Human Updated/ }).click();
-    await main.getByRole("button", { name: "Save Changes" }).click();
+    await rolesDialog.getByRole("button", { name: "Save Changes" }).click();
 
     await expect(page.getByText("Role saved")).toBeVisible({ timeout: 10_000 });
+    await expect(rolesDialog).toBeHidden({ timeout: 10_000 });
     await page.reload();
     await expect(main.getByText("Team Lead").first()).toBeVisible();
     await expect(main.getByText(department.name).first()).toBeVisible();

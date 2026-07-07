@@ -150,8 +150,13 @@ const roleManagerTeamSummary = {
   },
 };
 
-async function chooseSelectOption(user: ReturnType<typeof userEvent.setup>, name: string, optionName: string | RegExp) {
-  await user.click(screen.getByRole("combobox", { name }));
+async function chooseSelectOption(
+  user: ReturnType<typeof userEvent.setup>,
+  scope: typeof screen | ReturnType<typeof within>,
+  name: string,
+  optionName: string | RegExp,
+) {
+  await user.click(scope.getByRole("combobox", { name }));
   await user.click(await screen.findByRole("option", { name: optionName }));
 }
 
@@ -353,7 +358,8 @@ describe("HumanDetail", () => {
     renderHumanDetail("/team/user-1/roles");
 
     expect(await screen.findByText("Authority")).toBeInTheDocument();
-    expect(screen.getByText("Role & Department")).toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: "Role" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Edit roles" })).toBeInTheDocument();
     expect(screen.getAllByText("Team Lead").length).toBeGreaterThan(0);
     expect(screen.getByText("Product")).toBeInTheDocument();
     expect(screen.getAllByText("Grace Founder").length).toBeGreaterThan(0);
@@ -361,10 +367,14 @@ describe("HumanDetail", () => {
     expect(screen.getByText("Reports")).toBeInTheDocument();
     expect(screen.getByText("Agents")).toBeInTheDocument();
 
-    await chooseSelectOption(user, "Role", "Team Member");
-    await chooseSelectOption(user, "Department", "No department");
-    await chooseSelectOption(user, "Reports to", /Grace Founder/);
-    await user.click(screen.getByRole("button", { name: "Save Changes" }));
+    await user.click(screen.getByRole("button", { name: "Edit roles" }));
+    const dialog = await screen.findByRole("dialog", { name: "Edit Roles" });
+    const modal = within(dialog);
+
+    await chooseSelectOption(user, modal, "Role", "Team Member");
+    await chooseSelectOption(user, modal, "Department", "No department");
+    await chooseSelectOption(user, modal, "Reports to", /Grace Founder/);
+    await user.click(modal.getByRole("button", { name: "Save Changes" }));
 
     await waitFor(() => {
       expect(teamApi.updateRole).toHaveBeenCalledWith("company-1", "user-1", {
@@ -397,9 +407,12 @@ describe("HumanDetail", () => {
 
     renderHumanDetail("/team/user-1/roles");
 
-    await screen.findByText("Role & Department");
-    await chooseSelectOption(user, "Role", "Founder");
-    await user.click(screen.getByRole("button", { name: "Save Changes" }));
+    await screen.findByText("Authority");
+    await user.click(screen.getByRole("button", { name: "Edit roles" }));
+    const dialog = await screen.findByRole("dialog", { name: "Edit Roles" });
+    const modal = within(dialog);
+    await chooseSelectOption(user, modal, "Role", "Founder");
+    await user.click(modal.getByRole("button", { name: "Save Changes" }));
 
     await waitFor(() => {
       expect(teamApi.updateRole).toHaveBeenCalledWith("company-1", "user-1", {
@@ -429,9 +442,12 @@ describe("HumanDetail", () => {
     renderHumanDetail("/team/user-1/roles");
 
     expect(await screen.findByText("Authority")).toBeInTheDocument();
-    expect(screen.getByRole("combobox", { name: "Role" })).toBeDisabled();
-    expect(screen.getByRole("combobox", { name: "Department" })).toBeDisabled();
-    expect(screen.getByRole("combobox", { name: "Reports to" })).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: "Edit roles" }));
+    const dialog = await screen.findByRole("dialog", { name: "Edit Roles" });
+    const modal = within(dialog);
+    expect(modal.getByRole("combobox", { name: "Role" })).toBeDisabled();
+    expect(modal.getByRole("combobox", { name: "Department" })).toBeDisabled();
+    expect(modal.getByRole("combobox", { name: "Reports to" })).toBeDisabled();
   });
 
   it("locks all role hierarchy controls when viewing the only founder's own profile", async () => {
@@ -473,12 +489,15 @@ describe("HumanDetail", () => {
 
     renderHumanDetail("/team/user-1/roles");
 
-    expect(await screen.findByText("Role & Department")).toBeInTheDocument();
-    expect(screen.getByRole("combobox", { name: "Role" })).toBeDisabled();
-    expect(screen.getByRole("combobox", { name: "Department" })).toBeDisabled();
-    expect(screen.getByRole("combobox", { name: "Reports to" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Save Changes" })).toBeDisabled();
-    expect(screen.getByText(/Your founder role is locked/)).toBeInTheDocument();
+    expect(await screen.findByText("Authority")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Edit roles" }));
+    const dialog = await screen.findByRole("dialog", { name: "Edit Roles" });
+    const modal = within(dialog);
+    expect(modal.getByRole("combobox", { name: "Role" })).toBeDisabled();
+    expect(modal.getByRole("combobox", { name: "Department" })).toBeDisabled();
+    expect(modal.getByRole("combobox", { name: "Reports to" })).toBeDisabled();
+    expect(modal.getByRole("button", { name: "Save Changes" })).toBeDisabled();
+    expect(modal.getByText(/Your founder role is locked/)).toBeInTheDocument();
   });
 
   it("keeps unsaved profile edits during a background member refetch", async () => {

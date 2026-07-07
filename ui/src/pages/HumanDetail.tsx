@@ -345,6 +345,7 @@ export function HumanDetail() {
   const avatarInputRef = useRef<HTMLInputElement | null>(null);
   const [avatarFileDirty, setAvatarFileDirty] = useState(false);
   const [profileDialogOpen, setProfileDialogOpen] = useState(false);
+  const [roleDialogOpen, setRoleDialogOpen] = useState(false);
   const timezoneOptions = useMemo(() => getTimezoneOptions(), []);
   const titleOptions = useMemo(
     () => Array.from(new Set([
@@ -480,6 +481,7 @@ export function HumanDetail() {
         parentId: draftParentId === "none" ? null : draftParentId,
       }),
     onSuccess: () => {
+      setRoleDialogOpen(false);
       invalidateAll();
       pushToast({ title: "Role saved", tone: "success" });
     },
@@ -653,6 +655,135 @@ export function HumanDetail() {
 
         </div>
       </div>
+
+      <Dialog
+        open={roleDialogOpen}
+        onOpenChange={(open) => {
+          setRoleDialogOpen(open);
+          if (!open && member) {
+            setDraftRole(member.role);
+            setDraftDepartmentId(member.departmentId ?? "none");
+            setDraftParentId(member.parentId ?? "none");
+          }
+        }}
+      >
+        <DialogContent className="flex max-h-[90vh] flex-col overflow-hidden sm:max-w-lg">
+          <DialogHeader className="shrink-0 px-6 pt-4 pb-2">
+            <DialogTitle>Edit Roles</DialogTitle>
+            <DialogDescription className="sr-only">
+              Update this person's company role, department, and reporting line.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogBody className="min-h-0 flex-1 space-y-4 overflow-y-auto px-6 pt-2 pb-4">
+            <div className="rounded-lg border border-border bg-muted/25 p-4">
+              <p className="text-sm font-medium">{displayName}</p>
+              <p className="mt-1 text-xs text-muted-foreground">{member.email ?? "No email"}</p>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-muted-foreground">Role</label>
+              <Select
+                value={draftRole}
+                onValueChange={(value) => {
+                  const nextRole = value as UserRole;
+                  setDraftRole(nextRole);
+                  if (nextRole === "founder") {
+                    setDraftDepartmentId("none");
+                    setDraftParentId("none");
+                  }
+                }}
+                disabled={!canManageRoles || selfFounderLock || saveMutation.isPending}
+              >
+                <SelectTrigger className="w-full" aria-label="Role">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="founder">Founder</SelectItem>
+                  <SelectItem value="team_lead">Team Lead</SelectItem>
+                  <SelectItem value="team_member">Team Member</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-muted-foreground">Department</label>
+              <Select
+                value={draftDepartmentId}
+                onValueChange={setDraftDepartmentId}
+                disabled={!canManageRoles || selfFounderLock || draftRole === "founder" || saveMutation.isPending}
+              >
+                <SelectTrigger className="w-full" aria-label="Department">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">No department</SelectItem>
+                  {departments.map((dept: Project) => (
+                    <SelectItem key={dept.id} value={dept.id}>
+                      {dept.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-muted-foreground">Reports to</label>
+              <Select
+                value={draftParentId}
+                onValueChange={setDraftParentId}
+                disabled={!canManageRoles || selfFounderLock || saveMutation.isPending}
+              >
+                <SelectTrigger className="w-full" aria-label="Reports to">
+                  <SelectValue placeholder="No manager" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">No manager (root)</SelectItem>
+                  {reportsToOptions.map((opt) => (
+                    <SelectItem key={opt.userId} value={opt.userId}>
+                      {opt.displayName ?? opt.email ?? opt.userId.slice(0, 8)}{" "}
+                      <span className="text-muted-foreground">({ROLE_LABELS[opt.role]})</span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {selfFounderLock && (
+              <div className="rounded-lg border border-border bg-muted/25 p-3">
+                <p className="text-sm text-muted-foreground">
+                  Your founder role is locked because this company needs at least one founder. Add or promote another
+                  founder before changing your own role hierarchy.
+                </p>
+              </div>
+            )}
+
+            {!canManageRoles && (
+              <div className="rounded-lg border border-border bg-muted/25 p-3">
+                <p className="text-sm text-muted-foreground">
+                  You don't have permission to manage roles. Contact a founder or system admin.
+                </p>
+              </div>
+            )}
+          </DialogBody>
+          <DialogFooter className="shrink-0 border-t border-border px-6 py-4">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setRoleDialogOpen(false)}
+              disabled={saveMutation.isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              onClick={() => saveMutation.mutate()}
+              disabled={!hasChanges || selfFounderLock || saveMutation.isPending}
+            >
+              {saveMutation.isPending ? "Saving..." : "Save Changes"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={profileDialogOpen}
@@ -1020,10 +1151,22 @@ export function HumanDetail() {
         {activeTab === "roles" && deps && (
           <div className="space-y-4 mt-4">
             <section className="rounded-xl border border-border bg-card p-4">
-              <h3 className="text-sm font-semibold flex items-center gap-2 mb-3">
-                <Shield className="h-4 w-4" />
-                Authority
-              </h3>
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <h3 className="text-sm font-semibold flex items-center gap-2">
+                  <Shield className="h-4 w-4" />
+                  Authority
+                </h3>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setRoleDialogOpen(true)}
+                  className="shrink-0"
+                >
+                  <Pencil className="h-3.5 w-3.5" />
+                  Edit roles
+                </Button>
+              </div>
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                 <div>
                   <p className="text-xs font-medium text-muted-foreground">Role</p>
@@ -1078,87 +1221,6 @@ export function HumanDetail() {
                 </div>
               </div>
             </section>
-
-            <div className="rounded-xl border border-border bg-card p-5">
-              <h3 className="text-sm font-semibold mb-4">Role & Department</h3>
-              <div className="space-y-4 max-w-md">
-                <div className="space-y-1.5">
-                  <label className="text-xs font-medium text-muted-foreground">Role</label>
-                  <Select
-                    value={draftRole}
-                    onValueChange={(value) => {
-                      const nextRole = value as UserRole;
-                      setDraftRole(nextRole);
-                      if (nextRole === "founder") {
-                        setDraftDepartmentId("none");
-                        setDraftParentId("none");
-                      }
-                    }}
-                    disabled={!canManageRoles || selfFounderLock || saveMutation.isPending}
-                  >
-                    <SelectTrigger className="w-full" aria-label="Role">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="founder">Founder</SelectItem>
-                      <SelectItem value="team_lead">Team Lead</SelectItem>
-                      <SelectItem value="team_member">Team Member</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <div className="space-y-1.5">
-                  <label className="text-xs font-medium text-muted-foreground">Department</label>
-                  <Select
-                    value={draftDepartmentId}
-                    onValueChange={setDraftDepartmentId}
-                    disabled={!canManageRoles || selfFounderLock || draftRole === "founder" || saveMutation.isPending}
-                  >
-                    <SelectTrigger className="w-full" aria-label="Department">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none">No department</SelectItem>
-                      {departments.map((dept: Project) => (
-                        <SelectItem key={dept.id} value={dept.id}>
-                          {dept.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <div className="space-y-1.5">
-                  <label className="text-xs font-medium text-muted-foreground">Reports to</label>
-                  <Select
-                    value={draftParentId}
-                    onValueChange={setDraftParentId}
-                    disabled={!canManageRoles || selfFounderLock || saveMutation.isPending}
-                  >
-                    <SelectTrigger className="w-full" aria-label="Reports to">
-                      <SelectValue placeholder="No manager" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none">No manager (root)</SelectItem>
-                      {reportsToOptions.map((opt) => (
-                        <SelectItem key={opt.userId} value={opt.userId}>
-                          {opt.displayName ?? opt.email ?? opt.userId.slice(0, 8)}{" "}
-                          <span className="text-muted-foreground">({ROLE_LABELS[opt.role]})</span>
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <Button
-                  onClick={() => saveMutation.mutate()}
-                  disabled={!hasChanges || selfFounderLock || saveMutation.isPending}
-                  className="w-full sm:w-auto"
-                >
-                  {saveMutation.isPending ? "Saving..." : "Save Changes"}
-                </Button>
-              </div>
-            </div>
 
             {selfFounderLock && (
               <div className="rounded-xl border border-border bg-card p-4">
