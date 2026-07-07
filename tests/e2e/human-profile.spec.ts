@@ -29,17 +29,18 @@ test.describe("Human profile page", () => {
     expect(profileRes.ok()).toBe(true);
 
     await page.goto(`/${company.issuePrefix}/team/${userId}`);
+    const main = page.locator("#main-content");
 
-    await expect(page.getByRole("heading", { name: "E2E Human" })).toBeVisible({ timeout: 10_000 });
-    await expect(page.getByText("Founder Operator")).toBeVisible();
-    await expect(page.getByText("Owns human-agent operating cadence.")).toBeVisible();
-    await expect(page.getByText("Remote")).toBeVisible();
-    await expect(page.getByText("UTC")).toBeVisible();
-    await expect(page.getByRole("link", { name: "Website" })).toHaveAttribute("href", "https://example.com");
-    await expect(page.getByText("Authority")).toBeVisible();
-    await expect(page.getByText("Assigned Tasks").first()).toBeVisible();
-    await expect(page.getByText("Created Tasks").first()).toBeVisible();
-    await expect(page.getByText("Activity")).toBeVisible();
+    await expect(main.getByRole("heading", { name: "E2E Human" })).toBeVisible({ timeout: 10_000 });
+    await expect(main.getByText("Founder Operator")).toBeVisible();
+    await expect(main.getByText("Owns human-agent operating cadence.")).toBeVisible();
+    await expect(main.getByText("Remote")).toBeVisible();
+    await expect(main.getByText("UTC")).toBeVisible();
+    await expect(main.getByRole("link", { name: "Website" })).toHaveAttribute("href", "https://example.com");
+    await expect(main.getByText("Authority")).toBeVisible();
+    await expect(main.getByText("Assigned Tasks").first()).toBeVisible();
+    await expect(main.getByText("Created Tasks").first()).toBeVisible();
+    await expect(main.getByText("Activity")).toBeVisible();
 
     await page.getByRole("button", { name: /edit/i }).click();
     await expect(page.getByRole("region", { name: "Profile" })).toBeVisible({ timeout: 5_000 });
