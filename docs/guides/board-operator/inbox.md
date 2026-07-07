@@ -49,4 +49,3 @@ In lane views:
 - `j` / `k` move selection
 - `Enter` opens the selected item
 - `Escape` clears selection or closes the mobile rail
-

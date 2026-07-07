@@ -45,4 +45,3 @@ The Local tree can browse the configured company root folder or home path.
 ## Graph and Backlinks
 
 The viewer supports memory items, assets, graph view, open/recent collections, folder summaries, and collapsed tabs. Use graph/backlink views to inspect how memory items relate before approving or editing long-lived knowledge.
-

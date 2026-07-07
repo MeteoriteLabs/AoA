@@ -302,20 +302,21 @@ describe("action-gated discussion tools", () => {
     expect(ctx.services.artifacts.create).not.toHaveBeenCalled();
     expect(ctx.db.select).not.toHaveBeenCalled();
     expect(ctx.db.update).not.toHaveBeenCalled();
-    expect(proposeThreadAction).toHaveBeenCalledWith({
+    expect(proposeThreadAction).toHaveBeenCalledWith(expect.objectContaining({
       companyId,
       threadId,
       runId,
       agentId,
       actionType: "create_artifact_candidate",
-      payload: {
+      payload: expect.objectContaining({
         title: "Onboarding plan",
         artifactType: "document",
         content: "# Plan\nUse the versioned scope.",
         fileRef: null,
         discussionId: threadId,
         attachToEntryId: "entry-3",
-      },
+        storageKind: "inline",
+      }),
       // #197: run-independent + turn-anchored; derived by the shared builder.
       idempotencyKey: buildArtifactCandidateIdempotencyKey({
         threadId,
@@ -326,7 +327,7 @@ describe("action-gated discussion tools", () => {
         turnAnchor: "4",
       }),
       freshness: { latestHumanSeq: 4, entrySeq: 6, latestScopeVersionId: null },
-    });
+    }));
   });
 
   it("advance_phase queues a phase action in Drive controller action-gate mode", async () => {

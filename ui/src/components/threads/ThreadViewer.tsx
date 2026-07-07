@@ -21,7 +21,6 @@ import {
 import {
   MEMORY_ITEM_CATEGORIES,
   MEMORY_ITEM_LAYERS,
-  type ArtifactVersion,
   type ArtifactWithVersions,
   type Goal,
   type Issue,
@@ -37,6 +36,11 @@ import { TaskOutputViewer } from "./TaskOutputViewer";
 import { BrowserViewer } from "@/components/viewers/BrowserViewer";
 import { SharedContentViewer } from "@/components/viewers/SharedContentViewer";
 import { ViewerTabs, type ViewerTabModel } from "@/components/viewers/ViewerTabs";
+import {
+  assetUrlForArtifactVersion,
+  contentTypeForArtifactVersion,
+  filenameForArtifactVersion,
+} from "@/components/viewers/artifact-version-viewer";
 import { resolveViewer } from "@/components/viewers/viewer-registry";
 import { cn } from "@/lib/utils";
 import { artifactsApi } from "../../api/artifacts";
@@ -929,6 +933,27 @@ function buildScopeHandoffOptions(
     const url = payloadString(payload.url);
 
     if (kind === "artifact_link" && candidate.artifactId) {
+      if (payload.storageKind === "asset" && assetId) {
+        addHandoffOption(
+          options,
+          {
+            type: "asset",
+            id: assetId,
+            label: payloadString(payload.filename) ?? candidate.title,
+            metadata: {
+              contentType: contentType ?? undefined,
+              filename: payloadString(payload.filename) ?? undefined,
+              artifactId: candidate.artifactId,
+              artifactVersionId: candidate.artifactVersionId ?? undefined,
+              scopeItemId: candidate.id,
+            },
+          },
+          payloadString(payload.filename) ?? candidate.title,
+          contentType ?? "Uploaded artifact file",
+        );
+        continue;
+      }
+
       addHandoffOption(
         options,
         {
@@ -2176,9 +2201,16 @@ function formatDateTime(value: string | Date | null | undefined): string | null 
 }
 
 function AssetAttachmentViewer({ attachment }: { attachment: DiscussionEntryAttachment }) {
-  const assetId = attachment.assetId;
-  const filename = attachment.assetOriginalFilename || attachment.artifactTitle || "Attached file";
-  const contentType = attachment.assetContentType || "application/octet-stream";
+  const assetId = attachment.currentVersionAssetId ?? attachment.assetId;
+  const filename =
+    attachment.currentVersionFilename ||
+    attachment.assetOriginalFilename ||
+    attachment.artifactTitle ||
+    "Attached file";
+  const contentType =
+    attachment.currentVersionContentType ||
+    attachment.assetContentType ||
+    "application/octet-stream";
 
   if (!assetId) {
     return <CenteredMessage title="File unavailable" body="This attachment has no asset id." />;
@@ -2231,12 +2263,14 @@ function ArtifactAttachmentViewer({
   }
 
   const inlineContent = version.content ?? null;
-  const contentType = contentTypeFromArtifactVersion(artifact, version);
+  const filename = filenameForArtifactVersion(artifact, version);
+  const contentType = contentTypeForArtifactVersion(artifact, version);
+  const assetUrl = assetUrlForArtifactVersion(version);
   const viewer = resolveViewer({
     contentType,
-    filename: artifact.title,
-    assetId: null,
-    assetUrl: version.fileUrl,
+    filename,
+    assetId: version.assetId,
+    assetUrl,
   });
 
   return (
@@ -2261,7 +2295,7 @@ function ArtifactAttachmentViewer({
       </div>
       <SharedContentViewer
         viewer={viewer}
-        filename={artifact.title}
+        filename={filename}
         inlineTextContent={inlineContent}
       />
     </div>
@@ -2329,55 +2363,3 @@ function CenteredMessage({ title, body }: { title: string; body: string }) {
   );
 }
 
-function extensionFromName(value: string | null | undefined): string {
-  const name = value?.split(/[?#]/, 1)[0]?.trim().toLowerCase() ?? "";
-  const dot = name.lastIndexOf(".");
-  return dot === -1 ? "" : name.slice(dot + 1);
-}
-
-function contentTypeFromArtifactVersion(
-  artifact: ArtifactWithVersions,
-  version: ArtifactVersion,
-): string {
-  const extension = extensionFromName(artifact.title) || extensionFromName(version.fileUrl);
-  switch (extension) {
-    case "png":
-      return "image/png";
-    case "jpg":
-    case "jpeg":
-      return "image/jpeg";
-    case "gif":
-      return "image/gif";
-    case "webp":
-      return "image/webp";
-    case "svg":
-      return "image/svg+xml";
-    case "pdf":
-      return "application/pdf";
-    case "mp4":
-      return "video/mp4";
-    case "webm":
-      return "video/webm";
-    case "mp3":
-      return "audio/mpeg";
-    case "wav":
-      return "audio/wav";
-    case "html":
-    case "htm":
-      return "text/html";
-    case "md":
-    case "mdx":
-      return "text/markdown";
-    case "json":
-      return "application/json";
-    case "csv":
-      return "text/csv";
-  }
-  if (artifact.type === "design" && version.fileUrl) return "image/png";
-  if (version.content !== null && version.content !== undefined) {
-    if (artifact.type === "code") return "text/plain";
-    if (artifact.type === "document") return "text/markdown";
-    return "text/plain";
-  }
-  return "application/octet-stream";
-}

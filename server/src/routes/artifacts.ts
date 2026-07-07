@@ -8,7 +8,7 @@ import {
 } from "@armyofagents/shared";
 import { validate } from "../middleware/validate.js";
 import { artifactService, logActivity } from "../services/index.js";
-import { assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { assertRole } from "../middleware/rbac.js";
 import { registerIssueParamNormalizer } from "./issue-param-normalizer.js";
 
@@ -21,7 +21,8 @@ export function artifactRoutes(db: Db) {
   router.get("/companies/:companyId/artifacts", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    const result = await svc.list(companyId);
+    const includeArchived = req.query.includeArchived === "true";
+    const result = await svc.list(companyId, { includeArchived });
     res.json(result);
   });
 
@@ -137,6 +138,52 @@ export function artifactRoutes(db: Db) {
     },
   );
 
+  // Archive artifact (founder-gated, reversible)
+  router.post("/artifacts/:id/archive", async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Artifact not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+    assertBoard(req);
+    await assertRole(db, req, existing.companyId, "founder");
+
+    const updated = await svc.archive(id);
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: existing.companyId, actorType: actor.actorType, actorId: actor.actorId,
+      agentId: actor.agentId, runId: actor.runId,
+      action: "artifact.archived", entityType: "artifact", entityId: id,
+      details: { title: existing.title },
+    });
+    res.json(updated);
+  });
+
+  // Unarchive artifact (founder-gated)
+  router.post("/artifacts/:id/unarchive", async (req, res) => {
+    const id = req.params.id as string;
+    const existing = await svc.getById(id);
+    if (!existing) {
+      res.status(404).json({ error: "Artifact not found" });
+      return;
+    }
+    assertCompanyAccess(req, existing.companyId);
+    assertBoard(req);
+    await assertRole(db, req, existing.companyId, "founder");
+
+    const updated = await svc.unarchive(id);
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: existing.companyId, actorType: actor.actorType, actorId: actor.actorId,
+      agentId: actor.agentId, runId: actor.runId,
+      action: "artifact.unarchived", entityType: "artifact", entityId: id,
+      details: { title: existing.title },
+    });
+    res.json(updated);
+  });
+
   // MCP inbound: push artifact version from external tool (Decision #69, #70)
   router.post(
     "/mcp/artifacts/:id/versions",
@@ -151,7 +198,20 @@ export function artifactRoutes(db: Db) {
       assertCompanyAccess(req, existing.companyId);
       await assertRole(db, req, existing.companyId, "founder");
 
-      const { sourceDetail, changelog, parentVersionId, content, fileUrl } = req.body;
+      const {
+        sourceDetail,
+        changelog,
+        parentVersionId,
+        content,
+        fileUrl,
+        storageKind,
+        assetId,
+        filename,
+        contentType,
+        extension,
+        byteSize,
+        sha256,
+      } = req.body;
 
       const version = await svc.addVersion(id, {
         source: "mcp",
@@ -160,6 +220,13 @@ export function artifactRoutes(db: Db) {
         parentVersionId: parentVersionId ?? null,
         content: content ?? null,
         fileUrl: fileUrl ?? null,
+        storageKind: storageKind ?? "inline",
+        assetId: assetId ?? null,
+        filename: filename ?? null,
+        contentType: contentType ?? null,
+        extension: extension ?? null,
+        byteSize: byteSize ?? null,
+        sha256: sha256 ?? null,
       });
 
       const actor = getActorInfo(req);

@@ -81,6 +81,14 @@ describe("create_artifact tool (P2.5)", () => {
       source: "agent",
       content: "hello",
       fileUrl: null,
+      // Asset fields default to inline/null when no assetId is provided (P1).
+      storageKind: "inline",
+      assetId: null,
+      filename: null,
+      contentType: null,
+      extension: null,
+      byteSize: null,
+      sha256: null,
     });
   });
 

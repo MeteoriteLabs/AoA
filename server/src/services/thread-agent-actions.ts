@@ -183,6 +183,13 @@ type ArtifactCommitService = {
       source: string;
       content?: string | null;
       fileUrl?: string | null;
+      storageKind?: "inline" | "asset";
+      assetId?: string | null;
+      filename?: string | null;
+      contentType?: string | null;
+      extension?: string | null;
+      byteSize?: number | null;
+      sha256?: string | null;
       sourceActionId?: string | null;
     },
   ) => Promise<{ id: string; versions?: Array<{ id: string }> }>;
@@ -1149,6 +1156,9 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
             }
 
             const explicitEntryId = asString(payload.attachToEntryId);
+            const assetId = asString(payload.assetId);
+            const storageKind = asString(payload.storageKind) === "asset" && assetId ? "asset" : "inline";
+            const byteSize = typeof payload.byteSize === "number" ? payload.byteSize : null;
             // Validate the caller-supplied attach target is in THIS thread BEFORE
             // any writes — reject a forged cross-thread attachToEntryId up front
             // so no artifact is created for an invalid target. (Review fix (minor).)
@@ -1195,8 +1205,15 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
                     title,
                     type: asString(payload.artifactType) ?? "document",
                     source: "agent",
-                    content: asString(payload.content) ?? null,
-                    fileUrl: asString(payload.fileRef) ?? null,
+                    content: storageKind === "asset" ? null : (asString(payload.content) ?? null),
+                    fileUrl: storageKind === "asset" ? null : (asString(payload.fileRef) ?? null),
+                    storageKind,
+                    assetId: storageKind === "asset" ? assetId : null,
+                    filename: storageKind === "asset" ? (asString(payload.filename) ?? null) : null,
+                    contentType: storageKind === "asset" ? (asString(payload.contentType) ?? null) : null,
+                    extension: storageKind === "asset" ? (asString(payload.extension) ?? null) : null,
+                    byteSize: storageKind === "asset" ? byteSize : null,
+                    sha256: storageKind === "asset" ? (asString(payload.sha256) ?? null) : null,
                     // #197: stamp the action id so the partial unique index makes this
                     // artifact commit idempotent across re-runs / reaper re-commits.
                     sourceActionId: action.id,

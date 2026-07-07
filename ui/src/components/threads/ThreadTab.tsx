@@ -7,11 +7,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { discussionsApi, type DiscussionEntry, type DiscussionEntryAttachment } from "../../api/discussions";
+import { archiveArtifact, unarchiveArtifact } from "../../api/artifacts";
 import { authApi } from "../../api/auth";
 import { agentsApi } from "../../api/agents";
 import { assetsApi } from "../../api/assets";
 import { teamApi } from "../../api/team";
 import { issuesApi } from "../../api/issues";
+import { useTeamAccess } from "../../hooks/useTeamAccess";
 import { useToast } from "../../context/ToastContext";
 import { useLiveUpdates } from "../../context/LiveUpdatesProvider";
 import { queryKeys } from "../../lib/queryKeys";
@@ -63,6 +65,9 @@ export function ThreadTab({
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const { connectionState, workingAgentsByThread, presenceByThread } = useLiveUpdates();
+  // Artifact Lifecycle P1: archive/unarchive is founder-only.
+  const { role: teamRole } = useTeamAccess(companyId);
+  const canManageArtifacts = teamRole === "founder";
   const isOffline = connectionState === "offline";
   const isReconnecting = connectionState === "reconnecting";
   const isDisconnected = isOffline || isReconnecting;
@@ -196,6 +201,7 @@ export function ThreadTab({
 
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: ["threads", companyId, threadId] });
+    queryClient.invalidateQueries({ queryKey: queryKeys.discussions.detail(companyId, threadId) });
   };
 
   const addEntryMutation = useMutation({
@@ -209,8 +215,11 @@ export function ThreadTab({
         inputType: "write",
         parentEntryId: payload.parentEntryId,
         // Phase E1: pass attachment ids so the server links them in the same txn.
+        // Artifact Lifecycle P1: founder file-artifact uploads carry an
+        // `artifactId` — route those to { artifactId } so the server links the
+        // tracked artifact instead of a bare asset.
         attachments: payload.attachments.length
-          ? payload.attachments.map((a) => ({ assetId: a.id }))
+          ? payload.attachments.map((a) => (a.artifactId ? { artifactId: a.artifactId } : { assetId: a.id }))
           : undefined,
       } as Parameters<typeof discussionsApi.addEntry>[2]),
     onSuccess: () => {
@@ -220,6 +229,26 @@ export function ThreadTab({
       pushToast({ title: "Failed to send message", tone: "warn" });
     },
   });
+
+  // Artifact Lifecycle P1: archive/unarchive an inline artifact, then invalidate
+  // the same thread query the entry mutation uses so the card re-renders with
+  // the new artifactStatus (server returns it on the attachment join).
+  // Use mutateAsync at the call site so the card's ArtifactActions can await the
+  // result, drive its busy-disable, and surface a failure inline (single error
+  // surface at the artifact — no global toast double-report).
+  const archiveArtifactMutation = useMutation({
+    mutationFn: (artifactId: string) => archiveArtifact(artifactId),
+    onSuccess: () => invalidate(),
+  });
+  const unarchiveArtifactMutation = useMutation({
+    mutationFn: (artifactId: string) => unarchiveArtifact(artifactId),
+    onSuccess: () => invalidate(),
+  });
+  // Return Promise<void> so the card's ArtifactActions can await it (busy-disable +
+  // inline error). The mutation result is irrelevant to the card; a rejection
+  // propagates through `.then` to the card's catch.
+  const handleArchiveArtifact = (id: string): Promise<void> => archiveArtifactMutation.mutateAsync(id).then(() => undefined);
+  const handleUnarchiveArtifact = (id: string): Promise<void> => unarchiveArtifactMutation.mutateAsync(id).then(() => undefined);
 
   const reprocessMutation = useMutation({
     mutationFn: (entryId: string) =>
@@ -434,11 +463,13 @@ export function ThreadTab({
     <div data-testid="thread-composer">
       <EntryComposer
         threadId={threadId}
+        companyId={companyId}
         agents={composerAgents}
         users={composerUsers}
         onUpload={handleUpload}
         onSubmit={handleComposerSubmit}
         disabled={isDisconnected || addEntryMutation.isPending}
+        canCreateFileArtifacts={canManageArtifacts}
         myInitials={myInitials}
         hint={
           isDisconnected
@@ -516,6 +547,9 @@ export function ThreadTab({
                 onCrewFailureReassign={(issueId) => navigate(`/issues/${issueId}`)}
                 onCrewFailureSkip={(issueId) => skipTaskMutation.mutate(issueId)}
                 onOpenArtifact={(attachment) => onOpenAttachment?.(attachment, entry.id)}
+                canManageArtifacts={canManageArtifacts}
+                onArchiveArtifact={handleArchiveArtifact}
+                onUnarchiveArtifact={handleUnarchiveArtifact}
                 hasScopeDraft={hasScopeDraft}
               />
               {replies.map((reply) => (
@@ -531,6 +565,9 @@ export function ThreadTab({
                     onCrewFailureReassign={(issueId) => navigate(`/issues/${issueId}`)}
                     onCrewFailureSkip={(issueId) => skipTaskMutation.mutate(issueId)}
                     onOpenArtifact={(attachment) => onOpenAttachment?.(attachment, reply.id)}
+                    canManageArtifacts={canManageArtifacts}
+                    onArchiveArtifact={handleArchiveArtifact}
+                    onUnarchiveArtifact={handleUnarchiveArtifact}
                     hasScopeDraft={hasScopeDraft}
                   />
                 </div>

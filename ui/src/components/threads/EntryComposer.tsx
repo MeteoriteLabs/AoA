@@ -25,6 +25,7 @@ import {
   EntryAutocompleteList,
   type EntrySuggestion,
 } from "./EntryAutocompleteList";
+import { FileArtifactUpload } from "./FileArtifactUpload";
 
 /* ─── Public types ─── */
 
@@ -43,6 +44,8 @@ export interface AssetRef {
   id: string;
   name: string;
   mimeType: string;
+  /** Set when this attachment is a tracked artifact (founder file-artifact upload). */
+  artifactId?: string;
 }
 export interface Mention {
   id: string;
@@ -52,6 +55,8 @@ export interface Mention {
 
 export interface EntryComposerProps {
   threadId: string;
+  /** Company scope — used by the founder file-artifact upload control. */
+  companyId: string;
   parentEntryId?: string | null;
   agents: AgentRef[];
   users: UserRef[];
@@ -69,6 +74,8 @@ export interface EntryComposerProps {
   }) => void | Promise<void>;
   /** Composer is disabled (offline, error, etc.) and visually shows it. */
   disabled?: boolean;
+  /** Founder-only control for creating tracked file artifacts. */
+  canCreateFileArtifacts?: boolean;
   /** Optional inline hint shown above the input (e.g. offline notice). */
   hint?: React.ReactNode;
   /** Placeholder override. */
@@ -119,12 +126,14 @@ function detectMentionToken(
 
 export function EntryComposer({
   threadId,
+  companyId,
   parentEntryId = null,
   agents,
   users,
   onUpload,
   onSubmit,
   disabled = false,
+  canCreateFileArtifacts = false,
   hint,
   placeholder,
   onCancelReply,
@@ -435,6 +444,21 @@ export function EntryComposer({
             data-testid="entry-composer-file-input"
             aria-label="File attachment input"
           />
+
+          {canCreateFileArtifacts ? (
+            <div className="shrink-0">
+              <FileArtifactUpload
+                companyId={companyId}
+                onUploaded={(artifact) =>
+                  setAttachments((prev) => [
+                    ...prev,
+                    { id: artifact.id, name: artifact.title, mimeType: artifact.type, artifactId: artifact.id },
+                  ])
+                }
+                disabled={disabled || isSubmitting}
+              />
+            </div>
+          ) : null}
 
           {/* Autocomplete dropdown */}
           {autocompleteOpen && (

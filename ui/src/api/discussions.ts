@@ -93,6 +93,13 @@ export interface DiscussionEntryAttachment {
   assetContentType?: string | null;
   assetOriginalFilename?: string | null;
   assetByteSize?: number | null;
+  // Artifact Lifecycle P1
+  artifactStatus?: string | null;
+  currentVersionStorageKind?: string | null;
+  currentVersionFilename?: string | null;
+  currentVersionContentType?: string | null;
+  currentVersionByteSize?: number | null;
+  currentVersionAssetId?: string | null;
 }
 
 export interface DiscussionEntry {

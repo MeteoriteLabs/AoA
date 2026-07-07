@@ -2,17 +2,15 @@
 //
 // Task C2 batch 2 — `create_artifact_version` (action tool, Engineer iteration).
 //
-// Creates a new version of an existing artifact and updates artifacts.
-// current_version_id to point at it. Wrapped in a transaction so the
-// artifacts row's pointer is never left pointing at a non-existent
-// version (or stuck on the previous version when the insert succeeded).
-//
-// versionNumber is allocated atomically inside the transaction by reading
-// the current max(version_number) for the artifactId and adding 1. This
-// matches the existing artifactService.create-version pattern.
+// Creates a new version of an existing artifact by delegating to
+// artifactService.addVersion — the single choke point that owns
+// parent-validation, atomic version-numbering, the artifacts.current_version_id
+// pointer bump, and assertAssetOwned. The tool keeps its own caller-company
+// ownership pre-check (addVersion does not scope by caller company, and this is
+// a crew-agent / prompt-injection surface).
 
-import { eq, sql } from "drizzle-orm";
-import { artifacts, artifactVersions } from "@armyofagents/db";
+import { eq } from "drizzle-orm";
+import { artifacts } from "@armyofagents/db";
 import type { AgentTool } from "../types.js";
 
 export const createArtifactVersionTool: AgentTool = {
@@ -81,81 +79,35 @@ export const createArtifactVersionTool: AgentTool = {
       };
     }
 
+    // All version writers funnel through artifactService.addVersion — the single
+    // choke point that owns parent-validation, atomic version-numbering, the
+    // currentVersionId pointer bump, AND assertAssetOwned. Inserting the version
+    // row here directly would duplicate (and could drift from) those guards. The
+    // company-ownership pre-check above stays in the tool because addVersion does
+    // NOT scope by caller company, and this tool is a prompt-injection surface.
     try {
-      const result = await ctx.db.transaction(async (tx: any) => {
-        // SECURITY (branching scope): a supplied parentVersionId MUST belong to
-        // THIS artifact. The FK only constrains it to *some* artifact_versions
-        // row, so without this check a prompt-injected crew agent could branch a
-        // new version on a valid same-company artifact off a parent owned by
-        // ANOTHER artifact (and another company). This tool inserts the version
-        // row directly here, bypassing artifactService.addVersion's identical
-        // guard — so it must re-validate the parent inside the tx, BEFORE the
-        // insert. A foreign or missing parent is rejected as NOT_FOUND (same as
-        // artifacts.ts addVersion) and nothing is written. Returning here aborts
-        // the transaction before any insert/update runs.
-        if (parentVersionId) {
-          const [parent] = await tx
-            .select({ artifactId: artifactVersions.artifactId })
-            .from(artifactVersions)
-            .where(eq(artifactVersions.id, parentVersionId));
-          if (!parent || parent.artifactId !== artifactId) {
-            return { invalidParent: true as const };
-          }
-        }
-
-        const latestRows = await tx
-          .select({
-            max: sql<number>`coalesce(max(${artifactVersions.versionNumber}), 0)::int`,
-          })
-          .from(artifactVersions)
-          .where(eq(artifactVersions.artifactId, artifactId));
-        const latest = Array.isArray(latestRows) ? latestRows[0] : latestRows;
-        const currentMax = Number(latest?.max ?? 0);
-        const nextVersion = currentMax + 1;
-
-        const inserted = await tx
-          .insert(artifactVersions)
-          .values({
-            artifactId,
-            versionNumber: nextVersion,
-            content,
-            source: "agent",
-            parentVersionId: parentVersionId ?? null,
-          })
-          .returning();
-        const newVersion = Array.isArray(inserted) ? inserted[0] : inserted;
-        if (!newVersion || !newVersion.id) {
-          throw new Error("artifact_versions insert returned no row");
-        }
-
-        await tx
-          .update(artifacts)
-          .set({ currentVersionId: newVersion.id, updatedAt: new Date() })
-          .where(eq(artifacts.id, artifactId));
-
-        return { versionId: newVersion.id, versionNumber: nextVersion };
+      const version = await ctx.services.artifacts.addVersion(artifactId, {
+        source: "agent",
+        content,
+        parentVersionId: parentVersionId ?? null,
       });
-
-      if ("invalidParent" in result) {
-        return {
-          success: false,
-          data: null,
-          summary: "Artifact version parent invalid",
-          error: "NOT_FOUND",
-        };
-      }
-
       return {
         success: true,
-        data: result,
-        summary: `Created artifact v${result.versionNumber}`,
+        data: { versionId: version.id, versionNumber: version.versionNumber },
+        summary: `Created artifact v${version.versionNumber}`,
       };
     } catch (err: any) {
+      // addVersion throws badRequest (HttpError status 400) "parentVersionId does
+      // not belong to this artifact" for a foreign/missing parent — mirror the
+      // prior NOT_FOUND. Anchor on status 400 so a reworded message can't silently
+      // downgrade this to TRANSACTION_FAILED; the substring keeps it specific.
+      const foreignParent =
+        err?.status === 400 && typeof err?.message === "string" && err.message.includes("parentVersionId");
       return {
         success: false,
         data: null,
-        summary: `Failed to create artifact version: ${err?.message ?? "unknown error"}`,
-        error: "TRANSACTION_FAILED",
+        summary: foreignParent ? "Artifact version parent invalid" : `Failed to create artifact version: ${err?.message ?? "unknown error"}`,
+        error: foreignParent ? "NOT_FOUND" : "TRANSACTION_FAILED",
       };
     }
   },

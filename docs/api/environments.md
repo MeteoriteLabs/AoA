@@ -26,4 +26,3 @@ DELETE /api/companies/{companyId}/environments/{environmentId}
 Environment payloads are validated by the shared environment validators. Targets include local-style execution and sandbox targets such as `sandbox-docker`. Secret bindings reference company secrets rather than embedding secret material in the environment record.
 
 Use project-level `GET/PATCH /api/projects/{projectId}/environment` only for legacy project environment variables documented in Goals and Projects.
-

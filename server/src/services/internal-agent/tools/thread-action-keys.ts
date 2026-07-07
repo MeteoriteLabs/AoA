@@ -42,6 +42,7 @@ export function buildArtifactCandidateIdempotencyKey(input: {
   title: string;
   content?: string | null;
   fileRef?: string | null;
+  assetId?: string | null;
   turnAnchor?: string | null;
 }): string {
   return [
@@ -51,7 +52,7 @@ export function buildArtifactCandidateIdempotencyKey(input: {
     input.turnAnchor ?? "noanchor",
     // Delimited tuple (not space-join) so title/content boundaries are unambiguous,
     // and fileRef is always included even when content is present.
-    sha256(JSON.stringify([input.title, input.content ?? null, input.fileRef ?? null])),
+    sha256(JSON.stringify([input.title, input.content ?? null, input.fileRef ?? null, input.assetId ?? null])),
   ].join(":");
 }
 

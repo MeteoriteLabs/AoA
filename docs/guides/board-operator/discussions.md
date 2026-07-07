@@ -49,4 +49,3 @@ Thread entries can carry assets or artifacts. The viewer supports thread content
 ## Legacy Status
 
 Legacy Brief/Debrief tables remain for rollback safety. New operator work should happen in Discussions.
-

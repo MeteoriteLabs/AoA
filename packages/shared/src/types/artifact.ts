@@ -23,6 +23,13 @@ export interface ArtifactVersion {
   parentVersionId: string | null;
   content: string | null;
   fileUrl: string | null;
+  storageKind?: "inline" | "asset" | null;
+  assetId?: string | null;
+  filename?: string | null;
+  contentType?: string | null;
+  extension?: string | null;
+  byteSize?: number | null;
+  sha256?: string | null;
   createdAt: Date;
 }
 

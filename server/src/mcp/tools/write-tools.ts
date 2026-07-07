@@ -1,8 +1,11 @@
 import { z } from "zod";
+import { and, eq } from "drizzle-orm";
+import { assets } from "@armyofagents/db";
 import {
   ISSUE_STATUSES,
   MEMORY_ITEM_LAYERS,
   mcpArtifactVersionSchema,
+  mcpArtifactVersionShape,
   mcpDebriefSchema,
 } from "@armyofagents/shared";
 import { logActivity } from "../../services/index.js";
@@ -336,18 +339,25 @@ async function handleAddTaskComment(
   return ok(comment);
 }
 
-async function handleAttachArtifactVersion(
+export async function handleAttachArtifactVersion(
   ctx: ToolContext,
   args: Record<string, unknown>,
 ): Promise<ToolResult> {
   const parsed = z
     .object({
       artifactId: z.string().uuid(),
-      sourceDetail: mcpArtifactVersionSchema.shape.sourceDetail,
-      changelog: mcpArtifactVersionSchema.shape.changelog,
-      parentVersionId: mcpArtifactVersionSchema.shape.parentVersionId,
-      content: mcpArtifactVersionSchema.shape.content,
-      fileUrl: mcpArtifactVersionSchema.shape.fileUrl,
+      sourceDetail: mcpArtifactVersionShape.sourceDetail,
+      changelog: mcpArtifactVersionShape.changelog,
+      parentVersionId: mcpArtifactVersionShape.parentVersionId,
+      content: mcpArtifactVersionShape.content,
+      fileUrl: mcpArtifactVersionShape.fileUrl,
+      storageKind: mcpArtifactVersionShape.storageKind,
+      assetId: mcpArtifactVersionShape.assetId,
+      filename: mcpArtifactVersionShape.filename,
+      contentType: mcpArtifactVersionShape.contentType,
+      extension: mcpArtifactVersionShape.extension,
+      byteSize: mcpArtifactVersionShape.byteSize,
+      sha256: mcpArtifactVersionShape.sha256,
     })
     .parse(args);
 
@@ -376,6 +386,21 @@ async function handleAttachArtifactVersion(
     return forbiddenResult("Insufficient permissions for artifact update");
   }
 
+  // Defense-in-depth (P1): for asset-backed versions, verify the asset is
+  // owned by THIS company at the protocol boundary before forwarding. The
+  // service-level assertAssetOwned guard (Task 3) is the universal check; this
+  // is a redundant company-scoped lookup so a cross-tenant assetId is rejected
+  // with a clean 404 here.
+  if (parsed.storageKind === "asset") {
+    if (!parsed.assetId) return notFoundResult("assetId required for asset-backed version");
+    const asset = await ctx.db
+      .select({ id: assets.id })
+      .from(assets)
+      .where(and(eq(assets.id, parsed.assetId), eq(assets.companyId, ctx.companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (!asset) return notFoundResult("Asset not found");
+  }
+
   const version = await ctx.services.artifactsSvc.addVersion(parsed.artifactId, {
     source: "mcp",
     sourceDetail: parsed.sourceDetail,
@@ -383,6 +408,13 @@ async function handleAttachArtifactVersion(
     parentVersionId: parsed.parentVersionId ?? null,
     content: parsed.content ?? null,
     fileUrl: parsed.fileUrl ?? null,
+    storageKind: parsed.storageKind ?? "inline",
+    assetId: parsed.assetId ?? null,
+    filename: parsed.filename ?? null,
+    contentType: parsed.contentType ?? null,
+    extension: parsed.extension ?? null,
+    byteSize: parsed.byteSize ?? null,
+    sha256: parsed.sha256 ?? null,
   });
   await logActivity(ctx.db, {
     companyId: ctx.companyId,

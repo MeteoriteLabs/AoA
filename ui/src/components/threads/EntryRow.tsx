@@ -244,6 +244,10 @@ export interface EntryRowProps {
   onSpinOffDismiss?: (entry: DiscussionEntry, suggestion: SpinOffSuggestion) => void;
   /** Phase E2: clicked when the user opens an inline artifact. */
   onOpenArtifact?: (attachment: DiscussionEntryAttachment) => void;
+  /** Artifact Lifecycle P1: founder-gated archive/unarchive on inline artifacts. */
+  canManageArtifacts?: boolean;
+  onArchiveArtifact?: (artifactId: string) => void | Promise<void>;
+  onUnarchiveArtifact?: (artifactId: string) => void | Promise<void>;
   /** P2-T2: crew-failure card actions (issueId passed through). */
   onCrewFailureRetry?: (issueId: string) => void;
   onCrewFailureReassign?: (issueId: string) => void;
@@ -267,6 +271,9 @@ export function EntryRow({
   onSpinOffAccept,
   onSpinOffDismiss,
   onOpenArtifact,
+  canManageArtifacts,
+  onArchiveArtifact,
+  onUnarchiveArtifact,
   onCrewFailureRetry,
   onCrewFailureReassign,
   onCrewFailureSkip,
@@ -397,6 +404,9 @@ export function EntryRow({
         pendingCount={pendingCount}
         extractionError={extractionError}
         onOpenArtifact={onOpenArtifact}
+        canManageArtifacts={canManageArtifacts}
+        onArchiveArtifact={onArchiveArtifact}
+        onUnarchiveArtifact={onUnarchiveArtifact}
       />
     );
   }
@@ -410,6 +420,9 @@ export function EntryRow({
         pendingCount={pendingCount}
         extractionError={extractionError}
         onOpenArtifact={onOpenArtifact}
+        canManageArtifacts={canManageArtifacts}
+        onArchiveArtifact={onArchiveArtifact}
+        onUnarchiveArtifact={onUnarchiveArtifact}
       />
     );
   }
@@ -422,6 +435,9 @@ export function EntryRow({
       pendingCount={pendingCount}
       extractionError={extractionError}
       onOpenArtifact={onOpenArtifact}
+      canManageArtifacts={canManageArtifacts}
+      onArchiveArtifact={onArchiveArtifact}
+      onUnarchiveArtifact={onUnarchiveArtifact}
     />
   );
 }
@@ -435,6 +451,9 @@ function MeBubble({
   pendingCount,
   extractionError,
   onOpenArtifact,
+  canManageArtifacts,
+  onArchiveArtifact,
+  onUnarchiveArtifact,
 }: {
   entry: DiscussionEntry;
   taskCount: number;
@@ -442,6 +461,9 @@ function MeBubble({
   pendingCount: number;
   extractionError?: string | null;
   onOpenArtifact?: (attachment: DiscussionEntryAttachment) => void;
+  canManageArtifacts?: boolean;
+  onArchiveArtifact?: (artifactId: string) => void | Promise<void>;
+  onUnarchiveArtifact?: (artifactId: string) => void | Promise<void>;
 }) {
   return (
     <div
@@ -478,6 +500,9 @@ function MeBubble({
               <InlineArtifactCard
                 attachments={entry.attachments}
                 onOpen={onOpenArtifact}
+                canManage={canManageArtifacts}
+                onArchiveArtifact={onArchiveArtifact}
+                onUnarchiveArtifact={onUnarchiveArtifact}
               />
             </div>
           )}
@@ -511,6 +536,9 @@ function HumanBubble({
   pendingCount,
   extractionError,
   onOpenArtifact,
+  canManageArtifacts,
+  onArchiveArtifact,
+  onUnarchiveArtifact,
 }: {
   entry: DiscussionEntry;
   taskCount: number;
@@ -518,6 +546,9 @@ function HumanBubble({
   pendingCount: number;
   extractionError: string | null;
   onOpenArtifact?: (attachment: DiscussionEntryAttachment) => void;
+  canManageArtifacts?: boolean;
+  onArchiveArtifact?: (artifactId: string) => void | Promise<void>;
+  onUnarchiveArtifact?: (artifactId: string) => void | Promise<void>;
 }) {
   return (
     <div
@@ -558,6 +589,9 @@ function HumanBubble({
           <InlineArtifactCard
             attachments={entry.attachments}
             onOpen={onOpenArtifact}
+            canManage={canManageArtifacts}
+            onArchiveArtifact={onArchiveArtifact}
+            onUnarchiveArtifact={onUnarchiveArtifact}
           />
         )}
         <ChipRow
@@ -582,6 +616,9 @@ function AgentCard({
   pendingCount,
   extractionError,
   onOpenArtifact,
+  canManageArtifacts,
+  onArchiveArtifact,
+  onUnarchiveArtifact,
 }: {
   entry: DiscussionEntry;
   taskCount: number;
@@ -589,6 +626,9 @@ function AgentCard({
   pendingCount: number;
   extractionError: string | null;
   onOpenArtifact?: (attachment: DiscussionEntryAttachment) => void;
+  canManageArtifacts?: boolean;
+  onArchiveArtifact?: (artifactId: string) => void | Promise<void>;
+  onUnarchiveArtifact?: (artifactId: string) => void | Promise<void>;
 }) {
   const color = agentRoleColor(entry.authorAgentName);
   const agentName = entry.authorAgentName ?? "Agent";
@@ -644,6 +684,9 @@ function AgentCard({
           <InlineArtifactCard
             attachments={entry.attachments}
             onOpen={onOpenArtifact}
+            canManage={canManageArtifacts}
+            onArchiveArtifact={onArchiveArtifact}
+            onUnarchiveArtifact={onUnarchiveArtifact}
           />
         )}
 

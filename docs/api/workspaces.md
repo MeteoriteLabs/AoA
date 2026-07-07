@@ -40,4 +40,3 @@ GET /api/companies/{companyId}/projects/{projectId}/git/enrich
 ```
 
 These routes power project-level git graph visualizations and enrichment.
-

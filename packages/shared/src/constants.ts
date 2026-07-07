@@ -698,6 +698,9 @@ export const ARTIFACT_VERSION_SOURCES = [
 ] as const;
 export type ArtifactVersionSource = (typeof ARTIFACT_VERSION_SOURCES)[number];
 
+export const ARTIFACT_STORAGE_KINDS = ["inline", "asset"] as const;
+export type ArtifactStorageKind = (typeof ARTIFACT_STORAGE_KINDS)[number];
+
 // ── Suggestions ────────────────────────────────────────────────────
 
 export const SUGGESTION_CATEGORIES = [

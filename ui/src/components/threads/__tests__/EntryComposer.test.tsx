@@ -7,6 +7,10 @@ import userEvent from "@testing-library/user-event";
 import { renderWithProviders } from "../../../__tests__/test-utils";
 import { EntryComposer, type AgentRef, type UserRef } from "../EntryComposer";
 
+// The composer mounts FileArtifactUpload, which uses useToast; renderWithProviders
+// has no ToastProvider, so mock the hook (mirrors ThreadTab.test / FileArtifactUpload.test).
+vi.mock("../../../context/ToastContext", () => ({ useToast: () => ({ pushToast: vi.fn() }) }));
+
 const agents: AgentRef[] = [
   { id: "agent-scout", name: "Scout", role: "scout" },
   { id: "agent-engineer", name: "Engineer", role: "engineer" },
@@ -23,6 +27,7 @@ describe("EntryComposer — autocomplete", () => {
     renderWithProviders(
       <EntryComposer
         threadId="thread-1"
+        companyId="test-co"
         agents={agents}
         users={users}
         onSubmit={vi.fn()}
@@ -42,6 +47,7 @@ describe("EntryComposer — autocomplete", () => {
     renderWithProviders(
       <EntryComposer
         threadId="thread-1"
+        companyId="test-co"
         agents={agents}
         users={users}
         onSubmit={vi.fn()}
@@ -59,6 +65,7 @@ describe("EntryComposer — autocomplete", () => {
     renderWithProviders(
       <EntryComposer
         threadId="thread-1"
+        companyId="test-co"
         agents={agents}
         users={users}
         onSubmit={vi.fn()}
@@ -86,6 +93,7 @@ describe("EntryComposer — submit", () => {
     renderWithProviders(
       <EntryComposer
         threadId="thread-1"
+        companyId="test-co"
         parentEntryId="parent-42"
         agents={agents}
         users={users}
@@ -132,6 +140,33 @@ describe("EntryComposer — submit", () => {
 });
 
 describe("EntryComposer — attachments", () => {
+  it("does not render the tracked file-artifact upload by default", () => {
+    renderWithProviders(
+      <EntryComposer
+        threadId="thread-1"
+        companyId="test-co"
+        agents={agents}
+        users={users}
+        onSubmit={vi.fn()}
+      />,
+    );
+    expect(screen.queryByTestId("file-artifact-upload")).not.toBeInTheDocument();
+  });
+
+  it("renders the tracked file-artifact upload when allowed", () => {
+    renderWithProviders(
+      <EntryComposer
+        threadId="thread-1"
+        companyId="test-co"
+        agents={agents}
+        users={users}
+        onSubmit={vi.fn()}
+        canCreateFileArtifacts
+      />,
+    );
+    expect(screen.getByTestId("file-artifact-upload")).toBeInTheDocument();
+  });
+
   it("renders an attachment preview after the file is uploaded", async () => {
     const upload = vi.fn().mockResolvedValue({
       id: "asset-1",
@@ -141,6 +176,7 @@ describe("EntryComposer — attachments", () => {
     renderWithProviders(
       <EntryComposer
         threadId="thread-1"
+        companyId="test-co"
         agents={agents}
         users={users}
         onUpload={upload}
@@ -165,6 +201,7 @@ describe("EntryComposer — reply mode", () => {
     renderWithProviders(
       <EntryComposer
         threadId="thread-1"
+        companyId="test-co"
         parentEntryId="parent-42"
         agents={agents}
         users={users}

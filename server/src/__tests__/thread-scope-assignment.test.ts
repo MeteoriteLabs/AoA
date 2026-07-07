@@ -29,6 +29,7 @@ vi.mock("@armyofagents/db", () => ({
   discussionExtractedItems: new Proxy({}, { get: (_t, p) => p }),
   discussionEntryAttachments: new Proxy({}, { get: (_t, p) => p }),
   artifacts: new Proxy({}, { get: (_t, p) => p }),
+  artifactVersions: new Proxy({}, { get: (_t, p) => p }),
   assets: new Proxy({}, { get: (_t, p) => p }),
   threadScopeVersions: new Proxy({}, { get: (_t, p) => p }),
   threadScopeItems: new Proxy({}, { get: (_t, p) => p }),

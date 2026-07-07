@@ -40,7 +40,9 @@ export const queryCompanyArtifactsTool: AgentTool = {
     if (typeof type === "string" && !typeFilter) droppedFilters.push(`type="${type.slice(0, 40)}"`);
     if (typeof status === "string" && !statusFilter) droppedFilters.push(`status="${status.slice(0, 40)}"`);
 
-    const rows = await ctx.services.artifacts.list(ctx.companyId);
+    const rows = await ctx.services.artifacts.list(ctx.companyId, {
+      includeArchived: statusFilter === "archived",
+    });
     const filtered = (Array.isArray(rows) ? rows : [])
       .filter((a: any) => (typeFilter ? a.type === typeFilter : true))
       .filter((a: any) => (statusFilter ? a.status === statusFilter : true));

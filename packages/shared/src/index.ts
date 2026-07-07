@@ -877,6 +877,7 @@ export {
   updateArtifactSchema,
   createArtifactVersionSchema,
   mcpArtifactVersionSchema,
+  mcpArtifactVersionShape,
   type CreateArtifact,
   type UpdateArtifact,
   type CreateArtifactVersion,

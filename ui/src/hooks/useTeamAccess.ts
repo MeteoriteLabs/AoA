@@ -13,12 +13,15 @@ export function useTeamAccess(companyId: string | null | undefined) {
     ...query,
     summary: query.data ?? null,
     currentUser: query.data?.currentUser ?? null,
-    permissions: query.data?.currentUser.permissions ?? {
+    // Guard `currentUser` too (not just `data`): a partial/loading team summary —
+    // or a test mock returning `{ members: [] }` without `currentUser` — would
+    // otherwise throw "Cannot read properties of undefined (reading 'permissions')".
+    permissions: query.data?.currentUser?.permissions ?? {
       canAssignTasks: false,
       canInviteUsers: false,
       canManageRoles: false,
       canEditIdentityMemory: false,
     },
-    role: query.data?.currentUser.role ?? null,
+    role: query.data?.currentUser?.role ?? null,
   };
 }
