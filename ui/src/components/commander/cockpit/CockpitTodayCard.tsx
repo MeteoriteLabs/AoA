@@ -1,17 +1,19 @@
 import { MessageSquare, Pin } from "lucide-react";
-import type { CockpitPinnedEntityType, CockpitReminderItem, CockpitTaskItem } from "@armyofagents/shared";
+import type { CockpitPinnedEntityType, CockpitReminderItem, CockpitTaskItem, CommanderInputRef } from "@armyofagents/shared";
 
 export function CockpitTodayCard({
   reminders,
   dueTasks,
   onOpenTask,
   onAsk,
+  onReference,
   onPin,
 }: {
   reminders: CockpitReminderItem[];
   dueTasks: CockpitTaskItem[];
   onOpenTask?: (issueId: string, title: string) => void;
   onAsk?: (text: string) => void;
+  onReference?: (ref: CommanderInputRef, suggestedPrompt?: string) => void;
   onPin?: (entityType: CockpitPinnedEntityType, entityId: string) => void;
 }) {
   const totalCount = reminders.length + dueTasks.length;
@@ -77,11 +79,19 @@ export function CockpitTodayCard({
                     type="button"
                     aria-label="Ask Commander about this"
                     className="ml-1 hidden shrink-0 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground group-hover:flex"
-                    onClick={() =>
-                      onAsk(
-                        `${item.identifier ?? item.title} is due today — what's the current status and is there anything blocking it?`,
-                      )
-                    }
+                    onClick={() => {
+                      const prompt = `${item.identifier ?? item.title} is due today - what's the current status and is there anything blocking it?`;
+                      const ref: CommanderInputRef = {
+                        v: 1,
+                        kind: "task",
+                        id: item.id,
+                        label: item.identifier ? `${item.identifier} ${item.title}` : item.title,
+                        route: `/issues/${item.id}`,
+                        detail: `status=${item.status}`,
+                      };
+                      if (onReference) onReference(ref, prompt);
+                      else onAsk(prompt);
+                    }}
                   >
                     <MessageSquare className="size-3" aria-hidden />
                   </button>

@@ -1,5 +1,5 @@
 import { ExternalLink, MessageSquare } from "lucide-react";
-import type { CockpitInboxItem } from "@armyofagents/shared";
+import type { CockpitInboxItem, CommanderInputRef } from "@armyofagents/shared";
 
 const LANE_LABELS: Record<NonNullable<CockpitInboxItem["lane"]>, string> = {
   waiting_on_you: "Needs you",
@@ -25,10 +25,12 @@ export function CockpitInboxCard({
   items,
   onOpenFullPage,
   onAsk,
+  onReference,
 }: {
   items: CockpitInboxItem[];
   onOpenFullPage?: (href: string) => void;
   onAsk?: (text: string) => void;
+  onReference?: (ref: CommanderInputRef, suggestedPrompt?: string) => void;
 }) {
   if (items.length === 0) return null;
 
@@ -77,11 +79,20 @@ export function CockpitInboxCard({
                     aria-label="Ask Commander about this inbox item"
                     title="Ask Commander"
                     className="hidden shrink-0 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground group-hover:flex"
-                    onClick={() =>
-                      onAsk(
-                        `Use this inbox item as context: ${item.title}${item.summary ? ` - ${item.summary}` : ""}`,
-                      )
-                    }
+                    onClick={() => {
+                      const prompt = `Use this inbox item as context: ${item.title}${item.summary ? ` - ${item.summary}` : ""}`;
+                      const ref: CommanderInputRef = {
+                        v: 1,
+                        kind: "inbox",
+                        id: item.id,
+                        label: item.title,
+                        route: href,
+                        detail: item.summary,
+                        source: item.sourceType ?? undefined,
+                      };
+                      if (onReference) onReference(ref, prompt);
+                      else onAsk(prompt);
+                    }}
                   >
                     <MessageSquare className="size-3" aria-hidden />
                   </button>

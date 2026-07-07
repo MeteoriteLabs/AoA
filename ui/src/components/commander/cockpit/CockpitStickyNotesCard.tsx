@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { MessageSquare, Plus, Save, Trash2 } from "lucide-react";
-import type { CockpitNoteItem } from "@armyofagents/shared";
+import type { CockpitNoteItem, CommanderInputRef } from "@armyofagents/shared";
 import { userNotesApi } from "../../../api/user-notes";
 import { queryKeys } from "../../../lib/queryKeys";
 
@@ -23,10 +23,12 @@ export function CockpitStickyNotesCard({
   companyId,
   items,
   onAsk,
+  onReference,
 }: {
   companyId: string;
   items: CockpitNoteItem[];
   onAsk?: (text: string) => void;
+  onReference?: (ref: CommanderInputRef, suggestedPrompt?: string) => void;
 }) {
   const queryClient = useQueryClient();
   const [draft, setDraft] = useState("");
@@ -129,7 +131,18 @@ export function CockpitStickyNotesCard({
                       aria-label="Ask Commander about this note"
                       title="Ask Commander about this note"
                       className="flex h-6 w-6 items-center justify-center rounded text-current opacity-70 hover:bg-background/60 hover:opacity-100"
-                      onClick={() => onAsk(notePrompt({ ...note, body }))}
+                      onClick={() => {
+                        const prompt = notePrompt({ ...note, body });
+                        const ref: CommanderInputRef = {
+                          v: 1,
+                          kind: "note",
+                          id: note.id,
+                          label: note.title?.trim() || body.trim().slice(0, 80) || "Untitled note",
+                          detail: body.trim().slice(0, 500),
+                        };
+                        if (onReference) onReference(ref, prompt);
+                        else onAsk(prompt);
+                      }}
                     >
                       <MessageSquare className="size-3" aria-hidden />
                     </button>

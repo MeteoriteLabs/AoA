@@ -1232,6 +1232,7 @@ export * from "./autonomy-levels.js";
 export * from "./inbound-routing.js";
 export * from "./user-notes.js";
 export * from "./commander-output-refs.js";
+export * from "./commander-input-refs.js";
 export * from "./hub.js";
 export * from "./notification-registry.js";
 

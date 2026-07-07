@@ -29,6 +29,8 @@ export interface CommanderInputHandle {
    * space when needed).
    */
   insertSkill: (skill: SkillTokenData, viaSlash: boolean) => void;
+  /** Insert plain prompt text at the caret, preserving the rich editor model. */
+  insertText: (text: string) => void;
 }
 
 export interface SlashState {
@@ -153,6 +155,45 @@ export const CommanderInput = forwardRef<CommanderInputHandle, CommanderInputPro
       sel.addRange(range);
     }, []);
 
+    const insertPlainText = useCallback(
+      (text: string) => {
+        const root = rootRef.current;
+        if (!root || !text) return;
+        const doc = root.ownerDocument;
+        root.focus();
+        const sel = doc.getSelection();
+        if (!sel) return;
+
+        let range: Range;
+        if (sel.rangeCount && root.contains(sel.getRangeAt(0).startContainer)) {
+          range = sel.getRangeAt(0);
+        } else {
+          range = doc.createRange();
+          range.selectNodeContents(root);
+          range.collapse(false);
+        }
+        range.deleteContents();
+
+        if (needsLeadingSpace(range)) {
+          const lead = doc.createTextNode(" ");
+          range.insertNode(lead);
+          range.setStartAfter(lead);
+          range.collapse(true);
+        }
+
+        const tn = doc.createTextNode(text);
+        range.insertNode(tn);
+        range.setStartAfter(tn);
+        range.collapse(true);
+        sel.removeAllRanges();
+        sel.addRange(range);
+
+        emitEmpty();
+        emitSlash(readSlash());
+      },
+      [emitEmpty, emitSlash, readSlash],
+    );
+
     const clear = useCallback(() => {
       const root = rootRef.current;
       if (!root) return;
@@ -243,8 +284,9 @@ export const CommanderInput = forwardRef<CommanderInputHandle, CommanderInputPro
         clear,
         getText,
         insertSkill,
+        insertText: insertPlainText,
       }),
-      [clear, getText, insertSkill],
+      [clear, getText, insertSkill, insertPlainText],
     );
 
     // Initialise placeholder state on mount.

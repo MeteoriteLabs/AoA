@@ -24,7 +24,7 @@ import {
   Zap,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import type { CockpitData, CockpitPinnedEntityType, CommanderOutputRef } from "@armyofagents/shared";
+import type { CockpitData, CockpitPinnedEntityType, CommanderInputRef, CommanderOutputRef } from "@armyofagents/shared";
 import { cockpitApi } from "../../../api/cockpit";
 import { queryKeys } from "../../../lib/queryKeys";
 import { Popover, PopoverContent, PopoverTrigger } from "../../ui/popover";
@@ -62,6 +62,7 @@ import { CockpitConversationZone } from "./CockpitConversationZone";
 export interface CockpitInteractions {
   onOpenTask?: (issueId: string, title: string) => void;
   onAsk?: (text: string) => void;
+  onReference?: (ref: CommanderInputRef, suggestedPrompt?: string) => void;
   onOpenFullPage?: (href: string) => void;
   onPin?: (entityType: CockpitPinnedEntityType, entityId: string) => void;
   onUnpin?: (entityType: CockpitPinnedEntityType, entityId: string) => void;
@@ -166,8 +167,8 @@ export const COCKPIT_REGISTRY: CockpitCardRenderDef[] = [
     icon: Play,
     summary: (d) => d.running.length > 0 ? `${d.running.length} running` : null,
     isActive: (d) => d.running.length > 0,
-    render: ({ data, onOpenTask, onAsk }) => (
-      <CockpitRunningCard runs={data.running} onOpenTask={onOpenTask} onAsk={onAsk} />
+    render: ({ data, onOpenTask, onAsk, onReference }) => (
+      <CockpitRunningCard runs={data.running} onOpenTask={onOpenTask} onAsk={onAsk} onReference={onReference} />
     ),
   },
   {
@@ -182,11 +183,12 @@ export const COCKPIT_REGISTRY: CockpitCardRenderDef[] = [
       return d.inbox.length > 0 ? `${d.inbox.length} open` : null;
     },
     isActive: (d) => d.inbox.length > 0,
-    render: ({ data, onOpenFullPage, onAsk }) => (
+    render: ({ data, onOpenFullPage, onAsk, onReference }) => (
       <CockpitInboxCard
         items={data.inbox}
         onOpenFullPage={onOpenFullPage}
         onAsk={onAsk}
+        onReference={onReference}
       />
     ),
   },
@@ -198,8 +200,8 @@ export const COCKPIT_REGISTRY: CockpitCardRenderDef[] = [
     icon: CheckCircle,
     summary: (d) => d.review.length > 0 ? `${d.review.length} in review` : null,
     isActive: (d) => d.review.length > 0,
-    render: ({ data, onOpenTask, onAsk, onPin }) => (
-      <CockpitReviewCard items={data.review} onOpenTask={onOpenTask} onAsk={onAsk} onPin={onPin} />
+    render: ({ data, onOpenTask, onAsk, onPin, onReference }) => (
+      <CockpitReviewCard items={data.review} onOpenTask={onOpenTask} onAsk={onAsk} onPin={onPin} onReference={onReference} />
     ),
   },
   {
@@ -210,8 +212,8 @@ export const COCKPIT_REGISTRY: CockpitCardRenderDef[] = [
     icon: ClipboardList,
     summary: (d) => d.myTasks.length > 0 ? `${d.myTasks.length} tasks` : null,
     isActive: (d) => d.myTasks.length > 0,
-    render: ({ data, onOpenTask, onAsk, onPin }) => (
-      <CockpitMyTasksCard items={data.myTasks} onOpenTask={onOpenTask} onAsk={onAsk} onPin={onPin} />
+    render: ({ data, onOpenTask, onAsk, onPin, onReference }) => (
+      <CockpitMyTasksCard items={data.myTasks} onOpenTask={onOpenTask} onAsk={onAsk} onPin={onPin} onReference={onReference} />
     ),
   },
   {
@@ -225,13 +227,14 @@ export const COCKPIT_REGISTRY: CockpitCardRenderDef[] = [
       return total > 0 ? `${total} items` : null;
     },
     isActive: (d) => d.today.reminders.length > 0 || d.today.dueTasks.length > 0,
-    render: ({ data, onOpenTask, onAsk, onPin }) => (
+    render: ({ data, onOpenTask, onAsk, onPin, onReference }) => (
       <CockpitTodayCard
         reminders={data.today.reminders}
         dueTasks={data.today.dueTasks}
         onOpenTask={onOpenTask}
         onAsk={onAsk}
         onPin={onPin}
+        onReference={onReference}
       />
     ),
   },
@@ -243,11 +246,12 @@ export const COCKPIT_REGISTRY: CockpitCardRenderDef[] = [
     icon: StickyNote,
     summary: (d) => d.stickyNotes.length > 0 ? `${d.stickyNotes.length} notes` : null,
     isActive: (_d) => true,
-    render: ({ data, companyId, onAsk }) => (
+    render: ({ data, companyId, onAsk, onReference }) => (
       <CockpitStickyNotesCard
         companyId={companyId}
         items={data.stickyNotes}
         onAsk={onAsk}
+        onReference={onReference}
       />
     ),
   },
@@ -259,8 +263,8 @@ export const COCKPIT_REGISTRY: CockpitCardRenderDef[] = [
     icon: MessageSquare,
     summary: (d) => d.discussions.length > 0 ? `${d.discussions.length} active` : null,
     isActive: (d) => d.discussions.length > 0,
-    render: ({ data, onOpenFullPage, onAsk }) => (
-      <CockpitDiscussionsCard items={data.discussions} onOpenFullPage={onOpenFullPage} onAsk={onAsk} />
+    render: ({ data, onOpenFullPage, onAsk, onReference }) => (
+      <CockpitDiscussionsCard items={data.discussions} onOpenFullPage={onOpenFullPage} onAsk={onAsk} onReference={onReference} />
     ),
   },
   // Phase 3c: unified approvals queue (founder-only; server returns [] for non-founders)
@@ -272,12 +276,13 @@ export const COCKPIT_REGISTRY: CockpitCardRenderDef[] = [
     icon: CheckCircle2,
     summary: (d) => d.approvals.length > 0 ? `${d.approvals.length} pending` : null,
     isActive: (d) => d.approvals.length > 0,
-    render: ({ data, companyId, onOpenFullPage, onAsk }) => (
+    render: ({ data, companyId, onOpenFullPage, onAsk, onReference }) => (
       <CockpitApprovalsCard
         items={data.approvals}
         companyId={companyId}
         onOpenFullPage={onOpenFullPage}
         onAsk={onAsk}
+        onReference={onReference}
       />
     ),
   },
@@ -460,6 +465,7 @@ export function CommanderCockpitPanel({
   onCollapse,
   onOpenTask,
   onAsk,
+  onReference,
   onOpenFullPage,
   onOpenArtifact,
   conversationRefs = [],
@@ -632,6 +638,7 @@ export function CommanderCockpitPanel({
                       conversationId,
                       onOpenTask,
                       onAsk,
+                      onReference,
                       onOpenFullPage,
                       onOpenArtifact,
                       onPin: (entityType, entityId) => pin.mutate({ entityType, entityId }),

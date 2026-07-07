@@ -21,7 +21,7 @@
  */
 
 import { Check, ExternalLink, Loader2, MessageSquare, X } from "lucide-react";
-import type { CockpitApprovalItem } from "@armyofagents/shared";
+import type { CockpitApprovalItem, CommanderInputRef } from "@armyofagents/shared";
 import { Button } from "../../ui/button";
 import { useCockpitApprovalAction } from "./useCockpitApprovalAction";
 
@@ -57,11 +57,13 @@ function ApprovalRow({
   companyId,
   onOpenFullPage,
   onAsk,
+  onReference,
 }: {
   item: CockpitApprovalItem;
   companyId: string;
   onOpenFullPage?: (href: string) => void;
   onAsk?: (text: string) => void;
+  onReference?: (ref: CommanderInputRef, suggestedPrompt?: string) => void;
 }) {
   const { approve, deny, allowAlways } = useCockpitApprovalAction(companyId);
   // Stay disabled after success too — the row only unmounts once the cockpit refetch
@@ -171,11 +173,20 @@ function ApprovalRow({
             aria-label="Ask Commander about this"
             title="Ask Commander"
             className="ml-auto hidden shrink-0 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground group-hover:flex"
-            onClick={() =>
-              onAsk(
-                `About the pending "${item.title}" ${SOURCE_LABELS[item.source].toLowerCase()} — should I approve or deny it?`,
-              )
-            }
+            onClick={() => {
+              const prompt = `About the pending "${item.title}" ${SOURCE_LABELS[item.source].toLowerCase()} - should I approve or deny it?`;
+              const ref: CommanderInputRef = {
+                v: 1,
+                kind: "approval",
+                id: item.id,
+                label: item.title,
+                route: route || undefined,
+                detail: item.subtitle,
+                source: item.source,
+              };
+              if (onReference) onReference(ref, prompt);
+              else onAsk(prompt);
+            }}
           >
             <MessageSquare className="size-3" aria-hidden />
           </button>
@@ -195,11 +206,13 @@ export function CockpitApprovalsCard({
   companyId,
   onOpenFullPage,
   onAsk,
+  onReference,
 }: {
   items: CockpitApprovalItem[];
   companyId: string;
   onOpenFullPage?: (href: string) => void;
   onAsk?: (text: string) => void;
+  onReference?: (ref: CommanderInputRef, suggestedPrompt?: string) => void;
 }) {
   if (items.length === 0) return null;
 
@@ -213,6 +226,7 @@ export function CockpitApprovalsCard({
             companyId={companyId}
             onOpenFullPage={onOpenFullPage}
             onAsk={onAsk}
+            onReference={onReference}
           />
         ))}
       </ul>

@@ -70,7 +70,13 @@ import {
   type CommanderInputHandle,
   type SlashState,
 } from "./commander/CommanderInput";
-import type { CompanySkillListItem } from "@armyofagents/shared";
+import type { CommanderInputRef, CompanySkillListItem } from "@armyofagents/shared";
+import {
+  MAX_COMMANDER_INPUT_REFS,
+  appendCommanderInputRefsToMessage,
+  commanderInputRefKey,
+  commanderInputRefKindLabel,
+} from "@armyofagents/shared";
 import type { CommanderContextScope } from "@armyofagents/shared";
 import type { CommanderOutputRef } from "@armyofagents/shared";
 import {
@@ -399,6 +405,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
   // The rich input is uncontrolled (the contenteditable DOM owns the live
   // text). We only track empty-ness here to drive the Send button + placeholder.
   const [inputEmpty, setInputEmpty] = useState(true);
+  const [inputRefs, setInputRefs] = useState<CommanderInputRef[]>([]);
   const [streaming, setStreamingLocal] = useState(false);
   // Task 9: skill picker. `skillPickerOpen` = opened via the `+` menu (shows
   // all skills). `slashActive`/`slashQuery` = opened via a `/token` typed in
@@ -720,14 +727,43 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
     [companyId, streaming, pageContext, setIsStreaming, queryClient, conversationId, contextScope],
   );
 
+  const submitCommanderInput = useCallback(
+    async (text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed && inputRefs.length === 0) return;
+      const baseText = trimmed || "Use the referenced context.";
+      const refsForTurn = inputRefs;
+      setInputRefs([]);
+      await sendText(appendCommanderInputRefsToMessage(baseText, refsForTurn));
+    },
+    [inputRefs, sendText],
+  );
+
+  const addInputRef = useCallback((ref: CommanderInputRef, suggestedPrompt?: string) => {
+    setInputRefs((prev) => {
+      const key = commanderInputRefKey(ref);
+      const existing = prev.filter((item) => commanderInputRefKey(item) !== key);
+      return [...existing, ref].slice(-MAX_COMMANDER_INPUT_REFS);
+    });
+    if (suggestedPrompt) {
+      inputRef.current?.insertText(suggestedPrompt);
+    }
+    requestAnimationFrame(() => inputRef.current?.focus());
+  }, []);
+
+  const removeInputRef = useCallback((ref: CommanderInputRef) => {
+    const key = commanderInputRefKey(ref);
+    setInputRefs((prev) => prev.filter((item) => commanderInputRefKey(item) !== key));
+  }, []);
+
   const handleSend = useCallback(async () => {
     // Read the expanded directive text (skill tokens → full use_skill lines)
     // straight from the rich input; it clears itself on submit.
     const text = inputRef.current?.getText() ?? "";
-    if (!text) return;
+    if (!text && inputRefs.length === 0) return;
     inputRef.current?.clear();
-    await sendText(text);
-  }, [sendText]);
+    await submitCommanderInput(text);
+  }, [inputRefs.length, submitCommanderInput]);
 
   const handleStop = useCallback(() => {
     abortRef.current?.abort();
@@ -1476,12 +1512,39 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
           onClose={closePicker}
         />
         <div className="rounded-lg border border-border bg-background focus-within:ring-2 focus-within:ring-brand-focus-ring focus-within:border-brand transition-shadow">
+          {inputRefs.length > 0 && (
+            <div
+              className="flex flex-wrap gap-1.5 border-b border-border/70 px-2 py-2"
+              data-testid="commander-input-refs"
+            >
+              {inputRefs.map((ref) => (
+                <span
+                  key={commanderInputRefKey(ref)}
+                  className="inline-flex max-w-full items-center gap-1 rounded-md border border-border bg-muted/60 px-2 py-1 text-[11px] text-foreground"
+                >
+                  <span className="shrink-0 font-medium text-muted-foreground">
+                    {commanderInputRefKindLabel(ref.kind)}
+                  </span>
+                  <span className="min-w-0 max-w-[170px] truncate">{ref.label}</span>
+                  <button
+                    type="button"
+                    aria-label={`Remove ${ref.label} reference`}
+                    title="Remove reference"
+                    className="ml-0.5 rounded text-muted-foreground hover:text-foreground"
+                    onClick={() => removeInputRef(ref)}
+                  >
+                    <X className="size-3" aria-hidden />
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
           {/* Rich input — renders skill selections as colored atomic tokens */}
           <CommanderInput
             ref={inputRef}
             placeholder="Ask the agent..."
             disabled={streaming}
-            onSubmit={(text) => void sendText(text)}
+            onSubmit={(text) => void submitCommanderInput(text)}
             onEmptyChange={handleEmptyChange}
             onSlashChange={handleSlashChange}
             onKeyDown={handleKeyDown}
@@ -1561,7 +1624,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
               <button
                 type="button"
                 onClick={handleSend}
-                disabled={inputEmpty}
+                disabled={inputEmpty && inputRefs.length === 0}
                 aria-label="Send message"
                 className="size-8 rounded-full flex items-center justify-center shrink-0 bg-brand text-white hover:bg-brand-hover transition-colors focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-brand-focus-ring disabled:opacity-40 disabled:pointer-events-none"
               >
@@ -1662,6 +1725,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
           onCollapse={collapseCockpit}
           onOpenTask={(issueId, title) => { openPreview("right-panel"); viewer.openTask(issueId, title); }}
           onAsk={(text) => void sendText(text)}
+          onReference={addInputRef}
           onOpenFullPage={(href) => navigate(href)}
           onOpenArtifact={(id, title) => {
             openPreview("right-panel");

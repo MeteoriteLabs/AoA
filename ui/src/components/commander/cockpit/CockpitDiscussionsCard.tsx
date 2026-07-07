@@ -1,14 +1,16 @@
 import { MessageSquare as MessageSquareIcon } from "lucide-react";
-import type { CockpitDiscussionItem } from "@armyofagents/shared";
+import type { CockpitDiscussionItem, CommanderInputRef } from "@armyofagents/shared";
 
 export function CockpitDiscussionsCard({
   items,
   onOpenFullPage,
   onAsk,
+  onReference,
 }: {
   items: CockpitDiscussionItem[];
   onOpenFullPage?: (href: string) => void;
   onAsk?: (text: string) => void;
+  onReference?: (ref: CommanderInputRef, suggestedPrompt?: string) => void;
 }) {
   if (items.length === 0) return null;
 
@@ -46,11 +48,20 @@ export function CockpitDiscussionsCard({
                 type="button"
                 aria-label="Ask Commander about this"
                 className="ml-1 hidden shrink-0 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground group-hover:flex"
-                onClick={() =>
-                  onAsk(
-                    `Summarize the discussion "${item.title ?? "Untitled"}" and what action items are pending approval.`,
-                  )
-                }
+                onClick={() => {
+                  const title = item.title ?? "Untitled discussion";
+                  const prompt = `Summarize the discussion "${title}" and what action items are pending approval.`;
+                  const ref: CommanderInputRef = {
+                    v: 1,
+                    kind: "discussion",
+                    id: item.id,
+                    label: title,
+                    route: `/discussions/${item.id}`,
+                    detail: `reason=${item.reason}; pending=${item.pendingItemCount}`,
+                  };
+                  if (onReference) onReference(ref, prompt);
+                  else onAsk(prompt);
+                }}
               >
                 <MessageSquareIcon className="size-3" aria-hidden />
               </button>

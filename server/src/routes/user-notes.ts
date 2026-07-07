@@ -7,6 +7,7 @@ import { unauthorized } from "../errors.js";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
 
 function requireBoardUserId(req: Request, _res: Response): string {
+  // rbac: paired-via-helper
   assertBoard(req);
   if (req.actor.type !== "board" || !req.actor.userId) {
     throw unauthorized("Board authentication required");
