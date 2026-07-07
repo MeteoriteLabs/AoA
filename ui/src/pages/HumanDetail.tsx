@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, Link, useNavigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
@@ -276,11 +276,17 @@ export function HumanDetail() {
   const [profileDraft, setProfileDraft] = useState<UpdateCompanyUserProfile>({
     socialLinks: [],
   });
+  const [profileDraftDirty, setProfileDraftDirty] = useState(false);
+  const profileDraftSourceKeyRef = useRef<string | null>(null);
   const [avatarFile, setAvatarFile] = useState<File | null>(null);
+  const [avatarFileDirty, setAvatarFileDirty] = useState(false);
 
   // Sync draft state when member loads
   useEffect(() => {
     if (member) {
+      const sourceKey = `${selectedCompanyId ?? "none"}:${member.userId}`;
+      if (profileDraftSourceKeyRef.current === sourceKey && (profileDraftDirty || avatarFileDirty)) return;
+      profileDraftSourceKeyRef.current = sourceKey;
       setDraftRole(member.role);
       setDraftDepartmentId(member.departmentId ?? "none");
       setDraftParentId(member.parentId ?? "none");
@@ -294,9 +300,11 @@ export function HumanDetail() {
           ? member.socialLinks
           : [{ type: "github", label: null, url: "" }],
       });
+      setProfileDraftDirty(false);
       setAvatarFile(null);
+      setAvatarFileDirty(false);
     }
-  }, [member]);
+  }, [avatarFileDirty, member, profileDraftDirty, selectedCompanyId]);
 
   // Permissions
   const currentUser = teamSummary?.currentUser;
@@ -403,6 +411,7 @@ export function HumanDetail() {
   const saveProfileMutation = useMutation({
     mutationFn: (input: UpdateCompanyUserProfile) => teamApi.updateProfile(selectedCompanyId!, userId!, input),
     onSuccess: () => {
+      setProfileDraftDirty(false);
       invalidateAll();
       pushToast({ title: "Profile saved", tone: "success" });
     },
@@ -416,6 +425,7 @@ export function HumanDetail() {
     },
     onSuccess: () => {
       setAvatarFile(null);
+      setAvatarFileDirty(false);
       invalidateAll();
       pushToast({ title: "Avatar updated", tone: "success" });
     },
@@ -451,6 +461,7 @@ export function HumanDetail() {
   }, [profileDraft, saveProfileMutation]);
 
   const updateSocialLink = useCallback((index: number, patch: Partial<HumanSocialLink>) => {
+    setProfileDraftDirty(true);
     setProfileDraft((current) => {
       const links = [...(current.socialLinks ?? [])];
       links[index] = { ...links[index], ...patch } as HumanSocialLink;
@@ -721,7 +732,10 @@ export function HumanDetail() {
                       accept="image/*"
                       className="block w-full text-sm text-muted-foreground file:mr-3 file:rounded-md file:border-0 file:bg-muted file:px-3 file:py-1.5 file:text-sm file:font-medium"
                       disabled={!canEditProfile || avatarUploadMutation.isPending}
-                      onChange={(event) => setAvatarFile(event.target.files?.[0] ?? null)}
+                      onChange={(event) => {
+                        setAvatarFileDirty(true);
+                        setAvatarFile(event.target.files?.[0] ?? null);
+                      }}
                     />
                   </div>
                   <div className="flex flex-wrap gap-2">
@@ -757,7 +771,10 @@ export function HumanDetail() {
                       className={FIELD_CLASS}
                       value={profileDraft.displayName ?? ""}
                       disabled={!canEditProfile || saveProfileMutation.isPending}
-                      onChange={(event) => setProfileDraft((current) => ({ ...current, displayName: event.target.value }))}
+                      onChange={(event) => {
+                        setProfileDraftDirty(true);
+                        setProfileDraft((current) => ({ ...current, displayName: event.target.value }));
+                      }}
                     />
                   </div>
                   <div className="space-y-1.5">
@@ -767,7 +784,10 @@ export function HumanDetail() {
                       className={FIELD_CLASS}
                       value={profileDraft.title ?? ""}
                       disabled={!canEditProfile || saveProfileMutation.isPending}
-                      onChange={(event) => setProfileDraft((current) => ({ ...current, title: event.target.value }))}
+                      onChange={(event) => {
+                        setProfileDraftDirty(true);
+                        setProfileDraft((current) => ({ ...current, title: event.target.value }));
+                      }}
                     />
                   </div>
                   <div className="space-y-1.5">
@@ -777,7 +797,10 @@ export function HumanDetail() {
                       className={FIELD_CLASS}
                       value={profileDraft.location ?? ""}
                       disabled={!canEditProfile || saveProfileMutation.isPending}
-                      onChange={(event) => setProfileDraft((current) => ({ ...current, location: event.target.value }))}
+                      onChange={(event) => {
+                        setProfileDraftDirty(true);
+                        setProfileDraft((current) => ({ ...current, location: event.target.value }));
+                      }}
                     />
                   </div>
                   <div className="space-y-1.5">
@@ -787,7 +810,10 @@ export function HumanDetail() {
                       className={FIELD_CLASS}
                       value={profileDraft.timezone ?? ""}
                       disabled={!canEditProfile || saveProfileMutation.isPending}
-                      onChange={(event) => setProfileDraft((current) => ({ ...current, timezone: event.target.value }))}
+                      onChange={(event) => {
+                        setProfileDraftDirty(true);
+                        setProfileDraft((current) => ({ ...current, timezone: event.target.value }));
+                      }}
                     />
                   </div>
                 </div>
@@ -799,7 +825,10 @@ export function HumanDetail() {
                     className={TEXTAREA_CLASS}
                     value={profileDraft.bio ?? ""}
                     disabled={!canEditProfile || saveProfileMutation.isPending}
-                    onChange={(event) => setProfileDraft((current) => ({ ...current, bio: event.target.value }))}
+                    onChange={(event) => {
+                      setProfileDraftDirty(true);
+                      setProfileDraft((current) => ({ ...current, bio: event.target.value }));
+                    }}
                   />
                 </div>
 
@@ -846,10 +875,13 @@ export function HumanDetail() {
                           variant="ghost"
                           size="sm"
                           disabled={!canEditProfile || saveProfileMutation.isPending}
-                          onClick={() => setProfileDraft((current) => ({
-                            ...current,
-                            socialLinks: (current.socialLinks ?? []).filter((_, i) => i !== index),
-                          }))}
+                          onClick={() => {
+                            setProfileDraftDirty(true);
+                            setProfileDraft((current) => ({
+                              ...current,
+                              socialLinks: (current.socialLinks ?? []).filter((_, i) => i !== index),
+                            }));
+                          }}
                           aria-label="Remove social link"
                         >
                           <X className="h-3.5 w-3.5" />
@@ -862,10 +894,13 @@ export function HumanDetail() {
                     variant="outline"
                     size="sm"
                     disabled={!canEditProfile || saveProfileMutation.isPending}
-                    onClick={() => setProfileDraft((current) => ({
-                      ...current,
-                      socialLinks: [...(current.socialLinks ?? []), { type: "website", label: null, url: "" }],
-                    }))}
+                    onClick={() => {
+                      setProfileDraftDirty(true);
+                      setProfileDraft((current) => ({
+                        ...current,
+                        socialLinks: [...(current.socialLinks ?? []), { type: "website", label: null, url: "" }],
+                      }));
+                    }}
                   >
                     Add Social Link
                   </Button>

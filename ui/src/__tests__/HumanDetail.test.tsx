@@ -81,7 +81,10 @@ function renderHumanDetail(path = "/team/user-1") {
     );
   }
 
-  return render(<HumanDetail />, { wrapper: Wrapper });
+  return {
+    ...render(<HumanDetail />, { wrapper: Wrapper }),
+    queryClient,
+  };
 }
 
 const member = {
@@ -295,6 +298,36 @@ describe("HumanDetail", () => {
         socialLinks: [{ type: "github", label: "Portfolio", url: "https://ada.example.com" }],
       });
     });
+  });
+
+  it("keeps unsaved profile edits during a background member refetch", async () => {
+    const user = userEvent.setup();
+    const { queryClient } = renderHumanDetail("/team/user-1/settings");
+
+    const profileSection = await screen.findByRole("region", { name: "Profile" });
+    const displayNameInput = within(profileSection).getByLabelText("Display name");
+    await user.clear(displayNameInput);
+    await user.type(displayNameInput, "Ada Byron");
+
+    vi.mocked(teamApi.getMember).mockResolvedValueOnce({
+      member: {
+        ...member,
+        displayName: "Server Refetch Name",
+      },
+      dependencies: {
+        teamMembers: [],
+        agentTrees: [],
+        assignedTaskCount: 0,
+        createdTaskCount: 0,
+      },
+    });
+
+    await queryClient.invalidateQueries({ queryKey: ["team", "company-1", "member", "user-1"] });
+
+    await waitFor(() => {
+      expect(teamApi.getMember).toHaveBeenCalledTimes(2);
+    });
+    expect(displayNameInput).toHaveValue("Ada Byron");
   });
 
   it("uploads an avatar before saving the returned asset id and can remove it", async () => {
