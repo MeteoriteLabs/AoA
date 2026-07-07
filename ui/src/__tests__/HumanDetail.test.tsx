@@ -434,6 +434,53 @@ describe("HumanDetail", () => {
     expect(screen.getByRole("combobox", { name: "Reports to" })).toBeDisabled();
   });
 
+  it("locks all role hierarchy controls when viewing the only founder's own profile", async () => {
+    const founderMember = {
+      ...member,
+      role: "founder",
+      departmentId: null,
+      departmentName: null,
+      parentType: null,
+      parentId: null,
+      permissions: [],
+      isSystemAdmin: true,
+    } as const;
+    vi.mocked(teamApi.getMember).mockResolvedValueOnce({
+      member: founderMember,
+      dependencies: {
+        teamMembers: [],
+        agentTrees: [],
+        assignedTaskCount: 0,
+        createdTaskCount: 0,
+      },
+    });
+    vi.mocked(teamApi.get).mockResolvedValueOnce({
+      currentUser: {
+        userId: "user-1",
+        role: "founder",
+        departmentId: null,
+        isSystemAdmin: true,
+        permissions: {
+          canAssignTasks: true,
+          canInviteUsers: true,
+          canManageRoles: true,
+          canEditIdentityMemory: true,
+        },
+      },
+      members: [founderMember],
+      pendingInvites: [],
+    });
+
+    renderHumanDetail("/team/user-1/roles");
+
+    expect(await screen.findByText("Role & Department")).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Role" })).toBeDisabled();
+    expect(screen.getByRole("combobox", { name: "Department" })).toBeDisabled();
+    expect(screen.getByRole("combobox", { name: "Reports to" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Save Changes" })).toBeDisabled();
+    expect(screen.getByText(/Your founder role is locked/)).toBeInTheDocument();
+  });
+
   it("keeps unsaved profile edits during a background member refetch", async () => {
     const user = userEvent.setup();
     const { queryClient } = renderHumanDetail();

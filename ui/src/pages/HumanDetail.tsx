@@ -1112,7 +1112,7 @@ export function HumanDetail() {
                   <Select
                     value={draftDepartmentId}
                     onValueChange={setDraftDepartmentId}
-                    disabled={!canManageRoles || draftRole === "founder" || saveMutation.isPending}
+                    disabled={!canManageRoles || selfFounderLock || draftRole === "founder" || saveMutation.isPending}
                   >
                     <SelectTrigger className="w-full" aria-label="Department">
                       <SelectValue />
@@ -1133,7 +1133,7 @@ export function HumanDetail() {
                   <Select
                     value={draftParentId}
                     onValueChange={setDraftParentId}
-                    disabled={!canManageRoles || saveMutation.isPending}
+                    disabled={!canManageRoles || selfFounderLock || saveMutation.isPending}
                   >
                     <SelectTrigger className="w-full" aria-label="Reports to">
                       <SelectValue placeholder="No manager" />
@@ -1152,13 +1152,22 @@ export function HumanDetail() {
 
                 <Button
                   onClick={() => saveMutation.mutate()}
-                  disabled={!hasChanges || saveMutation.isPending}
+                  disabled={!hasChanges || selfFounderLock || saveMutation.isPending}
                   className="w-full sm:w-auto"
                 >
                   {saveMutation.isPending ? "Saving..." : "Save Changes"}
                 </Button>
               </div>
             </div>
+
+            {selfFounderLock && (
+              <div className="rounded-xl border border-border bg-card p-4">
+                <p className="text-sm text-muted-foreground">
+                  Your founder role is locked because this company needs at least one founder. Add or promote another
+                  founder before changing your own role hierarchy.
+                </p>
+              </div>
+            )}
 
             {!canManageRoles && (
               <div className="rounded-xl border border-border bg-card p-4">
