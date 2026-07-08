@@ -668,6 +668,7 @@ export function TaskDetail({
       return meta ? { ...comment, ...meta } : comment;
     });
   }, [activity, comments, linkedRuns]);
+  const latestComment = commentsWithRunMeta[0];
 
   const issueCostSummary = useMemo(() => {
     let input = 0;
@@ -1451,7 +1452,7 @@ export function TaskDetail({
                         </div>
                       )}
 
-                      {commentsWithRunMeta.length > 0 && (
+                      {latestComment && (
                         <button
                           type="button"
                           className="w-full rounded-md border border-border/80 px-3 py-2 text-left hover:bg-accent/30 transition-colors"
@@ -1460,11 +1461,11 @@ export function TaskDetail({
                           <div className="flex items-center justify-between gap-3 text-xs">
                             <span className="font-medium">Latest comment</span>
                             <span className="text-muted-foreground">
-                              {relativeTime(commentsWithRunMeta[commentsWithRunMeta.length - 1].createdAt)}
+                              {relativeTime(latestComment.createdAt)}
                             </span>
                           </div>
                           <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">
-                            {commentsWithRunMeta[commentsWithRunMeta.length - 1].body}
+                            {latestComment.body}
                           </p>
                         </button>
                       )}

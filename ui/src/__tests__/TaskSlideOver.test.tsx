@@ -515,6 +515,40 @@ describe("TaskSlideOver", () => {
     expect(screen.queryByTestId("tab-subissues")).not.toBeInTheDocument();
   });
 
+  it("previews the newest comment on Overview when comments are newest-first", () => {
+    vi.mocked(useQuery).mockImplementation(({ queryKey }: any) => {
+      const key = Array.isArray(queryKey) ? queryKey.join(".") : String(queryKey);
+      if (key.includes("detail")) return { data: mockIssue, isLoading: false, error: null } as any;
+      if (key.includes("comments")) {
+        return {
+          data: [
+            {
+              id: "comment-newest",
+              issueId: "issue-1",
+              body: "Newest comment should be previewed",
+              createdAt: "2026-07-08T06:00:00.000Z",
+            },
+            {
+              id: "comment-oldest",
+              issueId: "issue-1",
+              body: "Oldest comment should stay hidden",
+              createdAt: "2026-07-07T06:00:00.000Z",
+            },
+          ],
+          isLoading: false,
+          error: null,
+        } as any;
+      }
+      return defaultUseQueryImpl({ queryKey });
+    });
+
+    renderTaskDetail({ issueId: "issue-1" });
+
+    expect(screen.getByText("Latest comment")).toBeInTheDocument();
+    expect(screen.getByText("Newest comment should be previewed")).toBeInTheDocument();
+    expect(screen.queryByText("Oldest comment should stay hidden")).not.toBeInTheDocument();
+  });
+
   it("gives the comments tab a bounded chat-pane layout so the composer can stay docked", () => {
     renderTaskDetail({ issueId: "issue-1" });
 
