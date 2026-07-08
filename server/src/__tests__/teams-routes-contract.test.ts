@@ -1,5 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 
+const makeService = () => new Proxy({}, { get: () => vi.fn() });
+
+vi.mock("../services/index.js", () => ({
+  teamCoordinationService: vi.fn(() => makeService()),
+  teamExportService: vi.fn(() => makeService()),
+  teamScaffolderService: vi.fn(() => makeService()),
+  teamsService: vi.fn(() => makeService()),
+}));
+
 // Slice 1 / Task 1.10: contract tests for the new teamsRoutes(db) factory.
 //
 // IMPORTANT naming note: there is a pre-existing `teamRoutes` (singular)
@@ -7,14 +16,11 @@ import { describe, expect, it, vi } from "vitest";
 // domain. The new departmental-teams routes use the plural name
 // `teamsRoutes` to disambiguate. Same disambiguation applies to the
 // validation schemas (`addTeamsMemberSchema`, `updateTeamsMemberRoleSchema`).
-//
-// Dynamic import is used to traverse a heavy module graph that occasionally
-// exceeds the default 5000ms test timeout under parallel-suite load.
-vi.setConfig({ testTimeout: 15000 });
-
 describe("teamsRoutes — conformance + contract", () => {
   it("exports a factory function (not a top-level Router)", async () => {
+    const startedAt = performance.now();
     const mod = await import("../routes/teams.js");
+    expect(performance.now() - startedAt).toBeLessThan(3000);
     expect(typeof mod.teamsRoutes).toBe("function");
     expect(mod.teamsRoutes.length).toBe(1); // accepts (db) param
   });

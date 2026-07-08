@@ -1,17 +1,17 @@
 import { describe, it, expect, vi } from "vitest";
 
-// No `@armyofagents/db` or `drizzle-orm` mock needed — this file tests pure
-// functions (mapMcpToDiscussion) plus a single `await import("../routes/...")`
-// that asserts factory exports. The drizzle-mock helper at
-// `helpers/drizzle-mock.ts` is only required when a test actually destructures
-// tables/operators at module scope.
-//
-// Dynamic import("../routes/debriefs.js") traverses a heavy module graph that
-// occasionally exceeds the default 5000ms test timeout under parallel-suite
-// load. Bump per-file so the first import has headroom; subsequent imports
-// are cached and fast.
-vi.setConfig({ testTimeout: 15000 });
+const makeService = () => new Proxy({}, { get: () => vi.fn() });
 
+vi.mock("../services/index.js", () => ({
+  briefService: vi.fn(() => makeService()),
+  debriefService: vi.fn(() => makeService()),
+  discussionService: vi.fn(() => makeService()),
+  extractionService: vi.fn(() => makeService()),
+  logActivity: vi.fn(),
+}));
+
+// Keep route-contract imports focused on Express registration, not the full
+// service graph behind every handler.
 /**
  * Debrief Redirect Tests
  *
@@ -50,7 +50,9 @@ function mapMcpToDiscussion(body: {
 
 describe("debrief deprecation + redirect", () => {
   it("debriefRoutes factory is still exported", async () => {
+    const startedAt = performance.now();
     const mod = await import("../routes/debriefs.js");
+    expect(performance.now() - startedAt).toBeLessThan(3000);
     expect(mod.debriefRoutes).toBeDefined();
     expect(typeof mod.debriefRoutes).toBe("function");
   });

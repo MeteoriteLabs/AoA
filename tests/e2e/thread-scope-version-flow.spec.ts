@@ -213,9 +213,12 @@ test.describe("thread scope version flow", () => {
     await expect(acceptedTaskCard).toContainText(/Task /, { timeout: 10_000 });
     await expect(acceptedTaskCard).toContainText("E2E accepted scoped implementation task");
     await acceptedTaskCard.click();
-    await expect(page.getByTestId("task-detail-panel")).toBeVisible({ timeout: 10_000 });
-    await expect(page.getByTestId("task-detail-panel")).toContainText("E2E accepted scoped implementation task");
-    await expect(page.getByTestId("task-scope-handoff")).toBeVisible({ timeout: 10_000 });
+    const taskPanel = page.getByTestId("task-detail-panel");
+    await expect(taskPanel).toBeVisible({ timeout: 10_000 });
+    await expect(taskPanel).toContainText("E2E accepted scoped implementation task");
+    await taskPanel.getByRole("tab", { name: /^work$/i }).click();
+    await expect(taskPanel.getByTestId("task-work-tab")).toBeVisible({ timeout: 10_000 });
+    await expect(taskPanel.getByTestId("task-scope-handoff")).toBeVisible({ timeout: 10_000 });
     await page.getByTestId(`scope-version-card-${appliedMemory!.id}`).click();
     await expect(page.getByTestId("thread-viewer-memory")).toBeVisible({ timeout: 10_000 });
 

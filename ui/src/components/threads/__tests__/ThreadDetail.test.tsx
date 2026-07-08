@@ -919,9 +919,20 @@ describe("ThreadDetail", () => {
     await user.click(await screen.findByRole("tab", { name: /scope/i }));
     await user.click(await screen.findByTestId("scope-version-card-scope-item-task"));
 
-    expect(await screen.findByTestId("task-detail-panel")).toHaveTextContent("Build scoped onboarding cleanup");
-    expect(screen.getByText("Workspace")).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: /artifacts/i })).toBeInTheDocument();
+    const taskPanel = await screen.findByTestId("task-detail-panel");
+    expect(taskPanel).toHaveTextContent("Build scoped onboarding cleanup");
+    expect(within(taskPanel).getByRole("tab", { name: /overview/i })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(within(taskPanel).getByRole("tab", { name: /work/i })).toBeInTheDocument();
+    expect(within(taskPanel).getByRole("tab", { name: /comments/i })).toBeInTheDocument();
+    expect(within(taskPanel).getByRole("tab", { name: /sub-tasks/i })).toBeInTheDocument();
+    expect(within(taskPanel).queryByRole("tab", { name: /artifacts/i })).not.toBeInTheDocument();
+    expect(within(taskPanel).getByRole("tab", { name: /activity/i })).toBeInTheDocument();
+
+    await user.click(within(taskPanel).getByRole("tab", { name: /work/i }));
+    expect(within(taskPanel).getByText("Workspace")).toBeInTheDocument();
   });
 
   it("opens a draft task proposal as a task workbench without real task tabs", async () => {

@@ -352,21 +352,32 @@ export function CommentThread({
   const canSubmit = !submitting && !!body.trim();
 
   return (
-    <div className="space-y-4">
-      <h3 className="text-sm font-semibold">Comments &amp; Runs ({timeline.length})</h3>
+    <div
+      className="flex min-h-0 flex-1 flex-col gap-3"
+      data-testid="task-comments-panel"
+    >
+      <h3 className="shrink-0 text-sm font-semibold">Comments &amp; Runs ({timeline.length})</h3>
 
-      <TimelineList
-        timeline={timeline}
-        agentMap={agentMap}
-        highlightCommentId={highlightCommentId}
-        feedbackIssueId={feedbackIssueId}
-        existingVotesByCommentId={existingVotesByCommentId}
-        onVoteChange={onVoteChange}
-      />
+      <div
+        className="min-h-0 flex-1 overflow-y-auto overscroll-contain pr-1"
+        data-testid="task-comments-timeline"
+      >
+        <TimelineList
+          timeline={timeline}
+          agentMap={agentMap}
+          highlightCommentId={highlightCommentId}
+          feedbackIssueId={feedbackIssueId}
+          existingVotesByCommentId={existingVotesByCommentId}
+          onVoteChange={onVoteChange}
+        />
 
-      {liveRunSlot}
+        {liveRunSlot ? <div className="mt-3">{liveRunSlot}</div> : null}
+      </div>
 
-      <div className="space-y-2">
+      <div
+        className="sticky bottom-0 z-10 shrink-0 space-y-2 border-t border-border bg-background pt-3"
+        data-testid="task-comments-composer"
+      >
         <MarkdownEditor
           ref={editorRef}
           value={body}
