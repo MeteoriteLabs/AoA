@@ -283,6 +283,63 @@ test.describe("Commander viewer", () => {
     await waitForTurnEnd(page);
   });
 
+  test("cockpit discussion rows open as right-side viewer tabs without navigating", async ({
+    page,
+    request,
+  }) => {
+    const company = await seedCompany(request, `E2E-CmdViewer-Cockpit-${Date.now()}`);
+
+    const discussionTitle = "Commander cockpit e2e thread";
+    const discussionRes = await request.post(`/api/companies/${company.id}/discussions`, {
+      data: {
+        title: discussionTitle,
+        entry: {
+          inputType: "paste",
+          rawContent: "This seeded discussion should open inside the Commander viewer.",
+        },
+      },
+    });
+    expect(discussionRes.ok()).toBe(true);
+    const discussion = (await discussionRes.json()) as {
+      id: string;
+      entry?: { id: string } | null;
+    };
+    expect(discussion.entry?.id).toBeTruthy();
+    const reprocessRes = await request.post(
+      `/api/companies/${company.id}/discussions/${discussion.id}/entries/${discussion.entry!.id}/reprocess`,
+    );
+    expect(reprocessRes.ok()).toBe(true);
+
+    await page.goto(`/${company.issuePrefix}/commander`);
+    await expect(page.getByTestId("commander-open-preview")).toBeVisible({
+      timeout: 15_000,
+    });
+
+    const expandCockpit = page.getByRole("button", { name: "Expand cockpit" });
+    if ((await expandCockpit.count()) === 1) {
+      await expandCockpit.click();
+    }
+
+    const discussionsCard = page.getByTestId("cockpit-card-discussions");
+    await expect(discussionsCard.getByText(discussionTitle)).toBeVisible({
+      timeout: 15_000,
+    });
+
+    const discussionRow = discussionsCard.getByText(discussionTitle).locator("xpath=ancestor::li[1]");
+    await expect(discussionRow).toHaveAttribute("draggable", "true");
+    await expect(discussionRow).toHaveClass(/cursor-grab/);
+
+    await discussionsCard.getByRole("button", { name: discussionTitle }).click();
+
+    const panel = page.getByTestId("commander-viewer-panel");
+    await expect(page).toHaveURL(new RegExp(`/${company.issuePrefix}/commander$`));
+    await expect(panel).toBeVisible({ timeout: 15_000 });
+    await expect(panel.getByText(discussionTitle)).toBeVisible({ timeout: 15_000 });
+    await expect(panel.getByText("This seeded discussion should open inside the Commander viewer.")).toBeVisible({
+      timeout: 15_000,
+    });
+  });
+
   test("mobile: pill badges on created ref without auto-opening the sheet; tap opens viewer tabs", async ({
     page,
     request,

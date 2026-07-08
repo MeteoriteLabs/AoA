@@ -1,6 +1,7 @@
 import { MessageSquare as MessageSquareIcon } from "lucide-react";
 import type { CockpitDiscussionItem, CommanderInputRef } from "@armyofagents/shared";
 import { setCommanderRefDragData } from "./cockpitReferenceDrag";
+import { COCKPIT_DRAGGABLE_ROW_CLASS } from "./cockpitRowStyles";
 
 function discussionTitle(item: CockpitDiscussionItem) {
   return item.title ?? "Untitled discussion";
@@ -24,11 +25,13 @@ function discussionPrompt(item: CockpitDiscussionItem) {
 export function CockpitDiscussionsCard({
   items,
   onOpenFullPage,
+  onOpenReference,
   onAsk,
   onReference,
 }: {
   items: CockpitDiscussionItem[];
   onOpenFullPage?: (href: string) => void;
+  onOpenReference?: (ref: CommanderInputRef) => void;
   onAsk?: (text: string) => void;
   onReference?: (ref: CommanderInputRef, suggestedPrompt?: string) => void;
 }) {
@@ -44,12 +47,16 @@ export function CockpitDiscussionsCard({
             key={item.id}
             draggable
             onDragStart={(event) => setCommanderRefDragData(event.dataTransfer, discussionRef(item), discussionPrompt(item))}
-            className="group flex items-center gap-1 truncate rounded px-1 py-1 text-xs hover:bg-muted/50"
+            className={`group flex items-center gap-1 truncate rounded px-1 py-1 text-xs ${COCKPIT_DRAGGABLE_ROW_CLASS}`}
           >
             <button
               type="button"
               className="min-w-0 flex-1 truncate text-left"
-              onClick={() => onOpenFullPage?.(`/discussions/${item.id}`)}
+              onClick={() => {
+                const ref = discussionRef(item);
+                if (onOpenReference) onOpenReference(ref);
+                else onOpenFullPage?.(`/discussions/${item.id}`);
+              }}
             >
               <span className="truncate font-medium">
                 {discussionTitle(item)}

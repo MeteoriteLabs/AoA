@@ -141,6 +141,7 @@ export interface CommanderInputRefOpenDeps {
   openPreview: (source: "center" | "right-panel") => void;
   openTask: (issueId: string, title: string) => void;
   openArtifact: (id: string, title: string) => void;
+  openInputRef: (ref: CommanderInputRef) => void;
   navigate: (href: string) => void;
 }
 
@@ -148,14 +149,16 @@ export function openCommanderInputRef(
   ref: CommanderInputRef,
   deps: CommanderInputRefOpenDeps,
 ): void {
-  if (ref.kind === "task") {
+  if (
+    ref.kind === "task" ||
+    ref.kind === "artifact" ||
+    ref.kind === "discussion" ||
+    ref.kind === "approval" ||
+    ref.kind === "inbox" ||
+    ref.kind === "note"
+  ) {
     deps.openPreview("right-panel");
-    deps.openTask(ref.id, ref.label);
-    return;
-  }
-  if (ref.kind === "artifact") {
-    deps.openPreview("right-panel");
-    deps.openArtifact(ref.id, ref.label);
+    deps.openInputRef(ref);
     return;
   }
   if (ref.route) {
@@ -813,6 +816,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
         openArtifact: (id, title) => {
           viewer.openRef({ v: 1, kind: "artifact", id, title, action: "referenced" });
         },
+        openInputRef: viewer.openInputRef,
         navigate,
       });
     },
@@ -1803,6 +1807,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
           onOpenTask={(issueId, title) => { openPreview("right-panel"); viewer.openTask(issueId, title); }}
           onAsk={(text) => void sendText(text)}
           onReference={addInputRef}
+          onOpenInputRef={handleOpenInputRef}
           onOpenFullPage={(href) => navigate(href)}
           onOpenArtifact={(id, title) => {
             openPreview("right-panel");

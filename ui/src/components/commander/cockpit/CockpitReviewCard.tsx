@@ -1,6 +1,7 @@
 import { MessageSquare, Pin } from "lucide-react";
 import type { CockpitPinnedEntityType, CockpitTaskItem, CommanderInputRef } from "@armyofagents/shared";
 import { setCommanderRefDragData } from "./cockpitReferenceDrag";
+import { COCKPIT_DRAGGABLE_ROW_CLASS } from "./cockpitRowStyles";
 
 // Phase 5B: Internal <header> removed — title/icon/count now live in the
 // CockpitSection trigger in CommanderCockpitPanel. Card renders only body rows.
@@ -42,7 +43,7 @@ export function CockpitReviewCard({
             key={item.id}
             draggable
             onDragStart={(event) => setCommanderRefDragData(event.dataTransfer, taskRef(item), reviewPrompt(item))}
-            className="group flex items-center gap-1 truncate rounded px-1 py-1 text-xs hover:bg-muted/50"
+            className={`group flex items-center gap-1 truncate rounded px-1 py-1 text-xs ${COCKPIT_DRAGGABLE_ROW_CLASS}`}
           >
             <button
               type="button"

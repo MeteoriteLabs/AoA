@@ -4,6 +4,7 @@ import {
   type CommanderInputRef,
 } from "@armyofagents/shared";
 import { setCommanderRefDragData } from "./cockpitReferenceDrag";
+import { COCKPIT_DRAGGABLE_ROW_CLASS } from "./cockpitRowStyles";
 
 const LANE_LABELS: Record<NonNullable<CockpitInboxItem["lane"]>, string> = {
   waiting_on_you: "Needs you",
@@ -44,11 +45,13 @@ function inboxItemRef(item: CockpitInboxItem, href: string): CommanderInputRef {
 export function CockpitInboxCard({
   items,
   onOpenFullPage,
+  onOpenReference,
   onAsk,
   onReference,
 }: {
   items: CockpitInboxItem[];
   onOpenFullPage?: (href: string) => void;
+  onOpenReference?: (ref: CommanderInputRef) => void;
   onAsk?: (text: string) => void;
   onReference?: (ref: CommanderInputRef, suggestedPrompt?: string) => void;
 }) {
@@ -69,13 +72,17 @@ export function CockpitInboxCard({
                 const ref = inboxItemRef(item, href);
                 setCommanderRefDragData(event.dataTransfer, ref, prompt);
               }}
-              className="group flex flex-col gap-1 rounded px-1 py-1.5 text-xs hover:bg-muted/50"
+              className={`group flex flex-col gap-1 rounded px-1 py-1.5 text-xs ${COCKPIT_DRAGGABLE_ROW_CLASS}`}
             >
               <div className="flex items-center gap-1">
                 <button
                   type="button"
                   className="min-w-0 flex-1 truncate text-left"
-                  onClick={() => onOpenFullPage?.(href)}
+                  onClick={() => {
+                    const ref = inboxItemRef(item, href);
+                    if (onOpenReference) onOpenReference(ref);
+                    else onOpenFullPage?.(href);
+                  }}
                 >
                   <span className="truncate font-medium">
                     {item.unread && (

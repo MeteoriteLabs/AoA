@@ -24,6 +24,7 @@ import { Check, ExternalLink, Loader2, MessageSquare, X } from "lucide-react";
 import type { CockpitApprovalItem, CommanderInputRef } from "@armyofagents/shared";
 import { Button } from "../../ui/button";
 import { setCommanderRefDragData } from "./cockpitReferenceDrag";
+import { COCKPIT_DRAGGABLE_ROW_CLASS } from "./cockpitRowStyles";
 import { useCockpitApprovalAction } from "./useCockpitApprovalAction";
 
 // Source chip label map — must include all CockpitApprovalSource values.
@@ -100,7 +101,7 @@ function ApprovalRow({
     <li
       draggable
       onDragStart={(event) => setCommanderRefDragData(event.dataTransfer, approvalRef(item, route), approvalPrompt(item))}
-      className="group flex flex-col gap-1 rounded px-1 py-1.5 text-xs hover:bg-muted/50"
+      className={`group flex flex-col gap-1 rounded px-1 py-1.5 text-xs ${COCKPIT_DRAGGABLE_ROW_CLASS}`}
     >
       {/* Row header: title + source chip + ↗ (hidden when no route) */}
       <div className="flex items-center gap-1 truncate">

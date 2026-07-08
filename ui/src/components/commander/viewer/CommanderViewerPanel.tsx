@@ -1,11 +1,12 @@
 import { useQuery } from "@tanstack/react-query";
-import { FileText, Globe, Home, ListTodo } from "lucide-react";
+import { FileText, Globe, Home, Inbox, ListTodo, MessageSquare, ShieldCheck, StickyNote } from "lucide-react";
 import type { CommanderOutputRef } from "@armyofagents/shared";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "../../../lib/utils";
 import { COMMANDER_PANEL_CARD } from "../commanderChrome";
 import { artifactsApi } from "../../../api/artifacts";
+import { hubItemsApi } from "../../../api/hub-items";
 import { BrowserViewer } from "../../viewers/BrowserViewer";
 import { ViewerTabs, type ViewerTabModel } from "../../viewers/ViewerTabs";
 import { SharedContentViewer } from "../../viewers/SharedContentViewer";
@@ -17,6 +18,8 @@ import {
 import { resolveViewer } from "../../viewers/viewer-registry";
 import { CommanderViewerHome } from "./CommanderViewerHome";
 import { TaskDetail } from "../../TaskDetail";
+import { ThreadDetail } from "../../../pages/ThreadDetail";
+import { ApprovalDetailCore } from "../../approval/ApprovalDetailCore";
 import type { CommanderViewerApi } from "./useCommanderViewer";
 import type { ConversationViewerState, ViewerTab } from "./commanderViewerModel";
 
@@ -116,6 +119,63 @@ function TaskDetailTabBody({ tab, onDismiss }: TaskDetailTabBodyProps) {
   return <TaskDetail issueId={tab.refId} active onDismiss={onDismiss} />;
 }
 
+function InboxRefTabBody({ tab, companyId }: { tab: ViewerTab; companyId: string }) {
+  const {
+    data: item,
+    isLoading,
+    isError,
+  } = useQuery({
+    queryKey: ["commander-viewer-inbox", companyId, tab.refId],
+    queryFn: () => hubItemsApi.getOne(companyId, tab.refId),
+    enabled: Boolean(companyId && tab.refId),
+  });
+
+  if (isLoading) return <LoadingBody />;
+
+  const title = item?.title ?? tab.inputRef?.label ?? tab.title;
+  const summary = item?.summary ?? tab.inputRef?.detail ?? null;
+  const meta = item
+    ? [item.semanticType, item.priority, item.lane].filter(Boolean).join(" · ")
+    : tab.inputRef?.source ?? "Inbox";
+
+  return (
+    <div className="h-full overflow-auto p-4" data-testid="commander-inbox-ref-body">
+      <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+        <Inbox className="size-4" aria-hidden />
+        <span>{meta}</span>
+      </div>
+      <h2 className="mt-2 text-base font-semibold leading-snug text-foreground">{title}</h2>
+      {summary ? (
+        <p className="mt-3 text-sm leading-6 text-muted-foreground">{summary}</p>
+      ) : (
+        <p className="mt-3 text-sm text-muted-foreground">No further details.</p>
+      )}
+      {isError ? (
+        <p className="mt-3 text-xs text-muted-foreground">
+          The live Inbox item could not be loaded, so this preview is showing the referenced context.
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function NoteRefTabBody({ tab }: { tab: ViewerTab }) {
+  return (
+    <div className="h-full overflow-auto p-4" data-testid="commander-note-ref-body">
+      <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+        <StickyNote className="size-4" aria-hidden />
+        <span>Personal note</span>
+      </div>
+      <h2 className="mt-2 text-base font-semibold leading-snug text-foreground">{tab.inputRef?.label ?? tab.title}</h2>
+      {tab.inputRef?.detail ? (
+        <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-muted-foreground">{tab.inputRef.detail}</p>
+      ) : (
+        <p className="mt-3 text-sm text-muted-foreground">No note body was included with this reference.</p>
+      )}
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Tab body switcher (shared between desktop panel + mobile sheet)
 // ---------------------------------------------------------------------------
@@ -173,6 +233,28 @@ export function TabBodySwitch({
     );
   }
 
+  if (activeTab.kind === "discussion") {
+    return (
+      <ThreadDetail
+        discussionId={activeTab.refId}
+        companyId={companyId}
+        embedded
+      />
+    );
+  }
+
+  if (activeTab.kind === "approval") {
+    return <ApprovalDetailCore approvalId={activeTab.refId} embedded onOpenTab={() => {}} />;
+  }
+
+  if (activeTab.kind === "inbox") {
+    return <InboxRefTabBody tab={activeTab} companyId={companyId} />;
+  }
+
+  if (activeTab.kind === "note") {
+    return <NoteRefTabBody tab={activeTab} />;
+  }
+
   return (
     <UnavailableBody message="This item is no longer available (it may have been deleted, or you may not have access)." />
   );
@@ -190,7 +272,20 @@ export function buildViewerTabModels(state: ConversationViewerState): ViewerTabM
         id: t.id,
         kind: t.kind,
         title: t.title,
-        icon: t.kind === "browser" ? Globe : t.kind === "task" ? ListTodo : FileText,
+        icon:
+          t.kind === "browser"
+            ? Globe
+            : t.kind === "task"
+              ? ListTodo
+              : t.kind === "discussion"
+                ? MessageSquare
+                : t.kind === "approval"
+                  ? ShieldCheck
+                  : t.kind === "inbox"
+                    ? Inbox
+                    : t.kind === "note"
+                      ? StickyNote
+                      : FileText,
       }),
     ),
   ];

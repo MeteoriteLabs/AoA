@@ -5,6 +5,7 @@ import type { CockpitNoteItem, CommanderInputRef } from "@armyofagents/shared";
 import { userNotesApi } from "../../../api/user-notes";
 import { queryKeys } from "../../../lib/queryKeys";
 import { setCommanderRefDragData } from "./cockpitReferenceDrag";
+import { COCKPIT_DRAGGABLE_ROW_CLASS } from "./cockpitRowStyles";
 
 const noteColorClasses: Record<CockpitNoteItem["color"], string> = {
   yellow: "border-amber-200/70 bg-amber-50 text-amber-950 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-100",
@@ -126,7 +127,7 @@ export function CockpitStickyNotesCard({
                   const liveNote = { ...note, body };
                   setCommanderRefDragData(event.dataTransfer, noteRef(liveNote), notePrompt(liveNote));
                 }}
-                className={`rounded-md border p-2 ${noteColorClasses[note.color]}`}
+                className={`rounded-md border p-2 ${noteColorClasses[note.color]} ${COCKPIT_DRAGGABLE_ROW_CLASS}`}
               >
                 {note.title && (
                   <p className="mb-1 truncate text-xs font-semibold">{note.title}</p>

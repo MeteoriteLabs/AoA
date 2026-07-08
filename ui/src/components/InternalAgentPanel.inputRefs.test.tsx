@@ -37,20 +37,23 @@ describe("Commander input refs", () => {
     });
   });
 
-  it("opens task refs in the viewer and route refs through navigation fallback", () => {
+  it("opens supported refs in the Commander viewer instead of navigating away", () => {
     const deps: CommanderInputRefOpenDeps = {
       openPreview: vi.fn(),
       openTask: vi.fn(),
       openArtifact: vi.fn(),
+      openInputRef: vi.fn(),
       navigate: vi.fn(),
     };
 
     openCommanderInputRef(taskRef, deps);
     expect(deps.openPreview).toHaveBeenCalledWith("right-panel");
-    expect(deps.openTask).toHaveBeenCalledWith("task-1", "Fix login");
+    expect(deps.openInputRef).toHaveBeenCalledWith(taskRef);
     expect(deps.navigate).not.toHaveBeenCalled();
 
     openCommanderInputRef(inboxRef, deps);
-    expect(deps.navigate).toHaveBeenCalledWith("/inbox/waiting/hub-1");
+    expect(deps.openPreview).toHaveBeenCalledWith("right-panel");
+    expect(deps.openInputRef).toHaveBeenCalledWith(inboxRef);
+    expect(deps.navigate).not.toHaveBeenCalled();
   });
 });

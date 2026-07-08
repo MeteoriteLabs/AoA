@@ -90,12 +90,32 @@ describe("Cockpit reference actions", () => {
     );
   });
 
+  it("opens inbox rows through the reference viewer callback when available", () => {
+    const onOpenReference = vi.fn();
+    const onOpenFullPage = vi.fn();
+    render(
+      <CockpitInboxCard
+        items={[makeInboxItem()]}
+        onOpenReference={onOpenReference}
+        onOpenFullPage={onOpenFullPage}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("Approve launch budget"));
+    expect(onOpenReference).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "inbox", id: "hub-1", route: "/inbox/waiting/hub-1" }),
+    );
+    expect(onOpenFullPage).not.toHaveBeenCalled();
+  });
+
   it("writes an inbox reference drag payload from inbox rows", () => {
     const setData = vi.fn();
     render(<CockpitInboxCard items={[makeInboxItem()]} onAsk={vi.fn()} />);
 
     const row = screen.getByText("Approve launch budget").closest("li");
     expect(row).toHaveAttribute("draggable", "true");
+    expect(row).toHaveClass("cursor-grab");
+    expect(row?.className).toContain("hover:translate-x-0.5");
 
     fireEvent.dragStart(row!, {
       dataTransfer: {
@@ -121,6 +141,24 @@ describe("Cockpit reference actions", () => {
       expect.objectContaining({ kind: "discussion", id: "disc-1", route: "/discussions/disc-1" }),
       expect.stringContaining("Sprint planning"),
     );
+  });
+
+  it("opens discussion rows through the reference viewer callback when available", () => {
+    const onOpenReference = vi.fn();
+    const onOpenFullPage = vi.fn();
+    render(
+      <CockpitDiscussionsCard
+        items={[makeDiscussion()]}
+        onOpenReference={onOpenReference}
+        onOpenFullPage={onOpenFullPage}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("Sprint planning"));
+    expect(onOpenReference).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "discussion", id: "disc-1", route: "/discussions/disc-1" }),
+    );
+    expect(onOpenFullPage).not.toHaveBeenCalled();
   });
 
   it("adds a note reference from sticky notes", () => {

@@ -1,6 +1,7 @@
 import { MessageSquare } from "lucide-react";
 import type { CockpitRunItem, CommanderInputRef } from "@armyofagents/shared";
 import { setCommanderRefDragData } from "./cockpitReferenceDrag";
+import { COCKPIT_DRAGGABLE_ROW_CLASS } from "./cockpitRowStyles";
 
 function runPrompt(run: CockpitRunItem) {
   return `What is ${run.agentName ?? "the agent"} working on right now? Is there anything I should know?`;
@@ -45,7 +46,9 @@ export function CockpitRunningCard({
               const ref = runRef(r);
               if (ref) setCommanderRefDragData(event.dataTransfer, ref, runPrompt(r));
             }}
-            className="group flex items-center gap-1 truncate rounded px-1 py-1 text-xs hover:bg-muted/50"
+            className={`group flex items-center gap-1 truncate rounded px-1 py-1 text-xs ${
+              r.issueId ? COCKPIT_DRAGGABLE_ROW_CLASS : "hover:bg-muted/50"
+            }`}
           >
             <button
               type="button"

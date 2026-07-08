@@ -63,6 +63,7 @@ export interface CockpitInteractions {
   onOpenTask?: (issueId: string, title: string) => void;
   onAsk?: (text: string) => void;
   onReference?: (ref: CommanderInputRef, suggestedPrompt?: string) => void;
+  onOpenInputRef?: (ref: CommanderInputRef) => void;
   onOpenFullPage?: (href: string) => void;
   onPin?: (entityType: CockpitPinnedEntityType, entityId: string) => void;
   onUnpin?: (entityType: CockpitPinnedEntityType, entityId: string) => void;
@@ -183,10 +184,11 @@ export const COCKPIT_REGISTRY: CockpitCardRenderDef[] = [
       return d.inbox.length > 0 ? `${d.inbox.length} open` : null;
     },
     isActive: (d) => d.inbox.length > 0,
-    render: ({ data, onOpenFullPage, onAsk, onReference }) => (
+    render: ({ data, onOpenFullPage, onOpenInputRef, onAsk, onReference }) => (
       <CockpitInboxCard
         items={data.inbox}
         onOpenFullPage={onOpenFullPage}
+        onOpenReference={onOpenInputRef}
         onAsk={onAsk}
         onReference={onReference}
       />
@@ -263,8 +265,14 @@ export const COCKPIT_REGISTRY: CockpitCardRenderDef[] = [
     icon: MessageSquare,
     summary: (d) => d.discussions.length > 0 ? `${d.discussions.length} active` : null,
     isActive: (d) => d.discussions.length > 0,
-    render: ({ data, onOpenFullPage, onAsk, onReference }) => (
-      <CockpitDiscussionsCard items={data.discussions} onOpenFullPage={onOpenFullPage} onAsk={onAsk} onReference={onReference} />
+    render: ({ data, onOpenFullPage, onOpenInputRef, onAsk, onReference }) => (
+      <CockpitDiscussionsCard
+        items={data.discussions}
+        onOpenFullPage={onOpenFullPage}
+        onOpenReference={onOpenInputRef}
+        onAsk={onAsk}
+        onReference={onReference}
+      />
     ),
   },
   // Phase 3c: unified approvals queue (founder-only; server returns [] for non-founders)
@@ -466,6 +474,7 @@ export function CommanderCockpitPanel({
   onOpenTask,
   onAsk,
   onReference,
+  onOpenInputRef,
   onOpenFullPage,
   onOpenArtifact,
   conversationRefs = [],
@@ -639,6 +648,7 @@ export function CommanderCockpitPanel({
                       onOpenTask,
                       onAsk,
                       onReference,
+                      onOpenInputRef,
                       onOpenFullPage,
                       onOpenArtifact,
                       onPin: (entityType, entityId) => pin.mutate({ entityType, entityId }),

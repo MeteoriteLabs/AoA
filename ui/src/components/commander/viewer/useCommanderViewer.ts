@@ -1,9 +1,10 @@
 import { useCallback, useRef, useState } from "react";
-import type { CommanderOutputRef } from "@armyofagents/shared";
+import type { CommanderInputRef, CommanderOutputRef } from "@armyofagents/shared";
 import {
   closeTab,
   emptyViewerState,
   openBrowserTab,
+  openInputRefTab,
   openRefTab,
   openReplyTab,
   openTaskTab,
@@ -21,6 +22,8 @@ export interface CommanderViewerApi {
   openBrowser: (url: string) => void;
   /** Open a task as a viewer tab (Phase 3 cockpit / future task chips call this). */
   openTask: (issueId: string, title: string) => void;
+  /** Open an identity-preserving Commander input reference as a viewer tab. */
+  openInputRef: (ref: CommanderInputRef) => void;
   onLiveRef: (ref: CommanderOutputRef, isMobile: boolean) => void;
   activate: (tabId: string) => void;
   close: (tabId: string) => void;
@@ -69,6 +72,7 @@ export function useCommanderViewer(conversationId: string | null): CommanderView
     openReply: (messageId, content) => update(openReplyTab(readState(), messageId, content)),
     openBrowser: (url) => update(openBrowserTab(readState(), url)),
     openTask: (issueId, title) => update(openTaskTab(readState(), issueId, title)),
+    openInputRef: (ref) => update(openInputRefTab(readState(), ref)),
     onLiveRef: (ref, isMobile) => {
       const current = readState();
       if (shouldAutoOpen(ref, isMobile)) {
