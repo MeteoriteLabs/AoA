@@ -27,6 +27,12 @@ import { LiveRunWidget } from "./LiveRunWidget";
 import { WorkspaceTimeline } from "./workspace/WorkspaceTimeline";
 import { IssueWorkspaceCard } from "./IssueWorkspaceCard";
 import { ImageGalleryModal } from "./ImageGalleryModal";
+import {
+  TASK_DETAIL_TAB_ORDER,
+  getDefaultTaskDetailTab,
+  getTaskDetailTabLabel,
+  type TaskDetailTab,
+} from "./task-detail/taskDetailViewModel";
 import type { MentionOption } from "./MarkdownEditor";
 import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
@@ -50,6 +56,8 @@ import {
   ListTree,
   Loader2,
   MessageSquare,
+  Maximize2,
+  Minimize2,
   MoreHorizontal,
   FileBox,
   FileCode,
@@ -377,17 +385,26 @@ interface TaskDetailProps {
   active: boolean;
   onDismiss?: () => void;
   onOpenScopeHandoffItem?: (item: IssueContextBundle["items"][number]) => void;
+  panelWide?: boolean;
+  onTogglePanelWide?: () => void;
 }
 
 /* ── Component ── */
 
-export function TaskDetail({ issueId, active, onDismiss, onOpenScopeHandoffItem }: TaskDetailProps) {
+export function TaskDetail({
+  issueId,
+  active,
+  onDismiss,
+  onOpenScopeHandoffItem,
+  panelWide,
+  onTogglePanelWide,
+}: TaskDetailProps) {
   const { selectedCompanyId, selectedCompany } = useCompany();
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [moreOpen, setMoreOpen] = useState(false);
-  const [detailTab, setDetailTab] = useState("comments");
+  const [detailTab, setDetailTab] = useState<TaskDetailTab>(getDefaultTaskDetailTab);
   const [secondaryOpen, setSecondaryOpen] = useState({
     approvals: false,
     cost: false,
@@ -651,6 +668,7 @@ export function TaskDetail({ issueId, active, onDismiss, onOpenScopeHandoffItem 
       return meta ? { ...comment, ...meta } : comment;
     });
   }, [activity, comments, linkedRuns]);
+  const latestComment = commentsWithRunMeta[0];
 
   const issueCostSummary = useMemo(() => {
     let input = 0;
@@ -922,7 +940,7 @@ export function TaskDetail({ issueId, active, onDismiss, onOpenScopeHandoffItem 
     queries: upstreamDeps.map((dep) => ({
       queryKey: queryKeys.artifacts.byIssue(dep.dependencyIssueId!),
       queryFn: () => artifactsApi.getByIssueId(dep.dependencyIssueId!),
-      enabled: !!dep.dependencyIssueId && detailTab === "artifacts",
+      enabled: !!dep.dependencyIssueId && detailTab === "work",
     })),
   });
 
@@ -946,7 +964,7 @@ export function TaskDetail({ issueId, active, onDismiss, onOpenScopeHandoffItem 
   // Reset tab and mode when issue changes
   useEffect(() => {
     if (issueId) {
-      setDetailTab("comments");
+      setDetailTab(getDefaultTaskDetailTab());
       setSecondaryOpen({ approvals: false, cost: false });
       setShowAddVersion(false);
       setShowAllVersions(false);
@@ -968,11 +986,12 @@ export function TaskDetail({ issueId, active, onDismiss, onOpenScopeHandoffItem 
   };
 
   const isImageAttachment = (attachment: IssueAttachment) => attachment.contentType.startsWith("image/");
+  const isCommentsTab = detailTab === "comments";
 
   /* ── Render ── */
 
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden" data-testid="task-detail-panel">
+    <div className="flex h-full min-h-0 min-w-0 max-w-full flex-col overflow-hidden" data-testid="task-detail-panel">
         {/* Mode 2: Workspace Chat */}
         {sidebarMode === "workspace" && issue && (
           <>
@@ -1039,6 +1058,13 @@ export function TaskDetail({ issueId, active, onDismiss, onOpenScopeHandoffItem 
                 <span className="text-sm font-mono text-muted-foreground shrink-0">
                   {issue.identifier ?? issue.id.slice(0, 8)}
                 </span>
+                <span
+                  className="hidden text-xs text-muted-foreground/80 sm:inline"
+                  data-testid="task-header-updated-at"
+                  title={`Last updated ${new Date(issue.updatedAt).toLocaleString()}`}
+                >
+                  Updated {relativeTime(issue.updatedAt)}
+                </span>
                 {hasLiveRuns && (
                   <span className="inline-flex items-center gap-1.5 rounded-full bg-cyan-500/10 border border-cyan-500/30 px-2 py-0.5 text-[10px] font-medium text-cyan-600 dark:text-cyan-400 shrink-0">
                     <span className="relative flex h-1.5 w-1.5">
@@ -1065,6 +1091,18 @@ export function TaskDetail({ issueId, active, onDismiss, onOpenScopeHandoffItem 
           <div className="flex items-center gap-1 shrink-0">
             {issue && (
               <>
+                {onTogglePanelWide && (
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    className="shrink-0"
+                    title={panelWide ? "Collapse task panel" : "Expand task panel"}
+                    aria-label={panelWide ? "Collapse task panel" : "Expand task panel"}
+                    onClick={onTogglePanelWide}
+                  >
+                    {panelWide ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+                  </Button>
+                )}
                 <Popover open={llmMenuOpen} onOpenChange={setLlmMenuOpen}>
                   <PopoverTrigger asChild>
                     <Button
@@ -1112,6 +1150,18 @@ export function TaskDetail({ issueId, active, onDismiss, onOpenScopeHandoffItem 
                     </Button>
                   </PopoverTrigger>
                   <PopoverContent className="w-44 p-1" align="end">
+                    {issue.workMode !== "planning" && (
+                      <button
+                        className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50"
+                        onClick={() => {
+                          updateIssue.mutate({ workMode: "planning" });
+                          setMoreOpen(false);
+                        }}
+                      >
+                        <ClipboardList className="h-3 w-3" />
+                        Switch to Planning mode
+                      </button>
+                    )}
                     <button
                       className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
                       onClick={() => {
@@ -1135,8 +1185,21 @@ export function TaskDetail({ issueId, active, onDismiss, onOpenScopeHandoffItem 
           </div>
         </div>
 
-        <ScrollArea className="flex-1 overflow-y-auto">
-          <div className="p-4 space-y-6">
+        <ScrollArea
+          className={cn(
+            "flex-1 overflow-x-hidden [&_[data-slot=scroll-area-scrollbar]]:hidden",
+            isCommentsTab
+              ? "overflow-hidden [&_[data-slot=scroll-area-viewport]>div]:!h-full"
+              : "overflow-y-auto",
+          )}
+        >
+          <div
+            className={cn(
+              "min-w-0 max-w-full overflow-x-hidden p-4",
+              isCommentsTab ? "flex h-full min-h-0 flex-col gap-6" : "space-y-6",
+            )}
+            data-testid="task-detail-scroll-body"
+          >
             {isLoading && (
               <p className="text-sm text-muted-foreground">Loading...</p>
             )}
@@ -1192,6 +1255,7 @@ export function TaskDetail({ issueId, active, onDismiss, onOpenScopeHandoffItem 
                     className="text-sm text-muted-foreground"
                     placeholder="Add a description..."
                     multiline
+                    multilineAutoSave
                     mentions={mentionOptions}
                     companyId={selectedCompanyId}
                     imageUploadHandler={async (file) => {
@@ -1199,196 +1263,6 @@ export function TaskDetail({ issueId, active, onDismiss, onOpenScopeHandoffItem 
                       return attachment.contentPath;
                     }}
                   />
-                </div>
-
-                {/* Inline Properties */}
-                <div className="rounded-lg border border-border p-3">
-                  <IssueProperties
-                    issue={issue}
-                    onUpdate={(data) => updateIssue.mutate(data)}
-                    inline
-                  />
-                </div>
-
-                {/* Documents */}
-                <IssueDocumentsSection
-                  issue={issue}
-                  canDeleteDocuments={!!session?.user?.id}
-                  mentions={mentionOptions}
-                  imageUploadHandler={async (file) => {
-                    const attachment = await uploadAttachment.mutateAsync(file);
-                    return attachment.contentPath;
-                  }}
-                />
-
-                {/* Workspace Section */}
-                <div className="space-y-2" data-testid="workspace-section">
-                  <h3 className="text-sm font-medium text-muted-foreground flex items-center gap-1.5">
-                    <MonitorPlay className="h-3.5 w-3.5" />
-                    Workspace
-                  </h3>
-                  {!issue.executionWorkspaceId ? (
-                    <p className="text-xs text-muted-foreground" data-testid="workspace-empty-state">
-                      {issue.executionLockedAt && hasLiveRuns && issue.projectId && issue.project?.executionWorkspacePolicy ? (
-                        <span className="flex items-center gap-1.5">
-                          <Loader2 className="h-3 w-3 animate-spin" />
-                          Provisioning workspace...
-                        </span>
-                      ) : hasLiveRuns ? (
-                        "Agent is running without a project workspace"
-                      ) : !issue.projectId ? (
-                        "No project assigned — assign a project with workspace policy to enable"
-                      ) : !issue.project?.executionWorkspacePolicy ? (
-                        "Project has no workspace policy configured"
-                      ) : (
-                        "No workspace yet — will be created when agent starts work"
-                      )}
-                    </p>
-                  ) : workspace ? (
-                    <div
-                      role="button"
-                      tabIndex={0}
-                      data-testid="workspace-row"
-                      className="w-full flex items-center gap-3 rounded-lg border border-border px-3 py-2.5 text-sm hover:bg-accent/30 transition-colors text-left"
-                      onClick={() => setSidebarMode("workspace")}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter" || event.key === " ") {
-                          event.preventDefault();
-                          setSidebarMode("workspace");
-                        }
-                      }}
-                    >
-                      <span
-                        className={cn(
-                          "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium shrink-0",
-                          workspace.status === "active"
-                            ? "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-400"
-                            : workspace.status === "idle"
-                              ? "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400"
-                              : "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400",
-                        )}
-                      >
-                        {workspace.status}
-                      </span>
-                      {workspace.branchName && (
-                        <span className="flex items-center gap-1 min-w-0">
-                          <GitBranch className="h-3 w-3 text-muted-foreground shrink-0" />
-                          <span className="font-mono text-xs text-muted-foreground truncate">
-                            {workspace.branchName}
-                          </span>
-                          <button
-                            type="button"
-                            className="shrink-0 text-muted-foreground hover:text-foreground transition-colors"
-                            title="Copy branch name"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              void navigator.clipboard.writeText(workspace.branchName!);
-                            }}
-                          >
-                            <Copy className="h-3 w-3" />
-                          </button>
-                        </span>
-                      )}
-                      {!workspace.branchName && (
-                        <span className="text-xs text-muted-foreground truncate min-w-0">
-                          {workspace.name}
-                        </span>
-                      )}
-                      <span className="ml-auto text-xs text-muted-foreground shrink-0">
-                        {relativeTime(workspace.lastUsedAt)}
-                      </span>
-                      <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                    </div>
-                  ) : (
-                    <p className="text-xs text-muted-foreground">Loading workspace...</p>
-                  )}
-                </div>
-
-                {/* Issue-level workspace preference (gated by instance flag + software project) */}
-                <IssueWorkspaceCard
-                  issueId={issue.id}
-                  companyId={selectedCompanyId}
-                  projectId={issue.projectId}
-                  issueExecutionWorkspacePreference={issue.executionWorkspacePreference}
-                  issueExecutionWorkspaceSettings={issue.executionWorkspaceSettings}
-                />
-
-                {/* Dependencies */}
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <h3 className="text-sm font-medium text-muted-foreground flex items-center gap-1.5">
-                      <Link2 className="h-3.5 w-3.5" />
-                      Dependencies
-                    </h3>
-                    <Button variant="outline" size="sm" onClick={() => setDepPickerOpen(true)}>
-                      <Plus className="h-3.5 w-3.5 mr-1.5" />
-                      Add
-                    </Button>
-                  </div>
-
-                  {hasUnmetDeps && issue.status === "blocked" && (
-                    <div className="flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-400">
-                      <Link2 className="h-4 w-4 shrink-0" />
-                      Blocked — waiting for {upstreamDeps.filter((d) => d.status !== "done").length} dependency task{upstreamDeps.filter((d) => d.status !== "done").length !== 1 ? "s" : ""} to complete
-                    </div>
-                  )}
-
-                  {upstreamDeps.length > 0 && (
-                    <div>
-                      <p className="text-xs font-medium text-muted-foreground mb-1.5">Waiting for</p>
-                      <div className="border border-border rounded-lg divide-y divide-border">
-                        {upstreamDeps.map((dep) => (
-                          <div key={dep.id} className="flex items-center justify-between px-3 py-2 text-sm">
-                            <Link
-                              to={`/issues/${dep.identifier ?? dep.dependencyIssueId}`}
-                              className="flex items-center gap-2 min-w-0 hover:text-foreground transition-colors"
-                            >
-                              <StatusIcon status={dep.status} />
-                              <span className="font-mono text-xs text-muted-foreground shrink-0">
-                                {dep.identifier ?? dep.dependencyIssueId?.slice(0, 8)}
-                              </span>
-                              <span className="truncate">{dep.title}</span>
-                              <StatusBadge status={dep.status} />
-                            </Link>
-                            <button
-                              type="button"
-                              className="text-muted-foreground hover:text-destructive shrink-0 ml-2"
-                              onClick={() => removeDependency.mutate(dep.dependencyIssueId!)}
-                              title="Remove dependency"
-                            >
-                              <X className="h-3.5 w-3.5" />
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {downstreamDeps.length > 0 && (
-                    <div>
-                      <p className="text-xs font-medium text-muted-foreground mb-1.5">Blocking</p>
-                      <div className="border border-border rounded-lg divide-y divide-border">
-                        {downstreamDeps.map((dep) => (
-                          <Link
-                            key={dep.id}
-                            to={`/issues/${dep.identifier ?? dep.dependentIssueId}`}
-                            className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-accent/20 transition-colors"
-                          >
-                            <StatusIcon status={dep.status} />
-                            <span className="font-mono text-xs text-muted-foreground shrink-0">
-                              {dep.identifier ?? dep.dependentIssueId?.slice(0, 8)}
-                            </span>
-                            <span className="truncate">{dep.title}</span>
-                            <StatusBadge status={dep.status} />
-                          </Link>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {upstreamDeps.length === 0 && downstreamDeps.length === 0 && (
-                    <p className="text-xs text-muted-foreground">No dependencies.</p>
-                  )}
                 </div>
 
                 {/* Dependency Picker Dialog */}
@@ -1434,113 +1308,6 @@ export function TaskDetail({ issueId, active, onDismiss, onOpenScopeHandoffItem 
                   </DialogContent>
                 </Dialog>
 
-                {/* Scope handoff (discussion-created tasks) */}
-                <ScopeHandoffSection
-                  bundles={contextBundles}
-                  onOpenItem={onOpenScopeHandoffItem}
-                  pushToast={pushToast}
-                  onSetIncluded={(item, included) =>
-                    setScopeHandoffIncluded.mutate({ itemId: item.id, included })}
-                  isUpdatingItemId={
-                    setScopeHandoffIncluded.isPending
-                      ? (setScopeHandoffIncluded.variables as { itemId?: string } | undefined)?.itemId ?? null
-                      : null
-                  }
-                />
-
-                {/* Attachments */}
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <h3 className="text-sm font-medium text-muted-foreground">Attachments</h3>
-                    <div className="flex items-center gap-2">
-                      <input
-                        ref={fileInputRef}
-                        type="file"
-                        accept="image/png,image/jpeg,image/webp,image/gif"
-                        className="hidden"
-                        onChange={handleFilePicked}
-                      />
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => fileInputRef.current?.click()}
-                        disabled={uploadAttachment.isPending}
-                      >
-                        <Paperclip className="h-3.5 w-3.5 mr-1.5" />
-                        {uploadAttachment.isPending ? "Uploading..." : "Upload image"}
-                      </Button>
-                    </div>
-                  </div>
-
-                  {attachmentError && (
-                    <p className="text-xs text-destructive">{attachmentError}</p>
-                  )}
-
-                  {(!attachments || attachments.length === 0) ? (
-                    <p className="text-xs text-muted-foreground">No attachments yet.</p>
-                  ) : (
-                    <div className="space-y-2">
-                      {attachments.map((attachment) => (
-                        <div key={attachment.id} className="border border-border rounded-md p-2">
-                          <div className="flex items-center justify-between gap-2">
-                            <a
-                              href={attachment.contentPath}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="text-xs hover:underline truncate"
-                              title={attachment.originalFilename ?? attachment.id}
-                            >
-                              {attachment.originalFilename ?? attachment.id}
-                            </a>
-                            <button
-                              type="button"
-                              className="text-muted-foreground hover:text-destructive"
-                              onClick={() => deleteAttachment.mutate(attachment.id)}
-                              disabled={deleteAttachment.isPending}
-                              title="Delete attachment"
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </button>
-                          </div>
-                          <p className="text-[11px] text-muted-foreground">
-                            {attachment.contentType} · {(attachment.byteSize / 1024).toFixed(1)} KB
-                          </p>
-                          {isImageAttachment(attachment) && (
-                            <button
-                              type="button"
-                              className="mt-2 block w-full cursor-zoom-in text-left"
-                              aria-label={`Open ${attachment.originalFilename ?? "image"} in gallery`}
-                              onClick={() => {
-                                const idx = imageAttachments.findIndex((img) => img.id === attachment.id);
-                                if (idx >= 0) {
-                                  setGalleryInitialIndex(idx);
-                                  setGalleryOpen(true);
-                                }
-                              }}
-                            >
-                              <img
-                                src={attachment.contentPath}
-                                alt={attachment.originalFilename ?? "attachment"}
-                                className="max-h-56 w-full rounded border border-border object-contain bg-accent/10"
-                                loading="lazy"
-                              />
-                            </button>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                <ImageGalleryModal
-                  images={imageAttachments}
-                  initialIndex={galleryInitialIndex}
-                  open={galleryOpen}
-                  onOpenChange={setGalleryOpen}
-                />
-
-                <Separator />
-
                 {/* Review action bar, visible when task is in_review (Decisions #69, #70). */}
                 {issue?.status === "in_review" && (
                   <div className="rounded-lg border border-amber-200 dark:border-amber-800/50 bg-amber-50/50 dark:bg-amber-900/10 p-3 space-y-2">
@@ -1574,7 +1341,7 @@ export function TaskDetail({ issueId, active, onDismiss, onOpenScopeHandoffItem 
                           variant="outline"
                           size="sm"
                           onClick={() => {
-                            setDetailTab("artifacts");
+                            setDetailTab("work");
                             setShowAddVersion(true);
                           }}
                         >
@@ -1586,28 +1353,409 @@ export function TaskDetail({ issueId, active, onDismiss, onOpenScopeHandoffItem 
                   </div>
                 )}
 
-                {/* Tabs: Comments, Sub-tasks, Activity */}
-                <Tabs value={detailTab} onValueChange={setDetailTab} className="space-y-3">
-                  <TabsList variant="line" className="w-full justify-start gap-1">
+                {/* Tabs: Overview, Work, Comments, Sub-tasks, Activity */}
+                <Tabs
+                  value={detailTab}
+                  onValueChange={(value) => {
+                    if ((TASK_DETAIL_TAB_ORDER as readonly string[]).includes(value)) {
+                      setDetailTab(value as TaskDetailTab);
+                    }
+                  }}
+                  className={cn(
+                    isCommentsTab ? "min-h-0 flex-1 gap-3 overflow-hidden" : "space-y-3",
+                  )}
+                >
+                  <TabsList variant="line" className="w-full justify-start gap-1 overflow-x-auto [&::-webkit-scrollbar]:hidden [scrollbar-width:none]">
+                    <TabsTrigger value="overview" className="gap-1.5">
+                      <ClipboardList className="h-3.5 w-3.5" />
+                      {getTaskDetailTabLabel("overview")}
+                    </TabsTrigger>
+                    <TabsTrigger value="work" className="gap-1.5">
+                      <Link2 className="h-3.5 w-3.5" />
+                      {getTaskDetailTabLabel("work")}
+                    </TabsTrigger>
                     <TabsTrigger value="comments" className="gap-1.5">
                       <MessageSquare className="h-3.5 w-3.5" />
-                      Comments
+                      {getTaskDetailTabLabel("comments")}
                     </TabsTrigger>
-                    <TabsTrigger value="subissues" className="gap-1.5">
+                    <TabsTrigger value="subtasks" className="gap-1.5">
                       <ListTree className="h-3.5 w-3.5" />
-                      Sub-tasks
+                      {getTaskDetailTabLabel("subtasks")}
                     </TabsTrigger>
                     <TabsTrigger value="activity" className="gap-1.5">
                       <ActivityIcon className="h-3.5 w-3.5" />
-                      Activity
-                    </TabsTrigger>
-                    <TabsTrigger value="artifacts" className="gap-1.5">
-                      <FileBox className="h-3.5 w-3.5" />
-                      Artifacts
+                      {getTaskDetailTabLabel("activity")}
                     </TabsTrigger>
                   </TabsList>
 
-                  <TabsContent value="comments">
+                  <TabsContent value="overview">
+                    <div className="space-y-4" data-testid="task-overview-tab">
+                      {hasUnmetDeps && (
+                        <div className="flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-400">
+                          <Link2 className="h-4 w-4 shrink-0" />
+                          Waiting for {upstreamDeps.filter((d) => d.status !== "done").length} dependency task{upstreamDeps.filter((d) => d.status !== "done").length !== 1 ? "s" : ""}
+                        </div>
+                      )}
+
+                      {issue.executionWorkspaceId && workspace && (
+                        <button
+                          type="button"
+                          data-testid="overview-workspace-row"
+                          className="flex w-full items-center gap-3 rounded-md border border-cyan-500/30 bg-cyan-500/10 px-3 py-2 text-left text-xs transition-colors hover:bg-cyan-500/15"
+                          onClick={() => setSidebarMode("workspace")}
+                        >
+                          <MonitorPlay className="h-3.5 w-3.5 shrink-0 text-cyan-700 dark:text-cyan-300" />
+                          <span className="font-medium text-foreground">Workspace</span>
+                          <span className="min-w-0 truncate text-muted-foreground">
+                            {workspace.branchName ?? workspace.name}
+                          </span>
+                          <span
+                            className={cn(
+                              "ml-auto inline-flex shrink-0 items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium",
+                              workspace.status === "active"
+                                ? "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-400"
+                                : workspace.status === "idle"
+                                  ? "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400"
+                                  : "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400",
+                            )}
+                          >
+                            {workspace.status}
+                          </span>
+                          <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        </button>
+                      )}
+
+                      <div className="rounded-md border border-border/80 p-3" data-testid="task-overview-properties">
+                        <IssueProperties
+                          issue={issue}
+                          onUpdate={(data) => updateIssue.mutate(data)}
+                          layout="compact"
+                        />
+                      </div>
+
+                      {(issue.originKind || issue.sourceDiscussionId || issue.sourceThreadTitle) && (
+                        <div className="rounded-md border border-border/80 px-3 py-2 text-xs">
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="text-muted-foreground">Source</span>
+                            {issue.sourceDiscussionId ? (
+                              <Link
+                                to={`/discussions/${issue.sourceDiscussionId}`}
+                                className="truncate text-foreground hover:underline"
+                                title={issue.sourceThreadTitle ?? issue.sourceDiscussionId}
+                              >
+                                {issue.sourceThreadTitle ?? "Discussion thread"}
+                              </Link>
+                            ) : (
+                              <span className="truncate text-foreground">{issue.originKind ?? issue.source}</span>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      {latestComment && (
+                        <button
+                          type="button"
+                          className="w-full rounded-md border border-border/80 px-3 py-2 text-left hover:bg-accent/30 transition-colors"
+                          onClick={() => setDetailTab("comments")}
+                        >
+                          <div className="flex items-center justify-between gap-3 text-xs">
+                            <span className="font-medium">Latest comment</span>
+                            <span className="text-muted-foreground">
+                              {relativeTime(latestComment.createdAt)}
+                            </span>
+                          </div>
+                          <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">
+                            {latestComment.body}
+                          </p>
+                        </button>
+                      )}
+                    </div>
+                  </TabsContent>
+
+                  <TabsContent value="work">
+                    <div className="space-y-5" data-testid="task-work-tab">
+                      <IssueDocumentsSection
+                        issue={issue}
+                        canDeleteDocuments={!!session?.user?.id}
+                        mentions={mentionOptions}
+                        imageUploadHandler={async (file) => {
+                          const attachment = await uploadAttachment.mutateAsync(file);
+                          return attachment.contentPath;
+                        }}
+                      />
+
+                      <div className="space-y-2" data-testid="workspace-section">
+                        <h3 className="text-sm font-medium text-muted-foreground flex items-center gap-1.5">
+                          <MonitorPlay className="h-3.5 w-3.5" />
+                          Workspace
+                        </h3>
+                        {!issue.executionWorkspaceId ? (
+                          <p className="text-xs text-muted-foreground" data-testid="workspace-empty-state">
+                            {issue.executionLockedAt && hasLiveRuns && issue.projectId && issue.project?.executionWorkspacePolicy ? (
+                              <span className="flex items-center gap-1.5">
+                                <Loader2 className="h-3 w-3 animate-spin" />
+                                Provisioning workspace...
+                              </span>
+                            ) : hasLiveRuns ? (
+                              "Agent is running without a project workspace"
+                            ) : !issue.projectId ? (
+                              "No project assigned - assign a project with workspace policy to enable"
+                            ) : !issue.project?.executionWorkspacePolicy ? (
+                              "Project has no workspace policy configured"
+                            ) : (
+                              "No workspace yet - will be created when agent starts work"
+                            )}
+                          </p>
+                        ) : workspace ? (
+                          <div
+                            role="button"
+                            tabIndex={0}
+                            data-testid="workspace-row"
+                            className="w-full flex items-center gap-3 rounded-md border border-border px-3 py-2.5 text-sm hover:bg-accent/30 transition-colors text-left"
+                            onClick={() => setSidebarMode("workspace")}
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter" || event.key === " ") {
+                                event.preventDefault();
+                                setSidebarMode("workspace");
+                              }
+                            }}
+                          >
+                            <span
+                              className={cn(
+                                "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium shrink-0",
+                                workspace.status === "active"
+                                  ? "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-400"
+                                  : workspace.status === "idle"
+                                    ? "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400"
+                                    : "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400",
+                              )}
+                            >
+                              {workspace.status}
+                            </span>
+                            {workspace.branchName && (
+                              <span className="flex items-center gap-1 min-w-0">
+                                <GitBranch className="h-3 w-3 text-muted-foreground shrink-0" />
+                                <span className="font-mono text-xs text-muted-foreground truncate">
+                                  {workspace.branchName}
+                                </span>
+                                <button
+                                  type="button"
+                                  className="shrink-0 text-muted-foreground hover:text-foreground transition-colors"
+                                  title="Copy branch name"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    void navigator.clipboard.writeText(workspace.branchName!);
+                                  }}
+                                >
+                                  <Copy className="h-3 w-3" />
+                                </button>
+                              </span>
+                            )}
+                            {!workspace.branchName && (
+                              <span className="text-xs text-muted-foreground truncate min-w-0">
+                                {workspace.name}
+                              </span>
+                            )}
+                            <span className="ml-auto text-xs text-muted-foreground shrink-0">
+                              {relativeTime(workspace.lastUsedAt)}
+                            </span>
+                            <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                          </div>
+                        ) : (
+                          <p className="text-xs text-muted-foreground">Loading workspace...</p>
+                        )}
+                      </div>
+
+                      <IssueWorkspaceCard
+                        issueId={issue.id}
+                        companyId={selectedCompanyId}
+                        projectId={issue.projectId}
+                        issueExecutionWorkspacePreference={issue.executionWorkspacePreference}
+                        issueExecutionWorkspaceSettings={issue.executionWorkspaceSettings}
+                      />
+
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <h3 className="text-sm font-medium text-muted-foreground flex items-center gap-1.5">
+                            <Link2 className="h-3.5 w-3.5" />
+                            Dependencies
+                          </h3>
+                          <Button variant="outline" size="sm" onClick={() => setDepPickerOpen(true)}>
+                            <Plus className="h-3.5 w-3.5 mr-1.5" />
+                            Add
+                          </Button>
+                        </div>
+
+                        {upstreamDeps.length > 0 && (
+                          <div>
+                            <p className="text-xs font-medium text-muted-foreground mb-1.5">Waiting for</p>
+                            <div className="border border-border rounded-md divide-y divide-border">
+                              {upstreamDeps.map((dep) => (
+                                <div key={dep.id} className="flex items-center justify-between px-3 py-2 text-sm">
+                                  <Link
+                                    to={`/issues/${dep.identifier ?? dep.dependencyIssueId}`}
+                                    className="flex items-center gap-2 min-w-0 hover:text-foreground transition-colors"
+                                  >
+                                    <StatusIcon status={dep.status} />
+                                    <span className="font-mono text-xs text-muted-foreground shrink-0">
+                                      {dep.identifier ?? dep.dependencyIssueId?.slice(0, 8)}
+                                    </span>
+                                    <span className="truncate">{dep.title}</span>
+                                  </Link>
+                                  <span className="ml-auto flex items-center gap-2 shrink-0">
+                                    <StatusBadge status={dep.status} />
+                                    <button
+                                      type="button"
+                                      className="text-muted-foreground hover:text-destructive"
+                                      onClick={() => removeDependency.mutate(dep.dependencyIssueId!)}
+                                      title="Remove dependency"
+                                    >
+                                      <X className="h-3.5 w-3.5" />
+                                    </button>
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {downstreamDeps.length > 0 && (
+                          <div>
+                            <p className="text-xs font-medium text-muted-foreground mb-1.5">Blocking</p>
+                            <div className="border border-border rounded-md divide-y divide-border">
+                              {downstreamDeps.map((dep) => (
+                                <Link
+                                  key={dep.id}
+                                  to={`/issues/${dep.identifier ?? dep.dependentIssueId}`}
+                                  className="flex items-center gap-2 px-3 py-2 text-sm hover:bg-accent/20 transition-colors"
+                                >
+                                  <StatusIcon status={dep.status} />
+                                  <span className="font-mono text-xs text-muted-foreground shrink-0">
+                                    {dep.identifier ?? dep.dependentIssueId?.slice(0, 8)}
+                                  </span>
+                                  <span className="truncate">{dep.title}</span>
+                                  <StatusBadge status={dep.status} />
+                                </Link>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {upstreamDeps.length === 0 && downstreamDeps.length === 0 && (
+                          <p className="text-xs text-muted-foreground">No dependencies.</p>
+                        )}
+                      </div>
+
+                      <ScopeHandoffSection
+                        bundles={contextBundles}
+                        onOpenItem={onOpenScopeHandoffItem}
+                        pushToast={pushToast}
+                        onSetIncluded={(item, included) =>
+                          setScopeHandoffIncluded.mutate({ itemId: item.id, included })}
+                        isUpdatingItemId={
+                          setScopeHandoffIncluded.isPending
+                            ? (setScopeHandoffIncluded.variables as { itemId?: string } | undefined)?.itemId ?? null
+                            : null
+                        }
+                      />
+
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <h3 className="text-sm font-medium text-muted-foreground">Attachments</h3>
+                          <div className="flex items-center gap-2">
+                            <input
+                              ref={fileInputRef}
+                              type="file"
+                              accept="image/png,image/jpeg,image/webp,image/gif"
+                              className="hidden"
+                              onChange={handleFilePicked}
+                            />
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => fileInputRef.current?.click()}
+                              disabled={uploadAttachment.isPending}
+                            >
+                              <Paperclip className="h-3.5 w-3.5 mr-1.5" />
+                              {uploadAttachment.isPending ? "Uploading..." : "Upload image"}
+                            </Button>
+                          </div>
+                        </div>
+
+                        {attachmentError && (
+                          <p className="text-xs text-destructive">{attachmentError}</p>
+                        )}
+
+                        {(!attachments || attachments.length === 0) ? (
+                          <p className="text-xs text-muted-foreground">No attachments yet.</p>
+                        ) : (
+                          <div className="space-y-2">
+                            {attachments.map((attachment) => (
+                              <div key={attachment.id} className="border border-border rounded-md p-2">
+                                <div className="flex items-center justify-between gap-2">
+                                  <a
+                                    href={attachment.contentPath}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="text-xs hover:underline truncate"
+                                    title={attachment.originalFilename ?? attachment.id}
+                                  >
+                                    {attachment.originalFilename ?? attachment.id}
+                                  </a>
+                                  <button
+                                    type="button"
+                                    className="text-muted-foreground hover:text-destructive"
+                                    onClick={() => deleteAttachment.mutate(attachment.id)}
+                                    disabled={deleteAttachment.isPending}
+                                    title="Delete attachment"
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                  </button>
+                                </div>
+                                <p className="text-[11px] text-muted-foreground">
+                                  {attachment.contentType} - {(attachment.byteSize / 1024).toFixed(1)} KB
+                                </p>
+                                {isImageAttachment(attachment) && (
+                                  <button
+                                    type="button"
+                                    className="mt-2 block w-full cursor-zoom-in text-left"
+                                    aria-label={`Open ${attachment.originalFilename ?? "image"} in gallery`}
+                                    onClick={() => {
+                                      const idx = imageAttachments.findIndex((img) => img.id === attachment.id);
+                                      if (idx >= 0) {
+                                        setGalleryInitialIndex(idx);
+                                        setGalleryOpen(true);
+                                      }
+                                    }}
+                                  >
+                                    <img
+                                      src={attachment.contentPath}
+                                      alt={attachment.originalFilename ?? "attachment"}
+                                      className="max-h-56 w-full rounded border border-border object-contain bg-accent/10"
+                                      loading="lazy"
+                                    />
+                                  </button>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      <ImageGalleryModal
+                        images={imageAttachments}
+                        initialIndex={galleryInitialIndex}
+                        open={galleryOpen}
+                        onOpenChange={setGalleryOpen}
+                      />
+                    </div>
+                  </TabsContent>
+
+                  <TabsContent
+                    value="comments"
+                    className="flex min-h-0 flex-1 flex-col overflow-hidden"
+                    data-testid="task-comments-tab-content"
+                  >
                     <CommentThread
                       comments={commentsWithRunMeta}
                       linkedRuns={timelineRuns}
@@ -1639,7 +1787,7 @@ export function TaskDetail({ issueId, active, onDismiss, onOpenScopeHandoffItem 
                     />
                   </TabsContent>
 
-                  <TabsContent value="subissues">
+                  <TabsContent value="subtasks">
                     {childIssues.length === 0 ? (
                       <p className="text-xs text-muted-foreground">No sub-tasks.</p>
                     ) : (
@@ -1686,7 +1834,12 @@ export function TaskDetail({ issueId, active, onDismiss, onOpenScopeHandoffItem 
                     )}
                   </TabsContent>
 
-                  <TabsContent value="artifacts">
+                  <TabsContent value="work" className="space-y-4" data-testid="work-artifacts-section">
+                    <h3 className="text-sm font-medium text-muted-foreground flex items-center gap-1.5">
+                      <FileBox className="h-3.5 w-3.5" />
+                      Artifacts & outputs
+                    </h3>
+
                     {/* Detected outputs from agent runs. */}
                     {pendingOutputs.length > 0 && (
                       <div className="mb-4 space-y-2">
@@ -1959,7 +2112,7 @@ export function TaskDetail({ issueId, active, onDismiss, onOpenScopeHandoffItem 
                 </Tabs>
 
                 {/* Linked Approvals (collapsible) */}
-                {linkedApprovals && linkedApprovals.length > 0 && (
+                {detailTab === "activity" && linkedApprovals && linkedApprovals.length > 0 && (
                   <Collapsible
                     open={secondaryOpen.approvals}
                     onOpenChange={(o) => setSecondaryOpen((prev) => ({ ...prev, approvals: o }))}
@@ -1997,7 +2150,7 @@ export function TaskDetail({ issueId, active, onDismiss, onOpenScopeHandoffItem 
                 )}
 
                 {/* Cost Summary (collapsible) */}
-                {linkedRuns && linkedRuns.length > 0 && (
+                {detailTab === "activity" && linkedRuns && linkedRuns.length > 0 && (
                   <Collapsible
                     open={secondaryOpen.cost}
                     onOpenChange={(o) => setSecondaryOpen((prev) => ({ ...prev, cost: o }))}

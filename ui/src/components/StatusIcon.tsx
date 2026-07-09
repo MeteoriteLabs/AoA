@@ -14,10 +14,11 @@ interface StatusIconProps {
   status: string;
   onChange?: (status: string) => void;
   className?: string;
+  triggerClassName?: string;
   showLabel?: boolean;
 }
 
-export function StatusIcon({ status, onChange, className, showLabel }: StatusIconProps) {
+export function StatusIcon({ status, onChange, className, triggerClassName, showLabel }: StatusIconProps) {
   const [open, setOpen] = useState(false);
   const colorClass = issueStatusIcon[status] ?? issueStatusIconDefault;
   const isDone = status === "done";
@@ -40,7 +41,12 @@ export function StatusIcon({ status, onChange, className, showLabel }: StatusIco
   if (!onChange) return showLabel ? <span className="inline-flex items-center gap-1.5">{circle}<span className="text-sm">{statusLabel(status)}</span></span> : circle;
 
   const trigger = showLabel ? (
-    <button className="inline-flex items-center gap-1.5 cursor-pointer hover:bg-accent/50 rounded px-1 -mx-1 py-0.5 transition-colors">
+    <button
+      className={cn(
+        "inline-flex items-center gap-1.5 cursor-pointer hover:bg-accent/50 rounded px-1 -mx-1 py-0.5 transition-colors",
+        triggerClassName,
+      )}
+    >
       {circle}
       <span className="text-sm">{statusLabel(status)}</span>
     </button>

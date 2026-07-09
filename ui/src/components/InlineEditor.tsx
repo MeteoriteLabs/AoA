@@ -11,6 +11,7 @@ interface InlineEditorProps {
   className?: string;
   placeholder?: string;
   multiline?: boolean;
+  multilineAutoSave?: boolean;
   imageUploadHandler?: (file: File) => Promise<string>;
   mentions?: MentionOption[];
   /** Company ID to enable skill `/`-autocomplete inside the markdown editor. */
@@ -27,6 +28,7 @@ export function InlineEditor({
   className,
   placeholder = "Click to edit...",
   multiline = false,
+  multilineAutoSave = false,
   imageUploadHandler,
   mentions,
   companyId,
@@ -57,7 +59,7 @@ export function InlineEditor({
 
   function commit() {
     const trimmed = draft.trim();
-    if (trimmed && trimmed !== value) {
+    if ((multiline || trimmed) && trimmed !== value) {
       onSave(trimmed);
     } else {
       setDraft(value);
@@ -79,7 +81,7 @@ export function InlineEditor({
   if (editing) {
     if (multiline) {
       return (
-        <div className={cn("space-y-2", pad)}>
+        <div className={cn("space-y-2", pad)} onKeyDown={handleKeyDown}>
           <MarkdownEditor
             value={draft}
             onChange={setDraft}
@@ -89,22 +91,29 @@ export function InlineEditor({
             mentions={mentions}
             companyId={companyId}
             onSubmit={commit}
+            onBlur={multilineAutoSave ? commit : undefined}
           />
-          <div className="flex items-center justify-end gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                setDraft(value);
-                setEditing(false);
-              }}
-            >
-              Cancel
-            </Button>
-            <Button size="sm" onClick={commit}>
-              Save
-            </Button>
-          </div>
+          {multilineAutoSave ? (
+            <div className="flex items-center justify-end text-[11px] text-muted-foreground">
+              Saves on blur
+            </div>
+          ) : (
+            <div className="flex items-center justify-end gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setDraft(value);
+                  setEditing(false);
+                }}
+              >
+                Cancel
+              </Button>
+              <Button size="sm" onClick={commit}>
+                Save
+              </Button>
+            </div>
+          )}
         </div>
       );
     }

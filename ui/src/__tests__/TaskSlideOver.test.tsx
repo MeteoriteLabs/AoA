@@ -157,6 +157,8 @@ vi.mock("../lib/queryKeys", () => ({
     issues: {
       detail: (id: string) => ["issues", "detail", id],
       list: (id: string) => ["issues", "list", id],
+      listTouchedByMe: (id: string) => ["issues", "listTouchedByMe", id],
+      listUnreadTouchedByMe: (id: string) => ["issues", "listUnreadTouchedByMe", id],
       comments: (id: string) => ["issues", "comments", id],
       activity: (id: string) => ["issues", "activity", id],
       runs: (id: string) => ["issues", "runs", id],
@@ -167,6 +169,7 @@ vi.mock("../lib/queryKeys", () => ({
       dependencies: (id: string) => ["issues", "dependencies", id],
       documents: (id: string) => ["issues", "documents", id],
     },
+    sidebarBadges: (id: string) => ["sidebarBadges", id],
     agents: { list: (id: string) => ["agents", "list", id] },
     projects: { list: (id: string) => ["projects", "list", id], detail: (id: string) => ["projects", "detail", id] },
     goals: { list: (id: string) => ["goals", "list", id] },
@@ -258,7 +261,11 @@ vi.mock("../lib/utils", () => ({
 
 // Mock all child components that are complex
 vi.mock("../components/InlineEditor", () => ({
-  InlineEditor: ({ value }: any) => <div data-testid="inline-editor">{value}</div>,
+  InlineEditor: ({ value, multilineAutoSave }: any) => (
+    <div data-testid="inline-editor" data-multiline-autosave={multilineAutoSave ? "true" : "false"}>
+      {value}
+    </div>
+  ),
 }));
 
 vi.mock("../components/CommentThread", () => ({
@@ -266,7 +273,11 @@ vi.mock("../components/CommentThread", () => ({
 }));
 
 vi.mock("../components/IssueProperties", () => ({
-  IssueProperties: () => <div data-testid="issue-properties">Properties</div>,
+  IssueProperties: ({ layout }: any) => (
+    <div data-testid="issue-properties" data-layout={layout ?? "default"}>
+      Properties
+    </div>
+  ),
 }));
 
 vi.mock("../components/LiveRunWidget", () => ({
@@ -309,8 +320,24 @@ vi.mock("../components/IssueWorkspaceCard", () => ({
 vi.mock("@/components/ui/sheet", () => ({
   Sheet: ({ open, children, onOpenChange }: any) =>
     open ? <div data-testid="sheet" data-open={open}>{children}</div> : null,
-  SheetContent: ({ children, side }: any) => (
-    <div data-testid="sheet-content" data-side={side ?? "right"}>{children}</div>
+  SheetContent: ({
+    children,
+    side,
+    className,
+    style,
+    showCloseButton: _showCloseButton,
+    onPointerDownOutside: _onPointerDownOutside,
+    ...props
+  }: any) => (
+    <div
+      data-testid="sheet-content"
+      data-side={side ?? "right"}
+      className={className}
+      style={style}
+      {...props}
+    >
+      {children}
+    </div>
   ),
   SheetHeader: ({ children }: any) => <div>{children}</div>,
   SheetTitle: ({ children }: any) => <div>{children}</div>,
@@ -318,7 +345,11 @@ vi.mock("@/components/ui/sheet", () => ({
 }));
 
 vi.mock("@/components/ui/scroll-area", () => ({
-  ScrollArea: ({ children }: any) => <div>{children}</div>,
+  ScrollArea: ({ children, className, ...props }: any) => (
+    <div className={className} {...props}>
+      {children}
+    </div>
+  ),
 }));
 
 vi.mock("@/components/ui/separator", () => ({
@@ -327,9 +358,13 @@ vi.mock("@/components/ui/separator", () => ({
 
 vi.mock("@/components/ui/tabs", () => ({
   Tabs: ({ children, ...props }: any) => <div data-testid="tabs" {...props}>{children}</div>,
-  TabsList: ({ children }: any) => <div>{children}</div>,
+  TabsList: ({ children, className }: any) => <div data-testid="tabs-list" className={className}>{children}</div>,
   TabsTrigger: ({ children, value }: any) => <button data-testid={`tab-${value}`}>{children}</button>,
-  TabsContent: ({ children, value }: any) => <div data-testid={`tab-content-${value}`}>{children}</div>,
+  TabsContent: ({ children, value, className, ...props }: any) => (
+    <div data-testid={`tab-content-${value}`} className={className} {...props}>
+      {children}
+    </div>
+  ),
 }));
 
 vi.mock("@/components/ui/collapsible", () => ({
@@ -399,6 +434,7 @@ describe("TaskSlideOver", () => {
     // (resetAllMocks() can't be used: it would wipe the factory-provided default
     // implementation too, leaving useQuery returning undefined.)
     vi.mocked(useQuery).mockImplementation(defaultUseQueryImpl);
+    vi.mocked(issuesApi.update).mockResolvedValue(mockIssue as any);
   });
 
   it("renders nothing when open=false", () => {
@@ -412,6 +448,36 @@ describe("TaskSlideOver", () => {
     expect(screen.getByTestId("sheet-content")).toHaveAttribute("data-side", "right");
   });
 
+  it("uses a wider task panel by default and hides accidental horizontal overflow", () => {
+    renderSlideOver({ issueId: "issue-1", open: true });
+
+    const sheet = screen.getByTestId("sheet-content");
+    expect(sheet).toHaveAttribute("data-size-mode", "default");
+    expect(sheet.className).toContain("task-slide-over-default");
+    expect(sheet.className).toContain("overflow-x-hidden");
+    expect(sheet.className).toContain("sm:max-w-[min(760px,calc(100vw-32px))]");
+  });
+
+  it("lets the user toggle the task panel into a wider mode from the header", async () => {
+    const user = userEvent.setup();
+    renderSlideOver({ issueId: "issue-1", open: true });
+
+    await user.click(screen.getByLabelText("Expand task panel"));
+
+    const sheet = screen.getByTestId("sheet-content");
+    expect(sheet).toHaveAttribute("data-size-mode", "wide");
+    expect(sheet.className).toContain("task-slide-over-wide");
+    expect(screen.getByLabelText("Collapse task panel")).toBeInTheDocument();
+  });
+
+  it("renders an edge resize handle for widening the task panel", () => {
+    renderSlideOver({ issueId: "issue-1", open: true });
+
+    const handle = screen.getByTestId("task-slide-over-resize-handle");
+    expect(handle).toHaveAttribute("aria-label", "Resize task panel");
+    expect(handle.className).toContain("cursor-ew-resize");
+  });
+
   it("renders task title when issue data is loaded", () => {
     renderSlideOver({ issueId: "issue-1", open: true });
     // Two InlineEditors: one for title, one for description
@@ -420,11 +486,78 @@ describe("TaskSlideOver", () => {
     expect(editors[1]).toHaveTextContent("The login page has a bug");
   });
 
+  it("autosaves the task description editor without changing title editing behavior", () => {
+    renderSlideOver({ issueId: "issue-1", open: true });
+
+    const editors = screen.getAllByTestId("inline-editor");
+    expect(editors[0]).toHaveAttribute("data-multiline-autosave", "false");
+    expect(editors[1]).toHaveAttribute("data-multiline-autosave", "true");
+  });
+
   it("renders the task detail body without opening a Sheet when rendered directly", () => {
     renderTaskDetail({ issueId: "issue-1" });
     expect(screen.queryByTestId("sheet")).not.toBeInTheDocument();
     expect(screen.getByTestId("issue-properties")).toBeInTheDocument();
-    expect(screen.getByTestId("tab-artifacts")).toBeInTheDocument();
+    expect(screen.queryByTestId("tab-artifacts")).not.toBeInTheDocument();
+    expect(screen.getByTestId("tab-activity")).toBeInTheDocument();
+  });
+
+  it("opens task details on Overview with the compact redesign tab inventory", () => {
+    renderTaskDetail({ issueId: "issue-1" });
+
+    expect(screen.getByTestId("tabs")).toHaveAttribute("value", "overview");
+    expect(screen.getByTestId("tab-overview")).toHaveTextContent("Overview");
+    expect(screen.getByTestId("tab-work")).toHaveTextContent("Work");
+    expect(screen.getByTestId("tab-comments")).toHaveTextContent("Comments");
+    expect(screen.getByTestId("tab-subtasks")).toHaveTextContent("Sub-tasks");
+    expect(screen.getByTestId("tab-activity")).toHaveTextContent("Activity");
+    expect(screen.queryByTestId("tab-artifacts")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("tab-subissues")).not.toBeInTheDocument();
+  });
+
+  it("previews the newest comment on Overview when comments are newest-first", () => {
+    vi.mocked(useQuery).mockImplementation(({ queryKey }: any) => {
+      const key = Array.isArray(queryKey) ? queryKey.join(".") : String(queryKey);
+      if (key.includes("detail")) return { data: mockIssue, isLoading: false, error: null } as any;
+      if (key.includes("comments")) {
+        return {
+          data: [
+            {
+              id: "comment-newest",
+              issueId: "issue-1",
+              body: "Newest comment should be previewed",
+              createdAt: "2026-07-08T06:00:00.000Z",
+            },
+            {
+              id: "comment-oldest",
+              issueId: "issue-1",
+              body: "Oldest comment should stay hidden",
+              createdAt: "2026-07-07T06:00:00.000Z",
+            },
+          ],
+          isLoading: false,
+          error: null,
+        } as any;
+      }
+      return defaultUseQueryImpl({ queryKey });
+    });
+
+    renderTaskDetail({ issueId: "issue-1" });
+
+    expect(screen.getByText("Latest comment")).toBeInTheDocument();
+    expect(screen.getByText("Newest comment should be previewed")).toBeInTheDocument();
+    expect(screen.queryByText("Oldest comment should stay hidden")).not.toBeInTheDocument();
+  });
+
+  it("gives the comments tab a bounded chat-pane layout so the composer can stay docked", () => {
+    renderTaskDetail({ issueId: "issue-1" });
+
+    const commentsContent = screen.getByTestId("task-comments-tab-content");
+
+    expect(commentsContent).toHaveClass("flex");
+    expect(commentsContent).toHaveClass("flex-col");
+    expect(commentsContent).toHaveClass("min-h-0");
+    expect(commentsContent).toHaveClass("overflow-hidden");
   });
 
   it("shows scope handoff context for discussion-created tasks", () => {
@@ -799,10 +932,10 @@ describe("TaskSlideOver", () => {
     expect(screen.getByTestId("issue-properties")).toBeInTheDocument();
   });
 
-  it("renders Artifacts tab trigger", () => {
+  it("folds artifacts into Work instead of rendering an Artifacts tab trigger", () => {
     renderSlideOver({ issueId: "issue-1", open: true });
-    expect(screen.getByTestId("tab-artifacts")).toBeInTheDocument();
-    expect(screen.getByTestId("tab-artifacts")).toHaveTextContent("Artifacts");
+    expect(screen.queryByTestId("tab-artifacts")).not.toBeInTheDocument();
+    expect(screen.getByTestId("tab-work")).toHaveTextContent("Work");
   });
 
   it("renders Open in LLM button options", () => {
@@ -821,12 +954,23 @@ describe("TaskSlideOver", () => {
     expect(mockOnClose).toHaveBeenCalledTimes(1);
   });
 
-  it("renders all four tab triggers inside Sheet", () => {
+  it("renders the five agreed redesign tab triggers inside Sheet", () => {
     renderSlideOver({ issueId: "issue-1", open: true });
+    expect(screen.getByTestId("tab-overview")).toBeInTheDocument();
+    expect(screen.getByTestId("tab-work")).toBeInTheDocument();
     expect(screen.getByTestId("tab-comments")).toBeInTheDocument();
-    expect(screen.getByTestId("tab-subissues")).toBeInTheDocument();
+    expect(screen.getByTestId("tab-subtasks")).toBeInTheDocument();
     expect(screen.getByTestId("tab-activity")).toBeInTheDocument();
-    expect(screen.getByTestId("tab-artifacts")).toBeInTheDocument();
+    expect(screen.queryByTestId("tab-artifacts")).not.toBeInTheDocument();
+  });
+
+  it("keeps tab overflow as a hidden-scrollbar fallback instead of showing a tab scrollbar", () => {
+    renderSlideOver({ issueId: "issue-1", open: true });
+
+    const tabsList = screen.getByTestId("tabs-list");
+    expect(tabsList.className).toContain("overflow-x-auto");
+    expect(tabsList.className).toContain("[&::-webkit-scrollbar]:hidden");
+    expect(tabsList.className).toContain("[scrollbar-width:none]");
   });
 
   it("renders StatusIcon and PriorityIcon in Sheet header", () => {
@@ -991,6 +1135,7 @@ describe("planning mode pill", () => {
     vi.clearAllMocks();
     // Restore the default useQuery implementation before each test in this block
     vi.mocked(useQuery).mockImplementation(makeQueryImpl(mockIssue));
+    vi.mocked(issuesApi.update).mockResolvedValue(mockIssue as any);
   });
 
   it("shows Planning pill when workMode is planning", () => {
@@ -1003,11 +1148,46 @@ describe("planning mode pill", () => {
     renderSlideOver({ issueId: "issue-1", open: true });
     expect(screen.queryByText("Planning")).not.toBeInTheDocument();
   });
+
+  it("shows the last updated timestamp in the task header", () => {
+    renderSlideOver({ issueId: "issue-1", open: true });
+
+    expect(screen.getByTestId("task-header-updated-at")).toHaveTextContent("Updated");
+  });
+
+  it("offers a standard task action to switch into Planning mode", async () => {
+    const user = userEvent.setup();
+    renderSlideOver({ issueId: "issue-1", open: true });
+
+    await user.click(screen.getByLabelText("More task actions"));
+    await user.click(screen.getByRole("button", { name: /Switch to Planning mode/i }));
+
+    expect(issuesApi.update).toHaveBeenCalledWith("issue-1", expect.objectContaining({ workMode: "planning" }));
+  });
 });
 
 describe("TaskSlideOver — workspace with executionWorkspaceId", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it("surfaces compact workspace access on the Overview tab", () => {
+    renderSlideOverWithWorkspace();
+    expect(screen.getByTestId("overview-workspace-row")).toBeInTheDocument();
+  });
+
+  it("places highlighted workspace access before compact overview properties", () => {
+    renderSlideOverWithWorkspace();
+
+    const overview = screen.getByTestId("task-overview-tab");
+    const workspaceRow = screen.getByTestId("overview-workspace-row");
+    const properties = screen.getByTestId("task-overview-properties");
+
+    expect(workspaceRow.compareDocumentPosition(properties) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(workspaceRow.className).toContain("bg-cyan-500/10");
+    expect(workspaceRow.className).toContain("border-cyan-500/30");
+    expect(overview.firstElementChild).toBe(workspaceRow);
+    expect(screen.getByTestId("issue-properties")).toHaveAttribute("data-layout", "compact");
   });
 
   it("renders workspace row when executionWorkspaceId is set", () => {

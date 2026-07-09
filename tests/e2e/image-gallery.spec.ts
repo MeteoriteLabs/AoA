@@ -87,6 +87,7 @@ test.describe("Image gallery in TaskSlideOver (T8)", () => {
     // TaskSlideOver opens automatically on the issue route.
     const slideOver = page.locator('[data-slot="sheet-content"]');
     await expect(slideOver).toBeVisible({ timeout: 8_000 });
+    await slideOver.getByRole("tab", { name: /work/i }).click();
 
     // Click the first image attachment to open the gallery.
     const galleryTrigger = slideOver
@@ -121,6 +122,7 @@ test.describe("Image gallery in TaskSlideOver (T8)", () => {
 
     const slideOver = page.locator('[data-slot="sheet-content"]');
     await expect(slideOver).toBeVisible({ timeout: 8_000 });
+    await slideOver.getByRole("tab", { name: /work/i }).click();
 
     const galleryTrigger = slideOver
       .getByRole("button", { name: /open .* in gallery/i })

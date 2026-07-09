@@ -18,10 +18,11 @@ interface PriorityIconProps {
   priority: string;
   onChange?: (priority: string) => void;
   className?: string;
+  triggerClassName?: string;
   showLabel?: boolean;
 }
 
-export function PriorityIcon({ priority, onChange, className, showLabel }: PriorityIconProps) {
+export function PriorityIcon({ priority, onChange, className, triggerClassName, showLabel }: PriorityIconProps) {
   const [open, setOpen] = useState(false);
   const config = priorityConfig[priority] ?? priorityConfig.medium!;
   const Icon = config.icon;
@@ -42,7 +43,12 @@ export function PriorityIcon({ priority, onChange, className, showLabel }: Prior
   if (!onChange) return showLabel ? <span className="inline-flex items-center gap-1.5">{icon}<span className="text-sm">{config.label}</span></span> : icon;
 
   const trigger = showLabel ? (
-    <button className="inline-flex items-center gap-1.5 cursor-pointer hover:bg-accent/50 rounded px-1 -mx-1 py-0.5 transition-colors">
+    <button
+      className={cn(
+        "inline-flex items-center gap-1.5 cursor-pointer hover:bg-accent/50 rounded px-1 -mx-1 py-0.5 transition-colors",
+        triggerClassName,
+      )}
+    >
       {icon}
       <span className="text-sm">{config.label}</span>
     </button>

@@ -95,7 +95,7 @@ test.describe("task responsible human ownership", () => {
     await expect.poll(async () => (await getTask()).responsibleUserId).toBe(founderId);
 
     await page.goto(`/${company.issuePrefix}/issues?selected=${created.identifier ?? created.id}`);
-    const dialog = page.getByRole("dialog");
+    const dialog = page.getByRole("dialog", { name: new RegExp(taskTitle) });
     await expect(dialog).toBeVisible({ timeout: 15_000 });
     await expect(dialog).toContainText(taskTitle);
     await expect(dialog).toContainText("E2E Ownership Agent");
@@ -119,7 +119,7 @@ test.describe("task responsible human ownership", () => {
     await expect.poll(async () => (await getTask()).responsibleUserId).toBe(alternate.userId);
 
     await page.reload();
-    const reloadedDialog = page.getByRole("dialog");
+    const reloadedDialog = page.getByRole("dialog", { name: new RegExp(taskTitle) });
     await expect(reloadedDialog).toBeVisible({ timeout: 15_000 });
     await expect(reloadedDialog).toContainText(taskTitle);
     await expect(reloadedDialog).toContainText("E2E Responsible Alt");

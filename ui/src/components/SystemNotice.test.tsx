@@ -57,4 +57,22 @@ describe("SystemNotice", () => {
     expect(screen.queryByText("System")).toBeNull();
     expect(screen.queryByText("You")).toBeNull();
   });
+
+  it("keeps comments in an internal scroll area with a sticky composer", () => {
+    render(
+      <MemoryRouter>
+        <CommentThread comments={[baseComment]} onAdd={async () => {}} />
+      </MemoryRouter>,
+    );
+
+    const root = screen.getByTestId("task-comments-panel");
+    const timeline = screen.getByTestId("task-comments-timeline");
+    const composer = screen.getByTestId("task-comments-composer");
+
+    expect(root.className).toContain("flex");
+    expect(root.className).toContain("min-h-0");
+    expect(timeline.className).toContain("overflow-y-auto");
+    expect(composer.className).toContain("sticky");
+    expect(composer.className).toContain("bottom-0");
+  });
 });

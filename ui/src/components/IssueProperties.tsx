@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Link } from "@/lib/router";
 import type { Issue } from "@armyofagents/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -18,7 +18,7 @@ import { formatDateTime, cn, projectUrl } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
 import { Separator } from "@/components/ui/separator";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { User, Hexagon, ArrowUpRight, Tag, Plus, Trash2 } from "lucide-react";
+import { User, Hexagon, ArrowUpRight, Tag, Plus, Trash2, ChevronDown, ClipboardList } from "lucide-react";
 import { AgentIcon } from "./AgentIconPicker";
 
 interface IssuePropertiesProps {
@@ -26,6 +26,9 @@ interface IssuePropertiesProps {
   onUpdate: (data: Record<string, unknown>) => void;
   inline?: boolean;
   hideStatus?: boolean;
+  hidePriority?: boolean;
+  hideHierarchy?: boolean;
+  layout?: "default" | "compact";
 }
 
 function PropertyRow({ label, children }: { label: string; children: React.ReactNode }) {
@@ -45,8 +48,11 @@ function PropertyPicker({
   onOpenChange,
   triggerContent,
   triggerClassName,
+  triggerAriaLabel,
   popoverClassName,
   popoverAlign = "end",
+  compact,
+  contentTestId,
   extra,
   children,
 }: {
@@ -56,13 +62,18 @@ function PropertyPicker({
   onOpenChange: (open: boolean) => void;
   triggerContent: React.ReactNode;
   triggerClassName?: string;
+  triggerAriaLabel?: string;
   popoverClassName?: string;
   popoverAlign?: "start" | "center" | "end";
+  compact?: boolean;
+  contentTestId?: string;
   extra?: React.ReactNode;
   children: React.ReactNode;
 }) {
   const btnCn = cn(
-    "inline-flex items-center gap-1.5 cursor-pointer hover:bg-accent/50 rounded px-1 -mx-1 py-0.5 transition-colors",
+    compact
+      ? "flex min-w-0 flex-1 cursor-pointer items-center justify-end gap-2 text-right"
+      : "inline-flex items-center gap-1.5 cursor-pointer hover:bg-accent/50 rounded px-1 -mx-1 py-0.5 transition-colors",
     triggerClassName,
   );
 
@@ -84,22 +95,114 @@ function PropertyPicker({
     );
   }
 
-  return (
-    <PropertyRow label={label}>
+  const content = (
+    <>
       <Popover open={open} onOpenChange={onOpenChange}>
         <PopoverTrigger asChild>
-          <button className={btnCn}>{triggerContent}</button>
+          <button className={btnCn} aria-label={triggerAriaLabel}>
+            {triggerContent}
+            {compact && <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />}
+          </button>
         </PopoverTrigger>
-        <PopoverContent className={cn("p-1", popoverClassName)} align={popoverAlign} collisionPadding={16}>
+        <PopoverContent
+          className={cn("p-1", popoverClassName)}
+          align={popoverAlign}
+          collisionPadding={16}
+          data-testid={contentTestId}
+        >
           {children}
         </PopoverContent>
       </Popover>
       {extra}
+    </>
+  );
+
+  if (compact) {
+    return <CompactPropertyCard label={label} editable>{content}</CompactPropertyCard>;
+  }
+
+  return (
+    <PropertyRow label={label}>
+      {content}
     </PropertyRow>
   );
 }
 
-export function IssueProperties({ issue, onUpdate, inline, hideStatus }: IssuePropertiesProps) {
+function CompactPropertyCard({
+  label,
+  children,
+  editable,
+}: {
+  label: string;
+  children: React.ReactNode;
+  editable?: boolean;
+}) {
+  const cardRef = useRef<HTMLDivElement | null>(null);
+  const [isPointerActive, setIsPointerActive] = useState(false);
+  const isActive = editable && isPointerActive;
+
+  return (
+    <div
+      ref={cardRef}
+      className={cn(
+        "flex h-10 min-w-0 items-center gap-2 rounded-lg border border-border/70 bg-muted/20 px-2.5 py-1.5 transition-colors",
+        editable
+          ? "cursor-pointer hover:border-border hover:bg-accent/30 [&_*]:cursor-pointer"
+          : "hover:border-border hover:bg-muted/25",
+        isActive && "border-border bg-accent/50 shadow-sm ring-1 ring-border/80",
+      )}
+      data-testid="task-compact-property-card"
+      onMouseEnter={() => {
+        if (editable) setIsPointerActive(true);
+      }}
+      onMouseOver={() => {
+        if (editable) setIsPointerActive(true);
+      }}
+      onMouseMove={() => {
+        if (editable) setIsPointerActive(true);
+      }}
+      onMouseLeave={() => {
+        if (editable) setIsPointerActive(false);
+      }}
+      onPointerEnter={() => {
+        if (editable) setIsPointerActive(true);
+      }}
+      onPointerOver={() => {
+        if (editable) setIsPointerActive(true);
+      }}
+      onPointerMove={() => {
+        if (editable) setIsPointerActive(true);
+      }}
+      onPointerLeave={() => {
+        if (editable) setIsPointerActive(false);
+      }}
+      onClick={(event) => {
+        if (!editable) return;
+        const target = event.target as HTMLElement;
+        if (target.closest("button,a,input,textarea,select,[role='button']")) return;
+        cardRef.current?.querySelector<HTMLButtonElement>("button")?.click();
+      }}
+    >
+      <span className="shrink-0 text-[11px] text-muted-foreground">{label}</span>
+      <div
+        className="flex min-w-0 flex-1 items-center justify-end gap-1 text-right text-xs text-foreground"
+        data-testid="task-compact-property-value"
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function CompactTimeValue({ value, title }: { value: string; title?: string }) {
+  return (
+    <span className="min-w-0 truncate text-xs text-foreground" title={title ?? value}>
+      {value}
+    </span>
+  );
+}
+
+export function IssueProperties({ issue, onUpdate, inline, hideStatus, hidePriority, hideHierarchy, layout = "default" }: IssuePropertiesProps) {
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const companyId = issue.companyId ?? selectedCompanyId;
@@ -111,6 +214,7 @@ export function IssueProperties({ issue, onUpdate, inline, hideStatus }: IssuePr
   const [projectSearch, setProjectSearch] = useState("");
   const [labelsOpen, setLabelsOpen] = useState(false);
   const [labelSearch, setLabelSearch] = useState("");
+  const [workModeOpen, setWorkModeOpen] = useState(false);
   const [newLabelName, setNewLabelName] = useState("");
   const [newLabelColor, setNewLabelColor] = useState("#6366f1");
 
@@ -508,6 +612,156 @@ export function IssueProperties({ issue, onUpdate, inline, hideStatus }: IssuePr
     </>
   );
 
+  if (layout === "compact") {
+    const createdTitle = formatDateTime(issue.createdAt);
+    const startedTitle = issue.startedAt ? formatDateTime(issue.startedAt) : "Not started";
+    const workMode = issue.workMode ?? "standard";
+    const workModeLabel = workMode === "planning" ? "Planning" : "Standard";
+
+    return (
+      <div
+        className="grid grid-cols-1 gap-2 sm:grid-cols-2"
+        data-testid="task-compact-properties-grid"
+      >
+        <PropertyPicker
+          compact
+          label="Mode"
+          open={workModeOpen}
+          onOpenChange={setWorkModeOpen}
+          triggerContent={
+            <span className="flex min-w-0 items-center gap-1.5">
+              <ClipboardList className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              <span className="truncate text-xs">{workModeLabel}</span>
+            </span>
+          }
+          triggerAriaLabel={`Mode ${workModeLabel}`}
+          triggerClassName="min-w-0"
+          popoverClassName="w-44"
+          contentTestId="task-property-picker-work-mode"
+        >
+          <button
+            className={cn(
+              "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-accent/50",
+              workMode === "standard" && "bg-accent",
+            )}
+            onClick={() => {
+              onUpdate({ workMode: "standard" });
+              setWorkModeOpen(false);
+            }}
+          >
+            <ClipboardList className="h-3 w-3 shrink-0 text-muted-foreground" />
+            Standard
+          </button>
+          <button
+            className={cn(
+              "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-accent/50",
+              workMode === "planning" && "bg-accent",
+            )}
+            onClick={() => {
+              onUpdate({ workMode: "planning" });
+              setWorkModeOpen(false);
+            }}
+          >
+            <ClipboardList className="h-3 w-3 shrink-0 text-muted-foreground" />
+            Planning
+          </button>
+        </PropertyPicker>
+
+          <CompactPropertyCard label="Status" editable>
+            <StatusIcon
+              status={issue.status}
+              onChange={(status) => onUpdate({ status })}
+              showLabel
+              triggerClassName="w-full justify-end text-right -mx-1"
+            />
+          </CompactPropertyCard>
+
+          <CompactPropertyCard label="Priority" editable>
+            <PriorityIcon
+              priority={issue.priority}
+              onChange={(priority) => onUpdate({ priority })}
+              showLabel
+              triggerClassName="w-full justify-end text-right -mx-1"
+            />
+          </CompactPropertyCard>
+
+          {permissions.canAssignTasks ? (
+            <PropertyPicker
+              compact
+              label="Assignee"
+              open={assigneeOpen}
+              onOpenChange={(open) => { setAssigneeOpen(open); if (!open) setAssigneeSearch(""); }}
+              triggerContent={assigneeTrigger}
+              triggerClassName="min-w-0"
+              popoverClassName="w-52"
+              contentTestId="task-property-picker-assignee"
+            >
+              {assigneeContent}
+            </PropertyPicker>
+          ) : (
+            <CompactPropertyCard label="Assignee">
+              {assigneeTrigger}
+            </CompactPropertyCard>
+          )}
+
+          {permissions.canAssignTasks ? (
+            <PropertyPicker
+              compact
+              label="Responsible"
+              open={responsibleOpen}
+              onOpenChange={(open) => { setResponsibleOpen(open); if (!open) setResponsibleSearch(""); }}
+              triggerContent={responsibleTrigger}
+              triggerClassName="min-w-0"
+              popoverClassName="w-56"
+              contentTestId="task-property-picker-responsible"
+            >
+              {responsibleContent}
+            </PropertyPicker>
+          ) : (
+            <CompactPropertyCard label="Responsible">
+              {responsibleTrigger}
+            </CompactPropertyCard>
+          )}
+
+          <PropertyPicker
+            compact
+            label="Project"
+            open={projectOpen}
+            onOpenChange={(open) => { setProjectOpen(open); if (!open) setProjectSearch(""); }}
+            triggerContent={projectTrigger}
+            triggerClassName="min-w-0"
+            popoverClassName="w-fit min-w-[11rem]"
+            contentTestId="task-property-picker-project"
+          >
+            {projectContent}
+          </PropertyPicker>
+
+          <PropertyPicker
+            compact
+            label="Labels"
+            open={labelsOpen}
+            onOpenChange={(open) => { setLabelsOpen(open); if (!open) setLabelSearch(""); }}
+            triggerContent={labelsTrigger}
+            triggerClassName="min-w-0"
+            popoverClassName="w-64"
+            contentTestId="task-property-picker-labels"
+          >
+            {labelsContent}
+          </PropertyPicker>
+
+          <CompactPropertyCard label="Started">
+            <CompactTimeValue
+              value={issue.startedAt ? timeAgo(issue.startedAt) : "Not started"}
+              title={startedTitle}
+            />
+          </CompactPropertyCard>
+          <CompactPropertyCard label="Created">
+            <CompactTimeValue value={formatDateTime(issue.createdAt)} title={createdTitle} />
+          </CompactPropertyCard>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-4">
       <div className="space-y-1">
@@ -521,13 +775,15 @@ export function IssueProperties({ issue, onUpdate, inline, hideStatus }: IssuePr
           </PropertyRow>
         )}
 
-        <PropertyRow label="Priority">
-          <PriorityIcon
-            priority={issue.priority}
-            onChange={(priority) => onUpdate({ priority })}
-            showLabel
-          />
-        </PropertyRow>
+        {!hidePriority && (
+          <PropertyRow label="Priority">
+            <PriorityIcon
+              priority={issue.priority}
+              onChange={(priority) => onUpdate({ priority })}
+              showLabel
+            />
+          </PropertyRow>
+        )}
 
         <PropertyPicker
           inline={inline}
@@ -605,7 +861,7 @@ export function IssueProperties({ issue, onUpdate, inline, hideStatus }: IssuePr
           {projectContent}
         </PropertyPicker>
 
-        {issue.parentId && (
+        {!hideHierarchy && issue.parentId && (
           <PropertyRow label="Parent">
             <Link
               to={`/issues/${issue.ancestors?.[0]?.identifier ?? issue.parentId}`}
@@ -616,7 +872,7 @@ export function IssueProperties({ issue, onUpdate, inline, hideStatus }: IssuePr
           </PropertyRow>
         )}
 
-        {issue.requestDepth > 0 && (
+        {!hideHierarchy && issue.requestDepth > 0 && (
           <PropertyRow label="Depth">
             <span className="text-sm font-mono">{issue.requestDepth}</span>
           </PropertyRow>
