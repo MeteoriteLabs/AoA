@@ -35,6 +35,172 @@ export interface CompanyUserProfile {
   updatedByUserId: string | null;
 }
 
+export type HumanCapabilityDocumentKind =
+  | "resume"
+  | "skills"
+  | "responsibilities"
+  | "preferences"
+  | "availability"
+  | "background"
+  | "custom";
+
+export interface HumanCapabilityDocumentTemplate {
+  slug: string;
+  filename: string;
+  title: string;
+  kind: Exclude<HumanCapabilityDocumentKind, "custom">;
+  sortOrder: number;
+  content: string;
+}
+
+export interface HumanCapabilityDocumentSummary {
+  id: string;
+  companyId: string;
+  userId: string;
+  slug: string;
+  filename: string;
+  title: string;
+  kind: HumanCapabilityDocumentKind;
+  content: string;
+  sortOrder: number;
+  isStandard: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+  createdByUserId: string | null;
+  updatedByUserId: string | null;
+}
+
+export type HumanCapabilityDocumentDetail = HumanCapabilityDocumentSummary;
+
+export interface HumanCapabilityBundle {
+  companyId: string;
+  userId: string;
+  documents: HumanCapabilityDocumentSummary[];
+}
+
+export interface HumanContextIdentity {
+  userId: string;
+  email: string | null;
+  displayName: string | null;
+  title: string | null;
+  bio: string | null;
+  location: string | null;
+  timezone: string | null;
+  socialLinks: HumanSocialLink[];
+}
+
+export interface HumanContextAuthority {
+  role: UserRole;
+  departmentId: string | null;
+  departmentName: string | null;
+  reportsToUserId: string | null;
+  reportsToName: string | null;
+  isSystemAdmin: boolean;
+  explicitGrants: PermissionKey[];
+}
+
+export interface HumanContextResponsibility {
+  directHumanReports: Array<{
+    userId: string;
+    displayName: string | null;
+    email: string | null;
+    role: UserRole;
+  }>;
+  directAgentTrees: Array<{
+    rootAgentId: string;
+    rootAgentName: string;
+    subAgentCount: number;
+    agentIds: string[];
+  }>;
+  assignedTaskCount: number;
+  createdTaskCount: number;
+}
+
+export interface HumanContextCapabilityDocument {
+  id: string;
+  slug: string;
+  filename: string;
+  title: string;
+  kind: HumanCapabilityDocumentKind;
+  content: string;
+  isStandard: boolean;
+  updatedAt: Date;
+  updatedByUserId: string | null;
+}
+
+export interface HumanContextBundle {
+  companyId: string;
+  userId: string;
+  generatedAt: Date;
+  identity: HumanContextIdentity;
+  authority: HumanContextAuthority;
+  responsibility: HumanContextResponsibility;
+  capabilities: HumanContextCapabilityDocument[];
+  markdown: string;
+}
+
+export type HumanSearchMatchedField =
+  | "identity"
+  | "authority"
+  | "responsibility"
+  | "capability_document";
+
+export interface SearchHumansInput {
+  q: string;
+  role?: UserRole | "all";
+  departmentId?: string | null;
+  limit?: number;
+}
+
+export interface HumanSearchMatchSnippet {
+  field: HumanSearchMatchedField;
+  label: string;
+  value: string;
+  documentId?: string;
+  filename?: string;
+}
+
+export interface HumanSearchResult {
+  userId: string;
+  email: string | null;
+  displayName: string | null;
+  avatarUrl: string | null;
+  title: string | null;
+  role: UserRole;
+  departmentId: string | null;
+  departmentName: string | null;
+  reportsToUserId: string | null;
+  reportsToName: string | null;
+  matchedFields: HumanSearchMatchedField[];
+  snippets: HumanSearchMatchSnippet[];
+  responsibilitySummary: {
+    directHumanReportCount: number;
+    directAgentTreeCount: number;
+    assignedTaskCount: number;
+    createdTaskCount: number;
+  };
+}
+
+export interface HumanSearchResponse {
+  companyId: string;
+  query: string;
+  results: HumanSearchResult[];
+}
+
+export type HumanContextResolutionMode =
+  | "direct_context"
+  | "resolved_context"
+  | "multiple_matches"
+  | "no_match";
+
+export interface HumanContextResolutionResult {
+  mode: HumanContextResolutionMode;
+  query: string | null;
+  selectedHuman: HumanSearchResult | null;
+  candidates: HumanSearchResult[];
+  bundle: HumanContextBundle | null;
+}
+
 export interface TeamPermissionSummary {
   canAssignTasks: boolean;
   canInviteUsers: boolean;

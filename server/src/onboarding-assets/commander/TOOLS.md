@@ -1,6 +1,6 @@
 # Commander — Tool Reference
 
-You have **35 tools** across 9 categories. Only call tools in this list. No other tool names exist.
+You have **37 tools** across 9 categories. Only call tools in this list. No other tool names exist.
 
 **Tool naming convention.** Your AoA tools are exposed by the AoA MCP bridge with the namespace prefix `mcp__aoa__`. Inside the prose of this file the tools are written without the prefix for readability (e.g. `query_tasks`), but when you actually invoke a tool you must call it as `mcp__aoa__query_tasks`, `mcp__aoa__create_task`, `mcp__aoa__use_skill`, etc. If a tool in this list appears to be missing at call time, check whether you are using the prefixed form — the bare name (`query_tasks`) is the documentation alias, the callable name is the prefixed form.
 
@@ -10,8 +10,10 @@ You have **35 tools** across 9 categories. Only call tools in this list. No othe
 
 | Tool | What it returns |
 |------|----------------|
-| `query_tasks` | Tasks filtered by status, assignee, department, goal |
+| `query_tasks` | Tasks filtered by status, assignee, department, goal; results include `responsibleUserId` for the responsible human |
 | `query_goals` | Company goals with status, progress, linked tasks |
+| `query_team_roster` | Unified human + org-agent team roster with readable reporting hierarchy |
+| `query_humans` | Human roster with role, title, department, reporting, and admin signal |
 | `query_agents` | Agent roster with adapter type, trust score, current assignments |
 | `query_departments` | Department list with agent counts and goals |
 | `query_budget` | Spend by agent/department, remaining budget, cost events |
@@ -25,13 +27,13 @@ You have **35 tools** across 9 categories. Only call tools in this list. No othe
 
 | Tool | What it does |
 |------|-------------|
-| `create_task` | Creates a new task (title, description, priority, assignee, goalId) |
-| `update_task` | Updates an existing task (status, priority, assignee, description) |
+| `create_task` | Creates a new task (title, description, priority, assignee via `assigneeType` + `assigneeId`, `responsibleUserId`, goalId) |
+| `update_task` | Updates an existing task (status, priority, responsible human via `responsibleUserId`; `responsibleUserId` null clears it). Use `assign_task` for assignee reassignment |
 | `create_department` | Creates a new department (name, description, parentId) |
 | `create_goal` | Creates a company goal (title, description, targetDate) |
 | `create_agent` | Provisions a new agent (name, role, adapterType, department) |
 | `update_agent` | Updates agent config (name, concurrency, adapterConfig) |
-| `assign_task` | Assigns a task to a specific agent |
+| `assign_task` | Assigns a task to a specific agent or human |
 | `wakeup_agent` | Triggers an immediate agent heartbeat run |
 | `update_company_identity` | Updates company vision and/or mission — founder must approve |
 
@@ -108,7 +110,9 @@ You have **35 tools** across 9 categories. Only call tools in this list. No othe
 
 ## Usage Rules
 
-1. **Never guess a tool name.** The 35 tools above are your complete set. If a skill or instruction references a tool not on this list, flag it.
+1. **Never guess a tool name.** The 37 tools above are your complete set. If a skill or instruction references a tool not on this list, flag it.
 2. **Query before action.** Call read tools to gather current state before any write.
 3. **Confirm before write.** All Action and Workflow tools require user confirmation via ⚡OPTIONS⚡ unless a loaded skill explicitly grants auto-execute for the specific step.
 4. **Memory governance.** `create_memory` → PENDING. Use `detect_conflicts` before creating new memory that might contradict existing items.
+
+**Task ownership.** The assignee is the agent or human doing the work. The responsible human is the user accountable for the outcome. Use `assigneeType` plus `assigneeId` on `create_task` or `assign_task` when setting who does the task; use `responsibleUserId` on `create_task` or `update_task` when the user names the accountable human; use `query_tasks` to inspect existing responsible human ownership.

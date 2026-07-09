@@ -45,6 +45,7 @@ export const issues = pgTable(
     priority: text("priority").notNull().default("medium"),
     assigneeAgentId: uuid("assignee_agent_id").references(() => agents.id, { onDelete: "set null" }),
     assigneeUserId: text("assignee_user_id"),
+    responsibleUserId: text("responsible_user_id"),
     // Polymorphic run lock: holds a heartbeat_runs.id (org agents) OR an internal_agent_runs.id (crew, Decision #100).
     // No FK — the column is polymorphic across two run tables, so it cannot reference a single one.
     checkoutRunId: uuid("checkout_run_id"),
@@ -103,6 +104,11 @@ export const issues = pgTable(
     assigneeUserStatusIdx: index("issues_company_assignee_user_status_idx").on(
       table.companyId,
       table.assigneeUserId,
+      table.status,
+    ),
+    responsibleUserStatusIdx: index("issues_company_responsible_user_status_idx").on(
+      table.companyId,
+      table.responsibleUserId,
       table.status,
     ),
     parentIdx: index("issues_company_parent_idx").on(table.companyId, table.parentId),

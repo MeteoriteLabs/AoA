@@ -19,6 +19,7 @@ import { useCompany } from "../context/CompanyContext";
 import { useToast } from "../context/ToastContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { queryKeys } from "../lib/queryKeys";
+import { formatTaskAssigneeValue } from "../lib/task-assignee";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { relativeTime, cn, formatTokens } from "../lib/utils";
 import { InlineEditor } from "../components/InlineEditor";
@@ -290,7 +291,7 @@ export function IssueDetail() {
       .sort((a, b) => a.name.localeCompare(b.name));
     for (const agent of activeAgents) {
       options.push({
-        id: `agent:${agent.id}`,
+        id: formatTaskAssigneeValue("agent", agent.id),
         name: agent.name,
         kind: "agent",
       });
@@ -320,18 +321,18 @@ export function IssueDetail() {
       .filter((agent) => agent.status !== "terminated")
       .sort((a, b) => a.name.localeCompare(b.name));
     for (const agent of activeAgents) {
-      options.push({ id: `agent:${agent.id}`, label: agent.name });
+      options.push({ id: formatTaskAssigneeValue("agent", agent.id), label: agent.name });
     }
     if (currentUserId) {
       const label = currentUserId === "local-board" ? "Board" : "Me (Board)";
-      options.push({ id: `user:${currentUserId}`, label });
+      options.push({ id: formatTaskAssigneeValue("user", currentUserId), label });
     }
     return options;
   }, [agents, currentUserId]);
 
   const currentAssigneeValue = useMemo(() => {
-    if (issue?.assigneeAgentId) return `agent:${issue.assigneeAgentId}`;
-    if (issue?.assigneeUserId) return `user:${issue.assigneeUserId}`;
+    if (issue?.assigneeAgentId) return formatTaskAssigneeValue("agent", issue.assigneeAgentId);
+    if (issue?.assigneeUserId) return formatTaskAssigneeValue("user", issue.assigneeUserId);
     return "";
   }, [issue?.assigneeAgentId, issue?.assigneeUserId]);
 

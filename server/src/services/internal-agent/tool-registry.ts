@@ -208,6 +208,7 @@ export function filterAuthorizedToolsForContext(
 const CORE_TOOLS = new Set(["query_tasks", "query_memory", "query_goals", "use_skill", "query_company"]);
 
 const INTENT_KEYWORDS: Record<string, string[]> = {
+  query: ["team", "org", "organization", "hierarchy", "reports to", "roster", "humans", "people", "agents"],
   action: ["create", "add", "new", "make", "assign", "wake", "wakeup", "trigger"],
   memory: ["memory", "remember", "knowledge", "recall", "forget"],
   workflow: ["workflow", "pipeline", "template", "step", "process"],

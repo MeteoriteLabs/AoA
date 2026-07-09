@@ -2,27 +2,60 @@ import { Router, type NextFunction, type Request, type Response } from "express"
 import type { Db } from "@armyofagents/db";
 import { logger } from "../middleware/logger.js";
 import { validate } from "../middleware/validate.js";
-import { accessService, logActivity, teamService } from "../services/index.js";
+import { accessService, humanCapabilitiesService, humanContextService, humanDiscoveryService, logActivity, teamService } from "../services/index.js";
 import { forbidden } from "../errors.js";
 import { assertCompanyAccess } from "./authz.js";
 import {
   addMemberSchema,
+  createHumanCapabilityDocumentSchema,
   reassignAndRemoveSchema,
+  searchHumansSchema,
   transferAdminSchema,
   updateCompanyUserProfileSchema,
+  updateHumanCapabilityDocumentSchema,
   updateTeamMemberRoleSchema,
 } from "@armyofagents/shared";
 
 export function teamRoutes(db: Db) {
   const router = Router();
   const team = teamService(db);
+  const humanCapabilities = humanCapabilitiesService(db);
+  const humanContext = humanContextService(db);
+  const humanDiscovery = humanDiscoveryService(db);
   const access = accessService(db);
+
+  async function assertCanEditHumanCapabilities(req: Request, companyId: string, userId: string) {
+    if (req.actor.type !== "board" || !req.actor.userId) {
+      throw forbidden("Board authentication required");
+    }
+    const actorUserId = req.actor.userId;
+    if (actorUserId === userId) return actorUserId;
+    const [actorRole, isSystemAdmin] = await Promise.all([
+      team.getUserRole(companyId, actorUserId),
+      team.isCompanySystemAdmin(companyId, actorUserId),
+    ]);
+    if (actorRole.role !== "founder" && !isSystemAdmin) {
+      throw forbidden("Only founders or company system admins can edit another member's capabilities");
+    }
+    return actorUserId;
+  }
 
   router.get("/companies/:companyId/team", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const summary = await team.listTeam(companyId, req.actor.type === "board" ? req.actor.userId ?? null : null);
     res.json(summary);
+  });
+
+  router.get("/companies/:companyId/team/humans/search", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (req.actor.type !== "board") {
+      res.status(403).json({ error: "Board authentication required" });
+      return;
+    }
+    const input = searchHumansSchema.parse(req.query);
+    res.json(await humanDiscovery.search(companyId, input));
   });
 
   router.patch(
@@ -131,7 +164,105 @@ export function teamRoutes(db: Db) {
     },
   );
 
+  router.get("/companies/:companyId/team/users/:userId/agent-context", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const userId = req.params.userId as string;
+    assertCompanyAccess(req, companyId);
+    if (req.actor.type !== "board") {
+      res.status(403).json({ error: "Board authentication required" });
+      return;
+    }
+    const bundle = await humanContext.getBundle(companyId, userId, req.actor.userId ?? null);
+    res.json({ bundle });
+  });
+
   // POST /companies/:companyId/team/members — Direct add member
+  router.get("/companies/:companyId/team/users/:userId/capabilities", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const userId = req.params.userId as string;
+    assertCompanyAccess(req, companyId);
+    const actorUserId = req.actor.type === "board" ? req.actor.userId ?? null : null;
+    res.json(await humanCapabilities.listDocuments(companyId, userId, actorUserId));
+  });
+
+  router.post(
+    "/companies/:companyId/team/users/:userId/capabilities",
+    validate(createHumanCapabilityDocumentSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const userId = req.params.userId as string;
+      assertCompanyAccess(req, companyId);
+      const actorUserId = await assertCanEditHumanCapabilities(req, companyId, userId);
+      const document = await humanCapabilities.createDocument(companyId, userId, req.body, actorUserId);
+
+      await logActivity(db, {
+        companyId,
+        actorType: "user",
+        actorId: actorUserId,
+        action: "team.capability_document_created",
+        entityType: "user_capability_document",
+        entityId: document.id,
+        details: {
+          userId,
+          filename: document.filename,
+          title: document.title,
+        },
+      });
+
+      res.json({ document });
+    },
+  );
+
+  router.patch(
+    "/companies/:companyId/team/users/:userId/capabilities/:documentId",
+    validate(updateHumanCapabilityDocumentSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const userId = req.params.userId as string;
+      const documentId = req.params.documentId as string;
+      assertCompanyAccess(req, companyId);
+      const actorUserId = await assertCanEditHumanCapabilities(req, companyId, userId);
+      const document = await humanCapabilities.updateDocument(companyId, userId, documentId, req.body, actorUserId);
+
+      await logActivity(db, {
+        companyId,
+        actorType: "user",
+        actorId: actorUserId,
+        action: "team.capability_document_updated",
+        entityType: "user_capability_document",
+        entityId: document.id,
+        details: {
+          userId,
+          filename: document.filename,
+          fields: Object.keys(req.body),
+        },
+      });
+
+      res.json({ document });
+    },
+  );
+
+  router.delete("/companies/:companyId/team/users/:userId/capabilities/:documentId", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const userId = req.params.userId as string;
+    const documentId = req.params.documentId as string;
+    assertCompanyAccess(req, companyId);
+    const actorUserId = await assertCanEditHumanCapabilities(req, companyId, userId);
+    await humanCapabilities.deleteDocument(companyId, userId, documentId);
+
+    await logActivity(db, {
+      companyId,
+      actorType: "user",
+      actorId: actorUserId,
+      action: "team.capability_document_deleted",
+      entityType: "user_capability_document",
+      entityId: documentId,
+      details: { userId },
+    });
+
+    res.json({ ok: true });
+  });
+
   router.post(
     "/companies/:companyId/team/members",
     validate(addMemberSchema),

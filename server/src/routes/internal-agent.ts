@@ -159,10 +159,8 @@ export function internalAgentRoutes(db: Db) {
       res.setHeader("Cache-Control", "no-cache");
       res.setHeader("Connection", "keep-alive");
 
-      // Create a run record for observability in /runs UI. Sprint 2A (Decision
-      // #91) — CLI-mode doesn't populate tokenUsage / costCents / toolsCalled
-      // per-turn; those stay null on this record until the team-under-Commander
-      // work lands. The record is still useful for "did Commander run?" audit.
+      // Create a run record for observability in /runs UI. The final summary
+      // backfills token/cost/tool-call metadata once the turn completes.
       const [run] = await db
         .insert(internalAgentRuns)
         .values({
@@ -330,6 +328,7 @@ export function internalAgentRoutes(db: Db) {
             durationMs,
             costCents,
             tokenUsage,
+            toolsCalled: finalSummary?.toolsCalled ?? [],
             model: persistedModel,
             provider: persistedProvider,
           })

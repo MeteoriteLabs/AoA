@@ -31,6 +31,10 @@ vi.mock("../api/team", () => ({
     getMember: vi.fn(),
     updateRole: vi.fn(),
     updateProfile: vi.fn(),
+    listCapabilities: vi.fn(),
+    createCapabilityDocument: vi.fn(),
+    updateCapabilityDocument: vi.fn(),
+    deleteCapabilityDocument: vi.fn(),
   },
 }));
 
@@ -247,6 +251,81 @@ beforeEach(() => {
       updatedByUserId: "user-1",
     },
   });
+  vi.mocked(teamApi.listCapabilities).mockResolvedValue({
+    companyId: "company-1",
+    userId: "user-1",
+    documents: [
+      {
+        id: "cap-skills",
+        companyId: "company-1",
+        userId: "user-1",
+        slug: "skills",
+        filename: "skills.md",
+        title: "Skills",
+        kind: "skills",
+        content: "# Skills\n\n## Core Skills\n\n- Product strategy",
+        sortOrder: 20,
+        isStandard: true,
+        createdAt: new Date("2026-07-08T00:00:00.000Z"),
+        updatedAt: new Date("2026-07-08T00:00:00.000Z"),
+        createdByUserId: null,
+        updatedByUserId: null,
+      },
+      {
+        id: "cap-background",
+        companyId: "company-1",
+        userId: "user-1",
+        slug: "background",
+        filename: "background.md",
+        title: "Background",
+        kind: "background",
+        content: "# Background\n\n## Professional Background\n\n- Founder operator",
+        sortOrder: 60,
+        isStandard: true,
+        createdAt: new Date("2026-07-08T00:00:00.000Z"),
+        updatedAt: new Date("2026-07-08T00:00:00.000Z"),
+        createdByUserId: null,
+        updatedByUserId: null,
+      },
+    ],
+  } as never);
+  vi.mocked(teamApi.updateCapabilityDocument).mockResolvedValue({
+    document: {
+      id: "cap-skills",
+      companyId: "company-1",
+      userId: "user-1",
+      slug: "skills",
+      filename: "skills.md",
+      title: "Skills",
+      kind: "skills",
+      content: "# Skills\n\n## Core Skills\n\n- Product strategy\n- Hiring",
+      sortOrder: 20,
+      isStandard: true,
+      createdAt: new Date("2026-07-08T00:00:00.000Z"),
+      updatedAt: new Date("2026-07-08T00:00:00.000Z"),
+      createdByUserId: null,
+      updatedByUserId: "user-1",
+    },
+  } as never);
+  vi.mocked(teamApi.createCapabilityDocument).mockResolvedValue({
+    document: {
+      id: "cap-portfolio",
+      companyId: "company-1",
+      userId: "user-1",
+      slug: "portfolio",
+      filename: "portfolio.md",
+      title: "Portfolio",
+      kind: "custom",
+      content: "# Portfolio",
+      sortOrder: 1000,
+      isStandard: false,
+      createdAt: new Date("2026-07-08T00:00:00.000Z"),
+      updatedAt: new Date("2026-07-08T00:00:00.000Z"),
+      createdByUserId: "user-1",
+      updatedByUserId: "user-1",
+    },
+  } as never);
+  vi.mocked(teamApi.deleteCapabilityDocument).mockResolvedValue({ ok: true });
   vi.mocked(assetsApi.uploadImage).mockResolvedValue({
     assetId: "asset-1",
     companyId: "company-1",
@@ -268,6 +347,9 @@ beforeEach(() => {
     },
   ] as never);
   vi.mocked(issuesApi.list).mockImplementation(async (_companyId, filters) => {
+    if (filters?.responsibleUserId === "user-1") {
+      return [issue({ id: "responsible-1", identifier: "AOA-0", title: "Owned by Ada", responsibleUserId: "user-1" })] as never;
+    }
     if (filters?.assigneeUserId === "user-1") {
       return [issue({ id: "assigned-1", identifier: "AOA-1", title: "Assigned directly" })] as never;
     }
@@ -295,12 +377,15 @@ describe("HumanDetail", () => {
     expect(screen.getByText("Europe/London")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "GitHub" })).toHaveAttribute("href", "https://github.com/ada");
 
+    expect(await screen.findByText("Responsible Tasks")).toBeInTheDocument();
+    expect(screen.getByText("Owned by Ada")).toBeInTheDocument();
     expect(await screen.findByText("Assigned directly")).toBeInTheDocument();
     expect(screen.getByText("Created by Ada")).toBeInTheDocument();
     expect(screen.getByText("Agent follow-up")).toBeInTheDocument();
     expect(screen.getByText("issue.created")).toBeInTheDocument();
     expect(screen.queryByText("Authority")).not.toBeInTheDocument();
 
+    expect(issuesApi.list).toHaveBeenCalledWith("company-1", { responsibleUserId: "user-1", taskScope: "all" });
     expect(issuesApi.list).toHaveBeenCalledWith("company-1", { assigneeUserId: "user-1", taskScope: "all" });
     expect(issuesApi.list).toHaveBeenCalledWith("company-1", { createdByUserId: "user-1", taskScope: "all" });
     expect(issuesApi.list).toHaveBeenCalledWith("company-1", { assigneeAgentId: "agent-1", taskScope: "all" });
@@ -393,6 +478,28 @@ describe("HumanDetail", () => {
     expect(await screen.findByRole("button", { name: "Edit profile" })).toBeInTheDocument();
     expect(screen.queryByText("Role & Department")).not.toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Profile" })).not.toBeInTheDocument();
+  });
+
+  it("renders capabilities documents and saves markdown edits", async () => {
+    const user = userEvent.setup();
+    renderHumanDetail("/team/user-1/capabilities");
+
+    expect((await screen.findAllByText("skills.md")).length).toBeGreaterThan(0);
+    expect(screen.getByText("background.md")).toBeInTheDocument();
+    expect(screen.getByText(/Product strategy/)).toBeInTheDocument();
+    expect(screen.queryByText("Professional Background")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Edit document" }));
+    const editor = screen.getByLabelText("Capability markdown");
+    await user.clear(editor);
+    await user.type(editor, "# Skills\n\n## Core Skills\n\n- Product strategy\n- Hiring");
+    await user.click(screen.getByRole("button", { name: "Save document" }));
+
+    await waitFor(() => {
+      expect(teamApi.updateCapabilityDocument).toHaveBeenCalledWith("company-1", "user-1", "cap-skills", {
+        content: "# Skills\n\n## Core Skills\n\n- Product strategy\n- Hiring",
+      });
+    });
   });
 
   it("clears department and manager drafts when founder is selected", async () => {

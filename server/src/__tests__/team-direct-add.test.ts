@@ -21,6 +21,7 @@ vi.mock("@armyofagents/db", () => {
     agents: makeTable("agents"),
     authUsers: makeTable("auth_users"),
     companyMemberships: makeTable("company_memberships"),
+    companyUserCapabilityDocuments: makeTable("company_user_capability_documents"),
     instanceUserRoles: makeTable("instance_user_roles"),
     invites: makeTable("invites"),
     issues: makeTable("issues"),
@@ -85,7 +86,18 @@ function createSequenceDb(config: {
 
   function makeChain(getResult: () => MockRow[]) {
     const chain: Record<string, unknown> = {};
-    for (const m of ["from", "where", "set", "values", "returning", "innerJoin", "leftJoin", "orderBy", "limit"]) {
+    for (const m of [
+      "from",
+      "where",
+      "set",
+      "values",
+      "returning",
+      "innerJoin",
+      "leftJoin",
+      "orderBy",
+      "limit",
+      "onConflictDoNothing",
+    ]) {
       chain[m] = (..._args: unknown[]) => chain;
     }
     chain.then = (resolve: (v: MockRow[]) => unknown) => Promise.resolve(resolve(getResult()));

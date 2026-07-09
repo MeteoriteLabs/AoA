@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Users, UserPlus, Shield, ArrowRightLeft, RotateCw, X, Search, Mail } from "lucide-react";
-import type { JoinRequest, TeamMemberSummary, TeamSummary, TeamPermissionSummary, UserRole } from "@armyofagents/shared";
+import type { HumanSearchResult, JoinRequest, TeamMemberSummary, TeamSummary, TeamPermissionSummary, UserRole } from "@armyofagents/shared";
 import { useNavigate } from "@/lib/router";
 import { accessApi } from "../../api/access";
 import { teamApi } from "../../api/team";
@@ -241,6 +241,60 @@ function InviteCard({
   );
 }
 
+function HumanSearchResultCard({ result }: { result: HumanSearchResult }) {
+  const navigate = useNavigate();
+  const displayName = result.displayName ?? result.email ?? result.userId.slice(0, 8);
+  const initials = getInitials(displayName);
+  const agentTreeCount = result.responsibilitySummary.directAgentTreeCount;
+
+  return (
+    <ClickableDiv
+      className="border border-border bg-card rounded-lg p-4 transition-all duration-150 cursor-pointer hover:bg-accent/30"
+      onClick={() => navigate(`/team/${result.userId}`)}
+    >
+      <div className="flex items-start gap-3">
+        <Avatar className="h-10 w-10 shrink-0">
+          {result.avatarUrl && <AvatarImage src={result.avatarUrl} alt={displayName} />}
+          <AvatarFallback className="text-xs">{initials}</AvatarFallback>
+        </Avatar>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-sm font-semibold truncate">{displayName}</span>
+            <RoleBadge role={result.role} />
+          </div>
+          <div className="text-xs text-muted-foreground truncate mt-0.5">
+            {result.title ?? result.departmentName ?? result.email ?? "Human"}
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-3 space-y-1.5">
+        {result.snippets.slice(0, 3).map((snippet) => (
+          <p
+            key={`${result.userId}-${snippet.field}-${snippet.label}-${snippet.documentId ?? snippet.value}`}
+            className="line-clamp-2 text-xs text-muted-foreground"
+          >
+            <span className="font-medium text-foreground/80">{snippet.label}</span>
+            {": "}
+            {snippet.value}
+          </p>
+        ))}
+      </div>
+
+      <div className="mt-3 flex flex-wrap gap-1.5 border-t border-border/50 pt-3 text-[11px] text-muted-foreground">
+        {result.departmentName && <span>{result.departmentName}</span>}
+        {result.reportsToName && <span>Reports to {result.reportsToName}</span>}
+        {agentTreeCount > 0 && (
+          <span>{agentTreeCount} agent {agentTreeCount === 1 ? "tree" : "trees"}</span>
+        )}
+        {result.responsibilitySummary.assignedTaskCount > 0 && (
+          <span>{result.responsibilitySummary.assignedTaskCount} assigned</span>
+        )}
+      </div>
+    </ClickableDiv>
+  );
+}
+
 function joinRequestLabel(request: JoinRequest) {
   if (request.requestType === "agent") {
     return request.agentName ?? request.requestEmailSnapshot ?? `Agent request ${request.id.slice(0, 8)}`;
@@ -361,6 +415,7 @@ export function HumansTab({ teamSummary, highlightId, permissions, isSystemAdmin
   const members = teamSummary.members;
   const pendingInvites = teamSummary.pendingInvites;
   const pendingJoinRequests = joinRequestsQuery.data ?? [];
+  const trimmedSearch = search.trim();
 
   const founderCount = members.filter((m) => m.role === "founder").length;
   const teamLeadCount = members.filter((m) => m.role === "team_lead").length;
@@ -404,6 +459,21 @@ export function HumansTab({ teamSummary, highlightId, permissions, isSystemAdmin
     return { filteredMembers: fMembers, filteredInvites: fInvites, filteredJoinRequests: fJoinRequests };
   }, [members, pendingInvites, pendingJoinRequests, roleFilter, search]);
 
+  const humanSearchInput = useMemo(() => ({
+    q: trimmedSearch,
+    role: roleFilter === "pending" ? "all" as const : roleFilter,
+    limit: 20,
+  }), [roleFilter, trimmedSearch]);
+
+  const shouldUseHumanSearch = Boolean(selectedCompanyId && trimmedSearch && roleFilter !== "pending");
+  const humanSearchQuery = useQuery({
+    queryKey: selectedCompanyId
+      ? queryKeys.team.humanSearch(selectedCompanyId, humanSearchInput)
+      : ["team", "human-search", "none"],
+    queryFn: () => teamApi.searchHumans(selectedCompanyId!, humanSearchInput),
+    enabled: shouldUseHumanSearch,
+  });
+
   const invalidateTeam = useCallback(async () => {
     if (selectedCompanyId) {
       await queryClient.invalidateQueries({ queryKey: queryKeys.team.summary(selectedCompanyId) });
@@ -418,7 +488,10 @@ export function HumansTab({ teamSummary, highlightId, permissions, isSystemAdmin
   }
 
   const isEmpty = members.length === 0 && pendingInvites.length === 0 && pendingJoinRequests.length === 0;
-  const isFilteredEmpty = filteredMembers.length === 0 && filteredInvites.length === 0 && filteredJoinRequests.length === 0;
+  const humanSearchResults = shouldUseHumanSearch ? humanSearchQuery.data?.results ?? [] : [];
+  const isFilteredEmpty = shouldUseHumanSearch
+    ? !humanSearchQuery.isLoading && humanSearchResults.length === 0
+    : filteredMembers.length === 0 && filteredInvites.length === 0 && filteredJoinRequests.length === 0;
 
   return (
     <TooltipProvider>
@@ -508,7 +581,7 @@ export function HumansTab({ teamSummary, highlightId, permissions, isSystemAdmin
             <Input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search by name or email…"
+              placeholder="Search humans by skills, responsibilities, role, or docs..."
               className="h-8 pl-8 text-xs"
             />
           </div>
@@ -554,10 +627,24 @@ export function HumansTab({ teamSummary, highlightId, permissions, isSystemAdmin
             action="Add Member"
             onAction={permissions.canInviteUsers ? () => setAddMemberOpen(true) : undefined}
           />
+        ) : humanSearchQuery.isError ? (
+          <p className="py-8 text-center text-sm text-destructive">
+            Unable to search humans.
+          </p>
+        ) : humanSearchQuery.isLoading && shouldUseHumanSearch ? (
+          <p className="py-8 text-center text-sm text-muted-foreground">
+            Searching humans...
+          </p>
         ) : isFilteredEmpty ? (
           <p className="py-8 text-center text-sm text-muted-foreground">
             No results match your search or filter.
           </p>
+        ) : shouldUseHumanSearch ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {humanSearchResults.map((result) => (
+              <HumanSearchResultCard key={result.userId} result={result} />
+            ))}
+          </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {filteredMembers.map((member) => (

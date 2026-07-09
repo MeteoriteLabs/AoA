@@ -6,6 +6,43 @@ import {
   type CodexParsedChunk,
 } from "./parse-shared.js";
 
+function parseFunctionArguments(rawArgs: string): unknown {
+  if (!rawArgs.trim()) return {};
+  try {
+    return JSON.parse(rawArgs);
+  } catch {
+    return rawArgs;
+  }
+}
+
+function textFromMcpContent(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((entry) => {
+      const record = parseObject(entry);
+      return asString(record.text, "");
+    })
+    .join("");
+}
+
+function parseToolEnvelope(text: string): { success: boolean; data: unknown; summary: string } {
+  try {
+    const parsed = parseObject(JSON.parse(text));
+    return {
+      success: parsed.success !== false,
+      data: parsed.data ?? text,
+      summary: asString(parsed.summary, "") || text.slice(0, 500),
+    };
+  } catch {
+    return {
+      success: true,
+      data: text,
+      summary: text.slice(0, 500),
+    };
+  }
+}
+
 /**
  * Out-of-band session-id capture for the stdout chunk stream.
  *
@@ -103,6 +140,49 @@ export function parseCodexJsonl(stdout: string) {
     if (type === "error") {
       const msg = asString(event.message, "").trim();
       if (msg) errorMessage = msg;
+      continue;
+    }
+
+    if (type === "response_item") {
+      const payload = parseObject(event.payload);
+      if (asString(payload.type, "") === "function_call") {
+        const name = asString(payload.name, "");
+        const id = asString(payload.call_id, "");
+        if (name && id) {
+          chunks.push({
+            type: "tool_call",
+            id,
+            name,
+            input: parseFunctionArguments(asString(payload.arguments, "")),
+          });
+        }
+      }
+      continue;
+    }
+
+    if (type === "event_msg") {
+      const payload = parseObject(event.payload);
+      if (asString(payload.type, "") === "mcp_tool_call_end") {
+        const invocation = parseObject(payload.invocation);
+        const name = asString(invocation.tool, "");
+        const id = asString(payload.call_id, "");
+        const resultRecord = parseObject(payload.result);
+        const ok = parseObject(resultRecord.Ok);
+        const text = textFromMcpContent(ok.content);
+        if (name) {
+          const envelope = parseToolEnvelope(text);
+          chunks.push({
+            type: "tool_result",
+            ...(id ? { id } : {}),
+            name,
+            result: {
+              ...envelope,
+              success: envelope.success && ok.isError !== true,
+            },
+            refs: liftOutputRefs(text) ?? [],
+          });
+        }
+      }
       continue;
     }
 

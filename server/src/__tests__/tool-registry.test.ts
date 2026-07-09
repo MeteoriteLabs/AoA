@@ -23,7 +23,7 @@ const mockCtx: ToolContext = {
 
 describe("Tool Registry", () => {
   describe("createToolRegistry", () => {
-    it("returns all 75 tools", () => {
+    it("returns all 79 tools", () => {
       // Task C2 batch 1 (T15) added 7 thread+query tools to the 40 prior tools:
       // thread.listEntries, thread.setIntent, thread.postScopeProposal,
       // thread.updateSummary, thread.createLink, get_thread_summary,
@@ -55,8 +55,16 @@ describe("Tool Registry", () => {
       // W4 Steward added 2 coordination tools:
       // hub.readCurationContext (redacted curation read) and
       // hub.updateCurationSummary (bounded display-only hub curation write).
+      // Human context bundle added 1 query tool:
+      // query_human_context (Commander/internal-agent read of human profile context).
+      // Human discovery/routing added 1 query tool:
+      // find_humans (Commander/internal-agent read-only human search).
+      // Commander broad roster discovery added 1 query tool:
+      // query_humans (company-scoped human roster listing).
+      // Unified team roster added 1 query tool:
+      // query_team_roster (humans + org agents + readable hierarchy).
       const tools = createToolRegistry();
-      expect(tools).toHaveLength(75);
+      expect(tools).toHaveLength(79);
     });
 
     it("every tool has required fields", () => {
@@ -111,6 +119,19 @@ describe("Tool Registry", () => {
       const tools = getToolsForMessage("what's going on?", allTools);
       const categories = [...new Set(tools.map((t) => t.category))];
       expect(categories).toContain("query");
+    });
+
+    it("includes query_team_roster for broad team hierarchy questions", () => {
+      const tools = getToolsForMessage("who is on the team and who reports to whom?", allTools);
+      const names = tools.map((tool) => tool.name);
+      expect(names).toContain("query_team_roster");
+    });
+
+    it("keeps query_team_roster available when team wording appears with another intent", () => {
+      const tools = getToolsForMessage("create a task after checking the team hierarchy", allTools);
+      const names = tools.map((tool) => tool.name);
+      expect(names).toContain("create_task");
+      expect(names).toContain("query_team_roster");
     });
   });
 

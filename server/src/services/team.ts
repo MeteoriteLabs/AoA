@@ -28,6 +28,7 @@ import type {
 import { PERMISSION_KEYS } from "@armyofagents/shared";
 import { conflict, notFound } from "../errors.js";
 import { accessService } from "./access.js";
+import { humanCapabilitiesService } from "./human-capabilities.js";
 import { orgHierarchyService } from "./org-hierarchy.js";
 
 const TEAM_INVITE_KEY = "teamInvite";
@@ -103,6 +104,7 @@ function normalizeSocialLinks(value: unknown): HumanSocialLink[] {
 
 export function teamService(db: Db) {
   const access = accessService(db);
+  const humanCapabilities = humanCapabilitiesService(db);
   const orgHierarchy = orgHierarchyService(db);
 
   async function isInstanceAdmin(userId: string | null | undefined) {
@@ -708,6 +710,8 @@ export function teamService(db: Db) {
       },
       addedByUserId,
     );
+
+    await humanCapabilities.ensureStandardDocuments(companyId, userId, addedByUserId);
 
     return { userId };
   }

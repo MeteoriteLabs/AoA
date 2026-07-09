@@ -305,12 +305,19 @@ export {
   transferAdminSchema,
   reassignAndRemoveSchema,
   HUMAN_SOCIAL_LINK_TYPES,
+  STANDARD_HUMAN_CAPABILITY_DOCUMENTS,
+  createHumanCapabilityDocumentSchema,
+  updateHumanCapabilityDocumentSchema,
   updateCompanyUserProfileSchema,
+  searchHumansSchema,
   type UpdateTeamMemberRole,
   type AddMember,
   type TransferAdmin,
   type ReassignAndRemove,
   type UpdateCompanyUserProfile,
+  type CreateHumanCapabilityDocument,
+  type UpdateHumanCapabilityDocument,
+  type SearchHumans,
 } from "./team.js";
 
 export {

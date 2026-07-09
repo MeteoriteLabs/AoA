@@ -64,6 +64,57 @@ test.describe("Human profile page", () => {
     await expect(main.getByText("Founder Partner")).toBeVisible();
     await expect(main.getByText("Asia/Kolkata")).toBeVisible();
 
+    await page.goto(`/${company.issuePrefix}/team/${userId}/capabilities`);
+    await expect(main.getByText("Documents")).toBeVisible({ timeout: 10_000 });
+    await expect(main.getByText("skills.md").first()).toBeVisible();
+    await expect(main.getByText("background.md").first()).toBeVisible();
+    const documentListPanel = main.getByTestId("capabilities-document-list");
+    const documentDetailPanel = main.getByTestId("capabilities-document-detail");
+    const initialListBox = await documentListPanel.boundingBox();
+    const initialDetailBox = await documentDetailPanel.boundingBox();
+    expect(initialListBox?.height).toBeGreaterThan(500);
+    expect(Math.abs((initialListBox?.height ?? 0) - (initialDetailBox?.height ?? 0))).toBeLessThanOrEqual(2);
+    const listHeaderHeight = await documentListPanel
+      .getByTestId("capabilities-document-list-header")
+      .evaluate((element) => element.getBoundingClientRect().height);
+    const detailHeaderHeight = await documentDetailPanel
+      .getByTestId("capabilities-document-detail-header")
+      .evaluate((element) => element.getBoundingClientRect().height);
+    expect(Math.abs(listHeaderHeight - 42)).toBeLessThanOrEqual(1);
+    expect(Math.abs(detailHeaderHeight - 42)).toBeLessThanOrEqual(1);
+    await main.getByRole("button", { name: "Background background.md" }).hover();
+    const backgroundHover = await main.getByRole("button", { name: "Background background.md" }).evaluate((element) => {
+      const style = window.getComputedStyle(element);
+      return {
+        backgroundColor: style.backgroundColor,
+        borderColor: style.borderColor,
+      };
+    });
+    expect(backgroundHover.backgroundColor).not.toBe("rgba(0, 0, 0, 0)");
+    expect(backgroundHover.borderColor).not.toBe("rgba(0, 0, 0, 0)");
+    await main.getByRole("button", { name: "Background background.md" }).click();
+    await expect(main.getByText("## Professional Background")).toBeVisible();
+    const backgroundListBox = await documentListPanel.boundingBox();
+    const backgroundDetailBox = await documentDetailPanel.boundingBox();
+    expect(Math.abs((initialListBox?.height ?? 0) - (backgroundListBox?.height ?? 0))).toBeLessThanOrEqual(2);
+    expect(Math.abs((initialDetailBox?.height ?? 0) - (backgroundDetailBox?.height ?? 0))).toBeLessThanOrEqual(2);
+    await main.getByRole("button", { name: "Skills skills.md" }).click();
+    await expect(main.getByText("## Core Skills")).toBeVisible();
+    await main.getByRole("button", { name: "Edit document" }).click();
+    await main.getByLabel("Capability markdown").fill("# Skills\n\n## Core Skills\n\n- E2E product strategy\n- Human-agent operations");
+    await main.getByRole("button", { name: "Save document" }).click();
+    await expect(page.getByText("Document saved")).toBeVisible({ timeout: 10_000 });
+    await page.reload();
+    await main.getByRole("button", { name: "Skills skills.md" }).click();
+    await expect(main.getByText("E2E product strategy")).toBeVisible({ timeout: 10_000 });
+
+    const capabilitiesRes = await request.get(`/api/companies/${company.id}/team/users/${userId}/capabilities`);
+    expect(capabilitiesRes.ok()).toBe(true);
+    const capabilities = (await capabilitiesRes.json()) as {
+      documents: Array<{ filename: string; content: string }>;
+    };
+    expect(capabilities.documents.find((doc) => doc.filename === "skills.md")?.content).toContain("E2E product strategy");
+
     const departmentRes = await request.post(`/api/companies/${company.id}/projects`, {
       data: {
         name: `E2E Roles Dept ${Date.now()}`,

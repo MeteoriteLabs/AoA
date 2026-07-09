@@ -15,6 +15,9 @@ const mockLogActivity = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/index.js", () => ({
   accessService: () => ({}),
+  humanCapabilitiesService: () => ({}),
+  humanContextService: () => ({}),
+  humanDiscoveryService: () => ({}),
   logActivity: mockLogActivity,
   teamService: () => mockTeamService,
 }));

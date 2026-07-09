@@ -10,7 +10,7 @@ const src = readFileSync(
 describe("TOOLS.md contract", () => {
   // Core tools always present
   const coreTools = [
-    "query_tasks", "query_goals", "query_agents", "query_company",
+    "query_tasks", "query_goals", "query_team_roster", "query_humans", "query_agents", "query_company",
     "query_departments", "query_memory", "query_budget", "query_activity",
     "use_skill",
   ];
@@ -47,6 +47,11 @@ describe("TOOLS.md contract", () => {
     );
   });
 
+  it("documents the current Commander-visible tool count", () => {
+    expect(src).toContain("You have **37 tools**");
+    expect(src).toContain("The 37 tools above are your complete set");
+  });
+
   // The v0.1 rewrite organizes tools into named, table-rendered categories.
   // Lock that surface so a future drift back to the prose blob is caught.
   it("organizes tools into named markdown categories with table rows", () => {
@@ -55,5 +60,15 @@ describe("TOOLS.md contract", () => {
     expect(src).toMatch(/^## Memory Tools/m);
     // Pipe-table syntax: | Tool | What it ... |
     expect(src).toMatch(/^\|\s*Tool\s*\|/m);
+  });
+
+  it("documents responsible human ownership separately from executor assignment", () => {
+    expect(src).toMatch(/responsible human/i);
+    expect(src).toMatch(/assignee is the agent or human/i);
+    expect(src).toMatch(/`create_task`[\s\S]*assigneeId[\s\S]*responsibleUserId/i);
+    expect(src).toMatch(/`update_task`[\s\S]*responsibleUserId[\s\S]*null clears/i);
+    expect(src).toMatch(/`update_task`[\s\S]*Use `assign_task` for assignee reassignment/i);
+    expect(src).not.toMatch(/agent executor/i);
+    expect(src).toMatch(/`query_tasks`[\s\S]*responsibleUserId/i);
   });
 });

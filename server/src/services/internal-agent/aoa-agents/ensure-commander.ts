@@ -21,6 +21,8 @@ export const COMMANDER_TOOL_ALLOWLIST = [
   // Query
   "query_tasks",
   "query_goals",
+  "query_team_roster",
+  "query_humans",
   "query_agents",
   "query_departments",
   "query_budget",

@@ -80,8 +80,11 @@ export const queryKeys = {
   },
   team: {
     summary: (companyId: string) => ["team", companyId] as const,
+    humanSearch: (companyId: string, input: { q: string; role?: string; departmentId?: string | null; limit?: number }) =>
+      ["team", companyId, "humans", "search", input] as const,
     member: (companyId: string, userId: string) => ["team", companyId, "member", userId] as const,
     dependencies: (companyId: string, userId: string) => ["team", companyId, "dependencies", userId] as const,
+    capabilities: (companyId: string, userId: string) => ["team", companyId, "member", userId, "capabilities"] as const,
   },
   teams: {
     list: (companyId: string) => ["teams", companyId] as const,

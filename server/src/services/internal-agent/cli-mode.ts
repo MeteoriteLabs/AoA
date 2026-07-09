@@ -1084,6 +1084,14 @@ async function* runCodexTurn(
   }
 
   const parsed = parseCodexJsonl(result.stdout);
+  const toolsCalled = Array.from(
+    new Set(
+      (parsed.chunks ?? [])
+        .filter((chunk) => chunk.type === "tool_call" || chunk.type === "tool_result")
+        .map((chunk) => chunk.name)
+        .filter(Boolean),
+    ),
+  );
 
   // Persist/refresh the codex sessionId for the NEXT turn's `resume`.
   // Validate against safe-char allowlist before storing — on Windows, spawn
@@ -1121,7 +1129,7 @@ async function* runCodexTurn(
     type: "done",
     summary: {
       runId: "",
-      toolsCalled: [],
+      toolsCalled,
       durationMs: 0,
       costCents: 0,
       tokenUsage: {

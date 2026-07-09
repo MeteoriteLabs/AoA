@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import type { JoinRequest, TeamSummary } from "@armyofagents/shared";
 import { accessApi } from "../../../api/access";
+import { teamApi } from "../../../api/team";
 import { HumansTab } from "../HumansTab";
 
 const pushToast = vi.fn();
@@ -34,6 +35,7 @@ vi.mock("../../../api/access", () => ({
 
 vi.mock("../../../api/team", () => ({
   teamApi: {
+    searchHumans: vi.fn(),
     resendInvite: vi.fn(),
     revokeInvite: vi.fn(),
   },
@@ -133,6 +135,40 @@ describe("HumansTab", () => {
     vi.mocked(accessApi.listJoinRequests).mockResolvedValue([joinRequest]);
     vi.mocked(accessApi.approveJoinRequest).mockResolvedValue({ ...joinRequest, status: "approved" });
     vi.mocked(accessApi.rejectJoinRequest).mockResolvedValue({ ...joinRequest, status: "rejected" });
+    vi.mocked(teamApi.searchHumans).mockResolvedValue({
+      companyId: "company-1",
+      query: "enterprise routing alpha",
+      results: [
+        {
+          userId: "founder-1",
+          email: "founder@example.com",
+          displayName: "Founder",
+          avatarUrl: null,
+          title: "Founder",
+          role: "founder",
+          departmentId: null,
+          departmentName: null,
+          reportsToUserId: null,
+          reportsToName: null,
+          matchedFields: ["capability_document"],
+          snippets: [
+            {
+              field: "capability_document",
+              label: "Skills",
+              value: "Strong in enterprise routing alpha and product strategy.",
+              documentId: "doc-1",
+              filename: "skills.md",
+            },
+          ],
+          responsibilitySummary: {
+            directHumanReportCount: 0,
+            directAgentTreeCount: 1,
+            assignedTaskCount: 2,
+            createdTaskCount: 3,
+          },
+        },
+      ],
+    });
   });
 
   it("renders pending join requests and approves them inline", async () => {
@@ -162,5 +198,36 @@ describe("HumansTab", () => {
       expect(accessApi.rejectJoinRequest).toHaveBeenCalledWith("company-1", "jr-1");
     });
     expect(pushToast).toHaveBeenCalledWith({ title: "Join request declined", tone: "success" });
+  });
+
+  it("searches human capabilities through the discovery API and renders snippets", async () => {
+    const user = userEvent.setup();
+    renderHumansTab();
+
+    const search = screen.getByPlaceholderText("Search humans by skills, responsibilities, role, or docs...");
+    await user.type(search, "enterprise routing alpha");
+
+    await waitFor(() => {
+      expect(teamApi.searchHumans).toHaveBeenCalledWith("company-1", {
+        q: "enterprise routing alpha",
+        role: "all",
+        limit: 20,
+      });
+    });
+    expect(await screen.findByText("Skills")).toBeInTheDocument();
+    expect(screen.getByText(/Strong in enterprise routing alpha/)).toBeInTheDocument();
+    expect(screen.getByText("1 agent tree")).toBeInTheDocument();
+    expect(screen.getByText("2 assigned")).toBeInTheDocument();
+  });
+
+  it("keeps pending search local and does not call human discovery", async () => {
+    const user = userEvent.setup();
+    renderHumansTab();
+
+    await user.click(screen.getByRole("button", { name: /Pending/ }));
+    await user.type(screen.getByPlaceholderText("Search humans by skills, responsibilities, role, or docs..."), "Ops Scout");
+
+    expect(await screen.findByText("Ops Scout")).toBeInTheDocument();
+    expect(teamApi.searchHumans).not.toHaveBeenCalled();
   });
 });

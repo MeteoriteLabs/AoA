@@ -26,4 +26,17 @@ describe("issuesApi", () => {
       "/companies/company-1/issues?assigneeUserId=user-2&createdByUserId=user-1&taskScope=all",
     );
   });
+
+  it("serializes responsibleUserId with the issue list filters", async () => {
+    get.mockResolvedValueOnce([]);
+
+    await issuesApi.list("company-1", {
+      responsibleUserId: "user-1",
+      taskScope: "all",
+    });
+
+    expect(get).toHaveBeenCalledWith(
+      "/companies/company-1/issues?responsibleUserId=user-1&taskScope=all",
+    );
+  });
 });

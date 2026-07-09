@@ -18,6 +18,9 @@ import { discussionService } from "../discussions.js";
 import { threadService } from "../threads.js";
 import { taskOutputService } from "../task-outputs.js";
 import { companyService } from "../companies.js";
+import { humanContextService } from "../human-context.js";
+import { humanDiscoveryService } from "../human-discovery.js";
+import { teamService } from "../team.js";
 import {
   createEmbeddingService,
   createOpenAiEmbedder,
@@ -208,6 +211,9 @@ export function createServiceContainer(db: Db): ServiceContainer {
     discussions: discussionService(db),
     threads: threadService(db),
     taskOutputs: taskOutputService(db),
+    humanContext: humanContextService(db),
+    humanDiscovery: humanDiscoveryService(db),
+    team: teamService(db),
     companies: {
       get: (id: string) => companySvc.getById(id).then((row) => {
         if (!row) return null;

@@ -5,7 +5,8 @@ export function createActionTools(): AgentTool[] {
   return [
     {
       name: "create_task",
-      description: "Create a new task with title, optional description, priority, department, goal, and assignee.",
+      description:
+        "Create a new task with title, optional description, priority, department, goal, assignee, and responsible human. Assignee means who does the task; responsible human owns the outcome.",
       parameters: {
         type: "object",
         properties: {
@@ -14,7 +15,12 @@ export function createActionTools(): AgentTool[] {
           priority: { type: "string", enum: ["urgent", "high", "medium", "low"], description: "Task priority" },
           departmentId: { type: "string", description: "Department to assign task to" },
           goalId: { type: "string", description: "Goal to link task to" },
-          assigneeId: { type: "string", description: "Agent or user to assign task to" },
+          assigneeType: { type: "string", enum: ["agent", "user"], description: "Whether assigneeId is an agent id or human user id" },
+          assigneeId: { type: "string", description: "Assignee id for the agent or human doing the task" },
+          responsibleUserId: {
+            type: "string",
+            description: "Human accountable for the task outcome, separate from the executor assignee.",
+          },
         },
         required: ["title"],
       },
@@ -22,21 +28,29 @@ export function createActionTools(): AgentTool[] {
       requiredRole: "team_lead",
       requiresConfirmation: true,
       execute: async (params: unknown, ctx) => {
-        const { title, description, priority, departmentId, goalId, assigneeId } = (params ?? {}) as Record<string, unknown>;
+        const { title, description, priority, departmentId, goalId, assigneeId, assigneeType, responsibleUserId } = (params ?? {}) as Record<string, unknown>;
+        const assigneePatch =
+          assigneeId && assigneeType === "user"
+            ? { assigneeAgentId: null, assigneeUserId: assigneeId as string }
+            : assigneeId
+              ? { assigneeAgentId: assigneeId as string, assigneeUserId: null }
+              : {};
         const task = await ctx.services.issues.create(ctx.companyId, {
           title: title as string,
           ...(description ? { description: description as string } : {}),
           ...(priority ? { priority: priority as string } : {}),
           ...(departmentId ? { projectId: departmentId as string } : {}),
           ...(goalId ? { goalId: goalId as string } : {}),
-          ...(assigneeId ? { assigneeAgentId: assigneeId as string } : {}),
+          ...assigneePatch,
+          ...(responsibleUserId ? { responsibleUserId: responsibleUserId as string } : {}),
         });
         return { success: true, data: task, summary: `Created task "${title}"` };
       },
     },
     {
       name: "update_task",
-      description: "Update an existing task's title, status, or priority.",
+      description:
+        "Update an existing task's title, status, priority, or responsible human. Use assign_task for assignee reassignment.",
       parameters: {
         type: "object",
         properties: {
@@ -44,6 +58,10 @@ export function createActionTools(): AgentTool[] {
           title: { type: "string", description: "New title" },
           status: { type: "string", description: "New status" },
           priority: { type: "string", enum: ["urgent", "high", "medium", "low"], description: "New priority" },
+          responsibleUserId: {
+            type: ["string", "null"],
+            description: "Human accountable for the task outcome; null clears the responsible human.",
+          },
         },
         required: ["taskId"],
       },
@@ -51,7 +69,12 @@ export function createActionTools(): AgentTool[] {
       requiredRole: "team_member",
       requiresConfirmation: true,
       execute: async (params: unknown, ctx) => {
-        const { taskId, ...updates } = (params ?? {}) as Record<string, unknown>;
+        const { taskId, title, status, priority, responsibleUserId } = (params ?? {}) as Record<string, unknown>;
+        const updates: Record<string, unknown> = {};
+        if (title !== undefined) updates.title = title;
+        if (status !== undefined) updates.status = status;
+        if (priority !== undefined) updates.priority = priority;
+        if (responsibleUserId !== undefined) updates.responsibleUserId = responsibleUserId;
         const task = await ctx.services.issues.update(taskId as string, updates);
         return { success: true, data: task, summary: `Updated task ${taskId}` };
       },
@@ -153,12 +176,13 @@ export function createActionTools(): AgentTool[] {
     },
     {
       name: "assign_task",
-      description: "Assign a task to an agent or user.",
+      description: "Assign a task to an agent or human. Assignee means who does the task; responsible human ownership is separate.",
       parameters: {
         type: "object",
         properties: {
           taskId: { type: "string", description: "Task ID (required)" },
-          assigneeId: { type: "string", description: "Agent or user ID to assign (required)" },
+          assigneeType: { type: "string", enum: ["agent", "user"], description: "Whether assigneeId is an agent id or human user id" },
+          assigneeId: { type: "string", description: "Assignee id for the agent or human doing the task (required)" },
         },
         required: ["taskId", "assigneeId"],
       },
@@ -166,8 +190,12 @@ export function createActionTools(): AgentTool[] {
       requiredRole: "team_lead",
       requiresConfirmation: true,
       execute: async (params: unknown, ctx) => {
-        const { taskId, assigneeId } = (params ?? {}) as Record<string, unknown>;
-        const task = await ctx.services.issues.update(taskId as string, { assigneeAgentId: assigneeId as string });
+        const { taskId, assigneeId, assigneeType } = (params ?? {}) as Record<string, unknown>;
+        const assigneePatch =
+          assigneeType === "user"
+            ? { assigneeAgentId: null, assigneeUserId: assigneeId as string }
+            : { assigneeAgentId: assigneeId as string, assigneeUserId: null };
+        const task = await ctx.services.issues.update(taskId as string, assigneePatch);
         return { success: true, data: task, summary: `Assigned task ${taskId} to ${assigneeId}` };
       },
     },

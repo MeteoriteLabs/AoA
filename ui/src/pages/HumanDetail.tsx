@@ -16,10 +16,12 @@ import {
   Activity,
   Camera,
   Pencil,
+  Plus,
   X,
 } from "lucide-react";
 import type {
   ActivityEvent,
+  HumanCapabilityDocumentDetail,
   HumanSocialLink,
   HumanSocialLinkType,
   Issue,
@@ -79,6 +81,7 @@ const ROLE_LABELS: Record<UserRole, string> = {
 const TAB_ITEMS = [
   { value: "overview", label: "Overview" },
   { value: "roles", label: "Roles" },
+  { value: "capabilities", label: "Capabilities" },
   { value: "settings", label: "Settings" },
 ];
 
@@ -175,6 +178,15 @@ function displayIssueStatus(status: string): string {
 
 function displaySocialLabel(link: HumanSocialLink): string {
   return link.label?.trim() || link.type[0].toUpperCase() + link.type.slice(1);
+}
+
+function filenameToTitle(filename: string): string {
+  return filename
+    .replace(/\.md$/i, "")
+    .split(/[-_]/)
+    .filter(Boolean)
+    .map((part) => part[0]?.toUpperCase() + part.slice(1))
+    .join(" ");
 }
 
 function activityTitle(event: ActivityEvent): string | null {
@@ -285,7 +297,7 @@ export function HumanDetail() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
-  const activeTab = tab === "settings" || tab === "roles" ? tab : "overview";
+  const activeTab = tab === "settings" || tab === "roles" || tab === "capabilities" ? tab : "overview";
 
   const handleTabChange = useCallback(
     (value: string) => {
@@ -310,6 +322,14 @@ export function HumanDetail() {
       : ["team", "none"],
     queryFn: () => teamApi.get(selectedCompanyId!),
     enabled: Boolean(selectedCompanyId),
+  });
+
+  const capabilitiesQuery = useQuery({
+    queryKey: selectedCompanyId && userId
+      ? queryKeys.team.capabilities(selectedCompanyId, userId)
+      : ["team", "none", "capabilities"],
+    queryFn: () => teamApi.listCapabilities(selectedCompanyId!, userId!),
+    enabled: Boolean(selectedCompanyId && userId) && activeTab === "capabilities",
   });
 
   // Departments (for role editing)
@@ -346,6 +366,12 @@ export function HumanDetail() {
   const [avatarFileDirty, setAvatarFileDirty] = useState(false);
   const [profileDialogOpen, setProfileDialogOpen] = useState(false);
   const [roleDialogOpen, setRoleDialogOpen] = useState(false);
+  const [selectedCapabilityId, setSelectedCapabilityId] = useState<string | null>(null);
+  const [capabilityEditing, setCapabilityEditing] = useState(false);
+  const [capabilityDraft, setCapabilityDraft] = useState("");
+  const [newCapabilityOpen, setNewCapabilityOpen] = useState(false);
+  const [newCapabilityTitle, setNewCapabilityTitle] = useState("");
+  const [newCapabilityFilename, setNewCapabilityFilename] = useState("");
   const timezoneOptions = useMemo(() => getTimezoneOptions(), []);
   const titleOptions = useMemo(
     () => Array.from(new Set([
@@ -402,6 +428,14 @@ export function HumanDetail() {
     [member?.parentId, teamSummary?.members],
   );
 
+  const responsibleTasksQuery = useQuery({
+    queryKey: selectedCompanyId && userId
+      ? ["team", selectedCompanyId, "human", userId, "responsible-tasks", "all"]
+      : ["team", "none", "human", "responsible-tasks"],
+    queryFn: () => issuesApi.list(selectedCompanyId!, { responsibleUserId: userId!, taskScope: "all" }),
+    enabled: Boolean(selectedCompanyId && userId) && activeTab === "overview",
+  });
+
   const assignedTasksQuery = useQuery({
     queryKey: selectedCompanyId && userId
       ? ["team", selectedCompanyId, "human", userId, "assigned-tasks", "all"]
@@ -454,6 +488,27 @@ export function HumanDetail() {
     [teamSummary?.members, userId],
   );
 
+  const capabilityDocuments = capabilitiesQuery.data?.documents ?? [];
+  const selectedCapability = useMemo<HumanCapabilityDocumentDetail | null>(() => {
+    if (capabilityDocuments.length === 0) return null;
+    return capabilityDocuments.find((doc) => doc.id === selectedCapabilityId) ?? capabilityDocuments[0] ?? null;
+  }, [capabilityDocuments, selectedCapabilityId]);
+
+  useEffect(() => {
+    if (!selectedCapability && selectedCapabilityId) {
+      setSelectedCapabilityId(null);
+    }
+    if (!selectedCapabilityId && capabilityDocuments[0]) {
+      setSelectedCapabilityId(capabilityDocuments[0].id);
+    }
+  }, [capabilityDocuments, selectedCapability, selectedCapabilityId]);
+
+  useEffect(() => {
+    if (!selectedCapability) return;
+    setCapabilityDraft(selectedCapability.content);
+    setCapabilityEditing(false);
+  }, [selectedCapability?.id, selectedCapability?.content]);
+
   // Remove dialog
   const [removeDialogOpen, setRemoveDialogOpen] = useState(false);
 
@@ -497,6 +552,50 @@ export function HumanDetail() {
       pushToast({ title: "Profile saved", tone: "success" });
     },
     onError: (err: Error) => pushToast({ title: "Profile save failed", body: err.message, tone: "error" }),
+  });
+
+  const updateCapabilityMutation = useMutation({
+    mutationFn: ({ documentId, content }: { documentId: string; content: string }) =>
+      teamApi.updateCapabilityDocument(selectedCompanyId!, userId!, documentId, { content }),
+    onSuccess: () => {
+      setCapabilityEditing(false);
+      if (selectedCompanyId && userId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.team.capabilities(selectedCompanyId, userId) });
+      }
+      pushToast({ title: "Document saved", tone: "success" });
+    },
+    onError: (err: Error) => pushToast({ title: "Document save failed", body: err.message, tone: "error" }),
+  });
+
+  const createCapabilityMutation = useMutation({
+    mutationFn: () => teamApi.createCapabilityDocument(selectedCompanyId!, userId!, {
+      title: newCapabilityTitle.trim() || filenameToTitle(newCapabilityFilename),
+      filename: newCapabilityFilename.trim(),
+      content: `# ${newCapabilityTitle.trim() || filenameToTitle(newCapabilityFilename)}\n`,
+    }),
+    onSuccess: (result) => {
+      setSelectedCapabilityId(result.document.id);
+      setNewCapabilityOpen(false);
+      setNewCapabilityTitle("");
+      setNewCapabilityFilename("");
+      if (selectedCompanyId && userId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.team.capabilities(selectedCompanyId, userId) });
+      }
+      pushToast({ title: "Document added", tone: "success" });
+    },
+    onError: (err: Error) => pushToast({ title: "Document add failed", body: err.message, tone: "error" }),
+  });
+
+  const deleteCapabilityMutation = useMutation({
+    mutationFn: (documentId: string) => teamApi.deleteCapabilityDocument(selectedCompanyId!, userId!, documentId),
+    onSuccess: () => {
+      setSelectedCapabilityId(null);
+      if (selectedCompanyId && userId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.team.capabilities(selectedCompanyId, userId) });
+      }
+      pushToast({ title: "Document deleted", tone: "success" });
+    },
+    onError: (err: Error) => pushToast({ title: "Document delete failed", body: err.message, tone: "error" }),
   });
 
   const avatarUploadMutation = useMutation({
@@ -1033,6 +1132,59 @@ export function HumanDetail() {
         </DialogContent>
       </Dialog>
 
+      <Dialog
+        open={newCapabilityOpen}
+        onOpenChange={(open) => {
+          setNewCapabilityOpen(open);
+          if (!open) {
+            setNewCapabilityTitle("");
+            setNewCapabilityFilename("");
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Add Document</DialogTitle>
+            <DialogDescription className="sr-only">
+              Add a custom markdown capability document.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogBody className="space-y-4">
+            <div className="space-y-1.5">
+              <label htmlFor="capability-title" className="text-xs font-medium text-muted-foreground">Title</label>
+              <input
+                id="capability-title"
+                className={FIELD_CLASS}
+                value={newCapabilityTitle}
+                onChange={(event) => setNewCapabilityTitle(event.target.value)}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label htmlFor="capability-filename" className="text-xs font-medium text-muted-foreground">Filename</label>
+              <input
+                id="capability-filename"
+                className={FIELD_CLASS}
+                value={newCapabilityFilename}
+                placeholder="portfolio.md"
+                onChange={(event) => setNewCapabilityFilename(event.target.value)}
+              />
+            </div>
+          </DialogBody>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setNewCapabilityOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              disabled={!newCapabilityFilename.trim() || createCapabilityMutation.isPending}
+              onClick={() => createCapabilityMutation.mutate()}
+            >
+              Add Document
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* Tabs */}
       <Tabs value={activeTab} onValueChange={handleTabChange}>
         <PageTabBar items={TAB_ITEMS} value={activeTab} onValueChange={handleTabChange} />
@@ -1058,6 +1210,13 @@ export function HumanDetail() {
 
             <div className="grid gap-4 xl:grid-cols-2">
               <TaskListSection
+                title="Responsible Tasks"
+                icon={Shield}
+                tasks={responsibleTasksQuery.data ?? []}
+                isLoading={responsibleTasksQuery.isLoading}
+                empty="No tasks owned by this person."
+              />
+              <TaskListSection
                 title="Assigned Tasks"
                 icon={ClipboardList}
                 tasks={assignedTasksQuery.data ?? []}
@@ -1075,7 +1234,7 @@ export function HumanDetail() {
 
             <div className="grid gap-4 xl:grid-cols-2">
               <TaskListSection
-                title="Responsible Agent Tasks"
+                title="Agent Tree Tasks"
                 icon={Bot}
                 tasks={agentTasksQuery.data ?? []}
                 isLoading={agentTasksQuery.isLoading}
@@ -1144,6 +1303,146 @@ export function HumanDetail() {
                 </div>
               )}
             </div>
+          </div>
+        )}
+
+        {/* Capabilities Tab */}
+        {activeTab === "capabilities" && (
+          <div className="mt-4 grid gap-4 lg:h-[calc(100vh-18rem)] lg:min-h-[34rem] lg:grid-cols-[16rem_minmax(0,1fr)] lg:items-stretch">
+            <section
+              data-testid="capabilities-document-list"
+              className="flex min-h-[22rem] min-w-0 flex-col overflow-hidden rounded-xl border border-border bg-card"
+            >
+              <div
+                data-testid="capabilities-document-list-header"
+                className="flex h-[42px] shrink-0 items-center justify-between gap-2 border-b border-border px-4"
+              >
+                <h3 className="text-sm font-semibold">Documents</h3>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label="Add document"
+                  disabled={!canEditProfile}
+                  onClick={() => setNewCapabilityOpen(true)}
+                >
+                  <Plus className="h-4 w-4" />
+                </Button>
+              </div>
+              {capabilitiesQuery.isLoading ? (
+                <p className="p-3 text-sm text-muted-foreground">Loading...</p>
+              ) : capabilityDocuments.length === 0 ? (
+                <p className="p-3 text-sm text-muted-foreground">No capability documents yet.</p>
+              ) : (
+                <div className="min-h-0 flex-1 space-y-1 overflow-y-auto p-3">
+                  {capabilityDocuments.map((doc) => (
+                    <button
+                      key={doc.id}
+                      type="button"
+                      className={cn(
+                        "flex w-full min-w-0 flex-col rounded-lg border border-transparent px-3 py-2 text-left text-sm transition-colors hover:border-muted-foreground/30 hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+                        selectedCapability?.id === doc.id && "border-border bg-accent text-accent-foreground shadow-sm",
+                      )}
+                      onClick={() => setSelectedCapabilityId(doc.id)}
+                    >
+                      <span className="truncate font-medium">{doc.title}</span>
+                      <span className="truncate text-xs text-muted-foreground">{doc.filename}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </section>
+
+            <section
+              data-testid="capabilities-document-detail"
+              className="min-h-[22rem] min-w-0 overflow-hidden rounded-xl border border-border bg-card"
+            >
+              {!selectedCapability ? (
+                <p className="p-4 text-sm text-muted-foreground">Select a capability document.</p>
+              ) : (
+                <div className="flex h-full min-h-[24rem] flex-col">
+                  <div
+                    data-testid="capabilities-document-detail-header"
+                    className="flex h-[42px] shrink-0 items-center justify-between gap-3 border-b border-border px-4"
+                  >
+                    <div className="min-w-0">
+                      <h3 className="truncate text-sm font-semibold leading-tight">{selectedCapability.title}</h3>
+                      <p className="truncate text-xs leading-tight text-muted-foreground">{selectedCapability.filename}</p>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-2">
+                      {capabilityEditing ? (
+                        <>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            disabled={updateCapabilityMutation.isPending}
+                            onClick={() => {
+                              setCapabilityDraft(selectedCapability.content);
+                              setCapabilityEditing(false);
+                            }}
+                          >
+                            Cancel
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            disabled={updateCapabilityMutation.isPending}
+                            onClick={() => updateCapabilityMutation.mutate({
+                              documentId: selectedCapability.id,
+                              content: capabilityDraft,
+                            })}
+                          >
+                            Save document
+                          </Button>
+                        </>
+                      ) : (
+                        <>
+                          {!selectedCapability.isStandard && (
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon-sm"
+                              aria-label="Delete document"
+                              disabled={!canEditProfile || deleteCapabilityMutation.isPending}
+                              onClick={() => deleteCapabilityMutation.mutate(selectedCapability.id)}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          )}
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            disabled={!canEditProfile}
+                            onClick={() => setCapabilityEditing(true)}
+                          >
+                            <Pencil className="h-3.5 w-3.5" />
+                            Edit document
+                          </Button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                  <div className="min-h-0 flex-1 overflow-auto p-4">
+                    {capabilityEditing ? (
+                      <textarea
+                        aria-label="Capability markdown"
+                        className="h-full min-h-[20rem] w-full resize-none rounded-md border border-input bg-background px-3 py-2 font-mono text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        value={capabilityDraft}
+                        onChange={(event) => setCapabilityDraft(event.target.value)}
+                      />
+                    ) : selectedCapability.content.trim() ? (
+                      <pre className="whitespace-pre-wrap break-words text-sm leading-6 text-foreground">
+                        {selectedCapability.content}
+                      </pre>
+                    ) : (
+                      <p className="text-sm text-muted-foreground">This document is ready to fill in.</p>
+                    )}
+                  </div>
+                </div>
+              )}
+            </section>
           </div>
         )}
 

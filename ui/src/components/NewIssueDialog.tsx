@@ -17,6 +17,11 @@ import { useTeamAccess } from "../hooks/useTeamAccess";
 import { useWorkspacePermissions } from "../hooks/useWorkspacePermissions";
 import { getRecentAssigneeIds, sortAgentsByRecency, trackRecentAssignee } from "../lib/recent-assignees";
 import {
+  formatTaskAssigneeValue,
+  parseTaskAssigneeValue,
+  taskAssigneePayload,
+} from "../lib/task-assignee";
+import {
   Dialog,
   DialogContent,
   DialogTitle,
@@ -46,6 +51,7 @@ import {
   Layers,
   FolderGit2,
   GitBranch,
+  User,
 } from "lucide-react";
 import { cn } from "../lib/utils";
 import { pruneStaleId } from "../lib/issueDraft";
@@ -75,6 +81,7 @@ interface IssueDraft {
   status: string;
   priority: string;
   assigneeId: string;
+  responsibleUserId: string;
   projectId: string;
   assigneeModelOverride: string;
   assigneeThinkingEffort: string;
@@ -165,6 +172,13 @@ function clearDraft() {
   localStorage.removeItem(DRAFT_KEY);
 }
 
+function normalizeDraftAssigneeValue(value?: string | null): string {
+  if (!value) return "";
+  const parsed = parseTaskAssigneeValue(value);
+  if (parsed.kind !== "none") return value;
+  return formatTaskAssigneeValue("agent", value);
+}
+
 const statuses = [
   { value: "backlog", label: "Backlog", color: issueStatusText.backlog ?? issueStatusTextDefault },
   { value: "todo", label: "Todo", color: issueStatusText.todo ?? issueStatusTextDefault },
@@ -189,7 +203,8 @@ export function NewIssueDialog() {
   const [description, setDescription] = useState("");
   const [status, setStatus] = useState("todo");
   const [priority, setPriority] = useState("");
-  const [assigneeId, setAssigneeId] = useState("");
+  const [assigneeValue, setAssigneeValue] = useState("");
+  const [responsibleUserId, setResponsibleUserId] = useState("");
   const [projectId, setProjectId] = useState("");
   const [assigneeOptionsOpen, setAssigneeOptionsOpen] = useState(false);
   const [assigneeModelOverride, setAssigneeModelOverride] = useState("");
@@ -231,6 +246,7 @@ export function NewIssueDialog() {
   const descriptionEditorRef = useRef<MarkdownEditorRef>(null);
   const attachInputRef = useRef<HTMLInputElement | null>(null);
   const assigneeSelectorRef = useRef<HTMLButtonElement | null>(null);
+  const responsibleSelectorRef = useRef<HTMLButtonElement | null>(null);
   const projectSelectorRef = useRef<HTMLButtonElement | null>(null);
 
   const { data: agents } = useQuery({
@@ -254,7 +270,8 @@ export function NewIssueDialog() {
     companyId: effectiveCompanyId,
     userId: currentUserId,
   });
-  const { permissions } = useTeamAccess(effectiveCompanyId);
+  const { permissions, summary: teamSummary } = useTeamAccess(effectiveCompanyId);
+  const canAssignTasks = Boolean(permissions.canAssignTasks);
 
   const { data: environments } = useEnvironments(effectiveCompanyId ?? "");
   const selectedProject = orderedProjects.find((project) => project.id === projectId);
@@ -281,7 +298,11 @@ export function NewIssueDialog() {
     enabled: Boolean(newIssueOpen && effectiveCompanyId && projectId && selectedProjectHasWorkspacePolicy),
   });
 
-  const assigneeAdapterType = (agents ?? []).find((agent) => agent.id === assigneeId)?.adapterType ?? null;
+  const parsedAssignee = parseTaskAssigneeValue(assigneeValue);
+  const selectedAssigneeAgentId = parsedAssignee.kind === "agent" ? parsedAssignee.id : null;
+  const assigneeAdapterType = selectedAssigneeAgentId
+    ? (agents ?? []).find((agent) => agent.id === selectedAssigneeAgentId)?.adapterType ?? null
+    : null;
   const supportsAssigneeOverrides = Boolean(
     assigneeAdapterType && ISSUE_OVERRIDE_ADAPTER_TYPES.has(assigneeAdapterType),
   );
@@ -386,7 +407,8 @@ export function NewIssueDialog() {
       description,
       status,
       priority,
-      assigneeId,
+      assigneeId: assigneeValue,
+      responsibleUserId,
       projectId,
       assigneeModelOverride,
       assigneeThinkingEffort,
@@ -398,7 +420,8 @@ export function NewIssueDialog() {
     description,
     status,
     priority,
-    assigneeId,
+    assigneeValue,
+    responsibleUserId,
     projectId,
     assigneeModelOverride,
     assigneeThinkingEffort,
@@ -422,7 +445,12 @@ export function NewIssueDialog() {
       setDescription(draft.description);
       setStatus(draft.status || "todo");
       setPriority(draft.priority);
-      setAssigneeId(newIssueDefaults.assigneeAgentId ?? draft.assigneeId);
+      setAssigneeValue(
+        newIssueDefaults.assigneeAgentId
+          ? formatTaskAssigneeValue("agent", newIssueDefaults.assigneeAgentId)
+          : normalizeDraftAssigneeValue(draft.assigneeId),
+      );
+      setResponsibleUserId(draft.responsibleUserId ?? "");
       setProjectId(newIssueDefaults.projectId ?? draft.projectId);
       setAssigneeModelOverride(draft.assigneeModelOverride ?? "");
       setAssigneeThinkingEffort(draft.assigneeThinkingEffort ?? "");
@@ -434,7 +462,12 @@ export function NewIssueDialog() {
       setStatus(newIssueDefaults.status ?? "todo");
       setPriority(newIssueDefaults.priority ?? "");
       setProjectId(newIssueDefaults.projectId ?? "");
-      setAssigneeId(newIssueDefaults.assigneeAgentId ?? "");
+      setAssigneeValue(
+        newIssueDefaults.assigneeAgentId
+          ? formatTaskAssigneeValue("agent", newIssueDefaults.assigneeAgentId)
+          : "",
+      );
+      setResponsibleUserId("");
       setAssigneeModelOverride("");
       setAssigneeThinkingEffort("");
       setAssigneeChrome(false);
@@ -442,16 +475,25 @@ export function NewIssueDialog() {
     }
   }, [newIssueOpen, newIssueDefaults]);
 
-  // Drop rehydrated assigneeId / projectId once we know the live agent &
-  // project lists, in case the persisted draft was pointing at an entity
+  // Drop rehydrated assignee / project ids once we know the live agent, human,
+  // and project lists, in case the persisted draft was pointing at an entity
   // that has since been deleted (DB nuke, manual delete, etc).
   useEffect(() => {
-    if (!newIssueOpen || !agents || !projects) return;
-    const agentIds = new Set(agents.map((a) => a.id));
+    if (!newIssueOpen || !agents || !projects || !teamSummary) return;
+    const validAssigneeValues = new Set([
+      ...agents.map((agent) => formatTaskAssigneeValue("agent", agent.id)),
+      ...teamSummary.members.map((member) => formatTaskAssigneeValue("user", member.userId)),
+    ]);
     const projectIds = new Set(projects.map((p) => p.id));
-    setAssigneeId((prev) => pruneStaleId(prev, agentIds));
+    setAssigneeValue((prev) => pruneStaleId(prev, validAssigneeValues));
     setProjectId((prev) => pruneStaleId(prev, projectIds));
-  }, [newIssueOpen, agents, projects]);
+  }, [newIssueOpen, agents, projects, teamSummary]);
+
+  useEffect(() => {
+    if (!newIssueOpen || !teamSummary) return;
+    const responsibleUserIds = new Set(teamSummary.members.map((member) => member.userId));
+    setResponsibleUserId((prev) => pruneStaleId(prev, responsibleUserIds));
+  }, [newIssueOpen, teamSummary]);
 
   useEffect(() => {
     setTaskWorkspaceMode("inherit");
@@ -492,7 +534,8 @@ export function NewIssueDialog() {
     setDescription("");
     setStatus("todo");
     setPriority("");
-    setAssigneeId("");
+    setAssigneeValue("");
+    setResponsibleUserId("");
     setProjectId("");
     setAssigneeOptionsOpen(false);
     setAssigneeModelOverride("");
@@ -514,7 +557,8 @@ export function NewIssueDialog() {
   function handleCompanyChange(companyId: string) {
     if (companyId === effectiveCompanyId) return;
     setDialogCompanyId(companyId);
-    setAssigneeId("");
+    setAssigneeValue("");
+    setResponsibleUserId("");
     setProjectId("");
     setAssigneeModelOverride("");
     setAssigneeThinkingEffort("");
@@ -550,6 +594,10 @@ export function NewIssueDialog() {
           : taskWorkspaceMode === "reuse_existing"
             ? undefined
             : { mode: taskWorkspaceMode };
+    const assigneePatch =
+      canAssignTasks && parsedAssignee.kind !== "none"
+        ? taskAssigneePayload(assigneeValue)
+        : {};
     createIssue.mutate({
       companyId: effectiveCompanyId,
       title: title.trim(),
@@ -557,7 +605,8 @@ export function NewIssueDialog() {
       status,
       priority: priority || "medium",
       workMode,
-      ...(assigneeId ? { assigneeAgentId: assigneeId } : {}),
+      ...assigneePatch,
+      ...(canAssignTasks && responsibleUserId ? { responsibleUserId } : {}),
       ...(projectId ? { projectId } : {}),
       ...(assigneeAdapterOverrides ? { assigneeAdapterOverrides } : {}),
       ...(executionEnvironmentId ? { executionEnvironmentId } : {}),
@@ -595,7 +644,13 @@ export function NewIssueDialog() {
   const hasDraft = title.trim().length > 0 || description.trim().length > 0;
   const currentStatus = statuses.find((s) => s.value === status) ?? statuses[1]!;
   const currentPriority = priorities.find((p) => p.value === priority);
-  const currentAssignee = (agents ?? []).find((a) => a.id === assigneeId);
+  const currentAssignee = selectedAssigneeAgentId
+    ? (agents ?? []).find((a) => a.id === selectedAssigneeAgentId)
+    : null;
+  const currentHumanAssignee = parsedAssignee.kind === "user"
+    ? (teamSummary?.members ?? []).find((member) => member.userId === parsedAssignee.id)
+    : null;
+  const currentResponsibleHuman = (teamSummary?.members ?? []).find((member) => member.userId === responsibleUserId);
   const currentProject = selectedProject;
   const workspaceModeLabel =
     taskWorkspaceMode === "shared_workspace"
@@ -629,16 +684,32 @@ export function NewIssueDialog() {
       : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
   const recentAssigneeIds = useMemo(() => getRecentAssigneeIds(), [newIssueOpen]);
   const assigneeOptions = useMemo<InlineEntityOption[]>(
-    () =>
-      sortAgentsByRecency(
+    () => {
+      const agentOptions = sortAgentsByRecency(
         (agents ?? []).filter((agent) => agent.status !== "terminated"),
         recentAssigneeIds,
       ).map((agent) => ({
-        id: agent.id,
+        id: formatTaskAssigneeValue("agent", agent.id),
         label: agent.name,
-        searchText: `${agent.name} ${agent.role} ${agent.title ?? ""}`,
+        searchText: `${agent.name} ${agent.role} ${agent.title ?? ""} agent`,
+      }));
+      const humanOptions = (teamSummary?.members ?? []).map((member) => ({
+        id: formatTaskAssigneeValue("user", member.userId),
+        label: member.displayName ?? member.email ?? member.userId.slice(0, 8),
+        searchText: `${member.displayName ?? ""} ${member.email ?? ""} ${member.title ?? ""} ${member.role} human`,
+      }));
+      return [...agentOptions, ...humanOptions];
+    },
+    [agents, recentAssigneeIds, teamSummary?.members],
+  );
+  const responsibleHumanOptions = useMemo<InlineEntityOption[]>(
+    () =>
+      (teamSummary?.members ?? []).map((member) => ({
+        id: member.userId,
+        label: member.displayName ?? member.email ?? member.userId.slice(0, 8),
+        searchText: `${member.displayName ?? ""} ${member.email ?? ""} ${member.title ?? ""} ${member.role}`,
       })),
-    [agents, recentAssigneeIds],
+    [teamSummary?.members],
   );
   const projectOptions = useMemo<InlineEntityOption[]>(
     () =>
@@ -810,10 +881,10 @@ export function NewIssueDialog() {
           <div className="overflow-x-auto overscroll-x-contain">
             <div className="inline-flex items-center gap-2 text-sm text-muted-foreground flex-wrap sm:flex-nowrap sm:min-w-max">
               <span>For</span>
-              {permissions.canAssignTasks ? (
+              {canAssignTasks ? (
                 <InlineEntitySelector
                   ref={assigneeSelectorRef}
-                  value={assigneeId}
+                  value={assigneeValue}
                   options={assigneeOptions}
                   placeholder="Assignee"
                   disablePortal
@@ -821,17 +892,22 @@ export function NewIssueDialog() {
                   searchPlaceholder="Search assignees..."
                   emptyMessage="No assignees found."
                   onChange={(id) => {
-                    if (id) trackRecentAssignee(id);
-                    setAssigneeId(id);
+                    const parsed = parseTaskAssigneeValue(id);
+                    if (parsed.kind === "agent") trackRecentAssignee(parsed.id);
+                    setAssigneeValue(id);
                     clearFieldError("assigneeAgentId");
                   }}
                   onConfirm={() => {
-                    projectSelectorRef.current?.focus();
+                    responsibleSelectorRef.current?.focus();
                   }}
                   renderTriggerValue={(option) =>
-                    option && currentAssignee ? (
+                    option && (currentAssignee || currentHumanAssignee) ? (
                       <>
-                        <AgentIcon icon={currentAssignee.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        {currentAssignee ? (
+                          <AgentIcon icon={currentAssignee.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        ) : (
+                          <User className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        )}
                         <span className="truncate">{option.label}</span>
                       </>
                     ) : (
@@ -840,10 +916,17 @@ export function NewIssueDialog() {
                   }
                   renderOption={(option) => {
                     if (!option.id) return <span className="truncate">{option.label}</span>;
-                    const assignee = (agents ?? []).find((agent) => agent.id === option.id);
+                    const parsed = parseTaskAssigneeValue(option.id);
+                    const assignee = parsed.kind === "agent"
+                      ? (agents ?? []).find((agent) => agent.id === parsed.id)
+                      : null;
                     return (
                       <>
-                        <AgentIcon icon={assignee?.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        {parsed.kind === "agent" ? (
+                          <AgentIcon icon={assignee?.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        ) : (
+                          <User className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        )}
                         <span className="truncate">{option.label}</span>
                       </>
                     );
@@ -853,6 +936,44 @@ export function NewIssueDialog() {
                 <span className="rounded-md border border-border bg-muted/40 px-2 py-1 text-muted-foreground">
                   No assignment access
                 </span>
+              )}
+              {canAssignTasks && (
+                <>
+                  <span>responsible</span>
+                  <InlineEntitySelector
+                    ref={responsibleSelectorRef}
+                    value={responsibleUserId}
+                    options={responsibleHumanOptions}
+                    placeholder="Responsible human"
+                    disablePortal
+                    noneLabel="No responsible human"
+                    searchPlaceholder="Search humans..."
+                    emptyMessage="No humans found."
+                    onChange={setResponsibleUserId}
+                    onConfirm={() => {
+                      projectSelectorRef.current?.focus();
+                    }}
+                    renderTriggerValue={(option) =>
+                      option && currentResponsibleHuman ? (
+                        <>
+                          <User className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                          <span className="truncate">{option.label}</span>
+                        </>
+                      ) : (
+                        <span className="text-muted-foreground">Responsible human</span>
+                      )
+                    }
+                    renderOption={(option) => {
+                      if (!option.id) return <span className="truncate">{option.label}</span>;
+                      return (
+                        <>
+                          <User className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                          <span className="truncate">{option.label}</span>
+                        </>
+                      );
+                    }}
+                  />
+                </>
               )}
               <span>in</span>
               <InlineEntitySelector
