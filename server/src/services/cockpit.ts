@@ -47,7 +47,6 @@ import {
   joinRequests,
   notifications,
   userEntityPins,
-  userNotes,
   userRoles,
 } from "@armyofagents/db";
 import type {
@@ -66,6 +65,7 @@ import type {
 import { issueService } from "./issues.js";
 import { threadService } from "./threads.js";
 import { hubItemsService } from "./hub-items.js";
+import { userNotesService } from "./user-notes.js";
 import { memoryService } from "./memory.js";
 import { liveRunsForCompany } from "../routes/agents-live-runs.js";
 import { resolveCockpitScope, reviewFilterFor } from "./cockpit-scope.js";
@@ -680,6 +680,7 @@ export function cockpitService(db: Db) {
       const issueSvc = issueService(db);
       const threadSvc = threadService(db);
       const hubSvc = hubItemsService(db);
+      const notesSvc = userNotesService(db);
 
       // Build the threadService Actor from scope (canonical visibility — Codex #3).
       const threadActor = {
@@ -783,24 +784,7 @@ export function cockpitService(db: Db) {
             ),
 
           // 4c. Sticky notes: private human scratchpad for this user.
-          db
-            .select({
-              id: userNotes.id,
-              title: userNotes.title,
-              body: userNotes.body,
-              color: userNotes.color,
-              updatedAt: userNotes.updatedAt,
-            })
-            .from(userNotes)
-            .where(
-              and(
-                eq(userNotes.companyId, companyId),
-                eq(userNotes.userId, scope.userId),
-                isNull(userNotes.archivedAt),
-              ),
-            )
-            .orderBy(desc(userNotes.updatedAt))
-            .limit(5),
+          notesSvc.list(companyId, scope.userId),
 
           // 4d. Inbox: same RBAC-scoped hot set as the Inbox Hub.
           hubSvc.query(companyId, {
@@ -875,7 +859,7 @@ export function cockpitService(db: Db) {
         triggerAt: r.triggerAt.toISOString(),
       }));
       const dueTasks = dueTodayRows.map(toTaskItem);
-      const stickyNotes: CockpitNoteItem[] = stickyNoteRows.map((note) => ({
+      const stickyNotes: CockpitNoteItem[] = stickyNoteRows.slice(0, 5).map((note) => ({
         id: note.id,
         title: note.title,
         body: note.body,

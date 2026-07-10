@@ -22,6 +22,8 @@ const mockIssueServiceList = vi.hoisted(() => vi.fn());
 const mockThreadServiceList = vi.hoisted(() => vi.fn());
 const mockLiveRunsForCompany = vi.hoisted(() => vi.fn());
 const mockMemoryServiceListPending = vi.hoisted(() => vi.fn());
+const mockUserNotesList = vi.hoisted(() => vi.fn());
+const mockHubItemsQuery = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/cockpit-scope.js", () => ({
   resolveCockpitScope: mockResolveCockpitScope,
@@ -42,6 +44,14 @@ vi.mock("../routes/agents-live-runs.js", () => ({
 
 vi.mock("../services/memory.js", () => ({
   memoryService: () => ({ listPending: mockMemoryServiceListPending }),
+}));
+
+vi.mock("../services/user-notes.js", () => ({
+  userNotesService: () => ({ list: mockUserNotesList }),
+}));
+
+vi.mock("../services/hub-items.js", () => ({
+  hubItemsService: () => ({ query: mockHubItemsQuery }),
 }));
 
 // ── DB stub ───────────────────────────────────────────────────────────────────
@@ -135,6 +145,8 @@ beforeEach(() => {
     archives: [],
     totalCount: 0,
   });
+  mockUserNotesList.mockResolvedValue([]);
+  mockHubItemsQuery.mockResolvedValue({ items: [], nextCursor: null });
 });
 
 // ── goalsAtRisk ────────────────────────────────────────────────────────────────
