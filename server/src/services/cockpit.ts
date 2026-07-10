@@ -52,6 +52,7 @@ import {
 import type {
   CockpitApprovalItem,
   CockpitBudgetPulseItem,
+  CockpitCounts,
   CockpitData,
   CockpitDoneTodayItem,
   CockpitGoalsAtRiskItem,
@@ -60,19 +61,28 @@ import type {
   CockpitPinnedItem,
   CockpitProactiveItem,
   CockpitTaskItem,
+  CockpitTaskBucket,
+  CockpitTaskBucketResponse,
   CockpitTeammatesActivityItem,
 } from "@armyofagents/shared";
-import { issueService } from "./issues.js";
 import { threadService } from "./threads.js";
 import { hubItemsService } from "./hub-items.js";
 import { userNotesService } from "./user-notes.js";
 import { memoryService } from "./memory.js";
 import { liveRunsForCompany } from "../routes/agents-live-runs.js";
-import { resolveCockpitScope, reviewFilterFor } from "./cockpit-scope.js";
+import { resolveCockpitScope } from "./cockpit-scope.js";
 import type { ActorLike, CockpitScope } from "./cockpit-scope.js";
+import { cockpitWorkService } from "./cockpit-work.js";
 
-// Terminal statuses excluded from active task lists.
-const TERMINAL_STATUSES = new Set(["done", "cancelled"]);
+function settledValue<T>(result: PromiseSettledResult<T>, fallback: T): T {
+  return result.status === "fulfilled" ? result.value : fallback;
+}
+
+function sliceStatus(result: PromiseSettledResult<unknown>) {
+  return result.status === "fulfilled"
+    ? ({ status: "ok" } as const)
+    : ({ status: "error", errorCode: "unavailable" } as const);
+}
 
 /** End-of-today (23:59:59.999 local time on the server). */
 function endOfToday(): Date {
@@ -103,8 +113,11 @@ function toTaskItem(row: {
   identifier?: string | null;
   title: string;
   status: string;
+  priority?: string;
   assigneeUserId?: string | null;
   assigneeAgentId?: string | null;
+  responsibleUserId?: string | null;
+  reviewerUserId?: string | null;
   dueDate?: Date | null;
 }): CockpitTaskItem {
   return {
@@ -112,8 +125,11 @@ function toTaskItem(row: {
     identifier: row.identifier ?? null,
     title: row.title,
     status: row.status,
+    priority: row.priority ?? "medium",
     assigneeUserId: row.assigneeUserId ?? null,
     assigneeAgentId: row.assigneeAgentId ?? null,
+    responsibleUserId: row.responsibleUserId ?? null,
+    reviewerUserId: row.reviewerUserId ?? null,
     dueDate: row.dueDate ? row.dueDate.toISOString() : null,
   };
 }
@@ -677,7 +693,7 @@ export function cockpitService(db: Db) {
   return {
     async get(companyId: string, actor: ActorLike): Promise<CockpitData> {
       const scope = await resolveCockpitScope(db, companyId, actor);
-      const issueSvc = issueService(db);
+      const workSvc = cockpitWorkService(db);
       const threadSvc = threadService(db);
       const hubSvc = hubItemsService(db);
       const notesSvc = userNotesService(db);
@@ -691,8 +707,8 @@ export function cockpitService(db: Db) {
 
       const eod = endOfToday();
 
-      const [runRows, reviewRows, myTaskRows, remindersRows, dueTodayRows, stickyNoteRows, inboxResult, visibleThreads, approvalsItems, pinnedItems, goalsAtRiskItems, budgetPulseItem, doneTodayItems, proactiveFindingsItems, teammatesActivityItems] =
-        await Promise.all([
+      const [runResult, workSummaryResult, remindersResult, dueTodayResult, stickyNotesResult, inboxResult, visibleThreadsResult, approvalsResult, pinnedResult, goalsAtRiskResult, budgetPulseResult, doneTodayResult, proactiveFindingsResult, teammatesActivityResult] =
+        await Promise.allSettled([
           // ── 1. Running ────────────────────────────────────────────────────
           // Company-wide live runs (heartbeat + crew internal_agent runs).
           // Per-user scoping for crew is a 3c refinement (note in plan §13).
@@ -701,49 +717,11 @@ export function cockpitService(db: Db) {
           // ── 2. Review ────────────────────────────────────────────────────
           // taskScope:"all" is REQUIRED (Codex #2) — default "org" scope
           // hides crew agent tasks via notCrewAssigned; Review IS crew work.
-          (async () => {
-            const filter = reviewFilterFor(scope);
-            if ("projectIds" in filter) {
-              // team_lead: loop per dept, dedupe by id (bounded N = dept count).
-              const perDeptResults = await Promise.all(
-                filter.projectIds.map((pid) =>
-                  issueSvc.list(companyId, {
-                    status: "in_review",
-                    taskScope: "all",
-                    projectId: pid,
-                  }),
-                ),
-              );
-              // Flatten + dedupe by issue id.
-              const seen = new Set<string>();
-              return perDeptResults.flat().filter((row) => {
-                if (seen.has(row.id)) return false;
-                seen.add(row.id);
-                return true;
-              });
-            }
-            if ("assigneeUserId" in filter) {
-              // member: own assigned in-review tasks only (no cross-dept leak).
-              return issueSvc.list(companyId, {
-                status: "in_review",
-                taskScope: "all",
-                assigneeUserId: filter.assigneeUserId,
-              });
-            }
-            // founder: all in_review tasks.
-            return issueSvc.list(companyId, {
-              status: "in_review",
-              taskScope: "all",
-            });
-          })(),
+          workSvc.summary(companyId, scope.userId),
 
           // ── 3. My Tasks ───────────────────────────────────────────────────
           // The human's own assigned tasks, excluding terminal ones.
           // Default org-scope is correct — My tasks = the human's own tasks.
-          issueSvc.list(companyId, {
-            assigneeUserId: scope.userId,
-          }),
-
           // ── 4a. Today: pending reminders for this user ────────────────────
           db
             .select({
@@ -768,8 +746,11 @@ export function cockpitService(db: Db) {
               identifier: issues.identifier,
               title: issues.title,
               status: issues.status,
+              priority: issues.priority,
               assigneeUserId: issues.assigneeUserId,
               assigneeAgentId: issues.assigneeAgentId,
+              responsibleUserId: issues.responsibleUserId,
+              reviewerUserId: issues.reviewerUserId,
               dueDate: issues.dueDate,
             })
             .from(issues)
@@ -821,6 +802,43 @@ export function cockpitService(db: Db) {
           cockpitTeammatesActivity(db, companyId, scope),
         ]);
 
+      const emptyWorkSummary = {
+        activeWork: {
+          mine: { items: [], total: 0, nextCursor: null },
+          managed: { items: [], total: 0, nextCursor: null },
+        },
+        awaitingReview: { items: [], total: 0, nextCursor: null },
+      };
+      const runRows = settledValue(runResult, []);
+      const workSummary = settledValue(workSummaryResult, emptyWorkSummary);
+      const remindersRows = settledValue(remindersResult, []);
+      const dueTodayRows = settledValue(dueTodayResult, []);
+      const stickyNoteRows = settledValue(stickyNotesResult, []);
+      const visibleThreads = settledValue(visibleThreadsResult, []);
+      const approvalsItems = settledValue(approvalsResult, []);
+      const pinnedItems = settledValue(pinnedResult, []);
+      const goalsAtRiskItems = settledValue(goalsAtRiskResult, []);
+      const budgetPulseItem = settledValue(budgetPulseResult, null);
+      const doneTodayItems = settledValue(doneTodayResult, []);
+      const proactiveFindingsItems = settledValue(proactiveFindingsResult, []);
+      const teammatesActivityItems = settledValue(teammatesActivityResult, []);
+      const slices = {
+        running: sliceStatus(runResult),
+        work: sliceStatus(workSummaryResult),
+        todayReminders: sliceStatus(remindersResult),
+        todayTasks: sliceStatus(dueTodayResult),
+        stickyNotes: sliceStatus(stickyNotesResult),
+        inbox: sliceStatus(inboxResult),
+        discussions: sliceStatus(visibleThreadsResult),
+        approvals: sliceStatus(approvalsResult),
+        pinned: sliceStatus(pinnedResult),
+        goalsAtRisk: sliceStatus(goalsAtRiskResult),
+        budgetPulse: sliceStatus(budgetPulseResult),
+        doneToday: sliceStatus(doneTodayResult),
+        proactiveFindings: sliceStatus(proactiveFindingsResult),
+        teammatesActivity: sliceStatus(teammatesActivityResult),
+      };
+
       // ── Map running ───────────────────────────────────────────────────────
       const running = (
         runRows as Array<{
@@ -845,12 +863,10 @@ export function cockpitService(db: Db) {
       }));
 
       // ── Map review ────────────────────────────────────────────────────────
-      const review = reviewRows.map(toTaskItem);
+      const review = workSummary.awaitingReview.items;
 
       // ── Map myTasks (exclude terminal) ───────────────────────────────────
-      const myTasks = myTaskRows
-        .filter((r) => !TERMINAL_STATUSES.has(r.status))
-        .map(toTaskItem);
+      const myTasks = workSummary.activeWork.mine.items;
 
       // ── Map today ────────────────────────────────────────────────────────
       const reminders = remindersRows.map((r) => ({
@@ -866,7 +882,8 @@ export function cockpitService(db: Db) {
         color: note.color as CockpitNoteItem["color"],
         updatedAt: note.updatedAt,
       }));
-      const inbox: CockpitInboxItem[] = inboxResult.items.map((item) => ({
+      const inboxRows = inboxResult.status === "fulfilled" ? inboxResult.value.items : [];
+      const inbox: CockpitInboxItem[] = inboxRows.map((item) => ({
         id: item.id,
         lane: item.lane,
         priority: item.priority as CockpitInboxItem["priority"],
@@ -894,16 +911,20 @@ export function cockpitService(db: Db) {
 
       // Batch query: find any visible thread with a pending/failed entry.
       if (visibleIds.length > 0) {
-        const entryRows = await db
-          .select({ discussionId: discussionEntries.discussionId })
-          .from(discussionEntries)
-          .where(
-            and(
-              inArray(discussionEntries.discussionId, visibleIds),
-              inArray(discussionEntries.extractionStatus, ["pending", "failed"]),
-            ),
-          );
-        for (const e of entryRows) needsMeIds.add(e.discussionId);
+        try {
+          const entryRows = await db
+            .select({ discussionId: discussionEntries.discussionId })
+            .from(discussionEntries)
+            .where(
+              and(
+                inArray(discussionEntries.discussionId, visibleIds),
+                inArray(discussionEntries.extractionStatus, ["pending", "failed"]),
+              ),
+            );
+          for (const e of entryRows) needsMeIds.add(e.discussionId);
+        } catch {
+          slices.discussions = { status: "error", errorCode: "unavailable" };
+        }
       }
 
       const threadById = new Map(visibleThreads.map((t) => [t.id, t]));
@@ -938,6 +959,13 @@ export function cockpitService(db: Db) {
       const discussionItems = [...highSignalItems, ...recentItems].slice(0, 5);
 
       return {
+        activeWork: workSummary.activeWork,
+        awaitingReview: workSummary.awaitingReview,
+        meta: {
+          generatedAt: new Date().toISOString(),
+          partial: Object.values(slices).some((slice) => slice.status === "error"),
+          slices,
+        },
         running,
         review,
         myTasks,
@@ -952,6 +980,53 @@ export function cockpitService(db: Db) {
         doneToday: doneTodayItems,
         proactiveFindings: proactiveFindingsItems,
         teammatesActivity: teammatesActivityItems,
+      };
+    },
+
+    async listTasks(
+      companyId: string,
+      actor: ActorLike,
+      bucket: CockpitTaskBucket,
+      options: { limit?: number; cursor?: string } = {},
+    ): Promise<CockpitTaskBucketResponse> {
+      const scope = await resolveCockpitScope(db, companyId, actor);
+      return cockpitWorkService(db).listBucket(
+        companyId,
+        scope.userId,
+        bucket,
+        options.limit,
+        options.cursor,
+      );
+    },
+
+    async getCounts(companyId: string, actor: ActorLike): Promise<CockpitCounts> {
+      const scope = await resolveCockpitScope(db, companyId, actor);
+      const threadActor = { userId: scope.userId, role: scope.role, isHuman: true };
+      const [workSummary, runRows, inboxResult, visibleThreads, approvalsItems] = await Promise.all([
+        cockpitWorkService(db).summary(companyId, scope.userId),
+        liveRunsForCompany(db, companyId),
+        hubItemsService(db).query(companyId, {
+          actorUserId: scope.userId,
+          role: scope.role,
+          groupMode: "none",
+          limit: 1,
+        }),
+        threadService(db).list(companyId, threadActor),
+        cockpitApprovals(db, companyId, scope),
+      ]);
+
+      return {
+        activeWorkMine: workSummary.activeWork.mine.total,
+        activeWorkManaged: workSummary.activeWork.managed.total,
+        awaitingReview: workSummary.awaitingReview.total,
+        running: runRows.filter((run) => {
+          if (!run || typeof run !== "object" || !("status" in run)) return false;
+          return run.status === "running" || run.status === "queued";
+        }).length,
+        inbox: inboxResult.totalKnown ?? inboxResult.items.length,
+        approvals: approvalsItems.length,
+        discussions: visibleThreads.filter((thread) => thread.status !== "archived").length,
+        generatedAt: new Date().toISOString(),
       };
     },
   };

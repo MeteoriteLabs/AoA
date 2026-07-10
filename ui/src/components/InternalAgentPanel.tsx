@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertCircle,
@@ -38,6 +38,11 @@ import {
 import { queryKeys } from "../lib/queryKeys";
 import { cn, relativeTime } from "../lib/utils";
 import { COMMANDER_PANEL_CARD } from "./commander/commanderChrome";
+import {
+  commanderPaneReducer,
+  initialCommanderPaneState,
+  type CommanderDiscussionSelection,
+} from "./commander/commanderPaneModel";
 import { Button } from "@/components/ui/button";
 import { MarkdownBody } from "./MarkdownBody";
 import {
@@ -57,6 +62,7 @@ import { useCommanderCockpitCollapsed } from "./commander/useCommanderCockpitCol
 import { CommanderCockpitPanel } from "./commander/cockpit/CommanderCockpitPanel";
 import { TaskSlideOver } from "./TaskSlideOver";
 import { ThreadDetail } from "../pages/ThreadDetail";
+import type { ThreadOpenRequest } from "./threads/threadViewerModel";
 import {
   CommanderViewerPanel,
   CommanderViewerDetail,
@@ -170,22 +176,50 @@ export function openCommanderInputRef(
   }
 }
 
-interface CommanderDiscussionSelection {
-  id: string;
-  title: string;
+export function discussionDraftStorageKey(companyId: string, discussionId: string) {
+  return `aoa:commander:discussion-draft:${companyId}:${discussionId}`;
 }
 
 function CommanderDiscussionPane({
   companyId,
   discussion,
   onClose,
+  onOpenRequest,
   mobile = false,
 }: {
   companyId: string;
   discussion: CommanderDiscussionSelection;
   onClose: () => void;
+  onOpenRequest: (request: ThreadOpenRequest) => void;
   mobile?: boolean;
 }) {
+  const draftKey = discussionDraftStorageKey(companyId, discussion.id);
+  const [draftText, setDraftText] = useState(() => {
+    try {
+      return sessionStorage.getItem(draftKey) ?? "";
+    } catch {
+      return "";
+    }
+  });
+
+  useEffect(() => {
+    try {
+      setDraftText(sessionStorage.getItem(draftKey) ?? "");
+    } catch {
+      setDraftText("");
+    }
+  }, [draftKey]);
+
+  const updateDraftText = useCallback((text: string) => {
+    setDraftText(text);
+    try {
+      if (text) sessionStorage.setItem(draftKey, text);
+      else sessionStorage.removeItem(draftKey);
+    } catch {
+      // Keep the in-memory draft when storage is unavailable.
+    }
+  }, [draftKey]);
+
   const content = (
     <div className="flex h-full min-h-0 min-w-0 flex-col gap-2" data-testid="commander-discussion-pane">
       <div className="flex h-9 shrink-0 items-center justify-between border-b border-border px-2">
@@ -201,7 +235,14 @@ function CommanderDiscussionPane({
         </button>
       </div>
       <div className="min-h-0 flex-1">
-        <ThreadDetail discussionId={discussion.id} companyId={companyId} embedded />
+        <ThreadDetail
+          discussionId={discussion.id}
+          companyId={companyId}
+          embedded
+          onOpenRequest={onOpenRequest}
+          draftText={draftText}
+          onDraftTextChange={updateDraftText}
+        />
       </div>
     </div>
   );
@@ -570,25 +611,27 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
   // Commander Viewer P1: per-conversation tab state + mobile flag. The viewer
   // hook is always called (hooks rules) but the panel only mounts when
   // `enableViewerPanel` is set (full-page Commander route).
-  const { useDrawerSessions, isWide } = useBreakpoint();
+  const { useDrawerSessions, isTablet, isWide } = useBreakpoint();
   const viewer = useCommanderViewer(conversationId ?? null);
   const [taskSlideOverId, setTaskSlideOverId] = useState<string | null>(null);
-  const [discussionPane, setDiscussionPane] = useState<CommanderDiscussionSelection | null>(null);
+  const [paneState, dispatchPane] = useReducer(commanderPaneReducer, initialCommanderPaneState);
+  const discussionPane = paneState.discussion;
 
   // Phase 1: resizable panel geometry + collapse persistence.
   const [viewerCollapsed, setViewerCollapsed] = useCommanderViewerCollapsed();
   const [cockpitCollapsed, setCockpitCollapsed] = useCommanderCockpitCollapsed();
-  const discussionOpenSnapshotRef = useRef<{ sessions: boolean; cockpit: boolean; viewer: boolean } | null>(null);
+  const [tabletCockpitOpen, setTabletCockpitOpen] = useState(false);
+  const discussionDetailOpen = discussionPane !== null && paneState.nestedDetailOpen;
   // Phase 1 (panel-redesign): cockpit is now a width-div sibling — NOT in the Group.
   // panelIds only covers the center Group panels: chat + optionally viewer.
   // Key uses "-v2" suffix to avoid restoring stale 3-panel geometry from old sessions.
   const panelIds = useMemo(
     () => [
-      "commander-chat",
+      ...(discussionDetailOpen ? [] : ["commander-chat"]),
       ...(discussionPane ? ["commander-discussion"] : []),
       ...(viewerCollapsed ? [] : ["commander-detail"]),
     ],
-    [discussionPane, viewerCollapsed],
+    [discussionDetailOpen, discussionPane, viewerCollapsed],
   );
   const { defaultLayout, onLayoutChanged } = useDefaultLayout({
     id: "aoa:commander:panel-sizes-v2",
@@ -618,6 +661,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
     // Expand the viewer
     setViewerCollapsed(false);
     viewer.expand();
+    if (discussionPane) dispatchPane({ type: "open_nested_detail" });
 
     // Always collapse sessions
     onSetSessionsCollapsed?.(true);
@@ -625,13 +669,15 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
     // Collapse cockpit: always for "center"; also for "right-panel" when not ultrawide
     if (source === "center" || !isWide) {
       setCockpitCollapsed(true);
+      setTabletCockpitOpen(false);
     }
-  }, [sessionsCollapsed, cockpitCollapsed, setViewerCollapsed, viewer, onSetSessionsCollapsed, setCockpitCollapsed, isWide]);
+  }, [sessionsCollapsed, cockpitCollapsed, setViewerCollapsed, viewer, discussionPane, onSetSessionsCollapsed, setCockpitCollapsed, isWide]);
 
   // closePreview(): collapse viewer, restore sessions + cockpit to pre-open state.
   const closePreview = useCallback(() => {
     setViewerCollapsed(true);
     viewer.collapse();
+    dispatchPane({ type: "close_nested_detail" });
 
     if (preOpenSnapshotRef.current !== null) {
       const { sessions, cockpit } = preOpenSnapshotRef.current;
@@ -646,37 +692,80 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
   }, []);
 
   const openDiscussionPane = useCallback((discussionId: string, title: string) => {
-    if (!discussionPane) {
-      discussionOpenSnapshotRef.current = {
-        sessions: sessionsCollapsed ?? true,
-        cockpit: cockpitCollapsed,
-        viewer: viewerCollapsed,
-      };
-    }
-    setDiscussionPane({ id: discussionId, title });
+    dispatchPane({
+      type: "open_discussion",
+      discussion: { id: discussionId, title },
+      snapshot: {
+        sessionsCollapsed: sessionsCollapsed ?? true,
+        cockpitCollapsed,
+        viewerCollapsed,
+      },
+    });
     onSetSessionsCollapsed?.(true);
     setCockpitCollapsed(true);
+    setTabletCockpitOpen(false);
     setViewerCollapsed(true);
     viewer.collapse();
   }, [cockpitCollapsed, discussionPane, onSetSessionsCollapsed, sessionsCollapsed, setCockpitCollapsed, setViewerCollapsed, viewer, viewerCollapsed]);
 
   const closeDiscussionPane = useCallback(() => {
-    setDiscussionPane(null);
-    if (discussionOpenSnapshotRef.current) {
-      onSetSessionsCollapsed?.(discussionOpenSnapshotRef.current.sessions);
-      setCockpitCollapsed(discussionOpenSnapshotRef.current.cockpit);
-      setViewerCollapsed(discussionOpenSnapshotRef.current.viewer);
-      if (!discussionOpenSnapshotRef.current.viewer) viewer.expand();
-      discussionOpenSnapshotRef.current = null;
+    const snapshot = paneState.restoreSnapshot;
+    dispatchPane({ type: "close_discussion" });
+    preOpenSnapshotRef.current = null;
+    if (snapshot) {
+      onSetSessionsCollapsed?.(snapshot.sessionsCollapsed);
+      setCockpitCollapsed(snapshot.cockpitCollapsed);
+      setViewerCollapsed(snapshot.viewerCollapsed);
+      if (!snapshot.viewerCollapsed) viewer.expand();
     }
-  }, [onSetSessionsCollapsed, setCockpitCollapsed, setViewerCollapsed, viewer]);
+  }, [onSetSessionsCollapsed, paneState.restoreSnapshot, setCockpitCollapsed, setViewerCollapsed, viewer]);
+
+  const openDiscussionRequest = useCallback((request: ThreadOpenRequest) => {
+    switch (request.kind) {
+      case "task":
+      case "task_output":
+        openTaskSlideOver(request.issueId);
+        return;
+      case "artifact":
+        openPreview("right-panel");
+        viewer.openRef({
+          v: 1,
+          kind: "artifact",
+          id: request.artifactId,
+          versionId: request.versionId ?? null,
+          title: request.title,
+          action: "referenced",
+        });
+        return;
+      case "browser":
+        openPreview("right-panel");
+        viewer.openBrowser(request.url);
+        return;
+      case "memory":
+      case "scope_item":
+      case "asset":
+      case "map":
+        if (discussionPane) navigate(`/discussions/${discussionPane.id}`);
+        return;
+    }
+  }, [discussionPane, navigate, openPreview, openTaskSlideOver, viewer]);
 
   // Lightweight helpers still used for cockpit expand/collapse buttons (unchanged UX).
   const expandCockpit = useCallback(() => {
+    if (isTablet) {
+      setTabletCockpitOpen(true);
+      return;
+    }
     setCockpitCollapsed(false);
     if (!isWide) setViewerCollapsed(true);
-  }, [setCockpitCollapsed, setViewerCollapsed, isWide]);
-  const collapseCockpit = useCallback(() => setCockpitCollapsed(true), [setCockpitCollapsed]);
+  }, [isTablet, setCockpitCollapsed, setViewerCollapsed, isWide]);
+  const collapseCockpit = useCallback(() => {
+    if (isTablet) {
+      setTabletCockpitOpen(false);
+      return;
+    }
+    setCockpitCollapsed(true);
+  }, [isTablet, setCockpitCollapsed]);
 
   // Stable ref to openPreview for use inside stale SSE closures (onLiveRef).
   // The sendText / handleSSEEvent callbacks are memoized and capture viewer + other
@@ -1811,6 +1900,27 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
     </div>
   );
 
+  const renderCockpitPanel = (collapsed: boolean) => (
+    <CommanderCockpitPanel
+      companyId={companyId!}
+      conversationId={conversationId}
+      collapsed={collapsed}
+      onExpand={expandCockpit}
+      onCollapse={collapseCockpit}
+      onOpenTask={(issueId) => openTaskSlideOver(issueId)}
+      onAsk={(text) => void sendText(text)}
+      onReference={addInputRef}
+      onOpenInputRef={handleOpenInputRef}
+      onOpenFullPage={(href) => navigate(href)}
+      onOpenArtifact={(id, title) => {
+        openPreview("right-panel");
+        viewer.openRef({ v: 1, kind: "artifact", id, title, action: "referenced" });
+      }}
+      conversationRefs={conversationRefs}
+      onOpenRef={(ref) => { openPreview("right-panel"); viewer.openRef(ref); }}
+    />
+  );
+
   // No viewer panel (docked usage) — unchanged single column.
   if (!enableViewerPanel || !companyId) {
     return <div className="flex h-full min-h-0 flex-row overflow-hidden">{chatColumn}</div>;
@@ -1827,6 +1937,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
             companyId={companyId}
             discussion={discussionPane}
             onClose={closeDiscussionPane}
+            onOpenRequest={openDiscussionRequest}
             mobile
           />
         )}
@@ -1835,6 +1946,29 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
           open={taskSlideOverId !== null}
           onClose={() => setTaskSlideOverId(null)}
         />
+        {isTablet && !tabletCockpitOpen && (
+          <div
+            className={cn("h-full w-[48px] shrink-0 overflow-hidden", COMMANDER_PANEL_CARD)}
+            data-testid="commander-cockpit-container"
+            data-collapsed="true"
+          >
+            {renderCockpitPanel(true)}
+          </div>
+        )}
+        {isTablet && tabletCockpitOpen && (
+          <Sheet open onOpenChange={(open) => { if (!open) collapseCockpit(); }}>
+            <SheetContent
+              side="right"
+              showCloseButton={false}
+              className="w-[min(360px,100vw)] p-0 sm:max-w-[360px]"
+            >
+              <SheetTitle className="sr-only">Cockpit</SheetTitle>
+              <div className="h-full min-h-0 overflow-hidden">
+                {renderCockpitPanel(false)}
+              </div>
+            </SheetContent>
+          </Sheet>
+        )}
       </div>
     );
   }
@@ -1857,9 +1991,11 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
         onLayoutChanged={onLayoutChanged}
         data-testid="commander-center-group"
       >
-        <Panel id="commander-chat" minSize="30%" className="flex h-full min-w-0 flex-col">
-          {chatColumn}
-        </Panel>
+        {!discussionDetailOpen && (
+          <Panel id="commander-chat" minSize="30%" className="flex h-full min-w-0 flex-col">
+            {chatColumn}
+          </Panel>
+        )}
         {discussionPane && (
           <>
             <Separator
@@ -1877,6 +2013,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
                 companyId={companyId}
                 discussion={discussionPane}
                 onClose={closeDiscussionPane}
+                onOpenRequest={openDiscussionRequest}
               />
             </Panel>
           </>
@@ -1925,24 +2062,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
         data-testid="commander-cockpit-container"
         data-collapsed={cockpitCollapsed ? "true" : "false"}
       >
-        <CommanderCockpitPanel
-          companyId={companyId}
-          conversationId={conversationId}
-          collapsed={cockpitCollapsed}
-          onExpand={expandCockpit}
-          onCollapse={collapseCockpit}
-          onOpenTask={(issueId) => openTaskSlideOver(issueId)}
-          onAsk={(text) => void sendText(text)}
-          onReference={addInputRef}
-          onOpenInputRef={handleOpenInputRef}
-          onOpenFullPage={(href) => navigate(href)}
-          onOpenArtifact={(id, title) => {
-            openPreview("right-panel");
-            viewer.openRef({ v: 1, kind: "artifact", id, title, action: "referenced" });
-          }}
-          conversationRefs={conversationRefs}
-          onOpenRef={(ref) => { openPreview("right-panel"); viewer.openRef(ref); }}
-        />
+        {renderCockpitPanel(cockpitCollapsed)}
       </div>
       <TaskSlideOver
         issueId={taskSlideOverId}

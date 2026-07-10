@@ -164,6 +164,19 @@ describe("ThreadDetail — embedded, prop-supplied id", () => {
       expect(detailMock).toHaveBeenCalledWith("comp-override", "d1");
     });
   });
+
+  it("does not mount the Discussions-owned viewer for a host-dispatched pane", async () => {
+    renderWithProviders(
+      <ThreadDetail discussionId="d1" companyId="comp-1" embedded onOpenRequest={vi.fn()} />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getAllByText("Prop-hosted Thread").length).toBeGreaterThan(0);
+    });
+    expect(screen.queryByTestId("thread-right-viewer")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("stub-thread-viewer")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("mobile-tab-viewer")).not.toBeInTheDocument();
+  });
 });
 
 describe("ThreadDetail — route mode (no prop)", () => {

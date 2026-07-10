@@ -1110,6 +1110,18 @@ export * from "./notification-preferences.js";
 // Phase 3b/3c/3d: Commander cockpit data contract
 export type {
   CockpitTaskItem,
+  CockpitTaskResponsibilityReason,
+  CockpitTaskResponsibility,
+  CockpitWorkTaskItem,
+  CockpitTaskGroup,
+  CockpitActiveWork,
+  CockpitAwaitingReview,
+  CockpitSliceStatus,
+  CockpitSliceMeta,
+  CockpitMeta,
+  CockpitTaskBucket,
+  CockpitTaskBucketResponse,
+  CockpitCounts,
   CockpitRunItem,
   CockpitReminderItem,
   CockpitNoteItem,

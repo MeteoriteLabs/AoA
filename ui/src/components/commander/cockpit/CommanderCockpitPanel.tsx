@@ -75,6 +75,16 @@ export interface CockpitInteractions {
 // ---------------------------------------------------------------------------
 
 const EMPTY_DATA: CockpitData = {
+  activeWork: {
+    mine: { items: [], total: 0 },
+    managed: { items: [], total: 0 },
+  },
+  awaitingReview: { items: [], total: 0 },
+  meta: {
+    generatedAt: "",
+    partial: false,
+    slices: {},
+  },
   running: [],
   review: [],
   myTasks: [],
@@ -196,26 +206,52 @@ export const COCKPIT_REGISTRY: CockpitCardRenderDef[] = [
   },
   {
     id: "review",
-    title: "Review",
+    title: "Awaiting review",
     defaultOn: true,
     sectionId: "triage",
     icon: CheckCircle,
-    summary: (d) => d.review.length > 0 ? `${d.review.length} in review` : null,
-    isActive: (d) => d.review.length > 0,
-    render: ({ data, onOpenTask, onAsk, onPin, onReference }) => (
-      <CockpitReviewCard items={data.review} onOpenTask={onOpenTask} onAsk={onAsk} onPin={onPin} onReference={onReference} />
+    summary: (d) => {
+      const total = d.awaitingReview?.total ?? d.review.length;
+      return total > 0 ? `${total} awaiting` : null;
+    },
+    isActive: (d) => (d.awaitingReview?.total ?? d.review.length) > 0,
+    render: ({ data, onOpenTask, onAsk, onPin, onReference, onOpenFullPage }) => (
+      <CockpitReviewCard
+        items={data.awaitingReview?.items ?? data.review}
+        total={data.awaitingReview?.total ?? data.review.length}
+        onOpenTask={onOpenTask}
+        onAsk={onAsk}
+        onPin={onPin}
+        onReference={onReference}
+        onViewAll={() => onOpenFullPage?.("/issues?cockpitBucket=awaiting_review")}
+      />
     ),
   },
   {
     id: "myTasks",
-    title: "My tasks",
+    title: "Active work",
     defaultOn: true,
     sectionId: "my_work",
     icon: ClipboardList,
-    summary: (d) => d.myTasks.length > 0 ? `${d.myTasks.length} tasks` : null,
-    isActive: (d) => d.myTasks.length > 0,
-    render: ({ data, onOpenTask, onAsk, onPin, onReference }) => (
-      <CockpitMyTasksCard items={data.myTasks} onOpenTask={onOpenTask} onAsk={onAsk} onPin={onPin} onReference={onReference} />
+    summary: (d) => {
+      const total = d.activeWork
+        ? d.activeWork.mine.total + d.activeWork.managed.total
+        : d.myTasks.length;
+      return total > 0 ? `${total} active` : null;
+    },
+    isActive: (d) => d.activeWork
+      ? d.activeWork.mine.total + d.activeWork.managed.total > 0
+      : d.myTasks.length > 0,
+    render: ({ data, onOpenTask, onAsk, onPin, onReference, onOpenFullPage }) => (
+      <CockpitMyTasksCard
+        items={data.myTasks}
+        activeWork={data.activeWork}
+        onOpenTask={onOpenTask}
+        onAsk={onAsk}
+        onPin={onPin}
+        onReference={onReference}
+        onViewAll={(bucket) => onOpenFullPage?.(`/issues?cockpitBucket=${bucket}`)}
+      />
     ),
   },
   {
@@ -502,12 +538,19 @@ export function CommanderCockpitPanel({
   // ONE batched query. LiveEvents (LiveUpdatesProvider) invalidate this key for
   // instant updates; the modest refetchInterval is a belt-and-suspenders fallback
   // for heartbeat/crew runs between events.
-  const { data } = useQuery({
+  const fullQuery = useQuery({
     queryKey: queryKeys.cockpit(companyId),
     queryFn: () => cockpitApi.get(companyId),
-    enabled: !!companyId,
+    enabled: !!companyId && !collapsed,
     refetchInterval: 8000,
   });
+  const countsQuery = useQuery({
+    queryKey: queryKeys.cockpitCounts(companyId),
+    queryFn: () => cockpitApi.counts(companyId),
+    enabled: !!companyId && collapsed,
+    refetchInterval: 8000,
+  });
+  const { data, isLoading, isError, error, refetch } = fullQuery;
 
   const cockpitData = data ?? EMPTY_DATA;
 
@@ -516,6 +559,14 @@ export function CommanderCockpitPanel({
   const active = Object.fromEntries(
     COCKPIT_REGISTRY.map((c) => [c.id, c.isActive(cockpitData)]),
   );
+  if (collapsed && countsQuery.data) {
+    active.running = countsQuery.data.running > 0;
+    active.inbox = countsQuery.data.inbox > 0;
+    active.review = countsQuery.data.awaitingReview > 0;
+    active.myTasks = countsQuery.data.activeWorkMine + countsQuery.data.activeWorkManaged > 0;
+    active.approvals = countsQuery.data.approvals > 0;
+    active.discussions = countsQuery.data.discussions > 0;
+  }
 
   const visible = selectVisibleCards({
     registry: COCKPIT_REGISTRY,
@@ -607,8 +658,37 @@ export function CommanderCockpitPanel({
 
       <ScrollArea className="min-h-0 min-w-0 flex-1 overflow-hidden" data-testid="commander-cockpit-scroll">
         <div className="w-full min-w-0 space-y-2 overflow-hidden px-2 py-2">
+          {isLoading && (
+            <div className="px-2 py-6 text-center text-xs text-muted-foreground" role="status">
+              Loading cockpit...
+            </div>
+          )}
+
+          {isError && (
+            <div className="space-y-2 rounded border border-destructive/30 px-2 py-3 text-xs" role="alert">
+              <div className="flex items-start gap-2 text-destructive">
+                <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+                <span>{error instanceof Error ? error.message : "Cockpit data could not be loaded."}</span>
+              </div>
+              <button
+                type="button"
+                className="text-xs font-medium text-foreground hover:underline"
+                onClick={() => void refetch()}
+              >
+                Try again
+              </button>
+            </div>
+          )}
+
+          {!isLoading && !isError && cockpitData.meta?.partial && (
+            <div className="flex items-start gap-2 rounded border border-amber-500/30 px-2 py-2 text-xs text-muted-foreground" role="status">
+              <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-amber-500" aria-hidden />
+              <span>Some cockpit sections are temporarily unavailable.</span>
+            </div>
+          )}
+
           {/* Phase 5C: Conversation zone — NOT a registry card; gets its own CockpitSection [B4] */}
-          {conversationRefs.length > 0 && (
+          {!isLoading && !isError && conversationRefs.length > 0 && (
             <CockpitSection
               id="conversation"
               title="In this conversation"
@@ -622,7 +702,7 @@ export function CommanderCockpitPanel({
           )}
 
           {/* Phase 1: Product groups around existing cards; cards stay collapsible. */}
-          {visibleGroups.map((group) => (
+          {!isLoading && !isError && visibleGroups.map((group) => (
             <section
               key={group.section.id}
               data-testid={`cockpit-group-${group.section.id}`}
@@ -663,7 +743,7 @@ export function CommanderCockpitPanel({
             </section>
           ))}
 
-          {visible.length === 0 && conversationRefs.length === 0 && (
+          {!isLoading && !isError && visible.length === 0 && conversationRefs.length === 0 && (
             <div className="flex items-center justify-center p-6 text-center text-xs text-muted-foreground">
               All clear — nothing needs you right now.
             </div>

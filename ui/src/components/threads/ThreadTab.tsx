@@ -49,6 +49,8 @@ export interface ThreadTabProps {
    * each EntryRow so ScopeProposalCard can show the "Scoped" done-state.
    */
   hasScopeDraft?: boolean;
+  draftText?: string;
+  onDraftTextChange?: (text: string) => void;
 }
 
 export function ThreadTab({
@@ -60,6 +62,8 @@ export function ThreadTab({
   onRetry,
   onOpenAttachment,
   hasScopeDraft = false,
+  draftText,
+  onDraftTextChange,
 }: ThreadTabProps) {
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
@@ -471,6 +475,8 @@ export function ThreadTab({
         disabled={isDisconnected || addEntryMutation.isPending}
         canCreateFileArtifacts={canManageArtifacts}
         myInitials={myInitials}
+        draftText={draftText}
+        onDraftTextChange={onDraftTextChange}
         hint={
           isDisconnected
             ? (

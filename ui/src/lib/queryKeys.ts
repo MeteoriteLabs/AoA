@@ -298,6 +298,7 @@ export const queryKeys = {
     detail: (companyId: string, id: string) => ["environments", companyId, id] as const,
   },
   cockpit: (companyId: string) => ["cockpit", companyId] as const,
+  cockpitCounts: (companyId: string) => ["cockpit", companyId, "counts"] as const,
   plugins: {
     all: ["plugins"] as const,
     list: ["plugins", "list"] as const,

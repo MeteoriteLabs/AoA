@@ -92,6 +92,15 @@ vi.mock("../services/hub-items.js", () => ({
   hubItemsService: () => ({ query: mockHubItemsQuery }),
 }));
 
+vi.mock("../services/cockpit-work.js", () => ({
+  cockpitWorkService: () => ({
+    summary: vi.fn().mockResolvedValue({
+      activeWork: { mine: { items: [], total: 0 }, managed: { items: [], total: 0 } },
+      awaitingReview: { items: [], total: 0 },
+    }),
+  }),
+}));
+
 // ── DB stub ───────────────────────────────────────────────────────────────────
 
 // Sequence-based mock db. Select call order documented in the file-level comment.

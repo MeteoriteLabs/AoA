@@ -10,10 +10,16 @@ import type { CockpitData, CommanderOutputRef } from "@armyofagents/shared";
 
 // Mock queryKeys and cockpitApi for the panel test (panel tests come later)
 vi.mock("../../../api/cockpit", () => ({
-  cockpitApi: { get: vi.fn().mockResolvedValue({ running: [], review: [], myTasks: [], today: { reminders: [], dueTasks: [] }, stickyNotes: [], inbox: [], discussions: [], approvals: [], pinned: [], goalsAtRisk: [], budgetPulse: null, doneToday: [], proactiveFindings: [], teammatesActivity: [] } satisfies CockpitData) },
+  cockpitApi: {
+    get: vi.fn().mockResolvedValue({ running: [], review: [], myTasks: [], today: { reminders: [], dueTasks: [] }, stickyNotes: [], inbox: [], discussions: [], approvals: [], pinned: [], goalsAtRisk: [], budgetPulse: null, doneToday: [], proactiveFindings: [], teammatesActivity: [] } satisfies CockpitData),
+    counts: vi.fn().mockResolvedValue({ activeWorkMine: 0, activeWorkManaged: 0, awaitingReview: 0, running: 0, inbox: 0, approvals: 0, discussions: 0, generatedAt: "2026-07-10T00:00:00.000Z" }),
+  },
 }));
 vi.mock("../../../lib/queryKeys", () => ({
-  queryKeys: { cockpit: (id: string) => ["cockpit", id] },
+  queryKeys: {
+    cockpit: (id: string) => ["cockpit", id],
+    cockpitCounts: (id: string) => ["cockpit", id, "counts"],
+  },
 }));
 // Phase 3d: useCockpitPin calls useToast — mock it so panel tests don't need ToastProvider.
 vi.mock("../../../context/ToastContext", () => ({
@@ -40,6 +46,7 @@ import { CockpitDiscussionsCard } from "./CockpitDiscussionsCard";
 
 type RunItem = CockpitData["running"][0];
 type TaskItem = CockpitData["review"][0];
+type WorkTaskItem = NonNullable<CockpitData["activeWork"]>["mine"]["items"][0];
 type ReminderItem = CockpitData["today"]["reminders"][0];
 type DiscussionItem = CockpitData["discussions"][0];
 type NoteItem = CockpitData["stickyNotes"][0];
@@ -58,6 +65,22 @@ function makeTask(overrides?: Partial<TaskItem>): TaskItem {
     assigneeUserId: "u1",
     assigneeAgentId: null,
     dueDate: null,
+    ...overrides,
+  };
+}
+
+function makeWorkTask(overrides?: Partial<WorkTaskItem>): WorkTaskItem {
+  return {
+    ...makeTask(),
+    priority: "high",
+    responsibleUserId: "u1",
+    reviewerUserId: null,
+    responsibility: {
+      reason: "assigned_to_you",
+      entityType: "user",
+      entityId: "u1",
+      label: "Assigned to you",
+    },
     ...overrides,
   };
 }
@@ -271,6 +294,34 @@ describe("CockpitMyTasksCard", () => {
     );
     fireEvent.click(screen.getByText("Write docs"));
     expect(onOpenTask).toHaveBeenCalledWith("t-42", "Write docs");
+  });
+
+  it("renders Mine and Managed as distinct accountable-work groups", () => {
+    render(
+      <CockpitMyTasksCard
+        activeWork={{
+          mine: { items: [makeWorkTask({ id: "mine-1", title: "My launch task" })], total: 1 },
+          managed: {
+            items: [makeWorkTask({
+              id: "managed-1",
+              title: "Agent migration",
+              responsibility: {
+                reason: "managed_agent",
+                entityType: "agent",
+                entityId: "agent-1",
+                label: "Managed: Atlas",
+              },
+            })],
+            total: 4,
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByTestId("cockpit-active-work-mine")).toHaveTextContent("My launch task");
+    expect(screen.getByTestId("cockpit-active-work-managed")).toHaveTextContent("Agent migration");
+    expect(screen.getByText("Managed: Atlas")).toBeInTheDocument();
+    expect(screen.getByTestId("cockpit-active-work-managed")).toHaveTextContent("4");
   });
 });
 

@@ -45,9 +45,79 @@ export interface CockpitTaskItem {
   identifier: string | null;
   title: string;
   status: string;
+  priority?: string;
   assigneeUserId: string | null;
   assigneeAgentId: string | null;
+  responsibleUserId?: string | null;
+  reviewerUserId?: string | null;
   dueDate: string | null;
+  responsibility?: CockpitTaskResponsibility;
+}
+
+export type CockpitTaskResponsibilityReason =
+  | "assigned_to_you"
+  | "you_are_responsible"
+  | "managed_human"
+  | "managed_agent"
+  | "your_review"
+  | "team_review";
+
+export interface CockpitTaskResponsibility {
+  reason: CockpitTaskResponsibilityReason;
+  entityType: "user" | "agent";
+  entityId: string;
+  label: string;
+}
+
+export interface CockpitWorkTaskItem extends CockpitTaskItem {
+  priority: string;
+  responsibleUserId: string | null;
+  reviewerUserId: string | null;
+  responsibility: CockpitTaskResponsibility;
+}
+
+export interface CockpitTaskGroup {
+  items: CockpitWorkTaskItem[];
+  total: number;
+}
+
+export interface CockpitActiveWork {
+  mine: CockpitTaskGroup;
+  managed: CockpitTaskGroup;
+}
+
+export type CockpitAwaitingReview = CockpitTaskGroup;
+
+export type CockpitSliceStatus = "ok" | "error";
+
+export interface CockpitSliceMeta {
+  status: CockpitSliceStatus;
+  errorCode?: string;
+}
+
+export interface CockpitMeta {
+  generatedAt: string;
+  partial: boolean;
+  slices: Record<string, CockpitSliceMeta>;
+}
+
+export type CockpitTaskBucket = "mine" | "managed" | "awaiting_review";
+
+export interface CockpitTaskBucketResponse {
+  items: CockpitWorkTaskItem[];
+  total: number;
+  nextCursor: string | null;
+}
+
+export interface CockpitCounts {
+  activeWorkMine: number;
+  activeWorkManaged: number;
+  awaitingReview: number;
+  running: number;
+  inbox: number;
+  approvals: number;
+  discussions: number;
+  generatedAt: string;
 }
 
 export interface CockpitRunItem {
@@ -96,8 +166,14 @@ export interface CockpitDiscussionItem {
 }
 
 export interface CockpitData {
+  /** V2 accountable-work contract. Optional during the rolling compatibility window. */
+  activeWork?: CockpitActiveWork;
+  awaitingReview?: CockpitAwaitingReview;
+  meta?: CockpitMeta;
   running: CockpitRunItem[];
+  /** @deprecated Compatibility alias for awaitingReview.items. */
   review: CockpitTaskItem[];
+  /** @deprecated Compatibility alias for activeWork.mine.items. */
   myTasks: CockpitTaskItem[];
   today: {
     reminders: CockpitReminderItem[];

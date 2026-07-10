@@ -1,6 +1,8 @@
 import { and, eq } from "drizzle-orm";
 import {
   activityLog,
+  authUsers,
+  companyMemberships,
   costEvents,
   createDb,
   internalAgentReminders,
@@ -41,6 +43,39 @@ async function findOrCreateTask(
 }
 
 const now = new Date();
+const db = createDb(databaseUrl);
+const managedHumanId = "commander-review-human";
+
+await db.insert(authUsers).values({
+  id: managedHumanId,
+  name: "Priya Review",
+  displayName: "Priya Review",
+  email: "priya.commander-review@local.test",
+  emailVerified: true,
+  createdAt: now,
+  updatedAt: now,
+}).onConflictDoNothing();
+await db.insert(companyMemberships).values({
+  companyId,
+  principalType: "user",
+  principalId: managedHumanId,
+  status: "active",
+  membershipRole: "team_member",
+  parentType: "user",
+  parentId: "local-board",
+}).onConflictDoNothing();
+
+const agents = await api<Array<{ id: string; name: string }>>(`/companies/${companyId}/agents`);
+const atlas = agents.find((agent) => agent.name === "Atlas");
+if (!atlas) throw new Error("Commander review company needs the Atlas agent.");
+await api(`/agents/${atlas.id}`, {
+  method: "PATCH",
+  body: JSON.stringify({
+    parentType: "user",
+    parentId: managedHumanId,
+  }),
+});
+
 const dueToday = new Date(now.getTime() + 2 * 60 * 60 * 1000);
 const dueTask = await findOrCreateTask("Today: validate Commander full-spectrum data", {
   description: "Real due-today task for Commander coverage.",
@@ -48,6 +83,47 @@ const dueTask = await findOrCreateTask("Today: validate Commander full-spectrum 
   priority: "high",
   assigneeUserId: "local-board",
   dueDate: dueToday.toISOString(),
+});
+const managedHumanTask = await findOrCreateTask("Managed human: prepare launch checklist", {
+  description: "Reports through Priya and must appear in Active Work > Managed.",
+  status: "in_progress",
+  priority: "high",
+  assigneeUserId: managedHumanId,
+  responsibleUserId: managedHumanId,
+});
+const managedAgentTask = await findOrCreateTask("Managed agent: verify deployment evidence", {
+  description: "Assigned to Atlas under Priya and must appear in Active Work > Managed.",
+  status: "blocked",
+  priority: "critical",
+  assigneeAgentId: atlas.id,
+  responsibleUserId: managedHumanId,
+});
+await findOrCreateTask("Managed human: confirm support handoff", {
+  description: "Additional managed work keeps the cockpit card bounded and exercises View all.",
+  status: "todo",
+  priority: "medium",
+  assigneeUserId: managedHumanId,
+  responsibleUserId: managedHumanId,
+});
+await findOrCreateTask("Managed human: archive launch evidence", {
+  description: "Lower-ranked managed work belongs in the paginated Active Work queue.",
+  status: "backlog",
+  priority: "low",
+  assigneeUserId: managedHumanId,
+  responsibleUserId: managedHumanId,
+});
+const explicitReviewTask = await findOrCreateTask("Your review: approve Commander interaction contract", {
+  description: "Explicit reviewer placement must rank first in Awaiting Review.",
+  status: "in_review",
+  priority: "high",
+  reviewerUserId: "local-board",
+});
+const teamReviewTask = await findOrCreateTask("Team review: validate managed execution", {
+  description: "Hierarchy review work must move out of Active Work.",
+  status: "in_review",
+  priority: "medium",
+  assigneeUserId: managedHumanId,
+  responsibleUserId: managedHumanId,
 });
 await findOrCreateTask("Completed: Commander source audit", {
   description: "A real completed task for the Done today card.",
@@ -115,16 +191,10 @@ if (!approvals.some((item) => item.type === "approve_ceo_strategy" && item.paylo
   });
 }
 
-const agents = await api<Array<{ id: string; name: string }>>(`/companies/${companyId}/agents`);
-const atlas = agents.find((agent) => agent.name === "Atlas");
-if (!atlas) throw new Error("Commander review company needs the Atlas agent.");
-
 await api(`/companies/${companyId}/budgets`, {
   method: "PATCH",
   body: JSON.stringify({ budgetMonthlyCents: 100_000 }),
 });
-
-const db = createDb(databaseUrl);
 
 const existingCost = await db
   .select({ id: costEvents.id })
@@ -220,6 +290,8 @@ await api(`/agents/${atlas.id}`, {
   method: "PATCH",
   body: JSON.stringify({
     adapterType: "process",
+    parentType: "user",
+    parentId: managedHumanId,
     adapterConfig: process.platform === "win32"
       ? { command: "powershell.exe", args: ["-NoProfile", "-Command", "Start-Sleep", "-Seconds", "600"] }
       : { command: "sleep", args: ["600"] },
@@ -240,5 +312,15 @@ if (!activeRuns.some((run) => run.agentId === atlas.id)) {
 }
 
 const cockpit = await api<Record<string, unknown>>(`/companies/${companyId}/cockpit`);
-console.log(JSON.stringify({ companyId, dueTask, goal, artifact, cockpit }, null, 2));
+console.log(JSON.stringify({
+  companyId,
+  dueTask,
+  managedHumanTask,
+  managedAgentTask,
+  explicitReviewTask,
+  teamReviewTask,
+  goal,
+  artifact,
+  cockpit,
+}, null, 2));
 process.exit(0);

@@ -18,10 +18,18 @@ import { errorHandler } from "../middleware/index.js";
 
 // ── Mock cockpitService ───────────────────────────────────────────────────────
 
-const mockGet = vi.hoisted(() => vi.fn());
+const { mockGet, mockListTasks, mockGetCounts } = vi.hoisted(() => ({
+  mockGet: vi.fn(),
+  mockListTasks: vi.fn(),
+  mockGetCounts: vi.fn(),
+}));
 
 vi.mock("../services/cockpit.js", () => ({
-  cockpitService: () => ({ get: mockGet }),
+  cockpitService: () => ({
+    get: mockGet,
+    listTasks: mockListTasks,
+    getCounts: mockGetCounts,
+  }),
 }));
 
 // ── Import route under test (after mocks are set) ────────────────────────────
@@ -76,6 +84,11 @@ function createApp(
 beforeEach(() => {
   vi.clearAllMocks();
   mockGet.mockResolvedValue(COCKPIT_RESPONSE);
+  mockListTasks.mockResolvedValue({ items: [], total: 0, nextCursor: null });
+  mockGetCounts.mockResolvedValue({
+    activeWorkMine: 0,
+    generatedAt: "2026-07-10T00:00:00.000Z",
+  });
 });
 
 describe("GET /companies/:cid/cockpit — board-only guard (Codex #1)", () => {
@@ -165,6 +178,68 @@ describe("GET /companies/:cid/cockpit — assertCompanyAccess", () => {
     expect(mockGet).toHaveBeenCalledWith(
       COMPANY,
       expect.objectContaining({ actorId: "admin-user", isInstanceAdmin: true }),
+    );
+  });
+});
+
+describe("GET /companies/:cid/cockpit/tasks", () => {
+  it("passes a validated bucket, limit, and cursor to the service", async () => {
+    const cursor = Buffer.from(JSON.stringify({
+      attentionRank: 0,
+      urgencyRank: 1,
+      priorityRank: 2,
+      updatedAt: "2026-07-10T00:00:00.000Z",
+      id: "task-1",
+    })).toString("base64url");
+    const res = await request(createApp()).get(
+      `/api/companies/${COMPANY}/cockpit/tasks?bucket=managed&limit=25&cursor=${cursor}`,
+    );
+
+    expect(res.status).toBe(200);
+    expect(mockListTasks).toHaveBeenCalledWith(
+      COMPANY,
+      expect.objectContaining({ actorId: "board-user-1" }),
+      "managed",
+      { limit: 25, cursor },
+    );
+  });
+
+  it.each([
+    "bucket=unknown",
+    "bucket=mine&limit=0",
+    "bucket=mine&limit=101",
+    "bucket=mine&limit=1.5",
+    "bucket=mine&cursor=not-a-cursor",
+  ])("rejects invalid query: %s", async (query) => {
+    const res = await request(createApp()).get(
+      `/api/companies/${COMPANY}/cockpit/tasks?${query}`,
+    );
+    expect(res.status).toBe(400);
+    expect(mockListTasks).not.toHaveBeenCalled();
+  });
+
+  it("applies the board-only guard", async () => {
+    const res = await request(createApp({
+      type: "agent",
+      agentId: "agent-123",
+      companyId: COMPANY,
+      runId: null,
+    })).get(`/api/companies/${COMPANY}/cockpit/tasks?bucket=mine`);
+    expect(res.status).toBe(403);
+    expect(mockListTasks).not.toHaveBeenCalled();
+  });
+});
+
+describe("GET /companies/:cid/cockpit/counts", () => {
+  it("returns the lightweight cockpit counts", async () => {
+    const res = await request(createApp()).get(
+      `/api/companies/${COMPANY}/cockpit/counts`,
+    );
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ activeWorkMine: 0 });
+    expect(mockGetCounts).toHaveBeenCalledWith(
+      COMPANY,
+      expect.objectContaining({ actorId: "board-user-1" }),
     );
   });
 });

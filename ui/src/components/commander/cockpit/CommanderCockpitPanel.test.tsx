@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { CockpitData } from "@armyofagents/shared";
 
@@ -37,6 +37,16 @@ vi.mock("../../../api/cockpit", () => ({
       proactiveFindings: [],
       teammatesActivity: [],
     } satisfies CockpitData),
+    counts: vi.fn().mockResolvedValue({
+      activeWorkMine: 0,
+      activeWorkManaged: 0,
+      awaitingReview: 0,
+      running: 0,
+      inbox: 0,
+      approvals: 0,
+      discussions: 0,
+      generatedAt: "2026-07-10T00:00:00.000Z",
+    }),
   },
 }));
 
@@ -44,6 +54,7 @@ vi.mock("../../../api/cockpit", () => ({
 vi.mock("../../../lib/queryKeys", () => ({
   queryKeys: {
     cockpit: (companyId: string) => ["cockpit", companyId],
+    cockpitCounts: (companyId: string) => ["cockpit", companyId, "counts"],
   },
 }));
 
@@ -102,8 +113,36 @@ function renderPanel(onCollapse = vi.fn()) {
 
 describe("CommanderCockpitPanel", () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     localStorage.clear();
     vi.mocked(cockpitApi.get).mockResolvedValue(makeData());
+    vi.mocked(cockpitApi.counts).mockResolvedValue({
+      activeWorkMine: 0,
+      activeWorkManaged: 0,
+      awaitingReview: 0,
+      running: 0,
+      inbox: 0,
+      approvals: 0,
+      discussions: 0,
+      generatedAt: "2026-07-10T00:00:00.000Z",
+    });
+  });
+
+  it("uses lightweight counts and disables the full query while collapsed", async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <CommanderCockpitPanel
+          companyId="comp-1"
+          collapsed
+          onExpand={vi.fn()}
+          onCollapse={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => expect(cockpitApi.counts).toHaveBeenCalledWith("comp-1"));
+    expect(cockpitApi.get).not.toHaveBeenCalled();
   });
 
   it("renders with data-testid='commander-cockpit-panel'", async () => {
@@ -224,7 +263,7 @@ describe("CommanderCockpitPanel", () => {
     expect(screen.getByTestId("cockpit-config-group-watch")).toBeInTheDocument();
     expect(screen.getByTestId("cockpit-config-group-memory_context")).toBeInTheDocument();
     expect(screen.getByRole("checkbox", { name: /approvals/i })).toBeInTheDocument();
-    expect(screen.getByRole("checkbox", { name: /my tasks/i })).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: /active work/i })).toBeInTheDocument();
   });
 
   it("collapse button calls onCollapse", () => {
@@ -360,7 +399,7 @@ describe("COCKPIT_REGISTRY — Phase 5 icon + summary", () => {
     const data = makeData({
       review: [{ id: "t1", title: "T", status: "in_review", identifier: null, assigneeUserId: null, assigneeAgentId: null, dueDate: null }],
     });
-    expect(reviewEntry.summary(data)).toBe("1 in review");
+    expect(reviewEntry.summary(data)).toBe("1 awaiting");
   });
 
   it("'budgetPulse' summary shows percent", () => {

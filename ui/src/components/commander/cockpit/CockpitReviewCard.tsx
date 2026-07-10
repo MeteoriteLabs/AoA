@@ -26,12 +26,16 @@ export function CockpitReviewCard({
   onAsk,
   onReference,
   onPin,
+  total = items.length,
+  onViewAll,
 }: {
   items: CockpitTaskItem[];
   onOpenTask?: (issueId: string, title: string) => void;
   onAsk?: (text: string) => void;
   onReference?: (ref: CommanderInputRef, suggestedPrompt?: string) => void;
   onPin?: (entityType: CockpitPinnedEntityType, entityId: string) => void;
+  total?: number;
+  onViewAll?: () => void;
 }) {
   if (items.length === 0) return null;
 
@@ -56,6 +60,11 @@ export function CockpitReviewCard({
                 </span>
               )}
               <span className="truncate font-medium">{item.title}</span>
+              {item.responsibility?.label && (
+                <span className="ml-1 text-[10px] text-muted-foreground">
+                  {item.responsibility.label}
+                </span>
+              )}
             </button>
             {onAsk && (
               <button
@@ -85,6 +94,15 @@ export function CockpitReviewCard({
           </li>
         ))}
       </ul>
+      {total > items.length && onViewAll && (
+        <button
+          type="button"
+          className="mt-1 px-1 py-1 text-[10px] font-medium text-brand hover:underline"
+          onClick={onViewAll}
+        >
+          View all Awaiting Review
+        </button>
+      )}
     </div>
   );
 }
