@@ -38,6 +38,8 @@
     "gen:tools:md": "tsx scripts/generate-tools-md.ts",
     "gen:tools:md:check": "tsx scripts/generate-tools-md.ts --check",
     "sync:skills": "tsx scripts/sync-commander-to-skills.ts",
+    "gen:skills": "tsx scripts/generate-aoa-skills-seeder.ts",
+    "gen:skills:check": "tsx scripts/generate-aoa-skills-seeder.ts --check",
     "docs:dev": "cd docs && npx mintlify dev",
     "smoke:openclaw-join": "./scripts/smoke/openclaw-join.sh",
     "smoke:openclaw-docker-ui": "./scripts/smoke/openclaw-docker-ui.sh",
