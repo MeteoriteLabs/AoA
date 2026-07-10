@@ -6,6 +6,7 @@ import {
   internalAgentReminders,
   notifications,
 } from "@armyofagents/db";
+import { hubItemsService } from "../services/hub-items.js";
 
 const apiBase = process.env.AOA_API_BASE ?? "http://127.0.0.1:3100/api";
 const databaseUrl = process.env.DATABASE_URL ?? "postgres://paperclip:paperclip@127.0.0.1:54329/paperclip";
@@ -179,18 +180,17 @@ const existingProactive = await db
   ))
   .limit(1);
 if (existingProactive.length === 0) {
-  await db.insert(notifications).values({
+  await hubItemsService(db).emit({
     companyId,
-    userId: "local-board",
-    type: "internal_agent.proactive",
+    ownerUserId: "local-board",
+    legacyType: "internal_agent.proactive",
     semanticType: "proactive",
     title: proactiveTitle,
-    message: "Validate the dedicated Discussion pane and task slide-over.",
+    summary: "Validate the dedicated Discussion pane and task slide-over.",
     relatedEntityType: "task",
     relatedEntityId: dueTask.id,
     sourceType: "commander_review_seed",
     sourceId: dueTask.id,
-    sourceUniqueKey: `${companyId}:commander_review_seed:${dueTask.id}:proactive`,
   });
 }
 
