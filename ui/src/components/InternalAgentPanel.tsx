@@ -55,6 +55,8 @@ import { Group, Panel, Separator, useDefaultLayout } from "react-resizable-panel
 import { useCommanderViewerCollapsed } from "./commander/useCommanderViewerCollapsed";
 import { useCommanderCockpitCollapsed } from "./commander/useCommanderCockpitCollapsed";
 import { CommanderCockpitPanel } from "./commander/cockpit/CommanderCockpitPanel";
+import { TaskSlideOver } from "./TaskSlideOver";
+import { ThreadDetail } from "../pages/ThreadDetail";
 import {
   CommanderViewerPanel,
   CommanderViewerDetail,
@@ -140,6 +142,7 @@ export function buildCommanderInputRefState(
 export interface CommanderInputRefOpenDeps {
   openPreview: (source: "center" | "right-panel") => void;
   openTask: (issueId: string, title: string) => void;
+  openDiscussion: (discussionId: string, title: string) => void;
   openArtifact: (id: string, title: string) => void;
   openInputRef: (ref: CommanderInputRef) => void;
   navigate: (href: string) => void;
@@ -149,14 +152,15 @@ export function openCommanderInputRef(
   ref: CommanderInputRef,
   deps: CommanderInputRefOpenDeps,
 ): void {
-  if (
-    ref.kind === "task" ||
-    ref.kind === "artifact" ||
-    ref.kind === "discussion" ||
-    ref.kind === "approval" ||
-    ref.kind === "inbox" ||
-    ref.kind === "note"
-  ) {
+  if (ref.kind === "task") {
+    deps.openTask(ref.id, ref.label);
+    return;
+  }
+  if (ref.kind === "discussion") {
+    deps.openDiscussion(ref.id, ref.label);
+    return;
+  }
+  if (ref.kind === "artifact" || ref.kind === "approval" || ref.kind === "inbox" || ref.kind === "note") {
     deps.openPreview("right-panel");
     deps.openInputRef(ref);
     return;
@@ -164,6 +168,54 @@ export function openCommanderInputRef(
   if (ref.route) {
     deps.navigate(ref.route);
   }
+}
+
+interface CommanderDiscussionSelection {
+  id: string;
+  title: string;
+}
+
+function CommanderDiscussionPane({
+  companyId,
+  discussion,
+  onClose,
+  mobile = false,
+}: {
+  companyId: string;
+  discussion: CommanderDiscussionSelection;
+  onClose: () => void;
+  mobile?: boolean;
+}) {
+  const content = (
+    <div className="flex h-full min-h-0 min-w-0 flex-col gap-2" data-testid="commander-discussion-pane">
+      <div className="flex h-9 shrink-0 items-center justify-between border-b border-border px-2">
+        <span className="min-w-0 truncate text-xs font-medium text-muted-foreground">Discussion</span>
+        <button
+          type="button"
+          aria-label={`Close ${discussion.title}`}
+          title="Close discussion"
+          className="flex size-7 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-focus-ring"
+          onClick={onClose}
+        >
+          <X className="size-4" aria-hidden />
+        </button>
+      </div>
+      <div className="min-h-0 flex-1">
+        <ThreadDetail discussionId={discussion.id} companyId={companyId} embedded />
+      </div>
+    </div>
+  );
+
+  if (!mobile) return content;
+
+  return (
+    <Sheet open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <SheetContent side="right" showCloseButton={false} className="w-full max-w-full p-2 sm:max-w-full">
+        <SheetTitle className="sr-only">{discussion.title}</SheetTitle>
+        {content}
+      </SheetContent>
+    </Sheet>
+  );
 }
 
 /* ------------------------------------------------------------------ */
@@ -520,19 +572,23 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
   // `enableViewerPanel` is set (full-page Commander route).
   const { useDrawerSessions, isWide } = useBreakpoint();
   const viewer = useCommanderViewer(conversationId ?? null);
+  const [taskSlideOverId, setTaskSlideOverId] = useState<string | null>(null);
+  const [discussionPane, setDiscussionPane] = useState<CommanderDiscussionSelection | null>(null);
 
   // Phase 1: resizable panel geometry + collapse persistence.
   const [viewerCollapsed, setViewerCollapsed] = useCommanderViewerCollapsed();
   const [cockpitCollapsed, setCockpitCollapsed] = useCommanderCockpitCollapsed();
+  const discussionOpenSnapshotRef = useRef<{ sessions: boolean; cockpit: boolean; viewer: boolean } | null>(null);
   // Phase 1 (panel-redesign): cockpit is now a width-div sibling — NOT in the Group.
   // panelIds only covers the center Group panels: chat + optionally viewer.
   // Key uses "-v2" suffix to avoid restoring stale 3-panel geometry from old sessions.
   const panelIds = useMemo(
     () => [
       "commander-chat",
+      ...(discussionPane ? ["commander-discussion"] : []),
       ...(viewerCollapsed ? [] : ["commander-detail"]),
     ],
-    [viewerCollapsed],
+    [discussionPane, viewerCollapsed],
   );
   const { defaultLayout, onLayoutChanged } = useDefaultLayout({
     id: "aoa:commander:panel-sizes-v2",
@@ -584,6 +640,36 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
       preOpenSnapshotRef.current = null;
     }
   }, [setViewerCollapsed, viewer, onSetSessionsCollapsed, setCockpitCollapsed]);
+
+  const openTaskSlideOver = useCallback((issueId: string) => {
+    setTaskSlideOverId(issueId);
+  }, []);
+
+  const openDiscussionPane = useCallback((discussionId: string, title: string) => {
+    if (!discussionPane) {
+      discussionOpenSnapshotRef.current = {
+        sessions: sessionsCollapsed ?? true,
+        cockpit: cockpitCollapsed,
+        viewer: viewerCollapsed,
+      };
+    }
+    setDiscussionPane({ id: discussionId, title });
+    onSetSessionsCollapsed?.(true);
+    setCockpitCollapsed(true);
+    setViewerCollapsed(true);
+    viewer.collapse();
+  }, [cockpitCollapsed, discussionPane, onSetSessionsCollapsed, sessionsCollapsed, setCockpitCollapsed, setViewerCollapsed, viewer, viewerCollapsed]);
+
+  const closeDiscussionPane = useCallback(() => {
+    setDiscussionPane(null);
+    if (discussionOpenSnapshotRef.current) {
+      onSetSessionsCollapsed?.(discussionOpenSnapshotRef.current.sessions);
+      setCockpitCollapsed(discussionOpenSnapshotRef.current.cockpit);
+      setViewerCollapsed(discussionOpenSnapshotRef.current.viewer);
+      if (!discussionOpenSnapshotRef.current.viewer) viewer.expand();
+      discussionOpenSnapshotRef.current = null;
+    }
+  }, [onSetSessionsCollapsed, setCockpitCollapsed, setViewerCollapsed, viewer]);
 
   // Lightweight helpers still used for cockpit expand/collapse buttons (unchanged UX).
   const expandCockpit = useCallback(() => {
@@ -818,7 +904,8 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
     (ref: CommanderInputRef) => {
       openCommanderInputRef(ref, {
         openPreview,
-        openTask: viewer.openTask,
+        openTask: openTaskSlideOver,
+        openDiscussion: openDiscussionPane,
         openArtifact: (id, title) => {
           viewer.openRef({ v: 1, kind: "artifact", id, title, action: "referenced" });
         },
@@ -826,7 +913,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
         navigate,
       });
     },
-    [navigate, openPreview, viewer],
+    [navigate, openDiscussionPane, openPreview, openTaskSlideOver, viewer],
   );
 
   const handleSend = useCallback(async () => {
@@ -1735,6 +1822,19 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
       <div className="flex h-full min-h-0 flex-row overflow-hidden">
         {chatColumn}
         <CommanderViewerPanel companyId={companyId} viewer={viewer} conversationRefs={conversationRefs} isMobile />
+        {discussionPane && (
+          <CommanderDiscussionPane
+            companyId={companyId}
+            discussion={discussionPane}
+            onClose={closeDiscussionPane}
+            mobile
+          />
+        )}
+        <TaskSlideOver
+          issueId={taskSlideOverId}
+          open={taskSlideOverId !== null}
+          onClose={() => setTaskSlideOverId(null)}
+        />
       </div>
     );
   }
@@ -1757,9 +1857,30 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
         onLayoutChanged={onLayoutChanged}
         data-testid="commander-center-group"
       >
-        <Panel id="commander-chat" minSize="40%" className="flex h-full min-w-0 flex-col">
+        <Panel id="commander-chat" minSize="30%" className="flex h-full min-w-0 flex-col">
           {chatColumn}
         </Panel>
+        {discussionPane && (
+          <>
+            <Separator
+              id="commander-discussion-sep"
+              className="w-2 shrink-0 cursor-col-resize bg-transparent transition-colors hover:bg-brand/50 active:bg-brand/60"
+            />
+            <Panel
+              id="commander-discussion"
+              defaultSize={viewerCollapsed ? "60%" : "40%"}
+              minSize="30%"
+              maxSize="70%"
+              className="flex h-full min-w-0"
+            >
+              <CommanderDiscussionPane
+                companyId={companyId}
+                discussion={discussionPane}
+                onClose={closeDiscussionPane}
+              />
+            </Panel>
+          </>
+        )}
         {!viewerCollapsed && (
           <>
             {/* Separator renders its own `data-separator` + role="separator"
@@ -1810,7 +1931,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
           collapsed={cockpitCollapsed}
           onExpand={expandCockpit}
           onCollapse={collapseCockpit}
-          onOpenTask={(issueId, title) => { openPreview("right-panel"); viewer.openTask(issueId, title); }}
+          onOpenTask={(issueId) => openTaskSlideOver(issueId)}
           onAsk={(text) => void sendText(text)}
           onReference={addInputRef}
           onOpenInputRef={handleOpenInputRef}
@@ -1823,6 +1944,11 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
           onOpenRef={(ref) => { openPreview("right-panel"); viewer.openRef(ref); }}
         />
       </div>
+      <TaskSlideOver
+        issueId={taskSlideOverId}
+        open={taskSlideOverId !== null}
+        onClose={() => setTaskSlideOverId(null)}
+      />
     </div>
   );
 }

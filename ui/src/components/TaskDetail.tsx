@@ -1179,7 +1179,15 @@ export function TaskDetail({
                 </Popover>
               </>
             )}
-            <Button variant="ghost" size="icon-xs" onClick={() => onDismiss?.()} className="shrink-0" data-testid="close-button">
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              onClick={() => onDismiss?.()}
+              className="shrink-0"
+              data-testid="close-button"
+              aria-label="Close task details"
+              title="Close task details"
+            >
               <X className="h-4 w-4" />
             </Button>
           </div>

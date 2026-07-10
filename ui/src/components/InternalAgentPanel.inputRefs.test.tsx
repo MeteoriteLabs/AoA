@@ -22,6 +22,14 @@ const inboxRef: CommanderInputRef = {
   route: "/inbox/waiting/hub-1",
 };
 
+const discussionRef: CommanderInputRef = {
+  v: 1,
+  kind: "discussion",
+  id: "discussion-1",
+  label: "Launch review",
+  route: "/discussions/discussion-1",
+};
+
 describe("Commander input refs", () => {
   it("adds a new ref once and reports duplicate refs for emphasis", () => {
     const first = buildCommanderInputRefState([], taskRef);
@@ -37,18 +45,26 @@ describe("Commander input refs", () => {
     });
   });
 
-  it("opens supported refs in the Commander viewer instead of navigating away", () => {
+  it("routes tasks to the slide-over, discussions to the work pane, and inbox to the viewer", () => {
     const deps: CommanderInputRefOpenDeps = {
       openPreview: vi.fn(),
       openTask: vi.fn(),
+      openDiscussion: vi.fn(),
       openArtifact: vi.fn(),
       openInputRef: vi.fn(),
       navigate: vi.fn(),
     };
 
     openCommanderInputRef(taskRef, deps);
-    expect(deps.openPreview).toHaveBeenCalledWith("right-panel");
-    expect(deps.openInputRef).toHaveBeenCalledWith(taskRef);
+    expect(deps.openTask).toHaveBeenCalledWith("task-1", "Fix login");
+    expect(deps.openPreview).not.toHaveBeenCalled();
+    expect(deps.openInputRef).not.toHaveBeenCalled();
+
+    openCommanderInputRef(discussionRef, deps);
+    expect(deps.openDiscussion).toHaveBeenCalledWith("discussion-1", "Launch review");
+    expect(deps.openPreview).not.toHaveBeenCalled();
+    expect(deps.openInputRef).not.toHaveBeenCalled();
+
     expect(deps.navigate).not.toHaveBeenCalled();
 
     openCommanderInputRef(inboxRef, deps);

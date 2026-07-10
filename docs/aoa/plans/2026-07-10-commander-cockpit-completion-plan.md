@@ -44,8 +44,8 @@ Draggable rows use a grab cursor, visible keyboard focus, subtle hover highlight
 | Entity | Commander surface | Full-page escape hatch | V1 behavior |
 |---|---|---|---|
 | Inbox item | Viewer tab with Hub item detail and contextual lifecycle actions | Inbox route | Reuse Hub semantics; do not leave it as a summary-only preview. |
-| Task | Viewer tab using `TaskDetail` | Tasks route | Existing task is editable; direct creation remains `NewIssueDialog`/Commander tool flow. |
-| Discussion | Commander-safe discussion work pane | Discussions route | Reuse the thread/scope/branches center experience without nesting Discussions' own viewer or duplicate tab system. |
+| Task | Existing `TaskSlideOver` | Tasks route | Existing task is editable without consuming a Commander viewer tab; direct creation remains `NewIssueDialog`/Commander tool flow. |
+| Discussion | Dedicated closable Commander work pane | Discussions route | Reuse the real thread/scope/branches experience outside Commander viewer tabs; the discussion keeps its own nested-entity viewer. |
 | Approval | Viewer tab using embedded `ApprovalDetailCore` | Approvals/Inbox route | Preserve approve/deny and related detail behavior. |
 | Artifact | Existing artifact viewer tab | Artifact route where available | Preview the real artifact and keep identity. |
 | Goal | Entity-specific viewer when the existing detail can be safely embedded | Goal route | Keep route fallback until a safe body exists. |
@@ -54,7 +54,7 @@ Draggable rows use a grab cursor, visible keyboard focus, subtle hover highlight
 
 ### Discussion composition rule
 
-Do not mount the full `ThreadDetail` page inside `CommanderViewerPanel`. That page owns center tabs and a right-side `ThreadViewer`, which creates the duplicate-tab/duplicate-viewer failure. Extract or introduce a Commander-safe mode that renders only the discussion work body. When the discussion opens an artifact, task, or scope output, hand it to the Commander viewer as a sibling tab.
+Do not mount `ThreadDetail` inside `CommanderViewerPanel`. Host it as a dedicated sibling work pane, using its prop-driven embedded mode so thread, scope, branches, and nested entity inspection remain functional without Commander adding another tab bar around it.
 
 ### Inbox composition rule
 
@@ -79,7 +79,7 @@ Do not duplicate Hub lifecycle policy in an ad hoc Commander component. Reuse or
 ### Phase 2: Real entity viewers
 
 - Upgrade Inbox from compact preview to Hub-backed detail/actions.
-- Keep Task on `TaskDetail`, Approval on `ApprovalDetailCore`, and Artifact on the existing viewer registry.
+- Keep Task on `TaskSlideOver`, Approval on `ApprovalDetailCore`, and Artifact on the existing viewer registry.
 - Preserve note behavior and personal ownership.
 - Add graceful loading, missing, forbidden, and stale-reference states.
 

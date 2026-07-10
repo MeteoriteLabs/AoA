@@ -284,7 +284,43 @@ test.describe("Commander viewer", () => {
     await waitForTurnEnd(page);
   });
 
-  test("cockpit discussion rows open as right-side viewer tabs without navigating", async ({
+  test("cockpit task rows open the task slide-over without creating viewer tabs", async ({
+    page,
+    request,
+  }) => {
+    const company = await seedCompany(request, `E2E-CmdViewer-Task-${Date.now()}`);
+    const taskTitle = "Review Commander task surface";
+    const taskRes = await request.post(`/api/companies/${company.id}/issues`, {
+      data: {
+        title: taskTitle,
+        description: "This task should open in the shared task slide-over.",
+        status: "in_review",
+        priority: "high",
+      },
+    });
+    expect(taskRes.ok()).toBe(true);
+
+    await page.goto(`/${company.issuePrefix}/commander`);
+    const expandCockpit = page.getByRole("button", { name: "Expand cockpit" });
+    if ((await expandCockpit.count()) === 1) await expandCockpit.click();
+
+    const reviewCard = page.getByTestId("cockpit-card-review");
+    await expect(reviewCard.getByRole("button", { name: new RegExp(taskTitle) })).toBeVisible({
+      timeout: 15_000,
+    });
+    await reviewCard.getByRole("button", { name: new RegExp(taskTitle) }).click();
+
+    const taskSheet = page.locator('[data-slot="sheet-content"]');
+    await expect(page).toHaveURL(new RegExp(`/${company.issuePrefix}/commander$`));
+    await expect(taskSheet).toBeVisible({ timeout: 15_000 });
+    await expect(
+      taskSheet.getByTestId("task-detail-scroll-body").getByRole("heading", { name: taskTitle, exact: true }),
+    ).toBeVisible();
+    await expect(taskSheet.getByText("This task should open in the shared task slide-over.")).toBeVisible();
+    await expect(page.getByTestId("commander-viewer-panel")).toHaveCount(0);
+  });
+
+  test("cockpit discussion rows open a dedicated work pane without Commander viewer tabs", async ({
     page,
     request,
   }) => {
@@ -332,22 +368,26 @@ test.describe("Commander viewer", () => {
 
     await discussionsCard.getByRole("button", { name: discussionTitle }).click();
 
-    const panel = page.getByTestId("commander-viewer-panel");
     await expect(page).toHaveURL(new RegExp(`/${company.issuePrefix}/commander$`));
-    await expect(panel).toBeVisible({ timeout: 15_000 });
-    await expect(panel.getByTestId("commander-discussion-ref-body")).toBeVisible({
+    const discussionPane = page.getByTestId("commander-discussion-pane");
+    await expect(discussionPane).toBeVisible({ timeout: 15_000 });
+    await expect(discussionPane.getByTestId("thread-detail")).toBeVisible({
       timeout: 15_000,
     });
     await expect(
-      panel.getByRole("heading", { name: discussionTitle }),
+      discussionPane.getByRole("heading", { name: discussionTitle }).first(),
     ).toBeVisible({ timeout: 15_000 });
-    await expect(panel.getByText("This seeded discussion should open inside the Commander viewer.")).toBeVisible({
+    await expect(discussionPane.getByText("This seeded discussion should open inside the Commander viewer.")).toBeVisible({
       timeout: 15_000,
     });
-    await expect(panel.getByTestId("thread-detail")).toHaveCount(0);
-    await expect(panel.getByTestId("thread-mobile-tabs")).toHaveCount(0);
-    await expect(panel.getByTestId("center-tab-thread")).toHaveCount(0);
-    await expect(panel.getByText("Thread mapRelationships for this thread")).toHaveCount(0);
+    await expect(discussionPane.getByRole("tab", { name: "Thread" })).toBeVisible();
+    await expect(discussionPane.getByRole("tab", { name: "Scope" })).toBeVisible();
+    await expect(discussionPane.getByRole("tab", { name: "Branches" })).toBeVisible();
+    await expect(page.getByTestId("commander-viewer-panel")).toHaveCount(0);
+
+    await discussionPane.getByRole("button", { name: `Close ${discussionTitle}` }).click();
+    await expect(discussionPane).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Collapse cockpit" })).toBeVisible();
   });
 
   test("cockpit inbox rows open actionable Hub detail without navigating", async ({
