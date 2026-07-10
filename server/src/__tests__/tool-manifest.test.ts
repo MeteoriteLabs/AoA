@@ -1,6 +1,11 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { createToolRegistry } from "../services/internal-agent/tool-registry.js";
-import { buildToolManifest } from "../services/internal-agent/tool-manifest.js";
+import {
+  buildToolManifest,
+  serializeToolManifest,
+} from "../services/internal-agent/tool-manifest.js";
 
 describe("tool manifest — contract vs live registry", () => {
   const manifest = buildToolManifest();
@@ -39,5 +44,15 @@ describe("tool manifest — contract vs live registry", () => {
       expect(["founder", "team_lead", "team_member", null]).toContain(t.requiredRole);
       expect(typeof t.mcpAlias === "string" || t.mcpAlias === null).toBe(true);
     }
+  });
+});
+
+describe("tool manifest — committed artifact is fresh", () => {
+  it("packages/shared/src/generated/tools.json equals the freshly-built manifest", () => {
+    const committed = readFileSync(
+      resolve(__dirname, "../../../packages/shared/src/generated/tools.json"),
+      "utf8",
+    );
+    expect(committed).toBe(serializeToolManifest(buildToolManifest()));
   });
 });
