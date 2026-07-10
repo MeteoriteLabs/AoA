@@ -6,6 +6,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "../../../lib/utils";
 import { COMMANDER_PANEL_CARD } from "../commanderChrome";
 import { artifactsApi } from "../../../api/artifacts";
+import { discussionsApi } from "../../../api/discussions";
 import { hubItemsApi } from "../../../api/hub-items";
 import { BrowserViewer } from "../../viewers/BrowserViewer";
 import { ViewerTabs, type ViewerTabModel } from "../../viewers/ViewerTabs";
@@ -18,7 +19,6 @@ import {
 import { resolveViewer } from "../../viewers/viewer-registry";
 import { CommanderViewerHome } from "./CommanderViewerHome";
 import { TaskDetail } from "../../TaskDetail";
-import { ThreadDetail } from "../../../pages/ThreadDetail";
 import { ApprovalDetailCore } from "../../approval/ApprovalDetailCore";
 import type { CommanderViewerApi } from "./useCommanderViewer";
 import type { ConversationViewerState, ViewerTab } from "./commanderViewerModel";
@@ -176,6 +176,71 @@ function NoteRefTabBody({ tab }: { tab: ViewerTab }) {
   );
 }
 
+function DiscussionRefTabBody({ tab, companyId }: { tab: ViewerTab; companyId: string }) {
+  const {
+    data: discussion,
+    isLoading,
+    isError,
+  } = useQuery({
+    queryKey: ["commander-viewer-discussion", companyId, tab.refId],
+    queryFn: () => discussionsApi.get(companyId, tab.refId),
+    enabled: Boolean(companyId && tab.refId),
+  });
+
+  if (isLoading) return <LoadingBody />;
+
+  const title = discussion?.title ?? tab.inputRef?.label ?? tab.title;
+  const entries = discussion?.entries.slice(-3) ?? [];
+  const meta = discussion
+    ? [
+        discussion.derivedStage?.label,
+        discussion.scopeName,
+        `${discussion.entryCount} ${discussion.entryCount === 1 ? "message" : "messages"}`,
+        discussion.pendingItemCount > 0 ? `${discussion.pendingItemCount} pending` : null,
+      ].filter(Boolean).join(" · ")
+    : tab.inputRef?.source ?? "Discussion";
+
+  return (
+    <div className="h-full overflow-auto p-4" data-testid="commander-discussion-ref-body">
+      <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+        <MessageSquare className="size-4" aria-hidden />
+        <span>{meta}</span>
+      </div>
+      <h2 className="mt-2 text-base font-semibold leading-snug text-foreground">{title}</h2>
+      {entries.length > 0 ? (
+        <div className="mt-4 space-y-3">
+          {entries.map((entry) => (
+            <article
+              key={entry.id}
+              className="rounded-md border border-border/70 bg-background/60 p-3"
+            >
+              <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+                <span className="truncate">{entry.authorAgentName ?? entry.createdBy}</span>
+                <span className="shrink-0">{new Date(entry.createdAt).toLocaleDateString()}</span>
+              </div>
+              {entry.title ? (
+                <h3 className="mt-2 text-sm font-medium leading-snug text-foreground">{entry.title}</h3>
+              ) : null}
+              <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-muted-foreground">
+                {entry.rawContent}
+              </p>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <p className="mt-3 text-sm text-muted-foreground">
+          {tab.inputRef?.detail ?? "No discussion messages were found."}
+        </p>
+      )}
+      {isError ? (
+        <p className="mt-3 text-xs text-muted-foreground">
+          The live discussion could not be loaded, so this preview is showing the referenced context.
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Tab body switcher (shared between desktop panel + mobile sheet)
 // ---------------------------------------------------------------------------
@@ -234,13 +299,7 @@ export function TabBodySwitch({
   }
 
   if (activeTab.kind === "discussion") {
-    return (
-      <ThreadDetail
-        discussionId={activeTab.refId}
-        companyId={companyId}
-        embedded
-      />
-    );
+    return <DiscussionRefTabBody tab={activeTab} companyId={companyId} />;
   }
 
   if (activeTab.kind === "approval") {

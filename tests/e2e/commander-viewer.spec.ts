@@ -334,10 +334,19 @@ test.describe("Commander viewer", () => {
     const panel = page.getByTestId("commander-viewer-panel");
     await expect(page).toHaveURL(new RegExp(`/${company.issuePrefix}/commander$`));
     await expect(panel).toBeVisible({ timeout: 15_000 });
-    await expect(panel.getByText(discussionTitle)).toBeVisible({ timeout: 15_000 });
+    await expect(panel.getByTestId("commander-discussion-ref-body")).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(
+      panel.getByRole("heading", { name: discussionTitle }),
+    ).toBeVisible({ timeout: 15_000 });
     await expect(panel.getByText("This seeded discussion should open inside the Commander viewer.")).toBeVisible({
       timeout: 15_000,
     });
+    await expect(panel.getByTestId("thread-detail")).toHaveCount(0);
+    await expect(panel.getByTestId("thread-mobile-tabs")).toHaveCount(0);
+    await expect(panel.getByTestId("center-tab-thread")).toHaveCount(0);
+    await expect(panel.getByText("Thread mapRelationships for this thread")).toHaveCount(0);
   });
 
   test("mobile: pill badges on created ref without auto-opening the sheet; tap opens viewer tabs", async ({

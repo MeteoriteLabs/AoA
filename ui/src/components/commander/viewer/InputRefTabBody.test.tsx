@@ -7,21 +7,13 @@ import { TabBodySwitch } from "./CommanderViewerPanel";
 import type { ViewerTab } from "./commanderViewerModel";
 
 vi.mock("@/pages/ThreadDetail", () => ({
-  ThreadDetail: ({
-    discussionId,
-    companyId,
-    embedded,
-  }: {
-    discussionId?: string;
-    companyId?: string;
-    embedded?: boolean;
-  }) => (
-    <div
-      data-testid="thread-detail-mock"
-      data-discussion-id={discussionId}
-      data-company-id={companyId}
-      data-embedded={String(embedded)}
-    />
+  ThreadDetail: () => (
+    <div data-testid="thread-detail-mock">
+      <button role="tab" aria-selected="true">Thread</button>
+      <button role="tab" aria-selected="false">Scope</button>
+      <button role="tab" aria-selected="false">Branches</button>
+      <div role="tab" aria-selected="true">Open</div>
+    </div>
   ),
 }));
 
@@ -73,6 +65,56 @@ vi.mock("@/api/hub-items", () => ({
   },
 }));
 
+vi.mock("@/api/discussions", () => ({
+  discussionsApi: {
+    get: vi.fn(async () => ({
+      id: "disc-1",
+      title: "Sprint planning",
+      status: "active",
+      scopeType: "department",
+      scopeId: "dept-1",
+      scopeName: "Product",
+      tags: ["planning"],
+      entryCount: 2,
+      pendingItemCount: 1,
+      createdBy: "user-1",
+      createdAt: "2026-07-08T00:00:00.000Z",
+      updatedAt: "2026-07-08T01:00:00.000Z",
+      crewPaused: false,
+      autonomyLevel: 1,
+      derivedStage: {
+        stage: "discussing",
+        label: "Discussing",
+        versionNumber: null,
+        scopeVersionId: null,
+        hasNewEntries: true,
+        newEntryCount: 2,
+      },
+      entries: [
+        {
+          id: "entry-1",
+          inputType: "note",
+          rawContent: "Review the launch checklist and assign owners.",
+          title: null,
+          sourceInfo: null,
+          departmentId: null,
+          projectId: null,
+          goalId: null,
+          parentEntryId: null,
+          authorAgentId: null,
+          authorAgentName: null,
+          authorAgentAvatar: null,
+          extractionStatus: "completed",
+          createdBy: "Local Board",
+          createdAt: "2026-07-08T00:30:00.000Z",
+          extractedItems: [],
+          annotations: [],
+        },
+      ],
+    })),
+  },
+}));
+
 function renderTab(activeTab: ViewerTab) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
@@ -90,7 +132,7 @@ function renderTab(activeTab: ViewerTab) {
 }
 
 describe("Commander Viewer input-ref tab bodies", () => {
-  it("renders discussion refs with embedded ThreadDetail", () => {
+  it("renders discussion refs as compact previews without nested thread tabs", async () => {
     renderTab({
       id: "discussion:disc-1",
       kind: "discussion",
@@ -98,9 +140,14 @@ describe("Commander Viewer input-ref tab bodies", () => {
       refId: "disc-1",
     });
 
-    expect(screen.getByTestId("thread-detail-mock")).toHaveAttribute("data-discussion-id", "disc-1");
-    expect(screen.getByTestId("thread-detail-mock")).toHaveAttribute("data-company-id", "comp-1");
-    expect(screen.getByTestId("thread-detail-mock")).toHaveAttribute("data-embedded", "true");
+    expect(await screen.findByTestId("commander-discussion-ref-body")).toBeInTheDocument();
+    expect(screen.getByText("Sprint planning")).toBeInTheDocument();
+    expect(screen.getByText("Review the launch checklist and assign owners.")).toBeInTheDocument();
+    expect(screen.queryByTestId("thread-detail-mock")).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Thread" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Scope" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Branches" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Open" })).not.toBeInTheDocument();
   });
 
   it("renders approval refs with embedded ApprovalDetailCore", () => {
