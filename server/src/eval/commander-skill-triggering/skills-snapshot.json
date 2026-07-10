@@ -8,6 +8,18 @@
       "triggerPhrases": []
     },
     {
+      "key": "skill:aoa/daily-triage",
+      "name": "aoa-daily-triage",
+      "description": "When the user asks what to work on, what needs their attention, what is blocked or at risk, or how a department or the company is doing right now — a status/prioritization ask, not a request to change anything.",
+      "triggerPhrases": []
+    },
+    {
+      "key": "skill:aoa/delegate-handoff",
+      "name": "aoa-delegate-handoff",
+      "description": "When the user is ready to hand a piece of work to an agent — pick the right agent, write a clear task spec, set dependencies, and dispatch it. The planning→execution bridge, after the idea is shaped and before the agent runs.",
+      "triggerPhrases": []
+    },
+    {
       "key": "skill:aoa/discussion-facilitation",
       "name": "aoa-discussion-facilitation",
       "description": "Use when a discussion thread has accumulated conversation and someone wants the decisions, tasks, insights, and context pulled out and organized. Not for authoring one new task from scratch (use Spec).",
@@ -29,6 +41,12 @@
       "key": "skill:aoa/office-hours",
       "name": "aoa-office-hours",
       "description": "Use when someone is weighing whether to pursue a side project, a new product feature, or a strategic bet and needs demand, user reality, and the narrowest wedge exposed before committing. Not for a general idea interrogation (use Brainstorm) or turning a chosen idea into work (use Spec / Sprint Planning).",
+      "triggerPhrases": []
+    },
+    {
+      "key": "skill:aoa/review-agent-output",
+      "name": "aoa-review-agent-output",
+      "description": "When the user wants to review what an agent produced on a task — check its deliverable or diff against the acceptance criteria and decide whether to approve it or send it back — before an approval is granted.",
       "triggerPhrases": []
     },
     {

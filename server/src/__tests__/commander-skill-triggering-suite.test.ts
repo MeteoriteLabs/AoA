@@ -20,9 +20,10 @@ const SNAPSHOT_PATH = join(
   "skills-snapshot.json",
 );
 
-// The 8 canonical RUNTIME seeder keys — hardcoded so the test fails loudly
+// The 11 canonical RUNTIME seeder keys — hardcoded so the test fails loudly
 // (not silently) if a skill is added/removed from skills-snapshot.json
-// without updating this drift guard.
+// without updating this drift guard. Plan 3 added daily-triage,
+// review-agent-output, and delegate-handoff (8 -> 11).
 const CANONICAL_SKILL_KEYS = [
   "skill:aoa/brainstorm",
   "skill:aoa/office-hours",
@@ -32,6 +33,9 @@ const CANONICAL_SKILL_KEYS = [
   "skill:aoa/identity-setup",
   "skill:aoa/investigate",
   "skill:aoa/discussion-facilitation",
+  "skill:aoa/daily-triage",
+  "skill:aoa/review-agent-output",
+  "skill:aoa/delegate-handoff",
 ].sort();
 
 function makeClassifierResponse(key: string) {
@@ -44,12 +48,12 @@ function makeClassifierResponse(key: string) {
 }
 
 describe("commander-skill-triggering fixtures", () => {
-  it("loads exactly 10 fixture cases", async () => {
+  it("loads exactly 16 fixture cases", async () => {
     const cases = await loadFixtures<RoutingCaseInput, string>(FIXTURES_DIR);
-    expect(cases).toHaveLength(10);
+    expect(cases).toHaveLength(16);
   });
 
-  it("every expected.value is 'none' or one of the 8 snapshot keys", async () => {
+  it("every expected.value is 'none' or one of the 11 snapshot keys", async () => {
     const cases = await loadFixtures<RoutingCaseInput, string>(FIXTURES_DIR);
     const allowed = new Set([...CANONICAL_SKILL_KEYS, "none"]);
     for (const c of cases) {
@@ -68,7 +72,7 @@ describe("commander-skill-triggering fixtures", () => {
 });
 
 describe("commander-skill-triggering snapshot-drift guard", () => {
-  it("contains exactly the 8 canonical RUNTIME seeder keys — nothing added or removed silently", async () => {
+  it("contains exactly the 11 canonical RUNTIME seeder keys — nothing added or removed silently", async () => {
     const snapshot = await loadSkillsSnapshot(SNAPSHOT_PATH);
     const keys = snapshot.map((s) => s.key).sort();
     expect(keys).toEqual(CANONICAL_SKILL_KEYS);
@@ -124,7 +128,7 @@ describe("commander-skill-triggering B3 non-empty-table guard", () => {
 });
 
 describe("buildCommanderSkillTriggeringSuite", () => {
-  it("resolves to a suite named 'commander-skill-triggering' with 10 cases, concurrency 5", async () => {
+  it("resolves to a suite named 'commander-skill-triggering' with 16 cases, concurrency 5", async () => {
     const suite = await buildCommanderSkillTriggeringSuite({
       apiKey: "sk-test",
       fetchImpl: vi.fn() as unknown as typeof fetch,
@@ -132,7 +136,7 @@ describe("buildCommanderSkillTriggeringSuite", () => {
       snapshotPath: SNAPSHOT_PATH,
     });
     expect(suite.name).toBe("commander-skill-triggering");
-    expect(suite.cases).toHaveLength(10);
+    expect(suite.cases).toHaveLength(16);
     expect(suite.concurrency).toBe(5);
   });
 });
