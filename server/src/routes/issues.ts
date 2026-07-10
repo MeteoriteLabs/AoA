@@ -24,6 +24,7 @@ import {
   projectService,
   routineService,
 } from "../services/index.js";
+
 import { logger } from "../middleware/logger.js";
 import { forbidden, HttpError, unauthorized, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
@@ -46,6 +47,15 @@ import { assertAgentInReviewReviewPath } from "../services/issue-agent-status-gu
 // (e.g. agent-in-review-guard.test.ts importing from "../routes/issues.js")
 // keep resolving after the move to server/src/services/.
 export { assertAgentInReviewReviewPath };
+
+export function normalizeIssueDateFields<T extends Record<string, unknown>>(fields: T): T {
+  if (!Object.prototype.hasOwnProperty.call(fields, "dueDate")) return fields;
+  const dueDate = fields.dueDate;
+  return {
+    ...fields,
+    dueDate: typeof dueDate === "string" ? new Date(dueDate) : dueDate,
+  };
+}
 
 function hasWorkspaceOverrideFields(body: Record<string, unknown>): boolean {
   return body.executionWorkspaceId !== undefined
@@ -952,12 +962,12 @@ export function issueRoutes(db: Db, storage: StorageService) {
       wakeSkippedReason = decision.wakeSkippedReason ?? null;
     }
 
-    const issue = await svc.create(companyId, {
+    const issue = await svc.create(companyId, normalizeIssueDateFields({
       ...req.body,
       createdByAgentId: actor.agentId,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
       responsibleFallbackUserId: actor.actorType === "user" ? actor.actorId : null,
-    });
+    }));
 
     await logActivity(db, {
       companyId,
@@ -1066,7 +1076,8 @@ export function issueRoutes(db: Db, storage: StorageService) {
     }
     if (!(await assertAgentRunCheckoutOwnership(req, res, existing))) return;
 
-    const { comment: commentBody, hiddenAt: hiddenAtRaw, ...updateFields } = req.body;
+    const { comment: commentBody, hiddenAt: hiddenAtRaw, ...rawUpdateFields } = req.body;
+    const updateFields = normalizeIssueDateFields(rawUpdateFields);
     if (hiddenAtRaw !== undefined) {
       updateFields.hiddenAt = hiddenAtRaw ? new Date(hiddenAtRaw) : null;
     }

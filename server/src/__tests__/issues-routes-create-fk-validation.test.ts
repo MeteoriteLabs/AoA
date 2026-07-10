@@ -174,6 +174,20 @@ describe("POST /companies/:companyId/issues — FK validation", () => {
     mockLogActivity.mockResolvedValue(undefined);
   });
 
+  it("converts API due-date strings to Date values before persistence", async () => {
+    const dueDate = "2026-07-10T18:30:00.000Z";
+
+    const res = await request(createApp())
+      .post(`/api/companies/${companyId}/issues`)
+      .send({ title: "Due today", dueDate });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.create).toHaveBeenCalledWith(
+      companyId,
+      expect.objectContaining({ dueDate: new Date(dueDate) }),
+    );
+  });
+
   it("returns 422 with field=assigneeAgentId when assignee agent does not exist", async () => {
     mockAgentService.getById.mockResolvedValue(null);
 
