@@ -148,7 +148,7 @@ vi.mock("../components/InlineEntitySelector", () => ({
     onChange: (id: string) => void;
   }) => {
     const selected = options.find((option) => option.id === value);
-    const firstOption = options[0]?.id ?? "";
+    const firstOption = options.find((option) => option.label !== "No responsible human")?.id ?? options[0]?.id ?? "";
     return (
       <div data-testid={`selector-${placeholder}`}>
         <span data-testid={`selector-${placeholder}-value`}>{selected?.label ?? placeholder}</span>
@@ -214,7 +214,7 @@ describe("NewIssueDialog responsible human", () => {
     renderDialog();
 
     await waitFor(() => expect(screen.getByTestId("selector-Assignee-options")).toHaveTextContent("1"));
-    await waitFor(() => expect(screen.getByTestId("selector-Responsible human-options")).toHaveTextContent("1"));
+    await waitFor(() => expect(screen.getByTestId("selector-Responsible human-options")).toHaveTextContent("2"));
 
     fireEvent.click(screen.getByRole("button", { name: "Choose Assignee" }));
     fireEvent.click(screen.getByRole("button", { name: "Choose Responsible human" }));
@@ -261,7 +261,7 @@ describe("NewIssueDialog responsible human", () => {
   it("omits responsibleUserId when the responsible human is blank or cleared", async () => {
     renderDialog();
 
-    await waitFor(() => expect(screen.getByTestId("selector-Responsible human-options")).toHaveTextContent("1"));
+    await waitFor(() => expect(screen.getByTestId("selector-Responsible human-options")).toHaveTextContent("2"));
 
     fireEvent.click(screen.getByRole("button", { name: "Choose Responsible human" }));
     await waitFor(() =>
@@ -280,10 +280,25 @@ describe("NewIssueDialog responsible human", () => {
     );
   });
 
+  it("sends null when the explicit no responsible human option is selected", async () => {
+    renderDialog();
+
+    await waitFor(() => expect(screen.getByTestId("selector-Responsible human-options")).toHaveTextContent("2"));
+
+    fireEvent.click(screen.getByRole("button", { name: "Choose No responsible human" }));
+    fireEvent.click(screen.getByRole("button", { name: "Create Task" }));
+
+    await waitFor(() => expect(issuesApi.create).toHaveBeenCalled());
+    expect(issuesApi.create).toHaveBeenCalledWith(
+      "comp-1",
+      expect.objectContaining({ responsibleUserId: null }),
+    );
+  });
+
   it("clears the responsible human when the dialog company changes", async () => {
     renderDialog();
 
-    await waitFor(() => expect(screen.getByTestId("selector-Responsible human-options")).toHaveTextContent("1"));
+    await waitFor(() => expect(screen.getByTestId("selector-Responsible human-options")).toHaveTextContent("2"));
 
     fireEvent.click(screen.getByRole("button", { name: "Choose Responsible human" }));
     await waitFor(() =>
@@ -308,7 +323,7 @@ describe("NewIssueDialog responsible human", () => {
   it("resets the responsible human after a successful create", async () => {
     renderDialog();
 
-    await waitFor(() => expect(screen.getByTestId("selector-Responsible human-options")).toHaveTextContent("1"));
+    await waitFor(() => expect(screen.getByTestId("selector-Responsible human-options")).toHaveTextContent("2"));
 
     fireEvent.click(screen.getByRole("button", { name: "Choose Responsible human" }));
     await waitFor(() =>
@@ -367,7 +382,7 @@ describe("NewIssueDialog responsible human", () => {
   it("saves and restores a valid responsible human in the dialog draft", async () => {
     const firstRender = renderDialog();
 
-    await waitFor(() => expect(screen.getByTestId("selector-Responsible human-options")).toHaveTextContent("1"));
+    await waitFor(() => expect(screen.getByTestId("selector-Responsible human-options")).toHaveTextContent("2"));
 
     fireEvent.click(screen.getByRole("button", { name: "Choose Responsible human" }));
     await waitFor(() =>

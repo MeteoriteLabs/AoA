@@ -606,6 +606,24 @@ export function issueService(db: Db) {
     return unique.length === 1 ? unique[0] : null;
   }
 
+  async function resolveDefaultResponsibleUserId(input: {
+    companyId: string;
+    assigneeUserId?: string | null;
+    assigneeAgentId?: string | null;
+    responsibleFallbackUserId?: string | null;
+  }): Promise<string | null> {
+    if (input.assigneeUserId) return input.assigneeUserId;
+    if (input.assigneeAgentId) {
+      const manager = await findNearestHumanManagerForAgent(input.companyId, input.assigneeAgentId);
+      return manager ?? await findSingleFounderUserId(input.companyId);
+    }
+    if (input.responsibleFallbackUserId) {
+      return await findActiveCompanyUser(input.companyId, input.responsibleFallbackUserId);
+    }
+
+    return null;
+  }
+
   async function resolveResponsibleUserId(input: {
     companyId: string;
     explicitResponsibleUserId?: string | null;
@@ -626,16 +644,7 @@ export function issueService(db: Db) {
       return undefined;
     }
 
-    if (input.assigneeUserId) return input.assigneeUserId;
-    if (input.assigneeAgentId) {
-      const manager = await findNearestHumanManagerForAgent(input.companyId, input.assigneeAgentId);
-      return manager ?? await findSingleFounderUserId(input.companyId);
-    }
-    if (input.responsibleFallbackUserId) {
-      return await findActiveCompanyUser(input.companyId, input.responsibleFallbackUserId);
-    }
-
-    return null;
+    return await resolveDefaultResponsibleUserId(input);
   }
 
   async function assertValidLabelIds(companyId: string, labelIds: string[], dbOrTx: any = db) {
@@ -1329,11 +1338,15 @@ export function issueService(db: Db) {
         nextAssigneeAgentId !== existing.assigneeAgentId ||
         nextAssigneeUserId !== existing.assigneeUserId;
       const hasExplicitResponsibleUserId = Object.prototype.hasOwnProperty.call(issueData, "responsibleUserId");
-      const keepManualResponsibleOnExecutorChange =
-        executorChanged &&
-        !hasExplicitResponsibleUserId &&
-        existing.responsibleUserId !== null &&
-        existing.responsibleUserId !== existing.assigneeUserId;
+      let keepManualResponsibleOnExecutorChange = false;
+      if (executorChanged && !hasExplicitResponsibleUserId && existing.responsibleUserId !== null) {
+        const previousDefaultResponsibleUserId = await resolveDefaultResponsibleUserId({
+          companyId: existing.companyId,
+          assigneeUserId: existing.assigneeUserId,
+          assigneeAgentId: existing.assigneeAgentId,
+        });
+        keepManualResponsibleOnExecutorChange = existing.responsibleUserId !== previousDefaultResponsibleUserId;
+      }
       const updateResponsibleUserId = await resolveResponsibleUserId({
         companyId: existing.companyId,
         explicitResponsibleUserId: hasExplicitResponsibleUserId

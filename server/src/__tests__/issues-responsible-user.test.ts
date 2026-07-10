@@ -457,6 +457,58 @@ describe("issueService responsibleUserId resolver", () => {
     expect(db.getCapturedPatch()).not.toHaveProperty("responsibleUserId");
   });
 
+  it("recomputes auto responsible human when reassigning between managed agents", async () => {
+    const db = makeDb({
+      activeUsers: ["old-manager", "new-manager"],
+      agents: [
+        { id: "agent-1", parentType: "user", parentId: "old-manager" },
+        { id: "agent-2", parentType: "user", parentId: "new-manager" },
+      ],
+      existing: {
+        id: ISSUE_ID,
+        companyId: COMPANY_ID,
+        status: "todo",
+        assigneeAgentId: "agent-1",
+        assigneeUserId: null,
+        responsibleUserId: "old-manager",
+      },
+    });
+
+    const updated = await issueService(db).update(ISSUE_ID, {
+      assigneeAgentId: "agent-2",
+      assigneeUserId: null,
+    } as any);
+
+    expect(updated?.responsibleUserId).toBe("new-manager");
+    expect(db.getCapturedPatch()).toMatchObject({ responsibleUserId: "new-manager" });
+  });
+
+  it("preserves manual responsible human when reassigning between managed agents", async () => {
+    const db = makeDb({
+      activeUsers: ["old-manager", "new-manager", "manual-owner"],
+      agents: [
+        { id: "agent-1", parentType: "user", parentId: "old-manager" },
+        { id: "agent-2", parentType: "user", parentId: "new-manager" },
+      ],
+      existing: {
+        id: ISSUE_ID,
+        companyId: COMPANY_ID,
+        status: "todo",
+        assigneeAgentId: "agent-1",
+        assigneeUserId: null,
+        responsibleUserId: "manual-owner",
+      },
+    });
+
+    const updated = await issueService(db).update(ISSUE_ID, {
+      assigneeAgentId: "agent-2",
+      assigneeUserId: null,
+    } as any);
+
+    expect(updated?.responsibleUserId).toBe("manual-owner");
+    expect(db.getCapturedPatch()).not.toHaveProperty("responsibleUserId");
+  });
+
   it("preserves responsible user when update resends the same assignee and omits responsible user", async () => {
     const db = makeDb({
       activeUsers: ["user-1"],

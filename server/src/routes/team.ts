@@ -325,6 +325,10 @@ export function teamRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     const userId = req.params.userId as string;
     assertCompanyAccess(req, companyId);
+    if (req.actor.type !== "board") {
+      res.status(403).json({ error: "Board authentication required" });
+      return;
+    }
     res.json(await team.getWorkload(companyId, userId));
   });
 

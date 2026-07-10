@@ -63,6 +63,7 @@ import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySel
 
 const DRAFT_KEY = "aoa:issue-draft";
 const DEBOUNCE_MS = 800;
+const NO_RESPONSIBLE_HUMAN_VALUE = "__no_responsible_human__";
 type TaskWorkspaceMode = "inherit" | "shared_workspace" | "isolated_workspace" | "reuse_existing";
 
 /** Return black or white hex based on background luminance (WCAG perceptual weights). */
@@ -491,7 +492,10 @@ export function NewIssueDialog() {
 
   useEffect(() => {
     if (!newIssueOpen || !teamSummary) return;
-    const responsibleUserIds = new Set(teamSummary.members.map((member) => member.userId));
+    const responsibleUserIds = new Set([
+      NO_RESPONSIBLE_HUMAN_VALUE,
+      ...teamSummary.members.map((member) => member.userId),
+    ]);
     setResponsibleUserId((prev) => pruneStaleId(prev, responsibleUserIds));
   }, [newIssueOpen, teamSummary]);
 
@@ -598,6 +602,14 @@ export function NewIssueDialog() {
       canAssignTasks && parsedAssignee.kind !== "none"
         ? taskAssigneePayload(assigneeValue)
         : {};
+    const responsiblePatch =
+      !canAssignTasks
+        ? {}
+        : responsibleUserId === NO_RESPONSIBLE_HUMAN_VALUE
+          ? { responsibleUserId: null }
+          : responsibleUserId
+            ? { responsibleUserId }
+            : {};
     createIssue.mutate({
       companyId: effectiveCompanyId,
       title: title.trim(),
@@ -606,7 +618,7 @@ export function NewIssueDialog() {
       priority: priority || "medium",
       workMode,
       ...assigneePatch,
-      ...(canAssignTasks && responsibleUserId ? { responsibleUserId } : {}),
+      ...responsiblePatch,
       ...(projectId ? { projectId } : {}),
       ...(assigneeAdapterOverrides ? { assigneeAdapterOverrides } : {}),
       ...(executionEnvironmentId ? { executionEnvironmentId } : {}),
@@ -704,11 +716,14 @@ export function NewIssueDialog() {
   );
   const responsibleHumanOptions = useMemo<InlineEntityOption[]>(
     () =>
-      (teamSummary?.members ?? []).map((member) => ({
-        id: member.userId,
-        label: member.displayName ?? member.email ?? member.userId.slice(0, 8),
-        searchText: `${member.displayName ?? ""} ${member.email ?? ""} ${member.title ?? ""} ${member.role}`,
-      })),
+      [
+        { id: NO_RESPONSIBLE_HUMAN_VALUE, label: "No responsible human", searchText: "none no responsible human" },
+        ...(teamSummary?.members ?? []).map((member) => ({
+          id: member.userId,
+          label: member.displayName ?? member.email ?? member.userId.slice(0, 8),
+          searchText: `${member.displayName ?? ""} ${member.email ?? ""} ${member.title ?? ""} ${member.role}`,
+        })),
+      ],
     [teamSummary?.members],
   );
   const projectOptions = useMemo<InlineEntityOption[]>(
@@ -954,9 +969,11 @@ export function NewIssueDialog() {
                       projectSelectorRef.current?.focus();
                     }}
                     renderTriggerValue={(option) =>
-                      option && currentResponsibleHuman ? (
+                      option && (currentResponsibleHuman || responsibleUserId === NO_RESPONSIBLE_HUMAN_VALUE) ? (
                         <>
-                          <User className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                          {responsibleUserId !== NO_RESPONSIBLE_HUMAN_VALUE && (
+                            <User className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                          )}
                           <span className="truncate">{option.label}</span>
                         </>
                       ) : (
@@ -964,7 +981,9 @@ export function NewIssueDialog() {
                       )
                     }
                     renderOption={(option) => {
-                      if (!option.id) return <span className="truncate">{option.label}</span>;
+                      if (!option.id || option.id === NO_RESPONSIBLE_HUMAN_VALUE) {
+                        return <span className="truncate">{option.label}</span>;
+                      }
                       return (
                         <>
                           <User className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />

@@ -90,6 +90,21 @@ describe("GET /companies/:companyId/team/users/:userId/workload", () => {
     expect(mockTeamService.getWorkload).not.toHaveBeenCalled();
   });
 
+  it("rejects same-company non-board actors before returning workload", async () => {
+    const app = makeApp({
+      type: "agent",
+      companyId: COMPANY_ID,
+      agentId: "agent-1",
+      runId: "run-1",
+    });
+
+    const res = await request(app).get(`/api/companies/${COMPANY_ID}/team/users/${TARGET_USER_ID}/workload`);
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body).toEqual({ error: "Board authentication required" });
+    expect(mockTeamService.getWorkload).not.toHaveBeenCalled();
+  });
+
   it("returns 404 through error middleware when service reports missing member", async () => {
     mockTeamService.getWorkload.mockRejectedValue(notFound("Team member not found"));
     const app = makeApp({
