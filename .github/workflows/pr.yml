@@ -389,6 +389,11 @@ jobs:
       - name: Build
         run: pnpm build
 
+      - name: Tool contract freshness
+        run: |
+          pnpm gen:tools:check
+          pnpm gen:tools:md:check
+
   # Advisory cross-platform coverage — matches the verify job but runs on
   # macOS + Windows. continue-on-error: true so failures don't block PR
   # merges (existing `verify` Linux job remains the required gate via
