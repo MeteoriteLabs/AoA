@@ -1,4 +1,5 @@
 import type { AgentTool, ToolResult } from "../types.js";
+import { COMMANDER_SKILL_PREAMBLE } from "../commander-preamble.js";
 
 export const useSkillTool: AgentTool = {
   name: "use_skill",
@@ -96,7 +97,11 @@ export const useSkillTool: AgentTool = {
 
       return {
         success: true,
-        data: { key: skill.key, name: skill.name, content: skill.markdown },
+        data: {
+          key: skill.key,
+          name: skill.name,
+          content: `${COMMANDER_SKILL_PREAMBLE}\n\n---\n\n${skill.markdown}`,
+        },
         summary: `Loaded skill: ${skill.name}. Follow the instructions in 'content' for the rest of this conversation.`,
       };
     } catch (err: any) {
