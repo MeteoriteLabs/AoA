@@ -172,16 +172,16 @@ describe("CommanderCockpitPanel", () => {
       </QueryClientProvider>,
     );
 
-    expect(screen.getByTestId("cockpit-group-needs_me")).toBeInTheDocument();
+    expect(screen.getByTestId("cockpit-group-triage")).toBeInTheDocument();
     expect(screen.getByTestId("cockpit-group-my_work")).toBeInTheDocument();
-    expect(screen.getByTestId("cockpit-group-active_with_me")).toBeInTheDocument();
-    expect(screen.getByTestId("cockpit-group-company_pulse")).toBeInTheDocument();
-    expect(screen.getByTestId("cockpit-group-context")).toBeInTheDocument();
-    expect(screen.getByText("Needs Me")).toBeInTheDocument();
+    expect(screen.getByTestId("cockpit-group-conversations")).toBeInTheDocument();
+    expect(screen.getByTestId("cockpit-group-watch")).toBeInTheDocument();
+    expect(screen.getByTestId("cockpit-group-memory_context")).toBeInTheDocument();
+    expect(screen.getByText("Triage")).toBeInTheDocument();
     expect(screen.getByText("My Work")).toBeInTheDocument();
-    expect(screen.getByText("Active With Me")).toBeInTheDocument();
-    expect(screen.getByText("Company Pulse")).toBeInTheDocument();
-    expect(screen.getByText("Context")).toBeInTheDocument();
+    expect(screen.getByText("Conversations")).toBeInTheDocument();
+    expect(screen.getByText("Watch")).toBeInTheDocument();
+    expect(screen.getByText("Memory & Context")).toBeInTheDocument();
   });
 
   it("⚙ config popover can hide the running card", async () => {
@@ -218,11 +218,11 @@ describe("CommanderCockpitPanel", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /configure cockpit cards/i }));
 
-    expect(screen.getByTestId("cockpit-config-group-needs_me")).toBeInTheDocument();
+    expect(screen.getByTestId("cockpit-config-group-triage")).toBeInTheDocument();
     expect(screen.getByTestId("cockpit-config-group-my_work")).toBeInTheDocument();
-    expect(screen.getByTestId("cockpit-config-group-active_with_me")).toBeInTheDocument();
-    expect(screen.getByTestId("cockpit-config-group-company_pulse")).toBeInTheDocument();
-    expect(screen.getByTestId("cockpit-config-group-context")).toBeInTheDocument();
+    expect(screen.getByTestId("cockpit-config-group-conversations")).toBeInTheDocument();
+    expect(screen.getByTestId("cockpit-config-group-watch")).toBeInTheDocument();
+    expect(screen.getByTestId("cockpit-config-group-memory_context")).toBeInTheDocument();
     expect(screen.getByRole("checkbox", { name: /approvals/i })).toBeInTheDocument();
     expect(screen.getByRole("checkbox", { name: /my tasks/i })).toBeInTheDocument();
   });
