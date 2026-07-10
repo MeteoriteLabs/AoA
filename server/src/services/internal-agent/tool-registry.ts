@@ -86,6 +86,11 @@ import {
   hubReadCurationContextTool,
   hubUpdateCurationSummaryTool,
 } from "./tools/hub-curation-tools.js";
+// Plan 3 Task 2 (B2) — Approval-family oversight port. 5 founder-only tools
+// wrapping ctx.services.approvals / ctx.services.issueApprovals (Task 1).
+// See approval-tools.ts header for the RBAC divergence rationale (no
+// team_lead authorization project set on Commander's ToolContext — R2).
+import { approvalTools } from "./tools/approval-tools.js";
 
 export function createToolRegistry(): AgentTool[] {
   return [
@@ -175,6 +180,8 @@ export function createToolRegistry(): AgentTool[] {
     // never performs lifecycle/source actions and is allowlisted only for Steward.
     hubReadCurationContextTool,
     hubUpdateCurationSummaryTool,
+    // Plan 3 Task 2 (B2) — Approval-family oversight port (founder-only R1).
+    ...approvalTools,
   ];
 }
 
