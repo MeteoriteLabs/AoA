@@ -162,6 +162,27 @@ describe("Commander Viewer input-ref tab bodies", () => {
     expect(screen.getByTestId("approval-detail-mock")).toHaveAttribute("data-embedded", "true");
   });
 
+  it("does not send non-approval family ids to ApprovalDetailCore", () => {
+    renderTab({
+      id: "approval:memory-1",
+      kind: "approval",
+      title: "Use TypeScript",
+      refId: "memory-1",
+      inputRef: {
+        v: 1,
+        kind: "approval",
+        id: "memory-1",
+        label: "Use TypeScript",
+        detail: "Domain memory decision",
+        source: "memory",
+      },
+    });
+
+    expect(screen.getByTestId("commander-approval-ref-body")).toBeInTheDocument();
+    expect(screen.getByText("Use TypeScript")).toBeInTheDocument();
+    expect(screen.queryByTestId("approval-detail-mock")).not.toBeInTheDocument();
+  });
+
   it("renders note refs as compact previews", () => {
     renderTab({
       id: "note:note-1",
@@ -198,5 +219,8 @@ describe("Commander Viewer input-ref tab bodies", () => {
 
     expect(await screen.findByText("Run complete")).toBeInTheDocument();
     expect(screen.getByText("The run finished successfully.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Dismiss" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Snooze" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Resolve" })).toBeInTheDocument();
   });
 });

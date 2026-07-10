@@ -452,6 +452,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
   // text). We only track empty-ness here to drive the Send button + placeholder.
   const [inputEmpty, setInputEmpty] = useState(true);
   const [inputRefs, setInputRefs] = useState<CommanderInputRef[]>([]);
+  const inputRefsRef = useRef<CommanderInputRef[]>([]);
   const [duplicateInputRefKey, setDuplicateInputRefKey] = useState<string | null>(null);
   const [streaming, setStreamingLocal] = useState(false);
   // Task 9: skill picker. `skillPickerOpen` = opened via the `+` menu (shows
@@ -777,24 +778,27 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
   const submitCommanderInput = useCallback(
     async (text: string) => {
       const trimmed = text.trim();
-      if (!trimmed && inputRefs.length === 0) return;
+      const refsForTurn = inputRefsRef.current;
+      if (!trimmed && refsForTurn.length === 0) return;
       const baseText = trimmed || "Use the referenced context.";
-      const refsForTurn = inputRefs;
+      inputRefsRef.current = [];
       setInputRefs([]);
       await sendText(appendCommanderInputRefsToMessage(baseText, refsForTurn));
     },
-    [inputRefs, sendText],
+    [sendText],
   );
 
   const addInputRef = useCallback((ref: CommanderInputRef, suggestedPrompt?: string) => {
-    const next = buildCommanderInputRefState(inputRefs, ref);
-    setInputRefs(next.refs.slice(-MAX_COMMANDER_INPUT_REFS));
+    const next = buildCommanderInputRefState(inputRefsRef.current, ref);
+    const refs = next.refs.slice(-MAX_COMMANDER_INPUT_REFS);
+    inputRefsRef.current = refs;
+    setInputRefs(refs);
     setDuplicateInputRefKey(next.duplicateKey);
     if (suggestedPrompt && next.duplicateKey === null) {
       inputRef.current?.insertText(suggestedPrompt);
     }
     requestAnimationFrame(() => inputRef.current?.focus());
-  }, [inputRefs]);
+  }, []);
 
   useEffect(() => {
     if (!duplicateInputRefKey) return;
@@ -804,7 +808,9 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
 
   const removeInputRef = useCallback((ref: CommanderInputRef) => {
     const key = commanderInputRefKey(ref);
-    setInputRefs((prev) => prev.filter((item) => commanderInputRefKey(item) !== key));
+    const refs = inputRefsRef.current.filter((item) => commanderInputRefKey(item) !== key);
+    inputRefsRef.current = refs;
+    setInputRefs(refs);
     setDuplicateInputRefKey((current) => (current === key ? null : current));
   }, []);
 
@@ -827,10 +833,10 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
     // Read the expanded directive text (skill tokens → full use_skill lines)
     // straight from the rich input; it clears itself on submit.
     const text = inputRef.current?.getText() ?? "";
-    if (!text && inputRefs.length === 0) return;
+    if (!text && inputRefsRef.current.length === 0) return;
     inputRef.current?.clear();
     await submitCommanderInput(text);
-  }, [inputRefs.length, submitCommanderInput]);
+  }, [submitCommanderInput]);
 
   const handleStop = useCallback(() => {
     abortRef.current?.abort();

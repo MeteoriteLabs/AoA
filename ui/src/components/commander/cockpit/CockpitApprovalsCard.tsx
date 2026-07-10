@@ -57,6 +57,17 @@ function approvalPrompt(item: CockpitApprovalItem) {
 }
 
 function approvalRef(item: CockpitApprovalItem, route: string): CommanderInputRef {
+  if (item.source === "discussion_item" && item.discussionId) {
+    return {
+      v: 1,
+      kind: "discussion",
+      id: item.discussionId,
+      label: item.title,
+      route: route || undefined,
+      detail: item.subtitle,
+      source: item.source,
+    };
+  }
   return {
     v: 1,
     kind: "approval",
@@ -74,12 +85,14 @@ function ApprovalRow({
   item,
   companyId,
   onOpenFullPage,
+  onOpenReference,
   onAsk,
   onReference,
 }: {
   item: CockpitApprovalItem;
   companyId: string;
   onOpenFullPage?: (href: string) => void;
+  onOpenReference?: (ref: CommanderInputRef) => void;
   onAsk?: (text: string) => void;
   onReference?: (ref: CommanderInputRef, suggestedPrompt?: string) => void;
 }) {
@@ -105,7 +118,20 @@ function ApprovalRow({
     >
       {/* Row header: title + source chip + ↗ (hidden when no route) */}
       <div className="flex items-center gap-1 truncate">
-        <span className="min-w-0 flex-1 truncate font-medium">{item.title}</span>
+        <button
+          type="button"
+          className="min-w-0 flex-1 truncate text-left font-medium"
+          onClick={() => {
+            const ref = approvalRef(item, route);
+            if ((item.source === "approval" || ref.kind === "discussion") && onOpenReference) {
+              onOpenReference(ref);
+            } else if (route) {
+              onOpenFullPage?.(route);
+            }
+          }}
+        >
+          {item.title}
+        </button>
         <span className="shrink-0 rounded bg-muted px-1 py-0.5 text-[10px] text-muted-foreground">
           {SOURCE_LABELS[item.source]}
         </span>
@@ -219,12 +245,14 @@ export function CockpitApprovalsCard({
   items,
   companyId,
   onOpenFullPage,
+  onOpenReference,
   onAsk,
   onReference,
 }: {
   items: CockpitApprovalItem[];
   companyId: string;
   onOpenFullPage?: (href: string) => void;
+  onOpenReference?: (ref: CommanderInputRef) => void;
   onAsk?: (text: string) => void;
   onReference?: (ref: CommanderInputRef, suggestedPrompt?: string) => void;
 }) {
@@ -239,6 +267,7 @@ export function CockpitApprovalsCard({
             item={item}
             companyId={companyId}
             onOpenFullPage={onOpenFullPage}
+            onOpenReference={onOpenReference}
             onAsk={onAsk}
             onReference={onReference}
           />

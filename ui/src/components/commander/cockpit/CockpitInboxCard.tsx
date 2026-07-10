@@ -111,7 +111,7 @@ export function CockpitInboxCard({
                     type="button"
                     aria-label="Ask Commander about this inbox item"
                     title="Ask Commander"
-                    className="hidden shrink-0 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground group-hover:flex"
+                    className="hidden shrink-0 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground group-hover:flex group-focus-within:flex"
                     onClick={() => {
                       const prompt = inboxItemPrompt(item);
                       const ref = inboxItemRef(item, href);
@@ -126,7 +126,7 @@ export function CockpitInboxCard({
                   type="button"
                   aria-label="Open inbox item"
                   title="Open inbox item"
-                  className="hidden shrink-0 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground group-hover:flex"
+                  className="hidden shrink-0 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground group-hover:flex group-focus-within:flex"
                   onClick={() => onOpenFullPage?.(href)}
                 >
                   <ExternalLink className="size-3" aria-hidden />

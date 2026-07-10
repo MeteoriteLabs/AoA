@@ -106,6 +106,7 @@ describe("Cockpit reference actions", () => {
       expect.objectContaining({ kind: "inbox", id: "hub-1", route: "/inbox/waiting/hub-1" }),
     );
     expect(onOpenFullPage).not.toHaveBeenCalled();
+
   });
 
   it("writes an inbox reference drag payload from inbox rows", () => {
@@ -159,6 +160,8 @@ describe("Cockpit reference actions", () => {
       expect.objectContaining({ kind: "discussion", id: "disc-1", route: "/discussions/disc-1" }),
     );
     expect(onOpenFullPage).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Open Sprint planning full page" }));
+    expect(onOpenFullPage).toHaveBeenCalledWith("/discussions/disc-1");
   });
 
   it("adds a note reference from sticky notes", () => {

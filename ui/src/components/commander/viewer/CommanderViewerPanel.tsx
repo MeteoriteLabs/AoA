@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { FileText, Globe, Home, Inbox, ListTodo, MessageSquare, ShieldCheck, StickyNote } from "lucide-react";
 import type { CommanderOutputRef } from "@armyofagents/shared";
@@ -20,6 +21,11 @@ import { resolveViewer } from "../../viewers/viewer-registry";
 import { CommanderViewerHome } from "./CommanderViewerHome";
 import { TaskDetail } from "../../TaskDetail";
 import { ApprovalDetailCore } from "../../approval/ApprovalDetailCore";
+import { HubActionBar } from "../../hub/HubActionBar";
+import { HubTabBody } from "../../hub/HubTabBody";
+import { hubTabForItem } from "../../hub/hubRegistry";
+import type { HubThreadPayload } from "../../hub/hubViewerModel";
+import { useHubItemMutations } from "../../../hooks/useHubItemMutations";
 import type { CommanderViewerApi } from "./useCommanderViewer";
 import type { ConversationViewerState, ViewerTab } from "./commanderViewerModel";
 
@@ -120,17 +126,34 @@ function TaskDetailTabBody({ tab, onDismiss }: TaskDetailTabBodyProps) {
 }
 
 function InboxRefTabBody({ tab, companyId }: { tab: ViewerTab; companyId: string }) {
+  const mutations = useHubItemMutations(companyId);
+  const [undoAction, setUndoAction] = useState<
+    | {
+        label: string;
+        itemId: string;
+        auditId?: string;
+        expectedVersion?: number;
+        restore?: { kind: "unsnooze" | "undismiss" };
+      }
+    | null
+  >(null);
   const {
     data: item,
     isLoading,
     isError,
   } = useQuery({
-    queryKey: ["commander-viewer-inbox", companyId, tab.refId],
+    queryKey: ["hub-items", companyId, "item", tab.refId],
     queryFn: () => hubItemsApi.getOne(companyId, tab.refId),
     enabled: Boolean(companyId && tab.refId),
   });
 
   if (isLoading) return <LoadingBody />;
+
+  if (isError || !item) {
+    return (
+      <UnavailableBody message="This Inbox item is no longer available, or you do not have access to it." />
+    );
+  }
 
   const title = item?.title ?? tab.inputRef?.label ?? tab.title;
   const summary = item?.summary ?? tab.inputRef?.detail ?? null;
@@ -138,8 +161,82 @@ function InboxRefTabBody({ tab, companyId }: { tab: ViewerTab; companyId: string
     ? [item.semanticType, item.priority, item.lane].filter(Boolean).join(" · ")
     : tab.inputRef?.source ?? "Inbox";
 
-  return (
-    <div className="h-full overflow-auto p-4" data-testid="commander-inbox-ref-body">
+  const hubTab = hubTabForItem(item);
+  const threadPayload = hubTab.kind === "thread"
+    ? (hubTab.payload as HubThreadPayload | undefined)
+    : undefined;
+  const mutationError = [
+    mutations.dismiss.error,
+    mutations.snooze.error,
+    mutations.markUnread.error,
+    mutations.act.error,
+    mutations.undo.error,
+  ].find(Boolean);
+
+  const handleUndo = () => {
+    if (!undoAction) return;
+    if (undoAction.restore) {
+      void mutations.undoPersonalState({
+        itemId: undoAction.itemId,
+        restore: undoAction.restore,
+      });
+    } else if (undoAction.auditId && undoAction.expectedVersion != null) {
+      mutations.undo.mutate({
+        itemId: undoAction.itemId,
+        payload: {
+          auditId: undoAction.auditId,
+          expectedVersion: undoAction.expectedVersion,
+        },
+      });
+    }
+    setUndoAction(null);
+  };
+
+  const actionBar = (
+    <HubActionBar
+      item={item}
+      onDismiss={(itemId) => {
+        mutations.dismiss.mutate(itemId);
+        setUndoAction({ label: "dismiss", itemId, restore: { kind: "undismiss" } });
+      }}
+      onSnooze={(itemId) => {
+        const until = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+        mutations.snooze.mutate({ itemId, until });
+        setUndoAction({ label: "snooze", itemId, restore: { kind: "unsnooze" } });
+      }}
+      onLifecycleAction={(target, action) => {
+        mutations.act.mutate(
+          {
+            itemId: target.id,
+            payload: { action, expectedVersion: target.version },
+          },
+          {
+            onSuccess: (result) => {
+              setUndoAction({
+                label: action,
+                itemId: target.id,
+                auditId: result.auditId,
+                expectedVersion: result.item.version,
+              });
+            },
+          },
+        );
+      }}
+      onMarkUnread={(itemId) => mutations.markUnread.mutate(itemId)}
+      undoAction={undoAction ? { label: undoAction.label, onUndo: handleUndo } : null}
+    />
+  );
+
+  if (hubTab.kind === "notification") {
+    return (
+      <div className="flex h-full min-h-0 flex-col" data-testid="commander-inbox-ref-body">
+        {actionBar}
+        {mutationError ? (
+          <p className="border-b border-border bg-destructive/5 px-4 py-2 text-xs text-destructive" role="alert">
+            The Inbox action could not be completed. Refresh the item and try again.
+          </p>
+        ) : null}
+        <div className="min-h-0 flex-1 overflow-auto p-4">
       <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
         <Inbox className="size-4" aria-hidden />
         <span>{meta}</span>
@@ -150,11 +247,40 @@ function InboxRefTabBody({ tab, companyId }: { tab: ViewerTab; companyId: string
       ) : (
         <p className="mt-3 text-sm text-muted-foreground">No further details.</p>
       )}
-      {isError ? (
-        <p className="mt-3 text-xs text-muted-foreground">
-          The live Inbox item could not be loaded, so this preview is showing the referenced context.
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex h-full min-h-0 flex-col" data-testid="commander-inbox-ref-body">
+      {actionBar}
+      {mutationError ? (
+        <p className="border-b border-border bg-destructive/5 px-4 py-2 text-xs text-destructive" role="alert">
+          The Inbox action could not be completed. Refresh the item and try again.
         </p>
       ) : null}
+      <div className="min-h-0 flex-1">
+        {threadPayload?.discussionId ? (
+          <DiscussionRefTabBody
+            companyId={companyId}
+            tab={{
+              id: `discussion:${threadPayload.discussionId}`,
+              kind: "discussion",
+              title: item.title,
+              refId: threadPayload.discussionId,
+            }}
+          />
+        ) : (
+          <HubTabBody
+            tab={hubTab}
+            companyId={companyId}
+            activeItem={item}
+            resolveHubItem={(itemId) => (itemId === item.id ? item : undefined)}
+            onOpenTab={() => {}}
+          />
+        )}
+      </div>
     </div>
   );
 }
@@ -172,6 +298,32 @@ function NoteRefTabBody({ tab }: { tab: ViewerTab }) {
       ) : (
         <p className="mt-3 text-sm text-muted-foreground">No note body was included with this reference.</p>
       )}
+    </div>
+  );
+}
+
+function ApprovalRefTabBody({ tab }: { tab: ViewerTab }) {
+  if (!tab.inputRef?.source || tab.inputRef.source === "approval") {
+    return <ApprovalDetailCore approvalId={tab.refId} embedded onOpenTab={() => {}} />;
+  }
+
+  return (
+    <div className="h-full overflow-auto p-4" data-testid="commander-approval-ref-body">
+      <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+        <ShieldCheck className="size-4" aria-hidden />
+        <span>{tab.inputRef.source.replaceAll("_", " ")}</span>
+      </div>
+      <h2 className="mt-2 text-base font-semibold leading-snug text-foreground">
+        {tab.inputRef.label}
+      </h2>
+      {tab.inputRef.detail ? (
+        <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-muted-foreground">
+          {tab.inputRef.detail}
+        </p>
+      ) : null}
+      <p className="mt-4 text-xs text-muted-foreground">
+        Review and act on this item from its Cockpit card or open its full feature page.
+      </p>
     </div>
   );
 }
@@ -303,11 +455,11 @@ export function TabBodySwitch({
   }
 
   if (activeTab.kind === "approval") {
-    return <ApprovalDetailCore approvalId={activeTab.refId} embedded onOpenTab={() => {}} />;
+    return <ApprovalRefTabBody tab={activeTab} />;
   }
 
   if (activeTab.kind === "inbox") {
-    return <InboxRefTabBody tab={activeTab} companyId={companyId} />;
+    return <InboxRefTabBody key={activeTab.id} tab={activeTab} companyId={companyId} />;
   }
 
   if (activeTab.kind === "note") {

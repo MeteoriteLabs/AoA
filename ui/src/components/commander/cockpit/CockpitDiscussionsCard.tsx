@@ -1,4 +1,4 @@
-import { MessageSquare as MessageSquareIcon } from "lucide-react";
+import { ExternalLink, MessageSquare as MessageSquareIcon } from "lucide-react";
 import type { CockpitDiscussionItem, CommanderInputRef } from "@armyofagents/shared";
 import { setCommanderRefDragData } from "./cockpitReferenceDrag";
 import { COCKPIT_DRAGGABLE_ROW_CLASS } from "./cockpitRowStyles";
@@ -76,7 +76,7 @@ export function CockpitDiscussionsCard({
               <button
                 type="button"
                 aria-label="Ask Commander about this"
-                className="ml-1 hidden shrink-0 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground group-hover:flex"
+                className="ml-1 hidden shrink-0 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground group-hover:flex group-focus-within:flex"
                 onClick={() => {
                   const prompt = discussionPrompt(item);
                   const ref = discussionRef(item);
@@ -87,6 +87,15 @@ export function CockpitDiscussionsCard({
                 <MessageSquareIcon className="size-3" aria-hidden />
               </button>
             )}
+            <button
+              type="button"
+              aria-label={`Open ${discussionTitle(item)} full page`}
+              title="Open full page"
+              className="hidden shrink-0 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground group-hover:flex group-focus-within:flex"
+              onClick={() => onOpenFullPage?.(`/discussions/${item.id}`)}
+            >
+              <ExternalLink className="size-3" aria-hidden />
+            </button>
           </li>
         ))}
       </ul>

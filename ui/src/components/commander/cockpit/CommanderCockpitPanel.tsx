@@ -284,11 +284,12 @@ export const COCKPIT_REGISTRY: CockpitCardRenderDef[] = [
     icon: CheckCircle2,
     summary: (d) => d.approvals.length > 0 ? `${d.approvals.length} pending` : null,
     isActive: (d) => d.approvals.length > 0,
-    render: ({ data, companyId, onOpenFullPage, onAsk, onReference }) => (
+    render: ({ data, companyId, onOpenFullPage, onOpenInputRef, onAsk, onReference }) => (
       <CockpitApprovalsCard
         items={data.approvals}
         companyId={companyId}
         onOpenFullPage={onOpenFullPage}
+        onOpenReference={onOpenInputRef}
         onAsk={onAsk}
         onReference={onReference}
       />
