@@ -93,6 +93,26 @@ describe("human capability routes", () => {
     expect(res.body.documents[0].filename).toBe("skills.md");
   });
 
+  it("rejects agent actors from the UI capability document list route", async () => {
+    const app = createApp({ type: "agent", companyId, agentId: "agent-1" });
+
+    const res = await request(app)
+      .get(`/api/companies/${companyId}/team/users/${targetUserId}/capabilities`);
+
+    expect(res.status).toBe(403);
+    expect(mockHumanCapabilitiesService.listDocuments).not.toHaveBeenCalled();
+  });
+
+  it("rejects MCP actors from the UI capability document list route", async () => {
+    const app = createApp({ type: "mcp", companyId, userId: actorUserId });
+
+    const res = await request(app)
+      .get(`/api/companies/${companyId}/team/users/${targetUserId}/capabilities`);
+
+    expect(res.status).toBe(403);
+    expect(mockHumanCapabilitiesService.listDocuments).not.toHaveBeenCalled();
+  });
+
   it("allows self to update a capability document and logs activity", async () => {
     const app = createApp(makeActor());
 

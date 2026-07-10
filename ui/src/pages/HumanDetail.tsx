@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useParams, Link, useNavigate } from "@/lib/router";
+import { useParams, Link, useNavigate, useSearchParams } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft,
@@ -22,6 +22,7 @@ import {
 import type {
   ActivityEvent,
   HumanCapabilityDocumentDetail,
+  HumanWorkloadTaskSummary,
   HumanSocialLink,
   HumanSocialLinkType,
   Issue,
@@ -42,6 +43,7 @@ import { PageSkeleton } from "../components/PageSkeleton";
 import { EmptyState } from "../components/EmptyState";
 import { MetricCard } from "../components/MetricCard";
 import { Identity } from "../components/Identity";
+import { TaskSlideOver } from "../components/TaskSlideOver";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -80,6 +82,7 @@ const ROLE_LABELS: Record<UserRole, string> = {
 
 const TAB_ITEMS = [
   { value: "overview", label: "Overview" },
+  { value: "workload", label: "Workload" },
   { value: "roles", label: "Roles" },
   { value: "capabilities", label: "Capabilities" },
   { value: "settings", label: "Settings" },
@@ -250,6 +253,50 @@ function TaskListSection({
   );
 }
 
+function WorkloadTaskRow({ task, onOpen }: { task: HumanWorkloadTaskSummary; onOpen: (taskId: string) => void }) {
+  return (
+    <button
+      type="button"
+      aria-label={`Open ${task.title}`}
+      onClick={() => onOpen(task.id)}
+      className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-lg px-3 py-2 text-left text-sm hover:bg-accent/50 transition-colors text-inherit"
+    >
+      <span className="min-w-0">
+        <span className="mr-2 text-xs font-medium text-muted-foreground">{task.identifier ?? task.id.slice(0, 8)}</span>
+        <span className="font-medium">{task.title}</span>
+      </span>
+      <span className="text-xs capitalize text-muted-foreground">{displayIssueStatus(task.status)}</span>
+    </button>
+  );
+}
+
+function WorkloadSection({
+  title,
+  tasks,
+  empty,
+  onOpenTask,
+}: {
+  title: string;
+  tasks: HumanWorkloadTaskSummary[];
+  empty: string;
+  onOpenTask: (taskId: string) => void;
+}) {
+  return (
+    <section className="rounded-xl border border-border bg-card p-4">
+      <h3 className="mb-3 text-sm font-semibold">{title}</h3>
+      {tasks.length === 0 ? (
+        <p className="text-sm text-muted-foreground">{empty}</p>
+      ) : (
+        <div className="space-y-1">
+          {tasks.map((task) => (
+            <WorkloadTaskRow key={task.id} task={task} onOpen={onOpenTask} />
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function ActivitySection({ events, isLoading }: { events: ActivityEvent[]; isLoading: boolean }) {
   const visible = events.slice(0, 6);
   return (
@@ -295,9 +342,18 @@ export function HumanDetail() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
-  const activeTab = tab === "settings" || tab === "roles" || tab === "capabilities" ? tab : "overview";
+  const activeTab = tab === "settings" || tab === "roles" || tab === "capabilities" || tab === "workload"
+    ? tab
+    : "overview";
+  const selectedTaskId = searchParams.get("task");
+
+  const humanPath = useCallback(
+    (targetTab = activeTab) => targetTab === "overview" ? `/team/${userId}` : `/team/${userId}/${targetTab}`,
+    [activeTab, userId],
+  );
 
   const handleTabChange = useCallback(
     (value: string) => {
@@ -305,6 +361,17 @@ export function HumanDetail() {
     },
     [navigate, userId],
   );
+
+  const handleOpenTask = useCallback(
+    (taskId: string) => {
+      navigate(`${humanPath()}?task=${encodeURIComponent(taskId)}`);
+    },
+    [humanPath, navigate],
+  );
+
+  const handleCloseTask = useCallback(() => {
+    navigate(humanPath(), { replace: true });
+  }, [humanPath, navigate]);
 
   // Member + dependencies
   const { data, isLoading } = useQuery({
@@ -330,6 +397,14 @@ export function HumanDetail() {
       : ["team", "none", "capabilities"],
     queryFn: () => teamApi.listCapabilities(selectedCompanyId!, userId!),
     enabled: Boolean(selectedCompanyId && userId) && activeTab === "capabilities",
+  });
+
+  const workloadQuery = useQuery({
+    queryKey: selectedCompanyId && userId
+      ? queryKeys.team.workload(selectedCompanyId, userId)
+      : ["team", "none", "member", "workload"],
+    queryFn: () => teamApi.getWorkload(selectedCompanyId!, userId!),
+    enabled: Boolean(selectedCompanyId && userId) && activeTab === "workload",
   });
 
   // Departments (for role editing)
@@ -1306,6 +1381,126 @@ export function HumanDetail() {
           </div>
         )}
 
+        {activeTab === "workload" && (
+          <div className="space-y-4 mt-4">
+            {workloadQuery.isLoading ? (
+              <PageSkeleton />
+            ) : !workloadQuery.data ? (
+              <EmptyState
+                icon={ClipboardList}
+                message="No workload data"
+                description="Workload could not be loaded."
+              />
+            ) : (
+              <>
+                <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+                  <div className="rounded-lg border border-border bg-card">
+                    <MetricCard
+                      icon={Shield}
+                      value={workloadQuery.data.summary.responsibleOpenTaskCount}
+                      label="Responsible"
+                    />
+                  </div>
+                  <div className="rounded-lg border border-border bg-card">
+                    <MetricCard
+                      icon={ClipboardList}
+                      value={workloadQuery.data.summary.assignedOpenTaskCount}
+                      label="Assigned"
+                    />
+                  </div>
+                  <div className="rounded-lg border border-border bg-card">
+                    <MetricCard
+                      icon={Bot}
+                      value={workloadQuery.data.summary.managedAgentCount}
+                      label="Managed Agents"
+                    />
+                  </div>
+                  <div className="rounded-lg border border-border bg-card">
+                    <MetricCard
+                      icon={ClipboardList}
+                      value={workloadQuery.data.summary.managedAgentOpenTaskCount}
+                      label="Agent Tasks"
+                    />
+                  </div>
+                  <div className="rounded-lg border border-border bg-card">
+                    <MetricCard
+                      icon={Activity}
+                      value={workloadQuery.data.summary.attentionCount}
+                      label="Needs Attention"
+                    />
+                  </div>
+                </div>
+
+                <section className="rounded-xl border border-border bg-card p-4">
+                  <h3 className="mb-3 text-sm font-semibold">Needs Attention</h3>
+                  {workloadQuery.data.attentionItems.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">No blocked or review tasks need attention.</p>
+                  ) : (
+                    <div className="space-y-1">
+                      {workloadQuery.data.attentionItems.map((item) => (
+                        <button
+                          type="button"
+                          key={`${item.source}:${item.taskId}`}
+                          aria-label={`Open ${item.title}`}
+                          onClick={() => handleOpenTask(item.taskId)}
+                          className="flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-left text-sm hover:bg-accent/50 transition-colors text-inherit"
+                        >
+                          <span className="min-w-0 truncate font-medium">{item.title}</span>
+                          <Badge variant="outline" className="capitalize">{displayIssueStatus(item.status)}</Badge>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </section>
+
+                <div className="grid gap-4 xl:grid-cols-2">
+                  <WorkloadSection
+                    title="Responsible Tasks"
+                    tasks={workloadQuery.data.responsibleTasks}
+                    empty="No open tasks owned by this person."
+                    onOpenTask={handleOpenTask}
+                  />
+                  <WorkloadSection
+                    title="Assigned Tasks"
+                    tasks={workloadQuery.data.assignedTasks}
+                    empty="No open tasks assigned directly to this person."
+                    onOpenTask={handleOpenTask}
+                  />
+                </div>
+
+                <div className="grid gap-4 xl:grid-cols-2">
+                  <WorkloadSection
+                    title="Managed-Agent Tasks"
+                    tasks={workloadQuery.data.managedAgentTasks}
+                    empty="No open tasks assigned to this person's managed agents."
+                    onOpenTask={handleOpenTask}
+                  />
+                  <section className="rounded-xl border border-border bg-card p-4">
+                    <h3 className="mb-3 text-sm font-semibold">Managed Agents</h3>
+                    {workloadQuery.data.managedAgents.length === 0 ? (
+                      <p className="text-sm text-muted-foreground">No managed agents.</p>
+                    ) : (
+                      <div className="space-y-1">
+                        {workloadQuery.data.managedAgents.map((agent) => (
+                          <Link
+                            key={agent.id}
+                            to={`/agents/${agent.id}`}
+                            className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm hover:bg-accent/50 transition-colors no-underline text-inherit"
+                          >
+                            <Bot className="h-4 w-4 text-muted-foreground shrink-0" />
+                            <span className="min-w-0 flex-1 truncate font-medium">{agent.name}</span>
+                            <Badge variant="outline">{agent.openTaskCount} open</Badge>
+                          </Link>
+                        ))}
+                      </div>
+                    )}
+                  </section>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
         {/* Capabilities Tab */}
         {activeTab === "capabilities" && (
           <div className="mt-4 grid gap-4 lg:h-[calc(100vh-18rem)] lg:min-h-[34rem] lg:grid-cols-[16rem_minmax(0,1fr)] lg:items-stretch">
@@ -1580,6 +1775,11 @@ export function HumanDetail() {
           </div>
         )}
       </Tabs>
+      <TaskSlideOver
+        issueId={selectedTaskId}
+        open={Boolean(selectedTaskId)}
+        onClose={handleCloseTask}
+      />
     </div>
   );
 }

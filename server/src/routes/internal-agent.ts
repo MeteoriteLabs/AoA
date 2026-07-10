@@ -808,6 +808,7 @@ export function internalAgentRoutes(db: Db) {
       const companyId = req.params.companyId as string;
       assertCompanyAccess(req, companyId);
       await assertRole(db, req, companyId, "founder");
+      await ensureCommanderAgent(db, companyId);
 
       const configs = await db
         .select()

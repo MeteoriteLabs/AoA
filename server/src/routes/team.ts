@@ -181,6 +181,10 @@ export function teamRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     const userId = req.params.userId as string;
     assertCompanyAccess(req, companyId);
+    if (req.actor.type !== "board") {
+      res.status(403).json({ error: "Board authentication required" });
+      return;
+    }
     const actorUserId = req.actor.type === "board" ? req.actor.userId ?? null : null;
     res.json(await humanCapabilities.listDocuments(companyId, userId, actorUserId));
   });
@@ -317,6 +321,13 @@ export function teamRoutes(db: Db) {
   );
 
   // GET /companies/:companyId/team/users/:userId — Get member detail
+  router.get("/companies/:companyId/team/users/:userId/workload", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const userId = req.params.userId as string;
+    assertCompanyAccess(req, companyId);
+    res.json(await team.getWorkload(companyId, userId));
+  });
+
   router.get("/companies/:companyId/team/users/:userId", async (req, res) => {
     const companyId = req.params.companyId as string;
     const userId = req.params.userId as string;

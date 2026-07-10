@@ -66,7 +66,7 @@ export function createActionTools(): AgentTool[] {
         required: ["taskId"],
       },
       category: "action",
-      requiredRole: "team_member",
+      requiredRole: "team_lead",
       requiresConfirmation: true,
       execute: async (params: unknown, ctx) => {
         const { taskId, title, status, priority, responsibleUserId } = (params ?? {}) as Record<string, unknown>;

@@ -3,7 +3,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { HumanDetail } from "../pages/HumanDetail";
 import { teamApi } from "../api/team";
 import { issuesApi } from "../api/issues";
@@ -35,6 +35,7 @@ vi.mock("../api/team", () => ({
     createCapabilityDocument: vi.fn(),
     updateCapabilityDocument: vi.fn(),
     deleteCapabilityDocument: vi.fn(),
+    getWorkload: vi.fn(),
   },
 }));
 
@@ -62,6 +63,21 @@ vi.mock("../api/assets", () => ({
   },
 }));
 
+vi.mock("../components/TaskSlideOver", () => ({
+  TaskSlideOver: ({ issueId, open, onClose }: { issueId: string | null; open: boolean; onClose: () => void }) =>
+    open ? (
+      <div role="dialog" aria-label="Task details">
+        <span>Local task slide-over: {issueId}</span>
+        <button type="button" onClick={onClose}>Close task</button>
+      </div>
+    ) : null,
+}));
+
+function LocationProbe() {
+  const location = useLocation();
+  return <div data-testid="current-location">{`${location.pathname}${location.search}`}</div>;
+}
+
 function renderHumanDetail(path = "/team/user-1") {
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -75,6 +91,7 @@ function renderHumanDetail(path = "/team/user-1") {
       <QueryClientProvider client={queryClient}>
         <SidebarProvider>
           <MemoryRouter initialEntries={[path]}>
+            <LocationProbe />
             <Routes>
               <Route path="/team/:userId" element={children} />
               <Route path="/team/:userId/:tab" element={children} />
@@ -207,6 +224,91 @@ function issue(overrides: Partial<Record<string, unknown>>) {
   };
 }
 
+function makeWorkload() {
+  const updatedAt = new Date("2026-07-09T00:00:00.000Z");
+  return {
+    companyId: "company-1",
+    userId: "user-1",
+    generatedAt: updatedAt,
+    summary: {
+      responsibleOpenTaskCount: 1,
+      assignedOpenTaskCount: 1,
+      managedAgentCount: 1,
+      managedAgentOpenTaskCount: 1,
+      attentionCount: 1,
+    },
+    responsibleTasks: [
+      {
+        id: "issue-1",
+        identifier: "MANA-1",
+        title: "Own launch checklist",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: null,
+        assigneeUserId: "user-1",
+        responsibleUserId: "user-1",
+        dueDate: null,
+        updatedAt,
+      },
+    ],
+    assignedTasks: [
+      {
+        id: "issue-2",
+        identifier: "MANA-2",
+        title: "Direct human task",
+        status: "in_progress",
+        priority: "high",
+        assigneeAgentId: null,
+        assigneeUserId: "user-1",
+        responsibleUserId: "user-1",
+        dueDate: null,
+        updatedAt,
+      },
+    ],
+    managedAgents: [
+      {
+        id: "agent-1",
+        name: "Engineer",
+        role: "engineer",
+        status: "idle",
+        rootAgentId: "agent-1",
+        rootAgentName: "Engineer",
+        openTaskCount: 1,
+      },
+    ],
+    managedAgentTasks: [
+      {
+        id: "issue-3",
+        identifier: "MANA-3",
+        title: "Managed agent blocked task",
+        status: "blocked",
+        priority: "high",
+        assigneeAgentId: "agent-1",
+        assigneeUserId: null,
+        responsibleUserId: "user-1",
+        dueDate: null,
+        updatedAt,
+        managedAgentId: "agent-1",
+        managedAgentName: "Engineer",
+        rootAgentId: "agent-1",
+        rootAgentName: "Engineer",
+      },
+    ],
+    attentionItems: [
+      {
+        kind: "blocked_task",
+        taskId: "issue-3",
+        identifier: "MANA-3",
+        title: "Managed agent blocked task",
+        status: "blocked",
+        source: "managed_agent",
+        agentId: "agent-1",
+        agentName: "Engineer",
+      },
+    ],
+  } as never;
+}
+
 beforeAll(() => {
   if (!Element.prototype.hasPointerCapture) {
     Element.prototype.hasPointerCapture = () => false;
@@ -234,6 +336,7 @@ beforeEach(() => {
     },
   });
   vi.mocked(teamApi.get).mockResolvedValue(teamSummary);
+  vi.mocked(teamApi.getWorkload).mockResolvedValue(makeWorkload());
   vi.mocked(teamApi.updateProfile).mockResolvedValue({
     profile: {
       id: "profile-1",
@@ -391,6 +494,48 @@ describe("HumanDetail", () => {
     expect(issuesApi.list).toHaveBeenCalledWith("company-1", { assigneeAgentId: "agent-1", taskScope: "all" });
     expect(issuesApi.list).toHaveBeenCalledWith("company-1", { assigneeAgentId: "agent-2", taskScope: "all" });
     expect(activityApi.list).toHaveBeenCalledWith("company-1", { actorType: "user", actorId: "user-1" });
+  });
+
+  it("loads workload data on the Workload tab", async () => {
+    renderHumanDetail("/team/user-1/workload");
+
+    await waitFor(() => {
+      expect(teamApi.getWorkload).toHaveBeenCalledWith("company-1", "user-1");
+    });
+  });
+
+  it("renders workload summary, attention, task links, and managed agents without inline mutations", async () => {
+    renderHumanDetail("/team/user-1/workload");
+
+    expect(await screen.findByRole("heading", { name: "Needs Attention" })).toBeInTheDocument();
+    expect(screen.getByText("Own launch checklist")).toBeInTheDocument();
+    expect(screen.getByText("Direct human task")).toBeInTheDocument();
+    expect(screen.getAllByText("Managed agent blocked task")).toHaveLength(2);
+    expect(screen.getByText("Engineer")).toBeInTheDocument();
+
+    expect(screen.getByText("Responsible")).toBeInTheDocument();
+    expect(screen.getByText("Assigned")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Managed Agents" })).toBeInTheDocument();
+
+    expect(screen.getByRole("button", { name: /Open Own launch checklist/ })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Engineer/ })).toHaveAttribute("href", "/agents/agent-1");
+    expect(screen.queryByRole("button", { name: /change status/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /assign/i })).not.toBeInTheDocument();
+  });
+
+  it("opens workload tasks in a local slide-over without leaving the human page", async () => {
+    const user = userEvent.setup();
+    renderHumanDetail("/team/user-1/workload");
+
+    await user.click(await screen.findByRole("button", { name: /Open Own launch checklist/ }));
+
+    expect(screen.getByRole("dialog", { name: "Task details" })).toHaveTextContent("Local task slide-over: issue-1");
+    expect(screen.getByTestId("current-location")).toHaveTextContent("/team/user-1/workload?task=issue-1");
+
+    await user.click(screen.getByRole("button", { name: "Close task" }));
+
+    expect(screen.queryByRole("dialog", { name: "Task details" })).not.toBeInTheDocument();
+    expect(screen.getByTestId("current-location")).toHaveTextContent("/team/user-1/workload");
   });
 
   it("opens a modal from the header and saves profile display fields", async () => {

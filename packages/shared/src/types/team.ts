@@ -1,4 +1,4 @@
-import type { PermissionKey, UserRole } from "../constants.js";
+import type { IssuePriority, IssueStatus, PermissionKey, UserRole } from "../constants.js";
 
 export type HumanSocialLinkType =
   | "linkedin"
@@ -185,6 +185,67 @@ export interface HumanSearchResponse {
   companyId: string;
   query: string;
   results: HumanSearchResult[];
+}
+
+export interface HumanWorkloadTaskSummary {
+  id: string;
+  identifier: string | null;
+  title: string;
+  status: IssueStatus;
+  priority: IssuePriority;
+  assigneeAgentId: string | null;
+  assigneeUserId: string | null;
+  responsibleUserId: string | null;
+  dueDate: Date | null;
+  updatedAt: Date;
+}
+
+export interface HumanWorkloadManagedAgent {
+  id: string;
+  name: string;
+  role: string;
+  status: string;
+  rootAgentId: string;
+  rootAgentName: string;
+  openTaskCount: number;
+}
+
+export interface HumanWorkloadManagedAgentTask extends HumanWorkloadTaskSummary {
+  managedAgentId: string;
+  managedAgentName: string;
+  rootAgentId: string;
+  rootAgentName: string;
+}
+
+export interface HumanWorkloadAttentionItem {
+  kind: "blocked_task" | "review_task";
+  taskId: string;
+  identifier: string | null;
+  title: string;
+  status: IssueStatus;
+  source: "responsible" | "assigned" | "managed_agent";
+  agentId: string | null;
+  agentName: string | null;
+}
+
+export interface HumanWorkloadSummary {
+  responsibleOpenTaskCount: number;
+  assignedOpenTaskCount: number;
+  managedAgentCount: number;
+  managedAgentOpenTaskCount: number;
+  attentionCount: number;
+}
+
+export interface HumanWorkload {
+  companyId: string;
+  userId: string;
+  generatedAt: Date;
+  summary: HumanWorkloadSummary;
+  responsibleTasks: HumanWorkloadTaskSummary[];
+  assignedTasks: HumanWorkloadTaskSummary[];
+  managedAgents: HumanWorkloadManagedAgent[];
+  managedAgentTasks: HumanWorkloadManagedAgentTask[];
+  attentionItems: HumanWorkloadAttentionItem[];
 }
 
 export type HumanContextResolutionMode =

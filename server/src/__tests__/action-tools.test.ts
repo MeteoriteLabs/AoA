@@ -127,6 +127,7 @@ describe("Action Tools", () => {
     const updateTask = createActionTools().find((tool) => tool.name === "update_task")!;
     const properties = updateTask.parameters.properties as Record<string, any>;
 
+    expect(updateTask.requiredRole).toBe("team_lead");
     expect(updateTask.description).not.toMatch(/executor assignee/i);
     expect(updateTask.description).toMatch(/assign_task.*assignee reassignment/i);
     expect(properties.responsibleUserId).toBeDefined();

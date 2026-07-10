@@ -103,7 +103,7 @@ const joinRequest: JoinRequest = {
   updatedAt: new Date("2026-07-07T10:00:00.000Z"),
 };
 
-function renderHumansTab() {
+function renderHumansTab({ highlightId }: { highlightId?: string | null } = {}) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false, gcTime: 0 },
@@ -122,6 +122,7 @@ function renderHumansTab() {
   return render(
     <HumansTab
       teamSummary={teamSummary}
+      highlightId={highlightId}
       permissions={teamSummary.currentUser!.permissions}
       isSystemAdmin={false}
     />,
@@ -185,6 +186,14 @@ describe("HumansTab", () => {
       expect(accessApi.approveJoinRequest).toHaveBeenCalledWith("company-1", "jr-1");
     });
     expect(pushToast).toHaveBeenCalledWith({ title: "Join request approved", tone: "success" });
+  });
+
+  it("does not pulse or ring a single human card when highlightId is present", async () => {
+    const { container } = renderHumansTab({ highlightId: "founder-1" });
+
+    expect(await screen.findAllByText("Founder")).not.toHaveLength(0);
+    expect(container.querySelector(".animate-pulse")).not.toBeInTheDocument();
+    expect(container.querySelector(".ring-primary")).not.toBeInTheDocument();
   });
 
   it("declines pending join requests inline", async () => {

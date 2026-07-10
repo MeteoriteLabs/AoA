@@ -84,6 +84,7 @@ export const queryKeys = {
       ["team", companyId, "humans", "search", input] as const,
     member: (companyId: string, userId: string) => ["team", companyId, "member", userId] as const,
     dependencies: (companyId: string, userId: string) => ["team", companyId, "dependencies", userId] as const,
+    workload: (companyId: string, userId: string) => ["team", companyId, "member", userId, "workload"] as const,
     capabilities: (companyId: string, userId: string) => ["team", companyId, "member", userId, "capabilities"] as const,
   },
   teams: {

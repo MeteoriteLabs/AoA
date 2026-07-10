@@ -4,6 +4,7 @@ import type {
   CreateHumanCapabilityDocument,
   HumanCapabilityBundle,
   HumanCapabilityDocumentDetail,
+  HumanWorkload,
   HumanSearchResponse,
   MemberDependencies,
   SearchHumansInput,
@@ -61,6 +62,8 @@ export const teamApi = {
     api.get<{ member: TeamMemberSummary; dependencies: MemberDependencies }>(
       `/companies/${companyId}/team/users/${userId}`,
     ),
+  getWorkload: (companyId: string, userId: string) =>
+    api.get<HumanWorkload>(`/companies/${companyId}/team/users/${userId}/workload`),
   getDependencies: (companyId: string, userId: string) =>
     api.get<MemberDependencies>(`/companies/${companyId}/team/users/${userId}/dependencies`),
   transferAdmin: (companyId: string, input: TransferAdmin) =>

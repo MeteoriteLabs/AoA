@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Users, UserPlus, Shield, ArrowRightLeft, RotateCw, X, Search, Mail } from "lucide-react";
 import type { HumanSearchResult, JoinRequest, TeamMemberSummary, TeamSummary, TeamPermissionSummary, UserRole } from "@armyofagents/shared";
@@ -69,32 +69,21 @@ function PermissionDisabledButton({
 function MemberCard({
   member,
   members,
-  isHighlighted,
 }: {
   member: TeamMemberSummary;
   members: TeamMemberSummary[];
-  isHighlighted: boolean;
 }) {
   const navigate = useNavigate();
-  const cardRef = useRef<HTMLDivElement>(null);
   const displayName = member.displayName ?? member.email ?? member.userId.slice(0, 8);
   const initials = getInitials(displayName);
   const parent = member.parentId
     ? members.find((m) => m.userId === member.parentId)
     : null;
 
-  useEffect(() => {
-    if (isHighlighted && cardRef.current) {
-      cardRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
-    }
-  }, [isHighlighted]);
-
   return (
     <ClickableDiv
-      ref={cardRef}
       className={cn(
         "border border-border bg-card rounded-lg p-4 transition-all duration-150 cursor-pointer hover:bg-accent/30",
-        isHighlighted && "ring-2 ring-primary animate-pulse",
       )}
       onClick={() => navigate(`/team/${member.userId}`)}
     >
@@ -385,7 +374,7 @@ function JoinRequestCard({
   );
 }
 
-export function HumansTab({ teamSummary, highlightId, permissions, isSystemAdmin, onMutationSuccess }: HumansTabProps) {
+export function HumansTab({ teamSummary, permissions, isSystemAdmin, onMutationSuccess }: HumansTabProps) {
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const [addMemberOpen, setAddMemberOpen] = useState(false);
@@ -652,7 +641,6 @@ export function HumansTab({ teamSummary, highlightId, permissions, isSystemAdmin
                 key={member.userId}
                 member={member}
                 members={members}
-                isHighlighted={highlightId === member.userId}
               />
             ))}
             {filteredInvites.map((invite) => (

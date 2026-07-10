@@ -16,23 +16,48 @@ import { ensureCommanderAgent, COMMANDER_TOOL_ALLOWLIST } from "../services/inte
 function sel(rows:unknown[]){const c:any={};c.from=()=>c;c.where=()=>c;c.limit=()=>c;c.then=(r:(v:unknown[])=>unknown)=>Promise.resolve(rows).then(r);return c;}
 describe("ensureCommanderAgent", () => {
   beforeEach(() => { eqMock.mockClear(); andMock.mockClear(); seedBundleFn.mockClear(); });
-  it("returns existing commander id, no insert (toolAllowlist already set → no update)", async () => {
+  it("default Commander allowlist includes human discovery and context tools", () => {
+    expect(COMMANDER_TOOL_ALLOWLIST).toContain("find_humans");
+    expect(COMMANDER_TOOL_ALLOWLIST).toContain("query_human_context");
+  });
+
+  it("returns existing commander id, no insert (complete toolAllowlist already set -> no update)", async () => {
     // With atomic INSERT ON CONFLICT, insert is always attempted but returns [] on conflict.
     // The fallback SELECT then finds the existing commander.
     const insert = vi.fn(()=>({values:()=>({onConflictDoNothing:()=>({returning:()=>Promise.resolve([])})})}));
     const setCalls: Array<Record<string, unknown>> = [];
     const update = vi.fn(()=>({set:(v:Record<string, unknown>)=>{setCalls.push(v);return{where:()=>Promise.resolve([])};}}));
-    const existingRc = { aoa: { role: "lead", toolAllowlist: ["delegate_to_subagent"] }, heartbeat: { enabled:false, intervalSec:0 } };
+    const existingRc = { aoa: { role: "lead", toolAllowlist: [...COMMANDER_TOOL_ALLOWLIST] }, heartbeat: { enabled:false, intervalSec:0 } };
     const db:any = { select:()=>sel([{id:"cmd-1", runtimeConfig: existingRc}]), insert, update };
     expect(await ensureCommanderAgent(db,"co-1")).toBe("cmd-1");
     // insert is called (attempt), but the conflict path means no new row was created
     expect(insert).toHaveBeenCalled();
-    // Agent row must NOT be updated when toolAllowlist is already set
+    // Agent row must NOT be updated when the default toolAllowlist is already complete
     const agentRcUpdates = setCalls.filter((s) => "runtimeConfig" in s);
     expect(agentRcUpdates).toHaveLength(0);
     // Only the internalAgentConfig.agentId link update is expected
     const configLinkUpdates = setCalls.filter((s) => "agentId" in s);
     expect(configLinkUpdates).toHaveLength(1);
+  });
+  it("D2 backfill: existing row with partial toolAllowlist -> merges missing Commander tools", async () => {
+    const agentUpdateVals:any[]=[];
+    const existingRc = { aoa: { role: "lead", toolAllowlist: ["delegate_to_subagent", "custom_tool"] }, heartbeat: { enabled:false, intervalSec:0 } };
+    const db:any = {
+      select:()=>sel([{id:"cmd-partial", runtimeConfig: existingRc}]),
+      insert: vi.fn(()=>({values:()=>({onConflictDoNothing:()=>({returning:()=>Promise.resolve([])})})})),
+      update:()=>({set:(v:any)=>{agentUpdateVals.push(v);return{where:()=>Promise.resolve([])};}}),
+    };
+    expect(await ensureCommanderAgent(db,"co-1")).toBe("cmd-partial");
+    const agentRcUpdate = agentUpdateVals.find((v:any)=>v.runtimeConfig);
+    expect(agentRcUpdate).toBeDefined();
+    expect(agentRcUpdate.runtimeConfig.aoa.toolAllowlist).toEqual([
+      "delegate_to_subagent",
+      "custom_tool",
+      ...COMMANDER_TOOL_ALLOWLIST.filter((tool) => tool !== "delegate_to_subagent"),
+    ]);
+    expect(agentRcUpdate.runtimeConfig.aoa.toolAllowlist).toContain("find_humans");
+    expect(agentRcUpdate.runtimeConfig.aoa.toolAllowlist).toContain("query_human_context");
+    expect(agentRcUpdate.runtimeConfig.aoa.role).toBe("lead");
   });
   it("creates kind='aoa' role='general' runtimeConfig.aoa.role='lead' + toolAllowlist + links config", async () => {
     const av:any[]=[]; const sv:any[]=[];
