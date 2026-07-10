@@ -35,6 +35,8 @@
     "check:tokens": "node scripts/check-forbidden-tokens.mjs",
     "gen:tools": "tsx scripts/generate-tools-manifest.ts",
     "gen:tools:check": "tsx scripts/generate-tools-manifest.ts --check",
+    "gen:tools:md": "tsx scripts/generate-tools-md.ts",
+    "gen:tools:md:check": "tsx scripts/generate-tools-md.ts --check",
     "docs:dev": "cd docs && npx mintlify dev",
     "smoke:openclaw-join": "./scripts/smoke/openclaw-join.sh",
     "smoke:openclaw-docker-ui": "./scripts/smoke/openclaw-docker-ui.sh",

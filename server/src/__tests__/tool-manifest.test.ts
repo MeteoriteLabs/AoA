@@ -5,6 +5,7 @@ import { createToolRegistry } from "../services/internal-agent/tool-registry.js"
 import {
   buildToolManifest,
   serializeToolManifest,
+  renderCommanderToolsMd,
 } from "../services/internal-agent/tool-manifest.js";
 
 describe("tool manifest — contract vs live registry", () => {
@@ -54,5 +55,21 @@ describe("tool manifest — committed artifact is fresh", () => {
       "utf8",
     );
     expect(committed).toBe(serializeToolManifest(buildToolManifest()));
+  });
+});
+
+describe("TOOLS.md — generated commander cheat-sheet is fresh", () => {
+  it("onboarding-assets/commander/TOOLS.md equals the rendered output", () => {
+    const committed = readFileSync(
+      resolve(__dirname, "../onboarding-assets/commander/TOOLS.md"),
+      "utf8",
+    );
+    expect(committed).toBe(renderCommanderToolsMd(buildToolManifest()));
+  });
+
+  it("rendered TOOLS.md contains suggest_memory and never create_memory", () => {
+    const md = renderCommanderToolsMd(buildToolManifest());
+    expect(md).toContain("`suggest_memory`");
+    expect(md).not.toContain("create_memory");
   });
 });
