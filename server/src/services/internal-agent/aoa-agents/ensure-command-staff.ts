@@ -189,7 +189,7 @@ const ROLE_INSTRUCTIONS: Record<CommandStaffRoleKey, string> = {
     "archive_stale_memory to retire unused items, and propose_memory_from_thread to " +
     "create proposals that inherit the source thread's visibility + scope. " +
     "CRITICAL: You may only PROPOSE memory (status='pending'). You must never call " +
-    "create_memory or update_memory directly. Decisions #15/#16/#52.",
+    "suggest_memory (to self-approve) or update_memory directly. Decisions #15/#16/#52.",
 };
 
 async function ensureRole(
