@@ -36,6 +36,7 @@ vi.mock("drizzle-orm", () => ({
 vi.mock("../services/index.js", () => {
   const noopFactory = () => ({});
   return {
+    accessService: noopFactory,
     agentService: noopFactory,
     artifactService: noopFactory,
     companyService: noopFactory,
@@ -65,6 +66,7 @@ type Task = {
   status?: string;
   assigneeAgentId?: string | null;
   assigneeUserId?: string | null;
+  responsibleUserId?: string | null;
 };
 type Comment = {
   id: string;
@@ -143,6 +145,8 @@ function buildApp(options?: {
             rows = rows.filter((t) => t.assigneeAgentId === filters.assigneeAgentId);
           if (filters?.assigneeUserId)
             rows = rows.filter((t) => t.assigneeUserId === filters.assigneeUserId);
+          if (filters?.responsibleUserId)
+            rows = rows.filter((t) => t.responsibleUserId === filters.responsibleUserId);
           if (filters?.q) {
             const needle = filters.q.toLowerCase();
             rows = rows.filter((t) => (t.title ?? "").toLowerCase().includes(needle));
@@ -460,6 +464,32 @@ describe("MCP read tools", () => {
       const searchPayload = JSON.parse(bySearch.body.result.content[0].text);
       expect(searchPayload).toHaveLength(1);
       expect(searchPayload[0].id).toBe("t-1");
+    });
+
+    it("filters by responsibleUserId", async () => {
+      const { app } = buildApp({
+        tasks: [
+          {
+            id: "t-1",
+            companyId: "company-1",
+            projectId: "proj-1",
+            title: "Owned by user 2",
+            responsibleUserId: "user-2",
+          },
+          {
+            id: "t-2",
+            companyId: "company-1",
+            projectId: "proj-1",
+            title: "Owned by user 3",
+            responsibleUserId: "user-3",
+          },
+        ],
+      });
+      const res = await callTool(app, "list-tasks", { responsibleUserId: "user-2" });
+      expect(res.status).toBe(200);
+      const payload = JSON.parse(res.body.result.content[0].text);
+      expect(payload).toHaveLength(1);
+      expect(payload[0].id).toBe("t-1");
     });
 
     it("scoped user sees only tasks in their projects", async () => {

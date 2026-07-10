@@ -364,6 +364,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           workMode: "standard" as const,
           assigneeAgentId: input.assigneeAgentId ?? null,
           assigneeUserId: null,
+          responsibleUserId: null,
           checkoutRunId: null,
           executionRunId: null,
           executionAgentNameKey: null,

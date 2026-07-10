@@ -1491,11 +1491,13 @@ export function TaskDetail({
                         </h3>
                         {!issue.executionWorkspaceId ? (
                           <p className="text-xs text-muted-foreground" data-testid="workspace-empty-state">
-                            {issue.executionLockedAt ? (
+                            {issue.executionLockedAt && hasLiveRuns && issue.projectId && issue.project?.executionWorkspacePolicy ? (
                               <span className="flex items-center gap-1.5">
                                 <Loader2 className="h-3 w-3 animate-spin" />
                                 Provisioning workspace...
                               </span>
+                            ) : hasLiveRuns ? (
+                              "Agent is running without a project workspace"
                             ) : !issue.projectId ? (
                               "No project assigned - assign a project with workspace policy to enable"
                             ) : !issue.project?.executionWorkspacePolicy ? (

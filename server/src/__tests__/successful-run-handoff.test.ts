@@ -25,6 +25,7 @@ describe("successful run handoff decisions", () => {
         companyId: "company-1",
         status: "in_progress",
         assigneeAgentId: "agent-1",
+        executionRunId: "run-1",
       },
     });
 
@@ -71,6 +72,28 @@ describe("successful run handoff decisions", () => {
         existingAttempts: DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS,
       }),
     ).toMatchObject({ action: "none", reason: "attempts_exhausted" });
+  });
+
+  it("does not queue when the completed run no longer owns the task execution", () => {
+    expect(
+      decideSuccessfulRunHandoff({
+        run: {
+          id: "run-1",
+          companyId: "company-1",
+          agentId: "agent-1",
+          status: "succeeded",
+          livenessState: "advanced",
+          contextSnapshot: { issueId: "issue-1" },
+        },
+        issue: {
+          id: "issue-1",
+          companyId: "company-1",
+          status: "in_progress",
+          assigneeAgentId: "agent-1",
+          executionRunId: "run-2",
+        } as any,
+      }),
+    ).toMatchObject({ action: "none", reason: "issue_run_changed" });
   });
 
   it("builds compact system notice metadata for missing disposition", () => {

@@ -40,7 +40,7 @@ Requests with neither → `401` in authenticated deployments. In `local_trusted`
 | `get-agent` | Get a single agent by id. Required: `agentId` |
 | `list-projects` | List departments + projects. Filter: `type` (`department` \| `project`) |
 | `get-project` | Get a single project by id. Required: `projectId` |
-| `list-tasks` | List tasks with RBAC scoping. Filters: `status`, `projectId`, `assigneeAgentId`, `assigneeUserId`, `touchedByUserId`, `unreadForUserId`, `labelId`, `q` |
+| `list-tasks` | List tasks with RBAC scoping. Filters: `status`, `projectId`, `assigneeAgentId`, `assigneeUserId`, `responsibleUserId`, `touchedByUserId`, `unreadForUserId`, `labelId`, `q`. Results include task ownership fields including `assigneeAgentId`, `assigneeUserId`, `responsibleUserId`, and `reviewerUserId`. |
 | `get-heartbeat-context` | Compact `{ task, recentComments }` payload for a task (last 10 comments). Required: `taskId` |
 | `list-task-comments` | List comments on a task. Required: `taskId` |
 | `get-task-comment` | Get a single comment by id. Required: `commentId` |
@@ -56,8 +56,8 @@ Requests with neither → `401` in authenticated deployments. In `local_trusted`
 | `memory.write` | Create a structured memory item and enqueue it for RAG embedding. Always `status='pending'` — the founder must approve before it enters the Knowledge Base (Critical Rule #6). Use for structured knowledge; use `debrief-push` for unstructured content needing extraction first. Required: `title`, `content`, `category`, `layer`, `sourceContext`. Optional: `tags`, `departmentId`, `projectId`, `goalId`, `taskId` |
 | `memory.retain` | Persist an observation to memory. When called by an agent with `scopeToSelf: true`, auto-approved into agent's personal scope. All other writes create a pending item (Critical Rule #6). Required: `title`, `content`, `category`, `layer`, `sourceContext`. Optional: `tags`, `departmentId`, `projectId`, `goalId`, `taskId`, `scopeToSelf` |
 | `update-task-status` | Update a task's status with permission checks. Required: `taskId`, `status` |
-| `create-task` | Create a task directly (RBAC-scoped). Does not route through Discussion. Required: `title`. Optional: `description`, `projectId`, `goalId`, `parentId`, `status`, `priority`, `assigneeAgentId`, `assigneeUserId`, `labelIds` |
-| `update-task` | Update task fields. Required: `taskId`. Optional: `title`, `description`, `projectId`, `goalId`, `status`, `priority`, `assigneeAgentId`, `assigneeUserId`, `labelIds` |
+| `create-task` | Create a task directly (RBAC-scoped). Does not route through Discussion. Required: `title`. Optional: `description`, `projectId`, `goalId`, `parentId`, `status`, `priority`, `assigneeAgentId`, `assigneeUserId`, `responsibleUserId` (`string` or `null`), `labelIds` |
+| `update-task` | Update task fields. Required: `taskId`. Optional: `title`, `description`, `projectId`, `goalId`, `status`, `priority`, `assigneeAgentId`, `assigneeUserId`, `responsibleUserId` (`string` or `null`; `null` clears), `labelIds` |
 | `add-task-comment` | Add a comment to a task. Required: `taskId`, `body` |
 | `attach-artifact-version` | Add an immutable version to an artifact. Required: `artifactId`, `sourceDetail`. Optional: `changelog`, `parentVersionId`, `content`, `fileUrl` |
 | `ask_founder` | Ask the founder a question and block (~5 min) for the answer. **Org/heartbeat task-execution agents during an active run ONLY** (`403` otherwise; crew/internal-agent are out of scope — their channel is the in-thread reply). Surfaces in the Inbox hub as a `work_question` the founder answers (free-text, or one of your `options`). On timeout the run is parked → returns `{answered:false, status:"parked"}` — stop gracefully, do not retry. Required: `question`. Optional: `options` (`[{label,value}]`, values unique), `context` |
@@ -114,6 +114,8 @@ Most tools are open to all authenticated protocol actors unless listed in the se
 ## Key Behaviors
 
 - **`debrief-push` vs `create-task`:** Use `debrief-push` for unstructured content that needs extraction into tasks + memory. Use `create-task` when the task title/fields are already known. Revised Decision #14 allows authenticated direct task writes because RBAC is the quality gate; anonymous MCP traffic is rejected outside `local_trusted`.
+- **Task ownership fields:** `assigneeAgentId` and `assigneeUserId` identify the executor doing the work. `responsibleUserId` identifies the accountable human for outcome and escalation; it does not dispatch execution or change the single-assignee checkout model. `reviewerUserId` identifies the human expected to review output when review is needed.
+- **Task assignment permission:** Explicitly setting `responsibleUserId` or clearing it with `responsibleUserId: null` in `create-task` or `update-task` requires `tasks:assign`. Omitting `responsibleUserId` does not require that permission.
 - **Memory write gate:** Agents cannot write memory directly to approved status except into their own personal scope via `memory.retain` + `scopeToSelf: true`. All other memory writes land in `pending` status awaiting founder review (Critical Rule #6).
 - **Artifact immutability:** `attach-artifact-version` and `upsert-task-document` always create new versions. Existing versions are never modified (Decisions #43, #45).
 - **RBAC enforcement:** All tools enforce company isolation. `team_member` actors see only their project-scoped data. Cross-company access returns `404`.

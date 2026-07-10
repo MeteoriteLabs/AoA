@@ -22,6 +22,7 @@ vi.mock("@armyofagents/db", () => {
     companyMemberships: makeTable("company_memberships"),
     instanceUserRoles: makeTable("instance_user_roles"),
     invites: makeTable("invites"),
+    issues: makeTable("issues"),
     mcpApiKeys: makeTable("mcp_api_keys"),
     principalPermissionGrants: makeTable("principal_permission_grants"),
     projects: makeTable("projects"),
@@ -159,6 +160,47 @@ describe("teamService.removeMember", () => {
     const revoke = updateCalls.find((c) => c.table === mcpApiKeys);
     expect(revoke, "expected an update against mcp_api_keys").toBeTruthy();
     expect(revoke!.set).toMatchObject({ revokedAt: expect.any(Date) });
+  });
+
+  it("clears responsible task ownership when removing a member", async () => {
+    const updateCalls: Array<{ table: unknown; set: Record<string, unknown> | null }> = [];
+    const selects: MockRow[][] = [
+      [{ id: "mem-1", status: "active", principalType: "user", principalId: "user-2", companyId: "c1" }],
+      [{ isSystemAdmin: false }],
+      [],
+      [{ role: "team_member", projectId: null }],
+    ];
+    let selIdx = 0;
+    function recChain(getResult: () => MockRow[], onSet?: (s: Record<string, unknown>) => void) {
+      const chain: Record<string, unknown> = {};
+      for (const m of ["from", "where", "values", "returning", "innerJoin", "leftJoin", "orderBy", "limit"]) {
+        chain[m] = () => chain;
+      }
+      chain.set = (s: Record<string, unknown>) => { onSet?.(s); return chain; };
+      chain.then = (resolve: (v: MockRow[]) => unknown) => Promise.resolve(resolve(getResult()));
+      return chain;
+    }
+    const db: any = {
+      select: () => recChain(() => selects[selIdx++] ?? []),
+      update: (table: unknown) => {
+        const entry: { table: unknown; set: Record<string, unknown> | null } = { table, set: null };
+        updateCalls.push(entry);
+        return recChain(() => [], (s) => { entry.set = s; });
+      },
+      insert: () => recChain(() => []),
+      delete: () => recChain(() => []),
+      transaction: async (fn: (tx: any) => Promise<void>) => { await fn(db); },
+    };
+
+    const { issues } = await import("@armyofagents/db");
+    await teamService(db).removeMember("c1", "user-2");
+
+    const cleanup = updateCalls.find((c) => c.table === issues);
+    expect(cleanup, "expected an update against issues").toBeTruthy();
+    expect(cleanup!.set).toMatchObject({
+      responsibleUserId: null,
+      updatedAt: expect.any(Date),
+    });
   });
 
   it("throws when member not found", async () => {

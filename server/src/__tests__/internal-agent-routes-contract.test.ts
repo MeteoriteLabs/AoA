@@ -484,6 +484,18 @@ describe("config PATCH route-local schema accepts opencode + crewModel (Task 6)"
     "utf8",
   );
 
+  it("GET config re-ensures Commander before returning config so stale tool allowlists are healed", () => {
+    const routeStart = routeSrc.indexOf('"/companies/:companyId/internal-agent/config"');
+    const patchRouteStart = routeSrc.indexOf('"/companies/:companyId/internal-agent/config"', routeStart + 1);
+    const getConfigBlock = routeSrc.slice(routeStart, patchRouteStart);
+
+    expect(routeStart).toBeGreaterThan(-1);
+    expect(getConfigBlock).toContain("ensureCommanderAgent(db, companyId)");
+    expect(getConfigBlock.indexOf("ensureCommanderAgent(db, companyId)")).toBeLessThan(
+      getConfigBlock.indexOf(".select()"),
+    );
+  });
+
   it("route-local updateConfigSchema wires provider to the shared AGENT_PROVIDERS enum (incl. opencode)", () => {
     const schemaStart = routeSrc.indexOf("const updateConfigSchema = z.object({");
     expect(schemaStart).toBeGreaterThan(-1);

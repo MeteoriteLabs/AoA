@@ -208,6 +208,8 @@ export function IssueProperties({ issue, onUpdate, inline, hideStatus, hidePrior
   const companyId = issue.companyId ?? selectedCompanyId;
   const [assigneeOpen, setAssigneeOpen] = useState(false);
   const [assigneeSearch, setAssigneeSearch] = useState("");
+  const [responsibleOpen, setResponsibleOpen] = useState(false);
+  const [responsibleSearch, setResponsibleSearch] = useState("");
   const [projectOpen, setProjectOpen] = useState(false);
   const [projectSearch, setProjectSearch] = useState("");
   const [labelsOpen, setLabelsOpen] = useState(false);
@@ -244,7 +246,7 @@ export function IssueProperties({ issue, onUpdate, inline, hideStatus, hidePrior
     queryFn: () => issuesApi.listLabels(companyId!),
     enabled: !!companyId,
   });
-  const { permissions } = useTeamAccess(companyId);
+  const { permissions, summary: teamSummary } = useTeamAccess(companyId);
 
   const createLabel = useMutation({
     mutationFn: (data: { name: string; color: string }) => issuesApi.createLabel(companyId!, data),
@@ -289,6 +291,18 @@ export function IssueProperties({ issue, onUpdate, inline, hideStatus, hidePrior
     return project ? projectUrl(project) : `/projects/${id}`;
   };
 
+  const humanOptions = useMemo(
+    () =>
+      (teamSummary?.members ?? []).map((member) => ({
+        id: member.userId,
+        label: member.displayName ?? member.email ?? member.userId.slice(0, 8),
+        title: member.title,
+        role: member.role,
+        email: member.email,
+      })),
+    [teamSummary?.members],
+  );
+
   const recentAssigneeIds = useMemo(() => getRecentAssigneeIds(), [assigneeOpen]);
   const sortedAgents = useMemo(
     () => sortAgentsByRecency((agents ?? []).filter((a) => a.status !== "terminated"), recentAssigneeIds),
@@ -298,17 +312,16 @@ export function IssueProperties({ issue, onUpdate, inline, hideStatus, hidePrior
   const assignee = issue.assigneeAgentId
     ? agents?.find((a) => a.id === issue.assigneeAgentId)
     : null;
-  const userLabel = (userId: string | null | undefined) =>
-    userId
-      ? userId === "local-board"
-        ? "Board"
-        : currentUserId && userId === currentUserId
-          ? "Me"
-          : userId.slice(0, 5)
-      : null;
+  const userLabel = (userId: string | null | undefined) => {
+    if (!userId) return null;
+    const member = humanOptions.find((option) => option.id === userId);
+    if (member) return member.label;
+    if (currentUserId && userId === currentUserId && userId !== "local-board") return "Me";
+    return userId.slice(0, 8);
+  };
   const assigneeUserLabel = userLabel(issue.assigneeUserId);
   const creatorUserLabel = userLabel(issue.createdByUserId);
-  const humanLabel = assigneeUserLabel ?? creatorUserLabel ?? "None";
+  const responsibleUserLabel = userLabel(issue.responsibleUserId);
   const selectedLabels =
     issue.labels ??
     (labels ?? []).filter((label) => (issue.labelIds ?? []).includes(label.id));
@@ -460,6 +473,31 @@ export function IssueProperties({ issue, onUpdate, inline, hideStatus, hidePrior
             {creatorUserLabel ? `Assign to ${creatorUserLabel === "Me" ? "me" : creatorUserLabel}` : "Assign to requester"}
           </button>
         )}
+        {humanOptions
+          .filter((human) => human.id !== issue.createdByUserId)
+          .filter((human) => {
+            if (!assigneeSearch.trim()) return true;
+            const q = assigneeSearch.toLowerCase();
+            return [human.label, human.email, human.title, human.role]
+              .filter(Boolean)
+              .some((value) => value!.toLowerCase().includes(q));
+          })
+          .map((human) => (
+            <button
+              key={human.id}
+              className={cn(
+                "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+                human.id === issue.assigneeUserId && "bg-accent",
+              )}
+              onClick={() => {
+                onUpdate({ assigneeAgentId: null, assigneeUserId: human.id });
+                setAssigneeOpen(false);
+              }}
+            >
+              <User className="h-3 w-3 shrink-0 text-muted-foreground" />
+              {human.label}
+            </button>
+          ))}
         {sortedAgents
           .filter((a) => {
             if (!assigneeSearch.trim()) return true;
@@ -479,6 +517,62 @@ export function IssueProperties({ issue, onUpdate, inline, hideStatus, hidePrior
             {a.name}
           </button>
         ))}
+      </div>
+    </>
+  );
+
+  const responsibleTrigger = responsibleUserLabel ? (
+    <>
+      <User className="h-3.5 w-3.5 text-muted-foreground" />
+      <span className="text-sm">{responsibleUserLabel}</span>
+    </>
+  ) : (
+    <>
+      <User className="h-3.5 w-3.5 text-muted-foreground" />
+      <span className="text-sm text-muted-foreground">No responsible human</span>
+    </>
+  );
+
+  const responsibleContent = (
+    <>
+      <input
+        className="w-full px-2 py-1.5 text-xs bg-transparent outline-none border-b border-border mb-1 placeholder:text-muted-foreground/50"
+        placeholder="Search responsible humans..."
+        value={responsibleSearch}
+        onChange={(e) => setResponsibleSearch(e.target.value)}
+        autoFocus={!inline}
+      />
+      <div className="max-h-48 overflow-y-auto overscroll-contain">
+        <button
+          className={cn(
+            "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+            !issue.responsibleUserId && "bg-accent",
+          )}
+          onClick={() => { onUpdate({ responsibleUserId: null }); setResponsibleOpen(false); }}
+        >
+          No responsible human
+        </button>
+        {humanOptions
+          .filter((human) => {
+            if (!responsibleSearch.trim()) return true;
+            const q = responsibleSearch.toLowerCase();
+            return [human.label, human.email, human.title, human.role]
+              .filter(Boolean)
+              .some((value) => value!.toLowerCase().includes(q));
+          })
+          .map((human) => (
+            <button
+              key={human.id}
+              className={cn(
+                "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-left",
+                human.id === issue.responsibleUserId && "bg-accent",
+              )}
+              onClick={() => { onUpdate({ responsibleUserId: human.id }); setResponsibleOpen(false); }}
+            >
+              <User className="h-3 w-3 shrink-0 text-muted-foreground" />
+              <span className="truncate">{human.label}</span>
+            </button>
+          ))}
       </div>
     </>
   );
@@ -635,11 +729,24 @@ export function IssueProperties({ issue, onUpdate, inline, hideStatus, hidePrior
             </CompactPropertyCard>
           )}
 
-          <CompactPropertyCard label="Human">
-            <span className="min-w-0 truncate text-xs text-foreground" title={humanLabel}>
-              {humanLabel}
-            </span>
-          </CompactPropertyCard>
+          {permissions.canAssignTasks ? (
+            <PropertyPicker
+              compact
+              label="Responsible"
+              open={responsibleOpen}
+              onOpenChange={(open) => { setResponsibleOpen(open); if (!open) setResponsibleSearch(""); }}
+              triggerContent={responsibleTrigger}
+              triggerClassName="min-w-0"
+              popoverClassName="w-56"
+              contentTestId="task-property-picker-responsible"
+            >
+              {responsibleContent}
+            </PropertyPicker>
+          ) : (
+            <CompactPropertyCard label="Responsible">
+              {responsibleTrigger}
+            </CompactPropertyCard>
+          )}
 
           <PropertyPicker
             compact
@@ -738,6 +845,23 @@ export function IssueProperties({ issue, onUpdate, inline, hideStatus, hidePrior
         ) : (
           <PropertyRow label="Assignee">
             {assigneeTrigger}
+          </PropertyRow>
+        )}
+
+        {permissions.canAssignTasks ? (
+          <PropertyPicker
+            inline={inline}
+            label="Responsible"
+            open={responsibleOpen}
+            onOpenChange={(open) => { setResponsibleOpen(open); if (!open) setResponsibleSearch(""); }}
+            triggerContent={responsibleTrigger}
+            popoverClassName="w-56"
+          >
+            {responsibleContent}
+          </PropertyPicker>
+        ) : (
+          <PropertyRow label="Responsible">
+            {responsibleTrigger}
           </PropertyRow>
         )}
 

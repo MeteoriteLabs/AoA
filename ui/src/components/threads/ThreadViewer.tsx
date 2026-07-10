@@ -1047,6 +1047,7 @@ function makeDraftIssue({
     workMode: "planning",
     assigneeAgentId: payloadString(payload.assigneeAgentId),
     assigneeUserId: payloadString(payload.assigneeUserId),
+    responsibleUserId: payloadString(payload.responsibleUserId),
     checkoutRunId: null,
     executionRunId: null,
     executionAgentNameKey: null,

@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Users, UserPlus, Shield, ArrowRightLeft, RotateCw, X, Search, Mail } from "lucide-react";
-import type { TeamMemberSummary, TeamSummary, TeamPermissionSummary, UserRole } from "@armyofagents/shared";
+import type { HumanSearchResult, JoinRequest, TeamMemberSummary, TeamSummary, TeamPermissionSummary, UserRole } from "@armyofagents/shared";
 import { useNavigate } from "@/lib/router";
+import { accessApi } from "../../api/access";
 import { teamApi } from "../../api/team";
 import { projectsApi } from "../../api/projects";
 import { useCompany } from "../../context/CompanyContext";
@@ -68,32 +69,21 @@ function PermissionDisabledButton({
 function MemberCard({
   member,
   members,
-  isHighlighted,
 }: {
   member: TeamMemberSummary;
   members: TeamMemberSummary[];
-  isHighlighted: boolean;
 }) {
   const navigate = useNavigate();
-  const cardRef = useRef<HTMLDivElement>(null);
   const displayName = member.displayName ?? member.email ?? member.userId.slice(0, 8);
   const initials = getInitials(displayName);
   const parent = member.parentId
     ? members.find((m) => m.userId === member.parentId)
     : null;
 
-  useEffect(() => {
-    if (isHighlighted && cardRef.current) {
-      cardRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
-    }
-  }, [isHighlighted]);
-
   return (
     <ClickableDiv
-      ref={cardRef}
       className={cn(
         "border border-border bg-card rounded-lg p-4 transition-all duration-150 cursor-pointer hover:bg-accent/30",
-        isHighlighted && "ring-2 ring-primary animate-pulse",
       )}
       onClick={() => navigate(`/team/${member.userId}`)}
     >
@@ -240,7 +230,151 @@ function InviteCard({
   );
 }
 
-export function HumansTab({ teamSummary, highlightId, permissions, isSystemAdmin, onMutationSuccess }: HumansTabProps) {
+function HumanSearchResultCard({ result }: { result: HumanSearchResult }) {
+  const navigate = useNavigate();
+  const displayName = result.displayName ?? result.email ?? result.userId.slice(0, 8);
+  const initials = getInitials(displayName);
+  const agentTreeCount = result.responsibilitySummary.directAgentTreeCount;
+
+  return (
+    <ClickableDiv
+      className="border border-border bg-card rounded-lg p-4 transition-all duration-150 cursor-pointer hover:bg-accent/30"
+      onClick={() => navigate(`/team/${result.userId}`)}
+    >
+      <div className="flex items-start gap-3">
+        <Avatar className="h-10 w-10 shrink-0">
+          {result.avatarUrl && <AvatarImage src={result.avatarUrl} alt={displayName} />}
+          <AvatarFallback className="text-xs">{initials}</AvatarFallback>
+        </Avatar>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-sm font-semibold truncate">{displayName}</span>
+            <RoleBadge role={result.role} />
+          </div>
+          <div className="text-xs text-muted-foreground truncate mt-0.5">
+            {result.title ?? result.departmentName ?? result.email ?? "Human"}
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-3 space-y-1.5">
+        {result.snippets.slice(0, 3).map((snippet) => (
+          <p
+            key={`${result.userId}-${snippet.field}-${snippet.label}-${snippet.documentId ?? snippet.value}`}
+            className="line-clamp-2 text-xs text-muted-foreground"
+          >
+            <span className="font-medium text-foreground/80">{snippet.label}</span>
+            {": "}
+            {snippet.value}
+          </p>
+        ))}
+      </div>
+
+      <div className="mt-3 flex flex-wrap gap-1.5 border-t border-border/50 pt-3 text-[11px] text-muted-foreground">
+        {result.departmentName && <span>{result.departmentName}</span>}
+        {result.reportsToName && <span>Reports to {result.reportsToName}</span>}
+        {agentTreeCount > 0 && (
+          <span>{agentTreeCount} agent {agentTreeCount === 1 ? "tree" : "trees"}</span>
+        )}
+        {result.responsibilitySummary.assignedTaskCount > 0 && (
+          <span>{result.responsibilitySummary.assignedTaskCount} assigned</span>
+        )}
+      </div>
+    </ClickableDiv>
+  );
+}
+
+function joinRequestLabel(request: JoinRequest) {
+  if (request.requestType === "agent") {
+    return request.agentName ?? request.requestEmailSnapshot ?? `Agent request ${request.id.slice(0, 8)}`;
+  }
+  return request.requestEmailSnapshot ?? request.requestingUserId ?? `Human request ${request.id.slice(0, 8)}`;
+}
+
+function JoinRequestCard({
+  request,
+  canManage,
+  onMutationSuccess,
+}: {
+  request: JoinRequest;
+  canManage: boolean;
+  onMutationSuccess: () => Promise<void>;
+}) {
+  const { selectedCompanyId } = useCompany();
+  const { pushToast } = useToast();
+  const label = joinRequestLabel(request);
+
+  const approveMutation = useMutation({
+    mutationFn: () => accessApi.approveJoinRequest(selectedCompanyId!, request.id),
+    onSuccess: async () => {
+      await onMutationSuccess();
+      pushToast({ title: "Join request approved", tone: "success" });
+    },
+    onError: (err: Error) => {
+      pushToast({ title: "Failed to approve request", body: err.message, tone: "error" });
+    },
+  });
+
+  const rejectMutation = useMutation({
+    mutationFn: () => accessApi.rejectJoinRequest(selectedCompanyId!, request.id),
+    onSuccess: async () => {
+      await onMutationSuccess();
+      pushToast({ title: "Join request declined", tone: "success" });
+    },
+    onError: (err: Error) => {
+      pushToast({ title: "Failed to decline request", body: err.message, tone: "error" });
+    },
+  });
+
+  const isMutating = approveMutation.isPending || rejectMutation.isPending;
+
+  return (
+    <div className="flex flex-col gap-3 rounded-lg border border-dashed border-border bg-card p-4">
+      <div className="flex items-start gap-3">
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-dashed border-border bg-muted text-muted-foreground">
+          <UserPlus className="h-4 w-4" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <span className="block truncate text-sm font-semibold">{label}</span>
+          <span className="text-xs text-muted-foreground">
+            {request.requestType === "agent" ? "Agent join request" : "Human join request"}
+          </span>
+        </div>
+      </div>
+
+      {request.capabilities && (
+        <p className="line-clamp-2 text-xs text-muted-foreground">{request.capabilities}</p>
+      )}
+
+      <div className="flex items-center justify-between border-t border-dashed border-border/50 pt-2.5">
+        <span className="text-[11px] text-muted-foreground">
+          Requested {new Date(request.createdAt).toLocaleDateString()}
+        </span>
+        {canManage && (
+          <div className="flex items-center gap-1.5">
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={isMutating}
+              onClick={() => rejectMutation.mutate()}
+            >
+              Decline
+            </Button>
+            <Button
+              size="sm"
+              disabled={isMutating}
+              onClick={() => approveMutation.mutate()}
+            >
+              Approve
+            </Button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export function HumansTab({ teamSummary, permissions, isSystemAdmin, onMutationSuccess }: HumansTabProps) {
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
   const [addMemberOpen, setAddMemberOpen] = useState(false);
@@ -254,6 +388,14 @@ export function HumansTab({ teamSummary, highlightId, permissions, isSystemAdmin
     enabled: Boolean(selectedCompanyId),
   });
 
+  const joinRequestsQuery = useQuery({
+    queryKey: selectedCompanyId
+      ? queryKeys.access.joinRequests(selectedCompanyId)
+      : ["access", "join-requests", "none"],
+    queryFn: () => accessApi.listJoinRequests(selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId && permissions.canInviteUsers),
+  });
+
   const departments = useMemo(
     () => (projects ?? []).filter((project) => project.type === "department"),
     [projects],
@@ -261,15 +403,17 @@ export function HumansTab({ teamSummary, highlightId, permissions, isSystemAdmin
 
   const members = teamSummary.members;
   const pendingInvites = teamSummary.pendingInvites;
+  const pendingJoinRequests = joinRequestsQuery.data ?? [];
+  const trimmedSearch = search.trim();
 
   const founderCount = members.filter((m) => m.role === "founder").length;
   const teamLeadCount = members.filter((m) => m.role === "team_lead").length;
   const memberCount = members.filter((m) => m.role === "team_member").length;
-  const pendingCount = pendingInvites.length;
+  const pendingCount = pendingInvites.length + pendingJoinRequests.length;
 
-  const { filteredMembers, filteredInvites } = useMemo(() => {
+  const { filteredMembers, filteredInvites, filteredJoinRequests } = useMemo(() => {
     const showMembers = roleFilter !== "pending";
-    const showInvites = roleFilter === "all" || roleFilter === "pending";
+    const showPending = roleFilter === "all" || roleFilter === "pending";
     const roleToMatch = roleFilter !== "all" && roleFilter !== "pending" ? roleFilter : null;
 
     const fMembers = showMembers
@@ -286,19 +430,44 @@ export function HumansTab({ teamSummary, highlightId, permissions, isSystemAdmin
         })
       : [];
 
-    const fInvites = showInvites
+    const fInvites = showPending
       ? pendingInvites.filter((inv) => {
           if (!search) return true;
           return (inv.email ?? "").toLowerCase().includes(search.toLowerCase());
         })
       : [];
 
-    return { filteredMembers: fMembers, filteredInvites: fInvites };
-  }, [members, pendingInvites, roleFilter, search]);
+    const fJoinRequests = showPending
+      ? pendingJoinRequests.filter((request) => {
+          if (!search) return true;
+          const q = search.toLowerCase();
+          return joinRequestLabel(request).toLowerCase().includes(q);
+        })
+      : [];
+
+    return { filteredMembers: fMembers, filteredInvites: fInvites, filteredJoinRequests: fJoinRequests };
+  }, [members, pendingInvites, pendingJoinRequests, roleFilter, search]);
+
+  const humanSearchInput = useMemo(() => ({
+    q: trimmedSearch,
+    role: roleFilter === "pending" ? "all" as const : roleFilter,
+    limit: 20,
+  }), [roleFilter, trimmedSearch]);
+
+  const shouldUseHumanSearch = Boolean(selectedCompanyId && trimmedSearch && roleFilter !== "pending");
+  const humanSearchQuery = useQuery({
+    queryKey: selectedCompanyId
+      ? queryKeys.team.humanSearch(selectedCompanyId, humanSearchInput)
+      : ["team", "human-search", "none"],
+    queryFn: () => teamApi.searchHumans(selectedCompanyId!, humanSearchInput),
+    enabled: shouldUseHumanSearch,
+  });
 
   const invalidateTeam = useCallback(async () => {
     if (selectedCompanyId) {
       await queryClient.invalidateQueries({ queryKey: queryKeys.team.summary(selectedCompanyId) });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.access.joinRequests(selectedCompanyId) });
+      await queryClient.invalidateQueries({ queryKey: ["hub-items", selectedCompanyId] });
     }
     onMutationSuccess?.();
   }, [queryClient, selectedCompanyId, onMutationSuccess]);
@@ -307,8 +476,11 @@ export function HumansTab({ teamSummary, highlightId, permissions, isSystemAdmin
     return <EmptyState icon={Users} message="Select a company to view team." />;
   }
 
-  const isEmpty = members.length === 0 && pendingInvites.length === 0;
-  const isFilteredEmpty = filteredMembers.length === 0 && filteredInvites.length === 0;
+  const isEmpty = members.length === 0 && pendingInvites.length === 0 && pendingJoinRequests.length === 0;
+  const humanSearchResults = shouldUseHumanSearch ? humanSearchQuery.data?.results ?? [] : [];
+  const isFilteredEmpty = shouldUseHumanSearch
+    ? !humanSearchQuery.isLoading && humanSearchResults.length === 0
+    : filteredMembers.length === 0 && filteredInvites.length === 0 && filteredJoinRequests.length === 0;
 
   return (
     <TooltipProvider>
@@ -398,7 +570,7 @@ export function HumansTab({ teamSummary, highlightId, permissions, isSystemAdmin
             <Input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search by name or email…"
+              placeholder="Search humans by skills, responsibilities, role, or docs..."
               className="h-8 pl-8 text-xs"
             />
           </div>
@@ -444,10 +616,24 @@ export function HumansTab({ teamSummary, highlightId, permissions, isSystemAdmin
             action="Add Member"
             onAction={permissions.canInviteUsers ? () => setAddMemberOpen(true) : undefined}
           />
+        ) : humanSearchQuery.isError ? (
+          <p className="py-8 text-center text-sm text-destructive">
+            Unable to search humans.
+          </p>
+        ) : humanSearchQuery.isLoading && shouldUseHumanSearch ? (
+          <p className="py-8 text-center text-sm text-muted-foreground">
+            Searching humans...
+          </p>
         ) : isFilteredEmpty ? (
           <p className="py-8 text-center text-sm text-muted-foreground">
             No results match your search or filter.
           </p>
+        ) : shouldUseHumanSearch ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {humanSearchResults.map((result) => (
+              <HumanSearchResultCard key={result.userId} result={result} />
+            ))}
+          </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {filteredMembers.map((member) => (
@@ -455,13 +641,20 @@ export function HumansTab({ teamSummary, highlightId, permissions, isSystemAdmin
                 key={member.userId}
                 member={member}
                 members={members}
-                isHighlighted={highlightId === member.userId}
               />
             ))}
             {filteredInvites.map((invite) => (
               <InviteCard
                 key={invite.id}
                 invite={invite}
+                canManage={permissions.canInviteUsers}
+                onMutationSuccess={invalidateTeam}
+              />
+            ))}
+            {filteredJoinRequests.map((request) => (
+              <JoinRequestCard
+                key={request.id}
+                request={request}
                 canManage={permissions.canInviteUsers}
                 onMutationSuccess={invalidateTeam}
               />

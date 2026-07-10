@@ -994,6 +994,68 @@ describe("TaskSlideOver", () => {
       expect(screen.getByTestId("workspace-empty-state")).toBeInTheDocument();
       expect(screen.getByText(/No project assigned/)).toBeInTheDocument();
     });
+
+    it("does not show provisioning for a stale execution lock when no run is active", () => {
+      vi.mocked(useQuery).mockImplementation(makeQueryImpl({
+        ...mockIssue,
+        executionLockedAt: new Date().toISOString(),
+        executionWorkspaceId: null,
+      } as typeof mockIssue));
+
+      renderSlideOver({ issueId: "issue-1", open: true });
+
+      expect(screen.getByTestId("workspace-empty-state")).toHaveTextContent(/No project assigned/);
+      expect(screen.queryByText(/Provisioning workspace/)).not.toBeInTheDocument();
+    });
+
+    it("shows a truthful fallback workspace state when an agent is running without a project", () => {
+      vi.mocked(useQuery).mockImplementation(({ queryKey }: any) => {
+        const key = Array.isArray(queryKey) ? queryKey.join(".") : String(queryKey);
+        if (key.includes("detail")) {
+          return {
+            data: {
+              ...mockIssue,
+              executionLockedAt: new Date().toISOString(),
+              executionWorkspaceId: null,
+            },
+            isLoading: false,
+            error: null,
+          } as any;
+        }
+        if (key.includes("activeRun")) return { data: { id: "run-1", status: "running" }, isLoading: false, error: null } as any;
+        return makeQueryImpl(mockIssue)({ queryKey });
+      });
+
+      renderSlideOver({ issueId: "issue-1", open: true });
+
+      expect(screen.getByTestId("workspace-empty-state")).toHaveTextContent(/without a project workspace/);
+      expect(screen.queryByText(/Provisioning workspace/)).not.toBeInTheDocument();
+    });
+
+    it("shows provisioning only when an active run expects a project workspace", () => {
+      vi.mocked(useQuery).mockImplementation(({ queryKey }: any) => {
+        const key = Array.isArray(queryKey) ? queryKey.join(".") : String(queryKey);
+        if (key.includes("detail")) {
+          return {
+            data: {
+              ...mockIssue,
+              projectId: "project-1",
+              project: { id: "project-1", executionWorkspacePolicy: { mode: "create_new" } },
+              executionLockedAt: new Date().toISOString(),
+              executionWorkspaceId: null,
+            },
+            isLoading: false,
+            error: null,
+          } as any;
+        }
+        if (key.includes("activeRun")) return { data: { id: "run-1", status: "running" }, isLoading: false, error: null } as any;
+        return makeQueryImpl(mockIssue)({ queryKey });
+      });
+
+      renderSlideOver({ issueId: "issue-1", open: true });
+
+      expect(screen.getByTestId("workspace-empty-state")).toHaveTextContent(/Provisioning workspace/);
+    });
   });
 });
 

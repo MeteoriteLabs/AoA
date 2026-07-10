@@ -3,8 +3,10 @@ import crypto from "node:crypto";
 import type { Db } from "@armyofagents/db";
 import {
   agents,
+  assets,
   authUsers,
   companyMemberships,
+  companyUserProfiles,
   instanceUserRoles,
   invites,
   issues,
@@ -14,18 +16,29 @@ import {
   userRoles,
 } from "@armyofagents/db";
 import type {
+  CompanyUserProfile,
+  HumanWorkload,
+  HumanWorkloadAttentionItem,
+  HumanWorkloadManagedAgentTask,
+  HumanWorkloadTaskSummary,
+  HumanSocialLink,
+  IssuePriority,
+  IssueStatus,
   MemberDependencies,
   PermissionKey,
   TeamSummary,
+  UpdateCompanyUserProfile,
   UpdateTeamMemberRole,
   UserRole,
 } from "@armyofagents/shared";
 import { PERMISSION_KEYS } from "@armyofagents/shared";
 import { conflict, notFound } from "../errors.js";
 import { accessService } from "./access.js";
+import { humanCapabilitiesService } from "./human-capabilities.js";
 import { orgHierarchyService } from "./org-hierarchy.js";
 
 const TEAM_INVITE_KEY = "teamInvite";
+const OPEN_WORKLOAD_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
 const TEAM_PERMISSION_KEYS = {
   founder: [...PERMISSION_KEYS],
   team_lead: ["tasks:assign", "tasks:assign_scope"],
@@ -88,8 +101,38 @@ function roleGrants(role: UserRole, projectId: string | null) {
   }));
 }
 
+function assetContentPath(assetId: string) {
+  return `/api/assets/${assetId}/content`;
+}
+
+function normalizeSocialLinks(value: unknown): HumanSocialLink[] {
+  return Array.isArray(value) ? (value as HumanSocialLink[]) : [];
+}
+
+function toWorkloadTask(row: typeof issues.$inferSelect): HumanWorkloadTaskSummary {
+  return {
+    id: row.id,
+    identifier: row.identifier ?? null,
+    title: row.title,
+    status: row.status as IssueStatus,
+    priority: row.priority as IssuePriority,
+    assigneeAgentId: row.assigneeAgentId ?? null,
+    assigneeUserId: row.assigneeUserId ?? null,
+    responsibleUserId: row.responsibleUserId ?? null,
+    dueDate: row.dueDate ?? null,
+    updatedAt: row.updatedAt,
+  };
+}
+
+function workloadAttentionKind(status: string): HumanWorkloadAttentionItem["kind"] | null {
+  if (status === "blocked") return "blocked_task";
+  if (status === "in_review") return "review_task";
+  return null;
+}
+
 export function teamService(db: Db) {
   const access = accessService(db);
+  const humanCapabilities = humanCapabilitiesService(db);
   const orgHierarchy = orgHierarchyService(db);
 
   async function isInstanceAdmin(userId: string | null | undefined) {
@@ -143,7 +186,7 @@ export function teamService(db: Db) {
       );
 
     const userIds = memberships.map((membership) => membership.principalId);
-    const [users, roleRows, grants, pendingInvites, departmentRows] = await Promise.all([
+    const [users, profileRows, roleRows, grants, pendingInvites, departmentRows] = await Promise.all([
       userIds.length > 0
         ? db
             .select({
@@ -151,10 +194,26 @@ export function teamService(db: Db) {
               email: authUsers.email,
               displayName: authUsers.displayName,
               avatarUrl: authUsers.avatarUrl,
+              image: authUsers.image,
               name: authUsers.name,
             })
             .from(authUsers)
             .where(inArray(authUsers.id, userIds))
+        : Promise.resolve([]),
+      userIds.length > 0
+        ? db
+            .select({
+              userId: companyUserProfiles.userId,
+              displayName: companyUserProfiles.displayName,
+              title: companyUserProfiles.title,
+              bio: companyUserProfiles.bio,
+              location: companyUserProfiles.location,
+              timezone: companyUserProfiles.timezone,
+              socialLinks: companyUserProfiles.socialLinks,
+              avatarAssetId: companyUserProfiles.avatarAssetId,
+            })
+            .from(companyUserProfiles)
+            .where(and(eq(companyUserProfiles.companyId, companyId), inArray(companyUserProfiles.userId, userIds)))
         : Promise.resolve([]),
       userIds.length > 0
         ? db
@@ -203,6 +262,7 @@ export function teamService(db: Db) {
     ]);
 
     const userMap = new Map(users.map((user) => [user.id, user]));
+    const profileMap = new Map(profileRows.map((profile) => [profile.userId, profile]));
     const roleRowsByUser = new Map<string, Array<{ role: string; projectId: string | null }>>();
     for (const row of roleRows) {
       const existing = roleRowsByUser.get(row.userId) ?? [];
@@ -230,11 +290,19 @@ export function teamService(db: Db) {
         const effectiveRole = effectiveRoleFromRows(roleRowsForUser, isAdmin);
         if (!effectiveRole.role) return null;
         const user = userMap.get(membership.principalId);
+        const profile = profileMap.get(membership.principalId);
+        const avatarAssetId = profile?.avatarAssetId ?? null;
         return {
           userId: membership.principalId,
           email: user?.email ?? null,
-          displayName: user?.displayName ?? user?.name ?? null,
-          avatarUrl: user?.avatarUrl ?? null,
+          displayName: profile?.displayName ?? user?.displayName ?? user?.name ?? null,
+          avatarUrl: avatarAssetId ? assetContentPath(avatarAssetId) : (user?.avatarUrl ?? user?.image ?? null),
+          title: profile?.title ?? null,
+          bio: profile?.bio ?? null,
+          location: profile?.location ?? null,
+          timezone: profile?.timezone ?? null,
+          socialLinks: normalizeSocialLinks(profile?.socialLinks),
+          avatarAssetId,
           role: effectiveRole.role,
           departmentId: effectiveRole.projectId,
           departmentName: effectiveRole.projectId ? (departmentMap.get(effectiveRole.projectId) ?? null) : null,
@@ -420,6 +488,11 @@ export function teamService(db: Db) {
     await db.transaction(async (tx) => {
       // Re-parent all children pointing to this user
       await orgHierarchy.reparentChildren(companyId, userId, "user", tx as unknown as Db);
+      // Removed humans must not remain accountable owners of open or future-visible tasks.
+      await tx
+        .update(issues)
+        .set({ responsibleUserId: null, updatedAt: new Date() })
+        .where(and(eq(issues.companyId, companyId), eq(issues.responsibleUserId, userId)));
       // Delete role assignments
       await tx.delete(userRoles).where(and(eq(userRoles.companyId, companyId), eq(userRoles.userId, userId)));
       // Delete permission grants
@@ -478,6 +551,73 @@ export function teamService(db: Db) {
     }
 
     return result;
+  }
+
+  async function updateCompanyUserProfile(
+    companyId: string,
+    userId: string,
+    input: UpdateCompanyUserProfile,
+    updatedByUserId: string | null,
+  ): Promise<CompanyUserProfile> {
+    const membership = await access.getMembership(companyId, "user", userId);
+    if (!membership || membership.status !== "active") throw notFound("Team member not found");
+
+    if (input.avatarAssetId) {
+      const asset = await db
+        .select({
+          id: assets.id,
+          companyId: assets.companyId,
+          contentType: assets.contentType,
+        })
+        .from(assets)
+        .where(and(eq(assets.id, input.avatarAssetId), eq(assets.companyId, companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (!asset) throw notFound("Avatar asset not found");
+      if (!asset.contentType.startsWith("image/")) {
+        throw conflict("Avatar asset must be an image");
+      }
+    }
+
+    const now = new Date();
+    const profilePatch: Partial<typeof companyUserProfiles.$inferInsert> = {
+      updatedAt: now,
+      updatedByUserId,
+    };
+    for (const key of ["displayName", "title", "bio", "location", "timezone", "socialLinks", "avatarAssetId"] as const) {
+      if (input[key] !== undefined) {
+        (profilePatch as Record<string, unknown>)[key] = input[key];
+      }
+    }
+
+    const insertValues: typeof companyUserProfiles.$inferInsert = {
+      companyId,
+      userId,
+      displayName: input.displayName ?? null,
+      title: input.title ?? null,
+      bio: input.bio ?? null,
+      location: input.location ?? null,
+      timezone: input.timezone ?? null,
+      socialLinks: input.socialLinks ?? [],
+      avatarAssetId: input.avatarAssetId ?? null,
+      updatedAt: now,
+      updatedByUserId,
+    };
+
+    const profile = await db
+      .insert(companyUserProfiles)
+      .values(insertValues)
+      .onConflictDoUpdate({
+        target: [companyUserProfiles.companyId, companyUserProfiles.userId],
+        set: profilePatch,
+      })
+      .returning()
+      .then((rows) => rows[0] ?? null);
+
+    if (!profile) throw conflict("Unable to update team profile");
+    return {
+      ...profile,
+      socialLinks: normalizeSocialLinks(profile.socialLinks),
+    } as CompanyUserProfile;
   }
 
   async function isCompanySystemAdmin(companyId: string, userId: string | null | undefined): Promise<boolean> {
@@ -604,6 +744,8 @@ export function teamService(db: Db) {
       addedByUserId,
     );
 
+    await humanCapabilities.ensureStandardDocuments(companyId, userId, addedByUserId);
+
     return { userId };
   }
 
@@ -646,7 +788,7 @@ export function teamService(db: Db) {
       );
 
     // Count sub-agents per direct agent via BFS
-    const agentTrees: Array<{ rootAgentId: string; rootAgentName: string; subAgentCount: number }> = [];
+    const agentTrees: Array<{ rootAgentId: string; rootAgentName: string; subAgentCount: number; agentIds: string[] }> = [];
     for (const agent of directAgents) {
       let subCount = 0;
       const queue = [agent.id];
@@ -671,7 +813,12 @@ export function teamService(db: Db) {
           queue.push(child.id);
         }
       }
-      agentTrees.push({ rootAgentId: agent.id, rootAgentName: agent.name, subAgentCount: subCount });
+      agentTrees.push({
+        rootAgentId: agent.id,
+        rootAgentName: agent.name,
+        subAgentCount: subCount,
+        agentIds: Array.from(visited),
+      });
     }
 
     return { teamMembers: humanReports, agentTrees };
@@ -714,6 +861,167 @@ export function teamService(db: Db) {
       agentTrees: reports.agentTrees,
       assignedTaskCount: Number(assignedRows[0]?.cnt ?? 0),
       createdTaskCount: Number(createdRows[0]?.cnt ?? 0),
+    };
+  }
+
+  async function getWorkload(companyId: string, userId: string): Promise<HumanWorkload> {
+    const membership = await access.getMembership(companyId, "user", userId);
+    if (!membership || membership.status !== "active") throw notFound("Team member not found");
+
+    const reports = await getReportsFor(companyId, userId);
+    const managedAgentIds = Array.from(new Set(reports.agentTrees.flatMap((tree) => tree.agentIds)));
+    const rootByAgentId = new Map<string, { rootAgentId: string; rootAgentName: string }>();
+    for (const tree of reports.agentTrees) {
+      for (const agentId of tree.agentIds) {
+        rootByAgentId.set(agentId, {
+          rootAgentId: tree.rootAgentId,
+          rootAgentName: tree.rootAgentName,
+        });
+      }
+    }
+
+    const [responsibleRows, assignedRows, managedAgentRows, managedAgentTaskRows] = await Promise.all([
+      db
+        .select()
+        .from(issues)
+        .where(and(
+          eq(issues.companyId, companyId),
+          eq(issues.responsibleUserId, userId),
+          inArray(issues.status, OPEN_WORKLOAD_STATUSES),
+        )),
+      db
+        .select()
+        .from(issues)
+        .where(and(
+          eq(issues.companyId, companyId),
+          eq(issues.assigneeUserId, userId),
+          inArray(issues.status, OPEN_WORKLOAD_STATUSES),
+        )),
+      managedAgentIds.length > 0
+        ? db
+            .select({
+              id: agents.id,
+              name: agents.name,
+              role: agents.role,
+              status: agents.status,
+            })
+            .from(agents)
+            .where(and(
+              eq(agents.companyId, companyId),
+              inArray(agents.id, managedAgentIds),
+              ne(agents.status, "terminated"),
+            ))
+        : Promise.resolve([]),
+      managedAgentIds.length > 0
+        ? db
+            .select()
+            .from(issues)
+            .where(and(
+              eq(issues.companyId, companyId),
+              inArray(issues.assigneeAgentId, managedAgentIds),
+              inArray(issues.status, OPEN_WORKLOAD_STATUSES),
+            ))
+        : Promise.resolve([]),
+    ]);
+
+    const managedTaskCounts = new Map<string, number>();
+    for (const task of managedAgentTaskRows) {
+      if (!task.assigneeAgentId) continue;
+      managedTaskCounts.set(task.assigneeAgentId, (managedTaskCounts.get(task.assigneeAgentId) ?? 0) + 1);
+    }
+
+    const managedAgents = managedAgentRows.map((agent) => {
+      const root = rootByAgentId.get(agent.id) ?? { rootAgentId: agent.id, rootAgentName: agent.name };
+      return {
+        id: agent.id,
+        name: agent.name,
+        role: agent.role,
+        status: agent.status,
+        rootAgentId: root.rootAgentId,
+        rootAgentName: root.rootAgentName,
+        openTaskCount: managedTaskCounts.get(agent.id) ?? 0,
+      };
+    });
+    const agentNameById = new Map(managedAgents.map((agent) => [agent.id, agent.name]));
+    const responsibleTasks = responsibleRows.map(toWorkloadTask);
+    const assignedTasks = assignedRows.map(toWorkloadTask);
+    const managedAgentTasks: HumanWorkloadManagedAgentTask[] = managedAgentTaskRows
+      .filter((task) => Boolean(task.assigneeAgentId))
+      .map((task) => {
+        const managedAgentId = task.assigneeAgentId!;
+        const root = rootByAgentId.get(managedAgentId) ?? {
+          rootAgentId: managedAgentId,
+          rootAgentName: agentNameById.get(managedAgentId) ?? "Agent",
+        };
+        return {
+          ...toWorkloadTask(task),
+          managedAgentId,
+          managedAgentName: agentNameById.get(managedAgentId) ?? "Agent",
+          rootAgentId: root.rootAgentId,
+          rootAgentName: root.rootAgentName,
+        };
+      });
+
+    const attentionItems: HumanWorkloadAttentionItem[] = [];
+    for (const task of responsibleTasks) {
+      const kind = workloadAttentionKind(task.status);
+      if (!kind) continue;
+      attentionItems.push({
+        kind,
+        taskId: task.id,
+        identifier: task.identifier,
+        title: task.title,
+        status: task.status,
+        source: "responsible",
+        agentId: task.assigneeAgentId,
+        agentName: task.assigneeAgentId ? (agentNameById.get(task.assigneeAgentId) ?? null) : null,
+      });
+    }
+    for (const task of assignedTasks) {
+      const kind = workloadAttentionKind(task.status);
+      if (!kind) continue;
+      attentionItems.push({
+        kind,
+        taskId: task.id,
+        identifier: task.identifier,
+        title: task.title,
+        status: task.status,
+        source: "assigned",
+        agentId: null,
+        agentName: null,
+      });
+    }
+    for (const task of managedAgentTasks) {
+      const kind = workloadAttentionKind(task.status);
+      if (!kind) continue;
+      attentionItems.push({
+        kind,
+        taskId: task.id,
+        identifier: task.identifier,
+        title: task.title,
+        status: task.status,
+        source: "managed_agent",
+        agentId: task.managedAgentId,
+        agentName: task.managedAgentName,
+      });
+    }
+
+    return {
+      companyId,
+      userId,
+      generatedAt: new Date(),
+      summary: {
+        responsibleOpenTaskCount: responsibleTasks.length,
+        assignedOpenTaskCount: assignedTasks.length,
+        managedAgentCount: managedAgents.length,
+        managedAgentOpenTaskCount: managedAgentTasks.length,
+        attentionCount: attentionItems.length,
+      },
+      responsibleTasks,
+      assignedTasks,
+      managedAgents,
+      managedAgentTasks,
+      attentionItems,
     };
   }
 
@@ -774,6 +1082,12 @@ export function teamService(db: Db) {
           );
       }
 
+      // Reassignment handles org reporting; task accountability needs explicit cleanup.
+      await tx
+        .update(issues)
+        .set({ responsibleUserId: null, updatedAt: new Date() })
+        .where(and(eq(issues.companyId, companyId), eq(issues.responsibleUserId, userId)));
+
       // Delete roles, permissions, membership
       await tx.delete(userRoles).where(
         and(eq(userRoles.companyId, companyId), eq(userRoles.userId, userId)),
@@ -812,6 +1126,7 @@ export function teamService(db: Db) {
     applyInviteRole,
     getDependencies,
     getReportsFor,
+    getWorkload,
     getUserRole,
     isCompanySystemAdmin,
     listTeam,
@@ -819,6 +1134,7 @@ export function teamService(db: Db) {
     removeMember,
     roleGrants,
     transferAdmin,
+    updateCompanyUserProfile,
     updateUserRole,
   };
 }

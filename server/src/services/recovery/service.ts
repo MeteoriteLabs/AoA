@@ -51,7 +51,15 @@ export function recoveryService(db: Db) {
           issueCommentStatus: run.issueCommentStatus,
           contextSnapshot: snapshot,
         },
-        issue,
+        issue: issue
+          ? {
+              id: issue.id,
+              companyId: issue.companyId,
+              status: issue.status,
+              assigneeAgentId: issue.assigneeAgentId,
+              executionRunId: issue.executionRunId,
+            }
+          : null,
         existingAttempts,
       });
       if (decision.action !== "queue_handoff") return decision;

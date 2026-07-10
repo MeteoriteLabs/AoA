@@ -34,7 +34,9 @@ Agents are organized in a strict tree hierarchy. Every agent reports to exactly 
 Tasks are the unit of work. Every task has:
 
 - A title, description, status, and priority
-- An assignee: one agent at a time
+- An assignee: the agent or human executor doing the work, with execution still governed by the single-assignee model
+- A responsible human: the person accountable for outcome and escalation, separate from execution assignment
+- An optional reviewer: the human expected to review output when review is needed
 - A parent task, creating a traceable hierarchy back to the company goal
 - A project and optional goal association
 
@@ -48,7 +50,9 @@ backlog -> todo -> in_progress -> in_review -> done
 
 Terminal states: `done`, `cancelled`.
 
-The transition to `in_progress` requires an **atomic checkout**. Only one agent can own a task at a time. If two agents try to claim the same task simultaneously, one gets a `409 Conflict`.
+The transition to `in_progress` requires an **atomic agent checkout**. Only one assigned agent can own a task checkout at a time. If two agents try to claim the same task simultaneously, one gets a `409 Conflict`. The responsible human field is for accountability and escalation; it does not grant agent checkout ownership.
+
+If no responsible human is explicitly chosen, AoA defaults accountability from the human assignee, the assigned agent's nearest human manager, or the current operator for unassigned tasks. Manual accountability choices are preserved across later assignee changes unless explicitly changed or cleared.
 
 ## Heartbeats
 

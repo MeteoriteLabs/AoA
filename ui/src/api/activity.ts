@@ -37,10 +37,20 @@ export interface IssueForRun {
 }
 
 export const activityApi = {
-  list: (companyId: string, filters?: { entityType?: string; entityId?: string }) => {
+  list: (
+    companyId: string,
+    filters?: {
+      entityType?: string;
+      entityId?: string;
+      actorType?: "agent" | "user" | "system" | "autonomy";
+      actorId?: string;
+    },
+  ) => {
     const params = new URLSearchParams();
     if (filters?.entityType) params.set("entityType", filters.entityType);
     if (filters?.entityId) params.set("entityId", filters.entityId);
+    if (filters?.actorType) params.set("actorType", filters.actorType);
+    if (filters?.actorId) params.set("actorId", filters.actorId);
     const qs = params.toString();
     return api.get<ActivityEvent[]>(`/companies/${companyId}/activity${qs ? `?${qs}` : ""}`);
   },

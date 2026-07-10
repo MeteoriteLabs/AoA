@@ -21,6 +21,7 @@ vi.mock("@armyofagents/db", () => {
     agents: makeTable("agents"),
     authUsers: makeTable("auth_users"),
     companyMemberships: makeTable("company_memberships"),
+    companyUserCapabilityDocuments: makeTable("company_user_capability_documents"),
     instanceUserRoles: makeTable("instance_user_roles"),
     invites: makeTable("invites"),
     issues: makeTable("issues"),
@@ -85,7 +86,18 @@ function createSequenceDb(config: {
 
   function makeChain(getResult: () => MockRow[]) {
     const chain: Record<string, unknown> = {};
-    for (const m of ["from", "where", "set", "values", "returning", "innerJoin", "leftJoin", "orderBy", "limit"]) {
+    for (const m of [
+      "from",
+      "where",
+      "set",
+      "values",
+      "returning",
+      "innerJoin",
+      "leftJoin",
+      "orderBy",
+      "limit",
+      "onConflictDoNothing",
+    ]) {
       chain[m] = (..._args: unknown[]) => chain;
     }
     chain.then = (resolve: (v: MockRow[]) => unknown) => Promise.resolve(resolve(getResult()));
@@ -457,6 +469,7 @@ describe("teamService.reassignAndRemove", () => {
   it("reassigns and removes a non-admin member", async () => {
     resetMocks();
     const updateSets: Record<string, unknown>[] = [];
+    const updateCalls: Array<{ table: unknown; set: Record<string, unknown> | null }> = [];
     const deleteCalls: number[] = [];
     const db = createSequenceDb({
       selects: [
@@ -471,10 +484,13 @@ describe("teamService.reassignAndRemove", () => {
 
     const origUpdate = db.update;
     db.update = (...args: unknown[]) => {
+      const entry: { table: unknown; set: Record<string, unknown> | null } = { table: args[0], set: null };
+      updateCalls.push(entry);
       const chain = origUpdate.call(db, ...args);
       const origSet = (chain as any).set;
       (chain as any).set = (val: Record<string, unknown>) => {
         updateSets.push(val);
+        entry.set = val;
         return origSet.call(chain, val);
       };
       return chain;
@@ -493,7 +509,15 @@ describe("teamService.reassignAndRemove", () => {
     });
 
     // Should have updates for human reassignment + agent reassignment
-    expect(updateSets.length).toBeGreaterThanOrEqual(2);
+    expect(updateSets.length).toBeGreaterThanOrEqual(3);
+
+    const { issues } = await import("@armyofagents/db");
+    const responsibilityCleanup = updateCalls.find((call) => call.table === issues);
+    expect(responsibilityCleanup, "expected removed human's responsible tasks to be cleared").toBeTruthy();
+    expect(responsibilityCleanup!.set).toMatchObject({
+      responsibleUserId: null,
+      updatedAt: expect.any(Date),
+    });
 
     // Should have 3 deletes: userRoles, principalPermissionGrants, companyMemberships
     expect(deleteCalls.length).toBe(3);

@@ -13,6 +13,7 @@ import { FeedbackThumbs } from "./FeedbackThumbs";
 import { IssueRunLedger, type IssueRunLedgerItem } from "./IssueRunLedger";
 import { SystemNotice } from "./SystemNotice";
 import { isSystemNoticeComment } from "../lib/system-notice-comment";
+import { parseTaskAssigneeValue, taskAssigneePayload } from "../lib/task-assignee";
 import { formatDateTime } from "../lib/utils";
 
 interface CommentWithRunMeta extends IssueComment {
@@ -93,15 +94,8 @@ function parseReassignment(target: string): CommentReassignment | null {
   if (!target || target === "__none__") {
     return { assigneeAgentId: null, assigneeUserId: null };
   }
-  if (target.startsWith("agent:")) {
-    const assigneeAgentId = target.slice("agent:".length);
-    return assigneeAgentId ? { assigneeAgentId, assigneeUserId: null } : null;
-  }
-  if (target.startsWith("user:")) {
-    const assigneeUserId = target.slice("user:".length);
-    return assigneeUserId ? { assigneeAgentId: null, assigneeUserId } : null;
-  }
-  return null;
+  const parsed = parseTaskAssigneeValue(target);
+  return parsed.kind === "none" ? null : taskAssigneePayload(target);
 }
 
 type TimelineItem =
@@ -432,7 +426,8 @@ export function CommentThread({
               className="text-xs h-8"
               renderTriggerValue={(option) => {
                 if (!option) return <span className="text-muted-foreground">Assignee</span>;
-                const agentId = option.id.startsWith("agent:") ? option.id.slice("agent:".length) : null;
+                const parsed = parseTaskAssigneeValue(option.id);
+                const agentId = parsed.kind === "agent" ? parsed.id : null;
                 const agent = agentId ? agentMap?.get(agentId) : null;
                 return (
                   <>
@@ -445,7 +440,8 @@ export function CommentThread({
               }}
               renderOption={(option) => {
                 if (!option.id) return <span className="truncate">{option.label}</span>;
-                const agentId = option.id.startsWith("agent:") ? option.id.slice("agent:".length) : null;
+                const parsed = parseTaskAssigneeValue(option.id);
+                const agentId = parsed.kind === "agent" ? parsed.id : null;
                 const agent = agentId ? agentMap?.get(agentId) : null;
                 return (
                   <>

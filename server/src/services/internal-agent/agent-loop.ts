@@ -40,7 +40,7 @@ export type AgentStreamChunk =
   | { type: "text"; delta: string }
   | { type: "reasoning"; delta: string }
   | { type: "tool_call"; id: string; name: string; input: unknown }
-  | { type: "tool_result"; name: string; result: ToolResult; refs?: CommanderOutputRef[] }
+  | { type: "tool_result"; id?: string; name: string; result: ToolResult; refs?: CommanderOutputRef[] }
   | { type: "action_confirmation"; toolName: string; params: unknown; runId: string }
   | { type: "options_prompt"; question: string; options: string[]; promptId: string }
   | { type: "error"; message: string }
@@ -297,7 +297,7 @@ export function agentLoopService(db: Db) {
         const REASONING_CAP = 16000;
         let accumulatedReasoning = "";
         const turnRefs: CommanderOutputRef[] = [];
-        const turnToolCalls: Array<{ name: string; success?: boolean; summary?: string }> = [];
+        const turnToolCalls: Array<{ id?: string; name: string; input?: unknown; success?: boolean; summary?: string; result?: unknown }> = [];
         for await (const chunk of cliService.chat(cliParams, effectiveConfig)) {
           if (chunk.type === "text") accumulatedAssistant += chunk.delta;
           if (chunk.type === "reasoning") {
@@ -311,16 +311,17 @@ export function agentLoopService(db: Db) {
             accumulatedReasoning = (accumulatedReasoning + chunk.delta).slice(0, REASONING_CAP);
           }
           if (chunk.type === "tool_call") {
-            turnToolCalls.push({ name: chunk.name });
+            turnToolCalls.push({ id: chunk.id, name: chunk.name, input: chunk.input });
           }
           if (chunk.type === "tool_result") {
             const enriched = {
               success: chunk.result?.success ?? true,
               summary: humanToolSummary(chunk.name, chunk.result?.summary ?? chunk.result?.data),
+              result: chunk.result?.data ?? chunk.result,
             };
-            const match = turnToolCalls.find((c) => c.name === chunk.name && c.success === undefined);
+            const match = turnToolCalls.find((c) => (chunk.id && c.id === chunk.id) || (c.name === chunk.name && c.success === undefined));
             if (match) Object.assign(match, enriched);
-            else turnToolCalls.push({ name: chunk.name, ...enriched });
+            else turnToolCalls.push({ id: chunk.id, name: chunk.name, ...enriched });
           }
           collectChunkRefs(turnRefs, chunk);
           yield chunk;

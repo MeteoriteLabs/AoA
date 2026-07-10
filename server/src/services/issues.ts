@@ -112,6 +112,8 @@ export interface IssueFilters {
   status?: string;
   assigneeAgentId?: string;
   assigneeUserId?: string;
+  responsibleUserId?: string;
+  createdByUserId?: string;
   touchedByUserId?: string;
   unreadForUserId?: string;
   projectId?: string;
@@ -510,7 +512,7 @@ export function issueService(db: Db) {
     }
   }
 
-  async function assertAssignableUser(companyId: string, userId: string) {
+  async function assertAssignableUser(companyId: string, userId: string, subject = "Assignee user") {
     const membership = await db
       .select({ id: companyMemberships.id })
       .from(companyMemberships)
@@ -524,8 +526,125 @@ export function issueService(db: Db) {
       )
       .then((rows) => rows[0] ?? null);
     if (!membership) {
-      throw notFound("Assignee user not found");
+      throw notFound(`${subject} not found`);
     }
+  }
+
+  async function assertResponsibleUser(companyId: string, userId: string) {
+    await assertAssignableUser(companyId, userId, "Responsible user");
+  }
+
+  async function findActiveCompanyUser(companyId: string, userId: string): Promise<string | null> {
+    const membership = await db
+      .select({ id: companyMemberships.id })
+      .from(companyMemberships)
+      .where(
+        and(
+          eq(companyMemberships.companyId, companyId),
+          eq(companyMemberships.principalType, "user"),
+          eq(companyMemberships.principalId, userId),
+          eq(companyMemberships.status, "active"),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    return membership ? userId : null;
+  }
+
+  async function findNearestHumanManagerForAgent(companyId: string, agentId: string): Promise<string | null> {
+    type AgentParentRow = {
+      parentType: string | null;
+      parentId: string | null;
+      reportsTo: string | null;
+    };
+    const seen = new Set<string>();
+    let currentAgentId: string | null = agentId;
+
+    for (let depth = 0; currentAgentId && depth < 50; depth += 1) {
+      if (seen.has(currentAgentId)) return null;
+      seen.add(currentAgentId);
+
+      const row: AgentParentRow | null = await db
+        .select({
+          parentType: agents.parentType,
+          parentId: agents.parentId,
+          reportsTo: agents.reportsTo,
+        })
+        .from(agents)
+        .where(and(eq(agents.id, currentAgentId), eq(agents.companyId, companyId)))
+        .then((rows): AgentParentRow | null => rows[0] ?? null);
+
+      if (!row) return null;
+      if (row.parentType === "user" && row.parentId) {
+        return await findActiveCompanyUser(companyId, row.parentId);
+      }
+      if (row.parentType === "agent" && row.parentId) {
+        currentAgentId = row.parentId;
+        continue;
+      }
+      currentAgentId = row.reportsTo ?? null;
+    }
+
+    return null;
+  }
+
+  async function findSingleFounderUserId(companyId: string): Promise<string | null> {
+    const rows = await db
+      .select({ userId: userRoles.userId })
+      .from(userRoles)
+      .innerJoin(
+        companyMemberships,
+        and(
+          eq(companyMemberships.companyId, userRoles.companyId),
+          eq(companyMemberships.principalType, "user"),
+          eq(companyMemberships.principalId, userRoles.userId),
+          eq(companyMemberships.status, "active"),
+        ),
+      )
+      .where(and(eq(userRoles.companyId, companyId), eq(userRoles.role, "founder")));
+
+    const unique = [...new Set(rows.map((row) => row.userId))];
+    return unique.length === 1 ? unique[0] : null;
+  }
+
+  async function resolveDefaultResponsibleUserId(input: {
+    companyId: string;
+    assigneeUserId?: string | null;
+    assigneeAgentId?: string | null;
+    responsibleFallbackUserId?: string | null;
+  }): Promise<string | null> {
+    if (input.assigneeUserId) return input.assigneeUserId;
+    if (input.assigneeAgentId) {
+      const manager = await findNearestHumanManagerForAgent(input.companyId, input.assigneeAgentId);
+      return manager ?? await findSingleFounderUserId(input.companyId);
+    }
+    if (input.responsibleFallbackUserId) {
+      return await findActiveCompanyUser(input.companyId, input.responsibleFallbackUserId);
+    }
+
+    return null;
+  }
+
+  async function resolveResponsibleUserId(input: {
+    companyId: string;
+    explicitResponsibleUserId?: string | null;
+    assigneeUserId?: string | null;
+    assigneeAgentId?: string | null;
+    responsibleFallbackUserId?: string | null;
+    existingResponsibleUserId?: string | null;
+    executorChanged?: boolean;
+  }): Promise<string | null | undefined> {
+    if (input.explicitResponsibleUserId !== undefined) {
+      if (input.explicitResponsibleUserId !== null) {
+        await assertResponsibleUser(input.companyId, input.explicitResponsibleUserId);
+      }
+      return input.explicitResponsibleUserId;
+    }
+
+    if (!input.executorChanged && input.existingResponsibleUserId !== undefined) {
+      return undefined;
+    }
+
+    return await resolveDefaultResponsibleUserId(input);
   }
 
   async function assertValidLabelIds(companyId: string, labelIds: string[], dbOrTx: any = db) {
@@ -640,6 +759,12 @@ export function issueService(db: Db) {
       }
       if (filters?.assigneeUserId) {
         conditions.push(eq(issues.assigneeUserId, filters.assigneeUserId));
+      }
+      if (filters?.responsibleUserId) {
+        conditions.push(eq(issues.responsibleUserId, filters.responsibleUserId));
+      }
+      if (filters?.createdByUserId) {
+        conditions.push(eq(issues.createdByUserId, filters.createdByUserId));
       }
       if (touchedByUserId) {
         conditions.push(touchedByUserCondition(companyId, touchedByUserId));
@@ -874,6 +999,7 @@ export function issueService(db: Db) {
       data: Omit<typeof issues.$inferInsert, "companyId"> & {
         labelIds?: string[];
         inheritExecutionWorkspaceFromIssueId?: string | null;
+        responsibleFallbackUserId?: string | null;
         contextBundle?: {
           sourceIssueId?: string | null;
           sourceDiscussionId?: string | null;
@@ -889,6 +1015,7 @@ export function issueService(db: Db) {
       const {
         labelIds: inputLabelIds,
         inheritExecutionWorkspaceFromIssueId,
+        responsibleFallbackUserId,
         contextBundle,
         ...issueData
       } = data;
@@ -900,6 +1027,19 @@ export function issueService(db: Db) {
       }
       if (data.assigneeUserId) {
         await assertAssignableUser(companyId, data.assigneeUserId);
+      }
+      const createResponsibleUserId = await resolveResponsibleUserId({
+        companyId,
+        explicitResponsibleUserId: Object.prototype.hasOwnProperty.call(issueData, "responsibleUserId")
+          ? (issueData as { responsibleUserId?: string | null }).responsibleUserId
+          : undefined,
+        assigneeUserId: (issueData as { assigneeUserId?: string | null }).assigneeUserId ?? null,
+        assigneeAgentId: (issueData as { assigneeAgentId?: string | null }).assigneeAgentId ?? null,
+        responsibleFallbackUserId,
+        executorChanged: true,
+      });
+      if (createResponsibleUserId !== undefined) {
+        (issueData as Record<string, unknown>).responsibleUserId = createResponsibleUserId;
       }
       if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
@@ -1177,11 +1317,6 @@ export function issueService(db: Db) {
         assertTransition(existing.status, issueData.status);
       }
 
-      const patch: Partial<typeof issues.$inferInsert> = {
-        ...issueData,
-        updatedAt: new Date(),
-      };
-
       const nextAssigneeAgentId =
         issueData.assigneeAgentId !== undefined ? issueData.assigneeAgentId : existing.assigneeAgentId;
       const nextAssigneeUserId =
@@ -1190,7 +1325,7 @@ export function issueService(db: Db) {
       if (nextAssigneeAgentId && nextAssigneeUserId) {
         throw unprocessable("Issue can only have one assignee");
       }
-      if (patch.status === "in_progress" && !nextAssigneeAgentId && !nextAssigneeUserId) {
+      if (issueData.status === "in_progress" && !nextAssigneeAgentId && !nextAssigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
       }
       if (issueData.assigneeAgentId) {
@@ -1199,6 +1334,37 @@ export function issueService(db: Db) {
       if (issueData.assigneeUserId) {
         await assertAssignableUser(existing.companyId, issueData.assigneeUserId);
       }
+      const executorChanged =
+        nextAssigneeAgentId !== existing.assigneeAgentId ||
+        nextAssigneeUserId !== existing.assigneeUserId;
+      const hasExplicitResponsibleUserId = Object.prototype.hasOwnProperty.call(issueData, "responsibleUserId");
+      let keepManualResponsibleOnExecutorChange = false;
+      if (executorChanged && !hasExplicitResponsibleUserId && existing.responsibleUserId !== null) {
+        const previousDefaultResponsibleUserId = await resolveDefaultResponsibleUserId({
+          companyId: existing.companyId,
+          assigneeUserId: existing.assigneeUserId,
+          assigneeAgentId: existing.assigneeAgentId,
+        });
+        keepManualResponsibleOnExecutorChange = existing.responsibleUserId !== previousDefaultResponsibleUserId;
+      }
+      const updateResponsibleUserId = await resolveResponsibleUserId({
+        companyId: existing.companyId,
+        explicitResponsibleUserId: hasExplicitResponsibleUserId
+          ? (issueData as { responsibleUserId?: string | null }).responsibleUserId
+          : undefined,
+        assigneeUserId: nextAssigneeUserId,
+        assigneeAgentId: nextAssigneeAgentId,
+        existingResponsibleUserId: existing.responsibleUserId,
+        executorChanged: keepManualResponsibleOnExecutorChange ? false : executorChanged,
+      });
+      if (updateResponsibleUserId !== undefined) {
+        (issueData as Record<string, unknown>).responsibleUserId = updateResponsibleUserId;
+      }
+
+      const patch: Partial<typeof issues.$inferInsert> = {
+        ...issueData,
+        updatedAt: new Date(),
+      };
 
       // Service-level agent status-transition guard (A4). Runs an approval-lookup
       // read, so it lives here alongside the assignable-agent asserts and BEFORE

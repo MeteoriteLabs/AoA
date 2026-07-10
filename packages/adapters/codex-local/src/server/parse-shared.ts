@@ -39,7 +39,14 @@ export type CodexParsedChunk =
       runId: string;
     }
   | {
+      type: "tool_call";
+      id: string;
+      name: string;
+      input: unknown;
+    }
+  | {
       type: "tool_result";
+      id?: string;
       name: string;
       result: { success: boolean; data: unknown; summary: string };
       refs: LiftedOutputRef[];
