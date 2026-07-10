@@ -473,6 +473,31 @@ export function IssueProperties({ issue, onUpdate, inline, hideStatus, hidePrior
             {creatorUserLabel ? `Assign to ${creatorUserLabel === "Me" ? "me" : creatorUserLabel}` : "Assign to requester"}
           </button>
         )}
+        {humanOptions
+          .filter((human) => human.id !== issue.createdByUserId)
+          .filter((human) => {
+            if (!assigneeSearch.trim()) return true;
+            const q = assigneeSearch.toLowerCase();
+            return [human.label, human.email, human.title, human.role]
+              .filter(Boolean)
+              .some((value) => value!.toLowerCase().includes(q));
+          })
+          .map((human) => (
+            <button
+              key={human.id}
+              className={cn(
+                "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+                human.id === issue.assigneeUserId && "bg-accent",
+              )}
+              onClick={() => {
+                onUpdate({ assigneeAgentId: null, assigneeUserId: human.id });
+                setAssigneeOpen(false);
+              }}
+            >
+              <User className="h-3 w-3 shrink-0 text-muted-foreground" />
+              {human.label}
+            </button>
+          ))}
         {sortedAgents
           .filter((a) => {
             if (!assigneeSearch.trim()) return true;

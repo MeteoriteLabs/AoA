@@ -176,6 +176,13 @@ describe("IssueProperties permissions", () => {
         title: "Ops",
         role: "team_member",
       },
+      {
+        userId: "user-2",
+        displayName: "Jordan Member",
+        email: "jordan@example.com",
+        title: "Engineering",
+        role: "team_member",
+      },
     ];
     const onUpdate = vi.fn();
     const user = userEvent.setup();
@@ -188,11 +195,11 @@ describe("IssueProperties permissions", () => {
     );
 
     await user.click(screen.getByRole("button", { name: /Agent One/ }));
-    await user.click(screen.getByRole("button", { name: /Priya Owner/ }));
+    await user.click(screen.getByRole("button", { name: /Jordan Member/ }));
 
     expect(onUpdate).toHaveBeenCalledWith({
       assigneeAgentId: null,
-      assigneeUserId: "user-1",
+      assigneeUserId: "user-2",
     });
     expect(onUpdate).not.toHaveBeenCalledWith(expect.objectContaining({ responsibleUserId: expect.anything() }));
   });

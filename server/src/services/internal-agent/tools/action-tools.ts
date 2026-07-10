@@ -29,6 +29,22 @@ export function createActionTools(): AgentTool[] {
       requiresConfirmation: true,
       execute: async (params: unknown, ctx) => {
         const { title, description, priority, departmentId, goalId, assigneeId, assigneeType, responsibleUserId } = (params ?? {}) as Record<string, unknown>;
+        if (assigneeId && assigneeType !== "agent" && assigneeType !== "user") {
+          return {
+            success: false,
+            data: null,
+            error: "assigneeType is required when assigneeId is provided",
+            summary: "Missing assignee type",
+          };
+        }
+        if (assigneeType && !assigneeId) {
+          return {
+            success: false,
+            data: null,
+            error: "assigneeId is required when assigneeType is provided",
+            summary: "Missing assignee id",
+          };
+        }
         const assigneePatch =
           assigneeId && assigneeType === "user"
             ? { assigneeAgentId: null, assigneeUserId: assigneeId as string }
@@ -184,13 +200,21 @@ export function createActionTools(): AgentTool[] {
           assigneeType: { type: "string", enum: ["agent", "user"], description: "Whether assigneeId is an agent id or human user id" },
           assigneeId: { type: "string", description: "Assignee id for the agent or human doing the task (required)" },
         },
-        required: ["taskId", "assigneeId"],
+        required: ["taskId", "assigneeType", "assigneeId"],
       },
       category: "action",
       requiredRole: "team_lead",
       requiresConfirmation: true,
       execute: async (params: unknown, ctx) => {
         const { taskId, assigneeId, assigneeType } = (params ?? {}) as Record<string, unknown>;
+        if (assigneeType !== "agent" && assigneeType !== "user") {
+          return {
+            success: false,
+            data: null,
+            error: "assigneeType must be agent or user",
+            summary: "Invalid assignee type",
+          };
+        }
         const assigneePatch =
           assigneeType === "user"
             ? { assigneeAgentId: null, assigneeUserId: assigneeId as string }

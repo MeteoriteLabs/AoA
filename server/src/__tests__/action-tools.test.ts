@@ -55,6 +55,12 @@ describe("Action Tools", () => {
     expect(properties.assigneeId.description).toMatch(/assignee id/i);
   });
 
+  it("assign_task requires explicit assigneeType because agent and human ids share one field", () => {
+    const assignTask = createActionTools().find((tool) => tool.name === "assign_task")!;
+
+    expect(assignTask.parameters.required).toEqual(["taskId", "assigneeType", "assigneeId"]);
+  });
+
   it("create_task passes responsibleUserId through to the issue service when provided", async () => {
     const services = mockServices();
     const ctx = makeCtx(services);
@@ -103,6 +109,26 @@ describe("Action Tools", () => {
     );
   });
 
+  it("create_task rejects assigneeId without assigneeType instead of assuming agent", async () => {
+    const services = mockServices();
+    const ctx = makeCtx(services);
+    const createTask = createActionTools().find((tool) => tool.name === "create_task")!;
+
+    const result = await createTask.execute(
+      {
+        title: "Ambiguous task",
+        assigneeId: "user-or-agent",
+      },
+      ctx,
+    );
+
+    expect(result).toMatchObject({
+      success: false,
+      error: "assigneeType is required when assigneeId is provided",
+    });
+    expect(services.issues.create).not.toHaveBeenCalled();
+  });
+
   it("assign_task can assign a task to a human and clears agent assignee", async () => {
     const services = mockServices();
     const ctx = makeCtx(services);
@@ -121,6 +147,26 @@ describe("Action Tools", () => {
       assigneeAgentId: null,
       assigneeUserId: "user-2",
     });
+  });
+
+  it("assign_task rejects missing assigneeType before updating a task", async () => {
+    const services = mockServices();
+    const ctx = makeCtx(services);
+    const assignTask = createActionTools().find((tool) => tool.name === "assign_task")!;
+
+    const result = await assignTask.execute(
+      {
+        taskId: "task-1",
+        assigneeId: "user-or-agent",
+      },
+      ctx,
+    );
+
+    expect(result).toMatchObject({
+      success: false,
+      error: "assigneeType must be agent or user",
+    });
+    expect(services.issues.update).not.toHaveBeenCalled();
   });
 
   it("update_task schema exposes responsibleUserId and documents that null clears it", () => {

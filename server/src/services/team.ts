@@ -488,6 +488,11 @@ export function teamService(db: Db) {
     await db.transaction(async (tx) => {
       // Re-parent all children pointing to this user
       await orgHierarchy.reparentChildren(companyId, userId, "user", tx as unknown as Db);
+      // Removed humans must not remain accountable owners of open or future-visible tasks.
+      await tx
+        .update(issues)
+        .set({ responsibleUserId: null, updatedAt: new Date() })
+        .where(and(eq(issues.companyId, companyId), eq(issues.responsibleUserId, userId)));
       // Delete role assignments
       await tx.delete(userRoles).where(and(eq(userRoles.companyId, companyId), eq(userRoles.userId, userId)));
       // Delete permission grants
@@ -1076,6 +1081,12 @@ export function teamService(db: Db) {
             ),
           );
       }
+
+      // Reassignment handles org reporting; task accountability needs explicit cleanup.
+      await tx
+        .update(issues)
+        .set({ responsibleUserId: null, updatedAt: new Date() })
+        .where(and(eq(issues.companyId, companyId), eq(issues.responsibleUserId, userId)));
 
       // Delete roles, permissions, membership
       await tx.delete(userRoles).where(
