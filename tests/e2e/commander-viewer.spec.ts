@@ -1,5 +1,6 @@
 import { test, expect, type APIRequestContext, type Page } from "@playwright/test";
 import { cleanupTestCompanies, seedCompany } from "./helpers/seed-company";
+import { seedHubItem } from "./helpers/seed-hub-item";
 import {
   createArtifactTurn,
   queryArtifactsTurn,
@@ -347,6 +348,48 @@ test.describe("Commander viewer", () => {
     await expect(panel.getByTestId("thread-mobile-tabs")).toHaveCount(0);
     await expect(panel.getByTestId("center-tab-thread")).toHaveCount(0);
     await expect(panel.getByText("Thread mapRelationships for this thread")).toHaveCount(0);
+  });
+
+  test("cockpit inbox rows open actionable Hub detail without navigating", async ({
+    page,
+    request,
+  }) => {
+    const company = await seedCompany(request, `E2E-CmdViewer-Inbox-${Date.now()}`);
+    const inboxTitle = "Commander run completed";
+    const inboxSummary = "The launch validation run completed successfully.";
+    await seedHubItem({
+      companyId: company.id,
+      semanticType: "run_complete",
+      sourceType: "heartbeat_run",
+      sourceId: crypto.randomUUID(),
+      title: inboxTitle,
+      summary: inboxSummary,
+      priority: "normal",
+    });
+
+    await page.goto(`/${company.issuePrefix}/commander`);
+    const expandCockpit = page.getByRole("button", { name: "Expand cockpit" });
+    if ((await expandCockpit.count()) === 1) {
+      await expandCockpit.click();
+    }
+
+    const inboxCard = page.getByTestId("cockpit-card-inbox");
+    await expect(inboxCard.getByRole("button", { name: inboxTitle })).toBeVisible({
+      timeout: 15_000,
+    });
+    await inboxCard.getByRole("button", { name: inboxTitle }).click();
+
+    const panel = page.getByTestId("commander-viewer-panel");
+    await expect(page).toHaveURL(new RegExp(`/${company.issuePrefix}/commander$`));
+    await expect(panel.getByTestId("commander-inbox-ref-body")).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(panel.getByText(inboxSummary)).toBeVisible();
+    await expect(panel.getByRole("button", { name: "Dismiss" })).toBeVisible();
+    await expect(panel.getByRole("button", { name: "Snooze" })).toBeVisible();
+
+    await panel.getByRole("button", { name: "Dismiss" }).click();
+    await expect(panel.getByRole("button", { name: "Undo dismiss" })).toBeVisible();
   });
 
   test("mobile: pill badges on created ref without auto-opening the sheet; tap opens viewer tabs", async ({
