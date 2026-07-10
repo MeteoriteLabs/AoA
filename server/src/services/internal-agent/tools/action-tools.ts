@@ -58,7 +58,9 @@ export function createActionTools(): AgentTool[] {
           ...(departmentId ? { projectId: departmentId as string } : {}),
           ...(goalId ? { goalId: goalId as string } : {}),
           ...assigneePatch,
-          ...(responsibleUserId ? { responsibleUserId: responsibleUserId as string } : {}),
+          ...(responsibleUserId
+            ? { responsibleUserId: responsibleUserId as string }
+            : { responsibleFallbackUserId: ctx.userId }),
         });
         return { success: true, data: task, summary: `Created task "${title}"` };
       },

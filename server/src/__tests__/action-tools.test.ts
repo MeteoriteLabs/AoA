@@ -86,6 +86,27 @@ describe("Action Tools", () => {
     );
   });
 
+  it("create_task passes the current user as responsible fallback for unassigned tasks", async () => {
+    const services = mockServices();
+    const ctx = makeCtx(services);
+    const createTask = createActionTools().find((tool) => tool.name === "create_task")!;
+
+    await createTask.execute(
+      {
+        title: "Unassigned commander task",
+      },
+      ctx,
+    );
+
+    expect(services.issues.create).toHaveBeenCalledWith(
+      "comp-1",
+      expect.objectContaining({
+        title: "Unassigned commander task",
+        responsibleFallbackUserId: "user-1",
+      }),
+    );
+  });
+
   it("create_task can create a human-assigned task and clears agent assignee", async () => {
     const services = mockServices();
     const ctx = makeCtx(services);

@@ -133,8 +133,10 @@ test.describe("Human workload dashboard", () => {
       `/${company.issuePrefix}/agents/${agent.id}`,
     );
 
-    await main.getByRole("link", { name: /E2E accountable founder task/ }).click();
-    await expect(page).toHaveURL(new RegExp(`/issues\\?selected=${responsibleTask.id}`));
+    await main.getByRole("button", { name: /Open E2E accountable founder task/ }).click();
+    await expect(page).toHaveURL(
+      new RegExp(`/${company.issuePrefix}/team/${founderId}/workload\\?task=${responsibleTask.id}`),
+    );
     const dialog = page.getByRole("dialog", { name: /E2E accountable founder task/ });
     await expect(dialog).toBeVisible({ timeout: 15_000 });
     await expect(dialog).toContainText("E2E Accountable Founder");
