@@ -338,10 +338,11 @@ export const COCKPIT_REGISTRY: CockpitCardRenderDef[] = [
     icon: Zap,
     summary: (d) => d.proactiveFindings.length > 0 ? `${d.proactiveFindings.length} findings` : null,
     isActive: (d) => d.proactiveFindings.length > 0,
-    render: ({ data, onOpenFullPage, onAsk }) => (
+    render: ({ data, onOpenFullPage, onOpenTask, onAsk }) => (
       <CockpitProactiveFindingsCard
         items={data.proactiveFindings}
         onOpenFullPage={onOpenFullPage}
+        onOpenTask={onOpenTask}
         onAsk={onAsk}
       />
     ),
@@ -354,10 +355,11 @@ export const COCKPIT_REGISTRY: CockpitCardRenderDef[] = [
     icon: Users,
     summary: (d) => d.teammatesActivity.length > 0 ? `${d.teammatesActivity.length} updates` : null,
     isActive: (d) => d.teammatesActivity.length > 0,
-    render: ({ data, onOpenFullPage }) => (
+    render: ({ data, onOpenFullPage, onOpenTask }) => (
       <CockpitTeammatesActivityCard
         items={data.teammatesActivity}
         onOpenFullPage={onOpenFullPage}
+        onOpenTask={onOpenTask}
       />
     ),
   },

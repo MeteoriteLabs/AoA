@@ -16,9 +16,11 @@ import { timeAgo } from "../../../lib/timeAgo";
 export function CockpitTeammatesActivityCard({
   items,
   onOpenFullPage,
+  onOpenTask,
 }: {
   items: CockpitTeammatesActivityItem[];
   onOpenFullPage?: (href: string) => void;
+  onOpenTask?: (issueId: string, title: string) => void;
 }) {
   if (items.length === 0) return null;
 
@@ -38,7 +40,11 @@ export function CockpitTeammatesActivityCard({
                 type="button"
                 className="min-w-0 flex-1 truncate text-left"
                 onClick={() => {
-                  if (href) onOpenFullPage?.(href);
+                  if ((item.entityType === "issue" || item.entityType === "task") && item.entityId) {
+                    onOpenTask?.(item.entityId, activityVerb(item.action));
+                  } else if (href) {
+                    onOpenFullPage?.(href);
+                  }
                 }}
               >
                 <span className="truncate font-medium">

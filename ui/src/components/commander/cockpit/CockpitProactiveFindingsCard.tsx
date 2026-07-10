@@ -14,10 +14,12 @@ import type { CockpitProactiveItem } from "@armyofagents/shared";
 export function CockpitProactiveFindingsCard({
   items,
   onOpenFullPage,
+  onOpenTask,
   onAsk,
 }: {
   items: CockpitProactiveItem[];
   onOpenFullPage?: (href: string) => void;
+  onOpenTask?: (issueId: string, title: string) => void;
   onAsk?: (text: string) => void;
 }) {
   if (items.length === 0) return null;
@@ -37,7 +39,11 @@ export function CockpitProactiveFindingsCard({
               className="min-w-0 flex-1 truncate text-left"
               onClick={() => {
                 if (item.relatedEntityType && item.relatedEntityId) {
-                  onOpenFullPage?.("/inbox");
+                  if (item.relatedEntityType === "task" || item.relatedEntityType === "issue") {
+                    onOpenTask?.(item.relatedEntityId, item.title);
+                  } else {
+                    onOpenFullPage?.("/inbox");
+                  }
                 } else {
                   onAsk?.(item.title);
                 }
