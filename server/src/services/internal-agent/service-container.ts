@@ -18,6 +18,8 @@ import { discussionService } from "../discussions.js";
 import { threadService } from "../threads.js";
 import { taskOutputService } from "../task-outputs.js";
 import { companyService } from "../companies.js";
+import { approvalService } from "../approvals.js";
+import { issueApprovalService } from "../issue-approvals.js";
 import {
   createEmbeddingService,
   createOpenAiEmbedder,
@@ -208,6 +210,8 @@ export function createServiceContainer(db: Db): ServiceContainer {
     discussions: discussionService(db),
     threads: threadService(db),
     taskOutputs: taskOutputService(db),
+    approvals: approvalService(db),
+    issueApprovals: issueApprovalService(db),
     companies: {
       get: (id: string) => companySvc.getById(id).then((row) => {
         if (!row) return null;
