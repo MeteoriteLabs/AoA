@@ -864,7 +864,7 @@ export function cockpitService(db: Db) {
         title: note.title,
         body: note.body,
         color: note.color as CockpitNoteItem["color"],
-        updatedAt: note.updatedAt.toISOString(),
+        updatedAt: note.updatedAt,
       }));
       const inbox: CockpitInboxItem[] = inboxResult.items.map((item) => ({
         id: item.id,

@@ -126,6 +126,8 @@ beforeEach(() => {
     archives: [],
     totalCount: 0,
   });
+  mockUserNotesList.mockResolvedValue([]);
+  mockHubItemsQuery.mockResolvedValue({ items: [], nextCursor: null });
   // db.select returns a stub that resolves to []
   (mockDb as Record<string, unknown>).select = vi.fn(() => buildSelectStub());
 });
@@ -190,8 +192,30 @@ describe("cockpitService.get — founder", () => {
     expect(result).toHaveProperty("approvals");
     expect(Array.isArray(result.approvals)).toBe(true);
   });
-  mockUserNotesList.mockResolvedValue([]);
-  mockHubItemsQuery.mockResolvedValue({ items: [], nextCursor: null });
+
+  it("maps note DTO timestamps without treating them as Date objects", async () => {
+    mockUserNotesList.mockResolvedValue([
+      {
+        id: "note-1",
+        companyId: COMPANY,
+        userId: founderScope.userId,
+        title: "Today",
+        body: "Review Commander",
+        color: "yellow",
+        createdAt: "2026-07-10T09:00:00.000Z",
+        updatedAt: "2026-07-10T10:00:00.000Z",
+      },
+    ]);
+
+    const result = await cockpitService(mockDb).get(COMPANY, FOUNDER_ACTOR);
+
+    expect(result.stickyNotes).toEqual([
+      expect.objectContaining({
+        id: "note-1",
+        updatedAt: "2026-07-10T10:00:00.000Z",
+      }),
+    ]);
+  });
 });
 
 describe("cockpitService.get — team_member (SECURITY GATE)", () => {
