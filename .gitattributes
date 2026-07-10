@@ -17,3 +17,11 @@ tests/e2e/fixtures/fake-codex/fake-codex.mjs text eol=lf
 # rewrite them to CRLF and make the drift check falsely fail.
 packages/shared/src/generated/tools.json text eol=lf
 server/src/onboarding-assets/commander/TOOLS.md text eol=lf
+
+# Generated AoA-native-skills catalog (pnpm gen:skills / gen:skills:check)
+# and the eval snapshot committed alongside the commander-skill-triggering
+# suite (Plan 2, Task 6) — same CRLF-drift risk as the tools.json artifacts
+# above: a Windows checkout with autocrlf=true must not rewrite these to
+# CRLF and desync from what the generator/suite committed.
+server/src/services/internal-agent/generated/aoa-native-skills.json text eol=lf
+server/src/eval/commander-skill-triggering/skills-snapshot.json text eol=lf
