@@ -47,9 +47,11 @@ describe("TOOLS.md contract", () => {
     );
   });
 
-  it("documents the current Commander-visible tool count", () => {
-    expect(src).toContain("You have **37 tools**");
-    expect(src).toContain("The 37 tools above are your complete set");
+  it("documents the tool count generated from the live registry", () => {
+    // TOOLS.md is now generated from the registry (drift-locked by
+    // tool-manifest.test.ts). The count is emitted, not hand-typed.
+    expect(src).toMatch(/The \d+ tools below are your complete set/);
+    expect(src).toContain("generated from the live tool registry");
   });
 
   // The v0.1 rewrite organizes tools into named, table-rendered categories.
@@ -62,13 +64,13 @@ describe("TOOLS.md contract", () => {
     expect(src).toMatch(/^\|\s*Tool\s*\|/m);
   });
 
-  it("documents responsible human ownership separately from executor assignment", () => {
+  it("documents responsible-human ownership separately from executor assignment", () => {
+    // The responsible-human vs assignee distinction is carried in the generated
+    // tool descriptions (get_task/assign_task/create_task/update_task), not in
+    // hand-authored prose. Assert the concept, not the old field-name wording.
     expect(src).toMatch(/responsible human/i);
-    expect(src).toMatch(/assignee is the agent or human/i);
-    expect(src).toMatch(/`create_task`[\s\S]*assigneeId[\s\S]*responsibleUserId/i);
-    expect(src).toMatch(/`update_task`[\s\S]*responsibleUserId[\s\S]*null clears/i);
-    expect(src).toMatch(/`update_task`[\s\S]*Use `assign_task` for assignee reassignment/i);
+    expect(src).toMatch(/assignee means who does the task/i);
+    expect(src).toMatch(/responsible human owns the outcome/i);
     expect(src).not.toMatch(/agent executor/i);
-    expect(src).toMatch(/`query_tasks`[\s\S]*responsibleUserId/i);
   });
 });
