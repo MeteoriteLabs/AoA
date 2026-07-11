@@ -78,23 +78,23 @@ The 85 tools below are your complete set, generated from the live tool registry.
 | `extract_references` | read | team_member | Extract reference-type memory candidates from a thread (filtered subset of extract_memory_candidates). |
 | `find_similar_memory` | read | team_member | Find semantically similar memory items using vector search. |
 | `find_similar_memory_hnsw` | read | team_member | Find existing memory items semantically similar to a query via direct HNSW cosine search. |
-| `forget_working_context` | read | team_member | Archive temporary scoped Commander working context. |
-| `propose_memory_from_thread` | read | team_member | Propose a memory item (status='pending', founder approves) seeded from a thread. Inherits visibility + scope from the source thread. Private threads may only propose working or active_context layers. |
+| `forget_working_context` | write | team_member | Archive temporary scoped Commander working context. |
+| `propose_memory_from_thread` | write | team_member | Propose a memory item (status='pending', founder approves) seeded from a thread. Inherits visibility + scope from the source thread. Private threads may only propose working or active_context layers. |
 | `query_memory` | read | team_member | Search memory items with optional layer and text filters. |
-| `remember_working_context` | read | team_member | Remember temporary scoped Commander working context for the current project, goal, task, or conversation. |
+| `remember_working_context` | write | team_member | Remember temporary scoped Commander working context for the current project, goal, task, or conversation. |
 | `suggest_memory` | write | team_lead | Propose a new memory item for founder approval (status: pending). |
 | `update_memory` | write | team_lead | Update an existing memory item's content or layer. |
-| `update_working_context` | read | team_member | Update temporary scoped Commander working context. |
-| `write_memory` | read | team_member | Create a memory item (status='pending', founder approves per Critical Rule #6) and enqueue it for RAG indexing. Use for capturing important knowledge discovered during task execution that should be reviewed and promoted to company memory. For temporary working notes scoped only to this agent, prefer the MCP memory.retain tool with scopeToSelf=true and layer=working. |
+| `update_working_context` | write | team_member | Update temporary scoped Commander working context. |
+| `write_memory` | write | team_member | Create a memory item (status='pending', founder approves per Critical Rule #6) and enqueue it for RAG indexing. Use for capturing important knowledge discovered during task execution that should be reviewed and promoted to company memory. For temporary working notes scoped only to this agent, prefer the MCP memory.retain tool with scopeToSelf=true and layer=working. |
 
 ## Discussion Tools
 
 | Tool | R/W | Min role | What it does |
 |------|-----|----------|--------------|
-| `extract_from_content` | write | founder | Trigger extraction of tasks and memory items from a discussion entry. |
+| `extract_from_content` | read | founder | Trigger extraction of tasks and memory items from a discussion entry. |
 | `link_discussion_to_project` | write | team_lead | Scope a discussion to a project, department, or goal. |
 | `post_entry` | write | team_member | Post a message to a thread as this agent. Use for crew coordination, summaries, and @mentions. |
-| `search_discussions` | write | team_member | Search discussions by title. |
+| `search_discussions` | read | team_member | Search discussions by title. |
 | `submit_extracted_items` | write | founder | Persist structured extracted items (decisions, tasks, insights, etc.) for a discussion entry and mark the entry's extraction as completed. Called by the discussion-extraction agent to write its results. |
 
 ## Workflow Tools
@@ -115,14 +115,14 @@ The 85 tools below are your complete set, generated from the live tool registry.
 
 | Tool | R/W | Min role | What it does |
 |------|-----|----------|--------------|
-| `agent.dispatch` | read | team_member | Dispatch another AoA agent by inserting a wakeup row. Does NOT call heartbeat directly — the dispatcher's drain loop picks it up. Respects hop-count cap (max 3) and dedupes within a single thread context. |
-| `attach_task_artifact` | read | team_member | Attach your work product to a task as a deliverable: creates a new artifact (document, code, report, etc.) authored by you, links it to the task, and records it in the task's output index. Use this to hand back the result of your work. |
+| `agent.dispatch` | write | team_member | Dispatch another AoA agent by inserting a wakeup row. Does NOT call heartbeat directly — the dispatcher's drain loop picks it up. Respects hop-count cap (max 3) and dedupes within a single thread context. |
+| `attach_task_artifact` | write | team_member | Attach your work product to a task as a deliverable: creates a new artifact (document, code, report, etc.) authored by you, links it to the task, and records it in the task's output index. Use this to hand back the result of your work. |
 | `hub.readCurationContext` | read | team_member | Read bounded, redacted hub item context for Steward curation. This returns hub envelopes and source pointers only; it never reads raw source bodies or mutates lifecycle state. |
-| `hub.updateCurationSummary` | read | team_member | Write a bounded Steward curation summary or explanation for a hub item. This only updates display curation metadata and never resolves, archives, approves, rejects, or changes source-side state. |
-| `notify_owner` | read | team_member | Send a notification to the thread owner. Use when the crew needs human attention or approval. |
-| `post_task_comment` | read | team_member | Post a comment back onto a task (typically your assigned task) — for example a progress note, a summary of what you did, or a question for the founder. The comment is recorded as authored by you. |
+| `hub.updateCurationSummary` | write | team_member | Write a bounded Steward curation summary or explanation for a hub item. This only updates display curation metadata and never resolves, archives, approves, rejects, or changes source-side state. |
+| `notify_owner` | write | team_member | Send a notification to the thread owner. Use when the crew needs human attention or approval. |
+| `post_task_comment` | write | team_member | Post a comment back onto a task (typically your assigned task) — for example a progress note, a summary of what you did, or a question for the founder. The comment is recorded as authored by you. |
 | `query_dependency_chain` | read | team_member | Analyze task dependency chain — find what blocks a task or what it blocks. |
-| `set_task_status` | read | team_member | Move your own assigned task forward to a new status (for example from in_progress to in_review, or to done). Whether a transition is allowed depends on your autonomy level — moving a task to review requires at least Assist, and completing it requires Drive. Use this when you have finished a unit of work and want to hand the task to the next stage. |
+| `set_task_status` | write | team_member | Move your own assigned task forward to a new status (for example from in_progress to in_review, or to done). Whether a transition is allowed depends on your autonomy level — moving a task to review requires at least Assist, and completing it requires Drive. Use this when you have finished a unit of work and want to hand the task to the next stage. |
 
 ## Analysis Tools
 

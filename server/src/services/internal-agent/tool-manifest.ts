@@ -27,19 +27,30 @@ export interface ToolManifestEntry {
   mcpAlias: string | null;
 }
 
-// Commander write-signal rule (deterministic from registry fields):
-//   write iff category ∈ {action, workflow, discussion} OR requiresConfirmation.
-//   else read. Advisory metadata for the cheat-sheet — real gating lives in
-//   authorize-tool.ts, so an approximate-but-deterministic rule is acceptable.
-const COMMANDER_WRITE_CATEGORIES: ReadonlySet<ToolCategory> = new Set([
-  "action",
-  "workflow",
-  "discussion",
+// Commander read/write signal (advisory metadata for the cheat-sheet; real
+// gating is in authorize-tool.ts). Biased safe: a tool is READ only when we are
+// confident it does not mutate — pure-read categories, or an explicit read set
+// within otherwise-mixed categories. Everything else is WRITE, so a mutating
+// tool is never mislabeled "freely callable".
+const READ_ONLY_CATEGORIES: ReadonlySet<ToolCategory> = new Set([
+  "query",
+  "file",
+  "analysis",
+]);
+const READ_TOOL_NAMES: ReadonlySet<string> = new Set([
+  // memory reads
+  "query_memory", "find_similar_memory", "detect_conflicts", "find_similar_memory_hnsw",
+  "extract_memory_candidates", "extract_decisions", "extract_insights", "extract_references",
+  // discussion reads
+  "search_discussions", "extract_from_content",
+  // coordination reads
+  "query_dependency_chain", "hub.readCurationContext",
 ]);
 
 function commanderReadWrite(tool: AgentTool): ReadWrite {
-  if (COMMANDER_WRITE_CATEGORIES.has(tool.category)) return "write";
-  return tool.requiresConfirmation ? "write" : "read";
+  if (READ_ONLY_CATEGORIES.has(tool.category)) return "read";
+  if (READ_TOOL_NAMES.has(tool.name)) return "read";
+  return "write";
 }
 
 function mcpCategory(name: string): string {

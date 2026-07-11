@@ -24,7 +24,7 @@
       "name": "agent.dispatch",
       "surface": "commander",
       "category": "coordination",
-      "readWrite": "read",
+      "readWrite": "write",
       "requiredRole": "team_member",
       "description": "Dispatch another AoA agent by inserting a wakeup row. Does NOT call heartbeat directly — the dispatcher's drain loop picks it up. Respects hop-count cap (max 3) and dedupes within a single thread context.",
       "mcpAlias": null
@@ -69,7 +69,7 @@
       "name": "attach_task_artifact",
       "surface": "commander",
       "category": "coordination",
-      "readWrite": "read",
+      "readWrite": "write",
       "requiredRole": "team_member",
       "description": "Attach your work product to a task as a deliverable: creates a new artifact (document, code, report, etc.) authored by you, links it to the task, and records it in the task's output index. Use this to hand back the result of your work.",
       "mcpAlias": null
@@ -186,7 +186,7 @@
       "name": "extract_from_content",
       "surface": "commander",
       "category": "discussion",
-      "readWrite": "write",
+      "readWrite": "read",
       "requiredRole": "founder",
       "description": "Trigger extraction of tasks and memory items from a discussion entry.",
       "mcpAlias": null
@@ -258,7 +258,7 @@
       "name": "forget_working_context",
       "surface": "commander",
       "category": "memory",
-      "readWrite": "read",
+      "readWrite": "write",
       "requiredRole": "team_member",
       "description": "Archive temporary scoped Commander working context.",
       "mcpAlias": null
@@ -321,7 +321,7 @@
       "name": "hub.updateCurationSummary",
       "surface": "commander",
       "category": "coordination",
-      "readWrite": "read",
+      "readWrite": "write",
       "requiredRole": "team_member",
       "description": "Write a bounded Steward curation summary or explanation for a hub item. This only updates display curation metadata and never resolves, archives, approves, rejects, or changes source-side state.",
       "mcpAlias": null
@@ -375,7 +375,7 @@
       "name": "notify_owner",
       "surface": "commander",
       "category": "coordination",
-      "readWrite": "read",
+      "readWrite": "write",
       "requiredRole": "team_member",
       "description": "Send a notification to the thread owner. Use when the crew needs human attention or approval.",
       "mcpAlias": null
@@ -393,7 +393,7 @@
       "name": "post_task_comment",
       "surface": "commander",
       "category": "coordination",
-      "readWrite": "read",
+      "readWrite": "write",
       "requiredRole": "team_member",
       "description": "Post a comment back onto a task (typically your assigned task) — for example a progress note, a summary of what you did, or a question for the founder. The comment is recorded as authored by you.",
       "mcpAlias": null
@@ -420,7 +420,7 @@
       "name": "propose_memory_from_thread",
       "surface": "commander",
       "category": "memory",
-      "readWrite": "read",
+      "readWrite": "write",
       "requiredRole": "team_member",
       "description": "Propose a memory item (status='pending', founder approves) seeded from a thread. Inherits visibility + scope from the source thread. Private threads may only propose working or active_context layers.",
       "mcpAlias": null
@@ -582,7 +582,7 @@
       "name": "remember_working_context",
       "surface": "commander",
       "category": "memory",
-      "readWrite": "read",
+      "readWrite": "write",
       "requiredRole": "team_member",
       "description": "Remember temporary scoped Commander working context for the current project, goal, task, or conversation.",
       "mcpAlias": null
@@ -600,7 +600,7 @@
       "name": "search_discussions",
       "surface": "commander",
       "category": "discussion",
-      "readWrite": "write",
+      "readWrite": "read",
       "requiredRole": "team_member",
       "description": "Search discussions by title.",
       "mcpAlias": null
@@ -609,7 +609,7 @@
       "name": "set_task_status",
       "surface": "commander",
       "category": "coordination",
-      "readWrite": "read",
+      "readWrite": "write",
       "requiredRole": "team_member",
       "description": "Move your own assigned task forward to a new status (for example from in_progress to in_review, or to done). Whether a transition is allowed depends on your autonomy level — moving a task to review requires at least Assist, and completing it requires Drive. Use this when you have finished a unit of work and want to hand the task to the next stage.",
       "mcpAlias": null
@@ -735,7 +735,7 @@
       "name": "update_working_context",
       "surface": "commander",
       "category": "memory",
-      "readWrite": "read",
+      "readWrite": "write",
       "requiredRole": "team_member",
       "description": "Update temporary scoped Commander working context.",
       "mcpAlias": null
@@ -762,7 +762,7 @@
       "name": "write_memory",
       "surface": "commander",
       "category": "memory",
-      "readWrite": "read",
+      "readWrite": "write",
       "requiredRole": "team_member",
       "description": "Create a memory item (status='pending', founder approves per Critical Rule #6) and enqueue it for RAG indexing. Use for capturing important knowledge discovered during task execution that should be reviewed and promoted to company memory. For temporary working notes scoped only to this agent, prefer the MCP memory.retain tool with scopeToSelf=true and layer=working.",
       "mcpAlias": null
