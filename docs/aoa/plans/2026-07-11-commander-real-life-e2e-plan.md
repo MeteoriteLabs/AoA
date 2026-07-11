@@ -1,8 +1,8 @@
 # Commander Real-Life Lifecycle E2E Plan
 
-**Date:** 2026-07-11  
-**Branch:** `codex/commander-cockpit`  
-**Status:** Reviewed and ready for execution  
+**Date:** 2026-07-11
+**Branch:** `codex/commander-cockpit`
+**Status:** Reviewed and ready for execution
 **Related plan:** `2026-07-11-commander-ask-human-completion-policy-plan.md`
 
 ## Goal
