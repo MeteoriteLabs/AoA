@@ -22,6 +22,7 @@ import { ToastProvider } from "../../context/ToastContext";
 // ── Context + API mocks ─────────────────────────────────────────────────────
 const closeOnboarding = vi.fn();
 const setSelectedCompanyId = vi.fn();
+const navigate = vi.fn();
 const createCompany = vi.fn().mockResolvedValue({
   id: "comp-new",
   issuePrefix: "NEW",
@@ -29,8 +30,27 @@ const createCompany = vi.fn().mockResolvedValue({
 const updateCompany = vi.fn().mockResolvedValue({});
 const updateConfig = vi.fn().mockResolvedValue({});
 const createGoal = vi.fn().mockResolvedValue({});
+const createAgent = vi.fn().mockResolvedValue({ id: "agent-1" });
+const updateAgent = vi.fn().mockResolvedValue({});
+const adapterModels = vi.fn().mockResolvedValue([]);
+const testEnvironment = vi.fn().mockResolvedValue({
+  status: "pass",
+  checks: [],
+  testedAt: "2026-07-06T00:00:00.000Z",
+});
+const createIssue = vi.fn().mockResolvedValue({ id: "issue-1", identifier: "NEW-1" });
 const mkdir = vi.fn().mockResolvedValue({});
 const homePath = vi.fn().mockResolvedValue({ homePath: "/Users/test" });
+
+vi.mock("react-router-dom", async () => {
+  const actual = await vi.importActual<typeof import("react-router-dom")>(
+    "react-router-dom",
+  );
+  return {
+    ...actual,
+    useNavigate: () => navigate,
+  };
+});
 
 vi.mock("../../context/DialogContext", () => ({
   useDialog: () => ({
@@ -67,15 +87,15 @@ vi.mock("../../api/goals", () => ({
 
 vi.mock("../../api/agents", () => ({
   agentsApi: {
-    adapterModels: vi.fn().mockResolvedValue([]),
-    testEnvironment: vi.fn().mockResolvedValue({ status: "pass", checks: [], testedAt: "" }),
-    create: vi.fn().mockResolvedValue({ id: "agent-1" }),
-    update: vi.fn().mockResolvedValue({}),
+    adapterModels: (...args: unknown[]) => adapterModels(...args),
+    testEnvironment: (...args: unknown[]) => testEnvironment(...args),
+    create: (...args: unknown[]) => createAgent(...args),
+    update: (...args: unknown[]) => updateAgent(...args),
   },
 }));
 
 vi.mock("../../api/issues", () => ({
-  issuesApi: { create: vi.fn().mockResolvedValue({ id: "i-1", identifier: "NEW-1" }) },
+  issuesApi: { create: (...args: unknown[]) => createIssue(...args) },
 }));
 
 vi.mock("../../api/filesystem", () => ({
@@ -134,6 +154,15 @@ describe("OnboardingWizard Commander + Crew steps", () => {
     updateCompany.mockResolvedValue({});
     updateConfig.mockResolvedValue({});
     createGoal.mockResolvedValue({});
+    createAgent.mockResolvedValue({ id: "agent-1" });
+    updateAgent.mockResolvedValue({});
+    adapterModels.mockResolvedValue([]);
+    testEnvironment.mockResolvedValue({
+      status: "pass",
+      checks: [],
+      testedAt: "2026-07-06T00:00:00.000Z",
+    });
+    createIssue.mockResolvedValue({ id: "issue-1", identifier: "NEW-1" });
     mkdir.mockResolvedValue({});
     homePath.mockResolvedValue({ homePath: "/Users/test" });
   });
@@ -303,5 +332,79 @@ describe("OnboardingWizard Commander + Crew steps", () => {
         crewModel: null,
       });
     });
+  });
+
+  it("creates the first agent, creates its first task, and launches to the task", async () => {
+    const user = userEvent.setup();
+    renderWizard();
+    await advanceToCommanderStep(user);
+
+    await user.selectOptions(
+      screen.getByTestId("commander-provider"),
+      "openai",
+    );
+    await user.click(screen.getByTestId("step3-next"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("crew-provider")).toBeInTheDocument();
+    });
+    await user.selectOptions(screen.getByTestId("crew-provider"), "openai");
+    await user.click(screen.getByTestId("step4-next"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("step5-next")).toBeInTheDocument();
+    });
+    await user.click(screen.getByTestId("step5-next"));
+
+    await waitFor(() => {
+      expect(createAgent).toHaveBeenCalledWith("comp-new", expect.objectContaining({
+        name: "Director",
+        role: "cxo",
+        adapterType: "codex_local",
+        adapterConfig: expect.objectContaining({
+          cwd: "/Users/test/AoA/test-co/agents/director",
+        }),
+        runtimeConfig: expect.objectContaining({
+          heartbeat: expect.objectContaining({
+            enabled: true,
+            wakeOnDemand: true,
+            maxConcurrentRuns: 1,
+          }),
+        }),
+      }));
+    });
+    expect(testEnvironment).toHaveBeenCalledWith(
+      "comp-new",
+      "codex_local",
+      expect.objectContaining({
+        adapterConfig: expect.any(Object),
+      }),
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("step6-next")).toBeInTheDocument();
+    });
+    await user.click(screen.getByTestId("step6-next"));
+
+    await waitFor(() => {
+      expect(createIssue).toHaveBeenCalledWith("comp-new", expect.objectContaining({
+        title: "Review your Director playbook",
+        assigneeAgentId: "agent-1",
+        status: "todo",
+      }));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("step7-next")).toBeInTheDocument();
+    });
+    await user.click(screen.getByTestId("step7-next"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("step8-launch")).toBeInTheDocument();
+    });
+    await user.click(screen.getByTestId("step8-launch"));
+
+    expect(closeOnboarding).toHaveBeenCalledTimes(1);
+    expect(navigate).toHaveBeenCalledWith("/NEW/issues/NEW-1");
   });
 });

@@ -1,6 +1,7 @@
 .git
 .github
 .paperclip
+.runtime-research
 .pnpm-store
 node_modules
 **/node_modules

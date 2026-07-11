@@ -34,6 +34,14 @@ You have two options:
 | Rename the host directory | `mv ./data/docker-paperclip ./data/docker-aoa` |
 | Keep the old name | Set `AOA_DATA_DIR=./data/docker-paperclip` before `docker compose up` |
 
+**Docker Compose database volumes.** The default multi-service Compose stack now
+uses `pgvector/pgvector:pg18`, an `aoa-postgres` volume, and the Postgres 18
+storage layout at `/var/lib/postgresql`. Older simple Compose installs used a
+different volume name and Postgres 17 layout. Do not mount an old Postgres 17
+data directory directly into the new stack. Back up with `pg_dump` or an
+equivalent database backup from the old stack, then restore into the new
+database.
+
 **Shell profile env vars.** `PAPERCLIP_HOME=/foo` continues to work at runtime via env-compat mirroring, but plan to rename it to `AOA_HOME` at your next convenience — the mirror will be removed in a future major.
 
 **npm bin name.** `npx paperclipai onboard` still works (the alias is preserved). Once `@armyofagents/cli` is published, the canonical command becomes `npx aoa onboard`. No urgency — both work today.
