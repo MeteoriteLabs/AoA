@@ -55,8 +55,9 @@ describe("Tool Registry", () => {
       // W4 Steward added 2 coordination tools:
       // hub.readCurationContext (redacted curation read) and
       // hub.updateCurationSummary (bounded display-only hub curation write).
+      // Plan 3 B2: +5 approval tools + get_heartbeat_context = 81.
       const tools = createToolRegistry();
-      expect(tools).toHaveLength(75);
+      expect(tools).toHaveLength(81);
     });
 
     it("every tool has required fields", () => {

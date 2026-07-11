@@ -144,7 +144,7 @@ export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) 
     // 0 and the gate in ensure-commander.ts:170-200 skips writing. This
     // second call (combined with the relaxed gate in ensure-commander.ts
     // that allows re-run when skillKeys is empty AND installed > 0)
-    // populates skillKeys with all 4 native skills. The function is
+    // populates skillKeys with all seeded native skills. The function is
     // idempotent — second call only updates skillKeys and is otherwise
     // no-op against the agent row.
     await ensureCommanderAgent(db, company.id).catch(() => {
