@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { PROJECT_STATUSES, PROJECT_TYPES } from "../constants.js";
+import { AGENT_COMPLETION_POLICIES, PROJECT_STATUSES, PROJECT_TYPES } from "../constants.js";
 
 /**
  * Strict shape mirroring `ExecutionWorkspaceStrategy` from
@@ -87,6 +87,7 @@ const projectFields = {
   functionType: z.string().optional().nullable(),
   archivedAt: z.string().datetime().optional().nullable(),
   executionWorkspacePolicy: executionWorkspacePolicySchema.nullable().optional(),
+  agentCompletionPolicyDefault: z.enum(AGENT_COMPLETION_POLICIES).nullable().optional(),
 };
 
 export const createProjectSchema = z.object({

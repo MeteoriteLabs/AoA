@@ -1,4 +1,4 @@
-import type { CompanyStatus } from "../constants.js";
+import type { AgentCompletionPolicy, CompanyStatus } from "../constants.js";
 
 export interface Company {
   id: string;
@@ -10,6 +10,8 @@ export interface Company {
   budgetMonthlyCents: number;
   spentMonthlyCents: number;
   requireBoardApprovalForNewAgents: boolean;
+  agentCompletionPolicyDefault?: AgentCompletionPolicy;
+  agentCompletionReviewGuardrail?: boolean;
   vision: string | null;
   mission: string | null;
   values: string | null;

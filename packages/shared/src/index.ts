@@ -13,6 +13,9 @@ export {
   ISSUE_PRIORITIES,
   ISSUE_WORK_MODES,
   ISSUE_SOURCES,
+  AGENT_COMPLETION_POLICIES,
+  AGENT_COMPLETION_POLICY_SOURCES,
+  ISSUE_REVIEWER_SOURCES,
   GOAL_LEVELS,
   GOAL_STATUSES,
   PROJECT_TYPES,
@@ -139,6 +142,9 @@ export {
   type IssuePriority,
   type IssueWorkMode,
   type IssueSource,
+  type AgentCompletionPolicy,
+  type AgentCompletionPolicySource,
+  type IssueReviewerSource,
   type GoalLevel,
   type GoalStatus,
   type ProjectType,
@@ -1246,6 +1252,7 @@ export * from "./user-notes.js";
 export * from "./commander-output-refs.js";
 export * from "./commander-input-refs.js";
 export * from "./hub.js";
+export * from "./work-questions.js";
 export * from "./notification-registry.js";
 
 // ── API contract artifacts ──

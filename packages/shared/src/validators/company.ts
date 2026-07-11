@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { COMPANY_STATUSES } from "../constants.js";
+import { AGENT_COMPLETION_POLICIES, COMPANY_STATUSES } from "../constants.js";
 import {
   CommanderAdapterConfigSchema,
   CrewAdapterConfigSchema,
@@ -32,6 +32,8 @@ export const updateCompanySchema = createCompanySchema
     mission: z.string().nullable().optional(),
     values: z.string().nullable().optional(),
     mcpEnabled: z.boolean().optional(),
+    agentCompletionPolicyDefault: z.enum(AGENT_COMPLETION_POLICIES).optional(),
+    agentCompletionReviewGuardrail: z.boolean().optional(),
   });
 
 export type UpdateCompany = z.infer<typeof updateCompanySchema>;

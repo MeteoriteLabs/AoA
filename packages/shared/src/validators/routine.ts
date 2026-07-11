@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {
+  AGENT_COMPLETION_POLICIES,
   ROUTINE_STATUSES,
   ROUTINE_CONCURRENCY_POLICIES,
   ROUTINE_CATCH_UP_POLICIES,
@@ -30,6 +31,7 @@ export const createRoutineSchema = z.object({
   concurrencyPolicy: z.enum(ROUTINE_CONCURRENCY_POLICIES).optional(),
   catchUpPolicy: z.enum(ROUTINE_CATCH_UP_POLICIES).optional(),
   variables: z.array(routineVariableSchema).optional(),
+  agentCompletionPolicyOverride: z.enum(AGENT_COMPLETION_POLICIES).nullable().optional(),
 });
 
 export const updateRoutineSchema = createRoutineSchema.partial().extend({

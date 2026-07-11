@@ -39,6 +39,7 @@ Decisions made during product design and development. Do not relitigate unless e
 | 16 | Agents have read-only Memory access | Receive context at execution time, cannot write directly. |
 | 17 | Tasks don't care who does them | Same task model for humans and agents. Experience adapts. |
 | 18 | Agents can only self-transition: todo → in_progress → in_review | Only humans mark done/cancelled. Deliberate control point. |
+| 18A | Decision #18 is superseded by Decision #109 (2026-07-11) | Review-required remains the safe default; explicitly governed tasks may allow agent completion under policy, autonomy, and structured acceptance criteria. |
 | 19 | Drizzle only, no raw SQL | Matches Paperclip patterns. `pnpm db:generate` for all migrations. |
 | 20 | ~~Sub-goals limited to one level deep~~ **(SUPERSEDED 2026-05-25)** | Superseded by the multi-parent goals model — goals form a freely-nested, multi-parent DAG; integrity (cycles + child⊆parent scope) enforced on write. See `docs/superpowers/plans/2026-05-25-threads-goals-followup.md` B0. |
 | 21 | Task dependencies use a separate `task_dependencies` table, not parentId | parentId = subtasks (hierarchy). Dependencies = blocking relationships (different concept). Separate table, separate logic. |
@@ -1118,3 +1119,23 @@ The two items deferred by Decision #107 shipped together on `feat/inbox-hub-tabb
 **Deferred:** Route/Delegate wiring; Commander "weigh in" wiring; automatic content generation for option descriptions/rationales; full artifact/memory tab payloads and viewers; background auto-annotation of decisions.
 
 **Key files:** `ui/src/components/hub/HubShell.tsx`, `HubActionBar.tsx`, `HubTabBody.tsx`, `useHubTabs.ts`, `hubViewerModel.ts`, `hubRegistry.tsx`, `viewers/*`, `RuntimeDecisionPanel.tsx`; `server/src/mcp/tools/ask-founder-tool.ts`; `packages/shared/src/validators/hub.ts`. Plan: `docs/aoa/plans/2026-07-04-hub-tabbed-viewer-redesign-plan.md`.
+
+## Decision #109 - Task completion policy + durable Ask Human questions (2026-07-11)
+
+**Status:** Locked 2026-07-11. Supersedes the agent-completion restriction in Decision #18 while preserving single-assignee, approval, budget, and atomic-checkout invariants.
+
+1. **Agent-owned tasks resolve one of two completion policies.** `review_required` sends completed work to `in_review`; `agent_can_complete` permits `done` only when structured acceptance criteria and the autonomy ceiling allow it. Company default is `review_required`. A hard company review guardrail can tighten but never loosen child scopes.
+
+2. **Policy precedence follows the actual task model.** Task override -> Routine/workflow-template creator override -> the task's single department-or-project scope -> company. The `projects` table represents both scope types and `issues.projectId` points to one row, so V1 does not invent a department-to-project inheritance chain.
+
+3. **Configured policy and effective authority are separate.** Tasks snapshot the effective policy, source, source identifier, and resolution time. Overrides may change before execution; running-task authority stays stable except an audited founder change that tightens the task to `review_required`.
+
+4. **Review routing is materialized.** `reviewerUserId` may be explicitly set before review. On entering `in_review`, fallback resolution (responsible human -> scoped lead -> founder) is materialized with reviewer provenance, giving Commander and Inbox one stable recipient.
+
+5. **Ask Human is a durable work-domain object.** New questions live in `work_questions`, linked to company, task, agent, recipient, optional run/workspace/source Discussion, answer, and continuation state. Runtime permission decisions remain in `agent_runtime_decisions`. Existing run-bound work questions remain on their legacy lifecycle until terminal and are not unsafely migrated.
+
+6. **One answer resolves every mirror.** Commander, Inbox, Task Work, Workspace, and a source Discussion render the same question identity. First authorized answer wins. Live-broker adapters may relay into an active session; other runtimes ask-and-park and start one idempotent continuation after answer.
+
+7. **Process success is not task completion.** Technical run completion remains in run ledgers and observability. User-facing task completion and source-Discussion milestones are emitted only from actual task-domain transitions.
+
+**Plan:** `docs/aoa/plans/2026-07-11-commander-ask-human-completion-policy-plan.md`.

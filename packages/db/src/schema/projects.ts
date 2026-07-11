@@ -20,6 +20,7 @@ export const projects = pgTable(
     functionType: text("function_type").default("general"),
     defaultThreadVisibility: text("default_thread_visibility").notNull().default("company"), // ThreadVisibility: per-dept default for new threads (HR/Finance/Exec -> private). Phase 1 (Task A2): canonicalized from "open" -> "company" alongside the THREAD_VISIBILITIES rewrite.
     executionWorkspacePolicy: jsonb("execution_workspace_policy").$type<Record<string, unknown>>(),
+    agentCompletionPolicyDefault: text("agent_completion_policy_default"),
     env: jsonb("env").$type<AgentEnvConfig>(),
     archivedAt: timestamp("archived_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

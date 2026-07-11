@@ -1,5 +1,11 @@
 import { z } from "zod";
-import { ISSUE_PRIORITIES, ISSUE_SOURCES, ISSUE_STATUSES, ISSUE_WORK_MODES } from "../constants.js";
+import {
+  AGENT_COMPLETION_POLICIES,
+  ISSUE_PRIORITIES,
+  ISSUE_SOURCES,
+  ISSUE_STATUSES,
+  ISSUE_WORK_MODES,
+} from "../constants.js";
 
 export const issueAssigneeAdapterOverridesSchema = z
   .object({
@@ -100,6 +106,8 @@ export const createIssueSchema = z.object({
   assigneeAdapterOverrides: issueAssigneeAdapterOverridesSchema.optional().nullable(),
   source: z.enum(ISSUE_SOURCES).optional().nullable(),
   reviewerUserId: z.string().optional().nullable(),
+  acceptanceCriteria: z.array(z.string().trim().min(1).max(1000)).max(50).optional().default([]),
+  agentCompletionPolicyOverride: z.enum(AGENT_COMPLETION_POLICIES).optional().nullable(),
   dueDate: z.string().datetime().optional().nullable(),
   labelIds: z.array(z.string().uuid()).optional(),
   executionEnvironmentId: z.string().uuid().optional().nullable(),
