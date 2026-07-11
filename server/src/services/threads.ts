@@ -1280,6 +1280,12 @@ export function threadService(db: Db) {
           if (item.type !== "task") continue;
 
           // Create issue with workMode='planning' (D8: suppresses dispatch)
+          const projectId = item.departmentId ?? item.suggestedDepartmentId ?? item.suggestedProjectId ?? null;
+          const { resolveAgentCompletionPolicy } = await import("./agent-completion-policy.js");
+          const completionPolicy = await resolveAgentCompletionPolicy(tx as unknown as Db, {
+            companyId,
+            projectId,
+          });
           const [newIssue] = await tx
             .insert(issues)
             .values({
@@ -1290,12 +1296,16 @@ export function threadService(db: Db) {
               workMode: "planning", // D8: planning mode prevents auto-dispatch
               assigneeAgentId: item.assigneeAgentId ?? null,
               assigneeUserId: item.assigneeUserId ?? null,
-              projectId: item.departmentId ?? item.suggestedDepartmentId ?? item.suggestedProjectId ?? null,
+              projectId,
               // B6: approved tasks inherit the item's suggested goal, else the
               // thread's goal — so they count toward goal progress roll-up.
               goalId: item.suggestedGoalId ?? thread.goalId ?? null,
               priority: item.priority ?? item.suggestedPriority ?? "medium",
               createdByUserId: actor.userId,
+              agentCompletionPolicy: completionPolicy.policy,
+              agentCompletionPolicySource: completionPolicy.source,
+              agentCompletionPolicySourceId: completionPolicy.sourceId,
+              agentCompletionPolicyResolvedAt: completionPolicy.resolvedAt,
             })
             .returning();
 

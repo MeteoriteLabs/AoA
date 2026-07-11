@@ -81,6 +81,16 @@ vi.mock("../services/issue-agent-status-guard.js", () => ({
   assertAgentStatusTransition: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock("../services/agent-completion-policy.js", () => ({
+  resolveAgentCompletionPolicy: vi.fn().mockResolvedValue({
+    policy: "review_required",
+    source: "company",
+    sourceId: "company-1",
+    guardrailApplied: false,
+    resolvedAt: new Date("2026-07-11T00:00:00.000Z"),
+  }),
+}));
+
 vi.mock("../errors.js", () => ({
   badRequest: (msg: string) => Object.assign(new Error(msg), { status: 400 }),
   conflict: (msg: string) => Object.assign(new Error(msg), { status: 409 }),
@@ -89,10 +99,10 @@ vi.mock("../errors.js", () => ({
   forbidden: (msg: string) => Object.assign(new Error(msg), { status: 403 }),
 }));
 
-import { issueService } from "../services/issues.js";
-
 const COMPANY_ID = "company-1";
 const ISSUE_ID = "issue-1";
+
+import { issueService } from "../services/issues.js";
 
 type AgentRow = {
   id: string;

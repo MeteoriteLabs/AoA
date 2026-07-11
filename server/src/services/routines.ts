@@ -771,7 +771,13 @@ export function routineService(db: Db) {
             originRunId: createdRun.id,
             createdByUserId: manualRunnerUserId,
             createdByAgentId: manualRunnerAgentId,
-          });
+            completionPolicyCreatorOverride: input.routine.agentCompletionPolicyOverride as
+              | "review_required"
+              | "agent_can_complete"
+              | null,
+            completionPolicyCreatorSource: "routine",
+            completionPolicyCreatorSourceId: input.routine.id,
+          }, txDb as never);
         } catch (error) {
           const isOpenExecutionConflict =
             !!error &&

@@ -42,6 +42,7 @@ import {
 } from "../services/issue-context-bundles.js";
 import { assertCanOverrideTaskWorkspace } from "../services/workspace-authz.js";
 import { assertAgentInReviewReviewPath } from "../services/issue-agent-status-guard.js";
+import { assertRole } from "../middleware/rbac.js";
 
 // Re-exported from the shared guard module so existing import paths
 // (e.g. agent-in-review-guard.test.ts importing from "../routes/issues.js")
@@ -844,10 +845,20 @@ export function issueRoutes(db: Db, storage: StorageService) {
     assertCompanyAccess(req, companyId);
     if (
       req.body.responsibleUserId !== undefined ||
+      req.body.reviewerUserId !== undefined ||
       req.body.assigneeUserId ||
       (req.body.assigneeAgentId && req.actor.type !== "agent")
     ) {
       await assertCanAssignTasks(req, companyId);
+    }
+    if (req.body.agentCompletionPolicyOverride !== undefined) {
+      if (req.actor.type !== "board") {
+        throw forbidden("Only human operators may override task completion policy");
+      }
+      await assertCanAssignTasks(req, companyId);
+    }
+    if (req.actor.type === "agent" && req.body.acceptanceCriteria !== undefined) {
+      throw forbidden("Agents cannot define their own task acceptance criteria");
     }
 
     // Validate FK references up-front so the client gets a typed 422 (with
@@ -1059,6 +1070,12 @@ export function issueRoutes(db: Db, storage: StorageService) {
     const responsibleWillChange =
       req.body.responsibleUserId !== undefined &&
       req.body.responsibleUserId !== existing.responsibleUserId;
+    const reviewerWillChange =
+      req.body.reviewerUserId !== undefined &&
+      req.body.reviewerUserId !== existing.reviewerUserId;
+    const completionPolicyWillChange =
+      req.body.agentCompletionPolicyOverride !== undefined &&
+      req.body.agentCompletionPolicyOverride !== existing.agentCompletionPolicyOverride;
 
     const isAgentReturningIssueToCreator =
       req.actor.type === "agent" &&
@@ -1069,10 +1086,25 @@ export function issueRoutes(db: Db, storage: StorageService) {
       !!existing.createdByUserId &&
       req.body.assigneeUserId === existing.createdByUserId;
 
-    if (assigneeWillChange || responsibleWillChange) {
-      if (!(isAgentReturningIssueToCreator && !responsibleWillChange)) {
+    if (assigneeWillChange || responsibleWillChange || reviewerWillChange) {
+      if (!(isAgentReturningIssueToCreator && !responsibleWillChange && !reviewerWillChange)) {
         await assertCanAssignTasks(req, existing.companyId);
       }
+    }
+    if (completionPolicyWillChange) {
+      if (req.actor.type !== "board") {
+        throw forbidden("Only human operators may override task completion policy");
+      }
+      const executionStarted = existing.startedAt !== null
+        || ["in_progress", "in_review", "done", "cancelled"].includes(existing.status);
+      if (executionStarted) {
+        await assertRole(db, req, existing.companyId, "founder");
+      } else {
+        await assertCanAssignTasks(req, existing.companyId);
+      }
+    }
+    if (req.actor.type === "agent" && req.body.acceptanceCriteria !== undefined) {
+      throw forbidden("Agents cannot define their own task acceptance criteria");
     }
     if (!(await assertAgentRunCheckoutOwnership(req, res, existing))) return;
 
@@ -1088,19 +1120,17 @@ export function issueRoutes(db: Db, storage: StorageService) {
       });
     }
 
-    // Guard: prevent agents from self-marking tasks as in_review with no review path
-    await assertAgentInReviewReviewPath(
-      {
-        existing: { id: existing.id, status: existing.status },
-        updateFields,
-        actorType: (req.actor.type === "mcp" ? "board" : req.actor.type) as "agent" | "board" | "user" | "system",
-      },
-      db,
-    );
-
     let issue;
     try {
-      issue = await svc.update(id, updateFields);
+      issue = await svc.update(id, updateFields, req.actor.type === "agent"
+        ? {
+          actorType: "agent",
+          agentId: req.actor.agentId ?? null,
+          // Org-agent API keys are outside the crew Manual/Assist/Drive dial.
+          // Their task completion authority is governed by the task snapshot.
+          effectiveDial: 2,
+        }
+        : { actorType: req.actor.type === "board" ? "board" : "user" });
     } catch (err) {
       if (err instanceof HttpError && err.status === 422) {
         logger.warn(

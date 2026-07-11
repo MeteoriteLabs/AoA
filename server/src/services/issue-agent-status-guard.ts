@@ -89,7 +89,13 @@ export async function assertAgentInReviewReviewPath(
  */
 export async function assertAgentStatusTransition(
   input: {
-    existing: { id: string; status: string; assigneeAgentId: string | null };
+    existing: {
+      id: string;
+      status: string;
+      assigneeAgentId: string | null;
+      agentCompletionPolicy: string;
+      acceptanceCriteria: string[];
+    };
     updateFields: { status?: string; assigneeUserId?: string | null; [k: string]: unknown };
     actor: { actorType: "agent" | "board" | "user" | "system"; agentId?: string | null; effectiveDial?: number };
   },
@@ -110,7 +116,25 @@ export async function assertAgentStatusTransition(
   // The autonomy dial additionally gates completion-ish transitions.
   const dial = input.actor.effectiveDial ?? 0;
   if (next === "in_review" && dial < 1) throw unprocessable("Dial is Manual — agent cannot move task to review yet", { code: "invalid_issue_disposition" });
-  if (next === "done" && dial < 2) throw unprocessable("Only at Drive may a crew agent complete its own task", { code: "invalid_issue_disposition" });
+  if (next === "done") {
+    if (input.existing.agentCompletionPolicy !== "agent_can_complete") {
+      throw unprocessable("This task requires human review before completion", {
+        code: "review_required",
+        requiredStatus: "in_review",
+      });
+    }
+    if (dial < 2) {
+      throw unprocessable("Only at Drive may an agent complete its own task", {
+        code: "invalid_issue_disposition",
+      });
+    }
+    const criteria = input.existing.acceptanceCriteria;
+    if (!criteria.some((criterion) => typeof criterion === "string" && criterion.trim().length > 0)) {
+      throw unprocessable("Agent completion requires at least one acceptance criterion", {
+        code: "acceptance_criteria_required",
+      });
+    }
+  }
   // Live-QA fix (Scenario B): a crew agent moving its OWN task to `in_review` is gated
   // by ownership + dial (>=1) ONLY. We deliberately do NOT call assertAgentInReviewReviewPath
   // here. For a crew task the `in_review` status IS the founder's review queue (founder

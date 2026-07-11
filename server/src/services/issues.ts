@@ -1,4 +1,5 @@
 import { and, asc, desc, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
+import { randomUUID } from "node:crypto";
 import type { Db } from "@armyofagents/db";
 import {
   activityLog,
@@ -25,6 +26,7 @@ import {
   userRoles,
 } from "@armyofagents/db";
 import { extractProjectMentionIds } from "@armyofagents/shared";
+import type { AgentCompletionPolicy } from "@armyofagents/shared";
 import type {
   IssueCommentAuthorType,
   IssueCommentMetadata,
@@ -54,6 +56,7 @@ import {
   type CreateIssueContextBundleItemInput,
 } from "./issue-context-bundles.js";
 import { assertAgentStatusTransition } from "./issue-agent-status-guard.js";
+import type { CompletionPolicyCreatorSource } from "./agent-completion-policy.js";
 import { publishIssueStatusChanged } from "./live-events.js";
 import {
   crewAssigneeExists,
@@ -1000,6 +1003,9 @@ export function issueService(db: Db) {
         labelIds?: string[];
         inheritExecutionWorkspaceFromIssueId?: string | null;
         responsibleFallbackUserId?: string | null;
+        completionPolicyCreatorOverride?: AgentCompletionPolicy | null;
+        completionPolicyCreatorSource?: CompletionPolicyCreatorSource | null;
+        completionPolicyCreatorSourceId?: string | null;
         contextBundle?: {
           sourceIssueId?: string | null;
           sourceDiscussionId?: string | null;
@@ -1016,6 +1022,9 @@ export function issueService(db: Db) {
         labelIds: inputLabelIds,
         inheritExecutionWorkspaceFromIssueId,
         responsibleFallbackUserId,
+        completionPolicyCreatorOverride,
+        completionPolicyCreatorSource,
+        completionPolicyCreatorSourceId,
         contextBundle,
         ...issueData
       } = data;
@@ -1040,6 +1049,18 @@ export function issueService(db: Db) {
       });
       if (createResponsibleUserId !== undefined) {
         (issueData as Record<string, unknown>).responsibleUserId = createResponsibleUserId;
+      }
+      if (data.status === "in_review") {
+        const { resolveIssueReviewer } = await import("./issue-reviewer.js");
+        const reviewer = await resolveIssueReviewer(db, {
+          companyId,
+          projectId: (issueData as { projectId?: string | null }).projectId ?? null,
+          explicitReviewerUserId: (issueData as { reviewerUserId?: string | null }).reviewerUserId ?? null,
+          existingReviewerSource: (issueData as { reviewerSource?: string | null }).reviewerSource ?? null,
+          responsibleUserId: (issueData as { responsibleUserId?: string | null }).responsibleUserId ?? null,
+        });
+        (issueData as Record<string, unknown>).reviewerUserId = reviewer.reviewerUserId;
+        (issueData as Record<string, unknown>).reviewerSource = reviewer.reviewerSource;
       }
       if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
@@ -1146,9 +1167,28 @@ export function issueService(db: Db) {
           reuseWorkspace,
         });
         const issueInsertData = { ...issueData } as Record<string, unknown>;
+        const issueId = typeof issueInsertData.id === "string" ? issueInsertData.id : randomUUID();
+        issueInsertData.id = issueId;
         delete issueInsertData.executionWorkspaceId;
         delete issueInsertData.executionWorkspacePreference;
         delete issueInsertData.executionWorkspaceSettings;
+
+        const { resolveAgentCompletionPolicy } = await import("./agent-completion-policy.js");
+        const completionPolicy = await resolveAgentCompletionPolicy(tx as unknown as Db, {
+          companyId,
+          projectId,
+          taskOverride: (issueData as { agentCompletionPolicyOverride?: AgentCompletionPolicy | null })
+            .agentCompletionPolicyOverride ?? null,
+          creatorOverride: completionPolicyCreatorOverride,
+          creatorSource: completionPolicyCreatorSource,
+          creatorSourceId: completionPolicyCreatorSourceId,
+        });
+        issueInsertData.agentCompletionPolicy = completionPolicy.policy;
+        issueInsertData.agentCompletionPolicySource = completionPolicy.source;
+        issueInsertData.agentCompletionPolicySourceId = completionPolicy.source === "task"
+          ? issueId
+          : completionPolicy.sourceId;
+        issueInsertData.agentCompletionPolicyResolvedAt = completionPolicy.resolvedAt;
 
         const [company] = await tx
           .update(companies)
@@ -1361,6 +1401,62 @@ export function issueService(db: Db) {
         (issueData as Record<string, unknown>).responsibleUserId = updateResponsibleUserId;
       }
 
+      if (Object.prototype.hasOwnProperty.call(issueData, "agentCompletionPolicyOverride")) {
+        const { resolveAgentCompletionPolicy } = await import("./agent-completion-policy.js");
+        const nextProjectId = Object.prototype.hasOwnProperty.call(issueData, "projectId")
+          ? ((issueData as { projectId?: string | null }).projectId ?? null)
+          : existing.projectId;
+        const completionPolicy = await resolveAgentCompletionPolicy(db, {
+          companyId: existing.companyId,
+          projectId: nextProjectId,
+          taskOverride: (issueData as { agentCompletionPolicyOverride?: AgentCompletionPolicy | null })
+            .agentCompletionPolicyOverride ?? null,
+        });
+        const executionStarted = existing.startedAt !== null
+          || ["in_progress", "in_review", "done", "cancelled"].includes(existing.status);
+        if (executionStarted && completionPolicy.policy !== "review_required") {
+          throw unprocessable("A running task's completion policy may only be tightened to require review", {
+            code: "completion_policy_locked",
+          });
+        }
+        (issueData as Record<string, unknown>).agentCompletionPolicy = completionPolicy.policy;
+        (issueData as Record<string, unknown>).agentCompletionPolicySource = completionPolicy.source;
+        (issueData as Record<string, unknown>).agentCompletionPolicySourceId = completionPolicy.source === "task"
+          ? existing.id
+          : completionPolicy.sourceId;
+        (issueData as Record<string, unknown>).agentCompletionPolicyResolvedAt = completionPolicy.resolvedAt;
+      } else {
+        delete (issueData as Record<string, unknown>).agentCompletionPolicy;
+        delete (issueData as Record<string, unknown>).agentCompletionPolicySource;
+        delete (issueData as Record<string, unknown>).agentCompletionPolicySourceId;
+        delete (issueData as Record<string, unknown>).agentCompletionPolicyResolvedAt;
+      }
+
+      if (issueData.status === "in_review" && existing.status !== "in_review") {
+        const { resolveIssueReviewer } = await import("./issue-reviewer.js");
+        const nextProjectId = Object.prototype.hasOwnProperty.call(issueData, "projectId")
+          ? ((issueData as { projectId?: string | null }).projectId ?? null)
+          : existing.projectId;
+        const explicitReviewerUserId = Object.prototype.hasOwnProperty.call(issueData, "reviewerUserId")
+          ? ((issueData as { reviewerUserId?: string | null }).reviewerUserId ?? null)
+          : existing.reviewerUserId;
+        const reviewerSource = Object.prototype.hasOwnProperty.call(issueData, "reviewerSource")
+          ? ((issueData as { reviewerSource?: string | null }).reviewerSource ?? null)
+          : existing.reviewerSource;
+        const responsibleUserId = Object.prototype.hasOwnProperty.call(issueData, "responsibleUserId")
+          ? ((issueData as { responsibleUserId?: string | null }).responsibleUserId ?? null)
+          : existing.responsibleUserId;
+        const reviewer = await resolveIssueReviewer(db, {
+          companyId: existing.companyId,
+          projectId: nextProjectId,
+          explicitReviewerUserId,
+          existingReviewerSource: reviewerSource,
+          responsibleUserId,
+        });
+        (issueData as Record<string, unknown>).reviewerUserId = reviewer.reviewerUserId;
+        (issueData as Record<string, unknown>).reviewerSource = reviewer.reviewerSource;
+      }
+
       const patch: Partial<typeof issues.$inferInsert> = {
         ...issueData,
         updatedAt: new Date(),
@@ -1374,7 +1470,13 @@ export function issueService(db: Db) {
       // actor.effectiveDial; this service never reads internalAgentConfig.
       await assertAgentStatusTransition(
         {
-          existing: { id: existing.id, status: existing.status, assigneeAgentId: existing.assigneeAgentId },
+          existing: {
+            id: existing.id,
+            status: existing.status,
+            assigneeAgentId: existing.assigneeAgentId,
+            agentCompletionPolicy: existing.agentCompletionPolicy,
+            acceptanceCriteria: existing.acceptanceCriteria,
+          },
           updateFields: issueData,
           actor: { actorType: actor?.actorType ?? "system", agentId: actor?.agentId ?? null, effectiveDial: actor?.effectiveDial },
         },

@@ -161,6 +161,7 @@ describe("issue responsible user routes", () => {
     expect(mockIssueService.update).toHaveBeenCalledWith(
       issueId,
       expect.objectContaining({ responsibleUserId: "user-next" }),
+      { actorType: "board" },
     );
   });
 
@@ -326,5 +327,35 @@ describe("issue responsible user routes", () => {
     expect(res.status).toBe(403);
     expect(res.body.error).toBe("responsibleUserId=me requires board authentication");
     expect(mockIssueService.list).not.toHaveBeenCalled();
+  });
+
+  it("prevents agents from defining acceptance criteria on their own tasks", async () => {
+    const res = await request(createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+    }))
+      .patch(`/api/issues/${issueId}`)
+      .send({ acceptanceCriteria: ["Agent says the work is complete"] });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Agents cannot define their own task acceptance criteria");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("prevents agents from elevating task completion policy", async () => {
+    const res = await request(createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+    }))
+      .patch(`/api/issues/${issueId}`)
+      .send({ agentCompletionPolicyOverride: "agent_can_complete" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Only human operators may override task completion policy");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 });

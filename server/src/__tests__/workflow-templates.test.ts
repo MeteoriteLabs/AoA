@@ -19,6 +19,8 @@ vi.mock("@armyofagents/db", () => {
 
   return {
     issues: makeTable("issues"),
+    companies: makeTable("companies"),
+    projects: makeTable("projects"),
     taskDependencies: makeTable("task_dependencies"),
     workflowTemplates: makeTable("workflow_templates"),
   };
@@ -105,7 +107,11 @@ const sampleTemplate = {
   createdBy: "user-1",
   createdAt: new Date(),
   updatedAt: new Date(),
+  agentCompletionPolicyOverride: null,
 };
+
+const companyPolicy = { policyDefault: "review_required", reviewGuardrail: false };
+const projectPolicy = { id: PROJECT_ID, type: "project", policyDefault: null };
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
@@ -214,7 +220,7 @@ describe("workflowTemplateService", () => {
 
       const db = createSequenceDb({
         // 1. select template
-        selects: [[sampleTemplate]],
+        selects: [[sampleTemplate], [companyPolicy], [projectPolicy]],
         // inserts: task1, task2, task3, dep1, dep2
         inserts: [
           [task1], [task2], [task3],
@@ -238,7 +244,7 @@ describe("workflowTemplateService", () => {
       const task3 = { id: "task-3", title: "Implement" };
 
       const db = createSequenceDb({
-        selects: [[sampleTemplate]],
+        selects: [[sampleTemplate], [companyPolicy], [projectPolicy]],
         inserts: [[task1], [task2], [task3], [{ id: "dep-1" }], [{ id: "dep-2" }]],
         updates: [[{ ...sampleTemplate, instantiationCount: 1 }]],
       });
@@ -259,7 +265,7 @@ describe("workflowTemplateService", () => {
       const task3 = { id: "task-3", title: "Implement" };
 
       const db = createSequenceDb({
-        selects: [[sampleTemplate]],
+        selects: [[sampleTemplate], [companyPolicy], [projectPolicy]],
         inserts: [[task1], [task2], [task3], [{ id: "dep-1" }], [{ id: "dep-2" }]],
         updates: [[{ ...sampleTemplate, instantiationCount: 1 }]],
       });

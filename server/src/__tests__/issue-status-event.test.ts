@@ -87,6 +87,13 @@ vi.mock("../services/instance-settings.js", () => ({
   })),
 }));
 
+vi.mock("../services/issue-reviewer.js", () => ({
+  resolveIssueReviewer: vi.fn().mockResolvedValue({
+    reviewerUserId: "reviewer-user",
+    reviewerSource: "founder",
+  }),
+}));
+
 // The chokepoint under test. Spy on publishIssueStatusChanged (crosses the
 // issues.ts → live-events.js boundary → observable). Keep publishLiveEvent as a
 // no-op so any other publishing code in issues.ts stays inert.
