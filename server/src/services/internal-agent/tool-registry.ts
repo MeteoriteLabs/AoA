@@ -86,6 +86,16 @@ import {
   hubReadCurationContextTool,
   hubUpdateCurationSummaryTool,
 } from "./tools/hub-curation-tools.js";
+// Plan 3 Task 2 (B2) — Approval-family oversight port. 5 founder-only tools
+// wrapping ctx.services.approvals / ctx.services.issueApprovals (Task 1).
+// See approval-tools.ts header for the RBAC divergence rationale (no
+// team_lead authorization project set on Commander's ToolContext — R2).
+import { approvalTools } from "./tools/approval-tools.js";
+// Plan 3 Task 3 (B2) — get_heartbeat_context port. Lets review-agent-output /
+// daily-triage read a task's recent comments (the auto-run-summary comment
+// posted after each heartbeat/crew run) without a dedicated run-history tool.
+// Company-scoped in-tool (getById/listComments have no company filter).
+import { getHeartbeatContextTool } from "./tools/heartbeat-context-tool.js";
 
 export function createToolRegistry(): AgentTool[] {
   return [
@@ -175,6 +185,11 @@ export function createToolRegistry(): AgentTool[] {
     // never performs lifecycle/source actions and is allowlisted only for Steward.
     hubReadCurationContextTool,
     hubUpdateCurationSummaryTool,
+    // Plan 3 Task 2 (B2) — Approval-family oversight port (founder-only R1).
+    ...approvalTools,
+    // Plan 3 Task 3 (B2) — get_heartbeat_context: task + 10 recent comments
+    // (query category, team_member role, company-scoped in-tool).
+    getHeartbeatContextTool,
   ];
 }
 

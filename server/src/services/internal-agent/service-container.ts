@@ -18,6 +18,8 @@ import { discussionService } from "../discussions.js";
 import { threadService } from "../threads.js";
 import { taskOutputService } from "../task-outputs.js";
 import { companyService } from "../companies.js";
+import { approvalService } from "../approvals.js";
+import { issueApprovalService } from "../issue-approvals.js";
 import { humanContextService } from "../human-context.js";
 import { humanDiscoveryService } from "../human-discovery.js";
 import { teamService } from "../team.js";
@@ -211,6 +213,8 @@ export function createServiceContainer(db: Db): ServiceContainer {
     discussions: discussionService(db),
     threads: threadService(db),
     taskOutputs: taskOutputService(db),
+    approvals: approvalService(db),
+    issueApprovals: issueApprovalService(db),
     humanContext: humanContextService(db),
     humanDiscovery: humanDiscoveryService(db),
     team: teamService(db),

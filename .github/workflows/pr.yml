@@ -389,6 +389,11 @@ jobs:
       - name: Build
         run: pnpm build
 
+      - name: Tool contract freshness
+        run: |
+          pnpm gen:tools:check
+          pnpm gen:tools:md:check
+
   e2e:
     runs-on: ubuntu-latest
     needs: changes

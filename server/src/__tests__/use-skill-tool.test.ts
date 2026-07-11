@@ -19,6 +19,7 @@ vi.mock("drizzle-orm", () => ({
 }));
 
 import { useSkillTool } from "../services/internal-agent/tools/skill-tools.js";
+import { COMMANDER_SKILL_PREAMBLE } from "../services/internal-agent/commander-preamble.js";
 
 /**
  * Build a mock DB context for use_skill tests.
@@ -66,7 +67,7 @@ describe("useSkillTool.execute", () => {
     expect(result.data).toEqual({
       key: "brainstorming",
       name: "Brainstorming",
-      content: "# Brainstorming\nUse this before any build.",
+      content: `${COMMANDER_SKILL_PREAMBLE}\n\n---\n\n# Brainstorming\nUse this before any build.`,
     });
   });
 
@@ -124,5 +125,52 @@ describe("useSkillTool.execute", () => {
     const result = await useSkillTool.execute({ key: "review" }, ctx);
     expect(result.success).toBe(true);
     expect(result.summary).toContain("Code Review");
+  });
+
+  it("prepends the shared preamble to the returned skill content", async () => {
+    const skill = {
+      key: "brainstorming", name: "Brainstorming",
+      description: "x", markdown: "# Brainstorming\nBody text here.",
+    };
+    const ctx = makeCtx([skill]);
+    const result = await useSkillTool.execute({ key: "brainstorming" }, ctx);
+    expect(result.success).toBe(true);
+    const content = (result.data as { content: string }).content;
+    expect(content).toContain(COMMANDER_SKILL_PREAMBLE);
+    expect(content).toContain("# Brainstorming"); // original body preserved
+    // preamble precedes the body
+    expect(content.indexOf(COMMANDER_SKILL_PREAMBLE)).toBeLessThan(content.indexOf("# Brainstorming"));
+  });
+
+  it("resolves a curated-form key (skill:aoa-curated/aoa-<name>) against a skill stored under the runtime form (skill:aoa/<name>)", async () => {
+    const skill = {
+      key: "skill:aoa/sprint-planning",
+      name: "Sprint Planning",
+      description: "Plan the sprint",
+      markdown: "# Sprint Planning\nBody text here.",
+    };
+    const ctx = makeCtx([skill]);
+    const result = await useSkillTool.execute(
+      { key: "skill:aoa-curated/aoa-sprint-planning" },
+      ctx,
+    );
+    expect(result.success).toBe(true);
+    expect((result.data as { key: string }).key).toBe("skill:aoa/sprint-planning");
+  });
+
+  it("resolves a runtime-form key (skill:aoa/<name>) against a skill stored under the curated form (skill:aoa-curated/aoa-<name>)", async () => {
+    const skill = {
+      key: "skill:aoa-curated/aoa-sprint-planning",
+      name: "Sprint Planning",
+      description: "Plan the sprint",
+      markdown: "# Sprint Planning\nBody text here.",
+    };
+    const ctx = makeCtx([skill]);
+    const result = await useSkillTool.execute(
+      { key: "skill:aoa/sprint-planning" },
+      ctx,
+    );
+    expect(result.success).toBe(true);
+    expect((result.data as { key: string }).key).toBe("skill:aoa-curated/aoa-sprint-planning");
   });
 });

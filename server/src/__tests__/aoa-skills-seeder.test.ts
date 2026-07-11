@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { seedAoaNativeSkills, AOA_NATIVE_SKILLS } from "../services/internal-agent/aoa-skills-seeder.js";
+import catalog from "../services/internal-agent/generated/aoa-native-skills.json" with { type: "json" };
 
 describe("seedAoaNativeSkills", () => {
-  it("exports exactly 4 native skill definitions", () => {
-    expect(AOA_NATIVE_SKILLS).toHaveLength(4);
+  it("matches the generated catalog (no hand-drift)", () => {
+    expect(AOA_NATIVE_SKILLS.length).toBe(catalog.skills.length);
+    expect(AOA_NATIVE_SKILLS.length).toBeGreaterThanOrEqual(4);
   });
 
   it("each skill has required fields: key, name, description, markdown", () => {
@@ -15,12 +17,15 @@ describe("seedAoaNativeSkills", () => {
     }
   });
 
-  it("includes brainstorm, identity-setup, sprint-planning, team-design", () => {
-    const keys = AOA_NATIVE_SKILLS.map((s) => s.key);
-    expect(keys).toContain("skill:aoa/brainstorm");
-    expect(keys).toContain("skill:aoa/identity-setup");
-    expect(keys).toContain("skill:aoa/sprint-planning");
-    expect(keys).toContain("skill:aoa/team-design");
+  it("every native key is a runtime seeder key (skill:aoa/<name>), never the repo source key", () => {
+    for (const s of AOA_NATIVE_SKILLS) {
+      expect(s.key).toMatch(/^skill:aoa\/[a-z-]+$/);
+      expect(s.key.startsWith("skill:aoa-curated/")).toBe(false);
+    }
+  });
+
+  it("carries no create_memory phantom in any body", () => {
+    for (const s of AOA_NATIVE_SKILLS) expect(s.markdown).not.toContain("create_memory");
   });
 
   it("calls db insert for each skill", async () => {
@@ -33,6 +38,6 @@ describe("seedAoaNativeSkills", () => {
 
     await seedAoaNativeSkills(mockDb, "company-123");
 
-    expect(insertSpy).toHaveBeenCalledTimes(4);
+    expect(insertSpy).toHaveBeenCalledTimes(AOA_NATIVE_SKILLS.length);
   });
 });

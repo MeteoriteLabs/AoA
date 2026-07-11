@@ -5,10 +5,12 @@
  * Invoked by `pnpm eval:run` and by the .github/workflows/llm-evals.yml
  * CI job. Requires OPENAI_API_KEY in the environment.
  *
- * The three suites covered today are the Phase F crew-agent contracts:
+ * The suites covered today are the Phase F crew-agent contracts plus the
+ * Commander skill-triggering classifier-proxy (Plan 2, Task 6):
  *   - Adjutant scope readiness (F2)
  *   - Memory Keeper extraction (F3)
  *   - Planner plan completeness (F4)
+ *   - Commander skill triggering (Plan 2, Task 6)
  *
  * Each suite builds independently (fixtures loaded in parallel) and then
  * runs sequentially via runEvalSuite so CI logs stream readably one suite
@@ -26,6 +28,7 @@ import { runEvalSuite } from "./runner.js";
 import { buildAdjutantScopeSuite } from "./adjutant-scope-readiness/suite.js";
 import { buildMemoryKeeperSuite } from "./memory-keeper-extraction/suite.js";
 import { buildPlannerSuite } from "./planner-plan-completeness/suite.js";
+import { buildCommanderSkillTriggeringSuite } from "./commander-skill-triggering/suite.js";
 import type { EvalSuite, EvalSuiteResult } from "./types.js";
 
 const PASS_THRESHOLD = 0.8;
@@ -84,6 +87,7 @@ export async function runAllEvalSuites(): Promise<SuiteSummary[]> {
     buildAdjutantScopeSuite() as Promise<AnySuite>,
     buildMemoryKeeperSuite() as Promise<AnySuite>,
     buildPlannerSuite() as Promise<AnySuite>,
+    buildCommanderSkillTriggeringSuite() as Promise<AnySuite>,
   ]);
 
   const results: EvalSuiteResult<unknown>[] = [];

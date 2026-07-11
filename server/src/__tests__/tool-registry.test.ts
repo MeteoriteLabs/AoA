@@ -63,8 +63,9 @@ describe("Tool Registry", () => {
       // query_humans (company-scoped human roster listing).
       // Unified team roster added 1 query tool:
       // query_team_roster (humans + org agents + readable hierarchy).
+      // Plan 3 B2: +5 approval tools + get_heartbeat_context.
       const tools = createToolRegistry();
-      expect(tools).toHaveLength(79);
+      expect(tools).toHaveLength(85);
     });
 
     it("every tool has required fields", () => {
