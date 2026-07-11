@@ -1,6 +1,19 @@
 import type { AgentTool, ToolResult } from "../types.js";
 import { COMMANDER_SKILL_PREAMBLE } from "../commander-preamble.js";
 
+// Curated↔runtime key normalization: skill frontmatter is authored as
+// "skill:aoa-curated/aoa-<name>" but the runtime seeder installs the
+// company's copy as "skill:aoa/<name>", and in-skill handoffs may reference
+// either form. Compute the alternate form (in either direction) so a
+// reference in one form still resolves a skill stored under the other.
+function alternateSkillKey(prefixedKey: string): string | null {
+  const curatedMatch = prefixedKey.match(/^skill:aoa-curated\/aoa-(.+)$/);
+  if (curatedMatch) return `skill:aoa/${curatedMatch[1]}`;
+  const runtimeMatch = prefixedKey.match(/^skill:aoa\/(.+)$/);
+  if (runtimeMatch) return `skill:aoa-curated/aoa-${runtimeMatch[1]}`;
+  return null;
+}
+
 export const useSkillTool: AgentTool = {
   name: "use_skill",
   description:
@@ -47,9 +60,12 @@ export const useSkillTool: AgentTool = {
         .where(eq(companySkills.companyId, ctx.companyId));
 
       const want = key.toLowerCase();
+      const wantPrefixed = want.startsWith("skill:") ? want : `skill:${want}`;
+      const altPrefixed = alternateSkillKey(wantPrefixed);
       const skill =
         all.find((s) => s.key.toLowerCase() === want) ??
-        all.find((s) => s.key.toLowerCase() === `skill:${want}`) ??
+        all.find((s) => s.key.toLowerCase() === wantPrefixed) ??
+        (altPrefixed ? all.find((s) => s.key.toLowerCase() === altPrefixed) : undefined) ??
         all.find((s) => {
           const k = s.key.toLowerCase();
           return k.endsWith(`/${want}`) || k.endsWith(`:${want}`);
