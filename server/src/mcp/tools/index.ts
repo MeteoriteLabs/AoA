@@ -108,7 +108,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: "list-tasks",
     description:
-      "List tasks in the caller's company with RBAC scoping. Supports filters: status, projectId, assigneeAgentId, assigneeUserId, touchedByUserId, unreadForUserId, labelId, q",
+      "List tasks in the caller's company with RBAC scoping. Supports filters: status, projectId, assigneeAgentId, assigneeUserId, responsibleUserId, touchedByUserId, unreadForUserId, labelId, q",
     inputSchema: {
       type: "object",
       properties: {
@@ -116,6 +116,7 @@ export const TOOL_DEFINITIONS = [
         projectId: { type: "string" },
         assigneeAgentId: { type: "string" },
         assigneeUserId: { type: "string" },
+        responsibleUserId: { type: "string" },
         touchedByUserId: { type: "string" },
         unreadForUserId: { type: "string" },
         labelId: { type: "string" },
@@ -291,6 +292,7 @@ export const TOOL_DEFINITIONS = [
         priority: { type: "string" },
         assigneeAgentId: { type: "string" },
         assigneeUserId: { type: "string" },
+        responsibleUserId: { type: ["string", "null"] },
         labelIds: { type: "array", items: { type: "string" } },
       },
       required: ["title"],
@@ -312,6 +314,7 @@ export const TOOL_DEFINITIONS = [
         priority: { type: "string" },
         assigneeAgentId: { type: "string" },
         assigneeUserId: { type: "string" },
+        responsibleUserId: { type: ["string", "null"] },
         labelIds: { type: "array", items: { type: "string" } },
       },
       required: ["taskId"],

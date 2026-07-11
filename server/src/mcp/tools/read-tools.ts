@@ -96,6 +96,7 @@ async function handleListTasks(
       projectId: z.string().optional(),
       assigneeAgentId: z.string().optional(),
       assigneeUserId: z.string().optional(),
+      responsibleUserId: z.string().optional(),
       touchedByUserId: z.string().optional(),
       unreadForUserId: z.string().optional(),
       labelId: z.string().optional(),

@@ -328,7 +328,7 @@ describe("AgentsTab", () => {
     expect(screen.getByText(/Are you sure you want to permanently delete "Alice"/)).toBeInTheDocument();
   });
 
-  it("highlights card when highlightId matches", () => {
+  it("does not pulse or ring an agent card when highlightId matches", () => {
     const agents = [makeAgent({ id: "a1", name: "Alice" })];
 
     const { container } = renderWithProviders(
@@ -337,7 +337,8 @@ describe("AgentsTab", () => {
 
     const highlightedCard = container.querySelector("[data-testid='agent-card-a1']");
     expect(highlightedCard).toBeInTheDocument();
-    expect(highlightedCard?.className).toContain("ring-2");
+    expect(highlightedCard?.className).not.toContain("ring-2");
+    expect(highlightedCard?.className).not.toContain("animate-pulse");
   });
 
   it("does not highlight card when highlightId does not match", () => {

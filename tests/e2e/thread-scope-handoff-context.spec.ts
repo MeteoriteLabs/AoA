@@ -493,38 +493,49 @@ test.describe("thread scope handoff context", () => {
     await page.getByTestId(`scope-version-card-${taskItem!.id}`).click();
     const taskPanel = page.getByTestId("task-detail-panel");
     await expect(taskPanel).toBeVisible({ timeout: 10_000 });
-    await expect(taskPanel).toContainText("Scope handoff", { timeout: 10_000 });
-    await expect(taskPanel).toContainText("document reference");
-    await expect(taskPanel).toContainText("presentation reference");
-    await expect(taskPanel).toContainText("code reference");
-    await expect(taskPanel).toContainText("design reference");
-    await expect(taskPanel).toContainText("report reference");
-    await expect(taskPanel).toContainText("interview-notes.pdf");
-    await expect(taskPanel).toContainText("https://example.com/scope-reference");
-    await expect(taskPanel).not.toContainText("other reference");
-    await expect(taskPanel).toContainText("Included refs are passed to agents.");
-    await expect(taskPanel.getByText("In context").first()).toBeVisible();
-    await expect(taskPanel.getByText("Included in agent context")).toHaveCount(0);
+    const openTaskWorkHandoff = async () => {
+      await expect(taskPanel).toBeVisible({ timeout: 10_000 });
+      await taskPanel.getByRole("tab", { name: /^work$/i }).click();
+      const handoff = taskPanel.getByTestId("task-scope-handoff");
+      await expect(taskPanel.getByTestId("task-work-tab")).toBeVisible({ timeout: 10_000 });
+      await expect(handoff).toBeVisible({ timeout: 10_000 });
+      return handoff;
+    };
+    let handoff = await openTaskWorkHandoff();
+    await expect(handoff).toContainText("Scope handoff", { timeout: 10_000 });
+    await expect(handoff).toContainText("document reference");
+    await expect(handoff).toContainText("presentation reference");
+    await expect(handoff).toContainText("code reference");
+    await expect(handoff).toContainText("design reference");
+    await expect(handoff).toContainText("report reference");
+    await expect(handoff).toContainText("interview-notes.pdf");
+    await expect(handoff).toContainText("https://example.com/scope-reference");
+    await expect(handoff).not.toContainText("other reference");
+    await expect(handoff).toContainText("Included refs are passed to agents.");
+    await expect(handoff.getByText("In context").first()).toBeVisible();
+    await expect(handoff.getByText("Included in agent context")).toHaveCount(0);
 
-    await taskPanel.getByRole("button", { name: /Exclude document reference from agent context/i }).click();
-    await expect(taskPanel.getByText("Excluded").first()).toBeVisible();
-    await taskPanel.getByRole("button", { name: /Include document reference in agent context/i }).click();
-    await expect(taskPanel.getByText("In context").first()).toBeVisible();
+    await handoff.getByRole("button", { name: /Exclude document reference from agent context/i }).click();
+    await expect(handoff.getByText("Excluded").first()).toBeVisible();
+    await handoff.getByRole("button", { name: /Include document reference in agent context/i }).click();
+    await expect(handoff.getByText("In context").first()).toBeVisible();
 
-    await taskPanel.getByRole("button", { name: /Open handoff item: document reference/i }).click();
+    await handoff.getByRole("button", { name: /Open handoff item: document reference/i }).click();
     await expect(page.getByTestId("thread-artifact-viewer")).toContainText("document reference");
     await expect(page.getByTestId("thread-artifact-viewer")).toContainText("Use this document artifact as selected scope evidence.");
 
     await page.getByTestId("center-tab-scope").click();
     await page.getByTestId(`scope-version-card-${taskItem!.id}`).scrollIntoViewIfNeeded();
     await page.getByTestId(`scope-version-card-${taskItem!.id}`).click();
-    await taskPanel.getByRole("button", { name: /Open handoff item: interview-notes\.pdf/i }).click();
+    handoff = await openTaskWorkHandoff();
+    await handoff.getByRole("button", { name: /Open handoff item: interview-notes\.pdf/i }).click();
     await expect(page.getByTestId("thread-asset-viewer")).toContainText("interview-notes.pdf");
 
     await page.getByTestId("center-tab-scope").click();
     await page.getByTestId(`scope-version-card-${taskItem!.id}`).scrollIntoViewIfNeeded();
     await page.getByTestId(`scope-version-card-${taskItem!.id}`).click();
-    await taskPanel.getByRole("button", { name: /Open handoff item: Source: https:\/\/example\.com\/scope-reference/i }).click();
+    handoff = await openTaskWorkHandoff();
+    await handoff.getByRole("button", { name: /Open handoff item: Source: https:\/\/example\.com\/scope-reference/i }).click();
     await expect(
       page.getByRole("link", { name: /Open browser preview externally/i }),
     ).toHaveAttribute("href", "https://example.com/scope-reference");

@@ -13,6 +13,7 @@ import { FeedbackThumbs } from "./FeedbackThumbs";
 import { IssueRunLedger, type IssueRunLedgerItem } from "./IssueRunLedger";
 import { SystemNotice } from "./SystemNotice";
 import { isSystemNoticeComment } from "../lib/system-notice-comment";
+import { parseTaskAssigneeValue, taskAssigneePayload } from "../lib/task-assignee";
 import { formatDateTime } from "../lib/utils";
 
 interface CommentWithRunMeta extends IssueComment {
@@ -93,15 +94,8 @@ function parseReassignment(target: string): CommentReassignment | null {
   if (!target || target === "__none__") {
     return { assigneeAgentId: null, assigneeUserId: null };
   }
-  if (target.startsWith("agent:")) {
-    const assigneeAgentId = target.slice("agent:".length);
-    return assigneeAgentId ? { assigneeAgentId, assigneeUserId: null } : null;
-  }
-  if (target.startsWith("user:")) {
-    const assigneeUserId = target.slice("user:".length);
-    return assigneeUserId ? { assigneeAgentId: null, assigneeUserId } : null;
-  }
-  return null;
+  const parsed = parseTaskAssigneeValue(target);
+  return parsed.kind === "none" ? null : taskAssigneePayload(target);
 }
 
 type TimelineItem =
@@ -352,21 +346,32 @@ export function CommentThread({
   const canSubmit = !submitting && !!body.trim();
 
   return (
-    <div className="space-y-4">
-      <h3 className="text-sm font-semibold">Comments &amp; Runs ({timeline.length})</h3>
+    <div
+      className="flex min-h-0 flex-1 flex-col gap-3"
+      data-testid="task-comments-panel"
+    >
+      <h3 className="shrink-0 text-sm font-semibold">Comments &amp; Runs ({timeline.length})</h3>
 
-      <TimelineList
-        timeline={timeline}
-        agentMap={agentMap}
-        highlightCommentId={highlightCommentId}
-        feedbackIssueId={feedbackIssueId}
-        existingVotesByCommentId={existingVotesByCommentId}
-        onVoteChange={onVoteChange}
-      />
+      <div
+        className="min-h-0 flex-1 overflow-y-auto overscroll-contain pr-1"
+        data-testid="task-comments-timeline"
+      >
+        <TimelineList
+          timeline={timeline}
+          agentMap={agentMap}
+          highlightCommentId={highlightCommentId}
+          feedbackIssueId={feedbackIssueId}
+          existingVotesByCommentId={existingVotesByCommentId}
+          onVoteChange={onVoteChange}
+        />
 
-      {liveRunSlot}
+        {liveRunSlot ? <div className="mt-3">{liveRunSlot}</div> : null}
+      </div>
 
-      <div className="space-y-2">
+      <div
+        className="sticky bottom-0 z-10 shrink-0 space-y-2 border-t border-border bg-background pt-3"
+        data-testid="task-comments-composer"
+      >
         <MarkdownEditor
           ref={editorRef}
           value={body}
@@ -421,7 +426,8 @@ export function CommentThread({
               className="text-xs h-8"
               renderTriggerValue={(option) => {
                 if (!option) return <span className="text-muted-foreground">Assignee</span>;
-                const agentId = option.id.startsWith("agent:") ? option.id.slice("agent:".length) : null;
+                const parsed = parseTaskAssigneeValue(option.id);
+                const agentId = parsed.kind === "agent" ? parsed.id : null;
                 const agent = agentId ? agentMap?.get(agentId) : null;
                 return (
                   <>
@@ -434,7 +440,8 @@ export function CommentThread({
               }}
               renderOption={(option) => {
                 if (!option.id) return <span className="truncate">{option.label}</span>;
-                const agentId = option.id.startsWith("agent:") ? option.id.slice("agent:".length) : null;
+                const parsed = parseTaskAssigneeValue(option.id);
+                const agentId = parsed.kind === "agent" ? parsed.id : null;
                 const agent = agentId ? agentMap?.get(agentId) : null;
                 return (
                   <>

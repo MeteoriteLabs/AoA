@@ -47,6 +47,7 @@ vi.mock("drizzle-orm", () => ({
 vi.mock("../services/index.js", () => {
   const noopFactory = () => ({});
   return {
+    accessService: noopFactory,
     agentService: noopFactory,
     artifactService: noopFactory,
     companyService: noopFactory,
@@ -75,6 +76,7 @@ type Task = {
   status?: string;
   assigneeAgentId?: string | null;
   assigneeUserId?: string | null;
+  responsibleUserId?: string | null;
 };
 type Goal = { id: string; companyId: string; title?: string };
 type Comment = { id: string; companyId: string; issueId: string; body: string };
@@ -96,6 +98,8 @@ function buildApp(options?: {
     action: string,
     context?: any,
   ) => Promise<boolean>;
+  canAssignTasks?: ReturnType<typeof vi.fn>;
+  hasAgentPermission?: ReturnType<typeof vi.fn>;
   createImpl?: (companyId: string, data: any) => Promise<any>;
   updateImpl?: (id: string, data: any) => Promise<any>;
   addCommentImpl?: (
@@ -146,6 +150,7 @@ function buildApp(options?: {
       description: data.description ?? null,
       status: data.status ?? "backlog",
       priority: data.priority ?? "medium",
+      responsibleUserId: data.responsibleUserId ?? null,
     }));
 
   const updateImpl =
@@ -228,6 +233,10 @@ function buildApp(options?: {
         canAccessMemory:
           options?.canAccessMemory ?? vi.fn().mockResolvedValue(true),
       } as any,
+      accessSvc: {
+        canUser: options?.canAssignTasks ?? vi.fn().mockResolvedValue(true),
+        hasPermission: options?.hasAgentPermission ?? vi.fn().mockResolvedValue(true),
+      } as any,
       agentsSvc: {
         list: vi.fn().mockResolvedValue([]),
         getById: vi.fn().mockResolvedValue(null),
@@ -283,6 +292,25 @@ describe("MCP write tools", () => {
       const payload = JSON.parse(res.body.result.content[0].text);
       expect(payload.id).toBeTruthy();
       expect(payload.title).toBe("Fix login bug");
+    });
+
+    it("passes the human caller as responsible fallback when creating an unassigned task", async () => {
+      const createImpl = vi.fn().mockResolvedValue({
+        id: "new-task-id",
+        title: "Operator-owned task",
+        companyId: "company-1",
+        projectId: null,
+        responsibleUserId: "user-1",
+      });
+      const { app } = buildApp({ createImpl });
+
+      const res = await callTool(app, "create-task", { title: "Operator-owned task" });
+
+      expect(res.status).toBe(200);
+      expect(createImpl).toHaveBeenCalledWith(
+        "company-1",
+        expect.objectContaining({ responsibleFallbackUserId: "user-1" }),
+      );
     });
 
     it("does NOT route through Discussion pipeline (Decision #14 revised)", async () => {
@@ -415,6 +443,131 @@ describe("MCP write tools", () => {
       });
       expect(res.status).toBe(403);
     });
+
+    it("passes responsibleUserId through to issue creation", async () => {
+      const createSpy = vi.fn(async (companyId: string, data: any) => ({
+        id: "new-task-id",
+        companyId,
+        projectId: data.projectId ?? null,
+        title: data.title,
+        responsibleUserId: data.responsibleUserId ?? null,
+      }));
+      const { app } = buildApp({ createImpl: createSpy });
+
+      const res = await callTool(app, "create-task", {
+        title: "Coordinate launch handoff",
+        responsibleUserId: "user-2",
+      });
+
+      expect(res.status).toBe(200);
+      expect(createSpy).toHaveBeenCalledTimes(1);
+      expect(createSpy).toHaveBeenCalledWith(
+        "company-1",
+        expect.objectContaining({ responsibleUserId: "user-2" }),
+      );
+      const payload = JSON.parse(res.body.result.content[0].text);
+      expect(payload.responsibleUserId).toBe("user-2");
+    });
+
+    it("rejects explicit responsibleUserId when caller lacks task assign permission", async () => {
+      const createSpy = vi.fn(async (companyId: string, data: any) => ({
+        id: "new-task-id",
+        companyId,
+        title: data.title,
+        responsibleUserId: data.responsibleUserId ?? null,
+      }));
+      const canAssignTasks = vi.fn().mockResolvedValue(false);
+      const { app } = buildApp({ createImpl: createSpy, canAssignTasks });
+
+      const res = await callTool(app, "create-task", {
+        title: "Coordinate launch handoff",
+        responsibleUserId: "user-2",
+      });
+
+      expect(res.status).toBe(403);
+      expect(res.body.error.message).toMatch(/tasks:assign|assign/i);
+      expect(createSpy).not.toHaveBeenCalled();
+      expect(canAssignTasks).toHaveBeenCalledWith("company-1", "user-1", "tasks:assign");
+    });
+
+    it("allows omitted responsibleUserId when caller lacks task assign permission", async () => {
+      const createSpy = vi.fn(async (companyId: string, data: any) => ({
+        id: "new-task-id",
+        companyId,
+        title: data.title,
+        responsibleUserId: data.responsibleUserId ?? null,
+      }));
+      const canAssignTasks = vi.fn().mockResolvedValue(false);
+      const { app } = buildApp({ createImpl: createSpy, canAssignTasks });
+
+      const res = await callTool(app, "create-task", {
+        title: "Write launch checklist",
+      });
+
+      expect(res.status).toBe(200);
+      expect(createSpy).toHaveBeenCalledTimes(1);
+      expect(canAssignTasks).not.toHaveBeenCalled();
+    });
+
+    it("allows local trusted board actor to explicitly set responsibleUserId", async () => {
+      const createSpy = vi.fn(async (companyId: string, data: any) => ({
+        id: "new-task-id",
+        companyId,
+        title: data.title,
+        responsibleUserId: data.responsibleUserId ?? null,
+      }));
+      const canAssignTasks = vi.fn().mockResolvedValue(false);
+      const { app } = buildApp({
+        actor: { type: "board", source: "local_implicit" },
+        createImpl: createSpy,
+        canAssignTasks,
+      });
+
+      const res = await callTool(app, "create-task", {
+        title: "Coordinate launch handoff",
+        responsibleUserId: "user-2",
+      });
+
+      expect(res.status).toBe(200);
+      expect(createSpy).toHaveBeenCalledTimes(1);
+      expect(createSpy).toHaveBeenCalledWith(
+        "company-1",
+        expect.objectContaining({ responsibleUserId: "user-2" }),
+      );
+      expect(canAssignTasks).not.toHaveBeenCalled();
+    });
+
+    it("rejects agent explicit responsibleUserId set when missing tasks:assign", async () => {
+      const createSpy = vi.fn();
+      const hasAgentPermission = vi.fn().mockResolvedValue(false);
+      const { app } = buildApp({
+        actor: {
+          type: "agent",
+          source: "agent",
+          userId: "agent-1",
+          companyId: "company-1",
+          agentId: "agent-1",
+          runId: "run-1",
+        },
+        createImpl: createSpy,
+        hasAgentPermission,
+      });
+
+      const res = await callTool(app, "create-task", {
+        title: "Coordinate launch handoff",
+        responsibleUserId: "user-2",
+      });
+
+      expect(res.status).toBe(403);
+      expect(res.body.error.message).toMatch(/tasks:assign|assign/i);
+      expect(createSpy).not.toHaveBeenCalled();
+      expect(hasAgentPermission).toHaveBeenCalledWith(
+        "company-1",
+        "agent",
+        "agent-1",
+        "tasks:assign",
+      );
+    });
   });
 
   describe("update-task", () => {
@@ -527,6 +680,141 @@ describe("MCP write tools", () => {
         status: "in_progress",
       });
       expect(res.status).toBe(403);
+    });
+
+    it("preserves responsibleUserId: null when clearing responsible human", async () => {
+      const updateSpy = vi.fn(async (id: string, data: any) => ({
+        id,
+        companyId: "company-1",
+        projectId: "proj-1",
+        responsibleUserId: Object.prototype.hasOwnProperty.call(data, "responsibleUserId")
+          ? data.responsibleUserId
+          : "user-2",
+      }));
+      const { app } = buildApp({
+        tasks: [
+          {
+            id: "t-1",
+            companyId: "company-1",
+            projectId: "proj-1",
+            responsibleUserId: "user-2",
+          },
+        ],
+        updateImpl: updateSpy,
+      });
+
+      const res = await callTool(app, "update-task", {
+        taskId: "t-1",
+        responsibleUserId: null,
+      });
+
+      expect(res.status).toBe(200);
+      expect(updateSpy).toHaveBeenCalledTimes(1);
+      expect(updateSpy.mock.calls[0]?.[1]).toHaveProperty("responsibleUserId", null);
+      const payload = JSON.parse(res.body.result.content[0].text);
+      expect(payload.responsibleUserId).toBeNull();
+    });
+
+    it("rejects clearing responsibleUserId when caller lacks task assign permission", async () => {
+      const updateSpy = vi.fn();
+      const canAssignTasks = vi.fn().mockResolvedValue(false);
+      const { app } = buildApp({
+        tasks: [
+          {
+            id: "t-1",
+            companyId: "company-1",
+            projectId: "proj-1",
+            responsibleUserId: "user-2",
+          },
+        ],
+        updateImpl: updateSpy,
+        canAssignTasks,
+      });
+
+      const res = await callTool(app, "update-task", {
+        taskId: "t-1",
+        responsibleUserId: null,
+      });
+
+      expect(res.status).toBe(403);
+      expect(res.body.error.message).toMatch(/tasks:assign|assign/i);
+      expect(updateSpy).not.toHaveBeenCalled();
+      expect(canAssignTasks).toHaveBeenCalledWith("company-1", "user-1", "tasks:assign");
+    });
+
+    it("allows local trusted board actor to explicitly clear responsibleUserId", async () => {
+      const updateSpy = vi.fn(async (id: string, data: any) => ({
+        id,
+        companyId: "company-1",
+        projectId: "proj-1",
+        responsibleUserId: Object.prototype.hasOwnProperty.call(data, "responsibleUserId")
+          ? data.responsibleUserId
+          : "user-2",
+      }));
+      const canAssignTasks = vi.fn().mockResolvedValue(false);
+      const { app } = buildApp({
+        actor: { type: "board", source: "local_implicit" },
+        tasks: [
+          {
+            id: "t-1",
+            companyId: "company-1",
+            projectId: "proj-1",
+            responsibleUserId: "user-2",
+          },
+        ],
+        updateImpl: updateSpy,
+        canAssignTasks,
+      });
+
+      const res = await callTool(app, "update-task", {
+        taskId: "t-1",
+        responsibleUserId: null,
+      });
+
+      expect(res.status).toBe(200);
+      expect(updateSpy).toHaveBeenCalledTimes(1);
+      expect(updateSpy.mock.calls[0]?.[1]).toHaveProperty("responsibleUserId", null);
+      expect(canAssignTasks).not.toHaveBeenCalled();
+    });
+
+    it("rejects agent explicit responsibleUserId clear when missing tasks:assign", async () => {
+      const updateSpy = vi.fn();
+      const hasAgentPermission = vi.fn().mockResolvedValue(false);
+      const { app } = buildApp({
+        actor: {
+          type: "agent",
+          source: "agent",
+          userId: "agent-1",
+          companyId: "company-1",
+          agentId: "agent-1",
+          runId: "run-1",
+        },
+        tasks: [
+          {
+            id: "t-1",
+            companyId: "company-1",
+            projectId: "proj-1",
+            responsibleUserId: "user-2",
+          },
+        ],
+        updateImpl: updateSpy,
+        hasAgentPermission,
+      });
+
+      const res = await callTool(app, "update-task", {
+        taskId: "t-1",
+        responsibleUserId: null,
+      });
+
+      expect(res.status).toBe(403);
+      expect(res.body.error.message).toMatch(/tasks:assign|assign/i);
+      expect(updateSpy).not.toHaveBeenCalled();
+      expect(hasAgentPermission).toHaveBeenCalledWith(
+        "company-1",
+        "agent",
+        "agent-1",
+        "tasks:assign",
+      );
     });
   });
 

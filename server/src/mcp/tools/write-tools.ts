@@ -27,6 +27,30 @@ import {
   filterArtifactsForScope,
 } from "./scope.js";
 
+function hasOwn(value: object, key: string) {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+async function canAssignTasks(ctx: ToolContext) {
+  if (ctx.actor.source === "agent" && ctx.actor.agentId) {
+    return ctx.services.accessSvc.hasPermission(
+      ctx.companyId,
+      "agent",
+      ctx.actor.agentId,
+      "tasks:assign",
+    );
+  }
+  if (ctx.actor.source === "board" && ctx.scope.kind === "founder") {
+    return true;
+  }
+  return ctx.services.accessSvc.canUser(ctx.companyId, ctx.actor.userId, "tasks:assign");
+}
+
+async function requireTaskAssignPermission(ctx: ToolContext) {
+  if (await canAssignTasks(ctx)) return null;
+  return forbiddenResult("Missing permission: tasks:assign");
+}
+
 async function handleDebriefPush(
   ctx: ToolContext,
   args: Record<string, unknown>,
@@ -201,6 +225,7 @@ async function handleCreateTask(
       priority: z.string().optional(),
       assigneeAgentId: z.string().min(1).nullable().optional(),
       assigneeUserId: z.string().min(1).nullable().optional(),
+      responsibleUserId: z.string().min(1).nullable().optional(),
       labelIds: z.array(z.string().min(1)).optional(),
     })
     .parse(args);
@@ -222,10 +247,15 @@ async function handleCreateTask(
   if (!canCreate) {
     return forbiddenResult("Insufficient permissions for task create");
   }
+  if (hasOwn(parsed, "responsibleUserId")) {
+    const assignDenied = await requireTaskAssignPermission(ctx);
+    if (assignDenied) return assignDenied;
+  }
   const created = await ctx.services.issuesSvc.create(ctx.companyId, {
     ...parsed,
     createdByUserId: ctx.actorInfo.actorType === "user" ? ctx.actorInfo.actorId : null,
     createdByAgentId: ctx.actorInfo.agentId ?? null,
+    responsibleFallbackUserId: ctx.actorInfo.actorType === "user" ? ctx.actorInfo.actorId : null,
   } as any);
   await logActivity(ctx.db, {
     companyId: ctx.companyId,
@@ -256,6 +286,7 @@ async function handleUpdateTask(
       priority: z.string().optional(),
       assigneeAgentId: z.string().min(1).nullable().optional(),
       assigneeUserId: z.string().min(1).nullable().optional(),
+      responsibleUserId: z.string().min(1).nullable().optional(),
       labelIds: z.array(z.string().min(1)).optional(),
     })
     .parse(args);
@@ -287,6 +318,10 @@ async function handleUpdateTask(
   );
   if (!canUpdate) {
     return forbiddenResult("Insufficient permissions for task update");
+  }
+  if (hasOwn(parsed, "responsibleUserId")) {
+    const assignDenied = await requireTaskAssignPermission(ctx);
+    if (assignDenied) return assignDenied;
   }
   const { taskId, ...patch } = parsed;
   const updated = await ctx.services.issuesSvc.update(taskId, patch as any);

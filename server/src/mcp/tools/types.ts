@@ -1,5 +1,6 @@
 import type { Db } from "@armyofagents/db";
 import type {
+  accessService,
   agentService,
   approvalService,
   artifactService,
@@ -58,6 +59,7 @@ export interface ToolServices {
   companiesSvc: ReturnType<typeof companyService>;
   mcpSvc: ReturnType<typeof mcpService>;
   permissionsSvc: ReturnType<typeof permissionService>;
+  accessSvc: ReturnType<typeof accessService>;
   agentsSvc: ReturnType<typeof agentService>;
   projectsSvc: ReturnType<typeof projectService>;
   approvalsSvc: ReturnType<typeof approvalService>;

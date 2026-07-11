@@ -62,7 +62,7 @@
       "category": "action",
       "readWrite": "write",
       "requiredRole": "team_lead",
-      "description": "Assign a task to an agent or user.",
+      "description": "Assign a task to an agent or human. Assignee means who does the task; responsible human ownership is separate.",
       "mcpAlias": null
     },
     {
@@ -134,7 +134,7 @@
       "category": "action",
       "readWrite": "write",
       "requiredRole": "team_lead",
-      "description": "Create a new task with title, optional description, priority, department, goal, and assignee.",
+      "description": "Create a new task with title, optional description, priority, department, goal, assignee, and responsible human. Assignee means who does the task; responsible human owns the outcome.",
       "mcpAlias": null
     },
     {
@@ -219,6 +219,15 @@
       "mcpAlias": null
     },
     {
+      "name": "find_humans",
+      "surface": "commander",
+      "category": "query",
+      "readWrite": "read",
+      "requiredRole": "team_member",
+      "description": "Find company humans by profile, role, responsibility, and capability documents. Read-only; use before routing or escalating work.",
+      "mcpAlias": null
+    },
+    {
       "name": "find_similar_memory",
       "surface": "commander",
       "category": "memory",
@@ -287,7 +296,7 @@
       "category": "query",
       "readWrite": "read",
       "requiredRole": "team_member",
-      "description": "Read the full context of a single task (your assigned task): identifier, title, description, status, priority, the source discussion thread, the assigned agent, and execution workspace. Use this to understand what you have been asked to do before starting work.",
+      "description": "Read the full context of a single task (your assigned task): identifier, title, description, status, priority, source discussion thread, assignee, responsible human owner, and execution workspace. Assignee means who does the task; responsible human owns the outcome.",
       "mcpAlias": null
     },
     {
@@ -507,6 +516,24 @@
       "mcpAlias": null
     },
     {
+      "name": "query_human_context",
+      "surface": "commander",
+      "category": "query",
+      "readWrite": "read",
+      "requiredRole": "team_member",
+      "description": "Read a company human's operational context bundle by user id, or resolve a natural-language query to the right human when there is exactly one match. Intended for Commander orchestration.",
+      "mcpAlias": null
+    },
+    {
+      "name": "query_humans",
+      "surface": "commander",
+      "category": "query",
+      "readWrite": "read",
+      "requiredRole": "team_member",
+      "description": "List company humans from the team roster. Use for broad questions like who is in this org, who is on the team, or which humans exist.",
+      "mcpAlias": null
+    },
+    {
       "name": "query_memory",
       "surface": "commander",
       "category": "memory",
@@ -522,6 +549,15 @@
       "readWrite": "read",
       "requiredRole": "team_member",
       "description": "List and filter tasks. Returns tasks matching the given filters.",
+      "mcpAlias": null
+    },
+    {
+      "name": "query_team_roster",
+      "surface": "commander",
+      "category": "query",
+      "readWrite": "read",
+      "requiredRole": "team_member",
+      "description": "Read the unified company team roster and hierarchy across humans and org agents. Use for broad questions like who is on the team, who reports to whom, org chart, or humans and agents together.",
       "mcpAlias": null
     },
     {
@@ -691,8 +727,8 @@
       "surface": "commander",
       "category": "action",
       "readWrite": "write",
-      "requiredRole": "team_member",
-      "description": "Update an existing task's title, status, or priority.",
+      "requiredRole": "team_lead",
+      "description": "Update an existing task's title, status, priority, or responsible human. Use assign_task for assignee reassignment.",
       "mcpAlias": null
     },
     {
@@ -953,7 +989,7 @@
       "category": "read",
       "readWrite": "read",
       "requiredRole": null,
-      "description": "List tasks in the caller's company with RBAC scoping. Supports filters: status, projectId, assigneeAgentId, assigneeUserId, touchedByUserId, unreadForUserId, labelId, q",
+      "description": "List tasks in the caller's company with RBAC scoping. Supports filters: status, projectId, assigneeAgentId, assigneeUserId, responsibleUserId, touchedByUserId, unreadForUserId, labelId, q",
       "mcpAlias": null
     },
     {

@@ -26,6 +26,7 @@ export type SuccessfulRunHandoffIssue = {
   companyId: string;
   status: string;
   assigneeAgentId: string | null;
+  executionRunId?: string | null;
 };
 
 export type SuccessfulRunHandoffInput = {
@@ -56,6 +57,7 @@ export type SuccessfulRunHandoffDecision =
       | "issue_already_dispositioned"
       | "issue_unassigned"
       | "issue_assignee_changed"
+      | "issue_run_changed"
       | "attempts_exhausted";
   };
 
@@ -73,6 +75,9 @@ export function decideSuccessfulRunHandoff(input: SuccessfulRunHandoffInput): Su
   if (input.issue.status !== "in_progress") return { action: "none", reason: "issue_already_dispositioned" };
   if (!input.issue.assigneeAgentId) return { action: "none", reason: "issue_unassigned" };
   if (input.issue.assigneeAgentId !== input.run.agentId) return { action: "none", reason: "issue_assignee_changed" };
+  if (input.issue.executionRunId !== undefined && input.issue.executionRunId !== input.run.id) {
+    return { action: "none", reason: "issue_run_changed" };
+  }
   if ((input.existingAttempts ?? 0) >= maxAttempts) return { action: "none", reason: "attempts_exhausted" };
 
   const issueId = readIssueId(input.run.contextSnapshot) ?? input.issue.id;

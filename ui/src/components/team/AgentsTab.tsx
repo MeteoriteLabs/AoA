@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { Agent, AgentTrustScore } from "@armyofagents/shared";
 import type { OrgNode } from "../../api/agents";
@@ -7,7 +7,6 @@ import { useCompany } from "../../context/CompanyContext";
 import { useDialog } from "../../context/DialogContext";
 import { useToast } from "../../context/ToastContext";
 import { queryKeys } from "../../lib/queryKeys";
-import { cn } from "../../lib/utils";
 import { AgentCard } from "../AgentCard";
 
 import { Button } from "@/components/ui/button";
@@ -48,21 +47,12 @@ interface AgentsTabProps {
   onMutationSuccess?: () => void;
 }
 
-export function AgentsTab({ agents, highlightId, permissions, trustScores, onMutationSuccess }: AgentsTabProps) {
+export function AgentsTab({ agents, permissions, trustScores, onMutationSuccess }: AgentsTabProps) {
   const { selectedCompanyId } = useCompany();
   const { openNewAgent } = useDialog();
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
   const [confirmAction, setConfirmAction] = useState<{ type: "terminate" | "delete"; agent: Agent } | null>(null);
-
-  const highlightRef = useRef<HTMLDivElement>(null);
-
-  // Scroll to highlighted card
-  useEffect(() => {
-    if (highlightId && highlightRef.current && typeof highlightRef.current.scrollIntoView === "function") {
-      highlightRef.current.scrollIntoView({ behavior: "smooth", block: "nearest" });
-    }
-  }, [highlightId]);
 
   const terminateAgent = useMutation({
     mutationFn: (agent: Agent) =>
@@ -138,19 +128,14 @@ export function AgentsTab({ agents, highlightId, permissions, trustScores, onMut
       {/* Agent cards grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {agents.map((agent) => {
-          const isHighlighted = agent.id === highlightId;
           const isTerminated = agent.status === "terminated";
           const score = trustScores?.get(agent.id) ?? null;
 
           return (
             <div
               key={agent.id}
-              ref={isHighlighted ? highlightRef : undefined}
               data-testid={`agent-card-${agent.id}`}
-              className={cn(
-                "rounded-lg",
-                isHighlighted && "ring-2 ring-primary animate-pulse",
-              )}
+              className="rounded-lg"
             >
               <AgentCard
                 agent={agent}

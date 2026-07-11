@@ -6,6 +6,7 @@ import {
   executeTool,
   filterAuthorizedToolsForContext,
 } from "../services/internal-agent/tool-registry.js";
+import { createActionTools } from "../services/internal-agent/tools/action-tools.js";
 import type { AgentTool, ToolContext } from "../services/internal-agent/types.js";
 
 function fakeTool(overrides: Partial<AgentTool> = {}): AgentTool {
@@ -125,6 +126,15 @@ describe("resolveCommanderToolPolicy", () => {
     expect(safePolicy.requiresApproval).toBe(false);
     expect(blockedPolicy.allowed).toBe(false);
     expect(blockedPolicy.error).toBe("FORBIDDEN_ROLE");
+  });
+
+  it("blocks team members from invoking update_task because it can change responsible human ownership", () => {
+    const updateTask = createActionTools().find((tool) => tool.name === "update_task")!;
+
+    const policy = resolveCommanderToolPolicy(updateTask, ctx({ userRole: "team_member" }));
+
+    expect(policy.allowed).toBe(false);
+    expect(policy.error).toBe("FORBIDDEN_ROLE");
   });
 });
 

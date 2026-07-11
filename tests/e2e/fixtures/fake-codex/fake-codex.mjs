@@ -137,6 +137,54 @@ if (typeof control.reasoning === "string" && control.reasoning.length > 0) {
   });
 }
 
+if (Array.isArray(control.toolCalls)) {
+  control.toolCalls.forEach((toolCall, idx) => {
+    if (!toolCall || typeof toolCall.name !== "string" || toolCall.name.length === 0) return;
+    const callId = `call_${idx + 1}`;
+    const input = toolCall.input && typeof toolCall.input === "object" ? toolCall.input : {};
+    const envelope = toolCall.envelope && typeof toolCall.envelope === "object"
+      ? toolCall.envelope
+      : { success: true, data: {}, summary: "" };
+
+    emit({
+      timestamp: new Date().toISOString(),
+      type: "response_item",
+      payload: {
+        type: "function_call",
+        name: toolCall.name,
+        namespace: "mcp__aoa__",
+        arguments: JSON.stringify(input),
+        call_id: callId,
+      },
+    });
+
+    emit({
+      timestamp: new Date().toISOString(),
+      type: "event_msg",
+      payload: {
+        type: "mcp_tool_call_end",
+        call_id: callId,
+        invocation: {
+          server: "aoa",
+          tool: toolCall.name,
+          arguments: input,
+        },
+        result: {
+          Ok: {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify(envelope),
+              },
+            ],
+            isError: envelope.success === false,
+          },
+        },
+      },
+    });
+  });
+}
+
 emit({
   type: "item.completed",
   item: {

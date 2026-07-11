@@ -4461,6 +4461,9 @@ export function heartbeatService(db: Db) {
             });
           }
         }
+        await recoveryService(db).handleCompletedRun(finalizedRun.id).catch((err) => {
+          logger.warn({ err, runId: finalizedRun.id }, "recovery handleCompletedRun failed");
+        });
         await releaseIssueExecutionAndPromote(finalizedRun);
       }
 
@@ -4558,9 +4561,6 @@ export function heartbeatService(db: Db) {
           adapterResult,
           issueId: readNonEmptyString(context.issueId),
           detectedFiles,
-        });
-        await recoveryService(db).handleCompletedRun(finalizedRun.id).catch((err) => {
-          logger.warn({ err, runId: finalizedRun.id }, "recovery handleCompletedRun failed");
         });
       }
 

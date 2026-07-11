@@ -21,6 +21,10 @@ export const COMMANDER_TOOL_ALLOWLIST = [
   // Query
   "query_tasks",
   "query_goals",
+  "query_team_roster",
+  "query_humans",
+  "find_humans",
+  "query_human_context",
   "query_agents",
   "query_departments",
   "query_budget",
@@ -64,6 +68,21 @@ export const COMMANDER_TOOL_ALLOWLIST = [
   "get_thread_summary",
   "find_similar_threads",
 ] as const;
+
+function mergeCommanderToolAllowlist(existing: unknown): string[] {
+  const current = Array.isArray(existing)
+    ? existing.filter((tool): tool is string => typeof tool === "string" && tool.length > 0)
+    : [];
+  const seen = new Set(current);
+  const merged = [...current];
+  for (const tool of COMMANDER_TOOL_ALLOWLIST) {
+    if (!seen.has(tool)) {
+      seen.add(tool);
+      merged.push(tool);
+    }
+  }
+  return merged;
+}
 
 /** Idempotently ensure the per-company Commander kind='aoa' row + link
  *  internal_agent_config.agentId. Chat loop (agent-loop.ts) unaffected.
@@ -127,10 +146,18 @@ export async function ensureCommanderAgent(db: Db, companyId: string): Promise<s
     const aoaCfg = (rc.aoa as Record<string, unknown>) ?? {};
     const updates: Record<string, unknown> = {};
 
-    if (!Array.isArray(aoaCfg.toolAllowlist)) {
+    const mergedToolAllowlist = mergeCommanderToolAllowlist(aoaCfg.toolAllowlist);
+    const existingToolAllowlist = Array.isArray(aoaCfg.toolAllowlist)
+      ? aoaCfg.toolAllowlist.filter((tool): tool is string => typeof tool === "string" && tool.length > 0)
+      : [];
+    const toolAllowlistChanged =
+      mergedToolAllowlist.length !== existingToolAllowlist.length ||
+      mergedToolAllowlist.some((tool, index) => tool !== existingToolAllowlist[index]);
+
+    if (toolAllowlistChanged) {
       updates.runtimeConfig = {
         ...rc,
-        aoa: { ...aoaCfg, toolAllowlist: [...COMMANDER_TOOL_ALLOWLIST] },
+        aoa: { ...aoaCfg, toolAllowlist: mergedToolAllowlist },
       };
     }
 

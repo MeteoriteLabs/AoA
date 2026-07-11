@@ -21,6 +21,9 @@ import type { taskOutputService } from "../task-outputs.js";
 import type { EmbeddingService } from "../embeddings.js";
 import type { approvalService } from "../approvals.js";
 import type { issueApprovalService } from "../issue-approvals.js";
+import type { humanContextService } from "../human-context.js";
+import type { humanDiscoveryService } from "../human-discovery.js";
+import type { teamService } from "../team.js";
 
 // JSON Schema type for tool parameter definitions
 export interface JsonSchema {
@@ -122,6 +125,9 @@ export interface ServiceContainer {
   approvals: ReturnType<typeof approvalService>;
   /** Issue↔approval linkage — resolves which tasks an approval blocks. */
   issueApprovals: ReturnType<typeof issueApprovalService>;
+  humanContext: ReturnType<typeof humanContextService>;
+  humanDiscovery: ReturnType<typeof humanDiscoveryService>;
+  team: ReturnType<typeof teamService>;
   companies: {
     get: (id: string) => Promise<{ name: string | null; vision: string | null; mission: string | null; issuePrefix: string | null; stage: string | null } | null>;
     update: (id: string, data: Partial<{ vision: string; mission: string }>) => Promise<{ id: string; name: string | null; vision: string | null; mission: string | null }>;

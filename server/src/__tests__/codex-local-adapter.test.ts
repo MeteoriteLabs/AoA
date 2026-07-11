@@ -172,6 +172,72 @@ describe("codex_local parser", () => {
       },
     ]);
   });
+
+  it("parses response function calls and MCP call results into tool chunks", () => {
+    const stdout = [
+      JSON.stringify({
+        timestamp: "2026-07-08T11:48:43.459Z",
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          name: "find_humans",
+          namespace: "mcp__aoa__",
+          arguments: "{\"q\":\"Live Codex Human\",\"role\":\"all\",\"limit\":10}",
+          call_id: "call_1",
+        },
+      }),
+      JSON.stringify({
+        timestamp: "2026-07-08T11:48:43.499Z",
+        type: "event_msg",
+        payload: {
+          type: "mcp_tool_call_end",
+          call_id: "call_1",
+          invocation: {
+            server: "aoa",
+            tool: "find_humans",
+            arguments: { q: "Live Codex Human", role: "all", limit: 10 },
+          },
+          result: {
+            Ok: {
+              content: [
+                {
+                  type: "text",
+                  text: "{\"success\":true,\"data\":{\"results\":[{\"userId\":\"local-board\",\"displayName\":\"Live Codex Human\"}]},\"summary\":\"Found 1 human(s)\"}",
+                },
+              ],
+              isError: false,
+            },
+          },
+        },
+      }),
+      JSON.stringify({
+        type: "item.completed",
+        item: { type: "agent_message", text: "Live Codex Human." },
+      }),
+    ].join("\n");
+
+    const parsed = parseCodexJsonl(stdout);
+
+    expect(parsed.summary).toBe("Live Codex Human.");
+    expect(parsed.chunks).toEqual([
+      {
+        type: "tool_call",
+        id: "call_1",
+        name: "find_humans",
+        input: { q: "Live Codex Human", role: "all", limit: 10 },
+      },
+      {
+        type: "tool_result",
+        id: "call_1",
+        name: "find_humans",
+        result: expect.objectContaining({
+          success: true,
+          summary: "Found 1 human(s)",
+        }),
+        refs: [],
+      },
+    ]);
+  });
 });
 
 describe("parseCodexJsonl outputRefs lift", () => {

@@ -22,7 +22,7 @@ import type { AgentTool, ToolResult } from "../types.js";
 export const getTaskTool: AgentTool = {
   name: "get_task",
   description:
-    "Read the full context of a single task (your assigned task): identifier, title, description, status, priority, the source discussion thread, the assigned agent, and execution workspace. Use this to understand what you have been asked to do before starting work.",
+    "Read the full context of a single task (your assigned task): identifier, title, description, status, priority, source discussion thread, assignee, responsible human owner, and execution workspace. Assignee means who does the task; responsible human owns the outcome.",
   parameters: {
     type: "object",
     properties: {
@@ -75,6 +75,7 @@ export const getTaskTool: AgentTool = {
         sourceDiscussionId: task.sourceDiscussionId ?? null,
         assigneeAgentId: task.assigneeAgentId ?? null,
         assigneeUserId: task.assigneeUserId ?? null,
+        responsibleUserId: task.responsibleUserId ?? null,
         executionWorkspaceId: task.executionWorkspaceId ?? null,
         executionWorkspacePreference: task.executionWorkspacePreference ?? null,
         parentId: task.parentId ?? null,
