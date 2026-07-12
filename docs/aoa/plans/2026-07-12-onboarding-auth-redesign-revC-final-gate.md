@@ -13,7 +13,10 @@ statesOrder = orderedStatesFor(journey)              // e.g. FOUNDER_PHASE1_STAT
 assert requestedState ∈ statesOrder                  // 400 otherwise
 for attempt in 1..3:
   row = read progress for (userId, companyId)         // null-company via the user-layer partial index
-  if row is null: create initial row (AUTHENTICATED) then continue
+  if row is null: INSERT { currentState:"AUTHENTICATED", completedStates:["AUTHENTICATED"], version:0 }
+                  via conflict-safe upsert on the matching partial index, then re-read and continue
+                  // MUST seed completedStates:["AUTHENTICATED"] — the schema default [] would leave
+                  // PROFILE_SET's dependsOn unsatisfied and make replay a silent no-op.
   reqIdx = statesOrder.indexOf(requestedState)
   curIdx = statesOrder.indexOf(row.currentState)
   // IDEMPOTENT / BEHIND = success no-op (do NOT reject):
@@ -40,7 +43,7 @@ Notes: only append `requestedState` to `completedStates` (union), not a backfill
 The real approval happens in `server/src/routes/access.ts` (~:2419), **separate** from `/invites/:token/accept`. Therefore:
 - The **accept service** (reused by `/invite/:token/accept` and `/onboarding/join`) ONLY creates/reuses the `join_request` (status `pending_approval`) and advances invited progress to `JOIN_REQUESTED`. It does NOT complete onboarding.
 - **Amend the approval transaction** (`access.ts` ~:2419): after `ensureMembership(...,"active")` + `applyInviteRole`, call a **transaction-bound** onboarding service that:
-  1. derives the expected role via `parseInviteRoleMetadata` (the real helper),
+  1. derives the expected role via `parseInviteRoleMetadata` (the real helper — **currently private; export it or expose it through `teamService` before use**),
   2. verifies the active `company_memberships` row AND the matching `user_roles` row exist,
   3. advances the invited `onboarding_progress` to `SETUP_COMPLETE` — **before commit**, in the same transaction.
 - Idempotent: if progress is already `SETUP_COMPLETE`, the advance is a no-op (RC1). Rejection path: on reject, leave invited progress at `JOIN_REQUESTED` and surface rejection (edge #10) — do not complete.
@@ -54,7 +57,7 @@ Tests: approve → membership+role+progress all committed atomically; reject →
 - New table `onboarding_invite_handoffs`: `{ nonce (pk, opaque random), inviteTokenHash, boundUserId (nullable until callback), boundEmail, createdAt, expiresAt, consumedAt (nullable) }`.
 - **Before Google:** on `/invite/:token`, server stores `{ nonce, inviteTokenHash=sha256(token), expiresAt=now+15m }` and passes `nonce` into the OAuth start via better-auth `additionalData` (opaque; no token in URL). Optionally also set an HttpOnly `SameSite=Lax` cookie carrying the nonce as a fallback.
 - **OAuth callback hook:** read `nonce` from `additionalData`, look up the handoff row, and **bind** it: set `boundUserId = authedUser.id` after verifying `authUsers.emailVerified === true` AND the invite's email matches the authed verified email. Reject on mismatch.
-- **Consume in the accept transaction:** the accept service resolves the invite from the handoff and performs a single atomic update `UPDATE onboarding_invite_handoffs SET consumed_at=now() WHERE nonce=? AND consumed_at IS NULL AND expires_at > now()` — 0 rows ⇒ replay/expired ⇒ reject. Clear the cookie.
+- **Consume in the accept transaction:** the accept service resolves the invite from the handoff and performs a single atomic update `UPDATE onboarding_invite_handoffs SET consumed_at=now() WHERE nonce=? AND bound_user_id = :currentUserId AND bound_user_id IS NOT NULL AND consumed_at IS NULL AND expires_at > now()` — 0 rows ⇒ replay/expired/**not-bound-to-this-user** ⇒ reject. The `bound_user_id = :currentUserId` predicate (plus the verified-email match set at binding) prevents one authenticated user from consuming another user's handoff. Clear the cookie.
 - Never place the token in a URL, query string, or `sessionStorage`. CSRF/Origin validated on the accept POST.
 Tests: happy path `/invite/:token → Google → bound → accept → consumed`; replay (consumed) rejected; expired rejected; email-mismatch rejected; missing nonce → treated as no-invite (founder path).
 
