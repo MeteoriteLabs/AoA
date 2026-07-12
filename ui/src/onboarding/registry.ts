@@ -1,4 +1,4 @@
-import type { ComponentType, LazyExoticComponent } from "react";
+import type { ComponentType } from "react";
 import {
   orderedStatesFor,
   type OnboardingJourney,
@@ -34,7 +34,9 @@ export type StepDefinition = {
   canSkip: boolean;
   shouldInclude: (ctx: StepContext) => boolean;
   isComplete: (ctx: StepContext) => boolean;
-  Component: LazyExoticComponent<ComponentType<StepProps>>;
+  // Accepts a plain or React.lazy component (a LazyExoticComponent IS a
+  // ComponentType); the FlowEngine wraps rendering in <Suspense>.
+  Component: ComponentType<StepProps>;
   title: string;
 };
 
