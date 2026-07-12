@@ -1,5 +1,5 @@
-import { describe, it, expect } from "vitest";
-import { destinationForJourney } from "../onboarding";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { destinationForJourney, getOnboardingProgress, advanceOnboarding } from "../onboarding";
 import type { PostAuthJourneyResult } from "@armyofagents/shared";
 
 const base = (over: Partial<PostAuthJourneyResult>): PostAuthJourneyResult => ({
@@ -23,5 +23,41 @@ describe("destinationForJourney (Stage A / A9)", () => {
     expect(destinationForJourney(base({ journey: "invited", targetCompanyId: "c2" }))).toBe(
       "/onboarding/join?company=c2",
     );
+  });
+});
+
+describe("onboarding progress client (Stage B / B7)", () => {
+  beforeEach(() => {
+    (globalThis as any).fetch = vi.fn();
+  });
+
+  it("getOnboardingProgress GETs with credentials + companyId", async () => {
+    (globalThis.fetch as any).mockResolvedValue({
+      ok: true,
+      json: async () => ({ progress: { completedStates: ["AUTHENTICATED"] } }),
+    });
+    const p = await getOnboardingProgress("c1");
+    const [url, init] = (globalThis.fetch as any).mock.calls[0];
+    expect(url).toBe("/api/onboarding/progress?companyId=c1");
+    expect(init.credentials).toBe("include");
+    expect(p).toEqual({ completedStates: ["AUTHENTICATED"] });
+  });
+
+  it("getOnboardingProgress returns null when no row", async () => {
+    (globalThis.fetch as any).mockResolvedValue({ ok: true, json: async () => ({ progress: null }) });
+    expect(await getOnboardingProgress(null)).toBeNull();
+  });
+
+  it("advanceOnboarding PATCHes the requested state", async () => {
+    (globalThis.fetch as any).mockResolvedValue({
+      ok: true,
+      json: async () => ({ progress: { completedStates: ["AUTHENTICATED", "PROFILE_SET"] } }),
+    });
+    const p = await advanceOnboarding({ companyId: null, journey: "founder", requestedState: "PROFILE_SET" });
+    const [url, init] = (globalThis.fetch as any).mock.calls[0];
+    expect(url).toBe("/api/onboarding/progress");
+    expect(init.method).toBe("PATCH");
+    expect(JSON.parse(init.body)).toMatchObject({ journey: "founder", requestedState: "PROFILE_SET" });
+    expect(p?.completedStates).toContain("PROFILE_SET");
   });
 });

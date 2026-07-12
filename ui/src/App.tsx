@@ -1,10 +1,11 @@
 import { lazy, Suspense, useEffect, useRef } from "react";
-import { Navigate, Outlet, Route, Routes, useLocation } from "@/lib/router";
+import { Navigate, Outlet, Route, Routes, useLocation, useNavigate } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Layout } from "./components/Layout";
 import { authApi } from "./api/auth";
 import { healthApi } from "./api/health";
+import { fetchJourney } from "./api/onboarding";
 import { Dashboard } from "./pages/Dashboard";
 import { Lobby } from "./pages/Lobby";
 import { LobbyLayout } from "./components/LobbyLayout";
@@ -33,6 +34,7 @@ import { Discussions } from "./pages/Discussions";
 import { ThreadsWorkspace } from "./pages/ThreadsWorkspace";
 import { WorkspacesList } from "./pages/WorkspacesList";
 import { AuthPage } from "./pages/Auth";
+import { OnboardingFlowPage } from "./pages/OnboardingFlow";
 import { Me } from "./pages/Me";
 import { CompanyExport } from "./pages/CompanyExport";
 import { CompanyImport } from "./pages/CompanyImport";
@@ -308,16 +310,27 @@ function OnboardingWizardMount() {
   return onboardingOpen ? <OnboardingWizard /> : null;
 }
 
-// Stub — replaced by the resumable onboarding FlowEngine in Stage B. Present so
-// post-auth journey redirects to /onboarding and /onboarding/join land
-// somewhere during Stage A. The gate→journey redirect wiring lands with the
-// FlowEngine (Stage B), where these routes become real.
-function OnboardingPlaceholder() {
-  return (
-    <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">
-      Setting up your onboarding…
-    </div>
-  );
+// The index gate (Stage B / B7). Fetches the post-auth journey and redirects a
+// founder to /onboarding, an invited user to /onboarding/join; a returning user
+// sees the Lobby (with their pending invitations surfaced there).
+function LobbyOrOnboardingRedirect() {
+  const navigate = useNavigate();
+  const { data, isLoading } = useQuery({
+    queryKey: ["onboarding", "journey"],
+    queryFn: () => fetchJourney(),
+    retry: false,
+  });
+  useEffect(() => {
+    if (!data) return;
+    if (data.journey === "founder") {
+      navigate("/onboarding", { replace: true });
+    } else if (data.journey === "invited") {
+      navigate(`/onboarding/join?company=${data.targetCompanyId ?? ""}`, { replace: true });
+    }
+  }, [data, navigate]);
+  if (isLoading) return <RouteFallback />;
+  if (data && data.journey !== "returning") return null; // redirecting
+  return <Lobby />;
 }
 
 export function App() {
@@ -332,7 +345,7 @@ export function App() {
           <Route element={<CloudAccessGate />}>
             {/* Persistent lobby shell — sidebar mounts once, content swaps via <Outlet/> */}
             <Route element={<LobbyLayout />}>
-              <Route index element={<Lobby />} />
+              <Route index element={<LobbyOrOnboardingRedirect />} />
               <Route path="instance/settings" element={<InstanceSettingsPage />} />
               <Route path="instance/access" element={<InstanceAccessPage />} />
               <Route path="marketplace" element={<Marketplace />} />
@@ -342,8 +355,8 @@ export function App() {
               <Route path="marketplace/:type/:slug/*" element={<MarketplaceDetail />} />
             </Route>
             <Route path="me" element={<Me />} />
-            <Route path="onboarding" element={<OnboardingPlaceholder />} />
-            <Route path="onboarding/join" element={<OnboardingPlaceholder />} />
+            <Route path="onboarding" element={<OnboardingFlowPage journey="founder" />} />
+            <Route path="onboarding/join" element={<OnboardingFlowPage journey="invited" />} />
             <Route path="export" element={<Layout />}>
               <Route index element={<CompanyExport />} />
             </Route>
