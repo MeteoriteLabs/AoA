@@ -857,7 +857,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       }
       await assertCanAssignTasks(req, companyId);
     }
-    if (req.actor.type === "agent" && req.body.acceptanceCriteria !== undefined) {
+    if (req.actor.type === "agent" && (req.body.acceptanceCriteria?.length ?? 0) > 0) {
       throw forbidden("Agents cannot define their own task acceptance criteria");
     }
 
