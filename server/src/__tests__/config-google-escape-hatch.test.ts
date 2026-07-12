@@ -29,4 +29,11 @@ describe("config: google + escape hatch", () => {
     process.env.AOA_DEV_LOCAL_IDENTITY = "1";
     expect(loadConfig().devLocalIdentity).toBe(true);
   });
+
+  it("reads AOA_HEADLESS_BOOTSTRAP and defaults false (A10)", () => {
+    delete process.env.AOA_HEADLESS_BOOTSTRAP;
+    expect(loadConfig().headlessBootstrap).toBe(false);
+    process.env.AOA_HEADLESS_BOOTSTRAP = "1";
+    expect(loadConfig().headlessBootstrap).toBe(true);
+  });
 });

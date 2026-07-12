@@ -15,6 +15,16 @@ import { eq, sql } from "drizzle-orm";
  * creates a user — every created user is a Google user. If a second provider is
  * ever added, gate the caller on a Google account link (RC4).
  */
+/**
+ * revA A10/R16 — the CLI board-claim bootstrap is retired from the normal human
+ * flow (the first Google user becomes admin via {@link promoteFirstUserToInstanceAdmin}).
+ * The board-claim challenge is only initialized for headless/self-hosted server
+ * setups via `AOA_HEADLESS_BOOTSTRAP`. Off by default.
+ */
+export function shouldEnableHeadlessBootstrap(config: { headlessBootstrap: boolean }): boolean {
+  return config.headlessBootstrap === true;
+}
+
 export async function promoteFirstUserToInstanceAdmin(db: Db, userId: string): Promise<boolean> {
   return await (
     db as unknown as { transaction: <T>(fn: (tx: any) => Promise<T>) => Promise<T> }

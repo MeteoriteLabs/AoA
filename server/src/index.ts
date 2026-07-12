@@ -549,10 +549,14 @@ if (config.devLocalIdentity) {
   authReady = true;
 }
 
-// Board-claim CLI bootstrap remains authenticated-mode-only for now; revA A10
-// retires it from the human flow behind a headless flag.
-if (config.deploymentMode === "authenticated") {
-  await initializeBoardClaimChallenge(db as any, { deploymentMode: config.deploymentMode });
+// revA A10 — the board-claim CLI bootstrap is retired from the normal human
+// flow (the first Google user becomes admin instead). It is only initialized
+// for headless/self-hosted server setups via AOA_HEADLESS_BOOTSTRAP.
+{
+  const { shouldEnableHeadlessBootstrap } = await import("./services/first-user-bootstrap.js");
+  if (shouldEnableHeadlessBootstrap(config)) {
+    await initializeBoardClaimChallenge(db as any, { deploymentMode: config.deploymentMode });
+  }
 }
 
 const uiMode = config.uiDevMiddleware ? "vite-dev" : config.serveUi ? "static" : "none";

@@ -41,6 +41,7 @@ export interface Config {
   googleClientId: string | null;
   googleClientSecret: string | null;
   devLocalIdentity: boolean;
+  headlessBootstrap: boolean;
   databaseMode: DatabaseMode;
   databaseUrl: string | undefined;
   embeddedPostgresDataDir: string;
@@ -241,6 +242,7 @@ export function loadConfig(): Config {
   const googleClientId = process.env.GOOGLE_CLIENT_ID?.trim() || null;
   const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET?.trim() || null;
   const devLocalIdentity = /^(1|true|yes)$/i.test(process.env.AOA_DEV_LOCAL_IDENTITY?.trim() ?? "");
+  const headlessBootstrap = /^(1|true|yes)$/i.test(process.env.AOA_HEADLESS_BOOTSTRAP?.trim() ?? "");
 
   return {
     deploymentMode,
@@ -253,6 +255,7 @@ export function loadConfig(): Config {
     googleClientId,
     googleClientSecret,
     devLocalIdentity,
+    headlessBootstrap,
     databaseMode: fileDatabaseMode,
     databaseUrl: process.env.DATABASE_URL ?? fileDbUrl,
     embeddedPostgresDataDir: resolveHomeAwarePath(
