@@ -27,8 +27,8 @@ node -e "const p=require('./packages/shared/package.json');console.log('shared s
 
 Expected findings (verified in this worktree — use them in all `Run:` steps below):
 - **Server has NO `test` script.** Server tests run through the ROOT vitest project config (`vitest.config.ts` lists `"server"` under `test.projects`). Run a single server file from repo root with: `pnpm test:run <path/to/file>`. (The Stage 0 §7 / Stage A note `pnpm test:run` does not exist here — see the reconciler note at the end of this doc.)
-- **Shared** has `test` = `vitest run`. Single file: `pnpm --filter @armyofagents/shared exec vitest run <relative-path>`.
-- **UI** has `test` = `vitest` (watch). For deterministic single-file runs use: `pnpm --filter @armyofagents/ui exec vitest run <relative-path>`.
+- **Shared** has `test` = `vitest run`. Single file: `pnpm test:run <relative-path>`.
+- **UI** has `test` = `vitest` (watch). For deterministic single-file runs use: `pnpm test:run <relative-path>`.
 - **DB migration generate:** `pnpm db:generate` (root) → `pnpm --filter @armyofagents/db generate` → `tsc -p tsconfig.json && drizzle-kit generate`. It compiles the schema to `dist/schema/*.js` first, then writes SQL to `packages/db/src/migrations/`.
 - **Type/build gate:** `pnpm -r typecheck` (root) or `pnpm build`. There is no root `verify` script — use `pnpm -r typecheck` where Stage A said `pnpm typecheck`.
 
@@ -78,7 +78,7 @@ describe("onboarding_progress schema", () => {
 
 - [ ] **Step 2: Run test, verify it fails**
 
-Run: `pnpm --filter @armyofagents/db exec vitest run src/__tests__/onboarding-progress-schema.test.ts`
+Run: `pnpm test:run src/__tests__/onboarding-progress-schema.test.ts`
 Expected: FAIL — `../schema/onboarding_progress.js` module not found.
 
 - [ ] **Step 3: Create the schema file — EXACTLY per Stage 0 §2.2**
@@ -118,7 +118,7 @@ export { onboardingProgress } from "./onboarding_progress.js";
 
 - [ ] **Step 5: Run the schema/contract test, verify pass**
 
-Run: `pnpm --filter @armyofagents/db exec vitest run src/__tests__/onboarding-progress-schema.test.ts`
+Run: `pnpm test:run src/__tests__/onboarding-progress-schema.test.ts`
 Expected: PASS (2 tests).
 
 - [ ] **Step 6: Generate the migration**
@@ -191,7 +191,7 @@ describe("onboarding shared constants", () => {
 
 - [ ] **Step 2: Run test, verify it fails**
 
-Run: `pnpm --filter @armyofagents/shared exec vitest run src/__tests__/onboarding-constants.test.ts`
+Run: `pnpm test:run src/__tests__/onboarding-constants.test.ts`
 Expected: FAIL — `ONBOARDING_STATES` not exported.
 
 - [ ] **Step 3a: Append the constants — EXACTLY per Stage 0 §3.1**
@@ -282,7 +282,7 @@ export type { PostAuthJourneyResult } from "./onboarding.js";
 
 - [ ] **Step 4: Run test + shared typecheck, verify pass**
 
-Run: `pnpm --filter @armyofagents/shared exec vitest run src/__tests__/onboarding-constants.test.ts` then `pnpm --filter @armyofagents/shared typecheck`
+Run: `pnpm test:run src/__tests__/onboarding-constants.test.ts` then `pnpm --filter @armyofagents/shared typecheck`
 Expected: PASS (3 tests); no type errors.
 
 - [ ] **Step 5: Commit**
@@ -838,7 +838,7 @@ describe("resolveNextStep", () => {
 
 - [ ] **Step 2: Run test, verify it fails**
 
-Run: `pnpm --filter @armyofagents/ui exec vitest run src/onboarding/__tests__/registry.test.ts`
+Run: `pnpm test:run src/onboarding/__tests__/registry.test.ts`
 Expected: FAIL — `../registry` module not found.
 
 - [ ] **Step 3: Implement the registry + resolver**
@@ -905,7 +905,7 @@ export function resolveNextStep(
 
 - [ ] **Step 4: Run test, verify pass**
 
-Run: `pnpm --filter @armyofagents/ui exec vitest run src/onboarding/__tests__/registry.test.ts`
+Run: `pnpm test:run src/onboarding/__tests__/registry.test.ts`
 Expected: PASS (6 tests).
 
 - [ ] **Step 5: Commit**
@@ -1036,7 +1036,7 @@ describe("FlowEngine", () => {
 
 - [ ] **Step 2: Run test, verify it fails**
 
-Run: `pnpm --filter @armyofagents/ui exec vitest run src/onboarding/__tests__/FlowEngine.test.tsx`
+Run: `pnpm test:run src/onboarding/__tests__/FlowEngine.test.tsx`
 Expected: FAIL — `../FlowEngine` module not found.
 
 - [ ] **Step 3a: Extend the onboarding api client**
@@ -1233,7 +1233,7 @@ export function FlowEngine({
 
 - [ ] **Step 4: Run test, verify pass**
 
-Run: `pnpm --filter @armyofagents/ui exec vitest run src/onboarding/__tests__/FlowEngine.test.tsx`
+Run: `pnpm test:run src/onboarding/__tests__/FlowEngine.test.tsx`
 Expected: PASS (4 tests).
 
 - [ ] **Step 5: Commit**
@@ -1278,7 +1278,7 @@ describe("journeyRouteProps", () => {
 
 - [ ] **Step 2: Run test, verify it fails**
 
-Run: `pnpm --filter @armyofagents/ui exec vitest run src/__tests__/onboarding-routes.test.tsx`
+Run: `pnpm test:run src/__tests__/onboarding-routes.test.tsx`
 Expected: FAIL — `../onboarding/routeProps` module not found.
 
 - [ ] **Step 3: Implement the route-props helper + wrapper**
@@ -1342,7 +1342,7 @@ Inside the `<Route element={<CloudAccessGate />}>` block (so onboarding requires
 
 - [ ] **Step 5: Run test + UI typecheck, verify pass**
 
-Run: `pnpm --filter @armyofagents/ui exec vitest run src/__tests__/onboarding-routes.test.tsx` then `pnpm --filter @armyofagents/ui typecheck`
+Run: `pnpm test:run src/__tests__/onboarding-routes.test.tsx` then `pnpm --filter @armyofagents/ui typecheck`
 Expected: PASS (3 tests); no type errors.
 
 - [ ] **Step 6: Commit**
@@ -1380,7 +1380,7 @@ describe("createOrgReplayTarget", () => {
 
 - [ ] **Step 2: Run test, verify it fails**
 
-Run: `pnpm --filter @armyofagents/ui exec vitest run src/__tests__/lobby-create-org-replay.test.tsx`
+Run: `pnpm test:run src/__tests__/lobby-create-org-replay.test.tsx`
 Expected: FAIL — `../onboarding/orgReplay` module not found.
 
 - [ ] **Step 3: Implement the helper + rewire the Lobby entry points**
@@ -1409,7 +1409,7 @@ In `ui/src/components/LobbyLayout.tsx`:
 
 - [ ] **Step 4: Run test + UI typecheck, verify pass**
 
-Run: `pnpm --filter @armyofagents/ui exec vitest run src/__tests__/lobby-create-org-replay.test.tsx` then `pnpm --filter @armyofagents/ui typecheck`
+Run: `pnpm test:run src/__tests__/lobby-create-org-replay.test.tsx` then `pnpm --filter @armyofagents/ui typecheck`
 Expected: PASS (1 test); no type errors (watch for unused-import errors from the dropped `openOnboarding`).
 
 - [ ] **Step 5: Commit**
@@ -1440,4 +1440,4 @@ git commit -m "feat(onboarding): Lobby create-org routes into FlowEngine org-rep
   - `PostAuthJourneyResult` is imported/created identically to §3.2 — never redefined.
   - Testing follows §7: pure-function tests (firstIncompleteState, resolveNextStep, journeyRouteProps, createOrgReplayTarget), service tests via the `createSequenceDb`/Proxy-table mock, contract tests (schema columns, shared constants), no drizzle internals imported in pure tests.
 - [ ] **Non-negotiables (§8):** no hosted-API keys touched; no heartbeat/hire-approval/planning-mode divergence points altered; every server write is idempotent (advance dedupes; row auto-creates once). Migration generated via `pnpm db:generate` only — no hand-written SQL (Critical Rule #1).
-- [ ] **Green gate:** after B4, run the full server suite (`pnpm test:run server`) to catch any test that assumed no `/api/onboarding` router; after B6/B8, run `pnpm --filter @armyofagents/ui exec vitest run src/onboarding` + `pnpm --filter @armyofagents/ui typecheck`.
+- [ ] **Green gate:** after B4, run the full server suite (`pnpm test:run server`) to catch any test that assumed no `/api/onboarding` router; after B6/B8, run `pnpm test:run src/onboarding` + `pnpm --filter @armyofagents/ui typecheck`.

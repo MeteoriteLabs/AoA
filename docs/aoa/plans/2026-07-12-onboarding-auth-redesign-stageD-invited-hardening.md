@@ -78,7 +78,7 @@ describe("INVITED_PHASE1_STATES", () => {
 
 - [ ] **Step 2: Run test, verify it fails**
 
-Run: `pnpm --filter @armyofagents/shared test -- src/__tests__/invited-journey-states.test.ts`
+Run: `pnpm test:run src/__tests__/invited-journey-states.test.ts`
 Expected: FAIL — `INVITED_PHASE1_STATES` not exported.
 
 - [ ] **Step 3: Append the constant**
@@ -100,7 +100,7 @@ export const INVITED_PHASE1_STATES: OnboardingState[] = [
 
 - [ ] **Step 4: Run shared test, verify pass**
 
-Run: `pnpm --filter @armyofagents/shared test -- src/__tests__/invited-journey-states.test.ts`
+Run: `pnpm test:run src/__tests__/invited-journey-states.test.ts`
 Expected: PASS (3 tests).
 
 - [ ] **Step 5: Write the failing registry-exclusion test**
@@ -1167,7 +1167,7 @@ test("creating a 2nd org from the Lobby re-enters only the org-level flow", asyn
 
 - [ ] **Step 5: Run the four specs, verify pass**
 
-Run: `pnpm --filter @armyofagents/ui exec playwright test -c tests/e2e/playwright.config.ts onboarding-founder-happy-path onboarding-resume onboarding-invited-join onboarding-second-org` (confirm the repo's e2e run command from the pre-flight)
+Run: `pnpm test:e2e onboarding-founder-happy-path onboarding-resume onboarding-invited-join onboarding-second-org` (confirm the repo's e2e run command from the pre-flight)
 Expected: PASS on Linux/macOS. On Windows CI the config routes to `windows-embedded-postgres-skip.spec.ts` (embedded-pg can't start on `runneradmin` — Issue #114); locally, set `AOA_E2E_FORCE_WINDOWS=1` + `DATABASE_URL` to run them. First run may FAIL until Stage A's `google-mock` helper + Stage C step markup are present — that is expected sequencing.
 
 - [ ] **Step 6: Commit**
@@ -1190,7 +1190,7 @@ Final gate: run the full server + ui unit suites + typecheck, surface any cross-
 Run, in order:
 ```bash
 pnpm typecheck
-pnpm --filter @armyofagents/shared test
+pnpm test:run
 pnpm test:run
 pnpm --filter @armyofagents/ui test
 ```

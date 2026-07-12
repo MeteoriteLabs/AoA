@@ -24,8 +24,8 @@
 
 - [ ] **Confirm test/build script names**
 
-Run: `cat server/package.json | grep -A2 '"scripts"'` and `cat package.json | grep -A2 '"scripts"'`
-Expected: note the server test script (likely `vitest run`) and the root `verify`/`db:generate` scripts. Use the confirmed names in all later `Run:` steps.
+Run: `node -e "console.log(Object.keys(require('./package.json').scripts))"` (root)
+Expected: confirm the verified root scripts — `test:run` (= `vitest run`), `typecheck`, `build`, `db:generate`, `test:e2e`. **There is no root `verify` and no server-package `test` script.** Use `pnpm test:run <path-substring>` for any single server/ui/shared/db test file. These are the commands used in every `Run:` step below.
 
 ---
 
@@ -904,7 +904,7 @@ test("login shows only Continue-with-Google and lands post-auth", async ({ page 
 
 - [ ] **Step 2: Run it, verify it fails / then passes after the mock is wired**
 
-Run: `pnpm --filter @armyofagents/ui exec playwright test tests/e2e/auth-google.spec.ts` (confirm the repo's e2e run command)
+Run: `pnpm test:e2e tests/e2e/auth-google.spec.ts` (confirm the repo's e2e run command)
 Expected: first FAIL (no mock), then PASS once the session-injection helper is added. Respect the Windows e2e skip caveat (embedded-pg) per CLAUDE.md.
 
 - [ ] **Step 3: Commit**

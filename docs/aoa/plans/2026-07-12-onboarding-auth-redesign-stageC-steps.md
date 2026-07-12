@@ -604,7 +604,7 @@ describe("local environment probe verifies writability", () => {
   });
   it("fails (blocking) for a path that cannot be created/written", async () => {
     // A path under a file (not a dir) can never be a writable directory.
-    const r = await probeEnvironmentConfig({ companyId: "c1", driver: "local", config: { path: " /definitely/invalid" } });
+    const r = await probeEnvironmentConfig({ companyId: "c1", driver: "local", config: { path: "/definitely/invalid" } });
     expect(r.ok).toBe(false);
     expect(r.checks?.some((c) => c.status === "failed")).toBe(true);
   });
@@ -1280,7 +1280,7 @@ describe("DEPARTMENT_FUNCTION_TYPES", () => {
 });
 ```
 
-- [ ] **Step 2: Run, verify FAIL** — `pnpm --filter @armyofagents/shared test -- src/__tests__/department-function-types.test.ts`
+- [ ] **Step 2: Run, verify FAIL** — `pnpm test:run src/__tests__/department-function-types.test.ts`
 
 - [ ] **Step 3: Append the shared list (verbatim Stage 0 §3.3)**
 
@@ -1310,7 +1310,7 @@ In `ui/src/components/NewProjectDialog.tsx`: delete the local `const FUNCTION_TY
 
 - [ ] **Step 5: Run test + verify + commit**
 
-Run: `pnpm --filter @armyofagents/shared test -- src/__tests__/department-function-types.test.ts` then `pnpm typecheck`
+Run: `pnpm test:run src/__tests__/department-function-types.test.ts` then `pnpm typecheck`
 Expected: PASS; `NewProjectDialog` compiles with the shared list (now shows Sales + Customer Support).
 ```bash
 git add packages/shared/src/constants.ts packages/shared/src/index.ts ui/src/components/NewProjectDialog.tsx packages/shared/src/__tests__/department-function-types.test.ts
