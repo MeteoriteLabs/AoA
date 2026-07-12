@@ -8,11 +8,11 @@
 
 Phase 1 (Stages A–D) of the Google-only auth + modular resumable onboarding redesign.
 
-- **Branch:** `feat/onboarding-auth-redesign` — **29 commits ahead of `main`.**
+- **Branch:** `feat/onboarding-auth-redesign` — **~44 commits ahead of `main`.**
 - **Worktree:** `C:/Users/TK/.aoa/wt/onboarding-auth-redesign` (short path — OneDrive MAX_PATH; `core.longpaths=true`).
-- **Green:** server suite **7433** tests, UI suite **3142** tests, both typechecks clean.
-- **Done:** all planning (4 Codex passes → revA/B/C), **Stage A** (auth), **Stage B** (state-machine engine), **Stage C foundation + 1 of 7 steps**.
-- **Remaining:** Stage C steps 2–7 + wizard deletion + Lobby replay, then all of **Stage D**, plus **A12** e2e. ~15–20 tasks.
+- **Green:** server suite **7467** tests, UI suite **3166** tests, both typechecks clean.
+- **Done:** all planning (revA/B/C), **Stage A** (auth), **Stage B** (engine), **Stage C COMPLETE** (all 8 founder steps + OnboardingWizard deletion + FlowEngine routing), and **Stage D security hardening** (D6 cookie flags, D7 escape-hatch backstop).
+- **Remaining (all Stage D, infra-blocked — see §6):** the invited-journey **JoinOrg** UI + the approval→`SETUP_COMPLETE` amendment, the **invite-token handoff** table + OAuth nonce carry (RC3), the **in-app Codex/Claude subscription-login** routes (T-CodexLogin) + API-key paste (D8), and the **A12 Playwright e2e** (needs the mocked-Google helper; CI-only). These need live Google auth / e2e infra that can't be exercised in a Windows unit-test session — each is scoped below with the integration risk to resolve.
 
 ---
 
@@ -44,8 +44,16 @@ pnpm --filter @armyofagents/shared build              # if you edit packages/sha
 **Stage B (engine) — done:**
 `e3ebc4c0b` B1 table+migration · `99f67058c` B2 state enums · `236904dfd` B3 advance service · `ba7d7d13c` B4 progress route · `40a0470ce` B5 registry · `70255ef29` B6 FlowEngine · `b47a665ee` B7 wiring + gate redirect
 
-**Stage C — foundation + 3 steps:**
-`58ee1410c` foundation (engine read-only + org-layer seed) · `7872d6854` C1 user_profiles · `4d02e8f1d` C3 profile step (proves the pattern) · `2d3a77c78` order-2 org-create step (RB1 handshake via CompanyContext.createCompany) · `198d4b05a` order-3 blocking env write-probe + Set up environment step (R13)
+**Stage C — COMPLETE (foundation + all 8 steps + wizard deletion):**
+`58ee1410c` foundation · `7872d6854` C1 user_profiles · `4d02e8f1d` order-1 profile step (proves the pattern) · `2d3a77c78` order-2 org-create (RB1 handshake via CompanyContext.createCompany) · `198d4b05a` order-3 blocking env write-probe + Set up environment (R13) · `386845808` order-4 Choose Commander · `1d06b02ac` order-5 Verify tooling (blocking; verify service+route classifier) · `2b94639c8` order-6 shared DEPARTMENT_FUNCTION_TYPES + First department · `65923d662` order-7 First agent (dept-assigned at creation) · `8ae510df1` order-8 Review (SETUP_COMPLETE) · `8fda3be0e` C13 delete OnboardingWizard; route onboarding via FlowEngine (+ "onboarding" added to GLOBAL_ROUTE_ROOTS)
+
+**Stage D — security hardening done; invited UI + e2e deferred (§6):**
+`384e1cc78` D6 session-cookie hardening + D7 escape-hatch fail-closed backstop
+
+**The proven step recipe (Stage C) — adaptations discovered while executing (authoritative over the stageC-steps.md examples, which predate revB/revC):**
+1. Steps register in `ui/src/onboarding/steps/index.ts` `ONBOARDING_STEPS` with the **revB shape** (`order` + `shouldInclude`), NOT the doc's standalone `xxxStep`/`lazy` exports.
+2. The FlowEngine is **read-only** — EVERY step calls `advanceOnboarding({ companyId, journey, requestedState })` itself before `onComplete()`. The doc's C6–C12 examples omit this and would infinite-loop the step.
+3. Blocking steps (env R13, commander verify) return **422** from their route and the step surfaces the reason + a retry; only success advances.
 
 ---
 
@@ -71,22 +79,30 @@ The engine (`FlowEngine.tsx`) is READ-only: it resolves the next step, and `onCo
 |---|---|---|---|
 | 2 | `ORGANIZATION_CREATED` | ✅ **DONE** `2d3a77c78` — `useCompany().createCompany({name})` (bundles create + invalidate + `setSelectedCompanyId`) → `advanceOnboarding({companyId:new.id,...})` | **RB1 handshake:** the `setSelectedCompanyId` prop-change reloads the FlowEngine to the org layer. Advance targets the NEW companyId. Name only (mission dropped). `ensureProgress` seeds the org-layer from the user-layer so the `PROFILE_SET` dep passes. |
 | 3 | `ENVIRONMENT_READY` | ✅ **DONE** `198d4b05a` — probe local branch now does real mkdir+write+delete; `setupOnboardingEnvironment` (probe-first, upsert `environments` by name + set `companies.rootFolder`); route returns **422** on block; `EnvironmentStep` prefills `~/AoA`, POSTs, then advances ENVIRONMENT_READY (engine is read-only). | **BLOCKING** on probe fail (revA R13) implemented — the generic `ok:true` is no longer the gate. Cross-platform unwritable test = a path *under a file* (not `/definitely/invalid`, which Windows creates under `C:\`). |
-| 4 | `COMMANDER_SELECTED` | `internalAgentApi.updateConfig` (cliTool/provider) | Claude/Codex cards; no model internals. |
-| 5 | `COMMANDER_VERIFIED` | `agentsApi.testEnvironment` → parse `checks[]`; in-UI install/auth help | **BLOCKING** on `status:"fail"` (T-ProbeBlocking). **Net-new:** a company/Commander-scoped **Codex login route** (Claude's `claude-login` needs an existing agent; both must be pre-agent, revC RB8/R14). |
-| 6 | `DEPARTMENT_CREATED` | add `sales` to a shared `DEPARTMENT_FUNCTION_TYPES` (consumed by `NewProjectDialog.tsx` + the step) → `projectsApi.create` type=department + workspace | revC D8. Local folder default (nested under root) or GitHub picker. |
-| 7 | `AGENT_ASSIGNED` | `agentsApi.create` + `projectsApi.assignAgent` **at creation** + inherit Commander runtime | Fix the gap where onboarding agent wasn't dept-assigned. Advanced settings collapsed. |
-| — | `SETUP_COMPLETE` | Review summary + "Start walkthrough"(Phase 2)/"Go to dashboard" | Order 8. |
+| 4 | `COMMANDER_SELECTED` | ✅ **DONE** `386845808` — Claude/Codex cards → `internalAgentApi.updateConfig` (cliTool/provider, null models) → advance | No model internals. |
+| 5 | `COMMANDER_VERIFIED` | ✅ **DONE (blocking core)** `1d06b02ac` — `commander-verify` service (cliTool→adapterType + classifier verified/needs_auth/not_installed/failed) + route drives `adapter.testEnvironment`, 200 verified / **422** else; `VerifyStep` "Check again" loop + terminal login hint; advances only on `verified`. | **DEFERRED (needs live CLI):** the in-app subscription-login trigger — Claude `claude-login` is agent-scoped (needs a pre-agent variant); **codex has NO login runner at all** (T-CodexLogin, net-new, revC RB8/R14) — and the API-key paste + secret-binding route (D8). Today the founder runs `claude login`/`codex login` in a terminal, then Check again — the blocking gate is fully enforced regardless. |
+| 6 | `DEPARTMENT_CREATED` | ✅ **DONE** `2b94639c8` — C9 shared `DEPARTMENT_FUNCTION_TYPES` (adds sales, relabels support→Customer Support; `NewProjectDialog` imports it) + `DepartmentStep` (type picker, nested-local-folder default under rootFolder + optional GitHub, idempotent same-name guard) → advance | — |
+| 7 | `AGENT_ASSIGNED` | ✅ **DONE** `65923d662` — `agentsApi.create` inheriting Commander runtime + `projectsApi.assignAgent` **at creation** (fixes the dept-assignment gap); idempotent same-name org-agent reuse | Advanced settings collapsed. |
+| 8 | `SETUP_COMPLETE` | ✅ **DONE** `8ae510df1` — Review summary; both "Start walkthrough"(Phase-2 stub) + "Go to dashboard" advance SETUP_COMPLETE; FlowEngine `onFinished` navigates (no router coupling in the step) | — |
 
-**After the steps:** delete `ui/src/components/OnboardingWizard.tsx` + `OnboardingWizardMount` in `App.tsx`; repoint `openOnboarding`/Lobby "create org" → `navigate("/onboarding")` (**B8** org-replay — now non-looping since org steps exist).
+**Wizard deletion — ✅ DONE** `8fda3be0e` (C13): removed `OnboardingWizard.tsx` + `OnboardingWizardMount` + the DialogContext onboarding surface; repointed every `openOnboarding()` caller (App/Layout/LobbyLayout/Lobby/Companies/Dashboard) → `navigate("/onboarding")`. **Also added `"onboarding"` to `GLOBAL_ROUTE_ROOTS`** (`ui/src/lib/company-routes.ts`) so the prefix-aware `@/lib/router` never rewrites `/onboarding` → `/<PREFIX>/onboarding`.
 
 ---
 
-## 6. Stage D (not started)
+## 6. Stage D — DONE (security) + DEFERRED (invited UI + e2e, infra-blocked)
 
-- **Invited journey (minimal):** a `JoinOrg` step for the invited journey; reuse `access.ts` accept flow. Progress: `AUTHENTICATED → PROFILE_SET → JOIN_REQUESTED → SETUP_COMPLETE` (approval-gated). **Amend the approval transaction** (`server/src/routes/access.ts` ~:2419) to advance the invited progress to `SETUP_COMPLETE` after `ensureMembership` + `applyInviteRole` + role verify (revC RC2). `parseInviteRoleMetadata` is private — export it.
-- **Invite-token handoff (RB6/RC3):** new `onboarding_invite_handoffs` table (nonce, hashed token, bound_user_id, expires_at, consumed_at). Carry the nonce through OAuth via better-auth `additionalData`; consume atomically `WHERE nonce=? AND bound_user_id=:currentUser AND consumed_at IS NULL AND expires_at>now()`.
-- **Security tests:** OAuth `state`/PKCE (real better-auth flow), cookie flags, escape-hatch refused in hosted + on populated instance, no secrets in logs/URLs.
-- **A12 e2e (also outstanding from Stage A):** mocked-Google Playwright specs (founder happy path, resume, invited join, 2nd-org-skips-user-layer). Runs on **CI/Linux only** (Windows e2e skipped). The harness MUST set `AOA_DEV_LOCAL_IDENTITY=1` (local_trusted now requires Google creds or the escape hatch).
+**✅ DONE — security hardening (`384e1cc78`):**
+- **D6 cookie flags:** `buildBetterAuthConfig` sets `advanced.defaultCookieAttributes` (httpOnly always; secure gated to `authenticated` so loopback http dev isn't dropped; sameSite=lax for OAuth). Test in `better-auth-config.test.ts`.
+- **D7 escape-hatch backstop:** `escape-hatch-fail-closed.test.ts` proves the synthetic loopback admin is minted ONLY by the dev hatch in `local_trusted`.
+- **Already current (verified, no work needed):** the journey resolver `getJourneyForUser` is the Stage A A5 redesign (uses `joinRequests.requestEmailSnapshot` + verified-email gating + `deepLinkCompanyId` — the doc's D3 token-hash rewrite is **superseded**; no token flows through the resolver, so the D7 "no-secret-leak" test is moot). `INVITED_PHASE1_STATES` already exists in `packages/shared/src/onboarding.ts` **with `JOIN_REQUESTED`** (D1's constant change is superseded). The **profile step is already tagged `["founder","invited"]`** (D4's "widen profile" is done).
+
+**⛔ DEFERRED — needs live Google auth / e2e infra that a Windows unit-test session can't exercise. Each is scoped with the integration risk to resolve:**
+
+1. **JoinOrg step (invited UI).** Build `ui/src/onboarding/steps/JoinOrg.tsx`, register at `journeys:["invited"]`, `state:"JOIN_REQUESTED"`, `dependsOn:["PROFILE_SET"]`, order 20 (unique-per-journey; validator is per-journey so it won't clash with founder order-2). It advances `JOIN_REQUESTED` on the **user layer** (`companyId: null`, `journey:"invited"`) via the existing `advanceOnboarding` — the invited user has no membership, and the PATCH `/onboarding/progress` route only membership-checks non-null companyIds, so `companyId:null` passes with **no new server route**. **INTEGRATION RISK TO RESOLVE FIRST:** after JoinOrg completes, `resolveNextStep` returns null → FlowEngine `onFinished` → `navigate("/")` → the index gate re-resolves `invited` (still no membership) → routes back to `/onboarding/join` → **loop**. Fix by rendering a terminal "pending approval" state in JoinOrg that does NOT trigger `onFinished` navigation, OR by having the index gate show a pending page for an invited user whose join_request is already filed. This must be validated in the live flow — do not ship JoinOrg without exercising it.
+2. **Invite-token handoff (RC3).** New `onboarding_invite_handoffs` table (nonce, hashed token, bound_user_id, expires_at, consumed_at) + carry the nonce through OAuth via better-auth `additionalData` + atomic consume. This is how JoinOrg gets a plaintext token to `accessApi.acceptInvite`. Without it, JoinOrg can only advance progress / instruct the user to open their `/invite/:token` link. **Live auth infra — build against a real OAuth round-trip.**
+3. **Approval → `SETUP_COMPLETE` (revC RC2).** In the human branch of the approve txn (`access.ts` ~:2461, after `ensureMembership`/`setPrincipalGrants`/`applyInviteRole`), best-effort `advanceState(txDb, { userId: existing.requestingUserId, companyId: null, journey:"invited", requestedState:"SETUP_COMPLETE" })`. **NOTE — low value / risk:** it's cosmetic — an approved user gains membership so the journey resolver routes them "returning" (into the app) regardless. It touches the critical approval path and `computeAdvance` may reject a non-contiguous jump (guard: `ensureProgress` first, wrap in try/catch, never fail the approval). Deferred as not worth the critical-path risk until the invited flow is live-validated.
+4. **T-CodexLogin + D8 API-key path** (see §5 order-5 DEFERRED) — in-app subscription login (codex has no login runner; net-new) + encrypted per-company API-key secret. Needs a live CLI to verify.
+5. **A12 Playwright e2e** (also outstanding from Stage A): mocked-Google specs (founder happy path, resume, invited join, 2nd-org-skips-user-layer) in `tests/e2e/`. Needs the Stage A `injectGoogleSession` helper (`tests/e2e/helpers/google-mock`) which is **itself unbuilt**. **CI/Linux only** (Windows e2e is skipped — embedded-pg on `runneradmin`, Issue #114); the harness MUST set `AOA_DEV_LOCAL_IDENTITY=1`.
 
 ---
 
