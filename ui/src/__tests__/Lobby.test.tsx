@@ -159,12 +159,12 @@ describe("Lobby", () => {
     expect(mockDialogContext.openOnboarding).not.toHaveBeenCalled();
   });
 
-  it("invokes openOnboarding when LobbyEmptyState's create button is clicked", async () => {
+  it("navigates to /onboarding when LobbyEmptyState's create button is clicked (C13)", async () => {
     const user = userEvent.setup();
     mockCompanyContext.companies = [];
     renderWithProviders(<Lobby />);
     await user.click(screen.getByTestId("empty-create"));
-    expect(mockDialogContext.openOnboarding).toHaveBeenCalledTimes(1);
+    expect(mockNavigate).toHaveBeenCalledWith("/onboarding", undefined);
   });
 
   it("navigates to /import when LobbyEmptyState's import button is clicked", async () => {

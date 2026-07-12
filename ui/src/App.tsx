@@ -58,9 +58,6 @@ const DesignGuide = lazy(() => import("./pages/DesignGuide").then((m) => ({ defa
 const Issues = lazy(() => import("./pages/Issues").then((m) => ({ default: m.Issues })));
 const Memory = lazy(() => import("./pages/Memory").then((m) => ({ default: m.Memory })));
 const MemoryExplorer = lazy(() => import("./pages/MemoryExplorer").then((m) => ({ default: m.MemoryExplorer })));
-const OnboardingWizard = lazy(() =>
-  import("./components/OnboardingWizard").then((m) => ({ default: m.OnboardingWizard })),
-);
 const ProjectDetail = lazy(() => import("./pages/ProjectDetail").then((m) => ({ default: m.ProjectDetail })));
 const RoutineDetail = lazy(() => import("./pages/RoutineDetail").then((m) => ({ default: m.RoutineDetail })));
 const Routines = lazy(() => import("./pages/Routines").then((m) => ({ default: m.Routines })));
@@ -221,15 +218,9 @@ function boardRoutes() {
 
 function CompanyRootRedirect() {
   const { companies, selectedCompany, loading } = useCompany();
-  const { onboardingOpen } = useDialog();
 
   if (loading) {
     return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
-  }
-
-  // Keep the first-run onboarding mounted until it completes.
-  if (onboardingOpen) {
-    return <NoCompaniesStartPage autoOpen={false} />;
   }
 
   const targetCompany = selectedCompany ?? companies[0] ?? null;
@@ -262,15 +253,17 @@ function UnprefixedBoardRedirect() {
 }
 
 function NoCompaniesStartPage({ autoOpen = true }: { autoOpen?: boolean }) {
-  const { openOnboarding } = useDialog();
+  const navigate = useNavigate();
   const opened = useRef(false);
 
+  // Onboarding is the FlowEngine at /onboarding (C13) — route there instead of
+  // opening a modal.
   useEffect(() => {
     if (!autoOpen) return;
     if (opened.current) return;
     opened.current = true;
-    openOnboarding();
-  }, [autoOpen, openOnboarding]);
+    navigate("/onboarding");
+  }, [autoOpen, navigate]);
 
   return (
     <div className="mx-auto max-w-xl py-10">
@@ -280,7 +273,7 @@ function NoCompaniesStartPage({ autoOpen = true }: { autoOpen?: boolean }) {
           Get started by creating a company.
         </p>
         <div className="mt-4">
-          <Button onClick={() => openOnboarding()}>New Company</Button>
+          <Button onClick={() => navigate("/onboarding")}>New Company</Button>
         </div>
       </div>
     </div>
@@ -303,11 +296,6 @@ function NewThreadDialogMount() {
       defaults={newThreadDefaults}
     />
   );
-}
-
-function OnboardingWizardMount() {
-  const { onboardingOpen } = useDialog();
-  return onboardingOpen ? <OnboardingWizard /> : null;
 }
 
 // The index gate (Stage B / B7). Fetches the post-auth journey and redirects a
@@ -398,9 +386,6 @@ export function App() {
             </Route>
           </Route>
         </Routes>
-      </Suspense>
-      <Suspense fallback={null}>
-        <OnboardingWizardMount />
       </Suspense>
       <DiscussionCaptureModal />
       <NewThreadDialogMount />

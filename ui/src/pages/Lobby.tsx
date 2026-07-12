@@ -2,7 +2,6 @@ import { type CSSProperties } from "react";
 import { useNavigate } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { useCompany } from "@/context/CompanyContext";
-import { useDialog } from "@/context/DialogContext";
 import { profileApi } from "@/api/profile";
 import { companiesApi, type CompanyStats } from "@/api/companies";
 import { queryKeys } from "@/lib/queryKeys";
@@ -27,7 +26,6 @@ function deriveFirstName(
 
 export function Lobby() {
   const { companies, loading: companiesLoading } = useCompany();
-  const { openOnboarding } = useDialog();
   const navigate = useNavigate();
 
   const { data: profile } = useQuery({
@@ -82,7 +80,7 @@ export function Lobby() {
 
   return isEmpty ? (
     <LobbyEmptyState
-      onCreate={() => openOnboarding()}
+      onCreate={() => navigate("/onboarding")}
       onImport={() => navigate("/import")}
     />
   ) : (

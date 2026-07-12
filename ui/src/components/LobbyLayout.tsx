@@ -1,6 +1,5 @@
 import { useMemo, useState, type ReactNode } from "react";
-import { Outlet, useLocation } from "@/lib/router";
-import { useDialog } from "@/context/DialogContext";
+import { Outlet, useLocation, useNavigate } from "@/lib/router";
 import { LobbyShell } from "@/components/LobbyShell";
 import { lobbyActiveItem } from "@/lib/lobbyActiveItem";
 
@@ -21,7 +20,7 @@ export interface LobbyOutletContext {
  * a secondary sidebar via the outlet context.
  */
 export function LobbyLayout() {
-  const { openOnboarding } = useDialog();
+  const navigate = useNavigate();
   const location = useLocation();
   const [secondarySidebar, setSecondarySidebar] = useState<ReactNode | null>(null);
   // Stable context identity (setSecondarySidebar is a stable useState setter) so
@@ -31,7 +30,7 @@ export function LobbyLayout() {
   return (
     <LobbyShell
       activeItem={lobbyActiveItem(location.pathname)}
-      onCreateCompany={() => openOnboarding()}
+      onCreateCompany={() => navigate("/onboarding")}
       secondarySidebar={secondarySidebar}
     >
       <Outlet context={outletContext} />

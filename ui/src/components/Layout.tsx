@@ -56,7 +56,6 @@ export function Layout() {
     newIssueOpen,
     newProjectOpen,
     openNewIssue,
-    openOnboarding,
   } = useDialog();
   const { companies, loading: companiesLoading, selectedCompanyId, selectionSource, setSelectedCompanyId } = useCompany();
 
@@ -79,9 +78,10 @@ export function Layout() {
     if (health?.deploymentMode === "authenticated") return;
     if (companies.length === 0) {
       onboardingTriggered.current = true;
-      openOnboarding();
+      // Onboarding is the FlowEngine at /onboarding (C13), not a modal.
+      navigate("/onboarding");
     }
-  }, [companies, companiesLoading, openOnboarding, health?.deploymentMode]);
+  }, [companies, companiesLoading, navigate, health?.deploymentMode]);
 
   useEffect(() => {
     if (!companyPrefix || companiesLoading || companies.length === 0) return;

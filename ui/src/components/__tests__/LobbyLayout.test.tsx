@@ -10,8 +10,9 @@ vi.mock("@/components/LobbySidebar", () => ({
     <aside data-testid="lobby-sidebar" data-active={activeItem} />
   ),
 }));
-vi.mock("@/context/DialogContext", () => ({
-  useDialog: () => ({ openOnboarding: vi.fn() }),
+// LobbyLayout uses @/lib/router's useNavigate (C13), which reads useCompany.
+vi.mock("@/context/CompanyContext", () => ({
+  useCompany: () => ({ selectedCompany: null }),
 }));
 
 function Child() {
