@@ -158,6 +158,26 @@ export function buildBetterAuthConfig(
     };
   }
 
+  // RB3/A7 — the first Google user of a fresh instance becomes instance admin.
+  // Fires at real user creation; the service is advisory-locked + idempotent,
+  // and this is best-effort so a bootstrap hiccup never blocks sign-up.
+  authConfig.databaseHooks = {
+    user: {
+      create: {
+        after: async (user: { id: string }) => {
+          try {
+            const { promoteFirstUserToInstanceAdmin } = await import(
+              "../services/first-user-bootstrap.js"
+            );
+            await promoteFirstUserToInstanceAdmin(db, user.id);
+          } catch (err) {
+            logger.warn({ err }, "first-user admin bootstrap failed (non-fatal)");
+          }
+        },
+      },
+    },
+  };
+
   if (!baseUrl) {
     delete (authConfig as { baseURL?: string }).baseURL;
   }

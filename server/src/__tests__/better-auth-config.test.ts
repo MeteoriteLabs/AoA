@@ -286,6 +286,11 @@ describe("buildBetterAuthConfig — google provider, no email/password (Stage A 
     ) as Record<string, any>;
     expect(c.socialProviders?.google).toBeUndefined();
   });
+
+  it("wires the first-user admin bootstrap hook (RB3/A7)", () => {
+    const c = buildBetterAuthConfig(fakeDb, makeConfig(), [], "secret") as Record<string, any>;
+    expect(typeof c.databaseHooks?.user?.create?.after).toBe("function");
+  });
 });
 
 describe("assertAuthProviderConfigured (revA R6 — fail startup on missing google)", () => {
