@@ -38,6 +38,9 @@ export interface Config {
   allowedHostnames: string[];
   authBaseUrlMode: AuthBaseUrlMode;
   authPublicBaseUrl: string | undefined;
+  googleClientId: string | null;
+  googleClientSecret: string | null;
+  devLocalIdentity: boolean;
   databaseMode: DatabaseMode;
   databaseUrl: string | undefined;
   embeddedPostgresDataDir: string;
@@ -235,6 +238,10 @@ export function loadConfig(): Config {
       resolveDefaultBackupDir(),
   );
 
+  const googleClientId = process.env.GOOGLE_CLIENT_ID?.trim() || null;
+  const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET?.trim() || null;
+  const devLocalIdentity = /^(1|true|yes)$/i.test(process.env.AOA_DEV_LOCAL_IDENTITY?.trim() ?? "");
+
   return {
     deploymentMode,
     deploymentExposure,
@@ -243,6 +250,9 @@ export function loadConfig(): Config {
     allowedHostnames,
     authBaseUrlMode,
     authPublicBaseUrl,
+    googleClientId,
+    googleClientSecret,
+    devLocalIdentity,
     databaseMode: fileDatabaseMode,
     databaseUrl: process.env.DATABASE_URL ?? fileDbUrl,
     embeddedPostgresDataDir: resolveHomeAwarePath(
