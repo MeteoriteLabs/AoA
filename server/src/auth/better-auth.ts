@@ -117,15 +117,27 @@ export function deriveAuthTrustedOrigins(config: Config, opts?: { listenPort?: n
   return Array.from(trustedOrigins);
 }
 
-export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins?: string[]): BetterAuthInstance {
+/**
+ * Pure builder for the better-auth options object. Extracted so the provider
+ * configuration is unit-testable without instantiating better-auth.
+ *
+ * Google is the ONLY sign-in provider (email/password removed). The google
+ * social provider is attached only when both credentials are present; the
+ * `assertAuthProviderConfigured` gate (called at startup) is what refuses to
+ * boot a would-be-locked-out deployment.
+ */
+export function buildBetterAuthConfig(
+  db: Db,
+  config: Config,
+  trustedOrigins: string[],
+  secret: string,
+): Record<string, unknown> {
   const baseUrl = config.authBaseUrlMode === "explicit" ? config.authPublicBaseUrl : undefined;
-  const secret = resolveBetterAuthSigningSecret(config);
-  const effectiveTrustedOrigins = trustedOrigins ?? deriveAuthTrustedOrigins(config);
 
-  const authConfig = {
+  const authConfig: Record<string, unknown> = {
     baseURL: baseUrl,
     secret,
-    trustedOrigins: effectiveTrustedOrigins,
+    trustedOrigins,
     database: drizzleAdapter(db, {
       provider: "pg",
       schema: {
@@ -135,17 +147,51 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins?
         verification: authVerifications,
       },
     }),
-    emailAndPassword: {
-      enabled: true,
-      requireEmailVerification: false,
-    },
   };
+
+  if (config.googleClientId && config.googleClientSecret) {
+    authConfig.socialProviders = {
+      google: {
+        clientId: config.googleClientId,
+        clientSecret: config.googleClientSecret,
+      },
+    };
+  }
 
   if (!baseUrl) {
     delete (authConfig as { baseURL?: string }).baseURL;
   }
 
-  return betterAuth(authConfig);
+  return authConfig;
+}
+
+/**
+ * revA R6 — fail closed on a missing auth provider.
+ *
+ * Google is the only sign-in provider. If its credentials are absent, an
+ * `authenticated` deployment would ship a login screen whose only button
+ * cannot work — an instance lockout. A `local_trusted` deployment may boot
+ * without Google ONLY when the dev escape hatch (`AOA_DEV_LOCAL_IDENTITY`) is
+ * active. Call this at startup before serving traffic.
+ */
+export function assertAuthProviderConfigured(config: Config): void {
+  const hasGoogle = Boolean(config.googleClientId && config.googleClientSecret);
+  if (hasGoogle) return;
+  if (config.deploymentMode === "local_trusted" && config.devLocalIdentity) return;
+  throw new Error(
+    "Google OAuth is not configured (GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET). " +
+      "It is the only sign-in provider; set both before starting the server" +
+      (config.deploymentMode === "local_trusted"
+        ? ", or set AOA_DEV_LOCAL_IDENTITY=1 for local development."
+        : "."),
+  );
+}
+
+export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins?: string[]): BetterAuthInstance {
+  const secret = resolveBetterAuthSigningSecret(config);
+  const effectiveTrustedOrigins = trustedOrigins ?? deriveAuthTrustedOrigins(config);
+  const authConfig = buildBetterAuthConfig(db, config, effectiveTrustedOrigins, secret);
+  return betterAuth(authConfig as Parameters<typeof betterAuth>[0]);
 }
 
 export function createBetterAuthHandler(auth: BetterAuthInstance): RequestHandler {

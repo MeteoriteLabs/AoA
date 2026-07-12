@@ -48,7 +48,7 @@ vi.mock("../middleware/logger.js", () => ({
   httpLogger: vi.fn(),
 }));
 
-const { createBetterAuthInstance, deriveAuthTrustedOrigins } = await import("../auth/better-auth.js");
+const { createBetterAuthInstance, deriveAuthTrustedOrigins, buildBetterAuthConfig, assertAuthProviderConfigured } = await import("../auth/better-auth.js");
 
 const SECRET_ENV = "BETTER_AUTH_SECRET";
 const FALLBACK_ENV = "AOA_AGENT_JWT_SECRET";
@@ -98,6 +98,9 @@ function makeConfig(overrides: Partial<Config> = {}): Config {
     heartbeatSchedulerEnabled: false,
     heartbeatSchedulerIntervalMs: 30000,
     companyDeletionEnabled: false,
+    googleClientId: null,
+    googleClientSecret: null,
+    devLocalIdentity: false,
     ...overrides,
   };
 }
@@ -254,5 +257,67 @@ describe("deriveAuthTrustedOrigins port variants", () => {
     } as any;
     const origins = deriveAuthTrustedOrigins(config);
     expect(origins).toContain("https://app.example.com:3100");
+  });
+});
+
+describe("buildBetterAuthConfig — google provider, no email/password (Stage A / A2)", () => {
+  it("configures google when creds present", () => {
+    const c = buildBetterAuthConfig(
+      fakeDb,
+      makeConfig({ deploymentMode: "authenticated", googleClientId: "gid", googleClientSecret: "gsecret" }),
+      [],
+      "secret",
+    ) as Record<string, any>;
+    expect(c.socialProviders?.google?.clientId).toBe("gid");
+    expect(c.socialProviders?.google?.clientSecret).toBe("gsecret");
+  });
+
+  it("does NOT enable email/password", () => {
+    const c = buildBetterAuthConfig(fakeDb, makeConfig(), [], "secret") as Record<string, any>;
+    expect(c.emailAndPassword).toBeUndefined();
+  });
+
+  it("omits google when creds absent (builder is silent; startup guard enforces)", () => {
+    const c = buildBetterAuthConfig(
+      fakeDb,
+      makeConfig({ googleClientId: null, googleClientSecret: null }),
+      [],
+      "secret",
+    ) as Record<string, any>;
+    expect(c.socialProviders?.google).toBeUndefined();
+  });
+});
+
+describe("assertAuthProviderConfigured (revA R6 — fail startup on missing google)", () => {
+  it("throws in authenticated mode when google creds missing", () => {
+    expect(() =>
+      assertAuthProviderConfigured(
+        makeConfig({ deploymentMode: "authenticated", googleClientId: null, googleClientSecret: null }),
+      ),
+    ).toThrow(/google/i);
+  });
+
+  it("passes in authenticated mode when creds present", () => {
+    expect(() =>
+      assertAuthProviderConfigured(
+        makeConfig({ deploymentMode: "authenticated", googleClientId: "gid", googleClientSecret: "gsecret" }),
+      ),
+    ).not.toThrow();
+  });
+
+  it("throws in local_trusted without escape hatch when creds missing", () => {
+    expect(() =>
+      assertAuthProviderConfigured(
+        makeConfig({ deploymentMode: "local_trusted", googleClientId: null, googleClientSecret: null, devLocalIdentity: false }),
+      ),
+    ).toThrow();
+  });
+
+  it("passes in local_trusted with escape hatch even when creds missing", () => {
+    expect(() =>
+      assertAuthProviderConfigured(
+        makeConfig({ deploymentMode: "local_trusted", googleClientId: null, googleClientSecret: null, devLocalIdentity: true }),
+      ),
+    ).not.toThrow();
   });
 });
