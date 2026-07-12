@@ -44,8 +44,8 @@ pnpm --filter @armyofagents/shared build              # if you edit packages/sha
 **Stage B (engine) — done:**
 `e3ebc4c0b` B1 table+migration · `99f67058c` B2 state enums · `236904dfd` B3 advance service · `ba7d7d13c` B4 progress route · `40a0470ce` B5 registry · `70255ef29` B6 FlowEngine · `b47a665ee` B7 wiring + gate redirect
 
-**Stage C — foundation + 2 steps:**
-`58ee1410c` foundation (engine read-only + org-layer seed) · `7872d6854` C1 user_profiles · `4d02e8f1d` C3 profile step (proves the pattern) · `2d3a77c78` order-2 org-create step (RB1 handshake via CompanyContext.createCompany)
+**Stage C — foundation + 3 steps:**
+`58ee1410c` foundation (engine read-only + org-layer seed) · `7872d6854` C1 user_profiles · `4d02e8f1d` C3 profile step (proves the pattern) · `2d3a77c78` order-2 org-create step (RB1 handshake via CompanyContext.createCompany) · `198d4b05a` order-3 blocking env write-probe + Set up environment step (R13)
 
 ---
 
@@ -70,7 +70,7 @@ The engine (`FlowEngine.tsx`) is READ-only: it resolves the next step, and `onCo
 | Order | State | Step does | Notes |
 |---|---|---|---|
 | 2 | `ORGANIZATION_CREATED` | ✅ **DONE** `2d3a77c78` — `useCompany().createCompany({name})` (bundles create + invalidate + `setSelectedCompanyId`) → `advanceOnboarding({companyId:new.id,...})` | **RB1 handshake:** the `setSelectedCompanyId` prop-change reloads the FlowEngine to the org layer. Advance targets the NEW companyId. Name only (mission dropped). `ensureProgress` seeds the org-layer from the user-layer so the `PROFILE_SET` dep passes. |
-| 3 | `ENVIRONMENT_READY` | create `environments` row (`driver:"local"`) + set `companies.rootFolder`; run `probeEnvironmentConfig` | **BLOCKING** on probe fail (revC R13): onboarding route must require a real path + read/create/delete checks — the generic probe's `ok:true` at `environment-probe.ts:75` is NOT the gate. |
+| 3 | `ENVIRONMENT_READY` | ✅ **DONE** `198d4b05a` — probe local branch now does real mkdir+write+delete; `setupOnboardingEnvironment` (probe-first, upsert `environments` by name + set `companies.rootFolder`); route returns **422** on block; `EnvironmentStep` prefills `~/AoA`, POSTs, then advances ENVIRONMENT_READY (engine is read-only). | **BLOCKING** on probe fail (revA R13) implemented — the generic `ok:true` is no longer the gate. Cross-platform unwritable test = a path *under a file* (not `/definitely/invalid`, which Windows creates under `C:\`). |
 | 4 | `COMMANDER_SELECTED` | `internalAgentApi.updateConfig` (cliTool/provider) | Claude/Codex cards; no model internals. |
 | 5 | `COMMANDER_VERIFIED` | `agentsApi.testEnvironment` → parse `checks[]`; in-UI install/auth help | **BLOCKING** on `status:"fail"` (T-ProbeBlocking). **Net-new:** a company/Commander-scoped **Codex login route** (Claude's `claude-login` needs an existing agent; both must be pre-agent, revC RB8/R14). |
 | 6 | `DEPARTMENT_CREATED` | add `sales` to a shared `DEPARTMENT_FUNCTION_TYPES` (consumed by `NewProjectDialog.tsx` + the step) → `projectsApi.create` type=department + workspace | revC D8. Local folder default (nested under root) or GitHub picker. |
