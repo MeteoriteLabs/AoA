@@ -119,6 +119,31 @@ Authority order: **revC > revB > revA > stage docs**.
 
 ---
 
+## 9. Session 2 — live Google validation + live-QA fixes (2026-07-13)
+
+**Real Google login was exercised end-to-end** in `authenticated` mode on an isolated test instance (`~/.aoa/instances/onboarding-test`, port 3199, a real Web OAuth client — secret in local config only, never committed). The server log proved **first-user→instance-admin (RB3) + founder journey + two-layer advance (profile→org→env→dept)** all fire against a live OAuth round-trip — previously only escape-hatch tested. The user performs the Google login themselves (their credentials are never entered by the agent).
+
+A 3-parallel-agent review (redirect trace / agent-model gap / edge-case audit) then drove **7 fixes, all TDD + committed** (UI suite 3178 pass / 3 skip, UI typecheck clean):
+
+1. `e212028e0` **CloudAccessGate** — retired the `BootstrapPendingPage` intercept that blocked the very first Google sign-in on a fresh authenticated instance (A10 retired board-claim but missed this gate). **Real product bug.**
+2. `1b13eb7fe` **DepartmentStep** default name (was placeholder-only → silently-disabled Create button).
+3. `dcc22b3fa` **Auth.tsx bfcache** — `pageshow`/`persisted` reload so `/auth` can't get stuck on a frozen "Redirecting…" after Back. Root cause: the "already-signed-in → redirect away" guard is effect-based and bfcache restores don't re-run React effects.
+4. `682b4c7fe` **AgentStep** — surface the inherited runtime in the happy path ("Codex · gpt-5.5" / "Claude account-default"; the "no model asked" is **by design** — inherits the Commander runtime, VerifyStep guarantees the CLI is installed+authed) AND close a real race: `adapterType` guessed `claude_local` and was corrected by a swallowed `getConfig()`, so a Codex founder could ship a `claude_local` agent that fails at first run. Now the Create button is gated until the runtime resolves, with a Retry on failure.
+5. `aa9f0d254` **two live P1 traps** — (a) 2nd-company dead-end: a returning founder at bare `/onboarding` bound to their already-complete company → no step → Lobby; fixed with `/onboarding?new=1` which renders `OrgStep` directly on the user layer (selectedCompanyId hydrates late, so a `companyId=null` pin would loop), wired from `LobbyLayout.onCreateCompany`. (b) Invited redirect loop: the invited resolver+gate are live but JoinOrg is unbuilt → `onFinished`→`/`→gate re-resolves `invited`→loop; fixed with a terminal `InvitedPendingPage` (no navigate).
+6. `1b408a1e9` **hardening** — org-create idempotency (retry after a failed advance no longer mints a 2nd company); surface swallowed errors in `ReviewStep.finish()` + `DepartmentStep` mkdir.
+7. `b0b3019f9` **e2e whole-suite fix** — post-redesign `local_trusted` grants no board actor without `AOA_DEV_LOCAL_IDENTITY=1` (`config.ts:244` defaults false; `middleware/auth.ts:33`), and `playwright.config.ts` never set it → the **entire** local_trusted e2e suite would 401. Added the hatch env; rewrote the stale `onboarding.spec.ts` (imported the deleted `openOnboardingWizard`) to a health check + A12-skip.
+
+**Backlog surfaced but NOT done (next session):**
+- `DepartmentStep` idempotent guard skips workspace creation on a retry-after-partial-failure (deeper refactor than the swallowed-error surfacing done here).
+- **Interrupted founder not auto-resumed:** after `ORGANIZATION_CREATED` the user has membership → resolver returns `returning` → Lobby with no nudge to finish env/commander/dept/agent. Manual `/onboarding` resumes correctly; nothing routes them there.
+- Invite token still transits the URL through OAuth (`/auth?next=/invite/:token`) — RC3 `onboarding_invite_handoffs` still deferred (§6.2).
+- P3s: `advanceState` trusts the caller's `journey` not the persisted row; best-effort admin promotion could leave an instance adminless; `validateRegistry` never runs on the real `ONBOARDING_STEPS` (only fixtures); no working Back button (VerifyStep copy references one).
+- Plus the original §6 Stage-D deferrals (full JoinOrg journey, invite_handoffs, approval→SETUP_COMPLETE, T-CodexLogin, A12 e2e).
+
+**Phase 2 = GO** — the founder path is clean and the two live traps are closed. To live re-test the fixes, rebuild the UI + restart the :3199 server (it computes CSP script-hashes from the built `index.html` at boot).
+
+---
+
 ## 8. Key gotchas
 - `local_trusted` now requires Google creds OR `AOA_DEV_LOCAL_IDENTITY=1` (escape hatch). `AOA_DEV_LOCAL_IDENTITY_FORCE=1` overrides the populated-instance refusal.
 - Raw `sed -i` mangles emoji on Windows Git Bash → use **python** for bulk doc edits. `grep -c $'\x00'` in bash = empty pattern = counts ALL lines (false positive).
