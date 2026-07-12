@@ -9,13 +9,14 @@ import {
 
 export type FlowProgress = { completedStates: OnboardingState[] };
 
+/**
+ * The engine only READS progress. Steps perform their own data write + state
+ * advance (via the onboarding API) — this keeps the two-layer / org-create
+ * handshake correct: the org-create step advances ORGANIZATION_CREATED on the
+ * NEW company's layer and sets the selected company, and the engine re-reads.
+ */
 export type FlowEngineApi = {
   getProgress: (companyId: string | null) => Promise<FlowProgress | null>;
-  advance: (args: {
-    companyId: string | null;
-    journey: OnboardingJourney;
-    requestedState: OnboardingState;
-  }) => Promise<FlowProgress | null>;
 };
 
 export type FlowEngineProps = {
@@ -70,11 +71,10 @@ export function FlowEngine({
   }, [completed, step, onFinished]);
 
   const handleComplete = useCallback(async () => {
-    if (!step) return;
-    const updated = await api.advance({ companyId, journey, requestedState: step.state });
-    const fresh = updated ?? (await api.getProgress(companyId));
-    setCompleted(fresh?.completedStates ?? completed ?? ["AUTHENTICATED"]);
-  }, [api, companyId, journey, step, completed]);
+    // The step already performed its data write + state advance; re-read the
+    // authoritative context (RC/RB1) and resolve the next step.
+    await load();
+  }, [load]);
 
   if (!ctx) {
     return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading…</div>;

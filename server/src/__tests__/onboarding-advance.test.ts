@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { computeAdvance, advanceState, type ProgressRow } from "../services/onboarding.js";
+import { computeAdvance, advanceState, ensureProgress, type ProgressRow } from "../services/onboarding.js";
 import { FOUNDER_PHASE1_STATES } from "@armyofagents/shared";
 
 const ORDER = FOUNDER_PHASE1_STATES;
@@ -121,5 +121,41 @@ describe("advanceState (Stage B / B3 + revC RC1)", () => {
     const db = fakeDb({ start: {}, alwaysConflict: true });
     const r = await advanceState(db, { userId: "u1", companyId: null, journey: "founder", requestedState: "PROFILE_SET" });
     expect(r.status).toBe("conflict");
+  });
+});
+
+describe("ensureProgress org-layer seeding (Stage C)", () => {
+  it("seeds an org-layer row from the user-layer completed states", async () => {
+    const selectResults: unknown[][] = [
+      [], // org-layer lookup: none yet
+      [
+        {
+          id: "u-row",
+          userId: "u1",
+          companyId: null,
+          journey: "founder",
+          currentState: "PROFILE_SET",
+          completedStates: ["AUTHENTICATED", "PROFILE_SET"],
+          version: 3,
+        },
+      ], // user-layer row
+    ];
+    let i = 0;
+    let inserted: any = null;
+    const db: any = {
+      select: () => ({ from: () => ({ where: () => ({ limit: async () => selectResults[i++] ?? [] }) }) }),
+      insert: () => ({
+        values: (v: any) => ({
+          onConflictDoNothing: async () => {
+            inserted = v;
+            selectResults.push([{ id: "org-row", ...v }]); // org-layer re-read returns the seeded row
+          },
+        }),
+      }),
+    };
+    const row = await ensureProgress(db, { userId: "u1", companyId: "org1", journey: "founder" });
+    expect(inserted.completedStates).toEqual(["AUTHENTICATED", "PROFILE_SET"]);
+    expect(inserted.currentState).toBe("PROFILE_SET");
+    expect(row.companyId).toBe("org1");
   });
 });

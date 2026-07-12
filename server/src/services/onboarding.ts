@@ -78,21 +78,38 @@ export async function getProgress(
   return rows[0] ? mapRow(rows[0]) : null;
 }
 
-/** Create-if-absent the initial AUTHENTICATED row (seeded so PROFILE_SET's deps are met). */
+/**
+ * Create-if-absent the progress row. The user-layer row seeds
+ * `completedStates: ["AUTHENTICATED"]`. An ORG-layer row (companyId != null)
+ * INHERITS the user-layer row's completed states (e.g. PROFILE_SET) so the
+ * founder journey's dependency checks span both layers — otherwise advancing
+ * ORGANIZATION_CREATED would fail its PROFILE_SET dependency.
+ */
 export async function ensureProgress(
   db: Db,
   args: { userId: string; companyId: string | null; journey: OnboardingJourney },
 ): Promise<ProgressRow> {
   const existing = await getProgress(db, args.userId, args.companyId);
   if (existing) return existing;
+
+  let seedCompleted: OnboardingState[] = ["AUTHENTICATED"];
+  let seedCurrent: OnboardingState = "AUTHENTICATED";
+  if (args.companyId != null) {
+    const userLayer = await getProgress(db, args.userId, null);
+    if (userLayer && userLayer.completedStates.length > 0) {
+      seedCompleted = [...userLayer.completedStates];
+      seedCurrent = userLayer.currentState;
+    }
+  }
+
   await db
     .insert(onboardingProgress)
     .values({
       userId: args.userId,
       companyId: args.companyId,
       journey: args.journey,
-      currentState: "AUTHENTICATED",
-      completedStates: ["AUTHENTICATED"],
+      currentState: seedCurrent,
+      completedStates: seedCompleted,
       version: 0,
     })
     .onConflictDoNothing();
