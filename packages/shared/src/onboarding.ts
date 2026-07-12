@@ -4,7 +4,64 @@
 // so a *returning* user who also has open invites still sees them (surfaced in
 // the Lobby, not auto-routed).
 
-export type OnboardingJourney = "founder" | "invited";
+export const ONBOARDING_JOURNEYS = ["founder", "invited"] as const;
+export type OnboardingJourney = (typeof ONBOARDING_JOURNEYS)[number];
+
+/**
+ * All onboarding states. `JOIN_REQUESTED` (revC RC2) is invited-only. The
+ * WALKTHROUGH_* / *_COMPLETE tail is reserved for Phase 2 and not driven in
+ * Phase 1. The per-journey ORDERED sequences below are what the monotonic
+ * advance validates against.
+ */
+export const ONBOARDING_STATES = [
+  "AUTHENTICATED",
+  "PROFILE_SET",
+  "JOIN_REQUESTED",
+  "ORGANIZATION_CREATED",
+  "ENVIRONMENT_READY",
+  "COMMANDER_SELECTED",
+  "COMMANDER_VERIFIED",
+  "DEPARTMENT_CREATED",
+  "AGENT_ASSIGNED",
+  "SETUP_COMPLETE",
+  // Phase 2 (reserved — not implemented in Phase 1):
+  "WALKTHROUGH_STARTED",
+  "DISCUSSION_ANALYZED",
+  "CLARIFICATIONS_RESOLVED",
+  "SCOPE_CREATED",
+  "SCOPE_APPROVED",
+  "MEMORY_SAVED",
+  "TASKS_CREATED",
+  "AGENT_EXECUTION_STARTED",
+  "ONBOARDING_COMPLETE",
+] as const;
+export type OnboardingState = (typeof ONBOARDING_STATES)[number];
+
+/** Ordered founder-journey sequence Phase 1 actually drives. */
+export const FOUNDER_PHASE1_STATES: OnboardingState[] = [
+  "AUTHENTICATED",
+  "PROFILE_SET",
+  "ORGANIZATION_CREATED",
+  "ENVIRONMENT_READY",
+  "COMMANDER_SELECTED",
+  "COMMANDER_VERIFIED",
+  "DEPARTMENT_CREATED",
+  "AGENT_ASSIGNED",
+  "SETUP_COMPLETE",
+];
+
+/** Ordered invited-journey sequence (revC RC2 — approval-gated completion). */
+export const INVITED_PHASE1_STATES: OnboardingState[] = [
+  "AUTHENTICATED",
+  "PROFILE_SET",
+  "JOIN_REQUESTED",
+  "SETUP_COMPLETE",
+];
+
+/** The ordered state list for a journey (used by the monotonic advance). */
+export function orderedStatesFor(journey: OnboardingJourney): OnboardingState[] {
+  return journey === "invited" ? INVITED_PHASE1_STATES : FOUNDER_PHASE1_STATES;
+}
 
 /** An open invitation the authenticated user is eligible to accept. */
 export type PendingInvitation = {
