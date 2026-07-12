@@ -154,6 +154,12 @@ export default defineConfig({
           AOA_BIND: "loopback",
           AOA_DEPLOYMENT_MODE: "local_trusted",
           AOA_DEPLOYMENT_EXPOSURE: "private",
+          // Post auth-redesign, local_trusted no longer grants the synthetic
+          // loopback board admin by default — it is gated behind this dev escape
+          // hatch (server/src/middleware/auth.ts, config.ts). Without it EVERY
+          // board-authenticated e2e request resolves actor {type:"none"} → 401,
+          // so the whole suite would fail to authenticate. (HANDOFF §6.5.)
+          AOA_DEV_LOCAL_IDENTITY: "1",
           COREPACK_ENABLE_DOWNLOAD_PROMPT: "0",
           AOA_E2E_DB_PORT: String(E2E_DB_PORT),
           AOA_EMBEDDED_POSTGRES_PORT: String(E2E_DB_PORT),
