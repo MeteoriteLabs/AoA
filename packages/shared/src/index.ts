@@ -1217,3 +1217,8 @@ export {
   type CrewAdapterConfig,
   type NewNotificationType,
 } from "./api/threads-contract.js";
+export {
+  type OnboardingJourney,
+  type PendingInvitation,
+  type PostAuthJourneyResult,
+} from "./onboarding.js";
