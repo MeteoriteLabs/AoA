@@ -26,11 +26,11 @@ node -e "const p=require('./packages/shared/package.json');console.log('shared s
 ```
 
 Expected findings (verified in this worktree — use them in all `Run:` steps below):
-- **Server has NO `test` script.** Server tests run through the ROOT vitest project config (`vitest.config.ts` lists `"server"` under `test.projects`). Run a single server file from repo root with: `pnpm vitest run <path/to/file>`. (The Stage 0 §7 / Stage A note `pnpm --filter @armyofagents/server test` does not exist here — see the reconciler note at the end of this doc.)
+- **Server has NO `test` script.** Server tests run through the ROOT vitest project config (`vitest.config.ts` lists `"server"` under `test.projects`). Run a single server file from repo root with: `pnpm test:run <path/to/file>`. (The Stage 0 §7 / Stage A note `pnpm test:run` does not exist here — see the reconciler note at the end of this doc.)
 - **Shared** has `test` = `vitest run`. Single file: `pnpm --filter @armyofagents/shared exec vitest run <relative-path>`.
 - **UI** has `test` = `vitest` (watch). For deterministic single-file runs use: `pnpm --filter @armyofagents/ui exec vitest run <relative-path>`.
 - **DB migration generate:** `pnpm db:generate` (root) → `pnpm --filter @armyofagents/db generate` → `tsc -p tsconfig.json && drizzle-kit generate`. It compiles the schema to `dist/schema/*.js` first, then writes SQL to `packages/db/src/migrations/`.
-- **Type/build gate:** `pnpm -r typecheck` (root) or `pnpm build`. There is no root `verify` script — use `pnpm -r typecheck` where Stage A said `pnpm verify`.
+- **Type/build gate:** `pnpm -r typecheck` (root) or `pnpm build`. There is no root `verify` script — use `pnpm -r typecheck` where Stage A said `pnpm typecheck`.
 
 > Task author: the four `Run:` command families above are the only script-name unknowns in this stage; they are confirmed for this worktree. Re-confirm only if `package.json` changed since 2026-07-12.
 
@@ -425,7 +425,7 @@ describe("onboardingService.advanceState", () => {
 
 - [ ] **Step 2: Run test, verify it fails**
 
-Run: `pnpm vitest run server/src/__tests__/onboarding-service.test.ts`
+Run: `pnpm test:run server/src/__tests__/onboarding-service.test.ts`
 Expected: FAIL — `../services/onboarding.js` module not found.
 
 - [ ] **Step 3: Implement the service**
@@ -527,7 +527,7 @@ export type { OnboardingProgressRow } from "./onboarding.js";
 
 - [ ] **Step 4: Run test, verify pass**
 
-Run: `pnpm vitest run server/src/__tests__/onboarding-service.test.ts`
+Run: `pnpm test:run server/src/__tests__/onboarding-service.test.ts`
 Expected: PASS (9 tests).
 
 - [ ] **Step 5: Commit**
@@ -646,7 +646,7 @@ describe("PATCH /api/onboarding/progress", () => {
 
 - [ ] **Step 2: Run test, verify it fails**
 
-Run: `pnpm vitest run server/src/__tests__/onboarding-route.test.ts`
+Run: `pnpm test:run server/src/__tests__/onboarding-route.test.ts`
 Expected: FAIL — `../routes/onboarding.js` module not found.
 
 - [ ] **Step 3: Implement the route**
@@ -731,7 +731,7 @@ Mount it on the `/api` router next to `goalRoutes(db)` (~:279):
 
 - [ ] **Step 5: Run test + server typecheck, verify pass**
 
-Run: `pnpm vitest run server/src/__tests__/onboarding-route.test.ts` then `pnpm --filter @armyofagents/server typecheck`
+Run: `pnpm test:run server/src/__tests__/onboarding-route.test.ts` then `pnpm --filter @armyofagents/server typecheck`
 Expected: PASS (7 tests); no type errors.
 
 - [ ] **Step 6: Commit**
@@ -1440,4 +1440,4 @@ git commit -m "feat(onboarding): Lobby create-org routes into FlowEngine org-rep
   - `PostAuthJourneyResult` is imported/created identically to §3.2 — never redefined.
   - Testing follows §7: pure-function tests (firstIncompleteState, resolveNextStep, journeyRouteProps, createOrgReplayTarget), service tests via the `createSequenceDb`/Proxy-table mock, contract tests (schema columns, shared constants), no drizzle internals imported in pure tests.
 - [ ] **Non-negotiables (§8):** no hosted-API keys touched; no heartbeat/hire-approval/planning-mode divergence points altered; every server write is idempotent (advance dedupes; row auto-creates once). Migration generated via `pnpm db:generate` only — no hand-written SQL (Critical Rule #1).
-- [ ] **Green gate:** after B4, run the full server suite (`pnpm vitest run server`) to catch any test that assumed no `/api/onboarding` router; after B6/B8, run `pnpm --filter @armyofagents/ui exec vitest run src/onboarding` + `pnpm --filter @armyofagents/ui typecheck`.
+- [ ] **Green gate:** after B4, run the full server suite (`pnpm test:run server`) to catch any test that assumed no `/api/onboarding` router; after B6/B8, run `pnpm --filter @armyofagents/ui exec vitest run src/onboarding` + `pnpm --filter @armyofagents/ui typecheck`.

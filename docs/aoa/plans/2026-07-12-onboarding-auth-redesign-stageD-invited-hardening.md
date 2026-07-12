@@ -141,7 +141,7 @@ describe("invited journey registry", () => {
 
 - [ ] **Step 6: Run test, verify it fails, then wire the registry**
 
-Run: `pnpm --filter @armyofagents/ui test -- src/onboarding/__tests__/invited-registry.test.ts`
+Run: `pnpm --filter @armyofagents/ui test:run src/onboarding/__tests__/invited-registry.test.ts`
 Expected: first FAIL — the `join` step doesn't exist yet and/or `profile` isn't tagged `invited`. This test is completed by **Task D4** (which adds the `join` step and tags `profile` with `["founder","invited"]`). Leave it red here and reference it forward; it flips green at the end of D4.
 
 > The `profile` step is created in Stage C tagged `journeys: ["founder"]`. Task D4 widens it to `["founder", "invited"]`. Do not duplicate the profile step.
@@ -221,7 +221,7 @@ describe("completeInvitedJoin", () => {
 
 - [ ] **Step 2: Run test, verify it fails**
 
-Run: `pnpm --filter @armyofagents/server test -- src/__tests__/onboarding-join-route.test.ts`
+Run: `pnpm test:run src/__tests__/onboarding-join-route.test.ts`
 Expected: FAIL — module missing.
 
 - [ ] **Step 3: Implement the handler (dependency-injected core + Express wrapper)**
@@ -354,7 +354,7 @@ export function onboardingJoinRoutes(db: Db) {
 
 - [ ] **Step 4: Run test, verify pass**
 
-Run: `pnpm --filter @armyofagents/server test -- src/__tests__/onboarding-join-route.test.ts`
+Run: `pnpm test:run src/__tests__/onboarding-join-route.test.ts`
 Expected: PASS (2 tests).
 
 - [ ] **Step 5: Mount the route**
@@ -367,7 +367,7 @@ import { onboardingJoinRoutes } from "./onboarding-join.js";
 router.use(onboardingJoinRoutes(db));
 ```
 
-Run: `pnpm verify`
+Run: `pnpm typecheck`
 Expected: PASS; no type errors.
 
 - [ ] **Step 6: Commit**
@@ -438,7 +438,7 @@ describe("getJourneyForUser — invited detection", () => {
 
 - [ ] **Step 2: Run test, verify it fails**
 
-Run: `pnpm --filter @armyofagents/server test -- src/__tests__/onboarding-journey-invited.test.ts`
+Run: `pnpm test:run src/__tests__/onboarding-journey-invited.test.ts`
 Expected: FAIL — current query matches by plaintext / ignores email.
 
 - [ ] **Step 3: Rewrite the invites lookup in `getJourneyForUser`**
@@ -523,7 +523,7 @@ export async function getJourneyForUser(
 
 - [ ] **Step 4: Run test, verify pass**
 
-Run: `pnpm --filter @armyofagents/server test -- src/__tests__/onboarding-journey-invited.test.ts`
+Run: `pnpm test:run src/__tests__/onboarding-journey-invited.test.ts`
 Expected: PASS (3 tests). Also re-run Stage A's `post-auth-journey.test.ts` and `onboarding-journey-route.test.ts` — still green (the pure resolver is unchanged).
 
 - [ ] **Step 5: Commit**
@@ -587,7 +587,7 @@ describe("JoinOrg step", () => {
 
 - [ ] **Step 2: Run test, verify it fails**
 
-Run: `pnpm --filter @armyofagents/ui test -- src/onboarding/__tests__/join-org-step.test.tsx`
+Run: `pnpm --filter @armyofagents/ui test:run src/onboarding/__tests__/join-org-step.test.tsx`
 Expected: FAIL — module missing.
 
 - [ ] **Step 3: Add the API client method**
@@ -701,7 +701,7 @@ export const joinStep: StepDefinition = {
 
 - [ ] **Step 6: Run tests, verify pass**
 
-Run: `pnpm --filter @armyofagents/ui test -- src/onboarding/__tests__/join-org-step.test.tsx src/onboarding/__tests__/invited-registry.test.ts`
+Run: `pnpm --filter @armyofagents/ui test:run src/onboarding/__tests__/join-org-step.test.tsx src/onboarding/__tests__/invited-registry.test.ts`
 Expected: PASS (join-org: 2; invited-registry: 3 — D1's forward-referenced test is now green).
 
 - [ ] **Step 7: Commit**
@@ -773,7 +773,7 @@ describe("invited journey integration", () => {
 
 - [ ] **Step 2: Run test, verify pass**
 
-Run: `pnpm --filter @armyofagents/server test -- src/__tests__/invited-journey-integration.test.ts`
+Run: `pnpm test:run src/__tests__/invited-journey-integration.test.ts`
 Expected: PASS (2 tests).
 
 - [ ] **Step 3: Commit**
@@ -832,7 +832,7 @@ describe("auth security config", () => {
 
 - [ ] **Step 2: Run test, verify it fails**
 
-Run: `pnpm --filter @armyofagents/server test -- src/__tests__/auth-security-config.test.ts`
+Run: `pnpm test:run src/__tests__/auth-security-config.test.ts`
 Expected: FAIL — no `advanced.defaultCookieAttributes` on the config.
 
 - [ ] **Step 3: Add cookie hardening to `buildBetterAuthConfig`**
@@ -857,7 +857,7 @@ In `server/src/auth/better-auth.ts`, inside `buildBetterAuthConfig` (Stage A A2)
 
 - [ ] **Step 4: Run test, verify pass**
 
-Run: `pnpm --filter @armyofagents/server test -- src/__tests__/auth-security-config.test.ts`
+Run: `pnpm test:run src/__tests__/auth-security-config.test.ts`
 Expected: PASS (3 tests). Re-run `better-auth-config.test.ts` — still green.
 
 - [ ] **Step 5: Commit**
@@ -907,7 +907,7 @@ describe("escape hatch is fail-closed in authenticated mode", () => {
 
 - [ ] **Step 2: Run it — should PASS immediately** (Stage A A6 already implemented the gate)
 
-Run: `pnpm --filter @armyofagents/server test -- src/__tests__/escape-hatch-fail-closed.test.ts`
+Run: `pnpm test:run src/__tests__/escape-hatch-fail-closed.test.ts`
 Expected: PASS (2 tests). If it FAILS, Stage A A6 regressed — fix the middleware gate before continuing (this is the security backstop for A6).
 
 - [ ] **Step 3: Write the no-secret-leak test**
@@ -935,7 +935,7 @@ describe("journey endpoint does not leak the invite token", () => {
 
 - [ ] **Step 4: Run it, verify pass (and add redaction if it fails)**
 
-Run: `pnpm --filter @armyofagents/server test -- src/__tests__/no-secret-leak.test.ts`
+Run: `pnpm test:run src/__tests__/no-secret-leak.test.ts`
 Expected: PASS. If any log line in `getJourneyForUser` or its handler prints the token, redact it (log only `hashToken(inviteToken).slice(0,12)` — the same pattern as `summarizeSecretForLog` in `server/src/routes/access.ts:492`). Ensure the Express handler reads `inviteToken` from a header (`x-invite-token`) or POST body in preference to `?inviteToken=` so the secret stays out of URLs/access logs; keep the query param only as a compatibility fallback.
 
 > **Task author:** Stage A A9 wired the UI client to call `GET /api/onboarding/journey?inviteToken=...`. Putting the token in the query string violates "no secrets in URLs". Before finalizing, change the UI client (`ui/src/api/onboarding.ts` `fetchJourney`) to send the token as an `x-invite-token` header (keep `credentials: "include"`), and read it server-side from the header first. Flag this to the reconciler as a small Stage A follow-up.
@@ -988,7 +988,7 @@ describe("commander API-key storage", () => {
 
 - [ ] **Step 2: Run test, verify it fails**
 
-Run: `pnpm --filter @armyofagents/server test -- src/__tests__/commander-key-encrypted.test.ts`
+Run: `pnpm test:run src/__tests__/commander-key-encrypted.test.ts`
 Expected: FAIL — `persistCommanderApiKey` missing / not extracted.
 
 - [ ] **Step 3: Implement the DI-seam helper in `commander-verify.ts`**
@@ -1035,7 +1035,7 @@ export async function persistCommanderApiKey(
 
 - [ ] **Step 4: Run test, verify pass**
 
-Run: `pnpm --filter @armyofagents/server test -- src/__tests__/commander-key-encrypted.test.ts`
+Run: `pnpm test:run src/__tests__/commander-key-encrypted.test.ts`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -1189,9 +1189,9 @@ Final gate: run the full server + ui unit suites + typecheck, surface any cross-
 
 Run, in order:
 ```bash
-pnpm verify
+pnpm typecheck
 pnpm --filter @armyofagents/shared test
-pnpm --filter @armyofagents/server test
+pnpm test:run
 pnpm --filter @armyofagents/ui test
 ```
 Expected: all green.

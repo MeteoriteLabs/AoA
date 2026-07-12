@@ -2,6 +2,8 @@
 
 > **For agentic workers:** This is the FOUNDATION document for the Phase 1 plan set (Stages A–D). It locks the shared types, tables, interfaces, file structure, and conventions so the stages cannot drift. Read this before executing any stage plan. It contains **no executable tasks** — it is the contract every later task references.
 
+> 🔴 **REVISION A IS AUTHORITATIVE.** After the 2026-07-12 Codex review, `2026-07-12-onboarding-auth-redesign-revA-codex-fixes.md` amends this plan set (13 P1 + 4 P2 fixes). Read revA before executing ANY stage; where a stage task conflicts with a revA directive (R1–R16), **revA wins**. Codex verdict on the un-revised plan: "not safe to start Stage A."
+
 **Goal:** Lock cross-stage contracts (DB tables, shared types, the onboarding state machine, the step-registry interface, the escape-hatch flag, the taxonomy source-of-truth) and the file map, so Stages A–D compose without type drift.
 
 **Source spec:** `docs/aoa/plans/2026-07-12-onboarding-auth-redesign-scope.md`

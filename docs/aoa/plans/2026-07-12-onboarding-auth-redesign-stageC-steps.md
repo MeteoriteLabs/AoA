@@ -167,7 +167,7 @@ describe("userProfilesService.upsert", () => {
 
 - [ ] **Step 2: Run test, verify it fails**
 
-Run: `pnpm --filter @armyofagents/server test -- src/__tests__/user-profiles-service.test.ts`
+Run: `pnpm test:run src/__tests__/user-profiles-service.test.ts`
 Expected: FAIL — module missing.
 
 - [ ] **Step 3: Implement the service (upsert-by-PK idempotency + guarded seed)**
@@ -292,7 +292,7 @@ Mount it next to the other authenticated board routes (search `app.ts` for where
 
 - [ ] **Step 5: Run test + verify pass**
 
-Run: `pnpm --filter @armyofagents/server test -- src/__tests__/user-profiles-service.test.ts` then `pnpm verify`
+Run: `pnpm test:run src/__tests__/user-profiles-service.test.ts` then `pnpm typecheck`
 Expected: PASS; no type errors.
 
 - [ ] **Step 6: Commit**
@@ -335,7 +335,7 @@ describe("profileStep definition", () => {
 
 - [ ] **Step 2: Run test, verify it fails**
 
-Run: `pnpm --filter @armyofagents/ui test -- src/onboarding/steps/__tests__/profile-step.test.tsx`
+Run: `pnpm --filter @armyofagents/ui test:run src/onboarding/steps/__tests__/profile-step.test.tsx`
 Expected: FAIL — module missing.
 
 - [ ] **Step 3: API client**
@@ -457,7 +457,7 @@ In `ui/src/onboarding/registry.ts`, import and append `profileStep` to the expor
 
 - [ ] **Step 6: Run test, verify pass + commit**
 
-Run: `pnpm --filter @armyofagents/ui test -- src/onboarding/steps/__tests__/profile-step.test.tsx`
+Run: `pnpm --filter @armyofagents/ui test:run src/onboarding/steps/__tests__/profile-step.test.tsx`
 Expected: PASS.
 ```bash
 git add ui/src/api/user-profiles.ts ui/src/onboarding/steps/ProfileStep.tsx ui/src/onboarding/registry.ts ui/src/onboarding/steps/__tests__/profile-step.test.tsx
@@ -497,7 +497,7 @@ describe("organizationStep", () => {
 });
 ```
 
-- [ ] **Step 2: Run, verify FAIL** — `pnpm --filter @armyofagents/ui test -- src/onboarding/steps/__tests__/organization-step.test.tsx`
+- [ ] **Step 2: Run, verify FAIL** — `pnpm --filter @armyofagents/ui test:run src/onboarding/steps/__tests__/organization-step.test.tsx`
 
 - [ ] **Step 3: Implement (idempotent: skip create if ctx.companyId already set)**
 
@@ -615,7 +615,7 @@ describe("local environment probe verifies writability", () => {
 });
 ```
 
-- [ ] **Step 2: Run, verify FAIL** — `pnpm --filter @armyofagents/server test -- src/__tests__/environment-probe-local-write.test.ts`
+- [ ] **Step 2: Run, verify FAIL** — `pnpm test:run src/__tests__/environment-probe-local-write.test.ts`
 Expected: the "fails for invalid path" case FAILS (probe returns ok:true today).
 
 - [ ] **Step 3: Make the local branch verify read/write**
@@ -664,7 +664,7 @@ Replace the `if (input.driver === "local") { return { ok: true, … } }` block (
 
 - [ ] **Step 4: Run probe test, verify PASS**
 
-Run: `pnpm --filter @armyofagents/server test -- src/__tests__/environment-probe-local-write.test.ts`
+Run: `pnpm test:run src/__tests__/environment-probe-local-write.test.ts`
 Expected: PASS (3).
 
 - [ ] **Step 5: Write the onboarding-environment service test (idempotent upsert-by-name)**
@@ -854,8 +854,8 @@ export const environmentStep: StepDefinition = {
 
 Run:
 ```
-pnpm --filter @armyofagents/server test -- src/__tests__/environment-probe-local-write.test.ts src/__tests__/onboarding-environment-setup.test.ts
-pnpm --filter @armyofagents/ui test -- src/onboarding/steps/__tests__/environment-step.test.tsx
+pnpm test:run src/__tests__/environment-probe-local-write.test.ts src/__tests__/onboarding-environment-setup.test.ts
+pnpm --filter @armyofagents/ui test:run src/onboarding/steps/__tests__/environment-step.test.tsx
 ```
 Expected: PASS.
 ```bash
@@ -889,7 +889,7 @@ describe("commanderStep", () => {
 });
 ```
 
-- [ ] **Step 2: Run, verify FAIL** — `pnpm --filter @armyofagents/ui test -- src/onboarding/steps/__tests__/commander-step.test.tsx`
+- [ ] **Step 2: Run, verify FAIL** — `pnpm --filter @armyofagents/ui test:run src/onboarding/steps/__tests__/commander-step.test.tsx`
 
 - [ ] **Step 3: Implement (two cards: Claude / Codex → cliTool)**
 
@@ -1016,7 +1016,7 @@ describe("classifyCommanderProbe", () => {
 });
 ```
 
-- [ ] **Step 2: Run, verify FAIL** — `pnpm --filter @armyofagents/server test -- src/__tests__/commander-verify.test.ts`
+- [ ] **Step 2: Run, verify FAIL** — `pnpm test:run src/__tests__/commander-verify.test.ts`
 
 - [ ] **Step 3: Implement the classifier + service**
 
@@ -1099,7 +1099,7 @@ export function commanderVerifyRoutes(db: Db) {
 
 - [ ] **Step 5: Run, verify PASS + commit**
 
-Run: `pnpm --filter @armyofagents/server test -- src/__tests__/commander-verify.test.ts`
+Run: `pnpm test:run src/__tests__/commander-verify.test.ts`
 Expected: PASS. Mount the route in `app.ts`.
 ```bash
 git add server/src/services/commander-verify.ts server/src/routes/commander-verify.ts server/src/app.ts server/src/__tests__/commander-verify.test.ts
@@ -1133,7 +1133,7 @@ describe("verifyStep", () => {
 });
 ```
 
-- [ ] **Step 2: Run, verify FAIL** — `pnpm --filter @armyofagents/ui test -- src/onboarding/steps/__tests__/verify-step.test.tsx`
+- [ ] **Step 2: Run, verify FAIL** — `pnpm --filter @armyofagents/ui test:run src/onboarding/steps/__tests__/verify-step.test.tsx`
 
 - [ ] **Step 3: Implement (detect → guide → verify + API-key path)**
 
@@ -1310,7 +1310,7 @@ In `ui/src/components/NewProjectDialog.tsx`: delete the local `const FUNCTION_TY
 
 - [ ] **Step 5: Run test + verify + commit**
 
-Run: `pnpm --filter @armyofagents/shared test -- src/__tests__/department-function-types.test.ts` then `pnpm verify`
+Run: `pnpm --filter @armyofagents/shared test -- src/__tests__/department-function-types.test.ts` then `pnpm typecheck`
 Expected: PASS; `NewProjectDialog` compiles with the shared list (now shows Sales + Customer Support).
 ```bash
 git add packages/shared/src/constants.ts packages/shared/src/index.ts ui/src/components/NewProjectDialog.tsx packages/shared/src/__tests__/department-function-types.test.ts
@@ -1347,7 +1347,7 @@ describe("departmentStep", () => {
 });
 ```
 
-- [ ] **Step 2: Run, verify FAIL** — `pnpm --filter @armyofagents/ui test -- src/onboarding/steps/__tests__/department-step.test.tsx`
+- [ ] **Step 2: Run, verify FAIL** — `pnpm --filter @armyofagents/ui test:run src/onboarding/steps/__tests__/department-step.test.tsx`
 
 - [ ] **Step 3: Implement (type picker + nested-folder default + GitHub swap + idempotent create)**
 
@@ -1507,7 +1507,7 @@ describe("agentStep", () => {
 });
 ```
 
-- [ ] **Step 2: Run, verify FAIL** — `pnpm --filter @armyofagents/ui test -- src/onboarding/steps/__tests__/agent-step.test.tsx`
+- [ ] **Step 2: Run, verify FAIL** — `pnpm --filter @armyofagents/ui test:run src/onboarding/steps/__tests__/agent-step.test.tsx`
 
 - [ ] **Step 3: Implement (inherit Commander runtime, assign at creation, advanced collapsed)**
 
@@ -1649,7 +1649,7 @@ describe("reviewStep", () => {
 });
 ```
 
-- [ ] **Step 2: Run, verify FAIL** — `pnpm --filter @armyofagents/ui test -- src/onboarding/steps/__tests__/review-step.test.tsx`
+- [ ] **Step 2: Run, verify FAIL** — `pnpm --filter @armyofagents/ui test:run src/onboarding/steps/__tests__/review-step.test.tsx`
 
 - [ ] **Step 3: Implement (summary + two finish actions)**
 
@@ -1774,7 +1774,7 @@ describe("onboarding entrypoint", () => {
 
 > A stronger check: assert `openOnboarding` is no longer exported from `DialogContext`. Prefer whichever import the repo's existing tests can reach without a full render.
 
-- [ ] **Step 2: Run, verify FAIL** — `pnpm --filter @armyofagents/ui test -- src/__tests__/onboarding-entrypoint.test.tsx`
+- [ ] **Step 2: Run, verify FAIL** — `pnpm --filter @armyofagents/ui test:run src/__tests__/onboarding-entrypoint.test.tsx`
 Expected: FAIL while the wizard/mount still exist.
 
 - [ ] **Step 3: Remove the wizard + mount, repoint entry**
@@ -1783,11 +1783,11 @@ Expected: FAIL while the wizard/mount still exist.
 2. In `ui/src/App.tsx`: delete the `OnboardingWizard` lazy import (:60-61), the `OnboardingWizardMount` function (:307-309), and its `<OnboardingWizardMount />` render (:378). In `CompanyRootRedirect` (:221-240) drop the `onboardingOpen` special-case and route a no-company user to `/onboarding`. In `NoCompaniesStartPage` (:263-287) change the button + auto-open to `navigate("/onboarding")` instead of `openOnboarding()`.
 3. In `ui/src/context/DialogContext.tsx`: remove `OnboardingOptions`, `onboardingOpen`, `onboardingOptions`, `openOnboarding`, `closeOnboarding` and their state/provider wiring. Grep for remaining consumers first: `grep -rn "openOnboarding\|onboardingOpen\|closeOnboarding\|onboardingOptions" ui/src` — repoint every caller (Lobby "New Company", any Settings/empty-state CTA) to `useNavigate()("/onboarding")`.
 
-> Task author: `OnboardingWizard` imports many modules (goals/issues/agents APIs, adapter UI helpers). Deleting it may make some imports unused elsewhere — run `pnpm verify` and clean up any now-dead exports it was the sole consumer of. Confirm the `/onboarding` route renders the Stage B FlowEngine (Stage A stubbed the route; Stage B mounts the engine) before removing the modal, so there is never a window with no onboarding entrypoint.
+> Task author: `OnboardingWizard` imports many modules (goals/issues/agents APIs, adapter UI helpers). Deleting it may make some imports unused elsewhere — run `pnpm typecheck` and clean up any now-dead exports it was the sole consumer of. Confirm the `/onboarding` route renders the Stage B FlowEngine (Stage A stubbed the route; Stage B mounts the engine) before removing the modal, so there is never a window with no onboarding entrypoint.
 
 - [ ] **Step 4: Run test + full UI typecheck, verify pass**
 
-Run: `pnpm --filter @armyofagents/ui test -- src/__tests__/onboarding-entrypoint.test.tsx` then `pnpm verify`
+Run: `pnpm --filter @armyofagents/ui test:run src/__tests__/onboarding-entrypoint.test.tsx` then `pnpm typecheck`
 Expected: PASS; no unused-import / missing-symbol errors.
 
 - [ ] **Step 5: Commit**
@@ -1817,7 +1817,7 @@ git commit -m "feat(onboarding): delete OnboardingWizard modal; route onboarding
 - [ ] **Type consistency vs Stage 0:** `user_profiles` columns match §2.1 exactly (`userId` text PK, `socialLinks` jsonb default `[]`); `OnboardingState` values used verbatim (`PROFILE_SET`…`SETUP_COMPLETE`, §3.1); `DEPARTMENT_FUNCTION_TYPES` verbatim incl `sales` + "Customer Support" (§3.3); every step object conforms to `StepDefinition` and every body to `StepProps` (§4 — `onComplete: () => void`, `onBack`).
 - [ ] **Type consistency vs Stage B registry:** steps import `StepDefinition`/`StepProps`/`StepContext` from `ui/src/onboarding/registry.ts`; `dependsOn` chains are contiguous over `FOUNDER_PHASE1_STATES`; `isComplete` predicates read only `ctx.completedStates`/`ctx.companyId` (idempotent re-entry).
 - [ ] **Idempotency + blocking:** org-create existence-guard (C4), env upsert-by-name (C5), commander config PATCH-in-place (C6), agent existence-guard + `assignAgent` onConflictDoNothing (C11); environment probe (C5) and commander verify (C7/C8) return 422 → UI stays on step (no silent failure).
-- [ ] **Full UI + server suites green** after C13 (the wizard deletion is the highest-fallout task — run `pnpm verify` + both `test` filters).
+- [ ] **Full UI + server suites green** after C13 (the wizard deletion is the highest-fallout task — run `pnpm typecheck` + both `test` filters).
 
 ---
 

@@ -14,7 +14,7 @@
 
 ## ⚠️ Reconciliation corrections (read before executing — applied 2026-07-12)
 
-1. **Commands:** every `pnpm --filter @armyofagents/server test -- <file>` below → `pnpm test:run <file>` (root vitest). Every `pnpm verify` → `pnpm typecheck`. Every `pnpm --filter @armyofagents/ui test -- <file>` → `pnpm --filter @armyofagents/ui test:run <file>`. See Stage 0 §7 (verified). Server has no package `test` script.
+1. **Commands:** all inline commands are normalized to the verified forms in Stage 0 §7 — `pnpm test:run <path-substring>` (root vitest; server has NO package `test` script), `pnpm --filter @armyofagents/ui test:run <file>`, `pnpm typecheck`, `pnpm build`, `pnpm db:generate`, `pnpm test:e2e`. Note `pnpm test:run` filters test files by path *substring*, so the relative `src/__tests__/…` paths in the steps below still resolve to the right file.
 2. **A5 invited detection was buggy** (compared a hashed stored token to a plaintext token AND ignored email → always no-op). The corrected implementation is in Task A5 below: hash the incoming token before matching, and match open invites by email via `defaultsPayload->'teamInvite'->>'email'`. Stage D Task D3 owns the full invited-detection hardening; A5 must at minimum not be a guaranteed no-op.
 3. **A9 must NOT put the invite token in a URL query string.** Send it in an `x-invite-token` request header instead (see corrected A9). The journey route reads the header, not `req.query`.
 
@@ -71,7 +71,7 @@ describe("config: google + escape hatch", () => {
 
 - [ ] **Step 2: Run test, verify it fails**
 
-Run: `pnpm --filter @armyofagents/server test -- src/__tests__/config-google-escape-hatch.test.ts`
+Run: `pnpm test:run src/__tests__/config-google-escape-hatch.test.ts`
 Expected: FAIL — `googleClientId`/`devLocalIdentity` not on Config.
 
 - [ ] **Step 3: Add fields to the `Config` interface**
@@ -98,7 +98,7 @@ Then add `googleClientId, googleClientSecret, devLocalIdentity,` to the returned
 
 - [ ] **Step 5: Run test, verify pass**
 
-Run: `pnpm --filter @armyofagents/server test -- src/__tests__/config-google-escape-hatch.test.ts`
+Run: `pnpm test:run src/__tests__/config-google-escape-hatch.test.ts`
 Expected: PASS (3 tests).
 
 - [ ] **Step 6: Commit**
@@ -154,7 +154,7 @@ describe("buildBetterAuthConfig", () => {
 
 - [ ] **Step 2: Run test, verify it fails**
 
-Run: `pnpm --filter @armyofagents/server test -- src/__tests__/better-auth-config.test.ts`
+Run: `pnpm test:run src/__tests__/better-auth-config.test.ts`
 Expected: FAIL — `buildBetterAuthConfig` not exported.
 
 - [ ] **Step 3: Extract the pure builder and add google / drop email-password**
@@ -198,7 +198,7 @@ Note the removed `emailAndPassword` block — email/password is gone.
 
 - [ ] **Step 4: Run test, verify pass**
 
-Run: `pnpm --filter @armyofagents/server test -- src/__tests__/better-auth-config.test.ts`
+Run: `pnpm test:run src/__tests__/better-auth-config.test.ts`
 Expected: PASS (3 tests).
 
 - [ ] **Step 5: Commit**
@@ -239,7 +239,7 @@ describe("email/password auth routes are gone", () => {
 
 - [ ] **Step 2: Run test, verify it fails**
 
-Run: `pnpm --filter @armyofagents/server test -- src/__tests__/auth-routes-removed.test.ts`
+Run: `pnpm test:run src/__tests__/auth-routes-removed.test.ts`
 Expected: FAIL — route still returns 200 / still registered.
 
 - [ ] **Step 3: Delete the three routes**
@@ -260,7 +260,7 @@ In `server/src/app.ts` remove `signinLimiter`, `signupLimiter`, and `forgotPassw
 
 - [ ] **Step 5: Run test + full server typecheck, verify pass**
 
-Run: `pnpm --filter @armyofagents/server test -- src/__tests__/auth-routes-removed.test.ts` then `pnpm verify`
+Run: `pnpm test:run src/__tests__/auth-routes-removed.test.ts` then `pnpm typecheck`
 Expected: PASS; no unused-import type errors.
 
 - [ ] **Step 6: Commit**
@@ -311,7 +311,7 @@ describe("resolvePostAuthJourney", () => {
 
 - [ ] **Step 2: Run test, verify it fails**
 
-Run: `pnpm --filter @armyofagents/server test -- src/__tests__/post-auth-journey.test.ts`
+Run: `pnpm test:run src/__tests__/post-auth-journey.test.ts`
 Expected: FAIL — module not found.
 
 - [ ] **Step 3: Implement the pure resolver**
@@ -343,7 +343,7 @@ export function resolvePostAuthJourney(input: JourneyInput): PostAuthJourneyResu
 
 - [ ] **Step 4: Run test, verify pass**
 
-Run: `pnpm --filter @armyofagents/server test -- src/__tests__/post-auth-journey.test.ts`
+Run: `pnpm test:run src/__tests__/post-auth-journey.test.ts`
 Expected: PASS (5 tests).
 
 - [ ] **Step 5: Commit**
@@ -382,7 +382,7 @@ describe("getJourneyForUser", () => {
 
 - [ ] **Step 2: Run test, verify it fails**
 
-Run: `pnpm --filter @armyofagents/server test -- src/__tests__/onboarding-journey-route.test.ts`
+Run: `pnpm test:run src/__tests__/onboarding-journey-route.test.ts`
 Expected: FAIL — module missing.
 
 - [ ] **Step 3: Implement the query + route handler**
@@ -452,7 +452,7 @@ export async function getJourneyForUser(
 
 - [ ] **Step 4: Run test, verify pass**
 
-Run: `pnpm --filter @armyofagents/server test -- src/__tests__/onboarding-journey-route.test.ts`
+Run: `pnpm test:run src/__tests__/onboarding-journey-route.test.ts`
 Expected: PASS.
 
 - [ ] **Step 5: Mount the route + commit**
@@ -505,7 +505,7 @@ describe("default actor identity", () => {
 
 - [ ] **Step 2: Run test, verify it fails**
 
-Run: `pnpm --filter @armyofagents/server test -- src/__tests__/actor-default-identity.test.ts`
+Run: `pnpm test:run src/__tests__/actor-default-identity.test.ts`
 Expected: FAIL — middleware still auto-admins in local_trusted; `devLocalIdentity` not an option.
 
 - [ ] **Step 3: Extend options + change the default actor**
@@ -546,7 +546,7 @@ And ensure better-auth is instantiated in `local_trusted` too (see Task A7 note 
 
 - [ ] **Step 5: Run test + verify pass**
 
-Run: `pnpm --filter @armyofagents/server test -- src/__tests__/actor-default-identity.test.ts`
+Run: `pnpm test:run src/__tests__/actor-default-identity.test.ts`
 Expected: PASS (3 tests).
 
 - [ ] **Step 6: Commit**
@@ -556,7 +556,7 @@ git add server/src/middleware/auth.ts server/src/app.ts server/src/index.ts
 git commit -m "feat(auth): Google identity in both modes; gate synthetic admin behind AOA_DEV_LOCAL_IDENTITY"
 ```
 
-> ⚠️ This is the highest-risk task. After it, run the full server suite (`pnpm --filter @armyofagents/server test`) to catch any test that assumed the old local_trusted auto-admin default. Fix fallout before proceeding.
+> ⚠️ This is the highest-risk task. After it, run the full server suite (`pnpm test:run`) to catch any test that assumed the old local_trusted auto-admin default. Fix fallout before proceeding.
 
 ---
 
@@ -594,7 +594,7 @@ describe("promoteFirstUserToInstanceAdmin", () => {
 
 - [ ] **Step 2: Run test, verify it fails**
 
-Run: `pnpm --filter @armyofagents/server test -- src/__tests__/first-user-bootstrap.test.ts`
+Run: `pnpm test:run src/__tests__/first-user-bootstrap.test.ts`
 Expected: FAIL — module missing.
 
 - [ ] **Step 3: Implement (idempotent, race-safe)**
@@ -626,7 +626,7 @@ Hook this into the journey endpoint (Task A5) or a better-auth `after` hook on u
 
 - [ ] **Step 5: Run test, verify pass**
 
-Run: `pnpm --filter @armyofagents/server test -- src/__tests__/first-user-bootstrap.test.ts`
+Run: `pnpm test:run src/__tests__/first-user-bootstrap.test.ts`
 Expected: PASS (2 tests).
 
 - [ ] **Step 6: Commit**
@@ -670,7 +670,7 @@ describe("authApi.signInSocial", () => {
 
 - [ ] **Step 2: Run test, verify it fails**
 
-Run: `pnpm --filter @armyofagents/ui test -- src/api/__tests__/auth-client.test.ts`
+Run: `pnpm --filter @armyofagents/ui test:run src/api/__tests__/auth-client.test.ts`
 Expected: FAIL — `signInSocial` missing; email methods still present.
 
 - [ ] **Step 3: Update the API client**
@@ -698,7 +698,7 @@ Rewrite `AuthPage` in `ui/src/pages/Auth.tsx` to a single-action screen: product
 
 - [ ] **Step 5: Run test, verify pass**
 
-Run: `pnpm --filter @armyofagents/ui test -- src/api/__tests__/auth-client.test.ts`
+Run: `pnpm --filter @armyofagents/ui test:run src/api/__tests__/auth-client.test.ts`
 Expected: PASS (2 tests).
 
 - [ ] **Step 6: Commit**
@@ -739,7 +739,7 @@ describe("destinationForJourney", () => {
 
 - [ ] **Step 2: Run test, verify it fails**
 
-Run: `pnpm --filter @armyofagents/ui test -- src/__tests__/post-auth-routing.test.tsx`
+Run: `pnpm --filter @armyofagents/ui test:run src/__tests__/post-auth-routing.test.tsx`
 Expected: FAIL — `destinationForJourney` missing.
 
 - [ ] **Step 3: Implement the client + destination mapper**
@@ -770,7 +770,7 @@ In `CloudAccessGate` (or a new `PostAuthRouter`), after a session is confirmed, 
 
 - [ ] **Step 5: Run test, verify pass**
 
-Run: `pnpm --filter @armyofagents/ui test -- src/__tests__/post-auth-routing.test.tsx`
+Run: `pnpm --filter @armyofagents/ui test:run src/__tests__/post-auth-routing.test.tsx`
 Expected: PASS (3 tests).
 
 - [ ] **Step 6: Commit**
@@ -808,7 +808,7 @@ describe("headless bootstrap guard", () => {
 
 - [ ] **Step 2: Run test, verify it fails**
 
-Run: `pnpm --filter @armyofagents/server test -- src/__tests__/bootstrap-headless-guard.test.ts`
+Run: `pnpm test:run src/__tests__/bootstrap-headless-guard.test.ts`
 Expected: FAIL — helper missing.
 
 - [ ] **Step 3: Add the guard + config field**
@@ -826,7 +826,7 @@ Guard `initializeBoardClaimChallenge()` in `server/src/index.ts` behind `shouldE
 
 - [ ] **Step 4: Run test, verify pass**
 
-Run: `pnpm --filter @armyofagents/server test -- src/__tests__/bootstrap-headless-guard.test.ts`
+Run: `pnpm test:run src/__tests__/bootstrap-headless-guard.test.ts`
 Expected: PASS (2 tests).
 
 - [ ] **Step 5: Commit**
@@ -857,7 +857,7 @@ it("configures a long-lived session for local-first use", () => {
 
 - [ ] **Step 2: Run test, verify it fails**
 
-Run: `pnpm --filter @armyofagents/server test -- src/__tests__/better-auth-config.test.ts`
+Run: `pnpm test:run src/__tests__/better-auth-config.test.ts`
 Expected: FAIL — no `session.expiresIn`.
 
 - [ ] **Step 3: Add session config**
@@ -870,7 +870,7 @@ In `buildBetterAuthConfig`, add to `authConfig`:
 
 - [ ] **Step 4: Run test, verify pass**
 
-Run: `pnpm --filter @armyofagents/server test -- src/__tests__/better-auth-config.test.ts`
+Run: `pnpm test:run src/__tests__/better-auth-config.test.ts`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
