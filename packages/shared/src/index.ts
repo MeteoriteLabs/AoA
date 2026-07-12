@@ -322,6 +322,8 @@ export {
   type PluginWebhookDeliveryStatus,
   PLUGIN_BRIDGE_ERROR_CODES,
   type PluginBridgeErrorCode,
+  DEPARTMENT_FUNCTION_TYPES,
+  type DepartmentFunctionType,
 } from "./constants.js";
 
 export {

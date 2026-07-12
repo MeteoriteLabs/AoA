@@ -4,6 +4,7 @@ import { OrgStep } from "./OrgStep";
 import { EnvironmentStep } from "./EnvironmentStep";
 import { CommanderStep } from "./CommanderStep";
 import { VerifyStep } from "./VerifyStep";
+import { DepartmentStep } from "./DepartmentStep";
 
 /**
  * The real onboarding steps, assembled here (registry.ts stays pure logic).
@@ -70,5 +71,17 @@ export const ONBOARDING_STEPS: StepDefinition[] = [
     isComplete: (ctx) => ctx.completedStates.includes("COMMANDER_VERIFIED"),
     Component: VerifyStep,
     title: "Verify tooling",
+  },
+  {
+    id: "department",
+    order: 6,
+    state: "DEPARTMENT_CREATED",
+    journeys: ["founder"],
+    dependsOn: ["COMMANDER_VERIFIED"],
+    canSkip: false,
+    shouldInclude: () => true,
+    isComplete: (ctx) => ctx.completedStates.includes("DEPARTMENT_CREATED"),
+    Component: DepartmentStep,
+    title: "First department",
   },
 ];
