@@ -26,6 +26,21 @@ export function AuthPage() {
     }
   }, [session, navigate, nextPath]);
 
+  // bfcache guard. Clicking "Continue with Google" sets `pending` then does a
+  // full-page navigation to Google, so the browser caches this page frozen on
+  // the disabled "Redirecting…" button. Pressing Back restores it FROM the
+  // back-forward cache without re-mounting React, so `pending` never resets and
+  // the already-signed-in redirect above never re-fires — the page looks stuck.
+  // On a bfcache restore (`persisted`), force a clean reload so the session is
+  // re-checked and an authenticated user is bounced onward.
+  useEffect(() => {
+    const onPageShow = (e: PageTransitionEvent) => {
+      if (e.persisted) window.location.reload();
+    };
+    window.addEventListener("pageshow", onPageShow);
+    return () => window.removeEventListener("pageshow", onPageShow);
+  }, []);
+
   const handleGoogle = async () => {
     setError(null);
     setPending(true);
