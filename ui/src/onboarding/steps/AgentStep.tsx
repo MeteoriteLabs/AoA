@@ -16,6 +16,21 @@ function cliToolToAdapterType(cliTool: string | null | undefined): string {
   return "claude_local";
 }
 
+/** Human-readable runtime label so the founder can SEE what the agent will run on. */
+function runtimeLabel(adapterType: string): string {
+  switch (adapterType) {
+    // gpt-5.5 mirrors the server's DEFAULT_CODEX_CHAT_MODEL injected at create time.
+    case "codex_local":
+      return "Codex · gpt-5.5";
+    case "opencode_local":
+      return "OpenCode";
+    case "claude_local":
+      return "Claude (your account's default model)";
+    default:
+      return adapterType;
+  }
+}
+
 /**
  * "Create your first agent" step (Stage C / order 7). The agent inherits the
  * Commander runtime (no adapter picker in the happy path), is preselected into
@@ -29,7 +44,13 @@ export function AgentStep({ ctx, onComplete }: StepProps) {
   const [purpose, setPurpose] = useState(
     "Coordinate work in this department and hire the team as needed.",
   );
-  const [adapterType, setAdapterType] = useState<string>("claude_local");
+  // Start UNKNOWN, not a guessed "claude_local" default. The runtime is
+  // authoritatively inherited from the Commander config; if that load is slow or
+  // fails we must NOT let a (e.g. Codex) founder create a claude_local agent that
+  // would fail at first run. The Create button stays disabled until it resolves.
+  const [adapterType, setAdapterType] = useState<string | null>(null);
+  const [configError, setConfigError] = useState<string | null>(null);
+  const [configReload, setConfigReload] = useState(0);
   const [deptId, setDeptId] = useState<string | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -37,10 +58,23 @@ export function AgentStep({ ctx, onComplete }: StepProps) {
 
   useEffect(() => {
     if (!ctx.companyId) return;
+    let cancelled = false;
+    setConfigError(null);
     internalAgentApi
       .getConfig(ctx.companyId)
-      .then((cfg) => setAdapterType(cliToolToAdapterType((cfg as { cliTool?: string | null })?.cliTool)))
-      .catch(() => {});
+      .then((cfg) => {
+        if (!cancelled) setAdapterType(cliToolToAdapterType((cfg as { cliTool?: string | null })?.cliTool));
+      })
+      .catch(() => {
+        if (!cancelled) setConfigError("Couldn't load your Commander runtime.");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [ctx.companyId, configReload]);
+
+  useEffect(() => {
+    if (!ctx.companyId) return;
     projectsApi
       .list(ctx.companyId)
       .then((ps) => {
@@ -51,7 +85,7 @@ export function AgentStep({ ctx, onComplete }: StepProps) {
   }, [ctx.companyId]);
 
   const create = async () => {
-    if (!ctx.companyId || !name.trim() || !deptId) return;
+    if (!ctx.companyId || !name.trim() || !deptId || !adapterType) return;
     setBusy(true);
     setError(null);
     try {
@@ -95,7 +129,26 @@ export function AgentStep({ ctx, onComplete }: StepProps) {
     <div className="mx-auto max-w-md py-10">
       <h1 className="text-xl font-semibold">Create your first agent</h1>
       <p className="mt-1 text-sm text-muted-foreground">
-        It runs on your Commander runtime and is assigned to your department automatically.
+        {adapterType ? (
+          <>
+            It runs on{" "}
+            <span className="font-medium text-foreground">{runtimeLabel(adapterType)}</span> —
+            inherited from your Commander — and is assigned to your department automatically.
+          </>
+        ) : configError ? (
+          <span className="text-destructive">
+            {configError}{" "}
+            <button
+              type="button"
+              className="underline"
+              onClick={() => setConfigReload((n) => n + 1)}
+            >
+              Retry
+            </button>
+          </span>
+        ) : (
+          "Loading your Commander runtime…"
+        )}
       </p>
       <label className="mt-6 mb-1 block text-xs text-muted-foreground">Agent name</label>
       <input
@@ -120,14 +173,15 @@ export function AgentStep({ ctx, onComplete }: StepProps) {
       {showAdvanced && (
         <div className="mt-2 rounded-md border border-border p-3 text-xs text-muted-foreground">
           Heartbeat, context mode, retry, and permissions default to the recommended settings and
-          can be tuned later on the Agent page. Runtime is inherited from Commander ({adapterType}).
+          can be tuned later on the Agent page. Runtime is inherited from Commander
+          {adapterType ? ` (${runtimeLabel(adapterType)})` : ""}.
         </div>
       )}
       {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
       <Button
         className="mt-4 w-full"
         onClick={() => void create()}
-        disabled={busy || !name.trim() || !deptId}
+        disabled={busy || !name.trim() || !deptId || !adapterType}
       >
         {busy ? "Creating…" : "Create & assign"}
       </Button>

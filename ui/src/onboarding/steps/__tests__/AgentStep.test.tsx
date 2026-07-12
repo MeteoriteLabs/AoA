@@ -65,6 +65,26 @@ describe("AgentStep (Stage C / order 7)", () => {
     });
   });
 
+  it("shows the inherited Commander runtime in the happy path (transparency)", async () => {
+    getConfig.mockResolvedValue({ cliTool: "codex" });
+    render(<AgentStep ctx={ctx} onComplete={vi.fn()} onBack={() => {}} />);
+    // The founder can SEE what the agent runs on — the question they raised.
+    expect(await screen.findByText(/Codex · gpt-5\.5/)).toBeTruthy();
+  });
+
+  it("keeps Create disabled + offers a retry when the Commander config fails to load", async () => {
+    // The race: a swallowed getConfig failure used to leave the guessed
+    // claude_local default, so a Codex founder could mint a claude_local agent
+    // that fails at first run. Now we block until the real runtime resolves.
+    getConfig.mockRejectedValueOnce(new Error("boom"));
+    render(<AgentStep ctx={ctx} onComplete={vi.fn()} onBack={() => {}} />);
+    expect(await screen.findByText(/Couldn't load your Commander runtime/)).toBeTruthy();
+    expect(
+      (screen.getByText("Create & assign").closest("button") as HTMLButtonElement).disabled,
+    ).toBe(true);
+    expect(screen.getByText("Retry")).toBeTruthy();
+  });
+
   it("is idempotent — reuses an existing same-named org agent, still assigns it", async () => {
     agentsList.mockResolvedValue([{ id: "existing", kind: "org", name: "Director" }]);
     const onComplete = vi.fn();
