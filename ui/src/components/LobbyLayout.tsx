@@ -27,10 +27,15 @@ export function LobbyLayout() {
   // Outlet consumers don't re-render just because this layout re-rendered.
   const outletContext = useMemo<LobbyOutletContext>(() => ({ setSecondarySidebar }), []);
 
+  // ?new=1 forces the org-create step even for a returning founder who already
+  // has a (completed) selected company — otherwise /onboarding binds to that
+  // company, resolves no step, and dead-ends at the Lobby.
+  const handleCreateCompany = () => navigate("/onboarding?new=1");
+
   return (
     <LobbyShell
       activeItem={lobbyActiveItem(location.pathname)}
-      onCreateCompany={() => navigate("/onboarding")}
+      onCreateCompany={handleCreateCompany}
       secondarySidebar={secondarySidebar}
     >
       <Outlet context={outletContext} />
