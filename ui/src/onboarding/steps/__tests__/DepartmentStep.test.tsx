@@ -80,6 +80,13 @@ describe("DepartmentStep (Stage C / order 6)", () => {
       requestedState: "DEPARTMENT_CREATED",
     });
   });
+
+  it("prefills the name so the create button isn't silently disabled (live-QA regression)", () => {
+    render(<DepartmentStep ctx={ctx} onComplete={vi.fn()} onBack={() => {}} />);
+    const btn = screen.getByRole("button", { name: "Create department" }) as HTMLButtonElement;
+    expect(btn.disabled).toBe(false);
+    expect(screen.getByDisplayValue("Engineering")).toBeTruthy();
+  });
 });
 
 describe("assembled registry includes the department step", () => {

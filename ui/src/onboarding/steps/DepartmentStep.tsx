@@ -24,7 +24,10 @@ const isAbsolute = (v: string) => v.startsWith("/") || /^[A-Za-z]:[\\/]/.test(v)
  * department before creating. Advances DEPARTMENT_CREATED on success.
  */
 export function DepartmentStep({ ctx, onComplete }: StepProps) {
-  const [name, setName] = useState("");
+  // Default to a real value (not just a placeholder) so the button isn't
+  // silently disabled and the nested-folder path prefills — matching the agent
+  // step's "Director" default. The user can still rename it.
+  const [name, setName] = useState("Engineering");
   const [functionType, setFunctionType] = useState<string>("software_development");
   const [rootFolder, setRootFolder] = useState<string | null>(null);
   const [localPath, setLocalPath] = useState("");
