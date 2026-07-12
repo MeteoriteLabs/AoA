@@ -27,6 +27,7 @@ function Row({ label, value }: { label: string; value?: string }) {
 export function ReviewStep({ ctx, onComplete }: StepProps) {
   const [summary, setSummary] = useState<Summary>({});
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!ctx.companyId) return;
@@ -48,6 +49,7 @@ export function ReviewStep({ ctx, onComplete }: StepProps) {
   const finish = async () => {
     if (!ctx.companyId) return;
     setBusy(true);
+    setError(null);
     try {
       await advanceOnboarding({
         companyId: ctx.companyId,
@@ -55,7 +57,8 @@ export function ReviewStep({ ctx, onComplete }: StepProps) {
         requestedState: "SETUP_COMPLETE",
       });
       onComplete();
-    } catch {
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't finish setup. Please try again.");
       setBusy(false);
     }
   };
@@ -74,6 +77,7 @@ export function ReviewStep({ ctx, onComplete }: StepProps) {
           value={summary.agent ? `${summary.agent} → ${summary.dept ?? "department"}` : undefined}
         />
       </div>
+      {error && <p className="mt-3 text-xs text-destructive">{error}</p>}
       <div className="mt-4 flex gap-2">
         <Button variant="outline" className="flex-1" onClick={() => void finish()} disabled={busy}>
           Start walkthrough

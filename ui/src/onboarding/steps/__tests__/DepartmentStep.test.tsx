@@ -87,6 +87,21 @@ describe("DepartmentStep (Stage C / order 6)", () => {
     expect(btn.disabled).toBe(false);
     expect(screen.getByDisplayValue("Engineering")).toBeTruthy();
   });
+
+  it("surfaces a folder-creation failure instead of silently building a broken workspace", async () => {
+    mkdir.mockRejectedValueOnce(new Error("EACCES"));
+    const onComplete = vi.fn();
+    render(<DepartmentStep ctx={ctx} onComplete={onComplete} onBack={() => {}} />);
+    fireEvent.change(screen.getByPlaceholderText("Engineering"), { target: { value: "Engineering" } });
+    await waitFor(() => expect(screen.getByDisplayValue("/home/ada/AoA/engineering")).toBeTruthy());
+    fireEvent.click(screen.getByText("Create department"));
+    // the mkdir error is surfaced …
+    expect(await screen.findByText(/Couldn't create the folder/)).toBeTruthy();
+    // … and we do NOT create a workspace on a folder that doesn't exist, nor advance.
+    expect(createWorkspace).not.toHaveBeenCalled();
+    expect(advanceOnboarding).not.toHaveBeenCalled();
+    expect(onComplete).not.toHaveBeenCalled();
+  });
 });
 
 describe("assembled registry includes the department step", () => {

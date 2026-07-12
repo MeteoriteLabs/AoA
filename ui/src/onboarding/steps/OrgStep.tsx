@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { StepProps } from "../registry";
 import { useCompany } from "../../context/CompanyContext";
 import { advanceOnboarding } from "../../api/onboarding";
@@ -18,6 +18,9 @@ export function OrgStep({ ctx, onComplete }: StepProps) {
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Idempotency guard: if createCompany succeeds but the advance throws, a retry
+  // must NOT mint a second company. Remember the one we created and reuse it.
+  const createdRef = useRef<{ id: string } | null>(null);
 
   const submit = async () => {
     if (!name.trim()) {
@@ -27,7 +30,8 @@ export function OrgStep({ ctx, onComplete }: StepProps) {
     setBusy(true);
     setError(null);
     try {
-      const company = await createCompany({ name: name.trim() });
+      const company = createdRef.current ?? (await createCompany({ name: name.trim() }));
+      createdRef.current = company;
       await advanceOnboarding({
         companyId: company.id,
         journey: ctx.journey,

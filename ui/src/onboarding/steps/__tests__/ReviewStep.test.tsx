@@ -56,6 +56,21 @@ describe("ReviewStep (Stage C / order 8)", () => {
       requestedState: "SETUP_COMPLETE",
     });
   });
+
+  it("surfaces the error and re-enables the buttons when finishing fails", async () => {
+    (advanceOnboarding as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error("advance blew up"),
+    );
+    const onComplete = vi.fn();
+    render(<ReviewStep ctx={ctx} onComplete={onComplete} onBack={() => {}} />);
+    fireEvent.click(screen.getByText("Go to dashboard"));
+    expect(await screen.findByText("advance blew up")).toBeTruthy();
+    expect(onComplete).not.toHaveBeenCalled();
+    // button re-enabled so the founder can retry (not stuck)
+    expect((screen.getByText("Go to dashboard").closest("button") as HTMLButtonElement).disabled).toBe(
+      false,
+    );
+  });
 });
 
 describe("assembled registry includes the review step", () => {

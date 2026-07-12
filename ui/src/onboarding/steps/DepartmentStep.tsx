@@ -76,7 +76,19 @@ export function DepartmentStep({ ctx, onComplete }: StepProps) {
           if (useLocal && !isAbsolute(localPath.trim())) {
             throw new Error("Local folder must be an absolute path.");
           }
-          if (useLocal) await filesystemApi.mkdir(localPath.trim()).catch(() => {});
+          // Don't swallow a real mkdir failure — otherwise we'd create a
+          // workspace whose cwd points at a folder that was never created.
+          if (useLocal) {
+            try {
+              await filesystemApi.mkdir(localPath.trim());
+            } catch (mkErr) {
+              throw new Error(
+                mkErr instanceof Error
+                  ? `Couldn't create the folder "${localPath.trim()}": ${mkErr.message}`
+                  : `Couldn't create the folder "${localPath.trim()}".`,
+              );
+            }
+          }
           if (useLocal && useRepo) {
             await projectsApi.createWorkspace(deptId, {
               name: name.trim(),

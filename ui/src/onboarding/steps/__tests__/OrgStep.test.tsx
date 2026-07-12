@@ -48,6 +48,30 @@ describe("OrgStep (Stage C / order 2)", () => {
       requestedState: "ORGANIZATION_CREATED",
     });
   });
+
+  it("does NOT create a second company when the advance fails and the user retries", async () => {
+    // First advance throws (e.g. transient network) — the company is already
+    // created + selected; a retry must reuse it, not mint a duplicate.
+    (advanceOnboarding as unknown as ReturnType<typeof vi.fn>)
+      .mockRejectedValueOnce(new Error("network"))
+      .mockResolvedValueOnce({
+        completedStates: ["AUTHENTICATED", "PROFILE_SET", "ORGANIZATION_CREATED"],
+      });
+    const onComplete = vi.fn();
+    render(<OrgStep ctx={ctx} onComplete={onComplete} onBack={() => {}} />);
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "Acme" } });
+
+    fireEvent.click(screen.getByText("Continue"));
+    expect(await screen.findByText("network")).toBeTruthy();
+    expect(onComplete).not.toHaveBeenCalled();
+
+    // Retry — button re-enabled after the failure.
+    fireEvent.click(screen.getByText("Continue"));
+    await waitFor(() => expect(onComplete).toHaveBeenCalled());
+
+    expect(createCompany).toHaveBeenCalledTimes(1);
+    expect(advanceOnboarding).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("assembled registry includes the org step", () => {
