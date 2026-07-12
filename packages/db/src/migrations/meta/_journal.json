@@ -1170,6 +1170,13 @@
       "when": 1783873134997,
       "tag": "0166_wakeful_exiles",
       "breakpoints": true
+    },
+    {
+      "idx": 167,
+      "version": "7",
+      "when": 1783877232201,
+      "tag": "0167_natural_silk_fever",
+      "breakpoints": true
     }
   ]
 }

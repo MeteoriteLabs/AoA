@@ -121,6 +121,7 @@ export { cliAuthChallenges } from "./cli_auth_challenges.js";
 export { executionWorkspaces } from "./execution_workspaces.js";
 export { environments } from "./environments.js";
 export { onboardingProgress } from "./onboarding_progress.js";
+export { userProfiles, type UserProfileSocialLink } from "./user_profiles.js";
 export { environmentLeases } from "./environment_leases.js";
 export { workspaceRuntimeServices } from "./workspace_runtime_services.js";
 export { workspaceOperations } from "./workspace_operations.js";
