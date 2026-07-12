@@ -309,6 +309,18 @@ function OnboardingWizardMount() {
   return onboardingOpen ? <OnboardingWizard /> : null;
 }
 
+// Stub — replaced by the resumable onboarding FlowEngine in Stage B. Present so
+// post-auth journey redirects to /onboarding and /onboarding/join land
+// somewhere during Stage A. The gate→journey redirect wiring lands with the
+// FlowEngine (Stage B), where these routes become real.
+function OnboardingPlaceholder() {
+  return (
+    <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">
+      Setting up your onboarding…
+    </div>
+  );
+}
+
 export function App() {
   return (
     <>
@@ -332,6 +344,8 @@ export function App() {
               <Route path="marketplace/:type/:slug/*" element={<MarketplaceDetail />} />
             </Route>
             <Route path="me" element={<Me />} />
+            <Route path="onboarding" element={<OnboardingPlaceholder />} />
+            <Route path="onboarding/join" element={<OnboardingPlaceholder />} />
             <Route path="export" element={<Layout />}>
               <Route index element={<CompanyExport />} />
             </Route>
