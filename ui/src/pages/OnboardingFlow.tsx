@@ -6,6 +6,7 @@ import { authApi } from "../api/auth";
 import { queryKeys } from "../lib/queryKeys";
 import { onboardingApi } from "../api/onboarding";
 import { FlowEngine } from "../onboarding/FlowEngine";
+import { ONBOARDING_STEPS } from "../onboarding/steps";
 
 /**
  * The onboarding route (Stage B / B7). Wires the FlowEngine with the real
@@ -38,6 +39,7 @@ export function OnboardingFlowPage({ journey }: { journey: OnboardingJourney }) 
       companyId={selectedCompanyId ?? null}
       journey={journey}
       api={onboardingApi}
+      registry={ONBOARDING_STEPS}
       onFinished={() => navigate("/", { replace: true })}
     />
   );
