@@ -68,23 +68,6 @@ function RouteFallback() {
   return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
 }
 
-function BootstrapPendingPage() {
-  return (
-    <div className="mx-auto max-w-xl py-10">
-      <div className="rounded-lg border border-border bg-card p-6">
-        <h1 className="text-xl font-semibold">Instance setup required</h1>
-        <p className="mt-2 text-sm text-muted-foreground">
-          No instance admin exists yet. Run this command in your AoA environment to generate
-          the first admin invite URL:
-        </p>
-        <pre className="mt-4 overflow-x-auto rounded-md border border-border bg-muted/30 p-3 text-xs">
-{`pnpm aoa auth bootstrap-ceo`}
-        </pre>
-      </div>
-    </div>
-  );
-}
-
 function CloudAccessGate() {
   const location = useLocation();
   const healthQuery = useQuery({
@@ -113,10 +96,10 @@ function CloudAccessGate() {
     );
   }
 
-  if (isAuthenticatedMode && healthQuery.data?.bootstrapStatus === "bootstrap_pending") {
-    return <BootstrapPendingPage />;
-  }
-
+  // A fresh instance with no admin is NOT a dead end anymore: the first Google
+  // user to sign in becomes the instance admin (RB3). So a session-less user —
+  // including on a brand-new instance (bootstrapStatus "bootstrap_pending") — is
+  // sent to the Google login rather than the retired CLI-bootstrap page.
   if (isAuthenticatedMode && !sessionQuery.data) {
     const next = encodeURIComponent(`${location.pathname}${location.search}`);
     return <Navigate to={`/auth?next=${next}`} replace />;
