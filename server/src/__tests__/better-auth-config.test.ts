@@ -332,3 +332,39 @@ describe("assertAuthProviderConfigured (revA R6 — fail startup on missing goog
     ).not.toThrow();
   });
 });
+
+describe("buildBetterAuthConfig — security hardening (Stage D / D6)", () => {
+  it("enables the Google social provider (better-auth applies OAuth state + PKCE for social sign-in)", () => {
+    const c = buildBetterAuthConfig(
+      fakeDb,
+      makeConfig({ googleClientId: "gid", googleClientSecret: "gsecret" }),
+      ["https://app.example.com"],
+      "secret",
+    ) as Record<string, any>;
+    expect(c.socialProviders?.google?.clientId).toBe("gid");
+  });
+
+  it("hardens the session cookie in authenticated mode (httpOnly + secure + sameSite)", () => {
+    const c = buildBetterAuthConfig(
+      fakeDb,
+      makeConfig({ deploymentMode: "authenticated", googleClientId: "gid", googleClientSecret: "gsecret" }),
+      ["https://app.example.com"],
+      "secret",
+    ) as Record<string, any>;
+    const cookie = c.advanced?.defaultCookieAttributes;
+    expect(cookie?.httpOnly).toBe(true);
+    expect(cookie?.secure).toBe(true);
+    expect(String(cookie?.sameSite)).toMatch(/lax|strict/i);
+  });
+
+  it("does NOT force Secure in local_trusted (loopback http dev would drop a Secure cookie)", () => {
+    const c = buildBetterAuthConfig(
+      fakeDb,
+      makeConfig({ deploymentMode: "local_trusted" }),
+      [],
+      "secret",
+    ) as Record<string, any>;
+    expect(c.advanced?.defaultCookieAttributes?.secure).toBe(false);
+    expect(c.advanced?.defaultCookieAttributes?.httpOnly).toBe(true);
+  });
+});

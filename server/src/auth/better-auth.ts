@@ -161,6 +161,21 @@ export function buildBetterAuthConfig(
     };
   }
 
+  // D6 — session-cookie hardening. better-auth applies OAuth state + PKCE for
+  // the social flow internally; here we make the cookie intent explicit.
+  // Secure is gated to hosted deployments — loopback http dev in local_trusted
+  // must NOT set Secure or the cookie is dropped over http://127.0.0.1. SameSite
+  // stays Lax so the OAuth redirect round-trip keeps the callback cookie
+  // (Strict would drop it).
+  const isHosted = config.deploymentMode === "authenticated";
+  authConfig.advanced = {
+    defaultCookieAttributes: {
+      httpOnly: true,
+      secure: isHosted,
+      sameSite: "lax",
+    },
+  };
+
   // RB3/A7 — the first Google user of a fresh instance becomes instance admin.
   // Fires at real user creation; the service is advisory-locked + idempotent,
   // and this is best-effort so a bootstrap hiccup never blocks sign-up.
