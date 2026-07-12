@@ -15,6 +15,7 @@ import { extractInlineScriptHashes } from "./services/csp-script-hashes.js";
 import { healthRoutes } from "./routes/health.js";
 import { onboardingJourneyRoutes } from "./routes/onboarding-journey.js";
 import { onboardingRoutes } from "./routes/onboarding.js";
+import { onboardingEnvironmentRoutes } from "./routes/onboarding-environment.js";
 import { userProfileRoutes } from "./routes/user-profiles.js";
 import { operationsHealthRoutes } from "./routes/operations-health.js";
 import { companyRoutes } from "./routes/companies.js";
@@ -237,6 +238,7 @@ export async function createApp(
   app.use("/api", authProfileRoutes(db));
   app.use("/api", onboardingJourneyRoutes(db));
   app.use("/api", onboardingRoutes(db));
+  app.use("/api", onboardingEnvironmentRoutes(db));
   app.use("/api", userProfileRoutes(db));
   // Email/password auth is removed — Google is the only provider (see
   // buildBetterAuthConfig). The dedicated /sign-in/email, /sign-up/email and

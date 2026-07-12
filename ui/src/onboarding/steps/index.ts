@@ -1,6 +1,7 @@
 import type { StepDefinition } from "../registry";
 import { ProfileStep } from "./ProfileStep";
 import { OrgStep } from "./OrgStep";
+import { EnvironmentStep } from "./EnvironmentStep";
 
 /**
  * The real onboarding steps, assembled here (registry.ts stays pure logic).
@@ -31,5 +32,17 @@ export const ONBOARDING_STEPS: StepDefinition[] = [
     isComplete: (ctx) => ctx.completedStates.includes("ORGANIZATION_CREATED"),
     Component: OrgStep,
     title: "Create your organization",
+  },
+  {
+    id: "environment",
+    order: 3,
+    state: "ENVIRONMENT_READY",
+    journeys: ["founder"],
+    dependsOn: ["ORGANIZATION_CREATED"],
+    canSkip: false,
+    shouldInclude: () => true,
+    isComplete: (ctx) => ctx.completedStates.includes("ENVIRONMENT_READY"),
+    Component: EnvironmentStep,
+    title: "Set up environment",
   },
 ];
