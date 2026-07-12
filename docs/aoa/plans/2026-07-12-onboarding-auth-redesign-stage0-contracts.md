@@ -57,7 +57,9 @@ export const userProfiles = pgTable("user_profiles", {
 });
 ```
 
-Note: `userId` is `text` to match `authUsers.id` (better-auth uses text ids). No FK to `authUsers` (better-auth tables are managed separately; match the existing convention in `company_user_profiles.ts`, which also stores `userId` as `text` with no FK).
+Note: `userId` is `text` to match `authUsers.id` (better-auth uses text ids). No FK to `authUsers` (better-auth tables are managed separately).
+
+> **RECONCILED 2026-07-12 — `company_user_profiles` is NOT on `main`.** The table exists only on an older/parallel branch, not on the `main` this worktree branched from (verified: no schema file, no export on `main`). Therefore **Phase 1 depends ONLY on the global `user_profiles` table.** The per-company mirror seed (D7 in the scope doc) is **DEFERRED** until `company_user_profiles` lands on `main`; Stage C's seed task must be a guarded no-op (skip if the table/service is absent) and must NOT block onboarding. Do not create `company_user_profiles` in this plan — that would collide with the branch that owns it.
 
 ### 2.2 `onboarding_progress` (Stage B creates; resumable state machine)
 
@@ -210,6 +212,8 @@ export type StepProps = {
 
 **Flow engine contract (Stage B):** `resolveNextStep(registry, ctx)` returns the first `StepDefinition` whose `journeys` includes `ctx.journey`, whose `dependsOn` ⊆ `ctx.completedStates`, and whose `isComplete(ctx)` is false. When none remain → the journey is complete.
 
+**`onComplete` semantics (RECONCILED — Stage B + Stage C must agree):** `onComplete` is intentionally arg-less. After a step's server write succeeds and calls `onComplete()`, the FlowEngine (a) PATCHes `onboarding_progress` to append the step's `state`, then (b) **re-fetches the authoritative `StepContext` from the server** (progress + the newly-created `companyId`) before resolving the next step. This is how a newly-created company id reaches later steps WITHOUT threading it through `onComplete`. Concretely: the "Create organization" step (Stage C) sets the active company via the existing `CompanyContext` (`setSelectedCompanyId`) as part of its write; the FlowEngine reads `selectedCompanyId` into the next `StepContext.companyId`. Both stages MUST implement this exact handoff — do not add a payload arg to `onComplete`.
+
 ---
 
 ## 5. Escape-hatch & identity flags (Stage A owns)
@@ -234,10 +238,18 @@ export type StepProps = {
 | `server/src/middleware/auth.ts` | A | Default-actor change; escape-hatch gating |
 | `server/src/app.ts` | A | Remove email/password routes + limiters |
 | `server/src/services/onboarding.ts` | B | onboarding_progress service (upsert/advance/resume) |
-| `server/src/services/post-auth-journey.ts` | A | Pure journey resolver + server endpoint |
-| `server/src/routes/onboarding.ts` | B | GET/PATCH onboarding progress; GET journey |
-| `server/src/services/user-profiles.ts` | C | user_profiles CRUD + seed company_user_profiles |
-| `server/src/services/commander-verify.ts` | C | Detect→verify Commander CLI (extends adapter probe) |
+| `server/src/services/post-auth-journey.ts` | A | Pure journey resolver |
+| `server/src/routes/onboarding-journey.ts` | A | `GET /api/onboarding/journey` (journey + first-user-admin) |
+| `server/src/routes/onboarding.ts` | B | `GET/PATCH /api/onboarding/progress` (progress only — journey lives in the A route above) |
+| `server/src/routes/onboarding-join.ts` | D | `POST /api/onboarding/join` (invited minimal join) |
+| `server/src/services/user-profiles.ts` | C | user_profiles CRUD (+ guarded, deferred company_user_profiles seed) |
+| `server/src/routes/user-profiles.ts` + `ui/src/api/user-profiles.ts` | C | profile read/write route + client |
+| `server/src/routes/onboarding-environment.ts` | C | environment create + write-probe for onboarding |
+| `server/src/services/commander-verify.ts` + route | C | Detect→verify Commander CLI (extends adapter probe) |
+| `ui/src/api/onboarding.ts` | A (created) / B (extended) | journey + progress client (single file; B extends A's) |
+| `packages/shared/src/onboarding.ts` | A | `PostAuthJourneyResult` (created once; B/C/D import) |
+
+> **Two-router decision (RECONCILED):** `/api/onboarding/journey` (Stage A) and `/api/onboarding/progress` (Stage B) are **separate route files** under the same `/api/onboarding/*` prefix, both mounted. Do not merge them. `ui/src/api/onboarding.ts` and `packages/shared/src/onboarding.ts` are **created by Stage A** and only **additively extended** by later stages — later stages must verify-not-redefine (`fetchJourney`, `destinationForJourney`, `PostAuthJourneyResult`).
 | `ui/src/pages/Auth.tsx` | A | Single "Continue with Google" |
 | `ui/src/api/auth.ts` | A | signInSocial; remove email methods |
 | `ui/src/onboarding/registry.ts` | B | StepDefinition registry |
@@ -257,13 +269,17 @@ Per CLAUDE.md "Test Patterns":
 - **E2E** — Playwright under `tests/e2e/`. Google is mocked via a deterministic test IdP / stubbed session (Stage A defines the harness). Windows e2e caveats per CLAUDE.md still apply (embedded-pg skip).
 - **Commit discipline:** one commit per task (test+impl together), conventional-commit messages. End messages with the Co-Authored-By trailer only if the user's git config expects it (follow repo convention — recent history uses plain conventional commits).
 
-Run commands (from repo root):
-- Type/lint/build gate: `pnpm verify` (or the package-scoped script the repo uses — confirm in `package.json`).
-- Server unit tests: `pnpm --filter @armyofagents/server test` (confirm filter name in `server/package.json`).
-- A single test file: `pnpm --filter @armyofagents/server test -- src/__tests__/<file>.test.ts`.
-- DB migration generate: `pnpm db:generate`.
+**Run commands (VERIFIED against root/server/ui `package.json` on 2026-07-12 — use these exact forms; do NOT use `pnpm verify` or `pnpm --filter @armyofagents/server test`, neither exists):**
+- Typecheck gate (all packages): `pnpm typecheck` (root; runs `pnpm -r typecheck`, i.e. `tsc --noEmit` per package).
+- Build gate: `pnpm build` (root; `pnpm -r build`).
+- Run the whole unit suite: `pnpm test:run` (root; `vitest run` across the `projects` config covering server + ui + packages).
+- Run a single test file (server OR ui — vitest path filter): `pnpm test:run <path/to/file.test.ts>` (e.g. `pnpm test:run server/src/__tests__/foo.test.ts`).
+- UI-only single file (avoids watch mode): `pnpm --filter @armyofagents/ui test:run <file>` (`ui` has `test:run = vitest run`; its bare `test` is watch mode — never use it in a scripted step).
+- **Server has NO package-level `test` script** — server tests run only through the root vitest `projects` config. There is no `pnpm --filter @armyofagents/server test`.
+- E2E: `pnpm test:e2e` (`playwright test --config=tests/e2e/playwright.config.ts`).
+- DB migration generate: `pnpm db:generate` (`pnpm --filter @armyofagents/db generate`).
 
-> Task authors: verify the exact script names in the relevant `package.json` before writing the first test task of each stage (they are stable but confirm).
+> Stages A–D inline commands are normalized to the above. Any residual `pnpm verify` / `pnpm --filter … test` in a stage doc is a defect — substitute `pnpm typecheck` / `pnpm test:run <path>`.
 
 ---
 

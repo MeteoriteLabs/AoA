@@ -12,6 +12,14 @@
 
 ---
 
+## ⚠️ Reconciliation corrections (read before executing — applied 2026-07-12)
+
+1. **Commands:** every `pnpm --filter @armyofagents/server test -- <file>` below → `pnpm test:run <file>` (root vitest). Every `pnpm verify` → `pnpm typecheck`. Every `pnpm --filter @armyofagents/ui test -- <file>` → `pnpm --filter @armyofagents/ui test:run <file>`. See Stage 0 §7 (verified). Server has no package `test` script.
+2. **A5 invited detection was buggy** (compared a hashed stored token to a plaintext token AND ignored email → always no-op). The corrected implementation is in Task A5 below: hash the incoming token before matching, and match open invites by email via `defaultsPayload->'teamInvite'->>'email'`. Stage D Task D3 owns the full invited-detection hardening; A5 must at minimum not be a guaranteed no-op.
+3. **A9 must NOT put the invite token in a URL query string.** Send it in an `x-invite-token` request header instead (see corrected A9). The journey route reads the header, not `req.query`.
+
+---
+
 ## Pre-flight (once, before Task A1)
 
 - [ ] **Confirm test/build script names**
@@ -381,11 +389,16 @@ Expected: FAIL — module missing.
 
 ```ts
 // server/src/routes/onboarding-journey.ts
+import { createHash } from "node:crypto";
 import type { Db } from "@armyofagents/db";
 import { companyMemberships, invites } from "@armyofagents/db";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull, gt, or, sql } from "drizzle-orm";
 import { resolvePostAuthJourney } from "../services/post-auth-journey.js";
 import type { PostAuthJourneyResult } from "@armyofagents/shared";
+
+function hashToken(t: string) {
+  return createHash("sha256").update(t).digest("hex");
+}
 
 export async function getJourneyForUser(
   db: Db,
@@ -399,21 +412,41 @@ export async function getJourneyForUser(
       eq(companyMemberships.principalId, args.userId),
       eq(companyMemberships.status, "active"),
     ));
-  // Pending invites for this email (open, not revoked/accepted). Adjust columns to the real invites schema.
+
+  // Open invites for this email. NOTE: `invites` has NO email column — the invitee
+  // email is stored in defaultsPayload.teamInvite.email (see access.ts TEAM_INVITE_KEY).
+  // Open = not revoked, not accepted, not expired. `token` here is the STORED hash.
   const pending = await db
-    .select({ companyId: invites.companyId, token: invites.tokenHash })
+    .select({ companyId: invites.companyId, tokenHash: invites.tokenHash })
     .from(invites)
-    .where(/* open invites whose target email === args.email — see invites schema for the email/defaults column */ eq(invites.inviteType, "company_join"));
+    .where(and(
+      eq(invites.inviteType, "company_join"),
+      isNull(invites.revokedAt),
+      isNull(invites.acceptedAt),
+      or(isNull(invites.expiresAt), gt(invites.expiresAt, new Date())),
+      // email match on the jsonb payload:
+      sql`lower(${invites.defaultsPayload} -> 'teamInvite' ->> 'email') = lower(${args.email})`,
+    ));
+
+  // Hash the deep-link token so it can match the stored hash inside the resolver.
+  const hashedInviteToken = args.inviteToken ? hashToken(args.inviteToken) : null;
+
   return resolvePostAuthJourney({
     memberships: memberships.map((m) => m.companyId),
-    pendingInvites: pending.map((p) => ({ companyId: p.companyId, token: p.token })),
-    inviteToken: args.inviteToken,
+    pendingInvites: pending.map((p) => ({ companyId: p.companyId, token: p.tokenHash })),
+    inviteToken: hashedInviteToken,
   });
 }
 
-// Express handler: GET /api/onboarding/journey?inviteToken=...
-// req.actor.userId + the session email → getJourneyForUser → res.json(result)
+// Express handler: GET /api/onboarding/journey
+//   - actor: board only (req.actor.type === "board"); userId = req.actor.userId
+//   - email: from the resolved session user (opts.resolveSession) — NOT from the client
+//   - inviteToken: read from the `x-invite-token` REQUEST HEADER (never a query string)
+//   - before resolving, call promoteFirstUserToInstanceAdmin(db, userId) (Task A7)
+//   - res.json(await getJourneyForUser(db, { userId, email, inviteToken }))
 ```
+
+> Task author: confirm `invites.defaultsPayload` column name + the `teamInvite.email` path against `packages/db/src/schema/invites.ts` and `access.ts` (`TEAM_INVITE_KEY`). Stage D Task D3 hardens this same detection — keep the two consistent.
 
 > Task author: the `invites` table stores the invitee email inside `defaultsPayload` (the `teamInvite` metadata) — resolve the email-match against that, matching how `access.ts` reads `TEAM_INVITE_KEY`. Confirm the exact column before finalizing the `where`.
 
@@ -716,8 +749,10 @@ Expected: FAIL — `destinationForJourney` missing.
 import type { PostAuthJourneyResult } from "@armyofagents/shared";
 
 export async function fetchJourney(inviteToken?: string | null): Promise<PostAuthJourneyResult> {
-  const q = inviteToken ? `?inviteToken=${encodeURIComponent(inviteToken)}` : "";
-  const res = await fetch(`/api/onboarding/journey${q}`, { credentials: "include" });
+  // The invite token is a secret — send it in a header, NEVER in the URL (no query string).
+  const headers: Record<string, string> = {};
+  if (inviteToken) headers["x-invite-token"] = inviteToken;
+  const res = await fetch("/api/onboarding/journey", { credentials: "include", headers });
   if (!res.ok) throw new Error(`journey fetch failed: ${res.status}`);
   return res.json();
 }
