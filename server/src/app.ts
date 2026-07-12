@@ -10,11 +10,6 @@ import { httpLogger, errorHandler } from "./middleware/index.js";
 import { actorMiddleware } from "./middleware/auth.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
 import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middleware/private-hostname-guard.js";
-import {
-  signinLimiter,
-  signupLimiter,
-  forgotPasswordLimiter,
-} from "./middleware/rate-limit.js";
 import { buildHelmetOptions } from "./services/helmet-options.js";
 import { extractInlineScriptHashes } from "./services/csp-script-hashes.js";
 import { healthRoutes } from "./routes/health.js";
@@ -237,15 +232,12 @@ export async function createApp(
   // Mount profile-aware auth routes (get-session with DB-loaded user, profile GET/PATCH)
   // before the betterAuthHandler catch-all so specific routes win.
   app.use("/api", authProfileRoutes(db));
-  // Per-route rate limits in front of better-auth (Sprint 4 S4-F). better-auth
-  // mounts at the wildcard /api/auth/{*authPath} below; the limiters below
-  // intercept the credential-stuffing-prone sub-paths before the wildcard. We
-  // use app.post (not app.use) so only the targeted method+path gets rate-
-  // gated; non-matching paths fall through to the wildcard handler.
+  // Email/password auth is removed — Google is the only provider (see
+  // buildBetterAuthConfig). The dedicated /sign-in/email, /sign-up/email and
+  // /forget-password routes and their rate limiters are gone. better-auth
+  // handles all remaining auth sub-paths (Google social start, callback,
+  // get-session, sign-out) through the wildcard below.
   if (opts.betterAuthHandler) {
-    app.post("/api/auth/sign-in/email", signinLimiter, opts.betterAuthHandler);
-    app.post("/api/auth/sign-up/email", signupLimiter, opts.betterAuthHandler);
-    app.post("/api/auth/forget-password", forgotPasswordLimiter, opts.betterAuthHandler);
     app.all("/api/auth/{*authPath}", opts.betterAuthHandler);
   }
   app.use(llmRoutes(db));
