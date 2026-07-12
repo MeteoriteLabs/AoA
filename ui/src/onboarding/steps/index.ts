@@ -6,6 +6,7 @@ import { CommanderStep } from "./CommanderStep";
 import { VerifyStep } from "./VerifyStep";
 import { DepartmentStep } from "./DepartmentStep";
 import { AgentStep } from "./AgentStep";
+import { ReviewStep } from "./ReviewStep";
 
 /**
  * The real onboarding steps, assembled here (registry.ts stays pure logic).
@@ -96,5 +97,17 @@ export const ONBOARDING_STEPS: StepDefinition[] = [
     isComplete: (ctx) => ctx.completedStates.includes("AGENT_ASSIGNED"),
     Component: AgentStep,
     title: "First agent",
+  },
+  {
+    id: "review",
+    order: 8,
+    state: "SETUP_COMPLETE",
+    journeys: ["founder"],
+    dependsOn: ["AGENT_ASSIGNED"],
+    canSkip: false,
+    shouldInclude: () => true,
+    isComplete: (ctx) => ctx.completedStates.includes("SETUP_COMPLETE"),
+    Component: ReviewStep,
+    title: "Review",
   },
 ];
