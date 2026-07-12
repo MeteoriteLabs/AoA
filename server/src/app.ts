@@ -151,6 +151,7 @@ export async function createApp(
     trustProxy: boolean | number | string[];
     betterAuthHandler?: express.RequestHandler;
     resolveSession?: (req: ExpressRequest) => Promise<BetterAuthSessionResult | null>;
+    devLocalIdentity?: boolean;
   },
 ) {
   const app = express();
@@ -225,6 +226,7 @@ export async function createApp(
   app.use(
     actorMiddleware(db, {
       deploymentMode: opts.deploymentMode,
+      devLocalIdentity: opts.devLocalIdentity,
       resolveSession: opts.resolveSession,
     }),
   );
