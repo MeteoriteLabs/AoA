@@ -138,6 +138,9 @@ export function buildBetterAuthConfig(
     baseURL: baseUrl,
     secret,
     trustedOrigins,
+    // A11 — long-lived session so a local-first install authenticates to the
+    // cloud once, then operates offline until it expires (90d, refreshed daily).
+    session: { expiresIn: 60 * 60 * 24 * 90, updateAge: 60 * 60 * 24 },
     database: drizzleAdapter(db, {
       provider: "pg",
       schema: {

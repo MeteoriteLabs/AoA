@@ -291,6 +291,12 @@ describe("buildBetterAuthConfig — google provider, no email/password (Stage A 
     const c = buildBetterAuthConfig(fakeDb, makeConfig(), [], "secret") as Record<string, any>;
     expect(typeof c.databaseHooks?.user?.create?.after).toBe("function");
   });
+
+  it("configures a long-lived session for local-first use (A11)", () => {
+    const c = buildBetterAuthConfig(fakeDb, makeConfig(), [], "secret") as Record<string, any>;
+    expect(c.session?.expiresIn).toBeGreaterThanOrEqual(60 * 60 * 24 * 30);
+    expect(c.session?.updateAge).toBeGreaterThan(0);
+  });
 });
 
 describe("assertAuthProviderConfigured (revA R6 — fail startup on missing google)", () => {
