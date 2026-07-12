@@ -14,6 +14,7 @@ import { buildHelmetOptions } from "./services/helmet-options.js";
 import { extractInlineScriptHashes } from "./services/csp-script-hashes.js";
 import { healthRoutes } from "./routes/health.js";
 import { onboardingJourneyRoutes } from "./routes/onboarding-journey.js";
+import { onboardingRoutes } from "./routes/onboarding.js";
 import { operationsHealthRoutes } from "./routes/operations-health.js";
 import { companyRoutes } from "./routes/companies.js";
 import { agentRoutes } from "./routes/agents.js";
@@ -234,6 +235,7 @@ export async function createApp(
   // before the betterAuthHandler catch-all so specific routes win.
   app.use("/api", authProfileRoutes(db));
   app.use("/api", onboardingJourneyRoutes(db));
+  app.use("/api", onboardingRoutes(db));
   // Email/password auth is removed — Google is the only provider (see
   // buildBetterAuthConfig). The dedicated /sign-in/email, /sign-up/email and
   // /forget-password routes and their rate limiters are gone. better-auth
