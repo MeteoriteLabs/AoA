@@ -28,10 +28,14 @@ function makeApp(db: unknown, actorOverride?: Record<string, unknown>) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    req.actor = (actorOverride ?? { type: "board", userId: "u1" }) as never;
+    req.actor = (actorOverride ?? { type: "board", userId: "u1", isInstanceAdmin: true }) as never;
     next();
   });
   app.use("/api", onboardingEnvironmentRoutes(db as never));
+  app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    const status = typeof err === "object" && err && "status" in err ? Number((err as { status: unknown }).status) : 500;
+    res.status(Number.isFinite(status) ? status : 500).json({ error: err instanceof Error ? err.message : "error" });
+  });
   return app;
 }
 
@@ -51,6 +55,20 @@ describe("POST /companies/:companyId/onboarding/environment", () => {
       .post(`/api/companies/${COMPANY_ID}/onboarding/environment`)
       .send({ rootFolder: "/tmp/acme" });
     expect(res.status).toBe(403);
+    expect(mockSetup).not.toHaveBeenCalled();
+  });
+
+  it("403 when a non-admin company member attempts filesystem setup", async () => {
+    mockSetup.mockResolvedValue({ ok: true, environmentId: "e1", probe: { ok: true, summary: "ok" } });
+    const res = await request(makeApp(
+      dbWithMembership([{ id: COMPANY_ID }]),
+      { type: "board", source: "session", userId: "u1", isInstanceAdmin: false },
+    ))
+      .post(`/api/companies/${COMPANY_ID}/onboarding/environment`)
+      .send({ rootFolder: "/tmp/member-controlled" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toMatch(/instance admin access required/i);
     expect(mockSetup).not.toHaveBeenCalled();
   });
 

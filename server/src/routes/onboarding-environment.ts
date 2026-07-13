@@ -3,6 +3,7 @@ import type { Db } from "@armyofagents/db";
 import { companyMemberships } from "@armyofagents/db";
 import { and, eq } from "drizzle-orm";
 import { setupOnboardingEnvironment } from "../services/onboarding-environment.js";
+import { assertCanManageInstanceSettings } from "./authz.js";
 
 async function userHasCompanyAccess(db: Db, userId: string, companyId: string): Promise<boolean> {
   const rows = await db
@@ -21,10 +22,10 @@ async function userHasCompanyAccess(db: Db, userId: string, companyId: string): 
 }
 
 /**
- * Onboarding environment setup (Stage C / C5, revA R13). Board-scoped and
- * member-only. BLOCKING: the service runs the local write-probe first and, on
- * failure, persists nothing and we return 422 so the founder stays on the step
- * and can pick another folder.
+ * Onboarding environment setup (Stage C / C5, revA R13). Board-scoped,
+ * instance-admin, and member-only. BLOCKING: the service runs the local
+ * write-probe first and, on failure, persists nothing and we return 422 so the
+ * founder stays on the step and can pick another folder.
  */
 export function onboardingEnvironmentRoutes(db: Db): Router {
   const router = Router();
@@ -35,6 +36,7 @@ export function onboardingEnvironmentRoutes(db: Db): Router {
       res.status(401).json({ error: "authentication required" });
       return;
     }
+    assertCanManageInstanceSettings(req);
     const companyId = req.params.companyId as string;
     if (!(await userHasCompanyAccess(db, actor.userId, companyId))) {
       res.status(403).json({ error: "forbidden" });

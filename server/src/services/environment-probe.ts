@@ -34,6 +34,10 @@ function readString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
+export function getLocalProbeTargetPath(config: Record<string, unknown>): string | null {
+  return readString(config.path) ?? readString(config.rootFolder);
+}
+
 function isDockerSandboxProvider(provider: string): boolean {
   return provider === "sandbox-docker" || provider === "docker" || provider === "local-docker";
 }
@@ -73,7 +77,7 @@ function dockerSandboxProbe(config: Record<string, unknown>, provider: string): 
 
 export async function probeEnvironmentConfig(input: ProbeEnvironmentConfigInput): Promise<EnvironmentProbeResult> {
   if (input.driver === "local") {
-    const targetPath = readString(input.config.path) ?? readString(input.config.rootFolder);
+    const targetPath = getLocalProbeTargetPath(input.config);
     if (!targetPath) {
       // Back-compat: local runtime with no path has nothing to verify.
       return {
