@@ -22,7 +22,10 @@ type ProbeFn = (input: {
 export async function setupOnboardingEnvironment(
   db: Db,
   args: { companyId: string; rootFolder: string; probe?: ProbeFn },
-): Promise<{ ok: boolean; environmentId: string | null; probe: EnvironmentProbeResult }> {
+): Promise<
+  | { ok: false; environmentId: null; probe: EnvironmentProbeResult }
+  | { ok: true; environmentId: string; created: boolean; probe: EnvironmentProbeResult }
+> {
   const probeFn = args.probe ?? probeEnvironmentConfig;
   // 1. Blocking probe FIRST — never write rootFolder against an unwritable path.
   const probe = await probeFn({
@@ -47,6 +50,7 @@ export async function setupOnboardingEnvironment(
     .limit(1);
 
   let environmentId: string;
+  let created = false;
   if (existing) {
     await db
       .update(environments)
@@ -54,7 +58,7 @@ export async function setupOnboardingEnvironment(
       .where(eq(environments.id, existing.id));
     environmentId = existing.id;
   } else {
-    const [created] = await db
+    const [createdEnvironment] = await db
       .insert(environments)
       .values({
         companyId: args.companyId,
@@ -64,7 +68,8 @@ export async function setupOnboardingEnvironment(
         config: { path: args.rootFolder },
       })
       .returning();
-    environmentId = created.id;
+    environmentId = createdEnvironment.id;
+    created = true;
   }
 
   // 3. Persist rootFolder on the company (idempotent set).
@@ -73,5 +78,5 @@ export async function setupOnboardingEnvironment(
     .set({ rootFolder: args.rootFolder, updatedAt: new Date() })
     .where(eq(companies.id, args.companyId));
 
-  return { ok: true, environmentId, probe };
+  return { ok: true, environmentId, created, probe };
 }

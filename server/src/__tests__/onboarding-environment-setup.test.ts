@@ -50,6 +50,7 @@ describe("setupOnboardingEnvironment", () => {
     const res = await setupOnboardingEnvironment(db, { companyId: "c1", rootFolder: "/tmp/acme", probe });
     expect(res.ok).toBe(true);
     expect(res.environmentId).toBe("e1");
+    expect(res).toMatchObject({ created: true });
     expect(inserted[0]).toMatchObject({
       companyId: "c1",
       name: ONBOARDING_ENVIRONMENT_NAME,
@@ -71,6 +72,7 @@ describe("setupOnboardingEnvironment", () => {
     const res = await setupOnboardingEnvironment(db, { companyId: "c1", rootFolder: "/tmp/acme", probe });
     expect(res.ok).toBe(true);
     expect(res.environmentId).toBe("e1");
+    expect(res).toMatchObject({ created: false });
     expect(inserted).toHaveLength(0);
   });
 });

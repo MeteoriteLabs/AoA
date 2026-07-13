@@ -10,8 +10,12 @@ vi.mock("@armyofagents/db", () => ({
 }));
 
 const mockSetup = vi.hoisted(() => vi.fn());
+const mockSafeLogActivity = vi.hoisted(() => vi.fn());
 vi.mock("../services/onboarding-environment.js", () => ({
   setupOnboardingEnvironment: mockSetup,
+}));
+vi.mock("../utils/safe-log-activity.js", () => ({
+  safeLogActivity: mockSafeLogActivity,
 }));
 
 import {
@@ -102,10 +106,16 @@ describe("POST /companies/:companyId/onboarding/environment", () => {
     expect(res.status).toBe(422);
     expect(res.body.ok).toBe(false);
     expect(mockSetup).toHaveBeenCalledWith(expect.anything(), { companyId: COMPANY_ID, rootFolder: "/tmp/acme" });
+    expect(mockSafeLogActivity).not.toHaveBeenCalled();
   });
 
-  it("200 when the probe passes", async () => {
-    mockSetup.mockResolvedValue({ ok: true, environmentId: "e1", probe: { ok: true, summary: "ok" } });
+  it("200 and activity log when the probe creates the environment", async () => {
+    mockSetup.mockResolvedValue({
+      ok: true,
+      environmentId: "e1",
+      created: true,
+      probe: { ok: true, summary: "ok" },
+    });
     const res = await request(makeApp(dbWithMembership([{ id: COMPANY_ID }])))
       .post(`/api/companies/${COMPANY_ID}/onboarding/environment`)
       .send({ rootFolder: "  /tmp/acme  " });
@@ -113,6 +123,18 @@ describe("POST /companies/:companyId/onboarding/environment", () => {
     expect(res.body).toMatchObject({ ok: true, environmentId: "e1" });
     // trims before handing to the service
     expect(mockSetup).toHaveBeenCalledWith(expect.anything(), { companyId: COMPANY_ID, rootFolder: "/tmp/acme" });
+    expect(mockSafeLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        companyId: COMPANY_ID,
+        actorType: "user",
+        actorId: "u1",
+        action: "environment.created",
+        entityType: "environment",
+        entityId: "e1",
+      }),
+    );
+    expect(mockSafeLogActivity.mock.calls[0]?.[1]?.details).not.toHaveProperty("rootFolder");
   });
 });
 

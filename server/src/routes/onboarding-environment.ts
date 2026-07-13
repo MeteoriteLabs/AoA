@@ -4,7 +4,8 @@ import type { Db } from "@armyofagents/db";
 import { companyMemberships } from "@armyofagents/db";
 import { and, eq } from "drizzle-orm";
 import { setupOnboardingEnvironment } from "../services/onboarding-environment.js";
-import { assertCanManageInstanceSettings } from "./authz.js";
+import { safeLogActivity } from "../utils/safe-log-activity.js";
+import { assertCanManageInstanceSettings, getActorInfo } from "./authz.js";
 
 async function userHasCompanyAccess(db: Db, userId: string, companyId: string): Promise<boolean> {
   const rows = await db
@@ -61,6 +62,21 @@ export function onboardingEnvironmentRoutes(db: Db): Router {
       return;
     }
     const result = await setupOnboardingEnvironment(db, { companyId, rootFolder });
+    if (result.ok) {
+      await safeLogActivity(db, {
+        companyId,
+        ...getActorInfo(req),
+        action: result.created ? "environment.created" : "environment.updated",
+        entityType: "environment",
+        entityId: result.environmentId,
+        // Do not copy the local filesystem path into the audit payload.
+        details: {
+          name: "Local machine",
+          driver: "local",
+          source: "onboarding",
+        },
+      });
+    }
     // Blocking: 422 on probe failure so the UI stays on the step.
     res.status(result.ok ? 200 : 422).json(result);
   });
