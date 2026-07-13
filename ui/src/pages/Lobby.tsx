@@ -1,4 +1,5 @@
 import { type CSSProperties } from "react";
+import type { PendingInvitation } from "@armyofagents/shared";
 import { useNavigate } from "@/lib/router";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { useCompany } from "@/context/CompanyContext";
@@ -26,7 +27,11 @@ function deriveFirstName(
   return "there";
 }
 
-export function Lobby() {
+export function Lobby({
+  pendingInvitations = [],
+}: {
+  pendingInvitations?: PendingInvitation[];
+}) {
   const { companies, loading: companiesLoading, setSelectedCompanyId } = useCompany();
   const navigate = useNavigate();
 
@@ -113,6 +118,34 @@ export function Lobby() {
           {subtitleParts.join(" · ")}.
         </p>
       </div>
+
+      {pendingInvitations.length > 0 && (
+        <div className="mb-6 flex flex-col gap-2">
+          {pendingInvitations.map((invitation) => (
+            <button
+              key={invitation.inviteId}
+              type="button"
+              className="flex w-full items-center justify-between rounded-lg border border-brand/30 bg-brand/5 px-4 py-3 text-left transition-colors hover:bg-brand/10"
+              aria-label={`Review invitation to ${invitation.companyName}`}
+              onClick={() =>
+                navigate(
+                  `/onboarding/join?company=${encodeURIComponent(invitation.companyId)}`,
+                )
+              }
+            >
+              <span>
+                <span className="block text-sm font-semibold text-foreground">
+                  Invitation to {invitation.companyName}
+                </span>
+                <span className="mt-0.5 block text-xs text-muted-foreground">
+                  You have been invited to join this organization.
+                </span>
+              </span>
+              <span className="text-xs font-semibold text-brand">Review</span>
+            </button>
+          ))}
+        </div>
+      )}
 
       {interruptedCompanies.length > 0 && (
         <div className="mb-6 flex flex-col gap-2">

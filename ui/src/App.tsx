@@ -302,7 +302,7 @@ function LobbyOrOnboardingRedirect() {
   }, [data, navigate]);
   if (isLoading) return <RouteFallback />;
   if (data && data.journey !== "returning") return null; // redirecting
-  return <Lobby />;
+  return <Lobby pendingInvitations={data?.pendingInvitations ?? []} />;
 }
 
 export function App() {

@@ -128,6 +128,29 @@ describe("Lobby", () => {
     expect(screen.getByText("Beta Corp")).toBeInTheDocument();
   });
 
+  it("surfaces a returning user's pending invitation and opens its join flow", async () => {
+    const user = userEvent.setup();
+    mockCompanyContext.companies = [makeCompany()];
+
+    renderWithProviders(
+      <Lobby
+        pendingInvitations={[
+          {
+            companyId: "invited-co",
+            companyName: "Future Labs",
+            inviteId: "invite-1",
+            role: "team_member",
+            createdAt: "2026-07-13T00:00:00.000Z",
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("Invitation to Future Labs")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /review invitation to future labs/i }));
+    expect(mockNavigate).toHaveBeenCalledWith("/onboarding/join?company=invited-co", undefined);
+  });
+
   // The lobby v4 redesign drops the top header bar entirely. The "+ New
   // company" CTA lives in the LobbySidebar (mocked in this file). Import
   // company is only surfaced from the empty state. Tests for the prior
