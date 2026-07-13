@@ -2,42 +2,13 @@ import { useRef, useState } from "react";
 import type { StepProps } from "../registry";
 import { useCompany } from "../../context/CompanyContext";
 import { advanceOnboarding } from "../../api/onboarding";
+import {
+  clearPendingOrganization,
+  readPendingOrganization,
+  writePendingOrganization,
+  type PendingOrganization,
+} from "../pendingOrganization";
 import { Button } from "@/components/ui/button";
-
-type PendingOrganization = { id: string; name: string };
-
-function pendingOrganizationKey(userId: string): string {
-  return `aoa.onboarding.pendingOrganization.${userId}`;
-}
-
-function readPendingOrganization(userId: string): PendingOrganization | null {
-  try {
-    const raw = localStorage.getItem(pendingOrganizationKey(userId));
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as Partial<PendingOrganization>;
-    return typeof parsed.id === "string" && typeof parsed.name === "string"
-      ? { id: parsed.id, name: parsed.name }
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-function writePendingOrganization(userId: string, company: PendingOrganization): void {
-  try {
-    localStorage.setItem(pendingOrganizationKey(userId), JSON.stringify(company));
-  } catch {
-    // Same-page retries still use createdRef when browser storage is unavailable.
-  }
-}
-
-function clearPendingOrganization(userId: string): void {
-  try {
-    localStorage.removeItem(pendingOrganizationKey(userId));
-  } catch {
-    // A stale recovery hint is harmless: replaying the advance is idempotent.
-  }
-}
 
 /**
  * "Create your organization" step (Stage C / order 2). Creates the company via

@@ -7,7 +7,13 @@ import { Lobby } from "../pages/Lobby";
 // --- Mocks ---
 
 const mockNavigate = vi.fn();
-const onboardingProgressByCompany = vi.hoisted(() => new Map<string, string[]>());
+const onboardingProgressByCompany = vi.hoisted(() => new Map<string, string[] | null>());
+const currentProfile = vi.hoisted(() => ({
+  id: "u1",
+  email: "ada@example.com",
+  displayName: "Ada",
+  avatarUrl: null,
+}));
 
 vi.mock("react-router-dom", async () => {
   const actual = await vi.importActual<typeof import("react-router-dom")>("react-router-dom");
@@ -29,12 +35,23 @@ vi.mock("@tanstack/react-query", async () => {
   const actual = await vi.importActual<typeof import("@tanstack/react-query")>("@tanstack/react-query");
   return {
     ...actual,
-    useQuery: vi.fn().mockReturnValue({ data: undefined, isLoading: false }),
+    useQuery: vi.fn(({ queryKey }: { queryKey: readonly unknown[] }) => ({
+      data: queryKey[0] === "auth" ? currentProfile : undefined,
+      isLoading: false,
+    })),
     useQueries: vi.fn(({ queries }: { queries: { queryKey: readonly unknown[] }[] }) =>
-      queries.map((query) => ({
-        data: { completedStates: onboardingProgressByCompany.get(String(query.queryKey[2])) ?? [] },
-        isLoading: false,
-      }))),
+      queries.map((query) => {
+        const companyId = String(query.queryKey[2]);
+        const stored = onboardingProgressByCompany.get(companyId);
+        return {
+          data: onboardingProgressByCompany.has(companyId)
+            ? stored === null
+              ? null
+              : { completedStates: stored }
+            : { completedStates: ["SETUP_COMPLETE"] },
+          isLoading: false,
+        };
+      })),
   };
 });
 
@@ -92,6 +109,7 @@ vi.mock("@/components/UserMenu", () => ({
 describe("Lobby", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    localStorage.clear();
     onboardingProgressByCompany.clear();
     mockCompanyContext.loading = false;
     mockCompanyContext.companies = [];
@@ -150,6 +168,30 @@ describe("Lobby", () => {
     await user.click(screen.getByRole("button", { name: /finish setting up acme inc/i }));
     expect(mockCompanyContext.setSelectedCompanyId).toHaveBeenCalledWith("c1");
     expect(mockNavigate).toHaveBeenCalledWith("/onboarding", undefined);
+  });
+
+  it("surfaces pending-organization recovery when the progress row was never created", () => {
+    const company = makeCompany({ id: "c1", name: "Acme Inc", issuePrefix: "ACME" });
+    mockCompanyContext.companies = [company];
+    onboardingProgressByCompany.set("c1", null);
+    localStorage.setItem(
+      "aoa.onboarding.pendingOrganization.u1",
+      JSON.stringify({ id: "c1", name: "Acme Inc" }),
+    );
+
+    renderWithProviders(<Lobby />);
+
+    expect(screen.getByRole("button", { name: /finish setting up acme inc/i })).toBeInTheDocument();
+  });
+
+  it("does not label a legacy organization as interrupted without a recovery marker", () => {
+    const company = makeCompany({ id: "c1", name: "Acme Inc", issuePrefix: "ACME" });
+    mockCompanyContext.companies = [company];
+    onboardingProgressByCompany.set("c1", null);
+
+    renderWithProviders(<Lobby />);
+
+    expect(screen.queryByRole("button", { name: /finish setting up acme inc/i })).toBeNull();
   });
 
   it("renders LobbyEmptyState when there are 0 companies", () => {
