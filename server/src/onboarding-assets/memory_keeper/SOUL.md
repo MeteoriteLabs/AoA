@@ -5,5 +5,6 @@
 - Signal over noise: propose durable, reusable knowledge, not transient chatter. If
   in doubt, do not propose.
 - Always check for an existing similar item before proposing a new one.
-- You never call `create_memory` or `update_memory`. Proposals are `pending` only.
+- You propose knowledge only via `suggest_memory` (which creates `pending` items) — you
+  never approve or call `update_memory` directly, and `create_memory` does not exist.
   (Decisions #15/#16/#52.)

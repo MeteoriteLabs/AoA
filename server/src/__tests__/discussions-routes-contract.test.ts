@@ -1,16 +1,35 @@
 import { describe, it, expect, vi } from "vitest";
 
-// No `@armyofagents/db` or `drizzle-orm` mock needed — this file only asserts
-// factory exports via dynamic import. The drizzle-mock helper at
-// `helpers/drizzle-mock.ts` is only required when a test actually destructures
-// tables/operators at module scope.
-//
-// Dynamic import("../routes/discussions.js") traverses a heavy module graph
-// that occasionally exceeds the default 5000ms test timeout under
-// parallel-suite load. Bump per-file so the first import has headroom;
-// subsequent imports are cached and fast.
-vi.setConfig({ testTimeout: 15000 });
+const makeService = () => new Proxy({}, { get: () => vi.fn() });
 
+vi.mock("../services/index.js", () => ({
+  discussionService: vi.fn(() => makeService()),
+  logActivity: vi.fn(),
+  notificationService: vi.fn(() => makeService()),
+  permissionService: vi.fn(() => makeService()),
+}));
+
+vi.mock("../services/threads.js", () => ({
+  parseMentions: vi.fn(() => []),
+  processMentions: vi.fn(),
+  threadService: vi.fn(() => makeService()),
+}));
+
+vi.mock("../services/thread-scope-versions.js", () => ({
+  threadScopeVersionService: vi.fn(() => makeService()),
+}));
+
+vi.mock("../services/issue-assignee-wakeup.js", () => ({
+  enqueueIssueAssigneeWakeup: vi.fn(),
+}));
+
+vi.mock("../services/inbox-attach.js", () => ({
+  attachInboxItemToThread: vi.fn(),
+  promoteInboxItemToNewThread: vi.fn(),
+}));
+
+// Keep route-contract imports focused on Express registration, not the full
+// service/thread orchestration graph behind every handler.
 /**
  * Discussion Routes Contract Tests
  *
@@ -23,7 +42,9 @@ vi.setConfig({ testTimeout: 15000 });
 describe("discussionRoutes contract", () => {
   it("exports a discussionRoutes factory function", async () => {
     // Dynamic import to avoid drizzle ESM issues in test env
+    const startedAt = performance.now();
     const mod = await import("../routes/discussions.js");
+    expect(performance.now() - startedAt).toBeLessThan(3000);
     expect(mod.discussionRoutes).toBeDefined();
     expect(typeof mod.discussionRoutes).toBe("function");
   });

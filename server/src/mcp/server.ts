@@ -4,6 +4,7 @@ import { createMcpApiKeySchema, updateMcpSettingsSchema } from "@armyofagents/sh
 import { z } from "zod";
 import { forbidden, unauthorized } from "../errors.js";
 import {
+  accessService,
   agentService,
   approvalService,
   artifactService,
@@ -96,6 +97,7 @@ interface McpRouteDeps {
   companiesSvc?: ReturnType<typeof companyService>;
   mcpSvc?: ReturnType<typeof mcpService>;
   permissionsSvc?: ReturnType<typeof permissionService>;
+  accessSvc?: ReturnType<typeof accessService>;
   agentsSvc?: ReturnType<typeof agentService>;
   projectsSvc?: ReturnType<typeof projectService>;
   approvalsSvc?: ReturnType<typeof approvalService>;
@@ -254,6 +256,7 @@ export function mcpServerRoutes(db: Db, deps: McpRouteDeps = {}) {
   const companiesSvc = deps.companiesSvc ?? companyService(db);
   const mcpSvc = deps.mcpSvc ?? mcpService(db);
   const permissionsSvc = deps.permissionsSvc ?? permissionService(db);
+  const accessSvc = deps.accessSvc ?? accessService(db);
   const agentsSvc = deps.agentsSvc ?? agentService(db);
   const projectsSvc = deps.projectsSvc ?? projectService(db);
   const approvalsSvc = deps.approvalsSvc ?? approvalService(db);
@@ -276,6 +279,7 @@ export function mcpServerRoutes(db: Db, deps: McpRouteDeps = {}) {
     companiesSvc,
     mcpSvc,
     permissionsSvc,
+    accessSvc,
     agentsSvc,
     projectsSvc,
     approvalsSvc,

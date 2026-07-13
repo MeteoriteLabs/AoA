@@ -44,6 +44,8 @@ function makeIssueRow(overrides: Record<string, unknown> = {}): Record<string, u
     goalId: "goal-1",
     sourceDiscussionId: "thread-9",
     assigneeAgentId: AGENT_ID,
+    assigneeUserId: null,
+    responsibleUserId: "user-owner",
     executionWorkspaceId: "ws-1",
     executionWorkspacePreference: "isolated_workspace",
     labels: [],
@@ -142,6 +144,8 @@ describe("get_task tool — same-company task", () => {
     expect(data.priority).toBe("high");
     expect(data.sourceDiscussionId).toBe("thread-9");
     expect(data.assigneeAgentId).toBe(AGENT_ID);
+    expect(data.assigneeUserId).toBeNull();
+    expect(data.responsibleUserId).toBe("user-owner");
     expect(data.executionWorkspaceId).toBe("ws-1");
     expect(result.summary).toContain("ENG-42");
   });

@@ -1,3 +1,5 @@
+import { COMMANDER_SKILL_PREAMBLE } from "./commander-preamble.js";
+
 interface RuntimeSkillEntry { key: string; name: string; markdown: string; trustLevel?: string; }
 interface BuildArgs {
   companyId: string;
@@ -63,6 +65,8 @@ export async function buildCompactSkillList(args: CompactArgs): Promise<string> 
     }
     if (!rows.trim()) return "";
     return [
+      COMMANDER_SKILL_PREAMBLE,
+      "",
       "## Available Skills",
       "Call `use_skill` with the skill key to load full instructions before applying a skill.",
       "",

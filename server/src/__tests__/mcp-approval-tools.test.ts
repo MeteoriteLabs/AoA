@@ -53,6 +53,7 @@ vi.mock("../services/index.js", () => {
     memoryService: noopFactory,
     mcpService: noopFactory,
     permissionService: noopFactory,
+    accessService: noopFactory,
     projectService: noopFactory,
     logActivity: vi.fn().mockResolvedValue(undefined),
   };

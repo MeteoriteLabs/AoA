@@ -30,6 +30,16 @@ export interface FakeCodexControl {
   text: string;
   /** usage echoed in turn.completed. */
   usage?: { input?: number; cached?: number; output?: number };
+  /** MCP-style tool calls emitted before the assistant reply. */
+  toolCalls?: Array<{
+    name: string;
+    input?: unknown;
+    envelope: {
+      success: boolean;
+      data: unknown;
+      summary: string;
+    };
+  }>;
   /**
    * Force a failure: "model-400" simulates the gpt-5.3-codex ChatGPT-account
    * rejection (the bug the model-pin fix addresses); "generic" emits a generic

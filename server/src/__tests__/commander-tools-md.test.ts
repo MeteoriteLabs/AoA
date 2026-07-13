@@ -10,7 +10,7 @@ const src = readFileSync(
 describe("TOOLS.md contract", () => {
   // Core tools always present
   const coreTools = [
-    "query_tasks", "query_goals", "query_agents", "query_company",
+    "query_tasks", "query_goals", "query_team_roster", "query_humans", "query_agents", "query_company",
     "query_departments", "query_memory", "query_budget", "query_activity",
     "use_skill",
   ];
@@ -47,6 +47,13 @@ describe("TOOLS.md contract", () => {
     );
   });
 
+  it("documents the tool count generated from the live registry", () => {
+    // TOOLS.md is now generated from the registry (drift-locked by
+    // tool-manifest.test.ts). The count is emitted, not hand-typed.
+    expect(src).toMatch(/The \d+ tools below are your complete set/);
+    expect(src).toContain("generated from the live tool registry");
+  });
+
   // The v0.1 rewrite organizes tools into named, table-rendered categories.
   // Lock that surface so a future drift back to the prose blob is caught.
   it("organizes tools into named markdown categories with table rows", () => {
@@ -55,5 +62,15 @@ describe("TOOLS.md contract", () => {
     expect(src).toMatch(/^## Memory Tools/m);
     // Pipe-table syntax: | Tool | What it ... |
     expect(src).toMatch(/^\|\s*Tool\s*\|/m);
+  });
+
+  it("documents responsible-human ownership separately from executor assignment", () => {
+    // The responsible-human vs assignee distinction is carried in the generated
+    // tool descriptions (get_task/assign_task/create_task/update_task), not in
+    // hand-authored prose. Assert the concept, not the old field-name wording.
+    expect(src).toMatch(/responsible human/i);
+    expect(src).toMatch(/assignee means who does the task/i);
+    expect(src).toMatch(/responsible human owns the outcome/i);
+    expect(src).not.toMatch(/agent executor/i);
   });
 });

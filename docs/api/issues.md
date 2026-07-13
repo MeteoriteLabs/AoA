@@ -3,7 +3,16 @@ title: Tasks API
 summary: Task CRUD, checkout/release, comments, attachments, documents, labels, and approvals
 ---
 
-Tasks are the unit of work in AoA. The DB table and all routes use `issues`; the UI calls them "Tasks". They support hierarchical relationships, atomic checkout, comments, file attachments, inline documents, and labels.
+Tasks are the unit of work in AoA. The DB table and all routes use `issues`; the UI calls them "Tasks". They support hierarchical relationships, atomic agent checkout, comments, file attachments, inline documents, and labels.
+
+## Ownership Fields
+
+| Field | Meaning |
+|-------|---------|
+| `assigneeAgentId` | Agent executor assigned to do the work. Agent assignment can dispatch a heartbeat when the task is dispatchable. |
+| `assigneeUserId` | Human executor assigned to do the work, where human assignment is supported. |
+| `responsibleUserId` | Human accountable for the task outcome and escalation. This is accountability metadata, not an executor or checkout owner. |
+| `reviewerUserId` | Human expected to review output when review is needed. |
 
 ## List Tasks
 
@@ -17,9 +26,11 @@ Query parameters:
 |-------|-------------|
 | `status` | Filter by status (comma-separated: `todo,in_progress`) |
 | `assigneeAgentId` | Filter by assigned agent |
+| `assigneeUserId` | Filter by assigned human executor. Use `me` with board authentication to filter to the current user. |
+| `responsibleUserId` | Filter by responsible human. Use `me` with board authentication to filter to the current user. |
 | `projectId` | Filter by project |
 
-Results sorted by priority.
+Results sorted by priority. Task objects include `assigneeAgentId`, `assigneeUserId`, `responsibleUserId`, and `reviewerUserId`.
 
 ## Get Issue
 
@@ -39,11 +50,17 @@ POST /api/companies/{companyId}/issues
   "status": "todo",
   "priority": "high",
   "assigneeAgentId": "{agentId}",
+  "responsibleUserId": "{userId}",
+  "reviewerUserId": "{reviewerUserId}",
   "parentId": "{parentIssueId}",
   "projectId": "{projectId}",
   "goalId": "{goalId}"
 }
 ```
+
+Create accepts `assigneeAgentId`, `assigneeUserId`, `responsibleUserId`, and `reviewerUserId`. `assigneeAgentId` and `assigneeUserId` identify the executor; `responsibleUserId` identifies the accountable human and does not dispatch execution. Omit `responsibleUserId` to use server defaulting, or send `null` to create the task with no responsible human.
+
+Tasks have one assignee, either an agent (`assigneeAgentId`) or a human (`assigneeUserId`). Tasks also have one responsible human (`responsibleUserId`) who owns accountability for the work. If no responsible human is explicitly chosen, AoA defaults it from the human assignee, the assigned agent's nearest human manager, or the current operator for unassigned tasks.
 
 ## Update Issue
 
@@ -58,7 +75,7 @@ Headers: X-Aoa-Run-Id: {runId}
 
 The optional `comment` field adds a comment in the same call.
 
-Updatable fields: `title`, `description`, `status`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`.
+Updatable fields: `title`, `description`, `status`, `priority`, `assigneeAgentId`, `assigneeUserId`, `responsibleUserId`, `reviewerUserId`, `projectId`, `goalId`, `parentId`, `billingCode`. Send `responsibleUserId: null` to clear the responsible human.
 
 ## Delete Issue
 
@@ -255,8 +272,9 @@ backlog -> todo -> in_progress -> in_review -> done
                     blocked       in_progress
 ```
 
-- `in_progress` requires checkout (single assignee)
+- `in_progress` requires agent checkout (single assigned agent)
 - `started_at` auto-set on first `in_progress` transition
 - `completed_at` auto-set on `done`
 - Terminal states: `done`, `cancelled`
 - Any non-terminal status can be blocked via task dependencies
+- `responsibleUserId` does not affect agent checkout, dispatch, or the single-assignee execution invariant

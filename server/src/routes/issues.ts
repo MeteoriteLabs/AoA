@@ -556,12 +556,22 @@ export function issueRoutes(db: Db, storage: StorageService) {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const assigneeUserFilterRaw = req.query.assigneeUserId as string | undefined;
+    const responsibleUserFilterRaw = req.query.responsibleUserId as string | undefined;
+    const createdByUserFilterRaw = req.query.createdByUserId as string | undefined;
     const touchedByUserFilterRaw = req.query.touchedByUserId as string | undefined;
     const unreadForUserFilterRaw = req.query.unreadForUserId as string | undefined;
     const assigneeUserId =
       assigneeUserFilterRaw === "me" && req.actor.type === "board"
         ? req.actor.userId
         : assigneeUserFilterRaw;
+    const responsibleUserId =
+      responsibleUserFilterRaw === "me" && req.actor.type === "board"
+        ? req.actor.userId
+        : responsibleUserFilterRaw;
+    const createdByUserId =
+      createdByUserFilterRaw === "me" && req.actor.type === "board"
+        ? req.actor.userId
+        : createdByUserFilterRaw;
     const touchedByUserId =
       touchedByUserFilterRaw === "me" && req.actor.type === "board"
         ? req.actor.userId
@@ -573,6 +583,14 @@ export function issueRoutes(db: Db, storage: StorageService) {
 
     if (assigneeUserFilterRaw === "me" && (!assigneeUserId || req.actor.type !== "board")) {
       res.status(403).json({ error: "assigneeUserId=me requires board authentication" });
+      return;
+    }
+    if (responsibleUserFilterRaw === "me" && (!responsibleUserId || req.actor.type !== "board")) {
+      res.status(403).json({ error: "responsibleUserId=me requires board authentication" });
+      return;
+    }
+    if (createdByUserFilterRaw === "me" && (!createdByUserId || req.actor.type !== "board")) {
+      res.status(403).json({ error: "createdByUserId=me requires board authentication" });
       return;
     }
     if (touchedByUserFilterRaw === "me" && (!touchedByUserId || req.actor.type !== "board")) {
@@ -608,6 +626,8 @@ export function issueRoutes(db: Db, storage: StorageService) {
       status: req.query.status as string | undefined,
       assigneeAgentId: req.query.assigneeAgentId as string | undefined,
       assigneeUserId,
+      responsibleUserId,
+      createdByUserId,
       touchedByUserId,
       unreadForUserId,
       projectId: req.query.projectId as string | undefined,
@@ -812,7 +832,11 @@ export function issueRoutes(db: Db, storage: StorageService) {
   router.post("/companies/:companyId/issues", validate(createIssueSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    if (req.body.assigneeUserId || (req.body.assigneeAgentId && req.actor.type !== "agent")) {
+    if (
+      req.body.responsibleUserId !== undefined ||
+      req.body.assigneeUserId ||
+      (req.body.assigneeAgentId && req.actor.type !== "agent")
+    ) {
       await assertCanAssignTasks(req, companyId);
     }
 
@@ -932,6 +956,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       ...req.body,
       createdByAgentId: actor.agentId,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+      responsibleFallbackUserId: actor.actorType === "user" ? actor.actorId : null,
     });
 
     await logActivity(db, {
@@ -1021,6 +1046,9 @@ export function issueRoutes(db: Db, storage: StorageService) {
     const assigneeWillChange =
       (req.body.assigneeAgentId !== undefined && req.body.assigneeAgentId !== existing.assigneeAgentId) ||
       (req.body.assigneeUserId !== undefined && req.body.assigneeUserId !== existing.assigneeUserId);
+    const responsibleWillChange =
+      req.body.responsibleUserId !== undefined &&
+      req.body.responsibleUserId !== existing.responsibleUserId;
 
     const isAgentReturningIssueToCreator =
       req.actor.type === "agent" &&
@@ -1031,8 +1059,8 @@ export function issueRoutes(db: Db, storage: StorageService) {
       !!existing.createdByUserId &&
       req.body.assigneeUserId === existing.createdByUserId;
 
-    if (assigneeWillChange) {
-      if (!isAgentReturningIssueToCreator) {
+    if (assigneeWillChange || responsibleWillChange) {
+      if (!(isAgentReturningIssueToCreator && !responsibleWillChange)) {
         await assertCanAssignTasks(req, existing.companyId);
       }
     }
@@ -1098,6 +1126,15 @@ export function issueRoutes(db: Db, storage: StorageService) {
         previous[key] = (existing as Record<string, unknown>)[key];
       }
     }
+    const includeResponsibleTransition =
+      Object.prototype.hasOwnProperty.call(req.body, "responsibleUserId") ||
+      issue.responsibleUserId !== existing.responsibleUserId;
+    const responsibleTransitionDetails = includeResponsibleTransition
+      ? {
+          responsibleUserId: issue.responsibleUserId,
+          previousResponsibleUserId: existing.responsibleUserId,
+        }
+      : {};
 
     const actor = getActorInfo(req);
     await logActivity(db, {
@@ -1111,6 +1148,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
       entityId: issue.id,
       details: {
         ...updateFields,
+        ...responsibleTransitionDetails,
         identifier: issue.identifier,
         ...(workspaceOverrideAuditDetails(updateFields)
           ? { workspaceOverride: workspaceOverrideAuditDetails(updateFields) }

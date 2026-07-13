@@ -1,16 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
 
-// No `@armyofagents/db` or `drizzle-orm` mock needed — this file only asserts
-// factory exports via dynamic import. The drizzle-mock helper at
-// `helpers/drizzle-mock.ts` is only required when a test actually destructures
-// tables/operators at module scope.
-//
-// Dynamic import("../routes/routines.js") traverses a heavy module graph that
-// occasionally exceeds the default 5000ms test timeout under parallel-suite
-// load. Bump per-file so the first import has headroom; subsequent imports
-// are cached and fast.
-vi.setConfig({ testTimeout: 15000 });
+const makeService = () => new Proxy({}, { get: () => vi.fn() });
 
+vi.mock("../services/index.js", () => ({
+  accessService: vi.fn(() => makeService()),
+  logActivity: vi.fn(),
+  routineService: vi.fn(() => makeService()),
+}));
+
+// Keep route-contract imports focused on Express registration, not the full
+// service graph behind every handler.
 /**
  * Routine Routes Contract Tests
  *
@@ -20,7 +19,9 @@ vi.setConfig({ testTimeout: 15000 });
 
 describe("routineRoutes contract", () => {
   it("exports a routineRoutes factory function", async () => {
+    const startedAt = performance.now();
     const mod = await import("../routes/routines.js");
+    expect(performance.now() - startedAt).toBeLessThan(3000);
     expect(mod.routineRoutes).toBeDefined();
     expect(typeof mod.routineRoutes).toBe("function");
   });

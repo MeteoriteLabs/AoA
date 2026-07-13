@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { buildCompactSkillList } from "../services/internal-agent/commander-skills.js";
+import { COMMANDER_SKILL_PREAMBLE } from "../services/internal-agent/commander-preamble.js";
 
 function makeEntry(overrides: Partial<{ key: string; name: string; description: string; triggerPhrases: string[] }> = {}) {
   return {
@@ -72,5 +73,20 @@ describe("buildCompactSkillList", () => {
     });
     const result = await buildCompactSkillList({ companyId: "c1", agentId: "a1", resolve });
     expect(result).toBe("");
+  });
+
+  it("prepends the shared preamble before the Available Skills header", async () => {
+    const resolve = vi.fn(async () => [makeEntry()]);
+    const result = await buildCompactSkillList({ companyId: "c1", agentId: "a1", resolve });
+    expect(result).toContain(COMMANDER_SKILL_PREAMBLE);
+    // preamble must come before the table header
+    expect(result.indexOf(COMMANDER_SKILL_PREAMBLE)).toBeLessThan(result.indexOf("## Available Skills"));
+  });
+
+  it("omits the preamble entirely when there are no skills (still returns empty string)", async () => {
+    const resolve = vi.fn(async () => []);
+    const result = await buildCompactSkillList({ companyId: "c1", agentId: "a1", resolve });
+    expect(result).toBe("");
+    expect(result).not.toContain(COMMANDER_SKILL_PREAMBLE);
   });
 });
