@@ -11,8 +11,17 @@ const state = vi.hoisted(() => ({
   orgProps: null as unknown as { ctx: { companyId: string | null }; onComplete: () => void },
 }));
 const mockNavigate = vi.hoisted(() => vi.fn());
+const mockRemoveQueries = vi.hoisted(() => vi.fn());
 const mockGetOnboardingProgress = vi.hoisted(() => vi.fn());
 const mockAdvanceOnboarding = vi.hoisted(() => vi.fn());
+
+vi.mock("@tanstack/react-query", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@tanstack/react-query")>();
+  return {
+    ...actual,
+    useQueryClient: () => ({ removeQueries: mockRemoveQueries }),
+  };
+});
 
 vi.mock("@/lib/router", () => ({
   useNavigate: () => mockNavigate,
@@ -68,6 +77,22 @@ describe("OnboardingFlowPage", () => {
     await screen.findByText("finish-flow");
     expect(state.flowProps.companyId).toBe("existing-co");
     expect(state.orgProps).toBeNull();
+  });
+
+  it("founder: evicts the cached journey before returning to the Lobby", async () => {
+    state.selectedCompanyId = "completed-co";
+    renderWithProviders(<OnboardingFlowPage journey="founder" />);
+
+    fireEvent.click(await screen.findByText("finish-flow"));
+
+    expect(mockRemoveQueries).toHaveBeenCalledWith({
+      queryKey: ["onboarding", "journey"],
+      exact: true,
+    });
+    expect(mockRemoveQueries.mock.invocationCallOrder[0]).toBeLessThan(
+      mockNavigate.mock.invocationCallOrder[0]!,
+    );
+    expect(mockNavigate).toHaveBeenCalledWith("/", { replace: true });
   });
 
   it("founder + ?new=1: drives org-create directly on the user layer, then resumes clean", async () => {

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearchParams } from "@/lib/router";
 import { useCompany } from "@/context/CompanyContext";
 import type { OnboardingJourney, OnboardingState } from "@armyofagents/shared";
@@ -37,6 +37,7 @@ function InvitedPendingPage() {
  */
 export function OnboardingFlowPage({ journey }: { journey: OnboardingJourney }) {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [searchParams] = useSearchParams();
   const { selectedCompanyId } = useCompany();
   const [invitedDone, setInvitedDone] = useState(false);
@@ -118,9 +119,17 @@ export function OnboardingFlowPage({ journey }: { journey: OnboardingJourney }) 
       api={onboardingApi}
       registry={ONBOARDING_STEPS}
       onBack={() => navigate("/", { replace: true })}
-      onFinished={() =>
-        journey === "invited" ? setInvitedDone(true) : navigate("/", { replace: true })
-      }
+      onFinished={() => {
+        if (journey === "invited") {
+          setInvitedDone(true);
+          return;
+        }
+        // The index gate must resolve the post-setup membership state from the
+        // server. Its cached pre-setup `founder` result would otherwise redirect
+        // back into onboarding before the background refetch completes.
+        queryClient.removeQueries({ queryKey: ["onboarding", "journey"], exact: true });
+        navigate("/", { replace: true });
+      }}
     />
   );
 }
