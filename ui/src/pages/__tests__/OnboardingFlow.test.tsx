@@ -11,6 +11,8 @@ const state = vi.hoisted(() => ({
   orgProps: null as unknown as { ctx: { companyId: string | null }; onComplete: () => void },
 }));
 const mockNavigate = vi.hoisted(() => vi.fn());
+const mockGetOnboardingProgress = vi.hoisted(() => vi.fn());
+const mockAdvanceOnboarding = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/router", () => ({
   useNavigate: () => mockNavigate,
@@ -21,6 +23,11 @@ vi.mock("@/context/CompanyContext", () => ({
 }));
 vi.mock("../../api/auth", () => ({
   authApi: { getSession: () => Promise.resolve(state.session) },
+}));
+vi.mock("../../api/onboarding", () => ({
+  onboardingApi: { getProgress: vi.fn(), advance: vi.fn() },
+  getOnboardingProgress: mockGetOnboardingProgress,
+  advanceOnboarding: mockAdvanceOnboarding,
 }));
 vi.mock("../../onboarding/FlowEngine", () => ({
   FlowEngine: (props: { companyId: string | null; onFinished?: () => void }) => {
@@ -47,6 +54,12 @@ describe("OnboardingFlowPage", () => {
     state.session = { user: { id: "u1" } };
     state.flowProps = null as never;
     state.orgProps = null as never;
+    mockGetOnboardingProgress.mockResolvedValue({
+      completedStates: ["AUTHENTICATED", "PROFILE_SET"],
+    });
+    mockAdvanceOnboarding.mockResolvedValue({
+      completedStates: ["AUTHENTICATED", "PROFILE_SET"],
+    });
   });
 
   it("founder: runs the FlowEngine on the selected company's org layer", async () => {
@@ -66,6 +79,21 @@ describe("OnboardingFlowPage", () => {
     // finishing the org step resumes the NEW company via a clean /onboarding
     state.orgProps.onComplete();
     expect(mockNavigate).toHaveBeenCalledWith("/onboarding", { replace: true });
+  });
+
+  it("founder + ?new=1: persists PROFILE_SET before rendering OrgStep for a legacy user", async () => {
+    state.searchParams = new URLSearchParams("new=1");
+    mockGetOnboardingProgress.mockResolvedValue(null);
+
+    renderWithProviders(<OnboardingFlowPage journey="founder" />);
+
+    await screen.findByText("org-step-direct");
+    expect(mockGetOnboardingProgress).toHaveBeenCalledWith(null);
+    expect(mockAdvanceOnboarding).toHaveBeenCalledWith({
+      companyId: null,
+      journey: "founder",
+      requestedState: "PROFILE_SET",
+    });
   });
 
   it("invited: shows a terminal pending page on finish instead of looping to /", async () => {

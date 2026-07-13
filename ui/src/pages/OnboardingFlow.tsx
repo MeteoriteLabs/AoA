@@ -5,7 +5,7 @@ import { useCompany } from "@/context/CompanyContext";
 import type { OnboardingJourney, OnboardingState } from "@armyofagents/shared";
 import { authApi } from "../api/auth";
 import { queryKeys } from "../lib/queryKeys";
-import { onboardingApi } from "../api/onboarding";
+import { advanceOnboarding, getOnboardingProgress, onboardingApi } from "../api/onboarding";
 import { FlowEngine } from "../onboarding/FlowEngine";
 import { ONBOARDING_STEPS } from "../onboarding/steps";
 import { OrgStep } from "../onboarding/steps/OrgStep";
@@ -40,20 +40,46 @@ export function OnboardingFlowPage({ journey }: { journey: OnboardingJourney }) 
   const [searchParams] = useSearchParams();
   const { selectedCompanyId } = useCompany();
   const [invitedDone, setInvitedDone] = useState(false);
+  const isNewFounderOrganization =
+    journey === "founder" && searchParams.get("new") === "1";
   const { data: session, isLoading } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
     retry: false,
   });
+  const userId = session?.user?.id;
+  const profileProgressQuery = useQuery({
+    queryKey: ["onboarding", "progress", "user-layer", userId],
+    queryFn: async () => {
+      const progress = await getOnboardingProgress(null);
+      if (progress?.completedStates.includes("PROFILE_SET")) return progress;
+      return advanceOnboarding({
+        companyId: null,
+        journey: "founder",
+        requestedState: "PROFILE_SET",
+      });
+    },
+    enabled: Boolean(userId && isNewFounderOrganization),
+    retry: false,
+  });
 
-  if (isLoading) {
+  if (isLoading || (isNewFounderOrganization && profileProgressQuery.isLoading)) {
     return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading…</div>;
   }
 
-  const userId = session?.user?.id;
   if (!userId) {
     navigate("/auth", { replace: true });
     return null;
+  }
+
+  if (isNewFounderOrganization && profileProgressQuery.error) {
+    return (
+      <div className="mx-auto max-w-xl py-10 text-sm text-destructive">
+        {profileProgressQuery.error instanceof Error
+          ? profileProgressQuery.error.message
+          : "Failed to prepare organization setup"}
+      </div>
+    );
   }
 
   // "Create another organization" (?new=1). A returning founder funnelled to
@@ -64,7 +90,7 @@ export function OnboardingFlowPage({ journey }: { journey: OnboardingJourney }) 
   // clean /onboarding (dropping ?new so it can't re-fire). Going through the
   // engine with a pinned-null companyId would instead loop: OrgStep advances on
   // the NEW company while the engine re-reads the still-empty user layer.
-  if (journey === "founder" && searchParams.get("new") === "1") {
+  if (isNewFounderOrganization) {
     const orgCtx = {
       userId,
       companyId: null,
