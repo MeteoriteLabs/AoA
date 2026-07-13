@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
+import { buildDevEnvironment } from "./dev-environment.mjs";
 
 const mode = process.argv[2] === "watch" ? "watch" : "dev";
 const cliArgs = process.argv.slice(3);
@@ -27,16 +28,9 @@ if (process.env.npm_config_authenticated_private === "true") {
   tailscaleAuth = true;
 }
 
-const env = {
-  ...process.env,
-  AOA_UI_DEV_MIDDLEWARE: "true",
-};
+const env = buildDevEnvironment(process.env, tailscaleAuth);
 
 if (tailscaleAuth) {
-  env.AOA_DEPLOYMENT_MODE = "authenticated";
-  env.AOA_DEPLOYMENT_EXPOSURE = "private";
-  env.AOA_AUTH_BASE_URL_MODE = "auto";
-  env.HOST = "0.0.0.0";
   console.log("[aoa] dev mode: authenticated/private (tailscale-friendly) on 0.0.0.0");
 } else {
   console.log("[aoa] dev mode: local_trusted (default)");
