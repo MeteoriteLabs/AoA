@@ -48,9 +48,13 @@ export function FlowEngine({
   const [completed, setCompleted] = useState<OnboardingState[] | null>(null);
   const [backStepId, setBackStepId] = useState<string | null>(null);
   const finishedRef = useRef(false);
+  const companyIdRef = useRef(companyId);
+  companyIdRef.current = companyId;
 
   const load = useCallback(async () => {
-    const p = await api.getProgress(companyId);
+    const requestedCompanyId = companyId;
+    const p = await api.getProgress(requestedCompanyId);
+    if (companyIdRef.current !== requestedCompanyId) return;
     setCompleted(p?.completedStates ?? ["AUTHENTICATED"]);
   }, [api, companyId]);
 

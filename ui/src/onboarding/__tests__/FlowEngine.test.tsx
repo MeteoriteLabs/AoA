@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { act, render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { FlowEngine, type FlowEngineApi } from "../FlowEngine";
 import type { StepDefinition, StepProps } from "../registry";
 import type { OnboardingState } from "@armyofagents/shared";
@@ -95,5 +95,58 @@ describe("FlowEngine (Stage B / B6)", () => {
     await waitFor(() => screen.getByTestId("step-profile"));
     fireEvent.click(screen.getByTestId("step-profile"));
     await waitFor(() => screen.getByTestId("step-org"));
+  });
+
+  it("ignores a stale user-layer reload after switching to the company layer", async () => {
+    let staleComplete: (() => void) | undefined;
+    let resolveCompany!: (progress: { completedStates: OnboardingState[] }) => void;
+    let resolveStaleUser!: (progress: { completedStates: OnboardingState[] }) => void;
+    let userLoads = 0;
+    const companyProgress = new Promise<{ completedStates: OnboardingState[] }>((resolve) => {
+      resolveCompany = resolve;
+    });
+    const staleUserProgress = new Promise<{ completedStates: OnboardingState[] }>((resolve) => {
+      resolveStaleUser = resolve;
+    });
+    const api: FlowEngineApi = {
+      getProgress: (companyId) => {
+        if (companyId) return companyProgress;
+        userLoads += 1;
+        if (userLoads === 1) {
+          return Promise.resolve({ completedStates: ["AUTHENTICATED", "PROFILE_SET"] });
+        }
+        return staleUserProgress;
+      },
+    };
+    const registry = makeRegistry(() => {});
+    const OrgStep = ({ onComplete }: StepProps) => {
+      staleComplete = onComplete;
+      return <div data-testid="captured-org-step">org</div>;
+    };
+    registry[1] = { ...registry[1]!, Component: OrgStep };
+
+    const { rerender } = render(
+      <FlowEngine userId="u1" companyId={null} journey="founder" api={api} registry={registry} />,
+    );
+    await waitFor(() => screen.getByTestId("captured-org-step"));
+    const completeFromUserLayer = staleComplete!;
+
+    rerender(
+      <FlowEngine userId="u1" companyId="c1" journey="founder" api={api} registry={registry} />,
+    );
+    act(() => completeFromUserLayer());
+
+    await act(async () => {
+      resolveCompany({
+        completedStates: ["AUTHENTICATED", "PROFILE_SET", "ORGANIZATION_CREATED"],
+      });
+    });
+    await waitFor(() => screen.getByTestId("onboarding-complete"));
+
+    await act(async () => {
+      resolveStaleUser({ completedStates: ["AUTHENTICATED", "PROFILE_SET"] });
+    });
+    expect(screen.queryByTestId("captured-org-step")).toBeNull();
+    expect(screen.getByTestId("onboarding-complete")).toBeTruthy();
   });
 });
