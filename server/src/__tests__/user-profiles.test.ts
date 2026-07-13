@@ -6,7 +6,15 @@ import { userProfileRoutes } from "../routes/user-profiles.js";
 
 function fakeDb() {
   let saved: Record<string, unknown> | null = null;
-  return {
+  const authUpdates: Array<Record<string, unknown>> = [];
+  let db: any;
+  db = {
+    authUpdates,
+    transactionCalls: 0,
+    transaction: async (fn: (tx: any) => Promise<unknown>) => {
+      db.transactionCalls += 1;
+      return await fn(db);
+    },
     insert: () => ({
       values: (v: Record<string, unknown>) => ({
         onConflictDoUpdate: async ({ set }: { set: Record<string, unknown> }) => {
@@ -15,7 +23,13 @@ function fakeDb() {
       }),
     }),
     select: () => ({ from: () => ({ where: () => ({ limit: async () => (saved ? [saved] : []) }) }) }),
+    update: () => ({
+      set: (values: Record<string, unknown>) => ({
+        where: async () => { authUpdates.push(values); },
+      }),
+    }),
   } as any;
+  return db;
 }
 
 describe("user profile service (Stage C / C1)", () => {
@@ -28,6 +42,22 @@ describe("user profile service (Stage C / C1)", () => {
     expect(p.userId).toBe("u1");
     expect(p.displayName).toBe("Ada");
     expect(p.socialLinks[0].url).toContain("github");
+  });
+
+  it("keeps the existing app identity fields in sync with onboarding profile writes", async () => {
+    const db = fakeDb();
+    await upsertUserProfile(db, "u1", {
+      displayName: "Ada",
+      avatarUrl: "https://example.com/ada.png",
+    });
+
+    expect(db.authUpdates).toEqual([
+      expect.objectContaining({
+        displayName: "Ada",
+        avatarUrl: "https://example.com/ada.png",
+      }),
+    ]);
+    expect(db.transactionCalls).toBe(1);
   });
 
   it("getUserProfile returns null when none exists", async () => {
