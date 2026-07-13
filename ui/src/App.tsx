@@ -51,6 +51,7 @@ import MarketplacePackageDetail from "./pages/MarketplacePackageDetail";
 import { queryKeys } from "./lib/queryKeys";
 import { useCompany } from "./context/CompanyContext";
 import { useDialog } from "./context/DialogContext";
+import { requiresBoardSession } from "./lib/authGate";
 
 const AgentDetail = lazy(() => import("./pages/AgentDetail").then((m) => ({ default: m.AgentDetail })));
 const AoaAgentDetail = lazy(() => import("./pages/AoaAgentDetail").then((m) => ({ default: m.AoaAgentDetail })));
@@ -76,15 +77,15 @@ function CloudAccessGate() {
     retry: false,
   });
 
-  const isAuthenticatedMode = healthQuery.data?.deploymentMode === "authenticated";
+  const requiresSession = requiresBoardSession(healthQuery.data);
   const sessionQuery = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
-    enabled: isAuthenticatedMode,
+    enabled: requiresSession,
     retry: false,
   });
 
-  if (healthQuery.isLoading || (isAuthenticatedMode && sessionQuery.isLoading)) {
+  if (healthQuery.isLoading || (requiresSession && sessionQuery.isLoading)) {
     return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
   }
 
@@ -100,7 +101,7 @@ function CloudAccessGate() {
   // user to sign in becomes the instance admin (RB3). So a session-less user —
   // including on a brand-new instance (bootstrapStatus "bootstrap_pending") — is
   // sent to the Google login rather than the retired CLI-bootstrap page.
-  if (isAuthenticatedMode && !sessionQuery.data) {
+  if (requiresSession && !sessionQuery.data) {
     const next = encodeURIComponent(`${location.pathname}${location.search}`);
     return <Navigate to={`/auth?next=${next}`} replace />;
   }
