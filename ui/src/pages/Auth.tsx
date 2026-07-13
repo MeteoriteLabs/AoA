@@ -7,13 +7,19 @@ import { Button } from "@/components/ui/button";
 import { AsciiArtAnimation } from "@/components/AsciiArtAnimation";
 import { Sparkles } from "lucide-react";
 
+function safeNextPath(candidate: string | null): string {
+  if (!candidate?.startsWith("/")) return "/";
+  if (candidate.startsWith("//") || candidate.includes("\\")) return "/";
+  return candidate;
+}
+
 export function AuthPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
 
-  const nextPath = useMemo(() => searchParams.get("next") || "/", [searchParams]);
+  const nextPath = useMemo(() => safeNextPath(searchParams.get("next")), [searchParams]);
   const { data: session, isLoading: isSessionLoading } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
