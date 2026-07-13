@@ -1,4 +1,4 @@
-import type { StepDefinition } from "../registry";
+import { validateRegistry, type StepDefinition } from "../registry";
 import { ProfileStep } from "./ProfileStep";
 import { OrgStep } from "./OrgStep";
 import { EnvironmentStep } from "./EnvironmentStep";
@@ -111,3 +111,10 @@ export const ONBOARDING_STEPS: StepDefinition[] = [
     title: "Review",
   },
 ];
+
+export const ONBOARDING_REGISTRY_VALIDATION_ERRORS = validateRegistry(ONBOARDING_STEPS);
+if (ONBOARDING_REGISTRY_VALIDATION_ERRORS.length > 0) {
+  throw new Error(
+    `Invalid onboarding registry: ${ONBOARDING_REGISTRY_VALIDATION_ERRORS.map((error) => error.message).join("; ")}`,
+  );
+}
