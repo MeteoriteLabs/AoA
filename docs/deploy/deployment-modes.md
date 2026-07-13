@@ -58,7 +58,9 @@ pnpm aoa onboard
 
 ## Board Claim Flow
 
-When migrating from `local_trusted` to `authenticated`, AoA emits a one-time claim URL at startup:
+When migrating from `local_trusted` to `authenticated`, set
+`AOA_HEADLESS_BOOTSTRAP=1` if `local-board` is still the only instance admin.
+AoA then emits a one-time claim URL at startup:
 
 ```
 /board-claim/<token>?code=<code>
@@ -69,6 +71,10 @@ A signed-in user visits this URL to claim board ownership. This:
 - Promotes the current user to instance admin
 - Demotes the auto-created local board admin
 - Ensures active company membership for the claiming user
+
+"Headless" refers to the server setup: the claim can be completed from a
+different browser that can reach the server. The claiming user must still sign
+in with Google before ownership can be transferred.
 
 ## Changing Modes
 

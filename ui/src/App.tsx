@@ -38,6 +38,7 @@ import { OnboardingFlowPage } from "./pages/OnboardingFlow";
 import { Me } from "./pages/Me";
 import { CompanyExport } from "./pages/CompanyExport";
 import { CompanyImport } from "./pages/CompanyImport";
+import { BoardClaimPage } from "./pages/BoardClaim";
 import { CliAuthPage } from "./pages/CliAuth";
 import { InviteLandingPage } from "./pages/InviteLanding";
 import { PluginPage } from "./pages/PluginPage";
@@ -311,6 +312,7 @@ export function App() {
       <Suspense fallback={<RouteFallback />}>
         <Routes>
           <Route path="auth" element={<AuthPage />} />
+          <Route path="board-claim/:token" element={<BoardClaimPage />} />
           <Route path="cli-auth/:id" element={<CliAuthPage />} />
           <Route path="invite/:token" element={<InviteLandingPage />} />
 

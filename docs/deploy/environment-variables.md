@@ -42,7 +42,7 @@ For horizontally scaled deployments, local-file run logs require sticky routing 
 | `BETTER_AUTH_URL` | (derived) | Better Auth canonical URL |
 | `AOA_DEV_LOCAL_IDENTITY` | auto-enabled by `pnpm dev` when local Google credentials are absent | Development-only synthetic board identity for loopback `local_trusted` mode. It is ignored outside `local_trusted`; do not use it for an authenticated or exposed deployment. |
 | `AOA_DEV_LOCAL_IDENTITY_FORCE` | `false` | Allows `AOA_DEV_LOCAL_IDENTITY` on an instance that already contains real users. Development/recovery only: this bypasses the populated-instance safety check. |
-| `AOA_HEADLESS_BOOTSTRAP` | `false` | Enables the legacy first-board-user claim path for headless/self-hosted setup where interactive Google sign-in is unavailable. Leave disabled for normal browser onboarding. |
+| `AOA_HEADLESS_BOOTSTRAP` | `false` | Enables the legacy board-ownership claim path for a headless/self-hosted server migrating from `local_trusted` when `local-board` is still the only instance admin. The claim is completed by a real Google user in a browser that can reach the server. Leave disabled for normal onboarding. |
 
 ## Agent JWT (signing for `AOA_API_KEY`)
 
