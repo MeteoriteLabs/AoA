@@ -1,4 +1,5 @@
 import { Router, type Request, type Response } from "express";
+import path from "node:path";
 import type { Db } from "@armyofagents/db";
 import { companyMemberships } from "@armyofagents/db";
 import { and, eq } from "drizzle-orm";
@@ -19,6 +20,13 @@ async function userHasCompanyAccess(db: Db, userId: string, companyId: string): 
     )
     .limit(1);
   return rows.length > 0;
+}
+
+export function isAbsoluteFilesystemPath(
+  value: string,
+  pathApi: Pick<typeof path, "isAbsolute"> = path,
+): boolean {
+  return pathApi.isAbsolute(value);
 }
 
 /**
@@ -46,6 +54,10 @@ export function onboardingEnvironmentRoutes(db: Db): Router {
     const rootFolder = typeof body.rootFolder === "string" ? body.rootFolder.trim() : "";
     if (!rootFolder) {
       res.status(400).json({ error: "rootFolder is required" });
+      return;
+    }
+    if (!isAbsoluteFilesystemPath(rootFolder)) {
+      res.status(400).json({ error: "rootFolder must be an absolute path" });
       return;
     }
     const result = await setupOnboardingEnvironment(db, { companyId, rootFolder });

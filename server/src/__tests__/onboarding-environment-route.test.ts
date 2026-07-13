@@ -1,4 +1,5 @@
 import express from "express";
+import path from "node:path";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { drizzleOperatorStubs, makeTableProxy } from "./helpers/drizzle-mock.js";
@@ -13,7 +14,10 @@ vi.mock("../services/onboarding-environment.js", () => ({
   setupOnboardingEnvironment: mockSetup,
 }));
 
-import { onboardingEnvironmentRoutes } from "../routes/onboarding-environment.js";
+import {
+  isAbsoluteFilesystemPath,
+  onboardingEnvironmentRoutes,
+} from "../routes/onboarding-environment.js";
 
 const COMPANY_ID = "c1";
 
@@ -80,6 +84,16 @@ describe("POST /companies/:companyId/onboarding/environment", () => {
     expect(mockSetup).not.toHaveBeenCalled();
   });
 
+  it.each(["AoA", "./AoA"])("400 when rootFolder is relative: %s", async (rootFolder) => {
+    const res = await request(makeApp(dbWithMembership([{ id: COMPANY_ID }])))
+      .post(`/api/companies/${COMPANY_ID}/onboarding/environment`)
+      .send({ rootFolder });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/absolute/i);
+    expect(mockSetup).not.toHaveBeenCalled();
+  });
+
   it("422 (blocking) when the probe fails — stays on the step", async () => {
     mockSetup.mockResolvedValue({ ok: false, environmentId: null, probe: { ok: false, summary: "no perms" } });
     const res = await request(makeApp(dbWithMembership([{ id: COMPANY_ID }])))
@@ -99,5 +113,12 @@ describe("POST /companies/:companyId/onboarding/environment", () => {
     expect(res.body).toMatchObject({ ok: true, environmentId: "e1" });
     // trims before handing to the service
     expect(mockSetup).toHaveBeenCalledWith(expect.anything(), { companyId: COMPANY_ID, rootFolder: "/tmp/acme" });
+  });
+});
+
+describe("isAbsoluteFilesystemPath", () => {
+  it("uses native path semantics instead of accepting foreign drive syntax", () => {
+    expect(isAbsoluteFilesystemPath("C:\\AoA", path.posix)).toBe(false);
+    expect(isAbsoluteFilesystemPath("/srv/aoa", path.posix)).toBe(true);
   });
 });
