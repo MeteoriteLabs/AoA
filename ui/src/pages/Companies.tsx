@@ -98,7 +98,7 @@ export function Companies() {
             Switch between or manage the companies on this instance.
           </p>
         </div>
-        <Button size="sm" onClick={() => navigate("/onboarding")}>
+        <Button size="sm" onClick={() => navigate("/onboarding?new=1")}>
           <Plus className="h-3.5 w-3.5 mr-1.5" />
           New Company
         </Button>
