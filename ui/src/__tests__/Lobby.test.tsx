@@ -7,6 +7,7 @@ import { Lobby } from "../pages/Lobby";
 // --- Mocks ---
 
 const mockNavigate = vi.fn();
+const onboardingProgressByCompany = vi.hoisted(() => new Map<string, string[]>());
 
 vi.mock("react-router-dom", async () => {
   const actual = await vi.importActual<typeof import("react-router-dom")>("react-router-dom");
@@ -29,6 +30,11 @@ vi.mock("@tanstack/react-query", async () => {
   return {
     ...actual,
     useQuery: vi.fn().mockReturnValue({ data: undefined, isLoading: false }),
+    useQueries: vi.fn(({ queries }: { queries: { queryKey: readonly unknown[] }[] }) =>
+      queries.map((query) => ({
+        data: { completedStates: onboardingProgressByCompany.get(String(query.queryKey[2])) ?? [] },
+        isLoading: false,
+      }))),
   };
 });
 
@@ -45,6 +51,10 @@ vi.mock("@/api/companies", () => ({
 
 vi.mock("@/api/profile", () => ({
   profileApi: { get: vi.fn().mockResolvedValue(undefined) },
+}));
+
+vi.mock("@/api/onboarding", () => ({
+  getOnboardingProgress: vi.fn(),
 }));
 
 vi.mock("@/components/LobbyCompanyCard", () => ({
@@ -82,6 +92,7 @@ vi.mock("@/components/UserMenu", () => ({
 describe("Lobby", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    onboardingProgressByCompany.clear();
     mockCompanyContext.loading = false;
     mockCompanyContext.companies = [];
   });
@@ -126,6 +137,19 @@ describe("Lobby", () => {
 
     await user.click(screen.getByTestId("company-card-c1"));
     expect(mockNavigate).toHaveBeenCalledWith("/ACME/home", undefined);
+  });
+
+  it("surfaces an interrupted founder's organization and resumes its onboarding", async () => {
+    const user = userEvent.setup();
+    const company = makeCompany({ id: "c1", name: "Acme Inc", issuePrefix: "ACME" });
+    mockCompanyContext.companies = [company];
+    onboardingProgressByCompany.set("c1", ["AUTHENTICATED", "PROFILE_SET", "ORGANIZATION_CREATED"]);
+
+    renderWithProviders(<Lobby />);
+
+    await user.click(screen.getByRole("button", { name: /finish setting up acme inc/i }));
+    expect(mockCompanyContext.setSelectedCompanyId).toHaveBeenCalledWith("c1");
+    expect(mockNavigate).toHaveBeenCalledWith("/onboarding", undefined);
   });
 
   it("renders LobbyEmptyState when there are 0 companies", () => {
