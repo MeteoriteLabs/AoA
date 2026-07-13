@@ -24,7 +24,10 @@ const ctx: StepContext = {
 };
 
 describe("OrgStep (Stage C / order 2)", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+  });
 
   it("requires an organization name", async () => {
     const onComplete = vi.fn();
@@ -47,6 +50,7 @@ describe("OrgStep (Stage C / order 2)", () => {
       journey: "founder",
       requestedState: "ORGANIZATION_CREATED",
     });
+    expect(localStorage.getItem("aoa.onboarding.pendingOrganization.u1")).toBeNull();
   });
 
   it("does NOT create a second company when the advance fails and the user retries", async () => {
@@ -63,6 +67,7 @@ describe("OrgStep (Stage C / order 2)", () => {
 
     fireEvent.click(screen.getByText("Continue"));
     expect(await screen.findByText("network")).toBeTruthy();
+    expect(localStorage.getItem("aoa.onboarding.pendingOrganization.u1")).toContain('"id":"c1"');
     expect(onComplete).not.toHaveBeenCalled();
 
     // Retry — button re-enabled after the failure.
@@ -71,6 +76,58 @@ describe("OrgStep (Stage C / order 2)", () => {
 
     expect(createCompany).toHaveBeenCalledTimes(1);
     expect(advanceOnboarding).toHaveBeenCalledTimes(2);
+  });
+
+  it("does NOT create a second company after reload when create succeeded but advance failed", async () => {
+    (advanceOnboarding as unknown as ReturnType<typeof vi.fn>)
+      .mockRejectedValueOnce(new Error("network"))
+      .mockResolvedValueOnce({
+        completedStates: ["AUTHENTICATED", "PROFILE_SET", "ORGANIZATION_CREATED"],
+      });
+    const firstComplete = vi.fn();
+    const firstRender = render(
+      <OrgStep ctx={ctx} onComplete={firstComplete} onBack={() => {}} />,
+    );
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "Acme" } });
+    fireEvent.click(screen.getByText("Continue"));
+    expect(await screen.findByText("network")).toBeTruthy();
+
+    firstRender.unmount();
+
+    const secondComplete = vi.fn();
+    render(<OrgStep ctx={ctx} onComplete={secondComplete} onBack={() => {}} />);
+    expect(screen.getByDisplayValue("Acme")).toBeTruthy();
+    fireEvent.click(screen.getByText("Continue"));
+    await waitFor(() => expect(secondComplete).toHaveBeenCalled());
+
+    expect(createCompany).toHaveBeenCalledTimes(1);
+    expect(advanceOnboarding).toHaveBeenLastCalledWith({
+      companyId: "c1",
+      journey: "founder",
+      requestedState: "ORGANIZATION_CREATED",
+    });
+    expect(localStorage.getItem("aoa.onboarding.pendingOrganization.u1")).toBeNull();
+  });
+
+  it("reuses the selected company when resuming an org layer without a recovery hint", async () => {
+    const onComplete = vi.fn();
+    render(
+      <OrgStep
+        ctx={{ ...ctx, companyId: "existing-company" }}
+        onComplete={onComplete}
+        onBack={() => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("Continue"));
+    await waitFor(() => expect(onComplete).toHaveBeenCalled());
+
+    expect(createCompany).not.toHaveBeenCalled();
+    expect(advanceOnboarding).toHaveBeenCalledWith({
+      companyId: "existing-company",
+      journey: "founder",
+      requestedState: "ORGANIZATION_CREATED",
+    });
   });
 });
 

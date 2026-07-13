@@ -56,6 +56,10 @@ export function DepartmentStep({ ctx, onComplete }: StepProps) {
 
   const create = async () => {
     if (!ctx.companyId || !name.trim()) return;
+    if (isSoftware && useRepo && !repoUrl.trim()) {
+      setError("Please enter a GitHub repository URL.");
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -184,7 +188,11 @@ export function DepartmentStep({ ctx, onComplete }: StepProps) {
         </div>
       )}
       {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
-      <Button className="mt-4 w-full" onClick={() => void create()} disabled={busy || !name.trim()}>
+      <Button
+        className="mt-4 w-full"
+        onClick={() => void create()}
+        disabled={busy || !name.trim() || (isSoftware && useRepo && !repoUrl.trim())}
+      >
         {busy ? "Creating…" : "Create department"}
       </Button>
     </div>

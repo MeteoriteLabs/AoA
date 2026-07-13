@@ -127,6 +127,23 @@ describe("DepartmentStep (Stage C / order 6)", () => {
     expect(advanceOnboarding).not.toHaveBeenCalled();
     expect(onComplete).not.toHaveBeenCalled();
   });
+
+  it("requires a repository URL when GitHub repo is selected", async () => {
+    render(<DepartmentStep ctx={ctx} onComplete={vi.fn()} onBack={() => {}} />);
+    await waitFor(() => expect(screen.getByDisplayValue("/home/ada/AoA/engineering")).toBeTruthy());
+
+    fireEvent.click(screen.getByLabelText(/Local folder/i));
+    fireEvent.click(screen.getByLabelText(/GitHub repo/i));
+
+    const button = screen.getByRole("button", { name: "Create department" }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    expect(createWorkspace).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByPlaceholderText("https://github.com/org/repo"), {
+      target: { value: "https://github.com/acme/product" },
+    });
+    expect(button.disabled).toBe(false);
+  });
 });
 
 describe("assembled registry includes the department step", () => {

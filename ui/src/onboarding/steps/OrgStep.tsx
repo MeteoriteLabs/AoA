@@ -4,6 +4,41 @@ import { useCompany } from "../../context/CompanyContext";
 import { advanceOnboarding } from "../../api/onboarding";
 import { Button } from "@/components/ui/button";
 
+type PendingOrganization = { id: string; name: string };
+
+function pendingOrganizationKey(userId: string): string {
+  return `aoa.onboarding.pendingOrganization.${userId}`;
+}
+
+function readPendingOrganization(userId: string): PendingOrganization | null {
+  try {
+    const raw = localStorage.getItem(pendingOrganizationKey(userId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<PendingOrganization>;
+    return typeof parsed.id === "string" && typeof parsed.name === "string"
+      ? { id: parsed.id, name: parsed.name }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function writePendingOrganization(userId: string, company: PendingOrganization): void {
+  try {
+    localStorage.setItem(pendingOrganizationKey(userId), JSON.stringify(company));
+  } catch {
+    // Same-page retries still use createdRef when browser storage is unavailable.
+  }
+}
+
+function clearPendingOrganization(userId: string): void {
+  try {
+    localStorage.removeItem(pendingOrganizationKey(userId));
+  } catch {
+    // A stale recovery hint is harmless: replaying the advance is idempotent.
+  }
+}
+
 /**
  * "Create your organization" step (Stage C / order 2). Creates the company via
  * the CompanyContext primitive — which invalidates the companies query AND sets
@@ -15,28 +50,36 @@ import { Button } from "@/components/ui/button";
  */
 export function OrgStep({ ctx, onComplete }: StepProps) {
   const { createCompany } = useCompany();
-  const [name, setName] = useState("");
+  const [pendingAtMount] = useState(() => readPendingOrganization(ctx.userId));
+  const [name, setName] = useState(pendingAtMount?.name ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Idempotency guard: if createCompany succeeds but the advance throws, a retry
-  // must NOT mint a second company. Remember the one we created and reuse it.
-  const createdRef = useRef<{ id: string } | null>(null);
+  // The durable recovery hint closes both retry windows: createdRef handles a
+  // same-mount retry, while localStorage survives a reload/tab close between the
+  // company POST and the onboarding PATCH. A selected org-layer company is also
+  // safe to reuse when resuming an interrupted flow.
+  const createdRef = useRef<PendingOrganization | null>(pendingAtMount);
 
   const submit = async () => {
-    if (!name.trim()) {
+    const resumableCompany =
+      createdRef.current ??
+      (ctx.companyId ? { id: ctx.companyId, name: name.trim() } : null);
+    if (!resumableCompany && !name.trim()) {
       setError("Please enter a name for your organization.");
       return;
     }
     setBusy(true);
     setError(null);
     try {
-      const company = createdRef.current ?? (await createCompany({ name: name.trim() }));
+      const company = resumableCompany ?? (await createCompany({ name: name.trim() }));
       createdRef.current = company;
+      writePendingOrganization(ctx.userId, company);
       await advanceOnboarding({
         companyId: company.id,
         journey: ctx.journey,
         requestedState: "ORGANIZATION_CREATED",
       });
+      clearPendingOrganization(ctx.userId);
       onComplete();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to create your organization.");
