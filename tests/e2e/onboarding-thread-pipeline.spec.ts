@@ -1,24 +1,15 @@
 import { test, expect } from "@playwright/test";
 import {
   cleanupTestCompanies,
-  seedCompanyViaWizard,
+  seedConfiguredCompany,
 } from "./helpers/seed-company";
 
 /**
- * E2E: Phase 1 thread pipeline — onboarding → first thread → entry.
+ * E2E: Phase 1 thread pipeline — configured company → first thread → entry.
  *
- * Drives the 8-step OnboardingWizard end-to-end:
- *   Step 1 — Name your company
- *   Step 2 — Set up workspace root
- *   Step 3 — Choose your Commander (provider + model)
- *   Step 4 — Choose your Crew      (provider + model; this is the step that
- *                                   actually POSTs /companies)
- *   Steps 5–8 are not driven here because Step 5 requires a real local
- *   adapter CLI (claude_local / codex_local etc.) to pass the adapter
- *   environment test, which is not a safe assumption for every CI runner.
- *   Once the company is created (after Step 4) the test bails out of the
- *   wizard, navigates manually to /{prefix}/discussions, and exercises the
- *   thread-creation + entry-posting surface.
+ * Company creation and agent configuration are deterministic API setup. The
+ * test then exercises the browser-owned discussion creation and entry flow.
+ * The onboarding UI journey is covered separately by its focused test suite.
  *
  * The "Adjutant responds" leg of the pipeline is intentionally NOT asserted.
  * That requires either:
@@ -31,26 +22,22 @@ import {
 
 const SKIP_LLM = process.env.AOA_E2E_SKIP_LLM !== "false";
 
-test.describe("Onboarding → first thread → entry", () => {
+test.describe("Configured company → first thread → entry", () => {
   test.beforeEach(async ({ request }) => {
     await cleanupTestCompanies(request, /^E2E-/);
   });
 
-  test("drives onboarding through Step 4 and lands the company", async ({
+  test("creates a thread and entry for a configured company", async ({
     page,
     request,
   }) => {
-    // Drive the wizard through Step 4 (the step that POSTs /companies) via the
-    // shared helper, which owns the cold-path lobby-button budget. Preserve the
-    // original crew model ("gpt-5.5") + the E2E-Onboard- cleanup prefix.
-    const { issuePrefix } = await seedCompanyViaWizard(page, request, {
+    // Preserve the original crew model ("gpt-5.5") and cleanup prefix.
+    const { issuePrefix } = await seedConfiguredCompany(request, {
       companyName: `E2E-Onboard-${Date.now()}`,
       crewModel: "gpt-5.5",
     });
 
-    // ── Navigate to the discussions list — the post-onboarding landing per
-    // the plan. Step 5 needs a real local adapter CLI to advance so we leave
-    // the wizard and drive the discussions surface directly. ──
+    // ── Navigate to the discussions list and drive the browser surface. ──
     await page.goto(`/${issuePrefix}/discussions`);
     await expect(
       page.getByRole("heading", { name: /Discussions/i }).first(),

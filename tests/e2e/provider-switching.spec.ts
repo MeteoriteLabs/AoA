@@ -2,7 +2,7 @@ import { test, expect } from "@playwright/test";
 import type { APIRequestContext, Page } from "@playwright/test";
 import {
   cleanupTestCompanies,
-  seedCompanyViaWizard,
+  seedConfiguredCompany,
 } from "./helpers/seed-company";
 
 /**
@@ -122,7 +122,7 @@ test.describe("provider-switching: agent config save-side", () => {
     page,
     request,
   }) => {
-    const { companyId, issuePrefix } = await seedCompanyViaWizard(page, request, {
+    const { companyId, issuePrefix } = await seedConfiguredCompany(request, {
       companyName: `E2E-PS-${Date.now()}`,
     });
     // No explicit model on create -> the server injects the codex default
@@ -156,7 +156,7 @@ test.describe("provider-switching: agent config save-side", () => {
     page,
     request,
   }) => {
-    const { companyId, issuePrefix } = await seedCompanyViaWizard(page, request, {
+    const { companyId, issuePrefix } = await seedConfiguredCompany(request, {
       companyName: `E2E-PS-${Date.now()}`,
     });
     const agentId = await seedCodexAgent(request, companyId, "gpt-5.5");
@@ -204,10 +204,9 @@ test.describe("provider-switching: agent config save-side", () => {
   });
 
   test("cross-family (claude adapter + gpt model) is rejected", async ({
-    page,
     request,
   }) => {
-    const { companyId } = await seedCompanyViaWizard(page, request, {
+    const { companyId } = await seedConfiguredCompany(request, {
       companyName: `E2E-PS-${Date.now()}`,
     });
     const agentId = await seedCodexAgent(request, companyId, "gpt-5.5");
@@ -219,8 +218,8 @@ test.describe("provider-switching: agent config save-side", () => {
     expect(res.status()).toBe(400);
   });
 
-  test("shell-unsafe model is rejected", async ({ page, request }) => {
-    const { companyId } = await seedCompanyViaWizard(page, request, {
+  test("shell-unsafe model is rejected", async ({ request }) => {
+    const { companyId } = await seedConfiguredCompany(request, {
       companyName: `E2E-PS-${Date.now()}`,
     });
     const agentId = await seedCodexAgent(request, companyId, "gpt-5.5");
@@ -241,7 +240,7 @@ test.describe("provider-switching: agent config save-side", () => {
     page,
     request,
   }) => {
-    const { companyId, issuePrefix } = await seedCompanyViaWizard(page, request, {
+    const { companyId, issuePrefix } = await seedConfiguredCompany(request, {
       companyName: `E2E-PS-${Date.now()}`,
     });
     const agentId = await seedCodexAgent(request, companyId, "gpt-5.5");
@@ -273,15 +272,14 @@ test.describe("provider-switching: agent config save-side", () => {
     });
   });
 
-  // ── Provider switch reaches the crew (onboarding + Settings) ──
+  // ── Provider switch reaches the crew (initial config + Settings) ──
 
-  test("onboarding as OpenAI crew → crew agents are codex_local", async ({
-    page,
+  test("configured OpenAI crew → crew agents are codex_local", async ({
     request,
   }) => {
-    // Crew = openai at onboarding → ensureAllCrewAgents seeds the AoA crew on
+    // Crew = openai in config → ensureAllCrewAgents seeds the AoA crew on
     // the codex_local adapter (resolveCrewAdapterFor("openai")).
-    const { companyId } = await seedCompanyViaWizard(page, request, {
+    const { companyId } = await seedConfiguredCompany(request, {
       companyName: `E2E-PS-${Date.now()}`,
       commanderProvider: "anthropic",
       crewProvider: "openai",
@@ -296,11 +294,10 @@ test.describe("provider-switching: agent config save-side", () => {
     page,
     request,
   }) => {
-    // Onboard with an anthropic crew (claude_local), then flip the crew provider
+    // Seed an anthropic crew (claude_local), then flip the crew provider
     // to OpenCode in Settings → the config PATCH re-runs ensureAllCrewAgents and
     // migrates the existing crew rows to opencode_local.
-    const { companyId, issuePrefix } = await seedCompanyViaWizard(
-      page,
+    const { companyId, issuePrefix } = await seedConfiguredCompany(
       request,
       {
         companyName: `E2E-PS-${Date.now()}`,
@@ -342,7 +339,7 @@ test.describe("provider-switching: agent config save-side", () => {
     // Seed an anthropic crew pinned to a specific model. crewProvider stays anthropic
     // throughout, so the adapter TYPE never changes — only the model does. This is the
     // path the provider-change tests don't cover (the Task 4b model-drift branch).
-    const { companyId, issuePrefix } = await seedCompanyViaWizard(page, request, {
+    const { companyId, issuePrefix } = await seedConfiguredCompany(request, {
       commanderProvider: "anthropic",
       crewProvider: "anthropic",
       crewModel: "claude-haiku-4-5",
