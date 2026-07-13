@@ -8,16 +8,19 @@ import type { OnboardingState } from "@armyofagents/shared";
 // onComplete; the engine re-reads via api.getProgress.
 function makeRegistry(advance: (s: OnboardingState) => void): StepDefinition[] {
   const mk = (id: string, state: OnboardingState, deps: OnboardingState[], order: number): StepDefinition => {
-    const Comp = ({ onComplete }: StepProps) => (
-      <button
-        data-testid={`step-${id}`}
-        onClick={() => {
-          advance(state);
-          onComplete();
-        }}
-      >
-        {id}
-      </button>
+    const Comp = ({ onComplete, onBack }: StepProps) => (
+      <div>
+        <button
+          data-testid={`step-${id}`}
+          onClick={() => {
+            advance(state);
+            onComplete();
+          }}
+        >
+          {id}
+        </button>
+        <button data-testid={`back-${id}`} onClick={onBack}>back</button>
+      </div>
     );
     return {
       id,
@@ -77,5 +80,20 @@ describe("FlowEngine (Stage B / B6)", () => {
 
     await waitFor(() => screen.getByTestId("step-org"));
     expect(screen.queryByTestId("step-profile")).toBeNull();
+  });
+
+  it("walks back to the previous completed step", async () => {
+    const api: FlowEngineApi = {
+      getProgress: async () => ({ completedStates: ["AUTHENTICATED", "PROFILE_SET"] }),
+    };
+    render(
+      <FlowEngine userId="u1" companyId={null} journey="founder" api={api} registry={makeRegistry(() => {})} />,
+    );
+
+    await waitFor(() => screen.getByTestId("step-org"));
+    fireEvent.click(screen.getByTestId("back-org"));
+    await waitFor(() => screen.getByTestId("step-profile"));
+    fireEvent.click(screen.getByTestId("step-profile"));
+    await waitFor(() => screen.getByTestId("step-org"));
   });
 });

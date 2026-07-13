@@ -91,6 +91,7 @@ export function OnboardingFlowPage({ journey }: { journey: OnboardingJourney }) 
       journey={journey}
       api={onboardingApi}
       registry={ONBOARDING_STEPS}
+      onBack={() => navigate("/", { replace: true })}
       onFinished={() =>
         journey === "invited" ? setInvitedDone(true) : navigate("/", { replace: true })
       }

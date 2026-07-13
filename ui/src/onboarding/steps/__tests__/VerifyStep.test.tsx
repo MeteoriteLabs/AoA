@@ -26,6 +26,13 @@ const ctx: StepContext = {
 describe("VerifyStep (Stage C / order 5, blocking)", () => {
   beforeEach(() => vi.clearAllMocks());
 
+  it("offers a working Back control to change the selected runtime", () => {
+    const onBack = vi.fn();
+    render(<VerifyStep ctx={ctx} onComplete={vi.fn()} onBack={onBack} />);
+    fireEvent.click(screen.getByRole("button", { name: /back.*claude.*codex/i }));
+    expect(onBack).toHaveBeenCalledOnce();
+  });
+
   it("advances COMMANDER_VERIFIED and completes when verified", async () => {
     post.mockResolvedValueOnce({ outcome: "verified", result: { status: "pass" } });
     const onComplete = vi.fn();

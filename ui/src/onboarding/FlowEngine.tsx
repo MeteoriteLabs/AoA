@@ -46,6 +46,7 @@ export function FlowEngine({
   onBack,
 }: FlowEngineProps) {
   const [completed, setCompleted] = useState<OnboardingState[] | null>(null);
+  const [backStepId, setBackStepId] = useState<string | null>(null);
   const finishedRef = useRef(false);
 
   const load = useCallback(async () => {
@@ -55,13 +56,23 @@ export function FlowEngine({
 
   useEffect(() => {
     finishedRef.current = false;
+    setBackStepId(null);
     setCompleted(null);
     void load();
   }, [load]);
 
   const ctx: StepContext | null =
     completed === null ? null : { userId, companyId, journey, completedStates: completed };
-  const step = ctx ? resolveNextStep(registry, ctx) : null;
+  const applicableSteps = ctx
+    ? registry
+        .filter((candidate) => candidate.journeys.includes(ctx.journey))
+        .filter((candidate) => candidate.shouldInclude(ctx))
+        .sort((a, b) => a.order - b.order)
+    : [];
+  const nextStep = ctx ? resolveNextStep(registry, ctx) : null;
+  const step = backStepId
+    ? (applicableSteps.find((candidate) => candidate.id === backStepId) ?? nextStep)
+    : nextStep;
 
   useEffect(() => {
     if (completed !== null && !step && !finishedRef.current) {
@@ -73,8 +84,23 @@ export function FlowEngine({
   const handleComplete = useCallback(async () => {
     // The step already performed its data write + state advance; re-read the
     // authoritative context (RC/RB1) and resolve the next step.
+    setBackStepId(null);
     await load();
   }, [load]);
+
+  const handleBack = useCallback(() => {
+    if (!ctx || !step) return;
+    const currentIndex = applicableSteps.findIndex((candidate) => candidate.id === step.id);
+    const previous = applicableSteps
+      .slice(0, currentIndex)
+      .reverse()
+      .find((candidate) => candidate.isComplete(ctx));
+    if (previous) {
+      setBackStepId(previous.id);
+      return;
+    }
+    onBack?.();
+  }, [applicableSteps, ctx, onBack, step]);
 
   if (!ctx) {
     return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading…</div>;
@@ -95,7 +121,7 @@ export function FlowEngine({
     <Suspense
       fallback={<div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading step…</div>}
     >
-      <Step ctx={ctx} onComplete={() => void handleComplete()} onBack={() => onBack?.()} />
+      <Step ctx={ctx} onComplete={() => void handleComplete()} onBack={handleBack} />
     </Suspense>
   );
 }

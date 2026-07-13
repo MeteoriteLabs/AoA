@@ -27,7 +27,7 @@ function installHint(): string {
  * login (T-CodexLogin) and API-key paste are deferred follow-ups; today the
  * founder runs the CLI login in a terminal, then re-checks.
  */
-export function VerifyStep({ ctx, onComplete }: StepProps) {
+export function VerifyStep({ ctx, onComplete, onBack }: StepProps) {
   const [outcome, setOutcome] = useState<Outcome>("idle");
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -87,9 +87,9 @@ export function VerifyStep({ ctx, onComplete }: StepProps) {
       <Button className="mt-4 w-full" onClick={() => void check()} disabled={busy}>
         {busy ? "Checking…" : outcome === "idle" ? "Verify" : "Check again"}
       </Button>
-      <p className="mt-2 text-[11px] text-muted-foreground">
-        Prefer the other runtime? Go back to pick Claude or Codex.
-      </p>
+      <Button type="button" variant="ghost" className="mt-2 w-full" onClick={onBack}>
+        Back to choose Claude or Codex
+      </Button>
     </div>
   );
 }
