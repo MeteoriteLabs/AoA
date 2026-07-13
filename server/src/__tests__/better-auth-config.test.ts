@@ -404,6 +404,7 @@ describe("buildBetterAuthConfig — security hardening (Stage D / D6)", () => {
       "secret",
     ) as Record<string, any>;
     expect(c.advanced?.defaultCookieAttributes?.secure).toBe(false);
+    expect(c.advanced?.useSecureCookies).toBe(false);
   });
 
   it("keeps Secure for a private authenticated deployment with an explicit HTTPS base URL", () => {
@@ -419,6 +420,7 @@ describe("buildBetterAuthConfig — security hardening (Stage D / D6)", () => {
       "secret",
     ) as Record<string, any>;
     expect(c.advanced?.defaultCookieAttributes?.secure).toBe(true);
+    expect(c.advanced?.useSecureCookies).toBe(true);
   });
 
   it("does NOT force Secure in local_trusted (loopback http dev would drop a Secure cookie)", () => {

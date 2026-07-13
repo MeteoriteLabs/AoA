@@ -197,6 +197,7 @@ export function buildBetterAuthConfig(
   }
   const useSecureCookies = config.deploymentExposure === "public" || explicitBaseUrlUsesHttps;
   authConfig.advanced = {
+    useSecureCookies,
     defaultCookieAttributes: {
       httpOnly: true,
       secure: useSecureCookies,
