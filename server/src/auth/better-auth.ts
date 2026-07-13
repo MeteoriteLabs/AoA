@@ -117,6 +117,24 @@ export function deriveAuthTrustedOrigins(config: Config, opts?: { listenPort?: n
   return Array.from(trustedOrigins);
 }
 
+async function attemptFirstAdminBootstrap(
+  db: Db,
+  userId: string,
+  source: "user_create" | "session_create",
+): Promise<void> {
+  try {
+    const { promoteFirstUserToInstanceAdmin } = await import(
+      "../services/first-user-bootstrap.js"
+    );
+    await promoteFirstUserToInstanceAdmin(db, userId);
+  } catch (err) {
+    logger.error(
+      { err, userId, source },
+      "first-user admin bootstrap failed (non-fatal; will retry on next sign-in)",
+    );
+  }
+}
+
 /**
  * Pure builder for the better-auth options object. Extracted so the provider
  * configuration is unit-testable without instantiating better-auth.
@@ -177,20 +195,21 @@ export function buildBetterAuthConfig(
   };
 
   // RB3/A7 — the first Google user of a fresh instance becomes instance admin.
-  // Fires at real user creation; the service is advisory-locked + idempotent,
-  // and this is best-effort so a bootstrap hiccup never blocks sign-up.
+  // Fires at real user creation and again at session creation. The service is
+  // advisory-locked + idempotent, so the session hook backfills an admin-less
+  // instance after a transient create-hook failure without blocking sign-in.
   authConfig.databaseHooks = {
     user: {
       create: {
         after: async (user: { id: string }) => {
-          try {
-            const { promoteFirstUserToInstanceAdmin } = await import(
-              "../services/first-user-bootstrap.js"
-            );
-            await promoteFirstUserToInstanceAdmin(db, user.id);
-          } catch (err) {
-            logger.warn({ err }, "first-user admin bootstrap failed (non-fatal)");
-          }
+          await attemptFirstAdminBootstrap(db, user.id, "user_create");
+        },
+      },
+    },
+    session: {
+      create: {
+        after: async (session: { userId: string }) => {
+          await attemptFirstAdminBootstrap(db, session.userId, "session_create");
         },
       },
     },

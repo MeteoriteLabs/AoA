@@ -109,6 +109,27 @@ describe("advanceState (Stage B / B3 + revC RC1)", () => {
     expect(r.status).toBe("illegal");
   });
 
+  it("uses the persisted row journey instead of a conflicting caller journey", async () => {
+    const db = fakeDb({
+      start: {
+        journey: "invited",
+        currentState: "PROFILE_SET",
+        completedStates: ["AUTHENTICATED", "PROFILE_SET"],
+      },
+    });
+    const r = await advanceState(db, {
+      userId: "u1",
+      companyId: null,
+      journey: "founder",
+      requestedState: "ORGANIZATION_CREATED",
+    });
+    expect(r).toEqual({
+      status: "illegal",
+      reason: "state ORGANIZATION_CREATED not in journey",
+    });
+    expect(db._row().currentState).toBe("PROFILE_SET");
+  });
+
   it("retries after one optimistic conflict, then succeeds", async () => {
     const db = fakeDb({ start: {} });
     db._triggerConflictOnce();

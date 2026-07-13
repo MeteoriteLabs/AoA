@@ -137,13 +137,13 @@ export async function advanceState(
     requestedState: OnboardingState;
   },
 ): Promise<AdvanceResult> {
-  const order = orderedStatesFor(args.journey);
   for (let attempt = 0; attempt < 3; attempt++) {
     const row = await ensureProgress(db, {
       userId: args.userId,
       companyId: args.companyId,
       journey: args.journey,
     });
+    const order = orderedStatesFor(row.journey);
     const decision = computeAdvance(order, row.currentState, row.completedStates, args.requestedState);
     if (decision.kind === "noop") return { status: "ok", row };
     if (decision.kind === "illegal") return { status: "illegal", reason: decision.reason };

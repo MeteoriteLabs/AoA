@@ -42,10 +42,15 @@ const mockLogger = vi.hoisted(() => ({
   error: vi.fn(),
   debug: vi.fn(),
 }));
+const mockPromoteFirstUser = vi.hoisted(() => vi.fn(async () => true));
 
 vi.mock("../middleware/logger.js", () => ({
   logger: mockLogger,
   httpLogger: vi.fn(),
+}));
+
+vi.mock("../services/first-user-bootstrap.js", () => ({
+  promoteFirstUserToInstanceAdmin: mockPromoteFirstUser,
 }));
 
 const { createBetterAuthInstance, deriveAuthTrustedOrigins, buildBetterAuthConfig, assertAuthProviderConfigured } = await import("../auth/better-auth.js");
@@ -114,6 +119,8 @@ describe("createBetterAuthInstance — fail-closed secret gate", () => {
     mockLogger.info.mockClear();
     mockLogger.warn.mockClear();
     mockLogger.error.mockClear();
+    mockPromoteFirstUser.mockReset();
+    mockPromoteFirstUser.mockResolvedValue(true);
   });
 
   afterEach(() => {
@@ -261,6 +268,12 @@ describe("deriveAuthTrustedOrigins port variants", () => {
 });
 
 describe("buildBetterAuthConfig — google provider, no email/password (Stage A / A2)", () => {
+  beforeEach(() => {
+    mockLogger.error.mockClear();
+    mockPromoteFirstUser.mockReset();
+    mockPromoteFirstUser.mockResolvedValue(true);
+  });
+
   it("configures google when creds present", () => {
     const c = buildBetterAuthConfig(
       fakeDb,
@@ -290,6 +303,22 @@ describe("buildBetterAuthConfig — google provider, no email/password (Stage A 
   it("wires the first-user admin bootstrap hook (RB3/A7)", () => {
     const c = buildBetterAuthConfig(fakeDb, makeConfig(), [], "secret") as Record<string, any>;
     expect(typeof c.databaseHooks?.user?.create?.after).toBe("function");
+  });
+
+  it("retries the idempotent admin bootstrap whenever a new session is created", async () => {
+    const c = buildBetterAuthConfig(fakeDb, makeConfig(), [], "secret") as Record<string, any>;
+    await c.databaseHooks.session.create.after({ userId: "u1" });
+    expect(mockPromoteFirstUser).toHaveBeenCalledWith(fakeDb, "u1");
+  });
+
+  it("logs bootstrap failures at error level without blocking sign-in", async () => {
+    mockPromoteFirstUser.mockRejectedValueOnce(new Error("database unavailable"));
+    const c = buildBetterAuthConfig(fakeDb, makeConfig(), [], "secret") as Record<string, any>;
+    await expect(c.databaseHooks.session.create.after({ userId: "u1" })).resolves.toBeUndefined();
+    expect(mockLogger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: "u1", source: "session_create" }),
+      expect.stringMatching(/admin bootstrap failed/i),
+    );
   });
 
   it("configures a long-lived session for local-first use (A11)", () => {
