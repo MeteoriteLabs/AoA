@@ -181,15 +181,25 @@ export function buildBetterAuthConfig(
 
   // D6 — session-cookie hardening. better-auth applies OAuth state + PKCE for
   // the social flow internally; here we make the cookie intent explicit.
-  // Secure is gated to hosted deployments — loopback http dev in local_trusted
-  // must NOT set Secure or the cookie is dropped over http://127.0.0.1. SameSite
-  // stays Lax so the OAuth redirect round-trip keeps the callback cookie
-  // (Strict would drop it).
-  const isHosted = config.deploymentMode === "authenticated";
+  // Secure follows the endpoint's exposure and transport.
+  // Public and explicit HTTPS deployments use Secure. Private authenticated
+  // deployments may intentionally use HTTP over a trusted LAN or tailnet, where
+  // browsers would drop a Secure cookie. SameSite stays Lax so the OAuth redirect
+  // round-trip keeps the callback cookie (Strict would drop it).
+  let explicitBaseUrlUsesHttps = false;
+  if (baseUrl) {
+    try {
+      explicitBaseUrlUsesHttps = new URL(baseUrl).protocol === "https:";
+    } catch {
+      // Startup configuration validates the URL. Keep direct helper calls
+      // usable for private HTTP if they receive an invalid value.
+    }
+  }
+  const useSecureCookies = config.deploymentExposure === "public" || explicitBaseUrlUsesHttps;
   authConfig.advanced = {
     defaultCookieAttributes: {
       httpOnly: true,
-      secure: isHosted,
+      secure: useSecureCookies,
       sameSite: "lax",
     },
   };

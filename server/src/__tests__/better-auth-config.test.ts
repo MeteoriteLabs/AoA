@@ -373,10 +373,15 @@ describe("buildBetterAuthConfig — security hardening (Stage D / D6)", () => {
     expect(c.socialProviders?.google?.clientId).toBe("gid");
   });
 
-  it("hardens the session cookie in authenticated mode (httpOnly + secure + sameSite)", () => {
+  it("hardens the session cookie for public authenticated deployments", () => {
     const c = buildBetterAuthConfig(
       fakeDb,
-      makeConfig({ deploymentMode: "authenticated", googleClientId: "gid", googleClientSecret: "gsecret" }),
+      makeConfig({
+        deploymentMode: "authenticated",
+        deploymentExposure: "public",
+        googleClientId: "gid",
+        googleClientSecret: "gsecret",
+      }),
       ["https://app.example.com"],
       "secret",
     ) as Record<string, any>;
@@ -384,6 +389,36 @@ describe("buildBetterAuthConfig — security hardening (Stage D / D6)", () => {
     expect(cookie?.httpOnly).toBe(true);
     expect(cookie?.secure).toBe(true);
     expect(String(cookie?.sameSite)).toMatch(/lax|strict/i);
+  });
+
+  it("does NOT force Secure for private authenticated deployments served over HTTP", () => {
+    const c = buildBetterAuthConfig(
+      fakeDb,
+      makeConfig({
+        deploymentMode: "authenticated",
+        deploymentExposure: "private",
+        authBaseUrlMode: "auto",
+        authPublicBaseUrl: undefined,
+      }),
+      [],
+      "secret",
+    ) as Record<string, any>;
+    expect(c.advanced?.defaultCookieAttributes?.secure).toBe(false);
+  });
+
+  it("keeps Secure for a private authenticated deployment with an explicit HTTPS base URL", () => {
+    const c = buildBetterAuthConfig(
+      fakeDb,
+      makeConfig({
+        deploymentMode: "authenticated",
+        deploymentExposure: "private",
+        authBaseUrlMode: "explicit",
+        authPublicBaseUrl: "https://aoa.tailnet.example",
+      }),
+      ["https://aoa.tailnet.example"],
+      "secret",
+    ) as Record<string, any>;
+    expect(c.advanced?.defaultCookieAttributes?.secure).toBe(true);
   });
 
   it("does NOT force Secure in local_trusted (loopback http dev would drop a Secure cookie)", () => {
