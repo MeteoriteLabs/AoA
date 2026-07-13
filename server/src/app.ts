@@ -234,6 +234,9 @@ export async function createApp(
   // the global body parser so POST/PUT/uploads reach the upstream unchanged.
   app.use("/preview", createPreviewRouter(db));
   app.use(express.json({ verify: captureRawBody }));
+  // Protect every board-session mutation, including the direct auth and
+  // onboarding routers mounted before the main API router below.
+  app.use("/api", boardMutationGuard());
   // Mount profile-aware auth routes (get-session with DB-loaded user, profile GET/PATCH)
   // before the betterAuthHandler catch-all so specific routes win.
   app.use("/api", authProfileRoutes(db));
@@ -254,7 +257,6 @@ export async function createApp(
 
   // Mount API routes
   const api = Router();
-  api.use(boardMutationGuard());
   api.use(
     "/health",
     healthRoutes(db, {
