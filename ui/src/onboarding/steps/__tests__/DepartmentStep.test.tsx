@@ -7,11 +7,14 @@ import { DEPARTMENT_FUNCTION_TYPES } from "@armyofagents/shared";
 
 const list = vi.hoisted(() => vi.fn(async () => [] as unknown[]));
 const create = vi.hoisted(() => vi.fn(async () => ({ id: "d1" })));
+const listWorkspaces = vi.hoisted(() => vi.fn(async () => [] as unknown[]));
 const createWorkspace = vi.hoisted(() => vi.fn(async () => ({})));
 const getCompany = vi.hoisted(() => vi.fn(async () => ({ id: "c1", rootFolder: "/home/ada/AoA" })));
 const mkdir = vi.hoisted(() => vi.fn(async () => ({ created: true, path: "" })));
 
-vi.mock("../../../api/projects", () => ({ projectsApi: { list, create, createWorkspace } }));
+vi.mock("../../../api/projects", () => ({
+  projectsApi: { list, create, listWorkspaces, createWorkspace },
+}));
 vi.mock("../../../api/companies", () => ({ companiesApi: { get: getCompany } }));
 vi.mock("../../../api/filesystem", () => ({ filesystemApi: { mkdir } }));
 vi.mock("../../../api/onboarding", () => ({
@@ -38,6 +41,7 @@ describe("DepartmentStep (Stage C / order 6)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     list.mockResolvedValue([]);
+    listWorkspaces.mockResolvedValue([]);
     create.mockResolvedValue({ id: "d1" });
     getCompany.mockResolvedValue({ id: "c1", rootFolder: "/home/ada/AoA" });
   });
@@ -57,6 +61,7 @@ describe("DepartmentStep (Stage C / order 6)", () => {
     expect(createWorkspace).toHaveBeenCalledWith(
       "d1",
       expect.objectContaining({ cwd: "/home/ada/AoA/engineering" }),
+      "c1",
     );
     expect(advanceOnboarding).toHaveBeenCalledWith({
       companyId: "c1",
@@ -74,11 +79,31 @@ describe("DepartmentStep (Stage C / order 6)", () => {
     fireEvent.click(screen.getByText("Create department"));
     await waitFor(() => expect(onComplete).toHaveBeenCalled());
     expect(create).not.toHaveBeenCalled();
+    expect(listWorkspaces).toHaveBeenCalledWith("existing", "c1");
+    expect(createWorkspace).toHaveBeenCalledWith(
+      "existing",
+      expect.objectContaining({ cwd: "/home/ada/AoA/engineering" }),
+      "c1",
+    );
     expect(advanceOnboarding).toHaveBeenCalledWith({
       companyId: "c1",
       journey: "founder",
       requestedState: "DEPARTMENT_CREATED",
     });
+  });
+
+  it("does not duplicate a workspace that already exists on retry", async () => {
+    list.mockResolvedValue([{ id: "existing", type: "department", name: "Engineering" }]);
+    listWorkspaces.mockResolvedValue([{ id: "w1", projectId: "existing" }]);
+    const onComplete = vi.fn();
+    render(<DepartmentStep ctx={ctx} onComplete={onComplete} onBack={() => {}} />);
+    await waitFor(() => expect(screen.getByDisplayValue("/home/ada/AoA/engineering")).toBeTruthy());
+    fireEvent.click(screen.getByText("Create department"));
+    await waitFor(() => expect(onComplete).toHaveBeenCalled());
+    expect(create).not.toHaveBeenCalled();
+    expect(listWorkspaces).toHaveBeenCalledWith("existing", "c1");
+    expect(mkdir).not.toHaveBeenCalled();
+    expect(createWorkspace).not.toHaveBeenCalled();
   });
 
   it("prefills the name so the create button isn't silently disabled (live-QA regression)", () => {

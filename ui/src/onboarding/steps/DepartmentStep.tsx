@@ -71,11 +71,14 @@ export function DepartmentStep({ ctx, onComplete }: StepProps) {
           functionType,
         });
         deptId = (created as Project).id;
+      }
 
-        if (isSoftware && (useLocal || useRepo)) {
-          if (useLocal && !isAbsolute(localPath.trim())) {
-            throw new Error("Local folder must be an absolute path.");
-          }
+      if (isSoftware && (useLocal || useRepo)) {
+        if (useLocal && !isAbsolute(localPath.trim())) {
+          throw new Error("Local folder must be an absolute path.");
+        }
+        const workspaces = await projectsApi.listWorkspaces(deptId, ctx.companyId);
+        if (workspaces.length === 0) {
           // Don't swallow a real mkdir failure — otherwise we'd create a
           // workspace whose cwd points at a folder that was never created.
           if (useLocal) {
@@ -94,15 +97,19 @@ export function DepartmentStep({ ctx, onComplete }: StepProps) {
               name: name.trim(),
               cwd: localPath.trim(),
               repoUrl: repoUrl.trim(),
-            });
+            }, ctx.companyId);
           } else if (useLocal) {
-            await projectsApi.createWorkspace(deptId, { name: name.trim(), cwd: localPath.trim() });
+            await projectsApi.createWorkspace(
+              deptId,
+              { name: name.trim(), cwd: localPath.trim() },
+              ctx.companyId,
+            );
           } else if (useRepo) {
             await projectsApi.createWorkspace(deptId, {
               name: name.trim(),
               cwd: REPO_ONLY_CWD_SENTINEL,
               repoUrl: repoUrl.trim(),
-            });
+            }, ctx.companyId);
           }
         }
       }
