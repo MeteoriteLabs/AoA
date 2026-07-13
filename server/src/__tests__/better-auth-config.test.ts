@@ -308,7 +308,22 @@ describe("buildBetterAuthConfig — google provider, no email/password (Stage A 
   it("retries the idempotent admin bootstrap whenever a new session is created", async () => {
     const c = buildBetterAuthConfig(fakeDb, makeConfig(), [], "secret") as Record<string, any>;
     await c.databaseHooks.session.create.after({ userId: "u1" });
-    expect(mockPromoteFirstUser).toHaveBeenCalledWith(fakeDb, "u1");
+    expect(mockPromoteFirstUser).toHaveBeenCalledWith(fakeDb, "u1", {
+      preserveSyntheticAdmin: false,
+    });
+  });
+
+  it("preserves the synthetic admin while the explicit headless claim gate is active", async () => {
+    const c = buildBetterAuthConfig(
+      fakeDb,
+      makeConfig({ headlessBootstrap: true }),
+      [],
+      "secret",
+    ) as Record<string, any>;
+    await c.databaseHooks.session.create.after({ userId: "u1" });
+    expect(mockPromoteFirstUser).toHaveBeenCalledWith(fakeDb, "u1", {
+      preserveSyntheticAdmin: true,
+    });
   });
 
   it("logs bootstrap failures at error level without blocking sign-in", async () => {

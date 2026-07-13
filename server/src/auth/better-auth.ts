@@ -121,12 +121,13 @@ async function attemptFirstAdminBootstrap(
   db: Db,
   userId: string,
   source: "user_create" | "session_create",
+  preserveSyntheticAdmin: boolean,
 ): Promise<void> {
   try {
     const { promoteFirstUserToInstanceAdmin } = await import(
       "../services/first-user-bootstrap.js"
     );
-    await promoteFirstUserToInstanceAdmin(db, userId);
+    await promoteFirstUserToInstanceAdmin(db, userId, { preserveSyntheticAdmin });
   } catch (err) {
     logger.error(
       { err, userId, source },
@@ -213,14 +214,24 @@ export function buildBetterAuthConfig(
     user: {
       create: {
         after: async (user: { id: string }) => {
-          await attemptFirstAdminBootstrap(db, user.id, "user_create");
+          await attemptFirstAdminBootstrap(
+            db,
+            user.id,
+            "user_create",
+            config.headlessBootstrap === true,
+          );
         },
       },
     },
     session: {
       create: {
         after: async (session: { userId: string }) => {
-          await attemptFirstAdminBootstrap(db, session.userId, "session_create");
+          await attemptFirstAdminBootstrap(
+            db,
+            session.userId,
+            "session_create",
+            config.headlessBootstrap === true,
+          );
         },
       },
     },

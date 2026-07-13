@@ -1,10 +1,13 @@
 import type { Db } from "@armyofagents/db";
 import { instanceUserRoles } from "@armyofagents/db";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
+
+const LOCAL_BOARD_USER_ID = "local-board";
 
 /**
- * RB3/A7 — promote the given user to `instance_admin` IFF no `instance_admin`
- * exists yet.
+ * RB3/A7 — promote the given real user to `instance_admin` IFF no real
+ * `instance_admin` exists yet. A leftover synthetic `local-board` admin from
+ * the dev escape hatch is replaced transactionally during that handoff.
  *
  * Race-safe: serialized by a transaction-scoped Postgres advisory lock so two
  * concurrent new users cannot both become admin (the `(userId, role)` unique
@@ -25,17 +28,46 @@ export function shouldEnableHeadlessBootstrap(config: { headlessBootstrap: boole
   return config.headlessBootstrap === true;
 }
 
-export async function promoteFirstUserToInstanceAdmin(db: Db, userId: string): Promise<boolean> {
+export async function promoteFirstUserToInstanceAdmin(
+  db: Db,
+  userId: string,
+  opts: { preserveSyntheticAdmin?: boolean } = {},
+): Promise<boolean> {
   return await (
     db as unknown as { transaction: <T>(fn: (tx: any) => Promise<T>) => Promise<T> }
   ).transaction(async (tx) => {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('aoa:first-admin-bootstrap'))`);
     const existing = await tx
-      .select({ id: instanceUserRoles.id })
+      .select({ userId: instanceUserRoles.userId })
       .from(instanceUserRoles)
       .where(eq(instanceUserRoles.role, "instance_admin"));
-    if (existing.length > 0) return false;
+
+    const syntheticAdminExists = existing.some(
+      (admin: { userId: string }) => admin.userId === LOCAL_BOARD_USER_ID,
+    );
+    const realAdminExists = existing.some(
+      (admin: { userId: string }) => admin.userId !== LOCAL_BOARD_USER_ID,
+    );
+    const removeSyntheticAdmin = async () => {
+      await tx
+        .delete(instanceUserRoles)
+        .where(
+          and(
+            eq(instanceUserRoles.userId, LOCAL_BOARD_USER_ID),
+            eq(instanceUserRoles.role, "instance_admin"),
+          ),
+        );
+    };
+
+    if (realAdminExists) {
+      if (syntheticAdminExists) await removeSyntheticAdmin();
+      return false;
+    }
+    if (opts.preserveSyntheticAdmin && syntheticAdminExists) return false;
+    if (userId === LOCAL_BOARD_USER_ID) return false;
+
     await tx.insert(instanceUserRoles).values({ userId, role: "instance_admin" });
+    if (syntheticAdminExists) await removeSyntheticAdmin();
     return true;
   });
 }
