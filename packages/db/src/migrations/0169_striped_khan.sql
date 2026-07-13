@@ -1,4 +1,4 @@
-CREATE TABLE "onboarding_progress" (
+CREATE TABLE IF NOT EXISTS "onboarding_progress" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"user_id" text NOT NULL,
 	"company_id" uuid,
@@ -10,7 +10,7 @@ CREATE TABLE "onboarding_progress" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "user_profiles" (
+CREATE TABLE IF NOT EXISTS "user_profiles" (
 	"user_id" text PRIMARY KEY NOT NULL,
 	"display_name" text,
 	"avatar_url" text,
@@ -21,6 +21,6 @@ CREATE TABLE "user_profiles" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-ALTER TABLE "onboarding_progress" ADD CONSTRAINT "onboarding_progress_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "public"."companies"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-CREATE UNIQUE INDEX "onboarding_progress_user_company_uq" ON "onboarding_progress" USING btree ("user_id","company_id") WHERE "onboarding_progress"."company_id" IS NOT NULL;--> statement-breakpoint
-CREATE UNIQUE INDEX "onboarding_progress_user_layer_uq" ON "onboarding_progress" USING btree ("user_id") WHERE "onboarding_progress"."company_id" IS NULL;
+DO $$ BEGIN ALTER TABLE "onboarding_progress" ADD CONSTRAINT "onboarding_progress_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "public"."companies"("id") ON DELETE cascade ON UPDATE no action; EXCEPTION WHEN duplicate_object THEN NULL; END $$;--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "onboarding_progress_user_company_uq" ON "onboarding_progress" USING btree ("user_id","company_id") WHERE "onboarding_progress"."company_id" IS NOT NULL;--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "onboarding_progress_user_layer_uq" ON "onboarding_progress" USING btree ("user_id") WHERE "onboarding_progress"."company_id" IS NULL;
