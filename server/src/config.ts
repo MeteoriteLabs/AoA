@@ -241,7 +241,9 @@ export function loadConfig(): Config {
 
   const googleClientId = process.env.GOOGLE_CLIENT_ID?.trim() || null;
   const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET?.trim() || null;
-  const devLocalIdentity = /^(1|true|yes)$/i.test(process.env.AOA_DEV_LOCAL_IDENTITY?.trim() ?? "");
+  const devLocalIdentity =
+    deploymentMode === "local_trusted" &&
+    /^(1|true|yes)$/i.test(process.env.AOA_DEV_LOCAL_IDENTITY?.trim() ?? "");
   const headlessBootstrap = /^(1|true|yes)$/i.test(process.env.AOA_HEADLESS_BOOTSTRAP?.trim() ?? "");
 
   return {

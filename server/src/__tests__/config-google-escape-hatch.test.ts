@@ -26,8 +26,15 @@ describe("config: google + escape hatch", () => {
   });
 
   it("reads AOA_DEV_LOCAL_IDENTITY=1 as true", () => {
+    process.env.AOA_DEPLOYMENT_MODE = "local_trusted";
     process.env.AOA_DEV_LOCAL_IDENTITY = "1";
     expect(loadConfig().devLocalIdentity).toBe(true);
+  });
+
+  it("ignores AOA_DEV_LOCAL_IDENTITY outside local_trusted mode", () => {
+    process.env.AOA_DEPLOYMENT_MODE = "authenticated";
+    process.env.AOA_DEV_LOCAL_IDENTITY = "1";
+    expect(loadConfig().devLocalIdentity).toBe(false);
   });
 
   it("reads AOA_HEADLESS_BOOTSTRAP and defaults false (A10)", () => {
