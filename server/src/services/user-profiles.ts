@@ -50,19 +50,19 @@ export async function upsertUserProfile(
     socialLinks: input.socialLinks ?? [],
     updatedAt: new Date(),
   };
+  const updates: Partial<typeof userProfiles.$inferInsert> = { updatedAt: values.updatedAt };
+  if (input.displayName !== undefined) updates.displayName = input.displayName;
+  if (input.avatarUrl !== undefined) updates.avatarUrl = input.avatarUrl;
+  if (input.title !== undefined) updates.title = input.title;
+  if (input.bio !== undefined) updates.bio = input.bio;
+  if (input.socialLinks !== undefined) updates.socialLinks = input.socialLinks;
+
   await db
     .insert(userProfiles)
     .values(values)
     .onConflictDoUpdate({
       target: userProfiles.userId,
-      set: {
-        displayName: values.displayName,
-        avatarUrl: values.avatarUrl,
-        title: values.title,
-        bio: values.bio,
-        socialLinks: values.socialLinks,
-        updatedAt: values.updatedAt,
-      },
+      set: updates,
     });
   const saved = await getUserProfile(db, userId);
   if (!saved) throw new Error("failed to upsert user profile");
