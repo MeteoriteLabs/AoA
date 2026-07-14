@@ -5,12 +5,13 @@ import * as p from "@clack/prompts";
 import pc from "picocolors";
 import { onboard } from "./onboard.js";
 import { doctor } from "./doctor.js";
-import { configExists, resolveConfigPath } from "../config/store.js";
+import { configExists, readConfig, resolveConfigPath } from "../config/store.js";
 import {
   describeLocalInstancePaths,
   resolveAoaHomeDir,
   resolveAoaInstanceId,
 } from "../config/home.js";
+import { ensureLocalTrustedQuickstartIdentity } from "./run-environment.js";
 
 interface RunOptions {
   config?: string;
@@ -46,6 +47,14 @@ export async function runCommand(opts: RunOptions): Promise<void> {
 
     p.log.step("No config found. Starting onboarding...");
     await onboard({ config: configPath, invokedByRun: true });
+  }
+
+  const config = readConfig(configPath);
+  if (!config) {
+    throw new Error(`AoA config disappeared before startup: ${configPath}`);
+  }
+  if (ensureLocalTrustedQuickstartIdentity(config.server.deploymentMode)) {
+    p.log.message(pc.dim("Using the local identity for this no-login quickstart."));
   }
 
   p.log.step("Running doctor checks...");
