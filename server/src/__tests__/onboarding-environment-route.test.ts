@@ -58,12 +58,29 @@ describe("POST /companies/:companyId/onboarding/environment", () => {
     expect(mockSetup).not.toHaveBeenCalled();
   });
 
-  it("403 when the user is not a member of the company", async () => {
-    const res = await request(makeApp(dbWithMembership([])))
+  it("allows an instance admin to set up a company without a membership row", async () => {
+    mockSetup.mockResolvedValue({
+      ok: true,
+      environmentId: "e1",
+      created: true,
+      probe: { ok: true, summary: "ok" },
+    });
+
+    const res = await request(makeApp(dbWithMembership([]), {
+      type: "board",
+      source: "session",
+      userId: "u1",
+      isInstanceAdmin: true,
+      companyIds: [],
+    }))
       .post(`/api/companies/${COMPANY_ID}/onboarding/environment`)
       .send({ rootFolder: "/tmp/acme" });
-    expect(res.status).toBe(403);
-    expect(mockSetup).not.toHaveBeenCalled();
+
+    expect(res.status).toBe(200);
+    expect(mockSetup).toHaveBeenCalledWith(expect.anything(), {
+      companyId: COMPANY_ID,
+      rootFolder: "/tmp/acme",
+    });
   });
 
   it("403 when a non-admin company member attempts filesystem setup", async () => {

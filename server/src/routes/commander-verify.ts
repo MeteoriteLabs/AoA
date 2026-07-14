@@ -1,25 +1,8 @@
 import { Router, type Request, type Response } from "express";
 import type { Db } from "@armyofagents/db";
-import { companyMemberships } from "@armyofagents/db";
-import { and, eq } from "drizzle-orm";
 import { classifyCommanderProbe, resolveCommanderAdapterType } from "../services/commander-verify.js";
 import { findServerAdapter } from "../adapters/registry.js";
-
-async function userHasCompanyAccess(db: Db, userId: string, companyId: string): Promise<boolean> {
-  const rows = await db
-    .select({ id: companyMemberships.companyId })
-    .from(companyMemberships)
-    .where(
-      and(
-        eq(companyMemberships.principalType, "user"),
-        eq(companyMemberships.principalId, userId),
-        eq(companyMemberships.companyId, companyId),
-        eq(companyMemberships.status, "active"),
-      ),
-    )
-    .limit(1);
-  return rows.length > 0;
-}
+import { assertCompanyAccess } from "./authz.js";
 
 /**
  * Commander verify (Stage C / C7-C8, revA R14). Drives the SAME adapter
@@ -38,10 +21,7 @@ export function commanderVerifyRoutes(db: Db): Router {
       return;
     }
     const companyId = req.params.companyId as string;
-    if (!(await userHasCompanyAccess(db, actor.userId, companyId))) {
-      res.status(403).json({ error: "forbidden" });
-      return;
-    }
+    assertCompanyAccess(req, companyId);
     const adapterType = await resolveCommanderAdapterType(db, companyId);
     const adapter = findServerAdapter(adapterType);
     if (!adapter?.testEnvironment) {

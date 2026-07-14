@@ -30,7 +30,13 @@ function makeApp(db: unknown, actorOverride?: Record<string, unknown>) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    req.actor = (actorOverride ?? { type: "board", userId: "u1" }) as never;
+    req.actor = (actorOverride ?? {
+      type: "board",
+      source: "session",
+      userId: "u1",
+      companyIds: [COMPANY_ID],
+      isInstanceAdmin: false,
+    }) as never;
     next();
   });
   app.use("/api", commanderVerifyRoutes(db as never));
@@ -58,10 +64,33 @@ describe("POST /companies/:companyId/internal-agent/verify", () => {
   });
 
   it("403 when the user is not a member", async () => {
-    const res = await request(makeApp(dbWithMembership([])))
+    const res = await request(makeApp(dbWithMembership([]), {
+      type: "board",
+      source: "session",
+      userId: "u1",
+      companyIds: [],
+      isInstanceAdmin: false,
+    }))
       .post(`/api/companies/${COMPANY_ID}/internal-agent/verify`)
       .send({});
     expect(res.status).toBe(403);
+  });
+
+  it("allows an instance admin to verify a company without a membership row", async () => {
+    mockTestEnvironment.mockResolvedValue(probe("pass", ["claude_hello_probe_passed"]));
+
+    const res = await request(makeApp(dbWithMembership([]), {
+      type: "board",
+      source: "session",
+      userId: "u1",
+      isInstanceAdmin: true,
+      companyIds: [],
+    }))
+      .post(`/api/companies/${COMPANY_ID}/internal-agent/verify`)
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(res.body.outcome).toBe("verified");
   });
 
   it("200 verified when the probe passes", async () => {

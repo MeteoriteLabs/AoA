@@ -1,27 +1,9 @@
 import { Router, type Request, type Response } from "express";
 import path from "node:path";
 import type { Db } from "@armyofagents/db";
-import { companyMemberships } from "@armyofagents/db";
-import { and, eq } from "drizzle-orm";
 import { setupOnboardingEnvironment } from "../services/onboarding-environment.js";
 import { safeLogActivity } from "../utils/safe-log-activity.js";
-import { assertCanManageInstanceSettings, getActorInfo } from "./authz.js";
-
-async function userHasCompanyAccess(db: Db, userId: string, companyId: string): Promise<boolean> {
-  const rows = await db
-    .select({ id: companyMemberships.companyId })
-    .from(companyMemberships)
-    .where(
-      and(
-        eq(companyMemberships.principalType, "user"),
-        eq(companyMemberships.principalId, userId),
-        eq(companyMemberships.companyId, companyId),
-        eq(companyMemberships.status, "active"),
-      ),
-    )
-    .limit(1);
-  return rows.length > 0;
-}
+import { assertCanManageInstanceSettings, assertCompanyAccess, getActorInfo } from "./authz.js";
 
 export function isAbsoluteFilesystemPath(
   value: string,
@@ -32,7 +14,7 @@ export function isAbsoluteFilesystemPath(
 
 /**
  * Onboarding environment setup (Stage C / C5, revA R13). Board-scoped,
- * instance-admin, and member-only. BLOCKING: the service runs the local
+ * instance-admin, and company-access checked. BLOCKING: the service runs the local
  * write-probe first and, on failure, persists nothing and we return 422 so the
  * founder stays on the step and can pick another folder.
  */
@@ -47,10 +29,7 @@ export function onboardingEnvironmentRoutes(db: Db): Router {
     }
     assertCanManageInstanceSettings(req);
     const companyId = req.params.companyId as string;
-    if (!(await userHasCompanyAccess(db, actor.userId, companyId))) {
-      res.status(403).json({ error: "forbidden" });
-      return;
-    }
+    assertCompanyAccess(req, companyId);
     const body = (req.body ?? {}) as { rootFolder?: unknown };
     const rootFolder = typeof body.rootFolder === "string" ? body.rootFolder.trim() : "";
     if (!rootFolder) {
