@@ -175,9 +175,11 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
       status: "running", relatedEntityType: payload.issueId ? "task" : payload.entryId ? "discussion" : null,
       relatedEntityId: payload.issueId ?? payload.entryId ?? null, userId: null,
       continuationIdempotencyKey:
-        typeof payload.continuationIdempotencyKey === "string"
-          ? payload.continuationIdempotencyKey
-          : null,
+        typeof payload.continuationAttemptIdempotencyKey === "string"
+          ? payload.continuationAttemptIdempotencyKey
+          : typeof payload.continuationIdempotencyKey === "string"
+            ? payload.continuationIdempotencyKey
+            : null,
       humanQuestionWaitMs: inheritedHumanQuestionWaitMs,
     }).returning();
     runId = inserted[0]?.id ?? null;

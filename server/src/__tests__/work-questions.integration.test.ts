@@ -24,7 +24,11 @@ import { workQuestionContinuationService } from "../services/work-question-conti
 import { workQuestionService } from "../services/work-questions.js";
 import { workQuestionSlaService } from "../services/work-question-sla.js";
 import { issueService } from "../services/issues.js";
-import { bindHeartbeatWorkQuestionContinuation } from "../services/work-question-continuation-terminal.js";
+import {
+  bindHeartbeatWorkQuestionContinuation,
+  bindInternalAgentWorkQuestionContinuation,
+} from "../services/work-question-continuation-terminal.js";
+import { recoverExpiredCrewWakeup } from "../services/internal-agent/aoa-agents/dispatcher.js";
 import { askHumanForActiveRun } from "../mcp/tools/ask-founder-tool.js";
 
 const databaseUrl = process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL;
@@ -43,8 +47,8 @@ suite("durable work questions (real PostgreSQL)", () => {
 
   function continuationWorker() {
     return workQuestionContinuationService(db, {
-      enqueueHeartbeat: async (input) => {
-        const existing = await db.select({ runId: agentWakeupRequests.runId })
+      enqueueHeartbeat: async (input, executor = db) => {
+        const existing = await executor.select({ runId: agentWakeupRequests.runId })
           .from(agentWakeupRequests)
           .where(and(
             eq(agentWakeupRequests.companyId, input.companyId),
@@ -53,8 +57,7 @@ suite("durable work questions (real PostgreSQL)", () => {
           .then((rows) => rows.find((row) => row.runId) ?? null);
         if (existing?.runId) return { id: existing.runId };
 
-        return db.transaction(async (tx) => {
-          const wakeup = await tx.insert(agentWakeupRequests).values({
+        const wakeup = await executor.insert(agentWakeupRequests).values({
             companyId: input.companyId,
             agentId: input.agentId,
             source: "automation",
@@ -66,7 +69,7 @@ suite("durable work questions (real PostgreSQL)", () => {
             requestedByActorId: "work-question-continuation-test",
             idempotencyKey: input.idempotencyKey,
           }).returning().then((rows) => rows[0]);
-          const run = await tx.insert(heartbeatRuns).values({
+        const run = await executor.insert(heartbeatRuns).values({
             companyId: input.companyId,
             agentId: input.agentId,
             invocationSource: "automation",
@@ -75,9 +78,8 @@ suite("durable work questions (real PostgreSQL)", () => {
             wakeupRequestId: wakeup.id,
             contextSnapshot: { issueId: input.issueId, questionId: input.questionId },
           }).returning().then((rows) => rows[0]);
-          await tx.update(agentWakeupRequests).set({ runId: run.id }).where(eq(agentWakeupRequests.id, wakeup.id));
-          return run;
-        });
+        await executor.update(agentWakeupRequests).set({ runId: run.id }).where(eq(agentWakeupRequests.id, wakeup.id));
+        return run;
       },
     });
   }
@@ -739,6 +741,11 @@ suite("durable work questions (real PostgreSQL)", () => {
       continuationIdempotencyKey: `work-question:${question.id}:answer:1`,
       completedAt: new Date(),
     });
+    await bindInternalAgentWorkQuestionContinuation(db, {
+      companyId,
+      runId: continuationRunId,
+      idempotencyKey: `work-question:${question.id}:answer:1`,
+    });
     expect(await continuationWorker().reconcileInternalAgentTerminals()).toBe(1);
     const completed = await db.select().from(workQuestions)
       .where(eq(workQuestions.id, question.id))
@@ -750,6 +757,658 @@ suite("durable work questions (real PostgreSQL)", () => {
       continuationError: null,
     });
     expect(await continuationWorker().reconcileInternalAgentTerminals()).toBe(0);
+  });
+
+  it("does not let a Crew continuation escape when its task closes during dispatch", async () => {
+    const crewAgentId = randomUUID();
+    const crewRunId = randomUUID();
+    const crewIssueId = randomUUID();
+    await db.insert(agents).values({
+      id: crewAgentId,
+      companyId,
+      name: "Race-safe Product Crew",
+      role: "product",
+      kind: "aoa",
+      status: "idle",
+      adapterType: "codex_local",
+    });
+    await db.insert(internalAgentRuns).values({
+      id: crewRunId,
+      companyId,
+      agentId: crewAgentId,
+      triggerType: "sub_agent",
+      triggerSource: "task",
+      status: "running",
+      relatedEntityType: "task",
+      relatedEntityId: crewIssueId,
+    });
+    await db.insert(issues).values({
+      id: crewIssueId,
+      companyId,
+      projectId,
+      title: "Choose the launch evidence",
+      identifier: `WQ-${Math.floor(Math.random() * 1_000_000)}`,
+      status: "in_progress",
+      assigneeAgentId: crewAgentId,
+      responsibleUserId: userId,
+      checkoutRunId: crewRunId,
+      executionRunId: crewRunId,
+      sourceDiscussionId: discussionId,
+    });
+    const question = await workQuestionService(db).create(companyId, {
+      issueId: crewIssueId,
+      askingAgentId: crewAgentId,
+      originatingRunKind: "internal_agent",
+      originatingRunId: crewRunId,
+      title: "Choose the strongest signal",
+      question: "Should the recommendation lead with interviews or conversion data?",
+      blocking: true,
+    });
+    await db.update(internalAgentRuns).set({
+      status: "completed",
+      completedAt: new Date(),
+    }).where(eq(internalAgentRuns.id, crewRunId));
+    await workQuestionService(db).answer(companyId, question.id, { userId }, {
+      answer: { text: "Lead with conversion data." },
+      expectedVersion: 0,
+      idempotencyKey: "crew-close-race-answer",
+    });
+    await db.update(workQuestionContinuationRequests).set({ nextAttemptAt: new Date(0) }).where(eq(
+      workQuestionContinuationRequests.questionId,
+      question.id,
+    ));
+
+    let releaseEnqueue!: () => void;
+    const enqueueReleased = new Promise<void>((resolve) => { releaseEnqueue = resolve; });
+    let markEnqueueEntered!: () => void;
+    const enqueueEntered = new Promise<void>((resolve) => { markEnqueueEntered = resolve; });
+    let enqueueUsesTaskTransaction = false;
+    const worker = workQuestionContinuationService(db, {
+      enqueueCrew: async (input, transactionDb?: Db) => {
+        enqueueUsesTaskTransaction = Boolean(transactionDb);
+        markEnqueueEntered();
+        await enqueueReleased;
+        const executor = transactionDb ?? db;
+        const wakeup = await executor.insert(agentWakeupRequests).values({
+          companyId: input.companyId,
+          agentId: input.agentId,
+          source: "work_question_continuation",
+          triggerDetail: "system",
+          reason: "work_question_continuation",
+          payload: input,
+          status: "queued",
+          requestedByActorType: "system",
+          requestedByActorId: "work-question-continuation-race-test",
+          idempotencyKey: input.idempotencyKey,
+        }).onConflictDoNothing().returning().then((rows) => rows[0] ?? null);
+        return wakeup ? { id: wakeup.runId, wakeupRequestId: wakeup.id } : null;
+      },
+    });
+
+    const dispatchPromise = worker.processDue(new Date(), 10);
+    await enqueueEntered;
+    const closePromise = issueService(db).update(
+      crewIssueId,
+      { status: "done" },
+      { actorType: "system" },
+    );
+    if (!enqueueUsesTaskTransaction) await closePromise;
+    releaseEnqueue();
+    await Promise.all([dispatchPromise, closePromise]);
+
+    const [requestAfter, questionAfter, wakeupAfter] = await Promise.all([
+      db.select().from(workQuestionContinuationRequests)
+        .where(eq(workQuestionContinuationRequests.questionId, question.id))
+        .then((rows) => rows[0]),
+      db.select().from(workQuestions).where(eq(workQuestions.id, question.id))
+        .then((rows) => rows[0]),
+      db.select().from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.idempotencyKey, `work-question:${question.id}:answer:1`))
+        .then((rows) => rows[0] ?? null),
+    ]);
+    expect(requestAfter.status).toBe("cancelled");
+    expect(questionAfter).toMatchObject({ status: "answered", continuationStatus: "not_needed" });
+    expect(wakeupAfter?.status).toBe("cancelled");
+  });
+
+  it("keeps active Crew task locks while allowing a completed Crew run continuation to adopt", async () => {
+    const crewAgentId = randomUUID();
+    const activeRunId = randomUUID();
+    const nextRunId = randomUUID();
+    const crewIssueId = randomUUID();
+    await db.insert(agents).values({
+      id: crewAgentId,
+      companyId,
+      name: "Checkout Crew",
+      role: "product",
+      kind: "aoa",
+      status: "idle",
+      adapterType: "codex_local",
+    });
+    await db.insert(internalAgentRuns).values({
+      id: activeRunId,
+      companyId,
+      agentId: crewAgentId,
+      triggerType: "sub_agent",
+      triggerSource: "task",
+      status: "running",
+      relatedEntityType: "task",
+      relatedEntityId: crewIssueId,
+    });
+    await db.insert(issues).values({
+      id: crewIssueId,
+      companyId,
+      projectId,
+      title: "Preserve the active Crew lock",
+      identifier: `WQ-${Math.floor(Math.random() * 1_000_000)}`,
+      status: "in_progress",
+      assigneeAgentId: crewAgentId,
+      checkoutRunId: activeRunId,
+      executionRunId: activeRunId,
+    });
+
+    await expect(issueService(db).checkout(
+      crewIssueId,
+      crewAgentId,
+      ["todo", "backlog", "in_progress"],
+      nextRunId,
+    )).rejects.toMatchObject({ status: 409 });
+
+    await db.update(internalAgentRuns).set({
+      status: "completed",
+      completedAt: new Date(),
+    }).where(eq(internalAgentRuns.id, activeRunId));
+    const adopted = await issueService(db).checkout(
+      crewIssueId,
+      crewAgentId,
+      ["todo", "backlog", "in_progress"],
+      nextRunId,
+    );
+    expect(adopted).toMatchObject({
+      checkoutRunId: nextRunId,
+      executionRunId: nextRunId,
+    });
+  });
+
+  it("cancels the target heartbeat run when a continuation was coalesced onto it", async () => {
+    const askingRunId = randomUUID();
+    const activeRunId = randomUUID();
+    const originalWakeupId = randomUUID();
+    const coalescedIssueId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: askingRunId,
+      companyId,
+      agentId,
+      invocationSource: "on_demand",
+      status: "running",
+      contextSnapshot: { issueId: coalescedIssueId },
+    });
+    await db.insert(issues).values({
+      id: coalescedIssueId,
+      companyId,
+      projectId,
+      title: "Cancel a coalesced continuation",
+      identifier: `WQ-${Math.floor(Math.random() * 1_000_000)}`,
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      responsibleUserId: userId,
+      checkoutRunId: askingRunId,
+      executionRunId: askingRunId,
+    });
+    const question = await workQuestionService(db).create(companyId, {
+      issueId: coalescedIssueId,
+      askingAgentId: agentId,
+      originatingRunKind: "heartbeat",
+      originatingRunId: askingRunId,
+      title: "Choose the final evidence",
+      question: "Which evidence should lead the report?",
+      blocking: true,
+    });
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, askingRunId));
+    await db.insert(agentWakeupRequests).values({
+      id: originalWakeupId,
+      companyId,
+      agentId,
+      source: "assignment",
+      status: "queued",
+    });
+    await db.insert(heartbeatRuns).values({
+      id: activeRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      status: "queued",
+      wakeupRequestId: originalWakeupId,
+      contextSnapshot: { issueId: coalescedIssueId },
+    });
+    await db.update(agentWakeupRequests).set({ runId: activeRunId })
+      .where(eq(agentWakeupRequests.id, originalWakeupId));
+    await db.update(issues).set({ executionRunId: activeRunId })
+      .where(eq(issues.id, coalescedIssueId));
+    await workQuestionService(db).answer(companyId, question.id, { userId }, {
+      answer: { text: "Lead with conversion evidence." },
+      expectedVersion: 0,
+      idempotencyKey: "coalesced-heartbeat-answer",
+    });
+    await db.update(workQuestionContinuationRequests).set({ nextAttemptAt: new Date(0) })
+      .where(eq(workQuestionContinuationRequests.questionId, question.id));
+
+    await workQuestionContinuationService(db).processDue(new Date(), 10);
+    const continuationKey = `work-question:${question.id}:answer:1`;
+    const coalescedWakeup = await db.select().from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.idempotencyKey, continuationKey))
+      .then((rows) => rows[0]);
+    expect(coalescedWakeup).toMatchObject({ status: "coalesced", runId: activeRunId });
+
+    await issueService(db).update(coalescedIssueId, { status: "done" }, { actorType: "system" });
+    const [runAfter, issueAfter] = await Promise.all([
+      db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, activeRunId)).then((rows) => rows[0]),
+      db.select().from(issues).where(eq(issues.id, coalescedIssueId)).then((rows) => rows[0]),
+    ]);
+    expect(runAfter).toMatchObject({ status: "cancelled", errorCode: "task_no_longer_eligible" });
+    expect(issueAfter.executionRunId).toBeNull();
+  });
+
+  it("recovers an expired Crew wakeup and lets its replacement own the task", async () => {
+    const crewAgentId = randomUUID();
+    const originatingRunId = randomUUID();
+    const crashedRunId = randomUUID();
+    const replacementRunId = randomUUID();
+    const crewIssueId = randomUUID();
+    await db.insert(agents).values({
+      id: crewAgentId,
+      companyId,
+      name: "Recoverable Product Crew",
+      role: "product",
+      kind: "aoa",
+      status: "idle",
+      adapterType: "codex_local",
+    });
+    await db.insert(internalAgentRuns).values({
+      id: originatingRunId,
+      companyId,
+      agentId: crewAgentId,
+      triggerType: "sub_agent",
+      triggerSource: "task",
+      status: "running",
+      relatedEntityType: "task",
+      relatedEntityId: crewIssueId,
+    });
+    await db.insert(issues).values({
+      id: crewIssueId,
+      companyId,
+      projectId,
+      title: "Recover a crashed Crew continuation",
+      identifier: `WQ-${Math.floor(Math.random() * 1_000_000)}`,
+      status: "in_progress",
+      assigneeAgentId: crewAgentId,
+      responsibleUserId: userId,
+      checkoutRunId: originatingRunId,
+      executionRunId: originatingRunId,
+    });
+    const question = await workQuestionService(db).create(companyId, {
+      issueId: crewIssueId,
+      askingAgentId: crewAgentId,
+      originatingRunKind: "internal_agent",
+      originatingRunId,
+      title: "Choose a recovery path",
+      question: "Should the retry continue with the saved context?",
+      blocking: true,
+    });
+    await db.update(internalAgentRuns).set({ status: "completed", completedAt: new Date() })
+      .where(eq(internalAgentRuns.id, originatingRunId));
+    await workQuestionService(db).answer(companyId, question.id, { userId }, {
+      answer: { text: "Continue from the saved context." },
+      expectedVersion: 0,
+      idempotencyKey: "crew-recovery-answer",
+    });
+    await db.update(workQuestionContinuationRequests).set({ nextAttemptAt: new Date(0) })
+      .where(eq(workQuestionContinuationRequests.questionId, question.id));
+    await workQuestionContinuationService(db).processDue(new Date(), 10);
+    const continuationKey = `work-question:${question.id}:answer:1`;
+    const wakeup = await db.select().from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.idempotencyKey, continuationKey))
+      .then((rows) => rows[0]);
+    await db.insert(internalAgentRuns).values({
+      id: crashedRunId,
+      companyId,
+      agentId: crewAgentId,
+      triggerType: "sub_agent",
+      triggerSource: "work_question_continuation",
+      status: "running",
+      relatedEntityType: "task",
+      relatedEntityId: crewIssueId,
+      continuationIdempotencyKey: `${continuationKey}:crew-attempt:1`,
+    });
+    await db.update(agentWakeupRequests).set({
+      status: "processing",
+      runId: null,
+      attempts: 1,
+      claimedAt: new Date(Date.now() - 20 * 60_000),
+      claimToken: randomUUID(),
+      leaseExpiresAt: new Date(Date.now() - 10_000),
+    }).where(eq(agentWakeupRequests.id, wakeup.id));
+    await db.update(issues).set({ checkoutRunId: crashedRunId, executionRunId: crashedRunId })
+      .where(eq(issues.id, crewIssueId));
+    await db.update(workQuestions).set({ continuationRunId: crashedRunId })
+      .where(eq(workQuestions.id, question.id));
+
+    expect(await recoverExpiredCrewWakeup(db, {
+      id: wakeup.id,
+      companyId,
+      agentId: crewAgentId,
+      runId: crashedRunId,
+      idempotencyKey: continuationKey,
+      payload: { issueId: crewIssueId, questionId: question.id },
+    })).toBe(true);
+    const [recoveredWakeup, failedRun, recoveredIssue, recoveredQuestion] = await Promise.all([
+      db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeup.id)).then((rows) => rows[0]),
+      db.select().from(internalAgentRuns).where(eq(internalAgentRuns.id, crashedRunId)).then((rows) => rows[0]),
+      db.select().from(issues).where(eq(issues.id, crewIssueId)).then((rows) => rows[0]),
+      db.select().from(workQuestions).where(eq(workQuestions.id, question.id)).then((rows) => rows[0]),
+    ]);
+    expect(recoveredWakeup).toMatchObject({ status: "queued", runId: null, claimToken: null });
+    expect(failedRun).toMatchObject({ status: "failed", errorMessage: "reclaimed: expired Crew wakeup lease" });
+    expect(recoveredIssue).toMatchObject({ checkoutRunId: null, executionRunId: null });
+    expect(recoveredQuestion).toMatchObject({ continuationStatus: "dispatched", continuationRunId: null });
+    expect(await workQuestionContinuationService(db).reconcileInternalAgentTerminals()).toBe(0);
+    const questionAfterOldAttemptReconciliation = await db.select().from(workQuestions)
+      .where(eq(workQuestions.id, question.id)).then((rows) => rows[0]);
+    expect(questionAfterOldAttemptReconciliation).toMatchObject({
+      continuationStatus: "dispatched",
+      continuationRunId: null,
+    });
+
+    await db.insert(internalAgentRuns).values({
+      id: replacementRunId,
+      companyId,
+      agentId: crewAgentId,
+      triggerType: "sub_agent",
+      triggerSource: "work_question_continuation",
+      status: "running",
+      relatedEntityType: "task",
+      relatedEntityId: crewIssueId,
+      continuationIdempotencyKey: `${continuationKey}:crew-attempt:2`,
+    });
+    await db.update(agentWakeupRequests).set({
+      status: "processing",
+      attempts: 2,
+      claimToken: randomUUID(),
+      leaseExpiresAt: new Date(Date.now() + 60_000),
+    }).where(eq(agentWakeupRequests.id, wakeup.id));
+    await bindInternalAgentWorkQuestionContinuation(db, {
+      companyId,
+      runId: replacementRunId,
+      idempotencyKey: continuationKey,
+      agentId: crewAgentId,
+      wakeupId: wakeup.id,
+    });
+    const adopted = await issueService(db).checkout(
+      crewIssueId,
+      crewAgentId,
+      ["todo", "backlog", "in_progress"],
+      replacementRunId,
+    );
+    expect(adopted).toMatchObject({ checkoutRunId: replacementRunId, executionRunId: replacementRunId });
+    const reboundQuestion = await db.select().from(workQuestions)
+      .where(eq(workQuestions.id, question.id)).then((rows) => rows[0]);
+    expect(reboundQuestion.continuationRunId).toBe(replacementRunId);
+
+    await db.update(internalAgentRuns).set({ status: "completed", completedAt: new Date() })
+      .where(eq(internalAgentRuns.id, replacementRunId));
+    await db.update(agentWakeupRequests).set({
+      leaseExpiresAt: new Date(Date.now() - 10_000),
+    }).where(eq(agentWakeupRequests.id, wakeup.id));
+    expect(await recoverExpiredCrewWakeup(db, {
+      id: wakeup.id,
+      companyId,
+      agentId: crewAgentId,
+      runId: replacementRunId,
+      idempotencyKey: continuationKey,
+      payload: { issueId: crewIssueId, questionId: question.id },
+    })).toBe(true);
+    const [terminalWakeup, terminalQuestion] = await Promise.all([
+      db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeup.id)).then((rows) => rows[0]),
+      db.select().from(workQuestions).where(eq(workQuestions.id, question.id)).then((rows) => rows[0]),
+    ]);
+    expect(terminalWakeup).toMatchObject({ status: "succeeded", runId: replacementRunId });
+    expect(terminalQuestion).toMatchObject({
+      continuationStatus: "completed",
+      continuationRunId: replacementRunId,
+    });
+  });
+
+  it("reconciles a terminal failed Crew attempt and releases its stranded task lock", async () => {
+    const crewAgentId = randomUUID();
+    const originRunId = randomUUID();
+    const failedRunId = randomUUID();
+    const failedIssueId = randomUUID();
+    await db.insert(agents).values({
+      id: crewAgentId,
+      companyId,
+      name: "Failed Recovery Crew",
+      role: "product",
+      kind: "aoa",
+      status: "idle",
+      adapterType: "codex_local",
+    });
+    await db.insert(internalAgentRuns).values({
+      id: originRunId,
+      companyId,
+      agentId: crewAgentId,
+      triggerType: "sub_agent",
+      triggerSource: "task",
+      status: "running",
+      relatedEntityType: "task",
+      relatedEntityId: failedIssueId,
+    });
+    await db.insert(issues).values({
+      id: failedIssueId,
+      companyId,
+      projectId,
+      title: "Release a terminal failed continuation",
+      identifier: `WQ-${Math.floor(Math.random() * 1_000_000)}`,
+      status: "in_progress",
+      assigneeAgentId: crewAgentId,
+      responsibleUserId: userId,
+      checkoutRunId: originRunId,
+      executionRunId: originRunId,
+    });
+    const question = await workQuestionService(db).create(companyId, {
+      issueId: failedIssueId,
+      askingAgentId: crewAgentId,
+      originatingRunKind: "internal_agent",
+      originatingRunId: originRunId,
+      title: "Confirm the failed retry",
+      question: "Should this continuation retry use the saved answer?",
+      blocking: true,
+    });
+    await db.update(internalAgentRuns).set({ status: "completed", completedAt: new Date() })
+      .where(eq(internalAgentRuns.id, originRunId));
+    await workQuestionService(db).answer(companyId, question.id, { userId }, {
+      answer: { text: "Use the saved answer." },
+      expectedVersion: 0,
+      idempotencyKey: "terminal-failed-recovery-answer",
+    });
+    await db.update(workQuestionContinuationRequests).set({ nextAttemptAt: new Date(0) })
+      .where(eq(workQuestionContinuationRequests.questionId, question.id));
+    await workQuestionContinuationService(db).processDue(new Date(), 10);
+    const continuationKey = `work-question:${question.id}:answer:1`;
+    const wakeup = await db.select().from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.idempotencyKey, continuationKey))
+      .then((rows) => rows[0]);
+    await db.insert(internalAgentRuns).values({
+      id: failedRunId,
+      companyId,
+      agentId: crewAgentId,
+      triggerType: "sub_agent",
+      triggerSource: "work_question_continuation",
+      status: "failed",
+      relatedEntityType: "task",
+      relatedEntityId: failedIssueId,
+      continuationIdempotencyKey: `${continuationKey}:crew-attempt:1`,
+      errorMessage: "provider disconnected",
+      completedAt: new Date(),
+    });
+    await db.update(issues).set({ checkoutRunId: failedRunId, executionRunId: failedRunId })
+      .where(eq(issues.id, failedIssueId));
+    await db.update(workQuestions).set({ continuationRunId: failedRunId })
+      .where(eq(workQuestions.id, question.id));
+    await db.update(agentWakeupRequests).set({
+      status: "processing",
+      attempts: 1,
+      runId: failedRunId,
+      claimedAt: new Date(Date.now() - 20 * 60_000),
+      claimToken: randomUUID(),
+      leaseExpiresAt: new Date(Date.now() - 10_000),
+    }).where(eq(agentWakeupRequests.id, wakeup.id));
+
+    expect(await recoverExpiredCrewWakeup(db, {
+      id: wakeup.id,
+      companyId,
+      agentId: crewAgentId,
+      runId: failedRunId,
+      idempotencyKey: continuationKey,
+      payload: { issueId: failedIssueId, questionId: question.id },
+    })).toBe(true);
+    const [issueAfter, wakeupAfter, questionAfter] = await Promise.all([
+      db.select().from(issues).where(eq(issues.id, failedIssueId)).then((rows) => rows[0]),
+      db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeup.id)).then((rows) => rows[0]),
+      db.select().from(workQuestions).where(eq(workQuestions.id, question.id)).then((rows) => rows[0]),
+    ]);
+    expect(issueAfter).toMatchObject({ status: "todo", checkoutRunId: null, executionRunId: null });
+    expect(wakeupAfter).toMatchObject({ status: "failed", runId: failedRunId, claimToken: null });
+    expect(questionAfter).toMatchObject({
+      continuationStatus: "failed",
+      continuationRunId: failedRunId,
+      continuationError: "provider disconnected",
+    });
+  });
+
+  it("serializes expired Crew recovery behind task closure without deadlocking", async () => {
+    const crewAgentId = randomUUID();
+    const originRunId = randomUUID();
+    const activeRunId = randomUUID();
+    const closingIssueId = randomUUID();
+    await db.insert(agents).values({
+      id: crewAgentId,
+      companyId,
+      name: "Closing Recovery Crew",
+      role: "product",
+      kind: "aoa",
+      status: "idle",
+      adapterType: "codex_local",
+    });
+    await db.insert(internalAgentRuns).values({
+      id: originRunId,
+      companyId,
+      agentId: crewAgentId,
+      triggerType: "sub_agent",
+      triggerSource: "task",
+      status: "running",
+      relatedEntityType: "task",
+      relatedEntityId: closingIssueId,
+    });
+    await db.insert(issues).values({
+      id: closingIssueId,
+      companyId,
+      projectId,
+      title: "Close while recovering a continuation",
+      identifier: `WQ-${Math.floor(Math.random() * 1_000_000)}`,
+      status: "in_progress",
+      assigneeAgentId: crewAgentId,
+      responsibleUserId: userId,
+      checkoutRunId: originRunId,
+      executionRunId: originRunId,
+    });
+    const question = await workQuestionService(db).create(companyId, {
+      issueId: closingIssueId,
+      askingAgentId: crewAgentId,
+      originatingRunKind: "internal_agent",
+      originatingRunId: originRunId,
+      title: "Confirm closure ordering",
+      question: "Can this task close while recovery starts?",
+      blocking: true,
+    });
+    await db.update(internalAgentRuns).set({ status: "completed", completedAt: new Date() })
+      .where(eq(internalAgentRuns.id, originRunId));
+    await workQuestionService(db).answer(companyId, question.id, { userId }, {
+      answer: { text: "Yes." },
+      expectedVersion: 0,
+      idempotencyKey: "close-recovery-order-answer",
+    });
+    await db.update(workQuestionContinuationRequests).set({ nextAttemptAt: new Date(0) })
+      .where(eq(workQuestionContinuationRequests.questionId, question.id));
+    await workQuestionContinuationService(db).processDue(new Date(), 10);
+    const continuationKey = `work-question:${question.id}:answer:1`;
+    const wakeup = await db.select().from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.idempotencyKey, continuationKey))
+      .then((rows) => rows[0]);
+    await db.insert(internalAgentRuns).values({
+      id: activeRunId,
+      companyId,
+      agentId: crewAgentId,
+      triggerType: "sub_agent",
+      triggerSource: "work_question_continuation",
+      status: "running",
+      relatedEntityType: "task",
+      relatedEntityId: closingIssueId,
+      continuationIdempotencyKey: `${continuationKey}:crew-attempt:1`,
+    });
+    await db.update(issues).set({ checkoutRunId: activeRunId, executionRunId: activeRunId })
+      .where(eq(issues.id, closingIssueId));
+    await db.update(workQuestions).set({ continuationRunId: activeRunId })
+      .where(eq(workQuestions.id, question.id));
+    await db.update(agentWakeupRequests).set({
+      status: "processing",
+      attempts: 1,
+      runId: activeRunId,
+      claimedAt: new Date(Date.now() - 20 * 60_000),
+      claimToken: randomUUID(),
+      leaseExpiresAt: new Date(Date.now() - 10_000),
+    }).where(eq(agentWakeupRequests.id, wakeup.id));
+
+    let releaseTaskLock!: () => void;
+    const taskLockReleased = new Promise<void>((resolve) => { releaseTaskLock = resolve; });
+    let markTaskLocked!: () => void;
+    const taskLocked = new Promise<void>((resolve) => { markTaskLocked = resolve; });
+    const blocker = db.transaction(async (tx) => {
+      await tx.select({ id: issues.id }).from(issues)
+        .where(eq(issues.id, closingIssueId)).for("update");
+      markTaskLocked();
+      await taskLockReleased;
+    });
+    await taskLocked;
+    const closePromise = issueService(db).update(closingIssueId, { status: "done" }, { actorType: "system" });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const recoveryPromise = recoverExpiredCrewWakeup(db, {
+      id: wakeup.id,
+      companyId,
+      agentId: crewAgentId,
+      runId: activeRunId,
+      idempotencyKey: continuationKey,
+      payload: { issueId: closingIssueId, questionId: question.id },
+    });
+    releaseTaskLock();
+    await blocker;
+    let deadlockTimer!: ReturnType<typeof setTimeout>;
+    try {
+      await expect(Promise.race([
+        Promise.all([closePromise, recoveryPromise]),
+        new Promise((_, reject) => {
+          deadlockTimer = setTimeout(() => reject(new Error("task closure/recovery deadlocked")), 5_000);
+        }),
+      ])).resolves.toBeDefined();
+    } finally {
+      clearTimeout(deadlockTimer);
+    }
+    const [issueAfter, wakeupAfter] = await Promise.all([
+      db.select().from(issues).where(eq(issues.id, closingIssueId)).then((rows) => rows[0]),
+      db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeup.id)).then((rows) => rows[0]),
+    ]);
+    expect(issueAfter.status).toBe("done");
+    expect(wakeupAfter.status).toBe("cancelled");
   });
 
   it("snapshots a project SLA override and breaches it exactly once without reassigning", async () => {
@@ -890,7 +1549,7 @@ suite("durable work questions (real PostgreSQL)", () => {
       status: "running",
       relatedEntityType: "task",
       relatedEntityId: issueId,
-      continuationIdempotencyKey: continuationKey,
+      continuationIdempotencyKey: `${continuationKey}:crew-attempt:1`,
     });
     await db.update(agentWakeupRequests).set({
       status: "processing",

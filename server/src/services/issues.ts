@@ -131,21 +131,41 @@ async function cancelActiveWorkQuestionsForIssue(
   let runningRunIds: string[] = [];
   if (wakeupKeys.length > 0) {
     const wakeups = await tx
-      .select({ id: agentWakeupRequests.id })
+      .select({ id: agentWakeupRequests.id, runId: agentWakeupRequests.runId })
       .from(agentWakeupRequests)
       .where(and(
         eq(agentWakeupRequests.companyId, input.companyId),
         inArray(agentWakeupRequests.idempotencyKey, wakeupKeys),
       ));
     const wakeupIds = wakeups.map((row) => row.id);
+    const referencedRunIds = wakeups
+      .map((row) => row.runId)
+      .filter((runId): runId is string => Boolean(runId));
     if (wakeupIds.length > 0) {
+      // Task closure and expired-wakeup recovery both lock wakeups before runs.
+      // Keeping that order avoids a run <-> wakeup deadlock under concurrency.
+      await tx.update(agentWakeupRequests).set({
+        status: "cancelled",
+        finishedAt: now,
+        error: `Task ${input.reason}`,
+        claimToken: null,
+        leaseExpiresAt: null,
+        updatedAt: now,
+      }).where(and(
+        eq(agentWakeupRequests.companyId, input.companyId),
+        inArray(agentWakeupRequests.status, ["queued", "claimed", "processing", "deferred_issue_execution"]),
+        inArray(agentWakeupRequests.id, wakeupIds),
+      ));
       const activeRuns = await tx
         .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
         .from(heartbeatRuns)
         .where(and(
           eq(heartbeatRuns.companyId, input.companyId),
-          inArray(heartbeatRuns.wakeupRequestId, wakeupIds),
-          inArray(heartbeatRuns.status, ["queued", "running"]),
+          or(
+            inArray(heartbeatRuns.wakeupRequestId, wakeupIds),
+            ...(referencedRunIds.length > 0 ? [inArray(heartbeatRuns.id, referencedRunIds)] : []),
+          ),
+          inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
         ));
       runningRunIds = activeRuns
         .filter((run) => run.status === "running")
@@ -161,7 +181,7 @@ async function cancelActiveWorkQuestionsForIssue(
         }).where(and(
           eq(heartbeatRuns.companyId, input.companyId),
           inArray(heartbeatRuns.id, activeRunIds),
-          inArray(heartbeatRuns.status, ["queued", "running"]),
+          inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
         ));
         await tx.update(issues).set({
           executionRunId: null,
@@ -175,12 +195,20 @@ async function cancelActiveWorkQuestionsForIssue(
         ));
       }
     }
+    const crewRunMatch = or(
+      inArray(internalAgentRuns.continuationIdempotencyKey, wakeupKeys),
+      ...(referencedRunIds.length > 0 ? [inArray(internalAgentRuns.id, referencedRunIds)] : []),
+      ...wakeupKeys.map((key) => sql<boolean>`starts_with(
+        ${internalAgentRuns.continuationIdempotencyKey},
+        ${`${key}:crew-attempt:`}
+      )`),
+    );
     const activeCrewRuns = await tx
       .select({ id: internalAgentRuns.id })
       .from(internalAgentRuns)
       .where(and(
         eq(internalAgentRuns.companyId, input.companyId),
-        inArray(internalAgentRuns.continuationIdempotencyKey, wakeupKeys),
+        crewRunMatch,
         eq(internalAgentRuns.status, "running"),
       ));
     if (activeCrewRuns.length > 0) {
@@ -196,18 +224,6 @@ async function cancelActiveWorkQuestionsForIssue(
         eq(internalAgentRuns.status, "running"),
       ));
     }
-    await tx.update(agentWakeupRequests).set({
-      status: "cancelled",
-      finishedAt: now,
-      error: `Task ${input.reason}`,
-      claimToken: null,
-      leaseExpiresAt: null,
-      updatedAt: now,
-    }).where(and(
-      eq(agentWakeupRequests.companyId, input.companyId),
-      inArray(agentWakeupRequests.status, ["queued", "claimed", "processing", "deferred_issue_execution"]),
-      inArray(agentWakeupRequests.idempotencyKey, wakeupKeys),
-    ));
   }
 
   for (const questionId of questionIds) {
@@ -476,6 +492,7 @@ function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
 }
 
 const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
+const TERMINAL_INTERNAL_AGENT_RUN_STATUSES = new Set(["completed", "failed", "cancelled"]);
 
 function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, "\\$&");
@@ -853,14 +870,22 @@ export function issueService(db: Db) {
     );
   }
 
-  async function isTerminalOrMissingHeartbeatRun(runId: string) {
-    const run = await db
-      .select({ status: heartbeatRuns.status })
-      .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.id, runId))
-      .then((rows) => rows[0] ?? null);
-    if (!run) return true;
-    return TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status);
+  async function isTerminalOrMissingExecutionRun(runId: string) {
+    const [heartbeatRun, internalAgentRun] = await Promise.all([
+      db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ status: internalAgentRuns.status })
+        .from(internalAgentRuns)
+        .where(eq(internalAgentRuns.id, runId))
+        .then((rows) => rows[0] ?? null),
+    ]);
+    if (heartbeatRun && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(heartbeatRun.status)) return false;
+    if (internalAgentRun && !TERMINAL_INTERNAL_AGENT_RUN_STATUSES.has(internalAgentRun.status)) return false;
+    return true;
   }
 
   async function adoptStaleCheckoutRun(input: {
@@ -869,7 +894,7 @@ export function issueService(db: Db) {
     actorRunId: string;
     expectedCheckoutRunId: string;
   }) {
-    const stale = await isTerminalOrMissingHeartbeatRun(input.expectedCheckoutRunId);
+    const stale = await isTerminalOrMissingExecutionRun(input.expectedCheckoutRunId);
     if (!stale) return null;
 
     const now = new Date();

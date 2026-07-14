@@ -1,13 +1,22 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, lt, inArray, isNull, lte, notInArray, or, sql, gt } from "drizzle-orm";
+import { and, desc, eq, lt, inArray, isNull, lte, notInArray, or, sql, gt } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { discussionEntries, discussions, internalAgentRuns, agentWakeupRequests, agents, internalAgentConfig } from "@armyofagents/db";
+import {
+  discussionEntries,
+  discussions,
+  internalAgentRuns,
+  agentWakeupRequests,
+  agents,
+  internalAgentConfig,
+  issues,
+  workQuestions,
+} from "@armyofagents/db";
 import { listEnabledOutboxAgents } from "./triggers.js";
 import { ensureExtractionAgent } from "./ensure-extraction-agent.js";
 import { runExtractionConsumer } from "../subagents/extraction-consumer.js";
 import { runAoaAgent } from "./runner.js";
 import { createLimiter } from "../subagents/concurrency-limiter.js";
-import { publishLiveEvent } from "../../live-events.js";
+import { publishIssueStatusChanged, publishLiveEvent } from "../../live-events.js";
 import { logger } from "../../../middleware/logger.js";
 import { isRoleActiveAtAutonomy, ROLE_MIN_AUTONOMY, type CrewRole } from "./autonomy.js";
 import { resolveCrewRole } from "./resolve-crew-role.js";
@@ -17,10 +26,211 @@ import { runRateExceeded, resolveRoleModel, DEFAULT_CREW_RATE_LIMIT, DEFAULT_CRE
 // of live-events.ts, imported as ../../live-events.js above), so from
 // internal-agent/aoa-agents/ it resolves up TWO levels: ../../budgets.js.
 import { budgetService } from "../../budgets.js";
-import { failUnstartedInternalAgentWorkQuestionContinuation } from "../../work-question-continuation-terminal.js";
+import {
+  failUnstartedInternalAgentWorkQuestionContinuation,
+  finalizeInternalAgentWorkQuestionContinuation,
+} from "../../work-question-continuation-terminal.js";
 
 const WAKEUP_LEASE_MS = 10 * 60 * 1000;
 const WAKEUP_LEASE_RENEW_MS = 60 * 1000;
+
+function crewContinuationAttemptKey(idempotencyKey: string, attempt: number) {
+  return `${idempotencyKey}:crew-attempt:${Math.max(1, attempt)}`;
+}
+
+export async function recoverExpiredCrewWakeup(
+  db: Db,
+  wakeup: {
+    id: string;
+    companyId: string;
+    agentId: string;
+    runId: string | null;
+    idempotencyKey: string | null;
+    payload: Record<string, unknown> | null;
+  },
+) {
+  const now = new Date();
+  const issueId = typeof wakeup.payload?.issueId === "string" ? wakeup.payload.issueId : null;
+  const questionId = typeof wakeup.payload?.questionId === "string" ? wakeup.payload.questionId : null;
+  const outcome = await db.transaction(async (tx) => {
+    // Keep the same lock order as task closure: task -> question -> wakeup -> run.
+    if (issueId) {
+      await tx.select({ id: issues.id }).from(issues).where(and(
+        eq(issues.id, issueId),
+        eq(issues.companyId, wakeup.companyId),
+      )).for("update");
+    }
+    if (questionId) {
+      await tx.select({ id: workQuestions.id }).from(workQuestions).where(and(
+        eq(workQuestions.id, questionId),
+        eq(workQuestions.companyId, wakeup.companyId),
+      )).for("update");
+    }
+
+    const currentWakeup = await tx.select({
+      runId: agentWakeupRequests.runId,
+      source: agentWakeupRequests.source,
+      idempotencyKey: agentWakeupRequests.idempotencyKey,
+      attempts: agentWakeupRequests.attempts,
+      leaseExpiresAt: agentWakeupRequests.leaseExpiresAt,
+    }).from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.id, wakeup.id),
+        eq(agentWakeupRequests.companyId, wakeup.companyId),
+        eq(agentWakeupRequests.agentId, wakeup.agentId),
+        eq(agentWakeupRequests.status, "processing"),
+        or(
+          isNull(agentWakeupRequests.leaseExpiresAt),
+          lte(agentWakeupRequests.leaseExpiresAt, now),
+        ),
+      ))
+      .for("update")
+      .then((rows) => rows[0] ?? null);
+    if (!currentWakeup) return { recovered: false, terminal: null, releasedIssueId: null };
+
+    const baseKey = currentWakeup.idempotencyKey;
+    const attemptKey = baseKey && currentWakeup.source === "work_question_continuation"
+      ? crewContinuationAttemptKey(baseKey, currentWakeup.attempts)
+      : null;
+    let run = currentWakeup.runId
+      ? await tx.select({
+          id: internalAgentRuns.id,
+          status: internalAgentRuns.status,
+          errorMessage: internalAgentRuns.errorMessage,
+        }).from(internalAgentRuns).where(and(
+          eq(internalAgentRuns.id, currentWakeup.runId),
+          eq(internalAgentRuns.companyId, wakeup.companyId),
+          eq(internalAgentRuns.agentId, wakeup.agentId),
+        )).then((rows) => rows[0] ?? null)
+      : null;
+    if (!run && attemptKey && baseKey) {
+      // Covers a crash after the run insert but before the runner binds runId to
+      // the wakeup. The base-key lookup keeps pre-attempt-key rows recoverable.
+      run = await tx.select({
+        id: internalAgentRuns.id,
+        status: internalAgentRuns.status,
+        errorMessage: internalAgentRuns.errorMessage,
+      }).from(internalAgentRuns).where(and(
+        eq(internalAgentRuns.companyId, wakeup.companyId),
+        eq(internalAgentRuns.agentId, wakeup.agentId),
+        inArray(internalAgentRuns.continuationIdempotencyKey, [attemptKey, baseKey]),
+      )).orderBy(desc(internalAgentRuns.createdAt)).then((rows) => rows[0] ?? null);
+    }
+
+    if (!run) {
+      await tx.update(agentWakeupRequests).set({
+        status: "queued",
+        claimedAt: null,
+        claimToken: null,
+        leaseExpiresAt: null,
+        runId: null,
+        updatedAt: now,
+      }).where(eq(agentWakeupRequests.id, wakeup.id));
+      return { recovered: true, terminal: null, releasedIssueId: null };
+    }
+
+    const [failedRun] = await tx.update(internalAgentRuns).set({
+      status: "failed",
+      errorMessage: "reclaimed: expired Crew wakeup lease",
+      completedAt: now,
+    }).where(and(
+      eq(internalAgentRuns.id, run.id),
+      eq(internalAgentRuns.companyId, wakeup.companyId),
+      eq(internalAgentRuns.agentId, wakeup.agentId),
+      eq(internalAgentRuns.status, "running"),
+    )).returning({ id: internalAgentRuns.id });
+    if (!failedRun && ["completed", "failed", "cancelled"].includes(run.status)) {
+        const terminalStatus = run.status as "completed" | "failed" | "cancelled";
+        const wakeupStatus = terminalStatus === "completed" ? "succeeded" : terminalStatus;
+        await tx.update(agentWakeupRequests).set({
+          status: wakeupStatus,
+          runId: run.id,
+          finishedAt: now,
+          error: run.errorMessage,
+          claimToken: null,
+          leaseExpiresAt: null,
+          updatedAt: now,
+        }).where(eq(agentWakeupRequests.id, wakeup.id));
+        if (questionId) {
+          await tx.update(workQuestions).set({
+            continuationRunId: run.id,
+            updatedAt: now,
+          }).where(and(
+            eq(workQuestions.id, questionId),
+            eq(workQuestions.companyId, wakeup.companyId),
+            eq(workQuestions.continuationRunKind, "internal_agent"),
+            eq(workQuestions.continuationStatus, "dispatched"),
+            or(isNull(workQuestions.continuationRunId), eq(workQuestions.continuationRunId, run.id)),
+          ));
+        }
+        let releasedIssueId: string | null = null;
+        if (terminalStatus !== "completed") {
+          const released = await tx.update(issues).set({
+            status: "todo",
+            checkoutRunId: null,
+            executionRunId: null,
+            executionAgentNameKey: null,
+            executionLockedAt: null,
+            updatedAt: now,
+          }).where(and(
+            eq(issues.companyId, wakeup.companyId),
+            eq(issues.status, "in_progress"),
+            or(eq(issues.checkoutRunId, run.id), eq(issues.executionRunId, run.id)),
+          )).returning({ id: issues.id });
+          releasedIssueId = released[0]?.id ?? null;
+        }
+        return {
+          recovered: true,
+          terminal: {
+            runId: run.id,
+            status: terminalStatus,
+            error: run.errorMessage,
+          },
+          releasedIssueId,
+        };
+    }
+    await tx.update(issues).set({
+      checkoutRunId: null,
+      executionRunId: null,
+      executionAgentNameKey: null,
+      executionLockedAt: null,
+      updatedAt: now,
+    }).where(and(
+      eq(issues.companyId, wakeup.companyId),
+      or(eq(issues.checkoutRunId, run.id), eq(issues.executionRunId, run.id)),
+    ));
+    await tx.update(workQuestions).set({
+      continuationRunId: null,
+      updatedAt: now,
+    }).where(and(
+      eq(workQuestions.companyId, wakeup.companyId),
+      eq(workQuestions.continuationRunKind, "internal_agent"),
+      eq(workQuestions.continuationRunId, run.id),
+      eq(workQuestions.continuationStatus, "dispatched"),
+    ));
+    await tx.update(agentWakeupRequests).set({
+      status: "queued",
+      claimedAt: null,
+      claimToken: null,
+      leaseExpiresAt: null,
+      runId: null,
+      updatedAt: now,
+    }).where(eq(agentWakeupRequests.id, wakeup.id));
+    return { recovered: true, terminal: null, releasedIssueId: null };
+  });
+  if (outcome.releasedIssueId) {
+    publishIssueStatusChanged(wakeup.companyId, outcome.releasedIssueId, "todo");
+  }
+  if (outcome.terminal) {
+    await finalizeInternalAgentWorkQuestionContinuation(db, {
+      companyId: wakeup.companyId,
+      runId: outcome.terminal.runId,
+      status: outcome.terminal.status,
+      error: outcome.terminal.error,
+    });
+  }
+  return outcome.recovered;
+}
 
 async function failContinuationWakeup(
   db: Db,
@@ -229,14 +439,16 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
   // Commander has no trigger role → resolveCrewRole returns null → it would be
   // treated Drive-only and wrongly skipped_autonomy at dial 0/1; the exemption
   // below lets it run unconditionally (like inbox-routing).
-  const wakeupRows: Array<{ id: string; agentId: string; companyId: string; source: string; status: string; idempotencyKey: string | null; payload: Record<string, unknown> | null; runtimeConfig: Record<string, unknown> | null }> = await db
+  const wakeupRows: Array<{ id: string; agentId: string; companyId: string; source: string; status: string; attempts: number; idempotencyKey: string | null; runId: string | null; payload: Record<string, unknown> | null; runtimeConfig: Record<string, unknown> | null }> = await db
     .select({
       id: agentWakeupRequests.id,
       agentId: agentWakeupRequests.agentId,
       companyId: agentWakeupRequests.companyId,
       source: agentWakeupRequests.source,
       status: agentWakeupRequests.status,
+      attempts: agentWakeupRequests.attempts,
       idempotencyKey: agentWakeupRequests.idempotencyKey,
+      runId: agentWakeupRequests.runId,
       payload: agentWakeupRequests.payload,
       runtimeConfig: agents.runtimeConfig,
     })
@@ -336,26 +548,7 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
       wakeupRows.map((w) =>
         p3Limiter.run(async () => {
           if (w.status === "processing") {
-            const [recovered] = await db
-              .update(agentWakeupRequests)
-              .set({
-                status: "queued",
-                claimedAt: null,
-                claimToken: null,
-                leaseExpiresAt: null,
-                updatedAt: new Date(),
-              })
-              .where(and(
-                eq(agentWakeupRequests.id, w.id),
-                eq(agentWakeupRequests.companyId, w.companyId),
-                eq(agentWakeupRequests.agentId, w.agentId),
-                eq(agentWakeupRequests.status, "processing"),
-                or(
-                  isNull(agentWakeupRequests.leaseExpiresAt),
-                  lte(agentWakeupRequests.leaseExpiresAt, new Date()),
-                ),
-              ))
-              .returning({ id: agentWakeupRequests.id });
+            const recovered = await recoverExpiredCrewWakeup(db, w);
             if (!recovered) return;
           }
 
@@ -704,7 +897,7 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
               eq(agentWakeupRequests.agentId, w.agentId),
               eq(agentWakeupRequests.status, "queued"),
             ))
-            .returning({ id: agentWakeupRequests.id });
+            .returning({ id: agentWakeupRequests.id, attempts: agentWakeupRequests.attempts });
           if (claimed.length === 0) return; // already claimed by concurrent tick
 
           const leaseRenewal = setInterval(() => {
@@ -741,6 +934,9 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
             // reflects the actual outcome (succeeded/failed) the runner
             // reports, not just whether it threw. Cost/usage already
             // persisted to internal_agent_runs by the runner itself.
+            const continuationAttemptIdempotencyKey = w.source === "work_question_continuation" && w.idempotencyKey
+              ? crewContinuationAttemptKey(w.idempotencyKey, claimed[0]!.attempts)
+              : null;
             const result = await runAoaAgent(db, w.agentId, {
               companyId: w.companyId,
               // T1.2 (codex F6): pass the wakeup's ORIGINAL source (e.g.
@@ -756,6 +952,12 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
               // wakeup) must NOT override the dial the activation gate read — keep
               // gate and runner reading the same value.
               ...(w.payload ?? {}),
+              ...(continuationAttemptIdempotencyKey
+                ? {
+                    continuationIdempotencyKey: w.idempotencyKey,
+                    continuationAttemptIdempotencyKey,
+                  }
+                : {}),
               effectiveAutonomy,
             });
             // P2 + T1.0: status reflects what the runner actually saw.

@@ -637,6 +637,10 @@ interface WakeupOptions {
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
   contextSnapshot?: Record<string, unknown>;
+  beforeIssueWakeCommit?: (
+    tx: Db,
+    continuation: { id: string | null; wakeupRequestId: string | null },
+  ) => Promise<void>;
 }
 
 interface ParsedIssueAssigneeAdapterOverrides {
@@ -5400,7 +5404,7 @@ export function heartbeatService(db: Db) {
               .returning()
               .then((rows) => rows[0] ?? activeExecutionRun);
 
-            await tx.insert(agentWakeupRequests).values({
+            const coalescedWakeup = await tx.insert(agentWakeupRequests).values({
               companyId: agent.companyId,
               agentId,
               source,
@@ -5414,6 +5418,11 @@ export function heartbeatService(db: Db) {
               idempotencyKey: opts.idempotencyKey ?? null,
               runId: mergedRun.id,
               finishedAt: new Date(),
+            }).returning({ id: agentWakeupRequests.id }).then((rows) => rows[0]);
+
+            await opts.beforeIssueWakeCommit?.(tx as unknown as Db, {
+              id: mergedRun.id,
+              wakeupRequestId: coalescedWakeup.id,
             });
 
             return { kind: "coalesced" as const, run: mergedRun };
@@ -5471,10 +5480,15 @@ export function heartbeatService(db: Db) {
               })
               .where(eq(agentWakeupRequests.id, existingDeferred.id));
 
+            await opts.beforeIssueWakeCommit?.(tx as unknown as Db, {
+              id: existingDeferred.runId,
+              wakeupRequestId: existingDeferred.id,
+            });
+
             return { kind: "deferred" as const };
           }
 
-          await tx.insert(agentWakeupRequests).values({
+          const deferredWakeup = await tx.insert(agentWakeupRequests).values({
             companyId: agent.companyId,
             agentId,
             source,
@@ -5487,6 +5501,11 @@ export function heartbeatService(db: Db) {
             requestedByActorType: opts.requestedByActorType ?? null,
             requestedByActorId: opts.requestedByActorId ?? null,
             idempotencyKey: opts.idempotencyKey ?? null,
+          }).returning({ id: agentWakeupRequests.id }).then((rows) => rows[0]);
+
+          await opts.beforeIssueWakeCommit?.(tx as unknown as Db, {
+            id: null,
+            wakeupRequestId: deferredWakeup.id,
           });
 
           return { kind: "deferred" as const };
@@ -5542,6 +5561,11 @@ export function heartbeatService(db: Db) {
             updatedAt: new Date(),
           })
           .where(eq(issues.id, issue.id));
+
+        await opts.beforeIssueWakeCommit?.(tx as unknown as Db, {
+          id: newRun.id,
+          wakeupRequestId: wakeupRequest.id,
+        });
 
         return { kind: "queued" as const, run: newRun };
       });

@@ -8,6 +8,7 @@ vi.mock("drizzle-orm", () => ({
   lt: (a: unknown, b: unknown) => ({ lt: [a, b] }),
   lte: (a: unknown, b: unknown) => ({ lte: [a, b] }),
   gt: (a: unknown, b: unknown) => ({ gt: [a, b] }),
+  desc: (a: unknown) => ({ desc: a }),
   isNull: (a: unknown) => ({ isNull: a }),
   inArray: (a: unknown, b: unknown) => ({ inArray: [a, b] }),
   notInArray: (a: unknown, b: unknown) => ({ notInArray: [a, b] }),
@@ -20,8 +21,10 @@ vi.mock("@armyofagents/db", () => {
     agents: t("a"),
     discussionEntries: t("de"),
     discussions: t("d"),
+    issues: t("i"),
     internalAgentConfig: t("iac"),
     internalAgentRuns: t("iar"),
+    workQuestions: t("wq"),
   };
 });
 vi.mock("../services/internal-agent/aoa-agents/triggers.js", () => ({
@@ -58,7 +61,9 @@ function makeSelectChain(val: unknown): any {
     innerJoin: () => chain,
     leftJoin: () => chain,
     where: () => chain,
+    orderBy: () => chain,
     limit: () => chain,
+    for: () => chain,
     then: (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) =>
       Promise.resolve(val).then(resolve, reject),
   };
@@ -83,6 +88,7 @@ function makePhase3Db(
   let updateIdx = 0;
 
   const db: any = {
+    transaction: (callback: (tx: unknown) => unknown) => callback(db),
     select: () => {
       const val = selectResults[selectIdx++] ?? [];
       return makeSelectChain(val);
@@ -241,9 +247,18 @@ describe("aoa-wakeup-dispatch", () => {
           companyId: "co-stale",
           source: "work_question_continuation",
           status: "processing",
+          attempts: 1,
           idempotencyKey: "continuation-1",
           payload: { role: "adjutant" },
         }],
+        [{
+          runId: null,
+          source: "work_question_continuation",
+          idempotencyKey: "continuation-1",
+          attempts: 1,
+          leaseExpiresAt: new Date(0),
+        }],
+        [],
         [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-20250514" }],
         [],
         [],
@@ -251,8 +266,8 @@ describe("aoa-wakeup-dispatch", () => {
         [],
       ],
       [
-        [{ id: "w-stale" }],
-        [{ id: "w-stale" }],
+        [],
+        [{ id: "w-stale", attempts: 2 }],
         [],
       ],
       (value) => capturedSets.push(value),

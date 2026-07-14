@@ -15,7 +15,6 @@ import type { WorkQuestionContinuationEnvelope } from "@armyofagents/shared";
 import { logger } from "../middleware/logger.js";
 import { heartbeatService } from "./heartbeat.js";
 import {
-  bindInternalAgentWorkQuestionContinuation,
   finalizeHeartbeatWorkQuestionContinuation,
   finalizeInternalAgentWorkQuestionContinuation,
 } from "./work-question-continuation-terminal.js";
@@ -46,12 +45,20 @@ interface EnqueuedContinuation {
   wakeupRequestId: string | null;
 }
 
+class ContinuationClaimLostError extends Error {
+  constructor() {
+    super("Continuation claim was cancelled or reclaimed before dispatch committed");
+  }
+}
+
 export interface WorkQuestionContinuationDependencies {
   enqueueHeartbeat?: (
     input: WorkQuestionContinuationHeartbeatInput,
-  ) => Promise<{ id: string | null } | null>;
+    executor?: Db,
+  ) => Promise<{ id: string | null; wakeupRequestId?: string | null } | null>;
   enqueueCrew?: (
     input: WorkQuestionContinuationCrewInput,
+    executor?: Db,
   ) => Promise<EnqueuedContinuation | null>;
 }
 
@@ -59,12 +66,13 @@ export function workQuestionContinuationService(
   db: Db,
   dependencies: WorkQuestionContinuationDependencies = {},
 ) {
-  async function enqueueHeartbeat(input: WorkQuestionContinuationHeartbeatInput) {
-    if (dependencies.enqueueHeartbeat) {
-      const run = await dependencies.enqueueHeartbeat(input);
-      return run ? { ...run, wakeupRequestId: null } : null;
-    }
-
+  async function enqueueHeartbeat(
+    input: WorkQuestionContinuationHeartbeatInput,
+    beforeIssueWakeCommit: (
+      tx: Db,
+      continuation: EnqueuedContinuation,
+    ) => Promise<void>,
+  ) {
     const existingWakeup = await db
       .select({ runId: agentWakeupRequests.runId })
       .from(agentWakeupRequests)
@@ -111,6 +119,7 @@ export function workQuestionContinuationService(
       requestedByActorType: "system",
       requestedByActorId: "work-question-continuation",
       idempotencyKey: input.idempotencyKey,
+      beforeIssueWakeCommit,
     });
     if (run) return { ...run, wakeupRequestId: null };
 
@@ -126,10 +135,13 @@ export function workQuestionContinuationService(
     return deferred ? { id: null, wakeupRequestId: deferred.id } : null;
   }
 
-  async function enqueueCrew(input: WorkQuestionContinuationCrewInput): Promise<EnqueuedContinuation | null> {
-    if (dependencies.enqueueCrew) return dependencies.enqueueCrew(input);
+  async function enqueueCrew(
+    input: WorkQuestionContinuationCrewInput,
+    executor: Db = db,
+  ): Promise<EnqueuedContinuation | null> {
+    if (dependencies.enqueueCrew) return dependencies.enqueueCrew(input, executor);
 
-    const inserted = await db.insert(agentWakeupRequests).values({
+    const inserted = await executor.insert(agentWakeupRequests).values({
       companyId: input.companyId,
       agentId: input.agentId,
       source: "work_question_continuation",
@@ -155,7 +167,7 @@ export function workQuestionContinuationService(
       id: agentWakeupRequests.id,
       runId: agentWakeupRequests.runId,
     }).then((rows) => rows[0] ?? null);
-    const wakeup = inserted ?? await db.select({
+    const wakeup = inserted ?? await executor.select({
       id: agentWakeupRequests.id,
       runId: agentWakeupRequests.runId,
     }).from(agentWakeupRequests).where(and(
@@ -252,6 +264,99 @@ export function workQuestionContinuationService(
           details: { attempts: request.attempts, error: message.slice(0, 1000) },
         });
       }
+    });
+  }
+
+  async function markDispatched(
+    executor: Db,
+    request: typeof workQuestionContinuationRequests.$inferSelect,
+    continuationRun: EnqueuedContinuation,
+  ) {
+    if (!request.claimToken) return false;
+    const now = new Date();
+    const [markedRequest] = await executor.update(workQuestionContinuationRequests).set({
+      status: "dispatched",
+      dispatchedAt: now,
+      claimedAt: null,
+      claimToken: null,
+      leaseExpiresAt: null,
+      lastError: null,
+      updatedAt: now,
+    }).where(and(
+      eq(workQuestionContinuationRequests.id, request.id),
+      eq(workQuestionContinuationRequests.status, "claimed"),
+      eq(workQuestionContinuationRequests.claimToken, request.claimToken),
+    )).returning({ id: workQuestionContinuationRequests.id });
+    if (!markedRequest) return false;
+    await executor.update(workQuestions).set({
+      continuationStatus: "dispatched",
+      continuationRunKind: request.targetRunKind,
+      continuationRunId: continuationRun.id,
+      continuationError: null,
+      updatedAt: now,
+    }).where(and(
+      eq(workQuestions.companyId, request.companyId),
+      eq(workQuestions.id, request.questionId),
+      eq(workQuestions.continuationStatus, "pending"),
+    ));
+    await executor.insert(activityLog).values({
+      companyId: request.companyId,
+      actorType: "system",
+      actorId: "work-question-continuation",
+      action: "work_question.continuation_dispatched",
+      entityType: "work_question",
+      entityId: request.questionId,
+      details: {
+        targetRunKind: request.targetRunKind,
+        targetAgentId: request.targetAgentId,
+        continuationRunKind: request.targetRunKind,
+        continuationRunId: continuationRun.id,
+        wakeupRequestId: continuationRun.wakeupRequestId,
+        answerVersion: request.answerVersion,
+      },
+    });
+    return true;
+  }
+
+  async function enqueueAndCommitWithTaskLock(
+    request: typeof workQuestionContinuationRequests.$inferSelect,
+    input: WorkQuestionContinuationHeartbeatInput,
+    enqueue: (
+      continuationInput: WorkQuestionContinuationHeartbeatInput,
+      executor: Db,
+    ) => Promise<{ id: string | null; wakeupRequestId?: string | null } | null>,
+  ) {
+    if (!input.issueId) return false;
+    const issueId = input.issueId;
+    return db.transaction(async (tx) => {
+      const executor = tx as unknown as Db;
+      await tx.execute(sql`
+        select id
+        from issues
+        where id = ${issueId} and company_id = ${input.companyId}
+        for update
+      `);
+      const eligibleIssue = await tx.select({
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+      }).from(issues).where(and(
+        eq(issues.companyId, input.companyId),
+        eq(issues.id, issueId),
+      )).then((rows) => rows[0] ?? null);
+      if (
+        !eligibleIssue
+        || eligibleIssue.status !== "in_progress"
+        || eligibleIssue.assigneeAgentId !== input.agentId
+      ) return false;
+
+      const enqueued = await enqueue(input, executor);
+      if (!enqueued) throw new Error("Continuation execution was not enqueued");
+      const committed = await markDispatched(executor, request, {
+        id: enqueued.id,
+        wakeupRequestId: enqueued.wakeupRequestId ?? null,
+      });
+      if (!committed) throw new ContinuationClaimLostError();
+      return true;
     });
   }
 
@@ -372,60 +477,35 @@ export function workQuestionContinuationService(
         ),
         idempotencyKey: request.downstreamIdempotencyKey,
       };
-      const continuationRun = request.targetRunKind === "heartbeat"
-        ? await enqueueHeartbeat(continuationInput)
-        : await enqueueCrew(continuationInput);
-      if (!continuationRun) throw new Error("Continuation execution was not enqueued");
-
-      const now = new Date();
-      const committed = await db.transaction(async (tx) => {
-        if (!request.claimToken) return false;
-        const [markedRequest] = await tx.update(workQuestionContinuationRequests).set({
-          status: "dispatched",
-          dispatchedAt: now,
-          claimedAt: null,
-          claimToken: null,
-          leaseExpiresAt: null,
-          lastError: null,
-          updatedAt: now,
-        }).where(and(
-          eq(workQuestionContinuationRequests.id, request.id),
-          eq(workQuestionContinuationRequests.status, "claimed"),
-          eq(workQuestionContinuationRequests.claimToken, request.claimToken),
-        )).returning({ id: workQuestionContinuationRequests.id });
-        if (!markedRequest) return false;
-        await tx.update(workQuestions).set({
-          continuationStatus: "dispatched",
-          continuationRunKind: request.targetRunKind,
-          continuationRunId: continuationRun.id,
-          continuationError: null,
-          updatedAt: now,
-        }).where(and(
-          eq(workQuestions.companyId, request.companyId),
-          eq(workQuestions.id, request.questionId),
-          eq(workQuestions.continuationStatus, "pending"),
-        ));
-        await tx.insert(activityLog).values({
-          companyId: request.companyId,
-          actorType: "system",
-          actorId: "work-question-continuation",
-          action: "work_question.continuation_dispatched",
-          entityType: "work_question",
-          entityId: request.questionId,
-          details: {
-            targetRunKind: request.targetRunKind,
-            targetAgentId: request.targetAgentId,
-            continuationRunKind: request.targetRunKind,
-            continuationRunId: continuationRun.id,
-            wakeupRequestId: continuationRun.wakeupRequestId,
-            answerVersion: request.answerVersion,
+      let committed = false;
+      if (request.targetRunKind === "internal_agent") {
+        committed = await enqueueAndCommitWithTaskLock(request, continuationInput, enqueueCrew);
+      } else if (dependencies.enqueueHeartbeat) {
+        committed = await enqueueAndCommitWithTaskLock(
+          request,
+          continuationInput,
+          dependencies.enqueueHeartbeat,
+        );
+      } else {
+        let finalizedInWakeupTransaction = false;
+        const continuationRun = await enqueueHeartbeat(
+          continuationInput,
+          async (tx, enqueued) => {
+            const finalized = await markDispatched(tx, request, enqueued);
+            if (!finalized) throw new ContinuationClaimLostError();
+            finalizedInWakeupTransaction = true;
           },
-        });
-        return true;
-      });
+        );
+        if (!continuationRun) throw new Error("Continuation execution was not enqueued");
+        committed = finalizedInWakeupTransaction || await db.transaction(async (tx) =>
+          markDispatched(tx as unknown as Db, request, continuationRun));
+      }
       if (!committed) return { requestId: request.id, status: "cancelled" as const };
       return { requestId: request.id, status: "dispatched" as const };
     } catch (error) {
+      if (error instanceof ContinuationClaimLostError) {
+        return { requestId: request.id, status: "cancelled" as const };
+      }
       await markFailed(request, error);
       logger.warn(
         { err: error, requestId: request.id, questionId: request.questionId },
@@ -475,7 +555,6 @@ export function workQuestionContinuationService(
         runId: internalAgentRuns.id,
         status: internalAgentRuns.status,
         error: internalAgentRuns.errorMessage,
-        idempotencyKey: internalAgentRuns.continuationIdempotencyKey,
       })
       .from(workQuestions)
       .innerJoin(workQuestionContinuationRequests, and(
@@ -485,7 +564,7 @@ export function workQuestionContinuationService(
       ))
       .innerJoin(internalAgentRuns, and(
         eq(internalAgentRuns.companyId, workQuestions.companyId),
-        eq(internalAgentRuns.continuationIdempotencyKey, workQuestionContinuationRequests.downstreamIdempotencyKey),
+        eq(internalAgentRuns.id, workQuestions.continuationRunId),
       ))
       .where(and(
         eq(workQuestions.continuationRunKind, "internal_agent"),
@@ -496,12 +575,6 @@ export function workQuestionContinuationService(
 
     let finalized = 0;
     for (const row of rows) {
-      if (!row.idempotencyKey) continue;
-      await bindInternalAgentWorkQuestionContinuation(db, {
-        companyId: row.companyId,
-        runId: row.runId,
-        idempotencyKey: row.idempotencyKey,
-      });
       const questionId = await finalizeInternalAgentWorkQuestionContinuation(db, {
         companyId: row.companyId,
         runId: row.runId,
