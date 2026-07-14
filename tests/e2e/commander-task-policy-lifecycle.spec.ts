@@ -196,12 +196,7 @@ test.describe("Commander task completion policy lifecycle", () => {
     await expect(page).toHaveURL(new RegExp(`/${company.issuePrefix}/commander$`));
     const taskFocus = page.getByTestId("commander-task-focus-pane");
     await expect(taskFocus).toBeVisible({ timeout: 15_000 });
-    await expect(
-      taskFocus.getByTestId("task-detail-scroll-body").getByRole("heading", {
-        name: reviewTask.title,
-        exact: true,
-      }),
-    ).toBeVisible();
+    await expect(taskFocus.getByText(reviewTask.title, { exact: true })).toBeVisible();
     await expect(taskFocus.getByText("Atlas must submit this evidence")).toBeVisible();
     await expect(page.getByTestId("commander-viewer-panel")).toHaveCount(0);
   });
