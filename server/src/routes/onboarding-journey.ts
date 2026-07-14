@@ -16,7 +16,8 @@ function roleFromInviteDefaults(defaults: Record<string, unknown> | null | undef
 /**
  * Resolve the post-auth journey for a user (A5 + RB7/RB9).
  *
- * - `returning` if the user has any active company membership.
+ * - `returning` if the user has any active company membership, or if an
+ *   instance admin can see an existing company through the global admin bypass.
  * - `invited` if the user has an open, non-rejected human join_request they made
  *   (or, only when their email is verified, one snapshotting their email).
  * - `founder` otherwise.
@@ -28,7 +29,11 @@ function roleFromInviteDefaults(defaults: Record<string, unknown> | null | undef
  */
 export async function getJourneyForUser(
   db: Db,
-  args: { userId: string; deepLinkCompanyId?: string | null },
+  args: {
+    userId: string;
+    deepLinkCompanyId?: string | null;
+    isInstanceAdmin?: boolean;
+  },
 ): Promise<PostAuthJourneyResult> {
   const [user] = await db
     .select({ email: authUsers.email, emailVerified: authUsers.emailVerified })
@@ -84,8 +89,17 @@ export async function getJourneyForUser(
     createdAt: (r.createdAt instanceof Date ? r.createdAt : new Date(r.createdAt as string)).toISOString(),
   }));
 
+  let returningCompanyIds = memberships.map((membership) => membership.companyId);
+  if (returningCompanyIds.length === 0 && args.isInstanceAdmin) {
+    const adminVisibleCompanies = await db
+      .select({ companyId: companies.id })
+      .from(companies)
+      .limit(1);
+    returningCompanyIds = adminVisibleCompanies.map((company) => company.companyId);
+  }
+
   return resolvePostAuthJourney({
-    memberships: memberships.map((m) => m.companyId),
+    memberships: returningCompanyIds,
     pendingInvitations,
     deepLinkCompanyId: args.deepLinkCompanyId ?? null,
   });
@@ -100,7 +114,10 @@ export function onboardingJourneyRoutes(db: Db): Router {
       res.status(401).json({ error: "authentication required" });
       return;
     }
-    const result = await getJourneyForUser(db, { userId: actor.userId });
+    const result = await getJourneyForUser(db, {
+      userId: actor.userId,
+      isInstanceAdmin: actor.isInstanceAdmin === true,
+    });
     res.json(result);
   });
   return router;
