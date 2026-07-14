@@ -7,7 +7,7 @@ ARG HOST_UID=10001
 ENV DEBIAN_FRONTEND=noninteractive \
   AOA_HOME=/aoa \
   AOA_OPEN_ON_LISTEN=false \
-  HOST=0.0.0.0 \
+  HOST=127.0.0.1 \
   PORT=3100 \
   HOME=/home/paperclip \
   LANG=en_US.UTF-8 \
@@ -17,7 +17,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
   AOA_CLI_VERSION=${AOA_CLI_VERSION}
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates curl gnupg locales \
+  && apt-get install -y --no-install-recommends ca-certificates curl gnupg locales socat \
   && mkdir -p /etc/apt/keyrings \
   && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
     | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
@@ -34,7 +34,7 @@ RUN apt-get update \
 
 VOLUME ["/aoa"]
 WORKDIR /home/paperclip/workspace
-EXPOSE 3100
+EXPOSE 3101
 USER paperclip
 
-CMD ["bash", "-lc", "set -euo pipefail; mkdir -p \"$AOA_HOME\"; npx --yes \"@armyofagents/cli@${AOA_CLI_VERSION}\" onboard --yes --data-dir \"$AOA_HOME\""]
+CMD ["bash", "-lc", "set -euo pipefail; mkdir -p \"$AOA_HOME\"; socat TCP-LISTEN:3101,fork,reuseaddr TCP:127.0.0.1:3100 & exec npx --yes \"@armyofagents/cli@${AOA_CLI_VERSION}\" onboard --yes --data-dir \"$AOA_HOME\""]
