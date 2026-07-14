@@ -1,7 +1,5 @@
 import { Router, type Request, type Response } from "express";
 import type { Db } from "@armyofagents/db";
-import { companyMemberships } from "@armyofagents/db";
-import { and, eq } from "drizzle-orm";
 import {
   ONBOARDING_JOURNEYS,
   ONBOARDING_STATES,
@@ -9,27 +7,13 @@ import {
   type OnboardingState,
 } from "@armyofagents/shared";
 import { getProgress, advanceState } from "../services/onboarding.js";
-
-async function userHasCompanyAccess(db: Db, userId: string, companyId: string): Promise<boolean> {
-  const rows = await db
-    .select({ id: companyMemberships.companyId })
-    .from(companyMemberships)
-    .where(
-      and(
-        eq(companyMemberships.principalType, "user"),
-        eq(companyMemberships.principalId, userId),
-        eq(companyMemberships.companyId, companyId),
-        eq(companyMemberships.status, "active"),
-      ),
-    )
-    .limit(1);
-  return rows.length > 0;
-}
+import { assertCompanyAccess } from "./authz.js";
 
 /**
  * Progress routes (Stage B / B4 + revB RB4/R3). userId is ALWAYS the actor
  * (never the body) — a user can only read/write their own progress. For a
- * company-scoped row, the user must be an active member of that company.
+ * company-scoped row, the board actor must have standard company access
+ * (active membership, instance-admin access, or local-implicit access).
  */
 export function onboardingRoutes(db: Db): Router {
   const router = Router();
@@ -42,10 +26,7 @@ export function onboardingRoutes(db: Db): Router {
     }
     const raw = req.query.companyId;
     const companyId = typeof raw === "string" && raw.length > 0 ? raw : null;
-    if (companyId && !(await userHasCompanyAccess(db, actor.userId, companyId))) {
-      res.status(403).json({ error: "forbidden" });
-      return;
-    }
+    if (companyId) assertCompanyAccess(req, companyId);
     const progress = await getProgress(db, actor.userId, companyId);
     res.json({ progress });
   });
@@ -68,10 +49,7 @@ export function onboardingRoutes(db: Db): Router {
       return;
     }
     const companyId = typeof body.companyId === "string" && body.companyId.length > 0 ? body.companyId : null;
-    if (companyId && !(await userHasCompanyAccess(db, actor.userId, companyId))) {
-      res.status(403).json({ error: "forbidden" });
-      return;
-    }
+    if (companyId) assertCompanyAccess(req, companyId);
     const result = await advanceState(db, { userId: actor.userId, companyId, journey, requestedState });
     if (result.status === "illegal") {
       res.status(409).json({ error: "illegal transition", reason: result.reason });
