@@ -24,7 +24,7 @@ import { ApprovalDetailCore } from "../../approval/ApprovalDetailCore";
 import { HubActionBar } from "../../hub/HubActionBar";
 import { HubTabBody } from "../../hub/HubTabBody";
 import { hubTabForItem } from "../../hub/hubRegistry";
-import type { HubThreadPayload } from "../../hub/hubViewerModel";
+import type { HubTab, HubTaskPayload, HubThreadPayload } from "../../hub/hubViewerModel";
 import { useHubItemMutations } from "../../../hooks/useHubItemMutations";
 import type { CommanderViewerApi } from "./useCommanderViewer";
 import type { ConversationViewerState, ViewerTab } from "./commanderViewerModel";
@@ -125,7 +125,21 @@ function TaskDetailTabBody({ tab, onDismiss }: TaskDetailTabBodyProps) {
   return <TaskDetail issueId={tab.refId} active onDismiss={onDismiss} />;
 }
 
-function InboxRefTabBody({ tab, companyId }: { tab: ViewerTab; companyId: string }) {
+function openNestedHubTab(tab: HubTab, onOpenTask: (issueId: string, title: string) => void) {
+  if (tab.kind !== "task") return;
+  const payload = tab.payload as HubTaskPayload | undefined;
+  if (payload) onOpenTask(payload.issueId, tab.title);
+}
+
+function InboxRefTabBody({
+  tab,
+  companyId,
+  onOpenTask,
+}: {
+  tab: ViewerTab;
+  companyId: string;
+  onOpenTask: (issueId: string, title: string) => void;
+}) {
   const mutations = useHubItemMutations(companyId);
   const [undoAction, setUndoAction] = useState<
     | {
@@ -277,7 +291,7 @@ function InboxRefTabBody({ tab, companyId }: { tab: ViewerTab; companyId: string
             companyId={companyId}
             activeItem={item}
             resolveHubItem={(itemId) => (itemId === item.id ? item : undefined)}
-            onOpenTab={() => {}}
+            onOpenTab={(nextTab) => openNestedHubTab(nextTab, onOpenTask)}
           />
         )}
       </div>
@@ -302,9 +316,21 @@ function NoteRefTabBody({ tab }: { tab: ViewerTab }) {
   );
 }
 
-function ApprovalRefTabBody({ tab }: { tab: ViewerTab }) {
+function ApprovalRefTabBody({
+  tab,
+  onOpenTask,
+}: {
+  tab: ViewerTab;
+  onOpenTask: (issueId: string, title: string) => void;
+}) {
   if (!tab.inputRef?.source || tab.inputRef.source === "approval") {
-    return <ApprovalDetailCore approvalId={tab.refId} embedded onOpenTab={() => {}} />;
+    return (
+      <ApprovalDetailCore
+        approvalId={tab.refId}
+        embedded
+        onOpenTab={(nextTab) => openNestedHubTab(nextTab, onOpenTask)}
+      />
+    );
   }
 
   return (
@@ -404,6 +430,7 @@ interface TabBodySwitchProps {
   conversationRefs: CommanderOutputRef[];
   onOpen: (ref: CommanderOutputRef) => void;
   onCloseTab: (id: string) => void;
+  onOpenTask?: (issueId: string, title: string) => void;
 }
 
 export function TabBodySwitch({
@@ -413,6 +440,7 @@ export function TabBodySwitch({
   conversationRefs,
   onOpen,
   onCloseTab,
+  onOpenTask = () => {},
 }: TabBodySwitchProps) {
   if (activeId === "home" || !activeTab) {
     return (
@@ -455,11 +483,18 @@ export function TabBodySwitch({
   }
 
   if (activeTab.kind === "approval") {
-    return <ApprovalRefTabBody tab={activeTab} />;
+    return <ApprovalRefTabBody tab={activeTab} onOpenTask={onOpenTask} />;
   }
 
   if (activeTab.kind === "inbox") {
-    return <InboxRefTabBody key={activeTab.id} tab={activeTab} companyId={companyId} />;
+    return (
+      <InboxRefTabBody
+        key={activeTab.id}
+        tab={activeTab}
+        companyId={companyId}
+        onOpenTask={onOpenTask}
+      />
+    );
   }
 
   if (activeTab.kind === "note") {
@@ -514,6 +549,7 @@ export interface CommanderViewerDetailProps {
   tabModels: ViewerTabModel[];
   /** Global bridge: collapse the panel (persists) — wired by AgentPanelContent. */
   onCollapse: () => void;
+  onOpenTask: (issueId: string, title: string) => void;
 }
 
 export function CommanderViewerDetail({
@@ -523,6 +559,7 @@ export function CommanderViewerDetail({
   activeTab,
   tabModels,
   onCollapse,
+  onOpenTask,
 }: CommanderViewerDetailProps) {
   const state = viewer.state;
   const activeKey = {
@@ -552,6 +589,7 @@ export function CommanderViewerDetail({
           conversationRefs={conversationRefs}
           onOpen={viewer.openRef}
           onCloseTab={viewer.close}
+          onOpenTask={onOpenTask}
         />
       </div>
     </div>
@@ -602,6 +640,7 @@ export interface CommanderViewerPanelProps {
   conversationRefs: CommanderOutputRef[];
   /** True on mobile breakpoints — caller passes (e.g. from window width check). */
   isMobile: boolean;
+  onOpenTask: (issueId: string, title: string) => void;
 }
 
 export function CommanderViewerPanel({
@@ -609,6 +648,7 @@ export function CommanderViewerPanel({
   companyId,
   conversationRefs,
   isMobile,
+  onOpenTask,
 }: CommanderViewerPanelProps) {
   const state = viewer.state;
   const activeTab = state.tabs.find((t) => t.id === state.activeId);
@@ -658,6 +698,7 @@ export function CommanderViewerPanel({
               conversationRefs={conversationRefs}
               onOpen={viewer.openRef}
               onCloseTab={viewer.close}
+              onOpenTask={onOpenTask}
             />
           </div>
         </SheetContent>

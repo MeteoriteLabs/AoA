@@ -155,6 +155,11 @@ export const queryKeys = {
     trustRules: (companyId: string) =>
       ["agent-runtime-decisions", companyId, "trust-rules"] as const,
   },
+  workQuestions: {
+    all: (companyId: string) => ["work-questions", companyId] as const,
+    detail: (companyId: string, questionId: string) =>
+      ["work-questions", companyId, questionId] as const,
+  },
   sidebarPreferences: (companyId: string) => ["sidebar-preferences", companyId] as const,
   inboxDismissals: (companyId: string) => ["inbox-dismissals", companyId] as const,
   activity: (companyId: string) => ["activity", companyId] as const,

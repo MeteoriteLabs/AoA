@@ -65,7 +65,12 @@ export const postTaskCommentTool: AgentTool = {
     // getById has no company filter — enforce it here. Treat a cross-company
     // hit exactly like a miss (same error, no write) so the tool never confirms
     // the existence of, or writes onto, another company's task.
-    if (!row || (row as { companyId?: string }).companyId !== ctx.companyId) {
+    if (
+      !row ||
+      (row as { companyId?: string }).companyId !== ctx.companyId ||
+      (ctx.agentId !== undefined &&
+        (row as { assigneeAgentId?: string | null }).assigneeAgentId !== ctx.agentId)
+    ) {
       return {
         success: false,
         data: null,

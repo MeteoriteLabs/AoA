@@ -261,6 +261,16 @@ export interface AdapterRuntimeDecisionBroker {
   askWorkQuestion(input: AdapterRuntimeWorkQuestionPrompt): Promise<AdapterRuntimeWorkQuestionAnswer>;
 }
 
+export type HumanQuestionRuntimeCapabilities =
+  | { mode: "ask_and_park"; preservesProducerInvocationId: true }
+  | {
+      mode: "live_relay";
+      preservesProducerInvocationId: true;
+      pauseDeadline: true;
+      resumeSession: true;
+      cancelWait: true;
+    };
+
 /**
  * Non-secret configuration the adapter needs to wire up the PreToolUse hook
  * HTTP callback. Contains only plain strings safe to log. The per-run bearer
@@ -296,6 +306,11 @@ export interface AdapterExecutionContext {
    * local behavior.
    */
   runtimeDecisionBroker?: AdapterRuntimeDecisionBroker;
+  /**
+   * Provider-declared Ask Human behavior. Missing or malformed capabilities
+   * fail closed to ask-and-park; adapters are never inferred by type name.
+   */
+  humanQuestionCapabilities?: HumanQuestionRuntimeCapabilities;
   /**
    * NON-SECRET plain boolean: whether runtime-decision routing (human approval
    * supervision) is enabled for THIS run, per the Task 6 allow-list resolver
@@ -447,6 +462,7 @@ export interface HireApprovedHookResult {
 
 export interface ServerAdapterModule {
   type: string;
+  humanQuestionCapabilities?: HumanQuestionRuntimeCapabilities;
   execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult>;
   testEnvironment(ctx: AdapterEnvironmentTestContext): Promise<AdapterEnvironmentTestResult>;
   listSkills?: (ctx: AdapterSkillContext) => Promise<AdapterSkillSnapshot>;

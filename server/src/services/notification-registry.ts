@@ -21,7 +21,7 @@ function activeEntryForWrite(type: string) {
 export function buildNotificationHubEmit(input: NotificationInput): EmitArgs {
   const entry = activeEntryForWrite(input.type);
   const sourceType = input.relatedEntityType ?? entry.defaultSourceType;
-  const eventId = randomUUID();
+  const eventId = input.idempotencyKey ?? randomUUID();
   const sourceId = input.relatedEntityId
     ? `${input.relatedEntityId}:${input.userId}:${input.type}:${eventId}`
     : `${input.type}:${input.userId}:${eventId}`;

@@ -83,6 +83,24 @@ describe("buildHelmetOptions — production CSP shape", () => {
     expect(opts.contentSecurityPolicy).toBe(false);
   });
 
+  it("skips CSP for authenticated Vite middleware but keeps it for authenticated static UI", () => {
+    const viteDev = buildHelmetOptions({
+      deploymentMode: "authenticated",
+      uiMode: "vite-dev",
+      nodeEnv: "development",
+      inlineScriptHashes: [],
+    });
+    const staticUi = buildHelmetOptions({
+      deploymentMode: "authenticated",
+      uiMode: "static",
+      nodeEnv: "development",
+      inlineScriptHashes: ["bootloader"],
+    });
+
+    expect(viteDev.contentSecurityPolicy).toBe(false);
+    expect(staticUi.contentSecurityPolicy).not.toBe(false);
+  });
+
   it("includes upgrade-insecure-requests in production CSP", () => {
     const opts = buildHelmetOptions({
       deploymentMode: "authenticated",

@@ -6,10 +6,13 @@ import {
 } from "../constants.js";
 import {
   WORK_QUESTION_CONTINUATION_STATUSES,
+  WORK_QUESTION_CONTINUATION_REQUEST_STATUSES,
   WORK_QUESTION_RUN_KINDS,
   WORK_QUESTION_STATUSES,
   answerWorkQuestionSchema,
+  createWorkQuestionSchema,
   workQuestionAnswerSchema,
+  workQuestionContinuationIdempotencyKey,
 } from "../work-questions.js";
 import { createIssueSchema, updateIssueSchema } from "../validators/issue.js";
 import { updateCompanySchema } from "../validators/company.js";
@@ -97,7 +100,41 @@ describe("completion policy and work-question contracts", () => {
       "not_needed",
       "pending",
       "dispatched",
+      "completed",
       "failed",
     ]);
+    expect(WORK_QUESTION_CONTINUATION_REQUEST_STATUSES).toEqual([
+      "pending",
+      "claimed",
+      "dispatched",
+      "failed",
+      "cancelled",
+    ]);
+    expect(workQuestionContinuationIdempotencyKey("question-1", 3)).toBe(
+      "work-question:question-1:answer:3",
+    );
+  });
+
+  it("validates provider-neutral durable question creation", () => {
+    const parsed = createWorkQuestionSchema.parse({
+      issueId: "11111111-1111-4111-8111-111111111111",
+      askingAgentId: "22222222-2222-4222-8222-222222222222",
+      originatingRunKind: "heartbeat",
+      originatingRunId: "33333333-3333-4333-8333-333333333333",
+      title: "Choose a sample",
+      question: "Five deep or twelve short?",
+      options: [{
+        label: "Five deep",
+        value: "five",
+        description: "More depth",
+        rationale: "Fits the schedule",
+      }],
+    });
+    expect(parsed.blocking).toBe(true);
+    expect(parsed.options?.[0].rationale).toBe("Fits the schedule");
+    expect(() => createWorkQuestionSchema.parse({
+      ...parsed,
+      options: [{ label: "A", value: "same" }, { label: "B", value: "same" }],
+    })).toThrow(/unique/i);
   });
 });

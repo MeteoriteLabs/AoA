@@ -23,6 +23,8 @@ import { PresenceStrip } from "./PresenceStrip";
 import { Button } from "@/components/ui/button";
 import { RefreshCw } from "lucide-react";
 import { useNavigate } from "@/lib/router";
+import { useInlineWorkQuestions, WorkQuestionInlineError } from "../work-questions/WorkQuestionInlineList";
+import { WorkQuestionPanel } from "../work-questions/WorkQuestionPanel";
 
 /**
  * How long an optimistic "Summoning {names}…" chip lingers before auto-clearing
@@ -31,6 +33,9 @@ import { useNavigate } from "@/lib/router";
  * replaces it within a couple of seconds. (Task 5.4)
  */
 const SUMMONING_TIMEOUT_MS = 20_000;
+const SEND_RECEIPT_TIMEOUT_MS = 4_000;
+
+type SendReceipt = "sending" | "sent" | "failed" | null;
 
 /* ════════════════════════════════════════════════════════════════════════
    ThreadTab
@@ -75,6 +80,8 @@ export function ThreadTab({
   const isOffline = connectionState === "offline";
   const isReconnecting = connectionState === "reconnecting";
   const isDisconnected = isOffline || isReconnecting;
+  const inlineQuestionsQuery = useInlineWorkQuestions(companyId, { sourceDiscussionId: threadId });
+  const inlineQuestions = Array.isArray(inlineQuestionsQuery.data) ? inlineQuestionsQuery.data : [];
 
   // ── Task 5.3: live thread presence (humanized typing/working pill) ──
   // Defensive ?? {} so a partial useLiveUpdates() (e.g. a test mock, or a
@@ -93,6 +100,13 @@ export function ThreadTab({
   // ── Task 5.4: optimistic own-entry — render the just-sent message instantly,
   // before the server round-trip lands (today the mutation only invalidates). ──
   const [optimisticEntries, setOptimisticEntries] = useState<DiscussionEntry[]>([]);
+  const [sendReceipt, setSendReceipt] = useState<SendReceipt>(null);
+
+  useEffect(() => {
+    if (sendReceipt !== "sent") return;
+    const timeout = window.setTimeout(() => setSendReceipt(null), SEND_RECEIPT_TIMEOUT_MS);
+    return () => window.clearTimeout(timeout);
+  }, [sendReceipt]);
 
   // Current user identity — for right-aligning own messages
   const { data: session } = useQuery({
@@ -331,6 +345,8 @@ export function ThreadTab({
       return;
     }
 
+    setSendReceipt("sending");
+
     // Task 5.4: optimistically surface a "Summoning {names}…" chip for any
     // @mentioned crew agent, immediately — replaced by the real presence pill
     // (or auto-cleared after a timeout if it never lights).
@@ -386,9 +402,11 @@ export function ThreadTab({
         attachments: payload.attachments,
         parentEntryId: payload.parentEntryId,
       });
+      setSendReceipt("sent");
     } catch {
       // On failure, drop the optimistic echo (mutation's onError already toasts).
       setOptimisticEntries((prev) => prev.filter((o) => o.rawContent !== payload.text));
+      setSendReceipt("failed");
     }
   }
 
@@ -484,7 +502,21 @@ export function ThreadTab({
                   {isOffline ? "You're offline — messages won't send" : "Reconnecting…"}
                 </span>
               )
-            : undefined
+            : sendReceipt
+              ? (
+                  <span
+                    aria-live="polite"
+                    data-testid="thread-send-receipt"
+                    className={sendReceipt === "failed" ? "text-destructive" : undefined}
+                  >
+                    {sendReceipt === "sending"
+                      ? "Sending..."
+                      : sendReceipt === "sent"
+                        ? "Sent"
+                        : "Not sent. Try again."}
+                  </span>
+                )
+              : undefined
         }
       />
     </div>
@@ -494,9 +526,29 @@ export function ThreadTab({
   if (entries.length === 0 && optimisticEntries.length === 0) {
     return (
       <div className="flex flex-col h-full">
-        <div className="flex-1 flex flex-col items-center justify-center py-12 text-center px-6">
-          <p className="text-sm text-muted-foreground mb-1">No messages yet.</p>
-          <p className="text-xs text-muted-foreground/60">Start the discussion below.</p>
+        <div className="flex-1 overflow-y-auto px-4 py-4">
+          {inlineQuestionsQuery.isError ? (
+            <WorkQuestionInlineError onRetry={() => void inlineQuestionsQuery.refetch()} />
+          ) : null}
+          <div className="mx-auto grid w-full max-w-3xl gap-3">
+            {[...inlineQuestions]
+              .sort((left, right) => (
+                new Date(left.question.createdAt).getTime() - new Date(right.question.createdAt).getTime()
+                || left.question.id.localeCompare(right.question.id)
+              ))
+              .map((detail) => (
+              <WorkQuestionPanel
+                key={detail.question.id}
+                companyId={companyId}
+                questionId={detail.question.id}
+                initialDetail={detail}
+              />
+              ))}
+          </div>
+          <div className="flex flex-col items-center justify-center py-12 text-center px-6">
+            <p className="text-sm text-muted-foreground mb-1">No messages yet.</p>
+            <p className="text-xs text-muted-foreground/60">Start the discussion below.</p>
+          </div>
         </div>
         {presenceFooter}
         {composer}
@@ -523,6 +575,23 @@ export function ThreadTab({
   );
   const pendingOptimistic = optimisticEntries.filter((o) => !serverOwnContent.has(o.rawContent));
   const roots = [...topLevel, ...orphans, ...pendingOptimistic];
+  const timelineRows = [
+    ...roots.map((entry) => ({
+      kind: "entry" as const,
+      id: entry.id,
+      createdAt: new Date(entry.createdAt).getTime(),
+      entry,
+    })),
+    ...inlineQuestions.map((detail) => ({
+      kind: "work_question" as const,
+      id: detail.question.id,
+      createdAt: new Date(detail.question.createdAt).getTime(),
+      detail,
+    })),
+  ].sort((left, right) => (
+    left.createdAt - right.createdAt
+    || (left.kind === right.kind ? left.id.localeCompare(right.id) : left.kind === "entry" ? -1 : 1)
+  ));
 
   return (
     <div className="flex flex-col h-full">
@@ -531,7 +600,22 @@ export function ThreadTab({
         className="flex-1 min-h-0 overflow-y-auto px-4 py-4 space-y-3"
         data-testid="thread-tab-entries"
       >
-        {roots.map((entry) => {
+        {inlineQuestionsQuery.isError ? (
+          <WorkQuestionInlineError onRetry={() => void inlineQuestionsQuery.refetch()} />
+        ) : null}
+        {timelineRows.map((row) => {
+          if (row.kind === "work_question") {
+            return (
+              <div key={`work-question-${row.id}`} data-work-question-id={row.id} tabIndex={-1} className="outline-none">
+                <WorkQuestionPanel
+                  companyId={companyId}
+                  questionId={row.id}
+                  initialDetail={row.detail}
+                />
+              </div>
+            );
+          }
+          const entry = row.entry;
           const replies = repliesByParent.get(entry.id) ?? [];
           // Phase E2: client-side reply count when server doesn't supply one.
           const enrichedEntry: DiscussionEntry = {

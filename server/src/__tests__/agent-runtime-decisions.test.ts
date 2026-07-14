@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   agentRuntimeDecisionService,
   RuntimeDecisionCancelledError,
+  runtimeRunGrantEligibility,
   runtimeDecisionSourceSnapshot,
 } from "../services/agent-runtime-decisions.js";
 
@@ -53,6 +54,8 @@ function baseTrustRule(overrides: Record<string, unknown> = {}) {
     id: "rule-1",
     companyId: "company-1",
     agentId: "agent-1",
+    runId: null,
+    grantScope: "persistent",
     adapterType: "claude_local",
     toolName: "shell",
     commandHash: null,
@@ -276,6 +279,58 @@ describe("agentRuntimeDecisionService", () => {
     );
     expect(repo.markTrustRuleUsed).toHaveBeenCalledWith({ ruleId: "rule-1", usedAt: now() });
     expect(result.decision.status).toBe("answered");
+  });
+
+  it("auto-answers a run grant only inside the same run and Workspace", async () => {
+    const runRule = baseTrustRule({
+      runId: "11111111-1111-4111-8111-111111111111",
+      grantScope: "run",
+      toolName: null,
+      commandHash: null,
+      pathScope: "C:/repo",
+      riskClass: "filesystem",
+    });
+    const { service, repo } = makeService({
+      listTrustRules: vi.fn(async () => [runRule]),
+    });
+
+    await service.createPrompt({
+      companyId: "company-1",
+      agentId: "agent-1",
+      runId: "11111111-1111-4111-8111-111111111111",
+      adapterType: "claude_local",
+      kind: "permission",
+      nonce: "nonce-run-trusted",
+      title: "Allow file change?",
+      cwd: "C:/repo",
+      path: "C:/repo/src/app.ts",
+      riskClass: "filesystem",
+      timeoutPolicy: "deny",
+    });
+
+    expect(repo.createDecision).toHaveBeenCalledWith(expect.objectContaining({
+      status: "answered",
+      decision: "allow_run",
+    }));
+
+    repo.createDecision.mockClear();
+    await service.createPrompt({
+      companyId: "company-1",
+      agentId: "agent-1",
+      runId: "22222222-2222-4222-8222-222222222222",
+      adapterType: "claude_local",
+      kind: "permission",
+      nonce: "nonce-other-run",
+      title: "Allow file change?",
+      cwd: "C:/repo",
+      path: "C:/repo/src/other.ts",
+      riskClass: "filesystem",
+      timeoutPolicy: "deny",
+    });
+    expect(repo.createDecision).toHaveBeenCalledWith(expect.objectContaining({
+      status: "created",
+      decision: null,
+    }));
   });
 
   it("guards nonce replay upserts to preserve already answered or terminal prompts", async () => {
@@ -653,6 +708,83 @@ describe("agentRuntimeDecisionService", () => {
       activityLogger.mock.invocationCallOrder[0],
     );
     expect(result.status).toBe("answered");
+  });
+
+  it("creates an audited run-only filesystem grant scoped to the current Workspace", async () => {
+    const row = baseDecision({
+      toolName: "Edit",
+      command: null,
+      commandHash: null,
+      cwd: "C:/repo",
+      path: "C:/repo/src/app.ts",
+      riskClass: "filesystem",
+    });
+    const answerWithTrustRule = vi.fn(async (_id, patch, _guard, trustRule) => ({
+      decision: baseDecision(patch as Record<string, unknown>),
+      rule: baseTrustRule(trustRule as Record<string, unknown>),
+    }));
+    const { service, activityLogger } = makeService({
+      getDecision: vi.fn(async () => row),
+      answerWithTrustRule,
+    });
+
+    await service.answerPrompt({
+      companyId: "company-1",
+      decisionId: row.id,
+      actorUserId: "founder-1",
+      expectedSourceRevision: row.sourceRevision,
+      nonce: row.nonce,
+      kind: "permission",
+      decision: "allow_run",
+    });
+
+    expect(answerWithTrustRule).toHaveBeenCalledWith(
+      row.id,
+      expect.objectContaining({ decision: "allow_run", status: "answered" }),
+      expect.any(Object),
+      expect.objectContaining({
+        runId: row.runId,
+        grantScope: "run",
+        pathScope: "C:/repo",
+        riskClass: "filesystem",
+        toolName: null,
+        commandHash: null,
+        networkScope: null,
+        expiresAt: null,
+      }),
+    );
+    expect(activityLogger).toHaveBeenCalledWith(expect.objectContaining({
+      action: "runtime_decision_run_grant.created",
+      runId: row.runId,
+    }));
+  });
+
+  it("rejects run access for shell, network, and out-of-Workspace actions", async () => {
+    expect(runtimeRunGrantEligibility(baseDecision({ riskClass: "shell" }) as never).eligible).toBe(false);
+    expect(runtimeRunGrantEligibility(baseDecision({
+      command: null,
+      riskClass: "network",
+      networkTarget: "example.com",
+    }) as never).eligible).toBe(false);
+    expect(runtimeRunGrantEligibility(baseDecision({
+      command: null,
+      riskClass: "filesystem",
+      cwd: "C:/repo",
+      path: "C:/outside/file.ts",
+    }) as never).eligible).toBe(false);
+
+    const shell = baseDecision({ riskClass: "shell" });
+    const { service, repo } = makeService({ getDecision: vi.fn(async () => shell) });
+    await expect(service.answerPrompt({
+      companyId: "company-1",
+      decisionId: shell.id,
+      actorUserId: "founder-1",
+      expectedSourceRevision: shell.sourceRevision,
+      nonce: shell.nonce,
+      kind: "permission",
+      decision: "allow_run",
+    })).rejects.toMatchObject({ status: 422 });
+    expect(repo.answerWithTrustRule).not.toHaveBeenCalled();
   });
 
   it("allow_always answers + creates a 90-day trust rule atomically", async () => {
@@ -1269,6 +1401,32 @@ describe("agentRuntimeDecisionService", () => {
     );
     expect(hubItems.emit).toHaveBeenCalled();
     expect(result.cancelled).toBe(1);
+  });
+
+  it("expires run-scoped grants when the owning run terminalizes", async () => {
+    const runRule = baseTrustRule({
+      runId: "11111111-1111-4111-8111-111111111111",
+      grantScope: "run",
+    });
+    const { service, repo, activityLogger } = makeService({
+      listTrustRules: vi.fn(async () => [runRule]),
+    });
+
+    const result = await service.cancelActiveForRun({
+      companyId: "company-1",
+      runId: runRule.runId as string,
+      reason: "run succeeded",
+    });
+
+    expect(repo.revokeTrustRule).toHaveBeenCalledWith({
+      companyId: "company-1",
+      ruleId: runRule.id,
+    });
+    expect(activityLogger).toHaveBeenCalledWith(expect.objectContaining({
+      action: "runtime_decision_run_grant.expired",
+      runId: runRule.runId,
+    }));
+    expect(result.expiredRunGrants).toBe(1);
   });
 
   it("skips cancellation side effects when an active prompt finalized concurrently", async () => {

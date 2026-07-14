@@ -2,6 +2,7 @@ import {
   AlertCircle,
   Bell,
   Bot,
+  CircleHelp,
   CheckSquare,
   Lightbulb,
   MessageSquare,
@@ -26,6 +27,7 @@ import {
   reminderTab,
   routineTab,
   runtimeDecisionTab,
+  workQuestionTab,
   runTab,
   suggestionTab,
   taskTab,
@@ -131,6 +133,16 @@ export const HUB_REGISTRY: Record<HubSemanticType, HubRegistryEntry> = {
     // agent-runtime-decisions.ts:627 sourceId IS decision.id; relatedEntityId is
     // the runId (630-631). We surface the DECISION id here for completeness.
     resolveTabId: preferRelated(rawSource),
+  },
+  work_question: {
+    semanticType: "work_question",
+    lane: HUB_SEMANTIC_TO_LANE.work_question,
+    label: "Question",
+    icon: CircleHelp,
+    viewerKind: "reserved",
+    fullLink: () => null,
+    tabKind: "work_question",
+    resolveTabId: rawSource,
   },
   run_failed: {
     semanticType: "run_failed",
@@ -333,6 +345,8 @@ export function hubTabForItem(item: HubItemListRow): HubTab {
     case "runtime_decision":
       // Keyed on the HUB ITEM id — the panel fetches the decision from it.
       return runtimeDecisionTab(item.id, title);
+    case "work_question":
+      return id ? workQuestionTab(id, title, item.id) : notificationTab(item.id, title);
     case "task":
       return id ? taskTab(id, title, item.id) : notificationTab(item.id, title);
     case "run": {

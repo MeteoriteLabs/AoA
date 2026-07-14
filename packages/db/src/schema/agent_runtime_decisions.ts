@@ -85,6 +85,8 @@ export const agentRuntimeTrustRules = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
     agentId: uuid("agent_id").references(() => agents.id, { onDelete: "cascade" }),
+    runId: uuid("run_id").references(() => heartbeatRuns.id, { onDelete: "cascade" }),
+    grantScope: text("grant_scope").notNull().default("persistent"),
     adapterType: text("adapter_type").notNull(),
     toolName: text("tool_name"),
     commandHash: text("command_hash"),
@@ -108,6 +110,10 @@ export const agentRuntimeTrustRules = pgTable(
       table.companyId,
       table.adapterType,
       table.toolName,
+    ),
+    runScopeIdx: index("agent_runtime_trust_rules_run_scope_idx").on(
+      table.runId,
+      table.enabled,
     ),
   }),
 );

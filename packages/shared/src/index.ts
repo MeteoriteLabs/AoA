@@ -1145,6 +1145,41 @@ export type {
   CockpitTeammatesActivityItem,
 } from "./cockpit.js";
 
+export {
+  COCKPIT_PRESENTATION_VERSION,
+  COCKPIT_ATTENTION_FILTERS,
+  COCKPIT_SECTION_IDS,
+  COCKPIT_RELATIONSHIPS,
+  COCKPIT_GROUP_IDS,
+  COCKPIT_ATTENTION_KINDS,
+  commanderOpenTargetSchema,
+  cockpitAttentionSignalSchema,
+  cockpitPresentationItemSchema,
+  cockpitPresentationSchema,
+  classifyCockpitRelationship,
+  createCockpitAttentionSignal,
+  matchesCockpitAttentionFilter,
+  type CockpitAttentionFilter,
+  type CockpitSectionId,
+  type CockpitRelationship,
+  type CockpitGroupId,
+  type CockpitAttentionKind,
+  type CockpitAttentionCategory,
+  type CockpitAttentionTone,
+  type CockpitEntityRef,
+  type CommanderAnchor,
+  type CommanderViewerTabDescriptor,
+  type CommanderOpenTarget,
+  type CockpitAttentionSignal,
+  type CockpitLinkedAction,
+  type CockpitPresentationItem,
+  type CockpitGroup,
+  type CockpitPresentationSection,
+  type CockpitPresentationMeta,
+  type CockpitPresentation,
+  type CockpitRelationshipInput,
+} from "./cockpit-presentation.js";
+
 // Marketplace catalog types
 export {
   CATALOG_SCHEMA_VERSION_MIN,
@@ -1253,6 +1288,7 @@ export * from "./commander-output-refs.js";
 export * from "./commander-input-refs.js";
 export * from "./hub.js";
 export * from "./work-questions.js";
+export * from "./user-entity-follows.js";
 export * from "./notification-registry.js";
 
 // ── API contract artifacts ──

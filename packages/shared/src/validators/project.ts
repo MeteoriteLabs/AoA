@@ -88,6 +88,7 @@ const projectFields = {
   archivedAt: z.string().datetime().optional().nullable(),
   executionWorkspacePolicy: executionWorkspacePolicySchema.nullable().optional(),
   agentCompletionPolicyDefault: z.enum(AGENT_COMPLETION_POLICIES).nullable().optional(),
+  humanQuestionSlaHours: z.number().int().min(1).max(24 * 30).nullable().optional(),
 };
 
 export const createProjectSchema = z.object({

@@ -1,0 +1,1 @@
+ALTER TABLE "work_question_continuation_requests" ADD COLUMN "continuation_envelope" jsonb;

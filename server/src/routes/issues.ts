@@ -1,6 +1,7 @@
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
-import type { Db } from "@armyofagents/db";
+import { discussions, type Db } from "@armyofagents/db";
+import { and, eq } from "drizzle-orm";
 import {
   addIssueCommentSchema,
   createIssueAttachmentMetadataSchema,
@@ -866,7 +867,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
     // from a DB-level FK constraint failure.  Out-of-company hits are treated
     // as "not found" — leaking existence across tenants would be a bug.
     const fkLookups: Array<{
-      field: "assigneeAgentId" | "projectId" | "goalId" | "parentId" | "inheritExecutionWorkspaceFromIssueId";
+      field: "assigneeAgentId" | "projectId" | "goalId" | "parentId" | "inheritExecutionWorkspaceFromIssueId" | "sourceDiscussionId";
       id: string;
       label: string;
       fetch: () => Promise<{ companyId: string } | null>;
@@ -909,6 +910,20 @@ export function issueRoutes(db: Db, storage: StorageService) {
         id: req.body.inheritExecutionWorkspaceFromIssueId,
         label: "Workspace inheritance task",
         fetch: () => svc.getById(req.body.inheritExecutionWorkspaceFromIssueId),
+      });
+    }
+    if (req.body.sourceDiscussionId) {
+      fkLookups.push({
+        field: "sourceDiscussionId",
+        id: req.body.sourceDiscussionId,
+        label: "Source Discussion",
+        fetch: () => db.select({ companyId: discussions.companyId })
+          .from(discussions)
+          .where(and(
+            eq(discussions.id, req.body.sourceDiscussionId),
+            eq(discussions.companyId, companyId),
+          ))
+          .then((rows) => rows[0] ?? null),
       });
     }
     for (const check of fkLookups) {
@@ -1110,6 +1125,18 @@ export function issueRoutes(db: Db, storage: StorageService) {
 
     const { comment: commentBody, hiddenAt: hiddenAtRaw, ...rawUpdateFields } = req.body;
     const updateFields = normalizeIssueDateFields(rawUpdateFields);
+    const isRequestChangesTransition =
+      existing.status === "in_review" && updateFields.status === "in_progress";
+    const requestChangesFeedback = isRequestChangesTransition && typeof commentBody === "string"
+      ? commentBody.trim()
+      : null;
+    if (isRequestChangesTransition && !requestChangesFeedback) {
+      throw unprocessable("Requesting changes requires feedback", {
+        code: "review_feedback_required",
+        field: "comment",
+      });
+    }
+    const persistedCommentBody = requestChangesFeedback ?? commentBody;
     if (hiddenAtRaw !== undefined) {
       updateFields.hiddenAt = hiddenAtRaw ? new Date(hiddenAtRaw) : null;
     }
@@ -1120,17 +1147,35 @@ export function issueRoutes(db: Db, storage: StorageService) {
       });
     }
 
+    const actor = getActorInfo(req);
+    const updateActor = req.actor.type === "agent"
+      ? {
+        actorType: "agent" as const,
+        agentId: req.actor.agentId ?? null,
+        // Org-agent API keys are outside the crew Manual/Assist/Drive dial.
+        // Their task completion authority is governed by the task snapshot.
+        effectiveDial: 2,
+      }
+      : { actorType: req.actor.type === "board" ? "board" as const : "user" as const };
     let issue;
+    let comment = null;
     try {
-      issue = await svc.update(id, updateFields, req.actor.type === "agent"
-        ? {
-          actorType: "agent",
-          agentId: req.actor.agentId ?? null,
-          // Org-agent API keys are outside the crew Manual/Assist/Drive dial.
-          // Their task completion authority is governed by the task snapshot.
-          effectiveDial: 2,
-        }
-        : { actorType: req.actor.type === "board" ? "board" : "user" });
+      if (isRequestChangesTransition) {
+        const persisted = await db.transaction(async (txRaw) => {
+          const txSvc = issueService(txRaw as unknown as Db);
+          const updatedIssue = await txSvc.update(id, updateFields, updateActor);
+          if (!updatedIssue) return { issue: null, comment: null };
+          const feedbackComment = await txSvc.addComment(id, requestChangesFeedback!, {
+            agentId: actor.agentId ?? undefined,
+            userId: actor.actorType === "user" ? actor.actorId : undefined,
+          });
+          return { issue: updatedIssue, comment: feedbackComment };
+        });
+        issue = persisted.issue;
+        comment = persisted.comment;
+      } else {
+        issue = await svc.update(id, updateFields, updateActor);
+      }
     } catch (err) {
       if (err instanceof HttpError && err.status === 422) {
         logger.warn(
@@ -1177,7 +1222,6 @@ export function issueRoutes(db: Db, storage: StorageService) {
         }
       : {};
 
-    const actor = getActorInfo(req);
     await logActivity(db, {
       companyId: issue.companyId,
       actorType: actor.actorType,
@@ -1216,13 +1260,14 @@ export function issueRoutes(db: Db, storage: StorageService) {
         .catch((err) => logger.warn({ err, issueId: issue.id }, "onTaskCompleted memory lifecycle failed"));
     }
 
-    let comment = null;
-    if (commentBody) {
-      comment = await svc.addComment(id, commentBody, {
+    if (persistedCommentBody && !comment) {
+      comment = await svc.addComment(id, persistedCommentBody, {
         agentId: actor.agentId ?? undefined,
         userId: actor.actorType === "user" ? actor.actorId : undefined,
       });
+    }
 
+    if (comment) {
       await logActivity(db, {
         companyId: issue.companyId,
         actorType: actor.actorType,
@@ -1239,7 +1284,6 @@ export function issueRoutes(db: Db, storage: StorageService) {
           issueTitle: issue.title,
         },
       });
-
     }
 
     const assigneeChanged = assigneeWillChange;
@@ -1247,6 +1291,34 @@ export function issueRoutes(db: Db, storage: StorageService) {
     // Merge all wakeups from this update into one enqueue per agent to avoid duplicate runs.
     void (async () => {
       const wakeups = new Map<string, Parameters<typeof heartbeat.wakeup>[1]>();
+
+      if (
+        isRequestChangesTransition &&
+        comment &&
+        issue.assigneeAgentId &&
+        shouldDispatchIssueWakeup(issue)
+      ) {
+        wakeups.set(issue.assigneeAgentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "issue_review_changes_requested",
+          payload: {
+            issueId: issue.id,
+            commentId: comment.id,
+            mutation: "request_changes",
+          },
+          requestedByActorType: actor.actorType,
+          requestedByActorId: actor.actorId,
+          contextSnapshot: {
+            issueId: issue.id,
+            taskId: issue.id,
+            commentId: comment.id,
+            wakeCommentId: comment.id,
+            wakeReason: "issue_review_changes_requested",
+            source: "task.review",
+          },
+        });
+      }
 
       if (assigneeChanged && issue.assigneeAgentId && issue.status !== "backlog" && shouldDispatchIssueWakeup(issue)) {
         wakeups.set(issue.assigneeAgentId, {
@@ -1260,10 +1332,10 @@ export function issueRoutes(db: Db, storage: StorageService) {
         });
       }
 
-      if (commentBody && comment) {
+      if (persistedCommentBody && comment) {
         let mentionedIds: string[] = [];
         try {
-          mentionedIds = await svc.findMentionedAgents(issue.companyId, commentBody);
+          mentionedIds = await svc.findMentionedAgents(issue.companyId, persistedCommentBody);
         } catch (err) {
           logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
         }
@@ -1296,7 +1368,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
         }
 
         // @human mention notifications — see issueService.notifyMentionedHumans for safety contract.
-        await svc.notifyMentionedHumans(issue.companyId, commentBody, issue.id, actor);
+        await svc.notifyMentionedHumans(issue.companyId, persistedCommentBody, issue.id, actor);
       }
 
       const aoaKinds = await svc

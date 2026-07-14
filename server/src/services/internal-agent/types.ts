@@ -1,6 +1,7 @@
 // server/src/services/internal-agent/types.ts
 import type { Db } from "@armyofagents/db";
 import type { CommanderToolPermissions } from "@armyofagents/shared";
+import type { HumanQuestionRuntimeCapabilities } from "@armyofagents/adapter-utils";
 import type { NormalizedCommanderContextScope } from "./context-scope.js";
 import type { issueService } from "../issues.js";
 import type { goalService } from "../goals.js";
@@ -54,9 +55,9 @@ export interface ToolContext {
   userId: string;
   userRole: string;
   enabledCapabilities: readonly string[];   // from internal_agent_config
-  /** D2: kind of the calling agent. 'aoa' triggers per-agent tool allowlist gate. */
+  /** D2: kind of the calling agent. AoA and org runtimes require an allowlist. */
   agentKind?: string;
-  /** D2: explicit tool allowlist for AoA agents. Absent/empty = default-deny. */
+  /** D2: explicit model-runtime tool allowlist. Absent/empty = default-deny. */
   toolAllowlist?: readonly string[];
   /** Actor type: "commander" when invoked via Commander; "board" otherwise. */
   actorType?: string;
@@ -68,6 +69,10 @@ export interface ToolContext {
   conversationId?: string | null;
   /** Current internal agent run id, when available. */
   runId?: string | null;
+  /** Trusted tool-boundary identity. Never accepted from model tool arguments. */
+  producerInvocationId?: string | null;
+  /** Trusted adapter capability; absent or invalid means ask-and-park. */
+  humanQuestionCapabilities?: HumanQuestionRuntimeCapabilities;
   /** Discussion controller runs queue visible side effects until freshness commit. */
   discussionRunMode?: "direct" | "controller_action_gate" | null;
   /** Thread freshness snapshot captured when the controller/participation run started. */

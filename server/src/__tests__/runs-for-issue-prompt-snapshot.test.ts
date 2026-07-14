@@ -99,4 +99,15 @@ describe("runsForIssue select includes promptSnapshot", () => {
     // Specifically that it maps to the column
     expect(ACTIVITY_SERVICE_SRC).toContain("heartbeatRuns.promptSnapshot");
   });
+
+  it("activity.ts select object includes provider-active and wait accounting", () => {
+    for (const field of [
+      "activeExecutionMs",
+      "humanQuestionWaitMs",
+      "runtimePermissionWaitMs",
+      "totalWallClockMs",
+    ]) {
+      expect(ACTIVITY_SERVICE_SRC).toContain(`${field}: heartbeatRuns.${field}`);
+    }
+  });
 });

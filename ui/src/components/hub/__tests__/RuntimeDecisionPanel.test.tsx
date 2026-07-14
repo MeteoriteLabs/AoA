@@ -38,6 +38,8 @@ function permissionDetail(overrides: Partial<RuntimeDecisionDetail> = {}): Runti
     path: null,
     networkTarget: null,
     riskClass: "medium",
+    allowRunEligible: false,
+    allowRunReason: "Run access is unavailable for shell, network, secret, or unknown actions.",
     options: null,
     timeoutPolicy: "deny",
     expiresAt: null,
@@ -106,6 +108,7 @@ describe("RuntimeDecisionPanel", () => {
   beforeEach(() => {
     detailSpy.mockReset();
     answerSpy.mockReset();
+    detailSpy.mockResolvedValue(permissionDetail());
   });
 
   it("renders the allow/deny controls and decision facts for a permission decision", async () => {
@@ -114,8 +117,9 @@ describe("RuntimeDecisionPanel", () => {
 
     // Allow/deny permission controls render once the detail resolves.
     expect(await screen.findByRole("button", { name: /allow once/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /allow always/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /equivalent actions/i })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^deny$/i })).toBeInTheDocument();
+    expect(screen.getByText(/run access is unavailable for shell/i)).toBeInTheDocument();
 
     // Facts render from the detail (tool + command + risk).
     expect(screen.getByText("Tool")).toBeInTheDocument();
@@ -126,6 +130,28 @@ describe("RuntimeDecisionPanel", () => {
 
     // Status label humanizes underscores.
     expect(screen.getByText("shown")).toBeInTheDocument();
+  });
+
+  it("offers a run-scoped grant only for a validated workspace filesystem action", async () => {
+    const { fireEvent } = await import("@testing-library/react");
+    detailSpy.mockResolvedValueOnce(permissionDetail({
+      toolName: "Edit",
+      command: null,
+      cwd: "C:/repo",
+      path: "C:/repo/src/app.ts",
+      riskClass: "filesystem",
+      allowRunEligible: true,
+      allowRunReason: null,
+    }));
+    answerSpy.mockResolvedValueOnce(permissionDetail({ status: "answered" }));
+    renderPanel(runtimeDecisionItem());
+
+    fireEvent.click(await screen.findByRole("button", { name: /allow equivalent actions for this run/i }));
+    await waitFor(() => expect(answerSpy).toHaveBeenCalledTimes(1));
+    expect(answerSpy.mock.calls[0][2]).toMatchObject({
+      kind: "permission",
+      decision: "allow_run",
+    });
   });
 
   it("renders a work-question answer box for a work_question decision", async () => {

@@ -1,0 +1,2 @@
+ALTER TABLE "work_question_continuation_requests" ADD COLUMN "claim_token" uuid;--> statement-breakpoint
+ALTER TABLE "work_question_continuation_requests" ADD COLUMN "lease_expires_at" timestamp with time zone;

@@ -14,6 +14,10 @@ interface AoaRun {
   errorMessage?: string | null;
   completedAt?: string | Date | null;
   durationMs?: number | null;
+  activeExecutionMs?: number | null;
+  humanQuestionWaitMs?: number | null;
+  runtimePermissionWaitMs?: number | null;
+  totalWallClockMs?: number | null;
   costCents?: number | null;
   createdAt: string | Date;
 }
@@ -96,6 +100,12 @@ export function AoaRunsPanel({
               <div className="flex items-center gap-3 pl-5 text-[11px] text-muted-foreground flex-wrap">
                 {run.durationMs != null && (
                   <span>Duration: {formatDuration(run.durationMs)}</span>
+                )}
+                {run.humanQuestionWaitMs != null && run.humanQuestionWaitMs > 0 && (
+                  <span>Human wait: {formatDuration(run.humanQuestionWaitMs)}</span>
+                )}
+                {run.runtimePermissionWaitMs != null && run.runtimePermissionWaitMs > 0 && (
+                  <span>Permission wait: {formatDuration(run.runtimePermissionWaitMs)}</span>
                 )}
                 {run.toolsCalled && run.toolsCalled.length > 0 && (
                   <span>{run.toolsCalled.length} tool{run.toolsCalled.length === 1 ? "" : "s"} called</span>

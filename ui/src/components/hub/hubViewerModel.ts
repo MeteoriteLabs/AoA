@@ -7,6 +7,7 @@ export type HubTabKind =
   | "join_request"
   | "thread"
   | "runtime_decision"
+  | "work_question"
   | "task"
   | "task_output"
   | "agent"
@@ -38,6 +39,11 @@ export interface HubThreadPayload {
 
 export interface HubRuntimeDecisionPayload {
   hubItemId: string;
+}
+
+export interface HubWorkQuestionPayload {
+  questionId: string;
+  hubItemId?: string;
 }
 
 export interface HubTaskPayload {
@@ -93,6 +99,7 @@ export type HubTabPayload =
   | HubJoinRequestPayload
   | HubThreadPayload
   | HubRuntimeDecisionPayload
+  | HubWorkQuestionPayload
   | HubTaskPayload
   | HubAgentPayload
   | HubRunPayload
@@ -156,6 +163,16 @@ export function runtimeDecisionTab(hubItemId: string, title?: string): HubTab {
     title: title || "Runtime decision",
     closeable: true,
     payload: { hubItemId } satisfies HubRuntimeDecisionPayload,
+  };
+}
+
+export function workQuestionTab(questionId: string, title?: string, hubItemId?: string): HubTab {
+  return {
+    key: `work_question:${questionId}`,
+    kind: "work_question",
+    title: title || "Question",
+    closeable: true,
+    payload: { questionId, ...(hubItemId ? { hubItemId } : {}) } satisfies HubWorkQuestionPayload,
   };
 }
 

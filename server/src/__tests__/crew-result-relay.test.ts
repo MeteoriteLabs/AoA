@@ -75,6 +75,7 @@ import { publishLiveEvent } from "../services/live-events.js";
 interface MockIssueRow {
   id: string;
   title: string;
+  status: string;
   originKind: string | null;
   sourceDiscussionId: string | null;
   assigneeAgentId: string | null;
@@ -101,6 +102,7 @@ function makeMockDb(opts: {
       : {
           id: "issue-1",
           title: "Build the API",
+          status: "done",
           originKind: "crew_thread",
           sourceDiscussionId: "thread-1",
           assigneeAgentId: "agent-7",
@@ -203,6 +205,7 @@ describe("relayCrewResult", () => {
       issueRow: {
         id: "issue-2",
         title: "Some other task",
+        status: "done",
         originKind: "routine_execution",
         sourceDiscussionId: "thread-2",
         assigneeAgentId: "agent-3",
@@ -224,6 +227,7 @@ describe("relayCrewResult", () => {
       issueRow: {
         id: "issue-3",
         title: "Untagged task",
+        status: "done",
         originKind: null,
         sourceDiscussionId: "thread-3",
         assigneeAgentId: "agent-1",
@@ -244,6 +248,7 @@ describe("relayCrewResult", () => {
       issueRow: {
         id: "issue-4",
         title: "Orphaned crew task",
+        status: "done",
         originKind: "crew_thread",
         sourceDiscussionId: null,
         assigneeAgentId: "agent-5",
@@ -270,11 +275,33 @@ describe("relayCrewResult", () => {
     expect(publishLiveEvent).not.toHaveBeenCalled();
   });
 
+  it("is a no-op when the run succeeds before the task reaches done", async () => {
+    const { db, txStub } = makeMockDb({
+      issueRow: {
+        id: "issue-review",
+        title: "Awaiting human review",
+        status: "in_review",
+        originKind: "crew_thread",
+        sourceDiscussionId: "thread-review",
+        assigneeAgentId: "agent-7",
+        companyId: "co-1",
+      },
+    });
+    vi.mocked(publishLiveEvent).mockClear();
+
+    const result = await relayCrewResult(db as any, { issueId: "issue-review" });
+
+    expect(result).toEqual({ posted: false });
+    expect(txStub.insert).not.toHaveBeenCalled();
+    expect(publishLiveEvent).not.toHaveBeenCalled();
+  });
+
   it("uses issue.id as createdBy fallback when assigneeAgentId is null", async () => {
     const { db, insertValues } = makeMockDb({
       issueRow: {
         id: "issue-5",
         title: "Unassigned done task",
+        status: "done",
         originKind: "crew_thread",
         sourceDiscussionId: "thread-5",
         assigneeAgentId: null,
@@ -296,6 +323,7 @@ describe("relayCrewResult", () => {
       issueRow: {
         id: "issue-6",
         title: "Cross-tenant task",
+        status: "done",
         originKind: "crew_thread",
         sourceDiscussionId: "thread-6",
         assigneeAgentId: "agent-9",
@@ -320,6 +348,7 @@ describe("relayCrewResult", () => {
       issueRow: {
         id: "issue-7",
         title: "Orphaned-thread task",
+        status: "done",
         originKind: "crew_thread",
         sourceDiscussionId: "thread-7",
         assigneeAgentId: "agent-9",

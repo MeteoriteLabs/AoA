@@ -38,6 +38,7 @@ export interface Project {
   functionType: string | null;
   executionWorkspacePolicy: ProjectExecutionWorkspacePolicy | null;
   agentCompletionPolicyDefault?: AgentCompletionPolicy | null;
+  humanQuestionSlaHours?: number | null;
   workspaces: ProjectWorkspace[];
   primaryWorkspace: ProjectWorkspace | null;
   archivedAt: Date | null;

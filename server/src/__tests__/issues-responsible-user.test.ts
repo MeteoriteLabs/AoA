@@ -54,6 +54,8 @@ vi.mock("@armyofagents/db", () => ({
   artifactVersions: tableProxy("av"),
   instanceSettings: tableProxy("is"),
   instanceExperimentalSettings: tableProxy("ies"),
+  workQuestions: tableProxy("wq"),
+  workQuestionContinuationRequests: tableProxy("wqcr"),
 }));
 
 vi.mock("../services/instance-settings.js", () => ({
@@ -185,16 +187,22 @@ function makeDb(options: {
       });
       return c;
     }),
-    update: vi.fn(() => {
+    update: vi.fn((table: { id?: string }) => {
       const u: any = {};
       u.set = vi.fn((patch: Record<string, unknown>) => {
-        if (!Object.prototype.hasOwnProperty.call(patch, "clearReason")) {
+        if (
+          table?.id === "issues_id" &&
+          !Object.prototype.hasOwnProperty.call(patch, "clearReason")
+        ) {
           capturedPatch = patch;
         }
         return u;
       });
       u.where = () => u;
       u.returning = vi.fn((selection?: Record<string, unknown>) => {
+        if (table?.id === "wq_id") {
+          return Promise.resolve([]);
+        }
         if (selection?.issueCounter === "companies_issueCounter") {
           return Promise.resolve([{ issueCounter: 1, issuePrefix: "TASK" }]);
         }

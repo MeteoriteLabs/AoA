@@ -175,6 +175,17 @@ describe("get_task tool — different-company task (companyId mismatch)", () => 
 // (c) missing task → not found
 // ═════════════════════════════════════════════════════════════════════════════
 
+describe("get_task tool — different assignee", () => {
+  it("returns NOT_FOUND when another organization agent owns the task", async () => {
+    const { ctx } = makeCtx(makeIssueRow({ assigneeAgentId: "agent-other" }));
+    const result = await getTaskTool.execute({ taskId: TASK_ID }, ctx);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe("NOT_FOUND");
+    expect(result.data).toBeNull();
+  });
+});
+
 describe("get_task tool — missing task", () => {
   it("returns NOT_FOUND when getById resolves null", async () => {
     const { ctx, getById } = makeCtx(null);

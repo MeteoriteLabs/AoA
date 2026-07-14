@@ -4,10 +4,16 @@ import type { DeploymentMode } from "@armyofagents/shared";
 export interface BuildHelmetOptionsInput {
   deploymentMode: DeploymentMode;
   /**
+   * The UI delivery mode. Vite's development middleware injects an inline
+   * React-refresh preamble and connects to its HMR WebSocket, so its responses
+   * cannot use the static bundle's strict CSP.
+   */
+  uiMode?: "none" | "static" | "vite-dev";
+  /**
    * `process.env.NODE_ENV` value (or equivalent). When the deployment mode
-   * is `local_trusted` and this is anything other than `"production"`, we
-   * are in Vite-HMR territory and skip CSP entirely (HMR injects inline
-   * scripts and an `eval` evaluator that strict CSP would block).
+   * is `local_trusted` and this is anything other than `"production"`, the
+   * legacy development fallback skips CSP. New callers should pass `uiMode`
+   * so this decision follows the actual UI delivery mode.
    *
    * For production-built bundles in local_trusted (npm-package install,
    * Docker container) this is `"production"` and strict CSP applies.
@@ -38,9 +44,10 @@ export interface BuildHelmetOptionsInput {
  *   header. Audit external resource hosts before turning this on.
  */
 export function buildHelmetOptions(input: BuildHelmetOptionsInput): HelmetOptions {
-  const { deploymentMode, nodeEnv, inlineScriptHashes } = input;
+  const { deploymentMode, nodeEnv, inlineScriptHashes, uiMode } = input;
 
-  const skipCsp = deploymentMode === "local_trusted" && nodeEnv !== "production";
+  const skipCsp = uiMode === "vite-dev"
+    || (uiMode === undefined && deploymentMode === "local_trusted" && nodeEnv !== "production");
 
   const contentSecurityPolicy = skipCsp ? false : buildStrictCspConfig(inlineScriptHashes);
 

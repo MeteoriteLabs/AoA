@@ -58,6 +58,8 @@ function buildTrustRuleInsert(
   return {
     companyId: row.companyId,
     agentId: row.agentId,
+    runId: null,
+    grantScope: "persistent",
     adapterType: row.adapterType,
     toolName: row.toolName,
     commandHash: row.commandHash,
@@ -66,6 +68,50 @@ function buildTrustRuleInsert(
     riskClass: row.riskClass,
     enabled: true,
     expiresAt: new Date(nowDate.getTime() + TRUST_RULE_DEFAULT_TTL_MS),
+    createdByUserId: actorUserId,
+  };
+}
+
+export function runtimeRunGrantEligibility(row: Pick<
+  AgentRuntimeDecisionRow,
+  "kind" | "riskClass" | "command" | "cwd" | "path" | "networkTarget"
+>): { eligible: boolean; reason: string | null } {
+  if (row.kind !== "permission") return { eligible: false, reason: "Only permission requests support run access." };
+  if (row.riskClass !== "filesystem") {
+    return { eligible: false, reason: "Run access is unavailable for shell, network, secret, or unknown actions." };
+  }
+  if (row.command || row.networkTarget) {
+    return { eligible: false, reason: "Run access never includes shell or network access." };
+  }
+  if (!row.cwd || !row.path || !pathMatchesScope(row.path, row.cwd)) {
+    return { eligible: false, reason: "The target must be validated inside the current Workspace." };
+  }
+  return { eligible: true, reason: null };
+}
+
+function buildRunTrustRuleInsert(
+  row: AgentRuntimeDecisionRow,
+  actorUserId: string,
+): typeof agentRuntimeTrustRules.$inferInsert {
+  const eligibility = runtimeRunGrantEligibility(row);
+  if (!eligibility.eligible || !row.cwd) {
+    throw unprocessable(eligibility.reason ?? "Run access is unavailable for this action");
+  }
+  return {
+    companyId: row.companyId,
+    agentId: row.agentId,
+    runId: row.runId,
+    grantScope: "run",
+    adapterType: row.adapterType,
+    toolName: null,
+    commandHash: null,
+    pathScope: row.cwd,
+    networkScope: null,
+    riskClass: "filesystem",
+    enabled: true,
+    // The run itself is the lifetime boundary. Terminal run cleanup revokes
+    // this rule, while runId matching prevents it from authorizing other work.
+    expiresAt: null,
     createdByUserId: actorUserId,
   };
 }
@@ -306,6 +352,8 @@ function trustRuleMatchesPrompt(rule: AgentRuntimeTrustRuleRow, input: CreatePro
   if (!rule.enabled) return false;
   if (rule.expiresAt && rule.expiresAt.getTime() <= now.getTime()) return false;
   if (rule.companyId !== input.companyId) return false;
+  if (rule.grantScope === "run" && rule.runId !== input.runId) return false;
+  if (rule.grantScope !== "run" && rule.runId) return false;
   if (rule.adapterType !== input.adapterType) return false;
   if (rule.agentId && rule.agentId !== input.agentId) return false;
   if (rule.toolName && rule.toolName !== input.toolName) return false;
@@ -317,6 +365,7 @@ function trustRuleMatchesPrompt(rule: AgentRuntimeTrustRuleRow, input: CreatePro
 }
 
 export function runtimeDecisionDetail(row: AgentRuntimeDecisionRow): RuntimeDecisionDetail {
+  const allowRun = runtimeRunGrantEligibility(row);
   return {
     id: row.id,
     hubItemId: null,
@@ -338,6 +387,8 @@ export function runtimeDecisionDetail(row: AgentRuntimeDecisionRow): RuntimeDeci
     path: row.path,
     networkTarget: row.networkTarget,
     riskClass: row.riskClass,
+    allowRunEligible: allowRun.eligible,
+    allowRunReason: allowRun.reason,
     options: row.options as RuntimeDecisionDetail["options"],
     timeoutPolicy: row.timeoutPolicy as RuntimeDecisionTimeoutPolicy,
     expiresAt: toIso(row.expiresAt),
@@ -485,6 +536,10 @@ function realRepo(db: Db): DecisionRepo {
           eq(agentRuntimeTrustRules.companyId, trustRule.companyId),
           eq(agentRuntimeTrustRules.adapterType, trustRule.adapterType),
           eq(agentRuntimeTrustRules.enabled, true),
+          eq(agentRuntimeTrustRules.grantScope, trustRule.grantScope ?? "persistent"),
+          trustRule.runId
+            ? eq(agentRuntimeTrustRules.runId, trustRule.runId)
+            : isNull(agentRuntimeTrustRules.runId),
           trustRule.agentId
             ? eq(agentRuntimeTrustRules.agentId, trustRule.agentId)
             : isNull(agentRuntimeTrustRules.agentId),
@@ -784,7 +839,9 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
       options: input.options ? redactJsonSecrets(input.options) as Array<Record<string, unknown>> : null,
       expiresAt: resolvedExpiresAt,
       timeoutPolicy: input.timeoutPolicy,
-      decision: matchingTrustRule ? "allow_always" : null,
+      decision: matchingTrustRule
+        ? matchingTrustRule.grantScope === "run" ? "allow_run" : "allow_always"
+        : null,
       answeredByUserId: matchingTrustRule?.createdByUserId ?? null,
       answeredAt: matchingTrustRule ? nowDate : null,
     });
@@ -805,6 +862,8 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
     const rule = await repo.createTrustRule({
       companyId: input.companyId,
       agentId: input.agentId ?? null,
+      runId: null,
+      grantScope: "persistent",
       adapterType: input.adapterType,
       toolName: input.toolName ?? null,
       commandHash: input.commandHash ?? commandHash(input.command),
@@ -899,6 +958,10 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
     if (input.kind === "permission" && input.decision === "allow_always" && !hasConcreteTrustScope(row)) {
       throw unprocessable("Allow always requires a concrete command, path, network, or risk scope");
     }
+    if (input.kind === "permission" && input.decision === "allow_run") {
+      const eligibility = runtimeRunGrantEligibility(row);
+      if (!eligibility.eligible) throw unprocessable(eligibility.reason ?? "Run access is unavailable for this action");
+    }
     // R2 answer-time liveness gate (safety fix): the answer is relayed to the
     // run in-band by the broker (heartbeat waitAndRelay). If the run already
     // went terminal (or its row is gone), recording "answered" would mint a
@@ -925,8 +988,10 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
     };
 
     let answered: AgentRuntimeDecisionRow | null;
-    if (input.kind === "permission" && input.decision === "allow_always") {
-      const trustRule = buildTrustRuleInsert(row, input.actorUserId, now());
+    if (input.kind === "permission" && (input.decision === "allow_always" || input.decision === "allow_run")) {
+      const trustRule = input.decision === "allow_run"
+        ? buildRunTrustRuleInsert(row, input.actorUserId)
+        : buildTrustRuleInsert(row, input.actorUserId, now());
       const result = await repo.answerWithTrustRule(row.id, answerPatch, guard, trustRule);
       answered = result.decision;
       if (answered && result.rule) {
@@ -934,9 +999,12 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
           companyId: input.companyId,
           actorType: "user",
           actorId: input.actorUserId,
-          action: "runtime_decision_trust_rule.created",
+          action: input.decision === "allow_run"
+            ? "runtime_decision_run_grant.created"
+            : "runtime_decision_trust_rule.created",
           entityType: "agent_runtime_trust_rule",
           entityId: result.rule.id,
+          runId: result.rule.runId ?? undefined,
           details: {
             agentId: result.rule.agentId,
             adapterType: result.rule.adapterType,
@@ -945,6 +1013,8 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
             networkScope: result.rule.networkScope,
             riskClass: result.rule.riskClass,
             expiresAt: result.rule.expiresAt?.toISOString() ?? null,
+            grantScope: result.rule.grantScope,
+            runId: result.rule.runId,
           },
         });
       }
@@ -1149,7 +1219,23 @@ export function agentRuntimeDecisionService(db: Db, deps: ServiceDeps = {}) {
       await closeProjectedHubItem(updated);
       cancelled += 1;
     }
-    return { cancelled };
+    const runRules = (await repo.listTrustRules({ companyId: input.companyId, includeDisabled: false }))
+      .filter((rule) => rule.grantScope === "run" && rule.runId === input.runId);
+    for (const rule of runRules) {
+      const revoked = await repo.revokeTrustRule({ companyId: input.companyId, ruleId: rule.id });
+      if (!revoked) continue;
+      await activityLogger({
+        companyId: input.companyId,
+        actorType: "system",
+        actorId: "runtime_decision_run_cleanup",
+        action: "runtime_decision_run_grant.expired",
+        entityType: "agent_runtime_trust_rule",
+        entityId: rule.id,
+        runId: input.runId,
+        details: { reason: input.reason },
+      });
+    }
+    return { cancelled, expiredRunGrants: runRules.length };
   }
 
   // R2 stranded-answer sweep (P3-4): a decision that reached answered/relay_failed

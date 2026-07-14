@@ -16,7 +16,7 @@ import type {
 } from "../api/discussions";
 import {
   RefreshCw, Pencil, ChevronDown, Pause, Play,
-  Archive, MoreHorizontal,
+  Archive, MoreHorizontal, X,
 } from "lucide-react";
 import {
   DropdownMenu,
@@ -208,6 +208,8 @@ interface ThreadDetailProps {
   companyId?: string;
   /** Host-owned nested-detail dispatcher. Omit to retain the Discussions viewer. */
   onOpenRequest?: (request: ThreadOpenRequest) => void;
+  /** Host-owned close action for embedded focus panes. */
+  onClose?: () => void;
   draftText?: string;
   onDraftTextChange?: (text: string) => void;
 }
@@ -218,6 +220,7 @@ export function ThreadDetail({
   discussionId: discussionIdProp,
   companyId: companyIdProp,
   onOpenRequest,
+  onClose,
   draftText,
   onDraftTextChange,
 }: ThreadDetailProps = {}) {
@@ -937,7 +940,6 @@ export function ThreadDetail({
       <div
         className={cn(
           "flex flex-1 min-h-0 overflow-hidden",
-          embedded && "gap-2",
           !embedded && "rounded-xl border border-border bg-background shadow-sm",
         )}
       >
@@ -959,7 +961,6 @@ export function ThreadDetail({
         <div
           className={cn(
             "flex-1 min-w-0 h-full overflow-hidden flex flex-col",
-            embedded && "rounded-xl border border-border bg-background shadow-sm",
             mobileTab === "thread" || mobileTab === "scope" || mobileTab === "branches"
               ? "flex"
               : "hidden md:flex",
@@ -1138,6 +1139,17 @@ export function ThreadDetail({
                     : <Pause className="h-3.5 w-3.5" />
                   }
                 </button>
+                {embedded && onClose && (
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    onClick={onClose}
+                    aria-label="Close discussion focus"
+                    title="Close discussion"
+                  >
+                    <X className="h-4 w-4" />
+                  </Button>
+                )}
               </div>
             </div>
 
@@ -1461,7 +1473,7 @@ export function ThreadDetail({
         {!onOpenRequest && <div
           className={cn(
             "relative shrink-0 h-full overflow-hidden bg-muted/20 transition-[width] duration-200",
-            embedded ? "rounded-xl border border-border bg-background shadow-sm" : "border-l border-border",
+            !embedded && "border-l border-border",
             mobileTab !== "viewer" ? "hidden md:block" : "block",
           )}
           style={{ width: viewerCollapsed ? 46 : viewerWidth }}

@@ -20,6 +20,7 @@ export const companies = pgTable(
     agentCompletionReviewGuardrail: boolean("agent_completion_review_guardrail")
       .notNull()
       .default(false),
+    humanQuestionSlaHours: integer("human_question_sla_hours").notNull().default(24),
     vision: text("vision"),
     mission: text("mission"),
     values: text("values"),

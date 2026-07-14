@@ -3,11 +3,15 @@ const { runAoaMock } = vi.hoisted(() => ({ runAoaMock: vi.fn().mockResolvedValue
 vi.mock("../services/internal-agent/aoa-agents/runner.js", () => ({ runAoaAgent: runAoaMock }));
 vi.mock("drizzle-orm", () => ({
   and: (...a: unknown[]) => ({ and: a }),
+  or: (...a: unknown[]) => ({ or: a }),
   eq: (a: unknown, b: unknown) => ({ eq: [a, b] }),
   lt: (a: unknown, b: unknown) => ({ lt: [a, b] }),
+  lte: (a: unknown, b: unknown) => ({ lte: [a, b] }),
   gt: (a: unknown, b: unknown) => ({ gt: [a, b] }),
+  isNull: (a: unknown) => ({ isNull: a }),
   inArray: (a: unknown, b: unknown) => ({ inArray: [a, b] }),
   notInArray: (a: unknown, b: unknown) => ({ notInArray: [a, b] }),
+  sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({ sql: strings.join("?"), values }),
 }));
 vi.mock("@armyofagents/db", () => {
   const t = (n: string) => new Proxy({}, { get: (_x, p) => typeof p === "string" ? Symbol(`${n}.${p}`) : undefined });
@@ -73,6 +77,7 @@ function makePhase3Db(
   selectResults: unknown[],
   returningResults: unknown[][],
   onSet?: (v: unknown, idx: number) => void,
+  onWhere?: (condition: unknown, idx: number) => void,
 ) {
   let selectIdx = 0;
   let updateIdx = 0;
@@ -88,13 +93,16 @@ function makePhase3Db(
         onSet?.(v, idx);
         const ret = returningResults[idx] ?? [];
         return {
-          where: () => ({
+          where: (condition: unknown) => {
+            onWhere?.(condition, idx);
+            return {
             // Support .returning() for the claim update
             returning: () => Promise.resolve(ret),
             // Support plain await (done/failed update)
             then: (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) =>
               Promise.resolve(undefined).then(resolve, reject),
-          }),
+            };
+          },
         };
       },
     }),
@@ -105,7 +113,7 @@ function makePhase3Db(
 describe("aoa-wakeup-dispatch", () => {
   beforeEach(() => {
     runAoaMock.mockClear();
-    runAoaMock.mockResolvedValue(undefined);
+    runAoaMock.mockResolvedValue({ status: "succeeded", runId: "run-1", errorMessage: null });
   });
 
   it("claims a queued wakeup for a kind='aoa' agent and runs it", async () => {
@@ -218,5 +226,52 @@ describe("aoa-wakeup-dispatch", () => {
     const failedUpdate = capturedSets.find((s: any) => s.status === "failed");
     expect(failedUpdate).toBeDefined();
     expect((failedUpdate as any).error).toBe("agent exploded");
+  });
+
+  it("recovers an expired processing wakeup and fences the terminal write with the new claim token", async () => {
+    const capturedSets: any[] = [];
+    const capturedWhere: any[] = [];
+    const db = makePhase3Db(
+      [
+        [],
+        [],
+        [{
+          id: "w-stale",
+          agentId: "a-stale",
+          companyId: "co-stale",
+          source: "work_question_continuation",
+          status: "processing",
+          idempotencyKey: "continuation-1",
+          payload: { role: "adjutant" },
+        }],
+        [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-20250514" }],
+        [],
+        [],
+        [{ runtimeConfig: {}, adapterConfig: {} }],
+        [],
+      ],
+      [
+        [{ id: "w-stale" }],
+        [{ id: "w-stale" }],
+        [],
+      ],
+      (value) => capturedSets.push(value),
+      (condition) => capturedWhere.push(condition),
+    );
+
+    await runAoaDispatch(db, { limiterMax: 2, staleMs: 600_000 });
+
+    const recoverySet = capturedSets.find((value) => value.status === "queued");
+    const claimSet = capturedSets.find((value) => value.status === "processing");
+    const terminalSet = capturedSets.find((value) => value.status === "succeeded");
+    expect(recoverySet).toMatchObject({ claimToken: null, leaseExpiresAt: null });
+    expect(claimSet.claimToken).toEqual(expect.any(String));
+    expect(claimSet.leaseExpiresAt).toBeInstanceOf(Date);
+    expect(terminalSet).toMatchObject({ claimToken: null, leaseExpiresAt: null });
+    expect(capturedWhere.at(-1)).toEqual(expect.objectContaining({
+      and: expect.arrayContaining([
+        expect.objectContaining({ eq: [expect.anything(), claimSet.claimToken] }),
+      ]),
+    }));
   });
 });

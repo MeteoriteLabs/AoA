@@ -75,6 +75,10 @@ export interface AgentRun {
   tokenUsage: { inputTokens: number; outputTokens: number; cachedInputTokens?: number };
   costCents: number;
   durationMs: number;
+  activeExecutionMs: number;
+  humanQuestionWaitMs: number;
+  runtimePermissionWaitMs: number;
+  totalWallClockMs: number;
   summary: string | null;
   departmentContext: string | null;
   userId: string | null;

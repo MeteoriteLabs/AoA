@@ -388,6 +388,28 @@ describe("hubItems mirror-model lifecycle guard (R3 + H1)", () => {
     expect(await catchStatus(() => svc.recordLifecycleAction({ ...founderArgs, action: "archive" }))).toBe("ok");
   });
 
+  it.each(["resolve", "archive"] as const)(
+    "%s on an OPEN work_question whose source is unanswered → 409",
+    async (action) => {
+      const db = makeSequencedDb([
+        [openHubItem({ semanticType: "work_question", sourceType: "work_question" })],
+        [{
+          status: "open",
+          title: "Choose launch cohort",
+          question: "Which cohort should the agent use?",
+          currentRecipientUserId: "founder-1",
+          version: 0,
+          updatedAt: new Date(),
+        }],
+      ]);
+      const svc = hubItemsService(db as never);
+      expect(await catchStatus(() => svc.recordLifecycleAction({
+        ...founderArgs,
+        action,
+      }))).toBe(409);
+    },
+  );
+
   it.each(["created", "shown"] as const)(
     "resolve on a %s agent_runtime_decision item → 409",
     async (status) => {

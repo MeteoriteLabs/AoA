@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, date, index, jsonb } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, date, index, integer, jsonb } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { goals } from "./goals.js";
 import { agents } from "./agents.js";
@@ -21,6 +21,7 @@ export const projects = pgTable(
     defaultThreadVisibility: text("default_thread_visibility").notNull().default("company"), // ThreadVisibility: per-dept default for new threads (HR/Finance/Exec -> private). Phase 1 (Task A2): canonicalized from "open" -> "company" alongside the THREAD_VISIBILITIES rewrite.
     executionWorkspacePolicy: jsonb("execution_workspace_policy").$type<Record<string, unknown>>(),
     agentCompletionPolicyDefault: text("agent_completion_policy_default"),
+    humanQuestionSlaHours: integer("human_question_sla_hours"),
     env: jsonb("env").$type<AgentEnvConfig>(),
     archivedAt: timestamp("archived_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

@@ -63,7 +63,7 @@ export function RuntimeDecisionPanel({ item }: { item: HubItemListRow }) {
     (detail.status !== "created" && detail.status !== "shown" && detail.status !== "relay_failed");
   const options = (detail.options ?? []) as RuntimeDecisionOption[];
   const canSubmitQuestion = Boolean(answerText.trim() || selectedValue);
-  const submitPermission = (decision: "allow_once" | "allow_always" | "deny") => {
+  const submitPermission = (decision: "allow_once" | "allow_run" | "deny") => {
     answerMutation.mutate({
       kind: "permission",
       decision,
@@ -106,9 +106,13 @@ export function RuntimeDecisionPanel({ item }: { item: HubItemListRow }) {
           <Button type="button" size="sm" disabled={disabled} onClick={() => submitPermission("allow_once")}>
             Allow once
           </Button>
-          <Button type="button" size="sm" variant="secondary" disabled={disabled} onClick={() => submitPermission("allow_always")}>
-            Allow always
-          </Button>
+          {detail.allowRunEligible ? (
+            <Button type="button" size="sm" variant="secondary" disabled={disabled} onClick={() => submitPermission("allow_run")}>
+              Allow equivalent actions for this run
+            </Button>
+          ) : detail.allowRunReason ? (
+            <p className="text-xs leading-5 text-muted-foreground">{detail.allowRunReason}</p>
+          ) : null}
           <Button type="button" size="sm" variant="secondary" disabled={disabled} onClick={() => submitPermission("deny")}>
             Deny
           </Button>

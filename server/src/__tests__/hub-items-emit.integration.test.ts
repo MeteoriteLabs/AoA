@@ -16,7 +16,7 @@ import { join } from "node:path";
 import { eq, sql } from "drizzle-orm";
 import { agents, applyPendingMigrations, createDb, heartbeatRuns, type Db } from "@armyofagents/db";
 import { hubItemsService } from "../services/hub-items.js";
-import { buildTerminalRunHubEmit } from "../services/hub-source-producers.js";
+import { buildCompletedRunHubEmit, buildTerminalRunHubEmit } from "../services/hub-source-producers.js";
 import { emitLegacyAlertHubItems } from "../services/hub-legacy-alerts.js";
 
 type Pg = { initialise(): Promise<void>; start(): Promise<void>; stop(): Promise<void> };
@@ -334,30 +334,34 @@ describe.skipIf(process.platform === "win32")("hubItems.emit — real DB", () =>
     ).x;
   }
 
-  it("BUG-5: event-emit of a succeeded run creates ONE open run_complete row; identical re-emit is a no-op (xmin stable)", async () => {
+  it("keeps a succeeded process exit out of the attention lane", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const { companyId, founderId } = await seedCompanyWithFounder();
+    const agentId = await seedAgent(companyId, founderId, "Scout");
+    const runId = await seedRun(companyId, agentId, "succeeded");
+    const emitArgs = buildTerminalRunHubEmit(await loadRunLike(runId));
+    expect(emitArgs).toBeNull();
+
+    const open = await db.execute(
+      sql`SELECT count(*)::int AS n FROM notifications WHERE company_id = ${companyId} AND source_type = 'heartbeat_run' AND status = 'open'`,
+    );
+    expect(firstRow<{ n: number }>(open).n).toBe(0);
+  });
+
+  it("archives historical run_complete rows during heartbeat reconciliation", async () => {
     if (setupError) throw new Error(String(setupError));
     const { companyId, founderId } = await seedCompanyWithFounder();
     const agentId = await seedAgent(companyId, founderId, "Scout");
     const runId = await seedRun(companyId, agentId, "succeeded");
     const svc = hubItemsService(db);
+    const historical = await svc.emit(buildCompletedRunHubEmit(await loadRunLike(runId)));
 
-    const emitArgs = buildTerminalRunHubEmit(await loadRunLike(runId));
-    expect(emitArgs?.semanticType).toBe("run_complete");
-    const item = await svc.emit(emitArgs!);
-    expect(item.lane).toBe("notifications");
-    expect(item.ownerUserId).toBe(founderId); // agent actor → first human ancestor
-
-    const open = await db.execute(
-      sql`SELECT count(*)::int AS n FROM notifications WHERE company_id = ${companyId} AND source_type = 'heartbeat_run' AND status = 'open'`,
+    const result = await svc.reconcile(companyId, { sourceType: "heartbeat_run" });
+    expect(result.closed).toBe(1);
+    const archived = await db.execute(
+      sql`SELECT status FROM notifications WHERE id = ${historical.id}`,
     );
-    expect(firstRow<{ n: number }>(open).n).toBe(1);
-
-    // Change-aware emit compatibility: an identical re-emit (e.g. a replayed
-    // terminal transition) must NOT rewrite the tuple.
-    const before = await xminOf(item.id);
-    const second = await svc.emit(buildTerminalRunHubEmit(await loadRunLike(runId))!);
-    expect(second.id).toBe(item.id);
-    expect(await xminOf(item.id)).toBe(before);
+    expect(firstRow<{ status: string }>(archived).status).toBe("archived");
   });
 
   it("BUG-5 parity: event-emit(failed run) then emitLegacyAlertHubItems → exactly ONE row, untouched by the legacy pass", async () => {

@@ -60,7 +60,7 @@ import { CockpitConversationZone } from "./CockpitConversationZone";
 // ---------------------------------------------------------------------------
 
 export interface CockpitInteractions {
-  onOpenTask?: (issueId: string, title: string) => void;
+  onOpenTask?: (issueId: string, title: string, anchorId?: string) => void;
   onAsk?: (text: string) => void;
   onReference?: (ref: CommanderInputRef, suggestedPrompt?: string) => void;
   onOpenInputRef?: (ref: CommanderInputRef) => void;
@@ -194,11 +194,12 @@ export const COCKPIT_REGISTRY: CockpitCardRenderDef[] = [
       return d.inbox.length > 0 ? `${d.inbox.length} open` : null;
     },
     isActive: (d) => d.inbox.length > 0,
-    render: ({ data, onOpenFullPage, onOpenInputRef, onAsk, onReference }) => (
+    render: ({ data, onOpenFullPage, onOpenInputRef, onOpenTask, onAsk, onReference }) => (
       <CockpitInboxCard
         items={data.inbox}
         onOpenFullPage={onOpenFullPage}
         onOpenReference={onOpenInputRef}
+        onOpenTask={onOpenTask}
         onAsk={onAsk}
         onReference={onReference}
       />

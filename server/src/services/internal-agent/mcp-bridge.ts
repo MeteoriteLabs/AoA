@@ -31,6 +31,35 @@ function parseThreadFreshnessEnv() {
   }
 }
 
+function parseHumanQuestionCapabilitiesEnv(): ToolContext["humanQuestionCapabilities"] {
+  const raw = process.env.AOA_HUMAN_QUESTION_CAPABILITIES;
+  if (!raw) return undefined;
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (parsed.mode === "ask_and_park" && parsed.preservesProducerInvocationId === true) {
+      return { mode: "ask_and_park", preservesProducerInvocationId: true };
+    }
+    if (
+      parsed.mode === "live_relay"
+      && parsed.preservesProducerInvocationId === true
+      && parsed.pauseDeadline === true
+      && parsed.resumeSession === true
+      && parsed.cancelWait === true
+    ) {
+      return {
+        mode: "live_relay",
+        preservesProducerInvocationId: true,
+        pauseDeadline: true,
+        resumeSession: true,
+        cancelWait: true,
+      };
+    }
+  } catch {
+    // Fail closed below.
+  }
+  return undefined;
+}
+
 // ── Tool Call Handler (pure, testable) ──────────────────────────────────────
 
 interface ToolCallHandlerDeps {
@@ -58,9 +87,10 @@ async function executeAndFormat(
   tool: AgentTool,
   args: unknown,
   deps: ToolCallHandlerDeps,
+  toolContext = deps.toolContext,
 ): Promise<McpToolResult> {
   try {
-    const result = await deps.executeTool(tool, args, deps.toolContext);
+    const result = await deps.executeTool(tool, args, toolContext);
     let outputRefs: CommanderOutputRef[] = [];
     try {
       outputRefs = buildOutputRefs(tool.name, args, result);
@@ -97,6 +127,7 @@ export function createToolCallHandler(deps: ToolCallHandlerDeps) {
   return async function handleToolCall(
     name: string,
     args: unknown,
+    producerInvocationId?: string,
   ): Promise<McpToolResult> {
     const tool = deps.tools.find((t) => t.name === name);
     if (!tool) {
@@ -117,8 +148,12 @@ export function createToolCallHandler(deps: ToolCallHandlerDeps) {
       };
     }
 
+    const invocationContext = producerInvocationId
+      ? { ...deps.toolContext, producerInvocationId }
+      : deps.toolContext;
+
     if (!policy.requiresApproval) {
-      return executeAndFormat(tool, args, deps);
+      return executeAndFormat(tool, args, deps, invocationContext);
     }
 
     const params = normalizeToolArgs(args);
@@ -131,7 +166,7 @@ export function createToolCallHandler(deps: ToolCallHandlerDeps) {
     });
 
     if (trusted) {
-      return executeAndFormat(tool, args, deps);
+      return executeAndFormat(tool, args, deps, invocationContext);
     }
 
     const approval = await approvalSvc.createPending({
@@ -232,6 +267,7 @@ export async function startBridge(): Promise<void> {
   // P2.0: Calling agent's ID and effective autonomy level
   const agentId = process.env.AOA_AGENT_ID || undefined;
   const runId = process.env.AOA_RUN_ID || null;
+  const humanQuestionCapabilities = parseHumanQuestionCapabilitiesEnv();
   const discussionRunModeRaw = process.env.AOA_DISCUSSION_RUN_MODE;
   const discussionRunMode =
     discussionRunModeRaw === "controller_action_gate" || discussionRunModeRaw === "direct"
@@ -272,6 +308,7 @@ export async function startBridge(): Promise<void> {
     actorType,
     agentId,
     runId,
+    humanQuestionCapabilities,
     discussionRunMode,
     threadFreshness,
     effectiveAutonomy,
@@ -302,7 +339,7 @@ export async function startBridge(): Promise<void> {
     return { tools: buildToolListResponse(visibleTools) };
   });
 
-  server.setRequestHandler(CallToolRequestSchema, async (req) => {
+  server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
     inFlight.enter();
     try {
       // handleToolCall already returns { content, isError } and never throws.
@@ -310,7 +347,11 @@ export async function startBridge(): Promise<void> {
       // against CallToolResultSchema). The cast pins it to that union member
       // (vs. the task-creation branch) and bridges the named-interface →
       // index-signature gap; it is sound, not a widening lie.
-      const result = await handleToolCall(req.params.name, req.params.arguments ?? {});
+      const result = await handleToolCall(
+        req.params.name,
+        req.params.arguments ?? {},
+        `mcp:${String(extra.requestId)}`,
+      );
       return result as CallToolResult;
     } finally {
       inFlight.leave();

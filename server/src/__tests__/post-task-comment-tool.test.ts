@@ -32,7 +32,11 @@ function makeCtx(
         ({
           getById: vi
             .fn()
-            .mockResolvedValue({ id: "task-1", companyId: "co-1" }),
+            .mockResolvedValue({
+              id: "task-1",
+              companyId: "co-1",
+              assigneeAgentId: "agent-1",
+            }),
           addComment: vi
             .fn()
             .mockResolvedValue({ id: "comment-1", issueId: "task-1" }),
@@ -54,7 +58,11 @@ describe("post_task_comment tool (Spec B Task 3)", () => {
       .fn()
       .mockResolvedValue({ id: "comment-1", issueId: "task-1" });
     const issues = {
-      getById: vi.fn().mockResolvedValue({ id: "task-1", companyId: "co-1" }),
+      getById: vi.fn().mockResolvedValue({
+        id: "task-1",
+        companyId: "co-1",
+        assigneeAgentId: "agent-7",
+      }),
       addComment,
     };
     const ctx = makeCtx({ issues, agentId: "agent-7" });
@@ -104,6 +112,28 @@ describe("post_task_comment tool (Spec B Task 3)", () => {
 
     const result = await postTaskCommentTool.execute(
       { taskId: "ghost", body: "hi" },
+      ctx,
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe("NOT_FOUND");
+    expect(addComment).not.toHaveBeenCalled();
+  });
+
+  it("another agent's task → NOT_FOUND and does NOT write", async () => {
+    const addComment = vi.fn();
+    const issues = {
+      getById: vi.fn().mockResolvedValue({
+        id: "task-1",
+        companyId: "co-1",
+        assigneeAgentId: "agent-other",
+      }),
+      addComment,
+    };
+    const ctx = makeCtx({ issues, agentId: "agent-1" });
+
+    const result = await postTaskCommentTool.execute(
+      { taskId: "task-1", body: "not mine" },
       ctx,
     );
 

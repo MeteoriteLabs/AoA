@@ -46,12 +46,14 @@ export function CockpitInboxCard({
   items,
   onOpenFullPage,
   onOpenReference,
+  onOpenTask,
   onAsk,
   onReference,
 }: {
   items: CockpitInboxItem[];
   onOpenFullPage?: (href: string) => void;
   onOpenReference?: (ref: CommanderInputRef) => void;
+  onOpenTask?: (issueId: string, title: string, anchorId?: string) => void;
   onAsk?: (text: string) => void;
   onReference?: (ref: CommanderInputRef, suggestedPrompt?: string) => void;
 }) {
@@ -79,6 +81,15 @@ export function CockpitInboxCard({
                   type="button"
                   className="min-w-0 flex-1 truncate text-left"
                   onClick={() => {
+                    if (
+                      item.sourceType === "work_question"
+                      && item.sourceId
+                      && item.relatedEntityType === "issue"
+                      && item.relatedEntityId
+                    ) {
+                      onOpenTask?.(item.relatedEntityId, item.title, item.sourceId);
+                      return;
+                    }
                     const ref = inboxItemRef(item, href);
                     if (onOpenReference) onOpenReference(ref);
                     else onOpenFullPage?.(href);

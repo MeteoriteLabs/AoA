@@ -13,6 +13,7 @@ import {
   executionWorkspaces,
   goals,
   heartbeatRuns,
+  internalAgentRuns,
   issueAttachments,
   issueLabels,
   issueComments,
@@ -24,6 +25,8 @@ import {
   projects,
   taskDependencies,
   userRoles,
+  workQuestionContinuationRequests,
+  workQuestions,
 } from "@armyofagents/db";
 import { extractProjectMentionIds } from "@armyofagents/shared";
 import type { AgentCompletionPolicy } from "@armyofagents/shared";
@@ -32,6 +35,7 @@ import type {
   IssueCommentMetadata,
   IssueCommentPresentation,
 } from "@armyofagents/shared";
+import { runningProcesses, signalRunningProcess } from "@armyofagents/adapter-utils/server-utils";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { dependencyService, TERMINAL_STATUSES } from "./dependencies.js";
@@ -67,6 +71,175 @@ import {
 } from "./issue-crew-scope.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
+
+async function cancelActiveWorkQuestionsForIssue(
+  tx: Db,
+  input: {
+    companyId: string;
+    issueId: string;
+    reason: "done" | "cancelled" | "deleted" | "reassigned";
+  },
+) {
+  const now = new Date();
+  const cancelledOpen = await tx.update(workQuestions).set({
+    status: "cancelled",
+    continuationStatus: "not_needed",
+    continuationError: `Task ${input.reason}`,
+    version: sql`${workQuestions.version} + 1`,
+    updatedAt: now,
+  }).where(and(
+    eq(workQuestions.companyId, input.companyId),
+    eq(workQuestions.issueId, input.issueId),
+    eq(workQuestions.status, "open"),
+  )).returning({ id: workQuestions.id });
+
+  const stoppedAnswered = await tx.update(workQuestions).set({
+    continuationStatus: "not_needed",
+    continuationError: `Task ${input.reason}`,
+    version: sql`${workQuestions.version} + 1`,
+    updatedAt: now,
+  }).where(and(
+    eq(workQuestions.companyId, input.companyId),
+    eq(workQuestions.issueId, input.issueId),
+    eq(workQuestions.status, "answered"),
+    inArray(workQuestions.continuationStatus, ["pending", "dispatched"]),
+  )).returning({ id: workQuestions.id });
+
+  const questionIds = [...new Set([...cancelledOpen, ...stoppedAnswered].map((row) => row.id))];
+  if (questionIds.length === 0) return [] as string[];
+
+  const continuationKeys = await tx
+    .select({ key: workQuestionContinuationRequests.downstreamIdempotencyKey })
+    .from(workQuestionContinuationRequests)
+    .where(and(
+      eq(workQuestionContinuationRequests.companyId, input.companyId),
+      inArray(workQuestionContinuationRequests.questionId, questionIds),
+    ));
+
+  await tx.update(workQuestionContinuationRequests).set({
+    status: "cancelled",
+    claimedAt: null,
+    lastError: `Task ${input.reason}`,
+    updatedAt: now,
+  }).where(and(
+    eq(workQuestionContinuationRequests.companyId, input.companyId),
+    inArray(workQuestionContinuationRequests.questionId, questionIds),
+    inArray(workQuestionContinuationRequests.status, ["pending", "claimed", "dispatched"]),
+  ));
+
+  const wakeupKeys = [...new Set(continuationKeys.map((row) => row.key))];
+  let runningRunIds: string[] = [];
+  if (wakeupKeys.length > 0) {
+    const wakeups = await tx
+      .select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.companyId, input.companyId),
+        inArray(agentWakeupRequests.idempotencyKey, wakeupKeys),
+      ));
+    const wakeupIds = wakeups.map((row) => row.id);
+    if (wakeupIds.length > 0) {
+      const activeRuns = await tx
+        .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(and(
+          eq(heartbeatRuns.companyId, input.companyId),
+          inArray(heartbeatRuns.wakeupRequestId, wakeupIds),
+          inArray(heartbeatRuns.status, ["queued", "running"]),
+        ));
+      runningRunIds = activeRuns
+        .filter((run) => run.status === "running")
+        .map((run) => run.id);
+      const activeRunIds = activeRuns.map((run) => run.id);
+      if (activeRunIds.length > 0) {
+        await tx.update(heartbeatRuns).set({
+          status: "cancelled",
+          finishedAt: now,
+          error: `Task ${input.reason}`,
+          errorCode: "task_no_longer_eligible",
+          updatedAt: now,
+        }).where(and(
+          eq(heartbeatRuns.companyId, input.companyId),
+          inArray(heartbeatRuns.id, activeRunIds),
+          inArray(heartbeatRuns.status, ["queued", "running"]),
+        ));
+        await tx.update(issues).set({
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: now,
+        }).where(and(
+          eq(issues.companyId, input.companyId),
+          eq(issues.id, input.issueId),
+          inArray(issues.executionRunId, activeRunIds),
+        ));
+      }
+    }
+    const activeCrewRuns = await tx
+      .select({ id: internalAgentRuns.id })
+      .from(internalAgentRuns)
+      .where(and(
+        eq(internalAgentRuns.companyId, input.companyId),
+        inArray(internalAgentRuns.continuationIdempotencyKey, wakeupKeys),
+        eq(internalAgentRuns.status, "running"),
+      ));
+    if (activeCrewRuns.length > 0) {
+      const activeCrewRunIds = activeCrewRuns.map((run) => run.id);
+      runningRunIds = [...new Set([...runningRunIds, ...activeCrewRunIds])];
+      await tx.update(internalAgentRuns).set({
+        status: "cancelled",
+        errorMessage: `Task ${input.reason}`,
+        completedAt: now,
+      }).where(and(
+        eq(internalAgentRuns.companyId, input.companyId),
+        inArray(internalAgentRuns.id, activeCrewRunIds),
+        eq(internalAgentRuns.status, "running"),
+      ));
+    }
+    await tx.update(agentWakeupRequests).set({
+      status: "cancelled",
+      finishedAt: now,
+      error: `Task ${input.reason}`,
+      claimToken: null,
+      leaseExpiresAt: null,
+      updatedAt: now,
+    }).where(and(
+      eq(agentWakeupRequests.companyId, input.companyId),
+      inArray(agentWakeupRequests.status, ["queued", "claimed", "processing", "deferred_issue_execution"]),
+      inArray(agentWakeupRequests.idempotencyKey, wakeupKeys),
+    ));
+  }
+
+  for (const questionId of questionIds) {
+    await tx.insert(activityLog).values({
+      companyId: input.companyId,
+      actorType: "system",
+      actorId: "task-lifecycle",
+      action: "work_question.cancelled_by_task",
+      entityType: "work_question",
+      entityId: questionId,
+      details: { issueId: input.issueId, reason: input.reason },
+    });
+    await hubItemsService(tx).reconcile(input.companyId, {
+      sourceType: "work_question",
+      sourceId: questionId,
+    });
+  }
+  return runningRunIds;
+}
+
+function terminateTrackedRuns(runIds: string[]) {
+  for (const runId of runIds) {
+    const running = runningProcesses.get(runId);
+    if (!running) continue;
+    signalRunningProcess(running, "SIGTERM");
+    const graceMs = Math.max(1, running.graceSec) * 1000;
+    setTimeout(() => {
+      const stillRunning = runningProcesses.get(runId);
+      if (stillRunning) signalRunningProcess(stillRunning, "SIGKILL");
+    }, graceMs);
+  }
+}
 
 function monitorClearReasonForIssue(input: {
   status: string;
@@ -1500,14 +1673,32 @@ export function issueService(db: Db) {
         patch.checkoutRunId = null;
       }
 
-      const { result, tasksToWake } = await db.transaction(async (tx) => {
+      const { result, tasksToWake, runsToTerminate } = await db.transaction(async (tx) => {
+        const runIdsToTerminate = new Set<string>();
         const updated = await tx
           .update(issues)
           .set(patch)
           .where(eq(issues.id, id))
           .returning()
           .then((rows) => rows[0] ?? null);
-        if (!updated) return { result: null, tasksToWake: [] as { agentId: string; issueId: string; workMode: string | null }[] };
+        if (!updated) {
+          return {
+            result: null,
+            tasksToWake: [] as { agentId: string; issueId: string; workMode: string | null }[],
+            runsToTerminate: [] as string[],
+          };
+        }
+        if (
+          issueData.assigneeAgentId !== undefined &&
+          issueData.assigneeAgentId !== existing.assigneeAgentId
+        ) {
+          const runIds = await cancelActiveWorkQuestionsForIssue(tx as unknown as Db, {
+            companyId: existing.companyId,
+            issueId: id,
+            reason: "reassigned",
+          });
+          runIds.forEach((runId) => runIdsToTerminate.add(runId));
+        }
         if (nextLabelIds !== undefined) {
           await syncIssueLabels(updated.id, existing.companyId, nextLabelIds, tx);
         }
@@ -1610,9 +1801,21 @@ export function issueService(db: Db) {
         let wake: { agentId: string; issueId: string; workMode: string | null }[] = [];
         if (enriched && issueData.status && issueData.status !== existing.status) {
           if (issueData.status === "done") {
+            const runIds = await cancelActiveWorkQuestionsForIssue(tx as unknown as Db, {
+              companyId: existing.companyId,
+              issueId: id,
+              reason: "done",
+            });
+            runIds.forEach((runId) => runIdsToTerminate.add(runId));
             const resolved = await deps.resolveDependencies(existing.companyId, id, tx);
             wake = resolved.tasksToWake;
           } else if (issueData.status === "cancelled") {
+            const runIds = await cancelActiveWorkQuestionsForIssue(tx as unknown as Db, {
+              companyId: existing.companyId,
+              issueId: id,
+              reason: "cancelled",
+            });
+            runIds.forEach((runId) => runIdsToTerminate.add(runId));
             // A cancelled dependency is terminal too — it releases its dependents
             // and we must propagate the resulting wakeups so they get dispatched
             // (symmetric with the `done` branch). (A-H9)
@@ -1626,8 +1829,10 @@ export function issueService(db: Db) {
           });
         }
 
-        return { result: enriched, tasksToWake: wake };
+        return { result: enriched, tasksToWake: wake, runsToTerminate: [...runIdsToTerminate] };
       });
+
+      terminateTrackedRuns(runsToTerminate);
 
       // Task 5.6: publish issue.status_changed when the status ACTUALLY changed
       // (the canonical crew-move chokepoint that goes through update — incl.
@@ -1657,15 +1862,22 @@ export function issueService(db: Db) {
       return result;
     },
 
-    remove: (id: string) =>
-      db.transaction(async (tx) => {
+    remove: async (id: string) => {
+      const { removed, runsToTerminate } = await db.transaction(async (tx) => {
         // Fetch the issue first to get companyId (needed for activity log)
         const [issueToDelete] = await tx
           .select({ companyId: issues.companyId })
           .from(issues)
-          .where(eq(issues.id, id));
+          .where(eq(issues.id, id))
+          .for("update");
 
+        let runIdsToTerminate: string[] = [];
         if (issueToDelete) {
+          runIdsToTerminate = await cancelActiveWorkQuestionsForIssue(tx as unknown as Db, {
+            companyId: issueToDelete.companyId,
+            issueId: id,
+            reason: "deleted",
+          });
           // Auto-unblock dependents before cascade deletes the dependency rows
           const dependents = await tx
             .select({
@@ -1744,14 +1956,17 @@ export function issueService(db: Db) {
             .where(inArray(assets.id, attachmentAssetIds.map((row) => row.assetId)));
         }
 
-        if (!removedIssue) return null;
+        if (!removedIssue) return { removed: null, runsToTerminate: runIdsToTerminate };
         await hubItemsService(tx as unknown as Db).reconcile(removedIssue.companyId, {
           sourceType: "issue",
           sourceId: id,
         });
         const [enriched] = await withIssueLabels(tx, [removedIssue]);
-        return enriched;
-      }),
+        return { removed: enriched, runsToTerminate: runIdsToTerminate };
+      });
+      terminateTrackedRuns(runsToTerminate);
+      return removed;
+    },
 
     // Concurrency: Uses atomic conditional UPDATE (WHERE status = expected AND assignee conditions)
     // rather than SELECT FOR UPDATE. Two simultaneous checkout attempts will issue the same UPDATE,

@@ -27,6 +27,7 @@ import { goalRoutes } from "./routes/goals.js";
 import { hubItemRoutes } from "./routes/hub-items.js";
 import { hubAutopilotRoutes } from "./routes/hub-autopilot.js";
 import { agentRuntimeDecisionRoutes } from "./routes/agent-runtime-decisions.js";
+import { workQuestionRoutes } from "./routes/work-questions.js";
 import { teamsRoutes } from "./routes/teams.js";
 import { teamImportsRoutes } from "./routes/team-imports.js";
 import { approvalRoutes } from "./routes/approvals.js";
@@ -207,6 +208,7 @@ export async function createApp(
   // See `services/helmet-options.ts` for the full directive set.
   app.use(helmet(buildHelmetOptions({
     deploymentMode: opts.deploymentMode,
+    uiMode: opts.uiMode,
     nodeEnv: process.env.NODE_ENV,
     inlineScriptHashes,
   })));
@@ -281,6 +283,7 @@ export async function createApp(
   api.use(hubItemRoutes(db));
   api.use(hubAutopilotRoutes(db));
   api.use(agentRuntimeDecisionRoutes(db));
+  api.use(workQuestionRoutes(db));
   api.use(teamsRoutes(db));
   api.use(teamImportsRoutes(db));
   // Phase 6.0: memory-folders and memory-assets routes MUST mount before

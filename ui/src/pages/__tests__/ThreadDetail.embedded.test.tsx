@@ -11,7 +11,7 @@
  * Mirrors the useParams mock pattern from DiscussionDetail.test.tsx.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { renderWithProviders } from "../../__tests__/test-utils";
 import { ThreadDetail } from "../ThreadDetail";
 
@@ -176,6 +176,17 @@ describe("ThreadDetail — embedded, prop-supplied id", () => {
     expect(screen.queryByTestId("thread-right-viewer")).not.toBeInTheDocument();
     expect(screen.queryByTestId("stub-thread-viewer")).not.toBeInTheDocument();
     expect(screen.queryByTestId("mobile-tab-viewer")).not.toBeInTheDocument();
+  });
+
+  it("puts the host close action in the native discussion header", async () => {
+    const onClose = vi.fn();
+    renderWithProviders(
+      <ThreadDetail discussionId="d1" companyId="comp-1" embedded onClose={onClose} />,
+    );
+
+    const closeButton = await screen.findByRole("button", { name: "Close discussion focus" });
+    fireEvent.click(closeButton);
+    expect(onClose).toHaveBeenCalledOnce();
   });
 });
 

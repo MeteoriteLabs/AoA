@@ -1085,6 +1085,7 @@ export const NOTIFICATION_TYPES = [
   "thread.artifact_needs_review",
   "thread.crew_failed",
   "thread.spinoff_suggested",
+  "work_question.sla_breached",
 ] as const;
 export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
 

@@ -93,13 +93,16 @@ function createApp(actor: Record<string, unknown> = {
   source: "session",
   companyIds: [companyId],
 }) {
+  const db = {
+    transaction: vi.fn(async (callback: (tx: unknown) => Promise<unknown>) => callback({})),
+  };
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
     (req as any).actor = actor;
     next();
   });
-  app.use("/api", issueRoutes({} as any, {} as any));
+  app.use("/api", issueRoutes(db as any, {} as any));
   app.use(errorHandler);
   return app;
 }
@@ -137,6 +140,67 @@ describe("issue responsible user routes", () => {
     mockHeartbeatService.wakeup.mockResolvedValue(undefined);
     mockLogActivity.mockResolvedValue(undefined);
     mockEnqueueIssueAssigneeWakeup.mockResolvedValue(undefined);
+  });
+
+  it("requires feedback when review changes are requested", async () => {
+    mockIssueService.getById.mockResolvedValue({ ...baseIssue, status: "in_review" });
+
+    const res = await request(createApp())
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "in_progress", comment: "   " });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toBe("Requesting changes requires feedback");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("persists review feedback and wakes the assignee exactly once", async () => {
+    mockIssueService.getById.mockResolvedValue({ ...baseIssue, status: "in_review" });
+    mockIssueService.update.mockResolvedValue({ ...baseIssue, status: "in_progress" });
+    mockIssueService.addComment.mockResolvedValue({
+      id: "review-comment",
+      issueId,
+      companyId,
+      body: "Add a measurable success criterion.",
+      authorAgentId: null,
+      authorUserId: "board-user",
+    });
+    mockIssueService.findMentionedAgents.mockResolvedValue([agentId]);
+
+    const res = await request(createApp())
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        status: "in_progress",
+        comment: "  Add a measurable success criterion.  ",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      issueId,
+      "Add a measurable success criterion.",
+      expect.objectContaining({ userId: "board-user" }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      agentId,
+      expect.objectContaining({
+        source: "automation",
+        reason: "issue_review_changes_requested",
+        payload: {
+          issueId,
+          commentId: "review-comment",
+          mutation: "request_changes",
+        },
+        contextSnapshot: expect.objectContaining({
+          taskId: issueId,
+          wakeCommentId: "review-comment",
+          source: "task.review",
+        }),
+      }),
+    );
   });
 
   it("lets board users with tasks:assign create and update responsibleUserId", async () => {

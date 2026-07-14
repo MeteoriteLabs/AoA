@@ -551,7 +551,7 @@ export function routineService(db: Db) {
   // whose tick crashes before an issue exists — or whose execution issue is
   // blocked/cancelled — otherwise tells no one (no agent run → no run_failed).
   // NEVER throws; a missing routine yields a generic name. Success/skip/coalesce
-  // must NOT notify (they are covered by run_complete + the Routines page).
+  // must NOT notify (successful execution is visible in run history and the Routines page).
   async function emitRoutineFailure(
     run: typeof routineRuns.$inferSelect | null,
     routine: { title?: string | null; createdByUserId?: string | null } | null,

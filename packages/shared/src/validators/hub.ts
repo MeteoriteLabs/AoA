@@ -161,6 +161,8 @@ export const runtimeDecisionDetailSchema = z
     path: z.string().trim().min(1).max(1000).nullable(),
     networkTarget: z.string().trim().min(1).max(1000).nullable(),
     riskClass: z.string().trim().min(1).max(80).nullable(),
+    allowRunEligible: z.boolean().optional(),
+    allowRunReason: z.string().trim().min(1).max(240).nullable().optional(),
     options: z
       .array(
         z

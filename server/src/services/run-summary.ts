@@ -30,7 +30,7 @@ export function formatRunSummary(input: RunSummaryInput): string {
   // Outcome
   const outcomeLabel =
     outcome === "succeeded"
-      ? "\u2705 Completed"
+      ? "\u2705 Succeeded"
       : outcome === "failed"
         ? `\u274C Failed${errorMessage ? ` \u2014 ${errorMessage}` : ""}`
         : outcome === "timed_out"

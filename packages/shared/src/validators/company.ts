@@ -34,6 +34,7 @@ export const updateCompanySchema = createCompanySchema
     mcpEnabled: z.boolean().optional(),
     agentCompletionPolicyDefault: z.enum(AGENT_COMPLETION_POLICIES).optional(),
     agentCompletionReviewGuardrail: z.boolean().optional(),
+    humanQuestionSlaHours: z.number().int().min(1).max(24 * 30).optional(),
   });
 
 export type UpdateCompany = z.infer<typeof updateCompanySchema>;

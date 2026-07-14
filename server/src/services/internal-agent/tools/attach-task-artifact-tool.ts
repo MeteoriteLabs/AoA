@@ -113,8 +113,8 @@ export const attachTaskArtifactTool: AgentTool = {
       return {
         success: false,
         data: null,
-        summary: "You can only attach a deliverable to a task you are assigned to",
-        error: "FORBIDDEN",
+        summary: "Task not found",
+        error: "NOT_FOUND",
       };
     }
 

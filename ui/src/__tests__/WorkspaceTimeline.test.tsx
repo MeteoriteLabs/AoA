@@ -103,6 +103,10 @@ const agentsApiMock = {
   wakeup: vi.fn().mockResolvedValue(undefined),
 };
 
+const workQuestionsApiMock = {
+  listInline: vi.fn().mockResolvedValue([]),
+};
+
 vi.mock("../api/issues", () => ({
   issuesApi: new Proxy(
     {},
@@ -131,6 +135,13 @@ vi.mock("../api/agents", () => ({
   ),
 }));
 
+vi.mock("../api/work-questions", () => ({
+  workQuestionsApi: new Proxy(
+    {},
+    { get: (_t, prop) => (workQuestionsApiMock as any)[prop] },
+  ),
+}));
+
 vi.mock("../context/ToastContext", () => ({
   useToast: () => ({ pushToast: vi.fn(), toasts: [], dismissToast: vi.fn(), clearToasts: vi.fn() }),
 }));
@@ -147,6 +158,12 @@ vi.mock("../context/CompanyContext", () => ({
 vi.mock("../components/LiveRunWidget", () => ({
   LiveRunWidget: ({ issueId }: { issueId: string }) => (
     <div data-testid="live-run-widget">Live runs for {issueId}</div>
+  ),
+}));
+
+vi.mock("../components/work-questions/WorkQuestionPanel", () => ({
+  WorkQuestionPanel: ({ questionId }: { questionId: string }) => (
+    <div data-testid={`inline-work-question-${questionId}`}>Question {questionId}</div>
   ),
 }));
 
@@ -217,6 +234,7 @@ beforeEach(() => {
   heartbeatsApiMock.liveRunsForIssue.mockResolvedValue([]);
   heartbeatsApiMock.activeRunForIssue.mockResolvedValue(null);
   agentsApiMock.list.mockResolvedValue(mockAgents);
+  workQuestionsApiMock.listInline.mockResolvedValue([]);
 });
 
 describe("WorkspaceTimeline — rendering", () => {
@@ -224,6 +242,24 @@ describe("WorkspaceTimeline — rendering", () => {
     renderTimeline();
 
     expect(await screen.findAllByText(/Worked for/i)).toHaveLength(2);
+  });
+
+  it("separates active execution from human and permission wait time", async () => {
+    activityApiMock.runsForIssue.mockResolvedValue([
+      {
+        ...mockRuns[0],
+        activeExecutionMs: 90_000,
+        humanQuestionWaitMs: 30_000,
+        runtimePermissionWaitMs: 120_000,
+        totalWallClockMs: 240_000,
+      },
+    ]);
+
+    renderTimeline();
+
+    expect(await screen.findByText("Active: 1m 30s")).toBeInTheDocument();
+    expect(screen.getByText("Human wait: 30s")).toBeInTheDocument();
+    expect(screen.getByText("Permission wait: 2m 0s")).toBeInTheDocument();
   });
 
   it("renders image attachments under the exact comment that uploaded them", async () => {
@@ -528,6 +564,32 @@ describe("WorkspaceTimeline — rendering", () => {
     // Both comments should render
     expect(screen.getByText("Please fix the login flow")).toBeInTheDocument();
     expect(screen.getByText("Working on it now")).toBeInTheDocument();
+  });
+
+  it("composes a question chronologically and focuses an exact Commander anchor", async () => {
+    const questionId = "55555555-5555-4555-8555-555555555555";
+    workQuestionsApiMock.listInline.mockResolvedValueOnce([{
+      question: {
+        id: questionId,
+        createdAt: "2026-04-01T10:12:00Z",
+      },
+      capabilities: { read: true },
+    }]);
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoView,
+    });
+
+    renderTimeline({ anchorId: questionId });
+
+    const firstComment = await screen.findByTestId("timeline-comment-comment-1");
+    const question = await screen.findByTestId(`inline-work-question-${questionId}`);
+    const secondComment = screen.getByTestId("timeline-comment-comment-2");
+    expect(firstComment.compareDocumentPosition(question) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(question.compareDocumentPosition(secondComment) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    await waitFor(() => expect(question.parentElement).toHaveFocus());
+    expect(scrollIntoView).toHaveBeenCalled();
   });
 
   it("shows empty state when no runs or comments", async () => {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertCircle,
@@ -39,10 +39,11 @@ import { queryKeys } from "../lib/queryKeys";
 import { cn, relativeTime } from "../lib/utils";
 import { COMMANDER_PANEL_CARD } from "./commander/commanderChrome";
 import {
-  commanderPaneReducer,
-  initialCommanderPaneState,
-  type CommanderDiscussionSelection,
-} from "./commander/commanderPaneModel";
+  commanderPaneCoordinatorReducer,
+  initialCommanderPaneCoordinatorState,
+  type CommanderFocusTarget,
+} from "./commander/commanderPaneCoordinator";
+import { CommanderTaskFocusPane } from "./commander/CommanderTaskFocusPane";
 import { Button } from "@/components/ui/button";
 import { MarkdownBody } from "./MarkdownBody";
 import {
@@ -60,7 +61,6 @@ import { Group, Panel, Separator, useDefaultLayout } from "react-resizable-panel
 import { useCommanderViewerCollapsed } from "./commander/useCommanderViewerCollapsed";
 import { useCommanderCockpitCollapsed } from "./commander/useCommanderCockpitCollapsed";
 import { CommanderCockpitPanel } from "./commander/cockpit/CommanderCockpitPanel";
-import { TaskSlideOver } from "./TaskSlideOver";
 import { ThreadDetail } from "../pages/ThreadDetail";
 import type { ThreadOpenRequest } from "./threads/threadViewerModel";
 import {
@@ -88,6 +88,8 @@ import {
 } from "@armyofagents/shared";
 import type { CommanderContextScope } from "@armyofagents/shared";
 import type { CommanderOutputRef } from "@armyofagents/shared";
+import { useInlineWorkQuestions, WorkQuestionInlineError } from "./work-questions/WorkQuestionInlineList";
+import { WorkQuestionPanel } from "./work-questions/WorkQuestionPanel";
 import {
   Tooltip,
   TooltipContent,
@@ -188,12 +190,12 @@ function CommanderDiscussionPane({
   mobile = false,
 }: {
   companyId: string;
-  discussion: CommanderDiscussionSelection;
+  discussion: CommanderFocusTarget;
   onClose: () => void;
   onOpenRequest: (request: ThreadOpenRequest) => void;
   mobile?: boolean;
 }) {
-  const draftKey = discussionDraftStorageKey(companyId, discussion.id);
+  const draftKey = discussionDraftStorageKey(companyId, discussion.entityId);
   const [draftText, setDraftText] = useState(() => {
     try {
       return sessionStorage.getItem(draftKey) ?? "";
@@ -221,29 +223,16 @@ function CommanderDiscussionPane({
   }, [draftKey]);
 
   const content = (
-    <div className="flex h-full min-h-0 min-w-0 flex-col gap-2" data-testid="commander-discussion-pane">
-      <div className="flex h-9 shrink-0 items-center justify-between border-b border-border px-2">
-        <span className="min-w-0 truncate text-xs font-medium text-muted-foreground">Discussion</span>
-        <button
-          type="button"
-          aria-label={`Close ${discussion.title}`}
-          title="Close discussion"
-          className="flex size-7 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-focus-ring"
-          onClick={onClose}
-        >
-          <X className="size-4" aria-hidden />
-        </button>
-      </div>
-      <div className="min-h-0 flex-1">
-        <ThreadDetail
-          discussionId={discussion.id}
-          companyId={companyId}
-          embedded
-          onOpenRequest={onOpenRequest}
-          draftText={draftText}
-          onDraftTextChange={updateDraftText}
-        />
-      </div>
+    <div className="flex h-full min-h-0 min-w-0 flex-col" data-testid="commander-discussion-pane">
+      <ThreadDetail
+        discussionId={discussion.entityId}
+        companyId={companyId}
+        embedded
+        onClose={onClose}
+        onOpenRequest={onOpenRequest}
+        draftText={draftText}
+        onDraftTextChange={updateDraftText}
+      />
     </div>
   );
 
@@ -252,7 +241,7 @@ function CommanderDiscussionPane({
   return (
     <Sheet open onOpenChange={(open) => { if (!open) onClose(); }}>
       <SheetContent side="right" showCloseButton={false} className="w-full max-w-full p-2 sm:max-w-full">
-        <SheetTitle className="sr-only">{discussion.title}</SheetTitle>
+        <SheetTitle className="sr-only">{discussion.title ?? "Discussion"}</SheetTitle>
         {content}
       </SheetContent>
     </Sheet>
@@ -574,6 +563,9 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
 
   const companyId = selectedCompanyId ?? "";
+  const inlineQuestionsQuery = useInlineWorkQuestions(companyId, {
+    sourceCommanderConversationId: conversationId ?? undefined,
+  });
 
   // Load conversation history
   const { data: conversation } = useQuery({
@@ -613,31 +605,43 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
   // `enableViewerPanel` is set (full-page Commander route).
   const { useDrawerSessions, isTablet, isWide } = useBreakpoint();
   const viewer = useCommanderViewer(conversationId ?? null);
-  const [taskSlideOverId, setTaskSlideOverId] = useState<string | null>(null);
-  const [paneState, dispatchPane] = useReducer(commanderPaneReducer, initialCommanderPaneState);
-  const discussionPane = paneState.discussion;
+  const [paneState, dispatchPane] = useReducer(
+    commanderPaneCoordinatorReducer,
+    typeof window === "undefined" ? 1600 : window.innerWidth,
+    initialCommanderPaneCoordinatorState,
+  );
+  const focusPane = paneState.focus;
+  const discussionPane = focusPane?.kind === "discussion" ? focusPane : null;
+  const taskFocusPane = focusPane?.kind === "workspace" ? focusPane : null;
 
   // Phase 1: resizable panel geometry + collapse persistence.
   const [viewerCollapsed, setViewerCollapsed] = useCommanderViewerCollapsed();
   const [cockpitCollapsed, setCockpitCollapsed] = useCommanderCockpitCollapsed();
   const [tabletCockpitOpen, setTabletCockpitOpen] = useState(false);
-  const discussionDetailOpen = discussionPane !== null && paneState.nestedDetailOpen;
+  const focusDetailOpen = focusPane !== null && paneState.viewerOpen;
+  const showChatPanel = paneState.chat === "expanded" && !focusDetailOpen;
   // Phase 1 (panel-redesign): cockpit is now a width-div sibling — NOT in the Group.
   // panelIds only covers the center Group panels: chat + optionally viewer.
   // Key uses "-v2" suffix to avoid restoring stale 3-panel geometry from old sessions.
   const panelIds = useMemo(
     () => [
-      ...(discussionDetailOpen ? [] : ["commander-chat"]),
-      ...(discussionPane ? ["commander-discussion"] : []),
+      ...(showChatPanel ? ["commander-chat"] : []),
+      ...(focusPane ? ["commander-focus"] : []),
       ...(viewerCollapsed ? [] : ["commander-detail"]),
     ],
-    [discussionDetailOpen, discussionPane, viewerCollapsed],
+    [focusPane, showChatPanel, viewerCollapsed],
   );
   const { defaultLayout, onLayoutChanged } = useDefaultLayout({
-    id: "aoa:commander:panel-sizes-v2",
+    id: `aoa:commander:panel-sizes-v3:${panelIds.join(":") || "empty"}`,
     storage: localStorage,
     panelIds,
   });
+
+  useEffect(() => {
+    const updateWidth = () => dispatchPane({ type: "set_width", width: window.innerWidth });
+    window.addEventListener("resize", updateWidth);
+    return () => window.removeEventListener("resize", updateWidth);
+  }, []);
 
   // Phase 6: open/close preview choreography (applyPreviewFocus parity).
   //
@@ -645,6 +649,11 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
   // opening so closePreview() can restore them (not force-expand if the user had
   // them already closed). Stored in a ref so it doesn't trigger re-renders.
   const preOpenSnapshotRef = useRef<{ sessions: boolean; cockpit: boolean } | null>(null);
+  const focusRestoreRef = useRef<{
+    sessionsCollapsed: boolean;
+    cockpitCollapsed: boolean;
+    viewerCollapsed: boolean;
+  } | null>(null);
 
   // openPreview(source):
   //   "center"       — chat-header toggle: collapse BOTH sessions + cockpit
@@ -661,7 +670,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
     // Expand the viewer
     setViewerCollapsed(false);
     viewer.expand();
-    if (discussionPane) dispatchPane({ type: "open_nested_detail" });
+    dispatchPane({ type: "open_viewer", originFocusKey: focusPane ? `${focusPane.kind}:${focusPane.entityId}` : "commander" });
 
     // Always collapse sessions
     onSetSessionsCollapsed?.(true);
@@ -671,13 +680,13 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
       setCockpitCollapsed(true);
       setTabletCockpitOpen(false);
     }
-  }, [sessionsCollapsed, cockpitCollapsed, setViewerCollapsed, viewer, discussionPane, onSetSessionsCollapsed, setCockpitCollapsed, isWide]);
+  }, [sessionsCollapsed, cockpitCollapsed, setViewerCollapsed, viewer, focusPane, onSetSessionsCollapsed, setCockpitCollapsed, isWide]);
 
   // closePreview(): collapse viewer, restore sessions + cockpit to pre-open state.
   const closePreview = useCallback(() => {
     setViewerCollapsed(true);
     viewer.collapse();
-    dispatchPane({ type: "close_nested_detail" });
+    dispatchPane({ type: "close_viewer" });
 
     if (preOpenSnapshotRef.current !== null) {
       const { sessions, cockpit } = preOpenSnapshotRef.current;
@@ -687,30 +696,39 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
     }
   }, [setViewerCollapsed, viewer, onSetSessionsCollapsed, setCockpitCollapsed]);
 
-  const openTaskSlideOver = useCallback((issueId: string) => {
-    setTaskSlideOverId(issueId);
-  }, []);
-
-  const openDiscussionPane = useCallback((discussionId: string, title: string) => {
-    dispatchPane({
-      type: "open_discussion",
-      discussion: { id: discussionId, title },
-      snapshot: {
+  const openFocusPane = useCallback((target: CommanderFocusTarget, originFocusKey: string) => {
+    if (!focusPane) {
+      focusRestoreRef.current = {
         sessionsCollapsed: sessionsCollapsed ?? true,
         cockpitCollapsed,
         viewerCollapsed,
-      },
-    });
+      };
+    }
+    dispatchPane({ type: "open_focus", target, originFocusKey });
     onSetSessionsCollapsed?.(true);
     setCockpitCollapsed(true);
     setTabletCockpitOpen(false);
     setViewerCollapsed(true);
     viewer.collapse();
-  }, [cockpitCollapsed, discussionPane, onSetSessionsCollapsed, sessionsCollapsed, setCockpitCollapsed, setViewerCollapsed, viewer, viewerCollapsed]);
+  }, [cockpitCollapsed, focusPane, onSetSessionsCollapsed, sessionsCollapsed, setCockpitCollapsed, setViewerCollapsed, viewer, viewerCollapsed]);
 
-  const closeDiscussionPane = useCallback(() => {
-    const snapshot = paneState.restoreSnapshot;
-    dispatchPane({ type: "close_discussion" });
+  const openTaskFocusPane = useCallback((issueId: string, title = "Task", anchorId?: string) => {
+    openFocusPane(
+      { kind: "workspace", entityId: issueId, title, anchorId },
+      `task:${issueId}`,
+    );
+  }, [openFocusPane]);
+
+  const openDiscussionPane = useCallback((discussionId: string, title: string) => {
+    openFocusPane(
+      { kind: "discussion", entityId: discussionId, title },
+      `discussion:${discussionId}`,
+    );
+  }, [openFocusPane]);
+
+  const closeFocusPane = useCallback(() => {
+    const snapshot = focusRestoreRef.current;
+    dispatchPane({ type: "close_focus" });
     preOpenSnapshotRef.current = null;
     if (snapshot) {
       onSetSessionsCollapsed?.(snapshot.sessionsCollapsed);
@@ -718,13 +736,27 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
       setViewerCollapsed(snapshot.viewerCollapsed);
       if (!snapshot.viewerCollapsed) viewer.expand();
     }
-  }, [onSetSessionsCollapsed, paneState.restoreSnapshot, setCockpitCollapsed, setViewerCollapsed, viewer]);
+    focusRestoreRef.current = null;
+  }, [onSetSessionsCollapsed, setCockpitCollapsed, setViewerCollapsed, viewer]);
+
+  const closeTopSurface = useCallback(() => {
+    if (!viewerCollapsed) {
+      closePreview();
+      return;
+    }
+    if (focusPane) {
+      closeFocusPane();
+      return;
+    }
+    closePanel();
+  }, [closeFocusPane, closePanel, closePreview, focusPane, viewerCollapsed]);
 
   const openDiscussionRequest = useCallback((request: ThreadOpenRequest) => {
     switch (request.kind) {
       case "task":
       case "task_output":
-        openTaskSlideOver(request.issueId);
+        openPreview("right-panel");
+        viewer.openTask(request.issueId, request.title);
         return;
       case "artifact":
         openPreview("right-panel");
@@ -745,10 +777,10 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
       case "scope_item":
       case "asset":
       case "map":
-        if (discussionPane) navigate(`/discussions/${discussionPane.id}`);
+        if (discussionPane) navigate(`/discussions/${discussionPane.entityId}`);
         return;
     }
-  }, [discussionPane, navigate, openPreview, openTaskSlideOver, viewer]);
+  }, [discussionPane, navigate, openPreview, viewer]);
 
   // Lightweight helpers still used for cockpit expand/collapse buttons (unchanged UX).
   const expandCockpit = useCallback(() => {
@@ -871,12 +903,12 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
         if (document.querySelector('[data-slot="sheet-content"],[role="dialog"][data-state="open"]')) {
           return;
         }
-        closePanel();
+        closeTopSurface();
       }
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, [closePanel]);
+  }, [closeTopSurface]);
 
   const pageContext = breadcrumbs.length > 0 ? breadcrumbs.map((b) => b.label).join(" > ") : null;
   const contextScope = useMemo(
@@ -993,7 +1025,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
     (ref: CommanderInputRef) => {
       openCommanderInputRef(ref, {
         openPreview,
-        openTask: openTaskSlideOver,
+        openTask: openTaskFocusPane,
         openDiscussion: openDiscussionPane,
         openArtifact: (id, title) => {
           viewer.openRef({ v: 1, kind: "artifact", id, title, action: "referenced" });
@@ -1002,7 +1034,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
         navigate,
       });
     },
-    [navigate, openDiscussionPane, openPreview, openTaskSlideOver, viewer],
+    [navigate, openDiscussionPane, openPreview, openTaskFocusPane, viewer],
   );
 
   const handleSend = useCallback(async () => {
@@ -1358,6 +1390,30 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
   // Commander Viewer P1: deduped refs across the loaded conversation (feeds the
   // viewer's home tab). Cheap O(messages) — no memo needed.
   const conversationRefs = collectConversationRefs(messages);
+  const commanderInlineQuestions = useMemo(
+    () => Array.isArray(inlineQuestionsQuery.data) ? inlineQuestionsQuery.data : [],
+    [inlineQuestionsQuery.data],
+  );
+  const commanderQuestionBuckets = useMemo(() => {
+    const byMessageId = new Map<string, typeof commanderInlineQuestions>();
+    const trailing: typeof commanderInlineQuestions = [];
+    const orderedQuestions = [...commanderInlineQuestions].sort((left, right) => (
+      new Date(left.question.createdAt).getTime() - new Date(right.question.createdAt).getTime()
+      || left.question.id.localeCompare(right.question.id)
+    ));
+    for (const detail of orderedQuestions) {
+      const questionTime = new Date(detail.question.createdAt).getTime();
+      const nextMessage = messages.find((message) => new Date(message.createdAt).getTime() >= questionTime);
+      if (!nextMessage) {
+        trailing.push(detail);
+        continue;
+      }
+      const bucket = byMessageId.get(nextMessage.id) ?? [];
+      bucket.push(detail);
+      byMessageId.set(nextMessage.id, bucket);
+    }
+    return { byMessageId, trailing };
+  }, [commanderInlineQuestions, messages]);
 
   // The chat column is extracted into a const (instead of re-indenting the
   // ~400-line tree inside a new row wrapper) so the viewer-panel row below
@@ -1454,7 +1510,17 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
         )}
 
         {messages.map((msg) => (
-          <div key={msg.id} className={cn("flex", msg.role === "user" ? "justify-end" : "justify-start")}>
+          <Fragment key={msg.id}>
+          {(commanderQuestionBuckets.byMessageId.get(msg.id) ?? []).map((detail) => (
+            <div key={`work-question-${detail.question.id}`} data-work-question-id={detail.question.id}>
+              <WorkQuestionPanel
+                companyId={companyId}
+                questionId={detail.question.id}
+                initialDetail={detail}
+              />
+            </div>
+          ))}
+          <div className={cn("flex", msg.role === "user" ? "justify-end" : "justify-start")}>
             <div
               className={cn(
                 "group relative max-w-[85%] rounded-2xl px-3 py-2 text-sm",
@@ -1742,7 +1808,21 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
               )}
             </div>
           </div>
+          </Fragment>
         ))}
+
+        {commanderQuestionBuckets.trailing.map((detail) => (
+          <div key={`work-question-${detail.question.id}`} data-work-question-id={detail.question.id}>
+            <WorkQuestionPanel
+              companyId={companyId}
+              questionId={detail.question.id}
+              initialDetail={detail}
+            />
+          </div>
+        ))}
+        {inlineQuestionsQuery.isError ? (
+          <WorkQuestionInlineError onRetry={() => void inlineQuestionsQuery.refetch()} />
+        ) : null}
 
         <div ref={messagesEndRef} />
         </div>
@@ -1907,7 +1987,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
       collapsed={collapsed}
       onExpand={expandCockpit}
       onCollapse={collapseCockpit}
-      onOpenTask={(issueId) => openTaskSlideOver(issueId)}
+      onOpenTask={(issueId, title, anchorId) => openTaskFocusPane(issueId, title, anchorId)}
       onAsk={(text) => void sendText(text)}
       onReference={addInputRef}
       onOpenInputRef={handleOpenInputRef}
@@ -1931,21 +2011,34 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
     return (
       <div className="flex h-full min-h-0 flex-row overflow-hidden">
         {chatColumn}
-        <CommanderViewerPanel companyId={companyId} viewer={viewer} conversationRefs={conversationRefs} isMobile />
+        <CommanderViewerPanel
+          companyId={companyId}
+          viewer={viewer}
+          conversationRefs={conversationRefs}
+          isMobile
+          onOpenTask={openTaskFocusPane}
+        />
         {discussionPane && (
           <CommanderDiscussionPane
             companyId={companyId}
             discussion={discussionPane}
-            onClose={closeDiscussionPane}
+            onClose={closeFocusPane}
             onOpenRequest={openDiscussionRequest}
             mobile
           />
         )}
-        <TaskSlideOver
-          issueId={taskSlideOverId}
-          open={taskSlideOverId !== null}
-          onClose={() => setTaskSlideOverId(null)}
-        />
+        {taskFocusPane && (
+          <Sheet open onOpenChange={(open) => { if (!open) closeFocusPane(); }}>
+            <SheetContent side="right" showCloseButton={false} className="w-full max-w-full p-2 sm:max-w-full">
+              <SheetTitle className="sr-only">{taskFocusPane.title ?? "Task"}</SheetTitle>
+              <CommanderTaskFocusPane
+                issueId={taskFocusPane.entityId}
+                anchorId={taskFocusPane.anchorId}
+                onClose={closeFocusPane}
+              />
+            </SheetContent>
+          </Sheet>
+        )}
         {isTablet && !tabletCockpitOpen && (
           <div
             className={cn("h-full w-[48px] shrink-0 overflow-hidden", COMMANDER_PANEL_CARD)}
@@ -1985,36 +2078,46 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
           own COMMANDER_PANEL_CARD chrome. The Separator (w-2 transparent) acts as
           the 8px gap between the chat card and the viewer card. */}
       <Group
+        key={panelIds.join(":") || "commander-empty"}
         orientation="horizontal"
         className="flex h-full min-w-0 flex-1"
         defaultLayout={defaultLayout}
         onLayoutChanged={onLayoutChanged}
         data-testid="commander-center-group"
       >
-        {!discussionDetailOpen && (
+        {showChatPanel && (
           <Panel id="commander-chat" minSize="30%" className="flex h-full min-w-0 flex-col">
             {chatColumn}
           </Panel>
         )}
-        {discussionPane && (
+        {focusPane && (
           <>
-            <Separator
-              id="commander-discussion-sep"
-              className="w-2 shrink-0 cursor-col-resize bg-transparent transition-colors hover:bg-brand/50 active:bg-brand/60"
-            />
+            {showChatPanel && (
+              <Separator
+                id="commander-focus-sep"
+                className="w-2 shrink-0 cursor-col-resize bg-transparent transition-colors hover:bg-brand/50 active:bg-brand/60"
+              />
+            )}
             <Panel
-              id="commander-discussion"
-              defaultSize={viewerCollapsed ? "60%" : "40%"}
+              id="commander-focus"
+              defaultSize={viewerCollapsed ? "60%" : "50%"}
               minSize="30%"
-              maxSize="70%"
               className="flex h-full min-w-0"
             >
-              <CommanderDiscussionPane
-                companyId={companyId}
-                discussion={discussionPane}
-                onClose={closeDiscussionPane}
-                onOpenRequest={openDiscussionRequest}
-              />
+              {discussionPane ? (
+                <CommanderDiscussionPane
+                  companyId={companyId}
+                  discussion={discussionPane}
+                  onClose={closeFocusPane}
+                  onOpenRequest={openDiscussionRequest}
+                />
+              ) : taskFocusPane ? (
+                <CommanderTaskFocusPane
+                  issueId={taskFocusPane.entityId}
+                  anchorId={taskFocusPane.anchorId}
+                  onClose={closeFocusPane}
+                />
+              ) : null}
             </Panel>
           </>
         )}
@@ -2023,10 +2126,12 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
             {/* Separator renders its own `data-separator` + role="separator"
                 attributes (a passed data-testid is ignored); tests target
                 `[data-separator]`. */}
-            <Separator
-              id="commander-sep"
-              className="w-2 shrink-0 cursor-col-resize bg-transparent transition-colors hover:bg-brand/50 active:bg-brand/60"
-            />
+            {(showChatPanel || focusPane) && (
+              <Separator
+                id="commander-sep"
+                className="w-2 shrink-0 cursor-col-resize bg-transparent transition-colors hover:bg-brand/50 active:bg-brand/60"
+              />
+            )}
             <Panel
               id="commander-detail"
               defaultSize="40%"
@@ -2041,6 +2146,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
                 activeTab={activeTab}
                 tabModels={tabModels}
                 onCollapse={closePreview}
+                onOpenTask={openTaskFocusPane}
               />
             </Panel>
           </>
@@ -2064,11 +2170,6 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
       >
         {renderCockpitPanel(cockpitCollapsed)}
       </div>
-      <TaskSlideOver
-        issueId={taskSlideOverId}
-        open={taskSlideOverId !== null}
-        onClose={() => setTaskSlideOverId(null)}
-      />
     </div>
   );
 }

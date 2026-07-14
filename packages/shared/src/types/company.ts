@@ -12,6 +12,7 @@ export interface Company {
   requireBoardApprovalForNewAgents: boolean;
   agentCompletionPolicyDefault?: AgentCompletionPolicy;
   agentCompletionReviewGuardrail?: boolean;
+  humanQuestionSlaHours?: number;
   vision: string | null;
   mission: string | null;
   values: string | null;

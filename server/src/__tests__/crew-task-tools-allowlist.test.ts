@@ -40,6 +40,7 @@ const TASK_TOOLS = [
   "post_task_comment",
   "attach_task_artifact",
   "set_task_status",
+  "ask_human",
 ] as const;
 
 // Resolve each executor role's allowlist from its real source of truth.
@@ -71,6 +72,7 @@ describe("crew task tools on executor allowlists (Spec B Task 6)", () => {
       expect(byName.get("post_task_comment")).toBe("coordination");
       expect(byName.get("attach_task_artifact")).toBe("coordination");
       expect(byName.get("set_task_status")).toBe("coordination");
+      expect(byName.get("ask_human")).toBe("coordination");
       // None is `action` — `action` is the only category mapped to
       // system_actions (authorize-tool.ts CAPABILITY_TO_CATEGORY).
       for (const name of TASK_TOOLS) {

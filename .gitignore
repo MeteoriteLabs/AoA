@@ -63,6 +63,8 @@ ui/src/aoa-marketplace-snapshot.json
 # Codex CLI scratch dir — dev-server logs & UAT screenshots from agent runs
 .codex/
 .qa-logs/
+.aoa-qa/
+.codex-logs/
 
 # Per-slice live-verify screenshot dirs + Playwright HTML report (throwaway agent run artifacts)
 .*-verify/
