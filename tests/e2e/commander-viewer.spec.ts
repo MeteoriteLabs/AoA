@@ -1,5 +1,7 @@
 import { test, expect, type APIRequestContext, type Page } from "@playwright/test";
 import { cleanupTestCompanies, seedCompany } from "./helpers/seed-company";
+import { seedHubItem } from "./helpers/seed-hub-item";
+import { jsonOrThrow } from "./helpers/real-crew";
 import {
   createArtifactTurn,
   queryArtifactsTurn,
@@ -281,6 +283,299 @@ test.describe("Commander viewer", () => {
 
     // The held stream then completes normally.
     await waitForTurnEnd(page);
+  });
+
+  test("cockpit task rows open the task slide-over without creating viewer tabs", async ({
+    page,
+    request,
+  }) => {
+    const company = await seedCompany(request, `E2E-CmdViewer-Task-${Date.now()}`);
+    const taskTitle = "Review Commander task surface";
+    const taskRes = await request.post(`/api/companies/${company.id}/issues`, {
+      data: {
+        title: taskTitle,
+        description: "This task should open in the shared task slide-over.",
+        status: "in_review",
+        priority: "high",
+      },
+    });
+    expect(taskRes.ok()).toBe(true);
+
+    await page.goto(`/${company.issuePrefix}/commander`);
+    const expandCockpit = page.getByRole("button", { name: "Expand cockpit" });
+    if ((await expandCockpit.count()) === 1) await expandCockpit.click();
+
+    const reviewCard = page.getByTestId("cockpit-card-review");
+    await expect(reviewCard.getByRole("button", { name: new RegExp(taskTitle) })).toBeVisible({
+      timeout: 15_000,
+    });
+    await reviewCard.getByRole("button", { name: new RegExp(taskTitle) }).click();
+
+    const taskSheet = page.locator('[data-slot="sheet-content"]');
+    await expect(page).toHaveURL(new RegExp(`/${company.issuePrefix}/commander$`));
+    await expect(taskSheet).toBeVisible({ timeout: 15_000 });
+    await expect(
+      taskSheet.getByTestId("task-detail-scroll-body").getByRole("heading", { name: taskTitle, exact: true }),
+    ).toBeVisible();
+    await expect(taskSheet.getByText("This task should open in the shared task slide-over.")).toBeVisible();
+    await expect(page.getByTestId("commander-viewer-panel")).toHaveCount(0);
+  });
+
+  test("cockpit separates Mine, Managed, and Awaiting Review work", async ({
+    page,
+    request,
+  }) => {
+    const company = await seedCompany(request, `E2E-CmdViewer-Work-${Date.now()}`);
+    const team = await jsonOrThrow<{ currentUser: { userId: string } }>(
+      await request.get(`/api/companies/${company.id}/team`),
+      "get Commander team",
+    );
+    const founderId = team.currentUser.userId;
+
+    await jsonOrThrow(
+      await request.patch(`/api/companies/${company.id}/team/users/${founderId}/profile`, {
+        data: { displayName: "E2E Commander", title: "Founder", timezone: "UTC" },
+      }),
+      "name Commander",
+    );
+    const deliveryLead = await jsonOrThrow<{ userId: string }>(
+      await request.post(`/api/companies/${company.id}/team/members`, {
+        data: {
+          name: "E2E Delivery Lead",
+          email: `commander-lead-${Date.now()}@example.com`,
+          role: "team_member",
+          parentType: "user",
+          parentId: founderId,
+        },
+      }),
+      "create reporting human",
+    );
+    const managedAgent = await jsonOrThrow<{ id: string }>(
+      await request.post(`/api/companies/${company.id}/agents`, {
+        data: {
+          name: "E2E Managed Agent",
+          parentType: "user",
+          parentId: deliveryLead.userId,
+        },
+      }),
+      "create reporting agent",
+    );
+
+    await jsonOrThrow(
+      await request.post(`/api/companies/${company.id}/issues`, {
+        data: {
+          title: "E2E Commander mine task",
+          status: "todo",
+          priority: "high",
+          responsibleUserId: founderId,
+        },
+      }),
+      "create Mine task",
+    );
+    await jsonOrThrow(
+      await request.post(`/api/companies/${company.id}/issues`, {
+        data: {
+          title: "E2E managed human task",
+          status: "in_progress",
+          priority: "medium",
+          assigneeUserId: deliveryLead.userId,
+          responsibleUserId: deliveryLead.userId,
+        },
+      }),
+      "create managed human task",
+    );
+    await jsonOrThrow(
+      await request.post(`/api/companies/${company.id}/issues`, {
+        data: {
+          title: "E2E managed agent task",
+          status: "blocked",
+          priority: "critical",
+          assigneeAgentId: managedAgent.id,
+          responsibleUserId: deliveryLead.userId,
+        },
+      }),
+      "create managed agent task",
+    );
+    await jsonOrThrow(
+      await request.post(`/api/companies/${company.id}/issues`, {
+        data: {
+          title: "E2E explicit review task",
+          status: "in_review",
+          priority: "high",
+          responsibleUserId: deliveryLead.userId,
+          reviewerUserId: founderId,
+        },
+      }),
+      "create explicit review task",
+    );
+
+    await page.goto(`/${company.issuePrefix}/commander`);
+    const expandCockpit = page.getByRole("button", { name: "Expand cockpit" });
+    if ((await expandCockpit.count()) === 1) await expandCockpit.click();
+
+    const activeWork = page.getByTestId("cockpit-card-my-tasks");
+    await expect(activeWork.getByText("Mine", { exact: true })).toBeVisible({ timeout: 15_000 });
+    await expect(activeWork.getByText("E2E Commander mine task")).toBeVisible();
+    await expect(activeWork.getByText("Managed", { exact: true })).toBeVisible();
+    await expect(activeWork.getByText("E2E managed human task")).toBeVisible();
+    await expect(activeWork.getByText("Managed: E2E Delivery Lead")).toBeVisible();
+    await expect(activeWork.getByText("E2E managed agent task")).toBeVisible();
+    await expect(activeWork.getByText("Managed: E2E Managed Agent")).toBeVisible();
+
+    const awaitingReview = page.getByTestId("cockpit-card-review");
+    await expect(awaitingReview.getByText("E2E explicit review task")).toBeVisible();
+    await expect(awaitingReview.getByText("Your review")).toBeVisible();
+
+    await activeWork.getByRole("button", { name: /E2E managed agent task/ }).click();
+    await expect(page).toHaveURL(new RegExp(`/${company.issuePrefix}/commander$`));
+    await expect(
+      page.locator('[data-slot="sheet-content"]').getByRole("heading", {
+        name: "E2E managed agent task",
+        exact: true,
+      }),
+    ).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByTestId("commander-viewer-panel")).toHaveCount(0);
+  });
+
+  test("cockpit discussion rows open a dedicated work pane without Commander viewer tabs", async ({
+    page,
+    request,
+  }) => {
+    const company = await seedCompany(request, `E2E-CmdViewer-Cockpit-${Date.now()}`);
+
+    const discussionTitle = "Commander cockpit e2e thread";
+    const discussionRes = await request.post(`/api/companies/${company.id}/discussions`, {
+      data: {
+        title: discussionTitle,
+        entry: {
+          inputType: "paste",
+          rawContent: "This seeded discussion should open inside the Commander viewer.",
+        },
+      },
+    });
+    expect(discussionRes.ok()).toBe(true);
+    const discussion = (await discussionRes.json()) as {
+      id: string;
+      entry?: { id: string } | null;
+    };
+    expect(discussion.entry?.id).toBeTruthy();
+    const reprocessRes = await request.post(
+      `/api/companies/${company.id}/discussions/${discussion.id}/entries/${discussion.entry!.id}/reprocess`,
+    );
+    expect(reprocessRes.ok()).toBe(true);
+
+    await page.goto(`/${company.issuePrefix}/commander`);
+    await expect(page.getByTestId("commander-open-preview")).toBeVisible({
+      timeout: 15_000,
+    });
+
+    const expandCockpit = page.getByRole("button", { name: "Expand cockpit" });
+    if ((await expandCockpit.count()) === 1) {
+      await expandCockpit.click();
+    }
+
+    const discussionsCard = page.getByTestId("cockpit-card-discussions");
+    await expect(discussionsCard.getByText(discussionTitle)).toBeVisible({
+      timeout: 15_000,
+    });
+
+    const discussionRow = discussionsCard.getByText(discussionTitle).locator("xpath=ancestor::li[1]");
+    await expect(discussionRow).toHaveAttribute("draggable", "true");
+    await expect(discussionRow).toHaveClass(/cursor-grab/);
+
+    await discussionsCard.getByRole("button", { name: discussionTitle }).click();
+
+    await expect(page).toHaveURL(new RegExp(`/${company.issuePrefix}/commander$`));
+    const discussionPane = page.getByTestId("commander-discussion-pane");
+    await expect(discussionPane).toBeVisible({ timeout: 15_000 });
+    await expect(discussionPane.getByTestId("thread-detail")).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(
+      discussionPane.getByRole("heading", { name: discussionTitle }).first(),
+    ).toBeVisible({ timeout: 15_000 });
+    await expect(discussionPane.getByText("This seeded discussion should open inside the Commander viewer.")).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(discussionPane.getByRole("tab", { name: "Thread" })).toBeVisible();
+    await expect(discussionPane.getByRole("tab", { name: "Scope" })).toBeVisible();
+    await expect(discussionPane.getByRole("tab", { name: "Branches" })).toBeVisible();
+    await expect(page.getByTestId("commander-viewer-panel")).toHaveCount(0);
+
+    await discussionPane.getByRole("button", { name: `Close ${discussionTitle}` }).click();
+    await expect(discussionPane).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Collapse cockpit" })).toBeVisible();
+  });
+
+  test("tablet: cockpit rail opens the full cockpit as a sheet", async ({
+    page,
+    request,
+  }) => {
+    await page.setViewportSize({ width: 900, height: 800 });
+    const company = await seedCompany(request, `E2E-CmdViewer-Tablet-${Date.now()}`);
+    const taskTitle = "E2E tablet Commander task";
+    const taskRes = await request.post(`/api/companies/${company.id}/issues`, {
+      data: { title: taskTitle, status: "todo", priority: "high" },
+    });
+    expect(taskRes.ok()).toBe(true);
+
+    await page.goto(`/${company.issuePrefix}/commander`);
+    const expandCockpit = page.getByRole("button", { name: "Expand cockpit" });
+    await expect(expandCockpit).toBeVisible({ timeout: 15_000 });
+    await expandCockpit.click();
+
+    const cockpitSheet = page.getByRole("dialog", { name: "Cockpit" });
+    await expect(cockpitSheet).toBeVisible();
+    await expect(cockpitSheet.getByRole("button", { name: /Active work/ })).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(cockpitSheet.getByText(taskTitle)).toBeVisible();
+
+    await cockpitSheet.getByRole("button", { name: "Collapse cockpit" }).click();
+    await expect(cockpitSheet).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Expand cockpit" })).toBeVisible();
+  });
+
+  test("cockpit inbox rows open actionable Hub detail without navigating", async ({
+    page,
+    request,
+  }) => {
+    const company = await seedCompany(request, `E2E-CmdViewer-Inbox-${Date.now()}`);
+    const inboxTitle = "Commander run completed";
+    const inboxSummary = "The launch validation run completed successfully.";
+    await seedHubItem({
+      companyId: company.id,
+      semanticType: "run_complete",
+      sourceType: "heartbeat_run",
+      sourceId: crypto.randomUUID(),
+      title: inboxTitle,
+      summary: inboxSummary,
+      priority: "normal",
+    });
+
+    await page.goto(`/${company.issuePrefix}/commander`);
+    const expandCockpit = page.getByRole("button", { name: "Expand cockpit" });
+    if ((await expandCockpit.count()) === 1) {
+      await expandCockpit.click();
+    }
+
+    const inboxCard = page.getByTestId("cockpit-card-inbox");
+    await expect(inboxCard.getByRole("button", { name: inboxTitle })).toBeVisible({
+      timeout: 15_000,
+    });
+    await inboxCard.getByRole("button", { name: inboxTitle }).click();
+
+    const panel = page.getByTestId("commander-viewer-panel");
+    await expect(page).toHaveURL(new RegExp(`/${company.issuePrefix}/commander$`));
+    await expect(panel.getByTestId("commander-inbox-ref-body")).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(panel.getByText(inboxSummary)).toBeVisible();
+    await expect(panel.getByRole("button", { name: "Dismiss" })).toBeVisible();
+    await expect(panel.getByRole("button", { name: "Snooze" })).toBeVisible();
+
+    await panel.getByRole("button", { name: "Dismiss" }).click();
+    await expect(panel.getByRole("button", { name: "Undo dismiss" })).toBeVisible();
   });
 
   test("mobile: pill badges on created ref without auto-opening the sheet; tap opens viewer tabs", async ({

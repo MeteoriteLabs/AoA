@@ -1,4 +1,4 @@
-import type { ProjectStatus, ProjectType } from "../constants.js";
+import type { AgentCompletionPolicy, ProjectStatus, ProjectType } from "../constants.js";
 import type { ProjectExecutionWorkspacePolicy } from "./workspace-runtime.js";
 
 export interface ProjectGoalRef {
@@ -37,6 +37,8 @@ export interface Project {
   color: string | null;
   functionType: string | null;
   executionWorkspacePolicy: ProjectExecutionWorkspacePolicy | null;
+  agentCompletionPolicyDefault?: AgentCompletionPolicy | null;
+  humanQuestionSlaHours?: number | null;
   workspaces: ProjectWorkspace[];
   primaryWorkspace: ProjectWorkspace | null;
   archivedAt: Date | null;

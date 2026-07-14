@@ -25,6 +25,10 @@ import {
   teamMembers,
   teamCoordinations,
   teams,
+  discussions,
+  executionWorkspaces,
+  internalAgentConfig,
+  workQuestions,
 } from "@armyofagents/db";
 import { resolveEnvironmentRuntimeConfig } from "./environment-resolver.js";
 import { environmentRunOrchestrator, type EnvironmentAcquisitionResult } from "./environment-run-orchestrator.js";
@@ -32,6 +36,11 @@ import { environmentRuntimeService } from "./environment-runtime.js";
 import { conflict, notFound, HttpError } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent, threadWorkingAgents, broadcastThreadPresence } from "./live-events.js";
+import {
+  buildCurrentTaskMarkdown,
+  buildWorkQuestionContinuationMarkdown,
+} from "./heartbeat-task-context.js";
+import { bindHeartbeatWorkQuestionContinuation } from "./work-question-continuation-terminal.js";
 import { postCrewFailureCard } from "./crew-failure-card.js";
 import { relayCrewResult } from "./crew-result-relay.js";
 import { buildTerminalRunHubEmit, emitHubItem } from "./hub-source-producers.js";
@@ -76,6 +85,12 @@ import {
   RuntimeDecisionCancelledError,
   type AgentRuntimeDecisionRow,
 } from "./agent-runtime-decisions.js";
+import { resolveBridgeEntrypoint } from "./internal-agent/aoa-agents/bridge-path.js";
+import {
+  ORG_HEARTBEAT_TOOL_ALLOWLIST,
+  prepareHeartbeatMcpDelivery,
+  resolveHeartbeatEffectiveAutonomy,
+} from "./heartbeat-mcp.js";
 
 export {
   cancelCrewRunsForAgent,
@@ -124,6 +139,7 @@ import {
   findActiveThreadWorkspace,
   resolveThreadDeliverableWorkspace,
 } from "./heartbeat-thread-workspace.js";
+import { finalizeHeartbeatWorkQuestionContinuation } from "./work-question-continuation-terminal.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import {
   hasSessionCompactionThresholds,
@@ -239,7 +255,14 @@ const LEGACY_REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 // wake payload to suppress the redundant /issues/{id}/checkout agent call.
 const AOA_HARNESS_CHECKOUT_KEY = "aoaHarnessCheckedOut";
 
-export function classifyCompletedRunLiveness(input: { outcome: string }) {
+export function classifyCompletedRunLiveness(input: { outcome: string; waitingQuestionId?: string | null }) {
+  if (input.waitingQuestionId) {
+    return {
+      livenessState: "waiting_on_human",
+      livenessReason: "work_question",
+      nextAction: `work_question:${input.waitingQuestionId}`,
+    };
+  }
   if (input.outcome === "succeeded") {
     return { livenessState: "advanced", livenessReason: "adapter_succeeded" };
   }
@@ -315,8 +338,30 @@ type HeartbeatRuntimeDecisionBrokerInput = {
   appendRunEvent: (event: HeartbeatRuntimeDecisionEvent) => Promise<void>;
   markRunWaiting: (decision: AgentRuntimeDecisionRow) => Promise<void>;
   clearRunWaiting: (decision: AgentRuntimeDecisionRow) => Promise<void>;
+  recordWait?: (kind: "permission" | "work_question", durationMs: number) => Promise<void>;
   pollIntervalMs?: number;
 };
+
+export function calculateRunAccounting(input: {
+  startedAt: Date | string | null;
+  finishedAt: Date | string;
+  humanQuestionWaitMs: number;
+  runtimePermissionWaitMs: number;
+  humanWaitOccurredOutsideRun: boolean;
+}) {
+  const startedMs = input.startedAt ? new Date(input.startedAt).getTime() : new Date(input.finishedAt).getTime();
+  const finishedMs = new Date(input.finishedAt).getTime();
+  const runWallClockMs = Math.max(0, finishedMs - startedMs);
+  const humanQuestionWaitMs = Math.max(0, Math.trunc(input.humanQuestionWaitMs));
+  const runtimePermissionWaitMs = Math.max(0, Math.trunc(input.runtimePermissionWaitMs));
+  const inlineHumanWaitMs = input.humanWaitOccurredOutsideRun ? 0 : humanQuestionWaitMs;
+  return {
+    activeExecutionMs: Math.max(0, runWallClockMs - runtimePermissionWaitMs - inlineHumanWaitMs),
+    humanQuestionWaitMs,
+    runtimePermissionWaitMs,
+    totalWallClockMs: runWallClockMs + (input.humanWaitOccurredOutsideRun ? humanQuestionWaitMs : 0),
+  };
+}
 
 function normalizeRuntimeDecisionExpiresAt(value: Date | string | null | undefined): Date | null {
   if (value == null) return null;
@@ -374,11 +419,17 @@ export function createHeartbeatRuntimeDecisionBroker(
   }
 
   async function waitAndRelay(decision: AgentRuntimeDecisionRow) {
-    const answered = await input.runtimeDecisions.waitForAnswer({
-      companyId: input.run.companyId,
-      decisionId: decision.id,
-      pollIntervalMs: input.pollIntervalMs,
-    });
+    const waitStartedAt = Date.now();
+    let answered: AgentRuntimeDecisionRow;
+    try {
+      answered = await input.runtimeDecisions.waitForAnswer({
+        companyId: input.run.companyId,
+        decisionId: decision.id,
+        pollIntervalMs: input.pollIntervalMs,
+      });
+    } finally {
+      await input.recordWait?.(decision.kind as "permission" | "work_question", Date.now() - waitStartedAt);
+    }
     await input.appendRunEvent({
       eventType: "runtime_decision.prompt_answered",
       stream: "system",
@@ -450,13 +501,14 @@ export function createHeartbeatRuntimeDecisionBroker(
       return {
         kind: "permission",
         decisionId: created.id,
-        decision: relayed.decision as AdapterRuntimePermissionDecision,
+        decision: (relayed.decision === "allow_run" ? "allow_always" : relayed.decision) as AdapterRuntimePermissionDecision,
         sourceRevision: relayed.sourceRevision,
       };
     },
     async requestPermissionBounded(prompt, timeoutMs) {
       const created = await createPrompt("permission", prompt);
       let answered: AgentRuntimeDecisionRow;
+      const waitStartedAt = Date.now();
       try {
         answered = await input.runtimeDecisions.waitForAnswer({
           companyId: input.run.companyId,
@@ -480,6 +532,8 @@ export function createHeartbeatRuntimeDecisionBroker(
         }
         // RuntimeDecisionCancelledError (and any other error) → propagate.
         throw error;
+      } finally {
+        await input.recordWait?.("permission", Date.now() - waitStartedAt);
       }
 
       await input.appendRunEvent({
@@ -515,7 +569,7 @@ export function createHeartbeatRuntimeDecisionBroker(
       return {
         kind: "permission",
         decisionId: created.id,
-        decision: relayed.decision as AdapterRuntimePermissionDecision,
+        decision: (relayed.decision === "allow_run" ? "allow_always" : relayed.decision) as AdapterRuntimePermissionDecision,
         sourceRevision: relayed.sourceRevision,
       };
     },
@@ -1771,6 +1825,19 @@ export function heartbeatService(db: Db) {
     }
 
     if (updated) {
+      if (isTerminalRunStatus(updated.status)) {
+        try {
+          await finalizeHeartbeatWorkQuestionContinuation(db, {
+            companyId: updated.companyId,
+            runId: updated.id,
+            status: updated.status as "succeeded" | "failed" | "cancelled" | "timed_out",
+            error: updated.error ?? null,
+          });
+        } catch (err) {
+          logger.warn({ err, runId: updated.id }, "work-question continuation terminal callback failed");
+        }
+      }
+
       publishLiveEvent({
         companyId: updated.companyId,
         type: "heartbeat.run.status",
@@ -1787,8 +1854,10 @@ export function heartbeatService(db: Db) {
         },
       });
 
-      // BUG-5: event-driven run_complete / run_failed hub items at the single
-      // terminal-status chokepoint. Failures route through the SAME builder as
+      // Event-driven failed/timed-out hub items at the single terminal-status
+      // chokepoint. Successful exits stay in run history; their questions,
+      // reviews, and task transitions already have durable attention surfaces.
+      // Failures route through the SAME builder as
       // the legacy sidebar-badges scan (byte-identical rows → the change-aware
       // emit dedupes instead of ping-ponging). Best-effort try/catch mirrors
       // relayCrewResult: a hub failure (e.g. resolveOwner "no human owner")
@@ -1830,6 +1899,21 @@ export function heartbeatService(db: Db) {
       .update(agentWakeupRequests)
       .set({ status, ...patch, updatedAt: new Date() })
       .where(eq(agentWakeupRequests.id, wakeupRequestId));
+  }
+
+  async function resolveTerminalRunAccounting(
+    run: typeof heartbeatRuns.$inferSelect,
+    finishedAt: Date,
+  ) {
+    const current = await getRun(run.id) ?? run;
+    const context = parseObject(current.contextSnapshot);
+    return calculateRunAccounting({
+      startedAt: current.startedAt,
+      finishedAt,
+      humanQuestionWaitMs: current.humanQuestionWaitMs,
+      runtimePermissionWaitMs: current.runtimePermissionWaitMs,
+      humanWaitOccurredOutsideRun: context.source === "work_question_continuation",
+    });
   }
 
   async function cancelRuntimeDecisionPromptsForRun(
@@ -2321,6 +2405,9 @@ export function heartbeatService(db: Db) {
         error: "Process lost -- server may have restarted",
       });
       await cancelRuntimeDecisionPromptsForRun(run, "run failed");
+      await executionWorkspacesSvc.releaseWorkspaceRunsForRun(run.id);
+      await releaseRuntimeServicesForRun(run.id).catch(() => undefined);
+      await environmentRuntimeService(db).releaseRunLeases(run.id).catch(() => undefined);
       const updatedRun = await getRun(run.id);
       if (updatedRun) {
         await appendRunEvent(updatedRun, 1, {
@@ -2338,6 +2425,25 @@ export function heartbeatService(db: Db) {
       // to delete. Deregistration is owned by spawnTrackedChild's close/error
       // listeners (R1 zombie-run teardown).
       reaped.push(run.id);
+    }
+
+    // Heal leases left by a previous server version or a crash that happened
+    // after the run became terminal but before its finally block completed.
+    // releaseWorkspaceRunsForRun is ownership-fenced, so a reclaimed lease is
+    // never cleared by this late cleanup.
+    const lockedWorkspaceOwners = await db
+      .select({ activeRunId: executionWorkspaces.activeRunId })
+      .from(executionWorkspaces)
+      .where(sql`${executionWorkspaces.activeRunId} IS NOT NULL`);
+    for (const ownerRunId of new Set(
+      lockedWorkspaceOwners
+        .map((row) => row.activeRunId)
+        .filter((value): value is string => Boolean(value)),
+    )) {
+      const owner = await getRun(ownerRunId);
+      if (!owner || isTerminalRunStatus(owner.status)) {
+        await executionWorkspacesSvc.releaseWorkspaceRunsForRun(ownerRunId);
+      }
     }
 
     if (reaped.length > 0) {
@@ -2537,8 +2643,40 @@ export function heartbeatService(db: Db) {
       if (claimedRuns.length === 0) return [];
 
       for (const claimedRun of claimedRuns) {
-        void executeRun(claimedRun.id).catch((err) => {
+        void executeRun(claimedRun.id).catch(async (err) => {
           logger.error({ err, runId: claimedRun.id }, "queued heartbeat execution failed");
+          const current = await getRun(claimedRun.id);
+          if (!current) return;
+
+          await executionWorkspacesSvc.releaseWorkspaceRunsForRun(current.id);
+          await releaseRuntimeServicesForRun(current.id).catch(() => undefined);
+          await environmentRuntimeService(db).releaseRunLeases(current.id).catch(() => undefined);
+
+          if (current.status === "queued" || current.status === "running") {
+            const message = err instanceof Error ? err.message : String(err);
+            const failed = await setRunStatus(current.id, "failed", {
+              error: message,
+              errorCode: "pre_spawn_failed",
+              finishedAt: new Date(),
+            });
+            await setWakeupStatus(current.wakeupRequestId, "failed", {
+              finishedAt: new Date(),
+              error: message,
+            });
+            await cancelRuntimeDecisionPromptsForRun(current, "run failed");
+            if (failed) {
+              await appendRunEvent(failed, 1, {
+                eventType: "lifecycle",
+                stream: "system",
+                level: "error",
+                message,
+              });
+              await releaseIssueExecutionAndPromote(failed);
+            }
+            await finalizeAgentStatus(current.agentId, "failed");
+          }
+
+          await startNextQueuedRunForAgent(current.agentId);
         });
       }
       return claimedRuns;
@@ -2762,15 +2900,9 @@ export function heartbeatService(db: Db) {
       : null;
     if (issueContext) {
       const currentTaskMarkdown = [
-        "## Current Task",
-        `- Identifier: ${issueContext.identifier ?? issueContext.id}`,
-        `- Title: ${issueContext.title}`,
-        `- Status: ${issueContext.status}`,
-        `- Priority: ${issueContext.priority}`,
-        issueContext.description ? "" : null,
-        issueContext.description ? "### Description" : null,
-        issueContext.description ?? null,
-      ].filter((line): line is string => line !== null).join("\n");
+        buildCurrentTaskMarkdown(issueContext),
+        buildWorkQuestionContinuationMarkdown(context.continuationEnvelope),
+      ].filter((section): section is string => Boolean(section)).join("\n\n");
       context.currentTask = {
         id: issueContext.id,
         identifier: issueContext.identifier,
@@ -4006,6 +4138,59 @@ export function heartbeatService(db: Db) {
       }
       runScopedConfig = resolveRunScopedModel(agent.adapterType, runScopedConfig, providerStatus, { inheritedEnvOpenAiKey: process.env.OPENAI_API_KEY ?? null });
 
+      // Organization-agent heartbeat runs use the same provider-neutral AoA
+      // MCP bridge as crew runs. Role and per-tool service checks remain the
+      // authority boundary; capabilities only enable the bridge categories.
+      const [companyAutonomyRow, discussionAutonomyRow] = await Promise.all([
+        db
+          .select({ autonomyLevel: internalAgentConfig.autonomyLevel })
+          .from(internalAgentConfig)
+          .where(eq(internalAgentConfig.companyId, agent.companyId))
+          .limit(1)
+          .then((rows) => rows[0] ?? null),
+        issueContext?.sourceDiscussionId
+          ? db
+            .select({ autonomyLevel: discussions.autonomyLevel })
+            .from(discussions)
+            .where(and(
+              eq(discussions.id, issueContext.sourceDiscussionId),
+              eq(discussions.companyId, agent.companyId),
+            ))
+            .limit(1)
+            .then((rows) => rows[0] ?? null)
+          : Promise.resolve(null),
+      ]);
+      const effectiveAutonomy = resolveHeartbeatEffectiveAutonomy({
+        companyAutonomyLevel: companyAutonomyRow?.autonomyLevel,
+        discussionAutonomyLevel: discussionAutonomyRow?.autonomyLevel,
+      });
+      const heartbeatMcpParams = {
+        companyId: agent.companyId,
+        userId: agent.id,
+        userRole: "team_member",
+        enabledCapabilities: [
+          "discussion_processing",
+          "system_actions",
+          "memory_management",
+        ],
+        bridgeEntrypoint: resolveBridgeEntrypoint(),
+        agentKind: agent.kind,
+        toolAllowlist: [...ORG_HEARTBEAT_TOOL_ALLOWLIST],
+        actorType: "agent",
+        agentId: agent.id,
+        runId: run.id,
+        humanQuestionCapabilities: adapter.humanQuestionCapabilities,
+        effectiveAutonomy,
+      } as const;
+      const heartbeatMcpDelivery = await prepareHeartbeatMcpDelivery({
+        adapterType: agent.adapterType,
+        agentId: agent.id,
+        runId: run.id,
+        config: runScopedConfig,
+        params: heartbeatMcpParams,
+      });
+      runScopedConfig = heartbeatMcpDelivery.config;
+
       // ── onSpawn: persist PID/PGID/startedAt immediately after fork ──────
       const onSpawn = (pid: number | null, pgid: number | null, startedAt: Date) => {
         // pgid is now reliably populated on POSIX (= child.pid for detached:true spawns).
@@ -4183,6 +4368,20 @@ export function heartbeatService(db: Db) {
             nextAction: null,
           });
         },
+        recordWait: async (kind, durationMs) => {
+          const boundedDurationMs = Math.max(0, Math.trunc(durationMs));
+          if (boundedDurationMs === 0) return;
+          await db.update(heartbeatRuns).set(kind === "permission"
+            ? {
+                runtimePermissionWaitMs: sql`${heartbeatRuns.runtimePermissionWaitMs} + ${boundedDurationMs}`,
+                updatedAt: new Date(),
+              }
+            : {
+                humanQuestionWaitMs: sql`${heartbeatRuns.humanQuestionWaitMs} + ${boundedDurationMs}`,
+                updatedAt: new Date(),
+              })
+            .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "running")));
+        },
       });
 
       // ── W5b: per-agent runtime-decision routing bridge ───────────────────
@@ -4232,10 +4431,12 @@ export function heartbeatService(db: Db) {
           context,
           executionTarget,
           runtimeCommandSpec,
+          mcpBridge: heartbeatMcpDelivery.mcpBridge,
           onLog: onLogWithOutput,
           onMeta: onAdapterMeta,
           authToken: authToken ?? undefined,
           runtimeDecisionBroker,
+          humanQuestionCapabilities: adapter.humanQuestionCapabilities,
           // Non-secret plain boolean — safe in logged meta. codex_local reads
           // this to route its in-process app-server approval bridge; claude_local
           // additionally receives the HTTP hook machinery below.
@@ -4259,6 +4460,7 @@ export function heartbeatService(db: Db) {
         if (usesHttpHookBridge && runtimeHookToken != null) {
           deregisterRuntimeHook(runtimeHookToken);
         }
+        await heartbeatMcpDelivery.cleanup();
       }
 
       await livePreviewDetection.flush();
@@ -4395,9 +4597,28 @@ export function heartbeatService(db: Db) {
         }),
       );
 
-      const liveness = classifyCompletedRunLiveness({ outcome });
+      const waitingQuestion = await db
+        .select({ id: workQuestions.id })
+        .from(workQuestions)
+        .where(and(
+          eq(workQuestions.companyId, run.companyId),
+          eq(workQuestions.originatingRunKind, "heartbeat"),
+          eq(workQuestions.originatingRunId, run.id),
+          eq(workQuestions.status, "open"),
+          eq(workQuestions.blocking, true),
+        ))
+        .orderBy(desc(workQuestions.createdAt))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      const liveness = classifyCompletedRunLiveness({
+        outcome,
+        waitingQuestionId: waitingQuestion?.id,
+      });
+      const finishedAt = new Date();
+      const runAccounting = await resolveTerminalRunAccounting(run, finishedAt);
       const completedRun = await setRunStatus(run.id, status, {
-        finishedAt: new Date(),
+        finishedAt,
+        ...runAccounting,
         livenessState: liveness.livenessState,
         livenessReason: liveness.livenessReason,
         error: finalErrorMessage,
@@ -4422,7 +4643,7 @@ export function heartbeatService(db: Db) {
       }
 
       await setWakeupStatus(run.wakeupRequestId, outcome === "succeeded" ? "completed" : status, {
-        finishedAt: new Date(),
+        finishedAt,
         error: adapterResult.errorMessage ?? null,
       });
       await cancelRuntimeDecisionPromptsForRun(run, `run ${status}`);
@@ -4609,10 +4830,13 @@ export function heartbeatService(db: Db) {
         }
       }
 
+      const finishedAt = new Date();
+      const runAccounting = await resolveTerminalRunAccounting(run, finishedAt);
       const failedRun = await setRunStatus(run.id, terminalStatus, {
         error: message,
         errorCode: runtimeDecisionCancelled ? "cancelled" : "adapter_failed",
-        finishedAt: new Date(),
+        finishedAt,
+        ...runAccounting,
         stdoutExcerpt: sanitizeForDb(stdoutExcerpt),
         stderrExcerpt: sanitizeForDb(stderrExcerpt),
         logBytes: logSummary?.bytes,
@@ -4627,7 +4851,7 @@ export function heartbeatService(db: Db) {
         return;
       }
       await setWakeupStatus(run.wakeupRequestId, terminalStatus, {
-        finishedAt: new Date(),
+        finishedAt,
         error: message,
       });
       await cancelRuntimeDecisionPromptsForRun(failedRun, `run ${terminalStatus}`);
@@ -4843,6 +5067,7 @@ export function heartbeatService(db: Db) {
             wakeupRequestId: deferred.id,
             contextSnapshot: promotedContextSnapshot,
             sessionIdBefore: sessionBefore,
+            humanQuestionWaitMs: readNonNegativeInteger(promotedContextSnapshot.humanQuestionWaitMs),
           })
           .returning()
           .then((rows) => rows[0]);
@@ -4859,6 +5084,14 @@ export function heartbeatService(db: Db) {
             updatedAt: now,
           })
           .where(eq(agentWakeupRequests.id, deferred.id));
+
+        if (deferred.reason === "work_question_continuation" && deferred.idempotencyKey) {
+          await bindHeartbeatWorkQuestionContinuation(tx as unknown as Db, {
+            companyId: issue.companyId,
+            runId: newRun.id,
+            idempotencyKey: deferred.idempotencyKey,
+          });
+        }
 
         await tx
           .update(issues)
@@ -4909,6 +5142,9 @@ export function heartbeatService(db: Db) {
       triggerDetail,
       payload,
     });
+    const inheritedHumanQuestionWaitMs = readNonNegativeInteger(
+      enrichedContextSnapshot.humanQuestionWaitMs,
+    );
     const issueId = readNonEmptyString(enrichedContextSnapshot.issueId) ?? issueIdFromPayload;
 
     const agent = await getAgent(agentId);
@@ -5001,6 +5237,27 @@ export function heartbeatService(db: Db) {
             finishedAt: new Date(),
           });
           return { kind: "skipped" as const };
+        }
+
+        if (reason === "work_question_continuation") {
+          const invalidation = classifyScheduledRetryGate({ issue, agentId });
+          if (invalidation) {
+            await tx.insert(agentWakeupRequests).values({
+              companyId: agent.companyId,
+              agentId,
+              source,
+              triggerDetail,
+              reason,
+              payload,
+              status: "skipped",
+              requestedByActorType: opts.requestedByActorType ?? null,
+              requestedByActorId: opts.requestedByActorId ?? null,
+              idempotencyKey: opts.idempotencyKey ?? null,
+              error: invalidation,
+              finishedAt: new Date(),
+            });
+            return { kind: "skipped" as const };
+          }
         }
 
         let activeExecutionRun = issue.executionRunId
@@ -5123,12 +5380,12 @@ export function heartbeatService(db: Db) {
             normalizeAgentNameKey(executionAgent?.name);
           const isSameExecutionAgent =
             Boolean(executionAgentNameKey) && executionAgentNameKey === agentNameKey;
-          const shouldQueueFollowupForCommentWake =
-            Boolean(wakeCommentId) &&
+          const shouldQueueFollowup =
+            (Boolean(wakeCommentId) || reason === "work_question_continuation") &&
             activeExecutionRun.status === "running" &&
             isSameExecutionAgent;
 
-          if (isSameExecutionAgent && !shouldQueueFollowupForCommentWake) {
+          if (isSameExecutionAgent && !shouldQueueFollowup) {
             const mergedContextSnapshot = mergeCoalescedContextSnapshot(
               activeExecutionRun.contextSnapshot,
               enrichedContextSnapshot,
@@ -5177,6 +5434,9 @@ export function heartbeatService(db: Db) {
                 eq(agentWakeupRequests.agentId, agentId),
                 eq(agentWakeupRequests.status, "deferred_issue_execution"),
                 sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issue.id}`,
+                ...(reason === "work_question_continuation" && opts.idempotencyKey
+                  ? [eq(agentWakeupRequests.idempotencyKey, opts.idempotencyKey)]
+                  : []),
               ),
             )
             .orderBy(asc(agentWakeupRequests.requestedAt))
@@ -5219,7 +5479,9 @@ export function heartbeatService(db: Db) {
             agentId,
             source,
             triggerDetail,
-            reason: "issue_execution_deferred",
+            reason: reason === "work_question_continuation"
+              ? reason
+              : "issue_execution_deferred",
             payload: deferredPayload,
             status: "deferred_issue_execution",
             requestedByActorType: opts.requestedByActorType ?? null,
@@ -5258,6 +5520,7 @@ export function heartbeatService(db: Db) {
             wakeupRequestId: wakeupRequest.id,
             contextSnapshot: enrichedContextSnapshot,
             sessionIdBefore: sessionBefore,
+            humanQuestionWaitMs: inheritedHumanQuestionWaitMs,
           })
           .returning()
           .then((rows) => rows[0]);
@@ -5315,12 +5578,14 @@ export function heartbeatService(db: Db) {
     const sameScopeRunningRun = activeRuns.find(
       (candidate) => candidate.status === "running" && isSameTaskScope(runTaskKey(candidate), taskKey),
     );
-    const shouldQueueFollowupForCommentWake =
-      Boolean(wakeCommentId) && Boolean(sameScopeRunningRun) && !sameScopeQueuedRun;
+    const shouldQueueFollowup =
+      (Boolean(wakeCommentId) || reason === "work_question_continuation") &&
+      Boolean(sameScopeRunningRun) &&
+      !sameScopeQueuedRun;
 
     const coalescedTargetRun =
       sameScopeQueuedRun ??
-      (shouldQueueFollowupForCommentWake ? null : sameScopeRunningRun ?? null);
+      (shouldQueueFollowup ? null : sameScopeRunningRun ?? null);
 
     if (coalescedTargetRun) {
       const mergedContextSnapshot = mergeCoalescedContextSnapshot(
@@ -5385,6 +5650,7 @@ export function heartbeatService(db: Db) {
         wakeupRequestId: wakeupRequest.id,
         contextSnapshot: enrichedContextSnapshot,
         sessionIdBefore: sessionBefore,
+        humanQuestionWaitMs: inheritedHumanQuestionWaitMs,
       })
       .returning()
       .then((rows) => rows[0]);

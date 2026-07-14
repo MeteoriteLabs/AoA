@@ -30,6 +30,8 @@ function runtimeTrustRuleSummary(rule: AgentRuntimeTrustRuleRow) {
   return {
     id: rule.id,
     agentId: rule.agentId,
+    runId: rule.runId,
+    grantScope: rule.grantScope,
     adapterType: rule.adapterType,
     toolName: rule.toolName,
     commandHashPrefix: rule.commandHash?.slice(0, 8) ?? null,

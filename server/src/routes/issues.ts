@@ -1,6 +1,7 @@
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
-import type { Db } from "@armyofagents/db";
+import { discussions, type Db } from "@armyofagents/db";
+import { and, eq } from "drizzle-orm";
 import {
   addIssueCommentSchema,
   createIssueAttachmentMetadataSchema,
@@ -24,6 +25,7 @@ import {
   projectService,
   routineService,
 } from "../services/index.js";
+
 import { logger } from "../middleware/logger.js";
 import { forbidden, HttpError, unauthorized, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
@@ -41,11 +43,21 @@ import {
 } from "../services/issue-context-bundles.js";
 import { assertCanOverrideTaskWorkspace } from "../services/workspace-authz.js";
 import { assertAgentInReviewReviewPath } from "../services/issue-agent-status-guard.js";
+import { assertRole } from "../middleware/rbac.js";
 
 // Re-exported from the shared guard module so existing import paths
 // (e.g. agent-in-review-guard.test.ts importing from "../routes/issues.js")
 // keep resolving after the move to server/src/services/.
 export { assertAgentInReviewReviewPath };
+
+export function normalizeIssueDateFields<T extends Record<string, unknown>>(fields: T): T {
+  if (!Object.prototype.hasOwnProperty.call(fields, "dueDate")) return fields;
+  const dueDate = fields.dueDate;
+  return {
+    ...fields,
+    dueDate: typeof dueDate === "string" ? new Date(dueDate) : dueDate,
+  };
+}
 
 function hasWorkspaceOverrideFields(body: Record<string, unknown>): boolean {
   return body.executionWorkspaceId !== undefined
@@ -834,10 +846,20 @@ export function issueRoutes(db: Db, storage: StorageService) {
     assertCompanyAccess(req, companyId);
     if (
       req.body.responsibleUserId !== undefined ||
+      req.body.reviewerUserId !== undefined ||
       req.body.assigneeUserId ||
       (req.body.assigneeAgentId && req.actor.type !== "agent")
     ) {
       await assertCanAssignTasks(req, companyId);
+    }
+    if (req.body.agentCompletionPolicyOverride !== undefined) {
+      if (req.actor.type !== "board") {
+        throw forbidden("Only human operators may override task completion policy");
+      }
+      await assertCanAssignTasks(req, companyId);
+    }
+    if (req.actor.type === "agent" && (req.body.acceptanceCriteria?.length ?? 0) > 0) {
+      throw forbidden("Agents cannot define their own task acceptance criteria");
     }
 
     // Validate FK references up-front so the client gets a typed 422 (with
@@ -845,7 +867,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
     // from a DB-level FK constraint failure.  Out-of-company hits are treated
     // as "not found" — leaking existence across tenants would be a bug.
     const fkLookups: Array<{
-      field: "assigneeAgentId" | "projectId" | "goalId" | "parentId" | "inheritExecutionWorkspaceFromIssueId";
+      field: "assigneeAgentId" | "projectId" | "goalId" | "parentId" | "inheritExecutionWorkspaceFromIssueId" | "sourceDiscussionId";
       id: string;
       label: string;
       fetch: () => Promise<{ companyId: string } | null>;
@@ -888,6 +910,20 @@ export function issueRoutes(db: Db, storage: StorageService) {
         id: req.body.inheritExecutionWorkspaceFromIssueId,
         label: "Workspace inheritance task",
         fetch: () => svc.getById(req.body.inheritExecutionWorkspaceFromIssueId),
+      });
+    }
+    if (req.body.sourceDiscussionId) {
+      fkLookups.push({
+        field: "sourceDiscussionId",
+        id: req.body.sourceDiscussionId,
+        label: "Source Discussion",
+        fetch: () => db.select({ companyId: discussions.companyId })
+          .from(discussions)
+          .where(and(
+            eq(discussions.id, req.body.sourceDiscussionId),
+            eq(discussions.companyId, companyId),
+          ))
+          .then((rows) => rows[0] ?? null),
       });
     }
     for (const check of fkLookups) {
@@ -952,12 +988,12 @@ export function issueRoutes(db: Db, storage: StorageService) {
       wakeSkippedReason = decision.wakeSkippedReason ?? null;
     }
 
-    const issue = await svc.create(companyId, {
+    const issue = await svc.create(companyId, normalizeIssueDateFields({
       ...req.body,
       createdByAgentId: actor.agentId,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
       responsibleFallbackUserId: actor.actorType === "user" ? actor.actorId : null,
-    });
+    }));
 
     await logActivity(db, {
       companyId,
@@ -1049,6 +1085,12 @@ export function issueRoutes(db: Db, storage: StorageService) {
     const responsibleWillChange =
       req.body.responsibleUserId !== undefined &&
       req.body.responsibleUserId !== existing.responsibleUserId;
+    const reviewerWillChange =
+      req.body.reviewerUserId !== undefined &&
+      req.body.reviewerUserId !== existing.reviewerUserId;
+    const completionPolicyWillChange =
+      req.body.agentCompletionPolicyOverride !== undefined &&
+      req.body.agentCompletionPolicyOverride !== existing.agentCompletionPolicyOverride;
 
     const isAgentReturningIssueToCreator =
       req.actor.type === "agent" &&
@@ -1059,14 +1101,42 @@ export function issueRoutes(db: Db, storage: StorageService) {
       !!existing.createdByUserId &&
       req.body.assigneeUserId === existing.createdByUserId;
 
-    if (assigneeWillChange || responsibleWillChange) {
-      if (!(isAgentReturningIssueToCreator && !responsibleWillChange)) {
+    if (assigneeWillChange || responsibleWillChange || reviewerWillChange) {
+      if (!(isAgentReturningIssueToCreator && !responsibleWillChange && !reviewerWillChange)) {
         await assertCanAssignTasks(req, existing.companyId);
       }
     }
+    if (completionPolicyWillChange) {
+      if (req.actor.type !== "board") {
+        throw forbidden("Only human operators may override task completion policy");
+      }
+      const executionStarted = existing.startedAt !== null
+        || ["in_progress", "in_review", "done", "cancelled"].includes(existing.status);
+      if (executionStarted) {
+        await assertRole(db, req, existing.companyId, "founder");
+      } else {
+        await assertCanAssignTasks(req, existing.companyId);
+      }
+    }
+    if (req.actor.type === "agent" && req.body.acceptanceCriteria !== undefined) {
+      throw forbidden("Agents cannot define their own task acceptance criteria");
+    }
     if (!(await assertAgentRunCheckoutOwnership(req, res, existing))) return;
 
-    const { comment: commentBody, hiddenAt: hiddenAtRaw, ...updateFields } = req.body;
+    const { comment: commentBody, hiddenAt: hiddenAtRaw, ...rawUpdateFields } = req.body;
+    const updateFields = normalizeIssueDateFields(rawUpdateFields);
+    const isRequestChangesTransition =
+      existing.status === "in_review" && updateFields.status === "in_progress";
+    const requestChangesFeedback = isRequestChangesTransition && typeof commentBody === "string"
+      ? commentBody.trim()
+      : null;
+    if (isRequestChangesTransition && !requestChangesFeedback) {
+      throw unprocessable("Requesting changes requires feedback", {
+        code: "review_feedback_required",
+        field: "comment",
+      });
+    }
+    const persistedCommentBody = requestChangesFeedback ?? commentBody;
     if (hiddenAtRaw !== undefined) {
       updateFields.hiddenAt = hiddenAtRaw ? new Date(hiddenAtRaw) : null;
     }
@@ -1077,19 +1147,35 @@ export function issueRoutes(db: Db, storage: StorageService) {
       });
     }
 
-    // Guard: prevent agents from self-marking tasks as in_review with no review path
-    await assertAgentInReviewReviewPath(
-      {
-        existing: { id: existing.id, status: existing.status },
-        updateFields,
-        actorType: (req.actor.type === "mcp" ? "board" : req.actor.type) as "agent" | "board" | "user" | "system",
-      },
-      db,
-    );
-
+    const actor = getActorInfo(req);
+    const updateActor = req.actor.type === "agent"
+      ? {
+        actorType: "agent" as const,
+        agentId: req.actor.agentId ?? null,
+        // Org-agent API keys are outside the crew Manual/Assist/Drive dial.
+        // Their task completion authority is governed by the task snapshot.
+        effectiveDial: 2,
+      }
+      : { actorType: req.actor.type === "board" ? "board" as const : "user" as const };
     let issue;
+    let comment = null;
     try {
-      issue = await svc.update(id, updateFields);
+      if (isRequestChangesTransition) {
+        const persisted = await db.transaction(async (txRaw) => {
+          const txSvc = issueService(txRaw as unknown as Db);
+          const updatedIssue = await txSvc.update(id, updateFields, updateActor);
+          if (!updatedIssue) return { issue: null, comment: null };
+          const feedbackComment = await txSvc.addComment(id, requestChangesFeedback!, {
+            agentId: actor.agentId ?? undefined,
+            userId: actor.actorType === "user" ? actor.actorId : undefined,
+          });
+          return { issue: updatedIssue, comment: feedbackComment };
+        });
+        issue = persisted.issue;
+        comment = persisted.comment;
+      } else {
+        issue = await svc.update(id, updateFields, updateActor);
+      }
     } catch (err) {
       if (err instanceof HttpError && err.status === 422) {
         logger.warn(
@@ -1136,7 +1222,6 @@ export function issueRoutes(db: Db, storage: StorageService) {
         }
       : {};
 
-    const actor = getActorInfo(req);
     await logActivity(db, {
       companyId: issue.companyId,
       actorType: actor.actorType,
@@ -1175,13 +1260,14 @@ export function issueRoutes(db: Db, storage: StorageService) {
         .catch((err) => logger.warn({ err, issueId: issue.id }, "onTaskCompleted memory lifecycle failed"));
     }
 
-    let comment = null;
-    if (commentBody) {
-      comment = await svc.addComment(id, commentBody, {
+    if (persistedCommentBody && !comment) {
+      comment = await svc.addComment(id, persistedCommentBody, {
         agentId: actor.agentId ?? undefined,
         userId: actor.actorType === "user" ? actor.actorId : undefined,
       });
+    }
 
+    if (comment) {
       await logActivity(db, {
         companyId: issue.companyId,
         actorType: actor.actorType,
@@ -1198,7 +1284,6 @@ export function issueRoutes(db: Db, storage: StorageService) {
           issueTitle: issue.title,
         },
       });
-
     }
 
     const assigneeChanged = assigneeWillChange;
@@ -1206,6 +1291,34 @@ export function issueRoutes(db: Db, storage: StorageService) {
     // Merge all wakeups from this update into one enqueue per agent to avoid duplicate runs.
     void (async () => {
       const wakeups = new Map<string, Parameters<typeof heartbeat.wakeup>[1]>();
+
+      if (
+        isRequestChangesTransition &&
+        comment &&
+        issue.assigneeAgentId &&
+        shouldDispatchIssueWakeup(issue)
+      ) {
+        wakeups.set(issue.assigneeAgentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "issue_review_changes_requested",
+          payload: {
+            issueId: issue.id,
+            commentId: comment.id,
+            mutation: "request_changes",
+          },
+          requestedByActorType: actor.actorType,
+          requestedByActorId: actor.actorId,
+          contextSnapshot: {
+            issueId: issue.id,
+            taskId: issue.id,
+            commentId: comment.id,
+            wakeCommentId: comment.id,
+            wakeReason: "issue_review_changes_requested",
+            source: "task.review",
+          },
+        });
+      }
 
       if (assigneeChanged && issue.assigneeAgentId && issue.status !== "backlog" && shouldDispatchIssueWakeup(issue)) {
         wakeups.set(issue.assigneeAgentId, {
@@ -1219,10 +1332,10 @@ export function issueRoutes(db: Db, storage: StorageService) {
         });
       }
 
-      if (commentBody && comment) {
+      if (persistedCommentBody && comment) {
         let mentionedIds: string[] = [];
         try {
-          mentionedIds = await svc.findMentionedAgents(issue.companyId, commentBody);
+          mentionedIds = await svc.findMentionedAgents(issue.companyId, persistedCommentBody);
         } catch (err) {
           logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
         }
@@ -1255,7 +1368,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
         }
 
         // @human mention notifications — see issueService.notifyMentionedHumans for safety contract.
-        await svc.notifyMentionedHumans(issue.companyId, commentBody, issue.id, actor);
+        await svc.notifyMentionedHumans(issue.companyId, persistedCommentBody, issue.id, actor);
       }
 
       const aoaKinds = await svc

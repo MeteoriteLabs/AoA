@@ -62,7 +62,58 @@ console.log(JSON.stringify({
 }
 
 describe("claude execute target", () => {
-  it("uses explicit local target without changing command, stdin, env, or metadata", async () => {
+  it("includes the current task brief in the default Claude prompt", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-claude-task-prompt-"));
+    const workspace = path.join(root, "workspace");
+    const commandBase = path.join(root, "agent");
+    const capturePath = path.join(root, "capture.json");
+    await fs.mkdir(workspace, { recursive: true });
+    const commandPath = await writeFakeClaudeCommand(commandBase);
+
+    try {
+      const result = await execute({
+        runId: "run-claude-task",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Claude Researcher",
+          adapterType: "claude_local",
+          adapterConfig: {},
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          env: { AOA_TEST_CAPTURE_PATH: capturePath },
+          timeoutSec: 10,
+          graceSec: 1,
+        },
+        context: {
+          currentTaskMarkdown:
+            "## Current Task\n- Task ID: task-123\n- Title: Choose the first interview cohort",
+        },
+        executionTarget: { type: "local" },
+        runtimeCommandSpec: null,
+        authToken: "secret-run-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as { prompt: string };
+      expect(capture.prompt).toContain("You are agent agent-1 (Claude Researcher). Continue your AoA work.");
+      expect(capture.prompt).toContain("Task ID: task-123");
+      expect(capture.prompt).toContain("Choose the first interview cohort");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("uses an explicit local target and appends task context to a custom prompt", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-claude-execute-target-"));
     const workspace = path.join(root, "workspace");
     const commandBase = path.join(root, "agent");
@@ -99,7 +150,9 @@ describe("claude execute target", () => {
           timeoutSec: 10,
           graceSec: 1,
         },
-        context: {},
+        context: {
+          currentTaskMarkdown: "## Current Task\n- Task ID: task-custom-claude",
+        },
         executionTarget: { type: "local" },
         runtimeCommandSpec: { command: "claude", installCommand: "do-not-run" },
         authToken: "secret-run-token",
@@ -122,7 +175,9 @@ describe("claude execute target", () => {
       };
       await expectSameRealPath(capture.cwd, workspace);
       expect(capture.argv).toEqual(expect.arrayContaining(["--print", "-", "--output-format", "stream-json"]));
-      expect(capture.prompt).toBe("Prompt for agent-1 in run-claude-target.");
+      expect(capture.prompt).toBe(
+        "Prompt for agent-1 in run-claude-target.\n\n## Current Task\n- Task ID: task-custom-claude",
+      );
       expect(capture.env).toMatchObject({
         AOA_API_KEY: "secret-run-token",
         AOA_RUN_ID: "run-claude-target",

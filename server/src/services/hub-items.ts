@@ -17,6 +17,7 @@ import {
   issues,
   companies,
   costEvents,
+  workQuestions,
 } from "@armyofagents/db";
 import type {
   HubCountsChangedLivePayload,
@@ -46,14 +47,13 @@ import type { UserRole } from "@armyofagents/shared";
 const RUNTIME_DECISION_ANSWERABLE_STATUSES: ReadonlySet<string> = new Set(["created", "shown"]);
 
 // Heartbeat-backed hub items are actionable while the source run is live, or
-// while it is the latest failed/timed-out run for its agent. "succeeded" is
-// included so a run_complete item stays open while it is the agent's LATEST
-// run; the existing isSuperseded rule closes it when a newer run lands (BUG-5).
+// while it is the latest failed/timed-out run for its agent. Successful process
+// exits are run-history facts, not attention items; excluding "succeeded" also
+// archives historical run_complete rows during reconciliation.
 const HEARTBEAT_ACTIONABLE_STATUSES: ReadonlySet<string> = new Set([
   "queued",
   "scheduled_retry",
   "running",
-  "succeeded",
   "failed",
   "timed_out",
 ]);
@@ -501,7 +501,7 @@ export function hubItemsService(db: Db) {
           OR ${hubItems.userId} IS DISTINCT FROM ${values.userId}
           OR ${hubItems.ownerUserId} IS DISTINCT FROM ${values.ownerUserId}
           OR ${hubItems.ownerPool} IS DISTINCT FROM ${values.ownerPool}
-          OR ${hubItems.slaAt} IS DISTINCT FROM ${values.slaAt}
+          OR ${hubItems.slaAt} IS DISTINCT FROM ${values.slaAt?.toISOString() ?? null}
           OR ${hubItems.sourcePermissionRevision} IS DISTINCT FROM ${values.sourcePermissionRevision}
         )`,
         set: {
@@ -1587,6 +1587,23 @@ export function hubItemsService(db: Db) {
     return runtimeDecisionSourceSnapshot(row);
   };
 
+  const reconcileWorkQuestion: SourceReconciler = async (companyId, sourceId) => {
+    const row = await db
+      .select()
+      .from(workQuestions)
+      .where(and(eq(workQuestions.id, sourceId), eq(workQuestions.companyId, companyId)))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!row) return { terminal: true, summary: null, permissionRevision: null };
+    return {
+      terminal: row.status !== "open",
+      title: row.title,
+      summary: row.question,
+      ownerUserId: row.currentRecipientUserId,
+      permissionRevision: `${row.version}:${new Date(row.updatedAt).toISOString()}`,
+    };
+  };
+
   // company_budget (H3): the budget_alert item's sourceId IS the companyId. The
   // producer only re-fires while utilization stays >= 80%, so nothing ever closes
   // the item when the budget is cleared/raised, spend resets on month rollover, or
@@ -1639,6 +1656,7 @@ export function hubItemsService(db: Db) {
     approval: reconcileApproval,
     heartbeat_run: reconcileHeartbeatRun,
     runtime_decision: reconcileRuntimeDecision,
+    work_question: reconcileWorkQuestion,
     join_request: reconcileJoinRequest,
     discussion: reconcileDiscussion,
     discussion_entry: reconcileDiscussionEntry,
@@ -1671,6 +1689,8 @@ export function hubItemsService(db: Db) {
           // it never instantly archives that follow-up.
           : opts.sourceType === "runtime_decision"
             ? "agent_runtime_decision"
+            : opts.sourceType === "work_question"
+              ? "work_question"
             // company_budget carries exactly one semanticType (budget_alert);
             // scope for symmetry with the other multi-meaning sourceTypes (H3).
             : opts.sourceType === "company_budget"

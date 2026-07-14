@@ -65,7 +65,7 @@ describe("Tool Registry", () => {
       // query_team_roster (humans + org agents + readable hierarchy).
       // Plan 3 B2: +5 approval tools + get_heartbeat_context.
       const tools = createToolRegistry();
-      expect(tools).toHaveLength(85);
+      expect(tools).toHaveLength(87);
     });
 
     it("every tool has required fields", () => {

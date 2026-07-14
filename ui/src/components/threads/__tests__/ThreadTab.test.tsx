@@ -256,6 +256,31 @@ describe("ThreadTab", () => {
         expect.objectContaining({ rawContent: "hello world", parentEntryId: null }),
       ),
     );
+    expect(await screen.findByTestId("thread-send-receipt")).toHaveTextContent("Sent");
+  });
+
+  it("shows a failed receipt and removes the optimistic echo when sending fails", async () => {
+    const { fireEvent } = await import("@testing-library/react");
+    const { discussionsApi } = await import("../../../api/discussions");
+    vi.mocked(discussionsApi.addEntry).mockRejectedValueOnce(new Error("network error"));
+
+    renderWithProviders(
+      <ThreadTab
+        threadId="thread-1"
+        companyId="comp-1"
+        entries={[]}
+        isLoading={false}
+        isError={false}
+        onRetry={vi.fn()}
+      />,
+    );
+    fireEvent.change(screen.getByTestId("entry-composer-textarea"), {
+      target: { value: "message that fails" },
+    });
+    fireEvent.click(screen.getByTestId("entry-composer-submit"));
+
+    expect(await screen.findByText("Not sent. Try again.")).toBeInTheDocument();
+    expect(screen.queryByText("message that fails")).not.toBeInTheDocument();
   });
 
   it("invalidates the discussion detail after archiving an inline artifact", async () => {

@@ -23,6 +23,7 @@ export const workflowTemplates = pgTable(
     name: text("name").notNull(),
     description: text("description"),
     workspaceMode: text("workspace_mode").default("department_default"),
+    agentCompletionPolicyOverride: text("agent_completion_policy_override"),
 
     // Ordered steps with role assignments
     // Array of: { order, title, description, role, suggestedAssigneeType, suggestedDepartmentId, estimatedDurationHours, priority }

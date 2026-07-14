@@ -183,19 +183,6 @@ function buildFileChangePrompt(
   };
 }
 
-/** Generic fallback prompt for an unrecognized approval method (still gated). */
-function buildGenericPrompt(method: string): AdapterRuntimePermissionPrompt {
-  return {
-    kind: "permission",
-    title: `Approval request: ${truncate(method, 80)}`,
-    summary: `Agent requested approval (${method})`,
-    promptText: `Allow this action?`,
-    riskClass: "unknown",
-    timeoutPolicy: "escalate",
-    options: [{ source: "codex_app_server", kind: "unknown", method }],
-  };
-}
-
 // ---------------------------------------------------------------------------
 // Broker outcome → codex decision
 // ---------------------------------------------------------------------------
@@ -278,10 +265,12 @@ export async function handleApprovalRequest(
         validated.push(ok);
       }
       prompt = buildFileChangePrompt(validated, params);
+      prompt.cwd = path.resolve(deps.cwd);
     } else if (method === CMD_METHOD) {
       prompt = buildCommandPrompt(params);
     } else {
-      prompt = buildGenericPrompt(method);
+      log(`[aoa][codex-approval] unsupported server request "${method}" denied without prompting.`);
+      return DECLINE;
     }
 
     // 3. Ask the human (bounded). Any throw → decline (caught below).

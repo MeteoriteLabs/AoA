@@ -8,6 +8,7 @@ import {
   CheckCircle2,
   ClipboardList,
   DollarSign,
+  Inbox,
   FileText,
   LayoutDashboard,
   MessageSquare,
@@ -18,19 +19,21 @@ import {
   Pin,
   Play,
   Settings2,
+  StickyNote,
   Users,
   Zap,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import type { CockpitData, CockpitPinnedEntityType, CommanderOutputRef } from "@armyofagents/shared";
+import type { CockpitData, CockpitPinnedEntityType, CommanderInputRef, CommanderOutputRef } from "@armyofagents/shared";
 import { cockpitApi } from "../../../api/cockpit";
 import { queryKeys } from "../../../lib/queryKeys";
 import { Popover, PopoverContent, PopoverTrigger } from "../../ui/popover";
 import { ScrollArea } from "../../ui/scroll-area";
 import { useCommanderCockpitPrefs } from "../useCommanderCockpitPrefs";
 import {
-  mountableCards,
+  groupCardsBySection,
   selectVisibleCards,
+  selectVisibleSectionGroups,
   type CockpitCardDef,
 } from "./cockpitCardModel";
 import { CockpitSection } from "../../workspace/cockpit/CockpitSection";
@@ -38,6 +41,8 @@ import { CockpitRunningCard } from "./CockpitRunningCard";
 import { CockpitReviewCard } from "./CockpitReviewCard";
 import { CockpitMyTasksCard } from "./CockpitMyTasksCard";
 import { CockpitTodayCard } from "./CockpitTodayCard";
+import { CockpitStickyNotesCard } from "./CockpitStickyNotesCard";
+import { CockpitInboxCard } from "./CockpitInboxCard";
 import { CockpitDiscussionsCard } from "./CockpitDiscussionsCard";
 import { CockpitApprovalsCard } from "./CockpitApprovalsCard";
 import { CockpitPinnedCard } from "./CockpitPinnedCard";
@@ -55,8 +60,10 @@ import { CockpitConversationZone } from "./CockpitConversationZone";
 // ---------------------------------------------------------------------------
 
 export interface CockpitInteractions {
-  onOpenTask?: (issueId: string, title: string) => void;
+  onOpenTask?: (issueId: string, title: string, anchorId?: string) => void;
   onAsk?: (text: string) => void;
+  onReference?: (ref: CommanderInputRef, suggestedPrompt?: string) => void;
+  onOpenInputRef?: (ref: CommanderInputRef) => void;
   onOpenFullPage?: (href: string) => void;
   onPin?: (entityType: CockpitPinnedEntityType, entityId: string) => void;
   onUnpin?: (entityType: CockpitPinnedEntityType, entityId: string) => void;
@@ -68,10 +75,22 @@ export interface CockpitInteractions {
 // ---------------------------------------------------------------------------
 
 const EMPTY_DATA: CockpitData = {
+  activeWork: {
+    mine: { items: [], total: 0 },
+    managed: { items: [], total: 0 },
+  },
+  awaitingReview: { items: [], total: 0 },
+  meta: {
+    generatedAt: "",
+    partial: false,
+    slices: {},
+  },
   running: [],
   review: [],
   myTasks: [],
   today: { reminders: [], dueTasks: [] },
+  stickyNotes: [],
+  inbox: [],
   discussions: [],
   // Phase 3c: approvals required by CockpitData type
   approvals: [],
@@ -137,6 +156,7 @@ export const COCKPIT_REGISTRY: CockpitCardRenderDef[] = [
     id: "pinned",
     title: "Pinned",
     defaultOn: true,
+    sectionId: "memory_context",
     icon: Pin,
     summary: (d) => d.pinned.length > 0 ? `${d.pinned.length} pinned` : null,
     isActive: (d) => d.pinned.length > 0,
@@ -154,52 +174,123 @@ export const COCKPIT_REGISTRY: CockpitCardRenderDef[] = [
     id: "running",
     title: "Running now",
     defaultOn: true,
+    sectionId: "watch",
     icon: Play,
     summary: (d) => d.running.length > 0 ? `${d.running.length} running` : null,
     isActive: (d) => d.running.length > 0,
-    render: ({ data, onOpenTask, onAsk }) => (
-      <CockpitRunningCard runs={data.running} onOpenTask={onOpenTask} onAsk={onAsk} />
+    render: ({ data, onOpenTask, onAsk, onReference }) => (
+      <CockpitRunningCard runs={data.running} onOpenTask={onOpenTask} onAsk={onAsk} onReference={onReference} />
+    ),
+  },
+  {
+    id: "inbox",
+    title: "Inbox",
+    defaultOn: true,
+    sectionId: "triage",
+    icon: Inbox,
+    summary: (d) => {
+      const unread = d.inbox.filter((item) => item.unread).length;
+      if (unread > 0) return `${unread} unread`;
+      return d.inbox.length > 0 ? `${d.inbox.length} open` : null;
+    },
+    isActive: (d) => d.inbox.length > 0,
+    render: ({ data, onOpenFullPage, onOpenInputRef, onOpenTask, onAsk, onReference }) => (
+      <CockpitInboxCard
+        items={data.inbox}
+        onOpenFullPage={onOpenFullPage}
+        onOpenReference={onOpenInputRef}
+        onOpenTask={onOpenTask}
+        onAsk={onAsk}
+        onReference={onReference}
+      />
     ),
   },
   {
     id: "review",
-    title: "Review",
+    title: "Awaiting review",
     defaultOn: true,
+    sectionId: "triage",
     icon: CheckCircle,
-    summary: (d) => d.review.length > 0 ? `${d.review.length} in review` : null,
-    isActive: (d) => d.review.length > 0,
-    render: ({ data, onOpenTask, onAsk, onPin }) => (
-      <CockpitReviewCard items={data.review} onOpenTask={onOpenTask} onAsk={onAsk} onPin={onPin} />
+    summary: (d) => {
+      const total = d.awaitingReview?.total ?? d.review.length;
+      return total > 0 ? `${total} awaiting` : null;
+    },
+    isActive: (d) => (d.awaitingReview?.total ?? d.review.length) > 0,
+    render: ({ data, onOpenTask, onAsk, onPin, onReference, onOpenFullPage }) => (
+      <CockpitReviewCard
+        items={data.awaitingReview?.items ?? data.review}
+        total={data.awaitingReview?.total ?? data.review.length}
+        onOpenTask={onOpenTask}
+        onAsk={onAsk}
+        onPin={onPin}
+        onReference={onReference}
+        onViewAll={() => onOpenFullPage?.("/issues?cockpitBucket=awaiting_review")}
+      />
     ),
   },
   {
     id: "myTasks",
-    title: "My tasks",
+    title: "Active work",
     defaultOn: true,
+    sectionId: "my_work",
     icon: ClipboardList,
-    summary: (d) => d.myTasks.length > 0 ? `${d.myTasks.length} tasks` : null,
-    isActive: (d) => d.myTasks.length > 0,
-    render: ({ data, onOpenTask, onAsk, onPin }) => (
-      <CockpitMyTasksCard items={data.myTasks} onOpenTask={onOpenTask} onAsk={onAsk} onPin={onPin} />
+    summary: (d) => {
+      const total = d.activeWork
+        ? d.activeWork.mine.total + d.activeWork.managed.total
+        : d.myTasks.length;
+      return total > 0 ? `${total} active` : null;
+    },
+    isActive: (d) => d.activeWork
+      ? d.activeWork.mine.total + d.activeWork.managed.total > 0
+      : d.myTasks.length > 0,
+    render: ({ data, onOpenTask, onAsk, onPin, onReference, onOpenFullPage }) => (
+      <CockpitMyTasksCard
+        items={data.myTasks}
+        activeWork={data.activeWork}
+        onOpenTask={onOpenTask}
+        onAsk={onAsk}
+        onPin={onPin}
+        onReference={onReference}
+        onViewAll={(bucket) => onOpenFullPage?.(`/issues?cockpitBucket=${bucket}`)}
+      />
     ),
   },
   {
     id: "today",
     title: "Today",
     defaultOn: true,
+    sectionId: "my_work",
     icon: Calendar,
     summary: (d) => {
       const total = d.today.reminders.length + d.today.dueTasks.length;
       return total > 0 ? `${total} items` : null;
     },
     isActive: (d) => d.today.reminders.length > 0 || d.today.dueTasks.length > 0,
-    render: ({ data, onOpenTask, onAsk, onPin }) => (
+    render: ({ data, onOpenTask, onAsk, onPin, onReference }) => (
       <CockpitTodayCard
         reminders={data.today.reminders}
         dueTasks={data.today.dueTasks}
         onOpenTask={onOpenTask}
         onAsk={onAsk}
         onPin={onPin}
+        onReference={onReference}
+      />
+    ),
+  },
+  {
+    id: "stickyNotes",
+    title: "Sticky notes",
+    defaultOn: true,
+    sectionId: "my_work",
+    icon: StickyNote,
+    summary: (d) => d.stickyNotes.length > 0 ? `${d.stickyNotes.length} notes` : null,
+    isActive: (_d) => true,
+    render: ({ data, companyId, onAsk, onReference }) => (
+      <CockpitStickyNotesCard
+        companyId={companyId}
+        items={data.stickyNotes}
+        onAsk={onAsk}
+        onReference={onReference}
       />
     ),
   },
@@ -207,11 +298,18 @@ export const COCKPIT_REGISTRY: CockpitCardRenderDef[] = [
     id: "discussions",
     title: "Discussions",
     defaultOn: true,
+    sectionId: "conversations",
     icon: MessageSquare,
     summary: (d) => d.discussions.length > 0 ? `${d.discussions.length} active` : null,
     isActive: (d) => d.discussions.length > 0,
-    render: ({ data, onOpenFullPage, onAsk }) => (
-      <CockpitDiscussionsCard items={data.discussions} onOpenFullPage={onOpenFullPage} onAsk={onAsk} />
+    render: ({ data, onOpenFullPage, onOpenInputRef, onAsk, onReference }) => (
+      <CockpitDiscussionsCard
+        items={data.discussions}
+        onOpenFullPage={onOpenFullPage}
+        onOpenReference={onOpenInputRef}
+        onAsk={onAsk}
+        onReference={onReference}
+      />
     ),
   },
   // Phase 3c: unified approvals queue (founder-only; server returns [] for non-founders)
@@ -219,15 +317,18 @@ export const COCKPIT_REGISTRY: CockpitCardRenderDef[] = [
     id: "approvals",
     title: "Approvals",
     defaultOn: true,
+    sectionId: "triage",
     icon: CheckCircle2,
     summary: (d) => d.approvals.length > 0 ? `${d.approvals.length} pending` : null,
     isActive: (d) => d.approvals.length > 0,
-    render: ({ data, companyId, onOpenFullPage, onAsk }) => (
+    render: ({ data, companyId, onOpenFullPage, onOpenInputRef, onAsk, onReference }) => (
       <CockpitApprovalsCard
         items={data.approvals}
         companyId={companyId}
         onOpenFullPage={onOpenFullPage}
+        onOpenReference={onOpenInputRef}
         onAsk={onAsk}
+        onReference={onReference}
       />
     ),
   },
@@ -236,6 +337,7 @@ export const COCKPIT_REGISTRY: CockpitCardRenderDef[] = [
     id: "goalsAtRisk",
     title: "Goals at risk",
     defaultOn: false,
+    sectionId: "watch",
     icon: AlertTriangle,
     summary: (d) => d.goalsAtRisk.length > 0 ? `${d.goalsAtRisk.length} at risk` : null,
     isActive: (d) => d.goalsAtRisk.length > 0,
@@ -247,6 +349,7 @@ export const COCKPIT_REGISTRY: CockpitCardRenderDef[] = [
     id: "budgetPulse",
     title: "Budget pulse",
     defaultOn: false,
+    sectionId: "watch",
     icon: DollarSign,
     summary: (d) => d.budgetPulse !== null ? `${Math.round(d.budgetPulse.percentUsed)}% used` : null,
     isActive: (d) => d.budgetPulse !== null,
@@ -256,6 +359,7 @@ export const COCKPIT_REGISTRY: CockpitCardRenderDef[] = [
     id: "doneToday",
     title: "Done today",
     defaultOn: false,
+    sectionId: "watch",
     icon: CheckCircle2,
     summary: (d) => d.doneToday.length > 0 ? `${d.doneToday.length} completed` : null,
     isActive: (d) => d.doneToday.length > 0,
@@ -267,13 +371,15 @@ export const COCKPIT_REGISTRY: CockpitCardRenderDef[] = [
     id: "proactiveFindings",
     title: "Proactive findings",
     defaultOn: false,
+    sectionId: "watch",
     icon: Zap,
     summary: (d) => d.proactiveFindings.length > 0 ? `${d.proactiveFindings.length} findings` : null,
     isActive: (d) => d.proactiveFindings.length > 0,
-    render: ({ data, onOpenFullPage, onAsk }) => (
+    render: ({ data, onOpenFullPage, onOpenTask, onAsk }) => (
       <CockpitProactiveFindingsCard
         items={data.proactiveFindings}
         onOpenFullPage={onOpenFullPage}
+        onOpenTask={onOpenTask}
         onAsk={onAsk}
       />
     ),
@@ -282,13 +388,15 @@ export const COCKPIT_REGISTRY: CockpitCardRenderDef[] = [
     id: "teammatesActivity",
     title: "Teammates' activity",
     defaultOn: false,
+    sectionId: "watch",
     icon: Users,
     summary: (d) => d.teammatesActivity.length > 0 ? `${d.teammatesActivity.length} updates` : null,
     isActive: (d) => d.teammatesActivity.length > 0,
-    render: ({ data, onOpenFullPage }) => (
+    render: ({ data, onOpenFullPage, onOpenTask }) => (
       <CockpitTeammatesActivityCard
         items={data.teammatesActivity}
         onOpenFullPage={onOpenFullPage}
+        onOpenTask={onOpenTask}
       />
     ),
   },
@@ -301,6 +409,7 @@ export const COCKPIT_REGISTRY: CockpitCardRenderDef[] = [
     id: "memory",
     title: "Memory",
     defaultOn: false,
+    sectionId: "memory_context",
     icon: Brain,
     summary: (_d) => null, // row count is fetched inside the card, not from cockpit batch
     isActive: (_d) => true, // always mount; card shows empty state when no conversation
@@ -326,8 +435,7 @@ function CockpitConfigPopover({
   setPrefs: ReturnType<typeof useCommanderCockpitPrefs>[1];
   registry: CockpitCardDef[];
 }) {
-  const defaultOnCards = registry.filter((c) => c.defaultOn);
-  const optInCards = registry.filter((c) => !c.defaultOn);
+  const groupedCards = groupCardsBySection(registry);
 
   return (
     <Popover>
@@ -342,36 +450,22 @@ function CockpitConfigPopover({
         </button>
       </PopoverTrigger>
       <PopoverContent align="end" className="p-2">
-        {/* Default-on cards — toggle via hidden list */}
         <p className="mb-1.5 px-1 text-[11px] font-medium text-muted-foreground">Show cards</p>
-        {defaultOnCards.map((card) => {
-          const isHidden = prefs.hidden.includes(card.id);
-          return (
-            <label
-              key={card.id}
-              className="flex cursor-pointer items-center gap-2 rounded-md px-1 py-1.5 text-xs hover:bg-muted/50"
-            >
-              <input
-                type="checkbox"
-                className="accent-brand"
-                checked={!isHidden}
-                onChange={() => {
-                  const next = isHidden
-                    ? prefs.hidden.filter((id) => id !== card.id)
-                    : [...prefs.hidden, card.id];
-                  setPrefs({ ...prefs, hidden: next });
-                }}
-              />
-              {card.title}
-            </label>
-          );
-        })}
-        {/* Opt-in cards — toggle via enabled list (only render section if any exist) */}
-        {optInCards.length > 0 && (
-          <>
-            <p className="mb-1.5 mt-2 px-1 text-[11px] font-medium text-muted-foreground">Optional</p>
-            {optInCards.map((card) => {
+        {groupedCards.map((group) => (
+          <div
+            key={group.section.id}
+            className="space-y-0.5"
+            data-testid={`cockpit-config-group-${group.section.id}`}
+          >
+            <p className="mb-1 mt-2 px-1 text-[11px] font-medium text-muted-foreground">
+              {group.section.title}
+            </p>
+            {group.cards.map((card) => {
+              const isDefault = card.defaultOn;
+              const isHidden = prefs.hidden.includes(card.id);
               const isEnabled = prefs.enabled.includes(card.id);
+              const checked = isDefault ? !isHidden : isEnabled;
+
               return (
                 <label
                   key={card.id}
@@ -380,20 +474,28 @@ function CockpitConfigPopover({
                   <input
                     type="checkbox"
                     className="accent-brand"
-                    checked={isEnabled}
+                    checked={checked}
                     onChange={() => {
-                      const next = isEnabled
+                      if (isDefault) {
+                        const nextHidden = isHidden
+                          ? prefs.hidden.filter((id) => id !== card.id)
+                          : [...prefs.hidden, card.id];
+                        setPrefs({ ...prefs, hidden: nextHidden });
+                        return;
+                      }
+
+                      const nextEnabled = isEnabled
                         ? prefs.enabled.filter((id) => id !== card.id)
                         : [...prefs.enabled, card.id];
-                      setPrefs({ ...prefs, enabled: next });
+                      setPrefs({ ...prefs, enabled: nextEnabled });
                     }}
                   />
                   {card.title}
                 </label>
               );
             })}
-          </>
-        )}
+          </div>
+        ))}
       </PopoverContent>
     </Popover>
   );
@@ -411,6 +513,8 @@ export function CommanderCockpitPanel({
   onCollapse,
   onOpenTask,
   onAsk,
+  onReference,
+  onOpenInputRef,
   onOpenFullPage,
   onOpenArtifact,
   conversationRefs = [],
@@ -435,12 +539,19 @@ export function CommanderCockpitPanel({
   // ONE batched query. LiveEvents (LiveUpdatesProvider) invalidate this key for
   // instant updates; the modest refetchInterval is a belt-and-suspenders fallback
   // for heartbeat/crew runs between events.
-  const { data } = useQuery({
+  const fullQuery = useQuery({
     queryKey: queryKeys.cockpit(companyId),
     queryFn: () => cockpitApi.get(companyId),
-    enabled: !!companyId,
+    enabled: !!companyId && !collapsed,
     refetchInterval: 8000,
   });
+  const countsQuery = useQuery({
+    queryKey: queryKeys.cockpitCounts(companyId),
+    queryFn: () => cockpitApi.counts(companyId),
+    enabled: !!companyId && collapsed,
+    refetchInterval: 8000,
+  });
+  const { data, isLoading, isError, error, refetch } = fullQuery;
 
   const cockpitData = data ?? EMPTY_DATA;
 
@@ -449,8 +560,23 @@ export function CommanderCockpitPanel({
   const active = Object.fromEntries(
     COCKPIT_REGISTRY.map((c) => [c.id, c.isActive(cockpitData)]),
   );
+  if (collapsed && countsQuery.data) {
+    active.running = countsQuery.data.running > 0;
+    active.inbox = countsQuery.data.inbox > 0;
+    active.review = countsQuery.data.awaitingReview > 0;
+    active.myTasks = countsQuery.data.activeWorkMine + countsQuery.data.activeWorkManaged > 0;
+    active.approvals = countsQuery.data.approvals > 0;
+    active.discussions = countsQuery.data.discussions > 0;
+  }
 
   const visible = selectVisibleCards({
+    registry: COCKPIT_REGISTRY,
+    hidden: prefs.hidden,
+    order: prefs.order,
+    active,
+    enabled: prefs.enabled,
+  });
+  const visibleGroups = selectVisibleSectionGroups({
     registry: COCKPIT_REGISTRY,
     hidden: prefs.hidden,
     order: prefs.order,
@@ -533,8 +659,37 @@ export function CommanderCockpitPanel({
 
       <ScrollArea className="min-h-0 min-w-0 flex-1 overflow-hidden" data-testid="commander-cockpit-scroll">
         <div className="w-full min-w-0 space-y-2 overflow-hidden px-2 py-2">
+          {isLoading && (
+            <div className="px-2 py-6 text-center text-xs text-muted-foreground" role="status">
+              Loading cockpit...
+            </div>
+          )}
+
+          {isError && (
+            <div className="space-y-2 rounded border border-destructive/30 px-2 py-3 text-xs" role="alert">
+              <div className="flex items-start gap-2 text-destructive">
+                <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+                <span>{error instanceof Error ? error.message : "Cockpit data could not be loaded."}</span>
+              </div>
+              <button
+                type="button"
+                className="text-xs font-medium text-foreground hover:underline"
+                onClick={() => void refetch()}
+              >
+                Try again
+              </button>
+            </div>
+          )}
+
+          {!isLoading && !isError && cockpitData.meta?.partial && (
+            <div className="flex items-start gap-2 rounded border border-amber-500/30 px-2 py-2 text-xs text-muted-foreground" role="status">
+              <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-amber-500" aria-hidden />
+              <span>Some cockpit sections are temporarily unavailable.</span>
+            </div>
+          )}
+
           {/* Phase 5C: Conversation zone — NOT a registry card; gets its own CockpitSection [B4] */}
-          {conversationRefs.length > 0 && (
+          {!isLoading && !isError && conversationRefs.length > 0 && (
             <CockpitSection
               id="conversation"
               title="In this conversation"
@@ -547,36 +702,49 @@ export function CommanderCockpitPanel({
             </CockpitSection>
           )}
 
-          {/* Phase 5B: Each active card wrapped in CockpitSection */}
-          {mountableCards(COCKPIT_REGISTRY, prefs.hidden, prefs.order, prefs.enabled)
-            .filter((c) => active[c.id])
-            .map((c) => (
-              <CockpitSection
-                key={c.id}
-                id={c.id}
-                title={c.title}
-                summary={c.summary(cockpitData)}
-                icon={c.icon}
-                open={cardExpanded[c.id] ?? true}
-                onOpenChange={(open) => setCardOpen(c.id, open)}
-              >
-                {/* Phase 3c/3d: companyId + pin/unpin/artifact callbacks threaded through.
-                    Phase 7: conversationId for the Memory card. */}
-                {c.render({
-                  data: cockpitData,
-                  companyId,
-                  conversationId,
-                  onOpenTask,
-                  onAsk,
-                  onOpenFullPage,
-                  onOpenArtifact,
-                  onPin: (entityType, entityId) => pin.mutate({ entityType, entityId }),
-                  onUnpin: (entityType, entityId) => unpin.mutate({ entityType, entityId }),
-                })}
-              </CockpitSection>
+          {/* Phase 1: Product groups around existing cards; cards stay collapsible. */}
+          {!isLoading && !isError && visibleGroups.map((group) => (
+            <section
+              key={group.section.id}
+              data-testid={`cockpit-group-${group.section.id}`}
+              className="space-y-1.5"
+            >
+              <div className="px-1 pt-1 text-[11px] font-semibold uppercase tracking-normal text-muted-foreground">
+                {group.section.title}
+              </div>
+              <div className="space-y-2">
+                {group.cards.map((c) => (
+                  <CockpitSection
+                    key={c.id}
+                    id={c.id}
+                    title={c.title}
+                    summary={c.summary(cockpitData)}
+                    icon={c.icon}
+                    open={cardExpanded[c.id] ?? true}
+                    onOpenChange={(open) => setCardOpen(c.id, open)}
+                  >
+                    {/* Phase 3c/3d: companyId + pin/unpin/artifact callbacks threaded through.
+                        Phase 7: conversationId for the Memory card. */}
+                    {c.render({
+                      data: cockpitData,
+                      companyId,
+                      conversationId,
+                      onOpenTask,
+                      onAsk,
+                      onReference,
+                      onOpenInputRef,
+                      onOpenFullPage,
+                      onOpenArtifact,
+                      onPin: (entityType, entityId) => pin.mutate({ entityType, entityId }),
+                      onUnpin: (entityType, entityId) => unpin.mutate({ entityType, entityId }),
+                    })}
+                  </CockpitSection>
+                ))}
+              </div>
+            </section>
           ))}
 
-          {visible.length === 0 && conversationRefs.length === 0 && (
+          {!isLoading && !isError && visible.length === 0 && conversationRefs.length === 0 && (
             <div className="flex items-center justify-center p-6 text-center text-xs text-muted-foreground">
               All clear — nothing needs you right now.
             </div>

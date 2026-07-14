@@ -27,6 +27,7 @@ vi.mock("drizzle-orm", () => ({
   or: vi.fn((...a: unknown[]) => ({ or: a })),
   eq: vi.fn((a: unknown, b: unknown) => ({ eq: [a, b] })),
   lt: vi.fn((a: unknown, b: unknown) => ({ lt: [a, b] })),
+  lte: vi.fn((a: unknown, b: unknown) => ({ lte: [a, b] })),
   gt: vi.fn((a: unknown, b: unknown) => ({ gt: [a, b] })),
   isNull: vi.fn((c: unknown) => ({ isNull: c })),
   inArray: vi.fn((c: unknown, v: unknown) => ({ inArray: [c, v] })),

@@ -384,6 +384,61 @@ describe("driveCodexAppServer (W5c Task 3)", () => {
     await promise;
   });
 
+  it("accepts one authorized AoA MCP tool invocation without creating a permission prompt", async () => {
+    const fake = makeFakeClient();
+    const { acc } = makeAccumulator();
+    const onServerApproval = vi.fn(async () => "decline" as const);
+    const promise = driveCodexAppServer({ ...baseInput(fake, acc), onServerApproval });
+
+    const { turn } = await driveHandshake(fake, "thread-mcp");
+    resolveReq(turn, { turn: { id: "t1" } });
+
+    await fake.serverRequest(10, "mcpServer/elicitation/request", {
+      threadId: "thread-mcp",
+      turnId: "t1",
+      serverName: "aoa",
+      mode: "form",
+      _meta: { codex_approval_kind: "mcp_tool_call", tool_params: { question: "Choose" } },
+      message: 'Allow the aoa MCP server to run tool "ask_human"?',
+      requestedSchema: { type: "object", properties: {} },
+    });
+
+    expect(onServerApproval).not.toHaveBeenCalled();
+    expect(fake.responses).toContainEqual({
+      id: 10,
+      result: { action: "accept", content: {}, _meta: null },
+    });
+
+    fake.deliverNotification("turn/completed", {});
+    await promise;
+  });
+
+  it("declines MCP elicitations that are not exact AoA tool-call approvals", async () => {
+    const fake = makeFakeClient();
+    const { acc } = makeAccumulator();
+    const onServerApproval = vi.fn(async () => "accept" as const);
+    const promise = driveCodexAppServer({ ...baseInput(fake, acc), onServerApproval });
+
+    const { turn } = await driveHandshake(fake, "thread-foreign-mcp");
+    resolveReq(turn, { turn: { id: "t1" } });
+
+    await fake.serverRequest(11, "mcpServer/elicitation/request", {
+      serverName: "foreign",
+      mode: "form",
+      _meta: { codex_approval_kind: "mcp_tool_call" },
+      requestedSchema: { type: "object", properties: {} },
+    });
+
+    expect(onServerApproval).not.toHaveBeenCalled();
+    expect(fake.responses).toContainEqual({
+      id: 11,
+      result: { action: "decline", content: null, _meta: null },
+    });
+
+    fake.deliverNotification("turn/completed", {});
+    await promise;
+  });
+
   // --- fileChange approval enrichment (W5c path-map) -------------------------
   // The `item/fileChange/requestApproval` server request carries ONLY
   // { threadId, turnId, itemId, startedAtMs, reason?, grantRoot? } — NO path.

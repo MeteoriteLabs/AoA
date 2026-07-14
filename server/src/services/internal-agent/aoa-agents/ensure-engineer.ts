@@ -55,6 +55,7 @@ export const ENGINEER_TOOL_ALLOWLIST: string[] = [
   "post_task_comment",
   "attach_task_artifact",
   "set_task_status",
+  "ask_human",
 ];
 
 /**

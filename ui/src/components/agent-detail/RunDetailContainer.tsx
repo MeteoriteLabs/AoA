@@ -22,10 +22,12 @@ export function RunDetailContainer({
   runId,
   agentId,
   companyId,
+  onOpenIssue,
 }: {
   runId: string;
   agentId: string;
   companyId?: string;
+  onOpenIssue?: (issueId: string, title: string) => void;
 }) {
   const { selectedCompanyId } = useCompany();
   const lookupCompanyId = companyId ?? selectedCompanyId ?? undefined;
@@ -73,7 +75,12 @@ export function RunDetailContainer({
 
   return (
     <div className="h-full w-full overflow-auto p-5" data-testid="hub-run-detail-container">
-      <RunDetail run={foundRun} agentRouteId={agentRouteId} adapterType={adapterType} />
+      <RunDetail
+        run={foundRun}
+        agentRouteId={agentRouteId}
+        adapterType={adapterType}
+        onOpenIssue={onOpenIssue}
+      />
     </div>
   );
 }

@@ -21,8 +21,10 @@
  */
 
 import { Check, ExternalLink, Loader2, MessageSquare, X } from "lucide-react";
-import type { CockpitApprovalItem } from "@armyofagents/shared";
+import type { CockpitApprovalItem, CommanderInputRef } from "@armyofagents/shared";
 import { Button } from "../../ui/button";
+import { setCommanderRefDragData } from "./cockpitReferenceDrag";
+import { COCKPIT_DRAGGABLE_ROW_CLASS } from "./cockpitRowStyles";
 import { useCockpitApprovalAction } from "./useCockpitApprovalAction";
 
 // Source chip label map — must include all CockpitApprovalSource values.
@@ -50,18 +52,49 @@ function fullPageRoute(item: CockpitApprovalItem): string {
   return `/discussions/${item.discussionId ?? ""}`;
 }
 
+function approvalPrompt(item: CockpitApprovalItem) {
+  return `About the pending "${item.title}" ${SOURCE_LABELS[item.source].toLowerCase()} - should I approve or deny it?`;
+}
+
+function approvalRef(item: CockpitApprovalItem, route: string): CommanderInputRef {
+  if (item.source === "discussion_item" && item.discussionId) {
+    return {
+      v: 1,
+      kind: "discussion",
+      id: item.discussionId,
+      label: item.title,
+      route: route || undefined,
+      detail: item.subtitle,
+      source: item.source,
+    };
+  }
+  return {
+    v: 1,
+    kind: "approval",
+    id: item.id,
+    label: item.title,
+    route: route || undefined,
+    detail: item.subtitle,
+    source: item.source,
+  };
+}
+
 // ── Row component ─────────────────────────────────────────────────────────────
 
 function ApprovalRow({
   item,
   companyId,
   onOpenFullPage,
+  onOpenReference,
   onAsk,
+  onReference,
 }: {
   item: CockpitApprovalItem;
   companyId: string;
   onOpenFullPage?: (href: string) => void;
+  onOpenReference?: (ref: CommanderInputRef) => void;
   onAsk?: (text: string) => void;
+  onReference?: (ref: CommanderInputRef, suggestedPrompt?: string) => void;
 }) {
   const { approve, deny, allowAlways } = useCockpitApprovalAction(companyId);
   // Stay disabled after success too — the row only unmounts once the cockpit refetch
@@ -78,10 +111,27 @@ function ApprovalRow({
   const route = fullPageRoute(item);
 
   return (
-    <li className="group flex flex-col gap-1 rounded px-1 py-1.5 text-xs hover:bg-muted/50">
+    <li
+      draggable
+      onDragStart={(event) => setCommanderRefDragData(event.dataTransfer, approvalRef(item, route), approvalPrompt(item))}
+      className={`group flex flex-col gap-1 rounded px-1 py-1.5 text-xs ${COCKPIT_DRAGGABLE_ROW_CLASS}`}
+    >
       {/* Row header: title + source chip + ↗ (hidden when no route) */}
       <div className="flex items-center gap-1 truncate">
-        <span className="min-w-0 flex-1 truncate font-medium">{item.title}</span>
+        <button
+          type="button"
+          className="min-w-0 flex-1 truncate text-left font-medium"
+          onClick={() => {
+            const ref = approvalRef(item, route);
+            if ((item.source === "approval" || ref.kind === "discussion") && onOpenReference) {
+              onOpenReference(ref);
+            } else if (route) {
+              onOpenFullPage?.(route);
+            }
+          }}
+        >
+          {item.title}
+        </button>
         <span className="shrink-0 rounded bg-muted px-1 py-0.5 text-[10px] text-muted-foreground">
           {SOURCE_LABELS[item.source]}
         </span>
@@ -171,11 +221,12 @@ function ApprovalRow({
             aria-label="Ask Commander about this"
             title="Ask Commander"
             className="ml-auto hidden shrink-0 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground group-hover:flex"
-            onClick={() =>
-              onAsk(
-                `About the pending "${item.title}" ${SOURCE_LABELS[item.source].toLowerCase()} — should I approve or deny it?`,
-              )
-            }
+            onClick={() => {
+              const prompt = approvalPrompt(item);
+              const ref = approvalRef(item, route);
+              if (onReference) onReference(ref, prompt);
+              else onAsk(prompt);
+            }}
           >
             <MessageSquare className="size-3" aria-hidden />
           </button>
@@ -194,12 +245,16 @@ export function CockpitApprovalsCard({
   items,
   companyId,
   onOpenFullPage,
+  onOpenReference,
   onAsk,
+  onReference,
 }: {
   items: CockpitApprovalItem[];
   companyId: string;
   onOpenFullPage?: (href: string) => void;
+  onOpenReference?: (ref: CommanderInputRef) => void;
   onAsk?: (text: string) => void;
+  onReference?: (ref: CommanderInputRef, suggestedPrompt?: string) => void;
 }) {
   if (items.length === 0) return null;
 
@@ -212,7 +267,9 @@ export function CockpitApprovalsCard({
             item={item}
             companyId={companyId}
             onOpenFullPage={onOpenFullPage}
+            onOpenReference={onOpenReference}
             onAsk={onAsk}
+            onReference={onReference}
           />
         ))}
       </ul>

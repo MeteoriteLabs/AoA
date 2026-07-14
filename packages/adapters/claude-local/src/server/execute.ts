@@ -318,7 +318,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const promptTemplate = asString(
     config.promptTemplate,
-    "You are agent {{agent.id}} ({{agent.name}}). Continue your AoA work.",
+    [
+      "You are agent {{agent.id}} ({{agent.name}}). Continue your AoA work.",
+      "{{context.currentTaskMarkdown}}",
+    ].join("\n\n"),
   );
   const model = asString(config.model, "");
   const effort = asString(config.effort, "");
@@ -463,7 +466,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       `[aoa] Claude session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${executionCwd}".\n`,
     );
   }
-  const prompt = renderTemplate(promptTemplate, {
+  const renderedPrompt = renderTemplate(promptTemplate, {
     agentId: agent.id,
     companyId: agent.companyId,
     runId,
@@ -472,6 +475,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     run: { id: runId, source: "on_demand" },
     context,
   });
+  const currentTaskMarkdown = typeof context.currentTaskMarkdown === "string"
+    ? context.currentTaskMarkdown.trim()
+    : "";
+  const prompt = currentTaskMarkdown && !/{{\s*context\.currentTaskMarkdown\s*}}/.test(promptTemplate)
+    ? `${renderedPrompt.trimEnd()}\n\n${currentTaskMarkdown}`
+    : renderedPrompt;
 
   const buildClaudeArgs = async (resumeSessionId: string | null) => {
     const args = ["--print", "-", "--output-format", "stream-json", "--verbose"];

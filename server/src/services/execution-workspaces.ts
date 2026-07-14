@@ -986,6 +986,20 @@ export function executionWorkspaceService(db: Db) {
         .returning({ id: executionWorkspaces.id });
       return Boolean(row);
     },
+
+    /**
+     * Release every workspace lease still owned by a terminal heartbeat run.
+     * The activeRunId predicate is the ownership fence: a late cleanup can
+     * never clear a lease that has already been reclaimed by another run.
+     */
+    releaseWorkspaceRunsForRun: async (runId: string): Promise<string[]> => {
+      const rows = await db
+        .update(executionWorkspaces)
+        .set({ activeRunId: null, lockedAt: null })
+        .where(eq(executionWorkspaces.activeRunId, runId))
+        .returning({ id: executionWorkspaces.id });
+      return rows.map((row) => row.id);
+    },
   };
 }
 

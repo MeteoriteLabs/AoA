@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { CockpitData } from "@armyofagents/shared";
 
@@ -26,6 +26,8 @@ vi.mock("../../../api/cockpit", () => ({
       review: [],
       myTasks: [],
       today: { reminders: [], dueTasks: [] },
+      stickyNotes: [],
+      inbox: [],
       discussions: [],
       approvals: [],
       pinned: [],
@@ -35,6 +37,16 @@ vi.mock("../../../api/cockpit", () => ({
       proactiveFindings: [],
       teammatesActivity: [],
     } satisfies CockpitData),
+    counts: vi.fn().mockResolvedValue({
+      activeWorkMine: 0,
+      activeWorkManaged: 0,
+      awaitingReview: 0,
+      running: 0,
+      inbox: 0,
+      approvals: 0,
+      discussions: 0,
+      generatedAt: "2026-07-10T00:00:00.000Z",
+    }),
   },
 }));
 
@@ -42,6 +54,7 @@ vi.mock("../../../api/cockpit", () => ({
 vi.mock("../../../lib/queryKeys", () => ({
   queryKeys: {
     cockpit: (companyId: string) => ["cockpit", companyId],
+    cockpitCounts: (companyId: string) => ["cockpit", companyId, "counts"],
   },
 }));
 
@@ -56,6 +69,8 @@ function makeData(overrides?: Partial<CockpitData>): CockpitData {
     review: [],
     myTasks: [],
     today: { reminders: [], dueTasks: [] },
+    stickyNotes: [],
+    inbox: [],
     discussions: [],
     // Phase 3c: required by CockpitData
     approvals: [],
@@ -98,8 +113,36 @@ function renderPanel(onCollapse = vi.fn()) {
 
 describe("CommanderCockpitPanel", () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     localStorage.clear();
     vi.mocked(cockpitApi.get).mockResolvedValue(makeData());
+    vi.mocked(cockpitApi.counts).mockResolvedValue({
+      activeWorkMine: 0,
+      activeWorkManaged: 0,
+      awaitingReview: 0,
+      running: 0,
+      inbox: 0,
+      approvals: 0,
+      discussions: 0,
+      generatedAt: "2026-07-10T00:00:00.000Z",
+    });
+  });
+
+  it("uses lightweight counts and disables the full query while collapsed", async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <CommanderCockpitPanel
+          companyId="comp-1"
+          collapsed
+          onExpand={vi.fn()}
+          onCollapse={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => expect(cockpitApi.counts).toHaveBeenCalledWith("comp-1"));
+    expect(cockpitApi.get).not.toHaveBeenCalled();
   });
 
   it("renders with data-testid='commander-cockpit-panel'", async () => {
@@ -114,7 +157,8 @@ describe("CommanderCockpitPanel", () => {
     expect(screen.queryByTestId("cockpit-card-running")).not.toBeInTheDocument();
     // "All clear" renders immediately since active is derived from the shared data
     // (no async onActiveChange self-report — derived synchronously from query data).
-    expect(await screen.findByText(/all clear/i)).toBeInTheDocument();
+    expect(await screen.findByTestId("cockpit-card-stickyNotes")).toBeInTheDocument();
+    expect(screen.queryByText(/all clear/i)).not.toBeInTheDocument();
   });
 
   it("with running runs → the Running card renders with cockpit-card-running testid", async () => {
@@ -131,6 +175,52 @@ describe("CommanderCockpitPanel", () => {
     expect(screen.getByTestId("cockpit-card-running")).toBeInTheDocument();
     expect(screen.getByText("Atlas")).toBeInTheDocument();
     unmount();
+  });
+
+  it("renders visible cards under product cockpit section headings", () => {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    queryClient.setQueryData(["cockpit", "comp-sections"], makeData({
+      approvals: [
+        { source: "approval", id: "approval-1", title: "Hire Atlas", subtitle: "hire agent" },
+      ],
+      myTasks: [
+        {
+          id: "task-1",
+          identifier: "AOA-1",
+          title: "Write plan",
+          status: "todo",
+          assigneeUserId: "u1",
+          assigneeAgentId: null,
+          dueDate: null,
+        },
+      ],
+      discussions: [
+        { id: "disc-1", title: "Pricing sync", pendingItemCount: 1, reason: "pending_items" },
+      ],
+      running: [makeRunItem({ id: "run-1", agentName: "Atlas", issueId: null })],
+      pinned: [
+        { entityType: "task", entityId: "task-1", title: "Write plan", status: "todo", identifier: "AOA-1" },
+      ],
+    }));
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <CommanderCockpitPanel companyId="comp-sections" onCollapse={vi.fn()} />
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByTestId("cockpit-group-triage")).toBeInTheDocument();
+    expect(screen.getByTestId("cockpit-group-my_work")).toBeInTheDocument();
+    expect(screen.getByTestId("cockpit-group-conversations")).toBeInTheDocument();
+    expect(screen.getByTestId("cockpit-group-watch")).toBeInTheDocument();
+    expect(screen.getByTestId("cockpit-group-memory_context")).toBeInTheDocument();
+    expect(screen.getByText("Triage")).toBeInTheDocument();
+    expect(screen.getByText("My Work")).toBeInTheDocument();
+    expect(screen.getByText("Conversations")).toBeInTheDocument();
+    expect(screen.getByText("Watch")).toBeInTheDocument();
+    expect(screen.getByText("Memory & Context")).toBeInTheDocument();
   });
 
   it("⚙ config popover can hide the running card", async () => {
@@ -160,6 +250,20 @@ describe("CommanderCockpitPanel", () => {
 
     // After hiding, the Running card should not be rendered
     expect(screen.queryByTestId("cockpit-card-running")).not.toBeInTheDocument();
+  });
+
+  it("config popover groups card toggles by cockpit section", () => {
+    renderPanel();
+
+    fireEvent.click(screen.getByRole("button", { name: /configure cockpit cards/i }));
+
+    expect(screen.getByTestId("cockpit-config-group-triage")).toBeInTheDocument();
+    expect(screen.getByTestId("cockpit-config-group-my_work")).toBeInTheDocument();
+    expect(screen.getByTestId("cockpit-config-group-conversations")).toBeInTheDocument();
+    expect(screen.getByTestId("cockpit-config-group-watch")).toBeInTheDocument();
+    expect(screen.getByTestId("cockpit-config-group-memory_context")).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: /approvals/i })).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: /active work/i })).toBeInTheDocument();
   });
 
   it("collapse button calls onCollapse", () => {
@@ -295,7 +399,7 @@ describe("COCKPIT_REGISTRY — Phase 5 icon + summary", () => {
     const data = makeData({
       review: [{ id: "t1", title: "T", status: "in_review", identifier: null, assigneeUserId: null, assigneeAgentId: null, dueDate: null }],
     });
-    expect(reviewEntry.summary(data)).toBe("1 in review");
+    expect(reviewEntry.summary(data)).toBe("1 awaiting");
   });
 
   it("'budgetPulse' summary shows percent", () => {

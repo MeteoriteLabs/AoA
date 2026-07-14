@@ -16,7 +16,7 @@ import type {
 } from "../api/discussions";
 import {
   RefreshCw, Pencil, ChevronDown, Pause, Play,
-  Archive, MoreHorizontal,
+  Archive, MoreHorizontal, X,
 } from "lucide-react";
 import {
   DropdownMenu,
@@ -49,6 +49,8 @@ import {
   threadAttachmentToTab,
   type ThreadViewerScopeItem,
   type ThreadViewerTab,
+  type ThreadOpenRequest,
+  threadViewerTabToOpenRequest,
 } from "../components/threads/threadViewerModel";
 
 /* ─── Phase constants ─── */
@@ -204,6 +206,12 @@ interface ThreadDetailProps {
   discussionId?: string;
   /** D2: prop-supplied company id (hub tab). Falls back to CompanyContext. */
   companyId?: string;
+  /** Host-owned nested-detail dispatcher. Omit to retain the Discussions viewer. */
+  onOpenRequest?: (request: ThreadOpenRequest) => void;
+  /** Host-owned close action for embedded focus panes. */
+  onClose?: () => void;
+  draftText?: string;
+  onDraftTextChange?: (text: string) => void;
 }
 
 export function ThreadDetail({
@@ -211,6 +219,10 @@ export function ThreadDetail({
   onViewerWideChange,
   discussionId: discussionIdProp,
   companyId: companyIdProp,
+  onOpenRequest,
+  onClose,
+  draftText,
+  onDraftTextChange,
 }: ThreadDetailProps = {}) {
   void onViewerWideChange;
   const { threadId, discussionId: discussionIdParam } = useParams<{ threadId?: string; discussionId?: string }>();
@@ -294,11 +306,16 @@ export function ThreadDetail({
   }, [scopeVersionsQuery.data?.versions, selectedScopeVersionId]);
 
   const openViewerTab = useCallback((tab: ThreadViewerTab) => {
+    if (onOpenRequest) {
+      const request = threadViewerTabToOpenRequest(tab);
+      if (request) onOpenRequest(request);
+      return;
+    }
     setViewerTabs((current) => ensureTab(current, tab));
     setActiveViewerKey(tab.key);
     setViewerCollapsed(false);
     setMobileTab("viewer");
-  }, []);
+  }, [onOpenRequest]);
 
   const closeViewerTab = useCallback((key: string) => {
     setViewerTabs((current) => {
@@ -897,7 +914,7 @@ export function ThreadDetail({
 
       {/* Mobile tab bar */}
       <div className="flex border-b border-border shrink-0 md:hidden" data-testid="thread-mobile-tabs">
-        {MOBILE_TABS.map(({ key, label }) => (
+        {MOBILE_TABS.filter(({ key }) => !onOpenRequest || key !== "viewer").map(({ key, label }) => (
           <button
             key={key}
             type="button"
@@ -923,7 +940,6 @@ export function ThreadDetail({
       <div
         className={cn(
           "flex flex-1 min-h-0 overflow-hidden",
-          embedded && "gap-2",
           !embedded && "rounded-xl border border-border bg-background shadow-sm",
         )}
       >
@@ -945,7 +961,6 @@ export function ThreadDetail({
         <div
           className={cn(
             "flex-1 min-w-0 h-full overflow-hidden flex flex-col",
-            embedded && "rounded-xl border border-border bg-background shadow-sm",
             mobileTab === "thread" || mobileTab === "scope" || mobileTab === "branches"
               ? "flex"
               : "hidden md:flex",
@@ -1124,6 +1139,17 @@ export function ThreadDetail({
                     : <Pause className="h-3.5 w-3.5" />
                   }
                 </button>
+                {embedded && onClose && (
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    onClick={onClose}
+                    aria-label="Close discussion focus"
+                    title="Close discussion"
+                  >
+                    <X className="h-4 w-4" />
+                  </Button>
+                )}
               </div>
             </div>
 
@@ -1332,6 +1358,8 @@ export function ThreadDetail({
                 onRetry={refetch}
                 onOpenAttachment={openAttachmentInViewer}
                 hasScopeDraft={!!thread.derivedStage?.scopeVersionId}
+                draftText={draftText}
+                onDraftTextChange={onDraftTextChange}
               />
             </div>
 
@@ -1425,7 +1453,7 @@ export function ThreadDetail({
           </div>
         </div>
 
-        {!viewerCollapsed && (
+        {!onOpenRequest && !viewerCollapsed && (
           <div
             role="separator"
             aria-label="Resize viewer"
@@ -1442,10 +1470,10 @@ export function ThreadDetail({
         )}
 
         {/* Right viewer panel */}
-        <div
+        {!onOpenRequest && <div
           className={cn(
             "relative shrink-0 h-full overflow-hidden bg-muted/20 transition-[width] duration-200",
-            embedded ? "rounded-xl border border-border bg-background shadow-sm" : "border-l border-border",
+            !embedded && "border-l border-border",
             mobileTab !== "viewer" ? "hidden md:block" : "block",
           )}
           style={{ width: viewerCollapsed ? 46 : viewerWidth }}
@@ -1487,7 +1515,7 @@ export function ThreadDetail({
               onToggleCollapse={() => setViewerCollapsed(true)}
             />
           )}
-        </div>
+        </div>}
       </div>
     </div>
   );

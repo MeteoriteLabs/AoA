@@ -186,6 +186,12 @@ Versioned deliverables: documents, presentations, code, design, reports.
 
 `task_dependencies` table links tasks in blocking relationships. When a dependency task completes → dependent auto-unblocks. Separate from `parentId` (which is subtask hierarchy, not blocking). Tasks can be blocked from any non-terminal status: backlog, todo, in_progress.
 
+### Task Completion And Ask Human
+
+Agent-owned tasks snapshot an effective completion policy: `review_required` (safe company default) or `agent_can_complete`. Resolution order is task override -> Routine/workflow-template override -> the task's single department-or-project scope -> company; a hard company guardrail can force review. Agent completion also requires structured acceptance criteria and sufficient autonomy. Review assignment is materialized in `reviewerUserId` on entry to `in_review`.
+
+`work_questions` is the durable Ask Human source of truth. A question is linked to its task, asking agent, recipient, optional run/workspace/source Discussion, answer, and continuation state. Commander, Inbox, Task Work, Workspace, and source Discussion are mirrors of the same question. Technical run completion never implies task completion. See Decision #109.
+
 ### RBAC
 
 Three roles: `founder`, `team_lead`, `team_member`. Department-scoped. Additive permissions from restrictive defaults.
@@ -335,7 +341,8 @@ All table definitions in `packages/db/src/schema/` (126 files). Schema changes u
 | `company_secret_versions` | Secret rotation history |
 | `projects` | Departments AND projects. `type`: `'department'` \| `'project'` |
 | `goals` | Company goals. Status: planned → active → at_risk → achieved/cancelled |
-| `issues` | Tasks. `parentId` = subtask hierarchy. `artifactId` = linked deliverable |
+| `issues` | Tasks. `parentId` = subtask hierarchy. `artifactId` = linked deliverable. Snapshots completion policy, provenance, reviewer source, and acceptance criteria |
+| `work_questions` | Durable Ask Human questions linked to task/agent/recipient with answer and continuation state |
 | `task_dependencies` | Blocking relationships between tasks |
 | `issue_comments` | Task comments. Also used for heartbeat run summary comments |
 | `issue_labels`, `labels` | Task labeling |

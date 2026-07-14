@@ -26,6 +26,7 @@ export type {
   AdapterRuntimePermissionPrompt,
   AdapterRuntimeWorkQuestionAnswer,
   AdapterRuntimeWorkQuestionPrompt,
+  HumanQuestionRuntimeCapabilities,
   AdapterEnvironmentCheckLevel,
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestStatus,

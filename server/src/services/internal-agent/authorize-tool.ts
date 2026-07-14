@@ -50,11 +50,9 @@ export type CommanderToolPolicyDecision =
     };
 
 /**
- * D2: Per-agent tool allowlist for AoA agents (Decision #95 access model).
+ * D2: Per-agent tool allowlist for AoA and organization agents.
  *
- * When agentKind is 'aoa', the toolAllowlist is enforced with default-deny
- * semantics: absent/empty allowlist = deny all. Non-AoA agents skip this gate
- * entirely (existing behavior preserved).
+ * Both model runtimes use default-deny semantics: absent/empty = deny all.
  */
 export function authorizeToolInvocation(
   tool: AgentTool,
@@ -63,16 +61,16 @@ export function authorizeToolInvocation(
   opts?: { agentKind?: string; toolAllowlist?: readonly string[] },
 ): ToolAuthDecision {
   const capabilities = enabledCapabilities ?? [];
-  // D2: AoA-specific tool allowlist gate (default-deny for kind='aoa').
+  // Model-runtime allowlist gate (default-deny for AoA and org agents).
   // Checked BEFORE role/capability gates so a misconfigured allowlist fails
   // closed rather than silently falling through to the less-restrictive gates.
-  if (opts?.agentKind === "aoa") {
+  if (opts?.agentKind === "aoa" || opts?.agentKind === "org") {
     const allowlist = opts.toolAllowlist;
     if (!allowlist || allowlist.length === 0 || !allowlist.includes(tool.name)) {
       return {
         allowed: false,
         error: "NOT_IN_ALLOWLIST",
-        summary: `AoA agent tool allowlist does not include '${tool.name}'`,
+        summary: `Agent tool allowlist does not include '${tool.name}'`,
       };
     }
   }

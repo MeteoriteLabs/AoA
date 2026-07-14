@@ -84,6 +84,15 @@ describe("handleLiveEvent hub invalidations", () => {
     expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
       queryKey: queryKeys.notifications.digest("co1"),
     });
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
+      queryKey: queryKeys.cockpit("co1"),
+    });
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
+      queryKey: queryKeys.cockpitCounts("co1"),
+    });
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
+      queryKey: ["cockpit-tasks", "co1"],
+    });
     expect(notifyHubItemChanged).toHaveBeenCalledWith("hub-1");
     // The broad hub-items LIST invalidation is trailing-coalesced, not immediate.
     expect(queryClient.invalidateQueries).not.toHaveBeenCalledWith({
@@ -118,6 +127,9 @@ describe("handleLiveEvent hub invalidations", () => {
     });
     expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
       queryKey: queryKeys.sidebarBadges("co1"),
+    });
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({
+      queryKey: queryKeys.cockpitCounts("co1"),
     });
     expect(queryClient.invalidateQueries).not.toHaveBeenCalledWith({
       queryKey: ["hub-items", "co1"],

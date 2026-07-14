@@ -28,6 +28,9 @@ export const agentWakeupRequests = pgTable(
     runId: uuid("run_id"),
     requestedAt: timestamp("requested_at", { withTimezone: true }).notNull().defaultNow(),
     claimedAt: timestamp("claimed_at", { withTimezone: true }),
+    claimToken: uuid("claim_token"),
+    leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
+    attempts: integer("attempts").notNull().default(0),
     finishedAt: timestamp("finished_at", { withTimezone: true }),
     error: text("error"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -44,9 +47,13 @@ export const agentWakeupRequests = pgTable(
       table.requestedAt,
     ),
     agentRequestedIdx: index("agent_wakeup_requests_agent_requested_idx").on(table.agentId, table.requestedAt),
+    processingLeaseIdx: index("agent_wakeup_requests_processing_lease_idx").on(
+      table.status,
+      table.leaseExpiresAt,
+    ),
     companyIdempotencyKeyUq: uniqueIndex("agent_wakeup_requests_company_idempotency_key_uq")
       .on(table.companyId, table.idempotencyKey)
-      .where(sql`idempotency_key is not null and reason in ('max_turn_continuation_retry', 'issue_monitor_due', 'finish_successful_run_handoff')`),
+      .where(sql`idempotency_key is not null and reason in ('max_turn_continuation_retry', 'issue_monitor_due', 'finish_successful_run_handoff', 'work_question_continuation')`),
     // Partial unique index for hard cross-process dedup of *queued* wakeups.
     // Only fires while a row is still queued; once it transitions to
     // claimed/finished/failed the dedupKey may legitimately recur for the

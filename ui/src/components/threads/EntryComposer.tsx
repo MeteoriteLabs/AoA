@@ -84,6 +84,9 @@ export interface EntryComposerProps {
   onCancelReply?: () => void;
   /** Avatar initials for the current user. */
   myInitials?: string;
+  /** Optional host-owned text draft. Omit for the native uncontrolled composer. */
+  draftText?: string;
+  onDraftTextChange?: (text: string) => void;
 }
 
 /* ─── Helpers ─── */
@@ -138,8 +141,15 @@ export function EntryComposer({
   placeholder,
   onCancelReply,
   myInitials = "Me",
+  draftText,
+  onDraftTextChange,
 }: EntryComposerProps) {
-  const [text, setText] = useState("");
+  const [uncontrolledText, setUncontrolledText] = useState("");
+  const text = draftText ?? uncontrolledText;
+  const setText = (next: string) => {
+    if (draftText === undefined) setUncontrolledText(next);
+    onDraftTextChange?.(next);
+  };
   const [mentions, setMentions] = useState<Mention[]>([]);
   const [attachments, setAttachments] = useState<AssetRef[]>([]);
   const [autocompleteOpen, setAutocompleteOpen] = useState(false);

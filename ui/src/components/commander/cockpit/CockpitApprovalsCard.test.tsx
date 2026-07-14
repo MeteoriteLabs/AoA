@@ -132,7 +132,12 @@ function makeApprovalItem(overrides?: Partial<CockpitApprovalItem>): CockpitAppr
   };
 }
 
-function renderCard(items: CockpitApprovalItem[], onOpenFullPage = vi.fn(), onAsk = vi.fn()) {
+function renderCard(
+  items: CockpitApprovalItem[],
+  onOpenFullPage = vi.fn(),
+  onAsk = vi.fn(),
+  onOpenReference = vi.fn(),
+) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
@@ -140,6 +145,7 @@ function renderCard(items: CockpitApprovalItem[], onOpenFullPage = vi.fn(), onAs
         items={items}
         companyId={COMPANY}
         onOpenFullPage={onOpenFullPage}
+        onOpenReference={onOpenReference}
         onAsk={onAsk}
       />
     </QueryClientProvider>,
@@ -239,6 +245,36 @@ describe("CockpitApprovalsCard — render", () => {
     renderCard([makeApprovalItem(), makeApprovalItem({ id: "appr-2", title: "Hire Atlas" })]);
     expect(screen.getByText("Hire Scout")).toBeInTheDocument();
     expect(screen.getByText("Hire Atlas")).toBeInTheDocument();
+  });
+
+  it("opens true approvals in Commander and discussion decisions as discussion refs", () => {
+    const onOpenReference = vi.fn();
+    renderCard(
+      [
+        makeApprovalItem({ source: "approval", id: "appr-1", title: "Hire Scout" }),
+        makeApprovalItem({
+          source: "discussion_item",
+          id: "item-1",
+          discussionId: "disc-1",
+          title: "Create launch task",
+        }),
+      ],
+      vi.fn(),
+      vi.fn(),
+      onOpenReference,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Hire Scout" }));
+    fireEvent.click(screen.getByRole("button", { name: "Create launch task" }));
+
+    expect(onOpenReference).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ kind: "approval", id: "appr-1" }),
+    );
+    expect(onOpenReference).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ kind: "discussion", id: "disc-1" }),
+    );
   });
 });
 

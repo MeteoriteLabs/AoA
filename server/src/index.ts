@@ -36,6 +36,8 @@ import {
   processFileImportQueue,
   resetStuckJobs,
   WORKER_INTERVAL_MS,
+  workQuestionContinuationService,
+  workQuestionSlaService,
 } from "./services/index.js";
 import { getDbCapabilities, probeDbCapabilities } from "./services/db-capabilities.js";
 import { runExtractionSweep } from "./services/internal-agent/subagents/extraction-sweeper.js";
@@ -68,6 +70,7 @@ import { runChroniclerSweep, CHRONICLER_SWEEP_INTERVAL_MS } from "./services/int
 import { ensureAllCrewAgents, isCrewMarketplaceManaged } from "./services/internal-agent/aoa-agents/ensure-all-crew.js";
 import { backfillGoalParents } from "./migrations/backfill-goal-parents.js";
 import { backfillMemoryFolderSeeds } from "./migrations/backfill-memory-folder-seeds.js";
+import { backfillWorkQuestionSnapshots } from "./migrations/backfill-work-question-snapshots.js";
 import { backfillCrewTemplateOrigin } from "./services/internal-agent/aoa-agents/backfill-template-origin.js";
 import { backfillCrewOriginKind } from "./services/internal-agent/aoa-agents/backfill-crew-origin-kind.js";
 import { reconcileAutonomyScale } from "./services/internal-agent/aoa-agents/reconcile-autonomy-scale.js";
@@ -561,6 +564,10 @@ if (config.devLocalIdentity) {
 
 const uiMode = config.uiDevMiddleware ? "vite-dev" : config.serveUi ? "static" : "none";
 const storageService = createStorageServiceFromConfig(config);
+const workQuestionSnapshotBackfill = await backfillWorkQuestionSnapshots(db as any);
+if (workQuestionSnapshotBackfill.updated > 0) {
+  logger.info(workQuestionSnapshotBackfill, "work-question identity snapshot backfill complete");
+}
 const app = await createApp(db as any, {
   uiMode,
   storageService,
@@ -605,9 +612,13 @@ if (config.heartbeatSchedulerEnabled) {
   const heartbeat = heartbeatService(db as any);
   const productivityReviews = productivityReviewService(db as any);
   const monitorScheduler = issueMonitorSchedulerService(db as any);
+  const workQuestionContinuations = workQuestionContinuationService(db as any);
+  const workQuestionSla = workQuestionSlaService(db as any);
   const PRODUCTIVITY_REVIEW_RECONCILIATION_INTERVAL_MS = 60 * 60 * 1000;
   let monitorTickInFlight = false;
   let productivityReviewTickInFlight = false;
+  let workQuestionContinuationTickInFlight = false;
+  let workQuestionSlaTickInFlight = false;
 
   const runProductivityReviewReconciliation = (now = new Date()) => {
     if (productivityReviewTickInFlight) return;
@@ -691,6 +702,35 @@ if (config.heartbeatSchedulerEnabled) {
       .catch((err) => {
         logger.error({ err }, "heartbeat scheduled retry promotion failed");
       });
+
+    if (!workQuestionContinuationTickInFlight) {
+      workQuestionContinuationTickInFlight = true;
+      void workQuestionContinuations
+        .processDue(now)
+        .catch((err) => {
+          logger.error({ err }, "work-question continuation tick failed");
+        })
+        .finally(() => {
+          workQuestionContinuationTickInFlight = false;
+        });
+    }
+
+    if (!workQuestionSlaTickInFlight) {
+      workQuestionSlaTickInFlight = true;
+      void workQuestionSla
+        .processDue(now)
+        .then((result) => {
+          if (result.breached > 0 || result.notificationFailures > 0) {
+            logger.info({ ...result }, "work-question SLA tick completed");
+          }
+        })
+        .catch((err) => {
+          logger.error({ err }, "work-question SLA tick failed");
+        })
+        .finally(() => {
+          workQuestionSlaTickInFlight = false;
+        });
+    }
 
     // Tick scheduled routine triggers
     void routineService(db as any)

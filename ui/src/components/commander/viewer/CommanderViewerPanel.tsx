@@ -1,11 +1,14 @@
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { FileText, Globe, Home, ListTodo } from "lucide-react";
+import { FileText, Globe, Home, Inbox, ListTodo, MessageSquare, ShieldCheck, StickyNote } from "lucide-react";
 import type { CommanderOutputRef } from "@armyofagents/shared";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "../../../lib/utils";
 import { COMMANDER_PANEL_CARD } from "../commanderChrome";
 import { artifactsApi } from "../../../api/artifacts";
+import { discussionsApi } from "../../../api/discussions";
+import { hubItemsApi } from "../../../api/hub-items";
 import { BrowserViewer } from "../../viewers/BrowserViewer";
 import { ViewerTabs, type ViewerTabModel } from "../../viewers/ViewerTabs";
 import { SharedContentViewer } from "../../viewers/SharedContentViewer";
@@ -17,6 +20,12 @@ import {
 import { resolveViewer } from "../../viewers/viewer-registry";
 import { CommanderViewerHome } from "./CommanderViewerHome";
 import { TaskDetail } from "../../TaskDetail";
+import { ApprovalDetailCore } from "../../approval/ApprovalDetailCore";
+import { HubActionBar } from "../../hub/HubActionBar";
+import { HubTabBody } from "../../hub/HubTabBody";
+import { hubTabForItem } from "../../hub/hubRegistry";
+import type { HubTab, HubTaskPayload, HubThreadPayload } from "../../hub/hubViewerModel";
+import { useHubItemMutations } from "../../../hooks/useHubItemMutations";
 import type { CommanderViewerApi } from "./useCommanderViewer";
 import type { ConversationViewerState, ViewerTab } from "./commanderViewerModel";
 
@@ -116,6 +125,300 @@ function TaskDetailTabBody({ tab, onDismiss }: TaskDetailTabBodyProps) {
   return <TaskDetail issueId={tab.refId} active onDismiss={onDismiss} />;
 }
 
+function openNestedHubTab(tab: HubTab, onOpenTask: (issueId: string, title: string) => void) {
+  if (tab.kind !== "task") return;
+  const payload = tab.payload as HubTaskPayload | undefined;
+  if (payload) onOpenTask(payload.issueId, tab.title);
+}
+
+function InboxRefTabBody({
+  tab,
+  companyId,
+  onOpenTask,
+}: {
+  tab: ViewerTab;
+  companyId: string;
+  onOpenTask: (issueId: string, title: string) => void;
+}) {
+  const mutations = useHubItemMutations(companyId);
+  const [undoAction, setUndoAction] = useState<
+    | {
+        label: string;
+        itemId: string;
+        auditId?: string;
+        expectedVersion?: number;
+        restore?: { kind: "unsnooze" | "undismiss" };
+      }
+    | null
+  >(null);
+  const {
+    data: item,
+    isLoading,
+    isError,
+  } = useQuery({
+    queryKey: ["hub-items", companyId, "item", tab.refId],
+    queryFn: () => hubItemsApi.getOne(companyId, tab.refId),
+    enabled: Boolean(companyId && tab.refId),
+  });
+
+  if (isLoading) return <LoadingBody />;
+
+  if (isError || !item) {
+    return (
+      <UnavailableBody message="This Inbox item is no longer available, or you do not have access to it." />
+    );
+  }
+
+  const title = item?.title ?? tab.inputRef?.label ?? tab.title;
+  const summary = item?.summary ?? tab.inputRef?.detail ?? null;
+  const meta = item
+    ? [item.semanticType, item.priority, item.lane].filter(Boolean).join(" · ")
+    : tab.inputRef?.source ?? "Inbox";
+
+  const hubTab = hubTabForItem(item);
+  const threadPayload = hubTab.kind === "thread"
+    ? (hubTab.payload as HubThreadPayload | undefined)
+    : undefined;
+  const mutationError = [
+    mutations.dismiss.error,
+    mutations.snooze.error,
+    mutations.markUnread.error,
+    mutations.act.error,
+    mutations.undo.error,
+  ].find(Boolean);
+
+  const handleUndo = () => {
+    if (!undoAction) return;
+    if (undoAction.restore) {
+      void mutations.undoPersonalState({
+        itemId: undoAction.itemId,
+        restore: undoAction.restore,
+      });
+    } else if (undoAction.auditId && undoAction.expectedVersion != null) {
+      mutations.undo.mutate({
+        itemId: undoAction.itemId,
+        payload: {
+          auditId: undoAction.auditId,
+          expectedVersion: undoAction.expectedVersion,
+        },
+      });
+    }
+    setUndoAction(null);
+  };
+
+  const actionBar = (
+    <HubActionBar
+      item={item}
+      onDismiss={(itemId) => {
+        mutations.dismiss.mutate(itemId);
+        setUndoAction({ label: "dismiss", itemId, restore: { kind: "undismiss" } });
+      }}
+      onSnooze={(itemId) => {
+        const until = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+        mutations.snooze.mutate({ itemId, until });
+        setUndoAction({ label: "snooze", itemId, restore: { kind: "unsnooze" } });
+      }}
+      onLifecycleAction={(target, action) => {
+        mutations.act.mutate(
+          {
+            itemId: target.id,
+            payload: { action, expectedVersion: target.version },
+          },
+          {
+            onSuccess: (result) => {
+              setUndoAction({
+                label: action,
+                itemId: target.id,
+                auditId: result.auditId,
+                expectedVersion: result.item.version,
+              });
+            },
+          },
+        );
+      }}
+      onMarkUnread={(itemId) => mutations.markUnread.mutate(itemId)}
+      undoAction={undoAction ? { label: undoAction.label, onUndo: handleUndo } : null}
+    />
+  );
+
+  if (hubTab.kind === "notification") {
+    return (
+      <div className="flex h-full min-h-0 flex-col" data-testid="commander-inbox-ref-body">
+        {actionBar}
+        {mutationError ? (
+          <p className="border-b border-border bg-destructive/5 px-4 py-2 text-xs text-destructive" role="alert">
+            The Inbox action could not be completed. Refresh the item and try again.
+          </p>
+        ) : null}
+        <div className="min-h-0 flex-1 overflow-auto p-4">
+      <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+        <Inbox className="size-4" aria-hidden />
+        <span>{meta}</span>
+      </div>
+      <h2 className="mt-2 text-base font-semibold leading-snug text-foreground">{title}</h2>
+      {summary ? (
+        <p className="mt-3 text-sm leading-6 text-muted-foreground">{summary}</p>
+      ) : (
+        <p className="mt-3 text-sm text-muted-foreground">No further details.</p>
+      )}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex h-full min-h-0 flex-col" data-testid="commander-inbox-ref-body">
+      {actionBar}
+      {mutationError ? (
+        <p className="border-b border-border bg-destructive/5 px-4 py-2 text-xs text-destructive" role="alert">
+          The Inbox action could not be completed. Refresh the item and try again.
+        </p>
+      ) : null}
+      <div className="min-h-0 flex-1">
+        {threadPayload?.discussionId ? (
+          <DiscussionRefTabBody
+            companyId={companyId}
+            tab={{
+              id: `discussion:${threadPayload.discussionId}`,
+              kind: "discussion",
+              title: item.title,
+              refId: threadPayload.discussionId,
+            }}
+          />
+        ) : (
+          <HubTabBody
+            tab={hubTab}
+            companyId={companyId}
+            activeItem={item}
+            resolveHubItem={(itemId) => (itemId === item.id ? item : undefined)}
+            onOpenTab={(nextTab) => openNestedHubTab(nextTab, onOpenTask)}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function NoteRefTabBody({ tab }: { tab: ViewerTab }) {
+  return (
+    <div className="h-full overflow-auto p-4" data-testid="commander-note-ref-body">
+      <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+        <StickyNote className="size-4" aria-hidden />
+        <span>Personal note</span>
+      </div>
+      <h2 className="mt-2 text-base font-semibold leading-snug text-foreground">{tab.inputRef?.label ?? tab.title}</h2>
+      {tab.inputRef?.detail ? (
+        <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-muted-foreground">{tab.inputRef.detail}</p>
+      ) : (
+        <p className="mt-3 text-sm text-muted-foreground">No note body was included with this reference.</p>
+      )}
+    </div>
+  );
+}
+
+function ApprovalRefTabBody({
+  tab,
+  onOpenTask,
+}: {
+  tab: ViewerTab;
+  onOpenTask: (issueId: string, title: string) => void;
+}) {
+  if (!tab.inputRef?.source || tab.inputRef.source === "approval") {
+    return (
+      <ApprovalDetailCore
+        approvalId={tab.refId}
+        embedded
+        onOpenTab={(nextTab) => openNestedHubTab(nextTab, onOpenTask)}
+      />
+    );
+  }
+
+  return (
+    <div className="h-full overflow-auto p-4" data-testid="commander-approval-ref-body">
+      <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+        <ShieldCheck className="size-4" aria-hidden />
+        <span>{tab.inputRef.source.replaceAll("_", " ")}</span>
+      </div>
+      <h2 className="mt-2 text-base font-semibold leading-snug text-foreground">
+        {tab.inputRef.label}
+      </h2>
+      {tab.inputRef.detail ? (
+        <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-muted-foreground">
+          {tab.inputRef.detail}
+        </p>
+      ) : null}
+      <p className="mt-4 text-xs text-muted-foreground">
+        Review and act on this item from its Cockpit card or open its full feature page.
+      </p>
+    </div>
+  );
+}
+
+function DiscussionRefTabBody({ tab, companyId }: { tab: ViewerTab; companyId: string }) {
+  const {
+    data: discussion,
+    isLoading,
+    isError,
+  } = useQuery({
+    queryKey: ["commander-viewer-discussion", companyId, tab.refId],
+    queryFn: () => discussionsApi.get(companyId, tab.refId),
+    enabled: Boolean(companyId && tab.refId),
+  });
+
+  if (isLoading) return <LoadingBody />;
+
+  const title = discussion?.title ?? tab.inputRef?.label ?? tab.title;
+  const entries = discussion?.entries.slice(-3) ?? [];
+  const meta = discussion
+    ? [
+        discussion.derivedStage?.label,
+        discussion.scopeName,
+        `${discussion.entryCount} ${discussion.entryCount === 1 ? "message" : "messages"}`,
+        discussion.pendingItemCount > 0 ? `${discussion.pendingItemCount} pending` : null,
+      ].filter(Boolean).join(" · ")
+    : tab.inputRef?.source ?? "Discussion";
+
+  return (
+    <div className="h-full overflow-auto p-4" data-testid="commander-discussion-ref-body">
+      <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+        <MessageSquare className="size-4" aria-hidden />
+        <span>{meta}</span>
+      </div>
+      <h2 className="mt-2 text-base font-semibold leading-snug text-foreground">{title}</h2>
+      {entries.length > 0 ? (
+        <div className="mt-4 space-y-3">
+          {entries.map((entry) => (
+            <article
+              key={entry.id}
+              className="rounded-md border border-border/70 bg-background/60 p-3"
+            >
+              <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+                <span className="truncate">{entry.authorAgentName ?? entry.createdBy}</span>
+                <span className="shrink-0">{new Date(entry.createdAt).toLocaleDateString()}</span>
+              </div>
+              {entry.title ? (
+                <h3 className="mt-2 text-sm font-medium leading-snug text-foreground">{entry.title}</h3>
+              ) : null}
+              <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-muted-foreground">
+                {entry.rawContent}
+              </p>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <p className="mt-3 text-sm text-muted-foreground">
+          {tab.inputRef?.detail ?? "No discussion messages were found."}
+        </p>
+      )}
+      {isError ? (
+        <p className="mt-3 text-xs text-muted-foreground">
+          The live discussion could not be loaded, so this preview is showing the referenced context.
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Tab body switcher (shared between desktop panel + mobile sheet)
 // ---------------------------------------------------------------------------
@@ -127,6 +430,7 @@ interface TabBodySwitchProps {
   conversationRefs: CommanderOutputRef[];
   onOpen: (ref: CommanderOutputRef) => void;
   onCloseTab: (id: string) => void;
+  onOpenTask?: (issueId: string, title: string) => void;
 }
 
 export function TabBodySwitch({
@@ -136,6 +440,7 @@ export function TabBodySwitch({
   conversationRefs,
   onOpen,
   onCloseTab,
+  onOpenTask = () => {},
 }: TabBodySwitchProps) {
   if (activeId === "home" || !activeTab) {
     return (
@@ -173,6 +478,29 @@ export function TabBodySwitch({
     );
   }
 
+  if (activeTab.kind === "discussion") {
+    return <DiscussionRefTabBody tab={activeTab} companyId={companyId} />;
+  }
+
+  if (activeTab.kind === "approval") {
+    return <ApprovalRefTabBody tab={activeTab} onOpenTask={onOpenTask} />;
+  }
+
+  if (activeTab.kind === "inbox") {
+    return (
+      <InboxRefTabBody
+        key={activeTab.id}
+        tab={activeTab}
+        companyId={companyId}
+        onOpenTask={onOpenTask}
+      />
+    );
+  }
+
+  if (activeTab.kind === "note") {
+    return <NoteRefTabBody tab={activeTab} />;
+  }
+
   return (
     <UnavailableBody message="This item is no longer available (it may have been deleted, or you may not have access)." />
   );
@@ -190,7 +518,20 @@ export function buildViewerTabModels(state: ConversationViewerState): ViewerTabM
         id: t.id,
         kind: t.kind,
         title: t.title,
-        icon: t.kind === "browser" ? Globe : t.kind === "task" ? ListTodo : FileText,
+        icon:
+          t.kind === "browser"
+            ? Globe
+            : t.kind === "task"
+              ? ListTodo
+              : t.kind === "discussion"
+                ? MessageSquare
+                : t.kind === "approval"
+                  ? ShieldCheck
+                  : t.kind === "inbox"
+                    ? Inbox
+                    : t.kind === "note"
+                      ? StickyNote
+                      : FileText,
       }),
     ),
   ];
@@ -208,6 +549,7 @@ export interface CommanderViewerDetailProps {
   tabModels: ViewerTabModel[];
   /** Global bridge: collapse the panel (persists) — wired by AgentPanelContent. */
   onCollapse: () => void;
+  onOpenTask: (issueId: string, title: string) => void;
 }
 
 export function CommanderViewerDetail({
@@ -217,6 +559,7 @@ export function CommanderViewerDetail({
   activeTab,
   tabModels,
   onCollapse,
+  onOpenTask,
 }: CommanderViewerDetailProps) {
   const state = viewer.state;
   const activeKey = {
@@ -246,6 +589,7 @@ export function CommanderViewerDetail({
           conversationRefs={conversationRefs}
           onOpen={viewer.openRef}
           onCloseTab={viewer.close}
+          onOpenTask={onOpenTask}
         />
       </div>
     </div>
@@ -296,6 +640,7 @@ export interface CommanderViewerPanelProps {
   conversationRefs: CommanderOutputRef[];
   /** True on mobile breakpoints — caller passes (e.g. from window width check). */
   isMobile: boolean;
+  onOpenTask: (issueId: string, title: string) => void;
 }
 
 export function CommanderViewerPanel({
@@ -303,6 +648,7 @@ export function CommanderViewerPanel({
   companyId,
   conversationRefs,
   isMobile,
+  onOpenTask,
 }: CommanderViewerPanelProps) {
   const state = viewer.state;
   const activeTab = state.tabs.find((t) => t.id === state.activeId);
@@ -352,6 +698,7 @@ export function CommanderViewerPanel({
               conversationRefs={conversationRefs}
               onOpen={viewer.openRef}
               onCloseTab={viewer.close}
+              onOpenTask={onOpenTask}
             />
           </div>
         </SheetContent>

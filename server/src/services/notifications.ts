@@ -35,6 +35,7 @@ export interface NotificationInput {
   message?: string | null;
   relatedEntityType?: string | null;
   relatedEntityId?: string | null;
+  idempotencyKey?: string | null;
 }
 
 export interface NotificationRow {

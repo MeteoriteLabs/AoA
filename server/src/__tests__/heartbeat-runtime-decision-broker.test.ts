@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { RuntimeDecisionCancelledError } from "../services/agent-runtime-decisions.js";
-import { createHeartbeatRuntimeDecisionBroker } from "../services/heartbeat.js";
+import { calculateRunAccounting, createHeartbeatRuntimeDecisionBroker } from "../services/heartbeat.js";
 import { conflict } from "../errors.js";
 import { RUNTIME_HOOK_BLOCK_TIMEOUT_SEC } from "@armyofagents/adapter-utils";
 
@@ -78,6 +78,7 @@ describe("heartbeat runtime decision broker", () => {
     const appendRunEvent = vi.fn().mockResolvedValue(undefined);
     const markRunWaiting = vi.fn().mockResolvedValue(undefined);
     const clearRunWaiting = vi.fn().mockResolvedValue(undefined);
+    const recordWait = vi.fn().mockResolvedValue(undefined);
 
     const broker = createHeartbeatRuntimeDecisionBroker({
       run,
@@ -87,6 +88,7 @@ describe("heartbeat runtime decision broker", () => {
       appendRunEvent,
       markRunWaiting,
       clearRunWaiting,
+      recordWait,
       pollIntervalMs: 0,
     });
 
@@ -127,6 +129,7 @@ describe("heartbeat runtime decision broker", () => {
     });
     expect(runtimeDecisions.markRelayed).toHaveBeenCalledWith({ companyId: run.companyId, decisionId: created.id });
     expect(clearRunWaiting).toHaveBeenCalledWith(relayed);
+    expect(recordWait).toHaveBeenCalledWith("permission", expect.any(Number));
     expect(appendRunEvent.mock.calls.map((call) => call[0].eventType)).toEqual([
       "runtime_decision.prompt_created",
       "runtime_decision.prompt_answered",
@@ -293,6 +296,7 @@ describe("heartbeat runtime decision broker — requestPermissionBounded", () =>
       markRelayFailed: vi.fn(),
     };
     const clearRunWaiting = vi.fn().mockResolvedValue(undefined);
+    const recordWait = vi.fn().mockResolvedValue(undefined);
     const broker = createHeartbeatRuntimeDecisionBroker({
       run,
       agent,
@@ -301,6 +305,7 @@ describe("heartbeat runtime decision broker — requestPermissionBounded", () =>
       appendRunEvent: vi.fn().mockResolvedValue(undefined),
       markRunWaiting: vi.fn().mockResolvedValue(undefined),
       clearRunWaiting,
+      recordWait,
       pollIntervalMs: 0,
     });
 
@@ -323,6 +328,7 @@ describe("heartbeat runtime decision broker — requestPermissionBounded", () =>
     });
     expect(runtimeDecisions.markRelayed).toHaveBeenCalledWith({ companyId: run.companyId, decisionId: created.id });
     expect(clearRunWaiting).toHaveBeenCalledWith(relayed);
+    expect(recordWait).toHaveBeenCalledWith("permission", expect.any(Number));
   });
 
   it("returns { timedOut: true } and does NOT call markRelayed when waitForAnswer times out", async () => {
@@ -419,5 +425,41 @@ describe("heartbeat runtime decision broker — requestPermissionBounded", () =>
       broker.requestPermissionBounded({ nonce: "nonce-1", title: "Allow command?" }, TIMEOUT_MS),
     ).rejects.toBe(cancelError);
     expect(runtimeDecisions.markRelayed).not.toHaveBeenCalled();
+  });
+});
+
+describe("heartbeat run accounting", () => {
+  it("keeps parked human wait out of provider-active time while adding it to total elapsed time", () => {
+    expect(
+      calculateRunAccounting({
+        startedAt: "2026-07-13T12:00:00.000Z",
+        finishedAt: "2026-07-13T12:01:00.000Z",
+        humanQuestionWaitMs: 60 * 60 * 1000,
+        runtimePermissionWaitMs: 0,
+        humanWaitOccurredOutsideRun: true,
+      }),
+    ).toEqual({
+      activeExecutionMs: 60 * 1000,
+      humanQuestionWaitMs: 60 * 60 * 1000,
+      runtimePermissionWaitMs: 0,
+      totalWallClockMs: 61 * 60 * 1000,
+    });
+  });
+
+  it("subtracts inline permission and human waits from provider-active time", () => {
+    expect(
+      calculateRunAccounting({
+        startedAt: "2026-07-13T12:00:00.000Z",
+        finishedAt: "2026-07-13T12:02:00.000Z",
+        humanQuestionWaitMs: 20 * 1000,
+        runtimePermissionWaitMs: 30 * 1000,
+        humanWaitOccurredOutsideRun: false,
+      }),
+    ).toEqual({
+      activeExecutionMs: 70 * 1000,
+      humanQuestionWaitMs: 20 * 1000,
+      runtimePermissionWaitMs: 30 * 1000,
+      totalWallClockMs: 120 * 1000,
+    });
   });
 });

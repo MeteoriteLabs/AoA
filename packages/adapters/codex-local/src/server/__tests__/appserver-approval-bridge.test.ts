@@ -290,12 +290,13 @@ describe("handleApprovalRequest — never throws", () => {
     expect(["accept", "decline"]).toContain(d);
   });
 
-  it("unknown method still gates via broker (generic prompt)", async () => {
+  it("unknown method declines without creating a misleading permission prompt", async () => {
     const broker = makeBroker({ outcome: answer("deny") });
     const d = await handleApprovalRequest("item/unknown/requestApproval", cmdParams(), {
       ...base,
       broker,
     });
     expect(d).toBe("decline");
+    expect(broker.bounded).not.toHaveBeenCalled();
   });
 });

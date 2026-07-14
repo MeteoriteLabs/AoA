@@ -287,10 +287,8 @@ describe("terminal-run hub emit builders", () => {
     );
   });
 
-  it("buildTerminalRunHubEmit routes succeeded through buildCompletedRunHubEmit", () => {
-    expect(producers.buildTerminalRunHubEmit(baseRun)).toStrictEqual(
-      producers.buildCompletedRunHubEmit(baseRun),
-    );
+  it("buildTerminalRunHubEmit keeps successful process exits out of attention lanes", () => {
+    expect(producers.buildTerminalRunHubEmit(baseRun)).toBeNull();
   });
 
   it.each(["failed", "timed_out"])(
@@ -308,7 +306,7 @@ describe("terminal-run hub emit builders", () => {
     },
   );
 
-  it.each(["cancelled", "running", "queued", "scheduled_retry"])(
+  it.each(["succeeded", "cancelled", "running", "queued", "scheduled_retry"])(
     "buildTerminalRunHubEmit(%s) emits nothing (null)",
     (status) => {
       expect(producers.buildTerminalRunHubEmit({ ...baseRun, status })).toBeNull();

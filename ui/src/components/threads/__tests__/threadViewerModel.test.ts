@@ -3,6 +3,7 @@ import type { DiscussionDetail, DiscussionEntryAttachment, ExtractedItem } from 
 import {
   OPEN_TAB_KEY,
   browserTab,
+  artifactRefTab,
   closeTab,
   createGlobalMapTab,
   createOpenTab,
@@ -12,7 +13,10 @@ import {
   extractUrlsFromThread,
   scopeArtifactToTab,
   scopeItemToTab,
+  taskOutputTab,
+  taskTab,
   threadAttachmentToTab,
+  threadViewerTabToOpenRequest,
 } from "../threadViewerModel";
 
 function item(overrides: Partial<ExtractedItem> = {}): ExtractedItem {
@@ -195,6 +199,35 @@ describe("threadViewerModel", () => {
       label: "Global Map",
       kind: "map",
     });
+  });
+
+  it("converts native viewer tabs into typed host requests", () => {
+    expect(threadViewerTabToOpenRequest(taskTab("task-1", "Ship"))).toEqual({
+      kind: "task",
+      issueId: "task-1",
+      title: "Ship",
+      scopeItemId: undefined,
+    });
+    expect(threadViewerTabToOpenRequest(taskOutputTab("task-1", "Ship"))).toMatchObject({
+      kind: "task_output",
+      issueId: "task-1",
+    });
+    expect(threadViewerTabToOpenRequest(artifactRefTab("artifact-1", "Brief", "v1"))).toEqual({
+      kind: "artifact",
+      artifactId: "artifact-1",
+      versionId: "v1",
+      title: "Brief",
+    });
+    expect(threadViewerTabToOpenRequest(browserTab("https://example.com"))).toMatchObject({
+      kind: "browser",
+      url: "https://example.com/",
+    });
+    expect(threadViewerTabToOpenRequest(createThreadMapTab("thread-1"))).toEqual({
+      kind: "map",
+      scope: "thread",
+      threadId: "thread-1",
+    });
+    expect(threadViewerTabToOpenRequest(createOpenTab())).toBeNull();
   });
 
   it("extracts unique http urls and strips sentence punctuation", () => {

@@ -55,6 +55,13 @@ export async function postRunSummaryComment(
       issueId: input.issueId,
       authorAgentId: null,
       authorUserId: null,
+      authorType: "system",
+      presentation: {
+        kind: "system_notice",
+        tone: input.outcome === "succeeded" ? "success" : input.outcome === "cancelled" ? "info" : "danger",
+        title: "Run summary",
+        detailsDefaultOpen: false,
+      },
       body: sanitizeForDb(body),
     });
     await db.update(issues).set({ updatedAt: new Date() }).where(eq(issues.id, input.issueId));

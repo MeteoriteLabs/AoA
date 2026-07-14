@@ -4,6 +4,8 @@ import { api } from "./client";
 export interface AgentRuntimeTrustRule {
   id: string;
   agentId: string | null;
+  runId: string | null;
+  grantScope: "persistent" | "run";
   adapterType: string;
   toolName: string | null;
   commandHashPrefix: string | null;

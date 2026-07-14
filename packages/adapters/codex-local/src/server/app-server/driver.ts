@@ -182,9 +182,25 @@ function isUnknownSessionRejection(err: unknown): boolean {
 }
 
 const FILE_CHANGE_APPROVAL_METHOD = "item/fileChange/requestApproval";
+const MCP_ELICITATION_METHOD = "mcpServer/elicitation/request";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
+}
+
+function isTrustedAoaMcpToolCall(params: unknown): boolean {
+  const request = asRecord(params);
+  const meta = asRecord(request?._meta);
+  const schema = asRecord(request?.requestedSchema);
+  const properties = asRecord(schema?.properties);
+  return (
+    request?.serverName === "aoa" &&
+    request?.mode === "form" &&
+    meta?.codex_approval_kind === "mcp_tool_call" &&
+    schema?.type === "object" &&
+    properties != null &&
+    Object.keys(properties).length === 0
+  );
 }
 
 /**
@@ -282,6 +298,19 @@ export async function driveCodexAppServer(
 
   // --- Approval routing: fail-closed ----------------------------------------
   registerServerRequestHandler(async (id, method, params) => {
+    if (method === MCP_ELICITATION_METHOD) {
+      if (isTrustedAoaMcpToolCall(params)) {
+        // AoA tools are independently authorized by the MCP bridge using the
+        // run actor, company, task, role, and explicit tool allowlist. This
+        // response permits exactly this one invocation; it does not persist a
+        // Codex grant or relax shell/filesystem/network policy.
+        client.respond(id, { action: "accept", content: {}, _meta: null });
+      } else {
+        onWarn("[aoa] Declined unsupported Codex MCP elicitation request.");
+        client.respond(id, { action: "decline", content: null, _meta: null });
+      }
+      return;
+    }
     let decision: string;
     try {
       if (!onServerApproval) throw new Error("no approval bridge");

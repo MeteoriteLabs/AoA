@@ -15,17 +15,26 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { useToast } from "../../context/ToastContext";
 import { Activity } from "lucide-react";
-import type { IssueComment, Agent } from "@armyofagents/shared";
+import type { IssueComment, Agent, WorkQuestionDetail } from "@armyofagents/shared";
 import { ChatbarStatusRow } from "./ChatbarStatusRow";
 import { ChatbarControls } from "./ChatbarControls";
 import { useRunTokens } from "./useRunTokens";
 import { useLatestTodos } from "./useLatestTodos";
 import { getContextLimit } from "./adapter-utils";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../../api/heartbeats";
+import { useInlineWorkQuestions, WorkQuestionInlineError } from "../work-questions/WorkQuestionInlineList";
+import { WorkQuestionPanel } from "../work-questions/WorkQuestionPanel";
 
 export type TimelineItem =
   | { kind: "run"; ts: string; data: RunForIssue }
-  | { kind: "comment"; ts: string; data: IssueComment };
+  | { kind: "comment"; ts: string; data: IssueComment }
+  | { kind: "work_question"; ts: string; data: WorkQuestionDetail };
+
+const TIMELINE_KIND_ORDER: Record<TimelineItem["kind"], number> = {
+  comment: 0,
+  run: 1,
+  work_question: 2,
+};
 
 function normalizeTimelineDate(value: string | Date | null): string | null {
   if (value == null) return null;
@@ -57,12 +66,14 @@ interface WorkspaceTimelineProps {
   /** When true, renders in compact mode for TaskSlideOver */
   compact?: boolean;
   className?: string;
+  anchorId?: string;
 }
 
 export function WorkspaceTimeline({
   issueId,
   compact = false,
   className,
+  anchorId,
 }: WorkspaceTimelineProps) {
   const { selectedCompanyId } = useCompany();
   const queryClient = useQueryClient();
@@ -74,6 +85,8 @@ export function WorkspaceTimeline({
   const [modelOverride, setModelOverride] = useState<string | null>(null);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [hasUnseenActivity, setHasUnseenActivity] = useState(false);
+  const [highlightedAnchorId, setHighlightedAnchorId] = useState<string | null>(null);
+  const [anchorAnnouncement, setAnchorAnnouncement] = useState("");
 
   const handleTextareaChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setChatInput(e.target.value);
@@ -129,6 +142,12 @@ export function WorkspaceTimeline({
     enabled: !!issueId,
     refetchInterval: 3000,
   });
+
+  const inlineQuestionsQuery = useInlineWorkQuestions(selectedCompanyId ?? "", { issueId });
+  const inlineQuestions = useMemo(
+    () => Array.isArray(inlineQuestionsQuery.data) ? inlineQuestionsQuery.data : [],
+    [inlineQuestionsQuery.data],
+  );
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
@@ -195,9 +214,24 @@ export function WorkspaceTimeline({
         ts: typeof c.createdAt === "string" ? c.createdAt : c.createdAt.toISOString(),
         data: c,
       })),
+      ...inlineQuestions.map((detail) => ({
+        kind: "work_question" as const,
+        ts: typeof detail.question.createdAt === "string"
+          ? detail.question.createdAt
+          : detail.question.createdAt.toISOString(),
+        data: detail,
+      })),
     ];
-    return items.sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime());
-  }, [liveTimelineRuns, timelineRuns, comments]);
+    return items.sort((a, b) => {
+      const time = new Date(a.ts).getTime() - new Date(b.ts).getTime();
+      if (time !== 0) return time;
+      const kind = TIMELINE_KIND_ORDER[a.kind] - TIMELINE_KIND_ORDER[b.kind];
+      if (kind !== 0) return kind;
+      const leftId = a.kind === "run" ? a.data.runId : a.kind === "comment" ? a.data.id : a.data.question.id;
+      const rightId = b.kind === "run" ? b.data.runId : b.kind === "comment" ? b.data.id : b.data.question.id;
+      return leftId.localeCompare(rightId);
+    });
+  }, [liveTimelineRuns, timelineRuns, comments, inlineQuestions]);
 
   const attachmentsByCommentId = useMemo(() => {
     const grouped = new Map<string, NonNullable<typeof attachments>>();
@@ -243,6 +277,19 @@ export function WorkspaceTimeline({
   useEffect(() => {
     handleTimelineActivity();
   }, [mergedTimeline.length, hasLiveRuns, handleTimelineActivity]);
+
+  useEffect(() => {
+    if (!anchorId || anchorId === "question" || anchorId === "work") return;
+    const target = Array.from(scrollRef.current?.querySelectorAll<HTMLElement>("[data-work-question-id]") ?? [])
+      .find((element) => element.dataset.workQuestionId === anchorId);
+    if (!target) return;
+    target.scrollIntoView({ block: "center", behavior: "smooth" });
+    target.focus({ preventScroll: true });
+    setHighlightedAnchorId(anchorId);
+    setAnchorAnnouncement("Focused the requested work question");
+    const timeout = window.setTimeout(() => setHighlightedAnchorId(null), 1800);
+    return () => window.clearTimeout(timeout);
+  }, [anchorId, inlineQuestions]);
 
   // Agent resolution — always use the task's assigned agent
   const assignedAgentId = issue?.assigneeAgentId ?? null;
@@ -322,6 +369,9 @@ export function WorkspaceTimeline({
         onScroll={handleTimelineScroll}
       >
         <div className="mx-auto flex w-full max-w-3xl min-w-0 flex-col gap-4" data-testid="timeline-thread-lane">
+        {inlineQuestionsQuery.isError ? (
+          <WorkQuestionInlineError onRetry={() => void inlineQuestionsQuery.refetch()} />
+        ) : null}
         {(commentsLoading || runsLoading) && (
           <div className="space-y-3" data-testid="timeline-skeleton">
             {Array.from({ length: 3 }).map((_, i) => (
@@ -348,6 +398,26 @@ export function WorkspaceTimeline({
         )}
 
         {mergedTimeline.map((item, idx) => {
+          if (item.kind === "work_question") {
+            const detail = item.data;
+            return (
+              <div
+                key={`work-question-${detail.question.id}`}
+                data-work-question-id={detail.question.id}
+                tabIndex={-1}
+                className={cn(
+                  "outline-none transition-shadow motion-reduce:transition-none",
+                  highlightedAnchorId === detail.question.id && "ring-2 ring-primary ring-offset-2 ring-offset-background",
+                )}
+              >
+                <WorkQuestionPanel
+                  companyId={selectedCompanyId!}
+                  questionId={detail.question.id}
+                  initialDetail={detail}
+                />
+              </div>
+            );
+          }
           if (item.kind === "run") {
             const run = item.data;
             const agent = agentMap.get(run.agentId);
@@ -378,7 +448,7 @@ export function WorkspaceTimeline({
             let displayText = "System";
 
             if (isRunSummary) {
-              // Format: "🤖 **Run Summary** — Agent\nDuration: Xs | Tokens: N in / N out | Cost: $X\nOutcome: ✅ Completed"
+              // Format: "🤖 **Run Summary** — Agent\nDuration: Xs | Tokens: N in / N out | Cost: $X\nOutcome: ✅ Succeeded"
               const lines = body.split("\n").filter(Boolean);
               const statsLine = lines[1] ?? "";
               const outcomeLine = lines[2] ?? "";
@@ -421,6 +491,7 @@ export function WorkspaceTimeline({
         })}
         </div>
       </div>
+      <span className="sr-only" aria-live="polite">{anchorAnnouncement}</span>
 
       {/* Chatbar — unified 3-row widget fixed at bottom */}
       {hasUnseenActivity && (

@@ -69,6 +69,17 @@ export const issues = pgTable(
     assigneeAdapterOverrides: jsonb("assignee_adapter_overrides").$type<Record<string, unknown>>(),
     source: text("source"),
     reviewerUserId: text("reviewer_user_id").references(() => authUsers.id, { onDelete: "set null" }),
+    reviewerSource: text("reviewer_source"),
+    acceptanceCriteria: jsonb("acceptance_criteria").$type<string[]>().notNull().default([]),
+    agentCompletionPolicy: text("agent_completion_policy").notNull().default("review_required"),
+    agentCompletionPolicyOverride: text("agent_completion_policy_override"),
+    agentCompletionPolicySource: text("agent_completion_policy_source")
+      .notNull()
+      .default("legacy_backfill"),
+    agentCompletionPolicySourceId: text("agent_completion_policy_source_id"),
+    agentCompletionPolicyResolvedAt: timestamp("agent_completion_policy_resolved_at", {
+      withTimezone: true,
+    }).notNull().defaultNow(),
     dueDate: timestamp("due_date", { withTimezone: true }),
     startedAt: timestamp("started_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),

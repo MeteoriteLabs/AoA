@@ -37,6 +37,8 @@ const mockIssueServiceList = vi.hoisted(() => vi.fn());
 const mockThreadServiceList = vi.hoisted(() => vi.fn());
 const mockLiveRunsForCompany = vi.hoisted(() => vi.fn());
 const mockMemoryServiceListPending = vi.hoisted(() => vi.fn());
+const mockUserNotesList = vi.hoisted(() => vi.fn());
+const mockHubItemsQuery = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/cockpit-scope.js", () => ({
   resolveCockpitScope: mockResolveCockpitScope,
@@ -57,6 +59,23 @@ vi.mock("../routes/agents-live-runs.js", () => ({
 
 vi.mock("../services/memory.js", () => ({
   memoryService: () => ({ listPending: mockMemoryServiceListPending }),
+}));
+
+vi.mock("../services/user-notes.js", () => ({
+  userNotesService: () => ({ list: mockUserNotesList }),
+}));
+
+vi.mock("../services/hub-items.js", () => ({
+  hubItemsService: () => ({ query: mockHubItemsQuery }),
+}));
+
+vi.mock("../services/cockpit-work.js", () => ({
+  cockpitWorkService: () => ({
+    summary: vi.fn().mockResolvedValue({
+      activeWork: { mine: { items: [], total: 0 }, managed: { items: [], total: 0 } },
+      awaitingReview: { items: [], total: 0 },
+    }),
+  }),
 }));
 
 // ── DB stub ───────────────────────────────────────────────────────────────────
@@ -135,6 +154,8 @@ describe("cockpitPinned — empty pins", () => {
     expect(result).toHaveProperty("pinned");
     expect(result.pinned).toEqual([]);
   });
+  mockUserNotesList.mockResolvedValue([]);
+  mockHubItemsQuery.mockResolvedValue({ items: [], nextCursor: null });
 });
 
 describe("cockpitPinned — task pin", () => {

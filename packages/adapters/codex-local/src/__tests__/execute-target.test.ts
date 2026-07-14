@@ -53,7 +53,7 @@ console.log(JSON.stringify({
 }
 
 describe("codex execute target", () => {
-  it("uses explicit local target without changing command, stdin, env, or metadata", async () => {
+  it("uses an explicit local target and appends task context to a custom prompt", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-codex-execute-target-"));
     const workspace = path.join(root, "workspace");
     const commandBase = path.join(root, "agent");
@@ -93,7 +93,9 @@ describe("codex execute target", () => {
           timeoutSec: 10,
           graceSec: 1,
         },
-        context: {},
+        context: {
+          currentTaskMarkdown: "## Current Task\n- Task ID: task-custom-codex",
+        },
         executionTarget: { type: "local" },
         runtimeCommandSpec: { command: "codex", installCommand: "do-not-run" },
         authToken: "secret-run-token",
@@ -116,7 +118,9 @@ describe("codex execute target", () => {
       };
       await expectSameRealPath(capture.cwd, workspace);
       expect(capture.argv).toEqual(expect.arrayContaining(["exec", "--json", "-"]));
-      expect(capture.prompt).toBe("Prompt for agent-1 in run-codex-target.");
+      expect(capture.prompt).toBe(
+        "Prompt for agent-1 in run-codex-target.\n\n## Current Task\n- Task ID: task-custom-codex",
+      );
       expect(capture.env).toMatchObject({
         AOA_API_KEY: "secret-run-token",
         AOA_RUN_ID: "run-codex-target",

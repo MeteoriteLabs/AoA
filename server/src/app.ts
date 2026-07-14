@@ -27,6 +27,7 @@ import { goalRoutes } from "./routes/goals.js";
 import { hubItemRoutes } from "./routes/hub-items.js";
 import { hubAutopilotRoutes } from "./routes/hub-autopilot.js";
 import { agentRuntimeDecisionRoutes } from "./routes/agent-runtime-decisions.js";
+import { workQuestionRoutes } from "./routes/work-questions.js";
 import { teamsRoutes } from "./routes/teams.js";
 import { teamImportsRoutes } from "./routes/team-imports.js";
 import { approvalRoutes } from "./routes/approvals.js";
@@ -42,6 +43,7 @@ import { sidebarBadgeRoutes } from "./routes/sidebar-badges.js";
 import { sidebarPreferencesRoutes } from "./routes/sidebar-preferences.js";
 import { inboxDismissalRoutes } from "./routes/inbox-dismissals.js";
 import { userEntityPinRoutes } from "./routes/user-entity-pins.js";
+import { userNoteRoutes } from "./routes/user-notes.js";
 import { cockpitRoutes } from "./routes/cockpit.js";
 import { llmRoutes } from "./routes/llms.js";
 import { assetRoutes } from "./routes/assets.js";
@@ -207,6 +209,7 @@ export async function createApp(
   // See `services/helmet-options.ts` for the full directive set.
   app.use(helmet(buildHelmetOptions({
     deploymentMode: opts.deploymentMode,
+    uiMode: opts.uiMode,
     nodeEnv: process.env.NODE_ENV,
     inlineScriptHashes,
   })));
@@ -286,6 +289,7 @@ export async function createApp(
   api.use(hubItemRoutes(db));
   api.use(hubAutopilotRoutes(db));
   api.use(agentRuntimeDecisionRoutes(db));
+  api.use(workQuestionRoutes(db));
   api.use(teamsRoutes(db));
   api.use(teamImportsRoutes(db));
   // Phase 6.0: memory-folders and memory-assets routes MUST mount before
@@ -351,6 +355,7 @@ export async function createApp(
   api.use(sidebarPreferencesRoutes(db));
   api.use(inboxDismissalRoutes(db));
   api.use(userEntityPinRoutes(db));
+  api.use(userNoteRoutes(db));
   api.use(
     accessRoutes(db, {
       deploymentMode: opts.deploymentMode,

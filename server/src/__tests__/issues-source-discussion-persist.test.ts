@@ -20,6 +20,16 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 
 const createIssueContextBundleSpy = vi.hoisted(() => vi.fn().mockResolvedValue({ id: "bundle-1" }));
 
+vi.mock("../services/agent-completion-policy.js", () => ({
+  resolveAgentCompletionPolicy: vi.fn().mockResolvedValue({
+    policy: "review_required",
+    source: "company",
+    sourceId: "company-1",
+    guardrailApplied: false,
+    resolvedAt: new Date("2026-07-11T00:00:00.000Z"),
+  }),
+}));
+
 // ─── 1. Source-level contract (no mocks needed) ────────────────────────────────
 
 describe("issues.ts source contract — sourceDiscussionId is not stripped before INSERT", () => {

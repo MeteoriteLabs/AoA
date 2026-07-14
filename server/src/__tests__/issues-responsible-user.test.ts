@@ -54,6 +54,8 @@ vi.mock("@armyofagents/db", () => ({
   artifactVersions: tableProxy("av"),
   instanceSettings: tableProxy("is"),
   instanceExperimentalSettings: tableProxy("ies"),
+  workQuestions: tableProxy("wq"),
+  workQuestionContinuationRequests: tableProxy("wqcr"),
 }));
 
 vi.mock("../services/instance-settings.js", () => ({
@@ -81,6 +83,16 @@ vi.mock("../services/issue-agent-status-guard.js", () => ({
   assertAgentStatusTransition: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock("../services/agent-completion-policy.js", () => ({
+  resolveAgentCompletionPolicy: vi.fn().mockResolvedValue({
+    policy: "review_required",
+    source: "company",
+    sourceId: "company-1",
+    guardrailApplied: false,
+    resolvedAt: new Date("2026-07-11T00:00:00.000Z"),
+  }),
+}));
+
 vi.mock("../errors.js", () => ({
   badRequest: (msg: string) => Object.assign(new Error(msg), { status: 400 }),
   conflict: (msg: string) => Object.assign(new Error(msg), { status: 409 }),
@@ -89,10 +101,10 @@ vi.mock("../errors.js", () => ({
   forbidden: (msg: string) => Object.assign(new Error(msg), { status: 403 }),
 }));
 
-import { issueService } from "../services/issues.js";
-
 const COMPANY_ID = "company-1";
 const ISSUE_ID = "issue-1";
+
+import { issueService } from "../services/issues.js";
 
 type AgentRow = {
   id: string;
@@ -175,16 +187,22 @@ function makeDb(options: {
       });
       return c;
     }),
-    update: vi.fn(() => {
+    update: vi.fn((table: { id?: string }) => {
       const u: any = {};
       u.set = vi.fn((patch: Record<string, unknown>) => {
-        if (!Object.prototype.hasOwnProperty.call(patch, "clearReason")) {
+        if (
+          table?.id === "issues_id" &&
+          !Object.prototype.hasOwnProperty.call(patch, "clearReason")
+        ) {
           capturedPatch = patch;
         }
         return u;
       });
       u.where = () => u;
       u.returning = vi.fn((selection?: Record<string, unknown>) => {
+        if (table?.id === "wq_id") {
+          return Promise.resolve([]);
+        }
         if (selection?.issueCounter === "companies_issueCounter") {
           return Promise.resolve([{ issueCounter: 1, issuePrefix: "TASK" }]);
         }

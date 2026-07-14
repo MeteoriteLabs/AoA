@@ -1,264 +1,220 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// Real cancelled-error class (the tool catches it by instanceof). Defined inside
-// vi.hoisted so it exists when the hoisted vi.mock factory references it (a plain
-// top-level class would be in its temporal dead zone at hoist time).
-const { createPrompt, waitForAnswer, markRelayed, FakeCancelledError } = vi.hoisted(() => {
+const mocks = vi.hoisted(() => {
   class FakeCancelledError extends Error {
-    readonly decision: unknown;
     constructor() {
       super("cancelled");
-      this.name = "RuntimeDecisionCancelledError";
-      this.decision = {};
+      this.name = "WorkQuestionCancelledError";
     }
   }
   return {
-    createPrompt: vi.fn(),
+    create: vi.fn(),
     waitForAnswer: vi.fn(),
     markRelayed: vi.fn(),
     FakeCancelledError,
   };
 });
 
-vi.mock("../services/agent-runtime-decisions.js", () => ({
-  agentRuntimeDecisionService: () => ({ createPrompt, waitForAnswer, markRelayed }),
-  RuntimeDecisionCancelledError: FakeCancelledError,
+vi.mock("../services/work-questions.js", () => ({
+  WorkQuestionCancelledError: mocks.FakeCancelledError,
+  workQuestionService: () => ({
+    create: mocks.create,
+    waitForAnswer: mocks.waitForAnswer,
+    markRelayed: mocks.markRelayed,
+  }),
 }));
 
-import { handleAskFounder } from "../mcp/tools/ask-founder-tool.js";
+import {
+  askHumanForActiveRun,
+  handleAskFounder,
+  handleAskHuman,
+} from "../mcp/tools/ask-founder-tool.js";
 
-function makeCtx(actor: Record<string, unknown>, getById = vi.fn()) {
+const ISSUE_ID = "3c1a31aa-4a3a-43ce-95b0-dbd8c5cc50c2";
+
+function queryDb(contextSnapshot: Record<string, unknown> = { issueId: ISSUE_ID }) {
+  const terminal = Promise.resolve([{ contextSnapshot }]);
+  const chain = {
+    from: vi.fn(),
+    where: vi.fn(() => terminal),
+  };
+  chain.from.mockReturnValue(chain);
+  const updateTerminal = Promise.resolve([]);
+  const updateChain = {
+    set: vi.fn(),
+    where: vi.fn(() => updateTerminal),
+  };
+  updateChain.set.mockReturnValue(updateChain);
+  return { select: vi.fn(() => chain), update: vi.fn(() => updateChain) };
+}
+
+const LIVE_RELAY_CAPABILITIES = {
+  mode: "live_relay",
+  preservesProducerInvocationId: true,
+  pauseDeadline: true,
+  resumeSession: true,
+  cancelWait: true,
+} as const;
+
+function liveRelayInput(ctx: ReturnType<typeof makeCtx>) {
   return {
-    db: {} as any,
+    db: ctx.db,
+    companyId: ctx.companyId,
+    agentId: "agent-1",
+    runId: "run-1",
+    humanQuestionCapabilities: LIVE_RELAY_CAPABILITIES,
+  };
+}
+
+function makeCtx(actor: Record<string, unknown>, contextSnapshot?: Record<string, unknown>) {
+  return {
+    db: queryDb(contextSnapshot),
     companyId: "co-1",
     actor: { userId: "agent-1", companyId: "co-1", keyId: null, ...actor },
     scope: { kind: "founder", userId: "agent-1" },
-    services: { agentsSvc: { getById } },
+    services: {},
     actorInfo: {},
     resolveRole: vi.fn(),
     resolveScopedAgentIds: vi.fn(),
   } as any;
 }
 
+const created = { id: "question-1", version: 0 };
+const answered = { id: "question-1", version: 1, answer: { selectedValues: ["yes"] } };
+
 beforeEach(() => {
-  createPrompt.mockReset();
-  waitForAnswer.mockReset();
-  markRelayed.mockReset();
+  vi.clearAllMocks();
+  mocks.create.mockResolvedValue(created);
+  mocks.waitForAnswer.mockResolvedValue(answered);
+  mocks.markRelayed.mockResolvedValue({ ...answered, version: 2, continuationStatus: "dispatched" });
 });
 
-describe("ask_founder tool", () => {
-  it("403s when the caller is not an agent actor", async () => {
-    const res = await handleAskFounder(
+describe("ask_human tool", () => {
+  it("rejects callers without an active organization-agent run", async () => {
+    const board = await handleAskHuman(
       makeCtx({ source: "board", agentId: null, runId: null }),
       { question: "Ship it?" },
     );
-    expect(res.ok).toBe(false);
-    expect((res as any).status).toBe(403);
-  });
-
-  it("403s when the agent has no active run", async () => {
-    const res = await handleAskFounder(
+    const noRun = await handleAskHuman(
       makeCtx({ source: "agent", agentId: "agent-1", runId: null }),
       { question: "Ship it?" },
     );
-    expect(res.ok).toBe(false);
-    expect((res as any).status).toBe(403);
+    expect(board).toMatchObject({ ok: false, status: 403 });
+    expect(noRun).toMatchObject({ ok: false, status: 403 });
   });
 
-  it("creates a work_question prompt (park_run + options) and returns the answer", async () => {
-    const getById = vi.fn().mockResolvedValue({ adapterType: "codex_local" });
-    createPrompt.mockResolvedValue({ decision: { id: "d1" } });
-    waitForAnswer.mockResolvedValue({ answerPayload: { value: "yes" } });
-    markRelayed.mockResolvedValue({ id: "d1", status: "relayed" });
-
-    const res = await handleAskFounder(
-      makeCtx({ source: "agent", agentId: "agent-1", runId: "run-1" }, getById),
+  it("derives the task from the run and creates a durable question", async () => {
+    const result = await handleAskHuman(
+      makeCtx({ source: "agent", agentId: "agent-1", runId: "run-1" }),
       {
         question: "Ship the release?",
+        context: "The release candidate passed QA.",
         options: [
-          { label: "Yes", value: "yes" },
+          { label: "Yes", value: "yes", description: "Publish now.", rationale: "QA is green." },
           { label: "No", value: "no" },
         ],
       },
     );
 
-    expect(createPrompt).toHaveBeenCalledTimes(1);
-    const arg = createPrompt.mock.calls[0][0];
-    expect(arg.kind).toBe("work_question");
-    expect(arg.timeoutPolicy).toBe("park_run");
-    expect(arg.agentId).toBe("agent-1");
-    expect(arg.runId).toBe("run-1");
-    expect(arg.adapterType).toBe("codex_local");
-    expect(arg.options).toEqual([
-      { label: "Yes", value: "yes" },
-      { label: "No", value: "no" },
-    ]);
-    expect(res.ok).toBe(true);
-    expect((res as any).data).toEqual({ answered: true, answer: { value: "yes" } });
-  });
-
-  it("coerces empty/whitespace context to a null summary (schema-honesty)", async () => {
-    const getById = vi.fn().mockResolvedValue({ adapterType: "codex_local" });
-    createPrompt.mockResolvedValue({ decision: { id: "d1" } });
-    waitForAnswer.mockResolvedValue({ answerPayload: { text: "ok" } });
-    markRelayed.mockResolvedValue({ id: "d1", status: "relayed" });
-
-    await handleAskFounder(
-      makeCtx({ source: "agent", agentId: "agent-1", runId: "run-1" }, getById),
-      { question: "Ship it?", context: "   " },
-    );
-
-    // Empty/whitespace context must not persist as an empty-string summary
-    // (runtimeDecisionDetailSchema.summary is .min(1)).
-    expect(createPrompt.mock.calls[0][0].summary).toBeNull();
-  });
-
-  it("passes option description + rationale through to createPrompt", async () => {
-    const getById = vi.fn().mockResolvedValue({ adapterType: "codex_local" });
-    createPrompt.mockResolvedValue({ decision: { id: "d1" } });
-    waitForAnswer.mockResolvedValue({ answerPayload: { value: "saas" } });
-    markRelayed.mockResolvedValue({ id: "d1", status: "relayed" });
-
-    await handleAskFounder(
-      makeCtx({ source: "agent", agentId: "agent-1", runId: "run-1" }, getById),
-      {
-        question: "Which segment?",
-        options: [
-          { label: "SaaS", value: "saas", description: "Founder-led.", rationale: "High WTP." },
-          { label: "Agencies", value: "agencies" },
-        ],
-      },
-    );
-
-    expect(createPrompt.mock.calls[0][0].options).toEqual([
-      { label: "SaaS", value: "saas", description: "Founder-led.", rationale: "High WTP." },
-      { label: "Agencies", value: "agencies" },
-    ]);
-  });
-
-  it("marks the decision relayed after a successful answer (terminalizes -> hub item closes)", async () => {
-    const getById = vi.fn().mockResolvedValue({ adapterType: "codex_local" });
-    createPrompt.mockResolvedValue({ decision: { id: "d1" } });
-    waitForAnswer.mockResolvedValue({ answerPayload: { text: "yes" } });
-    markRelayed.mockResolvedValue({ id: "d1", status: "relayed" });
-
-    const res = await handleAskFounder(
-      makeCtx({ source: "agent", agentId: "agent-1", runId: "run-1" }, getById),
-      { question: "Ship it?" },
-    );
-
-    expect(markRelayed).toHaveBeenCalledWith({ companyId: "co-1", decisionId: "d1" });
-    expect((res as any).data).toEqual({ answered: true, answer: { text: "yes" } });
-  });
-
-  it("does NOT mark relayed on a parked (cancelled) outcome", async () => {
-    const getById = vi.fn().mockResolvedValue({ adapterType: "codex_local" });
-    createPrompt.mockResolvedValue({ decision: { id: "d1" } });
-    waitForAnswer.mockRejectedValue(new FakeCancelledError());
-
-    const res = await handleAskFounder(
-      makeCtx({ source: "agent", agentId: "agent-1", runId: "run-1" }, getById),
-      { question: "Ship it?" },
-    );
-
-    expect(markRelayed).not.toHaveBeenCalled();
-    expect((res as any).data.status).toBe("parked");
-  });
-
-  it("still returns the answer if markRelayed loses a race (answer is durable)", async () => {
-    const getById = vi.fn().mockResolvedValue({ adapterType: "codex_local" });
-    createPrompt.mockResolvedValue({ decision: { id: "d1" } });
-    waitForAnswer.mockResolvedValue({ answerPayload: { value: "a" } });
-    markRelayed.mockRejectedValue(new FakeCancelledError());
-
-    const res = await handleAskFounder(
-      makeCtx({ source: "agent", agentId: "agent-1", runId: "run-1" }, getById),
-      { question: "Pick?" },
-    );
-
-    expect((res as any).ok).toBe(true);
-    expect((res as any).data).toEqual({ answered: true, answer: { value: "a" } });
-  });
-
-  it("returns a graceful parked result (NOT isError) when the wait is cancelled", async () => {
-    const getById = vi.fn().mockResolvedValue({ adapterType: "codex_local" });
-    createPrompt.mockResolvedValue({ decision: { id: "d1" } });
-    waitForAnswer.mockRejectedValue(new FakeCancelledError());
-
-    const res = await handleAskFounder(
-      makeCtx({ source: "agent", agentId: "agent-1", runId: "run-1" }, getById),
-      { question: "Ship it?" },
-    );
-
-    expect(res.ok).toBe(true);
-    expect((res as any).data).toEqual({
-      answered: false,
-      status: "parked",
-      note: "parked for founder",
+    expect(mocks.create).toHaveBeenCalledWith("co-1", expect.objectContaining({
+      issueId: ISSUE_ID,
+      askingAgentId: "agent-1",
+      originatingRunKind: "heartbeat",
+      originatingRunId: "run-1",
+      context: { summary: "The release candidate passed QA." },
+      blocking: true,
+    }));
+    expect(mocks.waitForAnswer).not.toHaveBeenCalled();
+    expect(mocks.markRelayed).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      ok: true,
+      data: { answered: false, questionId: "question-1", status: "parked", note: "waiting for human" },
     });
   });
 
-  it("returns a graceful parked result when the block times out", async () => {
-    const getById = vi.fn().mockResolvedValue({ adapterType: "codex_local" });
-    createPrompt.mockResolvedValue({ decision: { id: "d1" } });
-    waitForAnswer.mockRejectedValue(new Error("Timed out waiting for runtime decision answer"));
-
-    const res = await handleAskFounder(
-      makeCtx({ source: "agent", agentId: "agent-1", runId: "run-1" }, getById),
-      { question: "Ship it?" },
+  it("stores whitespace-only context as null", async () => {
+    await handleAskHuman(
+      makeCtx({ source: "agent", agentId: "agent-1", runId: "run-1" }),
+      { question: "Ship it?", context: "   " },
     );
-
-    expect(res.ok).toBe(true);
-    expect((res as any).data.status).toBe("parked");
+    expect(mocks.create.mock.calls[0][1].context).toBeNull();
   });
 
-  it("returns parked when the decision is no longer actionable (terminal race)", async () => {
-    // waitForAnswer throws conflict("Runtime decision prompt is no longer
-    // actionable") if the row hit a terminal non-answered status (relayed/expired)
-    // while we polled. That is a benign "no answer" outcome under park_run — the
-    // model must STOP, not surface a hard error.
-    const getById = vi.fn().mockResolvedValue({ adapterType: "codex_local" });
-    createPrompt.mockResolvedValue({ decision: { id: "d1" } });
-    waitForAnswer.mockRejectedValue(
-      new Error("Runtime decision prompt is no longer actionable"),
-    );
-
-    const res = await handleAskFounder(
-      makeCtx({ source: "agent", agentId: "agent-1", runId: "run-1" }, getById),
-      { question: "Ship it?" },
-    );
-
-    expect(res.ok).toBe(true);
-    expect((res as any).data.status).toBe("parked");
-  });
-
-  it("propagates a terminal-run 409 from createPrompt (zombie guard)", async () => {
-    const getById = vi.fn().mockResolvedValue({ adapterType: "codex_local" });
-    const conflictErr = Object.assign(new Error("run is terminal"), { status: 409 });
-    createPrompt.mockRejectedValue(conflictErr);
-
-    await expect(
-      handleAskFounder(
-        makeCtx({ source: "agent", agentId: "agent-1", runId: "run-1" }, getById),
-        { question: "Ship it?" },
-      ),
-    ).rejects.toThrow("run is terminal");
-  });
-
-  it("rejects options with duplicate values (uniqueness guard)", async () => {
-    const getById = vi.fn().mockResolvedValue({ adapterType: "codex_local" });
-    await expect(
-      handleAskFounder(
-        makeCtx({ source: "agent", agentId: "agent-1", runId: "run-1" }, getById),
+  it("preserves valid source provenance from the active run", async () => {
+    await handleAskHuman(
+      makeCtx(
+        { source: "agent", agentId: "agent-1", runId: "run-1" },
         {
-          question: "Pick one?",
-          options: [
-            { label: "A", value: "x" },
-            { label: "B", value: "x" },
-          ],
+          issueId: "3c1a31aa-4a3a-43ce-95b0-dbd8c5cc50c2",
+          executionWorkspaceId: "7228d61a-58c9-4db6-a12e-0380064f188b",
+          sourceDiscussionId: "c82d72ce-7243-4dde-b0ed-a299949fb5a4",
+          sourceCommanderConversationId: "ff20d4f4-5024-46dd-b590-c006d3856c78",
         },
       ),
-    ).rejects.toThrow(/unique/i);
-    expect(createPrompt).not.toHaveBeenCalled();
+      { question: "Which route should we take?" },
+    );
+
+    expect(mocks.create).toHaveBeenCalledWith("co-1", expect.objectContaining({
+      issueId: "3c1a31aa-4a3a-43ce-95b0-dbd8c5cc50c2",
+      executionWorkspaceId: "7228d61a-58c9-4db6-a12e-0380064f188b",
+      sourceDiscussionId: "c82d72ce-7243-4dde-b0ed-a299949fb5a4",
+      sourceCommanderConversationId: "ff20d4f4-5024-46dd-b590-c006d3856c78",
+    }));
+  });
+
+  it("returns the durable answer even when live relay loses a race", async () => {
+    mocks.markRelayed.mockRejectedValue(new Error("already dispatched"));
+    const ctx = makeCtx({ source: "agent", agentId: "agent-1", runId: "run-1" });
+    const result = await askHumanForActiveRun(
+      liveRelayInput(ctx),
+      { question: "Ship it?" },
+    );
+    expect(result).toMatchObject({ answered: true, questionId: "question-1" });
+  });
+
+  it("parks cleanly when the wait is cancelled", async () => {
+    mocks.waitForAnswer.mockRejectedValue(new mocks.FakeCancelledError());
+    const ctx = makeCtx({ source: "agent", agentId: "agent-1", runId: "run-1" });
+    const result = await askHumanForActiveRun(
+      liveRelayInput(ctx),
+      { question: "Ship it?" },
+    );
+    expect(mocks.markRelayed).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      answered: false, questionId: "question-1", status: "parked", note: "question cancelled",
+    });
+  });
+
+  it("parks cleanly after the bounded wait times out", async () => {
+    mocks.waitForAnswer.mockRejectedValue(new Error("Timed out waiting for work question answer"));
+    const ctx = makeCtx({ source: "agent", agentId: "agent-1", runId: "run-1" });
+    const result = await askHumanForActiveRun(
+      liveRelayInput(ctx),
+      { question: "Ship it?" },
+    );
+    expect(result).toMatchObject({ status: "parked", note: "waiting for human" });
+  });
+
+  it("rejects duplicate option values before creating a question", async () => {
+    await expect(handleAskHuman(
+      makeCtx({ source: "agent", agentId: "agent-1", runId: "run-1" }),
+      { question: "Pick", options: [{ label: "A", value: "x" }, { label: "B", value: "x" }] },
+    )).rejects.toThrow(/unique/i);
+    expect(mocks.create).not.toHaveBeenCalled();
+  });
+
+  it("returns a conflict when the run has no task context", async () => {
+    const ctx = makeCtx({ source: "agent", agentId: "agent-1", runId: "run-1" }, {});
+    const runChain = { from: vi.fn(), where: vi.fn(() => Promise.resolve([{ contextSnapshot: {} }])) };
+    const taskChain = { from: vi.fn(), where: vi.fn(() => Promise.resolve([])) };
+    runChain.from.mockReturnValue(runChain);
+    taskChain.from.mockReturnValue(taskChain);
+    ctx.db.select = vi.fn().mockReturnValueOnce(runChain).mockReturnValueOnce(taskChain);
+    const result = await handleAskHuman(ctx, { question: "Ship it?" });
+    expect(result).toMatchObject({ ok: false, status: 409 });
+  });
+
+  it("keeps ask_founder as an exact compatibility alias", () => {
+    expect(handleAskFounder).toBe(handleAskHuman);
   });
 });

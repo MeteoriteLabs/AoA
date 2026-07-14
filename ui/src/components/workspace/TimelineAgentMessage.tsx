@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { ChevronDown } from "lucide-react";
 import { cn, relativeTime } from "@/lib/utils";
 import { formatDuration } from "./workspace-utils";
+import { formatDuration as formatDurationMs } from "../../lib/run-status";
 import type { RunForIssue } from "../../api/activity";
 import { StructuredRunBlock } from "./transcript";
 import type { DepartmentType } from "./transcript/types";
@@ -38,6 +39,8 @@ export function TimelineAgentMessage({
       ? "Failed after"
       : "Worked for";
   const boundaryLabel = duration ? `${actionLabel} ${duration}` : actionLabel;
+  const hasWaitAccounting =
+    (run.humanQuestionWaitMs ?? 0) > 0 || (run.runtimePermissionWaitMs ?? 0) > 0;
 
   return (
     <div
@@ -56,6 +59,20 @@ export function TimelineAgentMessage({
           {relativeTime(run.startedAt ?? run.createdAt)}
         </span>
       </button>
+
+      {(run.activeExecutionMs != null || hasWaitAccounting) && (
+        <div className="flex flex-wrap gap-x-3 gap-y-1 px-1 pt-2 text-[11px] text-muted-foreground">
+          {run.activeExecutionMs != null && (
+            <span>Active: {formatDurationMs(run.activeExecutionMs)}</span>
+          )}
+          {(run.humanQuestionWaitMs ?? 0) > 0 && (
+            <span>Human wait: {formatDurationMs(run.humanQuestionWaitMs)}</span>
+          )}
+          {(run.runtimePermissionWaitMs ?? 0) > 0 && (
+            <span>Permission wait: {formatDurationMs(run.runtimePermissionWaitMs)}</span>
+          )}
+        </div>
+      )}
 
       <div className="py-3">
         <StructuredRunBlock

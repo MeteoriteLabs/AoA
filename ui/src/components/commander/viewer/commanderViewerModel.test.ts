@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   emptyViewerState,
   openRefTab,
+  openInputRefTab,
   openReplyTab,
   openTaskTab,
   openBrowserTab,
@@ -13,6 +14,7 @@ import {
   type ConversationViewerState,
 } from "./commanderViewerModel";
 import type { CommanderOutputRef } from "@armyofagents/shared";
+import type { CommanderInputRef } from "@armyofagents/shared";
 
 const ref = (id: string, action: "created" | "referenced" = "created", title: string | null = "Plan"): CommanderOutputRef =>
   ({ v: 1, kind: "artifact", id, action, title } as CommanderOutputRef);
@@ -130,5 +132,50 @@ describe("openTaskTab", () => {
     expect(b.tabs).toHaveLength(1);
     expect(b.activeId).toBe("task:issue-1");
     expect(b.expanded).toBe(true);
+  });
+});
+
+describe("openInputRefTab", () => {
+  const inputRef = (
+    kind: CommanderInputRef["kind"],
+    id: string,
+    label = "Referenced item",
+    detail?: string,
+  ): CommanderInputRef => ({
+    v: 1,
+    kind,
+    id,
+    label,
+    ...(detail ? { detail } : {}),
+  });
+
+  it("opens discussion, approval, inbox, and note tabs in the viewer", () => {
+    let state = emptyViewerState();
+    state = openInputRefTab(state, inputRef("discussion", "disc-1", "Sprint planning"));
+    state = openInputRefTab(state, inputRef("approval", "approval-1", "Approve budget"));
+    state = openInputRefTab(state, inputRef("inbox", "hub-1", "Run complete", "Finished successfully"));
+    state = openInputRefTab(state, inputRef("note", "note-1", "Sticky note", "Remember launch"));
+
+    expect(state.tabs.map((tab) => tab.kind)).toEqual(["discussion", "approval", "inbox", "note"]);
+    expect(state.tabs.map((tab) => tab.refId)).toEqual(["disc-1", "approval-1", "hub-1", "note-1"]);
+    expect(state.activeId).toBe("note:note-1");
+    expect(state.expanded).toBe(true);
+  });
+
+  it("re-activates an existing input-ref tab instead of duplicating", () => {
+    const first = openInputRefTab(emptyViewerState(), inputRef("discussion", "disc-1", "Sprint planning"));
+    const second = openInputRefTab({ ...first, activeId: "home", expanded: false }, inputRef("discussion", "disc-1", "Sprint planning"));
+    expect(second.tabs).toHaveLength(1);
+    expect(second.activeId).toBe("discussion:disc-1");
+    expect(second.expanded).toBe(true);
+  });
+
+  it("maps task and artifact input refs to existing viewer tab kinds", () => {
+    let state = emptyViewerState();
+    state = openInputRefTab(state, inputRef("task", "issue-1", "Fix login"));
+    state = openInputRefTab(state, inputRef("artifact", "artifact-1", "Launch plan"));
+
+    expect(state.tabs[0]).toMatchObject({ id: "task:issue-1", kind: "task", refId: "issue-1" });
+    expect(state.tabs[1]).toMatchObject({ id: "artifact:artifact-1:latest", kind: "artifact", refId: "artifact-1" });
   });
 });

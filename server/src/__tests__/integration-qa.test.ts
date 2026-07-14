@@ -39,7 +39,7 @@ describe("Integration QA", () => {
   describe("Heartbeat → run summary → trust score pipeline", () => {
     it("run summary captures all outcome types", () => {
       const outcomes: RunSummaryInput["outcome"][] = ["succeeded", "failed", "cancelled", "timed_out"];
-      const labels = ["Completed", "Failed", "Cancelled", "Timed out"];
+      const labels = ["Succeeded", "Failed", "Cancelled", "Timed out"];
 
       for (let i = 0; i < outcomes.length; i++) {
         const result = formatRunSummary(buildRunInput({ outcome: outcomes[i] }));

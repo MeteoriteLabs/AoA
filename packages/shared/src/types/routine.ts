@@ -1,4 +1,4 @@
-import type { RoutineStatus, RoutineConcurrencyPolicy, RoutineCatchUpPolicy, RoutineTriggerKind, RoutineTriggerSigningMode, RoutineRunStatus, RoutineRunSource, RoutineVariableType } from "../constants.js";
+import type { AgentCompletionPolicy, RoutineStatus, RoutineConcurrencyPolicy, RoutineCatchUpPolicy, RoutineTriggerKind, RoutineTriggerSigningMode, RoutineRunStatus, RoutineRunSource, RoutineVariableType } from "../constants.js";
 
 export type RoutineVariableDefaultValue = string | number | boolean | null;
 
@@ -23,6 +23,7 @@ export interface RoutineSnapshot {
   projectId: string | null;
   goalId: string | null;
   parentIssueId: string | null;
+  agentCompletionPolicyOverride?: AgentCompletionPolicy | null;
 }
 
 export interface Routine {
@@ -39,6 +40,7 @@ export interface Routine {
   concurrencyPolicy: RoutineConcurrencyPolicy;
   catchUpPolicy: RoutineCatchUpPolicy;
   variables: RoutineVariable[];
+  agentCompletionPolicyOverride?: AgentCompletionPolicy | null;
   createdByAgentId: string | null;
   createdByUserId: string | null;
   updatedByAgentId: string | null;

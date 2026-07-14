@@ -73,6 +73,8 @@ vi.mock("@armyofagents/db", () => ({
   projects: tableProxy("projects"),
   taskDependencies: tableProxy("td"),
   userRoles: tableProxy("ur"),
+  workQuestions: tableProxy("wq"),
+  workQuestionContinuationRequests: tableProxy("wqcr"),
   memoryItems: tableProxy("mi"),
   discussionExtractedItems: tableProxy("dei"),
   artifacts: tableProxy("art"),
@@ -85,6 +87,13 @@ vi.mock("../services/instance-settings.js", () => ({
   instanceSettingsService: vi.fn(() => ({
     getExperimental: vi.fn().mockResolvedValue({ enableIsolatedWorkspaces: false }),
   })),
+}));
+
+vi.mock("../services/issue-reviewer.js", () => ({
+  resolveIssueReviewer: vi.fn().mockResolvedValue({
+    reviewerUserId: "reviewer-user",
+    reviewerSource: "founder",
+  }),
 }));
 
 // The chokepoint under test. Spy on publishIssueStatusChanged (crosses the
@@ -156,7 +165,7 @@ function makeUpdateDb(existing: Record<string, unknown>, patchedStatus: string) 
     select: () => {
       const c: any = {};
       c.from = () => c; c.where = () => c; c.innerJoin = () => c; c.leftJoin = () => c;
-      c.orderBy = () => c; c.limit = () => c;
+      c.orderBy = () => c; c.limit = () => c; c.for = () => c;
       c.then = (r: (v: unknown[]) => unknown) => Promise.resolve([existing]).then(r);
       return c;
     },
@@ -301,7 +310,7 @@ function makeRemoveDb() {
     select: () => {
       const c: any = {};
       c.from = () => c; c.where = () => c; c.innerJoin = () => c; c.leftJoin = () => c;
-      c.orderBy = () => c; c.limit = () => c;
+      c.orderBy = () => c; c.limit = () => c; c.for = () => c;
       c.then = (r: (v: unknown[]) => unknown) => {
         selectCall += 1;
         if (selectCall === 1) return Promise.resolve([{ companyId: COMPANY_ID }]).then(r);
@@ -317,7 +326,14 @@ function makeRemoveDb() {
       d.then = (r: (v: unknown[]) => unknown) => Promise.resolve([]).then(r);
       return d;
     },
-    update: () => ({ set: () => ({ where: () => Promise.resolve(undefined) }) }),
+    update: () => {
+      const u: any = {};
+      u.set = () => u;
+      u.where = () => u;
+      u.returning = () => Promise.resolve([]);
+      u.then = (r: (v: unknown[]) => unknown) => Promise.resolve([]).then(r);
+      return u;
+    },
     insert: () => ({ values: () => Promise.resolve(undefined) }),
   };
   const db: any = {

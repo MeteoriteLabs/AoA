@@ -188,6 +188,9 @@ vi.mock("../lib/queryKeys", () => ({
       list: (id: string) => ["executionWorkspaces", id],
       listForProject: (cId: string, pId: string) => ["executionWorkspaces", cId, pId],
     },
+    workQuestions: {
+      all: (companyId: string) => ["work-questions", companyId],
+    },
   },
 }));
 
@@ -448,6 +451,51 @@ describe("TaskSlideOver", () => {
     expect(screen.getByTestId("sheet-content")).toHaveAttribute("data-side", "right");
   });
 
+  it("keeps focused task state, comments, and activity synchronized with agent work", () => {
+    renderSlideOver({ issueId: "issue-1", open: true });
+
+    const queryOptions = vi.mocked(useQuery).mock.calls.map(([options]) => options as any);
+    for (const key of [
+      ["issues", "detail", "issue-1"],
+      ["issues", "comments", "issue-1"],
+      ["issues", "activity", "issue-1"],
+    ]) {
+      expect(queryOptions).toContainEqual(
+        expect.objectContaining({ queryKey: key, refetchInterval: 5000 }),
+      );
+    }
+  });
+
+  it("requires review feedback before returning a task to progress", async () => {
+    const user = userEvent.setup();
+    const reviewIssue = { ...mockIssue, status: "in_review" };
+    vi.mocked(useQuery).mockImplementation(({ queryKey }: any) => {
+      const key = Array.isArray(queryKey) ? queryKey.join(".") : String(queryKey);
+      if (key.includes("detail")) return { data: reviewIssue, isLoading: false, error: null } as any;
+      return defaultUseQueryImpl({ queryKey });
+    });
+    vi.mocked(issuesApi.update).mockResolvedValue({ ...reviewIssue, status: "in_progress" } as any);
+
+    renderSlideOver({ issueId: "issue-1", open: true });
+
+    await user.click(screen.getByRole("button", { name: "Request Changes" }));
+    const submit = screen.getByRole("button", { name: "Send feedback & resume" });
+    expect(screen.getByRole("dialog", { name: "Request changes" })).toBeInTheDocument();
+    expect(submit).toBeDisabled();
+
+    await user.type(screen.getByLabelText("Review feedback"), "Add measurable acceptance criteria.");
+    expect(submit).toBeEnabled();
+    await user.click(submit);
+
+    expect(issuesApi.update).toHaveBeenCalledWith("issue-1", {
+      status: "in_progress",
+      comment: "Add measurable acceptance criteria.",
+    });
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: "Request changes" })).not.toBeInTheDocument();
+    });
+  });
+
   it("uses a wider task panel by default and hides accidental horizontal overflow", () => {
     renderSlideOver({ issueId: "issue-1", open: true });
 
@@ -547,6 +595,43 @@ describe("TaskSlideOver", () => {
     expect(screen.getByText("Latest comment")).toBeInTheDocument();
     expect(screen.getByText("Newest comment should be previewed")).toBeInTheDocument();
     expect(screen.queryByText("Oldest comment should stay hidden")).not.toBeInTheDocument();
+  });
+
+  it("previews substantive work instead of a newer automatic run summary", () => {
+    vi.mocked(useQuery).mockImplementation(({ queryKey }: any) => {
+      const key = Array.isArray(queryKey) ? queryKey.join(".") : String(queryKey);
+      if (key.includes("detail")) return { data: mockIssue, isLoading: false, error: null } as any;
+      if (key.includes("comments")) {
+        return {
+          data: [
+            {
+              id: "comment-summary",
+              issueId: "issue-1",
+              authorType: "system",
+              presentation: { kind: "system_notice", title: "Run summary" },
+              body: "**Run Summary** - succeeded",
+              createdAt: "2026-07-08T06:01:00.000Z",
+            },
+            {
+              id: "comment-delivery",
+              issueId: "issue-1",
+              authorType: "agent",
+              presentation: null,
+              body: "Acceptance checklist and recommendation",
+              createdAt: "2026-07-08T06:00:00.000Z",
+            },
+          ],
+          isLoading: false,
+          error: null,
+        } as any;
+      }
+      return defaultUseQueryImpl({ queryKey });
+    });
+
+    renderTaskDetail({ issueId: "issue-1" });
+
+    expect(screen.getByText("Acceptance checklist and recommendation")).toBeInTheDocument();
+    expect(screen.queryByText("**Run Summary** - succeeded")).not.toBeInTheDocument();
   });
 
   it("gives the comments tab a bounded chat-pane layout so the composer can stay docked", () => {

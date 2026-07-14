@@ -173,6 +173,17 @@ export function workflowTemplateService(db: Db) {
         // Map step order → created task id
         const stepTaskMap = new Map<number, string>();
         const tasksCreated: InstantiateResult["tasksCreated"] = [];
+        const { resolveAgentCompletionPolicy } = await import("./agent-completion-policy.js");
+        const completionPolicy = await resolveAgentCompletionPolicy(tx as unknown as Db, {
+          companyId,
+          projectId,
+          creatorOverride: template.agentCompletionPolicyOverride as
+            | "review_required"
+            | "agent_can_complete"
+            | null,
+          creatorSource: "workflow_template",
+          creatorSourceId: template.id,
+        });
 
         // Create a task for each step
         for (const step of steps) {
@@ -186,6 +197,10 @@ export function workflowTemplateService(db: Db) {
               description: step.description ?? null,
               priority: step.priority ?? "medium",
               status: "backlog",
+              agentCompletionPolicy: completionPolicy.policy,
+              agentCompletionPolicySource: completionPolicy.source,
+              agentCompletionPolicySourceId: completionPolicy.sourceId,
+              agentCompletionPolicyResolvedAt: completionPolicy.resolvedAt,
             } as typeof issues.$inferInsert)
             .returning();
 

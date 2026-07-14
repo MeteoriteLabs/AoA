@@ -1,11 +1,11 @@
 // Pure state logic for the Commander viewer panel.
 // No React imports — unit-tested directly (pattern: commanderInputModel.ts).
-import type { CommanderOutputRef } from "@armyofagents/shared";
+import type { CommanderInputRef, CommanderOutputRef } from "@armyofagents/shared";
 
 export interface ViewerTab {
   /** Stable tab identity: `artifact:<id>:<versionId|latest>` | `reply:<messageId>` | `browser:<url>` | `task:<issueId>` */
   id: string;
-  kind: "artifact" | "reply" | "browser" | "task";
+  kind: "artifact" | "reply" | "browser" | "task" | "discussion" | "approval" | "inbox" | "note";
   title: string;
   /** artifact id, message id for replies, url for browser tabs, or issue id for task tabs */
   refId: string;
@@ -14,6 +14,7 @@ export interface ViewerTab {
   replyContent?: string;
   /** browser tabs only — the url loaded in the sandboxed iframe */
   url?: string;
+  inputRef?: CommanderInputRef;
 }
 
 export interface ConversationViewerState {
@@ -71,6 +72,43 @@ export function openTaskTab(
   const id = `task:${issueId}`;
   if (state.tabs.some((t) => t.id === id)) return { ...state, activeId: id, expanded: true };
   const tab: ViewerTab = { id, kind: "task", title, refId: issueId };
+  return { tabs: [...state.tabs, tab], activeId: id, expanded: true };
+}
+
+export function openInputRefTab(
+  state: ConversationViewerState,
+  ref: CommanderInputRef,
+): ConversationViewerState {
+  if (ref.kind === "task") {
+    return openTaskTab(state, ref.id, ref.label);
+  }
+  if (ref.kind === "artifact") {
+    return openRefTab(state, {
+      v: 1,
+      kind: "artifact",
+      id: ref.id,
+      title: ref.label,
+      action: "referenced",
+    } as CommanderOutputRef);
+  }
+  if (
+    ref.kind !== "discussion" &&
+    ref.kind !== "approval" &&
+    ref.kind !== "inbox" &&
+    ref.kind !== "note"
+  ) {
+    return state;
+  }
+
+  const id = `${ref.kind}:${ref.id}`;
+  if (state.tabs.some((t) => t.id === id)) return { ...state, activeId: id, expanded: true };
+  const tab: ViewerTab = {
+    id,
+    kind: ref.kind,
+    title: ref.label,
+    refId: ref.id,
+    inputRef: ref,
+  };
   return { tabs: [...state.tabs, tab], activeId: id, expanded: true };
 }
 

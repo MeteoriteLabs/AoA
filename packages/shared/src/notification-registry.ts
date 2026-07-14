@@ -128,6 +128,12 @@ export const NOTIFICATION_REGISTRY = {
     semanticType: "suggestion",
     defaultSourceType: "discussion",
   },
+  "work_question.sla_breached": {
+    status: "active",
+    type: "work_question.sla_breached",
+    semanticType: "reminder",
+    defaultSourceType: "issue",
+  },
   internal_agent_proactive: {
     status: "alias",
     type: "internal_agent_proactive",
