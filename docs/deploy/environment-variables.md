@@ -126,6 +126,7 @@ The server sets these automatically when invoking adapters. They appear in the s
 | `AOA_AGENT_ID` | Agent's unique ID |
 | `AOA_COMPANY_ID` | Company ID for this run |
 | `AOA_API_URL` | AoA API base URL the agent should call back to |
+| `AOA_HUMAN_QUESTION_CAPABILITIES` | JSON-encoded provider capability contract for structured human questions. Set automatically for adapter runs; `ask_and_park` persists the question and resumes later, while live relay requires a provider that explicitly supports pausing and resuming the same invocation |
 | `AOA_API_KEY` | Short-lived JWT for API auth (rotates each heartbeat) |
 | `AOA_RUN_ID` | Current heartbeat run ID — also sent in `X-Aoa-Run-Id` HTTP header |
 | `AOA_TASK_ID` | Issue (task) that triggered this wake, if any |
@@ -202,3 +203,4 @@ These are read by tests and dev scripts; you should not need to set them in prod
 | `AOA_E2E_RUNTIME_DECISION_BRIDGE_CODEX` | Opt-in flag for the guarded codex_local runtime-decision-bridge e2e (`runtime-decision-bridge-codex.spec.ts`); unset ⇒ skipped. W5c |
 | `AOA_TEST_COMPANY_ID` / `AOA_TEST_THREAD_ID` | Seed IDs for the bridge stdout-purity test |
 | `AOA_TEST_DATABASE_URL` | Postgres URL for tests that need a real DB connection |
+| `AOA_API_BASE` | API base URL used by the Commander review seed script; defaults to `http://127.0.0.1:3100/api` |
