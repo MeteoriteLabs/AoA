@@ -197,7 +197,11 @@ async function handleUpdateTaskStatus(
   if (!canUpdateTask) {
     return forbiddenResult("Insufficient permissions for task update");
   }
-  const updated = await ctx.services.issuesSvc.update(parsed.taskId, { status: parsed.status });
+  const updated = await ctx.services.issuesSvc.update(
+    parsed.taskId,
+    { status: parsed.status },
+    { actorType: "user", expectedUpdatedAt: issue.updatedAt },
+  );
   await logActivity(ctx.db, {
     companyId: ctx.companyId,
     actorType: "user",
@@ -324,7 +328,11 @@ async function handleUpdateTask(
     if (assignDenied) return assignDenied;
   }
   const { taskId, ...patch } = parsed;
-  const updated = await ctx.services.issuesSvc.update(taskId, patch as any);
+  const updated = await ctx.services.issuesSvc.update(
+    taskId,
+    patch as any,
+    { actorType: "user", expectedUpdatedAt: existing.updatedAt },
+  );
   await logActivity(ctx.db, {
     companyId: ctx.companyId,
     actorType: "user",

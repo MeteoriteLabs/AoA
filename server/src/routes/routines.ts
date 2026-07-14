@@ -29,6 +29,13 @@ export function routineRoutes(db: Db) {
     }
   }
 
+  async function assertCanOverrideCompletionPolicy(req: Request, companyId: string) {
+    if (req.actor.type !== "board") {
+      throw forbidden("Only human operators may override task completion policy");
+    }
+    await assertBoardCanAssignTasks(req, companyId);
+  }
+
   function assertCanManageCompanyRoutine(req: Request, companyId: string, assigneeAgentId?: string | null) {
     assertCompanyAccess(req, companyId);
     if (req.actor.type === "board") return;
@@ -61,6 +68,9 @@ export function routineRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     await assertBoardCanAssignTasks(req, companyId);
     assertCanManageCompanyRoutine(req, companyId, req.body.assigneeAgentId);
+    if (req.body.agentCompletionPolicyOverride !== undefined) {
+      await assertCanOverrideCompletionPolicy(req, companyId);
+    }
     const created = await svc.create(companyId, req.body, {
       agentId: req.actor.type === "agent" ? req.actor.agentId : null,
       userId: req.actor.type === "board" ? req.actor.userId ?? "board" : null,
@@ -96,18 +106,14 @@ export function routineRoutes(db: Db) {
       res.status(404).json({ error: "Routine not found" });
       return;
     }
-    const assigneeWillChange =
-      req.body.assigneeAgentId !== undefined &&
-      req.body.assigneeAgentId !== routine.assigneeAgentId;
-    if (assigneeWillChange) {
+    if (req.body.assigneeAgentId !== undefined) {
       await assertBoardCanAssignTasks(req, routine.companyId);
     }
-    const statusWillActivate =
-      req.body.status !== undefined &&
-      req.body.status === "active" &&
-      routine.status !== "active";
-    if (statusWillActivate) {
+    if (req.body.status === "active") {
       await assertBoardCanAssignTasks(req, routine.companyId);
+    }
+    if (req.body.agentCompletionPolicyOverride !== undefined) {
+      await assertCanOverrideCompletionPolicy(req, routine.companyId);
     }
     if (req.actor.type === "agent" && req.body.assigneeAgentId && req.body.assigneeAgentId !== req.actor.agentId) {
       throw forbidden("Agents can only assign routines to themselves");
@@ -148,10 +154,19 @@ export function routineRoutes(db: Db) {
       res.status(404).json({ error: "Routine not found" });
       return;
     }
-    const updated = await svc.restoreRevision(routine.id, req.body.revisionId as string, {
-      agentId: req.actor.type === "agent" ? req.actor.agentId : null,
-      userId: req.actor.type === "board" ? (req.actor.userId ?? "board") : null,
-    });
+    if (req.actor.type !== "board") {
+      throw forbidden("Only human operators may restore routine revisions");
+    }
+    await assertBoardCanAssignTasks(req, routine.companyId);
+    const updated = await svc.restoreRevision(
+      routine.id,
+      req.body.revisionId as string,
+      req.body.baseRevisionId as string | null | undefined,
+      {
+        agentId: null,
+        userId: req.actor.userId ?? "board",
+      },
+    );
     if (!updated) {
       res.status(404).json({ error: "Revision not found" });
       return;

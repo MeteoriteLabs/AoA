@@ -227,6 +227,7 @@ export function createWorkflowDb(config: {
       makeChain(() => config.updates?.[updateIdx++] ?? []),
     delete: (..._args: unknown[]) =>
       makeChain(() => config.deletes?.[deleteIdx++] ?? []),
+    execute: async (..._args: unknown[]) => [],
     transaction: async (callback: (tx: any) => unknown) => {
       const proxy = {
         select: (..._a: unknown[]) =>
@@ -235,6 +236,7 @@ export function createWorkflowDb(config: {
           makeChain(() => config.inserts?.[insertIdx++] ?? []),
         update: (..._a: unknown[]) =>
           makeChain(() => config.updates?.[updateIdx++] ?? []),
+        execute: async (..._a: unknown[]) => [],
       };
       return callback(proxy);
     },

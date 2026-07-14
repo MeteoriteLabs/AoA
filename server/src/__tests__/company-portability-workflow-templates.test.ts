@@ -221,6 +221,7 @@ const sampleTemplateRow1 = {
   name: "Ship Feature",
   description: "Plan → build → test → release",
   workspaceMode: "per_task",
+  agentCompletionPolicyOverride: "agent_can_complete",
   steps: [
     { order: 1, title: "Spec", role: "pm", suggestedAssigneeType: "human" },
     { order: 2, title: "Build", role: "engineer", suggestedAssigneeType: "agent" },
@@ -303,6 +304,7 @@ describe("company-portability workflow templates — export", () => {
       name: "Ship Feature",
       description: "Plan → build → test → release",
       workspaceMode: "per_task",
+      agentCompletionPolicyOverride: "agent_can_complete",
     });
   });
 
@@ -396,6 +398,7 @@ describe("company-portability workflow templates — import", () => {
           name: "Ship Feature",
           description: "Plan → build → test → release",
           workspaceMode: "per_task",
+          agentCompletionPolicyOverride: "review_required",
           steps: [{ order: 1, title: "Spec" }],
           dependencies: [],
         },
@@ -424,6 +427,7 @@ describe("company-portability workflow templates — import", () => {
       name: "Ship Feature",
       description: "Plan → build → test → release",
       workspaceMode: "per_task",
+      agentCompletionPolicyOverride: "review_required",
       instantiationCount: 0,
       lastInstantiatedAt: null,
       createdBy: "importer-user-1",
@@ -555,6 +559,7 @@ describe("company-portability workflow templates — import", () => {
       (row) => (row as { description?: string }).description === "Replacement content",
     );
     expect(updated).toBeDefined();
+    expect(updated).not.toHaveProperty("agentCompletionPolicyOverride");
     expect(captured.inserts.length).toBe(0);
   });
 

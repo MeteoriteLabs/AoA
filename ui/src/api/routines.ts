@@ -40,8 +40,8 @@ export const routinesApi = {
     api.post<RoutineRun>(`/routines/${id}/run`, data ?? {}),
   listRevisions: (id: string) =>
     api.get<RoutineRevisionListItem[]>(`/routines/${id}/revisions`),
-  restoreRevision: (id: string, revisionId: string) =>
-    api.post<Routine>(`/routines/${id}/revisions/restore`, { revisionId }),
+  restoreRevision: (id: string, revisionId: string, baseRevisionId: string | null) =>
+    api.post<Routine>(`/routines/${id}/revisions/restore`, { revisionId, baseRevisionId }),
   activity: async (
     companyId: string,
     routineId: string,

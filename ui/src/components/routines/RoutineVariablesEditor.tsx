@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation } from "@tanstack/react-query";
 import {
   ROUTINE_VARIABLE_TYPES,
   syncRoutineVariablesWithTemplate,
+  type Routine,
   type RoutineVariable,
   type RoutineVariableType,
 } from "@armyofagents/shared";
@@ -27,6 +28,8 @@ interface RoutineVariablesEditorProps {
   title: string;
   description: string | null;
   initialVariables: RoutineVariable[];
+  getBaseRevisionId: () => string | null;
+  onRoutineUpdated: (routine: Routine) => void;
 }
 
 function parseSelectOptions(value: string): string[] {
@@ -53,9 +56,10 @@ export function RoutineVariablesEditor({
   title,
   description,
   initialVariables,
+  getBaseRevisionId,
+  onRoutineUpdated,
 }: RoutineVariablesEditorProps) {
   const { pushToast } = useToast();
-  const queryClient = useQueryClient();
   const detected = useMemo(
     () => syncRoutineVariablesWithTemplate([title, description], initialVariables),
     [title, description, initialVariables],
@@ -69,10 +73,13 @@ export function RoutineVariablesEditor({
   const isDirty = serializeVariables(draft) !== serializeVariables(initialVariables);
 
   const saveMutation = useMutation({
-    mutationFn: async (variables: RoutineVariable[]) => routinesApi.update(routineId, { variables }),
-    onSuccess: () => {
+    mutationFn: async (variables: RoutineVariable[]) => routinesApi.update(routineId, {
+      variables,
+      baseRevisionId: getBaseRevisionId(),
+    }),
+    onSuccess: (updated) => {
+      onRoutineUpdated(updated);
       pushToast({ tone: "success", title: "Variables saved" });
-      queryClient.invalidateQueries({ queryKey: ["routine", routineId] });
     },
     onError: (error: Error) => {
       pushToast({ tone: "error", title: "Could not save variables", body: error.message });

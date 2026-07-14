@@ -2,6 +2,9 @@ import express from "express";
 import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
 
+const mockCanUser = vi.hoisted(() => vi.fn(async () => true));
+const mockAssertRole = vi.hoisted(() => vi.fn(async () => undefined));
+
 type AgentRow = {
   id: string;
   companyId: string;
@@ -133,9 +136,14 @@ vi.mock("../services/agents.js", () => ({
 
 vi.mock("../services/access.js", () => ({
   accessService: () => ({
+    canUser: mockCanUser,
     ensureMembership: vi.fn(async () => undefined),
     ensureRealOperator: vi.fn(async () => "operator-user-id"),
   }),
+}));
+
+vi.mock("../middleware/rbac.js", () => ({
+  assertRole: (...args: unknown[]) => mockAssertRole(...args),
 }));
 
 vi.mock("../services/projects.js", () => ({
@@ -176,6 +184,7 @@ vi.mock("../services/routines.js", () => ({
 import { companyPortabilityService } from "../services/company-portability.js";
 import { companyRoutes } from "../routes/companies.js";
 import { errorHandler } from "../middleware/error-handler.js";
+import { forbidden } from "../errors.js";
 
 function makeAgent(overrides: Partial<AgentRow> & { id: string; name: string }): AgentRow {
   return {
@@ -483,6 +492,102 @@ function buildAppWithImportBodyCap(actorOverrides: Partial<any> = {}) {
 }
 
 describe("import body-size cap", () => {
+  const validExistingCompanyImport = {
+    source: {
+      type: "inline" as const,
+      manifest: {
+        schemaVersion: 2,
+        generatedAt: "2026-07-14T00:00:00.000Z",
+        source: null,
+        includes: { company: false, agents: false },
+        company: null,
+        agents: [],
+        requiredSecrets: [],
+      },
+      files: {},
+    },
+    target: { mode: "existing_company" as const, companyId: SRC_CO_ID },
+  };
+
+  it("allows a company-scoped agent to preview an existing-company import", async () => {
+    const app = buildAppWithImportBodyCap({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: SRC_CO_ID,
+    });
+    const res = await request(app)
+      .post("/api/companies/import/preview")
+      .send(validExistingCompanyImport);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty("plan");
+  });
+
+  it("rejects an agent performing an import", async () => {
+    const app = buildAppWithImportBodyCap({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: SRC_CO_ID,
+    });
+    const res = await request(app)
+      .post("/api/companies/import")
+      .send(validExistingCompanyImport);
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Board access required");
+  });
+
+  it("requires tasks:assign when importing routines into an existing company", async () => {
+    mockCanUser.mockResolvedValueOnce(false);
+    const app = buildAppWithImportBodyCap();
+    const res = await request(app)
+      .post("/api/companies/import")
+      .send({
+        ...validExistingCompanyImport,
+        include: { routines: true },
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Missing permission: tasks:assign");
+    expect(mockCanUser).toHaveBeenCalledWith(SRC_CO_ID, "user-1", "tasks:assign");
+  });
+
+  it("requires tasks:assign when importing issues into an existing company", async () => {
+    mockCanUser.mockResolvedValueOnce(false);
+    const app = buildAppWithImportBodyCap();
+    const res = await request(app)
+      .post("/api/companies/import")
+      .send({
+        ...validExistingCompanyImport,
+        include: { issues: true },
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Missing permission: tasks:assign");
+    expect(mockCanUser).toHaveBeenCalledWith(SRC_CO_ID, "user-1", "tasks:assign");
+  });
+
+  it("requires founder or team-lead role when importing workflow templates", async () => {
+    mockAssertRole.mockRejectedValueOnce(forbidden("Requires one of: founder, team_lead"));
+    const app = buildAppWithImportBodyCap();
+    const res = await request(app)
+      .post("/api/companies/import")
+      .send({
+        ...validExistingCompanyImport,
+        include: { workflowTemplates: true },
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("founder, team_lead");
+    expect(mockAssertRole).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      SRC_CO_ID,
+      "founder",
+      "team_lead",
+    );
+  });
+
   it("returns 413 for bodies over 20MB on /api/companies/import/preview", async () => {
     const big = JSON.stringify({ __pad: "x".repeat(30 * 1024 * 1024) });
     const app = buildAppWithImportBodyCap();

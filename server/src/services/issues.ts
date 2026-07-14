@@ -29,14 +29,15 @@ import {
   workQuestions,
 } from "@armyofagents/db";
 import { extractProjectMentionIds } from "@armyofagents/shared";
-import type { AgentCompletionPolicy } from "@armyofagents/shared";
+import type { AgentCompletionPolicy, AgentCompletionPolicySource } from "@armyofagents/shared";
+import type { ResolvedAgentCompletionPolicy } from "./agent-completion-policy.js";
 import type {
   IssueCommentAuthorType,
   IssueCommentMetadata,
   IssueCommentPresentation,
 } from "@armyofagents/shared";
 import { requestTrackedProcessTermination } from "@armyofagents/adapter-utils/server-utils";
-import { conflict, notFound, unprocessable } from "../errors.js";
+import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { dependencyService, TERMINAL_STATUSES } from "./dependencies.js";
 import { enqueueIssueAssigneeWakeup } from "./issue-assignee-wakeup.js";
@@ -675,8 +676,8 @@ export function issueService(db: Db) {
     return upstream.some((r) => !TERMINAL_STATUSES.includes(r.status));
   }
 
-  async function assertAssignableAgent(companyId: string, agentId: string) {
-    const assignee = await db
+  async function assertAssignableAgent(companyId: string, agentId: string, dbOrTx: Db = db) {
+    const assignee = await dbOrTx
       .select({
         id: agents.id,
         companyId: agents.companyId,
@@ -698,8 +699,13 @@ export function issueService(db: Db) {
     }
   }
 
-  async function assertAssignableUser(companyId: string, userId: string, subject = "Assignee user") {
-    const membership = await db
+  async function assertAssignableUser(
+    companyId: string,
+    userId: string,
+    subject = "Assignee user",
+    dbOrTx: Db = db,
+  ) {
+    const membership = await dbOrTx
       .select({ id: companyMemberships.id })
       .from(companyMemberships)
       .where(
@@ -716,12 +722,12 @@ export function issueService(db: Db) {
     }
   }
 
-  async function assertResponsibleUser(companyId: string, userId: string) {
-    await assertAssignableUser(companyId, userId, "Responsible user");
+  async function assertResponsibleUser(companyId: string, userId: string, dbOrTx: Db = db) {
+    await assertAssignableUser(companyId, userId, "Responsible user", dbOrTx);
   }
 
-  async function findActiveCompanyUser(companyId: string, userId: string): Promise<string | null> {
-    const membership = await db
+  async function findActiveCompanyUser(companyId: string, userId: string, dbOrTx: Db = db): Promise<string | null> {
+    const membership = await dbOrTx
       .select({ id: companyMemberships.id })
       .from(companyMemberships)
       .where(
@@ -736,7 +742,11 @@ export function issueService(db: Db) {
     return membership ? userId : null;
   }
 
-  async function findNearestHumanManagerForAgent(companyId: string, agentId: string): Promise<string | null> {
+  async function findNearestHumanManagerForAgent(
+    companyId: string,
+    agentId: string,
+    dbOrTx: Db = db,
+  ): Promise<string | null> {
     type AgentParentRow = {
       parentType: string | null;
       parentId: string | null;
@@ -749,7 +759,7 @@ export function issueService(db: Db) {
       if (seen.has(currentAgentId)) return null;
       seen.add(currentAgentId);
 
-      const row: AgentParentRow | null = await db
+      const row: AgentParentRow | null = await dbOrTx
         .select({
           parentType: agents.parentType,
           parentId: agents.parentId,
@@ -761,7 +771,7 @@ export function issueService(db: Db) {
 
       if (!row) return null;
       if (row.parentType === "user" && row.parentId) {
-        return await findActiveCompanyUser(companyId, row.parentId);
+        return await findActiveCompanyUser(companyId, row.parentId, dbOrTx);
       }
       if (row.parentType === "agent" && row.parentId) {
         currentAgentId = row.parentId;
@@ -773,8 +783,8 @@ export function issueService(db: Db) {
     return null;
   }
 
-  async function findSingleFounderUserId(companyId: string): Promise<string | null> {
-    const rows = await db
+  async function findSingleFounderUserId(companyId: string, dbOrTx: Db = db): Promise<string | null> {
+    const rows = await dbOrTx
       .select({ userId: userRoles.userId })
       .from(userRoles)
       .innerJoin(
@@ -797,14 +807,14 @@ export function issueService(db: Db) {
     assigneeUserId?: string | null;
     assigneeAgentId?: string | null;
     responsibleFallbackUserId?: string | null;
-  }): Promise<string | null> {
+  }, dbOrTx: Db = db): Promise<string | null> {
     if (input.assigneeUserId) return input.assigneeUserId;
     if (input.assigneeAgentId) {
-      const manager = await findNearestHumanManagerForAgent(input.companyId, input.assigneeAgentId);
-      return manager ?? await findSingleFounderUserId(input.companyId);
+      const manager = await findNearestHumanManagerForAgent(input.companyId, input.assigneeAgentId, dbOrTx);
+      return manager ?? await findSingleFounderUserId(input.companyId, dbOrTx);
     }
     if (input.responsibleFallbackUserId) {
-      return await findActiveCompanyUser(input.companyId, input.responsibleFallbackUserId);
+      return await findActiveCompanyUser(input.companyId, input.responsibleFallbackUserId, dbOrTx);
     }
 
     return null;
@@ -818,10 +828,10 @@ export function issueService(db: Db) {
     responsibleFallbackUserId?: string | null;
     existingResponsibleUserId?: string | null;
     executorChanged?: boolean;
-  }): Promise<string | null | undefined> {
+  }, dbOrTx: Db = db): Promise<string | null | undefined> {
     if (input.explicitResponsibleUserId !== undefined) {
       if (input.explicitResponsibleUserId !== null) {
-        await assertResponsibleUser(input.companyId, input.explicitResponsibleUserId);
+        await assertResponsibleUser(input.companyId, input.explicitResponsibleUserId, dbOrTx);
       }
       return input.explicitResponsibleUserId;
     }
@@ -830,7 +840,7 @@ export function issueService(db: Db) {
       return undefined;
     }
 
-    return await resolveDefaultResponsibleUserId(input);
+    return await resolveDefaultResponsibleUserId(input, dbOrTx);
   }
 
   async function assertValidLabelIds(companyId: string, labelIds: string[], dbOrTx: any = db) {
@@ -1197,6 +1207,13 @@ export function issueService(db: Db) {
         completionPolicyCreatorOverride?: AgentCompletionPolicy | null;
         completionPolicyCreatorSource?: CompletionPolicyCreatorSource | null;
         completionPolicyCreatorSourceId?: string | null;
+        completionPolicySnapshot?: {
+          policy: AgentCompletionPolicy;
+          override: AgentCompletionPolicy | null;
+          source: AgentCompletionPolicySource;
+          sourceId: string | null;
+          resolvedAt: Date | null;
+        };
         contextBundle?: {
           sourceIssueId?: string | null;
           sourceDiscussionId?: string | null;
@@ -1209,6 +1226,7 @@ export function issueService(db: Db) {
       },
       outerTx?: Parameters<Parameters<typeof db.transaction>[0]>[0],
     ) => {
+      const operationDb = (outerTx ?? db) as unknown as Db;
       const {
         labelIds: inputLabelIds,
         inheritExecutionWorkspaceFromIssueId,
@@ -1216,6 +1234,7 @@ export function issueService(db: Db) {
         completionPolicyCreatorOverride,
         completionPolicyCreatorSource,
         completionPolicyCreatorSourceId,
+        completionPolicySnapshot,
         contextBundle,
         ...issueData
       } = data;
@@ -1223,10 +1242,10 @@ export function issueService(db: Db) {
         throw unprocessable("Issue can only have one assignee");
       }
       if (data.assigneeAgentId) {
-        await assertAssignableAgent(companyId, data.assigneeAgentId);
+        await assertAssignableAgent(companyId, data.assigneeAgentId, operationDb);
       }
       if (data.assigneeUserId) {
-        await assertAssignableUser(companyId, data.assigneeUserId);
+        await assertAssignableUser(companyId, data.assigneeUserId, "Assignee user", operationDb);
       }
       const createResponsibleUserId = await resolveResponsibleUserId({
         companyId,
@@ -1237,13 +1256,13 @@ export function issueService(db: Db) {
         assigneeAgentId: (issueData as { assigneeAgentId?: string | null }).assigneeAgentId ?? null,
         responsibleFallbackUserId,
         executorChanged: true,
-      });
+      }, operationDb);
       if (createResponsibleUserId !== undefined) {
         (issueData as Record<string, unknown>).responsibleUserId = createResponsibleUserId;
       }
       if (data.status === "in_review") {
         const { resolveIssueReviewer } = await import("./issue-reviewer.js");
-        const reviewer = await resolveIssueReviewer(db, {
+        const reviewer = await resolveIssueReviewer(operationDb, {
           companyId,
           projectId: (issueData as { projectId?: string | null }).projectId ?? null,
           explicitReviewerUserId: (issueData as { reviewerUserId?: string | null }).reviewerUserId ?? null,
@@ -1266,7 +1285,7 @@ export function issueService(db: Db) {
           (issueData as Record<string, unknown>).executionWorkspacePreference !== undefined ||
           (issueData as Record<string, unknown>).executionWorkspaceSettings !== undefined;
 
-        const isolatedWorkspacesEnabled = (await instanceSettingsService(db).getExperimental())
+        const isolatedWorkspacesEnabled = (await instanceSettingsService(tx as unknown as Db).getExperimental())
           .enableIsolatedWorkspaces;
         let inheritedExecutionWorkspace: ResolvedWorkspaceInheritance | null = null;
 
@@ -1368,18 +1387,33 @@ export function issueService(db: Db) {
         const completionPolicy = await resolveAgentCompletionPolicy(tx as unknown as Db, {
           companyId,
           projectId,
-          taskOverride: (issueData as { agentCompletionPolicyOverride?: AgentCompletionPolicy | null })
-            .agentCompletionPolicyOverride ?? null,
+          taskOverride: completionPolicySnapshot?.policy ??
+            ((issueData as { agentCompletionPolicyOverride?: AgentCompletionPolicy | null })
+              .agentCompletionPolicyOverride ?? null),
           creatorOverride: completionPolicyCreatorOverride,
           creatorSource: completionPolicyCreatorSource,
           creatorSourceId: completionPolicyCreatorSourceId,
+          lockSources: true,
         });
         issueInsertData.agentCompletionPolicy = completionPolicy.policy;
-        issueInsertData.agentCompletionPolicySource = completionPolicy.source;
-        issueInsertData.agentCompletionPolicySourceId = completionPolicy.source === "task"
-          ? issueId
+        const preserveImportedSnapshot = completionPolicySnapshot && !completionPolicy.guardrailApplied;
+        issueInsertData.agentCompletionPolicyOverride = completionPolicySnapshot
+          ? completionPolicySnapshot.override
+          : issueInsertData.agentCompletionPolicyOverride;
+        issueInsertData.agentCompletionPolicySource = preserveImportedSnapshot
+          ? completionPolicySnapshot.source
+          : completionPolicy.source;
+        const resolvedSourceId = preserveImportedSnapshot
+          ? completionPolicySnapshot.sourceId
           : completionPolicy.sourceId;
-        issueInsertData.agentCompletionPolicyResolvedAt = completionPolicy.resolvedAt;
+        issueInsertData.agentCompletionPolicySourceId =
+          (preserveImportedSnapshot ? completionPolicySnapshot.source : completionPolicy.source) === "task"
+            ? issueId
+            : resolvedSourceId;
+        issueInsertData.agentCompletionPolicyResolvedAt =
+          preserveImportedSnapshot && completionPolicySnapshot.resolvedAt
+            ? completionPolicySnapshot.resolvedAt
+            : completionPolicy.resolvedAt;
 
         const [company] = await tx
           .update(companies)
@@ -1435,19 +1469,81 @@ export function issueService(db: Db) {
     update: async (
       id: string,
       data: Partial<typeof issues.$inferInsert> & { labelIds?: string[]; monitorPolicy?: unknown },
-      actor?: { actorType?: "agent" | "board" | "user" | "system"; agentId?: string | null; effectiveDial?: number },
+      actor?: {
+        actorType?: "agent" | "board" | "user" | "system";
+        agentId?: string | null;
+        effectiveDial?: number;
+        expectedUpdatedAt?: Date | null;
+      },
     ) => {
-      const existing = await db
+      const completionPolicyOverrideSupplied = Object.prototype.hasOwnProperty.call(
+        data,
+        "agentCompletionPolicyOverride",
+      );
+      if (completionPolicyOverrideSupplied && actor?.actorType === "agent") {
+        throw forbidden("Only human operators may override task completion policy");
+      }
+      const { result, tasksToWake, runsToTerminate, existing, issueData } = await db.transaction(async (tx) => {
+      const operationDb = tx as unknown as Db;
+      let completionPolicy: ResolvedAgentCompletionPolicy | null = null;
+      let policyPrelockUpdatedAt: Date | null = null;
+      if (completionPolicyOverrideSupplied) {
+        const policyPrelockIssue = await tx
+          .select({
+            companyId: issues.companyId,
+            projectId: issues.projectId,
+            updatedAt: issues.updatedAt,
+          })
+          .from(issues)
+          .where(eq(issues.id, id))
+          .then((rows) => rows[0] ?? null);
+        if (policyPrelockIssue) {
+          const { resolveAgentCompletionPolicy } = await import("./agent-completion-policy.js");
+          const nextProjectId = Object.prototype.hasOwnProperty.call(data, "projectId")
+            ? ((data as { projectId?: string | null }).projectId ?? null)
+            : policyPrelockIssue.projectId;
+          completionPolicy = await resolveAgentCompletionPolicy(operationDb, {
+            companyId: policyPrelockIssue.companyId,
+            projectId: nextProjectId,
+            taskOverride: (data as { agentCompletionPolicyOverride?: AgentCompletionPolicy | null })
+              .agentCompletionPolicyOverride ?? null,
+            lockSources: true,
+          });
+          policyPrelockUpdatedAt = policyPrelockIssue.updatedAt;
+        }
+      }
+      const existing = await tx
         .select()
         .from(issues)
         .where(eq(issues.id, id))
+        .for("update")
         .then((rows) => rows[0] ?? null);
-      if (!existing) return null;
+      if (!existing) {
+        return {
+          result: null,
+          tasksToWake: [] as { agentId: string; issueId: string; workMode: string | null }[],
+          runsToTerminate: [] as string[],
+          existing: null,
+          issueData: {} as Record<string, unknown>,
+        };
+      }
+      if (
+        policyPrelockUpdatedAt &&
+        existing.updatedAt.getTime() !== policyPrelockUpdatedAt.getTime()
+      ) {
+        throw conflict("Issue changed while completion policy locks were acquired; retry the request");
+      }
+      if (
+        actor?.expectedUpdatedAt &&
+        existing.updatedAt.getTime() !== actor.expectedUpdatedAt.getTime()
+      ) {
+        throw conflict("Issue changed while the update was being authorized; retry the request");
+      }
 
       const { labelIds: nextLabelIds, monitorPolicy: rawMonitorPolicy, ...issueData } = data;
       const monitorPolicy = rawMonitorPolicy === undefined ? undefined : normalizeIssueMonitorPolicy(rawMonitorPolicy);
 
-      const isolatedWorkspacesEnabled = (await instanceSettingsService(db).getExperimental()).enableIsolatedWorkspaces;
+      const isolatedWorkspacesEnabled = (await instanceSettingsService(operationDb).getExperimental()).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
         delete (issueData as Record<string, unknown>).executionWorkspaceId;
         delete (issueData as Record<string, unknown>).executionWorkspacePreference;
@@ -1463,7 +1559,7 @@ export function issueService(db: Db) {
               ? ((issueData as { projectId?: string | null }).projectId ?? null)
               : existing.projectId;
           const projectPolicy = nextProjectId
-            ? await db
+            ? await operationDb
               .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
               .from(projects)
               .where(and(eq(projects.id, nextProjectId), eq(projects.companyId, existing.companyId)))
@@ -1476,7 +1572,7 @@ export function issueService(db: Db) {
             parsedIssueSettings?.reuseWorkspaceId ??
             ((issueData as { executionWorkspaceId?: string | null }).executionWorkspaceId ?? null);
           const reuseWorkspace = reuseWorkspaceId
-            ? await db
+            ? await operationDb
               .select({
                 id: executionWorkspaces.id,
                 companyId: executionWorkspaces.companyId,
@@ -1520,7 +1616,7 @@ export function issueService(db: Db) {
           existing.executionWorkspaceId
         ) {
           const nextProjectId = (issueData as { projectId?: string | null }).projectId ?? null;
-          const existingWorkspace = await db
+          const existingWorkspace = await operationDb
             .select({
               companyId: executionWorkspaces.companyId,
               projectId: executionWorkspaces.projectId,
@@ -1560,10 +1656,10 @@ export function issueService(db: Db) {
         throw unprocessable("in_progress issues require an assignee");
       }
       if (issueData.assigneeAgentId) {
-        await assertAssignableAgent(existing.companyId, issueData.assigneeAgentId);
+        await assertAssignableAgent(existing.companyId, issueData.assigneeAgentId, operationDb);
       }
       if (issueData.assigneeUserId) {
-        await assertAssignableUser(existing.companyId, issueData.assigneeUserId);
+        await assertAssignableUser(existing.companyId, issueData.assigneeUserId, "Assignee user", operationDb);
       }
       const executorChanged =
         nextAssigneeAgentId !== existing.assigneeAgentId ||
@@ -1575,7 +1671,7 @@ export function issueService(db: Db) {
           companyId: existing.companyId,
           assigneeUserId: existing.assigneeUserId,
           assigneeAgentId: existing.assigneeAgentId,
-        });
+        }, operationDb);
         keepManualResponsibleOnExecutorChange = existing.responsibleUserId !== previousDefaultResponsibleUserId;
       }
       const updateResponsibleUserId = await resolveResponsibleUserId({
@@ -1587,22 +1683,13 @@ export function issueService(db: Db) {
         assigneeAgentId: nextAssigneeAgentId,
         existingResponsibleUserId: existing.responsibleUserId,
         executorChanged: keepManualResponsibleOnExecutorChange ? false : executorChanged,
-      });
+      }, operationDb);
       if (updateResponsibleUserId !== undefined) {
         (issueData as Record<string, unknown>).responsibleUserId = updateResponsibleUserId;
       }
 
       if (Object.prototype.hasOwnProperty.call(issueData, "agentCompletionPolicyOverride")) {
-        const { resolveAgentCompletionPolicy } = await import("./agent-completion-policy.js");
-        const nextProjectId = Object.prototype.hasOwnProperty.call(issueData, "projectId")
-          ? ((issueData as { projectId?: string | null }).projectId ?? null)
-          : existing.projectId;
-        const completionPolicy = await resolveAgentCompletionPolicy(db, {
-          companyId: existing.companyId,
-          projectId: nextProjectId,
-          taskOverride: (issueData as { agentCompletionPolicyOverride?: AgentCompletionPolicy | null })
-            .agentCompletionPolicyOverride ?? null,
-        });
+        if (!completionPolicy) throw notFound("Issue not found");
         const executionStarted = existing.startedAt !== null
           || ["in_progress", "in_review", "done", "cancelled"].includes(existing.status);
         if (executionStarted && completionPolicy.policy !== "review_required") {
@@ -1637,7 +1724,7 @@ export function issueService(db: Db) {
         const responsibleUserId = Object.prototype.hasOwnProperty.call(issueData, "responsibleUserId")
           ? ((issueData as { responsibleUserId?: string | null }).responsibleUserId ?? null)
           : existing.responsibleUserId;
-        const reviewer = await resolveIssueReviewer(db, {
+        const reviewer = await resolveIssueReviewer(operationDb, {
           companyId: existing.companyId,
           projectId: nextProjectId,
           explicitReviewerUserId,
@@ -1654,8 +1741,8 @@ export function issueService(db: Db) {
       };
 
       // Service-level agent status-transition guard (A4). Runs an approval-lookup
-      // read, so it lives here alongside the assignable-agent asserts and BEFORE
-      // the transaction opens. Non-agent callers (default actorType "system") are
+      // read, so it lives beside the locked issue row inside the transaction.
+      // Non-agent callers (default actorType "system") are
       // unaffected — see issue-agent-status-guard.ts. The autonomy dial is
       // resolved by the caller (e.g. the set_task_status tool) and forwarded as
       // actor.effectiveDial; this service never reads internalAgentConfig.
@@ -1671,7 +1758,7 @@ export function issueService(db: Db) {
           updateFields: issueData,
           actor: { actorType: actor?.actorType ?? "system", agentId: actor?.agentId ?? null, effectiveDial: actor?.effectiveDial },
         },
-        db,
+        operationDb,
       );
 
       applyStatusSideEffects(issueData.status, patch);
@@ -1691,7 +1778,6 @@ export function issueService(db: Db) {
         patch.checkoutRunId = null;
       }
 
-      const { result, tasksToWake, runsToTerminate } = await db.transaction(async (tx) => {
         const runIdsToTerminate = new Set<string>();
         const updated = await tx
           .update(issues)
@@ -1847,10 +1933,18 @@ export function issueService(db: Db) {
           });
         }
 
-        return { result: enriched, tasksToWake: wake, runsToTerminate: [...runIdsToTerminate] };
+        return {
+          result: enriched,
+          tasksToWake: wake,
+          runsToTerminate: [...runIdsToTerminate],
+          existing,
+          issueData,
+        };
       });
 
       terminateTrackedRuns(runsToTerminate);
+
+      if (!existing) return null;
 
       // Task 5.6: publish issue.status_changed when the status ACTUALLY changed
       // (the canonical crew-move chokepoint that goes through update — incl.

@@ -89,28 +89,32 @@ export async function resolveAgentCompletionPolicy(
     creatorOverride?: AgentCompletionPolicy | null;
     creatorSource?: CompletionPolicyCreatorSource | null;
     creatorSourceId?: string | null;
+    lockSources?: boolean;
   },
 ): Promise<ResolvedAgentCompletionPolicy> {
-  const company = await db
+  const companyQuery = db
     .select({
       policyDefault: companies.agentCompletionPolicyDefault,
       reviewGuardrail: companies.agentCompletionReviewGuardrail,
     })
     .from(companies)
-    .where(eq(companies.id, input.companyId))
+    .where(eq(companies.id, input.companyId));
+  const company = await (input.lockSources ? companyQuery.for("no key update") : companyQuery)
     .then((rows) => rows[0] ?? null);
   if (!company) throw notFound("Company not found");
 
   const project = input.projectId
-    ? await db
-      .select({
-        id: projects.id,
-        type: projects.type,
-        policyDefault: projects.agentCompletionPolicyDefault,
-      })
-      .from(projects)
-      .where(and(eq(projects.id, input.projectId), eq(projects.companyId, input.companyId)))
-      .then((rows) => rows[0] ?? null)
+    ? await (() => {
+      const projectQuery = db
+        .select({
+          id: projects.id,
+          type: projects.type,
+          policyDefault: projects.agentCompletionPolicyDefault,
+        })
+        .from(projects)
+        .where(and(eq(projects.id, input.projectId!), eq(projects.companyId, input.companyId)));
+      return input.lockSources ? projectQuery.for("share") : projectQuery;
+    })().then((rows) => rows[0] ?? null)
     : null;
   if (input.projectId && !project) throw notFound("Project not found");
 

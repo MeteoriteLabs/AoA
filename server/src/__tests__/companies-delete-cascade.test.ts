@@ -90,6 +90,7 @@ vi.mock("drizzle-orm", () => ({
   and: (..._args: unknown[]) => "and",
   eq: (..._args: unknown[]) => "eq",
   count: (..._args: unknown[]) => "count",
+  sql: (...args: unknown[]) => args,
 }));
 
 import { companyService } from "../services/companies.js";
@@ -98,6 +99,7 @@ function makeMockDb() {
   return {
     transaction: async (cb: (tx: any) => Promise<any>) => {
       const tx = {
+        execute: () => Promise.resolve([]),
         delete: (table: any) => {
           const name = table?._tableName ?? "unknown";
           deleteCalls.push(name);

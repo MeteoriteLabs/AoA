@@ -1,13 +1,24 @@
-import { Router } from "express";
+import { Router, type Request } from "express";
 import type { Db } from "@armyofagents/db";
+import { createWorkflowTemplateSchema, updateWorkflowTemplateSchema } from "@armyofagents/shared";
 import { workflowTemplateService, logActivity } from "../services/index.js";
-import { HttpError } from "../errors.js";
+import { forbidden, HttpError } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { assertRole } from "../middleware/rbac.js";
+import { validate } from "../middleware/validate.js";
 
 export function workflowTemplateRoutes(db: Db) {
   const router = Router();
   const svc = workflowTemplateService(db);
+
+  function assertHumanCompletionPolicyOverride(req: Request) {
+    if (
+      req.body.agentCompletionPolicyOverride !== undefined &&
+      req.actor.type !== "board"
+    ) {
+      throw forbidden("Only human operators may override task completion policy");
+    }
+  }
 
   // GET /companies/:companyId/workflow-templates
   router.get("/companies/:companyId/workflow-templates", async (req, res) => {
@@ -31,9 +42,10 @@ export function workflowTemplateRoutes(db: Db) {
   });
 
   // POST /companies/:companyId/workflow-templates
-  router.post("/companies/:companyId/workflow-templates", async (req, res) => {
+  router.post("/companies/:companyId/workflow-templates", validate(createWorkflowTemplateSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    assertHumanCompletionPolicyOverride(req);
     await assertRole(db, req, companyId, "founder", "team_lead");
 
     const { name, steps } = req.body;
@@ -61,10 +73,11 @@ export function workflowTemplateRoutes(db: Db) {
   });
 
   // PATCH /companies/:companyId/workflow-templates/:templateId
-  router.patch("/companies/:companyId/workflow-templates/:templateId", async (req, res) => {
+  router.patch("/companies/:companyId/workflow-templates/:templateId", validate(updateWorkflowTemplateSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     const templateId = req.params.templateId as string;
     assertCompanyAccess(req, companyId);
+    assertHumanCompletionPolicyOverride(req);
     await assertRole(db, req, companyId, "founder", "team_lead");
 
     let template;

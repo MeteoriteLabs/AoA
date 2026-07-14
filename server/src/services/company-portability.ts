@@ -2,7 +2,16 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { and, eq, gte, isNull, lte } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { budgetPolicies, costEvents, financeEvents, internalAgentConfig, providerQuotaWindows, workflowTemplates } from "@armyofagents/db";
+import {
+  budgetPolicies,
+  companies as companiesTable,
+  costEvents,
+  financeEvents,
+  internalAgentConfig,
+  projects as projectsTable,
+  providerQuotaWindows,
+  workflowTemplates,
+} from "@armyofagents/db";
 import type {
   CompanyPortabilityAgentManifestEntry,
   CompanyPortabilityBudgetPolicyManifestEntry,
@@ -338,6 +347,11 @@ function serializeWorkflowTemplateRow(
     description: typeof row.description === "string" ? row.description : null,
     workspaceMode:
       typeof row.workspaceMode === "string" ? row.workspaceMode : "department_default",
+    agentCompletionPolicyOverride:
+      row.agentCompletionPolicyOverride === "review_required" ||
+      row.agentCompletionPolicyOverride === "agent_can_complete"
+        ? row.agentCompletionPolicyOverride
+        : null,
     steps: Array.isArray(row.steps) ? (row.steps as unknown[]) : [],
     dependencies: Array.isArray(row.dependencies) ? (row.dependencies as unknown[]) : [],
   };
@@ -1058,6 +1072,10 @@ export function companyPortabilityService(db: Db) {
         description: company.description ?? null,
         brandColor: company.brandColor ?? null,
         requireBoardApprovalForNewAgents: company.requireBoardApprovalForNewAgents,
+        agentCompletionPolicyDefault: company.agentCompletionPolicyDefault === "agent_can_complete"
+          ? "agent_can_complete"
+          : "review_required",
+        agentCompletionReviewGuardrail: company.agentCompletionReviewGuardrail,
       };
     }
 
@@ -1170,6 +1188,11 @@ export function companyPortabilityService(db: Db) {
           targetDate: project.targetDate ?? null,
           leadAgentSlug,
           functionType: project.functionType ?? null,
+          agentCompletionPolicyDefault:
+            project.agentCompletionPolicyDefault === "review_required" ||
+            project.agentCompletionPolicyDefault === "agent_can_complete"
+              ? project.agentCompletionPolicyDefault
+              : null,
           executionWorkspacePolicy:
             (project.executionWorkspacePolicy as Record<string, unknown> | null) ?? null,
         });
@@ -1221,6 +1244,30 @@ export function companyPortabilityService(db: Db) {
             (issue.assigneeAdapterOverrides as Record<string, unknown> | null) ?? null,
           executionWorkspaceSettings:
             (issue.executionWorkspaceSettings as Record<string, unknown> | null) ?? null,
+          acceptanceCriteria: Array.isArray(issue.acceptanceCriteria)
+            ? issue.acceptanceCriteria.filter((criterion): criterion is string => typeof criterion === "string")
+            : [],
+          agentCompletionPolicyOverride:
+            issue.agentCompletionPolicyOverride === "review_required" ||
+            issue.agentCompletionPolicyOverride === "agent_can_complete"
+              ? issue.agentCompletionPolicyOverride
+              : null,
+          agentCompletionPolicy:
+            issue.agentCompletionPolicy === "agent_can_complete"
+              ? "agent_can_complete"
+              : "review_required",
+          agentCompletionPolicySource:
+            issue.agentCompletionPolicySource === "company" ||
+            issue.agentCompletionPolicySource === "department" ||
+            issue.agentCompletionPolicySource === "project" ||
+            issue.agentCompletionPolicySource === "routine" ||
+            issue.agentCompletionPolicySource === "workflow_template" ||
+            issue.agentCompletionPolicySource === "task"
+              ? issue.agentCompletionPolicySource
+              : "legacy_backfill",
+          ...(!Number.isNaN(new Date(issue.agentCompletionPolicyResolvedAt).getTime())
+            ? { agentCompletionPolicyResolvedAt: new Date(issue.agentCompletionPolicyResolvedAt).toISOString() }
+            : {}),
           metadata: null,
         });
       }
@@ -1289,6 +1336,7 @@ export function companyPortabilityService(db: Db) {
           priority: routine.priority,
           concurrencyPolicy: routine.concurrencyPolicy,
           catchUpPolicy: routine.catchUpPolicy,
+          agentCompletionPolicyOverride: routine.agentCompletionPolicyOverride ?? null,
           projectSlug,
           assigneeAgentSlug,
           variables: routine.variables.map((variable) => ({
@@ -1862,6 +1910,10 @@ export function companyPortabilityService(db: Db) {
 
     let targetCompany: { id: string; name: string } | null = null;
     let companyAction: "created" | "updated" | "unchanged" = "unchanged";
+    let deferredCompanyCompletionPolicyPatch: {
+      agentCompletionPolicyDefault?: "review_required" | "agent_can_complete";
+      agentCompletionReviewGuardrail?: boolean;
+    } | null = null;
 
     if (input.target.mode === "new_company") {
       const companyName =
@@ -1876,6 +1928,12 @@ export function companyPortabilityService(db: Db) {
         requireBoardApprovalForNewAgents: include.company
           ? (sourceManifest.company?.requireBoardApprovalForNewAgents ?? true)
           : true,
+        agentCompletionPolicyDefault: include.company
+          ? (sourceManifest.company?.agentCompletionPolicyDefault ?? "review_required")
+          : "review_required",
+        agentCompletionReviewGuardrail: include.company
+          ? (sourceManifest.company?.agentCompletionReviewGuardrail ?? false)
+          : false,
       });
       await access.ensureMembership(created.id, "user", actorUserId ?? "board", "owner", "active");
       targetCompany = created;
@@ -1884,6 +1942,17 @@ export function companyPortabilityService(db: Db) {
       targetCompany = await companies.getById(input.target.companyId);
       if (!targetCompany) throw notFound("Target company not found");
       if (include.company && sourceManifest.company) {
+        const completionPolicyPatch = {
+          ...(sourceManifest.company.agentCompletionPolicyDefault !== undefined
+            ? { agentCompletionPolicyDefault: sourceManifest.company.agentCompletionPolicyDefault }
+            : {}),
+          ...(sourceManifest.company.agentCompletionReviewGuardrail !== undefined
+            ? { agentCompletionReviewGuardrail: sourceManifest.company.agentCompletionReviewGuardrail }
+            : {}),
+        };
+        deferredCompanyCompletionPolicyPatch = Object.keys(completionPolicyPatch).length > 0
+          ? completionPolicyPatch
+          : null;
         const updated = await companies.update(targetCompany.id, {
           name: sourceManifest.company.name,
           description: sourceManifest.company.description,
@@ -2074,6 +2143,10 @@ export function companyPortabilityService(db: Db) {
 
     const resultProjects: CompanyPortabilityImportResult["projects"] = [];
     const importedSlugToProjectId = new Map<string, string>();
+    const deferredProjectCompletionPolicyPatches: Array<{
+      id: string;
+      policy: "review_required" | "agent_can_complete" | null;
+    }> = [];
 
     if (include.projects) {
       const existingProjectRows = await projects.list(targetCompany.id);
@@ -2135,6 +2208,12 @@ export function companyPortabilityService(db: Db) {
           }
           importedSlugToProjectId.set(planProject.slug, updated.id);
           existingProjectSlugToId.set(normalizeProjectUrlKey(updated.name) ?? updated.id, updated.id);
+          if (manifestProject.agentCompletionPolicyDefault !== undefined) {
+            deferredProjectCompletionPolicyPatches.push({
+              id: updated.id,
+              policy: manifestProject.agentCompletionPolicyDefault,
+            });
+          }
           resultProjects.push({
             slug: planProject.slug,
             id: updated.id,
@@ -2146,7 +2225,21 @@ export function companyPortabilityService(db: Db) {
           continue;
         }
 
-        const created = await projects.create(targetCompany.id, projectPatch);
+        const deferCreatedProjectCompletionPolicy =
+          input.target.mode === "existing_company" &&
+          manifestProject.agentCompletionPolicyDefault !== undefined;
+        const created = await projects.create(targetCompany.id, {
+          ...projectPatch,
+          ...(!deferCreatedProjectCompletionPolicy && manifestProject.agentCompletionPolicyDefault !== undefined
+            ? { agentCompletionPolicyDefault: manifestProject.agentCompletionPolicyDefault }
+            : {}),
+        });
+        if (deferCreatedProjectCompletionPolicy) {
+          deferredProjectCompletionPolicyPatches.push({
+            id: created.id,
+            policy: manifestProject.agentCompletionPolicyDefault!,
+          });
+        }
         importedSlugToProjectId.set(planProject.slug, created.id);
         existingProjectSlugToId.set(normalizeProjectUrlKey(created.name) ?? created.id, created.id);
         resultProjects.push({
@@ -2234,6 +2327,38 @@ export function companyPortabilityService(db: Db) {
           });
         }
 
+        const requestedPolicySource = manifestIssue.agentCompletionPolicySource ?? "legacy_backfill" as const;
+        const portablePolicySource = requestedPolicySource === "routine" ||
+          requestedPolicySource === "workflow_template" ||
+          ((requestedPolicySource === "project" || requestedPolicySource === "department") && !projectId)
+          ? "legacy_backfill" as const
+          : requestedPolicySource;
+        const importedPolicySourceId = portablePolicySource === "company"
+          ? targetCompany.id
+          : portablePolicySource === "project" || portablePolicySource === "department"
+            ? projectId
+            : null;
+        const importedPolicyResolvedAt = manifestIssue.agentCompletionPolicyResolvedAt
+          ? new Date(manifestIssue.agentCompletionPolicyResolvedAt)
+          : null;
+        const completionPolicySnapshot = manifestIssue.agentCompletionPolicy
+          ? {
+            policy: manifestIssue.agentCompletionPolicy,
+            override: manifestIssue.agentCompletionPolicyOverride ?? null,
+            source: portablePolicySource,
+            sourceId: importedPolicySourceId,
+            resolvedAt: importedPolicyResolvedAt && !Number.isNaN(importedPolicyResolvedAt.getTime())
+              ? importedPolicyResolvedAt
+              : null,
+          }
+          : {
+            policy: "review_required" as const,
+            override: null,
+            source: "legacy_backfill" as const,
+            sourceId: null,
+            resolvedAt: null,
+          };
+
         const created = await issues.create(targetCompany.id, {
           projectId,
           title: manifestIssue.title,
@@ -2245,7 +2370,12 @@ export function companyPortabilityService(db: Db) {
           billingCode: manifestIssue.billingCode ?? null,
           assigneeAdapterOverrides: manifestIssue.assigneeAdapterOverrides ?? null,
           executionWorkspaceSettings: manifestIssue.executionWorkspaceSettings ?? null,
+          acceptanceCriteria: manifestIssue.acceptanceCriteria ?? [],
           dueDate: manifestIssue.dueDate ? new Date(manifestIssue.dueDate) : null,
+          ...(manifestIssue.agentCompletionPolicyOverride !== undefined
+            ? { agentCompletionPolicyOverride: manifestIssue.agentCompletionPolicyOverride }
+            : {}),
+          ...(completionPolicySnapshot ? { completionPolicySnapshot } : {}),
         });
 
         resultIssues.push({
@@ -2447,6 +2577,9 @@ export function companyPortabilityService(db: Db) {
           status: manifestRoutine.status,
           concurrencyPolicy: manifestRoutine.concurrencyPolicy,
           catchUpPolicy: manifestRoutine.catchUpPolicy,
+          ...(manifestRoutine.agentCompletionPolicyOverride !== undefined
+            ? { agentCompletionPolicyOverride: manifestRoutine.agentCompletionPolicyOverride }
+            : {}),
           variables: manifestRoutine.variables,
         };
 
@@ -2944,6 +3077,9 @@ export function companyPortabilityService(db: Db) {
                   name: tpl.name,
                   description: tpl.description ?? null,
                   workspaceMode: tpl.workspaceMode,
+                  ...(tpl.agentCompletionPolicyOverride !== undefined
+                    ? { agentCompletionPolicyOverride: tpl.agentCompletionPolicyOverride }
+                    : {}),
                   steps: tpl.steps as unknown,
                   dependencies: tpl.dependencies as unknown,
                   updatedAt: new Date(),
@@ -2967,6 +3103,7 @@ export function companyPortabilityService(db: Db) {
             name: candidateName,
             description: tpl.description ?? null,
             workspaceMode: tpl.workspaceMode,
+            agentCompletionPolicyOverride: tpl.agentCompletionPolicyOverride ?? null,
             steps: tpl.steps as unknown,
             dependencies: tpl.dependencies as unknown,
             instantiationCount: 0,
@@ -2982,6 +3119,7 @@ export function companyPortabilityService(db: Db) {
           name: tpl.name,
           description: tpl.description ?? null,
           workspaceMode: tpl.workspaceMode,
+          agentCompletionPolicyOverride: tpl.agentCompletionPolicyOverride ?? null,
           steps: tpl.steps as unknown,
           dependencies: tpl.dependencies as unknown,
           instantiationCount: 0,
@@ -3029,6 +3167,29 @@ export function companyPortabilityService(db: Db) {
     // (before agent restoration), so a founder is guaranteed to exist here.
     if (include.agents) {
       await agents.backfillHumanAtTop(targetCompany.id);
+    }
+
+    if (
+      input.target.mode === "existing_company" &&
+      (deferredCompanyCompletionPolicyPatch || deferredProjectCompletionPolicyPatches.length > 0)
+    ) {
+      await db.transaction(async (tx) => {
+        if (
+          deferredCompanyCompletionPolicyPatch &&
+          Object.keys(deferredCompanyCompletionPolicyPatch).length > 0
+        ) {
+          await tx
+            .update(companiesTable)
+            .set({ ...deferredCompanyCompletionPolicyPatch, updatedAt: new Date() })
+            .where(eq(companiesTable.id, targetCompany!.id));
+        }
+        for (const patch of deferredProjectCompletionPolicyPatches) {
+          await tx
+            .update(projectsTable)
+            .set({ agentCompletionPolicyDefault: patch.policy, updatedAt: new Date() })
+            .where(and(eq(projectsTable.id, patch.id), eq(projectsTable.companyId, targetCompany!.id)));
+        }
+      });
     }
 
     return {

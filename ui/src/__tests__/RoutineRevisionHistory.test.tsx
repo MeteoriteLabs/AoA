@@ -50,6 +50,7 @@ function makeRevision(overrides: Record<string, unknown> = {}) {
 const ROUTINE_ID = "routine-1";
 const defaultProps = {
   routineId: ROUTINE_ID,
+  getBaseRevisionId: () => "head-revision",
   onRestored: vi.fn(),
 };
 
@@ -57,7 +58,7 @@ const defaultProps = {
 describe("RoutineRevisionHistory", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    restoreRevisionMock.mockResolvedValue({ id: ROUTINE_ID });
+    restoreRevisionMock.mockResolvedValue({ id: ROUTINE_ID, latestRevisionId: "restored-head" });
   });
 
   it("renders empty state when query returns empty list", async () => {
@@ -116,8 +117,10 @@ describe("RoutineRevisionHistory", () => {
     await user.click(screen.getByRole("button", { name: /restore/i }));
 
     await waitFor(() => {
-      expect(restoreRevisionMock).toHaveBeenCalledWith(ROUTINE_ID, "rev-abc");
-      expect(onRestored).toHaveBeenCalled();
+      expect(restoreRevisionMock).toHaveBeenCalledWith(ROUTINE_ID, "rev-abc", "head-revision");
+      expect(onRestored).toHaveBeenCalledWith(
+        expect.objectContaining({ latestRevisionId: "restored-head" }),
+      );
     });
   });
 

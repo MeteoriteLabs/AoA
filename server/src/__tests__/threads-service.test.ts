@@ -203,6 +203,7 @@ function createSequenceDb(selectQueue: any[][]) {
       innerJoin: vi.fn().mockReturnThis(),
       orderBy: vi.fn().mockReturnThis(),
       limit: vi.fn().mockReturnThis(),
+      for: vi.fn().mockReturnThis(),
       then: vi.fn((fn: (rows: any[]) => any) =>
         Promise.resolve(fn(selectQueue[idx++] ?? [])),
       ),

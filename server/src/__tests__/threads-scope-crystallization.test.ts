@@ -50,6 +50,7 @@ function seqDb(queue: any[][]) {
     leftJoin: vi.fn().mockReturnThis(),
     orderBy: vi.fn().mockReturnThis(),
     limit: vi.fn().mockReturnThis(),
+    for: vi.fn().mockReturnThis(),
     then: vi.fn((f: any) => Promise.resolve(f(queue[i++] ?? []))),
   });
   const db: any = {

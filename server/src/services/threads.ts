@@ -1285,6 +1285,7 @@ export function threadService(db: Db) {
           const completionPolicy = await resolveAgentCompletionPolicy(tx as unknown as Db, {
             companyId,
             projectId,
+            lockSources: true,
           });
           const [newIssue] = await tx
             .insert(issues)

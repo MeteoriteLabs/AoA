@@ -99,10 +99,11 @@ vi.mock("../services/issue-reviewer.js", () => ({
 // The chokepoint under test. Spy on publishIssueStatusChanged (crosses the
 // issues.ts → live-events.js boundary → observable). Keep publishLiveEvent as a
 // no-op so any other publishing code in issues.ts stays inert.
-const { publishIssueStatusChangedMock, hubReconcileMock, hubServiceExecutors } = vi.hoisted(() => ({
+const { publishIssueStatusChangedMock, hubReconcileMock, hubServiceExecutors, assertAgentStatusTransitionMock } = vi.hoisted(() => ({
   publishIssueStatusChangedMock: vi.fn(),
   hubReconcileMock: vi.fn().mockResolvedValue(undefined),
   hubServiceExecutors: [] as unknown[],
+  assertAgentStatusTransitionMock: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("../services/live-events.js", () => ({
   publishLiveEvent: vi.fn(),
@@ -125,7 +126,7 @@ vi.mock("../services/hub-items.js", () => ({
 // The A4 agent status-transition guard reads the db; for these (non-agent /
 // system-actor) updates it's a no-op, but stub it so it never hits a real db.
 vi.mock("../services/issue-agent-status-guard.js", () => ({
-  assertAgentStatusTransition: vi.fn().mockResolvedValue(undefined),
+  assertAgentStatusTransition: assertAgentStatusTransitionMock,
 }));
 
 import { issueService } from "../services/issues.js";
@@ -142,6 +143,7 @@ const ISSUE_ID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 //    yields the patched row, and whose label select returns []
 function makeUpdateDb(existing: Record<string, unknown>, patchedStatus: string) {
   const updatedRow = { ...existing, status: patchedStatus };
+  let txSelectCall = 0;
   const labelChain = () => {
     const c: any = {};
     c.from = () => c; c.where = () => c; c.innerJoin = () => c; c.leftJoin = () => c;
@@ -158,7 +160,13 @@ function makeUpdateDb(existing: Record<string, unknown>, patchedStatus: string) 
       return u;
     },
     insert: () => ({ values: () => Promise.resolve(undefined) }),
-    select: () => labelChain(),
+    select: () => {
+      const rows = txSelectCall++ === 0 ? [existing] : [];
+      const chain = labelChain();
+      chain.for = () => chain;
+      chain.then = (r: (v: unknown[]) => unknown) => Promise.resolve(rows).then(r);
+      return chain;
+    },
     delete: () => ({ where: () => Promise.resolve(undefined) }),
   };
   const db: any = {
@@ -215,6 +223,8 @@ function makeCheckoutDb() {
 describe("issue.status_changed publish (Task 5.6) — issues.ts chokepoints", () => {
   beforeEach(() => {
     publishIssueStatusChangedMock.mockClear();
+    assertAgentStatusTransitionMock.mockReset();
+    assertAgentStatusTransitionMock.mockResolvedValue(undefined);
   });
 
   it("update() that CHANGES status publishes issue.status_changed { companyId, issueId, status }", async () => {
@@ -250,6 +260,73 @@ describe("issue.status_changed publish (Task 5.6) — issues.ts chokepoints", ()
     await issueService(db).update(ISSUE_ID, { title: "renamed only" });
 
     expect(publishIssueStatusChangedMock).not.toHaveBeenCalled();
+  });
+
+  it("update() rejects agent completion-policy fields at the service boundary", async () => {
+    const existing = {
+      id: ISSUE_ID,
+      companyId: COMPANY_ID,
+      status: "todo",
+      assigneeAgentId: "agent-1",
+      assigneeUserId: null,
+      agentCompletionPolicyOverride: null,
+    };
+    const db = makeUpdateDb(existing, "todo");
+
+    await expect(issueService(db).update(
+      ISSUE_ID,
+      { agentCompletionPolicyOverride: null },
+      { actorType: "agent", agentId: "agent-1", effectiveDial: 2 },
+    )).rejects.toMatchObject({ status: 403 });
+  });
+
+  it("validates agent transitions against the row locked inside the transaction", async () => {
+    const lockedExisting = {
+      id: ISSUE_ID,
+      companyId: COMPANY_ID,
+      status: "in_progress",
+      assigneeAgentId: "agent-2",
+      assigneeUserId: null,
+      agentCompletionPolicy: "agent_can_complete",
+      acceptanceCriteria: ["Verified"],
+    };
+    const db = makeUpdateDb(lockedExisting, "done");
+    assertAgentStatusTransitionMock.mockImplementationOnce(async (input: any) => {
+      if (input.existing.assigneeAgentId !== input.actor.agentId) {
+        throw Object.assign(new Error("stale ownership"), { status: 422 });
+      }
+    });
+
+    await expect(issueService(db).update(
+      ISSUE_ID,
+      { status: "done" },
+      { actorType: "agent", agentId: "agent-1", effectiveDial: 2 },
+    )).rejects.toMatchObject({ status: 422 });
+    expect(assertAgentStatusTransitionMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        existing: expect.objectContaining({ assigneeAgentId: "agent-2" }),
+      }),
+      expect.anything(),
+    );
+  });
+
+  it("rejects an update when the row changed after route authorization", async () => {
+    const authorizedAt = new Date("2026-07-14T00:00:00.000Z");
+    const lockedExisting = {
+      id: ISSUE_ID,
+      companyId: COMPANY_ID,
+      status: "todo",
+      assigneeAgentId: "agent-2",
+      assigneeUserId: null,
+      updatedAt: new Date("2026-07-14T00:00:01.000Z"),
+    };
+    const db = makeUpdateDb(lockedExisting, "todo");
+
+    await expect(issueService(db).update(
+      ISSUE_ID,
+      { assigneeAgentId: "agent-1" },
+      { actorType: "board", expectedUpdatedAt: authorizedAt },
+    )).rejects.toMatchObject({ status: 409 });
   });
 
   it("checkout() publishes issue.status_changed on the →in_progress claim", async () => {

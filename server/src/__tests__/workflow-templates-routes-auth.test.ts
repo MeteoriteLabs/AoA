@@ -1,0 +1,63 @@
+import express from "express";
+import request from "supertest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { errorHandler } from "../middleware/index.js";
+import { workflowTemplateRoutes } from "../routes/workflow-templates.js";
+
+const companyId = "11111111-1111-4111-8111-111111111111";
+const templateId = "22222222-2222-4222-8222-222222222222";
+const agentId = "33333333-3333-4333-8333-333333333333";
+
+const mockWorkflowTemplateService = vi.hoisted(() => ({
+  list: vi.fn(),
+  getById: vi.fn(),
+  create: vi.fn(),
+  update: vi.fn(),
+  instantiate: vi.fn(),
+  delete: vi.fn(),
+}));
+
+vi.mock("../services/index.js", () => ({
+  workflowTemplateService: () => mockWorkflowTemplateService,
+  logActivity: vi.fn(),
+}));
+
+function createAgentApp() {
+  const app = express();
+  app.use(express.json());
+  app.use((req, _res, next) => {
+    (req as any).actor = { type: "agent", agentId, companyId };
+    next();
+  });
+  app.use("/api", workflowTemplateRoutes({} as any));
+  app.use(errorHandler);
+  return app;
+}
+
+describe("workflow-template completion-policy authorization", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("rejects an agent-supplied override on create", async () => {
+    const res = await request(createAgentApp())
+      .post(`/api/companies/${companyId}/workflow-templates`)
+      .send({
+        name: "Agent template",
+        steps: [{ order: 1, title: "Run" }],
+        agentCompletionPolicyOverride: "agent_can_complete",
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Only human operators");
+    expect(mockWorkflowTemplateService.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects an agent-supplied override on update", async () => {
+    const res = await request(createAgentApp())
+      .patch(`/api/companies/${companyId}/workflow-templates/${templateId}`)
+      .send({ agentCompletionPolicyOverride: "agent_can_complete" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Only human operators");
+    expect(mockWorkflowTemplateService.update).not.toHaveBeenCalled();
+  });
+});

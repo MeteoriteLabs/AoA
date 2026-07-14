@@ -23,6 +23,7 @@ const routine = {
   status: "active",
   concurrencyPolicy: "coalesce_if_active",
   catchUpPolicy: "skip_missed",
+  agentCompletionPolicyOverride: null,
   createdByAgentId: null,
   createdByUserId: null,
   updatedByAgentId: null,
@@ -144,6 +145,34 @@ describe("routine routes — authorization", () => {
     expect(mockRoutineService.create).not.toHaveBeenCalled();
   });
 
+  it("rejects an agent-supplied completion policy on routine creation", async () => {
+    const app = createApp({ type: "agent", agentId, companyId });
+
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/routines`)
+      .send({
+        title: "Agent routine",
+        assigneeAgentId: agentId,
+        agentCompletionPolicyOverride: "agent_can_complete",
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Only human operators");
+    expect(mockRoutineService.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects an agent completion-policy change on an existing routine", async () => {
+    const app = createApp({ type: "agent", agentId, companyId });
+
+    const res = await request(app)
+      .patch(`/api/routines/${routineId}`)
+      .send({ agentCompletionPolicyOverride: "agent_can_complete" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Only human operators");
+    expect(mockRoutineService.update).not.toHaveBeenCalled();
+  });
+
   it("requires tasks:assign permission to retarget a routine assignee", async () => {
     const app = createApp({
       type: "board",
@@ -156,6 +185,24 @@ describe("routine routes — authorization", () => {
     const res = await request(app)
       .patch(`/api/routines/${routineId}`)
       .send({ assigneeAgentId: otherAgentId });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("tasks:assign");
+    expect(mockRoutineService.update).not.toHaveBeenCalled();
+  });
+
+  it("requires tasks:assign whenever a board patch supplies an assignee", async () => {
+    const app = createApp({
+      type: "board",
+      userId: "board-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const res = await request(app)
+      .patch(`/api/routines/${routineId}`)
+      .send({ assigneeAgentId: agentId });
 
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("tasks:assign");

@@ -143,13 +143,14 @@ describe("POST /routines/:id/revisions/restore", () => {
 
     const res = await request(app)
       .post(`/api/routines/${routineId}/revisions/restore`)
-      .send({ revisionId });
+      .send({ revisionId, baseRevisionId: null });
 
     expect(res.status).toBe(200);
     expect(res.body.id).toBe(routineId);
     expect(mockRoutineService.restoreRevision).toHaveBeenCalledWith(
       routineId,
       revisionId,
+      null,
       expect.objectContaining({ userId: "board-user", agentId: null }),
     );
     expect(mockLogActivity).toHaveBeenCalledWith(
@@ -163,13 +164,29 @@ describe("POST /routines/:id/revisions/restore", () => {
     );
   });
 
+  it("accepts legacy restore requests without a base revision token", async () => {
+    const app = createApp(boardActor);
+
+    const res = await request(app)
+      .post(`/api/routines/${routineId}/revisions/restore`)
+      .send({ revisionId });
+
+    expect(res.status).toBe(200);
+    expect(mockRoutineService.restoreRevision).toHaveBeenCalledWith(
+      routineId,
+      revisionId,
+      undefined,
+      expect.objectContaining({ userId: "board-user", agentId: null }),
+    );
+  });
+
   it("returns 404 when routine not found", async () => {
     mockRoutineService.get.mockResolvedValue(null);
     const app = createApp(boardActor);
 
     const res = await request(app)
       .post(`/api/routines/${routineId}/revisions/restore`)
-      .send({ revisionId });
+      .send({ revisionId, baseRevisionId: null });
 
     expect(res.status).toBe(404);
     expect(res.body.error).toContain("Routine not found");
@@ -182,10 +199,22 @@ describe("POST /routines/:id/revisions/restore", () => {
 
     const res = await request(app)
       .post(`/api/routines/${routineId}/revisions/restore`)
-      .send({ revisionId });
+      .send({ revisionId, baseRevisionId: null });
 
     expect(res.status).toBe(404);
     expect(res.body.error).toContain("Revision not found");
+  });
+
+  it("rejects an agent restoring a revision", async () => {
+    const app = createApp({ type: "agent", agentId, companyId });
+
+    const res = await request(app)
+      .post(`/api/routines/${routineId}/revisions/restore`)
+      .send({ revisionId, baseRevisionId: null });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Only human operators");
+    expect(mockRoutineService.restoreRevision).not.toHaveBeenCalled();
   });
 
   it("returns 400 when revisionId is missing from body", async () => {

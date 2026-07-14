@@ -35,7 +35,7 @@ export const createRoutineSchema = z.object({
 });
 
 export const updateRoutineSchema = createRoutineSchema.partial().extend({
-  baseRevisionId: z.string().uuid().optional(),
+  baseRevisionId: z.string().uuid().nullable().optional(),
 });
 
 const scheduleCreateSchema = z.object({
@@ -88,6 +88,7 @@ export const rotateRoutineTriggerSecretSchema = z.object({});
 
 export const restoreRoutineRevisionSchema = z.object({
   revisionId: z.string().uuid(),
+  baseRevisionId: z.string().uuid().nullable().optional(),
 });
 export type RestoreRoutineRevision = z.infer<typeof restoreRoutineRevisionSchema>;
 

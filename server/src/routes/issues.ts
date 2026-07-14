@@ -1088,9 +1088,8 @@ export function issueRoutes(db: Db, storage: StorageService) {
     const reviewerWillChange =
       req.body.reviewerUserId !== undefined &&
       req.body.reviewerUserId !== existing.reviewerUserId;
-    const completionPolicyWillChange =
-      req.body.agentCompletionPolicyOverride !== undefined &&
-      req.body.agentCompletionPolicyOverride !== existing.agentCompletionPolicyOverride;
+    const completionPolicyOverrideSupplied =
+      req.body.agentCompletionPolicyOverride !== undefined;
 
     const isAgentReturningIssueToCreator =
       req.actor.type === "agent" &&
@@ -1106,7 +1105,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
         await assertCanAssignTasks(req, existing.companyId);
       }
     }
-    if (completionPolicyWillChange) {
+    if (completionPolicyOverrideSupplied) {
       if (req.actor.type !== "board") {
         throw forbidden("Only human operators may override task completion policy");
       }
@@ -1155,8 +1154,12 @@ export function issueRoutes(db: Db, storage: StorageService) {
         // Org-agent API keys are outside the crew Manual/Assist/Drive dial.
         // Their task completion authority is governed by the task snapshot.
         effectiveDial: 2,
+        expectedUpdatedAt: existing.updatedAt,
       }
-      : { actorType: req.actor.type === "board" ? "board" as const : "user" as const };
+      : {
+        actorType: req.actor.type === "board" ? "board" as const : "user" as const,
+        expectedUpdatedAt: existing.updatedAt,
+      };
     let issue;
     let comment = null;
     try {

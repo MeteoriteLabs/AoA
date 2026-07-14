@@ -86,6 +86,7 @@ function createSequenceDb(config: {
     insert: (_table: unknown) => makeChain(() => config.inserts?.[insertIdx++] ?? []),
     update: (_table: unknown) => makeChain(() => config.updates?.[updateIdx++] ?? []),
     delete: (_table: unknown) => makeChain(() => config.deletes?.[deleteIdx++] ?? []),
+    execute: async (..._args: unknown[]) => [],
   });
 
   return {
@@ -93,6 +94,7 @@ function createSequenceDb(config: {
     insert: (_table: unknown) => makeChain(() => config.inserts?.[insertIdx++] ?? []),
     update: (_table: unknown) => makeChain(() => config.updates?.[updateIdx++] ?? []),
     delete: (_table: unknown) => makeChain(() => config.deletes?.[deleteIdx++] ?? []),
+    execute: async (..._args: unknown[]) => [],
     transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn(makeTx()),
   };
 }

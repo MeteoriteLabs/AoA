@@ -69,7 +69,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import type { RoutineTrigger } from "@armyofagents/shared";
+import type { Routine, RoutineTrigger } from "@armyofagents/shared";
 import { ROUTINE_VARIABLE_NAME_PATTERN } from "@armyofagents/shared";
 import { RoutineVariablesEditor } from "@/components/routines/RoutineVariablesEditor";
 import { RoutineRunDialog } from "@/components/routines/RoutineRunDialog";
@@ -440,20 +440,26 @@ export function RoutineDetail() {
     );
   };
 
+  const refreshRoutineRevisionQueries = async (updated: Routine) => {
+    latestRevisionIdRef.current = updated.latestRevisionId ?? null;
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(routineId!) }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId!) }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.routines.activity(selectedCompanyId!, routineId!) }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.routines.revisions(routineId!) }),
+    ]);
+  };
+
   const saveRoutine = useMutation({
     mutationFn: () => {
       return routinesApi.update(routineId!, {
         ...editDraft,
         description: editDraft.description.trim() || null,
-        baseRevisionId: latestRevisionIdRef.current ?? undefined,
+        baseRevisionId: latestRevisionIdRef.current,
       });
     },
-    onSuccess: async () => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(routineId!) }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId!) }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.routines.activity(selectedCompanyId!, routineId!) }),
-      ]);
+    onSuccess: async (updated) => {
+      await refreshRoutineRevisionQueries(updated);
     },
     onError: (error) => {
       pushToast({
@@ -476,17 +482,17 @@ export function RoutineDetail() {
   };
 
   const updateRoutineStatus = useMutation({
-    mutationFn: (status: string) => routinesApi.update(routineId!, { status }),
-    onSuccess: async (_data, status) => {
+    mutationFn: (status: string) => routinesApi.update(routineId!, {
+      status,
+      baseRevisionId: latestRevisionIdRef.current,
+    }),
+    onSuccess: async (updated, status) => {
       pushToast({
         title: "Routine saved",
         body: status === "paused" ? "Automation paused." : "Automation enabled.",
         tone: "success",
       });
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(routineId!) }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId!) }),
-      ]);
+      await refreshRoutineRevisionQueries(updated);
     },
     onError: (error) => {
       pushToast({
@@ -1115,6 +1121,10 @@ export function RoutineDetail() {
             title={routine.title}
             description={routine.description}
             initialVariables={routine.variables}
+            getBaseRevisionId={() => latestRevisionIdRef.current}
+            onRoutineUpdated={(updated) => {
+              void refreshRoutineRevisionQueries(updated);
+            }}
           />
         </TabsContent>
 
@@ -1149,8 +1159,9 @@ export function RoutineDetail() {
         <TabsContent value="history">
           <RoutineRevisionHistory
             routineId={routineId!}
-            onRestored={() => {
-              queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(routineId!) });
+            getBaseRevisionId={() => latestRevisionIdRef.current}
+            onRestored={(updated) => {
+              void refreshRoutineRevisionQueries(updated);
             }}
           />
         </TabsContent>

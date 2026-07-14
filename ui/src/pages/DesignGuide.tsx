@@ -1843,6 +1843,10 @@ function ReportsToSelectShowcase() {
 
 function RoutineVariablesEditorShowcase() {
   const routineId = "00000000-0000-0000-0000-000000000000";
+  const revisionProps = {
+    getBaseRevisionId: () => null,
+    onRoutineUpdated: () => undefined,
+  };
   return (
     <Section title="Routine Variables Editor">
       <SubSection title="Empty state (no placeholders in title/description)">
@@ -1852,6 +1856,7 @@ function RoutineVariablesEditorShowcase() {
             title="Daily standup"
             description="Post a summary to the team"
             initialVariables={[]}
+            {...revisionProps}
           />
         </div>
       </SubSection>
@@ -1863,6 +1868,7 @@ function RoutineVariablesEditorShowcase() {
             title="Review {{topic}}"
             description="Read all notes related to the given topic and summarise."
             initialVariables={[]}
+            {...revisionProps}
           />
         </div>
       </SubSection>
@@ -1873,6 +1879,7 @@ function RoutineVariablesEditorShowcase() {
             routineId={routineId}
             title="Send {{tone}} digest about {{topic}}"
             description="Depth: {{depth}}. Include charts: {{include_charts}}"
+            {...revisionProps}
             initialVariables={[
               {
                 name: "tone",

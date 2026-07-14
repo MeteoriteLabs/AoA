@@ -134,6 +134,7 @@ function chainForRows(rows: unknown[]) {
   c.leftJoin = () => c;
   c.orderBy = () => c;
   c.limit = () => c;
+  c.for = () => c;
   c.then = (resolve: (v: unknown[]) => unknown) => Promise.resolve(rows).then(resolve);
   return c;
 }

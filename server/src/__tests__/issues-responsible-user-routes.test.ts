@@ -23,6 +23,7 @@ const baseIssue = {
   goalId: null,
   parentId: null,
   executionRunId: null,
+  updatedAt: new Date("2026-07-14T00:00:00.000Z"),
   labels: [],
   labelIds: [],
 };
@@ -225,7 +226,7 @@ describe("issue responsible user routes", () => {
     expect(mockIssueService.update).toHaveBeenCalledWith(
       issueId,
       expect.objectContaining({ responsibleUserId: "user-next" }),
-      { actorType: "board" },
+      { actorType: "board", expectedUpdatedAt: baseIssue.updatedAt },
     );
   });
 
@@ -417,6 +418,26 @@ describe("issue responsible user routes", () => {
     }))
       .patch(`/api/issues/${issueId}`)
       .send({ agentCompletionPolicyOverride: "agent_can_complete" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Only human operators may override task completion policy");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects an agent-supplied completion override even when it matches the stored value", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      ...baseIssue,
+      agentCompletionPolicyOverride: null,
+    });
+
+    const res = await request(createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+    }))
+      .patch(`/api/issues/${issueId}`)
+      .send({ agentCompletionPolicyOverride: null });
 
     expect(res.status).toBe(403);
     expect(res.body.error).toBe("Only human operators may override task completion policy");

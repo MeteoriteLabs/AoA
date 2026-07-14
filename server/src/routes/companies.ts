@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, type Request } from "express";
 import { z } from "zod";
 import { eq } from "drizzle-orm";
 import { companies, type Db } from "@armyofagents/db";
@@ -23,6 +23,23 @@ export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) 
   const svc = companyService(db);
   const portability = companyPortabilityService(db);
   const access = accessService(db);
+
+  async function assertExistingCompanyImportPermissions(req: Request, companyId: string) {
+    const include = req.body.include as {
+      issues?: boolean;
+      routines?: boolean;
+      workflowTemplates?: boolean;
+    } | undefined;
+    if ((include?.issues === true || include?.routines === true) && req.actor.type === "board") {
+      if (req.actor.source !== "local_implicit" && !req.actor.isInstanceAdmin) {
+        const allowed = await access.canUser(companyId, req.actor.userId, "tasks:assign");
+        if (!allowed) throw forbidden("Missing permission: tasks:assign");
+      }
+    }
+    if (include?.workflowTemplates === true) {
+      await assertRole(db, req, companyId, "founder", "team_lead");
+    }
+  }
 
   router.get("/", async (req, res) => {
     // rbac: instance-admin-not-required — list endpoint with no companyId in path; result is scope-filtered inline against req.actor.companyIds.
@@ -88,7 +105,6 @@ export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) 
     if (req.body.target.mode === "existing_company") {
       assertCompanyAccess(req, req.body.target.companyId);
     } else {
-      // rbac: instance-admin-not-required — new-company import branch; no companyId yet, assertBoard is the only meaningful check.
       assertBoard(req);
     }
     const preview = await portability.previewImport(req.body);
@@ -96,11 +112,10 @@ export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) 
   });
 
   router.post("/import", validate(companyPortabilityImportSchema), async (req, res) => {
+    assertBoard(req);
     if (req.body.target.mode === "existing_company") {
       assertCompanyAccess(req, req.body.target.companyId);
-    } else {
-      // rbac: instance-admin-not-required — new-company import branch; no companyId yet, assertBoard is the only meaningful check.
-      assertBoard(req);
+      await assertExistingCompanyImportPermissions(req, req.body.target.companyId);
     }
     const actor = getActorInfo(req);
     const result = await portability.importBundle(req.body, req.actor.type === "board" ? req.actor.userId : null);

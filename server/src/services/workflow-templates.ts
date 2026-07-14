@@ -1,6 +1,7 @@
 import { eq, and, sql, inArray } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { workflowTemplates, issues, taskDependencies } from "@armyofagents/db";
+import type { CreateWorkflowTemplate, UpdateWorkflowTemplate } from "@armyofagents/shared";
 import { notFound, conflict } from "../errors.js";
 import { executionWorkspaceService } from "./execution-workspaces.js";
 
@@ -22,19 +23,9 @@ export interface WorkflowDependency {
   toStep: number;   // order of the dependent (blocked until fromStep done)
 }
 
-export interface CreateWorkflowInput {
-  name: string;
-  description?: string;
-  steps: WorkflowStep[];
-  dependencies?: WorkflowDependency[];
-}
+export type CreateWorkflowInput = CreateWorkflowTemplate;
 
-export interface UpdateWorkflowInput {
-  name?: string;
-  description?: string;
-  steps?: WorkflowStep[];
-  dependencies?: WorkflowDependency[];
-}
+export type UpdateWorkflowInput = UpdateWorkflowTemplate;
 
 export interface InstantiateResult {
   templateId: string;
@@ -78,8 +69,10 @@ export function workflowTemplateService(db: Db) {
           companyId,
           name: data.name,
           description: data.description ?? null,
+          workspaceMode: data.workspaceMode ?? "department_default",
           steps: data.steps,
           dependencies: data.dependencies ?? [],
+          agentCompletionPolicyOverride: data.agentCompletionPolicyOverride ?? null,
           createdBy: actorId,
         })
         .returning();
@@ -94,8 +87,12 @@ export function workflowTemplateService(db: Db) {
       const updates: Record<string, unknown> = { updatedAt: new Date() };
       if (data.name !== undefined) updates.name = data.name;
       if (data.description !== undefined) updates.description = data.description;
+      if (data.workspaceMode !== undefined) updates.workspaceMode = data.workspaceMode;
       if (data.steps !== undefined) updates.steps = data.steps;
       if (data.dependencies !== undefined) updates.dependencies = data.dependencies;
+      if (data.agentCompletionPolicyOverride !== undefined) {
+        updates.agentCompletionPolicyOverride = data.agentCompletionPolicyOverride;
+      }
 
       return db
         .update(workflowTemplates)
@@ -149,32 +146,34 @@ export function workflowTemplateService(db: Db) {
       goalId: string,
       projectId: string,
     ): Promise<InstantiateResult> => {
-      // Fetch the template (outside tx for early exit)
-      const template = await db
-        .select()
-        .from(workflowTemplates)
-        .where(
-          and(
-            eq(workflowTemplates.id, templateId),
-            eq(workflowTemplates.companyId, companyId),
-          ),
-        )
-        .then((rows) => rows[0] ?? null);
+      const txOutcome = await db.transaction(async (tx) => {
+        const txDb = tx as unknown as Db;
+        await tx.execute(
+          sql`select id from companies where id = ${companyId} for no key update`,
+        );
+        await tx.execute(
+          sql`select id from ${workflowTemplates} where ${workflowTemplates.id} = ${templateId} and ${workflowTemplates.companyId} = ${companyId} for update`,
+        );
+        const template = await txDb
+          .select()
+          .from(workflowTemplates)
+          .where(
+            and(
+              eq(workflowTemplates.id, templateId),
+              eq(workflowTemplates.companyId, companyId),
+            ),
+          )
+          .then((rows) => rows[0] ?? null);
+        if (!template) throw notFound("Workflow template not found");
 
-      if (!template) {
-        throw notFound("Workflow template not found");
-      }
-
-      const steps = template.steps as WorkflowStep[];
-      const deps = template.dependencies as WorkflowDependency[];
-      const workspaceMode = (template.workspaceMode ?? "department_default") as string;
-
-      const txResult = await db.transaction(async (tx) => {
+        const steps = template.steps as WorkflowStep[];
+        const deps = template.dependencies as WorkflowDependency[];
+        const workspaceMode = (template.workspaceMode ?? "department_default") as string;
         // Map step order → created task id
         const stepTaskMap = new Map<number, string>();
         const tasksCreated: InstantiateResult["tasksCreated"] = [];
         const { resolveAgentCompletionPolicy } = await import("./agent-completion-policy.js");
-        const completionPolicy = await resolveAgentCompletionPolicy(tx as unknown as Db, {
+        const completionPolicy = await resolveAgentCompletionPolicy(txDb, {
           companyId,
           projectId,
           creatorOverride: template.agentCompletionPolicyOverride as
@@ -183,6 +182,7 @@ export function workflowTemplateService(db: Db) {
             | null,
           creatorSource: "workflow_template",
           creatorSourceId: template.id,
+          lockSources: true,
         });
 
         // Create a task for each step
@@ -247,16 +247,20 @@ export function workflowTemplateService(db: Db) {
           .returning();
 
         return {
-          templateId,
-          tasksCreated,
-          dependenciesCreated,
+          result: {
+            templateId,
+            tasksCreated,
+            dependenciesCreated,
+          },
+          templateName: template.name,
+          workspaceMode,
         };
       });
 
       // Shared workspace: create one workspace and link all tasks
-      if (workspaceMode === "shared" && txResult.tasksCreated.length > 0) {
+      if (txOutcome.workspaceMode === "shared" && txOutcome.result.tasksCreated.length > 0) {
         const ewSvc = executionWorkspaceService(db);
-        const firstTaskId = txResult.tasksCreated[0]!.taskId;
+        const firstTaskId = txOutcome.result.tasksCreated[0]!.taskId;
         const workspace = await ewSvc.create({
           companyId,
           projectId,
@@ -264,20 +268,20 @@ export function workflowTemplateService(db: Db) {
           mode: "shared_workspace",
           strategyType: "project_primary",
           status: "active",
-          name: template.name,
+          name: txOutcome.templateName,
         });
         if (!workspace) {
           throw new Error("Failed to create shared execution workspace for workflow instantiation");
         }
-        const taskIds = txResult.tasksCreated.map((t) => t.taskId);
+        const taskIds = txOutcome.result.tasksCreated.map((t) => t.taskId);
         await db
           .update(issues)
           .set({ executionWorkspaceId: workspace.id })
           .where(inArray(issues.id, taskIds));
-        return { ...txResult, sharedWorkspaceId: workspace.id };
+        return { ...txOutcome.result, sharedWorkspaceId: workspace.id };
       }
 
-      return txResult;
+      return txOutcome.result;
     },
   };
 }
