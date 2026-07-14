@@ -118,6 +118,12 @@ test.describe("Commander viewer", () => {
     // this worker. Reset the desktop baseline so the tablet/mobile cases cannot
     // make later cockpit assertions inspect the rail instead of the panel.
     await page.setViewportSize({ width: 1280, height: 720 });
+    await page.addInitScript(() => {
+      // Each test owns its cockpit layout. Do not inherit a collapsed rail
+      // from another browser context when the test is asserting card content.
+      localStorage.setItem("aoa:commander:cockpit-collapsed", "false");
+      localStorage.setItem("aoa:commander:viewer-collapsed", "true");
+    });
   });
 
   test.beforeEach(async ({ request }) => {
@@ -304,6 +310,10 @@ test.describe("Commander viewer", () => {
         description: "This task should open in the shared task slide-over.",
         status: "in_review",
         priority: "high",
+        reviewerUserId: (await jsonOrThrow<{ currentUser: { userId: string } }>(
+          await request.get(`/api/companies/${company.id}/team`),
+          "get Commander task reviewer",
+        )).currentUser.userId,
       },
     });
     expect(taskRes.ok()).toBe(true);

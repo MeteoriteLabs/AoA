@@ -251,7 +251,6 @@ describe.skipIf(process.platform === "win32")("W3a integration: crew loopback + 
       originKind: "crew_thread",
       sourceDiscussionId: threadId,
       assigneeAgentId: engineerId,
-      status: "done",
     });
 
     const before = await threadCounts(threadId);
@@ -405,6 +404,7 @@ describe.skipIf(process.platform === "win32")("W3a integration: crew loopback + 
       originKind: "crew_thread",
       sourceDiscussionId: threadId,
       assigneeAgentId: engineerId,
+      status: "done",
     });
 
     const before = await threadCounts(threadId);

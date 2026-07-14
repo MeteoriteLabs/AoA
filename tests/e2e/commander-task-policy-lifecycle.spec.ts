@@ -32,6 +32,13 @@ async function patchAsAgent(
 }
 
 test.describe("Commander task completion policy lifecycle", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript(() => {
+      localStorage.setItem("aoa:commander:cockpit-collapsed", "false");
+      localStorage.setItem("aoa:commander:viewer-collapsed", "true");
+    });
+  });
+
   test.afterEach(async ({ request }) => {
     await cleanupTestCompanies(request, PREFIX);
   });
