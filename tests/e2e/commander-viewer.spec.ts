@@ -298,7 +298,7 @@ test.describe("Commander viewer", () => {
     await waitForTurnEnd(page);
   });
 
-  test("cockpit task rows open the task slide-over without creating viewer tabs", async ({
+  test("cockpit task rows open the task focus pane without creating viewer tabs", async ({
     page,
     request,
   }) => {
@@ -307,7 +307,7 @@ test.describe("Commander viewer", () => {
     const taskRes = await request.post(`/api/companies/${company.id}/issues`, {
       data: {
         title: taskTitle,
-        description: "This task should open in the shared task slide-over.",
+        description: "This task should open in the shared Commander focus pane.",
         status: "in_review",
         priority: "high",
         reviewerUserId: (await jsonOrThrow<{ currentUser: { userId: string } }>(
@@ -328,13 +328,13 @@ test.describe("Commander viewer", () => {
     });
     await reviewCard.getByRole("button", { name: new RegExp(taskTitle) }).click();
 
-    const taskSheet = page.locator('[data-slot="sheet-content"]');
+    const taskFocus = page.getByTestId("commander-task-focus-pane");
     await expect(page).toHaveURL(new RegExp(`/${company.issuePrefix}/commander$`));
-    await expect(taskSheet).toBeVisible({ timeout: 15_000 });
+    await expect(taskFocus).toBeVisible({ timeout: 15_000 });
     await expect(
-      taskSheet.getByTestId("task-detail-scroll-body").getByRole("heading", { name: taskTitle, exact: true }),
+      taskFocus.getByTestId("task-detail-scroll-body").getByRole("heading", { name: taskTitle, exact: true }),
     ).toBeVisible();
-    await expect(taskSheet.getByText("This task should open in the shared task slide-over.")).toBeVisible();
+    await expect(taskFocus.getByText("This task should open in the shared Commander focus pane.")).toBeVisible();
     await expect(page.getByTestId("commander-viewer-panel")).toHaveCount(0);
   });
 
@@ -446,7 +446,7 @@ test.describe("Commander viewer", () => {
     await activeWork.getByRole("button", { name: /E2E managed agent task/ }).click();
     await expect(page).toHaveURL(new RegExp(`/${company.issuePrefix}/commander$`));
     await expect(
-      page.locator('[data-slot="sheet-content"]').getByRole("heading", {
+      page.getByTestId("commander-task-focus-pane").getByRole("heading", {
         name: "E2E managed agent task",
         exact: true,
       }),

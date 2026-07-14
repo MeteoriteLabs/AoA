@@ -194,15 +194,15 @@ test.describe("Commander task completion policy lifecycle", () => {
     await reviewRow.click();
 
     await expect(page).toHaveURL(new RegExp(`/${company.issuePrefix}/commander$`));
-    const taskSheet = page.locator('[data-slot="sheet-content"]');
-    await expect(taskSheet).toBeVisible({ timeout: 15_000 });
+    const taskFocus = page.getByTestId("commander-task-focus-pane");
+    await expect(taskFocus).toBeVisible({ timeout: 15_000 });
     await expect(
-      taskSheet.getByTestId("task-detail-scroll-body").getByRole("heading", {
+      taskFocus.getByTestId("task-detail-scroll-body").getByRole("heading", {
         name: reviewTask.title,
         exact: true,
       }),
     ).toBeVisible();
-    await expect(taskSheet.getByText("Atlas must submit this evidence")).toBeVisible();
+    await expect(taskFocus.getByText("Atlas must submit this evidence")).toBeVisible();
     await expect(page.getByTestId("commander-viewer-panel")).toHaveCount(0);
   });
 });

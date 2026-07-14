@@ -78,13 +78,13 @@ test.describe("Inbox Hub W3 Autopilot", () => {
     await page.getByRole("button", { name: /hub settings/i }).click();
     const modeSelect = page.getByRole("combobox", { name: /autopilot mode/i });
     const enabledCheckbox = page.getByRole("checkbox", {
-      name: /run failed autopilot enabled/i,
+      name: /agent error autopilot enabled/i,
     });
     const actionSelect = page.getByRole("combobox", {
-      name: /run failed autopilot action/i,
+      name: /agent error autopilot action/i,
     });
     const minTrustInput = page.getByRole("spinbutton", {
-      name: /run failed min trust/i,
+      name: /agent error min trust/i,
     });
 
     await expect(modeSelect).toBeEnabled();
@@ -128,7 +128,7 @@ test.describe("Inbox Hub W3 Autopilot", () => {
     const run = await seedTrustedHeartbeatRun(company.id);
     const item = await seedHubItem({
       companyId: company.id,
-      semanticType: "run_failed",
+      semanticType: "agent_error",
       sourceType: "heartbeat_run",
       sourceId: run.id,
       title: "W3 trusted run failed",
@@ -145,7 +145,7 @@ test.describe("Inbox Hub W3 Autopilot", () => {
     await expect(page.getByText("Drive", { exact: true })).toBeVisible();
     await expect(page.getByText(/1 handled today/i)).toBeVisible();
     await expect(page.getByText("W3 trusted run failed", { exact: true })).toBeVisible();
-    await expect(page.getByText(/Autopilot Drive accepted run_failed/i)).toBeVisible();
+    await expect(page.getByText(/Autopilot Drive accepted agent_error/i)).toBeVisible();
 
     await Promise.all([
       page.waitForResponse((response) =>
