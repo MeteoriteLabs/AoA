@@ -11,6 +11,7 @@ vi.mock("@armyofagents/db", () => ({
 const mockResolveType = vi.hoisted(() => vi.fn());
 const mockFindAdapter = vi.hoisted(() => vi.fn());
 const mockTestEnvironment = vi.hoisted(() => vi.fn());
+const mockAssertRole = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/commander-verify.js", async (importActual) => {
   const actual = (await importActual()) as Record<string, unknown>;
@@ -18,6 +19,7 @@ vi.mock("../services/commander-verify.js", async (importActual) => {
   return { ...actual, resolveCommanderAdapterType: mockResolveType };
 });
 vi.mock("../adapters/registry.js", () => ({ findServerAdapter: mockFindAdapter }));
+vi.mock("../middleware/rbac.js", () => ({ assertRole: mockAssertRole }));
 
 import { commanderVerifyRoutes } from "../routes/commander-verify.js";
 
@@ -61,6 +63,7 @@ describe("POST /companies/:companyId/internal-agent/verify", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockTestEnvironment.mockReset();
+    mockAssertRole.mockResolvedValue(undefined);
     mockResolveType.mockResolvedValue("claude_local");
     mockFindAdapter.mockReturnValue({ testEnvironment: mockTestEnvironment });
   });
@@ -102,13 +105,40 @@ describe("POST /companies/:companyId/internal-agent/verify", () => {
     expect(res.body.outcome).toBe("verified");
   });
 
-  it("200 verified when the probe passes", async () => {
+  it("rejects a non-founder before resolving or running the Commander adapter", async () => {
+    mockAssertRole.mockRejectedValueOnce(
+      Object.assign(new Error("Requires one of: founder"), { status: 403 }),
+    );
+    mockTestEnvironment.mockResolvedValue(probe("pass", ["claude_hello_probe_passed"]));
+
+    const res = await request(makeApp(dbWithMembership([{ id: COMPANY_ID }])))
+      .post(`/api/companies/${COMPANY_ID}/internal-agent/verify`)
+      .send({});
+
+    expect(res.status).toBe(403);
+    expect(mockAssertRole).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      COMPANY_ID,
+      "founder",
+    );
+    expect(mockResolveType).not.toHaveBeenCalled();
+    expect(mockTestEnvironment).not.toHaveBeenCalled();
+  });
+
+  it("200 verified for a founder-authorized board user when the probe passes", async () => {
     mockTestEnvironment.mockResolvedValue(probe("pass", ["claude_hello_probe_passed"]));
     const res = await request(makeApp(dbWithMembership([{ id: COMPANY_ID }])))
       .post(`/api/companies/${COMPANY_ID}/internal-agent/verify`)
       .send({});
     expect(res.status).toBe(200);
     expect(res.body.outcome).toBe("verified");
+    expect(mockAssertRole).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      COMPANY_ID,
+      "founder",
+    );
   });
 
   it("returns 429 while a Commander probe is already running for the company", async () => {

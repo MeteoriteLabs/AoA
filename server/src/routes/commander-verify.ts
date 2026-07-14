@@ -7,6 +7,7 @@ import {
   ADAPTER_PROBE_RETRY_AFTER_SECONDS,
   tryAcquireAdapterProbeSlot,
 } from "../services/adapter-probe-concurrency.js";
+import { assertRole } from "../middleware/rbac.js";
 import { assertCompanyAccess } from "./authz.js";
 
 /**
@@ -27,6 +28,7 @@ export function commanderVerifyRoutes(db: Db): Router {
     }
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    await assertRole(db, req, companyId, "founder");
     const adapterType = await resolveCommanderAdapterType(db, companyId);
     const adapter = findServerAdapter(adapterType);
     if (!adapter?.testEnvironment) {
