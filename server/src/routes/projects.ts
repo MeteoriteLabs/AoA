@@ -12,8 +12,8 @@ import {
 } from "@armyofagents/shared";
 import { validate } from "../middleware/validate.js";
 import { assertRole } from "../middleware/rbac.js";
-import { projectService, logActivity, instanceSettingsService, secretService } from "../services/index.js";
-import { conflict, HttpError } from "../errors.js";
+import { accessService, projectService, logActivity, instanceSettingsService, secretService } from "../services/index.js";
+import { conflict, forbidden, HttpError } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { gateProjectExecutionWorkspacePolicy, parseProjectExecutionWorkspacePolicy } from "../services/execution-workspace-policy.js";
 import { assertCanControlWorkspace } from "../services/workspace-authz.js";
@@ -44,6 +44,15 @@ export function projectRoutes(db: Db) {
   const router = Router();
   const svc = projectService(db);
   const secretsSvc = secretService(db);
+
+  async function assertCanSetCompletionPolicyDefault(req: Request, companyId: string) {
+    if (req.actor.type !== "board") {
+      throw forbidden("Only human operators may set project completion policy");
+    }
+    if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
+    const allowed = await accessService(db).canUser(companyId, req.actor.userId, "tasks:assign");
+    if (!allowed) throw forbidden("Missing permission: tasks:assign");
+  }
 
   async function resolveCompanyIdForProjectReference(req: Request) {
     const companyIdQuery = req.query.companyId;
@@ -109,6 +118,9 @@ export function projectRoutes(db: Db) {
   router.post("/companies/:companyId/projects", validate(createProjectSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    if ("agentCompletionPolicyDefault" in req.body) {
+      await assertCanSetCompletionPolicyDefault(req, companyId);
+    }
 
     // Security finding C1: see PATCH handler comment. Same gate on creation
     // path so an attacker can't seed a brand-new project with a poisoned
@@ -187,6 +199,9 @@ export function projectRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+    if ("agentCompletionPolicyDefault" in req.body) {
+      await assertCanSetCompletionPolicyDefault(req, existing.companyId);
+    }
 
     // Security finding C1: shell-command fields on executionWorkspacePolicy are
     // executed via `sh -c` by the workspace runtime. Restrict the route surface
