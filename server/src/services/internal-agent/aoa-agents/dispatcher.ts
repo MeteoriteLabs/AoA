@@ -332,6 +332,43 @@ async function failContinuationWakeup(
   });
 }
 
+type QueuedWakeupSkipStatus =
+  | "skipped_autonomy"
+  | "skipped_budget"
+  | "skipped_controller_path"
+  | "skipped_paused"
+  | "skipped_rate_limit"
+  | "skipped_routing_off";
+
+async function skipQueuedWakeup(
+  db: Db,
+  wakeup: {
+    id: string;
+    companyId: string;
+    agentId: string;
+    source: string;
+    idempotencyKey: string | null;
+  },
+  status: QueuedWakeupSkipStatus,
+  continuationError?: string,
+) {
+  const now = new Date();
+  const skipped = await db.update(agentWakeupRequests)
+    .set({ status, finishedAt: now, updatedAt: now })
+    .where(and(
+      eq(agentWakeupRequests.id, wakeup.id),
+      eq(agentWakeupRequests.companyId, wakeup.companyId),
+      eq(agentWakeupRequests.agentId, wakeup.agentId),
+      eq(agentWakeupRequests.status, "queued"),
+    ))
+    .returning({ id: agentWakeupRequests.id });
+  if (skipped.length === 0) return false;
+  if (continuationError) {
+    await failContinuationWakeup(db, wakeup, continuationError);
+  }
+  return true;
+}
+
 export interface DispatchOptions {
   /** Max simultaneous extractions per dispatch tick. */
   limiterMax: number;
@@ -655,10 +692,8 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
           const isInfraSweep = w.source === "sweep.chronicler";
           if (isInboxRouting) {
             if (companyCfg.inboundRoutingLevel === "off") {
-              await db
-                .update(agentWakeupRequests)
-                .set({ status: "skipped_routing_off", finishedAt: new Date() })
-                .where(eq(agentWakeupRequests.id, w.id));
+              const skipped = await skipQueuedWakeup(db, w, "skipped_routing_off");
+              if (!skipped) return;
               logger.child({ subagent: "aoa-dispatcher" }).info(
                 { wakeupId: w.id, companyId: w.companyId },
                 "aoa wakeup skipped: inbound routing dial off",
@@ -716,16 +751,13 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
               // P2 fix: distinct terminal status so the wakeup table tells you
               // WHY a wakeup ended, not just that it ended. Was collapsed into
               // 'done' which made silent failures invisible.
-              await db
-                .update(agentWakeupRequests)
-                .set({ status: "skipped_paused", finishedAt: new Date() })
-                .where(and(
-                  eq(agentWakeupRequests.id, w.id),
-                  eq(agentWakeupRequests.companyId, w.companyId),
-                  eq(agentWakeupRequests.agentId, w.agentId),
-                  eq(agentWakeupRequests.status, "queued"),
-                ));
-              await failContinuationWakeup(db, w, "Crew continuation blocked by the crew pause policy");
+              const skipped = await skipQueuedWakeup(
+                db,
+                w,
+                "skipped_paused",
+                "Crew continuation blocked by the crew pause policy",
+              );
+              if (!skipped) return;
               logger.child({ subagent: "aoa-dispatcher" }).info(
                 { agentId: w.agentId, companyId: w.companyId, threadPaused },
                 "aoa wakeup skipped: crew kill-switch active",
@@ -744,10 +776,8 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
             // skipped_rate_limit / skipped_budget): write a distinct terminal
             // status + finishedAt so the wakeup table records WHY it ended.
             if (!isInfraSweep && threadRow?.useControllerPath) {
-              await db
-                .update(agentWakeupRequests)
-                .set({ status: "skipped_controller_path", finishedAt: new Date() })
-                .where(eq(agentWakeupRequests.id, w.id));
+              const skipped = await skipQueuedWakeup(db, w, "skipped_controller_path");
+              if (!skipped) return;
               logger.child({ subagent: "aoa-dispatcher" }).debug(
                 { wakeupId: w.id },
                 "peer-wake skipped: controller-path thread",
@@ -843,16 +873,13 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
               // P2 fix: distinct terminal status (was 'done'). The wakeup was
               // correctly queued but the autonomy level prevents execution for
               // agentic roles. Mark explicitly so the wakeup table is debuggable.
-              await db
-                .update(agentWakeupRequests)
-                .set({ status: "skipped_autonomy", finishedAt: new Date() })
-                .where(and(
-                  eq(agentWakeupRequests.id, w.id),
-                  eq(agentWakeupRequests.companyId, w.companyId),
-                  eq(agentWakeupRequests.agentId, w.agentId),
-                  eq(agentWakeupRequests.status, "queued"),
-                ));
-              await failContinuationWakeup(db, w, "Crew continuation blocked by the autonomy policy");
+              const skipped = await skipQueuedWakeup(
+                db,
+                w,
+                "skipped_autonomy",
+                "Crew continuation blocked by the autonomy policy",
+              );
+              if (!skipped) return;
               logger.child({ subagent: "aoa-dispatcher" }).info(
                 { agentId: w.agentId, role: resolvedRole ?? null, autonomy: effectiveAutonomy, companyAutonomy: companyCfg.autonomyLevel, companyId: w.companyId },
                 "aoa wakeup skipped: autonomy gate (fail-closed)",
@@ -880,16 +907,13 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
             // P2 fix: distinct terminal status (was 'done'). Rate-limit skips
             // were the dominant cause of "wakeup vanished" symptoms before
             // P1-B was fixed — now they're visible in the wakeup table.
-            await db
-              .update(agentWakeupRequests)
-              .set({ status: "skipped_rate_limit", finishedAt: new Date() })
-              .where(and(
-                eq(agentWakeupRequests.id, w.id),
-                eq(agentWakeupRequests.companyId, w.companyId),
-                eq(agentWakeupRequests.agentId, w.agentId),
-                eq(agentWakeupRequests.status, "queued"),
-              ));
-            await failContinuationWakeup(db, w, "Crew continuation blocked by the run-rate limit");
+            const skipped = await skipQueuedWakeup(
+              db,
+              w,
+              "skipped_rate_limit",
+              "Crew continuation blocked by the run-rate limit",
+            );
+            if (!skipped) return;
             logger.child({ subagent: "aoa-dispatcher" }).warn(
               { agentId: w.agentId, windowRuns, limit: DEFAULT_CREW_RATE_LIMIT.maxRunsPerWindow, companyId: w.companyId },
               "aoa wakeup skipped: run-rate brake (D3)",
@@ -914,15 +938,13 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
             )) // NO costCents filter — count every run
             .then((r: Array<{ id: string }>) => r.length);
           if (runRateExceeded(allWindowRuns, DEFAULT_CREW_RUN_COUNT_LIMIT.maxRunsPerWindow)) {
-            await db.update(agentWakeupRequests)
-              .set({ status: "skipped_rate_limit", finishedAt: new Date() })
-              .where(and(
-                eq(agentWakeupRequests.id, w.id),
-                eq(agentWakeupRequests.companyId, w.companyId),
-                eq(agentWakeupRequests.agentId, w.agentId),
-                eq(agentWakeupRequests.status, "queued"),
-              ));
-            await failContinuationWakeup(db, w, "Crew continuation blocked by the run-count limit");
+            const skipped = await skipQueuedWakeup(
+              db,
+              w,
+              "skipped_rate_limit",
+              "Crew continuation blocked by the run-count limit",
+            );
+            if (!skipped) return;
             logger.child({ subagent: "aoa-dispatcher" }).warn(
               { agentId: w.agentId, allWindowRuns, limit: DEFAULT_CREW_RUN_COUNT_LIMIT.maxRunsPerWindow, companyId: w.companyId },
               "aoa wakeup skipped: run-count brake (T1.9)",
@@ -949,15 +971,13 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
           // atomic claim so we never spend on a run the budget policy forbids.
           const budgetBlock = await budgetService(db).getInvocationBlock(w.agentId, w.companyId);
           if (budgetBlock) {
-            await db.update(agentWakeupRequests)
-              .set({ status: "skipped_budget", finishedAt: new Date() })
-              .where(and(
-                eq(agentWakeupRequests.id, w.id),
-                eq(agentWakeupRequests.companyId, w.companyId),
-                eq(agentWakeupRequests.agentId, w.agentId),
-                eq(agentWakeupRequests.status, "queued"),
-              ));
-            await failContinuationWakeup(db, w, `Crew continuation blocked by budget policy: ${budgetBlock}`);
+            const skipped = await skipQueuedWakeup(
+              db,
+              w,
+              "skipped_budget",
+              `Crew continuation blocked by budget policy: ${budgetBlock}`,
+            );
+            if (!skipped) return;
             logger.child({ subagent: "aoa-dispatcher" }).warn(
               { agentId: w.agentId, companyId: w.companyId, reason: budgetBlock },
               "aoa wakeup skipped: budget hard-stop",

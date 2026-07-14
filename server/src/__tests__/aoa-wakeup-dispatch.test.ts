@@ -1,6 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-const { runAoaMock } = vi.hoisted(() => ({ runAoaMock: vi.fn().mockResolvedValue(undefined) }));
+const { failContinuationMock, runAoaMock } = vi.hoisted(() => ({
+  failContinuationMock: vi.fn().mockResolvedValue(null),
+  runAoaMock: vi.fn().mockResolvedValue(undefined),
+}));
 vi.mock("../services/internal-agent/aoa-agents/runner.js", () => ({ runAoaAgent: runAoaMock }));
+vi.mock("../services/work-question-continuation-terminal.js", () => ({
+  failUnstartedInternalAgentWorkQuestionContinuation: failContinuationMock,
+  finalizeInternalAgentWorkQuestionContinuation: vi.fn().mockResolvedValue(null),
+}));
 vi.mock("drizzle-orm", () => ({
   and: (...a: unknown[]) => ({ and: a }),
   or: (...a: unknown[]) => ({ or: a }),
@@ -118,6 +125,7 @@ function makePhase3Db(
 
 describe("aoa-wakeup-dispatch", () => {
   beforeEach(() => {
+    failContinuationMock.mockClear();
     runAoaMock.mockClear();
     runAoaMock.mockResolvedValue({ status: "succeeded", runId: "run-1", errorMessage: null });
   });
@@ -191,6 +199,67 @@ describe("aoa-wakeup-dispatch", () => {
 
     await runAoaDispatch(db, { limiterMax: 2, staleMs: 600_000 });
 
+    expect(runAoaMock).not.toHaveBeenCalled();
+  });
+
+  it("does not fail a continuation when a policy skip loses the queued-row race", async () => {
+    const db = makePhase3Db(
+      [
+        [],
+        [],
+        [{
+          id: "w-policy-race",
+          agentId: "a-policy-race",
+          companyId: "co-policy-race",
+          source: "work_question_continuation",
+          idempotencyKey: "work-question:q-policy:answer:1",
+          payload: { issueId: "issue-policy-race", questionId: "q-policy" },
+        }],
+        [{ autonomyLevel: 0, crewPaused: true, model: "claude-sonnet-4-20250514" }],
+        [],
+      ],
+      [
+        [], // queued -> skipped_paused lost to a concurrent processing claim
+      ],
+    );
+
+    await runAoaDispatch(db, { limiterMax: 2, staleMs: 600_000 });
+
+    expect(failContinuationMock).not.toHaveBeenCalled();
+    expect(runAoaMock).not.toHaveBeenCalled();
+  });
+
+  it("fails a continuation only after winning the queued policy-skip transition", async () => {
+    const db = makePhase3Db(
+      [
+        [],
+        [],
+        [{
+          id: "w-policy-winner",
+          agentId: "a-policy-winner",
+          companyId: "co-policy-winner",
+          source: "work_question_continuation",
+          idempotencyKey: "work-question:q-policy-winner:answer:1",
+          payload: { issueId: "issue-policy-winner", questionId: "q-policy-winner" },
+        }],
+        [{ autonomyLevel: 0, crewPaused: true, model: "claude-sonnet-4-20250514" }],
+        [],
+      ],
+      [
+        [{ id: "w-policy-winner" }],
+      ],
+    );
+
+    await runAoaDispatch(db, { limiterMax: 2, staleMs: 600_000 });
+
+    expect(failContinuationMock).toHaveBeenCalledWith(
+      db,
+      expect.objectContaining({
+        companyId: "co-policy-winner",
+        idempotencyKey: "work-question:q-policy-winner:answer:1",
+        error: "Crew continuation blocked by the crew pause policy",
+      }),
+    );
     expect(runAoaMock).not.toHaveBeenCalled();
   });
 
