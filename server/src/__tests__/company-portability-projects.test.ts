@@ -256,6 +256,99 @@ describe("company-portability projects", () => {
     expect(projIdx).toBeGreaterThan(deptIdx);
   });
 
+  it("authorizes only completion-policy fields actually selected for import", async () => {
+    resetState();
+    const contexts: Array<{ changesCompletionPolicy: boolean }> = [];
+    const manifest = baseManifest([
+      {
+        slug: "engineering",
+        name: "Engineering",
+        type: "department",
+      },
+    ]);
+
+    await svc.importBundle(
+      {
+        source: { type: "inline", manifest, files: { "COMPANY.md": "" } },
+        target: { mode: "existing_company", companyId: TGT_CO_ID },
+        include: { company: false, agents: false, projects: true },
+      },
+      "user-1",
+      async (context) => {
+        contexts.push(context);
+      },
+    );
+
+    expect(contexts).toEqual([
+      expect.objectContaining({ changesCompletionPolicy: false }),
+    ]);
+  });
+
+  it("runs import authorization before mutating selected completion governance", async () => {
+    resetState();
+    const manifest = baseManifest([
+      {
+        slug: "engineering",
+        name: "Engineering",
+        type: "department",
+        agentCompletionPolicyDefault: "agent_can_complete",
+      },
+    ]);
+
+    await expect(
+      svc.importBundle(
+        {
+          source: { type: "inline", manifest, files: { "COMPANY.md": "" } },
+          target: { mode: "existing_company", companyId: TGT_CO_ID },
+          include: { company: false, agents: false, projects: true },
+        },
+        "user-1",
+        async (context) => {
+          expect(context.changesCompletionPolicy).toBe(true);
+          throw new Error("not authorized");
+        },
+      ),
+    ).rejects.toThrow("not authorized");
+    expect(createCalls).toHaveLength(0);
+    expect(updateCalls).toHaveLength(0);
+  });
+
+  it("does not authorize completion governance for collision entries that will be skipped", async () => {
+    resetState();
+    targetProjects = [
+      makeProject({ id: "t1", companyId: TGT_CO_ID, name: "Engineering", type: "department" }),
+    ];
+    const manifest = baseManifest([
+      {
+        slug: "engineering",
+        name: "Engineering",
+        type: "department",
+        agentCompletionPolicyDefault: "agent_can_complete",
+      },
+    ]);
+    const contexts: Array<{ changesCompletionPolicy: boolean }> = [];
+
+    await svc.importBundle(
+      {
+        source: { type: "inline", manifest, files: { "COMPANY.md": "" } },
+        target: { mode: "existing_company", companyId: TGT_CO_ID },
+        include: { company: false, agents: false, projects: true },
+        collisionStrategy: "skip",
+      },
+      "user-1",
+      async (context) => {
+        contexts.push(context);
+      },
+    );
+
+    expect(contexts).toEqual([
+      expect.objectContaining({
+        changesCompletionPolicy: false,
+        requiresTaskAssignmentPermission: false,
+      }),
+    ]);
+  });
+
   it("importBundle applies collision strategy 'rename' to duplicate project slugs", async () => {
     resetState();
     targetProjects = [makeProject({ id: "t1", companyId: TGT_CO_ID, name: "Engineering", type: "department" })];

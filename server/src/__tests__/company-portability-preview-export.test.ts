@@ -544,7 +544,26 @@ describe("import body-size cap", () => {
       .post("/api/companies/import")
       .send({
         ...validExistingCompanyImport,
-        include: { routines: true },
+        source: {
+          ...validExistingCompanyImport.source,
+          manifest: {
+            ...validExistingCompanyImport.source.manifest,
+            includes: { company: false, agents: false, routines: true },
+            routines: [{
+              slug: "daily-brief",
+              title: "Daily brief",
+              status: "active",
+              priority: "medium",
+              concurrencyPolicy: "coalesce_if_active",
+              catchUpPolicy: "skip_missed",
+              projectSlug: "product",
+              assigneeAgentSlug: "researcher",
+              variables: [],
+              triggers: [],
+            }],
+          },
+        },
+        include: { company: false, agents: false, routines: true },
       });
 
     expect(res.status).toBe(403);
@@ -559,7 +578,19 @@ describe("import body-size cap", () => {
       .post("/api/companies/import")
       .send({
         ...validExistingCompanyImport,
-        include: { issues: true },
+        source: {
+          ...validExistingCompanyImport.source,
+          manifest: {
+            ...validExistingCompanyImport.source.manifest,
+            includes: { company: false, agents: false, issues: true },
+            issues: [{
+              slug: "prepare-brief",
+              title: "Prepare brief",
+              assigneeAgentSlug: "researcher",
+            }],
+          },
+        },
+        include: { company: false, agents: false, issues: true },
       });
 
     expect(res.status).toBe(403);
@@ -574,7 +605,22 @@ describe("import body-size cap", () => {
       .post("/api/companies/import")
       .send({
         ...validExistingCompanyImport,
-        include: { workflowTemplates: true },
+        source: {
+          ...validExistingCompanyImport.source,
+          manifest: {
+            ...validExistingCompanyImport.source.manifest,
+            includes: { company: false, agents: false, workflowTemplates: true },
+            workflowTemplates: [{
+              slug: "launch",
+              name: "Launch",
+              description: null,
+              workspaceMode: "per_task",
+              steps: [],
+              dependencies: [],
+            }],
+          },
+        },
+        include: { company: false, agents: false, workflowTemplates: true },
       });
 
     expect(res.status).toBe(403);

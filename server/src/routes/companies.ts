@@ -24,21 +24,10 @@ export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) 
   const portability = companyPortabilityService(db);
   const access = accessService(db);
 
-  async function assertExistingCompanyImportPermissions(req: Request, companyId: string) {
-    const include = req.body.include as {
-      issues?: boolean;
-      routines?: boolean;
-      workflowTemplates?: boolean;
-    } | undefined;
-    if ((include?.issues === true || include?.routines === true) && req.actor.type === "board") {
-      if (req.actor.source !== "local_implicit" && !req.actor.isInstanceAdmin) {
-        const allowed = await access.canUser(companyId, req.actor.userId, "tasks:assign");
-        if (!allowed) throw forbidden("Missing permission: tasks:assign");
-      }
-    }
-    if (include?.workflowTemplates === true) {
-      await assertRole(db, req, companyId, "founder", "team_lead");
-    }
+  async function assertCanAssignTasks(req: Request, companyId: string) {
+    if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
+    const allowed = await access.canUser(companyId, req.actor.userId, "tasks:assign");
+    if (!allowed) throw forbidden("Missing permission: tasks:assign");
   }
 
   router.get("/", async (req, res) => {
@@ -113,12 +102,26 @@ export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) 
 
   router.post("/import", validate(companyPortabilityImportSchema), async (req, res) => {
     assertBoard(req);
+    const existingCompanyId =
+      req.body.target.mode === "existing_company" ? req.body.target.companyId : null;
     if (req.body.target.mode === "existing_company") {
       assertCompanyAccess(req, req.body.target.companyId);
-      await assertExistingCompanyImportPermissions(req, req.body.target.companyId);
     }
     const actor = getActorInfo(req);
-    const result = await portability.importBundle(req.body, req.actor.type === "board" ? req.actor.userId : null);
+    const result = await portability.importBundle(
+      req.body,
+      req.actor.type === "board" ? req.actor.userId : null,
+      existingCompanyId
+        ? async ({ requiresTaskAssignmentPermission, importsWorkflowTemplates }) => {
+          if (requiresTaskAssignmentPermission) {
+            await assertCanAssignTasks(req, existingCompanyId);
+          }
+          if (importsWorkflowTemplates) {
+            await assertRole(db, req, existingCompanyId, "founder", "team_lead");
+          }
+        }
+        : undefined,
+    );
     await logActivity(db, {
       companyId: result.company.id,
       actorType: actor.actorType,
@@ -181,6 +184,12 @@ export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) 
     assertBoard(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    if (
+      "agentCompletionPolicyDefault" in req.body ||
+      "agentCompletionReviewGuardrail" in req.body
+    ) {
+      await assertCanAssignTasks(req, companyId);
+    }
     const company = await svc.update(companyId, req.body);
     if (!company) {
       res.status(404).json({ error: "Company not found" });

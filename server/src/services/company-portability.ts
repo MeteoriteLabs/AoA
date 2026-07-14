@@ -159,6 +159,62 @@ type ImportPlanInternal = {
   selectedRoutines: CompanyPortabilityRoutineManifestEntry[];
 };
 
+type ImportAuthorizationContext = {
+  changesCompletionPolicy: boolean;
+  requiresTaskAssignmentPermission: boolean;
+  importsWorkflowTemplates: boolean;
+};
+
+function getImportAuthorizationContext(plan: ImportPlanInternal): ImportAuthorizationContext {
+  const manifest = plan.source.manifest;
+  const mutableProjectSlugs = new Set(
+    plan.preview.plan.projectPlans
+      .filter((project) => project.action !== "skip")
+      .map((project) => project.slug),
+  );
+  const mutableRoutineSlugs = new Set(
+    plan.preview.plan.routinePlans
+      .filter((routine) => routine.action !== "skip")
+      .map((routine) => routine.slug),
+  );
+  const mutableIssues = plan.selectedIssues.filter((issue) => !issue.recurring);
+  const mutableRoutines = plan.selectedRoutines.filter((routine) =>
+    mutableRoutineSlugs.has(routine.slug),
+  );
+  const companyPolicyChanges =
+    plan.include.company &&
+    !!manifest.company &&
+    (manifest.company.agentCompletionPolicyDefault !== undefined ||
+      manifest.company.agentCompletionReviewGuardrail !== undefined);
+  const projectPolicyChanges = plan.selectedProjects.some(
+    (project) =>
+      mutableProjectSlugs.has(project.slug) &&
+      project.agentCompletionPolicyDefault !== undefined,
+  );
+  const issuePolicyChanges = mutableIssues.some(
+    (issue) =>
+      issue.agentCompletionPolicyOverride !== undefined ||
+      issue.agentCompletionPolicy !== undefined,
+  );
+  const routinePolicyChanges = mutableRoutines.some(
+    (routine) => routine.agentCompletionPolicyOverride !== undefined,
+  );
+
+  const changesCompletionPolicy =
+    companyPolicyChanges || projectPolicyChanges || issuePolicyChanges || routinePolicyChanges;
+  const importsAssignedIssues = mutableIssues.some(
+    (issue) => !!issue.assigneeAgentSlug,
+  );
+
+  return {
+    changesCompletionPolicy,
+    requiresTaskAssignmentPermission:
+      changesCompletionPolicy || mutableRoutines.length > 0 || importsAssignedIssues,
+    importsWorkflowTemplates:
+      plan.include.workflowTemplates === true && (manifest.workflowTemplates?.length ?? 0) > 0,
+  };
+}
+
 function sortProjectsTopologically(
   projects: CompanyPortabilityProjectManifestEntry[],
 ): CompanyPortabilityProjectManifestEntry[] {
@@ -1898,11 +1954,13 @@ export function companyPortabilityService(db: Db) {
   async function importBundle(
     input: CompanyPortabilityImport,
     actorUserId: string | null | undefined,
+    authorize?: (context: ImportAuthorizationContext) => Promise<void>,
   ): Promise<CompanyPortabilityImportResult> {
     const plan = await buildPreview(input);
     if (plan.preview.errors.length > 0) {
       throw unprocessable(`Import preview has errors: ${plan.preview.errors.join("; ")}`);
     }
+    await authorize?.(getImportAuthorizationContext(plan));
 
     const sourceManifest = plan.source.manifest;
     const warnings = [...plan.preview.warnings];

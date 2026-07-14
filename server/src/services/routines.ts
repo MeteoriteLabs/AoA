@@ -1779,30 +1779,25 @@ export function routineService(db: Db) {
           }
         }
 
+        // Restoring a routine invalidates every webhook secret. Keep the
+        // rotations in the restore transaction so a provider or vault failure
+        // rolls back the restored definition instead of leaving an unrotated
+        // webhook active behind a successful response.
+        const triggers = await txDb
+          .select()
+          .from(routineTriggers)
+          .where(and(eq(routineTriggers.routineId, routineId), eq(routineTriggers.kind, "webhook")));
+        const txSecretsSvc = secretService(txDb);
+        for (const trigger of triggers) {
+          if (!trigger.secretId) continue;
+          const newSecretValue = crypto.randomBytes(24).toString("hex");
+          await txSecretsSvc.rotate(trigger.secretId, { value: newSecretValue }, actor);
+        }
+
         return finalRoutine;
       });
 
       if (!updated) return null;
-
-      // Rotate webhook trigger secrets (security property)
-      const triggers = await db
-        .select()
-        .from(routineTriggers)
-        .where(and(eq(routineTriggers.routineId, routineId), eq(routineTriggers.kind, "webhook")));
-      for (const t of triggers) {
-        if (t.secretId) {
-          try {
-            const newSecretValue = crypto.randomBytes(24).toString("hex");
-            await secretsSvc.rotate(t.secretId, { value: newSecretValue }, actor);
-          } catch (err) {
-            logger.error({ err, triggerId: t.id }, "[aoa-revision] Failed to rotate webhook secret on restore");
-            // The revision is already committed. Returning a 500 here would
-            // falsely tell the caller that restore failed and would skip the
-            // route-level restore audit. Keep the committed restore successful;
-            // the operational error remains visible for secret remediation.
-          }
-        }
-      }
 
       return toRoutine(updated);
     },

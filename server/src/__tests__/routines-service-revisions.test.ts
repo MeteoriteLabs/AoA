@@ -591,7 +591,7 @@ describe("routineService — restoreRevision", () => {
     );
   });
 
-  it("keeps a committed restore successful when post-commit secret rotation fails", async () => {
+  it("rejects and rolls back restore when webhook secret rotation fails", async () => {
     const snapshot = {
       title: "Restored title",
       description: null,
@@ -630,6 +630,6 @@ describe("routineService — restoreRevision", () => {
         baseRoutine.latestRevisionId,
         actor,
       ),
-    ).resolves.toMatchObject({ title: "Restored title" });
+    ).rejects.toThrow("provider unavailable");
   });
 });
