@@ -99,8 +99,8 @@ function continuationNeeded(question: Pick<QuestionRow, "originatingRunKind" | "
 }
 
 export function workQuestionService(db: Db) {
-  async function activeMemberships(companyId: string, userId: string) {
-    return db
+  async function activeMemberships(companyId: string, userId: string, executor: Db = db) {
+    return executor
       .select({ id: companyMemberships.id, parentType: companyMemberships.parentType, parentId: companyMemberships.parentId })
       .from(companyMemberships)
       .where(and(
@@ -111,12 +111,12 @@ export function workQuestionService(db: Db) {
       ));
   }
 
-  async function activeMembership(companyId: string, userId: string) {
-    return activeMemberships(companyId, userId).then((rows) => rows[0] ?? null);
+  async function activeMembership(companyId: string, userId: string, executor: Db = db) {
+    return activeMemberships(companyId, userId, executor).then((rows) => rows[0] ?? null);
   }
 
-  async function founderUserId(companyId: string): Promise<string | null> {
-    const rows = await db
+  async function founderUserId(companyId: string, executor: Db = db): Promise<string | null> {
+    const rows = await executor
       .select({ userId: userRoles.userId })
       .from(userRoles)
       .innerJoin(companyMemberships, and(
@@ -129,14 +129,14 @@ export function workQuestionService(db: Db) {
     return [...new Set(rows.map((row) => row.userId))][0] ?? null;
   }
 
-  async function resolveSlaPolicy(companyId: string, projectId: string | null) {
+  async function resolveSlaPolicy(companyId: string, projectId: string | null, executor: Db = db) {
     const [company, project] = await Promise.all([
-      db.select({ hours: companies.humanQuestionSlaHours })
+      executor.select({ hours: companies.humanQuestionSlaHours })
         .from(companies)
         .where(eq(companies.id, companyId))
         .then((rows) => rows[0] ?? null),
       projectId
-        ? db.select({ id: projects.id, companyId: projects.companyId, hours: projects.humanQuestionSlaHours })
+        ? executor.select({ id: projects.id, companyId: projects.companyId, hours: projects.humanQuestionSlaHours })
           .from(projects)
           .where(eq(projects.id, projectId))
           .then((rows) => rows[0] ?? null)
@@ -156,12 +156,13 @@ export function workQuestionService(db: Db) {
     companyId: string,
     projectId: string | null,
     currentRecipientUserId: string,
+    executor: Db = db,
   ): Promise<string | null> {
     const scopedLeadConditions = [
       eq(userRoles.companyId, companyId),
       eq(userRoles.role, "team_lead"),
     ];
-    const leadRows = await db
+    const leadRows = await executor
       .select({ userId: userRoles.userId, projectId: userRoles.projectId })
       .from(userRoles)
       .innerJoin(companyMemberships, and(
@@ -174,7 +175,7 @@ export function workQuestionService(db: Db) {
     const scopedLead = leadRows.find((row) => row.projectId === projectId && row.userId !== currentRecipientUserId)
       ?? leadRows.find((row) => row.projectId == null && row.userId !== currentRecipientUserId);
     if (scopedLead) return scopedLead.userId;
-    const founder = await founderUserId(companyId);
+    const founder = await founderUserId(companyId, executor);
     return founder === currentRecipientUserId ? null : founder;
   }
 
@@ -323,31 +324,43 @@ export function workQuestionService(db: Db) {
     });
   }
 
-  async function validateCreateSources(companyId: string, input: CreateWorkQuestionInput) {
+  async function validateCreateSources(executor: Db, companyId: string, input: CreateWorkQuestionInput, lock = false) {
+    if (lock) {
+      // Serialize question creation with task checkout/completion and run
+      // termination. A second validation without these locks still leaves a
+      // window where cancellation can commit before the question insert.
+      await executor.execute(sql`select id from issues where id = ${input.issueId} and company_id = ${companyId} for update`);
+      if (input.originatingRunKind === "heartbeat") {
+        await executor.execute(sql`select id from heartbeat_runs where id = ${input.originatingRunId} and company_id = ${companyId} for update`);
+      } else {
+        await executor.execute(sql`select id from internal_agent_runs where id = ${input.originatingRunId} and company_id = ${companyId} for update`);
+      }
+    }
+
     const [issue, agent, heartbeatRun, internalAgentRun, workspace, discussion, discussionEntry, conversation] = await Promise.all([
-      db.select().from(issues).where(eq(issues.id, input.issueId)).then((rows) => rows[0] ?? null),
-      db.select().from(agents).where(eq(agents.id, input.askingAgentId)).then((rows) => rows[0] ?? null),
+      executor.select().from(issues).where(and(eq(issues.id, input.issueId), eq(issues.companyId, companyId))).then((rows) => rows[0] ?? null),
+      executor.select().from(agents).where(and(eq(agents.id, input.askingAgentId), eq(agents.companyId, companyId))).then((rows) => rows[0] ?? null),
       input.originatingRunKind === "heartbeat"
-        ? db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, input.originatingRunId)).then((rows) => rows[0] ?? null)
+        ? executor.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, input.originatingRunId), eq(heartbeatRuns.companyId, companyId))).then((rows) => rows[0] ?? null)
         : Promise.resolve(null),
       input.originatingRunKind === "internal_agent"
-        ? db.select().from(internalAgentRuns).where(eq(internalAgentRuns.id, input.originatingRunId)).then((rows) => rows[0] ?? null)
+        ? executor.select().from(internalAgentRuns).where(and(eq(internalAgentRuns.id, input.originatingRunId), eq(internalAgentRuns.companyId, companyId))).then((rows) => rows[0] ?? null)
         : Promise.resolve(null),
       input.executionWorkspaceId
-        ? db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, input.executionWorkspaceId)).then((rows) => rows[0] ?? null)
+        ? executor.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, input.executionWorkspaceId)).then((rows) => rows[0] ?? null)
         : Promise.resolve(null),
       input.sourceDiscussionId
-        ? db.select().from(discussions).where(eq(discussions.id, input.sourceDiscussionId)).then((rows) => rows[0] ?? null)
+        ? executor.select().from(discussions).where(eq(discussions.id, input.sourceDiscussionId)).then((rows) => rows[0] ?? null)
         : Promise.resolve(null),
       input.sourceDiscussionEntryId
-        ? db.select({ id: discussionEntries.id, discussionId: discussionEntries.discussionId, companyId: discussions.companyId })
+        ? executor.select({ id: discussionEntries.id, discussionId: discussionEntries.discussionId, companyId: discussions.companyId })
           .from(discussionEntries)
           .innerJoin(discussions, eq(discussions.id, discussionEntries.discussionId))
           .where(eq(discussionEntries.id, input.sourceDiscussionEntryId))
           .then((rows) => rows[0] ?? null)
         : Promise.resolve(null),
       input.sourceCommanderConversationId
-        ? db.select().from(internalAgentConversations).where(eq(internalAgentConversations.id, input.sourceCommanderConversationId)).then((rows) => rows[0] ?? null)
+        ? executor.select().from(internalAgentConversations).where(eq(internalAgentConversations.id, input.sourceCommanderConversationId)).then((rows) => rows[0] ?? null)
         : Promise.resolve(null),
     ]);
 
@@ -441,24 +454,25 @@ export function workQuestionService(db: Db) {
 
   return {
     async create(companyId: string, input: CreateWorkQuestionInput) {
-      const { issue, agent } = await validateCreateSources(companyId, input);
+      await validateCreateSources(db, companyId, input);
       const producerPayloadFingerprint = workQuestionPayloadFingerprint(input);
       const producerInvocationId = input.producerInvocationId
         ?? `semantic:${producerPayloadFingerprint}`;
-      const recipientUserId = input.primaryRecipientUserId
-        ?? issue.responsibleUserId
-        ?? issue.reviewerUserId
-        ?? await founderUserId(companyId);
-      if (!recipientUserId || !(await activeMembership(companyId, recipientUserId))) {
-        throw unprocessable("Work question requires an active human recipient");
-      }
-      const [sla, escalationRecipient] = await Promise.all([
-        resolveSlaPolicy(companyId, issue.projectId),
-        escalationRecipientUserId(companyId, issue.projectId, recipientUserId),
-      ]);
       const createdAt = new Date();
       return db.transaction(async (txRaw) => {
         const tx = txRaw as unknown as Db;
+        const { issue, agent } = await validateCreateSources(tx, companyId, input, true);
+        const recipientUserId = input.primaryRecipientUserId
+          ?? issue.responsibleUserId
+          ?? issue.reviewerUserId
+          ?? await founderUserId(companyId, tx);
+        if (!recipientUserId || !(await activeMembership(companyId, recipientUserId, tx))) {
+          throw unprocessable("Work question requires an active human recipient");
+        }
+        const [sla, escalationRecipient] = await Promise.all([
+          resolveSlaPolicy(companyId, issue.projectId, tx),
+          escalationRecipientUserId(companyId, issue.projectId, recipientUserId, tx),
+        ]);
         const created = await tx.insert(workQuestions).values({
           companyId,
           issueId: issue.id,

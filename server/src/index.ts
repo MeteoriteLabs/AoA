@@ -608,17 +608,60 @@ setupLiveEventsWebSocketServer(server, db as any, {
   resolveSessionFromHeaders,
 });
 
+// Work-question continuation and SLA processing are durable workflow workers,
+// not heartbeat workers. They must keep running when heartbeat execution is
+// intentionally disabled (for example, during a controlled maintenance mode)
+// so an answered question can still resume its task and overdue questions can
+// still escalate.
+const workQuestionContinuations = workQuestionContinuationService(db as any);
+const workQuestionSla = workQuestionSlaService(db as any);
+let workQuestionContinuationTickInFlight = false;
+let workQuestionSlaTickInFlight = false;
+
+const tickWorkQuestionWorkers = (now = new Date()) => {
+  if (!workQuestionContinuationTickInFlight) {
+    workQuestionContinuationTickInFlight = true;
+    void workQuestionContinuations
+      .processDue(now)
+      .catch((err) => {
+        logger.error({ err }, "work-question continuation tick failed");
+      })
+      .finally(() => {
+        workQuestionContinuationTickInFlight = false;
+      });
+  }
+
+  if (!workQuestionSlaTickInFlight) {
+    workQuestionSlaTickInFlight = true;
+    void workQuestionSla
+      .processDue(now)
+      .then((result) => {
+        if (result.breached > 0 || result.notificationFailures > 0) {
+          logger.info({ ...result }, "work-question SLA tick completed");
+        }
+      })
+      .catch((err) => {
+        logger.error({ err }, "work-question SLA tick failed");
+      })
+      .finally(() => {
+        workQuestionSlaTickInFlight = false;
+      });
+  }
+};
+
+// Run independently of the heartbeat scheduler flag. This is intentionally
+// separate from the heartbeat interval below so HEARTBEAT_SCHEDULER_ENABLED
+// cannot strand durable questions in `pending`.
+tickWorkQuestionWorkers();
+setInterval(() => tickWorkQuestionWorkers(), config.heartbeatSchedulerIntervalMs);
+
 if (config.heartbeatSchedulerEnabled) {
   const heartbeat = heartbeatService(db as any);
   const productivityReviews = productivityReviewService(db as any);
   const monitorScheduler = issueMonitorSchedulerService(db as any);
-  const workQuestionContinuations = workQuestionContinuationService(db as any);
-  const workQuestionSla = workQuestionSlaService(db as any);
   const PRODUCTIVITY_REVIEW_RECONCILIATION_INTERVAL_MS = 60 * 60 * 1000;
   let monitorTickInFlight = false;
   let productivityReviewTickInFlight = false;
-  let workQuestionContinuationTickInFlight = false;
-  let workQuestionSlaTickInFlight = false;
 
   const runProductivityReviewReconciliation = (now = new Date()) => {
     if (productivityReviewTickInFlight) return;
@@ -702,35 +745,6 @@ if (config.heartbeatSchedulerEnabled) {
       .catch((err) => {
         logger.error({ err }, "heartbeat scheduled retry promotion failed");
       });
-
-    if (!workQuestionContinuationTickInFlight) {
-      workQuestionContinuationTickInFlight = true;
-      void workQuestionContinuations
-        .processDue(now)
-        .catch((err) => {
-          logger.error({ err }, "work-question continuation tick failed");
-        })
-        .finally(() => {
-          workQuestionContinuationTickInFlight = false;
-        });
-    }
-
-    if (!workQuestionSlaTickInFlight) {
-      workQuestionSlaTickInFlight = true;
-      void workQuestionSla
-        .processDue(now)
-        .then((result) => {
-          if (result.breached > 0 || result.notificationFailures > 0) {
-            logger.info({ ...result }, "work-question SLA tick completed");
-          }
-        })
-        .catch((err) => {
-          logger.error({ err }, "work-question SLA tick failed");
-        })
-        .finally(() => {
-          workQuestionSlaTickInFlight = false;
-        });
-    }
 
     // Tick scheduled routine triggers
     void routineService(db as any)

@@ -17,6 +17,15 @@ describe("adapter registry session management", () => {
     expect(claude?.sessionManagement?.nativeContextManagement).toBe("confirmed");
   });
 
+  it("declares parked question delivery for CLI adapters instead of implying live relay", () => {
+    for (const type of ["claude_local", "codex_local"]) {
+      expect(findServerAdapter(type)?.humanQuestionCapabilities).toEqual({
+        mode: "ask_and_park",
+        preservesProducerInvocationId: true,
+      });
+    }
+  });
+
   it("preserves Cursor Cloud repository session context in the registry codec", () => {
     const cursorCloud = findServerAdapter("cursor_cloud");
     expect(

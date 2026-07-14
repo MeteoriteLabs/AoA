@@ -12,4 +12,15 @@ describe("work-question continuation scheduler wiring", () => {
     expect(source).toContain("workQuestionContinuationTickInFlight = false");
     expect(source).toMatch(/workQuestionContinuations\s*\.processDue\(now\)/);
   });
+
+  it("keeps durable question workers outside the heartbeat scheduler gate", () => {
+    const heartbeatGate = source.indexOf("if (config.heartbeatSchedulerEnabled)");
+    const workerSetup = source.indexOf("const workQuestionContinuations");
+    const workerInterval = source.indexOf("setInterval(() => tickWorkQuestionWorkers(), config.heartbeatSchedulerIntervalMs)");
+    expect(heartbeatGate).toBeGreaterThan(-1);
+    expect(workerSetup).toBeGreaterThan(-1);
+    expect(workerInterval).toBeGreaterThan(-1);
+    expect(workerSetup).toBeLessThan(heartbeatGate);
+    expect(workerInterval).toBeLessThan(heartbeatGate);
+  });
 });

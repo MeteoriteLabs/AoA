@@ -4,6 +4,7 @@ import { testEnvironment } from "./test.js";
 
 export const processAdapter: ServerAdapterModule = {
   type: "process",
+  humanQuestionCapabilities: { mode: "ask_and_park", preservesProducerInvocationId: true },
   execute,
   testEnvironment,
   models: [],
