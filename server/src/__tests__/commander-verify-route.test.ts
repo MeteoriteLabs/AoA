@@ -40,6 +40,14 @@ function makeApp(db: unknown, actorOverride?: Record<string, unknown>) {
     next();
   });
   app.use("/api", commanderVerifyRoutes(db as never));
+  app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    const status = typeof err === "object" && err && "status" in err
+      ? Number((err as { status: unknown }).status)
+      : 500;
+    res.status(Number.isFinite(status) ? status : 500).json({
+      error: err instanceof Error ? err.message : "error",
+    });
+  });
   return app;
 }
 const probe = (status: "pass" | "warn" | "fail", codes: string[]) => ({
@@ -52,6 +60,7 @@ const probe = (status: "pass" | "warn" | "fail", codes: string[]) => ({
 describe("POST /companies/:companyId/internal-agent/verify", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockTestEnvironment.mockReset();
     mockResolveType.mockResolvedValue("claude_local");
     mockFindAdapter.mockReturnValue({ testEnvironment: mockTestEnvironment });
   });
@@ -100,6 +109,105 @@ describe("POST /companies/:companyId/internal-agent/verify", () => {
       .send({});
     expect(res.status).toBe(200);
     expect(res.body.outcome).toBe("verified");
+  });
+
+  it("returns 429 while a Commander probe is already running for the company", async () => {
+    let releaseProbe!: () => void;
+    let signalProbeStarted!: () => void;
+    const probeGate = new Promise<void>((resolve) => { releaseProbe = resolve; });
+    const probeStarted = new Promise<void>((resolve) => { signalProbeStarted = resolve; });
+    const passingProbe = probe("pass", ["claude_hello_probe_passed"]);
+
+    mockTestEnvironment.mockImplementationOnce(async () => {
+      signalProbeStarted();
+      await probeGate;
+      return passingProbe;
+    });
+    mockTestEnvironment.mockResolvedValueOnce(passingProbe);
+
+    const app = makeApp(dbWithMembership([{ id: COMPANY_ID }]));
+    let resolveFirst!: (response: request.Response) => void;
+    const firstResponse = new Promise<request.Response>((resolve) => { resolveFirst = resolve; });
+    request(app)
+      .post(`/api/companies/${COMPANY_ID}/internal-agent/verify`)
+      .send({})
+      .end((_error, response) => resolveFirst(response));
+
+    await probeStarted;
+    const concurrentResponse = await request(app)
+      .post(`/api/companies/${COMPANY_ID}/internal-agent/verify`)
+      .send({});
+
+    releaseProbe();
+    const completedResponse = await firstResponse;
+    const retryResponse = await request(app)
+      .post(`/api/companies/${COMPANY_ID}/internal-agent/verify`)
+      .send({});
+
+    expect(concurrentResponse.status).toBe(429);
+    expect(concurrentResponse.headers["retry-after"]).toBe("30");
+    expect(concurrentResponse.body.error).toMatch(/already running/i);
+    expect(completedResponse.status).toBe(200);
+    expect(retryResponse.status).toBe(200);
+    expect(mockTestEnvironment).toHaveBeenCalledTimes(2);
+  });
+
+  it("allows Commander probes for different companies to run concurrently", async () => {
+    let releaseProbe!: () => void;
+    let signalProbeStarted!: () => void;
+    const probeGate = new Promise<void>((resolve) => { releaseProbe = resolve; });
+    const probeStarted = new Promise<void>((resolve) => { signalProbeStarted = resolve; });
+    const passingProbe = probe("pass", ["claude_hello_probe_passed"]);
+
+    mockTestEnvironment.mockImplementationOnce(async () => {
+      signalProbeStarted();
+      await probeGate;
+      return passingProbe;
+    });
+    mockTestEnvironment.mockResolvedValueOnce(passingProbe);
+
+    const app = makeApp(dbWithMembership([]), {
+      type: "board",
+      source: "session",
+      userId: "u1",
+      isInstanceAdmin: true,
+      companyIds: [],
+    });
+    let resolveFirst!: (response: request.Response) => void;
+    const firstResponse = new Promise<request.Response>((resolve) => { resolveFirst = resolve; });
+    request(app)
+      .post(`/api/companies/${COMPANY_ID}/internal-agent/verify`)
+      .send({})
+      .end((_error, response) => resolveFirst(response));
+
+    await probeStarted;
+    const otherCompanyResponse = await request(app)
+      .post("/api/companies/c2/internal-agent/verify")
+      .send({});
+    releaseProbe();
+    const completedResponse = await firstResponse;
+
+    expect(otherCompanyResponse.status).toBe(200);
+    expect(completedResponse.status).toBe(200);
+    expect(mockTestEnvironment).toHaveBeenCalledTimes(2);
+  });
+
+  it("releases the company probe slot when Commander verification throws", async () => {
+    mockTestEnvironment
+      .mockRejectedValueOnce(new Error("probe crashed"))
+      .mockResolvedValueOnce(probe("pass", ["claude_hello_probe_passed"]));
+    const app = makeApp(dbWithMembership([{ id: COMPANY_ID }]));
+
+    const failedResponse = await request(app)
+      .post(`/api/companies/${COMPANY_ID}/internal-agent/verify`)
+      .send({});
+    const retryResponse = await request(app)
+      .post(`/api/companies/${COMPANY_ID}/internal-agent/verify`)
+      .send({});
+
+    expect(failedResponse.status).toBe(500);
+    expect(retryResponse.status).toBe(200);
+    expect(mockTestEnvironment).toHaveBeenCalledTimes(2);
   });
 
   it("422 needs_auth (blocking) when login is required", async () => {

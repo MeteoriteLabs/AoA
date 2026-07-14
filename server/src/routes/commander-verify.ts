@@ -2,6 +2,11 @@ import { Router, type Request, type Response } from "express";
 import type { Db } from "@armyofagents/db";
 import { classifyCommanderProbe, resolveCommanderAdapterType } from "../services/commander-verify.js";
 import { findServerAdapter } from "../adapters/registry.js";
+import {
+  ADAPTER_PROBE_BUSY_ERROR,
+  ADAPTER_PROBE_RETRY_AFTER_SECONDS,
+  tryAcquireAdapterProbeSlot,
+} from "../services/adapter-probe-concurrency.js";
 import { assertCompanyAccess } from "./authz.js";
 
 /**
@@ -30,9 +35,22 @@ export function commanderVerifyRoutes(db: Db): Router {
     }
     // Empty config → CLI defaults (subscription-login path), which is what
     // Commander verify should test.
-    const result = await adapter.testEnvironment({ companyId, adapterType, config: {} });
-    const classified = classifyCommanderProbe(result);
-    res.status(classified.outcome === "verified" ? 200 : 422).json(classified);
+    const releaseProbeSlot = tryAcquireAdapterProbeSlot(companyId);
+    if (!releaseProbeSlot) {
+      res
+        .status(429)
+        .set("Retry-After", String(ADAPTER_PROBE_RETRY_AFTER_SECONDS))
+        .json({ error: ADAPTER_PROBE_BUSY_ERROR });
+      return;
+    }
+
+    try {
+      const result = await adapter.testEnvironment({ companyId, adapterType, config: {} });
+      const classified = classifyCommanderProbe(result);
+      res.status(classified.outcome === "verified" ? 200 : 422).json(classified);
+    } finally {
+      releaseProbeSlot();
+    }
   });
 
   return router;

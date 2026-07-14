@@ -60,6 +60,11 @@ import { liveRunsForCompany, liveRunsForIssue } from "./agents-live-runs.js";
 import { getProviderStatus } from "../adapters/provider-status.js";
 import { realProviderStatusDeps } from "../adapters/provider-status-deps.js";
 import { resolveModel, ShellUnsafeModelError } from "../services/internal-agent/model-resolution.js";
+import {
+  ADAPTER_PROBE_BUSY_ERROR,
+  ADAPTER_PROBE_RETRY_AFTER_SECONDS,
+  tryAcquireAdapterProbeSlot,
+} from "../services/adapter-probe-concurrency.js";
 
 // Adapter types that go through the assertAdapterConfigConstraints validation
 // path (provider-status + model-resolution checks). Allocated once at module
@@ -92,9 +97,6 @@ const MODEL_AWARE_ADAPTER_TYPES = new Set([
 // timeoutSec 45 + graceSec 5 — see packages/adapters/*/server/test.ts.)
 // NOTE: in-process only — a multi-instance deployment would need a distributed
 // lock to share this counter. Acceptable for the Phase 1 single-process target.
-const MAX_CONCURRENT_PROBES_PER_COMPANY = 1;
-const inFlightProbeCounts = new Map<string, number>();
-
 export function agentRoutes(db: Db) {
   const DEFAULT_INSTRUCTIONS_PATH_KEYS: Record<string, string> = {
     claude_local: "instructionsFilePath",
@@ -532,8 +534,7 @@ export function agentRoutes(db: Db) {
       const companyId = req.params.companyId as string;
       const type = req.params.type as string;
 
-      // RBAC check and 404 check happen BEFORE incrementing the in-flight
-      // counter so they never leak a slot.
+      // RBAC and adapter checks happen before acquiring the shared probe slot.
       await assertCanReadConfigurations(req, companyId);
 
       const adapter = findServerAdapter(type);
@@ -543,12 +544,14 @@ export function agentRoutes(db: Db) {
       }
 
       // Unit D: per-company concurrency cap — reject if a probe is already running.
-      const inFlight = inFlightProbeCounts.get(companyId) ?? 0;
-      if (inFlight >= MAX_CONCURRENT_PROBES_PER_COMPANY) {
-        res.status(429).set("Retry-After", "30").json({ error: "A connection test is already running for this company. Please wait for it to finish and retry." });
+      const releaseProbeSlot = tryAcquireAdapterProbeSlot(companyId);
+      if (!releaseProbeSlot) {
+        res
+          .status(429)
+          .set("Retry-After", String(ADAPTER_PROBE_RETRY_AFTER_SECONDS))
+          .json({ error: ADAPTER_PROBE_BUSY_ERROR });
         return;
       }
-      inFlightProbeCounts.set(companyId, inFlight + 1);
 
       try {
         const inputAdapterConfig =
@@ -650,13 +653,7 @@ export function agentRoutes(db: Db) {
           }
         }
       } finally {
-        // Unit D: always decrement the in-flight counter regardless of outcome.
-        const n = (inFlightProbeCounts.get(companyId) ?? 1) - 1;
-        if (n <= 0) {
-          inFlightProbeCounts.delete(companyId);
-        } else {
-          inFlightProbeCounts.set(companyId, n);
-        }
+        releaseProbeSlot();
       }
     },
   );
