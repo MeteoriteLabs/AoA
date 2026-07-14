@@ -2,6 +2,10 @@ import { randomUUID } from "node:crypto";
 import { and, desc, eq, lt, inArray, isNull, lte, notInArray, or, sql, gt } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import {
+  requestTrackedProcessTermination,
+  waitForTrackedProcessExit,
+} from "@armyofagents/adapter-utils/server-utils";
+import {
   discussionEntries,
   discussions,
   internalAgentRuns,
@@ -50,6 +54,7 @@ export async function recoverExpiredCrewWakeup(
   },
 ) {
   const now = new Date();
+  const recoveryToken = randomUUID();
   const issueId = typeof wakeup.payload?.issueId === "string" ? wakeup.payload.issueId : null;
   const questionId = typeof wakeup.payload?.questionId === "string" ? wakeup.payload.questionId : null;
   const outcome = await db.transaction(async (tx) => {
@@ -86,7 +91,7 @@ export async function recoverExpiredCrewWakeup(
       ))
       .for("update")
       .then((rows) => rows[0] ?? null);
-    if (!currentWakeup) return { recovered: false, terminal: null, releasedIssueId: null };
+    if (!currentWakeup) return { kind: "none" as const, terminal: null, releasedIssueId: null };
 
     const baseKey = currentWakeup.idempotencyKey;
     const attemptKey = baseKey && currentWakeup.source === "work_question_continuation"
@@ -101,11 +106,13 @@ export async function recoverExpiredCrewWakeup(
           eq(internalAgentRuns.id, currentWakeup.runId),
           eq(internalAgentRuns.companyId, wakeup.companyId),
           eq(internalAgentRuns.agentId, wakeup.agentId),
-        )).then((rows) => rows[0] ?? null)
+        )).for("update").then((rows) => rows[0] ?? null)
       : null;
     if (!run && attemptKey && baseKey) {
       // Covers a crash after the run insert but before the runner binds runId to
-      // the wakeup. The base-key lookup keeps pre-attempt-key rows recoverable.
+      // the wakeup. The base-key fallback is only valid for attempt one; after
+      // that it would rediscover a retired legacy run from an earlier epoch.
+      const keys = currentWakeup.attempts === 1 ? [attemptKey, baseKey] : [attemptKey];
       run = await tx.select({
         id: internalAgentRuns.id,
         status: internalAgentRuns.status,
@@ -113,8 +120,8 @@ export async function recoverExpiredCrewWakeup(
       }).from(internalAgentRuns).where(and(
         eq(internalAgentRuns.companyId, wakeup.companyId),
         eq(internalAgentRuns.agentId, wakeup.agentId),
-        inArray(internalAgentRuns.continuationIdempotencyKey, [attemptKey, baseKey]),
-      )).orderBy(desc(internalAgentRuns.createdAt)).then((rows) => rows[0] ?? null);
+        inArray(internalAgentRuns.continuationIdempotencyKey, keys),
+      )).orderBy(desc(internalAgentRuns.createdAt)).for("update").then((rows) => rows[0] ?? null);
     }
 
     if (!run) {
@@ -126,7 +133,7 @@ export async function recoverExpiredCrewWakeup(
         runId: null,
         updatedAt: now,
       }).where(eq(agentWakeupRequests.id, wakeup.id));
-      return { recovered: true, terminal: null, releasedIssueId: null };
+      return { kind: "requeued" as const, terminal: null, releasedIssueId: null };
     }
 
     const [failedRun] = await tx.update(internalAgentRuns).set({
@@ -180,7 +187,7 @@ export async function recoverExpiredCrewWakeup(
           releasedIssueId = released[0]?.id ?? null;
         }
         return {
-          recovered: true,
+          kind: "terminal" as const,
           terminal: {
             runId: run.id,
             status: terminalStatus,
@@ -189,34 +196,24 @@ export async function recoverExpiredCrewWakeup(
           releasedIssueId,
         };
     }
-    await tx.update(issues).set({
-      checkoutRunId: null,
-      executionRunId: null,
-      executionAgentNameKey: null,
-      executionLockedAt: null,
-      updatedAt: now,
-    }).where(and(
-      eq(issues.companyId, wakeup.companyId),
-      or(eq(issues.checkoutRunId, run.id), eq(issues.executionRunId, run.id)),
-    ));
-    await tx.update(workQuestions).set({
-      continuationRunId: null,
-      updatedAt: now,
-    }).where(and(
-      eq(workQuestions.companyId, wakeup.companyId),
-      eq(workQuestions.continuationRunKind, "internal_agent"),
-      eq(workQuestions.continuationRunId, run.id),
-      eq(workQuestions.continuationStatus, "dispatched"),
-    ));
+    if (!failedRun) {
+      return { kind: "none" as const, terminal: null, releasedIssueId: null };
+    }
     await tx.update(agentWakeupRequests).set({
-      status: "queued",
-      claimedAt: null,
-      claimToken: null,
-      leaseExpiresAt: null,
-      runId: null,
+      // Keep the wakeup non-claimable until the old child has exited. The lease
+      // makes this recoverable if this process crashes during teardown.
+      status: "processing",
+      claimToken: recoveryToken,
+      leaseExpiresAt: new Date(now.getTime() + WAKEUP_LEASE_MS),
+      runId: run.id,
       updatedAt: now,
     }).where(eq(agentWakeupRequests.id, wakeup.id));
-    return { recovered: true, terminal: null, releasedIssueId: null };
+    return {
+      kind: "retiring" as const,
+      runId: run.id,
+      terminal: null,
+      releasedIssueId: null,
+    };
   });
   if (outcome.releasedIssueId) {
     publishIssueStatusChanged(wakeup.companyId, outcome.releasedIssueId, "todo");
@@ -229,7 +226,97 @@ export async function recoverExpiredCrewWakeup(
       error: outcome.terminal.error,
     });
   }
-  return outcome.recovered;
+  if (outcome.kind !== "retiring") return outcome.kind;
+
+  requestTrackedProcessTermination(outcome.runId);
+  if (!(await waitForTrackedProcessExit(outcome.runId))) return "none" as const;
+
+  return db.transaction(async (tx) => {
+    // Revalidate in the canonical task -> question -> wakeup -> run order before
+    // making the replacement claimable.
+    const issue = issueId
+      ? await tx.select({
+          status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+        }).from(issues).where(and(
+          eq(issues.id, issueId),
+          eq(issues.companyId, wakeup.companyId),
+        )).for("update").then((rows) => rows[0] ?? null)
+      : null;
+    const question = questionId
+      ? await tx.select({
+          status: workQuestions.status,
+          continuationStatus: workQuestions.continuationStatus,
+          continuationRunId: workQuestions.continuationRunId,
+        }).from(workQuestions).where(and(
+          eq(workQuestions.id, questionId),
+          eq(workQuestions.companyId, wakeup.companyId),
+        )).for("update").then((rows) => rows[0] ?? null)
+      : null;
+    const parkedWakeup = await tx.select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.id, wakeup.id),
+        eq(agentWakeupRequests.companyId, wakeup.companyId),
+        eq(agentWakeupRequests.agentId, wakeup.agentId),
+        eq(agentWakeupRequests.status, "processing"),
+        eq(agentWakeupRequests.claimToken, recoveryToken),
+        eq(agentWakeupRequests.runId, outcome.runId),
+      ))
+      .for("update")
+      .then((rows) => rows[0] ?? null);
+    await tx.select({ id: internalAgentRuns.id }).from(internalAgentRuns).where(and(
+      eq(internalAgentRuns.id, outcome.runId),
+      eq(internalAgentRuns.companyId, wakeup.companyId),
+    )).for("update");
+
+    if (
+      !parkedWakeup
+      || (issue && (
+        ["done", "cancelled"].includes(issue.status)
+        || issue.assigneeAgentId !== wakeup.agentId
+      ))
+      || (question && (
+        question.status !== "answered"
+        || question.continuationStatus !== "dispatched"
+      ))
+    ) {
+      return "none" as const;
+    }
+
+    await tx.update(issues).set({
+      checkoutRunId: null,
+      executionRunId: null,
+      executionAgentNameKey: null,
+      executionLockedAt: null,
+      updatedAt: new Date(),
+    }).where(and(
+      eq(issues.companyId, wakeup.companyId),
+      or(eq(issues.checkoutRunId, outcome.runId), eq(issues.executionRunId, outcome.runId)),
+    ));
+    await tx.update(workQuestions).set({
+      continuationRunId: null,
+      updatedAt: new Date(),
+    }).where(and(
+      eq(workQuestions.companyId, wakeup.companyId),
+      eq(workQuestions.continuationRunKind, "internal_agent"),
+      eq(workQuestions.continuationRunId, outcome.runId),
+      eq(workQuestions.continuationStatus, "dispatched"),
+    ));
+    const requeued = await tx.update(agentWakeupRequests).set({
+      status: "queued",
+      claimedAt: null,
+      claimToken: null,
+      leaseExpiresAt: null,
+      runId: null,
+      updatedAt: new Date(),
+    }).where(and(
+      eq(agentWakeupRequests.id, wakeup.id),
+      eq(agentWakeupRequests.status, "processing"),
+      eq(agentWakeupRequests.claimToken, recoveryToken),
+    )).returning({ id: agentWakeupRequests.id });
+    return requeued.length > 0 ? "requeued" as const : "none" as const;
+  });
 }
 
 async function failContinuationWakeup(
@@ -548,8 +635,8 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
       wakeupRows.map((w) =>
         p3Limiter.run(async () => {
           if (w.status === "processing") {
-            const recovered = await recoverExpiredCrewWakeup(db, w);
-            if (!recovered) return;
+            const recovery = await recoverExpiredCrewWakeup(db, w);
+            if (recovery !== "requeued") return;
           }
 
           const companyCfg = await resolveCompanyConfig(w.companyId);

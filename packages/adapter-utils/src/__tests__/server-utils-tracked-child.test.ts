@@ -1,6 +1,11 @@
 import os from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { runChildProcess, runningProcesses, spawnTrackedChild } from "../server-utils.js";
+import {
+  requestTrackedProcessTermination,
+  runChildProcess,
+  runningProcesses,
+  spawnTrackedChild,
+} from "../server-utils.js";
 
 const IS_WIN = process.platform === "win32";
 
@@ -32,6 +37,23 @@ describe("spawnTrackedChild (W5c Task 2)", () => {
     expect(handle.pid === null || typeof handle.pid === "number").toBe(true);
     expect(handle.startedAt).toBeInstanceOf(Date);
     await drain(handle.child);
+    expect(runningProcesses.has(runId)).toBe(false);
+  });
+
+  it("terminates a child that registers after cancellation was requested", async () => {
+    const runId = `tracked-late-spawn-${Date.now()}`;
+    requestTrackedProcessTermination(runId);
+    const handle = spawnTrackedChild(
+      runId,
+      process.execPath,
+      ["-e", "setTimeout(() => process.exit(0), 60000)"],
+      { cwd: os.tmpdir(), env: {}, graceSec: 1, shell: false },
+    );
+    expect(runningProcesses.has(runId)).toBe(true);
+    const terminal = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+      handle.child.on("close", (code, signal) => resolve({ code, signal }));
+    });
+    expect(terminal.code === 0 && terminal.signal === null).toBe(false);
     expect(runningProcesses.has(runId)).toBe(false);
   });
 

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, asc, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import {
   activityLog,
   agentWakeupRequests,
@@ -15,6 +15,7 @@ import type { WorkQuestionContinuationEnvelope } from "@armyofagents/shared";
 import { logger } from "../middleware/logger.js";
 import { heartbeatService } from "./heartbeat.js";
 import {
+  bindInternalAgentWorkQuestionContinuation,
   finalizeHeartbeatWorkQuestionContinuation,
   finalizeInternalAgentWorkQuestionContinuation,
 } from "./work-question-continuation-terminal.js";
@@ -549,8 +550,10 @@ export function workQuestionContinuationService(
   }
 
   async function reconcileInternalAgentTerminals(limit = 200) {
-    const rows = await db
+    const cappedLimit = Math.min(limit, 500);
+    const boundRows = await db
       .select({
+        questionId: workQuestions.id,
         companyId: workQuestions.companyId,
         runId: internalAgentRuns.id,
         status: internalAgentRuns.status,
@@ -571,10 +574,68 @@ export function workQuestionContinuationService(
         eq(workQuestions.continuationStatus, "dispatched"),
         inArray(internalAgentRuns.status, ["completed", "failed", "cancelled"]),
       ))
-      .limit(Math.min(limit, 500));
+      .limit(cappedLimit);
+
+    // The wakeup row is the durable authority for the run when the runner
+    // inserted and terminalized a run but its initial bind transaction failed.
+    // Order newest-first so a historical duplicate idempotency row cannot bind
+    // an older attempt over the wakeup that most recently owned dispatch.
+    const unboundRows = boundRows.length >= cappedLimit
+      ? []
+      : await db
+          .select({
+            questionId: workQuestions.id,
+            companyId: workQuestions.companyId,
+            idempotencyKey: workQuestionContinuationRequests.downstreamIdempotencyKey,
+            runId: internalAgentRuns.id,
+            status: internalAgentRuns.status,
+            error: internalAgentRuns.errorMessage,
+          })
+          .from(workQuestions)
+          .innerJoin(workQuestionContinuationRequests, and(
+            eq(workQuestionContinuationRequests.companyId, workQuestions.companyId),
+            eq(workQuestionContinuationRequests.questionId, workQuestions.id),
+            eq(workQuestionContinuationRequests.status, "dispatched"),
+          ))
+          .innerJoin(agentWakeupRequests, and(
+            eq(agentWakeupRequests.companyId, workQuestions.companyId),
+            eq(agentWakeupRequests.idempotencyKey, workQuestionContinuationRequests.downstreamIdempotencyKey),
+          ))
+          .innerJoin(internalAgentRuns, and(
+            eq(internalAgentRuns.companyId, workQuestions.companyId),
+            eq(internalAgentRuns.id, agentWakeupRequests.runId),
+          ))
+          .where(and(
+            eq(workQuestions.continuationRunKind, "internal_agent"),
+            eq(workQuestions.continuationStatus, "dispatched"),
+            isNull(workQuestions.continuationRunId),
+            inArray(agentWakeupRequests.status, ["succeeded", "failed", "cancelled"]),
+            inArray(internalAgentRuns.status, ["completed", "failed", "cancelled"]),
+          ))
+          .orderBy(asc(workQuestions.id), desc(agentWakeupRequests.updatedAt))
+          .limit(cappedLimit - boundRows.length);
 
     let finalized = 0;
-    for (const row of rows) {
+    const seenQuestions = new Set<string>();
+    for (const row of boundRows) {
+      seenQuestions.add(row.questionId);
+      const questionId = await finalizeInternalAgentWorkQuestionContinuation(db, {
+        companyId: row.companyId,
+        runId: row.runId,
+        status: row.status as "completed" | "failed" | "cancelled",
+        error: row.error,
+      });
+      if (questionId) finalized += 1;
+    }
+    for (const row of unboundRows) {
+      if (seenQuestions.has(row.questionId)) continue;
+      seenQuestions.add(row.questionId);
+      const bound = await bindInternalAgentWorkQuestionContinuation(db, {
+        companyId: row.companyId,
+        runId: row.runId,
+        idempotencyKey: row.idempotencyKey,
+      });
+      if (!bound) continue;
       const questionId = await finalizeInternalAgentWorkQuestionContinuation(db, {
         companyId: row.companyId,
         runId: row.runId,

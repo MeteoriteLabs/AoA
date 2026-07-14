@@ -35,7 +35,7 @@ import type {
   IssueCommentMetadata,
   IssueCommentPresentation,
 } from "@armyofagents/shared";
-import { runningProcesses, signalRunningProcess } from "@armyofagents/adapter-utils/server-utils";
+import { requestTrackedProcessTermination } from "@armyofagents/adapter-utils/server-utils";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { dependencyService, TERMINAL_STATUSES } from "./dependencies.js";
@@ -246,14 +246,7 @@ async function cancelActiveWorkQuestionsForIssue(
 
 function terminateTrackedRuns(runIds: string[]) {
   for (const runId of runIds) {
-    const running = runningProcesses.get(runId);
-    if (!running) continue;
-    signalRunningProcess(running, "SIGTERM");
-    const graceMs = Math.max(1, running.graceSec) * 1000;
-    setTimeout(() => {
-      const stillRunning = runningProcesses.get(runId);
-      if (stillRunning) signalRunningProcess(stillRunning, "SIGKILL");
-    }, graceMs);
+    requestTrackedProcessTermination(runId);
   }
 }
 

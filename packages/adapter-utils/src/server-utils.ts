@@ -141,8 +141,55 @@ type ChildProcessWithEvents = ChildProcess & {
 };
 
 export const runningProcesses = new Map<string, RunningProcess>();
+const pendingProcessTerminations = new Map<string, number>();
+const PROCESS_TERMINATION_TOMBSTONE_MS = 60 * 60 * 1000;
 export const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
 export const MAX_EXCERPT_BYTES = 32 * 1024;
+
+function pruneProcessTerminationTombstones(now = Date.now()): void {
+  for (const [runId, expiresAt] of pendingProcessTerminations) {
+    if (expiresAt <= now) pendingProcessTerminations.delete(runId);
+  }
+}
+
+function terminateRegisteredProcess(runId: string, running: RunningProcess): void {
+  signalRunningProcess(running, "SIGTERM");
+  if (process.platform === "win32" && !running.child.killed) {
+    // taskkill is fire-and-forget, so starting it is not proof that a child
+    // which has only just registered is already addressable by PID. Terminate
+    // the tracked parent directly as well; taskkill remains responsible for
+    // descendants, while this closes the spawn-to-taskkill race for the parent.
+    running.child.kill("SIGTERM");
+  }
+  const graceMs = Math.max(1, running.graceSec) * 1000;
+  const timer = setTimeout(() => {
+    const stillRunning = runningProcesses.get(runId);
+    if (stillRunning) signalRunningProcess(stillRunning, "SIGKILL");
+  }, graceMs);
+  timer.unref?.();
+}
+
+/**
+ * Records cancellation even when the child has not registered yet. This closes
+ * the checkout-to-spawn race: spawnTrackedChild observes the tombstone before
+ * callers can write stdin, while already-registered children are terminated now.
+ */
+export function requestTrackedProcessTermination(runId: string): void {
+  pruneProcessTerminationTombstones();
+  pendingProcessTerminations.set(runId, Date.now() + PROCESS_TERMINATION_TOMBSTONE_MS);
+  const running = runningProcesses.get(runId);
+  if (running) terminateRegisteredProcess(runId, running);
+}
+
+export async function waitForTrackedProcessExit(runId: string): Promise<boolean> {
+  const running = runningProcesses.get(runId);
+  if (!running) return true;
+  const deadline = Date.now() + Math.max(1, running.graceSec) * 1000 + 2_000;
+  while (runningProcesses.has(runId) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return !runningProcesses.has(runId);
+}
 
 export function parseObject(value: unknown): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -403,9 +450,16 @@ export function spawnTrackedChild(
 
   child.on("close", () => {
     runningProcesses.delete(runId);
+    pendingProcessTerminations.delete(runId);
   });
+
+  pruneProcessTerminationTombstones();
+  if (pendingProcessTerminations.has(runId)) {
+    terminateRegisteredProcess(runId, runningProcesses.get(runId)!);
+  }
   child.on("error", () => {
     runningProcesses.delete(runId);
+    pendingProcessTerminations.delete(runId);
   });
 
   const terminate = (): void => {
