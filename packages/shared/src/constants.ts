@@ -1393,3 +1393,24 @@ export const PLUGIN_BRIDGE_ERROR_CODES = [
   "UNKNOWN",
 ] as const;
 export type PluginBridgeErrorCode = (typeof PLUGIN_BRIDGE_ERROR_CODES)[number];
+
+/**
+ * Department function types — the single source of truth consumed by both the
+ * onboarding "First department" step and NewProjectDialog (Stage C / C9).
+ * `software_development` is the workspace-tooling gate value. Adds `sales`;
+ * `support` is labeled "Customer Support".
+ */
+export const DEPARTMENT_FUNCTION_TYPES = [
+  { value: "software_development", label: "Product (Software)", icon: "💻" },
+  { value: "marketing", label: "Marketing", icon: "📢" },
+  { value: "sales", label: "Sales", icon: "🤝" },
+  { value: "support", label: "Customer Support", icon: "🎧" },
+  { value: "finance", label: "Finance", icon: "💰" },
+  { value: "hr", label: "HR", icon: "👥" },
+  { value: "legal", label: "Legal", icon: "⚖️" },
+  { value: "research", label: "Research", icon: "🔬" },
+  { value: "operations", label: "Operations", icon: "📊" },
+  { value: "general", label: "General", icon: "📋" },
+  { value: "custom", label: "Custom", icon: "⚙️" },
+] as const;
+export type DepartmentFunctionType = (typeof DEPARTMENT_FUNCTION_TYPES)[number]["value"];

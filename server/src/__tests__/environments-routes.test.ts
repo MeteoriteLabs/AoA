@@ -4,16 +4,22 @@ import request from "supertest";
 
 const mocks = vi.hoisted(() => ({
   assertBoard: vi.fn(),
+  assertCanManageInstanceSettings: vi.fn(),
   assertCompanyAccess: vi.fn(),
   environmentService: vi.fn(() => ({})),
   logActivity: vi.fn(async () => undefined),
   normalizeEnvConfigForPersistence: vi.fn(async (_companyId: string, value: unknown) => value),
+  getLocalProbeTargetPath: vi.fn((config: Record<string, unknown>) => {
+    const value = config.path ?? config.rootFolder;
+    return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+  }),
   probeEnvironmentConfig: vi.fn(),
   syncEnvBindingsForTarget: vi.fn(),
 }));
 
 vi.mock("../routes/authz.js", () => ({
   assertBoard: mocks.assertBoard,
+  assertCanManageInstanceSettings: mocks.assertCanManageInstanceSettings,
   assertCompanyAccess: mocks.assertCompanyAccess,
   getActorInfo: () => ({ actorId: "u-1", actorType: "user", agentId: null, runId: null }),
 }));
@@ -35,6 +41,7 @@ vi.mock("../services/secrets.js", () => ({
 }));
 
 vi.mock("../services/environment-probe.js", () => ({
+  getLocalProbeTargetPath: mocks.getLocalProbeTargetPath,
   probeEnvironmentConfig: mocks.probeEnvironmentConfig,
 }));
 
@@ -70,6 +77,7 @@ describe("environments routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.assertBoard.mockReturnValue(undefined);
+    mocks.assertCanManageInstanceSettings.mockReturnValue(undefined);
     mocks.assertCompanyAccess.mockReturnValue(undefined);
     mocks.environmentService.mockReturnValue({});
     mocks.normalizeEnvConfigForPersistence.mockImplementation(async (_companyId: string, value: unknown) => value);
@@ -337,8 +345,59 @@ describe("environments routes", () => {
         timeoutMs: 60_000,
       },
     });
+    expect(mocks.assertCanManageInstanceSettings).not.toHaveBeenCalled();
     expect(svc.create).not.toHaveBeenCalled();
     expect(JSON.stringify(res.body)).not.toContain("secret-key");
+  });
+
+  it("POST /companies/:cid/environments/probe rejects non-admin local filesystem probes", async () => {
+    mocks.assertCanManageInstanceSettings.mockImplementation(() => {
+      throw Object.assign(new Error("Instance admin access required"), { status: 403 });
+    });
+    const app = buildApp({ create: vi.fn() });
+
+    const res = await request(app)
+      .post(`/companies/${companyId}/environments/probe`)
+      .send({ driver: "local", config: { path: "/tmp/member-controlled" } });
+
+    expect(res.status).toBe(403);
+    expect(mocks.assertCanManageInstanceSettings).toHaveBeenCalled();
+    expect(mocks.probeEnvironmentConfig).not.toHaveBeenCalled();
+  });
+
+  it("POST /companies/:cid/environments/probe preserves pathless local validation for non-admin members", async () => {
+    mocks.assertCanManageInstanceSettings.mockImplementation(() => {
+      throw Object.assign(new Error("Instance admin access required"), { status: 403 });
+    });
+    const app = buildApp({ create: vi.fn() });
+
+    const res = await request(app)
+      .post(`/companies/${companyId}/environments/probe`)
+      .send({ driver: "local", config: {} });
+
+    expect(res.status).toBe(200);
+    expect(mocks.assertCanManageInstanceSettings).not.toHaveBeenCalled();
+    expect(mocks.probeEnvironmentConfig).toHaveBeenCalledWith({
+      companyId,
+      driver: "local",
+      config: {},
+    });
+  });
+
+  it("POST /companies/:cid/environments/probe allows instance-admin local filesystem probes", async () => {
+    const app = buildApp({ create: vi.fn() });
+
+    const res = await request(app)
+      .post(`/companies/${companyId}/environments/probe`)
+      .send({ driver: "local", config: { path: "/tmp/admin-controlled" } });
+
+    expect(res.status).toBe(200);
+    expect(mocks.assertCanManageInstanceSettings).toHaveBeenCalled();
+    expect(mocks.probeEnvironmentConfig).toHaveBeenCalledWith({
+      companyId,
+      driver: "local",
+      config: { path: "/tmp/admin-controlled" },
+    });
   });
 
   it("POST /companies/:cid/environments/probe returns 400 for raw E2B API keys", async () => {

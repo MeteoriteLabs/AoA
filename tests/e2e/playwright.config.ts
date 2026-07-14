@@ -63,6 +63,17 @@ const AOA_HOME = WINDOWS_WITH_EMBEDDED_POSTGRES
   ? ""
   : fs.mkdtempSync(path.join(os.tmpdir(), "aoa-e2e-home-"));
 
+// Keep provider-status E2E hermetic as well as the AoA instance itself. The
+// production Codex status path intentionally reads the server's shared
+// CODEX_HOME/config.toml, so inheriting the developer's ~/.codex would make
+// model-resolution assertions depend on the host's current login/config.
+const CODEX_HOME = WINDOWS_WITH_EMBEDDED_POSTGRES
+  ? ""
+  : fs.mkdtempSync(path.join(os.tmpdir(), "aoa-e2e-codex-home-"));
+if (CODEX_HOME) {
+  fs.writeFileSync(path.join(CODEX_HOME, "config.toml"), 'model = "gpt-5.5"\n', "utf8");
+}
+
 // UNCONDITIONAL startup cleanup (eng-review fix 2): delete any leftover
 // fake-crew control file from a prior run that died on a signal (afterEach
 // doesn't run on SIGKILL/Ctrl-C, and os.tmpdir() persists across local runs).
@@ -150,10 +161,17 @@ export default defineConfig({
           ...process.env,
           PORT: String(PORT),
           AOA_HOME,
+          CODEX_HOME,
           AOA_INSTANCE_ID: "playwright-e2e",
           AOA_BIND: "loopback",
           AOA_DEPLOYMENT_MODE: "local_trusted",
           AOA_DEPLOYMENT_EXPOSURE: "private",
+          // Post auth-redesign, local_trusted no longer grants the synthetic
+          // loopback board admin by default — it is gated behind this dev escape
+          // hatch (server/src/middleware/auth.ts, config.ts). Without it EVERY
+          // board-authenticated e2e request resolves actor {type:"none"} → 401,
+          // so the whole suite would fail to authenticate. (HANDOFF §6.5.)
+          AOA_DEV_LOCAL_IDENTITY: "1",
           COREPACK_ENABLE_DOWNLOAD_PROMPT: "0",
           AOA_E2E_DB_PORT: String(E2E_DB_PORT),
           AOA_EMBEDDED_POSTGRES_PORT: String(E2E_DB_PORT),

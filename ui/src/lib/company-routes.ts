@@ -40,6 +40,10 @@ const GLOBAL_ROUTE_ROOTS = new Set([
   "export",
   "import",
   "marketplace",
+  // Onboarding is a top-level, company-agnostic route (the FlowEngine); it must
+  // never be company-prefixed so navigate("/onboarding") resolves correctly from
+  // any context (C13).
+  "onboarding",
 ]);
 
 export function normalizeCompanyPrefix(prefix: string): string {

@@ -29,7 +29,7 @@ import {
   Github,
   GitBranch,
 } from "lucide-react";
-import { PROJECT_COLORS } from "@armyofagents/shared";
+import { PROJECT_COLORS, DEPARTMENT_FUNCTION_TYPES } from "@armyofagents/shared";
 import { cn } from "../lib/utils";
 import { MarkdownEditor, type MarkdownEditorRef } from "./MarkdownEditor";
 import { StatusBadge } from "./StatusBadge";
@@ -47,18 +47,9 @@ const projectStatuses = [
 type WorkspaceSetup = "none" | "local" | "repo" | "both";
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 
-const FUNCTION_TYPES = [
-  { value: "software_development", label: "Product (Software)", icon: "💻" },
-  { value: "marketing", label: "Marketing", icon: "📢" },
-  { value: "finance", label: "Finance", icon: "💰" },
-  { value: "support", label: "Support", icon: "🎧" },
-  { value: "hr", label: "HR", icon: "👥" },
-  { value: "legal", label: "Legal", icon: "⚖️" },
-  { value: "research", label: "Research", icon: "🔬" },
-  { value: "operations", label: "Operations", icon: "📊" },
-  { value: "general", label: "General", icon: "📋" },
-  { value: "custom", label: "Custom", icon: "⚙️" },
-] as const;
+// Department taxonomy lives in @armyofagents/shared (Stage C / C9) so onboarding
+// and NewProjectDialog stay in sync.
+const FUNCTION_TYPES = DEPARTMENT_FUNCTION_TYPES;
 
 export function NewProjectDialog() {
   const { newProjectOpen, newProjectDefaults, closeNewProject } = useDialog();

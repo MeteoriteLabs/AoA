@@ -4,6 +4,7 @@ import { Link, useParams } from "@/lib/router";
 import { accessApi } from "../api/access";
 import { authApi } from "../api/auth";
 import { healthApi } from "../api/health";
+import { requiresBoardSession } from "../lib/authGate";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { AGENT_ADAPTER_TYPES } from "@armyofagents/shared";
@@ -84,7 +85,7 @@ export function InviteLandingPage() {
 
   const requiresAuthForHuman =
     joinType === "human" &&
-    healthQuery.data?.deploymentMode === "authenticated" &&
+    requiresBoardSession(healthQuery.data) &&
     !sessionQuery.data;
 
   const acceptMutation = useMutation({

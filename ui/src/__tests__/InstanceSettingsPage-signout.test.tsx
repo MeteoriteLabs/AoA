@@ -46,8 +46,7 @@ const mockSignOut = vi.fn();
 vi.mock("../api/auth", () => ({
   authApi: {
     getSession: vi.fn(),
-    signInEmail: vi.fn(),
-    signUpEmail: vi.fn(),
+    signInSocial: vi.fn(),
     signOut: (...args: unknown[]) => mockSignOut(...args),
   },
 }));

@@ -206,15 +206,23 @@ async function waitForWorkQuestionDecision(
   }
 }
 
-/** Assert a waiting_on_you hub (notifications) row exists for a decision. */
-async function findHubRowForDecision(companyId: string, decisionId: string) {
-  return rowsOf(
-    await db.execute(sql`
-      SELECT id, semantic_type, status, source_type
-      FROM notifications
-      WHERE company_id = ${companyId} AND source_type = 'runtime_decision' AND source_id = ${decisionId}
-    `),
-  );
+/** Poll until the asynchronously projected waiting_on_you hub row exists. */
+async function waitForHubRowForDecision(companyId: string, decisionId: string, timeoutMs = 5_000) {
+  const startedAt = Date.now();
+  for (;;) {
+    const rows = rowsOf(
+      await db.execute(sql`
+        SELECT id, semantic_type, status, source_type
+        FROM notifications
+        WHERE company_id = ${companyId} AND source_type = 'runtime_decision' AND source_id = ${decisionId}
+      `),
+    );
+    if (rows.length > 0) return rows;
+    if (Date.now() - startedAt >= timeoutMs) {
+      throw new Error(`hub row never appeared for runtime decision ${decisionId}`);
+    }
+    await new Promise((r) => setTimeout(r, 50));
+  }
 }
 
 // ── embedded-postgres lifecycle ───────────────────────────────────────────────
@@ -288,7 +296,7 @@ describe.skipIf(
     expect(["created", "shown"]).toContain(String(decision.status));
 
     // A real hub (notifications) row surfaced it in the waiting_on_you lane.
-    const hub = await findHubRowForDecision(companyId, decisionId);
+    const hub = await waitForHubRowForDecision(companyId, decisionId);
     expect(hub.length).toBeGreaterThanOrEqual(1);
     expect(String(hub[0].semantic_type)).toBe("agent_runtime_decision"); // → waiting_on_you lane
     expect(String(hub[0].status)).toBe("open");
@@ -336,7 +344,7 @@ describe.skipIf(
     // The decision persisted the options array.
     expect(decision.options).toEqual(options);
 
-    const hub = await findHubRowForDecision(companyId, decisionId);
+    const hub = await waitForHubRowForDecision(companyId, decisionId);
     expect(hub.length).toBeGreaterThanOrEqual(1);
     expect(String(hub[0].semantic_type)).toBe("agent_runtime_decision");
 
@@ -383,7 +391,7 @@ describe.skipIf(
     const decisionId = String(decision.id);
     expect(String(decision.kind)).toBe("work_question"); // still work_question, unaffected by routing flag
 
-    const hub = await findHubRowForDecision(companyId, decisionId);
+    const hub = await waitForHubRowForDecision(companyId, decisionId);
     expect(hub.length).toBeGreaterThanOrEqual(1);
     expect(String(hub[0].semantic_type)).toBe("agent_runtime_decision");
 
@@ -415,7 +423,7 @@ describe.skipIf(
 
     const decision = await waitForWorkQuestionDecision(companyId, runId);
     const decisionId = String(decision.id);
-    const hubBefore = await findHubRowForDecision(companyId, decisionId);
+    const hubBefore = await waitForHubRowForDecision(companyId, decisionId);
     expect(hubBefore.length).toBeGreaterThanOrEqual(1);
     expect(String(hubBefore[0].status)).toBe("open");
 
@@ -525,7 +533,7 @@ describe.skipIf(
     const decision = await waitForWorkQuestionDecision(companyId, runId);
     const decisionId = String(decision.id);
 
-    const hubBefore = await findHubRowForDecision(companyId, decisionId);
+    const hubBefore = await waitForHubRowForDecision(companyId, decisionId);
     expect(hubBefore.length).toBeGreaterThanOrEqual(1);
     expect(String(hubBefore[0].status)).toBe("open");
 

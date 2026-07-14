@@ -112,13 +112,27 @@ test.describe("Team AoA — fake-crew Assist crew_dispatch approval round-trip (
     await expect(page.getByRole("heading", { name: /Discussions/i }).first()).toBeVisible({
       timeout: 15_000,
     });
-    const threadId = await createThreadFromUi(
-      page,
-      `Fake dispatch approval ${Date.now()}`,
-      "We need to build the token endpoint for the auth rewrite, including refresh rotation.",
+    // Create the empty thread through the API so Assist is active before the
+    // first human entry. The E2E server uses a 250 ms debounce; creating a
+    // thread with an initial non-mention entry would let the proactive timer
+    // fire while the UI navigates, producing a second run before the explicit
+    // @Adjutant message. The actual trigger remains a real UI composer post.
+    const thread = await jsonOrThrow<{ id: string }>(
+      await request.post(`/api/companies/${company.id}/discussions`, {
+        data: { title: `Fake dispatch approval ${Date.now()}` },
+      }),
+      "create empty discussion",
     );
+    const threadId = thread.id;
     await patchThreadAutonomy(request, company.id, threadId, 1); // Assist (thread override)
-    await sendThreadMessage(page, "@Adjutant please scope this into tracked tasks.");
+    await page.goto(`/${company.issuePrefix}/discussions/${threadId}`);
+    await expect(page.getByRole("heading", { name: /Fake dispatch approval/i }).first()).toBeVisible({
+      timeout: 15_000,
+    });
+    await sendThreadMessage(
+      page,
+      "We need to build the token endpoint for the auth rewrite, including refresh rotation. @Adjutant please scope this into tracked tasks.",
+    );
 
     // The fake turn posts a visible confirmation entry once it queued the action.
     await waitForVisibleAgentEntry(

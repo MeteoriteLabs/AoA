@@ -322,6 +322,8 @@ export {
   type PluginWebhookDeliveryStatus,
   PLUGIN_BRIDGE_ERROR_CODES,
   type PluginBridgeErrorCode,
+  DEPARTMENT_FUNCTION_TYPES,
+  type DepartmentFunctionType,
 } from "./constants.js";
 
 export {
@@ -1252,3 +1254,14 @@ export {
   type CrewAdapterConfig,
   type NewNotificationType,
 } from "./api/threads-contract.js";
+export {
+  ONBOARDING_JOURNEYS,
+  ONBOARDING_STATES,
+  FOUNDER_PHASE1_STATES,
+  INVITED_PHASE1_STATES,
+  orderedStatesFor,
+  type OnboardingJourney,
+  type OnboardingState,
+  type PendingInvitation,
+  type PostAuthJourneyResult,
+} from "./onboarding.js";

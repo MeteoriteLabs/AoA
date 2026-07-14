@@ -2,7 +2,7 @@ import { test, expect } from "@playwright/test";
 import type { APIRequestContext } from "@playwright/test";
 import {
   cleanupTestCompanies,
-  seedCompanyViaWizard,
+  seedConfiguredCompany,
 } from "./helpers/seed-company";
 
 /**
@@ -100,7 +100,7 @@ test.describe("W6 first-agent reports-to (human-at-top)", () => {
     page,
     request,
   }) => {
-    const { companyId, issuePrefix } = await seedCompanyViaWizard(page, request, {
+    const { companyId, issuePrefix } = await seedConfiguredCompany(request, {
       companyName: `E2E-W6-${Date.now()}`,
     });
 
