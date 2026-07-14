@@ -197,18 +197,23 @@ describe.skipIf(
     )).then((rows) => rows[0]);
     expect(mirror).toMatchObject({ semanticType: "work_question", status: "open" });
 
+    await expect(pending).resolves.toEqual({
+      ok: true,
+      data: {
+        answered: false,
+        questionId: question.id,
+        status: "parked",
+        note: "waiting for human",
+      },
+    });
+
     await workQuestionService(db).answer(scenario.companyId, question.id, { userId: scenario.userId }, {
       answer: { text: "Yes, start with five design partners." },
       expectedVersion: 0,
       idempotencyKey: "dogfood-text-answer",
     });
-    await expect(pending).resolves.toEqual({
-      ok: true,
-      data: {
-        answered: true,
-        questionId: question.id,
-        answer: { text: "Yes, start with five design partners." },
-      },
+    expect((await db.select().from(workQuestions).where(eq(workQuestions.id, question.id)))[0]).toMatchObject({
+      status: "answered",
     });
   });
 
@@ -224,14 +229,17 @@ describe.skipIf(
     });
     const question = await waitForQuestion(scenario.runId);
     expect(question.options).toHaveLength(2);
+    await expect(pending).resolves.toMatchObject({
+      ok: true,
+      data: { answered: false, questionId: question.id, status: "parked" },
+    });
     await workQuestionService(db).answer(scenario.companyId, question.id, { userId: scenario.userId }, {
       answer: { selectedValues: ["five"] },
       expectedVersion: 0,
       idempotencyKey: "dogfood-option-answer",
     });
-    await expect(pending).resolves.toMatchObject({
-      ok: true,
-      data: { answered: true, questionId: question.id, answer: { selectedValues: ["five"] } },
+    expect((await db.select().from(workQuestions).where(eq(workQuestions.id, question.id)))[0]).toMatchObject({
+      status: "answered",
     });
   });
 

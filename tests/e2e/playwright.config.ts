@@ -113,9 +113,14 @@ export default defineConfig({
   testMatch: WINDOWS_WITH_EMBEDDED_POSTGRES
     ? "**/windows-embedded-postgres-skip.spec.ts"
     : "**/*.spec.ts",
-  // NOTE: authenticated (multi-user) deployment mode has NO e2e coverage yet.
-  // The e2e suite boots only in local_trusted mode (see webServer env below).
-  // Multi-user authenticated-mode e2e is tracked for 1.1.
+  // The standard job boots local_trusted mode. Authenticated Commander coverage
+  // and real-provider lifecycle coverage have dedicated configs that bootstrap
+  // their own database, auth mode, and provider campaign; including them here
+  // makes this job fail before the intended setup can run.
+  testIgnore: [
+    "**/commander-cockpit-authenticated.spec.ts",
+    "**/commander-lifecycle/**/*.live.spec.ts",
+  ],
   timeout: 60_000,
   // Retry up to twice on CI to absorb transient React refetch/remount churn that
   // detaches elements mid-interaction (the dominant e2e flake class). Kept at

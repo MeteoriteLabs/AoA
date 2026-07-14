@@ -143,12 +143,13 @@ async function seedIssue(opts: {
   originKind: string | null;
   sourceDiscussionId: string | null;
   assigneeAgentId: string | null;
+  status?: "in_progress" | "done";
 }): Promise<string> {
   const [issue] = rowsOf(
     await db.execute(sql`
       INSERT INTO issues (id, company_id, title, status, origin_kind, source_discussion_id, assignee_agent_id)
       VALUES (
-        gen_random_uuid(), ${opts.companyId}, ${opts.title}, 'in_progress',
+        gen_random_uuid(), ${opts.companyId}, ${opts.title}, ${opts.status ?? "in_progress"},
         ${opts.originKind}, ${opts.sourceDiscussionId}, ${opts.assigneeAgentId}
       )
       RETURNING id
@@ -250,6 +251,7 @@ describe.skipIf(process.platform === "win32")("W3a integration: crew loopback + 
       originKind: "crew_thread",
       sourceDiscussionId: threadId,
       assigneeAgentId: engineerId,
+      status: "done",
     });
 
     const before = await threadCounts(threadId);
@@ -350,6 +352,7 @@ describe.skipIf(process.platform === "win32")("W3a integration: crew loopback + 
       originKind: "crew_thread",
       sourceDiscussionId: threadId,
       assigneeAgentId: engineerId,
+      status: "done",
     });
 
     const before = await threadCounts(threadId);

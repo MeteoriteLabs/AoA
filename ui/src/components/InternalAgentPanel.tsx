@@ -784,19 +784,22 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
 
   // Lightweight helpers still used for cockpit expand/collapse buttons (unchanged UX).
   const expandCockpit = useCallback(() => {
+    // Keep the persisted desktop state and the tablet sheet state in sync. The
+    // breakpoint can change while the app is mounted (and Playwright can resize
+    // between navigations); updating only the branch selected by the current
+    // render can leave the rail visible after an expand click.
+    setCockpitCollapsed(false);
     if (isTablet) {
       setTabletCockpitOpen(true);
-      return;
     }
-    setCockpitCollapsed(false);
     if (!isWide) setViewerCollapsed(true);
   }, [isTablet, setCockpitCollapsed, setViewerCollapsed, isWide]);
   const collapseCockpit = useCallback(() => {
+    setCockpitCollapsed(true);
     if (isTablet) {
       setTabletCockpitOpen(false);
       return;
     }
-    setCockpitCollapsed(true);
   }, [isTablet, setCockpitCollapsed]);
 
   // Stable ref to openPreview for use inside stale SSE closures (onLiveRef).

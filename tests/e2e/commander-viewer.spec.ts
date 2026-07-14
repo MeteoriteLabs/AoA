@@ -113,6 +113,13 @@ async function waitForTurnEnd(page: Page): Promise<void> {
 }
 
 test.describe("Commander viewer", () => {
+  test.beforeEach(async ({ page }) => {
+    // Viewport changes are page-scoped but the page is reused across tests in
+    // this worker. Reset the desktop baseline so the tablet/mobile cases cannot
+    // make later cockpit assertions inspect the rail instead of the panel.
+    await page.setViewportSize({ width: 1280, height: 720 });
+  });
+
   test.beforeEach(async ({ request }) => {
     await cleanupTestCompanies(request, /^E2E-CmdViewer-/);
   });
@@ -502,7 +509,7 @@ test.describe("Commander viewer", () => {
     await expect(discussionPane.getByRole("tab", { name: "Branches" })).toBeVisible();
     await expect(page.getByTestId("commander-viewer-panel")).toHaveCount(0);
 
-    await discussionPane.getByRole("button", { name: `Close ${discussionTitle}` }).click();
+    await discussionPane.getByRole("button", { name: "Close discussion focus" }).click();
     await expect(discussionPane).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Collapse cockpit" })).toBeVisible();
   });
@@ -541,12 +548,14 @@ test.describe("Commander viewer", () => {
     request,
   }) => {
     const company = await seedCompany(request, `E2E-CmdViewer-Inbox-${Date.now()}`);
-    const inboxTitle = "Commander run completed";
-    const inboxSummary = "The launch validation run completed successfully.";
+    const inboxTitle = "Commander run failed";
+    const inboxSummary = "The launch validation run failed during launch validation.";
     await seedHubItem({
       companyId: company.id,
-      semanticType: "run_complete",
-      sourceType: "heartbeat_run",
+      // A successful heartbeat completion is history and is reconciled out of
+      // Inbox. Use an actionable exception notification for this viewer test.
+      semanticType: "agent_error",
+      sourceType: "test_fixture",
       sourceId: crypto.randomUUID(),
       title: inboxTitle,
       summary: inboxSummary,
