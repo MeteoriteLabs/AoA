@@ -1878,7 +1878,7 @@ export function TaskDetail({
                       linkedRuns={timelineRuns}
                       issueStatus={issue.status}
                       agentMap={agentMap}
-                      draftKey={`aoa:issue-comment-draft:${issue.id}`}
+                      draftKey={`aoa:composer-draft:${issue.companyId}:${currentUserId ?? "unknown"}:task:${issue.id}:root`}
                       enableReassign={permissions.canAssignTasks}
                       reassignOptions={commentReassignOptions}
                       currentAssigneeValue={currentAssigneeValue}
@@ -1893,6 +1893,9 @@ export function TaskDetail({
                           return;
                         }
                         await addComment.mutateAsync({ body, reopen, interrupt });
+                      }}
+                      onAddWithAttachments={async (body, files, reopen, interrupt) => {
+                        await issuesApi.addCommentWithAttachments(issue.id, body, files, reopen, interrupt);
                       }}
                       imageUploadHandler={async (file) => {
                         const attachment = await uploadAttachment.mutateAsync(file);

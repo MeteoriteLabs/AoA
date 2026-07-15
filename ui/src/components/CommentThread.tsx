@@ -18,6 +18,8 @@ import { formatDateTime } from "../lib/utils";
 import {
   resolveTaskCommentAction,
 } from "../lib/task-composer-actions";
+import { COMPOSER_ATTACHMENT_CONTENT_TYPES, COMPOSER_MAX_ATTACHMENTS, COMPOSER_MAX_ATTACHMENT_BYTES } from "@armyofagents/shared";
+import { ComposerFrame } from "./composer/ComposerFrame";
 
 export { resolveTaskCommentAction } from "../lib/task-composer-actions";
 export type { TaskCommentAction, TaskCommentActionInput } from "../lib/task-composer-actions";
@@ -44,6 +46,7 @@ interface CommentThreadProps {
   comments: CommentWithRunMeta[];
   linkedRuns?: LinkedRunItem[];
   onAdd: (body: string, reopen?: boolean, reassignment?: CommentReassignment, interrupt?: boolean) => Promise<void>;
+  onAddWithAttachments?: (body: string, files: File[], reopen?: boolean, interrupt?: boolean) => Promise<void>;
   issueStatus?: string;
   agentMap?: Map<string, Agent>;
   imageUploadHandler?: (file: File) => Promise<string>;
@@ -220,6 +223,7 @@ export function CommentThread({
   comments,
   linkedRuns = [],
   onAdd,
+  onAddWithAttachments,
   issueStatus,
   agentMap,
   imageUploadHandler,
@@ -240,6 +244,8 @@ export function CommentThread({
   const [interrupt, setInterrupt] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [attaching, setAttaching] = useState(false);
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [reassignTarget, setReassignTarget] = useState(currentAssigneeValue);
   const [highlightCommentId, setHighlightCommentId] = useState<string | null>(null);
   const editorRef = useRef<MarkdownEditorRef>(null);
@@ -325,7 +331,7 @@ export function CommentThread({
 
   async function handleSubmit() {
     const trimmed = body.trim();
-    if (!trimmed) return;
+    if (!trimmed && selectedFiles.length === 0) return;
     const hasReassignment = enableReassign && reassignTarget !== currentAssigneeValue;
     const reassignment = hasReassignment ? parseReassignment(reassignTarget) : null;
     const action = resolveTaskCommentAction({
@@ -338,13 +344,14 @@ export function CommentThread({
 
     setSubmitting(true);
     try {
-      await onAdd(
-        trimmed,
-        action === "reopen" ? true : undefined,
-        reassignment ?? undefined,
-        action === "interrupt" ? true : undefined,
-      );
+      if (selectedFiles.length > 0 && onAddWithAttachments && !reassignment) {
+        await onAddWithAttachments(trimmed, [...selectedFiles], action === "reopen" ? true : undefined, action === "interrupt" ? true : undefined);
+      } else {
+        await onAdd(trimmed, action === "reopen" ? true : undefined, reassignment ?? undefined, action === "interrupt" ? true : undefined);
+      }
       setBody("");
+      setSelectedFiles([]);
+      setAttachmentError(null);
       if (draftKey) clearDraft(draftKey);
       setReopen(false);
       setInterrupt(false);
@@ -356,7 +363,16 @@ export function CommentThread({
 
   async function handleAttachFile(evt: ChangeEvent<HTMLInputElement>) {
     const file = evt.target.files?.[0];
-    if (!file || !onAttachImage) return;
+    if (!file) return;
+    if (onAddWithAttachments) {
+      if (selectedFiles.length >= COMPOSER_MAX_ATTACHMENTS) setAttachmentError(`Attach up to ${COMPOSER_MAX_ATTACHMENTS} files per comment.`);
+      else if (!COMPOSER_ATTACHMENT_CONTENT_TYPES.includes(file.type as (typeof COMPOSER_ATTACHMENT_CONTENT_TYPES)[number])) setAttachmentError(`Unsupported attachment type: ${file.type || "unknown"}.`);
+      else if (file.size > COMPOSER_MAX_ATTACHMENT_BYTES) setAttachmentError(`${file.name} exceeds the 10 MB attachment limit.`);
+      else { setSelectedFiles((current) => [...current, file]); setAttachmentError(null); }
+      if (attachInputRef.current) attachInputRef.current.value = "";
+      return;
+    }
+    if (!onAttachImage) return;
     setAttaching(true);
     try {
       await onAttachImage(file);
@@ -366,13 +382,14 @@ export function CommentThread({
     }
   }
 
-  const canSubmit = !submitting && !!body.trim();
+  const canSubmit = !submitting && (!!body.trim() || selectedFiles.length > 0);
   const hasReassignment = enableReassign && reassignTarget !== currentAssigneeValue;
 
   return (
-    <div
+    <ComposerFrame
       className="flex min-h-0 flex-1 flex-col gap-3"
       data-testid="task-comments-panel"
+      density="comfortable"
     >
       <h3 className="shrink-0 text-sm font-semibold">Comments &amp; Runs ({timeline.length})</h3>
 
@@ -396,6 +413,16 @@ export function CommentThread({
         className="sticky bottom-0 z-10 shrink-0 space-y-2 border-t border-border bg-background pt-3"
         data-testid="task-comments-composer"
       >
+        {selectedFiles.length > 0 && (
+          <div className="mb-2 flex flex-wrap gap-1.5" data-testid="task-comment-attachments">
+            {selectedFiles.map((file, index) => (
+              <button key={`${file.name}-${file.size}-${index}`} type="button" className="rounded-md bg-muted/60 px-2 py-1 text-xs" onClick={() => setSelectedFiles((current) => current.filter((_, i) => i !== index))} title="Remove attachment">
+                {file.name}
+              </button>
+            ))}
+          </div>
+        )}
+        {attachmentError && <div className="mb-2 text-xs text-destructive" role="alert">{attachmentError}</div>}
         <MarkdownEditor
           ref={editorRef}
           value={body}
@@ -412,7 +439,7 @@ export function CommentThread({
               <input
                 ref={attachInputRef}
                 type="file"
-                accept="image/png,image/jpeg,image/webp,image/gif"
+                accept={COMPOSER_ATTACHMENT_CONTENT_TYPES.join(",")}
                 className="hidden"
                 onChange={handleAttachFile}
               />
@@ -421,7 +448,7 @@ export function CommentThread({
                 size="icon-sm"
                 onClick={() => attachInputRef.current?.click()}
                 disabled={attaching}
-                title="Attach image"
+                title="Attach file"
               >
                 <Paperclip className="h-4 w-4" />
               </Button>
@@ -495,6 +522,6 @@ export function CommentThread({
           </Button>
         </div>
       </div>
-    </div>
+    </ComposerFrame>
   );
 }

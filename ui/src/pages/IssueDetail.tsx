@@ -962,7 +962,7 @@ export function IssueDetail() {
             linkedRuns={timelineRuns}
             issueStatus={issue.status}
             agentMap={agentMap}
-            draftKey={`aoa:issue-comment-draft:${issue.id}`}
+            draftKey={`aoa:composer-draft:${issue.companyId}:${currentUserId ?? "unknown"}:task:${issue.id}:root`}
             enableReassign
             reassignOptions={commentReassignOptions}
             currentAssigneeValue={currentAssigneeValue}
@@ -974,6 +974,9 @@ export function IssueDetail() {
                 return;
               }
               await addComment.mutateAsync({ body, reopen, interrupt });
+            }}
+            onAddWithAttachments={async (body, files, reopen, interrupt) => {
+              await issuesApi.addCommentWithAttachments(issueId!, body, files, reopen, interrupt);
             }}
             imageUploadHandler={async (file) => {
               const attachment = await uploadAttachment.mutateAsync(file);
