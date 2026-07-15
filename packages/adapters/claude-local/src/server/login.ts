@@ -15,11 +15,16 @@ export function resolveClaudeConfigHome(env: NodeJS.ProcessEnv): string {
 }
 
 /**
- * Start an interactive `claude login` (Plan 3 / §6.2 Task 3), streaming the
- * verification URL out live. Streaming (not the batch `runClaudeLogin` in
- * execute.ts) because a device flow blocks until the browser round-trip, so a
- * collect-to-EOF read would never surface the URL. The real device flow is
- * dogfood-verified; CI covers URL parsing + the runner wiring via the spawn seam.
+ * Start an interactive `claude auth login` (Plan 3 / §6.2), streaming the
+ * verification URL out live. The subcommand is `auth login` — dogfood confirmed
+ * there is NO `claude login` (it just prints "Please run /login" and exits).
+ *
+ * NOTE: unlike `codex login` (local :1455 callback, self-completing), Claude's
+ * flow redirects to a REMOTE callback (platform.claude.com) and then BLOCKS on
+ * stdin: "Paste code here". So surfacing the URL is not enough — completing it
+ * requires piping the pasted auth code into the child's stdin (the "paste-code
+ * bridge", tracked follow-up). Until that exists, the UI offers Claude the
+ * API-key path only; this runner surfaces the URL but does not self-complete.
  */
 export function runClaudeLoginStreaming(args: {
   runId: string;
@@ -38,7 +43,7 @@ export function runClaudeLoginStreaming(args: {
   const result = runStreamingLogin({
     runId: args.runId,
     command: args.command ?? "claude",
-    args: ["login"],
+    args: ["auth", "login"],
     cwd: authHome,
     env: { CLAUDE_CONFIG_DIR: authHome },
     discoveryTimeoutMs: args.discoveryTimeoutMs,

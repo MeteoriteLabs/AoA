@@ -202,13 +202,18 @@ export function VerifyStep({ ctx, onComplete, onBack }: StepProps) {
             </Button>
           </div>
 
-          <div className="flex items-center gap-2 text-muted-foreground">
-            <span className="h-px flex-1 bg-border" />
-            or
-            <span className="h-px flex-1 bg-border" />
-          </div>
+          {/* Interactive login is Codex-only: `codex login` self-completes via a
+              local callback. Claude's `claude auth login` needs a paste-code
+              bridge (follow-up), so Claude shows the API-key path only. */}
+          {provider === "openai" && (
+            <>
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <span className="h-px flex-1 bg-border" />
+                or
+                <span className="h-px flex-1 bg-border" />
+              </div>
 
-          {login ? (
+              {login ? (
             <div className="space-y-1">
               <p>
                 Open this link to finish signing in, then keep this tab open — we'll continue
@@ -232,8 +237,10 @@ export function VerifyStep({ ctx, onComplete, onBack }: StepProps) {
               onClick={() => void startLogin()}
               disabled={authBusy || !provider}
             >
-              {authBusy ? "Working…" : `Sign in with ${providerLabel}`}
-            </Button>
+                  {authBusy ? "Working…" : `Sign in with ${providerLabel}`}
+                </Button>
+              )}
+            </>
           )}
 
           {authError && <p className="text-destructive">{authError}</p>}

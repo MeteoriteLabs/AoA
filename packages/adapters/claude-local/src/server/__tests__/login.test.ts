@@ -30,7 +30,7 @@ describe("runClaudeLoginStreaming (Plan 3 T3)", () => {
     const f = fakeSpawn();
     const res = runClaudeLoginStreaming({ runId: "l1", env: { CLAUDE_CONFIG_DIR: "/x/.claude" }, spawn: f.spawn });
     expect(f.calls[0].command).toBe("claude");
-    expect(f.calls[0].argv).toEqual(["login"]);
+    expect(f.calls[0].argv).toEqual(["auth", "login"]);
     expect(f.calls[0].opts.env.CLAUDE_CONFIG_DIR).toBe("/x/.claude");
     expect(res.authHome).toBe("/x/.claude");
     f.child.stderr.emit("data", "Sign in: https://claude.ai/oauth?code=z9\n");

@@ -17,8 +17,8 @@ test.beforeEach(async ({ request }) => {
   await freshOnboardingState(request);
 });
 
-/** Walk profile → org → environment → commander(Claude) → the Verify step. */
-async function walkToVerify(page: Page): Promise<void> {
+/** Walk profile → org → environment → commander(provider) → the Verify step. */
+async function walkToVerify(page: Page, commander: "Claude" | "Codex"): Promise<void> {
   await page.goto("/onboarding");
   await expect(page.getByRole("heading", { name: /your profile/i })).toBeVisible({ timeout: 15_000 });
   await page.getByRole("textbox").first().fill("Track C Founder");
@@ -32,7 +32,7 @@ async function walkToVerify(page: Page): Promise<void> {
   await page.getByRole("button", { name: /verify & continue/i }).click();
 
   await expect(page.getByRole("heading", { name: /choose your commander/i })).toBeVisible();
-  await page.getByText("Claude", { exact: true }).click();
+  await page.getByText(commander, { exact: true }).click();
   await page.getByRole("button", { name: /continue/i }).click();
 
   await expect(page.getByRole("heading", { name: /verify your tooling/i })).toBeVisible();
@@ -67,7 +67,7 @@ test("needs_auth → API-key paste re-verifies to completion", async ({ page }) 
     route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, secretId: "sec-e2e" }) }),
   );
 
-  await walkToVerify(page);
+  await walkToVerify(page, "Claude");
   await page.getByRole("button", { name: /^verify$/i }).click();
 
   await expect(page.getByText("sign in")).toBeVisible();
@@ -113,11 +113,11 @@ test("needs_auth → interactive login surfaces the URL and completes on poll", 
     }),
   );
 
-  await walkToVerify(page);
+  await walkToVerify(page, "Codex");
   await page.getByRole("button", { name: /^verify$/i }).click();
   await expect(page.getByText("sign in")).toBeVisible();
 
-  await page.getByRole("button", { name: /sign in with claude/i }).click();
+  await page.getByRole("button", { name: /sign in with codex/i }).click();
   await expect(page.getByText("https://claude.ai/oauth?code=E2E")).toBeVisible();
   await shot("02-login-url");
 

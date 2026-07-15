@@ -110,29 +110,40 @@ describe("VerifyStep (Stage C / order 5, blocking)", () => {
     });
   });
 
-  it("needs_auth → interactive login → surfaces the verification URL while pending", async () => {
+  it("Claude (anthropic) needs_auth shows API-key only — no interactive 'Sign in' button (gated)", async () => {
     post.mockRejectedValueOnce(needsAuthError());
-    startCommanderLogin.mockResolvedValueOnce({ challengeId: "ch-1", loginUrl: "https://claude.ai/oauth?c=1" });
-    getCommanderLoginStatus.mockResolvedValue({ status: "pending", loginUrl: "https://claude.ai/oauth?c=1" });
+    render(<VerifyStep ctx={ctx} onComplete={vi.fn()} onBack={() => {}} />);
+    fireEvent.click(screen.getByText("Verify"));
+    // Key field is present; the interactive sign-in button is not (Claude needs the paste-code bridge).
+    expect(await screen.findByPlaceholderText(/sk-ant/i)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /sign in with/i })).toBeNull();
+  });
+
+  it("needs_auth → Codex interactive login → surfaces the verification URL while pending", async () => {
+    getCommanderLoginStatus.mockResolvedValue({ status: "pending", loginUrl: "https://auth.openai.com/go?c=1" });
+    getConfig.mockResolvedValue({ provider: "openai" }); // interactive login is Codex-only
+    post.mockRejectedValueOnce(needsAuthError());
+    startCommanderLogin.mockResolvedValueOnce({ challengeId: "ch-1", loginUrl: "https://auth.openai.com/go?c=1" });
     render(<VerifyStep ctx={ctx} onComplete={vi.fn()} onBack={() => {}} />);
     fireEvent.click(screen.getByText("Verify"));
 
-    fireEvent.click(await screen.findByRole("button", { name: /sign in with claude/i }));
-    const link = (await screen.findByText("https://claude.ai/oauth?c=1")) as HTMLAnchorElement;
-    expect(link.getAttribute("href")).toBe("https://claude.ai/oauth?c=1");
-    expect(startCommanderLogin).toHaveBeenCalledWith({ companyId: "c1", provider: "anthropic" });
+    fireEvent.click(await screen.findByRole("button", { name: /sign in with codex/i }));
+    const link = (await screen.findByText("https://auth.openai.com/go?c=1")) as HTMLAnchorElement;
+    expect(link.getAttribute("href")).toBe("https://auth.openai.com/go?c=1");
+    expect(startCommanderLogin).toHaveBeenCalledWith({ companyId: "c1", provider: "openai" });
   });
 
-  it("needs_auth → interactive login → polls to completed and re-verifies", async () => {
+  it("needs_auth → Codex interactive login → polls to completed and re-verifies", async () => {
+    getConfig.mockResolvedValue({ provider: "openai" });
     post.mockRejectedValueOnce(needsAuthError());
-    startCommanderLogin.mockResolvedValueOnce({ challengeId: "ch-1", loginUrl: "https://claude.ai/oauth?c=1" });
-    getCommanderLoginStatus.mockResolvedValue({ status: "completed", loginUrl: "https://claude.ai/oauth?c=1" });
+    startCommanderLogin.mockResolvedValueOnce({ challengeId: "ch-1", loginUrl: "https://auth.openai.com/go?c=1" });
+    getCommanderLoginStatus.mockResolvedValue({ status: "completed", loginUrl: "https://auth.openai.com/go?c=1" });
     post.mockResolvedValueOnce({ outcome: "verified", result: { status: "pass" } });
     const onComplete = vi.fn();
     render(<VerifyStep ctx={ctx} onComplete={onComplete} onBack={() => {}} />);
     fireEvent.click(screen.getByText("Verify"));
 
-    fireEvent.click(await screen.findByRole("button", { name: /sign in with claude/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /sign in with codex/i }));
     await waitFor(() => expect(onComplete).toHaveBeenCalled()); // immediate poll → completed → re-verify
     expect(getCommanderLoginStatus).toHaveBeenCalledWith({ companyId: "c1", challengeId: "ch-1" });
     expect(advanceOnboarding).toHaveBeenCalledWith({
