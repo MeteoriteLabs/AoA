@@ -2087,20 +2087,24 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
               disabled={streaming}
             />
 
-            {/* @mention (disabled, coming soon) */}
+            {/* Structured @mention picker */}
             <TooltipProvider>
               <Tooltip>
                 <TooltipTrigger asChild>
                   <button
                     type="button"
-                    disabled
-                    aria-disabled="true"
-                    className="size-8 rounded-full flex items-center justify-center shrink-0 text-muted-foreground opacity-40 cursor-not-allowed"
+                    disabled={streaming}
+                    aria-label="Mention a teammate"
+                    className="size-8 rounded-full flex items-center justify-center shrink-0 text-muted-foreground hover:text-foreground hover:bg-muted/60 disabled:opacity-40"
+                    onClick={() => {
+                      inputRef.current?.focus();
+                      inputRef.current?.insertText("@");
+                    }}
                   >
                     <AtSign className="size-4" aria-hidden="true" />
                   </button>
                 </TooltipTrigger>
-                <TooltipContent side="top">Coming soon</TooltipContent>
+                <TooltipContent side="top">Mention a teammate</TooltipContent>
               </Tooltip>
             </TooltipProvider>
 
