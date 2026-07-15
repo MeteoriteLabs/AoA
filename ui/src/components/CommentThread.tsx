@@ -15,6 +15,12 @@ import { SystemNotice } from "./SystemNotice";
 import { isSystemNoticeComment } from "../lib/system-notice-comment";
 import { parseTaskAssigneeValue, taskAssigneePayload } from "../lib/task-assignee";
 import { formatDateTime } from "../lib/utils";
+import {
+  resolveTaskCommentAction,
+} from "../lib/task-composer-actions";
+
+export { resolveTaskCommentAction } from "../lib/task-composer-actions";
+export type { TaskCommentAction, TaskCommentActionInput } from "../lib/task-composer-actions";
 
 interface CommentWithRunMeta extends IssueComment {
   runId?: string | null;
@@ -32,29 +38,6 @@ interface LinkedRunItem extends Omit<IssueRunLedgerItem, "finishedAt" | "invocat
 interface CommentReassignment {
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
-}
-
-/** The explicit task-composer effects sent with a comment. */
-export type TaskCommentAction = "comment" | "interrupt" | "reopen" | "reassign";
-
-export interface TaskCommentActionInput {
-  isClosed: boolean;
-  reopenRequested: boolean;
-  hasActiveRun: boolean;
-  interruptRequested: boolean;
-  hasReassignment: boolean;
-}
-
-/**
- * Keep the task composer policy visible and testable:
- * ordinary comments never interrupt a run; reopen and reassignment are
- * explicit mutations; interruption is only valid while a run is active.
- */
-export function resolveTaskCommentAction(input: TaskCommentActionInput): TaskCommentAction {
-  if (input.hasReassignment) return "reassign";
-  if (input.isClosed && input.reopenRequested) return "reopen";
-  if (input.hasActiveRun && input.interruptRequested) return "interrupt";
-  return "comment";
 }
 
 interface CommentThreadProps {

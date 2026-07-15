@@ -31,6 +31,7 @@ import { getContextLimit } from "./adapter-utils";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../../api/heartbeats";
 import { useInlineWorkQuestions, WorkQuestionInlineError } from "../work-questions/WorkQuestionInlineList";
 import { WorkQuestionPanel } from "../work-questions/WorkQuestionPanel";
+import { resolveTaskCommentAction } from "../../lib/task-composer-actions";
 
 export type TimelineItem =
   | { kind: "run"; ts: string; data: RunForIssue }
@@ -410,14 +411,20 @@ export function WorkspaceTimeline({
     if (!canSend || sendInFlightRef.current || sendMessage.isPending) return;
     sendInFlightRef.current = true;
     setComposerError(null);
+    const isClosed = issue?.status === "done" || issue?.status === "cancelled";
+    const action = resolveTaskCommentAction({
+      isClosed,
+      reopenRequested,
+      hasActiveRun: hasLiveRuns,
+      interruptRequested,
+      hasReassignment: false,
+    });
     sendMessage.mutate({
       text: chatInput.trim(),
       files: [...selectedFiles],
       revision: composerRevisionRef.current,
-      reopen: issue?.status === "done" || issue?.status === "cancelled" ? (reopenRequested ? true : undefined) : undefined,
-      interrupt: hasLiveRuns && !(issue?.status === "done" || issue?.status === "cancelled") && interruptRequested
-        ? true
-        : undefined,
+      reopen: action === "reopen" ? true : undefined,
+      interrupt: action === "interrupt" ? true : undefined,
     });
   };
 
