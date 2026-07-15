@@ -99,15 +99,47 @@ describe("commander-login service (Plan 3 T4)", () => {
     ).rejects.toMatchObject({ status: 409 });
   });
 
-  it("(b') same company re-start is idempotent (returns the existing challenge)", async () => {
-    const f1 = fakeRun();
-    const { svc } = makeService({ runLogin: () => f1.run });
+  it("(b') same company re-start cancels the stale child (frees :1455) and starts fresh", async () => {
+    const f1 = fakeRun(555, 555);
+    const f2 = fakeRun(666, 666);
+    let call = 0;
+    const store = memStore();
+    const terminate = vi.fn();
+    let seq = 0;
+    const svc = createCommanderLoginService({
+      store,
+      resolveAuthHome: () => "/home/.codex",
+      runLogin: () => (call++ === 0 ? f1.run : f2.run),
+      credentialPresent: async () => true,
+      terminate,
+      newId: () => `ch-${++seq}`,
+      env: () => ({}) as never,
+    });
     const p1 = svc.startChallenge({ companyId: "c1", provider: "openai", startedByUserId: "u1" });
     f1.resolveUrl("https://chatgpt.com/device?code=A");
     const first = await p1;
-    const second = await svc.startChallenge({ companyId: "c1", provider: "openai", startedByUserId: "u1" });
-    expect(second.challengeId).toBe(first.challengeId);
-    expect(second.loginUrl).toBe("https://chatgpt.com/device?code=A");
+
+    const p2 = svc.startChallenge({ companyId: "c1", provider: "openai", startedByUserId: "u1" });
+    f2.resolveUrl("https://chatgpt.com/device?code=B");
+    const second = await p2;
+
+    expect(terminate).toHaveBeenCalledWith(555, 555); // the stale child was killed
+    expect(second.challengeId).not.toBe(first.challengeId); // a fresh challenge
+    expect(second.loginUrl).toBe("https://chatgpt.com/device?code=B");
+    // Only the new row survives — no orphaned pending row holding the lock.
+    expect([...store.rows.values()].filter((r) => r.status === "pending")).toHaveLength(1);
+  });
+
+  it("(b'') cross-company start is 409 and does NOT kill the other company's child", async () => {
+    const f1 = fakeRun(777, 777);
+    const { svc, terminate } = makeService({ runLogin: () => f1.run });
+    const p1 = svc.startChallenge({ companyId: "c1", provider: "openai", startedByUserId: "u1" });
+    f1.resolveUrl("https://chatgpt.com/device?code=A");
+    await p1;
+    await expect(
+      svc.startChallenge({ companyId: "c2", provider: "openai", startedByUserId: "u2" }),
+    ).rejects.toMatchObject({ status: 409 });
+    expect(terminate).not.toHaveBeenCalled();
   });
 
   it("(c) getStatus → completed on exit code 0 with the credential file present", async () => {

@@ -98,8 +98,11 @@ export function createCommanderLoginService(deps: CommanderLoginServiceDeps): Co
     const env = deps.env();
     const authHome = deps.resolveAuthHome(args.provider, env);
 
-    // Cross-company exclusion: one login per (provider, authHome). A pending
-    // challenge owned by another company blocks; the same company re-attaches.
+    // Single-flight per (provider, authHome). A pending challenge owned by
+    // ANOTHER company blocks (409). For the SAME company, a re-attempt must not
+    // spawn a second child — two `codex login` children fight over the local
+    // callback port (:1455) and a stale PKCE URL then silently fails. So we
+    // cancel the prior child (free the port) and start ONE clean login.
     const existing = await deps.store.findPending(args.provider, authHome);
     if (existing) {
       if (existing.companyId !== args.companyId) {
@@ -107,7 +110,8 @@ export function createCommanderLoginService(deps: CommanderLoginServiceDeps): Co
           `another company is already signing in with ${args.provider} at ${authHome}`,
         );
       }
-      return { challengeId: existing.id, loginUrl: existing.loginUrl ?? "", completion: Promise.resolve() };
+      if (existing.pid != null) deps.terminate(existing.pid, existing.pgid);
+      await deps.store.remove(existing.id);
     }
 
     const id = deps.newId();

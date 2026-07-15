@@ -15,9 +15,45 @@
  * Pure and synchronous — the spawn/lifecycle wiring lives in `streaming-login`.
  */
 
-// A URL is only considered complete when followed by a terminator, so a URL cut
+// URLs are only considered complete when followed by a terminator, so a URL cut
 // off at a chunk boundary won't match until the rest (and its terminator) arrive.
-const URL_WITH_TERMINATOR = /(https?:\/\/[^\s"'<>`]+)(?=[\s"'<>`])/;
+// Global so we can skip decoy URLs (see below) and take the first *real* one.
+const URL_WITH_TERMINATOR = /(https?:\/\/[^\s"'<>`]+)(?=[\s"'<>`])/g;
+
+// Trailing sentence punctuation that a CLI may print right after the URL
+// ("…authenticate: https://…/x." ) but that isn't part of the URL.
+const TRAILING_PUNCT = /[.,);:!?'"\]]+$/;
+
+/**
+ * Loopback callback servers are NOT the verification URL. `codex login` prints
+ * its local callback (`http://localhost:1455.`) BEFORE the real
+ * `https://auth.openai.com/…` page, so "first URL wins" would grab the wrong
+ * one — skip loopback hosts and take the first remote URL instead.
+ */
+function isLoopbackHost(host: string): boolean {
+  const h = host.toLowerCase();
+  return (
+    h === "localhost" ||
+    h === "0.0.0.0" ||
+    h === "[::1]" ||
+    h === "::1" ||
+    h.startsWith("127.")
+  );
+}
+
+function firstVerificationUrl(text: string): string | null {
+  for (const match of text.matchAll(URL_WITH_TERMINATOR)) {
+    const url = match[1].replace(TRAILING_PUNCT, "");
+    let host: string;
+    try {
+      host = new URL(url).hostname; // strips port; "[::1]" for IPv6 loopback
+    } catch {
+      continue;
+    }
+    if (!isLoopbackHost(host)) return url;
+  }
+  return null;
+}
 
 // Guard against unbounded growth when the process emits lots of URL-free output.
 // A verification URL is short and appears early; keep only a tail large enough
@@ -40,9 +76,9 @@ export function createLoginUrlDetector(): LoginUrlDetector {
     push(chunk: string): string | null {
       if (found !== null) return found;
       buffer += chunk;
-      const match = URL_WITH_TERMINATOR.exec(buffer);
-      if (match) {
-        found = match[1];
+      const url = firstVerificationUrl(buffer);
+      if (url !== null) {
+        found = url;
         buffer = "";
         return found;
       }

@@ -42,4 +42,26 @@ describe("createLoginUrlDetector (Plan 3 T3)", () => {
     expect(d.push("Sign in at https://claude.ai/oauth?first=1\n")).toBe("https://claude.ai/oauth?first=1");
     expect(d.push("callback hit https://example.com/other?x=2\n")).toBe("https://claude.ai/oauth?first=1");
   });
+
+  it("skips the loopback callback URL and returns the real auth URL (codex flow)", () => {
+    const d = createLoginUrlDetector();
+    // codex prints its local callback server FIRST, then the real auth URL.
+    const first = d.push("Starting local login server on http://localhost:1455.\n");
+    expect(first).toBeNull(); // loopback is not a verification URL
+    const real = d.push(
+      "If your browser did not open, navigate to this URL to authenticate:\n\nhttps://auth.openai.com/oauth/authorize?client_id=abc&state=xyz\n",
+    );
+    expect(real).toBe("https://auth.openai.com/oauth/authorize?client_id=abc&state=xyz");
+  });
+
+  it("ignores 127.0.0.1 / [::1] loopback hosts too", () => {
+    const d = createLoginUrlDetector();
+    expect(d.push("server on http://127.0.0.1:8080/cb and http://[::1]:9/x\n")).toBeNull();
+    expect(d.push("auth: https://auth.openai.com/go\n")).toBe("https://auth.openai.com/go");
+  });
+
+  it("trims trailing sentence punctuation from the matched URL", () => {
+    const d = createLoginUrlDetector();
+    expect(d.push("Go to https://claude.ai/oauth?a=b.\n")).toBe("https://claude.ai/oauth?a=b");
+  });
 });
