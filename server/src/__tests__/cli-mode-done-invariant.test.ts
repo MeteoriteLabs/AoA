@@ -112,6 +112,7 @@ async function drainChat(
       userRole: "founder",
       content,
       enabledCapabilities: [],
+      conversationId: "conversation-done-invariant",
     } as any,
     { cliTool, executionMode: "cli", ...configOverride } as any,
   )) {

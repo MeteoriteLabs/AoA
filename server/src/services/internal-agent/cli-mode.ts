@@ -593,7 +593,19 @@ export function cliModeService(db: Db) {
         return;
       }
 
-      const sessionKey = `${params.companyId}:${params.userId}`;
+      // Provider sessions must follow the persisted Commander conversation.
+      // Keying only by company + user resumes the previous provider thread
+      // after the user switches conversations, leaking context across chats.
+      const conversationId =
+        params.conversationId ?? normalizeCliContextScope(params.contextScope)?.conversationId;
+      if (!conversationId) {
+        yield {
+          type: "error",
+          message: "Commander conversation context is required for CLI execution.",
+        };
+        return;
+      }
+      const sessionKey = `${params.companyId}:${params.userId}:${conversationId}`;
       let session = sessionStore.get(sessionKey);
 
       try {

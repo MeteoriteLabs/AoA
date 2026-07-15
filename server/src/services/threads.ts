@@ -338,6 +338,88 @@ export interface Actor {
   userId: string;
   role: "founder" | "team_lead" | "team_member";
   isHuman: boolean;
+  principalType?: "user" | "agent";
+}
+
+type ThreadAccessRow = {
+  id: string;
+  scopeType: string | null;
+  scopeId: string | null;
+  ownerUserId: string | null;
+  visibility: string;
+};
+
+/** Canonical visibility assertion shared by thread reads and posting. */
+async function assertCanAccessThread(
+  db: Db,
+  companyId: string,
+  thread: ThreadAccessRow,
+  actor: Actor,
+): Promise<void> {
+  if (actor.role === "founder") return;
+
+  const principalType = actor.principalType ?? "user";
+  const participantRows = await db
+    .select({ id: threadParticipants.id })
+    .from(threadParticipants)
+    .where(
+      and(
+        eq(threadParticipants.threadId, thread.id),
+        eq(threadParticipants.principalType, principalType),
+        eq(threadParticipants.principalId, actor.userId),
+      ),
+    );
+  const isParticipant = participantRows.length > 0;
+
+  let hasScopeAccess = thread.scopeType == null;
+  if (!hasScopeAccess && thread.scopeId && principalType === "user") {
+    const roleRows = await db
+      .select({ id: userRoles.id })
+      .from(userRoles)
+      .where(
+        and(
+          eq(userRoles.companyId, companyId),
+          eq(userRoles.userId, actor.userId),
+          eq(userRoles.projectId, thread.scopeId),
+        ),
+      );
+    hasScopeAccess = roleRows.length > 0;
+  }
+
+  const ok = canViewThread(
+    {
+      ownerUserId: thread.ownerUserId,
+      visibility: thread.visibility as ThreadVisibility,
+    },
+    { role: actor.role, hasScopeAccess, isParticipant },
+  );
+  if (!ok) throw notFound("Thread not found");
+}
+
+/**
+ * Assert that an actor may post to a company-scoped thread. Hidden and
+ * cross-company threads deliberately return 404 to avoid leaking existence.
+ */
+export async function assertCanPostToThread(
+  db: Db,
+  companyId: string,
+  threadId: string,
+  actor: Actor,
+): Promise<void> {
+  const thread = await db
+    .select({
+      id: discussions.id,
+      scopeType: discussions.scopeType,
+      scopeId: discussions.scopeId,
+      ownerUserId: discussions.ownerUserId,
+      visibility: discussions.visibility,
+    })
+    .from(discussions)
+    .where(and(eq(discussions.id, threadId), eq(discussions.companyId, companyId)))
+    .then((rows) => rows[0] ?? null);
+
+  if (!thread) throw notFound("Thread not found");
+  await assertCanAccessThread(db, companyId, thread, actor);
 }
 
 // ── Service factory ───────────────────────────────────────────────────────────
@@ -351,53 +433,10 @@ export function threadService(db: Db) {
    */
   async function assertCanView(
     companyId: string,
-    thread: {
-      id: string;
-      scopeType: string | null;
-      scopeId: string | null;
-      ownerUserId: string | null;
-      visibility: string;
-    },
+    thread: ThreadAccessRow,
     actor: Actor,
   ): Promise<void> {
-    if (actor.role === "founder") return;
-
-    const participantRows = await db
-      .select({ id: threadParticipants.id })
-      .from(threadParticipants)
-      .where(
-        and(
-          eq(threadParticipants.threadId, thread.id),
-          eq(threadParticipants.principalType, "user"),
-          eq(threadParticipants.principalId, actor.userId),
-        ),
-      );
-    const isParticipant = participantRows.length > 0;
-
-    // Scope access: no scope = globally accessible; scoped = must have role in that project
-    let hasScopeAccess = thread.scopeType == null;
-    if (!hasScopeAccess && thread.scopeId) {
-      const roleRows = await db
-        .select({ id: userRoles.id })
-        .from(userRoles)
-        .where(
-          and(
-            eq(userRoles.companyId, companyId),
-            eq(userRoles.userId, actor.userId),
-            eq(userRoles.projectId, thread.scopeId),
-          ),
-        );
-      hasScopeAccess = roleRows.length > 0;
-    }
-
-    const ok = canViewThread(
-      {
-        ownerUserId: thread.ownerUserId,
-        visibility: thread.visibility as ThreadVisibility,
-      },
-      { role: actor.role, hasScopeAccess, isParticipant },
-    );
-    if (!ok) throw notFound("Thread not found");
+    await assertCanAccessThread(db, companyId, thread, actor);
   }
 
   /**

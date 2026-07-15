@@ -687,6 +687,12 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
                   sourceActionId: action.id,
                 },
                 `agent:${action.agentId}`,
+                {
+                  userId: action.agentId,
+                  role: "team_member",
+                  isHuman: false,
+                  principalType: "agent",
+                },
               );
             } catch (err) {
               if (!isUniqueViolation(err, "discussion_entries_source_action_uq")) throw err;

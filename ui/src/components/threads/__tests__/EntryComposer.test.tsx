@@ -82,6 +82,28 @@ describe("EntryComposer — autocomplete", () => {
 });
 
 describe("EntryComposer — submit", () => {
+  it("sends with Enter and keeps Shift+Enter available for multiline text", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+    renderWithProviders(
+      <EntryComposer
+        threadId="thread-1"
+        companyId="test-co"
+        agents={agents}
+        users={users}
+        onSubmit={onSubmit}
+      />,
+    );
+    const ta = screen.getByTestId("entry-composer-textarea");
+    await user.type(ta, "first line");
+    await user.keyboard("{Shift>}{Enter}{/Shift}");
+    expect(onSubmit).not.toHaveBeenCalled();
+    await user.type(ta, "second line");
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0][0].text).toBe("first line\nsecond line");
+  });
+
   it("submits the entry with text + mentions + attachments + parentEntryId on Ctrl+Enter", async () => {
     const user = userEvent.setup();
     const upload = vi.fn().mockResolvedValue({
@@ -140,6 +162,56 @@ describe("EntryComposer — submit", () => {
 });
 
 describe("EntryComposer — attachments", () => {
+  it("allows an attachment-only message", async () => {
+    const user = userEvent.setup();
+    const upload = vi.fn().mockResolvedValue({
+      id: "asset-1",
+      name: "test.png",
+      mimeType: "image/png",
+    });
+    const onSubmit = vi.fn();
+    renderWithProviders(
+      <EntryComposer
+        threadId="thread-1"
+        companyId="test-co"
+        agents={agents}
+        users={users}
+        onUpload={upload}
+        onSubmit={onSubmit}
+      />,
+    );
+    const input = screen.getByTestId("entry-composer-file-input") as HTMLInputElement;
+    fireEvent.change(input, {
+      target: { files: [new File(["x"], "test.png", { type: "image/png" })] },
+    });
+    await screen.findByTestId("entry-composer-attachment-test.png");
+    (screen.getByTestId("entry-composer-textarea") as HTMLTextAreaElement).focus();
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(onSubmit.mock.calls[0][0].text).toBe("");
+    expect(onSubmit.mock.calls[0][0].attachments).toHaveLength(1);
+  });
+
+  it("rejects unsupported and oversized files before upload", async () => {
+    const upload = vi.fn();
+    renderWithProviders(
+      <EntryComposer
+        threadId="thread-1"
+        companyId="test-co"
+        agents={agents}
+        users={users}
+        onUpload={upload}
+        onSubmit={vi.fn()}
+      />,
+    );
+    const input = screen.getByTestId("entry-composer-file-input") as HTMLInputElement;
+    fireEvent.change(input, {
+      target: { files: [new File(["text"], "notes.exe", { type: "application/x-msdownload" })] },
+    });
+    expect(upload).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert")).toHaveTextContent("Unsupported attachment type");
+  });
+
   it("does not render the tracked file-artifact upload by default", () => {
     renderWithProviders(
       <EntryComposer

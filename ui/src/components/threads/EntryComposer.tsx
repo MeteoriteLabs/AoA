@@ -22,6 +22,11 @@ import {
 import { Paperclip, SendHorizonal, X, FileText, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
+  COMPOSER_ATTACHMENT_CONTENT_TYPES,
+  COMPOSER_MAX_ATTACHMENTS,
+  COMPOSER_MAX_ATTACHMENT_BYTES,
+} from "@armyofagents/shared";
+import {
   EntryAutocompleteList,
   type EntrySuggestion,
 } from "./EntryAutocompleteList";
@@ -158,6 +163,7 @@ export function EntryComposer({
   const [autocompleteIndex, setAutocompleteIndex] = useState(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [uploadingFiles, setUploadingFiles] = useState<string[]>([]);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -271,6 +277,11 @@ export function EntryComposer({
     if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
       e.preventDefault();
       void handleSubmit();
+      return;
+    }
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      void handleSubmit();
     }
   }
 
@@ -279,13 +290,28 @@ export function EntryComposer({
     // Reset the input so picking the same file twice still triggers onChange.
     if (fileInputRef.current) fileInputRef.current.value = "";
     if (files.length === 0 || !onUpload) return;
-    for (const file of files) {
+    const available = COMPOSER_MAX_ATTACHMENTS - attachments.length - uploadingFiles.length;
+    if (files.length > available) {
+      setAttachmentError(`Attach up to ${COMPOSER_MAX_ATTACHMENTS} files per message.`);
+    }
+    const accepted = files.slice(0, Math.max(0, available)).filter((file) => {
+      if (!COMPOSER_ATTACHMENT_CONTENT_TYPES.includes(file.type as (typeof COMPOSER_ATTACHMENT_CONTENT_TYPES)[number])) {
+        setAttachmentError(`Unsupported attachment type: ${file.type || "unknown"}.`);
+        return false;
+      }
+      if (file.size > COMPOSER_MAX_ATTACHMENT_BYTES) {
+        setAttachmentError(`${file.name} exceeds the 10 MB attachment limit.`);
+        return false;
+      }
+      return true;
+    });
+    for (const file of accepted) {
       setUploadingFiles((prev) => [...prev, file.name]);
       try {
         const asset = await onUpload(file);
         setAttachments((prev) => [...prev, asset]);
       } catch {
-        // Errors surfaced via parent toast; we silently drop the file here.
+        setAttachmentError(`Could not upload ${file.name}. Retry from the file picker.`);
       } finally {
         setUploadingFiles((prev) => prev.filter((n) => n !== file.name));
       }
@@ -298,7 +324,8 @@ export function EntryComposer({
 
   async function handleSubmit() {
     const trimmed = text.trim();
-    if (!trimmed || isSubmitting || disabled) return;
+    if ((!trimmed && attachments.length === 0) || isSubmitting || disabled || uploadingFiles.length > 0) return;
+    setAttachmentError(null);
     setIsSubmitting(true);
     try {
       await onSubmit({
@@ -354,6 +381,12 @@ export function EntryComposer({
               Cancel
             </button>
           )}
+        </div>
+      )}
+
+      {attachmentError && (
+        <div className="mb-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-1.5 text-xs text-destructive" role="alert">
+          {attachmentError}
         </div>
       )}
 
@@ -485,7 +518,7 @@ export function EntryComposer({
         <button
           type="button"
           onClick={() => void handleSubmit()}
-          disabled={!text.trim() || isSubmitting || disabled}
+          disabled={(!text.trim() && attachments.length === 0) || isSubmitting || disabled || uploadingFiles.length > 0}
           className="shrink-0 w-9 h-9 rounded-full flex items-center justify-center transition-opacity disabled:opacity-40"
           style={{ background: "#b82d1c" }}
           aria-label={isReply ? "Send reply" : "Send"}

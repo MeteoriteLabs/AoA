@@ -31,7 +31,7 @@ import { threadOrchestrationService } from "./thread-orchestration.js";
 // module graph via live-events.ts → threads.ts, so this static import adds no
 // new load-time cost or cycle (discussions → threads is one-directional;
 // threads.ts does not import discussions.ts).
-import { parseMentions } from "./threads.js";
+import { assertCanPostToThread, parseMentions, type Actor } from "./threads.js";
 import { deriveThreadStage, loadLatestScopeForThreadStages } from "./thread-scope-versions.js";
 // NOTE: workspace-ttl-sweeper is imported dynamically in `update()` to keep
 // the top-level import graph free of execution-workspaces → git → child_process.
@@ -936,6 +936,7 @@ export function discussionService(db: Db) {
         attachments?: Array<{ assetId?: string | null; artifactId?: string | null }>;
       },
       actorId: string,
+      authorizationActor?: Actor,
     ) => {
       if (data.authorAgentId && data.inputType !== "agent") {
         throw badRequest(
@@ -943,6 +944,12 @@ export function discussionService(db: Db) {
         );
       }
       await validateEntryAttachments(db, companyId, data.attachments);
+
+      // HTTP and agent entry points pass their resolved actor. Trusted internal
+      // maintenance callers may omit it, but no externally reachable route may.
+      if (authorizationActor) {
+        await assertCanPostToThread(db, companyId, discussionId, authorizationActor);
+      }
 
       // Verify discussion exists and belongs to company
       const discussion = await db

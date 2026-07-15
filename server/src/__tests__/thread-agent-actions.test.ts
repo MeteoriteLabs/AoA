@@ -426,6 +426,12 @@ describe("threadAgentActionService", () => {
         authorAgentId: "agent-1",
       }),
       "agent:agent-1",
+      {
+        userId: "agent-1",
+        role: "team_member",
+        isHuman: false,
+        principalType: "agent",
+      },
     );
     expect(db.__updateSets).toContainEqual(expect.objectContaining({
       status: "committed",
@@ -460,6 +466,12 @@ describe("threadAgentActionService", () => {
       "thread-1",
       expect.objectContaining({ sourceInfo: { systemNotice: true } }),
       "agent:agent-1",
+      {
+        userId: "agent-1",
+        role: "team_member",
+        isHuman: false,
+        principalType: "agent",
+      },
     );
   });
 

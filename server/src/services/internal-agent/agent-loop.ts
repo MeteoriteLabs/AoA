@@ -281,6 +281,10 @@ export function agentLoopService(db: Db) {
         // For codex: content (full assembled) is used via stdin — unchanged.
         const cliParams = {
           ...params,
+          // The caller may omit conversationId when starting a new chat. The
+          // runtime provider session still needs the resolved persisted ID so
+          // it cannot be shared with another Commander conversation.
+          conversationId: conversation.id,
           content: assembledContent,
           contextScope: cliContextScope,
           ...(systemContext !== undefined

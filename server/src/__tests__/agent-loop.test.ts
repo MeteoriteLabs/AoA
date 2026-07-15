@@ -231,7 +231,10 @@ describe("agentLoopService.chat — assistant persistence (MX-chatpersist)", () 
     await drain(svc);
 
     expect(cliChat).toHaveBeenCalledWith(
-      expect.objectContaining({ content: expect.any(String) }),
+      expect.objectContaining({
+        content: expect.any(String),
+        conversationId: "conv-1",
+      }),
       expect.objectContaining({ cliTool: "claude_cli" }),
     );
   });

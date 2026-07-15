@@ -229,7 +229,12 @@ async function defaultAddEntry(
   actorId: string,
 ): Promise<unknown> {
   const { discussionService } = await import("../../discussions.js");
-  return discussionService(db).addEntry(companyId, threadId, data, actorId);
+  return discussionService(db).addEntry(companyId, threadId, data, actorId, {
+    userId: data.authorAgentId ?? actorId,
+    role: "team_member",
+    isHuman: false,
+    principalType: "agent",
+  });
 }
 
 async function defaultUpdateSummary(

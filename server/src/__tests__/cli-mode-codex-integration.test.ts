@@ -190,6 +190,7 @@ async function drainCodexChat(
       userRole: "founder" as const,
       content,
       enabledCapabilities: [],
+      conversationId: "conversation-integ",
     } as any,
     {
       cliTool: "codex",
@@ -308,7 +309,7 @@ describe("cli-mode-codex-integration — real fake-codex spawn (no child_process
     expect(recorded.configTomlExists).toBe(true);
 
     // session ID stored on the session
-    const stored = service.getSessionStore().get("cmp-success:usr-integ");
+    const stored = service.getSessionStore().get("cmp-success:usr-integ:conversation-integ");
     expect(stored).toBeDefined();
     expect(stored.codexSessionId).toBe("integ-sess-001");
   }, 30_000);
@@ -361,6 +362,7 @@ describe("cli-mode-codex-integration — real fake-codex spawn (no child_process
       userId: "usr-integ",
       userRole: "founder",
       enabledCapabilities: [],
+      conversationId: "conversation-resume",
     };
     const chatConfig: any = { cliTool: "codex", executionMode: "cli", model: "claude-sonnet-4-6" };
 
@@ -370,7 +372,7 @@ describe("cli-mode-codex-integration — real fake-codex spawn (no child_process
       t1.push(c);
     }
     expect(t1.some((c) => c.type === "done")).toBe(true);
-    expect(service.getSessionStore().get("cmp-resume:usr-integ")?.codexSessionId).toBe("integ-resume-sess-abc");
+    expect(service.getSessionStore().get("cmp-resume:usr-integ:conversation-resume")?.codexSessionId).toBe("integ-resume-sess-abc");
 
     // Turn 2: update control file
     writeControl(ctrl, {

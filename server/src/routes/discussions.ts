@@ -698,15 +698,16 @@ export function discussionRoutes(db: Db) {
       const companyId = req.params.companyId as string;
       const discussionId = req.params.discussionId as string;
       assertCompanyAccess(req, companyId);
-      await assertRole(db, req, companyId, "founder", "team_lead");
 
       const actor = getActorInfo(req);
+      const threadActor = await buildActor(req, companyId);
       try {
         const entry = await svc.addEntry(
           companyId,
           discussionId,
           req.body,
           actor.actorId,
+          threadActor,
         );
 
         // Process @mentions in the entry text (fire-and-forget; errors must not
@@ -1067,7 +1068,12 @@ export function discussionRoutes(db: Db) {
       return { userId: info.actorId, role: "founder", isHuman };
     }
     if (req.actor.type === "agent") {
-      return { userId: info.actorId, role: "team_member", isHuman: false };
+      return {
+        userId: info.actorId,
+        role: "team_member",
+        isHuman: false,
+        principalType: "agent",
+      };
     }
 
     // Non-board bearer tokens (mcp) are NEVER founder/team_lead for thread
@@ -1077,7 +1083,12 @@ export function discussionRoutes(db: Db) {
     // Confine them to team_member (participant/owner-scoped). Interactive
     // founder access is via board sessions only. (Mirrors conversation-authz.ts.)
     if (req.actor.type !== "board") {
-      return { userId: info.actorId, role: "team_member", isHuman: false };
+      return {
+        userId: info.actorId,
+        role: "team_member",
+        isHuman: false,
+        principalType: "user",
+      };
     }
 
     const perms = permissionService(db);

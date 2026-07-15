@@ -95,6 +95,12 @@ export function createPostEntryTool(): AgentTool {
           sourceInfo: (sourceInfo as Record<string, unknown>) ?? null,
         },
         ctx.agentId ?? "aoa-agent",
+        {
+          userId: ctx.agentId ?? "aoa-agent",
+          role: "team_member",
+          isHuman: false,
+          principalType: "agent",
+        },
       );
 
       const mentions = parseMentions(content as string);

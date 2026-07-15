@@ -3,14 +3,19 @@ import multer from "multer";
 import type { Db } from "@armyofagents/db";
 import { companies } from "@armyofagents/db";
 import { eq } from "drizzle-orm";
-import { createAssetImageMetadataSchema, createAssetFileMetadataSchema } from "@armyofagents/shared";
+import {
+  COMPOSER_ATTACHMENT_CONTENT_TYPES,
+  COMPOSER_MAX_ATTACHMENT_BYTES,
+  createAssetImageMetadataSchema,
+  createAssetFileMetadataSchema,
+} from "@armyofagents/shared";
 import type { StorageService } from "../storage/types.js";
 import { assetService, logActivity } from "../services/index.js";
 import { getSafeServingHeaders } from "../services/asset-serving-safety.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 
 const MAX_ASSET_IMAGE_BYTES = Number(process.env.AOA_ATTACHMENT_MAX_BYTES) || 10 * 1024 * 1024;
-const MAX_ASSET_FILE_BYTES = Number(process.env.AOA_FILE_MAX_BYTES) || 50 * 1024 * 1024;
+const MAX_ASSET_FILE_BYTES = Number(process.env.AOA_ATTACHMENT_MAX_BYTES) || COMPOSER_MAX_ATTACHMENT_BYTES;
 const ALLOWED_IMAGE_CONTENT_TYPES = new Set([
   "image/png",
   "image/jpeg",
@@ -18,6 +23,7 @@ const ALLOWED_IMAGE_CONTENT_TYPES = new Set([
   "image/webp",
   "image/gif",
 ]);
+const ALLOWED_FILE_CONTENT_TYPES = new Set<string>(COMPOSER_ATTACHMENT_CONTENT_TYPES);
 
 export function assetRoutes(db: Db, storage: StorageService) {
   const router = Router();
@@ -181,6 +187,10 @@ export function assetRoutes(db: Db, storage: StorageService) {
 
     const namespaceSuffix = parsedMeta.data.namespace ?? "files";
     const contentType = (file.mimetype || "application/octet-stream").toLowerCase();
+    if (!ALLOWED_FILE_CONTENT_TYPES.has(contentType)) {
+      res.status(415).json({ error: `Unsupported attachment type: ${contentType}` });
+      return;
+    }
     const actor = getActorInfo(req);
     const stored = await storage.putFile({
       companyId,

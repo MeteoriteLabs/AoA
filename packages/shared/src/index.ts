@@ -330,6 +330,9 @@ export {
   type PluginBridgeErrorCode,
   DEPARTMENT_FUNCTION_TYPES,
   type DepartmentFunctionType,
+  COMPOSER_MAX_ATTACHMENTS,
+  COMPOSER_MAX_ATTACHMENT_BYTES,
+  COMPOSER_ATTACHMENT_CONTENT_TYPES,
 } from "./constants.js";
 
 export {
