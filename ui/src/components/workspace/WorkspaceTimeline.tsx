@@ -354,9 +354,7 @@ export function WorkspaceTimeline({
     fileInputRef.current?.click();
   };
 
-  const handleFilesSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const incoming = Array.from(e.target.files ?? []);
-    e.target.value = "";
+  const addComposerFiles = (incoming: File[]) => {
     if (incoming.length === 0) return;
 
     const next = [...selectedFiles];
@@ -384,6 +382,12 @@ export function WorkspaceTimeline({
     setComposerError(errors.length > 0 ? errors.join(" ") : null);
   };
 
+  const handleFilesSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const incoming = Array.from(e.target.files ?? []);
+    e.target.value = "";
+    addComposerFiles(incoming);
+  };
+
   const removeSelectedFile = (index: number) => {
     composerRevisionRef.current += 1;
     setSelectedFiles((files) => files.filter((_, i) => i !== index));
@@ -405,6 +409,20 @@ export function WorkspaceTimeline({
     if (e.key !== "Enter" || e.shiftKey || e.nativeEvent.isComposing) return;
     e.preventDefault();
     handleSend();
+  };
+
+  const handleComposerPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = Array.from(e.clipboardData?.files ?? []);
+    if (files.length === 0) return;
+    e.preventDefault();
+    addComposerFiles(files);
+  };
+
+  const handleComposerDrop = (e: React.DragEvent<HTMLTextAreaElement>) => {
+    const files = Array.from(e.dataTransfer?.files ?? []);
+    if (files.length === 0) return;
+    e.preventDefault();
+    addComposerFiles(files);
   };
 
   const chatbarRunState =
@@ -604,6 +622,9 @@ export function WorkspaceTimeline({
               value={chatInput}
               onChange={handleTextareaChange}
               onKeyDown={handleComposerKeyDown}
+              onPaste={handleComposerPaste}
+              onDragOver={(e) => { if (e.dataTransfer.types.includes("Files")) e.preventDefault(); }}
+              onDrop={handleComposerDrop}
             />
           </div>
 
@@ -677,6 +698,9 @@ export function WorkspaceTimeline({
               value={chatInput}
               onChange={handleTextareaChange}
               onKeyDown={handleComposerKeyDown}
+              onPaste={handleComposerPaste}
+              onDragOver={(e) => { if (e.dataTransfer.types.includes("Files")) e.preventDefault(); }}
+              onDrop={handleComposerDrop}
             />
           </div>
           <input
