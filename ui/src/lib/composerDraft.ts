@@ -61,7 +61,7 @@ export interface ComposerDraftStorage {
   removeItem(key: string): void;
 }
 
-interface ComposerDraftOptions {
+export interface ComposerDraftOptions {
   /** Injected in tests or hosts that provide a scoped storage implementation. */
   storage?: ComposerDraftStorage | null;
   now?: () => number;
