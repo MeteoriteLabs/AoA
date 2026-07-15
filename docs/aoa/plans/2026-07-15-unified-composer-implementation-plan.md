@@ -398,3 +398,22 @@ This review was performed after the initial draft. The formal interactive gstack
 ### Review verdict
 
 **Not implementation-ready until P0 items 1–5 are resolved.** The architecture and test breadth are directionally sound, but the unresolved contracts above would let two engineers build incompatible behavior while both claiming conformance to the plan.
+
+## 10. Implementation evidence and bounded follow-ups
+
+The isolated implementation branch (`codex/unified-composer`) has now closed the UI and contract work that was in scope for this pass:
+
+- A shared `ComposerFrame` is mounted in Commander, Discussion, Workspace, task detail, and task slide-over hosts with comfortable, compact, and mobile density behavior.
+- Text submission is normalized across hosts: Enter sends, Shift+Enter creates a newline, IME composition is protected, attachment-only sends are allowed, and failed sends preserve the draft and files.
+- File and image attachment selection, paste, drop, previews, retry/remove, count/size/type validation, and task-comment refresh are covered across the composer surfaces. The shared contract uses a 10 MB per-file limit.
+- Commander supports scoped agent mentions, keyboard selection, token deletion, and conversation-scoped draft keys. Discussion and task drafts are keyed by company, user, surface, entity, and reply target.
+- Task action labels map explicitly to add-comment, reopen, interrupt, wake, and reassignment behavior; ordinary comments do not interrupt a run.
+- Commander session identity and Discussion posting authorization are company/user/conversation or participant scoped rather than relying on presentation-only context.
+- Shared contract, draft, attachment, commander input, composer-frame, workspace, discussion, task, and slide-over tests pass on the branch; UI/shared/server typechecks pass.
+
+Two correctness items remain intentionally bounded rather than being represented as complete:
+
+1. **Runtime file content:** uploads are stored, linked, and company-authorized for retrieval, but the provider/tool runtime does not yet receive raw attachment bytes or extracted text/vision inputs. The capability metadata and server read boundary are documented in `docs/architecture/commander-attachment-runtime.md`; runtime exposure needs a separate governed adapter/tool change.
+2. **Server idempotency:** the shared client contract can derive stable submission keys, but Commander, Discussion, and task-comment endpoints do not yet persist/replay those keys server-side. This must be implemented as an endpoint-specific persistence contract before claiming exactly-once behavior.
+
+Browser E2E remains an environment follow-up: the local dev server is blocked by an existing embedded-Postgres migration conflict (`constraint ... already exists`), and the bundled browse executable is unavailable in this workspace. No browser pass is claimed until the database is repaired or reset with explicit approval and the runner is available.
