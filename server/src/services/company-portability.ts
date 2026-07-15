@@ -157,6 +157,7 @@ type ImportPlanInternal = {
   selectedIssues: CompanyPortabilityIssueManifestEntry[];
   selectedSkills: CompanyPortabilitySkillManifestEntry[];
   selectedRoutines: CompanyPortabilityRoutineManifestEntry[];
+  mutableWorkflowTemplateSlugs: Set<string>;
 };
 
 type ImportAuthorizationContext = {
@@ -199,9 +200,20 @@ function getImportAuthorizationContext(plan: ImportPlanInternal): ImportAuthoriz
   const routinePolicyChanges = mutableRoutines.some(
     (routine) => routine.agentCompletionPolicyOverride !== undefined,
   );
+  const workflowTemplatePolicyChanges =
+    plan.include.workflowTemplates === true &&
+    (manifest.workflowTemplates ?? []).some(
+      (template) =>
+        plan.mutableWorkflowTemplateSlugs.has(getWorkflowTemplateManifestSlug(template)) &&
+        template.agentCompletionPolicyOverride !== undefined,
+    );
 
   const changesCompletionPolicy =
-    companyPolicyChanges || projectPolicyChanges || issuePolicyChanges || routinePolicyChanges;
+    companyPolicyChanges ||
+    projectPolicyChanges ||
+    issuePolicyChanges ||
+    routinePolicyChanges ||
+    workflowTemplatePolicyChanges;
   const importsAssignedIssues = mutableIssues.some(
     (issue) => !!issue.assigneeAgentSlug,
   );
@@ -391,6 +403,14 @@ function synthesizeWorkflowTemplateSlug(name: string): string {
     .slice(0, 60)
     .replace(/-+$/g, "");
   return normalized.length > 0 ? normalized : "workflow-template";
+}
+
+function getWorkflowTemplateManifestSlug(
+  template: CompanyPortabilityWorkflowTemplateManifestEntry,
+): string {
+  return typeof template.slug === "string" && template.slug.length > 0
+    ? template.slug
+    : synthesizeWorkflowTemplateSlug(template.name);
 }
 
 function serializeWorkflowTemplateRow(
@@ -1910,6 +1930,29 @@ export function companyPortabilityService(db: Db) {
       }
     }
 
+    const selectedWorkflowTemplates = include.workflowTemplates
+      ? (manifest.workflowTemplates ?? [])
+      : [];
+    const mutableWorkflowTemplateSlugs = new Set(
+      selectedWorkflowTemplates.map(getWorkflowTemplateManifestSlug),
+    );
+    if (
+      selectedWorkflowTemplates.length > 0 &&
+      collisionStrategy === "skip" &&
+      input.target.mode === "existing_company"
+    ) {
+      const existingWorkflowTemplateRows = (await db
+        .select({ name: workflowTemplates.name })
+        .from(workflowTemplates)
+        .where(eq(workflowTemplates.companyId, input.target.companyId))) as Array<{ name: string }>;
+      const existingWorkflowTemplateSlugs = new Set(
+        existingWorkflowTemplateRows.map((row) => synthesizeWorkflowTemplateSlug(row.name)),
+      );
+      for (const slug of existingWorkflowTemplateSlugs) {
+        mutableWorkflowTemplateSlugs.delete(slug);
+      }
+    }
+
     const preview: CompanyPortabilityPreviewResult = {
       include,
       targetCompanyId,
@@ -1943,6 +1986,7 @@ export function companyPortabilityService(db: Db) {
       selectedIssues,
       selectedSkills,
       selectedRoutines,
+      mutableWorkflowTemplateSlugs,
     };
   }
 
@@ -3117,9 +3161,13 @@ export function companyPortabilityService(db: Db) {
       }
 
       for (const tpl of manifestWorkflowTemplates) {
-        const bundleSlug = typeof tpl.slug === "string" && tpl.slug.length > 0
-          ? tpl.slug
-          : synthesizeWorkflowTemplateSlug(tpl.name);
+        const bundleSlug = getWorkflowTemplateManifestSlug(tpl);
+        if (
+          plan.collisionStrategy === "skip" &&
+          !plan.mutableWorkflowTemplateSlugs.has(bundleSlug)
+        ) {
+          continue;
+        }
         const collision = existingBySlug.get(bundleSlug);
 
         if (collision) {

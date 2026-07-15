@@ -16,17 +16,24 @@ const mockWorkflowTemplateService = vi.hoisted(() => ({
   instantiate: vi.fn(),
   delete: vi.fn(),
 }));
+const mockCanUser = vi.hoisted(() => vi.fn());
+const mockAssertRole = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/index.js", () => ({
+  accessService: () => ({ canUser: mockCanUser }),
   workflowTemplateService: () => mockWorkflowTemplateService,
   logActivity: vi.fn(),
 }));
 
-function createAgentApp() {
+vi.mock("../middleware/rbac.js", () => ({
+  assertRole: (...args: unknown[]) => mockAssertRole(...args),
+}));
+
+function createApp(actor: Record<string, unknown>) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as any).actor = { type: "agent", agentId, companyId };
+    (req as any).actor = actor;
     next();
   });
   app.use("/api", workflowTemplateRoutes({} as any));
@@ -35,10 +42,16 @@ function createAgentApp() {
 }
 
 describe("workflow-template completion-policy authorization", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockCanUser.mockResolvedValue(false);
+    mockAssertRole.mockResolvedValue(undefined);
+    mockWorkflowTemplateService.create.mockResolvedValue({ id: templateId, companyId, name: "Template" });
+    mockWorkflowTemplateService.update.mockResolvedValue({ id: templateId, companyId, name: "Template" });
+  });
 
   it("rejects an agent-supplied override on create", async () => {
-    const res = await request(createAgentApp())
+    const res = await request(createApp({ type: "agent", agentId, companyId }))
       .post(`/api/companies/${companyId}/workflow-templates`)
       .send({
         name: "Agent template",
@@ -52,12 +65,99 @@ describe("workflow-template completion-policy authorization", () => {
   });
 
   it("rejects an agent-supplied override on update", async () => {
-    const res = await request(createAgentApp())
+    const res = await request(createApp({ type: "agent", agentId, companyId }))
       .patch(`/api/companies/${companyId}/workflow-templates/${templateId}`)
       .send({ agentCompletionPolicyOverride: "agent_can_complete" });
 
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("Only human operators");
     expect(mockWorkflowTemplateService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects a board override on create without tasks:assign", async () => {
+    const res = await request(createApp({
+      type: "board",
+      userId: "team-lead-1",
+      source: "session",
+      companyIds: [companyId],
+      isInstanceAdmin: false,
+    }))
+      .post(`/api/companies/${companyId}/workflow-templates`)
+      .send({
+        name: "Governed template",
+        steps: [{ order: 1, title: "Run" }],
+        agentCompletionPolicyOverride: "agent_can_complete",
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Missing permission: tasks:assign");
+    expect(mockCanUser).toHaveBeenCalledWith(companyId, "team-lead-1", "tasks:assign");
+    expect(mockWorkflowTemplateService.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects clearing an override on update without tasks:assign", async () => {
+    const res = await request(createApp({
+      type: "board",
+      userId: "team-lead-1",
+      source: "session",
+      companyIds: [companyId],
+      isInstanceAdmin: false,
+    }))
+      .patch(`/api/companies/${companyId}/workflow-templates/${templateId}`)
+      .send({ agentCompletionPolicyOverride: null });
+
+    expect(res.status).toBe(403);
+    expect(mockWorkflowTemplateService.update).not.toHaveBeenCalled();
+  });
+
+  it("allows an override with tasks:assign", async () => {
+    mockCanUser.mockResolvedValue(true);
+
+    const res = await request(createApp({
+      type: "board",
+      userId: "workflow-admin",
+      source: "session",
+      companyIds: [companyId],
+      isInstanceAdmin: false,
+    }))
+      .patch(`/api/companies/${companyId}/workflow-templates/${templateId}`)
+      .send({ agentCompletionPolicyOverride: "review_required" });
+
+    expect(res.status).toBe(200);
+    expect(mockWorkflowTemplateService.update).toHaveBeenCalledWith(
+      companyId,
+      templateId,
+      expect.objectContaining({ agentCompletionPolicyOverride: "review_required" }),
+    );
+  });
+
+  it("does not require tasks:assign for ordinary template updates", async () => {
+    const res = await request(createApp({
+      type: "board",
+      userId: "team-lead-1",
+      source: "session",
+      companyIds: [companyId],
+      isInstanceAdmin: false,
+    }))
+      .patch(`/api/companies/${companyId}/workflow-templates/${templateId}`)
+      .send({ description: "Updated description" });
+
+    expect(res.status).toBe(200);
+    expect(mockCanUser).not.toHaveBeenCalled();
+  });
+
+  it("preserves the trusted local operator bypass", async () => {
+    const res = await request(createApp({
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+      companyIds: [],
+      isInstanceAdmin: false,
+    }))
+      .patch(`/api/companies/${companyId}/workflow-templates/${templateId}`)
+      .send({ agentCompletionPolicyOverride: "agent_can_complete" });
+
+    expect(res.status).toBe(200);
+    expect(mockCanUser).not.toHaveBeenCalled();
   });
 });

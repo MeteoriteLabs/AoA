@@ -434,11 +434,13 @@ describe("company-portability workflow templates — import", () => {
     });
   });
 
-  it("import collision with 'skip' strategy leaves existing template untouched", async () => {
+  it("freezes a skipped workflow template so a later deletion cannot authorize an insert", async () => {
     const { db, captured } = createSequenceDb({
       selects: [
-        // existing templates in target
+        // Preview authorization collision plan.
         [{ id: "existing-wt", companyId: TGT_CO_ID, name: "Ship Feature" }],
+        // The row is deleted after authorization but before import execution.
+        [],
       ],
     });
     const svc = companyPortabilityService(db as any);
@@ -450,12 +452,14 @@ describe("company-portability workflow templates — import", () => {
           name: "Ship Feature",
           description: "New version",
           workspaceMode: "per_task",
+          agentCompletionPolicyOverride: "agent_can_complete",
           steps: [{ order: 1, title: "Spec" }],
           dependencies: [],
         },
       ],
     });
 
+    let authorizationContext: { requiresTaskAssignmentPermission: boolean } | null = null;
     await svc.importBundle(
       {
         source: {
@@ -468,8 +472,12 @@ describe("company-portability workflow templates — import", () => {
         collisionStrategy: "skip",
       },
       "importer-user-1",
+      async (context) => {
+        authorizationContext = context;
+      },
     );
 
+    expect(authorizationContext?.requiresTaskAssignmentPermission).toBe(false);
     expect(captured.inserts.length).toBe(0);
     expect(captured.updates.length).toBe(0);
   });

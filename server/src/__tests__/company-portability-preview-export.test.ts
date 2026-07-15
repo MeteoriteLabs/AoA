@@ -634,6 +634,37 @@ describe("import body-size cap", () => {
     );
   });
 
+  it("requires tasks:assign when imported workflow templates override completion policy", async () => {
+    mockCanUser.mockResolvedValueOnce(false);
+    const app = buildAppWithImportBodyCap();
+    const res = await request(app)
+      .post("/api/companies/import")
+      .send({
+        ...validExistingCompanyImport,
+        source: {
+          ...validExistingCompanyImport.source,
+          manifest: {
+            ...validExistingCompanyImport.source.manifest,
+            includes: { company: false, agents: false, workflowTemplates: true },
+            workflowTemplates: [{
+              slug: "launch",
+              name: "Launch",
+              description: null,
+              workspaceMode: "per_task",
+              agentCompletionPolicyOverride: "agent_can_complete",
+              steps: [],
+              dependencies: [],
+            }],
+          },
+        },
+        include: { company: false, agents: false, workflowTemplates: true },
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Missing permission: tasks:assign");
+    expect(mockCanUser).toHaveBeenCalledWith(SRC_CO_ID, "user-1", "tasks:assign");
+  });
+
   it("returns 413 for bodies over 20MB on /api/companies/import/preview", async () => {
     const big = JSON.stringify({ __pad: "x".repeat(30 * 1024 * 1024) });
     const app = buildAppWithImportBodyCap();

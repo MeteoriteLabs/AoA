@@ -1,7 +1,7 @@
 import { Router, type Request } from "express";
 import type { Db } from "@armyofagents/db";
 import { createWorkflowTemplateSchema, updateWorkflowTemplateSchema } from "@armyofagents/shared";
-import { workflowTemplateService, logActivity } from "../services/index.js";
+import { accessService, workflowTemplateService, logActivity } from "../services/index.js";
 import { forbidden, HttpError } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { assertRole } from "../middleware/rbac.js";
@@ -10,14 +10,16 @@ import { validate } from "../middleware/validate.js";
 export function workflowTemplateRoutes(db: Db) {
   const router = Router();
   const svc = workflowTemplateService(db);
+  const access = accessService(db);
 
-  function assertHumanCompletionPolicyOverride(req: Request) {
-    if (
-      req.body.agentCompletionPolicyOverride !== undefined &&
-      req.actor.type !== "board"
-    ) {
+  async function assertCanOverrideCompletionPolicy(req: Request, companyId: string) {
+    if (!("agentCompletionPolicyOverride" in req.body)) return;
+    if (req.actor.type !== "board") {
       throw forbidden("Only human operators may override task completion policy");
     }
+    if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
+    const allowed = await access.canUser(companyId, req.actor.userId, "tasks:assign");
+    if (!allowed) throw forbidden("Missing permission: tasks:assign");
   }
 
   // GET /companies/:companyId/workflow-templates
@@ -45,7 +47,7 @@ export function workflowTemplateRoutes(db: Db) {
   router.post("/companies/:companyId/workflow-templates", validate(createWorkflowTemplateSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    assertHumanCompletionPolicyOverride(req);
+    await assertCanOverrideCompletionPolicy(req, companyId);
     await assertRole(db, req, companyId, "founder", "team_lead");
 
     const { name, steps } = req.body;
@@ -77,7 +79,7 @@ export function workflowTemplateRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     const templateId = req.params.templateId as string;
     assertCompanyAccess(req, companyId);
-    assertHumanCompletionPolicyOverride(req);
+    await assertCanOverrideCompletionPolicy(req, companyId);
     await assertRole(db, req, companyId, "founder", "team_lead");
 
     let template;
