@@ -162,6 +162,9 @@ export const addIssueCommentSchema = z.object({
   body: z.string().min(1),
   reopen: z.boolean().optional(),
   interrupt: z.boolean().optional(),
+  // Client-generated idempotency key. A retried Send (same key) replays the
+  // original comment instead of creating a duplicate or re-firing side-effects.
+  clientSubmissionId: z.string().trim().min(1).max(200).optional(),
   authorType: z.enum(["user", "agent", "system"]).optional(),
   presentation: z
     .object({

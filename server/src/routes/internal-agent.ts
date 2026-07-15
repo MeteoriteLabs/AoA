@@ -16,7 +16,7 @@ import { assertRole } from "../middleware/rbac.js";
 import { internalAgentChatLimiter } from "../middleware/rate-limit.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { HttpError, badRequest, notFound, forbidden } from "../errors.js";
-import { agentLoopService } from "../services/internal-agent/agent-loop.js";
+import { agentLoopService, type RuntimeAttachmentStorage } from "../services/internal-agent/agent-loop.js";
 import { detectCliTool } from "../services/internal-agent/cli-mode.js";
 import { ensureCommanderAgent } from "../services/internal-agent/aoa-agents/ensure-commander.js";
 import { ensureAllCrewAgents, isCrewMarketplaceManaged } from "../services/internal-agent/aoa-agents/ensure-all-crew.js";
@@ -138,7 +138,7 @@ export async function maybeReensureAgentsOnConfigChange(
 
 // ── Route factory ────────────────────────────────────────────────────────────
 
-export function internalAgentRoutes(db: Db) {
+export function internalAgentRoutes(db: Db, storageService?: RuntimeAttachmentStorage) {
   const router = Router();
 
   // ── 2.1 Send Message (SSE Streaming) ─────────────────────────────────
@@ -193,7 +193,7 @@ export function internalAgentRoutes(db: Db) {
         | null = null;
 
       try {
-        const svc = agentLoopService(db);
+        const svc = agentLoopService(db, storageService);
         // Board-gated role: founder-equivalence requires a type:"board" actor.
         // MCP/agent bearer tokens are always "team_member" regardless of the
         // userId they carry (a founder-created MCP key replays the founder's
@@ -230,6 +230,8 @@ export function internalAgentRoutes(db: Db) {
           departmentContext: req.body.departmentContext ?? req.body.contextScope?.departmentId ?? undefined,
           conversationId: req.body.conversationId ?? undefined,
           contextScope: req.body.contextScope ?? undefined,
+          clientSubmissionId: req.body.clientSubmissionId ?? undefined,
+          attachmentAssetIds: req.body.attachmentAssetIds ?? undefined,
         });
 
         for await (const chunk of stream) {

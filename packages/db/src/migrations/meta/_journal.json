@@ -1198,6 +1198,27 @@
       "when": 1784026975382,
       "tag": "0170_blue_princess_powerful",
       "breakpoints": true
+    },
+    {
+      "idx": 171,
+      "version": "7",
+      "when": 1784131426632,
+      "tag": "0171_petite_hex",
+      "breakpoints": true
+    },
+    {
+      "idx": 172,
+      "version": "7",
+      "when": 1784134470966,
+      "tag": "0172_volatile_brood",
+      "breakpoints": true
+    },
+    {
+      "idx": 173,
+      "version": "7",
+      "when": 1784136485290,
+      "tag": "0173_steep_infant_terrible",
+      "breakpoints": true
     }
   ]
 }

@@ -182,11 +182,15 @@ function createAddEntryDb(config: { selects: any[][]; updates?: any[][]; inserts
   function makeInsertChain() {
     const idx = insertIdx++;
     return {
-      values: vi.fn(() => ({
-        returning: vi.fn(() =>
-          Promise.resolve((config.inserts ?? [])[idx] ?? []),
-        ),
-      })),
+      values: vi.fn(() => {
+        const chain: any = {
+          onConflictDoNothing: vi.fn(() => chain),
+          returning: vi.fn(() =>
+            Promise.resolve((config.inserts ?? [])[idx] ?? []),
+          ),
+        };
+        return chain;
+      }),
     };
   }
   const db: any = {

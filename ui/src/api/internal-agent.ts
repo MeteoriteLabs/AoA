@@ -195,6 +195,7 @@ export async function* streamAgentChat(
   signal?: AbortSignal,
   conversationId?: string | null,
   contextScope?: CommanderContextScope | null,
+  attachmentAssetIds?: string[],
 ): AsyncGenerator<SSEEvent> {
   const response = await fetch(
     `/api/companies/${encodeURIComponent(companyId)}/internal-agent/chat`,
@@ -207,6 +208,7 @@ export async function* streamAgentChat(
         pageContext,
         ...(conversationId ? { conversationId } : {}),
         ...(contextScope ? { contextScope } : {}),
+        ...(attachmentAssetIds && attachmentAssetIds.length > 0 ? { attachmentAssetIds } : {}),
       }),
       signal,
     },

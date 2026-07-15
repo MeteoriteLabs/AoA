@@ -211,6 +211,10 @@ export const discussionEntries = pgTable(
     // this guarantee to all action types.
     sourceActionId: uuid("source_action_id"),
 
+    // Client-generated idempotency key for user Sends. A retried Send replays the
+    // original entry. Nullable: agent/system/action-gated entries carry no key.
+    clientSubmissionId: text("client_submission_id"),
+
     createdBy: text("created_by").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
@@ -220,6 +224,10 @@ export const discussionEntries = pgTable(
     discussionIdx: index("discussion_entries_discussion_idx").on(
       table.discussionId,
     ),
+    // Enforce one entry per (discussion, submission key). Partial: null keys exempt.
+    clientSubmissionUq: uniqueIndex("discussion_entries_client_submission_uq")
+      .on(table.discussionId, table.clientSubmissionId)
+      .where(sql`client_submission_id IS NOT NULL`),
     extractionStatusIdx: index("discussion_entries_extraction_status_idx").on(
       table.extractionStatus,
     ),

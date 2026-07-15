@@ -31,8 +31,17 @@ vi.mock("@armyofagents/db", () => ({
 
 const appendMessage = vi.fn(async () => ({ id: "msg" }));
 const getOrCreateActive = vi.fn(async () => ({ id: "conv-1" }));
+const getById = vi.fn(async () => ({ id: "conv-1", companyId: "co-1", userId: "user-1" }));
+const getMessageByClientSubmissionId = vi.fn(async () => null as any);
+const getAssistantReplyAfter = vi.fn(async () => null as any);
 vi.mock("../services/internal-agent/conversation.js", () => ({
-  conversationService: vi.fn(() => ({ getOrCreateActive, appendMessage })),
+  conversationService: vi.fn(() => ({
+    getOrCreateActive,
+    getById,
+    appendMessage,
+    getMessageByClientSubmissionId,
+    getAssistantReplyAfter,
+  })),
 }));
 
 const cliChat = vi.fn();
@@ -73,7 +82,12 @@ vi.mock("../services/memory.js", () => ({
 vi.mock("../services/agent-instructions.js", () => ({
   agentInstructionsService: vi.fn(() => ({})),
 }));
+const assetGetById = vi.fn(async () => null as any);
+vi.mock("../services/assets.js", () => ({
+  assetService: vi.fn(() => ({ getById: assetGetById })),
+}));
 
+import { Readable } from "node:stream";
 import { agentLoopService } from "../services/internal-agent/agent-loop.js";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -111,6 +125,105 @@ beforeEach(() => {
   vi.clearAllMocks();
   getOrCreateActive.mockResolvedValue({ id: "conv-1" });
   appendMessage.mockResolvedValue({ id: "msg" });
+  getById.mockResolvedValue({ id: "conv-1", companyId: "co-1", userId: "user-1" });
+  getMessageByClientSubmissionId.mockResolvedValue(null);
+  getAssistantReplyAfter.mockResolvedValue(null);
+});
+
+describe("agentLoopService.chat — runtime attachment delivery (text)", () => {
+  it("delivers a company-owned text file's content into the turn shown to the model", async () => {
+    assetGetById.mockResolvedValue({
+      companyId: "co-1",
+      contentType: "text/plain",
+      objectKey: "k/notes.txt",
+      originalFilename: "notes.txt",
+      byteSize: 14,
+    });
+    scriptStream([
+      { type: "text", delta: "ok" },
+      { type: "done", summary: { runId: "", toolsCalled: [], durationMs: 0, costCents: 0, tokenUsage: { inputTokens: 0, outputTokens: 0 } } },
+    ]);
+    const storage = {
+      getObject: vi.fn(async () => ({ stream: Readable.from([Buffer.from("SECRET-CONTENT")]) })),
+    };
+    const svc = agentLoopService(dbWithConfig({ cliTool: "claude_cli", executionMode: "cli" }), storage);
+    for await (const _ of svc.chat({ ...BASE_PARAMS, attachmentAssetIds: ["a1"] } as any)) { void _; }
+
+    const cliParams = cliChat.mock.calls[0][0];
+    // The file content + filename ride with the user turn (content/rawContent),
+    // whichever channel the adapter split uses — never the persisted message row.
+    const turnText = `${cliParams.content ?? ""}\n${cliParams.rawContent ?? ""}`;
+    expect(turnText).toContain("SECRET-CONTENT");
+    expect(turnText).toContain("notes.txt");
+    const persistedUser = appendMessage.mock.calls.find((c) => (c[1] as any).role === "user");
+    expect((persistedUser?.[1] as any).content).toBe("what is up");
+  });
+
+  it("discloses an image as stored-only and never reads its bytes", async () => {
+    assetGetById.mockResolvedValue({
+      companyId: "co-1",
+      contentType: "image/png",
+      objectKey: "k/pic.png",
+      originalFilename: "pic.png",
+      byteSize: 100,
+    });
+    scriptStream([
+      { type: "text", delta: "ok" },
+      { type: "done", summary: { runId: "", toolsCalled: [], durationMs: 0, costCents: 0, tokenUsage: { inputTokens: 0, outputTokens: 0 } } },
+    ]);
+    const getObject = vi.fn(async () => ({ stream: Readable.from([Buffer.from("PNGBYTES")]) }));
+    const svc = agentLoopService(dbWithConfig({ cliTool: "claude_cli", executionMode: "cli" }), { getObject });
+    for await (const _ of svc.chat({ ...BASE_PARAMS, attachmentAssetIds: ["a1"] } as any)) { void _; }
+
+    const cliParams = cliChat.mock.calls[0][0];
+    const turnText = `${cliParams.content ?? ""}\n${cliParams.rawContent ?? ""}`;
+    expect(turnText).toContain("pic.png");
+    expect(turnText.toLowerCase()).toMatch(/not readable|stored/);
+    expect(turnText).not.toContain("PNGBYTES");
+    expect(getObject).not.toHaveBeenCalled();
+  });
+});
+
+describe("agentLoopService.chat — idempotent retry (clientSubmissionId)", () => {
+  async function drainWithKey(svc: ReturnType<typeof agentLoopService>, key: string) {
+    const out: any[] = [];
+    for await (const chunk of svc.chat({ ...BASE_PARAMS, conversationId: "conv-1", clientSubmissionId: key } as any)) {
+      out.push(chunk);
+    }
+    return out;
+  }
+
+  it("replays the original assistant reply and does NOT persist a new message or run the CLI", async () => {
+    // The key was already recorded → this is a retry.
+    getMessageByClientSubmissionId.mockResolvedValue({ id: "user-orig", createdAt: new Date(0) });
+    getAssistantReplyAfter.mockResolvedValue({ id: "asst-orig", content: "Original answer" });
+
+    const svc = agentLoopService(dbWithConfig({ cliTool: "claude_cli", executionMode: "cli" }));
+    const out = await drainWithKey(svc, "sub-42");
+
+    // Streamed the original reply back to the caller…
+    expect(out).toEqual([{ type: "text", delta: "Original answer" }]);
+    // …without persisting a duplicate user message or starting a CLI turn.
+    expect(appendMessage).not.toHaveBeenCalled();
+    expect(cliChat).not.toHaveBeenCalled();
+  });
+
+  it("runs normally when the key has not been seen before", async () => {
+    getMessageByClientSubmissionId.mockResolvedValue(null);
+    scriptStream([
+      { type: "text", delta: "Fresh" },
+      { type: "done", summary: { runId: "", toolsCalled: [], durationMs: 0, costCents: 0, tokenUsage: { inputTokens: 0, outputTokens: 0 } } },
+    ]);
+    const svc = agentLoopService(dbWithConfig({ cliTool: "claude_cli", executionMode: "cli" }));
+    await drainWithKey(svc, "sub-new");
+
+    // The first Send persists the user message carrying the key and runs the CLI.
+    expect(appendMessage).toHaveBeenCalledWith(
+      "conv-1",
+      expect.objectContaining({ role: "user", clientSubmissionId: "sub-new" }),
+    );
+    expect(cliChat).toHaveBeenCalledTimes(1);
+  });
 });
 
 // ── Tests ──────────────────────────────────────────────────────────────────

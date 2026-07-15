@@ -177,12 +177,14 @@ function createCapturingDb(config: {
     return {
       values: vi.fn((v: Record<string, unknown>) => {
         if (captureValues) captured.insertedEntry = v;
-        return {
-          returning: vi.fn().mockReturnThis(),
+        const chain: any = {
+          onConflictDoNothing: vi.fn(() => chain),
+          returning: vi.fn(() => chain),
           then: vi.fn((fn: (rows: any[]) => any) =>
             Promise.resolve(fn((config.inserts ?? [])[idx] ?? [])),
           ),
         };
+        return chain;
       }),
     };
   }

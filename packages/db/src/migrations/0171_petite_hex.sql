@@ -1,0 +1,2 @@
+ALTER TABLE "issue_comments" ADD COLUMN "client_submission_id" text;--> statement-breakpoint
+CREATE UNIQUE INDEX "issue_comments_client_submission_uq" ON "issue_comments" USING btree ("company_id","client_submission_id") WHERE client_submission_id IS NOT NULL;

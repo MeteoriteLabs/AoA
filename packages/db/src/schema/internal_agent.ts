@@ -221,6 +221,11 @@ export const internalAgentMessages = pgTable(
       onDelete: "set null",
     }),
 
+    // Client-generated idempotency key for a user Send. A retried Send replays
+    // the original turn instead of persisting a duplicate user message or
+    // starting a second CLI run. Nullable: assistant/system/tool rows carry none.
+    clientSubmissionId: text("client_submission_id"),
+
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -229,6 +234,10 @@ export const internalAgentMessages = pgTable(
     conversationIdx: index("ia_messages_conversation_idx").on(
       table.conversationId,
     ),
+    // Enforce one message per (conversation, submission key). Partial: null exempt.
+    clientSubmissionUq: uniqueIndex("ia_messages_client_submission_uq")
+      .on(table.conversationId, table.clientSubmissionId)
+      .where(sql`client_submission_id IS NOT NULL`),
     conversationTimeIdx: index("ia_messages_conversation_time_idx").on(
       table.conversationId,
       table.createdAt,

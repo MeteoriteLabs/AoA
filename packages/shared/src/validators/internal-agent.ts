@@ -64,8 +64,14 @@ export const chatMessageSchema = z.object({
   message: z.string().min(1).max(10000),
   pageContext: z.string().max(5000).optional().nullable(),
   conversationId: z.string().uuid().optional().nullable(),
+  // Client-generated idempotency key. A retried Send (same key) replays the
+  // original turn instead of persisting a duplicate message or re-running the CLI.
+  clientSubmissionId: z.string().trim().min(1).max(200).optional().nullable(),
   contextScope: commanderContextScopeSchema.optional().nullable(),
   departmentContext: z.string().uuid().optional().nullable(),
+  // Composer attachment asset IDs. The server resolves company-owned files and
+  // delivers text-readable content into the turn (runtime delivery v1).
+  attachmentAssetIds: z.array(z.string().uuid()).max(5).optional(),
 });
 
 export type ChatMessage = z.infer<typeof chatMessageSchema>;

@@ -47,6 +47,7 @@ export function createDiscussionDb(selectQueue: any[][]) {
     selectDistinctOn: vi.fn(() => makeSelectChain()),
     insert: vi.fn(() => ({
       values: vi.fn(() => ({
+        onConflictDoNothing: vi.fn().mockReturnThis(),
         returning: vi.fn().mockReturnThis(),
         then: vi.fn((fn: (rows: any[]) => any) =>
           Promise.resolve(fn(selectQueue[selectIdx++] ?? [])),
@@ -69,6 +70,7 @@ export function createDiscussionDb(selectQueue: any[][]) {
         select: vi.fn(() => makeSelectChain()),
         insert: vi.fn(() => ({
           values: vi.fn(() => ({
+            onConflictDoNothing: vi.fn().mockReturnThis(),
             returning: vi.fn().mockReturnThis(),
             then: vi.fn((fn: (rows: any[]) => any) =>
               Promise.resolve(fn(selectQueue[selectIdx++] ?? [])),
@@ -115,7 +117,7 @@ export function createAgentDb(config: {
   function makeChain(getResult: () => MockRow[]) {
     const chain: Record<string, unknown> = {};
     for (const m of [
-      "from", "where", "set", "values", "returning",
+      "from", "where", "set", "values", "returning", "onConflictDoNothing",
       "innerJoin", "leftJoin", "orderBy", "limit", "catch",
     ]) {
       chain[m] = (..._args: unknown[]) => chain;

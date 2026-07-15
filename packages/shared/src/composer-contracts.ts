@@ -26,6 +26,22 @@ export const composerCommandTokenSchema = z.object({
 });
 export type ComposerCommandToken = z.infer<typeof composerCommandTokenSchema>;
 
+export type AttachmentRuntimeCapability = "text-readable" | "vision-readable" | "stored-only";
+
+/**
+ * Classify how the active runtime can consume an attachment, by content type.
+ * Single source of truth shared by the composer UI and the server-side runtime
+ * delivery resolver. text-readable = plain UTF-8 (txt/md/json) the runtime reads
+ * inline; vision-readable = images (delivered only to vision-capable adapters,
+ * a later phase); stored-only = preserved + downloadable but not interpreted.
+ */
+export function attachmentRuntimeCapability(contentType: string): AttachmentRuntimeCapability {
+  const type = (contentType || "").toLowerCase().split(";")[0].trim();
+  if (["text/plain", "text/markdown", "application/json"].includes(type)) return "text-readable";
+  if (type.startsWith("image/")) return "vision-readable";
+  return "stored-only";
+}
+
 export const composerAttachmentRefSchema = z.object({
   id: z.string().trim().min(1).max(200),
   filename: z.string().trim().min(1).max(512),

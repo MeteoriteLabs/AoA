@@ -702,6 +702,20 @@ export function discussionRoutes(db: Db) {
       const actor = getActorInfo(req);
       const threadActor = await buildActor(req, companyId);
       try {
+        // Idempotent retry: replay the original entry without re-posting or
+        // re-firing mention summons. The DB partial-unique index is the backstop.
+        const clientSubmissionId =
+          typeof (req.body as { clientSubmissionId?: unknown }).clientSubmissionId === "string"
+            ? (req.body as { clientSubmissionId: string }).clientSubmissionId
+            : undefined;
+        if (clientSubmissionId) {
+          const replay = await svc.getEntryByClientSubmissionId(discussionId, clientSubmissionId);
+          if (replay) {
+            res.status(200).json(replay);
+            return;
+          }
+        }
+
         const entry = await svc.addEntry(
           companyId,
           discussionId,

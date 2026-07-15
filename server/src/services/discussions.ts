@@ -933,6 +933,7 @@ export function discussionService(db: Db) {
         parentEntryId?: string | null;
         authorAgentId?: string | null;
         sourceActionId?: string | null;
+        clientSubmissionId?: string | null;
         attachments?: Array<{ assetId?: string | null; artifactId?: string | null }>;
       },
       actorId: string,
@@ -965,6 +966,24 @@ export function discussionService(db: Db) {
 
       if (!discussion) {
         throw notFound("Discussion not found");
+      }
+
+      // Idempotent retry: a repeated Send (same key) replays the original entry
+      // without bumping the seq/count counters or re-firing extraction/summon
+      // side-effects. The partial unique index below is the concurrency backstop.
+      const clientSubmissionId = data.clientSubmissionId ?? null;
+      if (clientSubmissionId) {
+        const existing = await db
+          .select()
+          .from(discussionEntries)
+          .where(
+            and(
+              eq(discussionEntries.discussionId, discussionId),
+              eq(discussionEntries.clientSubmissionId, clientSubmissionId),
+            ),
+          )
+          .then((rows) => rows[0] ?? null);
+        if (existing) return existing;
       }
 
       if (data.parentEntryId) {
@@ -1019,6 +1038,7 @@ export function discussionService(db: Db) {
             authorAgentId: data.authorAgentId ?? null,
             // #197: idempotency anchor for action-gated commits; null for normal entries.
             sourceActionId: data.sourceActionId ?? null,
+            clientSubmissionId,
             // QA-BUG-015: discuss-phase entries are NOT auto-extracted. Mark
             // 'skipped' so the (gated-off) durable drain never picks them up
             // and the UI doesn't show a misleading "pending extraction"
@@ -1028,11 +1048,14 @@ export function discussionService(db: Db) {
             seq: entrySeq,
             createdBy: actorId,
           })
+          // Concurrency backstop for the replay check above: a truly simultaneous
+          // duplicate key resolves to one row via the partial unique index.
+          .onConflictDoNothing()
           .returning();
 
         // Phase E1: link attachments (assets or artifacts) to the entry in the
         // same transaction so the entry+attachments commit atomically.
-        if (data.attachments && data.attachments.length > 0) {
+        if (inserted && data.attachments && data.attachments.length > 0) {
           const rows = data.attachments
             .filter((a) => a.assetId || a.artifactId)
             .map((a) => ({
@@ -1047,6 +1070,21 @@ export function discussionService(db: Db) {
 
         return inserted;
       });
+
+      // Lost the insert race → the winning entry already fired its side-effects.
+      // Return it without re-publishing events, re-arming crew, or re-logging.
+      if (!entry && clientSubmissionId) {
+        return db
+          .select()
+          .from(discussionEntries)
+          .where(
+            and(
+              eq(discussionEntries.discussionId, discussionId),
+              eq(discussionEntries.clientSubmissionId, clientSubmissionId),
+            ),
+          )
+          .then((rows) => rows[0]);
+      }
 
       publishLiveEvent({
         companyId,
@@ -1100,6 +1138,22 @@ export function discussionService(db: Db) {
       });
 
       return entry;
+    },
+
+    getEntryByClientSubmissionId: async (
+      discussionId: string,
+      clientSubmissionId: string,
+    ) => {
+      return db
+        .select()
+        .from(discussionEntries)
+        .where(
+          and(
+            eq(discussionEntries.discussionId, discussionId),
+            eq(discussionEntries.clientSubmissionId, clientSubmissionId),
+          ),
+        )
+        .then((rows) => rows[0] ?? null);
     },
 
     /**

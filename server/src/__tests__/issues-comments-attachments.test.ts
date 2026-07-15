@@ -55,6 +55,7 @@ const mockIssueService = vi.hoisted(() => ({
   assertCheckoutOwner: vi.fn(),
   resolveAgentKinds: vi.fn(),
   enqueueAoaMentionWakeup: vi.fn(),
+  getCommentByClientSubmissionId: vi.fn(),
 }));
 
 const mockAccessService = vi.hoisted(() => ({
@@ -163,6 +164,8 @@ beforeEach(() => {
   // Default: no crew assignees → comment wakeups route to heartbeat (org path).
   mockIssueService.resolveAgentKinds.mockResolvedValue(new Map());
   mockIssueService.enqueueAoaMentionWakeup.mockResolvedValue(undefined);
+  // Default: no prior submission with this key → the create path runs.
+  mockIssueService.getCommentByClientSubmissionId.mockResolvedValue(null);
   mockIssueService.addComment.mockResolvedValue({
     id: "comment-1",
     issueId,
@@ -516,6 +519,47 @@ describe("POST /issues/:id/comments-with-attachments", () => {
     expect(mockIssueService.createAttachment).not.toHaveBeenCalled();
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
+
+  it("replays the original comment+attachments and does not re-persist or re-wake on a retried key", async () => {
+    const submissionId = "sub-att-1";
+    const existing = {
+      id: "comment-1",
+      issueId,
+      companyId,
+      body: "Please inspect these screenshots",
+      authorAgentId: null,
+      authorUserId: "board-user",
+      clientSubmissionId: submissionId,
+    };
+    mockIssueService.getCommentByClientSubmissionId
+      .mockResolvedValueOnce(null) // first send creates
+      .mockResolvedValueOnce(existing); // retry replays
+    mockIssueService.listAttachments.mockResolvedValue([
+      { id: "attachment-1", issueId, issueCommentId: "comment-1", originalFilename: "proof.png", contentType: "image/png" },
+    ]);
+
+    const app = createApp();
+    const send = () =>
+      request(app)
+        .post(`/api/issues/${issueId}/comments-with-attachments`)
+        .field("body", "Please inspect these screenshots")
+        .field("clientSubmissionId", submissionId)
+        .attach("files", Buffer.from("fake-png"), { filename: "proof.png", contentType: "image/png" });
+
+    const first = await send();
+    const retry = await send();
+
+    expect(first.status).toBe(201);
+    expect(retry.status).toBe(200);
+    expect(retry.body.comment.id).toBe("comment-1");
+    expect(retry.body.attachments).toHaveLength(1);
+
+    // The retry must not persist a second comment, re-store the file, or re-wake.
+    expect(mockIssueService.addComment).toHaveBeenCalledTimes(1);
+    expect(mockIssueService.createAttachment).toHaveBeenCalledTimes(1);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("POST /issues/:id/comments (no attachments) — D8 reopen gate", () => {
@@ -557,6 +601,60 @@ describe("POST /issues/:id/comments (no attachments) — D8 reopen gate", () => 
         reason: "issue_reopened_via_comment",
         payload: expect.objectContaining({ issueId, reopenedFrom: "done" }),
       }),
+    );
+  });
+});
+
+describe("POST /issues/:id/comments — idempotent retry (clientSubmissionId)", () => {
+  // A retried Send (same clientSubmissionId, e.g. after a lost 201 response)
+  // must not create a second durable comment and must not re-fire task
+  // side-effects (wakeup/interrupt). The whole handler is gated, not just the
+  // row insert — otherwise a retry could re-interrupt a run while the row dedups.
+  const submissionId = "sub-1111-2222";
+  const existingComment = {
+    id: "comment-1",
+    issueId,
+    companyId,
+    body: "Please inspect the logs",
+    authorAgentId: null,
+    authorUserId: "board-user",
+    clientSubmissionId: submissionId,
+  };
+
+  it("replays the same comment (200) and wakes at most once on a retried key", async () => {
+    mockIssueService.getCommentByClientSubmissionId
+      .mockResolvedValueOnce(null) // first attempt: not seen yet → create
+      .mockResolvedValueOnce(existingComment); // retry: key already recorded → replay
+    mockIssueService.addComment.mockResolvedValue(existingComment);
+
+    const app = createApp();
+    const first = await request(app)
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Please inspect the logs", clientSubmissionId: submissionId });
+    const retry = await request(app)
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Please inspect the logs", clientSubmissionId: submissionId });
+
+    expect(first.status).toBe(201);
+    expect(retry.status).toBe(200); // replay is a read, not a new creation
+    expect(retry.body.id).toBe("comment-1");
+
+    expect(mockIssueService.addComment).toHaveBeenCalledTimes(1);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes the clientSubmissionId through to addComment on the create path", async () => {
+    const app = createApp();
+    const res = await request(app)
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "First send", clientSubmissionId: submissionId });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      issueId,
+      "First send",
+      expect.objectContaining({ clientSubmissionId: submissionId }),
     );
   });
 });

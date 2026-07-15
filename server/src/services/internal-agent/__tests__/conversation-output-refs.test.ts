@@ -12,11 +12,13 @@ function mockDb() {
     insert: () => ({
       values: (v: any) => {
         captured.values = v;
-        return {
+        const chain: any = {
+          onConflictDoNothing: () => chain,
           returning: () => ({
             then: (fn: any) => Promise.resolve(fn([{ id: "m1", ...v }])),
           }),
         };
+        return chain;
       },
     }),
     // appendMessage calls: db.update(...).set({...}).where(...) — must be awaitable

@@ -1569,6 +1569,19 @@ export function issueRoutes(db: Db, storage: StorageService) {
     assertCompanyAccess(req, issue.companyId);
     if (!(await assertAgentRunCheckoutOwnership(req, res, issue))) return;
 
+    // Idempotent retry: if this exact submission was already recorded, replay the
+    // original comment without re-running control effects (reopen/interrupt) or
+    // wakeups. The DB partial-unique index is the concurrency backstop below.
+    const clientSubmissionId =
+      typeof req.body.clientSubmissionId === "string" ? req.body.clientSubmissionId : undefined;
+    if (clientSubmissionId) {
+      const replay = await svc.getCommentByClientSubmissionId(issue.companyId, id, clientSubmissionId);
+      if (replay) {
+        res.status(200).json(replay);
+        return;
+      }
+    }
+
     const actor = getActorInfo(req);
     const control = await applyIssueCommentControlEffects({
       req,
@@ -1584,6 +1597,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
     const comment = await svc.addComment(id, req.body.body, {
       agentId: actor.agentId ?? undefined,
       userId: actor.actorType === "user" ? actor.actorId : undefined,
+      clientSubmissionId,
     });
 
     await logActivity(db, {
@@ -1651,6 +1665,21 @@ export function issueRoutes(db: Db, storage: StorageService) {
     const files = ((req as Request & { files?: Express.Multer.File[] }).files ?? []);
     for (const file of files) validateAttachmentFile(file);
 
+    // Idempotent retry: replay the original comment + its attachments without
+    // re-storing files, re-creating records, or re-firing control effects/wakeups.
+    const clientSubmissionId =
+      typeof req.body?.clientSubmissionId === "string" ? req.body.clientSubmissionId : undefined;
+    if (clientSubmissionId) {
+      const replay = await svc.getCommentByClientSubmissionId(issue.companyId, id, clientSubmissionId);
+      if (replay) {
+        const replayAttachments = (await svc.listAttachments(id)).filter(
+          (a) => a.issueCommentId === replay.id,
+        );
+        res.status(200).json({ comment: replay, attachments: replayAttachments });
+        return;
+      }
+    }
+
     const actor = getActorInfo(req);
     const bodyText = typeof req.body?.body === "string" ? req.body.body.trim() : "";
     const body = bodyText || (files.length > 0
@@ -1675,6 +1704,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
     const comment = await svc.addComment(id, body, {
       agentId: actor.agentId ?? undefined,
       userId: actor.actorType === "user" ? actor.actorId : undefined,
+      clientSubmissionId,
     });
 
     const attachments = [];

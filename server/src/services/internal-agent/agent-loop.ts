@@ -22,6 +22,18 @@ import {
 } from "./context-scope.js";
 import { collectChunkRefs, mergeOutputRefs } from "./output-refs.js";
 import { humanToolSummary } from "./tool-summary.js";
+import { assetService } from "../assets.js";
+import {
+  resolveRuntimeAttachments,
+  formatRuntimeAttachmentBlock,
+  createRuntimeAttachmentDeps,
+} from "./runtime-attachments.js";
+import type { Readable } from "node:stream";
+
+/** Minimal storage surface needed to read attachment bytes for runtime delivery. */
+export interface RuntimeAttachmentStorage {
+  getObject: (companyId: string, objectKey: string) => Promise<{ stream: Readable }>;
+}
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -74,6 +86,10 @@ export interface ChatInput {
   departmentContext?: string;
   conversationId?: string;
   contextScope?: CommanderContextScope | NormalizedCommanderContextScope | null;
+  /** Client idempotency key; a repeat replays the original turn (see chat()). */
+  clientSubmissionId?: string;
+  /** Composer attachment asset IDs; text-readable content is delivered to the turn. */
+  attachmentAssetIds?: string[];
 }
 
 // ── Service ──────────────────────────────────────────────────────────────────
@@ -113,7 +129,7 @@ export interface ChatInput {
  *   (`summarizeViaCli`). Long conversations are compacted automatically;
  *   a failed compaction is swallowed so it never affects the delivered reply.
  */
-export function agentLoopService(db: Db) {
+export function agentLoopService(db: Db, storage?: RuntimeAttachmentStorage) {
   const convService = conversationService(db);
   const cliService = cliModeService(db);
 
@@ -142,13 +158,57 @@ export function agentLoopService(db: Db) {
           return;
         }
 
+        // 1b. Idempotent retry: if this exact Send was already recorded, replay
+        // the original turn — stream its persisted assistant reply (if any) and
+        // stop — WITHOUT persisting a duplicate user message or starting a second
+        // CLI run. The partial unique index on the message is the race backstop.
+        if (params.clientSubmissionId) {
+          const priorUser = await convService.getMessageByClientSubmissionId(
+            conversation.id,
+            params.clientSubmissionId,
+          );
+          if (priorUser) {
+            const reply = await convService.getAssistantReplyAfter(
+              conversation.id,
+              priorUser.createdAt,
+            );
+            if (reply?.content) {
+              yield { type: "text", delta: reply.content };
+            }
+            return;
+          }
+        }
+
         // 2. Persist the user message
         await convService.appendMessage(conversation.id, {
           role: "user",
           content: params.content,
           pageContext: params.pageContext ?? null,
           departmentContext: params.departmentContext ?? null,
+          clientSubmissionId: params.clientSubmissionId ?? null,
         });
+
+        // 2b. Runtime attachment delivery (v1 — text only). Resolve company-owned
+        // attachment content server-side and fold it into the message shown to the
+        // model. Best-effort: an attachment failure must never fail the turn.
+        let effectiveUserMessage = params.content;
+        if (storage && params.attachmentAssetIds && params.attachmentAssetIds.length > 0) {
+          try {
+            const deps = createRuntimeAttachmentDeps(
+              (assetId) => assetService(db).getById(assetId) as any,
+              storage,
+            );
+            const resolved = await resolveRuntimeAttachments(
+              deps,
+              params.companyId,
+              params.attachmentAssetIds,
+            );
+            const block = formatRuntimeAttachmentBlock(resolved);
+            if (block) effectiveUserMessage = `${params.content}\n\n${block}`;
+          } catch {
+            // Leave the message untouched; the file stays referenced, not read.
+          }
+        }
 
         // 3. Load Commander config
         const config = await db
@@ -270,10 +330,10 @@ export function agentLoopService(db: Db) {
           // Full assembled string kept for the codex stdin path (unchanged).
           assembledContent =
             systemContext +
-            `\n\n## User Message\n${params.content}`;
+            `\n\n## User Message\n${effectiveUserMessage}`;
         } catch {
           // Any assembly failure → send the raw message (never hard-fail).
-          assembledContent = params.content;
+          assembledContent = effectiveUserMessage;
           systemContext = undefined;
         }
 
@@ -288,7 +348,7 @@ export function agentLoopService(db: Db) {
           content: assembledContent,
           contextScope: cliContextScope,
           ...(systemContext !== undefined
-            ? { systemContext, rawContent: params.content }
+            ? { systemContext, rawContent: effectiveUserMessage }
             : {}),
         };
 

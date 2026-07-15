@@ -2391,6 +2391,7 @@ export function issueService(db: Db) {
         authorType?: IssueCommentAuthorType;
         presentation?: IssueCommentPresentation | null;
         metadata?: IssueCommentMetadata | null;
+        clientSubmissionId?: string;
       },
     ) => {
       const issue = await db
@@ -2400,6 +2401,8 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
 
       if (!issue) throw notFound("Issue not found");
+
+      const clientSubmissionId = actor.clientSubmissionId ?? null;
 
       const comment = await db.transaction(async (tx) => {
         const [created] = await tx
@@ -2413,8 +2416,27 @@ export function issueService(db: Db) {
             presentation: actor.presentation ?? null,
             metadata: actor.metadata ?? null,
             body,
+            clientSubmissionId,
           })
+          // Concurrency backstop for the route-level replay check: two in-flight
+          // retries of the same key resolve to one row via the partial unique index.
+          .onConflictDoNothing()
           .returning();
+
+        // Lost the insert race → the original already ran its side-effects. Return
+        // the existing row without re-touching recency or reconciling the hub.
+        if (!created && clientSubmissionId) {
+          return tx
+            .select()
+            .from(issueComments)
+            .where(
+              and(
+                eq(issueComments.companyId, issue.companyId),
+                eq(issueComments.clientSubmissionId, clientSubmissionId),
+              ),
+            )
+            .then((rows) => rows[0]);
+        }
 
         // Update issue's updatedAt so comment activity is reflected in recency sorting
         await tx
@@ -2429,6 +2451,24 @@ export function issueService(db: Db) {
       });
 
       return comment;
+    },
+
+    getCommentByClientSubmissionId: async (
+      companyId: string,
+      issueId: string,
+      clientSubmissionId: string,
+    ) => {
+      return db
+        .select()
+        .from(issueComments)
+        .where(
+          and(
+            eq(issueComments.companyId, companyId),
+            eq(issueComments.issueId, issueId),
+            eq(issueComments.clientSubmissionId, clientSubmissionId),
+          ),
+        )
+        .then((rows) => rows[0] ?? null);
     },
 
     createAttachment: async (input: {

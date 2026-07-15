@@ -3,7 +3,8 @@ import type {
   IssueCommentMetadata,
   IssueCommentPresentation,
 } from "@armyofagents/shared";
-import { pgTable, uuid, text, timestamp, index, jsonb } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, index, jsonb, uniqueIndex } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { companies } from "./companies.js";
 import { issues } from "./issues.js";
 import { agents } from "./agents.js";
@@ -20,11 +21,18 @@ export const issueComments = pgTable(
     presentation: jsonb("presentation").$type<IssueCommentPresentation | null>(),
     metadata: jsonb("metadata").$type<IssueCommentMetadata | null>(),
     body: text("body").notNull(),
+    // Client-generated idempotency key for user Sends. A retried Send replays the
+    // original comment. Nullable: agent/system-authored comments carry no key.
+    clientSubmissionId: text("client_submission_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
     issueIdx: index("issue_comments_issue_idx").on(table.issueId),
+    // Enforce one comment per (company, submission key). Partial: null keys exempt.
+    clientSubmissionUq: uniqueIndex("issue_comments_client_submission_uq")
+      .on(table.companyId, table.clientSubmissionId)
+      .where(sql`client_submission_id IS NOT NULL`),
     companyIdx: index("issue_comments_company_idx").on(table.companyId),
     companyIssueCreatedAtIdx: index("issue_comments_company_issue_created_at_idx").on(
       table.companyId,

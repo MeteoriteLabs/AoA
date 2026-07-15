@@ -177,12 +177,14 @@ function createCapturingDb(config: {
     return {
       values: vi.fn((v: Record<string, unknown>) => {
         if (captureValues) captured.insertedEntry = v;
-        return {
-          returning: vi.fn().mockReturnThis(),
+        const chain: any = {
+          onConflictDoNothing: vi.fn(() => chain),
+          returning: vi.fn(() => chain),
           then: vi.fn((fn: (rows: any[]) => any) =>
             Promise.resolve(fn((config.inserts ?? [])[idx] ?? [])),
           ),
         };
+        return chain;
       }),
     };
   }
@@ -273,6 +275,54 @@ describe("discussionService.addEntry — parentEntryId", () => {
       discussionIdFilterCall,
       "eq(discussionEntries.discussionId, 'disc-1') must be part of the parent-entry lookup query",
     ).toBeDefined();
+  });
+
+  it("replays the existing entry for a repeated clientSubmissionId without inserting", async () => {
+    const insertSpy = vi.fn();
+    const { db } = createCapturingDb({
+      selects: [
+        // 1. select discussion → found
+        [{ id: "disc-1", companyId: "co" }],
+        // 2. clientSubmissionId lookup → already recorded
+        [{ id: "entry-original", seq: 3, clientSubmissionId: "sub-9" }],
+      ],
+    });
+    db.insert = insertSpy;
+    db.transaction = vi.fn();
+
+    const result = await discussionService(db).addEntry(
+      "co",
+      "disc-1",
+      { rawContent: "dup", inputType: "write", clientSubmissionId: "sub-9" },
+      "user:1",
+    );
+
+    expect(result).toMatchObject({ id: "entry-original" });
+    // No new entry inserted and no counter-bumping transaction on replay.
+    expect(insertSpy).not.toHaveBeenCalled();
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
+
+  it("records the clientSubmissionId on the inserted entry for a first Send", async () => {
+    const { db, captured } = createCapturingDb({
+      selects: [
+        // 1. discussion → found
+        [{ id: "disc-1", companyId: "co" }],
+        // 2. clientSubmissionId lookup → not seen yet
+        [],
+      ],
+      updates: [[{ entrySeq: 1 }]],
+      inserts: [[{ id: "entry-new", seq: 1, clientSubmissionId: "sub-9" }]],
+    });
+
+    await discussionService(db).addEntry(
+      "co",
+      "disc-1",
+      { rawContent: "first", inputType: "write", clientSubmissionId: "sub-9" },
+      "user:1",
+    );
+
+    expect(captured.insertedEntry?.clientSubmissionId).toBe("sub-9");
   });
 
   it("leaves parentEntryId null for a normal top-level entry", async () => {

@@ -971,7 +971,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
   );
 
   const sendText = useCallback(
-    async (text: string): Promise<boolean> => {
+    async (text: string, attachmentAssetIds?: string[]): Promise<boolean> => {
       if (!text || !companyId || streaming) return false;
 
       setStreamingLocal(true);
@@ -1004,7 +1004,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
       let accepted = false;
 
       try {
-        const stream = streamAgentChat(companyId, text, pageContext, controller.signal, conversationId, contextScope);
+        const stream = streamAgentChat(companyId, text, pageContext, controller.signal, conversationId, contextScope, attachmentAssetIds);
 
         for await (const event of stream) {
           handleSSEEvent(event, assistantId);
@@ -1048,7 +1048,13 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
       const refsForTurn = inputRefsRef.current;
       if ((!trimmed && refsForTurn.length === 0) || uploadingFiles.length > 0) return;
       const baseText = trimmed || "Use the referenced context.";
-      const accepted = await sendText(appendCommanderInputRefsToMessage(baseText, refsForTurn));
+      const attachmentAssetIds = refsForTurn
+        .filter((r) => r.kind === "asset")
+        .map((r) => r.id);
+      const accepted = await sendText(
+        appendCommanderInputRefsToMessage(baseText, refsForTurn),
+        attachmentAssetIds,
+      );
       if (accepted) {
         inputRef.current?.clear();
         const remaining = settleCommanderInputRefsAfterSend(

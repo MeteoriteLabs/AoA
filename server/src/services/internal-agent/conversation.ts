@@ -1,4 +1,4 @@
-import { and, eq, desc, gt, sql } from "drizzle-orm";
+import { and, eq, desc, gt, gte, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import {
   internalAgentConversations,
@@ -18,6 +18,7 @@ export interface MessageInput {
   runId?: string | null;
   outputRefs?: unknown;
   reasoning?: string | null;
+  clientSubmissionId?: string | null;
 }
 
 const MESSAGE_THRESHOLD = 20;
@@ -76,9 +77,17 @@ export function conversationService(db: Db) {
           runId: message.runId ?? null,
           outputRefs,
           reasoning: message.reasoning ?? null,
+          clientSubmissionId: message.clientSubmissionId ?? null,
         })
+        // Concurrency backstop for the replay check in agent-loop.chat(): a
+        // simultaneous duplicate key resolves to one row via the partial index.
+        .onConflictDoNothing()
         .returning()
         .then((rows: any[]) => rows[0]);
+
+      // A lost insert race means the duplicate turn is already recorded; don't
+      // double-count the conversation's messages.
+      if (!inserted) return inserted;
 
       await db
         .update(internalAgentConversations)
@@ -89,6 +98,40 @@ export function conversationService(db: Db) {
         .where(eq(internalAgentConversations.id, conversationId));
 
       return inserted;
+    },
+
+    /** Idempotency lookup: the user message previously persisted for this key. */
+    async getMessageByClientSubmissionId(
+      conversationId: string,
+      clientSubmissionId: string,
+    ) {
+      return db
+        .select()
+        .from(internalAgentMessages)
+        .where(
+          and(
+            eq(internalAgentMessages.conversationId, conversationId),
+            eq(internalAgentMessages.clientSubmissionId, clientSubmissionId),
+          ),
+        )
+        .then((rows: any[]) => rows[0] ?? null);
+    },
+
+    /** The first assistant reply persisted at/after the given timestamp. */
+    async getAssistantReplyAfter(conversationId: string, afterCreatedAt: Date) {
+      return db
+        .select()
+        .from(internalAgentMessages)
+        .where(
+          and(
+            eq(internalAgentMessages.conversationId, conversationId),
+            eq(internalAgentMessages.role, "assistant"),
+            gte(internalAgentMessages.createdAt, afterCreatedAt),
+          ),
+        )
+        .orderBy(internalAgentMessages.createdAt, internalAgentMessages.id)
+        .limit(1)
+        .then((rows: any[]) => rows[0] ?? null);
     },
 
     async getRecentMessages(conversationId: string, limit = 50) {

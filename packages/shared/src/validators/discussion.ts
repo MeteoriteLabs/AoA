@@ -19,6 +19,9 @@ export const createDiscussionEntrySchema = z.object({
   sourceInfo: z.record(z.unknown()).optional().nullable(),
   parentEntryId: z.string().uuid().optional().nullable(),
   authorAgentId: z.string().uuid().optional().nullable(),
+  // Client-generated idempotency key. A retried Send (same key) replays the
+  // original entry instead of creating a duplicate or re-firing side-effects.
+  clientSubmissionId: z.string().trim().min(1).max(200).optional().nullable(),
   // Phase E1: composer can attach assets (file uploads) and artifacts
   // (e.g. an existing plan or document) when posting an entry. Server links
   // each via discussion_entry_attachments after the entry is inserted.
