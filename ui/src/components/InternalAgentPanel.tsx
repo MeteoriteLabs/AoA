@@ -557,6 +557,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
   activeConversationIdRef.current = conversationId;
   const uploadSequenceRef = useRef(0);
   const [uploadingFiles, setUploadingFiles] = useState<Array<{ id: number; name: string }>>([]);
+  const [failedUploads, setFailedUploads] = useState<Array<{ id: number; file: File }>>([]);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [streaming, setStreamingLocal] = useState(false);
   // Task 9: skill picker. `skillPickerOpen` = opened via the `+` menu (shows
@@ -865,6 +866,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
     inputRefsRef.current = [];
     setInputRefs([]);
     setUploadingFiles([]);
+    setFailedUploads([]);
     setAttachmentError(null);
   }, [conversationId]);
 
@@ -1052,14 +1054,18 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
     requestAnimationFrame(() => inputRef.current?.focus());
   }, []);
 
-  const uploadCommanderFiles = useCallback(async (files: File[]) => {
+  const uploadCommanderFiles = useCallback(async (files: File[], replacingFailedId?: number) => {
     if (!companyId || files.length === 0 || streaming) return;
     const attachedCount = inputRefsRef.current.filter((ref) => ref.kind === "asset").length;
+    const retainedFailureCount = failedUploads.filter((item) => item.id !== replacingFailedId).length;
     const selection = validateCommanderAttachmentFiles(
       files,
-      attachedCount,
+      attachedCount + retainedFailureCount,
       uploadingFiles.length,
     );
+    if (replacingFailedId !== undefined) {
+      setFailedUploads((current) => current.filter((item) => item.id !== replacingFailedId));
+    }
     setAttachmentError(selection.errors.length > 0 ? selection.errors.join(" ") : null);
 
     for (const file of selection.accepted) {
@@ -1076,12 +1082,13 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
           addInputRef(assetResponseToCommanderInputRef(asset, file.name));
         }
       } catch {
-        setAttachmentError(`Could not upload ${file.name}. Choose the file again to retry.`);
+        setFailedUploads((current) => [...current, { id: uploadId, file }]);
+        setAttachmentError(`Could not upload ${file.name}. Retry or remove it below.`);
       } finally {
         setUploadingFiles((current) => current.filter((item) => item.id !== uploadId));
       }
     }
-  }, [addInputRef, companyId, conversationId, streaming, uploadingFiles.length]);
+  }, [addInputRef, companyId, conversationId, failedUploads, streaming, uploadingFiles.length]);
 
   const handleCommanderFileInput = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.target.files ?? []);
@@ -1932,12 +1939,33 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
             aria-label="Attach files"
             onChange={handleCommanderFileInput}
           />
-          {(uploadingFiles.length > 0 || attachmentError) && (
+          {(uploadingFiles.length > 0 || failedUploads.length > 0 || attachmentError) && (
             <div className="border-b border-border/70 px-2 py-2 text-xs" role="status" aria-live="polite">
               {uploadingFiles.map((file) => (
                 <div key={file.id} className="flex items-center gap-2 text-muted-foreground">
                   <Loader2 className="size-3 animate-spin" aria-hidden="true" />
                   <span className="truncate">Uploading {file.name}…</span>
+                </div>
+              ))}
+              {failedUploads.map((item) => (
+                <div key={item.id} className="flex items-center gap-2 text-destructive">
+                  <AlertCircle className="size-3 shrink-0" aria-hidden="true" />
+                  <span className="min-w-0 flex-1 truncate">{item.file.name} failed</span>
+                  <button
+                    type="button"
+                    className="rounded px-1 font-medium hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-focus-ring"
+                    onClick={() => void uploadCommanderFiles([item.file], item.id)}
+                  >
+                    Retry
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`Remove failed ${item.file.name} attachment`}
+                    className="rounded p-0.5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-focus-ring"
+                    onClick={() => setFailedUploads((current) => current.filter((failed) => failed.id !== item.id))}
+                  >
+                    <X className="size-3" aria-hidden="true" />
+                  </button>
                 </div>
               ))}
               {attachmentError && <p className="mt-1 text-destructive">{attachmentError}</p>}
