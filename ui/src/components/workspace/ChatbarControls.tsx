@@ -21,6 +21,12 @@ interface ChatbarControlsProps {
   showModelLabel?: boolean;
   sendDisabled: boolean;
   sendPending: boolean;
+  activeRun?: boolean;
+  interruptRequested?: boolean;
+  onInterruptChange?: (value: boolean) => void;
+  closedTask?: boolean;
+  reopenRequested?: boolean;
+  onReopenChange?: (value: boolean) => void;
 }
 
 export function ChatbarControls({
@@ -32,6 +38,12 @@ export function ChatbarControls({
   showModelLabel = true,
   sendDisabled,
   sendPending,
+  activeRun = false,
+  interruptRequested = false,
+  onInterruptChange,
+  closedTask = false,
+  reopenRequested = false,
+  onReopenChange,
 }: ChatbarControlsProps) {
   // Sprint 2A: API adapters removed — model is read-only now; CLI tool picks
   // its own model so onModelChange is no longer wired.
@@ -59,6 +71,31 @@ export function ChatbarControls({
           <span className="text-[11px] text-muted-foreground px-1.5 py-0.5 bg-muted/40 rounded">
             {displayModel}
           </span>
+        )}
+      </div>
+
+      <div className="flex items-center gap-3 text-[11px] text-muted-foreground">
+        {activeRun && onInterruptChange && !closedTask && (
+          <label className="inline-flex items-center gap-1.5 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={interruptRequested}
+              onChange={(event) => onInterruptChange(event.target.checked)}
+              className="rounded border-border"
+            />
+            Interrupt active run
+          </label>
+        )}
+        {closedTask && onReopenChange && (
+          <label className="inline-flex items-center gap-1.5 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={reopenRequested}
+              onChange={(event) => onReopenChange(event.target.checked)}
+              className="rounded border-border"
+            />
+            Re-open task
+          </label>
         )}
       </div>
 

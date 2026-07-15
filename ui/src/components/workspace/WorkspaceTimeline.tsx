@@ -94,6 +94,8 @@ export function WorkspaceTimeline({
   const [modelOverride, setModelOverride] = useState<string | null>(null);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [composerError, setComposerError] = useState<string | null>(null);
+  const [interruptRequested, setInterruptRequested] = useState(false);
+  const [reopenRequested, setReopenRequested] = useState(true);
   const [hasUnseenActivity, setHasUnseenActivity] = useState(false);
   const [highlightedAnchorId, setHighlightedAnchorId] = useState<string | null>(null);
   const [anchorAnnouncement, setAnchorAnnouncement] = useState("");
@@ -320,12 +322,20 @@ export function WorkspaceTimeline({
   // --- Mutations ---
 
   const sendMessage = useMutation({
-    mutationFn: async ({ text, files }: { text: string; files: File[]; revision: number }) => {
+    mutationFn: async ({ text, files, reopen, interrupt }: { text: string; files: File[]; revision: number; reopen?: boolean; interrupt?: boolean }) => {
       if (files.length > 0) {
-        await issuesApi.addCommentWithAttachments(issueId, text, files);
+        if (reopen !== undefined || interrupt !== undefined) {
+          await issuesApi.addCommentWithAttachments(issueId, text, files, reopen, interrupt);
+        } else {
+          await issuesApi.addCommentWithAttachments(issueId, text, files);
+        }
         return;
       }
-      await issuesApi.addComment(issueId, text);
+      if (reopen !== undefined || interrupt !== undefined) {
+        await issuesApi.addComment(issueId, text, reopen, interrupt);
+      } else {
+        await issuesApi.addComment(issueId, text);
+      }
     },
     onSuccess: (_data, submitted) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(issueId) });
@@ -337,6 +347,8 @@ export function WorkspaceTimeline({
         setChatInput("");
         setSelectedFiles([]);
         setModelOverride(null); // Reset model override after send
+        setInterruptRequested(false);
+        setReopenRequested(true);
       }
     },
     onError: (error) => {
@@ -402,6 +414,10 @@ export function WorkspaceTimeline({
       text: chatInput.trim(),
       files: [...selectedFiles],
       revision: composerRevisionRef.current,
+      reopen: issue?.status === "done" || issue?.status === "cancelled" ? (reopenRequested ? true : undefined) : undefined,
+      interrupt: hasLiveRuns && !(issue?.status === "done" || issue?.status === "cancelled") && interruptRequested
+        ? true
+        : undefined,
     });
   };
 
@@ -645,7 +661,7 @@ export function WorkspaceTimeline({
 
           {/* Controls row */}
           <div className="border-t border-border/50">
-            <ChatbarControls
+              <ChatbarControls
               adapterType={agentAdapterType}
               defaultModel={agentDefaultModel}
               selectedModel={modelOverride}
@@ -653,8 +669,14 @@ export function WorkspaceTimeline({
               onAttach={handleAttach}
               onSend={handleSend}
               sendDisabled={!canSend || sendMessage.isPending}
-              sendPending={sendMessage.isPending}
-            />
+                sendPending={sendMessage.isPending}
+                activeRun={hasLiveRuns}
+                interruptRequested={interruptRequested}
+                onInterruptChange={setInterruptRequested}
+                closedTask={issue?.status === "done" || issue?.status === "cancelled"}
+                reopenRequested={reopenRequested}
+                onReopenChange={setReopenRequested}
+              />
           </div>
         </div>
       )}
@@ -728,6 +750,12 @@ export function WorkspaceTimeline({
               showModelLabel={false}
               sendDisabled={!canSend || sendMessage.isPending}
               sendPending={sendMessage.isPending}
+              activeRun={hasLiveRuns}
+              interruptRequested={interruptRequested}
+              onInterruptChange={setInterruptRequested}
+              closedTask={issue?.status === "done" || issue?.status === "cancelled"}
+              reopenRequested={reopenRequested}
+              onReopenChange={setReopenRequested}
             />
           </div>
         </div>
