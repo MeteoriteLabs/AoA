@@ -161,8 +161,21 @@ export function deserializeComposerDraft(raw: string | null, now = Date.now()): 
   }
 }
 
-function readDraft(storage: ComposerDraftStorage | null, storageKey: string | null, now: () => number): ComposerDraftValue {
-  if (!storage || !storageKey) return { ...EMPTY_COMPOSER_DRAFT, tokens: [], attachments: [] };
+function cloneDraft(draft: ComposerDraftValue): ComposerDraftValue {
+  return {
+    text: draft.text,
+    tokens: [...draft.tokens],
+    attachments: [...draft.attachments],
+  };
+}
+
+function readDraft(
+  storage: ComposerDraftStorage | null,
+  storageKey: string | null,
+  now: () => number,
+  fallback: ComposerDraftValue = EMPTY_COMPOSER_DRAFT,
+): ComposerDraftValue {
+  if (!storage || !storageKey) return cloneDraft(fallback);
   try {
     const raw = storage.getItem(storageKey);
     const restored = deserializeComposerDraft(raw, now());
@@ -171,7 +184,7 @@ function readDraft(storage: ComposerDraftStorage | null, storageKey: string | nu
   } catch {
     // Storage failures are non-fatal: the composer remains usable in memory.
   }
-  return { ...EMPTY_COMPOSER_DRAFT, tokens: [], attachments: [] };
+  return cloneDraft(fallback);
 }
 
 export interface UseComposerDraftResult {
@@ -197,24 +210,22 @@ export function useComposerDraft(
   const storageKey = key ? composerDraftStorageKey(key) : null;
   const initialDraft = { ...EMPTY_COMPOSER_DRAFT, ...initial, tokens: initial.tokens ?? [], attachments: initial.attachments ?? [] };
   const [draft, setDraftState] = useState<ComposerDraftValue>(() =>
-    storageKey ? readDraft(storage, storageKey, now) : initialDraft,
+    storageKey ? readDraft(storage, storageKey, now, initialDraft) : initialDraft,
   );
   const hydratedKey = useRef(storageKey);
-  const initialized = useRef(true);
+  const needsHydration = hydratedKey.current !== storageKey;
 
   useEffect(() => {
     if (hydratedKey.current === storageKey) return;
     hydratedKey.current = storageKey;
-    setDraftState(storageKey ? readDraft(storage, storageKey, now) : initialDraft);
+    setDraftState(storageKey ? readDraft(storage, storageKey, now, initialDraft) : initialDraft);
   }, [initialDraft, now, storage, storageKey]);
 
   useEffect(() => {
-    if (!initialized.current) return;
-    initialized.current = false;
-  }, []);
-
-  useEffect(() => {
-    if (hydratedKey.current !== storageKey || !storage || !storageKey) return;
+    // On a host transition, the hydration effect above runs before this effect
+    // but its state update is deferred. Use the render-time guard so the old
+    // draft can never be written into the new entity's key.
+    if (needsHydration || hydratedKey.current !== storageKey || !storage || !storageKey) return;
     try {
       if (isComposerDraftEmpty(draft)) {
         storage.removeItem(storageKey);
@@ -224,7 +235,7 @@ export function useComposerDraft(
     } catch {
       // Quota/security errors must never disable typing or submission.
     }
-  }, [draft, now, options.ttlMs, storage, storageKey]);
+  }, [draft, needsHydration, now, options.ttlMs, storage, storageKey]);
 
   const setDraft = useCallback((next: ComposerDraftUpdater) => {
     setDraftState((previous) => {
@@ -247,4 +258,3 @@ export function useComposerDraft(
 
   return { draft, setDraft, clearDraft, storageKey, storageAvailable: storage !== null };
 }
-

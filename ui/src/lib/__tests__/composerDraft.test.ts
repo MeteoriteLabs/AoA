@@ -60,6 +60,16 @@ describe("composer draft contract", () => {
     expect(second.result.current.draft.text).toBe("");
   });
 
+  it("does not copy the previous entity draft during a host transition", () => {
+    const storage = memoryStorage();
+    const first = renderHook(({ entityId }) => useComposerDraft({ ...key, entityId }, {}, { storage, now: () => 100 }), {
+      initialProps: { entityId: "first" },
+    });
+    act(() => first.result.current.setDraft({ text: "first only" }));
+    act(() => first.rerender({ entityId: "second" }));
+    expect(first.result.current.draft.text).toBe("");
+  });
+
   it("remains usable when storage is unavailable or throws", () => {
     const broken: ComposerDraftStorage = {
       getItem: () => { throw new Error("blocked"); },
@@ -72,4 +82,3 @@ describe("composer draft contract", () => {
     expect(result.current.draft.text).toBe("still works");
   });
 });
-
