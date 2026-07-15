@@ -9,14 +9,15 @@ vi.mock("@armyofagents/db", () => ({
 }));
 
 const mockResolveType = vi.hoisted(() => vi.fn());
+const mockProbeConfig = vi.hoisted(() => vi.fn(async () => ({})));
 const mockFindAdapter = vi.hoisted(() => vi.fn());
 const mockTestEnvironment = vi.hoisted(() => vi.fn());
 const mockAssertRole = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/commander-verify.js", async (importActual) => {
   const actual = (await importActual()) as Record<string, unknown>;
-  // keep the real classifier; stub only the db-touching resolver
-  return { ...actual, resolveCommanderAdapterType: mockResolveType };
+  // keep the real classifier; stub the db-touching resolvers
+  return { ...actual, resolveCommanderAdapterType: mockResolveType, resolveCommanderProbeConfig: mockProbeConfig };
 });
 vi.mock("../adapters/registry.js", () => ({ findServerAdapter: mockFindAdapter }));
 vi.mock("../middleware/rbac.js", () => ({ assertRole: mockAssertRole }));
