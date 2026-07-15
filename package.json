@@ -22,6 +22,7 @@
     "test:commander-evidence": "tsx tests/e2e/scripts/verify-commander-evidence.ts",
     "test:e2e": "playwright test --config=tests/e2e/playwright.config.ts",
     "test:e2e:headed": "playwright test --config=tests/e2e/playwright.config.ts --headed",
+    "test:e2e:real-provider": "playwright test --config=tests/e2e/playwright.real-provider.config.ts",
     "test:release-smoke": "playwright test --config=tests/release-smoke/playwright.config.ts",
     "test:release-smoke:headed": "playwright test --config=tests/release-smoke/playwright.config.ts --headed",
     "db:generate": "pnpm --filter @armyofagents/db generate",
