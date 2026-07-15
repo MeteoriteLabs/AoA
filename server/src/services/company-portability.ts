@@ -158,6 +158,8 @@ type ImportPlanInternal = {
   selectedSkills: CompanyPortabilitySkillManifestEntry[];
   selectedRoutines: CompanyPortabilityRoutineManifestEntry[];
   mutableWorkflowTemplateSlugs: Set<string>;
+  replaceWorkflowTemplateSlugs: Set<string>;
+  workflowTemplatePolicyChangeSlugs: Set<string>;
 };
 
 type ImportAuthorizationContext = {
@@ -202,11 +204,7 @@ function getImportAuthorizationContext(plan: ImportPlanInternal): ImportAuthoriz
   );
   const workflowTemplatePolicyChanges =
     plan.include.workflowTemplates === true &&
-    (manifest.workflowTemplates ?? []).some(
-      (template) =>
-        plan.mutableWorkflowTemplateSlugs.has(getWorkflowTemplateManifestSlug(template)) &&
-        template.agentCompletionPolicyOverride !== undefined,
-    );
+    plan.workflowTemplatePolicyChangeSlugs.size > 0;
 
   const changesCompletionPolicy =
     companyPolicyChanges ||
@@ -1936,9 +1934,15 @@ export function companyPortabilityService(db: Db) {
     const mutableWorkflowTemplateSlugs = new Set(
       selectedWorkflowTemplates.map(getWorkflowTemplateManifestSlug),
     );
+    const workflowTemplatePolicyChangeSlugs = new Set(
+      selectedWorkflowTemplates
+        .filter((template) => template.agentCompletionPolicyOverride != null)
+        .map(getWorkflowTemplateManifestSlug),
+    );
+    const replaceWorkflowTemplateSlugs = new Set<string>();
     if (
       selectedWorkflowTemplates.length > 0 &&
-      collisionStrategy === "skip" &&
+      (collisionStrategy === "skip" || collisionStrategy === "replace") &&
       input.target.mode === "existing_company"
     ) {
       const existingWorkflowTemplateRows = (await db
@@ -1949,7 +1953,21 @@ export function companyPortabilityService(db: Db) {
         existingWorkflowTemplateRows.map((row) => synthesizeWorkflowTemplateSlug(row.name)),
       );
       for (const slug of existingWorkflowTemplateSlugs) {
-        mutableWorkflowTemplateSlugs.delete(slug);
+        const matchingTemplates = selectedWorkflowTemplates.filter(
+          (template) => getWorkflowTemplateManifestSlug(template) === slug,
+        );
+        if (matchingTemplates.length === 0) continue;
+
+        if (collisionStrategy === "skip") {
+          mutableWorkflowTemplateSlugs.delete(slug);
+          workflowTemplatePolicyChangeSlugs.delete(slug);
+          continue;
+        }
+
+        replaceWorkflowTemplateSlugs.add(slug);
+        if (matchingTemplates.some((template) => template.agentCompletionPolicyOverride === null)) {
+          workflowTemplatePolicyChangeSlugs.add(slug);
+        }
       }
     }
 
@@ -1987,6 +2005,8 @@ export function companyPortabilityService(db: Db) {
       selectedSkills,
       selectedRoutines,
       mutableWorkflowTemplateSlugs,
+      replaceWorkflowTemplateSlugs,
+      workflowTemplatePolicyChangeSlugs,
     };
   }
 
@@ -3175,6 +3195,14 @@ export function companyPortabilityService(db: Db) {
             continue;
           }
           if (plan.collisionStrategy === "replace") {
+            if (!plan.replaceWorkflowTemplateSlugs.has(bundleSlug)) {
+              warnings.push({
+                kind: "skipped_update",
+                section: "workflowTemplates",
+                message: `Skipped workflow template "${tpl.name}" because it appeared after import authorization. Retry the import to replace it.`,
+              });
+              continue;
+            }
             const existingId = typeof collision.id === "string" ? collision.id : null;
             if (existingId) {
               await db

@@ -434,6 +434,52 @@ describe("company-portability workflow templates — import", () => {
     });
   });
 
+  it("does not require task assignment permission when a new template inherits policy", async () => {
+    const { db, captured } = createSequenceDb({
+      selects: [[], []],
+      inserts: [[{ id: "new-wt" }]],
+    });
+    const svc = companyPortabilityService(db as any);
+    const manifest = baseManifest({
+      workflowTemplates: [
+        {
+          slug: "ship-feature",
+          name: "Ship Feature",
+          description: null,
+          workspaceMode: "per_task",
+          agentCompletionPolicyOverride: null,
+          steps: [{ order: 1, title: "Spec" }],
+          dependencies: [],
+        },
+      ],
+    });
+
+    let authorizationContext: { requiresTaskAssignmentPermission: boolean } | null = null;
+    await svc.importBundle(
+      {
+        source: {
+          type: "inline",
+          manifest,
+          files: { "COMPANY.md": "---\nkind: company\nname: Source Co\n---\n" },
+        },
+        target: { mode: "existing_company", companyId: TGT_CO_ID },
+        include: { agents: false, internalAgentConfig: false, workflowTemplates: true },
+      },
+      "importer-user-1",
+      async (context) => {
+        authorizationContext = context;
+      },
+    );
+
+    expect(authorizationContext?.requiresTaskAssignmentPermission).toBe(false);
+    expect(captured.inserts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: "Ship Feature",
+        agentCompletionPolicyOverride: null,
+      }),
+    ]));
+  });
+
   it("freezes a skipped workflow template so a later deletion cannot authorize an insert", async () => {
     const { db, captured } = createSequenceDb({
       selects: [
@@ -530,6 +576,7 @@ describe("company-portability workflow templates — import", () => {
     const { db, captured } = createSequenceDb({
       selects: [
         [{ id: "existing-wt", companyId: TGT_CO_ID, name: "Ship Feature" }],
+        [{ id: "existing-wt", companyId: TGT_CO_ID, name: "Ship Feature" }],
       ],
       updates: [[{ id: "existing-wt" }]],
     });
@@ -569,6 +616,168 @@ describe("company-portability workflow templates — import", () => {
     expect(updated).toBeDefined();
     expect(updated).not.toHaveProperty("agentCompletionPolicyOverride");
     expect(captured.inserts.length).toBe(0);
+  });
+
+  it("requires task assignment permission when replace clears a template override", async () => {
+    const existingTemplate = {
+      id: "existing-wt",
+      companyId: TGT_CO_ID,
+      name: "Ship Feature",
+      agentCompletionPolicyOverride: "agent_can_complete",
+    };
+    const { db, captured } = createSequenceDb({
+      selects: [[existingTemplate], [existingTemplate]],
+      updates: [[{ id: "existing-wt" }]],
+    });
+    const svc = companyPortabilityService(db as any);
+    const manifest = baseManifest({
+      workflowTemplates: [
+        {
+          slug: "ship-feature",
+          name: "Ship Feature",
+          description: "Use company policy",
+          workspaceMode: "per_task",
+          agentCompletionPolicyOverride: null,
+          steps: [{ order: 1, title: "Spec" }],
+          dependencies: [],
+        },
+      ],
+    });
+
+    let authorizationContext: { requiresTaskAssignmentPermission: boolean } | null = null;
+    await svc.importBundle(
+      {
+        source: {
+          type: "inline",
+          manifest,
+          files: { "COMPANY.md": "---\nkind: company\nname: Source Co\n---\n" },
+        },
+        target: { mode: "existing_company", companyId: TGT_CO_ID },
+        include: { agents: false, internalAgentConfig: false, workflowTemplates: true },
+        collisionStrategy: "replace",
+      },
+      "importer-user-1",
+      async (context) => {
+        authorizationContext = context;
+      },
+    );
+
+    expect(authorizationContext?.requiresTaskAssignmentPermission).toBe(true);
+    expect(captured.updates).toEqual(expect.arrayContaining([
+      expect.objectContaining({ agentCompletionPolicyOverride: null }),
+    ]));
+  });
+
+  it("checks every duplicate template entry before authorizing a replacement", async () => {
+    const existingTemplate = {
+      id: "existing-wt",
+      companyId: TGT_CO_ID,
+      name: "Ship Feature",
+      agentCompletionPolicyOverride: "agent_can_complete",
+    };
+    const { db, captured } = createSequenceDb({
+      selects: [[existingTemplate], [existingTemplate]],
+      updates: [[{ id: "existing-wt" }], [{ id: "existing-wt" }]],
+    });
+    const svc = companyPortabilityService(db as any);
+    const manifest = baseManifest({
+      workflowTemplates: [
+        {
+          slug: "ship-feature",
+          name: "Ship Feature",
+          description: "First entry",
+          workspaceMode: "per_task",
+          steps: [{ order: 1, title: "Spec" }],
+          dependencies: [],
+        },
+        {
+          slug: "ship-feature",
+          name: "Ship Feature",
+          description: "Second entry",
+          workspaceMode: "per_task",
+          agentCompletionPolicyOverride: null,
+          steps: [{ order: 1, title: "Spec" }],
+          dependencies: [],
+        },
+      ],
+    });
+
+    let authorizationContext: { requiresTaskAssignmentPermission: boolean } | null = null;
+    await svc.importBundle(
+      {
+        source: {
+          type: "inline",
+          manifest,
+          files: { "COMPANY.md": "---\nkind: company\nname: Source Co\n---\n" },
+        },
+        target: { mode: "existing_company", companyId: TGT_CO_ID },
+        include: { agents: false, internalAgentConfig: false, workflowTemplates: true },
+        collisionStrategy: "replace",
+      },
+      "importer-user-1",
+      async (context) => {
+        authorizationContext = context;
+      },
+    );
+
+    expect(authorizationContext?.requiresTaskAssignmentPermission).toBe(true);
+    expect(captured.updates).toEqual(expect.arrayContaining([
+      expect.objectContaining({ agentCompletionPolicyOverride: null }),
+    ]));
+  });
+
+  it("does not replace a template that appears after import authorization", async () => {
+    const lateTemplate = {
+      id: "late-wt",
+      companyId: TGT_CO_ID,
+      name: "Ship Feature",
+      agentCompletionPolicyOverride: "agent_can_complete",
+    };
+    const { db, captured } = createSequenceDb({
+      selects: [[], [lateTemplate]],
+    });
+    const svc = companyPortabilityService(db as any);
+    const manifest = baseManifest({
+      workflowTemplates: [
+        {
+          slug: "ship-feature",
+          name: "Ship Feature",
+          description: "Use company policy",
+          workspaceMode: "per_task",
+          agentCompletionPolicyOverride: null,
+          steps: [{ order: 1, title: "Spec" }],
+          dependencies: [],
+        },
+      ],
+    });
+
+    let authorizationContext: { requiresTaskAssignmentPermission: boolean } | null = null;
+    const result = await svc.importBundle(
+      {
+        source: {
+          type: "inline",
+          manifest,
+          files: { "COMPANY.md": "---\nkind: company\nname: Source Co\n---\n" },
+        },
+        target: { mode: "existing_company", companyId: TGT_CO_ID },
+        include: { agents: false, internalAgentConfig: false, workflowTemplates: true },
+        collisionStrategy: "replace",
+      },
+      "importer-user-1",
+      async (context) => {
+        authorizationContext = context;
+      },
+    );
+
+    expect(authorizationContext?.requiresTaskAssignmentPermission).toBe(false);
+    expect(captured.updates).toHaveLength(0);
+    expect(captured.inserts).toHaveLength(0);
+    expect(result.warnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "skipped_update",
+        section: "workflowTemplates",
+      }),
+    ]));
   });
 
   it("workflowTemplates section is not warned as unknown_section", async () => {
