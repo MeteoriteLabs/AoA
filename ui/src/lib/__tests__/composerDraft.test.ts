@@ -1,0 +1,75 @@
+import { act, renderHook } from "@testing-library/react";
+import { describe, expect, it } from "vitest";
+import {
+  COMPOSER_DRAFT_VERSION,
+  composerDraftStorageKey,
+  deserializeComposerDraft,
+  serializeComposerDraft,
+  useComposerDraft,
+  type ComposerDraftStorage,
+} from "../composerDraft";
+
+function memoryStorage(): ComposerDraftStorage {
+  const values = new Map<string, string>();
+  return {
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => { values.set(key, value); },
+    removeItem: (key) => { values.delete(key); },
+  };
+}
+
+const key = { companyId: "co:1", userId: "u/2", surface: "discussion" as const, entityId: "d:3", replyTargetId: null };
+
+describe("composer draft contract", () => {
+  it("keys drafts by company, user, surface, entity, and reply target", () => {
+    expect(composerDraftStorageKey(key)).not.toBe(composerDraftStorageKey({ ...key, replyTargetId: "entry-4" }));
+    expect(composerDraftStorageKey(key)).toContain("co%3A1");
+    expect(composerDraftStorageKey(key)).toContain("u%2F2");
+  });
+
+  it("round-trips text, tokens, and attachment refs without byte-bearing fields", () => {
+    const raw = serializeComposerDraft({
+      text: "hello",
+      tokens: [{ type: "mention", id: "agent-1", label: "Ada" }],
+      attachments: [{ id: "asset-1", name: "brief.pdf", mimeType: "application/pdf", artifactId: "artifact-1" }],
+    }, 100, 1_000);
+    const parsed = JSON.parse(raw);
+    expect(parsed.version).toBe(COMPOSER_DRAFT_VERSION);
+    expect(parsed.draft.attachments[0]).not.toHaveProperty("bytes");
+    expect(deserializeComposerDraft(raw, 500)).toEqual({
+      text: "hello",
+      tokens: [{ type: "mention", id: "agent-1", label: "Ada" }],
+      attachments: [{ id: "asset-1", name: "brief.pdf", mimeType: "application/pdf", artifactId: "artifact-1" }],
+    });
+  });
+
+  it("rejects malformed, future-version, and expired records", () => {
+    expect(deserializeComposerDraft("not-json", 100)).toBeNull();
+    expect(deserializeComposerDraft(JSON.stringify({ version: COMPOSER_DRAFT_VERSION + 1, expiresAt: 1000, draft: {} }), 100)).toBeNull();
+    expect(deserializeComposerDraft(JSON.stringify({ version: COMPOSER_DRAFT_VERSION, expiresAt: 100, draft: {} }), 100)).toBeNull();
+  });
+
+  it("recovers the scoped draft and persists updates", () => {
+    const storage = memoryStorage();
+    const first = renderHook(() => useComposerDraft(key, {}, { storage, now: () => 100 }));
+    act(() => first.result.current.setDraft({ text: "recover me" }));
+    first.unmount();
+    const second = renderHook(() => useComposerDraft(key, {}, { storage, now: () => 101 }));
+    expect(second.result.current.draft.text).toBe("recover me");
+    act(() => second.result.current.clearDraft());
+    expect(second.result.current.draft.text).toBe("");
+  });
+
+  it("remains usable when storage is unavailable or throws", () => {
+    const broken: ComposerDraftStorage = {
+      getItem: () => { throw new Error("blocked"); },
+      setItem: () => { throw new Error("blocked"); },
+      removeItem: () => { throw new Error("blocked"); },
+    };
+    const result = renderHook(() => useComposerDraft(key, {}, { storage: broken })).result;
+    expect(result.current.storageAvailable).toBe(true);
+    act(() => result.current.setDraft({ text: "still works" }));
+    expect(result.current.draft.text).toBe("still works");
+  });
+});
+
