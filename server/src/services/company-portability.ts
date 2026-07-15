@@ -158,7 +158,7 @@ type ImportPlanInternal = {
   selectedSkills: CompanyPortabilitySkillManifestEntry[];
   selectedRoutines: CompanyPortabilityRoutineManifestEntry[];
   mutableWorkflowTemplateSlugs: Set<string>;
-  replaceWorkflowTemplateSlugs: Set<string>;
+  replaceWorkflowTemplateIdsBySlug: Map<string, Set<string>>;
   workflowTemplatePolicyChangeSlugs: Set<string>;
 };
 
@@ -1939,20 +1939,21 @@ export function companyPortabilityService(db: Db) {
         .filter((template) => template.agentCompletionPolicyOverride != null)
         .map(getWorkflowTemplateManifestSlug),
     );
-    const replaceWorkflowTemplateSlugs = new Set<string>();
+    const replaceWorkflowTemplateIdsBySlug = new Map<string, Set<string>>();
     if (
       selectedWorkflowTemplates.length > 0 &&
       (collisionStrategy === "skip" || collisionStrategy === "replace") &&
       input.target.mode === "existing_company"
     ) {
       const existingWorkflowTemplateRows = (await db
-        .select({ name: workflowTemplates.name })
+        .select({ id: workflowTemplates.id, name: workflowTemplates.name })
         .from(workflowTemplates)
-        .where(eq(workflowTemplates.companyId, input.target.companyId))) as Array<{ name: string }>;
-      const existingWorkflowTemplateSlugs = new Set(
-        existingWorkflowTemplateRows.map((row) => synthesizeWorkflowTemplateSlug(row.name)),
-      );
-      for (const slug of existingWorkflowTemplateSlugs) {
+        .where(eq(workflowTemplates.companyId, input.target.companyId))) as Array<{
+          id: string;
+          name: string;
+        }>;
+      for (const existingTemplate of existingWorkflowTemplateRows) {
+        const slug = synthesizeWorkflowTemplateSlug(existingTemplate.name);
         const matchingTemplates = selectedWorkflowTemplates.filter(
           (template) => getWorkflowTemplateManifestSlug(template) === slug,
         );
@@ -1964,7 +1965,9 @@ export function companyPortabilityService(db: Db) {
           continue;
         }
 
-        replaceWorkflowTemplateSlugs.add(slug);
+        const authorizedIds = replaceWorkflowTemplateIdsBySlug.get(slug) ?? new Set<string>();
+        authorizedIds.add(existingTemplate.id);
+        replaceWorkflowTemplateIdsBySlug.set(slug, authorizedIds);
         if (matchingTemplates.some((template) => template.agentCompletionPolicyOverride === null)) {
           workflowTemplatePolicyChangeSlugs.add(slug);
         }
@@ -2005,7 +2008,7 @@ export function companyPortabilityService(db: Db) {
       selectedSkills,
       selectedRoutines,
       mutableWorkflowTemplateSlugs,
-      replaceWorkflowTemplateSlugs,
+      replaceWorkflowTemplateIdsBySlug,
       workflowTemplatePolicyChangeSlugs,
     };
   }
@@ -3195,31 +3198,33 @@ export function companyPortabilityService(db: Db) {
             continue;
           }
           if (plan.collisionStrategy === "replace") {
-            if (!plan.replaceWorkflowTemplateSlugs.has(bundleSlug)) {
+            const existingId = typeof collision.id === "string" ? collision.id : null;
+            const authorizedTemplateIds = plan.replaceWorkflowTemplateIdsBySlug.get(bundleSlug);
+            if (!existingId || !authorizedTemplateIds?.has(existingId)) {
               warnings.push({
                 kind: "skipped_update",
                 section: "workflowTemplates",
-                message: `Skipped workflow template "${tpl.name}" because it appeared after import authorization. Retry the import to replace it.`,
+                message: `Skipped workflow template "${tpl.name}" because the matching template changed after import authorization. Retry the import to replace it.`,
               });
               continue;
             }
-            const existingId = typeof collision.id === "string" ? collision.id : null;
-            if (existingId) {
-              await db
-                .update(workflowTemplates)
-                .set({
-                  name: tpl.name,
-                  description: tpl.description ?? null,
-                  workspaceMode: tpl.workspaceMode,
-                  ...(tpl.agentCompletionPolicyOverride !== undefined
-                    ? { agentCompletionPolicyOverride: tpl.agentCompletionPolicyOverride }
-                    : {}),
-                  steps: tpl.steps as unknown,
-                  dependencies: tpl.dependencies as unknown,
-                  updatedAt: new Date(),
-                })
-                .where(eq(workflowTemplates.id, existingId));
-            }
+            await db
+              .update(workflowTemplates)
+              .set({
+                name: tpl.name,
+                description: tpl.description ?? null,
+                workspaceMode: tpl.workspaceMode,
+                ...(tpl.agentCompletionPolicyOverride !== undefined
+                  ? { agentCompletionPolicyOverride: tpl.agentCompletionPolicyOverride }
+                  : {}),
+                steps: tpl.steps as unknown,
+                dependencies: tpl.dependencies as unknown,
+                updatedAt: new Date(),
+              })
+              .where(and(
+                eq(workflowTemplates.id, existingId),
+                eq(workflowTemplates.companyId, targetCompany.id),
+              ));
             continue;
           }
           // rename: derive a unique name + slug

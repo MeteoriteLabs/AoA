@@ -780,6 +780,118 @@ describe("company-portability workflow templates — import", () => {
     ]));
   });
 
+  it("does not replace a different template that takes over an authorized slug", async () => {
+    const authorizedTemplate = {
+      id: "authorized-wt",
+      companyId: TGT_CO_ID,
+      name: "Ship Feature",
+      agentCompletionPolicyOverride: "agent_can_complete",
+    };
+    const replacementTemplate = {
+      id: "replacement-wt",
+      companyId: TGT_CO_ID,
+      name: "Ship Feature",
+      agentCompletionPolicyOverride: "review_required",
+    };
+    const { db, captured } = createSequenceDb({
+      selects: [[authorizedTemplate], [replacementTemplate]],
+    });
+    const svc = companyPortabilityService(db as any);
+    const manifest = baseManifest({
+      workflowTemplates: [
+        {
+          slug: "ship-feature",
+          name: "Ship Feature",
+          description: "Use company policy",
+          workspaceMode: "per_task",
+          agentCompletionPolicyOverride: null,
+          steps: [{ order: 1, title: "Spec" }],
+          dependencies: [],
+        },
+      ],
+    });
+
+    let authorizationContext: { requiresTaskAssignmentPermission: boolean } | null = null;
+    const result = await svc.importBundle(
+      {
+        source: {
+          type: "inline",
+          manifest,
+          files: { "COMPANY.md": "---\nkind: company\nname: Source Co\n---\n" },
+        },
+        target: { mode: "existing_company", companyId: TGT_CO_ID },
+        include: { agents: false, internalAgentConfig: false, workflowTemplates: true },
+        collisionStrategy: "replace",
+      },
+      "importer-user-1",
+      async (context) => {
+        authorizationContext = context;
+      },
+    );
+
+    expect(authorizationContext?.requiresTaskAssignmentPermission).toBe(true);
+    expect(captured.updates).toHaveLength(0);
+    expect(captured.inserts).toHaveLength(0);
+    expect(result.warnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "skipped_update",
+        section: "workflowTemplates",
+      }),
+    ]));
+  });
+
+  it("accepts any pre-authorized template when existing names share a slug", async () => {
+    const firstTemplate = {
+      id: "first-wt",
+      companyId: TGT_CO_ID,
+      name: "Ship Feature",
+    };
+    const secondTemplate = {
+      id: "second-wt",
+      companyId: TGT_CO_ID,
+      name: "Ship Feature",
+    };
+    const { db, captured } = createSequenceDb({
+      selects: [
+        [firstTemplate, secondTemplate],
+        [secondTemplate, firstTemplate],
+      ],
+      updates: [[firstTemplate]],
+    });
+    const svc = companyPortabilityService(db as any);
+    const manifest = baseManifest({
+      workflowTemplates: [
+        {
+          slug: "ship-feature",
+          name: "Ship Feature",
+          description: "Replacement content",
+          workspaceMode: "per_task",
+          steps: [{ order: 1, title: "Spec" }],
+          dependencies: [],
+        },
+      ],
+    });
+
+    await svc.importBundle(
+      {
+        source: {
+          type: "inline",
+          manifest,
+          files: { "COMPANY.md": "---\nkind: company\nname: Source Co\n---\n" },
+        },
+        target: { mode: "existing_company", companyId: TGT_CO_ID },
+        include: { agents: false, internalAgentConfig: false, workflowTemplates: true },
+        collisionStrategy: "replace",
+      },
+      "importer-user-1",
+    );
+
+    expect(captured.updates).toEqual(expect.arrayContaining([
+      expect.objectContaining({ description: "Replacement content" }),
+    ]));
+    expect(captured.inserts).toHaveLength(0);
+  });
+
   it("workflowTemplates section is not warned as unknown_section", async () => {
     const { db } = createSequenceDb({
       selects: [[]],
