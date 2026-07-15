@@ -3,11 +3,17 @@ import {
   COMPOSER_MAX_ATTACHMENT_BYTES,
 } from "@armyofagents/shared";
 import {
+  attachmentCapability,
   assetResponseToCommanderInputRef,
   validateCommanderAttachmentFiles,
 } from "./commanderAttachments";
 
 describe("Commander attachments", () => {
+  it("assigns explicit runtime capabilities", () => {
+    expect(attachmentCapability("text/plain")).toBe("text-readable");
+    expect(attachmentCapability("image/png")).toBe("vision-readable");
+    expect(attachmentCapability("application/pdf")).toBe("stored-only");
+  });
   it("accepts supported files within the shared count and size limits", () => {
     const image = new File(["image"], "launch.png", { type: "image/png" });
     const pdf = new File(["pdf"], "brief.pdf", { type: "application/pdf" });
@@ -57,7 +63,7 @@ describe("Commander attachments", () => {
       label: "launch-plan.pdf",
       route: "/api/assets/asset-1/content",
       source: "commander-upload",
-      detail: "contentType=application/pdf | byteSize=2048",
+      detail: "contentType=application/pdf | byteSize=2048 | capability=stored-only",
     });
   });
 });

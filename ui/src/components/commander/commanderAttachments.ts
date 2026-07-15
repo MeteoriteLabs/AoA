@@ -11,6 +11,13 @@ export interface CommanderAttachmentSelection {
   errors: string[];
 }
 
+export function attachmentCapability(contentType: string): "text-readable" | "vision-readable" | "stored-only" {
+  const type = contentType.toLowerCase();
+  if (["text/plain", "text/markdown", "application/json"].includes(type)) return "text-readable";
+  if (type.startsWith("image/")) return "vision-readable";
+  return "stored-only";
+}
+
 export function validateCommanderAttachmentFiles(
   files: readonly File[],
   attachedCount: number,
@@ -56,7 +63,6 @@ export function assetResponseToCommanderInputRef(
     label: asset.originalFilename || fallbackFilename,
     route: asset.contentPath,
     source: "commander-upload",
-    detail: `contentType=${asset.contentType} | byteSize=${asset.byteSize}`,
+    detail: `contentType=${asset.contentType} | byteSize=${asset.byteSize} | capability=${attachmentCapability(asset.contentType)}`,
   };
 }
-
