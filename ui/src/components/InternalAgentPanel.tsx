@@ -88,6 +88,7 @@ import {
   commanderInputRefKindLabel,
 } from "@armyofagents/shared";
 import { assetsApi } from "../api/assets";
+import { agentsApi } from "../api/agents";
 import {
   assetResponseToCommanderInputRef,
   validateCommanderAttachmentFiles,
@@ -612,6 +613,12 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
     staleTime: 60 * 1000,
   });
   const allowAlwaysEnabled = runtimeSettings?.runtimeAllowAlwaysEnabled ?? true;
+  const { data: mentionAgents = [] } = useQuery({
+    queryKey: ["commander-mention-agents", companyId],
+    queryFn: () => agentsApi.list(companyId),
+    enabled: !!companyId,
+    staleTime: 60_000,
+  });
 
   // Load history when switching to a specific conversation
   const { data: historyData } = useQuery({
@@ -2033,6 +2040,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
             onSubmit={(text) => void submitCommanderInput(text)}
             onReferenceDrop={({ ref, prompt }) => addInputRef(ref, prompt)}
             onFilesSelected={(files) => void uploadCommanderFiles(files)}
+            mentionOptions={mentionAgents.filter((agent) => agent.status !== "terminated").map((agent) => ({ id: agent.id, name: agent.name }))}
             onEmptyChange={handleEmptyChange}
             onSlashChange={handleSlashChange}
             onKeyDown={handleKeyDown}

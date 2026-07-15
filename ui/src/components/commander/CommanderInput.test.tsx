@@ -83,4 +83,5 @@ describe("CommanderInput", () => {
 
     expect(onFilesSelected).toHaveBeenCalledWith([pdf]);
   });
+
 });

@@ -32,6 +32,8 @@ import type { ActiveRunForIssue, LiveRunForIssue } from "../../api/heartbeats";
 import { useInlineWorkQuestions, WorkQuestionInlineError } from "../work-questions/WorkQuestionInlineList";
 import { WorkQuestionPanel } from "../work-questions/WorkQuestionPanel";
 import { resolveTaskCommentAction } from "../../lib/task-composer-actions";
+import { useComposerDraft } from "../../lib/composerDraft";
+import { useTeamAccess } from "../../hooks/useTeamAccess";
 
 export type TimelineItem =
   | { kind: "run"; ts: string; data: RunForIssue }
@@ -84,6 +86,7 @@ export function WorkspaceTimeline({
   anchorId,
 }: WorkspaceTimelineProps) {
   const { selectedCompanyId } = useCompany();
+  const { currentUser } = useTeamAccess(selectedCompanyId);
   const queryClient = useQueryClient();
   const scrollRef = useRef<HTMLDivElement>(null);
   const isPinnedToBottomRef = useRef(true);
@@ -95,9 +98,22 @@ export function WorkspaceTimeline({
   const [modelOverride, setModelOverride] = useState<string | null>(null);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [composerError, setComposerError] = useState<string | null>(null);
+  const composerDraft = useComposerDraft(
+    selectedCompanyId && currentUser?.userId
+      ? { companyId: selectedCompanyId, userId: currentUser.userId, surface: "task", entityId: issueId }
+      : null,
+  );
   const [interruptRequested, setInterruptRequested] = useState(false);
   const [reopenRequested, setReopenRequested] = useState(true);
   const [hasUnseenActivity, setHasUnseenActivity] = useState(false);
+
+  useEffect(() => {
+    setChatInput(composerDraft.draft.text);
+  }, [composerDraft.storageKey]);
+
+  useEffect(() => {
+    composerDraft.setDraft({ text: chatInput });
+  }, [chatInput]);
   const [highlightedAnchorId, setHighlightedAnchorId] = useState<string | null>(null);
   const [anchorAnnouncement, setAnchorAnnouncement] = useState("");
 
@@ -347,6 +363,7 @@ export function WorkspaceTimeline({
       if (composerRevisionRef.current === submitted.revision) {
         setChatInput("");
         setSelectedFiles([]);
+        composerDraft.clearDraft();
         setModelOverride(null); // Reset model override after send
         setInterruptRequested(false);
         setReopenRequested(true);
