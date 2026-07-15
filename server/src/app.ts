@@ -20,6 +20,7 @@ import { testSupportRoutes } from "./routes/test-support.js";
 import { onboardingEnvironmentRoutes } from "./routes/onboarding-environment.js";
 import { commanderVerifyRoutes } from "./routes/commander-verify.js";
 import { commanderKeyRoutes } from "./routes/commander-key.js";
+import { commanderLoginRoutes } from "./routes/commander-login.js";
 import { userProfileRoutes } from "./routes/user-profiles.js";
 import { operationsHealthRoutes } from "./routes/operations-health.js";
 import { companyRoutes } from "./routes/companies.js";
@@ -257,6 +258,7 @@ export async function createApp(
   app.use("/api", onboardingEnvironmentRoutes(db));
   app.use("/api", commanderVerifyRoutes(db));
   app.use("/api", commanderKeyRoutes(db));
+  app.use("/api", commanderLoginRoutes(db));
   app.use("/api", userProfileRoutes(db));
   // Email/password auth is removed — Google is the only provider (see
   // buildBetterAuthConfig). The dedicated /sign-in/email, /sign-up/email and
