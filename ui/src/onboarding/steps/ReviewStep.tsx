@@ -67,7 +67,10 @@ export function ReviewStep({ ctx, onComplete }: StepProps) {
     <div className="mx-auto max-w-md py-10">
       <h1 className="text-xl font-semibold">You're set up</h1>
       <p className="mt-1 text-sm text-muted-foreground">Review your workspace, then dive in.</p>
-      <div className="mt-6 divide-y divide-border rounded-md border border-border text-sm">
+      <div
+        data-testid="review-summary"
+        className="mt-6 divide-y divide-border rounded-md border border-border text-sm"
+      >
         <Row label="Organization" value={summary.org} />
         <Row label="Environment" value="Local machine — verified" />
         <Row label="Commander" value="Configured & verified" />
