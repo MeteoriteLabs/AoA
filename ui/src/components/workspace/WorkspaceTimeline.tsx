@@ -34,6 +34,7 @@ import { WorkQuestionPanel } from "../work-questions/WorkQuestionPanel";
 import { resolveTaskCommentAction } from "../../lib/task-composer-actions";
 import { useComposerDraft } from "../../lib/composerDraft";
 import { useTeamAccess } from "../../hooks/useTeamAccess";
+import { ComposerFrame } from "../composer/ComposerFrame";
 
 export type TimelineItem =
   | { kind: "run"; ts: string; data: RunForIssue }
@@ -621,7 +622,7 @@ export function WorkspaceTimeline({
       )}
 
       {assignedAgent && (
-        <div className="shrink-0 mx-3 mb-3 border border-border rounded-lg overflow-hidden bg-background" data-testid="workspace-chatbar">
+        <ComposerFrame density={compact ? "compact" : "comfortable"} className="shrink-0 mx-3 mb-3 border border-border rounded-lg overflow-hidden bg-background" data-testid="workspace-chatbar">
           {/* Status row */}
           <ChatbarStatusRow
             agentName={assignedAgent.name}
@@ -702,12 +703,12 @@ export function WorkspaceTimeline({
                 onReopenChange={setReopenRequested}
               />
           </div>
-        </div>
+        </ComposerFrame>
       )}
 
       {/* Fallback when no agent assigned */}
       {!assignedAgent && (
-        <div className="shrink-0 mx-3 mb-3 border border-border rounded-lg overflow-hidden bg-background" data-testid="workspace-chatbar-fallback">
+        <ComposerFrame density={compact ? "compact" : "comfortable"} className="shrink-0 mx-3 mb-3 border border-border rounded-lg overflow-hidden bg-background" data-testid="workspace-chatbar-fallback">
           <ChatbarStatusRow
             agentName="No agent assigned"
             adapterType="process"
@@ -782,7 +783,7 @@ export function WorkspaceTimeline({
               onReopenChange={setReopenRequested}
             />
           </div>
-        </div>
+        </ComposerFrame>
       )}
     </div>
   );
