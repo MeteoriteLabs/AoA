@@ -31,6 +31,7 @@ import {
   type EntrySuggestion,
 } from "./EntryAutocompleteList";
 import { FileArtifactUpload } from "./FileArtifactUpload";
+import { ComposerFrame } from "../composer/ComposerFrame";
 
 /* ─── Public types ─── */
 
@@ -352,7 +353,7 @@ export function EntryComposer({
   const isReply = !!parentEntryId;
 
   return (
-    <div
+    <ComposerFrame
       className={cn(
         "shrink-0 px-4 py-3 border-t border-border relative",
         isReply && "border-l-2 border-l-primary/50",
@@ -362,6 +363,7 @@ export function EntryComposer({
       data-thread-id={threadId}
       data-reply={isReply ? "true" : undefined}
       data-parent-entry-id={parentEntryId ?? undefined}
+      density="comfortable"
     >
       {hint && (
         <div
@@ -570,6 +572,6 @@ export function EntryComposer({
           ))}
         </div>
       )}
-    </div>
+    </ComposerFrame>
   );
 }
