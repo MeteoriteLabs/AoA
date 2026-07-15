@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, fireEvent, act } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
+import { COMPOSER_MAX_ATTACHMENT_BYTES } from "@armyofagents/shared";
 import { WorkspaceTimeline } from "../components/workspace/WorkspaceTimeline";
 import { queryKeys } from "../lib/queryKeys";
 
@@ -652,6 +653,23 @@ describe("WorkspaceTimeline — input area", () => {
     expect(agentsApiMock.wakeup).not.toHaveBeenCalled();
   });
 
+  it("sends on Enter and keeps Shift+Enter available for a newline", async () => {
+    renderTimeline();
+
+    const textarea = await screen.findByPlaceholderText("Message Alpha Agent...");
+    fireEvent.change(textarea, { target: { value: "First line" } });
+    fireEvent.keyDown(textarea, { key: "Enter", shiftKey: true });
+
+    expect(issuesApiMock.addComment).not.toHaveBeenCalled();
+    expect(textarea).toHaveValue("First line");
+
+    fireEvent.keyDown(textarea, { key: "Enter" });
+
+    await waitFor(() => {
+      expect(issuesApiMock.addComment).toHaveBeenCalledWith("issue-1", "First line");
+    });
+  });
+
   it("renders the classic separated chatbar rows", async () => {
     renderTimeline();
 
@@ -736,6 +754,45 @@ describe("WorkspaceTimeline — input area", () => {
     await waitFor(() => {
       expect(issuesApiMock.addCommentWithAttachments).toHaveBeenCalledWith("issue-1", "", [file]);
     });
+  });
+
+  it("rejects unsupported and oversized attachments with inline feedback", async () => {
+    renderTimeline();
+
+    await screen.findByTestId("workspace-chatbar");
+    const fileInput = screen.getByTestId("workspace-chatbar-file-input") as HTMLInputElement;
+    const unsupported = new File(["fake"], "script.exe", { type: "application/x-msdownload" });
+    fireEvent.change(fileInput, { target: { files: [unsupported] } });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Unsupported attachment type");
+    expect(screen.queryByText("script.exe")).not.toBeInTheDocument();
+
+    const oversized = new File(["fake"], "large.pdf", { type: "application/pdf" });
+    Object.defineProperty(oversized, "size", {
+      configurable: true,
+      value: COMPOSER_MAX_ATTACHMENT_BYTES + 1,
+    });
+    fireEvent.change(fileInput, { target: { files: [oversized] } });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("large.pdf exceeds the 10 MB attachment limit");
+    expect(screen.queryByText("large.pdf")).not.toBeInTheDocument();
+    expect(issuesApiMock.addCommentWithAttachments).not.toHaveBeenCalled();
+  });
+
+  it("keeps the draft and selected files when sending fails", async () => {
+    issuesApiMock.addCommentWithAttachments.mockRejectedValueOnce(new Error("Upload failed"));
+    renderTimeline();
+
+    const textarea = await screen.findByPlaceholderText("Message Alpha Agent...");
+    const file = new File(["fake"], "evidence.txt", { type: "text/plain" });
+    fireEvent.change(screen.getByTestId("workspace-chatbar-file-input"), { target: { files: [file] } });
+    fireEvent.change(textarea, { target: { value: "Please inspect this" } });
+    fireEvent.click(screen.getByText("Send"));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not send message");
+    expect(screen.getByRole("alert")).toHaveTextContent("Upload failed");
+    expect(textarea).toHaveValue("Please inspect this");
+    expect(screen.getByText("evidence.txt")).toBeInTheDocument();
   });
 
   it("Send button is disabled when input is empty", async () => {

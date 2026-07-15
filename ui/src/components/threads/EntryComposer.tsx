@@ -77,6 +77,8 @@ export interface EntryComposerProps {
     parentEntryId: string | null;
     attachments: AssetRef[];
   }) => void | Promise<void>;
+  /** Called when submission fails; the composer keeps its draft snapshot. */
+  onSubmitError?: (error: unknown) => void;
   /** Composer is disabled (offline, error, etc.) and visually shows it. */
   disabled?: boolean;
   /** Founder-only control for creating tracked file artifacts. */
@@ -140,6 +142,7 @@ export function EntryComposer({
   users,
   onUpload,
   onSubmit,
+  onSubmitError,
   disabled = false,
   canCreateFileArtifacts = false,
   hint,
@@ -338,6 +341,8 @@ export function EntryComposer({
       setMentions([]);
       setAttachments([]);
       setAutocompleteOpen(false);
+    } catch (error) {
+      onSubmitError?.(error);
     } finally {
       setIsSubmitting(false);
     }

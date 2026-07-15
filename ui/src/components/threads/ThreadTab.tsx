@@ -403,10 +403,13 @@ export function ThreadTab({
         parentEntryId: payload.parentEntryId,
       });
       setSendReceipt("sent");
-    } catch {
+    } catch (error) {
       // On failure, drop the optimistic echo (mutation's onError already toasts).
       setOptimisticEntries((prev) => prev.filter((o) => o.rawContent !== payload.text));
       setSendReceipt("failed");
+      // Let EntryComposer retain the immutable submission snapshot. Swallowing
+      // this error causes it to clear the user's draft and uploaded attachments.
+      throw error;
     }
   }
 
@@ -490,6 +493,7 @@ export function ThreadTab({
         users={composerUsers}
         onUpload={handleUpload}
         onSubmit={handleComposerSubmit}
+        onSubmitError={() => setSendReceipt("failed")}
         disabled={isDisconnected || addEntryMutation.isPending}
         canCreateFileArtifacts={canManageArtifacts}
         myInitials={myInitials}

@@ -15,7 +15,14 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { useToast } from "../../context/ToastContext";
 import { Activity } from "lucide-react";
-import type { IssueComment, Agent, WorkQuestionDetail } from "@armyofagents/shared";
+import {
+  COMPOSER_ATTACHMENT_CONTENT_TYPES,
+  COMPOSER_MAX_ATTACHMENTS,
+  COMPOSER_MAX_ATTACHMENT_BYTES,
+  type IssueComment,
+  type Agent,
+  type WorkQuestionDetail,
+} from "@armyofagents/shared";
 import { ChatbarStatusRow } from "./ChatbarStatusRow";
 import { ChatbarControls } from "./ChatbarControls";
 import { useRunTokens } from "./useRunTokens";
@@ -81,15 +88,20 @@ export function WorkspaceTimeline({
   const isPinnedToBottomRef = useRef(true);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const composerRevisionRef = useRef(0);
+  const sendInFlightRef = useRef(false);
   const [chatInput, setChatInput] = useState("");
   const [modelOverride, setModelOverride] = useState<string | null>(null);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const [composerError, setComposerError] = useState<string | null>(null);
   const [hasUnseenActivity, setHasUnseenActivity] = useState(false);
   const [highlightedAnchorId, setHighlightedAnchorId] = useState<string | null>(null);
   const [anchorAnnouncement, setAnchorAnnouncement] = useState("");
 
   const handleTextareaChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    composerRevisionRef.current += 1;
     setChatInput(e.target.value);
+    setComposerError(null);
     // Auto-grow: reset to 1 row then expand to content, max 4 rows
     const ta = e.target;
     ta.style.height = "auto";
@@ -308,21 +320,31 @@ export function WorkspaceTimeline({
   // --- Mutations ---
 
   const sendMessage = useMutation({
-    mutationFn: async ({ text, files }: { text: string; files: File[] }) => {
+    mutationFn: async ({ text, files }: { text: string; files: File[]; revision: number }) => {
       if (files.length > 0) {
         await issuesApi.addCommentWithAttachments(issueId, text, files);
         return;
       }
       await issuesApi.addComment(issueId, text);
     },
-    onSuccess: () => {
+    onSuccess: (_data, submitted) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(issueId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.liveRuns(issueId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.runs(issueId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.attachments(issueId) });
-      setChatInput("");
-      setSelectedFiles([]);
-      setModelOverride(null); // Reset model override after send
+      setComposerError(null);
+      if (composerRevisionRef.current === submitted.revision) {
+        setChatInput("");
+        setSelectedFiles([]);
+        setModelOverride(null); // Reset model override after send
+      }
+    },
+    onError: (error) => {
+      const detail = error instanceof Error && error.message ? ` ${error.message}` : "";
+      setComposerError(`Could not send message. Your draft and attachments were kept.${detail}`);
+    },
+    onSettled: () => {
+      sendInFlightRef.current = false;
     },
   });
 
@@ -334,23 +356,55 @@ export function WorkspaceTimeline({
 
   const handleFilesSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
     const incoming = Array.from(e.target.files ?? []);
-    if (incoming.length === 0) return;
-    const next = [...selectedFiles, ...incoming].slice(0, 5);
-    if (selectedFiles.length + incoming.length > 5) {
-      pushToast({ tone: "error", title: "Too many attachments", body: "Attach up to 5 files per message." });
-    }
-    setSelectedFiles(next);
     e.target.value = "";
+    if (incoming.length === 0) return;
+
+    const next = [...selectedFiles];
+    const errors: string[] = [];
+    let reachedLimit = false;
+    for (const file of incoming) {
+      if (next.length >= COMPOSER_MAX_ATTACHMENTS) {
+        reachedLimit = true;
+        continue;
+      }
+      if (!COMPOSER_ATTACHMENT_CONTENT_TYPES.includes(file.type as (typeof COMPOSER_ATTACHMENT_CONTENT_TYPES)[number])) {
+        errors.push(`Unsupported attachment type: ${file.type || "unknown"}.`);
+        continue;
+      }
+      if (file.size > COMPOSER_MAX_ATTACHMENT_BYTES) {
+        errors.push(`${file.name} exceeds the 10 MB attachment limit.`);
+        continue;
+      }
+      next.push(file);
+    }
+    if (reachedLimit) errors.unshift(`Attach up to ${COMPOSER_MAX_ATTACHMENTS} files per message.`);
+
+    composerRevisionRef.current += 1;
+    setSelectedFiles(next);
+    setComposerError(errors.length > 0 ? errors.join(" ") : null);
   };
 
   const removeSelectedFile = (index: number) => {
+    composerRevisionRef.current += 1;
     setSelectedFiles((files) => files.filter((_, i) => i !== index));
+    setComposerError(null);
   };
 
   const handleSend = () => {
-    if (canSend) {
-      sendMessage.mutate({ text: chatInput.trim(), files: selectedFiles });
-    }
+    if (!canSend || sendInFlightRef.current || sendMessage.isPending) return;
+    sendInFlightRef.current = true;
+    setComposerError(null);
+    sendMessage.mutate({
+      text: chatInput.trim(),
+      files: [...selectedFiles],
+      revision: composerRevisionRef.current,
+    });
+  };
+
+  const handleComposerKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key !== "Enter" || e.shiftKey || e.nativeEvent.isComposing) return;
+    e.preventDefault();
+    handleSend();
   };
 
   const chatbarRunState =
@@ -522,32 +576,6 @@ export function WorkspaceTimeline({
             runDurationLabel={null}
           />
 
-          {/* Textarea */}
-          <div className="border-t border-border/50">
-            <textarea
-              ref={textareaRef}
-              className="w-full bg-transparent px-3 py-2 text-sm resize-none focus:outline-none placeholder:text-muted-foreground/50"
-              placeholder={`Message ${assignedAgent.name}...`}
-              rows={1}
-              value={chatInput}
-              onChange={handleTextareaChange}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                  e.preventDefault();
-                  handleSend();
-                }
-              }}
-            />
-          </div>
-
-          <input
-            ref={fileInputRef}
-            data-testid="workspace-chatbar-file-input"
-            type="file"
-            multiple
-            className="hidden"
-            onChange={handleFilesSelected}
-          />
           {selectedFiles.length > 0 && (
             <div className="border-t border-border/50 px-3 py-1.5">
               <div className="flex flex-wrap gap-1">
@@ -563,6 +591,34 @@ export function WorkspaceTimeline({
                   </button>
                 ))}
               </div>
+            </div>
+          )}
+
+          {/* Textarea */}
+          <div className="border-t border-border/50">
+            <textarea
+              ref={textareaRef}
+              className="w-full bg-transparent px-3 py-2 text-sm resize-none focus:outline-none placeholder:text-muted-foreground/50"
+              placeholder={`Message ${assignedAgent.name}...`}
+              rows={1}
+              value={chatInput}
+              onChange={handleTextareaChange}
+              onKeyDown={handleComposerKeyDown}
+            />
+          </div>
+
+          <input
+            ref={fileInputRef}
+            data-testid="workspace-chatbar-file-input"
+            type="file"
+            multiple
+            accept={COMPOSER_ATTACHMENT_CONTENT_TYPES.join(",")}
+            className="hidden"
+            onChange={handleFilesSelected}
+          />
+          {composerError && (
+            <div className="border-t border-border/50 px-3 py-2 text-xs text-destructive" role="alert">
+              {composerError}
             </div>
           )}
 
@@ -595,30 +651,6 @@ export function WorkspaceTimeline({
             runState={chatbarRunState}
             runDurationLabel={null}
           />
-          <div className="border-t border-border/50">
-            <textarea
-              ref={textareaRef}
-              className="w-full bg-transparent px-3 py-2 text-sm resize-none focus:outline-none placeholder:text-muted-foreground/50"
-              placeholder="Add a comment..."
-              rows={1}
-              value={chatInput}
-              onChange={handleTextareaChange}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                  e.preventDefault();
-                  handleSend();
-                }
-              }}
-            />
-          </div>
-          <input
-            ref={fileInputRef}
-            data-testid="workspace-chatbar-file-input"
-            type="file"
-            multiple
-            className="hidden"
-            onChange={handleFilesSelected}
-          />
           {selectedFiles.length > 0 && (
             <div className="border-t border-border/50 px-3 py-1.5">
               <div className="flex flex-wrap gap-1">
@@ -634,6 +666,31 @@ export function WorkspaceTimeline({
                   </button>
                 ))}
               </div>
+            </div>
+          )}
+          <div className="border-t border-border/50">
+            <textarea
+              ref={textareaRef}
+              className="w-full bg-transparent px-3 py-2 text-sm resize-none focus:outline-none placeholder:text-muted-foreground/50"
+              placeholder="Add a comment..."
+              rows={1}
+              value={chatInput}
+              onChange={handleTextareaChange}
+              onKeyDown={handleComposerKeyDown}
+            />
+          </div>
+          <input
+            ref={fileInputRef}
+            data-testid="workspace-chatbar-file-input"
+            type="file"
+            multiple
+            accept={COMPOSER_ATTACHMENT_CONTENT_TYPES.join(",")}
+            className="hidden"
+            onChange={handleFilesSelected}
+          />
+          {composerError && (
+            <div className="border-t border-border/50 px-3 py-2 text-xs text-destructive" role="alert">
+              {composerError}
             </div>
           )}
           <div className="border-t border-border/50">

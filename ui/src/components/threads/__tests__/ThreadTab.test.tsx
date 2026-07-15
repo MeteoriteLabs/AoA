@@ -280,7 +280,7 @@ describe("ThreadTab", () => {
     fireEvent.click(screen.getByTestId("entry-composer-submit"));
 
     expect(await screen.findByText("Not sent. Try again.")).toBeInTheDocument();
-    expect(screen.queryByText("message that fails")).not.toBeInTheDocument();
+    expect(screen.getByTestId("entry-composer-textarea")).toHaveValue("message that fails");
   });
 
   it("invalidates the discussion detail after archiving an inline artifact", async () => {
