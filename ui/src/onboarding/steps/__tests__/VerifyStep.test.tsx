@@ -13,6 +13,12 @@ vi.mock("../../../api/client", async (importActual) => {
 vi.mock("../../../api/onboarding", () => ({
   advanceOnboarding: vi.fn(async () => ({ completedStates: [] })),
 }));
+const getConfig = vi.hoisted(() => vi.fn(async () => ({ provider: "anthropic" })));
+vi.mock("../../../api/internal-agent", () => ({ internalAgentApi: { getConfig } }));
+const saveCommanderKey = vi.hoisted(() => vi.fn(async () => ({ ok: true, secretId: "s1" })));
+const startCommanderLogin = vi.hoisted(() => vi.fn());
+const getCommanderLoginStatus = vi.hoisted(() => vi.fn());
+vi.mock("../../../api/commander-auth", () => ({ saveCommanderKey, startCommanderLogin, getCommanderLoginStatus }));
 
 import { advanceOnboarding } from "../../../api/onboarding";
 
@@ -57,7 +63,7 @@ describe("VerifyStep (Stage C / order 5, blocking)", () => {
     const onComplete = vi.fn();
     render(<VerifyStep ctx={ctx} onComplete={onComplete} onBack={() => {}} />);
     fireEvent.click(screen.getByText("Verify"));
-    expect(await screen.findByText(/sign in/i)).toBeTruthy();
+    expect(await screen.findByText("sign in")).toBeTruthy(); // the probe message
     expect(screen.getByText("Check again")).toBeTruthy();
     expect(advanceOnboarding).not.toHaveBeenCalled();
     expect(onComplete).not.toHaveBeenCalled();
@@ -75,6 +81,65 @@ describe("VerifyStep (Stage C / order 5, blocking)", () => {
     fireEvent.click(screen.getByText("Verify"));
     expect(await screen.findByText(/install/i)).toBeTruthy();
     expect(onComplete).not.toHaveBeenCalled();
+  });
+
+  const needsAuthError = () =>
+    new ApiError("Request failed: 422", 422, {
+      outcome: "needs_auth",
+      result: { status: "fail", checks: [{ code: "claude_hello_probe_auth_required", message: "sign in" }] },
+    });
+
+  it("needs_auth → paste an API key → saves it (encrypted) and re-verifies to completion", async () => {
+    post.mockRejectedValueOnce(needsAuthError());
+    post.mockResolvedValueOnce({ outcome: "verified", result: { status: "pass" } });
+    const onComplete = vi.fn();
+    render(<VerifyStep ctx={ctx} onComplete={onComplete} onBack={() => {}} />);
+    fireEvent.click(screen.getByText("Verify"));
+
+    // Provider (Claude/anthropic) loads async → the key field becomes enabled.
+    const input = (await screen.findByPlaceholderText(/sk-ant/i)) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "sk-ant-SECRET" } });
+    fireEvent.click(screen.getByRole("button", { name: /save key & verify/i }));
+
+    await waitFor(() => expect(onComplete).toHaveBeenCalled());
+    expect(saveCommanderKey).toHaveBeenCalledWith({ companyId: "c1", provider: "anthropic", value: "sk-ant-SECRET" });
+    expect(advanceOnboarding).toHaveBeenCalledWith({
+      companyId: "c1",
+      journey: "founder",
+      requestedState: "COMMANDER_VERIFIED",
+    });
+  });
+
+  it("needs_auth → interactive login → surfaces the verification URL while pending", async () => {
+    post.mockRejectedValueOnce(needsAuthError());
+    startCommanderLogin.mockResolvedValueOnce({ challengeId: "ch-1", loginUrl: "https://claude.ai/oauth?c=1" });
+    getCommanderLoginStatus.mockResolvedValue({ status: "pending", loginUrl: "https://claude.ai/oauth?c=1" });
+    render(<VerifyStep ctx={ctx} onComplete={vi.fn()} onBack={() => {}} />);
+    fireEvent.click(screen.getByText("Verify"));
+
+    fireEvent.click(await screen.findByRole("button", { name: /sign in with claude/i }));
+    const link = (await screen.findByText("https://claude.ai/oauth?c=1")) as HTMLAnchorElement;
+    expect(link.getAttribute("href")).toBe("https://claude.ai/oauth?c=1");
+    expect(startCommanderLogin).toHaveBeenCalledWith({ companyId: "c1", provider: "anthropic" });
+  });
+
+  it("needs_auth → interactive login → polls to completed and re-verifies", async () => {
+    post.mockRejectedValueOnce(needsAuthError());
+    startCommanderLogin.mockResolvedValueOnce({ challengeId: "ch-1", loginUrl: "https://claude.ai/oauth?c=1" });
+    getCommanderLoginStatus.mockResolvedValue({ status: "completed", loginUrl: "https://claude.ai/oauth?c=1" });
+    post.mockResolvedValueOnce({ outcome: "verified", result: { status: "pass" } });
+    const onComplete = vi.fn();
+    render(<VerifyStep ctx={ctx} onComplete={onComplete} onBack={() => {}} />);
+    fireEvent.click(screen.getByText("Verify"));
+
+    fireEvent.click(await screen.findByRole("button", { name: /sign in with claude/i }));
+    await waitFor(() => expect(onComplete).toHaveBeenCalled()); // immediate poll → completed → re-verify
+    expect(getCommanderLoginStatus).toHaveBeenCalledWith({ companyId: "c1", challengeId: "ch-1" });
+    expect(advanceOnboarding).toHaveBeenCalledWith({
+      companyId: "c1",
+      journey: "founder",
+      requestedState: "COMMANDER_VERIFIED",
+    });
   });
 });
 
