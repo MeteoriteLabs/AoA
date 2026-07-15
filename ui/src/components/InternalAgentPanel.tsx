@@ -153,6 +153,16 @@ export function buildCommanderInputRefState(
   };
 }
 
+export function settleCommanderInputRefsAfterSend(
+  current: readonly CommanderInputRef[],
+  sent: readonly CommanderInputRef[],
+  accepted: boolean,
+): CommanderInputRef[] {
+  if (!accepted) return [...current];
+  const sentKeys = new Set(sent.map(commanderInputRefKey));
+  return current.filter((ref) => !sentKeys.has(commanderInputRefKey(ref)));
+}
+
 export interface CommanderInputRefOpenDeps {
   openPreview: (source: "center" | "right-panel") => void;
   openTask: (issueId: string, title: string) => void;
@@ -543,6 +553,8 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
   const inputRefsRef = useRef<CommanderInputRef[]>([]);
   const [duplicateInputRefKey, setDuplicateInputRefKey] = useState<string | null>(null);
   const commanderFileInputRef = useRef<HTMLInputElement>(null);
+  const activeConversationIdRef = useRef(conversationId);
+  activeConversationIdRef.current = conversationId;
   const uploadSequenceRef = useRef(0);
   const [uploadingFiles, setUploadingFiles] = useState<Array<{ id: number; name: string }>>([]);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
@@ -560,7 +572,6 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<CommanderInputHandle>(null);
-  const commanderFileInputRef = useRef<HTMLInputElement>(null);
   const inputBarRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -935,8 +946,8 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
   );
 
   const sendText = useCallback(
-    async (text: string) => {
-      if (!text || !companyId || streaming) return;
+    async (text: string): Promise<boolean> => {
+      if (!text || !companyId || streaming) return false;
 
       setStreamingLocal(true);
       setIsStreaming(true);
@@ -965,6 +976,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
 
       const controller = new AbortController();
       abortRef.current = controller;
+      let accepted = false;
 
       try {
         const stream = streamAgentChat(companyId, text, pageContext, controller.signal, conversationId, contextScope);
@@ -972,8 +984,12 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
         for await (const event of stream) {
           handleSSEEvent(event, assistantId);
         }
+        accepted = true;
       } catch (err) {
-        if ((err as Error).name !== "AbortError") {
+        if ((err as Error).name === "AbortError") {
+          // Stop generation happens after the server accepted the user turn.
+          accepted = true;
+        } else {
           setMessages((prev) =>
             settleRunningToolCalls(prev, assistantId).map((m) =>
               m.id === assistantId
@@ -996,6 +1012,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
         queryClient.invalidateQueries({ queryKey: queryKeys.agentConversation(companyId) });
         queryClient.invalidateQueries({ queryKey: ["commander-conversations"] });
       }
+      return accepted;
     },
     [companyId, streaming, pageContext, setIsStreaming, queryClient, conversationId, contextScope],
   );
@@ -1006,9 +1023,19 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
       const refsForTurn = inputRefsRef.current;
       if ((!trimmed && refsForTurn.length === 0) || uploadingFiles.length > 0) return;
       const baseText = trimmed || "Use the referenced context.";
-      inputRefsRef.current = [];
-      setInputRefs([]);
-      await sendText(appendCommanderInputRefsToMessage(baseText, refsForTurn));
+      const accepted = await sendText(appendCommanderInputRefsToMessage(baseText, refsForTurn));
+      if (accepted) {
+        const remaining = settleCommanderInputRefsAfterSend(
+          inputRefsRef.current,
+          refsForTurn,
+          true,
+        );
+        inputRefsRef.current = remaining;
+        setInputRefs(remaining);
+        setAttachmentError(null);
+      } else {
+        setAttachmentError("Message was not sent. Your attached files are still here.");
+      }
     },
     [sendText, uploadingFiles.length],
   );
@@ -1036,6 +1063,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
     setAttachmentError(selection.errors.length > 0 ? selection.errors.join(" ") : null);
 
     for (const file of selection.accepted) {
+      const uploadConversationId = conversationId;
       const uploadId = ++uploadSequenceRef.current;
       setUploadingFiles((current) => [...current, { id: uploadId, name: file.name }]);
       try {
@@ -1044,7 +1072,9 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
           file,
           `commander/${conversationId ?? "new"}`,
         );
-        addInputRef(assetResponseToCommanderInputRef(asset, file.name));
+        if (activeConversationIdRef.current === uploadConversationId) {
+          addInputRef(assetResponseToCommanderInputRef(asset, file.name));
+        }
       } catch {
         setAttachmentError(`Could not upload ${file.name}. Choose the file again to retry.`);
       } finally {
@@ -1928,18 +1958,32 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
                       : "border-border",
                   )}
                 >
-                  <button
-                    type="button"
-                    aria-label={`Open ${ref.label} reference`}
-                    title="Open reference"
-                    className="inline-flex min-w-0 max-w-[220px] items-center gap-1 rounded text-left hover:text-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-focus-ring"
-                    onClick={() => handleOpenInputRef(ref)}
-                  >
-                    <span className="shrink-0 font-medium text-muted-foreground">
-                      {commanderInputRefKindLabel(ref.kind)}
-                    </span>
-                    <span className="min-w-0 truncate">{ref.label}</span>
-                  </button>
+                  {ref.kind === "asset" && ref.route ? (
+                    <a
+                      href={ref.route}
+                      target="_blank"
+                      rel="noreferrer"
+                      aria-label={`Open ${ref.label} attachment`}
+                      title="Open attachment"
+                      className="inline-flex min-w-0 max-w-[220px] items-center gap-1 rounded text-left hover:text-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-focus-ring"
+                    >
+                      <span className="shrink-0 font-medium text-muted-foreground">File</span>
+                      <span className="min-w-0 truncate">{ref.label}</span>
+                    </a>
+                  ) : (
+                    <button
+                      type="button"
+                      aria-label={`Open ${ref.label} reference`}
+                      title="Open reference"
+                      className="inline-flex min-w-0 max-w-[220px] items-center gap-1 rounded text-left hover:text-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-focus-ring"
+                      onClick={() => handleOpenInputRef(ref)}
+                    >
+                      <span className="shrink-0 font-medium text-muted-foreground">
+                        {commanderInputRefKindLabel(ref.kind)}
+                      </span>
+                      <span className="min-w-0 truncate">{ref.label}</span>
+                    </button>
+                  )}
                   <button
                     type="button"
                     aria-label={`Remove ${ref.label} reference`}
@@ -2041,7 +2085,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
               <button
                 type="button"
                 onClick={handleSend}
-                disabled={inputEmpty && inputRefs.length === 0}
+                disabled={(inputEmpty && inputRefs.length === 0) || uploadingFiles.length > 0}
                 aria-label="Send message"
                 className="size-8 rounded-full flex items-center justify-center shrink-0 bg-brand text-white hover:bg-brand-hover transition-colors focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-brand-focus-ring disabled:opacity-40 disabled:pointer-events-none"
               >

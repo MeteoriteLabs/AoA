@@ -3,6 +3,7 @@ import type { CommanderInputRef } from "@armyofagents/shared";
 import {
   buildCommanderInputRefState,
   openCommanderInputRef,
+  settleCommanderInputRefsAfterSend,
   type CommanderInputRefOpenDeps,
 } from "./InternalAgentPanel";
 
@@ -28,6 +29,14 @@ const discussionRef: CommanderInputRef = {
   id: "discussion-1",
   label: "Launch review",
   route: "/discussions/discussion-1",
+};
+
+const assetRef: CommanderInputRef = {
+  v: 1,
+  kind: "asset",
+  id: "asset-1",
+  label: "brief.pdf",
+  route: "/api/assets/asset-1/content",
 };
 
 describe("Commander input refs", () => {
@@ -71,5 +80,10 @@ describe("Commander input refs", () => {
     expect(deps.openPreview).toHaveBeenCalledWith("right-panel");
     expect(deps.openInputRef).toHaveBeenCalledWith(inboxRef);
     expect(deps.navigate).not.toHaveBeenCalled();
+  });
+
+  it("preserves attached asset refs on send failure and removes only accepted refs", () => {
+    expect(settleCommanderInputRefsAfterSend([assetRef], [assetRef], false)).toEqual([assetRef]);
+    expect(settleCommanderInputRefsAfterSend([assetRef, taskRef], [assetRef], true)).toEqual([taskRef]);
   });
 });
