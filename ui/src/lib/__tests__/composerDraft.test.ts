@@ -31,7 +31,7 @@ describe("composer draft contract", () => {
     const raw = serializeComposerDraft({
       text: "hello",
       tokens: [{ type: "mention", id: "agent-1", label: "Ada" }],
-      attachments: [{ id: "asset-1", name: "brief.pdf", mimeType: "application/pdf", artifactId: "artifact-1" }],
+      attachments: [{ id: "asset-1", name: "brief.pdf", mimeType: "application/pdf", artifactId: "artifact-1", bytes: "must-not-persist" } as never],
     }, 100, 1_000);
     const parsed = JSON.parse(raw);
     expect(parsed.version).toBe(COMPOSER_DRAFT_VERSION);
