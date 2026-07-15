@@ -435,7 +435,13 @@ export async function execute(
     run: { id: runId, source: "on_demand" },
     context,
   });
-  const prompt = `${instructionsPrefix}${renderedPrompt}`;
+  const currentTaskMarkdown = typeof context.currentTaskMarkdown === "string"
+    ? context.currentTaskMarkdown.trim()
+    : "";
+  const promptBody = currentTaskMarkdown && !/{{\s*context\.currentTaskMarkdown\s*}}/.test(promptTemplate)
+    ? `${renderedPrompt.trimEnd()}\n\n${currentTaskMarkdown}`
+    : renderedPrompt;
+  const prompt = `${instructionsPrefix}${promptBody}`;
 
   const buildArgs = (resumeSessionId: string | null) => {
     const args = ["exec", "--json"];

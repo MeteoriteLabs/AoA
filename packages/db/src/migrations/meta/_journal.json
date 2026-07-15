@@ -1184,6 +1184,20 @@
       "when": 1783530548976,
       "tag": "0168_chief_rawhide_kid",
       "breakpoints": true
+    },
+    {
+      "idx": 169,
+      "version": "7",
+      "when": 1783928203724,
+      "tag": "0169_striped_khan",
+      "breakpoints": true
+    },
+    {
+      "idx": 170,
+      "version": "7",
+      "when": 1784026975382,
+      "tag": "0170_blue_princess_powerful",
+      "breakpoints": true
     }
   ]
 }

@@ -26,6 +26,8 @@ vi.mock("@armyofagents/db", () => ({
     priority: "dei_priority", suggestedPriority: "dei_sugg_priority", updatedAt: "dei_updated",
   },
   issues: { id: "issues_id", companyId: "issues_co", workMode: "issues_work_mode" },
+  companies: { id: "companies_id", agentCompletionPolicyDefault: "companies_policy", agentCompletionReviewGuardrail: "companies_guardrail" },
+  projects: { id: "projects_id", companyId: "projects_co", type: "projects_type", agentCompletionPolicyDefault: "projects_policy" },
   agents: {}, authUsers: {}, companyMemberships: {}, agentWakeupRequests: {},
   notifications: {}, aoaAgentTriggers: {}, scopeItemDependencies: {}, taskDependencies: {},
 }));
@@ -48,6 +50,7 @@ function seqDb(queue: any[][]) {
     leftJoin: vi.fn().mockReturnThis(),
     orderBy: vi.fn().mockReturnThis(),
     limit: vi.fn().mockReturnThis(),
+    for: vi.fn().mockReturnThis(),
     then: vi.fn((f: any) => Promise.resolve(f(queue[i++] ?? []))),
   });
   const db: any = {
@@ -75,6 +78,8 @@ describe("threadService.assignScopeItems — scope→task crystallization (D8 pl
         { id: "item1", type: "task", title: "Build API", status: "approved", resultTaskId: null, departmentId: "eng", assigneeAgentId: null, assigneeUserId: null, description: null, suggestedPriority: null, suggestedDepartmentId: null, suggestedProjectId: null, suggestedGoalId: null, priority: null },
         { id: "item2", type: "insight", title: "Note", status: "approved", resultTaskId: null, departmentId: null, assigneeAgentId: null, assigneeUserId: null, description: null, suggestedPriority: null, suggestedDepartmentId: null, suggestedProjectId: null, suggestedGoalId: null, priority: null },
       ], // approved items
+      [{ policyDefault: "review_required", reviewGuardrail: false }],
+      [{ id: "eng", type: "department", policyDefault: null }],
       [{ id: "new-issue-1" }], // issues insert .returning()
     ]);
     const res = await threadService(db).assignScopeItems("co1", "t1", { userId: "u1", role: "founder", isHuman: true });

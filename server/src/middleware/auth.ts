@@ -14,21 +14,39 @@ function hashToken(token: string) {
 
 interface ActorMiddlewareOptions {
   deploymentMode: DeploymentMode;
+  /**
+   * Dev/offline escape hatch. When true AND deploymentMode is local_trusted,
+   * the default actor is the synthetic loopback admin (`local-board`). Ignored
+   * (with a WARN) in any other mode — fail-closed. Sourced from
+   * `config.devLocalIdentity` (env `AOA_DEV_LOCAL_IDENTITY`).
+   */
+  devLocalIdentity?: boolean;
   resolveSession?: (req: Request) => Promise<BetterAuthSessionResult | null>;
 }
 
 export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHandler {
   return async (req, _res, next) => {
-    req.actor =
-      opts.deploymentMode === "local_trusted"
-        ? { type: "board", userId: "local-board", isInstanceAdmin: true, source: "local_implicit" }
-        : { type: "none", source: "none" };
+    // RB4/A6: the synthetic loopback admin is NO LONGER the default. It is
+    // produced only behind the dev escape hatch in local_trusted; otherwise the
+    // real identity comes from the resolved Google/persisted session below.
+    const useEscapeHatch =
+      opts.deploymentMode === "local_trusted" && opts.devLocalIdentity === true;
+    if (opts.deploymentMode !== "local_trusted" && opts.devLocalIdentity) {
+      logger.warn(
+        "AOA_DEV_LOCAL_IDENTITY is set but ignored outside local_trusted mode (fail-closed).",
+      );
+    }
+    req.actor = useEscapeHatch
+      ? { type: "board", userId: "local-board", isInstanceAdmin: true, source: "local_implicit" }
+      : { type: "none", source: "none" };
 
     const runIdHeader = req.header("x-aoa-run-id") ?? req.header("x-paperclip-run-id");
 
     const authHeader = req.header("authorization");
     if (!authHeader?.toLowerCase().startsWith("bearer ")) {
-      if (opts.deploymentMode === "authenticated" && opts.resolveSession) {
+      // Resolve the real Google/persisted session in BOTH modes (Google
+      // identity everywhere) — run whenever a resolver is wired.
+      if (opts.resolveSession) {
         let session: BetterAuthSessionResult | null = null;
         try {
           session = await opts.resolveSession(req);

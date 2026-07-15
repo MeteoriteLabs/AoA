@@ -129,6 +129,28 @@ export type IssueWorkMode = (typeof ISSUE_WORK_MODES)[number];
 export const ISSUE_SOURCES = ["manual", "brief", "agent_proposal", "mcp"] as const;
 export type IssueSource = (typeof ISSUE_SOURCES)[number];
 
+export const AGENT_COMPLETION_POLICIES = ["review_required", "agent_can_complete"] as const;
+export type AgentCompletionPolicy = (typeof AGENT_COMPLETION_POLICIES)[number];
+
+export const AGENT_COMPLETION_POLICY_SOURCES = [
+  "company",
+  "department",
+  "project",
+  "routine",
+  "workflow_template",
+  "task",
+  "legacy_backfill",
+] as const;
+export type AgentCompletionPolicySource = (typeof AGENT_COMPLETION_POLICY_SOURCES)[number];
+
+export const ISSUE_REVIEWER_SOURCES = [
+  "explicit",
+  "responsible",
+  "scope_lead",
+  "founder",
+] as const;
+export type IssueReviewerSource = (typeof ISSUE_REVIEWER_SOURCES)[number];
+
 export const GOAL_LEVELS = ["company", "team", "agent", "task"] as const;
 export type GoalLevel = (typeof GOAL_LEVELS)[number];
 
@@ -1063,6 +1085,7 @@ export const NOTIFICATION_TYPES = [
   "thread.artifact_needs_review",
   "thread.crew_failed",
   "thread.spinoff_suggested",
+  "work_question.sla_breached",
 ] as const;
 export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
 
@@ -1393,3 +1416,24 @@ export const PLUGIN_BRIDGE_ERROR_CODES = [
   "UNKNOWN",
 ] as const;
 export type PluginBridgeErrorCode = (typeof PLUGIN_BRIDGE_ERROR_CODES)[number];
+
+/**
+ * Department function types — the single source of truth consumed by both the
+ * onboarding "First department" step and NewProjectDialog (Stage C / C9).
+ * `software_development` is the workspace-tooling gate value. Adds `sales`;
+ * `support` is labeled "Customer Support".
+ */
+export const DEPARTMENT_FUNCTION_TYPES = [
+  { value: "software_development", label: "Product (Software)", icon: "💻" },
+  { value: "marketing", label: "Marketing", icon: "📢" },
+  { value: "sales", label: "Sales", icon: "🤝" },
+  { value: "support", label: "Customer Support", icon: "🎧" },
+  { value: "finance", label: "Finance", icon: "💰" },
+  { value: "hr", label: "HR", icon: "👥" },
+  { value: "legal", label: "Legal", icon: "⚖️" },
+  { value: "research", label: "Research", icon: "🔬" },
+  { value: "operations", label: "Operations", icon: "📊" },
+  { value: "general", label: "General", icon: "📋" },
+  { value: "custom", label: "Custom", icon: "⚙️" },
+] as const;
+export type DepartmentFunctionType = (typeof DEPARTMENT_FUNCTION_TYPES)[number]["value"];

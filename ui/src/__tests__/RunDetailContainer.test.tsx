@@ -81,8 +81,14 @@ describe("RunDetailContainer (D4b)", () => {
   });
 
   it("finds the run in the agent's run list and renders RunDetail with it", async () => {
+    const onOpenIssue = vi.fn();
     renderWithProviders(
-      <RunDetailContainer runId="run-B" agentId="agent-9" companyId="comp-1" />,
+      <RunDetailContainer
+        runId="run-B"
+        agentId="agent-9"
+        companyId="comp-1"
+        onOpenIssue={onOpenIssue}
+      />,
     );
 
     await waitFor(() => {
@@ -98,6 +104,7 @@ describe("RunDetailContainer (D4b)", () => {
           run: expect.objectContaining({ id: "run-B" }),
           adapterType: "codex_local",
           agentRouteId: "worker-bee",
+          onOpenIssue,
         }),
       );
     });

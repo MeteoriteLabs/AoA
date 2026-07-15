@@ -49,6 +49,14 @@ Config includes execution mode, provider/model fields, autonomy level, enabled c
 
 ```
 GET /api/companies/{companyId}/cockpit
+GET /api/companies/{companyId}/cockpit/counts
+GET /api/companies/{companyId}/cockpit/tasks?bucket={mine|managed|awaiting_review}&limit={1..100}&cursor={opaqueCursor}
 ```
 
-Returns the compact data model for Commander cockpit panels.
+These board-only routes return the current user's company-scoped Commander work.
+
+- `/cockpit` returns bounded card slices, per-slice status metadata, Active Work split into `mine` and `managed`, and a separate `awaitingReview` queue. A failed independent slice sets `meta.partial` instead of presenting a false all-clear state.
+- `/cockpit/counts` supplies lightweight collapsed-rail counts without loading every Cockpit card.
+- `/cockpit/tasks` provides stable cursor pagination for the three accountable-work queues. Cursors are opaque and tied to the selected bucket's ranking order.
+
+Active Work excludes terminal and `in_review` tasks. `mine` wins when a task also matches the user's responsibility hierarchy. `managed` follows the bounded mixed human/agent reporting graph, while `awaiting_review` includes explicit reviewer assignments and review work in that responsibility scope.

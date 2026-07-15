@@ -7,6 +7,13 @@ import { Lobby } from "../pages/Lobby";
 // --- Mocks ---
 
 const mockNavigate = vi.fn();
+const onboardingProgressByCompany = vi.hoisted(() => new Map<string, string[] | null>());
+const currentProfile = vi.hoisted(() => ({
+  id: "u1",
+  email: "ada@example.com",
+  displayName: "Ada",
+  avatarUrl: null,
+}));
 
 vi.mock("react-router-dom", async () => {
   const actual = await vi.importActual<typeof import("react-router-dom")>("react-router-dom");
@@ -28,7 +35,23 @@ vi.mock("@tanstack/react-query", async () => {
   const actual = await vi.importActual<typeof import("@tanstack/react-query")>("@tanstack/react-query");
   return {
     ...actual,
-    useQuery: vi.fn().mockReturnValue({ data: undefined, isLoading: false }),
+    useQuery: vi.fn(({ queryKey }: { queryKey: readonly unknown[] }) => ({
+      data: queryKey[0] === "auth" ? currentProfile : undefined,
+      isLoading: false,
+    })),
+    useQueries: vi.fn(({ queries }: { queries: { queryKey: readonly unknown[] }[] }) =>
+      queries.map((query) => {
+        const companyId = String(query.queryKey[2]);
+        const stored = onboardingProgressByCompany.get(companyId);
+        return {
+          data: onboardingProgressByCompany.has(companyId)
+            ? stored === null
+              ? null
+              : { completedStates: stored }
+            : { completedStates: ["SETUP_COMPLETE"] },
+          isLoading: false,
+        };
+      })),
   };
 });
 
@@ -45,6 +68,10 @@ vi.mock("@/api/companies", () => ({
 
 vi.mock("@/api/profile", () => ({
   profileApi: { get: vi.fn().mockResolvedValue(undefined) },
+}));
+
+vi.mock("@/api/onboarding", () => ({
+  getOnboardingProgress: vi.fn(),
 }));
 
 vi.mock("@/components/LobbyCompanyCard", () => ({
@@ -82,6 +109,8 @@ vi.mock("@/components/UserMenu", () => ({
 describe("Lobby", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    localStorage.clear();
+    onboardingProgressByCompany.clear();
     mockCompanyContext.loading = false;
     mockCompanyContext.companies = [];
   });
@@ -97,6 +126,29 @@ describe("Lobby", () => {
 
     expect(screen.getByText("Acme Inc")).toBeInTheDocument();
     expect(screen.getByText("Beta Corp")).toBeInTheDocument();
+  });
+
+  it("surfaces a returning user's pending invitation and opens its join flow", async () => {
+    const user = userEvent.setup();
+    mockCompanyContext.companies = [makeCompany()];
+
+    renderWithProviders(
+      <Lobby
+        pendingInvitations={[
+          {
+            companyId: "invited-co",
+            companyName: "Future Labs",
+            inviteId: "invite-1",
+            role: "team_member",
+            createdAt: "2026-07-13T00:00:00.000Z",
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("Invitation to Future Labs")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /review invitation to future labs/i }));
+    expect(mockNavigate).toHaveBeenCalledWith("/onboarding/join?company=invited-co", undefined);
   });
 
   // The lobby v4 redesign drops the top header bar entirely. The "+ New
@@ -126,6 +178,43 @@ describe("Lobby", () => {
 
     await user.click(screen.getByTestId("company-card-c1"));
     expect(mockNavigate).toHaveBeenCalledWith("/ACME/home", undefined);
+  });
+
+  it("surfaces an interrupted founder's organization and resumes its onboarding", async () => {
+    const user = userEvent.setup();
+    const company = makeCompany({ id: "c1", name: "Acme Inc", issuePrefix: "ACME" });
+    mockCompanyContext.companies = [company];
+    onboardingProgressByCompany.set("c1", ["AUTHENTICATED", "PROFILE_SET", "ORGANIZATION_CREATED"]);
+
+    renderWithProviders(<Lobby />);
+
+    await user.click(screen.getByRole("button", { name: /finish setting up acme inc/i }));
+    expect(mockCompanyContext.setSelectedCompanyId).toHaveBeenCalledWith("c1");
+    expect(mockNavigate).toHaveBeenCalledWith("/onboarding", undefined);
+  });
+
+  it("surfaces pending-organization recovery when the progress row was never created", () => {
+    const company = makeCompany({ id: "c1", name: "Acme Inc", issuePrefix: "ACME" });
+    mockCompanyContext.companies = [company];
+    onboardingProgressByCompany.set("c1", null);
+    localStorage.setItem(
+      "aoa.onboarding.pendingOrganization.u1",
+      JSON.stringify({ id: "c1", name: "Acme Inc" }),
+    );
+
+    renderWithProviders(<Lobby />);
+
+    expect(screen.getByRole("button", { name: /finish setting up acme inc/i })).toBeInTheDocument();
+  });
+
+  it("does not label a legacy organization as interrupted without a recovery marker", () => {
+    const company = makeCompany({ id: "c1", name: "Acme Inc", issuePrefix: "ACME" });
+    mockCompanyContext.companies = [company];
+    onboardingProgressByCompany.set("c1", null);
+
+    renderWithProviders(<Lobby />);
+
+    expect(screen.queryByRole("button", { name: /finish setting up acme inc/i })).toBeNull();
   });
 
   it("renders LobbyEmptyState when there are 0 companies", () => {
@@ -159,12 +248,12 @@ describe("Lobby", () => {
     expect(mockDialogContext.openOnboarding).not.toHaveBeenCalled();
   });
 
-  it("invokes openOnboarding when LobbyEmptyState's create button is clicked", async () => {
+  it("navigates to /onboarding when LobbyEmptyState's create button is clicked (C13)", async () => {
     const user = userEvent.setup();
     mockCompanyContext.companies = [];
     renderWithProviders(<Lobby />);
     await user.click(screen.getByTestId("empty-create"));
-    expect(mockDialogContext.openOnboarding).toHaveBeenCalledTimes(1);
+    expect(mockNavigate).toHaveBeenCalledWith("/onboarding", undefined);
   });
 
   it("navigates to /import when LobbyEmptyState's import button is clicked", async () => {

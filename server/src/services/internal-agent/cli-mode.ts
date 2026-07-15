@@ -6,6 +6,7 @@ import { platform, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Db } from "@armyofagents/db";
+import type { HumanQuestionRuntimeCapabilities } from "@armyofagents/adapter-utils";
 import type { AgentTool } from "./types.js";
 import type { AgentStreamChunk, ChatInput } from "./agent-loop.js";
 import { createCLISessionStore } from "./cli-session-store.js";
@@ -104,6 +105,7 @@ export interface McpConfigParams {
   /** Agent DB ID — set as AOA_AGENT_ID in the bridge so tools can stamp authorAgentId. */
   agentId?: string;
   runId?: string | null;
+  humanQuestionCapabilities?: HumanQuestionRuntimeCapabilities;
   discussionRunMode?: "direct" | "controller_action_gate" | null;
   threadFreshness?: {
     startEpoch?: number;
@@ -189,6 +191,9 @@ export function buildMcpBridgeSpec(params: McpConfigParams): McpBridgeSpec {
       ...(params.actorType ? { AOA_ACTOR_TYPE: params.actorType } : {}),
       ...(params.agentId ? { AOA_AGENT_ID: params.agentId } : {}),
       ...(params.runId ? { AOA_RUN_ID: params.runId } : {}),
+      ...(params.humanQuestionCapabilities
+        ? { AOA_HUMAN_QUESTION_CAPABILITIES: JSON.stringify(params.humanQuestionCapabilities) }
+        : {}),
       ...(params.discussionRunMode ? { AOA_DISCUSSION_RUN_MODE: params.discussionRunMode } : {}),
       ...(params.threadFreshness ? { AOA_THREAD_FRESHNESS: JSON.stringify(params.threadFreshness) } : {}),
       ...(params.effectiveAutonomy != null

@@ -178,6 +178,7 @@ const routineId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const agentId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const runId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
 const issueId = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+const triggerId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 const userId = "user-1234";
 
 const baseRoutine: MockRow = {
@@ -193,6 +194,7 @@ const baseRoutine: MockRow = {
   status: "active",
   concurrencyPolicy: "always_enqueue",
   catchUpPolicy: "skip_missed",
+  agentCompletionPolicyOverride: null,
   variables: [],
   createdByAgentId: null,
   createdByUserId: null,
@@ -220,6 +222,31 @@ const baseRun: MockRow = {
   triggerPayload: null,
   createdAt: new Date("2026-03-31T03:00:00.000Z"),
   updatedAt: new Date("2026-03-31T03:00:00.000Z"),
+};
+
+const baseTrigger: MockRow = {
+  id: triggerId,
+  companyId,
+  routineId,
+  kind: "schedule",
+  label: "Daily schedule",
+  enabled: true,
+  cronExpression: "0 9 * * *",
+  timezone: "UTC",
+  nextRunAt: null,
+  lastFiredAt: null,
+  publicId: null,
+  secretId: null,
+  signingMode: null,
+  replayWindowSec: null,
+  lastRotatedAt: null,
+  lastResult: null,
+  createdByAgentId: null,
+  createdByUserId: userId,
+  updatedByAgentId: null,
+  updatedByUserId: userId,
+  createdAt: new Date("2026-03-31T00:00:00.000Z"),
+  updatedAt: new Date("2026-03-31T00:00:00.000Z"),
 };
 
 const baseIssue: MockRow = {
@@ -339,6 +366,108 @@ describe("touchIssueForUserInbox — via runRoutine (manual, fresh issue path)",
     expect(data.createdByAgentId).toBe(agentId);
     expect(data.createdByUserId ?? null).toBeNull();
   });
+
+  it("uses the completion policy reread after taking the dispatch lock", async () => {
+    const staleRoutine = { ...baseRoutine, agentCompletionPolicyOverride: "agent_can_complete" };
+    const lockedRoutine = { ...baseRoutine, agentCompletionPolicyOverride: "review_required" };
+    mockIssueService.create.mockResolvedValue(baseIssue);
+
+    const db = createTrackingDb({
+      selects: [
+        [staleRoutine],
+        [lockedRoutine],
+        [],
+      ],
+      inserts: [[baseRun]],
+      updates: [
+        [{ ...baseRun, status: "issue_created", linkedIssueId: issueId }],
+        [lockedRoutine],
+      ],
+    });
+    const svc = routineService(db as any);
+
+    await svc.runRoutine(routineId, { source: "manual" }, {
+      agentId: null,
+      userId,
+    });
+
+    expect(mockIssueService.create).toHaveBeenCalledWith(
+      companyId,
+      expect.objectContaining({ completionPolicyCreatorOverride: "review_required" }),
+      expect.anything(),
+    );
+  });
+
+  it("rejects a former assignee after rereading the locked routine", async () => {
+    const reassignedRoutine = { ...baseRoutine, assigneeAgentId: "replacement-agent" };
+    const db = createTrackingDb({
+      selects: [
+        [baseRoutine],
+        [reassignedRoutine],
+      ],
+    });
+    const svc = routineService(db as any);
+
+    await expect(svc.runRoutine(routineId, { source: "manual" }, {
+      agentId,
+      userId: null,
+    })).rejects.toThrow("Agents can only run routines assigned to themselves");
+
+    expect(mockIssueService.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects a routine archived while dispatch waits for its lock", async () => {
+    const db = createTrackingDb({
+      selects: [
+        [baseRoutine],
+        [{ ...baseRoutine, status: "archived" }],
+      ],
+    });
+    const svc = routineService(db as any);
+
+    await expect(svc.runRoutine(routineId, { source: "manual" }, {
+      agentId: null,
+      userId,
+    })).rejects.toThrow("Routine is archived");
+
+    expect(mockIssueService.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects a scheduled routine paused while dispatch waits for its lock", async () => {
+    const db = createTrackingDb({
+      selects: [
+        [baseRoutine],
+        [{ ...baseRoutine, status: "paused" }],
+      ],
+    });
+    const svc = routineService(db as any);
+
+    await expect(svc.runRoutine(routineId, { source: "schedule" }, {
+      agentId: null,
+      userId: null,
+    })).rejects.toThrow("Routine is not active");
+
+    expect(mockIssueService.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects a trigger disabled while dispatch waits for its lock", async () => {
+    const db = createTrackingDb({
+      selects: [
+        [baseRoutine],
+        [baseTrigger],
+        [baseRoutine],
+        [{ ...baseTrigger, enabled: false }],
+      ],
+    });
+    const svc = routineService(db as any);
+
+    await expect(svc.runRoutine(routineId, { source: "manual", triggerId }, {
+      agentId: null,
+      userId,
+    })).rejects.toThrow("Routine trigger is not active");
+
+    expect(mockIssueService.create).not.toHaveBeenCalled();
+  });
 });
 
 describe("touchIssueForUserInbox — coalesce path", () => {
@@ -354,6 +483,8 @@ describe("touchIssueForUserInbox — coalesce path", () => {
     const db = createTrackingDb({
       selects: [
         // getRoutineById (outside transaction)
+        [{ ...baseRoutine, concurrencyPolicy: "coalesce_if_active" }],
+        // reread after SELECT FOR UPDATE
         [{ ...baseRoutine, concurrencyPolicy: "coalesce_if_active" }],
         // findLiveExecutionIssue first query (joins heartbeatRuns, returns { issues } shape)
         [{ issues: activeIssue }],
@@ -409,6 +540,8 @@ describe("touchIssueForUserInbox — coalesce path", () => {
     const db = createTrackingDb({
       selects: [
         // getRoutineById (outside transaction)
+        [{ ...baseRoutine, concurrencyPolicy: "coalesce_if_active" }],
+        // reread after SELECT FOR UPDATE
         [{ ...baseRoutine, concurrencyPolicy: "coalesce_if_active" }],
         // findLiveExecutionIssue first query (returns { issues } shape)
         [{ issues: activeIssue }],

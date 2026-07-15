@@ -189,9 +189,11 @@ describe.skipIf(process.platform === "win32")(
       const revsBefore = await svc.listRevisions(routineId, companyId);
       const oldestRev = revsBefore[revsBefore.length - 1];
       expect(oldestRev.snapshot.title).toBe("Initial Title");
+      const current = await svc.get(routineId);
+      expect(current).not.toBeNull();
 
       // Restore to oldest revision (title = "Initial Title")
-      const restored = await svc.restoreRevision(routineId, oldestRev.id, actor);
+      const restored = await svc.restoreRevision(routineId, oldestRev.id, current!.latestRevisionId, actor);
       expect(restored).not.toBeNull();
       expect(restored?.title).toBe("Initial Title");
 

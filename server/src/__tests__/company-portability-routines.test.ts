@@ -360,6 +360,7 @@ describe("company-portability routines", () => {
         projectId: "p1",
         assigneeAgentId: "a1",
         description: "Send daily summary",
+        agentCompletionPolicyOverride: "agent_can_complete",
         variables: [
           { name: "AUDIENCE", label: "Audience", type: "text", defaultValue: "team", required: true, options: [] },
         ],
@@ -386,6 +387,7 @@ describe("company-portability routines", () => {
     expect(routine.status).toBe("active");
     expect(routine.concurrencyPolicy).toBe("coalesce_if_active");
     expect(routine.catchUpPolicy).toBe("skip_missed");
+    expect(routine.agentCompletionPolicyOverride).toBe("agent_can_complete");
     expect(routine.variables).toHaveLength(1);
     expect(routine.variables[0]!.name).toBe("AUDIENCE");
     expect(routine.variables[0]!.defaultValue).toBe("team");
@@ -456,6 +458,7 @@ describe("company-portability routines", () => {
           priority: "medium",
           concurrencyPolicy: "coalesce_if_active",
           catchUpPolicy: "skip_missed",
+          agentCompletionPolicyOverride: "review_required",
           projectSlug: "engineering",
           assigneeAgentSlug: "ada",
           variables: [],
@@ -487,6 +490,7 @@ describe("company-portability routines", () => {
     expect(createdRoutine.projectId).toBe("tp1");
     expect(createdRoutine.assigneeAgentId).toBe("ta1");
     expect(createdRoutine.status).toBe("active");
+    expect(createdRoutine.agentCompletionPolicyOverride).toBe("review_required");
     expect(triggerCreateCalls).toHaveLength(1);
     expect(triggerCreateCalls[0]!.input.kind).toBe("schedule");
     expect(triggerCreateCalls[0]!.input.cronExpression).toBe("0 9 * * *");
@@ -739,6 +743,7 @@ describe("company-portability routines", () => {
     expect(routineUpdateCalls).toHaveLength(1);
     expect(routineUpdateCalls[0]!.id).toBe("existing-r1");
     expect(routineUpdateCalls[0]!.patch.description).toBe("new desc");
+    expect(routineUpdateCalls[0]!.patch).not.toHaveProperty("agentCompletionPolicyOverride");
     expect(result.routines[0]!.action).toBe("updated");
   });
 

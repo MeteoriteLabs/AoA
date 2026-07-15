@@ -63,6 +63,17 @@ const AOA_HOME = WINDOWS_WITH_EMBEDDED_POSTGRES
   ? ""
   : fs.mkdtempSync(path.join(os.tmpdir(), "aoa-e2e-home-"));
 
+// Keep provider-status E2E hermetic as well as the AoA instance itself. The
+// production Codex status path intentionally reads the server's shared
+// CODEX_HOME/config.toml, so inheriting the developer's ~/.codex would make
+// model-resolution assertions depend on the host's current login/config.
+const CODEX_HOME = WINDOWS_WITH_EMBEDDED_POSTGRES
+  ? ""
+  : fs.mkdtempSync(path.join(os.tmpdir(), "aoa-e2e-codex-home-"));
+if (CODEX_HOME) {
+  fs.writeFileSync(path.join(CODEX_HOME, "config.toml"), 'model = "gpt-5.5"\n', "utf8");
+}
+
 // UNCONDITIONAL startup cleanup (eng-review fix 2): delete any leftover
 // fake-crew control file from a prior run that died on a signal (afterEach
 // doesn't run on SIGKILL/Ctrl-C, and os.tmpdir() persists across local runs).
@@ -102,9 +113,14 @@ export default defineConfig({
   testMatch: WINDOWS_WITH_EMBEDDED_POSTGRES
     ? "**/windows-embedded-postgres-skip.spec.ts"
     : "**/*.spec.ts",
-  // NOTE: authenticated (multi-user) deployment mode has NO e2e coverage yet.
-  // The e2e suite boots only in local_trusted mode (see webServer env below).
-  // Multi-user authenticated-mode e2e is tracked for 1.1.
+  // The standard job boots local_trusted mode. Authenticated Commander coverage
+  // and real-provider lifecycle coverage have dedicated configs that bootstrap
+  // their own database, auth mode, and provider campaign; including them here
+  // makes this job fail before the intended setup can run.
+  testIgnore: [
+    "**/commander-cockpit-authenticated.spec.ts",
+    "**/commander-lifecycle/**/*.live.spec.ts",
+  ],
   timeout: 60_000,
   // Retry up to twice on CI to absorb transient React refetch/remount churn that
   // detaches elements mid-interaction (the dominant e2e flake class). Kept at
@@ -150,10 +166,17 @@ export default defineConfig({
           ...process.env,
           PORT: String(PORT),
           AOA_HOME,
+          CODEX_HOME,
           AOA_INSTANCE_ID: "playwright-e2e",
           AOA_BIND: "loopback",
           AOA_DEPLOYMENT_MODE: "local_trusted",
           AOA_DEPLOYMENT_EXPOSURE: "private",
+          // Post auth-redesign, local_trusted no longer grants the synthetic
+          // loopback board admin by default — it is gated behind this dev escape
+          // hatch (server/src/middleware/auth.ts, config.ts). Without it EVERY
+          // board-authenticated e2e request resolves actor {type:"none"} → 401,
+          // so the whole suite would fail to authenticate. (HANDOFF §6.5.)
+          AOA_DEV_LOCAL_IDENTITY: "1",
           COREPACK_ENABLE_DOWNLOAD_PROMPT: "0",
           AOA_E2E_DB_PORT: String(E2E_DB_PORT),
           AOA_EMBEDDED_POSTGRES_PORT: String(E2E_DB_PORT),

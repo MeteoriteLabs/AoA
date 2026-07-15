@@ -588,7 +588,7 @@ function SuggestedMemoryDialog({
 
 export function Dashboard() {
   const { selectedCompanyId, companies } = useCompany();
-  const { openOnboarding, openNewIssue, openDiscussionCapture, openNewProject, openNewAgent, openNewGoal } = useDialog();
+  const { openNewIssue, openDiscussionCapture, openNewProject, openNewAgent, openNewGoal } = useDialog();
   const { pushToast } = useToast();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -751,7 +751,7 @@ export function Dashboard() {
           icon={Home}
           message="Welcome to AoA. Set up your first company and agent to get started."
           action="Get Started"
-          onAction={openOnboarding}
+          onAction={() => navigate("/onboarding")}
         />
       );
     }

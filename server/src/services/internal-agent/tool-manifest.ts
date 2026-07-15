@@ -59,7 +59,7 @@ function mcpCategory(name: string): string {
   if (name in documentToolHandlers) return "document";
   if (name in approvalToolHandlers) return "approval";
   if (name in skillToolHandlers) return "skill";
-  if (name === "ask_founder") return "ask"; // askFounderToolHandlers is not exported
+  if (name === "ask_human" || name === "ask_founder") return "ask";
   return "other";
 }
 

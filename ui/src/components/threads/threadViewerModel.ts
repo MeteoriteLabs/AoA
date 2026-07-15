@@ -91,6 +91,74 @@ export interface ThreadViewerMapPayload {
   threadId?: string;
 }
 
+export type ThreadOpenRequest =
+  | { kind: "task"; issueId: string; title: string; scopeItemId?: string }
+  | { kind: "task_output"; issueId: string; title: string; scopeItemId?: string }
+  | { kind: "scope_item"; item: ThreadViewerScopeItem; scopeVersionId?: string | null }
+  | { kind: "memory"; memoryId: string; title: string; scopeItemId?: string }
+  | { kind: "artifact"; artifactId: string; versionId?: string | null; title: string }
+  | { kind: "asset"; attachment: DiscussionEntryAttachment; entryId?: string }
+  | { kind: "browser"; url: string; title: string }
+  | { kind: "map"; scope: "thread" | "global"; threadId?: string };
+
+export function threadViewerTabToOpenRequest(tab: ThreadViewerTab): ThreadOpenRequest | null {
+  switch (tab.kind) {
+    case "task":
+    case "task_output": {
+      const payload = tab.payload as ThreadViewerTaskPayload | ThreadViewerTaskOutputPayload;
+      return { kind: tab.kind, ...payload };
+    }
+    case "scope_item": {
+      const payload = tab.payload as ThreadViewerScopePayload;
+      return {
+        kind: "scope_item",
+        item: payload.item,
+        scopeVersionId: payload.item.scopeVersionId,
+      };
+    }
+    case "memory": {
+      const payload = tab.payload as ThreadViewerMemoryPayload;
+      return {
+        kind: "memory",
+        memoryId: payload.memoryId,
+        title: payload.title,
+        scopeItemId: payload.scopeItemId,
+      };
+    }
+    case "artifact_ref": {
+      const payload = tab.payload as ThreadViewerArtifactRefPayload;
+      return {
+        kind: "artifact",
+        artifactId: payload.artifactId,
+        versionId: payload.artifactVersionId,
+        title: payload.title,
+      };
+    }
+    case "artifact":
+    case "asset": {
+      const payload = tab.payload as ThreadViewerAttachmentPayload;
+      if (tab.kind === "artifact" && payload.attachment.artifactId) {
+        return {
+          kind: "artifact",
+          artifactId: payload.attachment.artifactId,
+          title: payload.attachment.artifactTitle ?? tab.label,
+        };
+      }
+      return { kind: "asset", ...payload };
+    }
+    case "browser": {
+      const payload = tab.payload as ThreadViewerBrowserPayload;
+      return { kind: "browser", ...payload };
+    }
+    case "map": {
+      const payload = tab.payload as ThreadViewerMapPayload;
+      return { kind: "map", ...payload };
+    }
+    case "open":
+      return null;
+  }
+}
+
 export const OPEN_TAB_KEY = "open";
 const TRAILING_URL_PUNCTUATION = /[.,!?;:)\]}]+$/;
 const URL_PATTERN = /\bhttps?:\/\/[^\s<>"')]+/gi;

@@ -1,7 +1,7 @@
 import { useState, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { History, Loader2 } from "lucide-react";
-import type { RoutineRevisionListItem } from "@armyofagents/shared";
+import type { Routine, RoutineRevisionListItem } from "@armyofagents/shared";
 import { routinesApi } from "../../api/routines";
 import { useToast } from "../../context/ToastContext";
 import { diffLines, isDiffEmpty } from "../../lib/line-diff";
@@ -12,7 +12,8 @@ import { Button } from "@/components/ui/button";
 
 interface Props {
   routineId: string;
-  onRestored: () => void;
+  getBaseRevisionId: () => string | null;
+  onRestored: (routine: Routine) => void;
 }
 
 interface RoutineRevisionCardProps {
@@ -115,7 +116,7 @@ function RoutineRevisionCard({ rev, prevDescription, onRestore, isRestoring }: R
   );
 }
 
-export function RoutineRevisionHistory({ routineId, onRestored }: Props) {
+export function RoutineRevisionHistory({ routineId, getBaseRevisionId, onRestored }: Props) {
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
 
@@ -126,11 +127,15 @@ export function RoutineRevisionHistory({ routineId, onRestored }: Props) {
   });
 
   const restoreMutation = useMutation({
-    mutationFn: (revisionId: string) => routinesApi.restoreRevision(routineId, revisionId),
-    onSuccess: () => {
+    mutationFn: (revisionId: string) => routinesApi.restoreRevision(
+      routineId,
+      revisionId,
+      getBaseRevisionId(),
+    ),
+    onSuccess: (updated) => {
       pushToast({ title: "Revision restored", tone: "success" });
       queryClient.invalidateQueries({ queryKey: queryKeys.routines.revisions(routineId) });
-      onRestored();
+      onRestored(updated);
     },
     onError: (error) => {
       pushToast({

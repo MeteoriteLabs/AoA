@@ -135,6 +135,7 @@ export function GeneralSection() {
   const [description, setDescription] = useState("");
   const [brandColor, setBrandColor] = useState("");
   const [rootFolder, setRootFolder] = useState("");
+  const [humanQuestionSlaHours, setHumanQuestionSlaHours] = useState(24);
 
   useEffect(() => {
     if (!selectedCompany) return;
@@ -142,6 +143,7 @@ export function GeneralSection() {
     setDescription(selectedCompany.description ?? "");
     setBrandColor(selectedCompany.brandColor ?? "");
     setRootFolder(selectedCompany.rootFolder ?? "");
+    setHumanQuestionSlaHours(selectedCompany.humanQuestionSlaHours ?? 24);
   }, [selectedCompany]);
 
   const [inviteError, setInviteError] = useState<string | null>(null);
@@ -189,6 +191,15 @@ export function GeneralSection() {
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+    },
+  });
+
+  const questionSlaMutation = useMutation({
+    mutationFn: (hours: number) =>
+      companiesApi.update(selectedCompanyId!, { humanQuestionSlaHours: hours }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.detail(selectedCompanyId!) });
     },
   });
 
@@ -501,6 +512,52 @@ export function GeneralSection() {
             )}
           </div>
         )}
+
+        {/* Task execution */}
+        <div className="space-y-4">
+          <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+            Task execution
+          </div>
+          <div className="space-y-3 rounded-md border border-border px-4 py-4">
+            <Field
+              label="Human question response time"
+              hint="Elapsed time before an unanswered agent question is marked At risk. This does not reassign the question or restart work."
+            >
+              <div className="flex items-center gap-2">
+                <input
+                  aria-label="Human question response time"
+                  type="number"
+                  min={1}
+                  max={24 * 30}
+                  value={humanQuestionSlaHours}
+                  onChange={(event) => setHumanQuestionSlaHours(Number(event.target.value))}
+                  className="w-24 rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
+                />
+                <span className="text-sm text-muted-foreground">elapsed hours</span>
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={
+                    questionSlaMutation.isPending
+                    || !Number.isInteger(humanQuestionSlaHours)
+                    || humanQuestionSlaHours < 1
+                    || humanQuestionSlaHours > 24 * 30
+                    || humanQuestionSlaHours === (selectedCompany.humanQuestionSlaHours ?? 24)
+                  }
+                  onClick={() => questionSlaMutation.mutate(humanQuestionSlaHours)}
+                >
+                  {questionSlaMutation.isPending ? "Saving..." : "Save"}
+                </Button>
+              </div>
+            </Field>
+            <p className="text-xs text-muted-foreground">
+              Default: 24 elapsed hours. Departments and projects can override this for new questions.
+            </p>
+            {questionSlaMutation.isError ? (
+              <p role="alert" className="text-xs text-destructive">Could not save the response-time policy.</p>
+            ) : null}
+          </div>
+        </div>
 
         {/* Hiring */}
         <div className="space-y-4">

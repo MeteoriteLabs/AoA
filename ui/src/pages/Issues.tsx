@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useCallback, useRef } from "react";
 import { useParams, useSearchParams, useNavigate } from "@/lib/router";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import type { CockpitTaskBucket } from "@armyofagents/shared";
 import { issuesApi } from "../api/issues";
+import { cockpitApi } from "../api/cockpit";
 import { agentsApi } from "../api/agents";
 import { heartbeatsApi } from "../api/heartbeats";
 import { useCompany } from "../context/CompanyContext";
@@ -10,7 +12,9 @@ import { queryKeys } from "../lib/queryKeys";
 import { EmptyState } from "../components/EmptyState";
 import { IssuesList } from "../components/IssuesList";
 import { TaskSlideOver } from "../components/TaskSlideOver";
-import { CircleDot } from "lucide-react";
+import { CircleDot, Loader2 } from "lucide-react";
+
+const COCKPIT_BUCKETS = new Set<CockpitTaskBucket>(["mine", "managed", "awaiting_review"]);
 
 export function Issues() {
   const { selectedCompanyId } = useCompany();
@@ -23,6 +27,10 @@ export function Issues() {
   // Resolve issue ID from either route param (issues/:issueId) or query param (?selected=:id)
   const selectedQueryParam = searchParams.get("selected");
   const selectedIssueId = routeIssueId || selectedQueryParam || null;
+  const rawCockpitBucket = searchParams.get("cockpitBucket");
+  const cockpitBucket = rawCockpitBucket && COCKPIT_BUCKETS.has(rawCockpitBucket as CockpitTaskBucket)
+    ? rawCockpitBucket as CockpitTaskBucket
+    : null;
 
   const slideOverOpen = !!selectedIssueId;
 
@@ -49,15 +57,19 @@ export function Issues() {
     markIssueRead.mutate(selectedIssueId);
   }, [selectedIssueId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Close slide-over: navigate to /issues (clean URL)
+  // Close slide-over without discarding an accountable-work filter.
   const handleCloseSlideOver = useCallback(() => {
-    navigate("/issues", { replace: true });
-  }, [navigate]);
+    const next = new URLSearchParams(searchParams);
+    next.delete("selected");
+    navigate(`/issues${next.size > 0 ? `?${next.toString()}` : ""}`, { replace: true });
+  }, [navigate, searchParams]);
 
   // Open slide-over for a task: set ?selected=:id query param
   const handleSelectIssue = useCallback((issueIdentifier: string) => {
-    navigate(`/issues?selected=${encodeURIComponent(issueIdentifier)}`, { replace: true });
-  }, [navigate]);
+    const next = new URLSearchParams(searchParams);
+    next.set("selected", issueIdentifier);
+    navigate(`/issues?${next.toString()}`, { replace: true });
+  }, [navigate, searchParams]);
 
   const initialSearch = searchParams.get("q") ?? "";
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -87,13 +99,13 @@ export function Issues() {
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
     queryFn: () => agentsApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && !cockpitBucket,
   });
 
   const { data: liveRuns } = useQuery({
     queryKey: queryKeys.liveRuns(selectedCompanyId!),
     queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && !cockpitBucket,
     refetchInterval: 5000,
   });
 
@@ -116,11 +128,34 @@ export function Issues() {
   const { data: issues, isLoading, error } = useQuery({
     queryKey: queryKeys.issues.list(selectedCompanyId!),
     queryFn: () => issuesApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
+    enabled: !!selectedCompanyId && !cockpitBucket,
   });
+
+  const cockpitTasksQuery = useInfiniteQuery({
+    queryKey: ["cockpit", selectedCompanyId, "tasks", cockpitBucket],
+    queryFn: ({ pageParam }) => cockpitApi.listTasks(
+      selectedCompanyId!,
+      cockpitBucket!,
+      { limit: 50, cursor: pageParam },
+    ),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
+    enabled: !!selectedCompanyId && !!cockpitBucket,
+  });
+  const cockpitTasks = cockpitTasksQuery.data?.pages.flatMap((page) => page.items) ?? [];
+  const cockpitTotal = cockpitTasksQuery.data?.pages[0]?.total ?? 0;
 
   // Compute subtitle counts
   useEffect(() => {
+    if (cockpitBucket) {
+      const label = cockpitBucket === "mine"
+        ? "Mine"
+        : cockpitBucket === "managed"
+          ? "Managed"
+          : "Awaiting Review";
+      setSubtitle(cockpitTasksQuery.data ? `${cockpitTotal} ${label.toLowerCase()}` : null);
+      return;
+    }
     if (!issues) return;
     const active = issues.filter((i) => ["todo", "in_progress", "blocked"].includes(i.status)).length;
     const inReview = issues.filter((i) => i.status === "in_review").length;
@@ -128,7 +163,7 @@ export function Issues() {
     if (active > 0) parts.push(`${active} active`);
     if (inReview > 0) parts.push(`${inReview} in review`);
     setSubtitle(parts.length > 0 ? parts.join(" \u00B7 ") : null);
-  }, [issues, setSubtitle]);
+  }, [cockpitBucket, cockpitTasksQuery.data, cockpitTotal, issues, setSubtitle]);
 
   const updateIssue = useMutation({
     mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
@@ -152,19 +187,76 @@ export function Issues() {
           The primary unit of work agents execute on your behalf.
         </p>
       </div>
-      <IssuesList
-        issues={issues ?? []}
-        isLoading={isLoading}
-        error={error as Error | null}
-        agents={agents}
-        liveIssueIds={liveIssueIds}
-        viewStateKey="aoa:issues-view"
-        initialAssignees={searchParams.get("assignee") ? [searchParams.get("assignee")!] : undefined}
-        initialSearch={initialSearch}
-        onSearchChange={handleSearchChange}
-        onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
-        onSelectIssue={handleSelectIssue}
-      />
+      {cockpitBucket ? (
+        <section className="border-y border-border" aria-label="Accountable work">
+          <div className="flex min-h-10 items-center justify-between border-b border-border px-2 text-xs text-muted-foreground">
+            <span>
+              {cockpitBucket === "mine" ? "Mine" : cockpitBucket === "managed" ? "Managed" : "Awaiting Review"}
+            </span>
+            <span className="tabular-nums">{cockpitTotal}</span>
+          </div>
+          {cockpitTasksQuery.isLoading && (
+            <div className="flex items-center justify-center gap-2 py-12 text-sm text-muted-foreground" role="status">
+              <Loader2 className="size-4 animate-spin" aria-hidden /> Loading tasks...
+            </div>
+          )}
+          {cockpitTasksQuery.isError && (
+            <div className="space-y-2 py-10 text-center text-sm" role="alert">
+              <p>These tasks could not be loaded.</p>
+              <button type="button" className="font-medium text-brand hover:underline" onClick={() => void cockpitTasksQuery.refetch()}>
+                Try again
+              </button>
+            </div>
+          )}
+          {!cockpitTasksQuery.isLoading && !cockpitTasksQuery.isError && cockpitTasks.length === 0 && (
+            <div className="py-12 text-center text-sm text-muted-foreground">No tasks in this queue.</div>
+          )}
+          {cockpitTasks.length > 0 && (
+            <ul className="divide-y divide-border">
+              {cockpitTasks.map((task) => (
+                <li key={task.id}>
+                  <button
+                    type="button"
+                    className="flex min-h-12 w-full items-center gap-3 px-2 text-left hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand-focus-ring"
+                    onClick={() => handleSelectIssue(task.id)}
+                  >
+                    <span className="w-20 shrink-0 text-xs text-muted-foreground">{task.identifier ?? "Task"}</span>
+                    <span className="min-w-0 flex-1 truncate text-sm font-medium">{task.title}</span>
+                    <span className="shrink-0 text-xs text-muted-foreground">{task.responsibility.label}</span>
+                    <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">{task.status}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          {cockpitTasksQuery.hasNextPage && (
+            <div className="flex justify-center border-t border-border p-3">
+              <button
+                type="button"
+                className="min-h-10 px-4 text-sm font-medium text-brand hover:underline disabled:opacity-50"
+                disabled={cockpitTasksQuery.isFetchingNextPage}
+                onClick={() => void cockpitTasksQuery.fetchNextPage()}
+              >
+                {cockpitTasksQuery.isFetchingNextPage ? "Loading..." : "Load more"}
+              </button>
+            </div>
+          )}
+        </section>
+      ) : (
+        <IssuesList
+          issues={issues ?? []}
+          isLoading={isLoading}
+          error={error as Error | null}
+          agents={agents}
+          liveIssueIds={liveIssueIds}
+          viewStateKey="aoa:issues-view"
+          initialAssignees={searchParams.get("assignee") ? [searchParams.get("assignee")!] : undefined}
+          initialSearch={initialSearch}
+          onSearchChange={handleSearchChange}
+          onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
+          onSelectIssue={handleSelectIssue}
+        />
+      )}
       <TaskSlideOver
         issueId={selectedIssueId}
         open={slideOverOpen}

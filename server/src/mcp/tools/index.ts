@@ -56,10 +56,11 @@ export const toolAllowedActors: Record<string, McpActorType[]> = {
   // (Critical Rule #6: founders approve identity/domain; this tool never bypasses that.)
   "memory.write": ALL_ACTORS,
   "use_skill": ["board", "commander"],  // HTTP MCP endpoint gate only: founder (board) + commander; worker agents + mcp excluded (skill markdown may contain company IP). Commander's CLI bridge dispatches via tool-registry and does NOT consult this map.
-  // ask_founder is org/heartbeat task-execution agents ONLY. The handler
+  // Ask Human is for org/heartbeat task-execution agents only. The handler
   // additionally requires an active runId; crew/internal-agent (whose question
   // channel is the in-thread reply) are excluded by this actor gate. board/mcp/
   // commander cannot call it.
+  "ask_human": ["agent"],
   "ask_founder": ["agent"],
 };
 
@@ -553,13 +554,39 @@ export const TOOL_DEFINITIONS = [
     },
   },
   {
-    name: "ask_founder",
+    name: "ask_human",
     description:
-      "Ask the founder a question and block (up to ~5 min) for the answer. For " +
+      "Ask the responsible human a durable task question and block (up to ~5 min) for the answer. For " +
       "org/heartbeat task-execution agents during an active run only. Surfaces in " +
-      "the Inbox as a question the founder answers (free-text, or one of your " +
+      "Commander and Inbox as a question the recipient answers (free-text, or one of your " +
       "options). On timeout the run is parked and you get {answered:false, " +
       "status:\"parked\"} — stop gracefully; do not retry.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        question: { type: "string" },
+        options: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              label: { type: "string" },
+              value: { type: "string" },
+              description: { type: "string" },
+              rationale: { type: "string" },
+            },
+            required: ["label", "value"],
+          },
+        },
+        context: { type: "string" },
+      },
+      required: ["question"],
+    },
+  },
+  {
+    name: "ask_founder",
+    description:
+      "Compatibility alias for ask_human. Recipient routing follows the task's responsible human, reviewer, then founder fallback.",
     inputSchema: {
       type: "object",
       properties: {

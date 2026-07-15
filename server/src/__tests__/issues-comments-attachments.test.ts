@@ -603,6 +603,25 @@ describe("POST /companies/:companyId/issues agent delegation", () => {
     );
   });
 
+  it("rejects non-empty agent-authored acceptance criteria", async () => {
+    mockAccessService.hasPermission.mockResolvedValue(false);
+    mockIssueService.getById.mockResolvedValue(makeIssue({ id: parentIssueId }));
+
+    const res = await request(createApp(agentActor()))
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        title: "Child task with self-authored criteria",
+        status: "todo",
+        parentId: parentIssueId,
+        assigneeAgentId,
+        acceptanceCriteria: ["Agent decides when the work is complete"],
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Agents cannot define their own task acceptance criteria");
+    expect(mockIssueService.create).not.toHaveBeenCalled();
+  });
+
   it("blocks a lead assigning a child task outside direct reports", async () => {
     mockAccessService.hasPermission.mockResolvedValue(false);
     mockIssueService.getById.mockResolvedValue(makeIssue({ id: parentIssueId }));

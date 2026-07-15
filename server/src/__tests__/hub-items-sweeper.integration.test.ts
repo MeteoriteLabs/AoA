@@ -231,7 +231,7 @@ describe.skipIf(process.platform === "win32")("hubItems.reconcile — real DB", 
     expect(res.closed).toBe(1);
   });
 
-  it("BUG-5: latest-succeeded run_complete SURVIVES reconcile; a newer run closes it with a reconcile_close audit row", async () => {
+  it("archives succeeded run_complete history instead of keeping it in attention", async () => {
     if (setupError) throw new Error(String(setupError));
     const { companyId, founderId } = await seedCompanyWithFounder();
     const svc = hubItemsService(db);
@@ -248,17 +248,17 @@ describe.skipIf(process.platform === "win32")("hubItems.reconcile — real DB", 
       ownerUserId: founderId,
     });
 
-    // While it is the agent's LATEST run, the succeeded item survives the sweep
-    // ("succeeded" is in HEARTBEAT_ACTIONABLE_STATUSES).
+    // A successful process exit is history, not an open attention item. The
+    // task/result surface owns completion; Inbox should stay focused on work
+    // that still needs a human or an exception to resolve.
     const res1 = await svc.reconcile(companyId, { sourceType: "heartbeat_run" });
-    expect(res1.closed).toBe(0);
-    expect(await statusOf(item.id)).toBe("open");
+    expect(res1.closed).toBe(1);
+    expect(await statusOf(item.id)).toBe("archived");
 
-    // A newer run for the same agent supersedes it → closed via the
-    // version-guarded system path.
+    // A newer run cannot close the item a second time.
     await db.execute(sql`INSERT INTO heartbeat_runs (id, company_id, agent_id, status, created_at) VALUES (gen_random_uuid(), ${companyId}, ${agentId}, 'running', now())`);
     const res2 = await svc.reconcile(companyId, { sourceType: "heartbeat_run" });
-    expect(res2.closed).toBe(1);
+    expect(res2.closed).toBe(0);
     expect(await statusOf(item.id)).toBe("archived");
 
     const audit = await db.execute(

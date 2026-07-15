@@ -195,6 +195,9 @@ export function companyService(db: Db) {
 
     remove: (id: string) =>
       db.transaction(async (tx) => {
+        // All work creation locks the company before child rows. Take the same
+        // parent lock before the explicit child deletes to avoid lock cycles.
+        await tx.execute(sql`select id from ${companies} where ${companies.id} = ${id} for update`);
         // Delete from child tables in dependency order.
         //
         // Schema-level FK cascades (migration 0066) make the explicit deletes

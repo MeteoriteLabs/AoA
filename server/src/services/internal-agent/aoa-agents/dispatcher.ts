@@ -1,12 +1,26 @@
-import { and, eq, lt, inArray, notInArray, sql, gt } from "drizzle-orm";
+import { randomUUID } from "node:crypto";
+import { and, desc, eq, lt, inArray, isNull, lte, notInArray, or, sql, gt } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { discussionEntries, discussions, internalAgentRuns, agentWakeupRequests, agents, internalAgentConfig } from "@armyofagents/db";
+import {
+  requestTrackedProcessTermination,
+  waitForTrackedProcessExit,
+} from "@armyofagents/adapter-utils/server-utils";
+import {
+  discussionEntries,
+  discussions,
+  internalAgentRuns,
+  agentWakeupRequests,
+  agents,
+  internalAgentConfig,
+  issues,
+  workQuestions,
+} from "@armyofagents/db";
 import { listEnabledOutboxAgents } from "./triggers.js";
 import { ensureExtractionAgent } from "./ensure-extraction-agent.js";
 import { runExtractionConsumer } from "../subagents/extraction-consumer.js";
 import { runAoaAgent } from "./runner.js";
 import { createLimiter } from "../subagents/concurrency-limiter.js";
-import { publishLiveEvent } from "../../live-events.js";
+import { publishIssueStatusChanged, publishLiveEvent } from "../../live-events.js";
 import { logger } from "../../../middleware/logger.js";
 import { isRoleActiveAtAutonomy, ROLE_MIN_AUTONOMY, type CrewRole } from "./autonomy.js";
 import { resolveCrewRole } from "./resolve-crew-role.js";
@@ -16,6 +30,344 @@ import { runRateExceeded, resolveRoleModel, DEFAULT_CREW_RATE_LIMIT, DEFAULT_CRE
 // of live-events.ts, imported as ../../live-events.js above), so from
 // internal-agent/aoa-agents/ it resolves up TWO levels: ../../budgets.js.
 import { budgetService } from "../../budgets.js";
+import {
+  failUnstartedInternalAgentWorkQuestionContinuation,
+  finalizeInternalAgentWorkQuestionContinuation,
+} from "../../work-question-continuation-terminal.js";
+
+const WAKEUP_LEASE_MS = 10 * 60 * 1000;
+const WAKEUP_LEASE_RENEW_MS = 60 * 1000;
+
+function crewContinuationAttemptKey(idempotencyKey: string, attempt: number) {
+  return `${idempotencyKey}:crew-attempt:${Math.max(1, attempt)}`;
+}
+
+export async function recoverExpiredCrewWakeup(
+  db: Db,
+  wakeup: {
+    id: string;
+    companyId: string;
+    agentId: string;
+    runId: string | null;
+    idempotencyKey: string | null;
+    payload: Record<string, unknown> | null;
+  },
+) {
+  const now = new Date();
+  const recoveryToken = randomUUID();
+  const issueId = typeof wakeup.payload?.issueId === "string" ? wakeup.payload.issueId : null;
+  const questionId = typeof wakeup.payload?.questionId === "string" ? wakeup.payload.questionId : null;
+  const outcome = await db.transaction(async (tx) => {
+    // Keep the same lock order as task closure: task -> question -> wakeup -> run.
+    if (issueId) {
+      await tx.select({ id: issues.id }).from(issues).where(and(
+        eq(issues.id, issueId),
+        eq(issues.companyId, wakeup.companyId),
+      )).for("update");
+    }
+    if (questionId) {
+      await tx.select({ id: workQuestions.id }).from(workQuestions).where(and(
+        eq(workQuestions.id, questionId),
+        eq(workQuestions.companyId, wakeup.companyId),
+      )).for("update");
+    }
+
+    const currentWakeup = await tx.select({
+      runId: agentWakeupRequests.runId,
+      source: agentWakeupRequests.source,
+      idempotencyKey: agentWakeupRequests.idempotencyKey,
+      attempts: agentWakeupRequests.attempts,
+      leaseExpiresAt: agentWakeupRequests.leaseExpiresAt,
+    }).from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.id, wakeup.id),
+        eq(agentWakeupRequests.companyId, wakeup.companyId),
+        eq(agentWakeupRequests.agentId, wakeup.agentId),
+        eq(agentWakeupRequests.status, "processing"),
+        or(
+          isNull(agentWakeupRequests.leaseExpiresAt),
+          lte(agentWakeupRequests.leaseExpiresAt, now),
+        ),
+      ))
+      .for("update")
+      .then((rows) => rows[0] ?? null);
+    if (!currentWakeup) return { kind: "none" as const, terminal: null, releasedIssueId: null };
+
+    const baseKey = currentWakeup.idempotencyKey;
+    const attemptKey = baseKey && currentWakeup.source === "work_question_continuation"
+      ? crewContinuationAttemptKey(baseKey, currentWakeup.attempts)
+      : null;
+    let run = currentWakeup.runId
+      ? await tx.select({
+          id: internalAgentRuns.id,
+          status: internalAgentRuns.status,
+          errorMessage: internalAgentRuns.errorMessage,
+        }).from(internalAgentRuns).where(and(
+          eq(internalAgentRuns.id, currentWakeup.runId),
+          eq(internalAgentRuns.companyId, wakeup.companyId),
+          eq(internalAgentRuns.agentId, wakeup.agentId),
+        )).for("update").then((rows) => rows[0] ?? null)
+      : null;
+    if (!run && attemptKey && baseKey) {
+      // Covers a crash after the run insert but before the runner binds runId to
+      // the wakeup. The base-key fallback is only valid for attempt one; after
+      // that it would rediscover a retired legacy run from an earlier epoch.
+      const keys = currentWakeup.attempts === 1 ? [attemptKey, baseKey] : [attemptKey];
+      run = await tx.select({
+        id: internalAgentRuns.id,
+        status: internalAgentRuns.status,
+        errorMessage: internalAgentRuns.errorMessage,
+      }).from(internalAgentRuns).where(and(
+        eq(internalAgentRuns.companyId, wakeup.companyId),
+        eq(internalAgentRuns.agentId, wakeup.agentId),
+        inArray(internalAgentRuns.continuationIdempotencyKey, keys),
+      )).orderBy(desc(internalAgentRuns.createdAt)).for("update").then((rows) => rows[0] ?? null);
+    }
+
+    if (!run) {
+      await tx.update(agentWakeupRequests).set({
+        status: "queued",
+        claimedAt: null,
+        claimToken: null,
+        leaseExpiresAt: null,
+        runId: null,
+        updatedAt: now,
+      }).where(eq(agentWakeupRequests.id, wakeup.id));
+      return { kind: "requeued" as const, terminal: null, releasedIssueId: null };
+    }
+
+    const [failedRun] = await tx.update(internalAgentRuns).set({
+      status: "failed",
+      errorMessage: "reclaimed: expired Crew wakeup lease",
+      completedAt: now,
+    }).where(and(
+      eq(internalAgentRuns.id, run.id),
+      eq(internalAgentRuns.companyId, wakeup.companyId),
+      eq(internalAgentRuns.agentId, wakeup.agentId),
+      eq(internalAgentRuns.status, "running"),
+    )).returning({ id: internalAgentRuns.id });
+    if (!failedRun && ["completed", "failed", "cancelled"].includes(run.status)) {
+        const terminalStatus = run.status as "completed" | "failed" | "cancelled";
+        const wakeupStatus = terminalStatus === "completed" ? "succeeded" : terminalStatus;
+        await tx.update(agentWakeupRequests).set({
+          status: wakeupStatus,
+          runId: run.id,
+          finishedAt: now,
+          error: run.errorMessage,
+          claimToken: null,
+          leaseExpiresAt: null,
+          updatedAt: now,
+        }).where(eq(agentWakeupRequests.id, wakeup.id));
+        if (questionId) {
+          await tx.update(workQuestions).set({
+            continuationRunId: run.id,
+            updatedAt: now,
+          }).where(and(
+            eq(workQuestions.id, questionId),
+            eq(workQuestions.companyId, wakeup.companyId),
+            eq(workQuestions.continuationRunKind, "internal_agent"),
+            eq(workQuestions.continuationStatus, "dispatched"),
+            or(isNull(workQuestions.continuationRunId), eq(workQuestions.continuationRunId, run.id)),
+          ));
+        }
+        let releasedIssueId: string | null = null;
+        if (terminalStatus !== "completed") {
+          const released = await tx.update(issues).set({
+            status: "todo",
+            checkoutRunId: null,
+            executionRunId: null,
+            executionAgentNameKey: null,
+            executionLockedAt: null,
+            updatedAt: now,
+          }).where(and(
+            eq(issues.companyId, wakeup.companyId),
+            eq(issues.status, "in_progress"),
+            or(eq(issues.checkoutRunId, run.id), eq(issues.executionRunId, run.id)),
+          )).returning({ id: issues.id });
+          releasedIssueId = released[0]?.id ?? null;
+        }
+        return {
+          kind: "terminal" as const,
+          terminal: {
+            runId: run.id,
+            status: terminalStatus,
+            error: run.errorMessage,
+          },
+          releasedIssueId,
+        };
+    }
+    if (!failedRun) {
+      return { kind: "none" as const, terminal: null, releasedIssueId: null };
+    }
+    await tx.update(agentWakeupRequests).set({
+      // Keep the wakeup non-claimable until the old child has exited. The lease
+      // makes this recoverable if this process crashes during teardown.
+      status: "processing",
+      claimToken: recoveryToken,
+      leaseExpiresAt: new Date(now.getTime() + WAKEUP_LEASE_MS),
+      runId: run.id,
+      updatedAt: now,
+    }).where(eq(agentWakeupRequests.id, wakeup.id));
+    return {
+      kind: "retiring" as const,
+      runId: run.id,
+      terminal: null,
+      releasedIssueId: null,
+    };
+  });
+  if (outcome.releasedIssueId) {
+    publishIssueStatusChanged(wakeup.companyId, outcome.releasedIssueId, "todo");
+  }
+  if (outcome.terminal) {
+    await finalizeInternalAgentWorkQuestionContinuation(db, {
+      companyId: wakeup.companyId,
+      runId: outcome.terminal.runId,
+      status: outcome.terminal.status,
+      error: outcome.terminal.error,
+    });
+  }
+  if (outcome.kind !== "retiring") return outcome.kind;
+
+  requestTrackedProcessTermination(outcome.runId);
+  if (!(await waitForTrackedProcessExit(outcome.runId))) return "none" as const;
+
+  return db.transaction(async (tx) => {
+    // Revalidate in the canonical task -> question -> wakeup -> run order before
+    // making the replacement claimable.
+    const issue = issueId
+      ? await tx.select({
+          status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+        }).from(issues).where(and(
+          eq(issues.id, issueId),
+          eq(issues.companyId, wakeup.companyId),
+        )).for("update").then((rows) => rows[0] ?? null)
+      : null;
+    const question = questionId
+      ? await tx.select({
+          status: workQuestions.status,
+          continuationStatus: workQuestions.continuationStatus,
+          continuationRunId: workQuestions.continuationRunId,
+        }).from(workQuestions).where(and(
+          eq(workQuestions.id, questionId),
+          eq(workQuestions.companyId, wakeup.companyId),
+        )).for("update").then((rows) => rows[0] ?? null)
+      : null;
+    const parkedWakeup = await tx.select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.id, wakeup.id),
+        eq(agentWakeupRequests.companyId, wakeup.companyId),
+        eq(agentWakeupRequests.agentId, wakeup.agentId),
+        eq(agentWakeupRequests.status, "processing"),
+        eq(agentWakeupRequests.claimToken, recoveryToken),
+        eq(agentWakeupRequests.runId, outcome.runId),
+      ))
+      .for("update")
+      .then((rows) => rows[0] ?? null);
+    await tx.select({ id: internalAgentRuns.id }).from(internalAgentRuns).where(and(
+      eq(internalAgentRuns.id, outcome.runId),
+      eq(internalAgentRuns.companyId, wakeup.companyId),
+    )).for("update");
+
+    if (
+      !parkedWakeup
+      || (issue && (
+        ["done", "cancelled"].includes(issue.status)
+        || issue.assigneeAgentId !== wakeup.agentId
+      ))
+      || (question && (
+        question.status !== "answered"
+        || question.continuationStatus !== "dispatched"
+      ))
+    ) {
+      return "none" as const;
+    }
+
+    await tx.update(issues).set({
+      checkoutRunId: null,
+      executionRunId: null,
+      executionAgentNameKey: null,
+      executionLockedAt: null,
+      updatedAt: new Date(),
+    }).where(and(
+      eq(issues.companyId, wakeup.companyId),
+      or(eq(issues.checkoutRunId, outcome.runId), eq(issues.executionRunId, outcome.runId)),
+    ));
+    await tx.update(workQuestions).set({
+      continuationRunId: null,
+      updatedAt: new Date(),
+    }).where(and(
+      eq(workQuestions.companyId, wakeup.companyId),
+      eq(workQuestions.continuationRunKind, "internal_agent"),
+      eq(workQuestions.continuationRunId, outcome.runId),
+      eq(workQuestions.continuationStatus, "dispatched"),
+    ));
+    const requeued = await tx.update(agentWakeupRequests).set({
+      status: "queued",
+      claimedAt: null,
+      claimToken: null,
+      leaseExpiresAt: null,
+      runId: null,
+      updatedAt: new Date(),
+    }).where(and(
+      eq(agentWakeupRequests.id, wakeup.id),
+      eq(agentWakeupRequests.status, "processing"),
+      eq(agentWakeupRequests.claimToken, recoveryToken),
+    )).returning({ id: agentWakeupRequests.id });
+    return requeued.length > 0 ? "requeued" as const : "none" as const;
+  });
+}
+
+async function failContinuationWakeup(
+  db: Db,
+  wakeup: { companyId: string; source: string; idempotencyKey: string | null },
+  error: string,
+) {
+  if (wakeup.source !== "work_question_continuation" || !wakeup.idempotencyKey) return;
+  await failUnstartedInternalAgentWorkQuestionContinuation(db, {
+    companyId: wakeup.companyId,
+    idempotencyKey: wakeup.idempotencyKey,
+    error,
+  });
+}
+
+type QueuedWakeupSkipStatus =
+  | "skipped_autonomy"
+  | "skipped_budget"
+  | "skipped_controller_path"
+  | "skipped_paused"
+  | "skipped_rate_limit"
+  | "skipped_routing_off";
+
+async function skipQueuedWakeup(
+  db: Db,
+  wakeup: {
+    id: string;
+    companyId: string;
+    agentId: string;
+    source: string;
+    idempotencyKey: string | null;
+  },
+  status: QueuedWakeupSkipStatus,
+  continuationError?: string,
+) {
+  const now = new Date();
+  const skipped = await db.update(agentWakeupRequests)
+    .set({ status, finishedAt: now, updatedAt: now })
+    .where(and(
+      eq(agentWakeupRequests.id, wakeup.id),
+      eq(agentWakeupRequests.companyId, wakeup.companyId),
+      eq(agentWakeupRequests.agentId, wakeup.agentId),
+      eq(agentWakeupRequests.status, "queued"),
+    ))
+    .returning({ id: agentWakeupRequests.id });
+  if (skipped.length === 0) return false;
+  if (continuationError) {
+    await failContinuationWakeup(db, wakeup, continuationError);
+  }
+  return true;
+}
 
 export interface DispatchOptions {
   /** Max simultaneous extractions per dispatch tick. */
@@ -211,12 +563,16 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
   // Commander has no trigger role → resolveCrewRole returns null → it would be
   // treated Drive-only and wrongly skipped_autonomy at dial 0/1; the exemption
   // below lets it run unconditionally (like inbox-routing).
-  const wakeupRows: Array<{ id: string; agentId: string; companyId: string; source: string; payload: Record<string, unknown> | null; runtimeConfig: Record<string, unknown> | null }> = await db
+  const wakeupRows: Array<{ id: string; agentId: string; companyId: string; source: string; status: string; attempts: number; idempotencyKey: string | null; runId: string | null; payload: Record<string, unknown> | null; runtimeConfig: Record<string, unknown> | null }> = await db
     .select({
       id: agentWakeupRequests.id,
       agentId: agentWakeupRequests.agentId,
       companyId: agentWakeupRequests.companyId,
       source: agentWakeupRequests.source,
+      status: agentWakeupRequests.status,
+      attempts: agentWakeupRequests.attempts,
+      idempotencyKey: agentWakeupRequests.idempotencyKey,
+      runId: agentWakeupRequests.runId,
       payload: agentWakeupRequests.payload,
       runtimeConfig: agents.runtimeConfig,
     })
@@ -224,7 +580,16 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
     .innerJoin(agents, eq(agents.id, agentWakeupRequests.agentId))
     .where(
       and(
-        eq(agentWakeupRequests.status, "queued"),
+        or(
+          eq(agentWakeupRequests.status, "queued"),
+          and(
+            eq(agentWakeupRequests.status, "processing"),
+            or(
+              isNull(agentWakeupRequests.leaseExpiresAt),
+              lte(agentWakeupRequests.leaseExpiresAt, new Date()),
+            ),
+          ),
+        ),
         eq(agents.kind, "aoa"),
         notInArray(agents.status, ["paused", "terminated"]),
       ),
@@ -306,6 +671,11 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
     await Promise.allSettled(
       wakeupRows.map((w) =>
         p3Limiter.run(async () => {
+          if (w.status === "processing") {
+            const recovery = await recoverExpiredCrewWakeup(db, w);
+            if (recovery !== "requeued") return;
+          }
+
           const companyCfg = await resolveCompanyConfig(w.companyId);
 
           // D4: inbox-routing wakeups are gated on the routing dial
@@ -322,10 +692,8 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
           const isInfraSweep = w.source === "sweep.chronicler";
           if (isInboxRouting) {
             if (companyCfg.inboundRoutingLevel === "off") {
-              await db
-                .update(agentWakeupRequests)
-                .set({ status: "skipped_routing_off", finishedAt: new Date() })
-                .where(eq(agentWakeupRequests.id, w.id));
+              const skipped = await skipQueuedWakeup(db, w, "skipped_routing_off");
+              if (!skipped) return;
               logger.child({ subagent: "aoa-dispatcher" }).info(
                 { wakeupId: w.id, companyId: w.companyId },
                 "aoa wakeup skipped: inbound routing dial off",
@@ -383,10 +751,13 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
               // P2 fix: distinct terminal status so the wakeup table tells you
               // WHY a wakeup ended, not just that it ended. Was collapsed into
               // 'done' which made silent failures invisible.
-              await db
-                .update(agentWakeupRequests)
-                .set({ status: "skipped_paused", finishedAt: new Date() })
-                .where(eq(agentWakeupRequests.id, w.id));
+              const skipped = await skipQueuedWakeup(
+                db,
+                w,
+                "skipped_paused",
+                "Crew continuation blocked by the crew pause policy",
+              );
+              if (!skipped) return;
               logger.child({ subagent: "aoa-dispatcher" }).info(
                 { agentId: w.agentId, companyId: w.companyId, threadPaused },
                 "aoa wakeup skipped: crew kill-switch active",
@@ -405,10 +776,8 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
             // skipped_rate_limit / skipped_budget): write a distinct terminal
             // status + finishedAt so the wakeup table records WHY it ended.
             if (!isInfraSweep && threadRow?.useControllerPath) {
-              await db
-                .update(agentWakeupRequests)
-                .set({ status: "skipped_controller_path", finishedAt: new Date() })
-                .where(eq(agentWakeupRequests.id, w.id));
+              const skipped = await skipQueuedWakeup(db, w, "skipped_controller_path");
+              if (!skipped) return;
               logger.child({ subagent: "aoa-dispatcher" }).debug(
                 { wakeupId: w.id },
                 "peer-wake skipped: controller-path thread",
@@ -465,7 +834,7 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
           // Mention/sweep wakeups use `thread_mention`/`sweep.*` and carry no
           // issueId, so they stay gated (agent initiative).
           const isTaskDispatch = typeof wkPayload.issueId === "string"
-            && (w.source === "assignment" || w.source === "automation");
+            && (w.source === "assignment" || w.source === "automation" || w.source === "work_question_continuation");
           if (!isInboxRouting && !isCommander && !isTaskDispatch) {
             // Plan 3 Task 4: autonomyLevel gate — agentic crew roles (router,
             // planner, dispatcher) require autonomyLevel ≥ 2. Core roles
@@ -504,10 +873,13 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
               // P2 fix: distinct terminal status (was 'done'). The wakeup was
               // correctly queued but the autonomy level prevents execution for
               // agentic roles. Mark explicitly so the wakeup table is debuggable.
-              await db
-                .update(agentWakeupRequests)
-                .set({ status: "skipped_autonomy", finishedAt: new Date() })
-                .where(eq(agentWakeupRequests.id, w.id));
+              const skipped = await skipQueuedWakeup(
+                db,
+                w,
+                "skipped_autonomy",
+                "Crew continuation blocked by the autonomy policy",
+              );
+              if (!skipped) return;
               logger.child({ subagent: "aoa-dispatcher" }).info(
                 { agentId: w.agentId, role: resolvedRole ?? null, autonomy: effectiveAutonomy, companyAutonomy: companyCfg.autonomyLevel, companyId: w.companyId },
                 "aoa wakeup skipped: autonomy gate (fail-closed)",
@@ -535,10 +907,13 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
             // P2 fix: distinct terminal status (was 'done'). Rate-limit skips
             // were the dominant cause of "wakeup vanished" symptoms before
             // P1-B was fixed — now they're visible in the wakeup table.
-            await db
-              .update(agentWakeupRequests)
-              .set({ status: "skipped_rate_limit", finishedAt: new Date() })
-              .where(eq(agentWakeupRequests.id, w.id));
+            const skipped = await skipQueuedWakeup(
+              db,
+              w,
+              "skipped_rate_limit",
+              "Crew continuation blocked by the run-rate limit",
+            );
+            if (!skipped) return;
             logger.child({ subagent: "aoa-dispatcher" }).warn(
               { agentId: w.agentId, windowRuns, limit: DEFAULT_CREW_RATE_LIMIT.maxRunsPerWindow, companyId: w.companyId },
               "aoa wakeup skipped: run-rate brake (D3)",
@@ -563,9 +938,13 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
             )) // NO costCents filter — count every run
             .then((r: Array<{ id: string }>) => r.length);
           if (runRateExceeded(allWindowRuns, DEFAULT_CREW_RUN_COUNT_LIMIT.maxRunsPerWindow)) {
-            await db.update(agentWakeupRequests)
-              .set({ status: "skipped_rate_limit", finishedAt: new Date() })
-              .where(eq(agentWakeupRequests.id, w.id));
+            const skipped = await skipQueuedWakeup(
+              db,
+              w,
+              "skipped_rate_limit",
+              "Crew continuation blocked by the run-count limit",
+            );
+            if (!skipped) return;
             logger.child({ subagent: "aoa-dispatcher" }).warn(
               { agentId: w.agentId, allWindowRuns, limit: DEFAULT_CREW_RUN_COUNT_LIMIT.maxRunsPerWindow, companyId: w.companyId },
               "aoa wakeup skipped: run-count brake (T1.9)",
@@ -592,9 +971,13 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
           // atomic claim so we never spend on a run the budget policy forbids.
           const budgetBlock = await budgetService(db).getInvocationBlock(w.agentId, w.companyId);
           if (budgetBlock) {
-            await db.update(agentWakeupRequests)
-              .set({ status: "skipped_budget", finishedAt: new Date() })
-              .where(eq(agentWakeupRequests.id, w.id));
+            const skipped = await skipQueuedWakeup(
+              db,
+              w,
+              "skipped_budget",
+              `Crew continuation blocked by budget policy: ${budgetBlock}`,
+            );
+            if (!skipped) return;
             logger.child({ subagent: "aoa-dispatcher" }).warn(
               { agentId: w.agentId, companyId: w.companyId, reason: budgetBlock },
               "aoa wakeup skipped: budget hard-stop",
@@ -603,12 +986,50 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
           }
 
           // Atomic claim: queued → processing
+          const claimToken = randomUUID();
+          const claimedAt = new Date();
           const claimed = await db
             .update(agentWakeupRequests)
-            .set({ status: "processing", claimedAt: new Date() })
-            .where(and(eq(agentWakeupRequests.id, w.id), eq(agentWakeupRequests.status, "queued")))
-            .returning({ id: agentWakeupRequests.id });
+            .set({
+              status: "processing",
+              claimedAt,
+              claimToken,
+              leaseExpiresAt: new Date(claimedAt.getTime() + WAKEUP_LEASE_MS),
+              attempts: sql`${agentWakeupRequests.attempts} + 1`,
+              updatedAt: claimedAt,
+            })
+            .where(and(
+              eq(agentWakeupRequests.id, w.id),
+              eq(agentWakeupRequests.companyId, w.companyId),
+              eq(agentWakeupRequests.agentId, w.agentId),
+              eq(agentWakeupRequests.status, "queued"),
+            ))
+            .returning({ id: agentWakeupRequests.id, attempts: agentWakeupRequests.attempts });
           if (claimed.length === 0) return; // already claimed by concurrent tick
+
+          const leaseRenewal = setInterval(() => {
+            const now = new Date();
+            void db
+              .update(agentWakeupRequests)
+              .set({
+                leaseExpiresAt: new Date(now.getTime() + WAKEUP_LEASE_MS),
+                updatedAt: now,
+              })
+              .where(and(
+                eq(agentWakeupRequests.id, w.id),
+                eq(agentWakeupRequests.companyId, w.companyId),
+                eq(agentWakeupRequests.agentId, w.agentId),
+                eq(agentWakeupRequests.status, "processing"),
+                eq(agentWakeupRequests.claimToken, claimToken),
+              ))
+              .catch((error: unknown) => {
+                logger.child({ subagent: "aoa-dispatcher" }).warn(
+                  { err: error, wakeupId: w.id },
+                  "aoa wakeup lease renewal failed",
+                );
+              });
+          }, WAKEUP_LEASE_RENEW_MS);
+          leaseRenewal.unref?.();
 
           // D10/C1/C2: effectiveAutonomy (thread override ?? company) was already
           // resolved BEFORE the activation gate above and reused here, so the gate
@@ -620,6 +1041,9 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
             // reflects the actual outcome (succeeded/failed) the runner
             // reports, not just whether it threw. Cost/usage already
             // persisted to internal_agent_runs by the runner itself.
+            const continuationAttemptIdempotencyKey = w.source === "work_question_continuation" && w.idempotencyKey
+              ? crewContinuationAttemptKey(w.idempotencyKey, claimed[0]!.attempts)
+              : null;
             const result = await runAoaAgent(db, w.agentId, {
               companyId: w.companyId,
               // T1.2 (codex F6): pass the wakeup's ORIGINAL source (e.g.
@@ -635,6 +1059,12 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
               // wakeup) must NOT override the dial the activation gate read — keep
               // gate and runner reading the same value.
               ...(w.payload ?? {}),
+              ...(continuationAttemptIdempotencyKey
+                ? {
+                    continuationIdempotencyKey: w.idempotencyKey,
+                    continuationAttemptIdempotencyKey,
+                  }
+                : {}),
               effectiveAutonomy,
             });
             // P2 + T1.0: status reflects what the runner actually saw.
@@ -646,9 +1076,18 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
               .set({
                 status: result.status,
                 error: result.errorMessage ?? null,
+                runId: result.runId ?? null,
                 finishedAt: new Date(),
+                claimToken: null,
+                leaseExpiresAt: null,
               })
-              .where(eq(agentWakeupRequests.id, w.id));
+              .where(and(
+                eq(agentWakeupRequests.id, w.id),
+                eq(agentWakeupRequests.companyId, w.companyId),
+                eq(agentWakeupRequests.agentId, w.agentId),
+                eq(agentWakeupRequests.status, "processing"),
+                eq(agentWakeupRequests.claimToken, claimToken),
+              ));
           } catch (err: unknown) {
             await db
               .update(agentWakeupRequests)
@@ -656,8 +1095,18 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
                 status: "failed",
                 error: err instanceof Error ? err.message : String(err),
                 finishedAt: new Date(),
+                claimToken: null,
+                leaseExpiresAt: null,
               })
-              .where(eq(agentWakeupRequests.id, w.id));
+              .where(and(
+                eq(agentWakeupRequests.id, w.id),
+                eq(agentWakeupRequests.companyId, w.companyId),
+                eq(agentWakeupRequests.agentId, w.agentId),
+                eq(agentWakeupRequests.status, "processing"),
+                eq(agentWakeupRequests.claimToken, claimToken),
+              ));
+          } finally {
+            clearInterval(leaseRenewal);
           }
         }),
       ),

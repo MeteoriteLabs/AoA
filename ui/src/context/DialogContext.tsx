@@ -16,13 +16,6 @@ interface NewGoalDefaults {
   projectIds?: string[];
 }
 
-interface OnboardingOptions {
-  // Phase 1 Phase E batch 2 (T20): step count grew from 6 to 8 (Commander
-  // + Crew picks inserted between root-folder and first-agent steps).
-  initialStep?: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
-  companyId?: string;
-}
-
 interface NewProjectDefaults {
   type?: "department" | "project";
 }
@@ -56,10 +49,6 @@ interface DialogContextValue {
   newAgentOpen: boolean;
   openNewAgent: () => void;
   closeNewAgent: () => void;
-  onboardingOpen: boolean;
-  onboardingOptions: OnboardingOptions;
-  openOnboarding: (options?: OnboardingOptions) => void;
-  closeOnboarding: () => void;
   discussionCaptureOpen: boolean;
   discussionCaptureDefaults: DiscussionCaptureDefaults;
   openDiscussionCapture: (defaults?: DiscussionCaptureDefaults) => void;
@@ -80,8 +69,6 @@ export function DialogProvider({ children }: { children: ReactNode }) {
   const [newGoalOpen, setNewGoalOpen] = useState(false);
   const [newGoalDefaults, setNewGoalDefaults] = useState<NewGoalDefaults>({});
   const [newAgentOpen, setNewAgentOpen] = useState(false);
-  const [onboardingOpen, setOnboardingOpen] = useState(false);
-  const [onboardingOptions, setOnboardingOptions] = useState<OnboardingOptions>({});
   const [discussionCaptureOpen, setDiscussionCaptureOpen] = useState(false);
   const [discussionCaptureDefaults, setDiscussionCaptureDefaults] = useState<DiscussionCaptureDefaults>({});
   const [newThreadOpen, setNewThreadOpen] = useState(false);
@@ -125,16 +112,6 @@ export function DialogProvider({ children }: { children: ReactNode }) {
     setNewAgentOpen(false);
   }, []);
 
-  const openOnboarding = useCallback((options: OnboardingOptions = {}) => {
-    setOnboardingOptions(options);
-    setOnboardingOpen(true);
-  }, []);
-
-  const closeOnboarding = useCallback(() => {
-    setOnboardingOpen(false);
-    setOnboardingOptions({});
-  }, []);
-
   const openDiscussionCapture = useCallback((defaults: DiscussionCaptureDefaults = {}) => {
     setDiscussionCaptureDefaults(defaults);
     setDiscussionCaptureOpen(true);
@@ -173,10 +150,6 @@ export function DialogProvider({ children }: { children: ReactNode }) {
         newAgentOpen,
         openNewAgent,
         closeNewAgent,
-        onboardingOpen,
-        onboardingOptions,
-        openOnboarding,
-        closeOnboarding,
         discussionCaptureOpen,
         discussionCaptureDefaults,
         openDiscussionCapture,

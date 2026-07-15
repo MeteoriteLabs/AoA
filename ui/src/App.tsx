@@ -1,10 +1,11 @@
 import { lazy, Suspense, useEffect, useRef } from "react";
-import { Navigate, Outlet, Route, Routes, useLocation } from "@/lib/router";
+import { Navigate, Outlet, Route, Routes, useLocation, useNavigate } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Layout } from "./components/Layout";
 import { authApi } from "./api/auth";
 import { healthApi } from "./api/health";
+import { fetchJourney } from "./api/onboarding";
 import { Dashboard } from "./pages/Dashboard";
 import { Lobby } from "./pages/Lobby";
 import { LobbyLayout } from "./components/LobbyLayout";
@@ -33,6 +34,7 @@ import { Discussions } from "./pages/Discussions";
 import { ThreadsWorkspace } from "./pages/ThreadsWorkspace";
 import { WorkspacesList } from "./pages/WorkspacesList";
 import { AuthPage } from "./pages/Auth";
+import { OnboardingFlowPage } from "./pages/OnboardingFlow";
 import { Me } from "./pages/Me";
 import { CompanyExport } from "./pages/CompanyExport";
 import { CompanyImport } from "./pages/CompanyImport";
@@ -50,6 +52,7 @@ import MarketplacePackageDetail from "./pages/MarketplacePackageDetail";
 import { queryKeys } from "./lib/queryKeys";
 import { useCompany } from "./context/CompanyContext";
 import { useDialog } from "./context/DialogContext";
+import { requiresBoardSession } from "./lib/authGate";
 
 const AgentDetail = lazy(() => import("./pages/AgentDetail").then((m) => ({ default: m.AgentDetail })));
 const AoaAgentDetail = lazy(() => import("./pages/AoaAgentDetail").then((m) => ({ default: m.AoaAgentDetail })));
@@ -57,9 +60,6 @@ const DesignGuide = lazy(() => import("./pages/DesignGuide").then((m) => ({ defa
 const Issues = lazy(() => import("./pages/Issues").then((m) => ({ default: m.Issues })));
 const Memory = lazy(() => import("./pages/Memory").then((m) => ({ default: m.Memory })));
 const MemoryExplorer = lazy(() => import("./pages/MemoryExplorer").then((m) => ({ default: m.MemoryExplorer })));
-const OnboardingWizard = lazy(() =>
-  import("./components/OnboardingWizard").then((m) => ({ default: m.OnboardingWizard })),
-);
 const ProjectDetail = lazy(() => import("./pages/ProjectDetail").then((m) => ({ default: m.ProjectDetail })));
 const RoutineDetail = lazy(() => import("./pages/RoutineDetail").then((m) => ({ default: m.RoutineDetail })));
 const Routines = lazy(() => import("./pages/Routines").then((m) => ({ default: m.Routines })));
@@ -70,23 +70,6 @@ function RouteFallback() {
   return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
 }
 
-function BootstrapPendingPage() {
-  return (
-    <div className="mx-auto max-w-xl py-10">
-      <div className="rounded-lg border border-border bg-card p-6">
-        <h1 className="text-xl font-semibold">Instance setup required</h1>
-        <p className="mt-2 text-sm text-muted-foreground">
-          No instance admin exists yet. Run this command in your AoA environment to generate
-          the first admin invite URL:
-        </p>
-        <pre className="mt-4 overflow-x-auto rounded-md border border-border bg-muted/30 p-3 text-xs">
-{`pnpm aoa auth bootstrap-ceo`}
-        </pre>
-      </div>
-    </div>
-  );
-}
-
 function CloudAccessGate() {
   const location = useLocation();
   const healthQuery = useQuery({
@@ -95,15 +78,15 @@ function CloudAccessGate() {
     retry: false,
   });
 
-  const isAuthenticatedMode = healthQuery.data?.deploymentMode === "authenticated";
+  const requiresSession = requiresBoardSession(healthQuery.data);
   const sessionQuery = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
-    enabled: isAuthenticatedMode,
+    enabled: requiresSession,
     retry: false,
   });
 
-  if (healthQuery.isLoading || (isAuthenticatedMode && sessionQuery.isLoading)) {
+  if (healthQuery.isLoading || (requiresSession && sessionQuery.isLoading)) {
     return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
   }
 
@@ -115,11 +98,11 @@ function CloudAccessGate() {
     );
   }
 
-  if (isAuthenticatedMode && healthQuery.data?.bootstrapStatus === "bootstrap_pending") {
-    return <BootstrapPendingPage />;
-  }
-
-  if (isAuthenticatedMode && !sessionQuery.data) {
+  // A fresh instance with no admin is NOT a dead end anymore: the first Google
+  // user to sign in becomes the instance admin (RB3). So a session-less user —
+  // including on a brand-new instance (bootstrapStatus "bootstrap_pending") — is
+  // sent to the Google login rather than the retired CLI-bootstrap page.
+  if (requiresSession && !sessionQuery.data) {
     const next = encodeURIComponent(`${location.pathname}${location.search}`);
     return <Navigate to={`/auth?next=${next}`} replace />;
   }
@@ -220,15 +203,9 @@ function boardRoutes() {
 
 function CompanyRootRedirect() {
   const { companies, selectedCompany, loading } = useCompany();
-  const { onboardingOpen } = useDialog();
 
   if (loading) {
     return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
-  }
-
-  // Keep the first-run onboarding mounted until it completes.
-  if (onboardingOpen) {
-    return <NoCompaniesStartPage autoOpen={false} />;
   }
 
   const targetCompany = selectedCompany ?? companies[0] ?? null;
@@ -261,15 +238,17 @@ function UnprefixedBoardRedirect() {
 }
 
 function NoCompaniesStartPage({ autoOpen = true }: { autoOpen?: boolean }) {
-  const { openOnboarding } = useDialog();
+  const navigate = useNavigate();
   const opened = useRef(false);
 
+  // Onboarding is the FlowEngine at /onboarding (C13) — route there instead of
+  // opening a modal.
   useEffect(() => {
     if (!autoOpen) return;
     if (opened.current) return;
     opened.current = true;
-    openOnboarding();
-  }, [autoOpen, openOnboarding]);
+    navigate("/onboarding");
+  }, [autoOpen, navigate]);
 
   return (
     <div className="mx-auto max-w-xl py-10">
@@ -279,7 +258,7 @@ function NoCompaniesStartPage({ autoOpen = true }: { autoOpen?: boolean }) {
           Get started by creating a company.
         </p>
         <div className="mt-4">
-          <Button onClick={() => openOnboarding()}>New Company</Button>
+          <Button onClick={() => navigate("/onboarding")}>New Company</Button>
         </div>
       </div>
     </div>
@@ -304,9 +283,27 @@ function NewThreadDialogMount() {
   );
 }
 
-function OnboardingWizardMount() {
-  const { onboardingOpen } = useDialog();
-  return onboardingOpen ? <OnboardingWizard /> : null;
+// The index gate (Stage B / B7). Fetches the post-auth journey and redirects a
+// founder to /onboarding, an invited user to /onboarding/join; a returning user
+// sees the Lobby (with their pending invitations surfaced there).
+function LobbyOrOnboardingRedirect() {
+  const navigate = useNavigate();
+  const { data, isLoading } = useQuery({
+    queryKey: ["onboarding", "journey"],
+    queryFn: () => fetchJourney(),
+    retry: false,
+  });
+  useEffect(() => {
+    if (!data) return;
+    if (data.journey === "founder") {
+      navigate("/onboarding", { replace: true });
+    } else if (data.journey === "invited") {
+      navigate(`/onboarding/join?company=${data.targetCompanyId ?? ""}`, { replace: true });
+    }
+  }, [data, navigate]);
+  if (isLoading) return <RouteFallback />;
+  if (data && data.journey !== "returning") return null; // redirecting
+  return <Lobby pendingInvitations={data?.pendingInvitations ?? []} />;
 }
 
 export function App() {
@@ -322,7 +319,7 @@ export function App() {
           <Route element={<CloudAccessGate />}>
             {/* Persistent lobby shell — sidebar mounts once, content swaps via <Outlet/> */}
             <Route element={<LobbyLayout />}>
-              <Route index element={<Lobby />} />
+              <Route index element={<LobbyOrOnboardingRedirect />} />
               <Route path="instance/settings" element={<InstanceSettingsPage />} />
               <Route path="instance/access" element={<InstanceAccessPage />} />
               <Route path="marketplace" element={<Marketplace />} />
@@ -332,6 +329,8 @@ export function App() {
               <Route path="marketplace/:type/:slug/*" element={<MarketplaceDetail />} />
             </Route>
             <Route path="me" element={<Me />} />
+            <Route path="onboarding" element={<OnboardingFlowPage journey="founder" />} />
+            <Route path="onboarding/join" element={<OnboardingFlowPage journey="invited" />} />
             <Route path="export" element={<Layout />}>
               <Route index element={<CompanyExport />} />
             </Route>
@@ -373,9 +372,6 @@ export function App() {
             </Route>
           </Route>
         </Routes>
-      </Suspense>
-      <Suspense fallback={null}>
-        <OnboardingWizardMount />
       </Suspense>
       <DiscussionCaptureModal />
       <NewThreadDialogMount />

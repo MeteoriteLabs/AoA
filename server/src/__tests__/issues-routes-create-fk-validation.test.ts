@@ -11,6 +11,7 @@ const projectId = "33333333-3333-4333-8333-333333333333";
 const goalId = "44444444-4444-4444-8444-444444444444";
 const parentId = "55555555-5555-4555-8555-555555555555";
 const workspaceSourceId = "66666666-6666-4666-8666-666666666666";
+const sourceDiscussionId = "77777777-7777-4777-8777-777777777777";
 
 const validAgent = {
   id: agentId,
@@ -143,20 +144,29 @@ vi.mock("../services/documents.js", () => ({
 
 const { issueRoutes } = await import("../routes/issues.js");
 
+function discussionDb(discussionCompanyId: string | null = companyId) {
+  const rows = discussionCompanyId ? [{ companyId: discussionCompanyId }] : [];
+  const chain: any = {
+    from: () => chain,
+    where: () => Promise.resolve(rows),
+  };
+  return { select: () => chain };
+}
+
 function createApp(actor: Record<string, unknown> = {
   type: "board",
   userId: "board-user",
   source: "session",
   isInstanceAdmin: true,
   companyIds: [companyId],
-}) {
+}, db: Record<string, unknown> = {}) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
     (req as any).actor = actor;
     next();
   });
-  app.use("/api", issueRoutes({} as any, {} as any));
+  app.use("/api", issueRoutes(db as any, {} as any));
   app.use(errorHandler);
   return app;
 }
@@ -172,6 +182,20 @@ describe("POST /companies/:companyId/issues — FK validation", () => {
     mockIssueService.getById.mockResolvedValue(validParentIssue);
     mockIssueService.create.mockResolvedValue(createdIssue);
     mockLogActivity.mockResolvedValue(undefined);
+  });
+
+  it("converts API due-date strings to Date values before persistence", async () => {
+    const dueDate = "2026-07-10T18:30:00.000Z";
+
+    const res = await request(createApp())
+      .post(`/api/companies/${companyId}/issues`)
+      .send({ title: "Due today", dueDate });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.create).toHaveBeenCalledWith(
+      companyId,
+      expect.objectContaining({ dueDate: new Date(dueDate) }),
+    );
   });
 
   it("returns 422 with field=assigneeAgentId when assignee agent does not exist", async () => {
@@ -275,6 +299,31 @@ describe("POST /companies/:companyId/issues — FK validation", () => {
     expect(res.body).toEqual({
       error: "Workspace inheritance task not found",
       details: { field: "inheritExecutionWorkspaceFromIssueId", id: workspaceSourceId },
+    });
+    expect(mockIssueService.create).not.toHaveBeenCalled();
+  });
+
+  it("persists a source discussion when it belongs to the same company", async () => {
+    const res = await request(createApp(undefined, discussionDb()))
+      .post(`/api/companies/${companyId}/issues`)
+      .send({ title: "Discussion task", sourceDiscussionId });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.create).toHaveBeenCalledWith(
+      companyId,
+      expect.objectContaining({ sourceDiscussionId }),
+    );
+  });
+
+  it("rejects a source discussion outside the company boundary", async () => {
+    const res = await request(createApp(undefined, discussionDb(null)))
+      .post(`/api/companies/${companyId}/issues`)
+      .send({ title: "Foreign discussion task", sourceDiscussionId });
+
+    expect(res.status).toBe(422);
+    expect(res.body).toEqual({
+      error: "Source Discussion not found",
+      details: { field: "sourceDiscussionId", id: sourceDiscussionId },
     });
     expect(mockIssueService.create).not.toHaveBeenCalled();
   });

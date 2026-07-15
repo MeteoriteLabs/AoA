@@ -390,3 +390,29 @@ describe("concurrent claims — only one run wins", () => {
     expect(db._state.activeRunId).toBe(winners[0]!.activeRunId);
   });
 });
+
+describe("releaseWorkspaceRunsForRun", () => {
+  it("releases leases owned by the terminal run", async () => {
+    const workspace = makeWorkspace({ activeRunId: "run-A", lockedAt: new Date() });
+    const db = makeDb(workspace);
+    const svc = executionWorkspaceService(db as never);
+
+    const releasedIds = await svc.releaseWorkspaceRunsForRun("run-A");
+
+    expect(releasedIds).toEqual(["workspace-1"]);
+    expect(db._state.activeRunId).toBeNull();
+    expect(db._state.lockedAt).toBeNull();
+  });
+
+  it("does not release a lease that another run owns", async () => {
+    const workspace = makeWorkspace({ activeRunId: "run-B", lockedAt: new Date() });
+    const db = makeDb(workspace);
+    const svc = executionWorkspaceService(db as never);
+
+    const releasedIds = await svc.releaseWorkspaceRunsForRun("run-A");
+
+    expect(releasedIds).toEqual([]);
+    expect(db._state.activeRunId).toBe("run-B");
+    expect(db._state.lockedAt).not.toBeNull();
+  });
+});

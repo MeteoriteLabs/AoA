@@ -4,6 +4,7 @@ import { testEnvironment } from "./test.js";
 
 export const httpAdapter: ServerAdapterModule = {
   type: "http",
+  humanQuestionCapabilities: { mode: "ask_and_park", preservesProducerInvocationId: true },
   execute,
   testEnvironment,
   models: [],

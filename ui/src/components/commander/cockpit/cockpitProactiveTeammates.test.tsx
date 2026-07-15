@@ -133,15 +133,17 @@ describe("CockpitProactiveFindingsCard", () => {
 
   it("click with relatedEntity → calls onOpenFullPage('/inbox')", () => {
     const onOpenFullPage = vi.fn();
+    const onOpenTask = vi.fn();
     render(
       <CockpitProactiveFindingsCard
         items={[makeProactiveItem({ relatedEntityType: "issue", relatedEntityId: "issue-42" })]}
         onOpenFullPage={onOpenFullPage}
+        onOpenTask={onOpenTask}
       />,
     );
     fireEvent.click(screen.getByText("Blocked task detected"));
-    expect(onOpenFullPage).toHaveBeenCalledWith("/inbox");
-    expect(onOpenFullPage).toHaveBeenCalledTimes(1);
+    expect(onOpenTask).toHaveBeenCalledWith("issue-42", "Blocked task detected");
+    expect(onOpenFullPage).not.toHaveBeenCalled();
   });
 
   it("click without relatedEntity → calls onAsk(item.title)", () => {
@@ -270,6 +272,21 @@ describe("CockpitTeammatesActivityCard", () => {
     );
     const btn = screen.getByRole("button");
     fireEvent.click(btn);
+    expect(onOpenFullPage).not.toHaveBeenCalled();
+  });
+
+  it("click with task activity opens the task surface", () => {
+    const onOpenFullPage = vi.fn();
+    const onOpenTask = vi.fn();
+    render(
+      <CockpitTeammatesActivityCard
+        items={[makeTeammatesItem({ action: "issue.created", entityType: "issue", entityId: "issue-7" })]}
+        onOpenFullPage={onOpenFullPage}
+        onOpenTask={onOpenTask}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button"));
+    expect(onOpenTask).toHaveBeenCalledWith("issue-7", "created");
     expect(onOpenFullPage).not.toHaveBeenCalled();
   });
 

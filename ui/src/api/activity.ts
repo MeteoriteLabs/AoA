@@ -14,6 +14,10 @@ export interface RunForIssue {
   processPid?: number | null;
   processStartedAt?: string | null;
   lastOutputAt?: string | null;
+  activeExecutionMs?: number;
+  humanQuestionWaitMs?: number;
+  runtimePermissionWaitMs?: number;
+  totalWallClockMs?: number;
   usageJson: Record<string, unknown> | null;
   resultJson: Record<string, unknown> | null;
   detectedOutputs: DetectedOutput[] | null;

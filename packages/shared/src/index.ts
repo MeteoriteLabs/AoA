@@ -13,6 +13,9 @@ export {
   ISSUE_PRIORITIES,
   ISSUE_WORK_MODES,
   ISSUE_SOURCES,
+  AGENT_COMPLETION_POLICIES,
+  AGENT_COMPLETION_POLICY_SOURCES,
+  ISSUE_REVIEWER_SOURCES,
   GOAL_LEVELS,
   GOAL_STATUSES,
   PROJECT_TYPES,
@@ -139,6 +142,9 @@ export {
   type IssuePriority,
   type IssueWorkMode,
   type IssueSource,
+  type AgentCompletionPolicy,
+  type AgentCompletionPolicySource,
+  type IssueReviewerSource,
   type GoalLevel,
   type GoalStatus,
   type ProjectType,
@@ -322,6 +328,8 @@ export {
   type PluginWebhookDeliveryStatus,
   PLUGIN_BRIDGE_ERROR_CODES,
   type PluginBridgeErrorCode,
+  DEPARTMENT_FUNCTION_TYPES,
+  type DepartmentFunctionType,
 } from "./constants.js";
 
 export {
@@ -1044,6 +1052,11 @@ export {
   type CreateInboxDismissal,
   createUserEntityPinSchema,
   type CreateUserEntityPin,
+  createUserNoteSchema,
+  updateUserNoteSchema,
+  userNoteColorSchema,
+  type CreateUserNote,
+  type UpdateUserNote,
   listHubItemsQuery,
   hubActionSchema,
   hubUserStateSchema,
@@ -1105,8 +1118,22 @@ export * from "./notification-preferences.js";
 // Phase 3b/3c/3d: Commander cockpit data contract
 export type {
   CockpitTaskItem,
+  CockpitTaskResponsibilityReason,
+  CockpitTaskResponsibility,
+  CockpitWorkTaskItem,
+  CockpitTaskGroup,
+  CockpitActiveWork,
+  CockpitAwaitingReview,
+  CockpitSliceStatus,
+  CockpitSliceMeta,
+  CockpitMeta,
+  CockpitTaskBucket,
+  CockpitTaskBucketResponse,
+  CockpitCounts,
   CockpitRunItem,
   CockpitReminderItem,
+  CockpitNoteItem,
+  CockpitInboxItem,
   CockpitDiscussionItem,
   CockpitData,
   CockpitApprovalSource,
@@ -1119,6 +1146,41 @@ export type {
   CockpitProactiveItem,
   CockpitTeammatesActivityItem,
 } from "./cockpit.js";
+
+export {
+  COCKPIT_PRESENTATION_VERSION,
+  COCKPIT_ATTENTION_FILTERS,
+  COCKPIT_SECTION_IDS,
+  COCKPIT_RELATIONSHIPS,
+  COCKPIT_GROUP_IDS,
+  COCKPIT_ATTENTION_KINDS,
+  commanderOpenTargetSchema,
+  cockpitAttentionSignalSchema,
+  cockpitPresentationItemSchema,
+  cockpitPresentationSchema,
+  classifyCockpitRelationship,
+  createCockpitAttentionSignal,
+  matchesCockpitAttentionFilter,
+  type CockpitAttentionFilter,
+  type CockpitSectionId,
+  type CockpitRelationship,
+  type CockpitGroupId,
+  type CockpitAttentionKind,
+  type CockpitAttentionCategory,
+  type CockpitAttentionTone,
+  type CockpitEntityRef,
+  type CommanderAnchor,
+  type CommanderViewerTabDescriptor,
+  type CommanderOpenTarget,
+  type CockpitAttentionSignal,
+  type CockpitLinkedAction,
+  type CockpitPresentationItem,
+  type CockpitGroup,
+  type CockpitPresentationSection,
+  type CockpitPresentationMeta,
+  type CockpitPresentation,
+  type CockpitRelationshipInput,
+} from "./cockpit-presentation.js";
 
 // Marketplace catalog types
 export {
@@ -1223,8 +1285,12 @@ export {
 export * from "./teams.js";
 export * from "./autonomy-levels.js";
 export * from "./inbound-routing.js";
+export * from "./user-notes.js";
 export * from "./commander-output-refs.js";
+export * from "./commander-input-refs.js";
 export * from "./hub.js";
+export * from "./work-questions.js";
+export * from "./user-entity-follows.js";
 export * from "./notification-registry.js";
 
 // ── API contract artifacts ──
@@ -1252,3 +1318,14 @@ export {
   type CrewAdapterConfig,
   type NewNotificationType,
 } from "./api/threads-contract.js";
+export {
+  ONBOARDING_JOURNEYS,
+  ONBOARDING_STATES,
+  FOUNDER_PHASE1_STATES,
+  INVITED_PHASE1_STATES,
+  orderedStatesFor,
+  type OnboardingJourney,
+  type OnboardingState,
+  type PendingInvitation,
+  type PostAuthJourneyResult,
+} from "./onboarding.js";

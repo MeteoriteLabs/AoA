@@ -163,7 +163,7 @@ describe("attach_task_artifact tool (Spec B Task 3)", () => {
     expect(taskOutputs.upsertForIssue).not.toHaveBeenCalled();
   });
 
-  it("non-owned task → FORBIDDEN and writes NOTHING (review #4)", async () => {
+  it("non-owned task → NOT_FOUND and writes NOTHING (review #4)", async () => {
     // The task belongs to a different crew agent; the caller may not overwrite
     // its artifactId pointer.
     const issues = makeIssues({ assigneeAgentId: "agent-OTHER" });
@@ -177,7 +177,7 @@ describe("attach_task_artifact tool (Spec B Task 3)", () => {
     );
 
     expect(result.success).toBe(false);
-    expect(result.error).toBe("FORBIDDEN");
+    expect(result.error).toBe("NOT_FOUND");
     expect(artifacts.create).not.toHaveBeenCalled();
     expect(issues.update).not.toHaveBeenCalled();
     expect(taskOutputs.upsertForIssue).not.toHaveBeenCalled();

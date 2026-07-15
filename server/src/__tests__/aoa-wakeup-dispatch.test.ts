@@ -1,13 +1,25 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-const { runAoaMock } = vi.hoisted(() => ({ runAoaMock: vi.fn().mockResolvedValue(undefined) }));
+const { failContinuationMock, runAoaMock } = vi.hoisted(() => ({
+  failContinuationMock: vi.fn().mockResolvedValue(null),
+  runAoaMock: vi.fn().mockResolvedValue(undefined),
+}));
 vi.mock("../services/internal-agent/aoa-agents/runner.js", () => ({ runAoaAgent: runAoaMock }));
+vi.mock("../services/work-question-continuation-terminal.js", () => ({
+  failUnstartedInternalAgentWorkQuestionContinuation: failContinuationMock,
+  finalizeInternalAgentWorkQuestionContinuation: vi.fn().mockResolvedValue(null),
+}));
 vi.mock("drizzle-orm", () => ({
   and: (...a: unknown[]) => ({ and: a }),
+  or: (...a: unknown[]) => ({ or: a }),
   eq: (a: unknown, b: unknown) => ({ eq: [a, b] }),
   lt: (a: unknown, b: unknown) => ({ lt: [a, b] }),
+  lte: (a: unknown, b: unknown) => ({ lte: [a, b] }),
   gt: (a: unknown, b: unknown) => ({ gt: [a, b] }),
+  desc: (a: unknown) => ({ desc: a }),
+  isNull: (a: unknown) => ({ isNull: a }),
   inArray: (a: unknown, b: unknown) => ({ inArray: [a, b] }),
   notInArray: (a: unknown, b: unknown) => ({ notInArray: [a, b] }),
+  sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({ sql: strings.join("?"), values }),
 }));
 vi.mock("@armyofagents/db", () => {
   const t = (n: string) => new Proxy({}, { get: (_x, p) => typeof p === "string" ? Symbol(`${n}.${p}`) : undefined });
@@ -16,8 +28,10 @@ vi.mock("@armyofagents/db", () => {
     agents: t("a"),
     discussionEntries: t("de"),
     discussions: t("d"),
+    issues: t("i"),
     internalAgentConfig: t("iac"),
     internalAgentRuns: t("iar"),
+    workQuestions: t("wq"),
   };
 });
 vi.mock("../services/internal-agent/aoa-agents/triggers.js", () => ({
@@ -54,7 +68,9 @@ function makeSelectChain(val: unknown): any {
     innerJoin: () => chain,
     leftJoin: () => chain,
     where: () => chain,
+    orderBy: () => chain,
     limit: () => chain,
+    for: () => chain,
     then: (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) =>
       Promise.resolve(val).then(resolve, reject),
   };
@@ -73,11 +89,13 @@ function makePhase3Db(
   selectResults: unknown[],
   returningResults: unknown[][],
   onSet?: (v: unknown, idx: number) => void,
+  onWhere?: (condition: unknown, idx: number) => void,
 ) {
   let selectIdx = 0;
   let updateIdx = 0;
 
   const db: any = {
+    transaction: (callback: (tx: unknown) => unknown) => callback(db),
     select: () => {
       const val = selectResults[selectIdx++] ?? [];
       return makeSelectChain(val);
@@ -88,13 +106,16 @@ function makePhase3Db(
         onSet?.(v, idx);
         const ret = returningResults[idx] ?? [];
         return {
-          where: () => ({
+          where: (condition: unknown) => {
+            onWhere?.(condition, idx);
+            return {
             // Support .returning() for the claim update
             returning: () => Promise.resolve(ret),
             // Support plain await (done/failed update)
             then: (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) =>
               Promise.resolve(undefined).then(resolve, reject),
-          }),
+            };
+          },
         };
       },
     }),
@@ -104,8 +125,9 @@ function makePhase3Db(
 
 describe("aoa-wakeup-dispatch", () => {
   beforeEach(() => {
+    failContinuationMock.mockClear();
     runAoaMock.mockClear();
-    runAoaMock.mockResolvedValue(undefined);
+    runAoaMock.mockResolvedValue({ status: "succeeded", runId: "run-1", errorMessage: null });
   });
 
   it("claims a queued wakeup for a kind='aoa' agent and runs it", async () => {
@@ -180,6 +202,67 @@ describe("aoa-wakeup-dispatch", () => {
     expect(runAoaMock).not.toHaveBeenCalled();
   });
 
+  it("does not fail a continuation when a policy skip loses the queued-row race", async () => {
+    const db = makePhase3Db(
+      [
+        [],
+        [],
+        [{
+          id: "w-policy-race",
+          agentId: "a-policy-race",
+          companyId: "co-policy-race",
+          source: "work_question_continuation",
+          idempotencyKey: "work-question:q-policy:answer:1",
+          payload: { issueId: "issue-policy-race", questionId: "q-policy" },
+        }],
+        [{ autonomyLevel: 0, crewPaused: true, model: "claude-sonnet-4-20250514" }],
+        [],
+      ],
+      [
+        [], // queued -> skipped_paused lost to a concurrent processing claim
+      ],
+    );
+
+    await runAoaDispatch(db, { limiterMax: 2, staleMs: 600_000 });
+
+    expect(failContinuationMock).not.toHaveBeenCalled();
+    expect(runAoaMock).not.toHaveBeenCalled();
+  });
+
+  it("fails a continuation only after winning the queued policy-skip transition", async () => {
+    const db = makePhase3Db(
+      [
+        [],
+        [],
+        [{
+          id: "w-policy-winner",
+          agentId: "a-policy-winner",
+          companyId: "co-policy-winner",
+          source: "work_question_continuation",
+          idempotencyKey: "work-question:q-policy-winner:answer:1",
+          payload: { issueId: "issue-policy-winner", questionId: "q-policy-winner" },
+        }],
+        [{ autonomyLevel: 0, crewPaused: true, model: "claude-sonnet-4-20250514" }],
+        [],
+      ],
+      [
+        [{ id: "w-policy-winner" }],
+      ],
+    );
+
+    await runAoaDispatch(db, { limiterMax: 2, staleMs: 600_000 });
+
+    expect(failContinuationMock).toHaveBeenCalledWith(
+      db,
+      expect.objectContaining({
+        companyId: "co-policy-winner",
+        idempotencyKey: "work-question:q-policy-winner:answer:1",
+        error: "Crew continuation blocked by the crew pause policy",
+      }),
+    );
+    expect(runAoaMock).not.toHaveBeenCalled();
+  });
+
   it("marks a wakeup as failed when runAoaAgent throws", async () => {
     runAoaMock.mockRejectedValueOnce(new Error("agent exploded"));
 
@@ -218,5 +301,61 @@ describe("aoa-wakeup-dispatch", () => {
     const failedUpdate = capturedSets.find((s: any) => s.status === "failed");
     expect(failedUpdate).toBeDefined();
     expect((failedUpdate as any).error).toBe("agent exploded");
+  });
+
+  it("recovers an expired processing wakeup and fences the terminal write with the new claim token", async () => {
+    const capturedSets: any[] = [];
+    const capturedWhere: any[] = [];
+    const db = makePhase3Db(
+      [
+        [],
+        [],
+        [{
+          id: "w-stale",
+          agentId: "a-stale",
+          companyId: "co-stale",
+          source: "work_question_continuation",
+          status: "processing",
+          attempts: 1,
+          idempotencyKey: "continuation-1",
+          payload: { role: "adjutant" },
+        }],
+        [{
+          runId: null,
+          source: "work_question_continuation",
+          idempotencyKey: "continuation-1",
+          attempts: 1,
+          leaseExpiresAt: new Date(0),
+        }],
+        [],
+        [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-20250514" }],
+        [],
+        [],
+        [{ runtimeConfig: {}, adapterConfig: {} }],
+        [],
+      ],
+      [
+        [],
+        [{ id: "w-stale", attempts: 2 }],
+        [],
+      ],
+      (value) => capturedSets.push(value),
+      (condition) => capturedWhere.push(condition),
+    );
+
+    await runAoaDispatch(db, { limiterMax: 2, staleMs: 600_000 });
+
+    const recoverySet = capturedSets.find((value) => value.status === "queued");
+    const claimSet = capturedSets.find((value) => value.status === "processing");
+    const terminalSet = capturedSets.find((value) => value.status === "succeeded");
+    expect(recoverySet).toMatchObject({ claimToken: null, leaseExpiresAt: null });
+    expect(claimSet.claimToken).toEqual(expect.any(String));
+    expect(claimSet.leaseExpiresAt).toBeInstanceOf(Date);
+    expect(terminalSet).toMatchObject({ claimToken: null, leaseExpiresAt: null });
+    expect(capturedWhere.at(-1)).toEqual(expect.objectContaining({
+      and: expect.arrayContaining([
+        expect.objectContaining({ eq: [expect.anything(), claimSet.claimToken] }),
+      ]),
+    }));
   });
 });

@@ -17,6 +17,10 @@ vi.mock("@/context/ToastContext", () => ({
 }));
 
 const routineId = "11111111-1111-1111-1111-111111111111";
+const editorCallbacks = {
+  getBaseRevisionId: () => null,
+  onRoutineUpdated: vi.fn(),
+};
 
 describe("RoutineVariablesEditor", () => {
   beforeEach(() => {
@@ -31,6 +35,7 @@ describe("RoutineVariablesEditor", () => {
         title="Daily standup"
         description="Post a summary to the team"
         initialVariables={[]}
+        {...editorCallbacks}
       />,
     );
     expect(
@@ -45,6 +50,7 @@ describe("RoutineVariablesEditor", () => {
         title="Review {{topic}}"
         description="Focus area: {{focus}}"
         initialVariables={[]}
+        {...editorCallbacks}
       />,
     );
     expect(screen.getByText("{{topic}}")).toBeInTheDocument();
@@ -58,6 +64,7 @@ describe("RoutineVariablesEditor", () => {
         title="Daily digest {{date}} for {{topic}}"
         description=""
         initialVariables={[]}
+        {...editorCallbacks}
       />,
     );
     expect(screen.queryByText("{{date}}")).not.toBeInTheDocument();
@@ -73,6 +80,7 @@ describe("RoutineVariablesEditor", () => {
         initialVariables={[
           { name: "topic", label: "Review topic", type: "text", defaultValue: "Q4 OKRs", required: true, options: [] },
         ]}
+        {...editorCallbacks}
       />,
     );
     expect(screen.getByDisplayValue("Review topic")).toBeInTheDocument();
@@ -81,12 +89,17 @@ describe("RoutineVariablesEditor", () => {
 
   it("save button calls routinesApi.update with edited variables", async () => {
     const user = userEvent.setup();
+    const onRoutineUpdated = vi.fn();
+    const updatedRoutine = { latestRevisionId: "revision-2" };
+    routinesUpdate.mockResolvedValue(updatedRoutine);
     renderWithProviders(
       <RoutineVariablesEditor
         routineId={routineId}
         title="Review {{topic}}"
         description=""
         initialVariables={[]}
+        getBaseRevisionId={() => "revision-1"}
+        onRoutineUpdated={onRoutineUpdated}
       />,
     );
     const labelInput = screen.getByLabelText(/label/i) as HTMLInputElement;
@@ -100,8 +113,10 @@ describe("RoutineVariablesEditor", () => {
           variables: expect.arrayContaining([
             expect.objectContaining({ name: "topic", label: "Review topic" }),
           ]),
+          baseRevisionId: "revision-1",
         }),
       );
+      expect(onRoutineUpdated).toHaveBeenCalledWith(updatedRoutine);
     });
   });
 });

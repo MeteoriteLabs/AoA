@@ -345,12 +345,23 @@ describe("HubTabBody", () => {
   });
 
   it("routes a run tab to RunDetailContainer with runId + agentId + companyId (D4b)", () => {
-    renderBody(runTab("run-7", "agent-42", "Run 7"));
+    const onOpenTab = vi.fn();
+    renderBody(runTab("run-7", "agent-42", "Run 7"), onOpenTab);
     const el = screen.getByTestId("mock-run-container");
     expect(el).toHaveAttribute("data-run-id", "run-7");
     expect(el).toHaveAttribute("data-agent-id", "agent-42");
     expect(el).toHaveAttribute("data-company-id", "company-1");
     expect(screen.queryByText(/preparing viewer/i)).toBeNull();
+
+    const props = runContainerSpy.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    const onOpenIssue = props.onOpenIssue as (issueId: string, title: string) => void;
+    onOpenIssue("issue-9", "Review launch plan");
+    expect(onOpenTab).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "task",
+        payload: expect.objectContaining({ issueId: "issue-9" }),
+      }),
+    );
   });
 
   it("falls back to the placeholder for an agent tab with no payload", () => {

@@ -29,10 +29,11 @@ test.describe("thread controls and viewer regressions", () => {
     await expect(archiveDialog).toBeHidden({ timeout: 10_000 });
 
     await page.goto(`/${company.issuePrefix}/discussions`);
-    await expect(page.getByRole("link", { name: threadTitle })).toBeVisible({ timeout: 10_000 });
-    await page.getByRole("button", { name: `${threadTitle} actions` }).click({ force: true });
+    const threadRailRow = page.getByTestId(`thread-rail-row-${threadId}`);
+    await expect(threadRailRow.getByRole("link", { name: threadTitle })).toBeVisible({ timeout: 10_000 });
+    await threadRailRow.getByRole("button", { name: `${threadTitle} actions` }).click({ force: true });
     await page.getByRole("menuitem", { name: /^unarchive thread$/i }).click();
-    await expect(page.getByRole("link", { name: threadTitle })).toBeVisible({ timeout: 10_000 });
+    await expect(threadRailRow.getByRole("link", { name: threadTitle })).toBeVisible({ timeout: 10_000 });
   });
 
   test("updates autonomy dropdown and closes it on outside click", async ({ page, request }) => {

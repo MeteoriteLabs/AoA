@@ -1,3 +1,5 @@
+import type { AgentCompletionPolicy, AgentCompletionPolicySource } from "../constants.js";
+
 export interface CompanyPortabilityCostEventsDateRange {
   from?: string;
   to?: string;
@@ -36,6 +38,8 @@ export interface CompanyPortabilityCompanyManifestEntry {
   description: string | null;
   brandColor: string | null;
   requireBoardApprovalForNewAgents: boolean;
+  agentCompletionPolicyDefault?: AgentCompletionPolicy;
+  agentCompletionReviewGuardrail?: boolean;
 }
 
 export interface CompanyPortabilityAgentManifestEntry {
@@ -92,6 +96,7 @@ export interface CompanyPortabilityProjectManifestEntry {
   targetDate?: string | null;
   leadAgentSlug?: string | null;
   functionType?: string | null;
+  agentCompletionPolicyDefault?: AgentCompletionPolicy | null;
   executionWorkspacePolicy?: Record<string, unknown> | null;
   metadata?: Record<string, unknown> | null;
 }
@@ -124,6 +129,7 @@ export interface CompanyPortabilityRoutineManifestEntry {
   priority: string;
   concurrencyPolicy: "coalesce_if_active" | "always_enqueue" | "skip_if_active";
   catchUpPolicy: "skip_missed" | "enqueue_missed_with_cap";
+  agentCompletionPolicyOverride?: AgentCompletionPolicy | null;
   projectSlug: string;
   assigneeAgentSlug: string;
   variables: CompanyPortabilityRoutineVariableManifestEntry[];
@@ -162,6 +168,11 @@ export interface CompanyPortabilityIssueManifestEntry {
   recurring?: boolean | null;
   assigneeAdapterOverrides?: Record<string, unknown> | null;
   executionWorkspaceSettings?: Record<string, unknown> | null;
+  acceptanceCriteria?: string[];
+  agentCompletionPolicyOverride?: AgentCompletionPolicy | null;
+  agentCompletionPolicy?: AgentCompletionPolicy;
+  agentCompletionPolicySource?: AgentCompletionPolicySource;
+  agentCompletionPolicyResolvedAt?: string;
   metadata?: Record<string, unknown> | null;
 }
 
@@ -249,6 +260,7 @@ export interface CompanyPortabilityWorkflowTemplateManifestEntry {
   name: string;
   description: string | null;
   workspaceMode: string;
+  agentCompletionPolicyOverride?: AgentCompletionPolicy | null;
   steps: unknown[];
   dependencies: unknown[];
   metadata?: Record<string, unknown> | null;

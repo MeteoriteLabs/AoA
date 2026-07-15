@@ -78,8 +78,6 @@ jobs:
           set +a
           {
             echo "SMOKE_BASE_URL=$SMOKE_BASE_URL"
-            echo "SMOKE_ADMIN_EMAIL=$SMOKE_ADMIN_EMAIL"
-            echo "SMOKE_ADMIN_PASSWORD=$SMOKE_ADMIN_PASSWORD"
             echo "SMOKE_CONTAINER_NAME=$SMOKE_CONTAINER_NAME"
             echo "SMOKE_DATA_DIR=$SMOKE_DATA_DIR"
             echo "SMOKE_IMAGE_NAME=$SMOKE_IMAGE_NAME"
@@ -90,8 +88,6 @@ jobs:
       - name: Run release smoke Playwright suite
         env:
           AOA_RELEASE_SMOKE_BASE_URL: ${{ env.SMOKE_BASE_URL }}
-          AOA_RELEASE_SMOKE_EMAIL: ${{ env.SMOKE_ADMIN_EMAIL }}
-          AOA_RELEASE_SMOKE_PASSWORD: ${{ env.SMOKE_ADMIN_PASSWORD }}
         run: pnpm run test:release-smoke
 
       - name: Capture Docker logs

@@ -1,4 +1,5 @@
 import { and, asc, desc, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
+import { randomUUID } from "node:crypto";
 import type { Db } from "@armyofagents/db";
 import {
   activityLog,
@@ -12,6 +13,7 @@ import {
   executionWorkspaces,
   goals,
   heartbeatRuns,
+  internalAgentRuns,
   issueAttachments,
   issueLabels,
   issueComments,
@@ -23,14 +25,19 @@ import {
   projects,
   taskDependencies,
   userRoles,
+  workQuestionContinuationRequests,
+  workQuestions,
 } from "@armyofagents/db";
 import { extractProjectMentionIds } from "@armyofagents/shared";
+import type { AgentCompletionPolicy, AgentCompletionPolicySource } from "@armyofagents/shared";
+import type { ResolvedAgentCompletionPolicy } from "./agent-completion-policy.js";
 import type {
   IssueCommentAuthorType,
   IssueCommentMetadata,
   IssueCommentPresentation,
 } from "@armyofagents/shared";
-import { conflict, notFound, unprocessable } from "../errors.js";
+import { requestTrackedProcessTermination } from "@armyofagents/adapter-utils/server-utils";
+import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { dependencyService, TERMINAL_STATUSES } from "./dependencies.js";
 import { enqueueIssueAssigneeWakeup } from "./issue-assignee-wakeup.js";
@@ -54,6 +61,7 @@ import {
   type CreateIssueContextBundleItemInput,
 } from "./issue-context-bundles.js";
 import { assertAgentStatusTransition } from "./issue-agent-status-guard.js";
+import type { CompletionPolicyCreatorSource } from "./agent-completion-policy.js";
 import { publishIssueStatusChanged } from "./live-events.js";
 import {
   crewAssigneeExists,
@@ -64,6 +72,184 @@ import {
 } from "./issue-crew-scope.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
+
+async function cancelActiveWorkQuestionsForIssue(
+  tx: Db,
+  input: {
+    companyId: string;
+    issueId: string;
+    reason: "done" | "cancelled" | "deleted" | "reassigned";
+  },
+) {
+  const now = new Date();
+  const cancelledOpen = await tx.update(workQuestions).set({
+    status: "cancelled",
+    continuationStatus: "not_needed",
+    continuationError: `Task ${input.reason}`,
+    version: sql`${workQuestions.version} + 1`,
+    updatedAt: now,
+  }).where(and(
+    eq(workQuestions.companyId, input.companyId),
+    eq(workQuestions.issueId, input.issueId),
+    eq(workQuestions.status, "open"),
+  )).returning({ id: workQuestions.id });
+
+  const stoppedAnswered = await tx.update(workQuestions).set({
+    continuationStatus: "not_needed",
+    continuationError: `Task ${input.reason}`,
+    version: sql`${workQuestions.version} + 1`,
+    updatedAt: now,
+  }).where(and(
+    eq(workQuestions.companyId, input.companyId),
+    eq(workQuestions.issueId, input.issueId),
+    eq(workQuestions.status, "answered"),
+    inArray(workQuestions.continuationStatus, ["pending", "dispatched"]),
+  )).returning({ id: workQuestions.id });
+
+  const questionIds = [...new Set([...cancelledOpen, ...stoppedAnswered].map((row) => row.id))];
+  if (questionIds.length === 0) return [] as string[];
+
+  const continuationKeys = await tx
+    .select({ key: workQuestionContinuationRequests.downstreamIdempotencyKey })
+    .from(workQuestionContinuationRequests)
+    .where(and(
+      eq(workQuestionContinuationRequests.companyId, input.companyId),
+      inArray(workQuestionContinuationRequests.questionId, questionIds),
+    ));
+
+  await tx.update(workQuestionContinuationRequests).set({
+    status: "cancelled",
+    claimedAt: null,
+    lastError: `Task ${input.reason}`,
+    updatedAt: now,
+  }).where(and(
+    eq(workQuestionContinuationRequests.companyId, input.companyId),
+    inArray(workQuestionContinuationRequests.questionId, questionIds),
+    inArray(workQuestionContinuationRequests.status, ["pending", "claimed", "dispatched"]),
+  ));
+
+  const wakeupKeys = [...new Set(continuationKeys.map((row) => row.key))];
+  let runningRunIds: string[] = [];
+  if (wakeupKeys.length > 0) {
+    const wakeups = await tx
+      .select({ id: agentWakeupRequests.id, runId: agentWakeupRequests.runId })
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.companyId, input.companyId),
+        inArray(agentWakeupRequests.idempotencyKey, wakeupKeys),
+      ));
+    const wakeupIds = wakeups.map((row) => row.id);
+    const referencedRunIds = wakeups
+      .map((row) => row.runId)
+      .filter((runId): runId is string => Boolean(runId));
+    if (wakeupIds.length > 0) {
+      // Task closure and expired-wakeup recovery both lock wakeups before runs.
+      // Keeping that order avoids a run <-> wakeup deadlock under concurrency.
+      await tx.update(agentWakeupRequests).set({
+        status: "cancelled",
+        finishedAt: now,
+        error: `Task ${input.reason}`,
+        claimToken: null,
+        leaseExpiresAt: null,
+        updatedAt: now,
+      }).where(and(
+        eq(agentWakeupRequests.companyId, input.companyId),
+        inArray(agentWakeupRequests.status, ["queued", "claimed", "processing", "deferred_issue_execution"]),
+        inArray(agentWakeupRequests.id, wakeupIds),
+      ));
+      const activeRuns = await tx
+        .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(and(
+          eq(heartbeatRuns.companyId, input.companyId),
+          or(
+            inArray(heartbeatRuns.wakeupRequestId, wakeupIds),
+            ...(referencedRunIds.length > 0 ? [inArray(heartbeatRuns.id, referencedRunIds)] : []),
+          ),
+          inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
+        ));
+      runningRunIds = activeRuns
+        .filter((run) => run.status === "running")
+        .map((run) => run.id);
+      const activeRunIds = activeRuns.map((run) => run.id);
+      if (activeRunIds.length > 0) {
+        await tx.update(heartbeatRuns).set({
+          status: "cancelled",
+          finishedAt: now,
+          error: `Task ${input.reason}`,
+          errorCode: "task_no_longer_eligible",
+          updatedAt: now,
+        }).where(and(
+          eq(heartbeatRuns.companyId, input.companyId),
+          inArray(heartbeatRuns.id, activeRunIds),
+          inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
+        ));
+        await tx.update(issues).set({
+          executionRunId: null,
+          executionAgentNameKey: null,
+          executionLockedAt: null,
+          updatedAt: now,
+        }).where(and(
+          eq(issues.companyId, input.companyId),
+          eq(issues.id, input.issueId),
+          inArray(issues.executionRunId, activeRunIds),
+        ));
+      }
+    }
+    const crewRunMatch = or(
+      inArray(internalAgentRuns.continuationIdempotencyKey, wakeupKeys),
+      ...(referencedRunIds.length > 0 ? [inArray(internalAgentRuns.id, referencedRunIds)] : []),
+      ...wakeupKeys.map((key) => sql<boolean>`starts_with(
+        ${internalAgentRuns.continuationIdempotencyKey},
+        ${`${key}:crew-attempt:`}
+      )`),
+    );
+    const activeCrewRuns = await tx
+      .select({ id: internalAgentRuns.id })
+      .from(internalAgentRuns)
+      .where(and(
+        eq(internalAgentRuns.companyId, input.companyId),
+        crewRunMatch,
+        eq(internalAgentRuns.status, "running"),
+      ));
+    if (activeCrewRuns.length > 0) {
+      const activeCrewRunIds = activeCrewRuns.map((run) => run.id);
+      runningRunIds = [...new Set([...runningRunIds, ...activeCrewRunIds])];
+      await tx.update(internalAgentRuns).set({
+        status: "cancelled",
+        errorMessage: `Task ${input.reason}`,
+        completedAt: now,
+      }).where(and(
+        eq(internalAgentRuns.companyId, input.companyId),
+        inArray(internalAgentRuns.id, activeCrewRunIds),
+        eq(internalAgentRuns.status, "running"),
+      ));
+    }
+  }
+
+  for (const questionId of questionIds) {
+    await tx.insert(activityLog).values({
+      companyId: input.companyId,
+      actorType: "system",
+      actorId: "task-lifecycle",
+      action: "work_question.cancelled_by_task",
+      entityType: "work_question",
+      entityId: questionId,
+      details: { issueId: input.issueId, reason: input.reason },
+    });
+    await hubItemsService(tx).reconcile(input.companyId, {
+      sourceType: "work_question",
+      sourceId: questionId,
+    });
+  }
+  return runningRunIds;
+}
+
+function terminateTrackedRuns(runIds: string[]) {
+  for (const runId of runIds) {
+    requestTrackedProcessTermination(runId);
+  }
+}
 
 function monitorClearReasonForIssue(input: {
   status: string;
@@ -300,6 +486,7 @@ function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
 }
 
 const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
+const TERMINAL_INTERNAL_AGENT_RUN_STATUSES = new Set(["completed", "failed", "cancelled"]);
 
 function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, "\\$&");
@@ -489,8 +676,8 @@ export function issueService(db: Db) {
     return upstream.some((r) => !TERMINAL_STATUSES.includes(r.status));
   }
 
-  async function assertAssignableAgent(companyId: string, agentId: string) {
-    const assignee = await db
+  async function assertAssignableAgent(companyId: string, agentId: string, dbOrTx: Db = db) {
+    const assignee = await dbOrTx
       .select({
         id: agents.id,
         companyId: agents.companyId,
@@ -512,8 +699,13 @@ export function issueService(db: Db) {
     }
   }
 
-  async function assertAssignableUser(companyId: string, userId: string, subject = "Assignee user") {
-    const membership = await db
+  async function assertAssignableUser(
+    companyId: string,
+    userId: string,
+    subject = "Assignee user",
+    dbOrTx: Db = db,
+  ) {
+    const membership = await dbOrTx
       .select({ id: companyMemberships.id })
       .from(companyMemberships)
       .where(
@@ -530,12 +722,12 @@ export function issueService(db: Db) {
     }
   }
 
-  async function assertResponsibleUser(companyId: string, userId: string) {
-    await assertAssignableUser(companyId, userId, "Responsible user");
+  async function assertResponsibleUser(companyId: string, userId: string, dbOrTx: Db = db) {
+    await assertAssignableUser(companyId, userId, "Responsible user", dbOrTx);
   }
 
-  async function findActiveCompanyUser(companyId: string, userId: string): Promise<string | null> {
-    const membership = await db
+  async function findActiveCompanyUser(companyId: string, userId: string, dbOrTx: Db = db): Promise<string | null> {
+    const membership = await dbOrTx
       .select({ id: companyMemberships.id })
       .from(companyMemberships)
       .where(
@@ -550,7 +742,11 @@ export function issueService(db: Db) {
     return membership ? userId : null;
   }
 
-  async function findNearestHumanManagerForAgent(companyId: string, agentId: string): Promise<string | null> {
+  async function findNearestHumanManagerForAgent(
+    companyId: string,
+    agentId: string,
+    dbOrTx: Db = db,
+  ): Promise<string | null> {
     type AgentParentRow = {
       parentType: string | null;
       parentId: string | null;
@@ -563,7 +759,7 @@ export function issueService(db: Db) {
       if (seen.has(currentAgentId)) return null;
       seen.add(currentAgentId);
 
-      const row: AgentParentRow | null = await db
+      const row: AgentParentRow | null = await dbOrTx
         .select({
           parentType: agents.parentType,
           parentId: agents.parentId,
@@ -575,7 +771,7 @@ export function issueService(db: Db) {
 
       if (!row) return null;
       if (row.parentType === "user" && row.parentId) {
-        return await findActiveCompanyUser(companyId, row.parentId);
+        return await findActiveCompanyUser(companyId, row.parentId, dbOrTx);
       }
       if (row.parentType === "agent" && row.parentId) {
         currentAgentId = row.parentId;
@@ -587,8 +783,8 @@ export function issueService(db: Db) {
     return null;
   }
 
-  async function findSingleFounderUserId(companyId: string): Promise<string | null> {
-    const rows = await db
+  async function findSingleFounderUserId(companyId: string, dbOrTx: Db = db): Promise<string | null> {
+    const rows = await dbOrTx
       .select({ userId: userRoles.userId })
       .from(userRoles)
       .innerJoin(
@@ -611,14 +807,14 @@ export function issueService(db: Db) {
     assigneeUserId?: string | null;
     assigneeAgentId?: string | null;
     responsibleFallbackUserId?: string | null;
-  }): Promise<string | null> {
+  }, dbOrTx: Db = db): Promise<string | null> {
     if (input.assigneeUserId) return input.assigneeUserId;
     if (input.assigneeAgentId) {
-      const manager = await findNearestHumanManagerForAgent(input.companyId, input.assigneeAgentId);
-      return manager ?? await findSingleFounderUserId(input.companyId);
+      const manager = await findNearestHumanManagerForAgent(input.companyId, input.assigneeAgentId, dbOrTx);
+      return manager ?? await findSingleFounderUserId(input.companyId, dbOrTx);
     }
     if (input.responsibleFallbackUserId) {
-      return await findActiveCompanyUser(input.companyId, input.responsibleFallbackUserId);
+      return await findActiveCompanyUser(input.companyId, input.responsibleFallbackUserId, dbOrTx);
     }
 
     return null;
@@ -632,10 +828,10 @@ export function issueService(db: Db) {
     responsibleFallbackUserId?: string | null;
     existingResponsibleUserId?: string | null;
     executorChanged?: boolean;
-  }): Promise<string | null | undefined> {
+  }, dbOrTx: Db = db): Promise<string | null | undefined> {
     if (input.explicitResponsibleUserId !== undefined) {
       if (input.explicitResponsibleUserId !== null) {
-        await assertResponsibleUser(input.companyId, input.explicitResponsibleUserId);
+        await assertResponsibleUser(input.companyId, input.explicitResponsibleUserId, dbOrTx);
       }
       return input.explicitResponsibleUserId;
     }
@@ -644,7 +840,7 @@ export function issueService(db: Db) {
       return undefined;
     }
 
-    return await resolveDefaultResponsibleUserId(input);
+    return await resolveDefaultResponsibleUserId(input, dbOrTx);
   }
 
   async function assertValidLabelIds(companyId: string, labelIds: string[], dbOrTx: any = db) {
@@ -677,14 +873,22 @@ export function issueService(db: Db) {
     );
   }
 
-  async function isTerminalOrMissingHeartbeatRun(runId: string) {
-    const run = await db
-      .select({ status: heartbeatRuns.status })
-      .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.id, runId))
-      .then((rows) => rows[0] ?? null);
-    if (!run) return true;
-    return TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status);
+  async function isTerminalOrMissingExecutionRun(runId: string) {
+    const [heartbeatRun, internalAgentRun] = await Promise.all([
+      db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ status: internalAgentRuns.status })
+        .from(internalAgentRuns)
+        .where(eq(internalAgentRuns.id, runId))
+        .then((rows) => rows[0] ?? null),
+    ]);
+    if (heartbeatRun && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(heartbeatRun.status)) return false;
+    if (internalAgentRun && !TERMINAL_INTERNAL_AGENT_RUN_STATUSES.has(internalAgentRun.status)) return false;
+    return true;
   }
 
   async function adoptStaleCheckoutRun(input: {
@@ -693,7 +897,7 @@ export function issueService(db: Db) {
     actorRunId: string;
     expectedCheckoutRunId: string;
   }) {
-    const stale = await isTerminalOrMissingHeartbeatRun(input.expectedCheckoutRunId);
+    const stale = await isTerminalOrMissingExecutionRun(input.expectedCheckoutRunId);
     if (!stale) return null;
 
     const now = new Date();
@@ -1000,6 +1204,16 @@ export function issueService(db: Db) {
         labelIds?: string[];
         inheritExecutionWorkspaceFromIssueId?: string | null;
         responsibleFallbackUserId?: string | null;
+        completionPolicyCreatorOverride?: AgentCompletionPolicy | null;
+        completionPolicyCreatorSource?: CompletionPolicyCreatorSource | null;
+        completionPolicyCreatorSourceId?: string | null;
+        completionPolicySnapshot?: {
+          policy: AgentCompletionPolicy;
+          override: AgentCompletionPolicy | null;
+          source: AgentCompletionPolicySource;
+          sourceId: string | null;
+          resolvedAt: Date | null;
+        };
         contextBundle?: {
           sourceIssueId?: string | null;
           sourceDiscussionId?: string | null;
@@ -1012,10 +1226,15 @@ export function issueService(db: Db) {
       },
       outerTx?: Parameters<Parameters<typeof db.transaction>[0]>[0],
     ) => {
+      const operationDb = (outerTx ?? db) as unknown as Db;
       const {
         labelIds: inputLabelIds,
         inheritExecutionWorkspaceFromIssueId,
         responsibleFallbackUserId,
+        completionPolicyCreatorOverride,
+        completionPolicyCreatorSource,
+        completionPolicyCreatorSourceId,
+        completionPolicySnapshot,
         contextBundle,
         ...issueData
       } = data;
@@ -1023,10 +1242,10 @@ export function issueService(db: Db) {
         throw unprocessable("Issue can only have one assignee");
       }
       if (data.assigneeAgentId) {
-        await assertAssignableAgent(companyId, data.assigneeAgentId);
+        await assertAssignableAgent(companyId, data.assigneeAgentId, operationDb);
       }
       if (data.assigneeUserId) {
-        await assertAssignableUser(companyId, data.assigneeUserId);
+        await assertAssignableUser(companyId, data.assigneeUserId, "Assignee user", operationDb);
       }
       const createResponsibleUserId = await resolveResponsibleUserId({
         companyId,
@@ -1037,9 +1256,21 @@ export function issueService(db: Db) {
         assigneeAgentId: (issueData as { assigneeAgentId?: string | null }).assigneeAgentId ?? null,
         responsibleFallbackUserId,
         executorChanged: true,
-      });
+      }, operationDb);
       if (createResponsibleUserId !== undefined) {
         (issueData as Record<string, unknown>).responsibleUserId = createResponsibleUserId;
+      }
+      if (data.status === "in_review") {
+        const { resolveIssueReviewer } = await import("./issue-reviewer.js");
+        const reviewer = await resolveIssueReviewer(operationDb, {
+          companyId,
+          projectId: (issueData as { projectId?: string | null }).projectId ?? null,
+          explicitReviewerUserId: (issueData as { reviewerUserId?: string | null }).reviewerUserId ?? null,
+          existingReviewerSource: (issueData as { reviewerSource?: string | null }).reviewerSource ?? null,
+          responsibleUserId: (issueData as { responsibleUserId?: string | null }).responsibleUserId ?? null,
+        });
+        (issueData as Record<string, unknown>).reviewerUserId = reviewer.reviewerUserId;
+        (issueData as Record<string, unknown>).reviewerSource = reviewer.reviewerSource;
       }
       if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
@@ -1054,7 +1285,7 @@ export function issueService(db: Db) {
           (issueData as Record<string, unknown>).executionWorkspacePreference !== undefined ||
           (issueData as Record<string, unknown>).executionWorkspaceSettings !== undefined;
 
-        const isolatedWorkspacesEnabled = (await instanceSettingsService(db).getExperimental())
+        const isolatedWorkspacesEnabled = (await instanceSettingsService(tx as unknown as Db).getExperimental())
           .enableIsolatedWorkspaces;
         let inheritedExecutionWorkspace: ResolvedWorkspaceInheritance | null = null;
 
@@ -1146,9 +1377,43 @@ export function issueService(db: Db) {
           reuseWorkspace,
         });
         const issueInsertData = { ...issueData } as Record<string, unknown>;
+        const issueId = typeof issueInsertData.id === "string" ? issueInsertData.id : randomUUID();
+        issueInsertData.id = issueId;
         delete issueInsertData.executionWorkspaceId;
         delete issueInsertData.executionWorkspacePreference;
         delete issueInsertData.executionWorkspaceSettings;
+
+        const { resolveAgentCompletionPolicy } = await import("./agent-completion-policy.js");
+        const completionPolicy = await resolveAgentCompletionPolicy(tx as unknown as Db, {
+          companyId,
+          projectId,
+          taskOverride: completionPolicySnapshot?.policy ??
+            ((issueData as { agentCompletionPolicyOverride?: AgentCompletionPolicy | null })
+              .agentCompletionPolicyOverride ?? null),
+          creatorOverride: completionPolicyCreatorOverride,
+          creatorSource: completionPolicyCreatorSource,
+          creatorSourceId: completionPolicyCreatorSourceId,
+          lockSources: true,
+        });
+        issueInsertData.agentCompletionPolicy = completionPolicy.policy;
+        const preserveImportedSnapshot = completionPolicySnapshot && !completionPolicy.guardrailApplied;
+        issueInsertData.agentCompletionPolicyOverride = completionPolicySnapshot
+          ? completionPolicySnapshot.override
+          : issueInsertData.agentCompletionPolicyOverride;
+        issueInsertData.agentCompletionPolicySource = preserveImportedSnapshot
+          ? completionPolicySnapshot.source
+          : completionPolicy.source;
+        const resolvedSourceId = preserveImportedSnapshot
+          ? completionPolicySnapshot.sourceId
+          : completionPolicy.sourceId;
+        issueInsertData.agentCompletionPolicySourceId =
+          (preserveImportedSnapshot ? completionPolicySnapshot.source : completionPolicy.source) === "task"
+            ? issueId
+            : resolvedSourceId;
+        issueInsertData.agentCompletionPolicyResolvedAt =
+          preserveImportedSnapshot && completionPolicySnapshot.resolvedAt
+            ? completionPolicySnapshot.resolvedAt
+            : completionPolicy.resolvedAt;
 
         const [company] = await tx
           .update(companies)
@@ -1204,19 +1469,81 @@ export function issueService(db: Db) {
     update: async (
       id: string,
       data: Partial<typeof issues.$inferInsert> & { labelIds?: string[]; monitorPolicy?: unknown },
-      actor?: { actorType?: "agent" | "board" | "user" | "system"; agentId?: string | null; effectiveDial?: number },
+      actor?: {
+        actorType?: "agent" | "board" | "user" | "system";
+        agentId?: string | null;
+        effectiveDial?: number;
+        expectedUpdatedAt?: Date | null;
+      },
     ) => {
-      const existing = await db
+      const completionPolicyOverrideSupplied = Object.prototype.hasOwnProperty.call(
+        data,
+        "agentCompletionPolicyOverride",
+      );
+      if (completionPolicyOverrideSupplied && actor?.actorType === "agent") {
+        throw forbidden("Only human operators may override task completion policy");
+      }
+      const { result, tasksToWake, runsToTerminate, existing, issueData } = await db.transaction(async (tx) => {
+      const operationDb = tx as unknown as Db;
+      let completionPolicy: ResolvedAgentCompletionPolicy | null = null;
+      let policyPrelockUpdatedAt: Date | null = null;
+      if (completionPolicyOverrideSupplied) {
+        const policyPrelockIssue = await tx
+          .select({
+            companyId: issues.companyId,
+            projectId: issues.projectId,
+            updatedAt: issues.updatedAt,
+          })
+          .from(issues)
+          .where(eq(issues.id, id))
+          .then((rows) => rows[0] ?? null);
+        if (policyPrelockIssue) {
+          const { resolveAgentCompletionPolicy } = await import("./agent-completion-policy.js");
+          const nextProjectId = Object.prototype.hasOwnProperty.call(data, "projectId")
+            ? ((data as { projectId?: string | null }).projectId ?? null)
+            : policyPrelockIssue.projectId;
+          completionPolicy = await resolveAgentCompletionPolicy(operationDb, {
+            companyId: policyPrelockIssue.companyId,
+            projectId: nextProjectId,
+            taskOverride: (data as { agentCompletionPolicyOverride?: AgentCompletionPolicy | null })
+              .agentCompletionPolicyOverride ?? null,
+            lockSources: true,
+          });
+          policyPrelockUpdatedAt = policyPrelockIssue.updatedAt;
+        }
+      }
+      const existing = await tx
         .select()
         .from(issues)
         .where(eq(issues.id, id))
+        .for("update")
         .then((rows) => rows[0] ?? null);
-      if (!existing) return null;
+      if (!existing) {
+        return {
+          result: null,
+          tasksToWake: [] as { agentId: string; issueId: string; workMode: string | null }[],
+          runsToTerminate: [] as string[],
+          existing: null,
+          issueData: {} as Record<string, unknown>,
+        };
+      }
+      if (
+        policyPrelockUpdatedAt &&
+        existing.updatedAt.getTime() !== policyPrelockUpdatedAt.getTime()
+      ) {
+        throw conflict("Issue changed while completion policy locks were acquired; retry the request");
+      }
+      if (
+        actor?.expectedUpdatedAt &&
+        existing.updatedAt.getTime() !== actor.expectedUpdatedAt.getTime()
+      ) {
+        throw conflict("Issue changed while the update was being authorized; retry the request");
+      }
 
       const { labelIds: nextLabelIds, monitorPolicy: rawMonitorPolicy, ...issueData } = data;
       const monitorPolicy = rawMonitorPolicy === undefined ? undefined : normalizeIssueMonitorPolicy(rawMonitorPolicy);
 
-      const isolatedWorkspacesEnabled = (await instanceSettingsService(db).getExperimental()).enableIsolatedWorkspaces;
+      const isolatedWorkspacesEnabled = (await instanceSettingsService(operationDb).getExperimental()).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
         delete (issueData as Record<string, unknown>).executionWorkspaceId;
         delete (issueData as Record<string, unknown>).executionWorkspacePreference;
@@ -1232,7 +1559,7 @@ export function issueService(db: Db) {
               ? ((issueData as { projectId?: string | null }).projectId ?? null)
               : existing.projectId;
           const projectPolicy = nextProjectId
-            ? await db
+            ? await operationDb
               .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
               .from(projects)
               .where(and(eq(projects.id, nextProjectId), eq(projects.companyId, existing.companyId)))
@@ -1245,7 +1572,7 @@ export function issueService(db: Db) {
             parsedIssueSettings?.reuseWorkspaceId ??
             ((issueData as { executionWorkspaceId?: string | null }).executionWorkspaceId ?? null);
           const reuseWorkspace = reuseWorkspaceId
-            ? await db
+            ? await operationDb
               .select({
                 id: executionWorkspaces.id,
                 companyId: executionWorkspaces.companyId,
@@ -1289,7 +1616,7 @@ export function issueService(db: Db) {
           existing.executionWorkspaceId
         ) {
           const nextProjectId = (issueData as { projectId?: string | null }).projectId ?? null;
-          const existingWorkspace = await db
+          const existingWorkspace = await operationDb
             .select({
               companyId: executionWorkspaces.companyId,
               projectId: executionWorkspaces.projectId,
@@ -1329,10 +1656,10 @@ export function issueService(db: Db) {
         throw unprocessable("in_progress issues require an assignee");
       }
       if (issueData.assigneeAgentId) {
-        await assertAssignableAgent(existing.companyId, issueData.assigneeAgentId);
+        await assertAssignableAgent(existing.companyId, issueData.assigneeAgentId, operationDb);
       }
       if (issueData.assigneeUserId) {
-        await assertAssignableUser(existing.companyId, issueData.assigneeUserId);
+        await assertAssignableUser(existing.companyId, issueData.assigneeUserId, "Assignee user", operationDb);
       }
       const executorChanged =
         nextAssigneeAgentId !== existing.assigneeAgentId ||
@@ -1344,7 +1671,7 @@ export function issueService(db: Db) {
           companyId: existing.companyId,
           assigneeUserId: existing.assigneeUserId,
           assigneeAgentId: existing.assigneeAgentId,
-        });
+        }, operationDb);
         keepManualResponsibleOnExecutorChange = existing.responsibleUserId !== previousDefaultResponsibleUserId;
       }
       const updateResponsibleUserId = await resolveResponsibleUserId({
@@ -1356,9 +1683,56 @@ export function issueService(db: Db) {
         assigneeAgentId: nextAssigneeAgentId,
         existingResponsibleUserId: existing.responsibleUserId,
         executorChanged: keepManualResponsibleOnExecutorChange ? false : executorChanged,
-      });
+      }, operationDb);
       if (updateResponsibleUserId !== undefined) {
         (issueData as Record<string, unknown>).responsibleUserId = updateResponsibleUserId;
+      }
+
+      if (Object.prototype.hasOwnProperty.call(issueData, "agentCompletionPolicyOverride")) {
+        if (!completionPolicy) throw notFound("Issue not found");
+        const executionStarted = existing.startedAt !== null
+          || ["in_progress", "in_review", "done", "cancelled"].includes(existing.status);
+        if (executionStarted && completionPolicy.policy !== "review_required") {
+          throw unprocessable("A running task's completion policy may only be tightened to require review", {
+            code: "completion_policy_locked",
+          });
+        }
+        (issueData as Record<string, unknown>).agentCompletionPolicy = completionPolicy.policy;
+        (issueData as Record<string, unknown>).agentCompletionPolicySource = completionPolicy.source;
+        (issueData as Record<string, unknown>).agentCompletionPolicySourceId = completionPolicy.source === "task"
+          ? existing.id
+          : completionPolicy.sourceId;
+        (issueData as Record<string, unknown>).agentCompletionPolicyResolvedAt = completionPolicy.resolvedAt;
+      } else {
+        delete (issueData as Record<string, unknown>).agentCompletionPolicy;
+        delete (issueData as Record<string, unknown>).agentCompletionPolicySource;
+        delete (issueData as Record<string, unknown>).agentCompletionPolicySourceId;
+        delete (issueData as Record<string, unknown>).agentCompletionPolicyResolvedAt;
+      }
+
+      if (issueData.status === "in_review" && existing.status !== "in_review") {
+        const { resolveIssueReviewer } = await import("./issue-reviewer.js");
+        const nextProjectId = Object.prototype.hasOwnProperty.call(issueData, "projectId")
+          ? ((issueData as { projectId?: string | null }).projectId ?? null)
+          : existing.projectId;
+        const explicitReviewerUserId = Object.prototype.hasOwnProperty.call(issueData, "reviewerUserId")
+          ? ((issueData as { reviewerUserId?: string | null }).reviewerUserId ?? null)
+          : existing.reviewerUserId;
+        const reviewerSource = Object.prototype.hasOwnProperty.call(issueData, "reviewerSource")
+          ? ((issueData as { reviewerSource?: string | null }).reviewerSource ?? null)
+          : existing.reviewerSource;
+        const responsibleUserId = Object.prototype.hasOwnProperty.call(issueData, "responsibleUserId")
+          ? ((issueData as { responsibleUserId?: string | null }).responsibleUserId ?? null)
+          : existing.responsibleUserId;
+        const reviewer = await resolveIssueReviewer(operationDb, {
+          companyId: existing.companyId,
+          projectId: nextProjectId,
+          explicitReviewerUserId,
+          existingReviewerSource: reviewerSource,
+          responsibleUserId,
+        });
+        (issueData as Record<string, unknown>).reviewerUserId = reviewer.reviewerUserId;
+        (issueData as Record<string, unknown>).reviewerSource = reviewer.reviewerSource;
       }
 
       const patch: Partial<typeof issues.$inferInsert> = {
@@ -1367,18 +1741,24 @@ export function issueService(db: Db) {
       };
 
       // Service-level agent status-transition guard (A4). Runs an approval-lookup
-      // read, so it lives here alongside the assignable-agent asserts and BEFORE
-      // the transaction opens. Non-agent callers (default actorType "system") are
+      // read, so it lives beside the locked issue row inside the transaction.
+      // Non-agent callers (default actorType "system") are
       // unaffected — see issue-agent-status-guard.ts. The autonomy dial is
       // resolved by the caller (e.g. the set_task_status tool) and forwarded as
       // actor.effectiveDial; this service never reads internalAgentConfig.
       await assertAgentStatusTransition(
         {
-          existing: { id: existing.id, status: existing.status, assigneeAgentId: existing.assigneeAgentId },
+          existing: {
+            id: existing.id,
+            status: existing.status,
+            assigneeAgentId: existing.assigneeAgentId,
+            agentCompletionPolicy: existing.agentCompletionPolicy,
+            acceptanceCriteria: existing.acceptanceCriteria,
+          },
           updateFields: issueData,
           actor: { actorType: actor?.actorType ?? "system", agentId: actor?.agentId ?? null, effectiveDial: actor?.effectiveDial },
         },
-        db,
+        operationDb,
       );
 
       applyStatusSideEffects(issueData.status, patch);
@@ -1398,14 +1778,31 @@ export function issueService(db: Db) {
         patch.checkoutRunId = null;
       }
 
-      const { result, tasksToWake } = await db.transaction(async (tx) => {
+        const runIdsToTerminate = new Set<string>();
         const updated = await tx
           .update(issues)
           .set(patch)
           .where(eq(issues.id, id))
           .returning()
           .then((rows) => rows[0] ?? null);
-        if (!updated) return { result: null, tasksToWake: [] as { agentId: string; issueId: string; workMode: string | null }[] };
+        if (!updated) {
+          return {
+            result: null,
+            tasksToWake: [] as { agentId: string; issueId: string; workMode: string | null }[],
+            runsToTerminate: [] as string[],
+          };
+        }
+        if (
+          issueData.assigneeAgentId !== undefined &&
+          issueData.assigneeAgentId !== existing.assigneeAgentId
+        ) {
+          const runIds = await cancelActiveWorkQuestionsForIssue(tx as unknown as Db, {
+            companyId: existing.companyId,
+            issueId: id,
+            reason: "reassigned",
+          });
+          runIds.forEach((runId) => runIdsToTerminate.add(runId));
+        }
         if (nextLabelIds !== undefined) {
           await syncIssueLabels(updated.id, existing.companyId, nextLabelIds, tx);
         }
@@ -1508,9 +1905,21 @@ export function issueService(db: Db) {
         let wake: { agentId: string; issueId: string; workMode: string | null }[] = [];
         if (enriched && issueData.status && issueData.status !== existing.status) {
           if (issueData.status === "done") {
+            const runIds = await cancelActiveWorkQuestionsForIssue(tx as unknown as Db, {
+              companyId: existing.companyId,
+              issueId: id,
+              reason: "done",
+            });
+            runIds.forEach((runId) => runIdsToTerminate.add(runId));
             const resolved = await deps.resolveDependencies(existing.companyId, id, tx);
             wake = resolved.tasksToWake;
           } else if (issueData.status === "cancelled") {
+            const runIds = await cancelActiveWorkQuestionsForIssue(tx as unknown as Db, {
+              companyId: existing.companyId,
+              issueId: id,
+              reason: "cancelled",
+            });
+            runIds.forEach((runId) => runIdsToTerminate.add(runId));
             // A cancelled dependency is terminal too — it releases its dependents
             // and we must propagate the resulting wakeups so they get dispatched
             // (symmetric with the `done` branch). (A-H9)
@@ -1524,8 +1933,18 @@ export function issueService(db: Db) {
           });
         }
 
-        return { result: enriched, tasksToWake: wake };
+        return {
+          result: enriched,
+          tasksToWake: wake,
+          runsToTerminate: [...runIdsToTerminate],
+          existing,
+          issueData,
+        };
       });
+
+      terminateTrackedRuns(runsToTerminate);
+
+      if (!existing) return null;
 
       // Task 5.6: publish issue.status_changed when the status ACTUALLY changed
       // (the canonical crew-move chokepoint that goes through update — incl.
@@ -1555,15 +1974,22 @@ export function issueService(db: Db) {
       return result;
     },
 
-    remove: (id: string) =>
-      db.transaction(async (tx) => {
+    remove: async (id: string) => {
+      const { removed, runsToTerminate } = await db.transaction(async (tx) => {
         // Fetch the issue first to get companyId (needed for activity log)
         const [issueToDelete] = await tx
           .select({ companyId: issues.companyId })
           .from(issues)
-          .where(eq(issues.id, id));
+          .where(eq(issues.id, id))
+          .for("update");
 
+        let runIdsToTerminate: string[] = [];
         if (issueToDelete) {
+          runIdsToTerminate = await cancelActiveWorkQuestionsForIssue(tx as unknown as Db, {
+            companyId: issueToDelete.companyId,
+            issueId: id,
+            reason: "deleted",
+          });
           // Auto-unblock dependents before cascade deletes the dependency rows
           const dependents = await tx
             .select({
@@ -1642,14 +2068,17 @@ export function issueService(db: Db) {
             .where(inArray(assets.id, attachmentAssetIds.map((row) => row.assetId)));
         }
 
-        if (!removedIssue) return null;
+        if (!removedIssue) return { removed: null, runsToTerminate: runIdsToTerminate };
         await hubItemsService(tx as unknown as Db).reconcile(removedIssue.companyId, {
           sourceType: "issue",
           sourceId: id,
         });
         const [enriched] = await withIssueLabels(tx, [removedIssue]);
-        return enriched;
-      }),
+        return { removed: enriched, runsToTerminate: runIdsToTerminate };
+      });
+      terminateTrackedRuns(runsToTerminate);
+      return removed;
+    },
 
     // Concurrency: Uses atomic conditional UPDATE (WHERE status = expected AND assignee conditions)
     // rather than SELECT FOR UPDATE. Two simultaneous checkout attempts will issue the same UPDATE,

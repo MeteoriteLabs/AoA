@@ -44,6 +44,16 @@ vi.mock("../services/execution-workspaces.js", () => ({
   executionWorkspaceService: vi.fn(() => mockExecutionWorkspaceService),
 }));
 
+vi.mock("../services/agent-completion-policy.js", () => ({
+  resolveAgentCompletionPolicy: vi.fn().mockResolvedValue({
+    policy: "review_required",
+    source: "company",
+    sourceId: "company-1",
+    guardrailApplied: false,
+    resolvedAt: new Date("2026-07-11T00:00:00.000Z"),
+  }),
+}));
+
 import { workflowTemplateService } from "../services/workflow-templates.js";
 
 // ── Mock DB helpers ───────────────────────────────────────────────────────────
@@ -76,6 +86,7 @@ function createSequenceDb(config: {
     insert: (_table: unknown) => makeChain(() => config.inserts?.[insertIdx++] ?? []),
     update: (_table: unknown) => makeChain(() => config.updates?.[updateIdx++] ?? []),
     delete: (_table: unknown) => makeChain(() => config.deletes?.[deleteIdx++] ?? []),
+    execute: async (..._args: unknown[]) => [],
   });
 
   return {
@@ -83,6 +94,7 @@ function createSequenceDb(config: {
     insert: (_table: unknown) => makeChain(() => config.inserts?.[insertIdx++] ?? []),
     update: (_table: unknown) => makeChain(() => config.updates?.[updateIdx++] ?? []),
     delete: (_table: unknown) => makeChain(() => config.deletes?.[deleteIdx++] ?? []),
+    execute: async (..._args: unknown[]) => [],
     transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn(makeTx()),
   };
 }

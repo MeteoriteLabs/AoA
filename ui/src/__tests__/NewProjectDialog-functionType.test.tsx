@@ -101,12 +101,13 @@ describe("NewProjectDialog — function type picker", () => {
     projectApiMocks.createWorkspace.mockResolvedValue({});
   });
 
-  it("renders all 10 function type options for departments", () => {
+  it("renders all 11 function type options for departments (shared taxonomy)", () => {
     renderDialog();
     expect(screen.getByText("Product (Software)")).toBeInTheDocument();
     expect(screen.getByText("Marketing")).toBeInTheDocument();
+    expect(screen.getByText("Sales")).toBeInTheDocument(); // C9: new
     expect(screen.getByText("Finance")).toBeInTheDocument();
-    expect(screen.getByText("Support")).toBeInTheDocument();
+    expect(screen.getByText("Customer Support")).toBeInTheDocument(); // C9: relabeled from "Support"
     expect(screen.getByText("HR")).toBeInTheDocument();
     expect(screen.getByText("Legal")).toBeInTheDocument();
     expect(screen.getByText("Research")).toBeInTheDocument();

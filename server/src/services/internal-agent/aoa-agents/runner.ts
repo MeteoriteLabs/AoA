@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { writeFile, unlink } from "node:fs/promises";
 import type { Db } from "@armyofagents/db";
-import { agents, internalAgentRuns, discussionEntries, issues, threadOrchestrationState } from "@armyofagents/db";
+import { agents, internalAgentRuns, discussionEntries, issues, threadOrchestrationState, workQuestions } from "@armyofagents/db";
 import { getServerAdapter } from "../../../adapters/registry.js";
 import { costService } from "../../costs.js";
 import { buildMcpConfig, buildMcpBridgeSpec } from "../cli-mode.js";
@@ -26,6 +26,10 @@ import type { ProviderStatus } from "../../../adapters/provider-status.js";
 import { realProviderStatusDeps } from "../../../adapters/provider-status-deps.js";
 import { applyModelResolutionToConfig } from "./runner-model-resolution.js";
 import { secretService } from "../../secrets.js";
+import {
+  bindInternalAgentWorkQuestionContinuation,
+  finalizeInternalAgentWorkQuestionContinuation,
+} from "../../work-question-continuation-terminal.js";
 
 export interface AoaTriggerPayload { companyId: string; source: string; entryId?: string; issueId?: string; [k: string]: unknown; }
 
@@ -116,6 +120,9 @@ const TOOL_REGISTRY_FOR_CAPABILITY_DERIVATION = createToolRegistry();
 export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPayload): Promise<AoaRunResult> {
   const log = logger.child({ svc: "aoa-runner", agentId, companyId: payload.companyId });
   const startedAt = Date.now();
+  const inheritedHumanQuestionWaitMs = typeof payload.humanQuestionWaitMs === "number"
+    ? Math.max(0, Math.trunc(payload.humanQuestionWaitMs))
+    : 0;
   let runId: string | null = null;
   let cfgPath: string | null = null;
   // Audit #27: prompt snapshot built after triggerPrompt is assembled; persisted
@@ -167,8 +174,27 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
       // also carries an entry to claim).
       status: "running", relatedEntityType: payload.issueId ? "task" : payload.entryId ? "discussion" : null,
       relatedEntityId: payload.issueId ?? payload.entryId ?? null, userId: null,
+      continuationIdempotencyKey:
+        typeof payload.continuationAttemptIdempotencyKey === "string"
+          ? payload.continuationAttemptIdempotencyKey
+          : typeof payload.continuationIdempotencyKey === "string"
+            ? payload.continuationIdempotencyKey
+            : null,
+      humanQuestionWaitMs: inheritedHumanQuestionWaitMs,
     }).returning();
     runId = inserted[0]?.id ?? null;
+    const continuationIdempotencyKey = typeof payload.continuationIdempotencyKey === "string"
+      ? payload.continuationIdempotencyKey
+      : null;
+    if (runId && continuationIdempotencyKey && typeof payload.wakeupId === "string") {
+      await bindInternalAgentWorkQuestionContinuation(db, {
+        companyId: payload.companyId,
+        runId,
+        idempotencyKey: continuationIdempotencyKey,
+        agentId,
+        wakeupId: payload.wakeupId,
+      });
+    }
 
     // M2/#99 atomic claim: flip pending→processing AND link extraction_run_id
     // in ONE statement. Empty RETURNING ⇒ already claimed ⇒ abort (mirrors
@@ -227,7 +253,15 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
         log.info({ issueId: payload.issueId, err: (err as Error)?.message }, "task checkout conflict — another run owns it; skipping");
         await db.update(internalAgentRuns)
           .set({ status: "failed", errorMessage: "task checkout conflict (concurrent)", completedAt: new Date(), durationMs: Date.now() - startedAt })
-          .where(eq(internalAgentRuns.id, runId));
+          .where(and(eq(internalAgentRuns.id, runId), eq(internalAgentRuns.status, "running")));
+        if (continuationIdempotencyKey) {
+          await finalizeInternalAgentWorkQuestionContinuation(db, {
+            companyId: payload.companyId,
+            runId,
+            status: "failed",
+            error: "task checkout conflict (concurrent)",
+          });
+        }
         return { status: "succeeded", runId }; // benign concurrency skip — mirror entry-claim race
       }
     }
@@ -296,6 +330,8 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
       }
     }
 
+    const adapter = getServerAdapter(agent.adapterType);
+
     // MX2: the bridge params are identical for both the claude {mcpServers}
     // envelope and the provider-neutral spec — build them once.
     const mcpParams = {
@@ -309,6 +345,7 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
       toolAllowlist: toolAllowlistFromConfig,
       agentId,
       runId,
+      humanQuestionCapabilities: adapter.humanQuestionCapabilities,
       discussionRunMode,
       threadFreshness,
       effectiveAutonomy: typeof payload.effectiveAutonomy === "number"
@@ -334,7 +371,6 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
     // uniform across adapters.
     const bridgeSpec = buildMcpBridgeSpec(mcpParams);
 
-    const adapter = getServerAdapter(agent.adapterType);
     const baseConfig = { ...(agent.adapterConfig ?? {}) } as Record<string, unknown>;
     const prevArgs = Array.isArray(baseConfig.args) ? (baseConfig.args as string[]) : [];
 
@@ -528,6 +564,7 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
         context: { aoaInstruction: instruction, payload },
         executionTarget, runtimeCommandSpec,
         mcpBridge: bridgeSpec,
+        humanQuestionCapabilities: adapter.humanQuestionCapabilities,
         onLog: async () => {}, onMeta: async () => {},
         authToken: undefined, onSpawn: () => {},
       }));
@@ -568,7 +605,22 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
       const { issueService } = await import("../../issues.js");
       const task = await issueService(db).getById(payload.issueId);
       if (task && task.status === "in_progress" && (task as { executionRunId?: string | null }).executionRunId === runId) {
-        const released = await db.update(issues)
+        const parkedQuestion = await db.select({ id: workQuestions.id }).from(workQuestions).where(and(
+          eq(workQuestions.companyId, payload.companyId),
+          eq(workQuestions.issueId, payload.issueId),
+          eq(workQuestions.askingAgentId, agentId),
+          eq(workQuestions.originatingRunKind, "internal_agent"),
+          eq(workQuestions.originatingRunId, runId),
+          eq(workQuestions.status, "open"),
+          eq(workQuestions.blocking, true),
+        )).then((rows) => rows[0] ?? null);
+        if (parkedQuestion) {
+          log.info(
+            { issueId: payload.issueId, questionId: parkedQuestion.id },
+            "crew task run parked on an open human question",
+          );
+        } else {
+          const released = await db.update(issues)
           // Atomic status guard (Codex P2): a concurrent set_task_status between
           // the getById read and this write keeps executionRunId (only checkoutRunId
           // is cleared on leaving in_progress), so without status='in_progress' here
@@ -590,6 +642,7 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
             log.warn({ err: publishErr, issueId: payload.issueId }, "issue.status_changed publish failed on silent-stuck release (best-effort, ignored)");
           }
           throw new Error("crew task run completed without moving the task (no set_task_status call)");
+        }
         }
       }
     }
@@ -700,7 +753,8 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
     }
 
     if (runId) {
-      await db.update(internalAgentRuns)
+      const activeExecutionMs = Date.now() - startedAt;
+      const terminalRows = await db.update(internalAgentRuns)
         .set({
           status: runResult.status === "failed" ? "failed" : "completed",
           errorMessage: runResult.errorMessage ?? null,
@@ -712,13 +766,36 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
               : {}),
           } : null,
           costCents,
-          durationMs: Date.now() - startedAt,
+          durationMs: activeExecutionMs,
+          activeExecutionMs,
+          humanQuestionWaitMs: inheritedHumanQuestionWaitMs,
+          totalWallClockMs: activeExecutionMs + inheritedHumanQuestionWaitMs,
           completedAt: new Date(),
           // Audit #27: folded here (was a separate update pre-execute). This is
           // the natural home — one round-trip for the final run-row write.
           ...(promptSnapshot !== null ? { promptSnapshot } : {}),
         })
-        .where(eq(internalAgentRuns.id, runId));
+        .where(and(eq(internalAgentRuns.id, runId), eq(internalAgentRuns.status, "running")))
+        .returning({ status: internalAgentRuns.status, errorMessage: internalAgentRuns.errorMessage });
+      const persistedTerminal = terminalRows[0] ?? await db.select({
+        status: internalAgentRuns.status,
+        errorMessage: internalAgentRuns.errorMessage,
+      }).from(internalAgentRuns).where(and(
+        eq(internalAgentRuns.companyId, payload.companyId),
+        eq(internalAgentRuns.id, runId),
+      )).then((rows) => rows[0] ?? null);
+      if (
+        continuationIdempotencyKey
+        && persistedTerminal
+        && ["completed", "failed", "cancelled"].includes(persistedTerminal.status)
+      ) {
+        await finalizeInternalAgentWorkQuestionContinuation(db, {
+          companyId: payload.companyId,
+          runId,
+          status: persistedTerminal.status as "completed" | "failed" | "cancelled",
+          error: persistedTerminal.errorMessage,
+        });
+      }
     }
 
     // W3a: crew result loopback + run-summary comment on task outcome (SUCCESS
@@ -813,9 +890,35 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
     const errMessage = err instanceof Error ? err.message : String(err);
     if (runId) {
       try {
+        const activeExecutionMs = Date.now() - startedAt;
         await db.update(internalAgentRuns)
-          .set({ status: "failed", errorMessage: String((err as Error)?.message ?? err), durationMs: Date.now() - startedAt, completedAt: new Date() })
-          .where(eq(internalAgentRuns.id, runId));
+          .set({
+            status: "failed",
+            errorMessage: String((err as Error)?.message ?? err),
+            durationMs: activeExecutionMs,
+            activeExecutionMs,
+            humanQuestionWaitMs: inheritedHumanQuestionWaitMs,
+            totalWallClockMs: activeExecutionMs + inheritedHumanQuestionWaitMs,
+            completedAt: new Date(),
+          })
+          .where(and(eq(internalAgentRuns.id, runId), eq(internalAgentRuns.status, "running")));
+        if (typeof payload.continuationIdempotencyKey === "string") {
+          const persistedTerminal = await db.select({
+            status: internalAgentRuns.status,
+            errorMessage: internalAgentRuns.errorMessage,
+          }).from(internalAgentRuns).where(and(
+            eq(internalAgentRuns.companyId, payload.companyId),
+            eq(internalAgentRuns.id, runId),
+          )).then((rows) => rows[0] ?? null);
+          if (persistedTerminal && ["completed", "failed", "cancelled"].includes(persistedTerminal.status)) {
+            await finalizeInternalAgentWorkQuestionContinuation(db, {
+              companyId: payload.companyId,
+              runId,
+              status: persistedTerminal.status as "completed" | "failed" | "cancelled",
+              error: persistedTerminal.errorMessage ?? errMessage,
+            });
+          }
+        }
       } catch { /* swallow */ }
     }
 

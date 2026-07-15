@@ -2,6 +2,9 @@ import type {
   IssueMonitorClearReason,
   IssueMonitorStatus,
   IssuePriority,
+  AgentCompletionPolicy,
+  AgentCompletionPolicySource,
+  IssueReviewerSource,
   IssueSource,
   IssueStatus,
   IssueWorkMode,
@@ -111,6 +114,13 @@ export interface Issue {
    */
   sourceThreadTitle?: string | null;
   reviewerUserId: string | null;
+  reviewerSource: IssueReviewerSource | null;
+  acceptanceCriteria: string[];
+  agentCompletionPolicy: AgentCompletionPolicy;
+  agentCompletionPolicyOverride: AgentCompletionPolicy | null;
+  agentCompletionPolicySource: AgentCompletionPolicySource;
+  agentCompletionPolicySourceId: string | null;
+  agentCompletionPolicyResolvedAt: Date;
   dueDate: Date | null;
   startedAt: Date | null;
   completedAt: Date | null;

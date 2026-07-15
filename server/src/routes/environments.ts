@@ -5,12 +5,20 @@ import {
   probeEnvironmentSchema,
   updateEnvironmentSchema,
 } from "@armyofagents/shared";
-import { probeEnvironmentConfig } from "../services/environment-probe.js";
+import {
+  getLocalProbeTargetPath,
+  probeEnvironmentConfig,
+} from "../services/environment-probe.js";
 import { environmentService, type EnvironmentService } from "../services/environments.js";
 import { logActivity } from "../services/index.js";
 import { secretService } from "../services/secrets.js";
 import { runtimeProviderKeyService } from "../services/runtime-provider-keys.js";
-import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import {
+  assertBoard,
+  assertCanManageInstanceSettings,
+  assertCompanyAccess,
+  getActorInfo,
+} from "./authz.js";
 
 interface RoutesOptions {
   // Test seam: callers can inject a pre-built service. Production uses `db`.
@@ -105,6 +113,12 @@ export function environmentRoutes(opts: RoutesOptions) {
         if (!parsed.success) {
           res.status(400).json({ error: parsed.error.flatten() });
           return;
+        }
+        if (
+          parsed.data.driver === "local" &&
+          getLocalProbeTargetPath(parsed.data.config) !== null
+        ) {
+          assertCanManageInstanceSettings(req);
         }
 
         const result = await probeEnvironmentConfig({

@@ -45,9 +45,79 @@ export interface CockpitTaskItem {
   identifier: string | null;
   title: string;
   status: string;
+  priority?: string;
   assigneeUserId: string | null;
   assigneeAgentId: string | null;
+  responsibleUserId?: string | null;
+  reviewerUserId?: string | null;
   dueDate: string | null;
+  responsibility?: CockpitTaskResponsibility;
+}
+
+export type CockpitTaskResponsibilityReason =
+  | "assigned_to_you"
+  | "you_are_responsible"
+  | "managed_human"
+  | "managed_agent"
+  | "your_review"
+  | "team_review";
+
+export interface CockpitTaskResponsibility {
+  reason: CockpitTaskResponsibilityReason;
+  entityType: "user" | "agent";
+  entityId: string;
+  label: string;
+}
+
+export interface CockpitWorkTaskItem extends CockpitTaskItem {
+  priority: string;
+  responsibleUserId: string | null;
+  reviewerUserId: string | null;
+  responsibility: CockpitTaskResponsibility;
+}
+
+export interface CockpitTaskGroup {
+  items: CockpitWorkTaskItem[];
+  total: number;
+}
+
+export interface CockpitActiveWork {
+  mine: CockpitTaskGroup;
+  managed: CockpitTaskGroup;
+}
+
+export type CockpitAwaitingReview = CockpitTaskGroup;
+
+export type CockpitSliceStatus = "ok" | "error";
+
+export interface CockpitSliceMeta {
+  status: CockpitSliceStatus;
+  errorCode?: string;
+}
+
+export interface CockpitMeta {
+  generatedAt: string;
+  partial: boolean;
+  slices: Record<string, CockpitSliceMeta>;
+}
+
+export type CockpitTaskBucket = "mine" | "managed" | "awaiting_review";
+
+export interface CockpitTaskBucketResponse {
+  items: CockpitWorkTaskItem[];
+  total: number;
+  nextCursor: string | null;
+}
+
+export interface CockpitCounts {
+  activeWorkMine: number;
+  activeWorkManaged: number;
+  awaitingReview: number;
+  running: number;
+  inbox: number;
+  approvals: number;
+  discussions: number;
+  generatedAt: string;
 }
 
 export interface CockpitRunItem {
@@ -64,21 +134,55 @@ export interface CockpitReminderItem {
   triggerAt: string;
 }
 
+export interface CockpitNoteItem {
+  id: string;
+  title: string | null;
+  body: string;
+  color: "yellow" | "blue" | "green" | "pink";
+  updatedAt: string;
+}
+
+export interface CockpitInboxItem {
+  id: string;
+  lane: "waiting_on_you" | "notifications" | "suggestions" | null;
+  priority: "low" | "normal" | "high" | "urgent";
+  title: string;
+  summary: string | null;
+  sourceType: string | null;
+  sourceId: string | null;
+  relatedEntityType: string | null;
+  relatedEntityId: string | null;
+  unread: boolean;
+  createdAt: string;
+}
+
 export interface CockpitDiscussionItem {
   id: string;
   title: string | null;
   pendingItemCount: number;
-  reason: "pending_items" | "extraction_failed";
+  reason: "pending_items" | "extraction_failed" | "recent_activity";
+  entryCount?: number;
+  lastEntryAt?: string | null;
 }
 
 export interface CockpitData {
+  /** V2 accountable-work contract. Optional during the rolling compatibility window. */
+  activeWork?: CockpitActiveWork;
+  awaitingReview?: CockpitAwaitingReview;
+  meta?: CockpitMeta;
   running: CockpitRunItem[];
+  /** @deprecated Compatibility alias for awaitingReview.items. */
   review: CockpitTaskItem[];
+  /** @deprecated Compatibility alias for activeWork.mine.items. */
   myTasks: CockpitTaskItem[];
   today: {
     reminders: CockpitReminderItem[];
     dueTasks: CockpitTaskItem[];
   };
+  /** Private user/company sticky notes for Commander Cockpit. */
+  stickyNotes: CockpitNoteItem[];
+  /** RBAC-scoped hot Inbox/Hub items for daily triage. */
+  inbox: CockpitInboxItem[];
   discussions: CockpitDiscussionItem[];
   /** Unified approvals queue, per-role scoped (founder: all sources; lead: dept memory + own runtime; member: own runtime). */
   approvals: CockpitApprovalItem[];

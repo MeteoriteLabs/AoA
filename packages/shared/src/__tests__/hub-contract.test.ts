@@ -11,12 +11,14 @@ import {
   HUB_SEMANTIC_TYPES,
   HUB_SEMANTIC_TO_LANE,
   HUB_AUTHORITY_BY_TYPE,
+  HUB_SOURCE_MIRRORED_TYPES,
   RUNTIME_DECISION_KINDS,
   RUNTIME_DECISION_STATUSES,
   RUNTIME_DECISION_PERMISSION_DECISIONS,
   RUNTIME_DECISION_TIMEOUT_POLICIES,
   laneForSemanticType,
   authorityForSemanticType,
+  isSourceMirroredType,
 } from "../hub.js";
 import {
   runtimeDecisionAnswerSchema,
@@ -63,6 +65,7 @@ describe("hub contract", () => {
     ]);
     expect(RUNTIME_DECISION_PERMISSION_DECISIONS).toEqual([
       "allow_once",
+      "allow_run",
       "allow_always",
       "deny",
     ]);
@@ -134,6 +137,8 @@ describe("hub contract", () => {
       path: null,
       networkTarget: null,
       riskClass: "medium",
+      allowRunEligible: false,
+      allowRunReason: "Run access is unavailable for shell actions.",
       options: null,
       timeoutPolicy: "deny",
       expiresAt: "2026-07-01T12:00:00.000Z",
@@ -159,6 +164,10 @@ describe("hub contract", () => {
   });
   it("approval_request requires founder authority", () => {
     expect(authorityForSemanticType("approval_request")).toBe("founder");
+  });
+  it("treats durable work questions as source-owned Inbox mirrors", () => {
+    expect(HUB_SOURCE_MIRRORED_TYPES).toContain("work_question");
+    expect(isSourceMirroredType("work_question")).toBe(true);
   });
   it("list query limit defaults to 50 and caps at 50", () => {
     expect(listHubItemsQuery.parse({}).limit).toBe(50);

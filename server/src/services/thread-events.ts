@@ -319,6 +319,13 @@ export function createThreadEventListener(
       // controller/participation path; the peer-wake-only MAX_HOP_COUNT below
       // governs the legacy dispatchMention path exclusively.
       if (event.hasCrewMention) {
+        // Cancel a timer armed by an earlier human entry. Direct mentions use
+        // participation, so leaving it alive would launch a second Adjutant run.
+        const existing = timers.get(event.discussionId);
+        if (existing) {
+          clearTimeout(existing);
+          timers.delete(event.discussionId);
+        }
         log.debug(
           { threadId: event.discussionId, entryId: event.id },
           "skip arming adjutant debounce — entry @mentions a crew agent (answered directly via participation)",

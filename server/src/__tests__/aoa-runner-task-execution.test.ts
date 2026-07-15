@@ -83,6 +83,7 @@ vi.mock("@armyofagents/db", () => {
     internalAgentRuns: makeTable("internal_agent_runs"),
     discussionEntries: makeTable("discussion_entries"),
     issues: makeTable("issues"),
+    workQuestions: makeTable("work_questions"),
     memoryItems: makeTable("memory_items"),
     discussions: makeTable("discussions"),
     discussionExtractedItems: makeTable("discussion_extracted_items"),
@@ -152,7 +153,7 @@ import { runAoaAgent } from "../services/internal-agent/aoa-agents/runner.js";
 // db.select() once — to load the agent row. All issue access (checkout/getById)
 // goes through the MOCKED issueService, not db.* — so the db mock here only has
 // to model the agent load, the run insert, and the run/issue update writes.
-function makeDb() {
+function makeDb(options: { parkedQuestion?: boolean } = {}) {
   const agentRow = {
     id: "a-1",
     companyId: "co-1",
@@ -167,10 +168,18 @@ function makeDb() {
     _sets: sets,
     select: () => {
       const c: any = {};
-      c.from = () => c;
+      let source = "";
+      c.from = (table: { _?: { name?: string } }) => {
+        source = table?._?.name ?? "";
+        return c;
+      };
       c.where = () => c;
       c.then = (resolve: (v: unknown[]) => unknown) =>
-        Promise.resolve([agentRow]).then(resolve);
+        Promise.resolve(
+          source === "work_questions"
+            ? (options.parkedQuestion ? [{ id: "question-1" }] : [])
+            : [agentRow],
+        ).then(resolve);
       return c;
     },
     insert: () => ({
@@ -317,6 +326,22 @@ describe("Spec B Task 5: runner issueId branch", () => {
     expect(result.status).not.toBe("failed");
     const release = db._sets.find((s: any) => s.set?.status === "todo");
     expect(release).toBeUndefined();
+  });
+
+  it("keeps an in-progress task parked when this Crew run owns an open blocking question", async () => {
+    getByIdMock.mockResolvedValueOnce({
+      id: "TASK-1",
+      status: "in_progress",
+      executionRunId: "run-1",
+    });
+    const db = makeDb({ parkedQuestion: true });
+
+    const result = await runAoaAgent(db as any, "a-1", TASK_PAYLOAD);
+
+    expect(result.status).toBe("succeeded");
+    const release = db._sets.find((s: any) => s.set?.status === "todo");
+    expect(release).toBeUndefined();
+    expect(publishIssueStatusChangedMock).not.toHaveBeenCalledWith("co-1", "TASK-1", "todo");
   });
 
   it("(d'') no release when a DIFFERENT run owns the task (executionRunId !== runId)", async () => {

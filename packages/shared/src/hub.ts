@@ -39,6 +39,7 @@ export type RuntimeDecisionStatus = (typeof RUNTIME_DECISION_STATUSES)[number];
 
 export const RUNTIME_DECISION_PERMISSION_DECISIONS = [
   "allow_once",
+  "allow_run",
   "allow_always",
   "deny",
 ] as const;
@@ -71,6 +72,7 @@ export const HUB_SEMANTIC_TYPES = [
   // @mentions, and the scope-decision surface is the crew_dispatch
   // approval_request (W1c). Do NOT re-add without a real producer.
   "agent_runtime_decision", // reserved (W5)
+  "work_question",
   // notifications
   "run_failed",
   "budget_alert",         // budget.incident_created
@@ -94,6 +96,7 @@ export const HUB_SEMANTIC_TO_LANE: Record<HubSemanticType, HubLane> = {
   discussion_pending: "waiting_on_you",
   join_request: "waiting_on_you",
   agent_runtime_decision: "waiting_on_you",
+  work_question: "waiting_on_you",
   run_failed: "notifications",
   budget_alert: "notifications",
   agent_error: "notifications",
@@ -122,6 +125,7 @@ export const HUB_AUTHORITY_BY_TYPE: Record<HubSemanticType, HubAuthority> = {
   approval_request: "founder",
   join_request: "founder",
   agent_runtime_decision: "founder", // reserved; per-prompt tightening in W5
+  work_question: "owner",
   discussion_pending: "owner",
   run_failed: "owner", budget_alert: "owner", agent_error: "owner", mention: "owner",
   marketplace_op: "owner", run_complete: "owner", reminder: "owner",
@@ -142,6 +146,7 @@ export const HUB_AUTOPILOT_FOUNDER_GATED_TYPES = [
   "approval_request",
   "join_request",
   "agent_runtime_decision",
+  "work_question",
 ] as const satisfies readonly HubSemanticType[];
 
 export function isFounderGatedAutopilotType(type: HubSemanticType): boolean {
@@ -165,6 +170,7 @@ export const HUB_SOURCE_MIRRORED_TYPES = [
   "approval_request",
   "join_request",
   "agent_runtime_decision",
+  "work_question",
 ] as const satisfies readonly HubSemanticType[];
 
 export function isSourceMirroredType(type: HubSemanticType): boolean {

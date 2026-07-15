@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { act, renderHook } from "@testing-library/react";
-import type { CommanderOutputRef } from "@armyofagents/shared";
+import type { CommanderInputRef, CommanderOutputRef } from "@armyofagents/shared";
 import { useCommanderViewer } from "./useCommanderViewer";
 
 const ref = (id: string): CommanderOutputRef => ({
@@ -8,6 +8,31 @@ const ref = (id: string): CommanderOutputRef => ({
   kind: "artifact",
   id,
   action: "created",
+});
+
+describe("useCommanderViewer input refs", () => {
+  it("opens input refs as viewer tabs", () => {
+    const { result } = renderHook(() => useCommanderViewer("conv-1"));
+    const discussionRef: CommanderInputRef = {
+      v: 1,
+      kind: "discussion",
+      id: "disc-1",
+      label: "Sprint planning",
+    };
+
+    act(() => {
+      result.current.openInputRef(discussionRef);
+    });
+
+    expect(result.current.state.tabs).toHaveLength(1);
+    expect(result.current.state.tabs[0]).toMatchObject({
+      id: "discussion:disc-1",
+      kind: "discussion",
+      refId: "disc-1",
+      title: "Sprint planning",
+    });
+    expect(result.current.state.expanded).toBe(true);
+  });
 });
 
 describe("useCommanderViewer — stale-closure safety", () => {

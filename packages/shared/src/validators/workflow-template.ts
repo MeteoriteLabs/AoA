@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { AGENT_COMPLETION_POLICIES } from "../constants.js";
 
 export const workflowStepSchema = z.object({
   order: z.number().int().nonnegative(),
@@ -26,6 +27,7 @@ export const createWorkflowTemplateSchema = z.object({
   workspaceMode: z.enum(["department_default", "shared", "isolated"]).optional(),
   steps: z.array(workflowStepSchema).min(1),
   dependencies: z.array(workflowDependencySchema).optional(),
+  agentCompletionPolicyOverride: z.enum(AGENT_COMPLETION_POLICIES).nullable().optional(),
 });
 
 export type CreateWorkflowTemplate = z.infer<typeof createWorkflowTemplateSchema>;
@@ -36,6 +38,7 @@ export const updateWorkflowTemplateSchema = z.object({
   workspaceMode: z.enum(["department_default", "shared", "isolated"]).optional(),
   steps: z.array(workflowStepSchema).min(1).optional(),
   dependencies: z.array(workflowDependencySchema).optional(),
+  agentCompletionPolicyOverride: z.enum(AGENT_COMPLETION_POLICIES).nullable().optional(),
 });
 
 export type UpdateWorkflowTemplate = z.infer<typeof updateWorkflowTemplateSchema>;

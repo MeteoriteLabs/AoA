@@ -43,6 +43,10 @@ export interface HeartbeatRun {
   issueCommentRetryQueuedAt: Date | null;
   livenessState: RunLivenessState | null;
   livenessReason: string | null;
+  activeExecutionMs: number;
+  humanQuestionWaitMs: number;
+  runtimePermissionWaitMs: number;
+  totalWallClockMs: number;
   continuationAttempt: number;
   lastUsefulActionAt: Date | null;
   nextAction: string | null;

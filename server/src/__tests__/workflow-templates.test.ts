@@ -19,6 +19,8 @@ vi.mock("@armyofagents/db", () => {
 
   return {
     issues: makeTable("issues"),
+    companies: makeTable("companies"),
+    projects: makeTable("projects"),
     taskDependencies: makeTable("task_dependencies"),
     workflowTemplates: makeTable("workflow_templates"),
   };
@@ -48,10 +50,11 @@ function createSequenceDb(config: {
   let deleteIdx = 0;
   const insertValues: unknown[] = [];
   const updateSets: unknown[] = [];
+  const operationOrder: string[] = [];
 
   function makeChain(getResult: () => MockRow[]) {
     const chain: Record<string, unknown> = {};
-    for (const method of ["from", "where", "groupBy", "orderBy", "limit", "values", "set", "returning"]) {
+    for (const method of ["from", "where", "groupBy", "orderBy", "limit", "for", "values", "set", "returning"]) {
       chain[method] = (...args: unknown[]) => {
         if (method === "values") insertValues.push(args[0]);
         if (method === "set") updateSets.push(args[0]);
@@ -63,13 +66,21 @@ function createSequenceDb(config: {
   }
 
   const db = {
-    select: (..._args: unknown[]) => makeChain(() => config.selects?.[selectIdx++] ?? []),
+    select: (..._args: unknown[]) => {
+      operationOrder.push("select");
+      return makeChain(() => config.selects?.[selectIdx++] ?? []);
+    },
     insert: (..._args: unknown[]) => makeChain(() => config.inserts?.[insertIdx++] ?? []),
     update: (..._args: unknown[]) => makeChain(() => config.updates?.[updateIdx++] ?? []),
     delete: (..._args: unknown[]) => makeChain(() => config.deletes?.[deleteIdx++] ?? []),
+    execute: async (..._args: unknown[]) => {
+      operationOrder.push("execute");
+      return [];
+    },
     transaction: async (callback: (tx: any) => unknown) => callback(db),
     __insertValues: insertValues,
     __updateSets: updateSets,
+    __operationOrder: operationOrder,
   };
 
   return db;
@@ -97,6 +108,7 @@ const sampleTemplate = {
   id: TEMPLATE_ID,
   companyId: COMPANY_ID,
   name: "Feature Pipeline",
+  workspaceMode: "department_default",
   description: "Spec → Design → Code",
   steps: sampleSteps,
   dependencies: sampleDeps,
@@ -105,7 +117,11 @@ const sampleTemplate = {
   createdBy: "user-1",
   createdAt: new Date(),
   updatedAt: new Date(),
+  agentCompletionPolicyOverride: null,
 };
+
+const companyPolicy = { policyDefault: "review_required", reviewGuardrail: false };
+const projectPolicy = { id: PROJECT_ID, type: "project", policyDefault: null };
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
@@ -140,8 +156,13 @@ describe("workflowTemplateService", () => {
   });
 
   describe("create", () => {
-    it("creates template with steps and dependencies", async () => {
-      const created = { ...sampleTemplate, id: "new-id" };
+    it("persists workspace and completion policy overrides", async () => {
+      const created = {
+        ...sampleTemplate,
+        id: "new-id",
+        workspaceMode: "shared",
+        agentCompletionPolicyOverride: "agent_can_complete",
+      };
       const db = createSequenceDb({
         inserts: [[created]],
       });
@@ -149,22 +170,41 @@ describe("workflowTemplateService", () => {
       const result = await svc.create(COMPANY_ID, {
         name: "Feature Pipeline",
         description: "Spec → Design → Code",
+        workspaceMode: "shared",
         steps: sampleSteps,
         dependencies: sampleDeps,
+        agentCompletionPolicyOverride: "agent_can_complete",
       }, "user-1");
       expect(result).toEqual(created);
+      expect(db.__insertValues[0]).toMatchObject({
+        workspaceMode: "shared",
+        agentCompletionPolicyOverride: "agent_can_complete",
+      });
     });
   });
 
   describe("update", () => {
-    it("updates template fields", async () => {
-      const updated = { ...sampleTemplate, name: "Updated Pipeline" };
+    it("updates template fields and supports clearing the completion override", async () => {
+      const updated = {
+        ...sampleTemplate,
+        name: "Updated Pipeline",
+        workspaceMode: "isolated",
+        agentCompletionPolicyOverride: null,
+      };
       const db = createSequenceDb({
         updates: [[updated]],
       });
       const svc = workflowTemplateService(db as any);
-      const result = await svc.update(COMPANY_ID, TEMPLATE_ID, { name: "Updated Pipeline" });
+      const result = await svc.update(COMPANY_ID, TEMPLATE_ID, {
+        name: "Updated Pipeline",
+        workspaceMode: "isolated",
+        agentCompletionPolicyOverride: null,
+      });
       expect(result).toEqual(updated);
+      expect(db.__updateSets[0]).toMatchObject({
+        workspaceMode: "isolated",
+        agentCompletionPolicyOverride: null,
+      });
     });
 
     it("returns null when template not found", async () => {
@@ -214,7 +254,7 @@ describe("workflowTemplateService", () => {
 
       const db = createSequenceDb({
         // 1. select template
-        selects: [[sampleTemplate]],
+        selects: [[sampleTemplate], [companyPolicy], [projectPolicy]],
         // inserts: task1, task2, task3, dep1, dep2
         inserts: [
           [task1], [task2], [task3],
@@ -238,7 +278,7 @@ describe("workflowTemplateService", () => {
       const task3 = { id: "task-3", title: "Implement" };
 
       const db = createSequenceDb({
-        selects: [[sampleTemplate]],
+        selects: [[sampleTemplate], [companyPolicy], [projectPolicy]],
         inserts: [[task1], [task2], [task3], [{ id: "dep-1" }], [{ id: "dep-2" }]],
         updates: [[{ ...sampleTemplate, instantiationCount: 1 }]],
       });
@@ -253,13 +293,38 @@ describe("workflowTemplateService", () => {
       expect(depInserts).toHaveLength(2);
     });
 
+    it("snapshots a persisted template completion override onto every task", async () => {
+      const task = { id: "task-1", title: "Write spec" };
+      const template = {
+        ...sampleTemplate,
+        steps: [sampleSteps[0]],
+        dependencies: [],
+        agentCompletionPolicyOverride: "agent_can_complete",
+      };
+      const db = createSequenceDb({
+        selects: [[template], [companyPolicy], [projectPolicy]],
+        inserts: [[task]],
+        updates: [[{ ...template, instantiationCount: 1 }]],
+      });
+
+      const svc = workflowTemplateService(db as any);
+      await svc.instantiate(COMPANY_ID, TEMPLATE_ID, GOAL_ID, PROJECT_ID);
+
+      expect(db.__insertValues[0]).toMatchObject({
+        agentCompletionPolicy: "agent_can_complete",
+        agentCompletionPolicySource: "workflow_template",
+        agentCompletionPolicySourceId: TEMPLATE_ID,
+      });
+      expect(db.__operationOrder.slice(0, 3)).toEqual(["execute", "execute", "select"]);
+    });
+
     it("increments instantiationCount via update", async () => {
       const task1 = { id: "task-1", title: "Write spec" };
       const task2 = { id: "task-2", title: "Design" };
       const task3 = { id: "task-3", title: "Implement" };
 
       const db = createSequenceDb({
-        selects: [[sampleTemplate]],
+        selects: [[sampleTemplate], [companyPolicy], [projectPolicy]],
         inserts: [[task1], [task2], [task3], [{ id: "dep-1" }], [{ id: "dep-2" }]],
         updates: [[{ ...sampleTemplate, instantiationCount: 1 }]],
       });

@@ -23,6 +23,7 @@ const baseIssue = {
   goalId: null,
   parentId: null,
   executionRunId: null,
+  updatedAt: new Date("2026-07-14T00:00:00.000Z"),
   labels: [],
   labelIds: [],
 };
@@ -93,13 +94,16 @@ function createApp(actor: Record<string, unknown> = {
   source: "session",
   companyIds: [companyId],
 }) {
+  const db = {
+    transaction: vi.fn(async (callback: (tx: unknown) => Promise<unknown>) => callback({})),
+  };
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
     (req as any).actor = actor;
     next();
   });
-  app.use("/api", issueRoutes({} as any, {} as any));
+  app.use("/api", issueRoutes(db as any, {} as any));
   app.use(errorHandler);
   return app;
 }
@@ -139,6 +143,67 @@ describe("issue responsible user routes", () => {
     mockEnqueueIssueAssigneeWakeup.mockResolvedValue(undefined);
   });
 
+  it("requires feedback when review changes are requested", async () => {
+    mockIssueService.getById.mockResolvedValue({ ...baseIssue, status: "in_review" });
+
+    const res = await request(createApp())
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "in_progress", comment: "   " });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toBe("Requesting changes requires feedback");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("persists review feedback and wakes the assignee exactly once", async () => {
+    mockIssueService.getById.mockResolvedValue({ ...baseIssue, status: "in_review" });
+    mockIssueService.update.mockResolvedValue({ ...baseIssue, status: "in_progress" });
+    mockIssueService.addComment.mockResolvedValue({
+      id: "review-comment",
+      issueId,
+      companyId,
+      body: "Add a measurable success criterion.",
+      authorAgentId: null,
+      authorUserId: "board-user",
+    });
+    mockIssueService.findMentionedAgents.mockResolvedValue([agentId]);
+
+    const res = await request(createApp())
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        status: "in_progress",
+        comment: "  Add a measurable success criterion.  ",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      issueId,
+      "Add a measurable success criterion.",
+      expect.objectContaining({ userId: "board-user" }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      agentId,
+      expect.objectContaining({
+        source: "automation",
+        reason: "issue_review_changes_requested",
+        payload: {
+          issueId,
+          commentId: "review-comment",
+          mutation: "request_changes",
+        },
+        contextSnapshot: expect.objectContaining({
+          taskId: issueId,
+          wakeCommentId: "review-comment",
+          source: "task.review",
+        }),
+      }),
+    );
+  });
+
   it("lets board users with tasks:assign create and update responsibleUserId", async () => {
     const app = createApp();
 
@@ -161,6 +226,7 @@ describe("issue responsible user routes", () => {
     expect(mockIssueService.update).toHaveBeenCalledWith(
       issueId,
       expect.objectContaining({ responsibleUserId: "user-next" }),
+      { actorType: "board", expectedUpdatedAt: baseIssue.updatedAt },
     );
   });
 
@@ -326,5 +392,55 @@ describe("issue responsible user routes", () => {
     expect(res.status).toBe(403);
     expect(res.body.error).toBe("responsibleUserId=me requires board authentication");
     expect(mockIssueService.list).not.toHaveBeenCalled();
+  });
+
+  it("prevents agents from defining acceptance criteria on their own tasks", async () => {
+    const res = await request(createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+    }))
+      .patch(`/api/issues/${issueId}`)
+      .send({ acceptanceCriteria: ["Agent says the work is complete"] });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Agents cannot define their own task acceptance criteria");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("prevents agents from elevating task completion policy", async () => {
+    const res = await request(createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+    }))
+      .patch(`/api/issues/${issueId}`)
+      .send({ agentCompletionPolicyOverride: "agent_can_complete" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Only human operators may override task completion policy");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects an agent-supplied completion override even when it matches the stored value", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      ...baseIssue,
+      agentCompletionPolicyOverride: null,
+    });
+
+    const res = await request(createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+    }))
+      .patch(`/api/issues/${issueId}`)
+      .send({ agentCompletionPolicyOverride: null });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Only human operators may override task completion policy");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 });

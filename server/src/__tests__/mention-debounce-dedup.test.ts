@@ -399,6 +399,20 @@ describe("Task 1.3 — onEntryCreated skips the proactive debounce on a crew @me
     expect(db.select).not.toHaveBeenCalled();
   });
 
+  it("cancels an already-armed proactive debounce when a direct crew mention arrives", async () => {
+    const { db, insertCalls } = makeFireDb();
+    listener = createThreadEventListener(db, { debounceMs: 1_000 });
+
+    await listener.onEntryCreated(humanEntry({ id: "ambient", hasCrewMention: false }));
+    await listener.onEntryCreated(humanEntry({ id: "mention", hasCrewMention: true }));
+    await vi.advanceTimersByTimeAsync(2_000);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(insertCalls).toHaveLength(0);
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
   // (e) part 2: hasCrewMention=false → debounce armed → Adjutant wakeup fires.
   it("(e) arms the debounce (proactive Adjutant wakeup fires) when hasCrewMention=false", async () => {
     const { db, insertCalls } = makeFireDb();

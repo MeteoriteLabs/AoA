@@ -484,6 +484,14 @@ export {
 } from "./user-entity-pins.js";
 
 export {
+  createUserNoteSchema,
+  updateUserNoteSchema,
+  userNoteColorSchema,
+  type CreateUserNote,
+  type UpdateUserNote,
+} from "./user-notes.js";
+
+export {
   listHubItemsQuery,
   hubActionSchema,
   hubUserStateSchema,

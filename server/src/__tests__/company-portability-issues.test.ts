@@ -11,6 +11,7 @@ type ProjectRow = {
   targetDate: string | null;
   leadAgentId: string | null;
   functionType: string | null;
+  agentCompletionPolicyDefault: "review_required" | "agent_can_complete" | null;
   executionWorkspacePolicy: Record<string, unknown> | null;
   archivedAt: Date | null;
 };
@@ -50,6 +51,11 @@ type IssueRow = {
   billingCode: string | null;
   assigneeAdapterOverrides: Record<string, unknown> | null;
   executionWorkspaceSettings: Record<string, unknown> | null;
+  acceptanceCriteria: string[];
+  agentCompletionPolicyOverride: "review_required" | "agent_can_complete" | null;
+  agentCompletionPolicy: "review_required" | "agent_can_complete";
+  agentCompletionPolicySource: "company" | "department" | "project" | "routine" | "workflow_template" | "task" | "legacy_backfill";
+  agentCompletionPolicyResolvedAt: Date;
   dueDate: Date | null;
   labels: IssueLabelRow[];
   labelIds: string[];
@@ -58,8 +64,20 @@ type IssueRow = {
 const SRC_CO_ID = "11111111-1111-4111-8111-111111111111";
 const TGT_CO_ID = "22222222-2222-4222-8222-222222222222";
 
-const companyStore: Record<string, { id: string; name: string; requireBoardApprovalForNewAgents?: boolean }> = {
-  [SRC_CO_ID]: { id: SRC_CO_ID, name: "Source Co", requireBoardApprovalForNewAgents: true },
+const companyStore: Record<string, {
+  id: string;
+  name: string;
+  requireBoardApprovalForNewAgents?: boolean;
+  agentCompletionPolicyDefault?: "review_required" | "agent_can_complete";
+  agentCompletionReviewGuardrail?: boolean;
+}> = {
+  [SRC_CO_ID]: {
+    id: SRC_CO_ID,
+    name: "Source Co",
+    requireBoardApprovalForNewAgents: true,
+    agentCompletionPolicyDefault: "agent_can_complete",
+    agentCompletionReviewGuardrail: true,
+  },
   [TGT_CO_ID]: { id: TGT_CO_ID, name: "Target Co", requireBoardApprovalForNewAgents: true },
 };
 
@@ -71,11 +89,16 @@ let targetAgents: AgentRow[] = [];
 const issueCreateCalls: Array<{ companyId: string; data: any }> = [];
 const projectCreateCalls: Array<{ companyId: string; data: any }> = [];
 const agentCreateCalls: Array<{ companyId: string; data: any }> = [];
+const companyCreateCalls: any[] = [];
+let issueCreateError: Error | null = null;
 
 vi.mock("../services/companies.js", () => ({
   companyService: () => ({
     getById: vi.fn(async (id: string) => companyStore[id] ?? null),
-    create: vi.fn(async (input: { name: string }) => ({ id: "new-co", name: input.name })),
+    create: vi.fn(async (input: { name: string }) => {
+      companyCreateCalls.push(input);
+      return { id: "new-co", ...input };
+    }),
     update: vi.fn(async (id: string, patch: any) => ({ id, name: patch.name ?? companyStore[id]?.name ?? "Co" })),
   }),
 }));
@@ -168,6 +191,7 @@ vi.mock("../services/issues.js", () => ({
       return [];
     }),
     create: vi.fn(async (companyId: string, data: any) => {
+      if (issueCreateError) throw issueCreateError;
       issueCreateCalls.push({ companyId, data });
       return {
         id: `new-issue-${issueCreateCalls.length}`,
@@ -190,6 +214,8 @@ function resetState() {
   issueCreateCalls.length = 0;
   projectCreateCalls.length = 0;
   agentCreateCalls.length = 0;
+  companyCreateCalls.length = 0;
+  issueCreateError = null;
 }
 
 function makeIssue(overrides: Partial<IssueRow> & { id: string; title: string }): IssueRow {
@@ -205,6 +231,11 @@ function makeIssue(overrides: Partial<IssueRow> & { id: string; title: string })
     billingCode: null,
     assigneeAdapterOverrides: null,
     executionWorkspaceSettings: null,
+    acceptanceCriteria: [],
+    agentCompletionPolicyOverride: null,
+    agentCompletionPolicy: "review_required",
+    agentCompletionPolicySource: "company",
+    agentCompletionPolicyResolvedAt: new Date("2026-07-14T00:00:00.000Z"),
     dueDate: null,
     labels: [],
     labelIds: [],
@@ -243,6 +274,7 @@ function makeProject(overrides: Partial<ProjectRow> & { id: string; name: string
     targetDate: null,
     leadAgentId: null,
     functionType: "general",
+    agentCompletionPolicyDefault: null,
     executionWorkspacePolicy: null,
     archivedAt: null,
     ...overrides,
@@ -290,7 +322,12 @@ describe("company-portability issues", () => {
 
   it("exportBundle with include.issues=true serializes all issues with slugs", async () => {
     resetState();
-    sourceProjects = [makeProject({ id: "p1", name: "Engineering", type: "department" })];
+    sourceProjects = [makeProject({
+      id: "p1",
+      name: "Engineering",
+      type: "department",
+      agentCompletionPolicyDefault: "review_required",
+    })];
     sourceAgents = [makeAgent({ id: "a1", name: "Alice" })];
     sourceIssues = [
       makeIssue({
@@ -302,6 +339,10 @@ describe("company-portability issues", () => {
         priority: "high",
         projectId: "p1",
         assigneeAgentId: "a1",
+        agentCompletionPolicyOverride: "review_required",
+        agentCompletionPolicy: "review_required",
+        agentCompletionPolicySource: "department",
+        acceptanceCriteria: ["Login succeeds with valid credentials"],
       }),
       makeIssue({
         id: "i2",
@@ -313,6 +354,11 @@ describe("company-portability issues", () => {
       include: { projects: true, issues: true, agents: true },
     });
     expect(result.manifest.issues).toHaveLength(2);
+    expect(result.manifest.company).toMatchObject({
+      agentCompletionPolicyDefault: "agent_can_complete",
+      agentCompletionReviewGuardrail: true,
+    });
+    expect(result.manifest.projects?.[0]?.agentCompletionPolicyDefault).toBe("review_required");
     expect(result.manifest.issues!.every((issue) => issue.slug)).toBe(true);
     const fix = result.manifest.issues!.find((issue) => issue.title === "Fix login bug");
     expect(fix).toBeDefined();
@@ -321,6 +367,13 @@ describe("company-portability issues", () => {
     expect(fix!.projectSlug).toBe("engineering");
     expect(fix!.assigneeAgentSlug).toBe("alice");
     expect(fix!.identifier).toBe("SRC-1");
+    expect(fix).toMatchObject({
+      agentCompletionPolicyOverride: "review_required",
+      agentCompletionPolicy: "review_required",
+      agentCompletionPolicySource: "department",
+      agentCompletionPolicyResolvedAt: "2026-07-14T00:00:00.000Z",
+      acceptanceCriteria: ["Login succeeds with valid credentials"],
+    });
   });
 
   it("exportBundle omits issues by default (DEFAULT_INCLUDE.issues=false)", async () => {
@@ -382,6 +435,15 @@ describe("company-portability issues", () => {
     resetState();
     const manifest = baseManifest({
       includes: { company: true, agents: true, projects: true, issues: true },
+      company: {
+        path: "COMPANY.md",
+        name: "Source Co",
+        description: null,
+        brandColor: null,
+        requireBoardApprovalForNewAgents: true,
+        agentCompletionPolicyDefault: "agent_can_complete",
+        agentCompletionReviewGuardrail: true,
+      },
       agents: [
         {
           slug: "alice",
@@ -400,7 +462,12 @@ describe("company-portability issues", () => {
           metadata: null,
         },
       ],
-      projects: [{ slug: "engineering", name: "Engineering", type: "department" }],
+      projects: [{
+        slug: "engineering",
+        name: "Engineering",
+        type: "department",
+        agentCompletionPolicyDefault: "review_required",
+      }],
       issues: [
         {
           slug: "src-1",
@@ -409,6 +476,11 @@ describe("company-portability issues", () => {
           priority: "high",
           projectSlug: "engineering",
           assigneeAgentSlug: "alice",
+          agentCompletionPolicyOverride: null,
+          agentCompletionPolicy: "review_required",
+          agentCompletionPolicySource: "department",
+          agentCompletionPolicyResolvedAt: "2026-07-14T00:00:00.000Z",
+          acceptanceCriteria: ["All authentication tests pass"],
         },
       ],
     });
@@ -425,6 +497,10 @@ describe("company-portability issues", () => {
       "user-1",
     );
     expect(issueCreateCalls).toHaveLength(1);
+    expect(companyCreateCalls[0]).toMatchObject({
+      agentCompletionPolicyDefault: "agent_can_complete",
+      agentCompletionReviewGuardrail: true,
+    });
     const createCall = issueCreateCalls[0]!;
     expect(createCall.data.title).toBe("Fix login bug");
     expect(createCall.data.status).toBe("todo");
@@ -433,6 +509,196 @@ describe("company-portability issues", () => {
     expect(createCall.data.projectId).toBe(projectCreateCalls[0]!.data.name === "Engineering" ? "new-proj-1" : null);
     // resolved agent id should be the newly created agent
     expect(createCall.data.assigneeAgentId).toBe("new-agent-1");
+    expect(projectCreateCalls[0]!.data.agentCompletionPolicyDefault).toBe("review_required");
+    expect(createCall.data.completionPolicySnapshot).toEqual({
+      policy: "review_required",
+      override: null,
+      source: "department",
+      sourceId: "new-proj-1",
+      resolvedAt: new Date("2026-07-14T00:00:00.000Z"),
+    });
+    expect(createCall.data.acceptanceCriteria).toEqual(["All authentication tests pass"]);
+  });
+
+  it("imports legacy tasks with a conservative completion snapshot", async () => {
+    resetState();
+    const manifest = baseManifest({
+      includes: { company: true, agents: false, projects: false, issues: true },
+      issues: [{ slug: "legacy-1", title: "Legacy task" }],
+    });
+
+    await svc.importBundle(
+      buildInlineSource(manifest, {
+        company: true,
+        agents: false,
+        projects: false,
+        issues: true,
+      }),
+      "user-1",
+    );
+
+    expect(issueCreateCalls[0]!.data.completionPolicySnapshot).toEqual({
+      policy: "review_required",
+      override: null,
+      source: "legacy_backfill",
+      sourceId: null,
+      resolvedAt: null,
+    });
+  });
+
+  it("downgrades unmappable Routine provenance instead of retaining a dangling source", async () => {
+    resetState();
+    const manifest = baseManifest({
+      includes: { company: true, agents: false, projects: false, issues: true },
+      issues: [{
+        slug: "routine-task",
+        title: "Routine task",
+        agentCompletionPolicy: "agent_can_complete",
+        agentCompletionPolicySource: "routine",
+      }],
+    });
+
+    await svc.importBundle(
+      buildInlineSource(manifest, {
+        company: true,
+        agents: false,
+        projects: false,
+        issues: true,
+      }),
+      "user-1",
+    );
+
+    expect(issueCreateCalls[0]!.data.completionPolicySnapshot).toMatchObject({
+      policy: "agent_can_complete",
+      source: "legacy_backfill",
+      sourceId: null,
+    });
+  });
+
+  it("downgrades project provenance when the project cannot be remapped", async () => {
+    resetState();
+    const manifest = baseManifest({
+      includes: { company: true, agents: false, projects: false, issues: true },
+      issues: [{
+        slug: "unmapped-project-task",
+        title: "Unmapped project task",
+        projectSlug: "missing-project",
+        agentCompletionPolicy: "review_required",
+        agentCompletionPolicySource: "project",
+      }],
+    });
+
+    await svc.importBundle(
+      buildInlineSource(manifest, {
+        company: true,
+        agents: false,
+        projects: false,
+        issues: true,
+      }),
+      "user-1",
+    );
+
+    expect(issueCreateCalls[0]!.data.completionPolicySnapshot).toMatchObject({
+      source: "legacy_backfill",
+      sourceId: null,
+    });
+  });
+
+  it("defers policy defaults for projects created in an existing company", async () => {
+    resetState();
+    const governancePatches: Array<Record<string, unknown>> = [];
+    const localSvc = companyPortabilityService({
+      select: () => ({ from: () => ({ where: () => Promise.resolve([]) }) }),
+      transaction: async (callback: (tx: any) => Promise<unknown>) => callback({
+        update: () => ({
+          set: (patch: Record<string, unknown>) => {
+            governancePatches.push(patch);
+            return { where: () => Promise.resolve(undefined) };
+          },
+        }),
+      }),
+    } as any);
+    const manifest = baseManifest({
+      includes: { company: false, agents: false, projects: true, issues: false },
+      company: null,
+      projects: [{
+        slug: "new-department",
+        name: "New Department",
+        type: "department",
+        agentCompletionPolicyDefault: "agent_can_complete",
+      }],
+      issues: [],
+    });
+
+    await localSvc.importBundle({
+      source: { type: "inline", manifest, files: {} },
+      target: { mode: "existing_company", companyId: TGT_CO_ID },
+      include: {
+        company: false,
+        agents: false,
+        projects: true,
+        issues: false,
+        skills: false,
+        routines: false,
+        envInputs: false,
+        internalAgentConfig: false,
+        budgetPolicies: false,
+        costEvents: false,
+        financeEvents: false,
+        quotaWindows: false,
+        workflowTemplates: false,
+      },
+    }, "user-1");
+
+    expect(projectCreateCalls[0]!.data).not.toHaveProperty("agentCompletionPolicyDefault");
+    expect(governancePatches).toContainEqual(expect.objectContaining({
+      agentCompletionPolicyDefault: "agent_can_complete",
+    }));
+  });
+
+  it("defers existing-company completion governance changes until the import succeeds", async () => {
+    resetState();
+    issueCreateError = new Error("later import failure");
+    const governanceTransaction = vi.fn(async (callback: (tx: any) => Promise<unknown>) => callback({}));
+    const localSvc = companyPortabilityService({
+      select: () => ({ from: () => ({ where: () => Promise.resolve([]) }) }),
+      transaction: governanceTransaction,
+    } as any);
+    const manifest = baseManifest({
+      includes: { company: true, agents: false, projects: false, issues: true },
+      company: {
+        path: "COMPANY.md",
+        name: "Source Co",
+        description: null,
+        brandColor: null,
+        requireBoardApprovalForNewAgents: true,
+        agentCompletionPolicyDefault: "agent_can_complete",
+        agentCompletionReviewGuardrail: true,
+      },
+      issues: [{ slug: "fails-later", title: "Fails later" }],
+    });
+
+    await expect(localSvc.importBundle({
+      source: { type: "inline", manifest, files: { "COMPANY.md": "" } },
+      target: { mode: "existing_company", companyId: TGT_CO_ID },
+      include: {
+        company: true,
+        agents: false,
+        projects: false,
+        issues: true,
+        skills: false,
+        routines: false,
+        envInputs: false,
+        internalAgentConfig: false,
+        budgetPolicies: false,
+        costEvents: false,
+        financeEvents: false,
+        quotaWindows: false,
+        workflowTemplates: false,
+      },
+    }, "user-1")).rejects.toThrow("later import failure");
+
+    expect(governanceTransaction).not.toHaveBeenCalled();
   });
 
   it("importBundle warns when assigneeAgentSlug is not found in bundle's agent list", async () => {

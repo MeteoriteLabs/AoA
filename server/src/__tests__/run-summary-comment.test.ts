@@ -44,7 +44,19 @@ describe("postRunSummaryComment", () => {
     expect(result).toEqual({ posted: true });
     expect(insertMock).toHaveBeenCalledTimes(1);
     const values = (insertMock.mock.results[0].value.values as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    expect(values).toMatchObject({ companyId: "co-1", issueId: "task-1", authorAgentId: null, authorUserId: null });
+    expect(values).toMatchObject({
+      companyId: "co-1",
+      issueId: "task-1",
+      authorAgentId: null,
+      authorUserId: null,
+      authorType: "system",
+      presentation: {
+        kind: "system_notice",
+        tone: "success",
+        title: "Run summary",
+        detailsDefaultOpen: false,
+      },
+    });
     expect(typeof values.body).toBe("string");
     expect(values.body).toContain("Engineer");
     expect(updateMock).toHaveBeenCalledTimes(1); // issues.updatedAt touch
@@ -71,6 +83,7 @@ describe("postRunSummaryComment", () => {
     expect(result).toEqual({ posted: true });
     const values = (insertMock.mock.results[0].value.values as ReturnType<typeof vi.fn>).mock.calls[0][0];
     expect(values.body).toContain("boom");
+    expect(values.presentation).toMatchObject({ kind: "system_notice", tone: "danger" });
   });
 
   it("never throws — a DB insert error resolves posted:false", async () => {

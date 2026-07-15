@@ -42,9 +42,10 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Dialog, DialogBody, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogBody, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Activity as ActivityIcon,
   ArrowLeft,
@@ -383,6 +384,9 @@ function ScopeHandoffSection({
 interface TaskDetailProps {
   issueId: string | null;
   active: boolean;
+  initialTab?: TaskDetailTab;
+  initialMode?: "task" | "workspace";
+  workspaceAnchorId?: string;
   onDismiss?: () => void;
   onOpenScopeHandoffItem?: (item: IssueContextBundle["items"][number]) => void;
   panelWide?: boolean;
@@ -394,6 +398,9 @@ interface TaskDetailProps {
 export function TaskDetail({
   issueId,
   active,
+  initialTab = getDefaultTaskDetailTab(),
+  initialMode = "task",
+  workspaceAnchorId,
   onDismiss,
   onOpenScopeHandoffItem,
   panelWide,
@@ -404,13 +411,15 @@ export function TaskDetail({
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [moreOpen, setMoreOpen] = useState(false);
-  const [detailTab, setDetailTab] = useState<TaskDetailTab>(getDefaultTaskDetailTab);
+  const [detailTab, setDetailTab] = useState<TaskDetailTab>(initialTab);
   const [secondaryOpen, setSecondaryOpen] = useState({
     approvals: false,
     cost: false,
   });
   const [depPickerOpen, setDepPickerOpen] = useState(false);
   const [depSearch, setDepSearch] = useState("");
+  const [requestChangesOpen, setRequestChangesOpen] = useState(false);
+  const [requestChangesFeedback, setRequestChangesFeedback] = useState("");
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [galleryInitialIndex, setGalleryInitialIndex] = useState(0);
@@ -422,7 +431,7 @@ export function TaskDetail({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Two-mode sidebar state
-  const [sidebarMode, setSidebarMode] = useState<"task" | "workspace">("task");
+  const [sidebarMode, setSidebarMode] = useState<"task" | "workspace">(initialMode);
 
   /* ── Data fetching ── */
 
@@ -430,12 +439,14 @@ export function TaskDetail({
     queryKey: queryKeys.issues.detail(issueId!),
     queryFn: () => issuesApi.get(issueId!),
     enabled: !!issueId && active,
+    refetchInterval: 5000,
   });
 
   const { data: comments } = useQuery({
     queryKey: queryKeys.issues.comments(issueId!),
     queryFn: () => issuesApi.listComments(issueId!),
     enabled: !!issueId && active,
+    refetchInterval: 5000,
   });
 
   const { data: feedbackVotes, refetch: refetchFeedbackVotes } = useQuery({
@@ -456,6 +467,7 @@ export function TaskDetail({
     queryKey: queryKeys.issues.activity(issueId!),
     queryFn: () => activityApi.forIssue(issueId!),
     enabled: !!issueId && active,
+    refetchInterval: 5000,
   });
 
   const { data: linkedRuns } = useQuery({
@@ -668,7 +680,12 @@ export function TaskDetail({
       return meta ? { ...comment, ...meta } : comment;
     });
   }, [activity, comments, linkedRuns]);
-  const latestComment = commentsWithRunMeta[0];
+  const latestComment =
+    commentsWithRunMeta.find(
+      (comment) =>
+        comment.presentation?.title !== "Run summary" &&
+        !comment.body.includes("**Run Summary**"),
+    ) ?? commentsWithRunMeta[0];
 
   const issueCostSummary = useMemo(() => {
     let input = 0;
@@ -767,6 +784,41 @@ export function TaskDetail({
         body: truncate(updated.title, 96),
         tone: "success",
         action: { label: `View ${issueRef}`, href: `/issues/${updated.identifier ?? updated.id}` },
+      });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Task update failed",
+        body: err instanceof Error ? err.message : "The task could not be updated.",
+        tone: "warn",
+      });
+    },
+  });
+
+  const requestChanges = useMutation({
+    mutationFn: (feedback: string) => issuesApi.update(issueId!, {
+      status: "in_progress",
+      comment: feedback.trim(),
+    }),
+    onSuccess: (updated) => {
+      invalidateIssue();
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(issueId!) });
+      setRequestChangesOpen(false);
+      setRequestChangesFeedback("");
+      const issueRef = updated.identifier ?? `Task ${updated.id.slice(0, 8)}`;
+      pushToast({
+        dedupeKey: `activity:issue.request_changes:${updated.id}`,
+        title: `Changes requested on ${issueRef}`,
+        body: "The task is back in progress and the assignee has been notified.",
+        tone: "success",
+        action: { label: `View ${issueRef}`, href: `/issues/${updated.identifier ?? updated.id}` },
+      });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Could not request changes",
+        body: err instanceof Error ? err.message : "The review feedback could not be sent.",
+        tone: "warn",
       });
     },
   });
@@ -964,15 +1016,15 @@ export function TaskDetail({
   // Reset tab and mode when issue changes
   useEffect(() => {
     if (issueId) {
-      setDetailTab(getDefaultTaskDetailTab());
+      setDetailTab(initialTab);
       setSecondaryOpen({ approvals: false, cost: false });
       setShowAddVersion(false);
       setShowAllVersions(false);
-      setSidebarMode("task");
+      setSidebarMode(initialMode);
       setGalleryOpen(false);
       setGalleryInitialIndex(0);
     }
-  }, [issueId]);
+  }, [initialMode, initialTab, issueId]);
 
   /* ── Handlers ── */
 
@@ -1034,6 +1086,7 @@ export function TaskDetail({
             <WorkspaceTimeline
               issueId={issueId!}
               compact
+              anchorId={workspaceAnchorId}
               className="flex-1 min-h-0"
             />
           </>
@@ -1179,7 +1232,15 @@ export function TaskDetail({
                 </Popover>
               </>
             )}
-            <Button variant="ghost" size="icon-xs" onClick={() => onDismiss?.()} className="shrink-0" data-testid="close-button">
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              onClick={() => onDismiss?.()}
+              className="shrink-0"
+              data-testid="close-button"
+              aria-label="Close task details"
+              title="Close task details"
+            >
               <X className="h-4 w-4" />
             </Button>
           </div>
@@ -1308,6 +1369,62 @@ export function TaskDetail({
                   </DialogContent>
                 </Dialog>
 
+                <Dialog
+                  open={requestChangesOpen}
+                  onOpenChange={(open) => {
+                    if (requestChanges.isPending) return;
+                    setRequestChangesOpen(open);
+                    if (!open) setRequestChangesFeedback("");
+                  }}
+                >
+                  <DialogContent className="sm:max-w-md">
+                    <DialogHeader>
+                      <DialogTitle>Request changes</DialogTitle>
+                      <DialogDescription>
+                        Tell the assignee what needs to change. The task will return to in progress and resume automatically.
+                      </DialogDescription>
+                    </DialogHeader>
+                    <DialogBody>
+                      <div className="space-y-2">
+                        <label htmlFor="request-changes-feedback" className="text-sm font-medium">
+                          Review feedback
+                        </label>
+                        <Textarea
+                          id="request-changes-feedback"
+                          value={requestChangesFeedback}
+                          onChange={(event) => setRequestChangesFeedback(event.target.value)}
+                          placeholder="Describe the required changes and any acceptance criteria..."
+                          rows={5}
+                          autoFocus
+                        />
+                      </div>
+                    </DialogBody>
+                    <DialogFooter>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        onClick={() => {
+                          setRequestChangesOpen(false);
+                          setRequestChangesFeedback("");
+                        }}
+                        disabled={requestChanges.isPending}
+                      >
+                        Cancel
+                      </Button>
+                      <Button
+                        type="button"
+                        onClick={() => requestChanges.mutate(requestChangesFeedback)}
+                        disabled={!requestChangesFeedback.trim() || requestChanges.isPending}
+                      >
+                        {requestChanges.isPending ? (
+                          <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+                        ) : null}
+                        Send feedback &amp; resume
+                      </Button>
+                    </DialogFooter>
+                  </DialogContent>
+                </Dialog>
+
                 {/* Review action bar, visible when task is in_review (Decisions #69, #70). */}
                 {issue?.status === "in_review" && (
                   <div className="rounded-lg border border-amber-200 dark:border-amber-800/50 bg-amber-50/50 dark:bg-amber-900/10 p-3 space-y-2">
@@ -1331,8 +1448,8 @@ export function TaskDetail({
                       <Button
                         variant="outline"
                         size="sm"
-                        onClick={() => updateIssue.mutate({ status: "in_progress" })}
-                        disabled={updateIssue.isPending}
+                        onClick={() => setRequestChangesOpen(true)}
+                        disabled={updateIssue.isPending || requestChanges.isPending}
                       >
                         Request Changes
                       </Button>

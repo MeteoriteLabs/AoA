@@ -258,12 +258,13 @@ export function buildCompletedRunHubEmit(run: FailedRunLike): EmitArgs {
 
 const TERMINAL_FAILED_STATUSES: ReadonlySet<string> = new Set(["failed", "timed_out"]);
 
-// Maps a terminal heartbeat run to its hub emit. Cancelled/queued/running -> null
-// (cancellation is founder-initiated; no notification). MUST route failures
+// Maps a terminal heartbeat run to its attention-worthy hub emit. Successful
+// process exits stay in run history; any resulting question, review, or task
+// transition has its own durable surface. Cancelled/queued/running also emit
+// nothing. MUST route failures
 // through buildFailedRunHubEmit so the event emit and the legacy sidebar-badges
 // scan produce byte-identical rows for the same run (change-aware emit no-ops).
 export function buildTerminalRunHubEmit(run: FailedRunLike): EmitArgs | null {
-  if (run.status === "succeeded") return buildCompletedRunHubEmit(run);
   if (TERMINAL_FAILED_STATUSES.has(run.status)) return buildFailedRunHubEmit(run);
   return null;
 }

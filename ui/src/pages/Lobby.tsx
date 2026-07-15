@@ -1,10 +1,12 @@
 import { type CSSProperties } from "react";
+import type { PendingInvitation } from "@armyofagents/shared";
 import { useNavigate } from "@/lib/router";
-import { useQuery } from "@tanstack/react-query";
+import { useQueries, useQuery } from "@tanstack/react-query";
 import { useCompany } from "@/context/CompanyContext";
-import { useDialog } from "@/context/DialogContext";
 import { profileApi } from "@/api/profile";
 import { companiesApi, type CompanyStats } from "@/api/companies";
+import { getOnboardingProgress } from "@/api/onboarding";
+import { readPendingOrganization } from "@/onboarding/pendingOrganization";
 import { queryKeys } from "@/lib/queryKeys";
 import { LobbyCompanyCard } from "@/components/LobbyCompanyCard";
 import { LobbyEmptyState } from "@/components/LobbyEmptyState";
@@ -25,9 +27,12 @@ function deriveFirstName(
   return "there";
 }
 
-export function Lobby() {
-  const { companies, loading: companiesLoading } = useCompany();
-  const { openOnboarding } = useDialog();
+export function Lobby({
+  pendingInvitations = [],
+}: {
+  pendingInvitations?: PendingInvitation[];
+}) {
+  const { companies, loading: companiesLoading, setSelectedCompanyId } = useCompany();
   const navigate = useNavigate();
 
   const { data: profile } = useQuery({
@@ -38,6 +43,19 @@ export function Lobby() {
 
   // Filter out archived companies
   const visibleCompanies = companies.filter((c) => c.status !== "archived");
+  const progressQueries = useQueries({
+    queries: visibleCompanies.map((company) => ({
+      queryKey: ["onboarding", "progress", company.id] as const,
+      queryFn: () => getOnboardingProgress(company.id),
+      staleTime: 30_000,
+    })),
+  });
+  const pendingOrganization = profile?.id ? readPendingOrganization(profile.id) : null;
+  const interruptedCompanies = visibleCompanies.filter((_, index) => {
+    const progress = progressQueries[index]?.data;
+    if (progress == null) return pendingOrganization?.id === visibleCompanies[index]?.id;
+    return !progress.completedStates.includes("SETUP_COMPLETE");
+  });
 
   // Lazy-load stats (T4)
   const { data: statsData, isLoading: statsLoading } = useQuery({
@@ -82,7 +100,7 @@ export function Lobby() {
 
   return isEmpty ? (
     <LobbyEmptyState
-      onCreate={() => openOnboarding()}
+      onCreate={() => navigate("/onboarding")}
       onImport={() => navigate("/import")}
     />
   ) : (
@@ -100,6 +118,61 @@ export function Lobby() {
           {subtitleParts.join(" · ")}.
         </p>
       </div>
+
+      {pendingInvitations.length > 0 && (
+        <div className="mb-6 flex flex-col gap-2">
+          {pendingInvitations.map((invitation) => (
+            <button
+              key={invitation.inviteId}
+              type="button"
+              className="flex w-full items-center justify-between rounded-lg border border-brand/30 bg-brand/5 px-4 py-3 text-left transition-colors hover:bg-brand/10"
+              aria-label={`Review invitation to ${invitation.companyName}`}
+              onClick={() =>
+                navigate(
+                  `/onboarding/join?company=${encodeURIComponent(invitation.companyId)}`,
+                )
+              }
+            >
+              <span>
+                <span className="block text-sm font-semibold text-foreground">
+                  Invitation to {invitation.companyName}
+                </span>
+                <span className="mt-0.5 block text-xs text-muted-foreground">
+                  You have been invited to join this organization.
+                </span>
+              </span>
+              <span className="text-xs font-semibold text-brand">Review</span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {interruptedCompanies.length > 0 && (
+        <div className="mb-6 flex flex-col gap-2">
+          {interruptedCompanies.map((company) => (
+            <button
+              key={company.id}
+              type="button"
+              className="flex w-full items-center justify-between rounded-lg border border-brand/30 bg-brand/5 px-4 py-3 text-left transition-colors hover:bg-brand/10"
+              aria-label={`Finish setting up ${company.name}`}
+              onClick={() => {
+                setSelectedCompanyId(company.id);
+                navigate("/onboarding");
+              }}
+            >
+              <span>
+                <span className="block text-sm font-semibold text-foreground">
+                  Finish setting up {company.name}
+                </span>
+                <span className="mt-0.5 block text-xs text-muted-foreground">
+                  Continue where you left off.
+                </span>
+              </span>
+              <span className="text-xs font-semibold text-brand">Continue</span>
+            </button>
+          ))}
+        </div>
+      )}
 
       <div className="mb-3 sm:mb-3.5 text-[0.66rem] sm:text-[0.7rem] font-semibold uppercase tracking-[0.08em] text-dim">
         Your organizations

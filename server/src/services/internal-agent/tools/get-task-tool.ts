@@ -50,7 +50,12 @@ export const getTaskTool: AgentTool = {
     // hit exactly like a miss (same error + no row data) so the tool never
     // confirms the existence of, or leaks any field from, another company's
     // task.
-    if (!row || (row as { companyId?: string }).companyId !== ctx.companyId) {
+    if (
+      !row ||
+      (row as { companyId?: string }).companyId !== ctx.companyId ||
+      (ctx.agentId !== undefined &&
+        (row as { assigneeAgentId?: string | null }).assigneeAgentId !== ctx.agentId)
+    ) {
       return {
         success: false,
         data: null,

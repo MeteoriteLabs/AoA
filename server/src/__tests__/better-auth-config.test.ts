@@ -42,13 +42,18 @@ const mockLogger = vi.hoisted(() => ({
   error: vi.fn(),
   debug: vi.fn(),
 }));
+const mockPromoteFirstUser = vi.hoisted(() => vi.fn(async () => true));
 
 vi.mock("../middleware/logger.js", () => ({
   logger: mockLogger,
   httpLogger: vi.fn(),
 }));
 
-const { createBetterAuthInstance, deriveAuthTrustedOrigins } = await import("../auth/better-auth.js");
+vi.mock("../services/first-user-bootstrap.js", () => ({
+  promoteFirstUserToInstanceAdmin: mockPromoteFirstUser,
+}));
+
+const { createBetterAuthInstance, deriveAuthTrustedOrigins, buildBetterAuthConfig, assertAuthProviderConfigured } = await import("../auth/better-auth.js");
 
 const SECRET_ENV = "BETTER_AUTH_SECRET";
 const FALLBACK_ENV = "AOA_AGENT_JWT_SECRET";
@@ -98,6 +103,9 @@ function makeConfig(overrides: Partial<Config> = {}): Config {
     heartbeatSchedulerEnabled: false,
     heartbeatSchedulerIntervalMs: 30000,
     companyDeletionEnabled: false,
+    googleClientId: null,
+    googleClientSecret: null,
+    devLocalIdentity: false,
     ...overrides,
   };
 }
@@ -111,6 +119,8 @@ describe("createBetterAuthInstance — fail-closed secret gate", () => {
     mockLogger.info.mockClear();
     mockLogger.warn.mockClear();
     mockLogger.error.mockClear();
+    mockPromoteFirstUser.mockReset();
+    mockPromoteFirstUser.mockResolvedValue(true);
   });
 
   afterEach(() => {
@@ -254,5 +264,188 @@ describe("deriveAuthTrustedOrigins port variants", () => {
     } as any;
     const origins = deriveAuthTrustedOrigins(config);
     expect(origins).toContain("https://app.example.com:3100");
+  });
+});
+
+describe("buildBetterAuthConfig — google provider, no email/password (Stage A / A2)", () => {
+  beforeEach(() => {
+    mockLogger.error.mockClear();
+    mockPromoteFirstUser.mockReset();
+    mockPromoteFirstUser.mockResolvedValue(true);
+  });
+
+  it("configures google when creds present", () => {
+    const c = buildBetterAuthConfig(
+      fakeDb,
+      makeConfig({ deploymentMode: "authenticated", googleClientId: "gid", googleClientSecret: "gsecret" }),
+      [],
+      "secret",
+    ) as Record<string, any>;
+    expect(c.socialProviders?.google?.clientId).toBe("gid");
+    expect(c.socialProviders?.google?.clientSecret).toBe("gsecret");
+  });
+
+  it("does NOT enable email/password", () => {
+    const c = buildBetterAuthConfig(fakeDb, makeConfig(), [], "secret") as Record<string, any>;
+    expect(c.emailAndPassword).toBeUndefined();
+  });
+
+  it("omits google when creds absent (builder is silent; startup guard enforces)", () => {
+    const c = buildBetterAuthConfig(
+      fakeDb,
+      makeConfig({ googleClientId: null, googleClientSecret: null }),
+      [],
+      "secret",
+    ) as Record<string, any>;
+    expect(c.socialProviders?.google).toBeUndefined();
+  });
+
+  it("wires the first-user admin bootstrap hook (RB3/A7)", () => {
+    const c = buildBetterAuthConfig(fakeDb, makeConfig(), [], "secret") as Record<string, any>;
+    expect(typeof c.databaseHooks?.user?.create?.after).toBe("function");
+  });
+
+  it("retries the idempotent admin bootstrap whenever a new session is created", async () => {
+    const c = buildBetterAuthConfig(fakeDb, makeConfig(), [], "secret") as Record<string, any>;
+    await c.databaseHooks.session.create.after({ userId: "u1" });
+    expect(mockPromoteFirstUser).toHaveBeenCalledWith(fakeDb, "u1", {
+      preserveSyntheticAdmin: false,
+    });
+  });
+
+  it("preserves the synthetic admin while the explicit headless claim gate is active", async () => {
+    const c = buildBetterAuthConfig(
+      fakeDb,
+      makeConfig({ headlessBootstrap: true }),
+      [],
+      "secret",
+    ) as Record<string, any>;
+    await c.databaseHooks.session.create.after({ userId: "u1" });
+    expect(mockPromoteFirstUser).toHaveBeenCalledWith(fakeDb, "u1", {
+      preserveSyntheticAdmin: true,
+    });
+  });
+
+  it("logs bootstrap failures at error level without blocking sign-in", async () => {
+    mockPromoteFirstUser.mockRejectedValueOnce(new Error("database unavailable"));
+    const c = buildBetterAuthConfig(fakeDb, makeConfig(), [], "secret") as Record<string, any>;
+    await expect(c.databaseHooks.session.create.after({ userId: "u1" })).resolves.toBeUndefined();
+    expect(mockLogger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: "u1", source: "session_create" }),
+      expect.stringMatching(/admin bootstrap failed/i),
+    );
+  });
+
+  it("configures a long-lived session for local-first use (A11)", () => {
+    const c = buildBetterAuthConfig(fakeDb, makeConfig(), [], "secret") as Record<string, any>;
+    expect(c.session?.expiresIn).toBeGreaterThanOrEqual(60 * 60 * 24 * 30);
+    expect(c.session?.updateAge).toBeGreaterThan(0);
+  });
+});
+
+describe("assertAuthProviderConfigured (revA R6 — fail startup on missing google)", () => {
+  it("throws in authenticated mode when google creds missing", () => {
+    expect(() =>
+      assertAuthProviderConfigured(
+        makeConfig({ deploymentMode: "authenticated", googleClientId: null, googleClientSecret: null }),
+      ),
+    ).toThrow(/google/i);
+  });
+
+  it("passes in authenticated mode when creds present", () => {
+    expect(() =>
+      assertAuthProviderConfigured(
+        makeConfig({ deploymentMode: "authenticated", googleClientId: "gid", googleClientSecret: "gsecret" }),
+      ),
+    ).not.toThrow();
+  });
+
+  it("throws in local_trusted without escape hatch when creds missing", () => {
+    expect(() =>
+      assertAuthProviderConfigured(
+        makeConfig({ deploymentMode: "local_trusted", googleClientId: null, googleClientSecret: null, devLocalIdentity: false }),
+      ),
+    ).toThrow();
+  });
+
+  it("passes in local_trusted with escape hatch even when creds missing", () => {
+    expect(() =>
+      assertAuthProviderConfigured(
+        makeConfig({ deploymentMode: "local_trusted", googleClientId: null, googleClientSecret: null, devLocalIdentity: true }),
+      ),
+    ).not.toThrow();
+  });
+});
+
+describe("buildBetterAuthConfig — security hardening (Stage D / D6)", () => {
+  it("enables the Google social provider (better-auth applies OAuth state + PKCE for social sign-in)", () => {
+    const c = buildBetterAuthConfig(
+      fakeDb,
+      makeConfig({ googleClientId: "gid", googleClientSecret: "gsecret" }),
+      ["https://app.example.com"],
+      "secret",
+    ) as Record<string, any>;
+    expect(c.socialProviders?.google?.clientId).toBe("gid");
+  });
+
+  it("hardens the session cookie for public authenticated deployments", () => {
+    const c = buildBetterAuthConfig(
+      fakeDb,
+      makeConfig({
+        deploymentMode: "authenticated",
+        deploymentExposure: "public",
+        googleClientId: "gid",
+        googleClientSecret: "gsecret",
+      }),
+      ["https://app.example.com"],
+      "secret",
+    ) as Record<string, any>;
+    const cookie = c.advanced?.defaultCookieAttributes;
+    expect(cookie?.httpOnly).toBe(true);
+    expect(cookie?.secure).toBe(true);
+    expect(String(cookie?.sameSite)).toMatch(/lax|strict/i);
+  });
+
+  it("does NOT force Secure for private authenticated deployments served over HTTP", () => {
+    const c = buildBetterAuthConfig(
+      fakeDb,
+      makeConfig({
+        deploymentMode: "authenticated",
+        deploymentExposure: "private",
+        authBaseUrlMode: "auto",
+        authPublicBaseUrl: undefined,
+      }),
+      [],
+      "secret",
+    ) as Record<string, any>;
+    expect(c.advanced?.defaultCookieAttributes?.secure).toBe(false);
+    expect(c.advanced?.useSecureCookies).toBe(false);
+  });
+
+  it("keeps Secure for a private authenticated deployment with an explicit HTTPS base URL", () => {
+    const c = buildBetterAuthConfig(
+      fakeDb,
+      makeConfig({
+        deploymentMode: "authenticated",
+        deploymentExposure: "private",
+        authBaseUrlMode: "explicit",
+        authPublicBaseUrl: "https://aoa.tailnet.example",
+      }),
+      ["https://aoa.tailnet.example"],
+      "secret",
+    ) as Record<string, any>;
+    expect(c.advanced?.defaultCookieAttributes?.secure).toBe(true);
+    expect(c.advanced?.useSecureCookies).toBe(true);
+  });
+
+  it("does NOT force Secure in local_trusted (loopback http dev would drop a Secure cookie)", () => {
+    const c = buildBetterAuthConfig(
+      fakeDb,
+      makeConfig({ deploymentMode: "local_trusted" }),
+      [],
+      "secret",
+    ) as Record<string, any>;
+    expect(c.advanced?.defaultCookieAttributes?.secure).toBe(false);
+    expect(c.advanced?.defaultCookieAttributes?.httpOnly).toBe(true);
   });
 });

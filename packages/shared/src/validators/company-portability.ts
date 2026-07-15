@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { AGENT_COMPLETION_POLICIES, AGENT_COMPLETION_POLICY_SOURCES } from "../constants.js";
 
 export const portabilityCostEventsDateRangeSchema = z.object({
   from: z.string().optional(),
@@ -41,6 +42,8 @@ export const portabilityCompanyManifestEntrySchema = z.object({
   description: z.string().nullable(),
   brandColor: z.string().nullable(),
   requireBoardApprovalForNewAgents: z.boolean(),
+  agentCompletionPolicyDefault: z.enum(AGENT_COMPLETION_POLICIES).optional(),
+  agentCompletionReviewGuardrail: z.boolean().optional(),
 });
 
 export const portabilityAgentManifestEntrySchema = z.object({
@@ -95,6 +98,7 @@ export const portabilityProjectManifestEntrySchema = z.object({
   targetDate: z.string().nullable().optional(),
   leadAgentSlug: z.string().min(1).nullable().optional(),
   functionType: z.string().nullable().optional(),
+  agentCompletionPolicyDefault: z.enum(AGENT_COMPLETION_POLICIES).nullable().optional(),
   executionWorkspacePolicy: z.record(z.unknown()).nullable().optional(),
   metadata: z.record(z.unknown()).nullable().optional(),
 });
@@ -115,6 +119,11 @@ export const portabilityIssueManifestEntrySchema = z.object({
   recurring: z.boolean().nullable().optional(),
   assigneeAdapterOverrides: z.record(z.unknown()).nullable().optional(),
   executionWorkspaceSettings: z.record(z.unknown()).nullable().optional(),
+  acceptanceCriteria: z.array(z.string()).optional(),
+  agentCompletionPolicyOverride: z.enum(AGENT_COMPLETION_POLICIES).nullable().optional(),
+  agentCompletionPolicy: z.enum(AGENT_COMPLETION_POLICIES).optional(),
+  agentCompletionPolicySource: z.enum(AGENT_COMPLETION_POLICY_SOURCES).optional(),
+  agentCompletionPolicyResolvedAt: z.string().datetime({ offset: true }).optional(),
   metadata: z.record(z.unknown()).nullable().optional(),
 });
 
@@ -157,6 +166,7 @@ export const portabilityRoutineManifestEntrySchema = z.object({
   priority: z.string().min(1),
   concurrencyPolicy: z.enum(["coalesce_if_active", "always_enqueue", "skip_if_active"]),
   catchUpPolicy: z.enum(["skip_missed", "enqueue_missed_with_cap"]),
+  agentCompletionPolicyOverride: z.enum(AGENT_COMPLETION_POLICIES).nullable().optional(),
   projectSlug: z.string().min(1),
   assigneeAgentSlug: z.string().min(1),
   variables: z.array(portabilityRoutineVariableManifestEntrySchema),
@@ -253,6 +263,7 @@ export const portabilityWorkflowTemplateManifestSchema = z
     name: z.string().min(1),
     description: z.string().nullable(),
     workspaceMode: z.string().min(1),
+    agentCompletionPolicyOverride: z.enum(AGENT_COMPLETION_POLICIES).nullable().optional(),
     steps: z.array(z.unknown()),
     dependencies: z.array(z.unknown()),
     metadata: z.record(z.unknown()).nullable().optional(),

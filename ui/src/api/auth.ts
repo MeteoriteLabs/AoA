@@ -60,12 +60,16 @@ export const authApi = {
     return nested;
   },
 
-  signInEmail: async (input: { email: string; password: string }) => {
-    await authPost("/sign-in/email", input);
-  },
-
-  signUpEmail: async (input: { name: string; email: string; password: string }) => {
-    await authPost("/sign-up/email", input);
+  // Google is the only sign-in provider. This starts the OAuth flow via
+  // better-auth and returns the provider URL to redirect the browser to.
+  signInSocial: async (
+    provider: "google" = "google",
+    callbackURL = "/",
+  ): Promise<{ url?: string }> => {
+    const data = (await authPost("/sign-in/social", { provider, callbackURL })) as
+      | { url?: string }
+      | null;
+    return data ?? {};
   },
 
   signOut: async () => {

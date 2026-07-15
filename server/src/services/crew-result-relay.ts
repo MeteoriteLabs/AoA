@@ -48,6 +48,7 @@ export async function relayCrewResult(
     .select({
       id: issues.id,
       title: issues.title,
+      status: issues.status,
       originKind: issues.originKind,
       sourceDiscussionId: issues.sourceDiscussionId,
       assigneeAgentId: issues.assigneeAgentId,
@@ -68,6 +69,13 @@ export async function relayCrewResult(
 
   // ── Guard 2: must have a source thread to post into ───────────────────────
   if (!issue.sourceDiscussionId) {
+    return { posted: false };
+  }
+
+  // A successful adapter process is not the same thing as a completed task.
+  // The legacy callers invoke this relay when a run exits successfully, so
+  // refuse to publish completion wording unless the task itself is done.
+  if (issue.status !== "done") {
     return { posted: false };
   }
 

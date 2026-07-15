@@ -47,7 +47,7 @@ async function seedTrustedHeartbeatRun(companyId: string) {
         companyId,
         agentId: agent.id,
         invocationSource: "e2e",
-        status: "succeeded",
+        status: "failed",
         startedAt: new Date(),
         finishedAt: new Date(),
       })
@@ -78,13 +78,13 @@ test.describe("Inbox Hub W3 Autopilot", () => {
     await page.getByRole("button", { name: /hub settings/i }).click();
     const modeSelect = page.getByRole("combobox", { name: /autopilot mode/i });
     const enabledCheckbox = page.getByRole("checkbox", {
-      name: /run complete autopilot enabled/i,
+      name: /agent error autopilot enabled/i,
     });
     const actionSelect = page.getByRole("combobox", {
-      name: /run complete autopilot action/i,
+      name: /agent error autopilot action/i,
     });
     const minTrustInput = page.getByRole("spinbutton", {
-      name: /run complete min trust/i,
+      name: /agent error min trust/i,
     });
 
     await expect(modeSelect).toBeEnabled();
@@ -128,31 +128,31 @@ test.describe("Inbox Hub W3 Autopilot", () => {
     const run = await seedTrustedHeartbeatRun(company.id);
     const item = await seedHubItem({
       companyId: company.id,
-      semanticType: "run_complete",
+      semanticType: "agent_error",
       sourceType: "heartbeat_run",
       sourceId: run.id,
-      title: "W3 trusted run complete",
-      summary: "Trusted completion can be auto-resolved.",
+      title: "W3 trusted run failed",
+      summary: "Trusted failure can be auto-resolved.",
       ownerPool: "owner",
     });
 
     await page.goto(`/${company.issuePrefix}/inbox/notifications`);
-    await expect(page.getByRole("button", { name: /W3 trusted run complete/i })).toBeHidden({
+    await expect(page.getByRole("button", { name: /W3 trusted run failed/i })).toBeHidden({
       timeout: 15_000,
     });
 
     await page.goto(`/${company.issuePrefix}/inbox`);
     await expect(page.getByText("Drive", { exact: true })).toBeVisible();
     await expect(page.getByText(/1 handled today/i)).toBeVisible();
-    await expect(page.getByText("W3 trusted run complete", { exact: true })).toBeVisible();
-    await expect(page.getByText(/Autopilot Drive accepted run_complete/i)).toBeVisible();
+    await expect(page.getByText("W3 trusted run failed", { exact: true })).toBeVisible();
+    await expect(page.getByText(/Autopilot Drive accepted agent_error/i)).toBeVisible();
 
     await Promise.all([
       page.waitForResponse((response) =>
         response.url().includes(`/hub-items/${item.id}/undo`) &&
         response.status() === 200,
       ),
-      page.getByRole("button", { name: /undo autopilot action w3 trusted run complete/i }).click(),
+      page.getByRole("button", { name: /undo autopilot action w3 trusted run failed/i }).click(),
     ]);
 
     const itemRes = await request.get(`/api/companies/${company.id}/hub-items/${item.id}`);

@@ -12,6 +12,7 @@ import { AgentDetailContainer } from "../agent-detail/AgentDetailContainer";
 import { RunDetailContainer } from "../agent-detail/RunDetailContainer";
 import { HUB_TABPANEL_ID } from "./HubTabStrip";
 import { RuntimeDecisionPanel } from "./RuntimeDecisionPanel";
+import { WorkQuestionPanel } from "@/components/work-questions/WorkQuestionPanel";
 import { GenericNotificationBody } from "./viewers/GenericNotificationBody";
 import { JoinRequestBody } from "./viewers/JoinRequestBody";
 import { MarketplaceOpBody } from "./viewers/MarketplaceOpBody";
@@ -21,11 +22,13 @@ import { SuggestionBody } from "./viewers/SuggestionBody";
 import { UnlinkableEntityBody } from "./viewers/UnlinkableEntityBody";
 import {
   browserTab,
+  taskTab,
   type HubAgentPayload,
   type HubApprovalPayload,
   type HubBrowserPayload,
   type HubRunPayload,
   type HubRuntimeDecisionPayload,
+  type HubWorkQuestionPayload,
   type HubTab,
   type HubTabKind,
   type HubTaskPayload,
@@ -187,6 +190,7 @@ function HubTabBodyContent({
           runId={payload.runId}
           agentId={payload.agentId}
           companyId={companyId}
+          onOpenIssue={(issueId, title) => onOpenTab(taskTab(issueId, title))}
         />
       );
     }
@@ -210,6 +214,12 @@ function HubTabBodyContent({
           <RuntimeDecisionPanel item={item} />
         </div>
       );
+    }
+
+    case "work_question": {
+      const payload = tab.payload as HubWorkQuestionPayload | undefined;
+      if (!payload || !companyId) return <TabLoadingPlaceholder kind={tab.kind} />;
+      return <WorkQuestionPanel companyId={companyId} questionId={payload.questionId} embedded />;
     }
 
     case "join_request":

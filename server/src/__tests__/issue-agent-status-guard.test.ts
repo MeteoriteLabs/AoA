@@ -33,7 +33,13 @@ describe("assertAgentStatusTransition", () => {
     await expect(
       assertAgentStatusTransition(
         {
-          existing: { id: "issue-1", status: "in_progress", assigneeAgentId: "agent-A" },
+          existing: {
+            id: "issue-1",
+            status: "in_progress",
+            assigneeAgentId: "agent-A",
+            agentCompletionPolicy: "agent_can_complete",
+            acceptanceCriteria: ["All checks pass"],
+          },
           updateFields: { status: "done" },
           actor: { actorType: "agent", agentId: "agent-A", effectiveDial: 2 },
         },
@@ -47,13 +53,63 @@ describe("assertAgentStatusTransition", () => {
     await expect(
       assertAgentStatusTransition(
         {
-          existing: { id: "issue-1", status: "in_progress", assigneeAgentId: "agent-A" },
+          existing: {
+            id: "issue-1",
+            status: "in_progress",
+            assigneeAgentId: "agent-A",
+            agentCompletionPolicy: "agent_can_complete",
+            acceptanceCriteria: ["All checks pass"],
+          },
           updateFields: { status: "done" },
           actor: { actorType: "agent", agentId: "agent-A", effectiveDial: 1 },
         },
         explodingDb as never,
       ),
     ).rejects.toThrow(HttpError);
+  });
+
+  it("routes a review-required task to in_review instead of allowing agent completion", async () => {
+    await expect(
+      assertAgentStatusTransition(
+        {
+          existing: {
+            id: "issue-1",
+            status: "in_progress",
+            assigneeAgentId: "agent-A",
+            agentCompletionPolicy: "review_required",
+            acceptanceCriteria: ["All checks pass"],
+          },
+          updateFields: { status: "done", acceptanceCriteria: ["Agent-authored criterion"] },
+          actor: { actorType: "agent", agentId: "agent-A", effectiveDial: 2 },
+        },
+        explodingDb as never,
+      ),
+    ).rejects.toMatchObject({
+      status: 422,
+      details: { code: "review_required", requiredStatus: "in_review" },
+    });
+  });
+
+  it("requires acceptance criteria before an agent can complete directly", async () => {
+    await expect(
+      assertAgentStatusTransition(
+        {
+          existing: {
+            id: "issue-1",
+            status: "in_progress",
+            assigneeAgentId: "agent-A",
+            agentCompletionPolicy: "agent_can_complete",
+            acceptanceCriteria: [],
+          },
+          updateFields: { status: "done", acceptanceCriteria: ["Agent-authored criterion"] },
+          actor: { actorType: "agent", agentId: "agent-A", effectiveDial: 2 },
+        },
+        explodingDb as never,
+      ),
+    ).rejects.toMatchObject({
+      status: 422,
+      details: { code: "acceptance_criteria_required" },
+    });
   });
 
   // ── LIVE-QA FIX: in_review at Assist (dial 1), own task, NO review path → resolves ──

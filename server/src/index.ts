@@ -36,6 +36,8 @@ import {
   processFileImportQueue,
   resetStuckJobs,
   WORKER_INTERVAL_MS,
+  workQuestionContinuationService,
+  workQuestionSlaService,
 } from "./services/index.js";
 import { getDbCapabilities, probeDbCapabilities } from "./services/db-capabilities.js";
 import { runExtractionSweep } from "./services/internal-agent/subagents/extraction-sweeper.js";
@@ -68,6 +70,7 @@ import { runChroniclerSweep, CHRONICLER_SWEEP_INTERVAL_MS } from "./services/int
 import { ensureAllCrewAgents, isCrewMarketplaceManaged } from "./services/internal-agent/aoa-agents/ensure-all-crew.js";
 import { backfillGoalParents } from "./migrations/backfill-goal-parents.js";
 import { backfillMemoryFolderSeeds } from "./migrations/backfill-memory-folder-seeds.js";
+import { backfillWorkQuestionSnapshots } from "./migrations/backfill-work-question-snapshots.js";
 import { backfillCrewTemplateOrigin } from "./services/internal-agent/aoa-agents/backfill-template-origin.js";
 import { backfillCrewOriginKind } from "./services/internal-agent/aoa-agents/backfill-crew-origin-kind.js";
 import { reconcileAutonomyScale } from "./services/internal-agent/aoa-agents/reconcile-autonomy-scale.js";
@@ -487,7 +490,7 @@ if (listenPort !== requestedListenPort) {
   logger.warn(`Requested port is busy; using next free port (requestedPort=${requestedListenPort}, selectedPort=${listenPort})`);
 }
 
-let authReady = config.deploymentMode === "local_trusted";
+let authReady = false;
 let betterAuthHandler: RequestHandler | undefined;
 let resolveSession:
   | ((req: ExpressRequest) => Promise<BetterAuthSessionResult | null>)
@@ -495,10 +498,27 @@ let resolveSession:
 let resolveSessionFromHeaders:
   | ((headers: Headers) => Promise<BetterAuthSessionResult | null>)
   | undefined;
-if (config.deploymentMode === "local_trusted") {
+
+// revA R6 — Google is the only sign-in provider. Refuse to boot a would-be
+// locked-out deployment: `authenticated` without Google creds, or
+// `local_trusted` without Google AND without the dev escape hatch.
+{
+  const { assertAuthProviderConfigured } = await import("./auth/better-auth.js");
+  assertAuthProviderConfigured(config);
+}
+
+// RB4/R5 — the synthetic `local-board` admin is created ONLY under the dev
+// escape hatch, and refused on a populated instance unless explicitly forced.
+// Without the hatch, the real admin is the first Google user (see A7/RB3).
+if (config.devLocalIdentity) {
+  const { assertEscapeHatchAllowed } = await import("./services/dev-escape-hatch.js");
+  await assertEscapeHatchAllowed(db as any);
   await ensureLocalTrustedBoardPrincipal(db as any);
 }
-if (config.deploymentMode === "authenticated") {
+
+// better-auth (Google identity) is instantiated in BOTH deployment modes so a
+// local-first install authenticates the same way it does in the cloud.
+{
   const {
     createBetterAuthHandler,
     createBetterAuthInstance,
@@ -506,13 +526,6 @@ if (config.deploymentMode === "authenticated") {
     resolveBetterAuthSession,
     resolveBetterAuthSessionFromHeaders,
   } = await import("./auth/better-auth.js");
-  const betterAuthSecret =
-    process.env.BETTER_AUTH_SECRET?.trim() ?? process.env.AOA_AGENT_JWT_SECRET?.trim();
-  if (!betterAuthSecret) {
-    throw new Error(
-      "authenticated mode requires BETTER_AUTH_SECRET (or AOA_AGENT_JWT_SECRET) to be set",
-    );
-  }
   const derivedTrustedOrigins = deriveAuthTrustedOrigins(config, { listenPort });
   const envTrustedOrigins = (process.env.BETTER_AUTH_TRUSTED_ORIGINS ?? "")
     .split(",")
@@ -521,6 +534,7 @@ if (config.deploymentMode === "authenticated") {
   const effectiveTrustedOrigins = Array.from(new Set([...derivedTrustedOrigins, ...envTrustedOrigins]));
   logger.info(
     {
+      deploymentMode: config.deploymentMode,
       authBaseUrlMode: config.authBaseUrlMode,
       authPublicBaseUrl: config.authPublicBaseUrl ?? null,
       trustedOrigins: effectiveTrustedOrigins,
@@ -529,18 +543,31 @@ if (config.deploymentMode === "authenticated") {
         env: envTrustedOrigins.length,
       },
     },
-    "Authenticated mode auth origin configuration",
+    "Auth origin configuration",
   );
   const auth = createBetterAuthInstance(db as any, config, effectiveTrustedOrigins);
   betterAuthHandler = createBetterAuthHandler(auth);
   resolveSession = (req) => resolveBetterAuthSession(auth, req);
   resolveSessionFromHeaders = (headers) => resolveBetterAuthSessionFromHeaders(auth, headers);
-  await initializeBoardClaimChallenge(db as any, { deploymentMode: config.deploymentMode });
   authReady = true;
+}
+
+// revA A10 — the board-claim CLI bootstrap is retired from the normal human
+// flow (the first Google user becomes admin instead). It is only initialized
+// for headless/self-hosted server setups via AOA_HEADLESS_BOOTSTRAP.
+{
+  const { shouldEnableHeadlessBootstrap } = await import("./services/first-user-bootstrap.js");
+  if (shouldEnableHeadlessBootstrap(config)) {
+    await initializeBoardClaimChallenge(db as any, { deploymentMode: config.deploymentMode });
+  }
 }
 
 const uiMode = config.uiDevMiddleware ? "vite-dev" : config.serveUi ? "static" : "none";
 const storageService = createStorageServiceFromConfig(config);
+const workQuestionSnapshotBackfill = await backfillWorkQuestionSnapshots(db as any);
+if (workQuestionSnapshotBackfill.updated > 0) {
+  logger.info(workQuestionSnapshotBackfill, "work-question identity snapshot backfill complete");
+}
 const app = await createApp(db as any, {
   uiMode,
   storageService,
@@ -553,6 +580,7 @@ const app = await createApp(db as any, {
   trustProxy: config.trustProxy,
   betterAuthHandler,
   resolveSession,
+  devLocalIdentity: config.devLocalIdentity,
 });
 const server = createServer(app as unknown as Parameters<typeof createServer>[0]);
 
@@ -579,6 +607,53 @@ setupLiveEventsWebSocketServer(server, db as any, {
   deploymentMode: config.deploymentMode,
   resolveSessionFromHeaders,
 });
+
+// Work-question continuation and SLA processing are durable workflow workers,
+// not heartbeat workers. They must keep running when heartbeat execution is
+// intentionally disabled (for example, during a controlled maintenance mode)
+// so an answered question can still resume its task and overdue questions can
+// still escalate.
+const workQuestionContinuations = workQuestionContinuationService(db as any);
+const workQuestionSla = workQuestionSlaService(db as any);
+let workQuestionContinuationTickInFlight = false;
+let workQuestionSlaTickInFlight = false;
+
+const tickWorkQuestionWorkers = (now = new Date()) => {
+  if (!workQuestionContinuationTickInFlight) {
+    workQuestionContinuationTickInFlight = true;
+    void workQuestionContinuations
+      .processDue(now)
+      .catch((err) => {
+        logger.error({ err }, "work-question continuation tick failed");
+      })
+      .finally(() => {
+        workQuestionContinuationTickInFlight = false;
+      });
+  }
+
+  if (!workQuestionSlaTickInFlight) {
+    workQuestionSlaTickInFlight = true;
+    void workQuestionSla
+      .processDue(now)
+      .then((result) => {
+        if (result.breached > 0 || result.notificationFailures > 0) {
+          logger.info({ ...result }, "work-question SLA tick completed");
+        }
+      })
+      .catch((err) => {
+        logger.error({ err }, "work-question SLA tick failed");
+      })
+      .finally(() => {
+        workQuestionSlaTickInFlight = false;
+      });
+  }
+};
+
+// Run independently of the heartbeat scheduler flag. This is intentionally
+// separate from the heartbeat interval below so HEARTBEAT_SCHEDULER_ENABLED
+// cannot strand durable questions in `pending`.
+tickWorkQuestionWorkers();
+setInterval(() => tickWorkQuestionWorkers(), config.heartbeatSchedulerIntervalMs);
 
 if (config.heartbeatSchedulerEnabled) {
   const heartbeat = heartbeatService(db as any);

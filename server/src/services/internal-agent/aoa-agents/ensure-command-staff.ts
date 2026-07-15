@@ -116,6 +116,7 @@ export function roleToolAllowlist(
         "post_task_comment",
         "attach_task_artifact",
         "set_task_status",
+        "ask_human",
       ];
     case "memory_keeper":
       // C2 batch 1: Memory Keeper benefits from cross-thread retrieval to

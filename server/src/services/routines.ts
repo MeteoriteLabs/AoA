@@ -171,6 +171,7 @@ function toRoutine(row: typeof routines.$inferSelect): Routine {
     status: row.status as Routine["status"],
     concurrencyPolicy: row.concurrencyPolicy as Routine["concurrencyPolicy"],
     catchUpPolicy: row.catchUpPolicy as Routine["catchUpPolicy"],
+    agentCompletionPolicyOverride: row.agentCompletionPolicyOverride as Routine["agentCompletionPolicyOverride"],
     variables: row.variables ?? [],
     createdByAgentId: row.createdByAgentId,
     createdByUserId: row.createdByUserId,
@@ -551,7 +552,7 @@ export function routineService(db: Db) {
   // whose tick crashes before an issue exists — or whose execution issue is
   // blocked/cancelled — otherwise tells no one (no agent run → no run_failed).
   // NEVER throws; a missing routine yields a generic name. Success/skip/coalesce
-  // must NOT notify (they are covered by run_complete + the Routines page).
+  // must NOT notify (successful execution is visible in run history and the Routines page).
   async function emitRoutineFailure(
     run: typeof routineRuns.$inferSelect | null,
     routine: { title?: string | null; createdByUserId?: string | null } | null,
@@ -661,32 +662,70 @@ export function routineService(db: Db) {
     idempotencyKey?: string | null;
     actor?: { agentId: string | null; userId: string | null } | null;
   }) {
-    const routineVariables = input.routine.variables ?? [];
-    // Apply explicit variableOverrides on top of stored defaults first, then
-    // run through the full resolver so type coercion and required-field checks apply.
-    const effectiveVariables = input.variableOverrides
-      ? { ...(input.variables ?? {}), ...resolveRoutineRunVariables(input.routine, input.variableOverrides) }
-      : input.variables;
-    const resolvedVariables = resolveRoutineVariableValues(routineVariables, {
-      source: input.source,
-      payload: input.payload,
-      variables: effectiveVariables,
-    });
-    const interpolationContext = { ...getBuiltinRoutineVariableValues(), ...resolvedVariables };
-    const interpolatedTitle =
-      interpolateRoutineTemplate(input.routine.title, interpolationContext) ?? input.routine.title;
-    const interpolatedDescription = interpolateRoutineTemplate(
-      input.routine.description,
-      interpolationContext,
-    );
-    const mergedPayload = mergeRoutineRunPayload(input.payload ?? null, resolvedVariables);
     const manualRunnerUserId = input.source === "manual" ? input.actor?.userId ?? null : null;
     const manualRunnerAgentId = input.source === "manual" ? input.actor?.agentId ?? null : null;
     const run = await db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
       await tx.execute(
+        sql`select id from companies where id = ${input.routine.companyId} for no key update`,
+      );
+      await tx.execute(
         sql`select id from ${routines} where ${routines.id} = ${input.routine.id} and ${routines.companyId} = ${input.routine.companyId} for update`,
       );
+      const routine = await txDb
+        .select()
+        .from(routines)
+        .where(
+          and(
+            eq(routines.id, input.routine.id),
+            eq(routines.companyId, input.routine.companyId),
+          ),
+        )
+        .then((rows) => rows[0] ?? null);
+      if (!routine) throw notFound("Routine not found");
+      if (input.actor?.agentId && routine.assigneeAgentId !== input.actor.agentId) {
+        throw forbidden("Agents can only run routines assigned to themselves");
+      }
+      if (routine.status === "archived") throw conflict("Routine is archived");
+      if ((input.source === "schedule" || input.source === "webhook") && routine.status !== "active") {
+        throw conflict("Routine is not active");
+      }
+
+      let trigger = input.trigger;
+      if (trigger) {
+        await tx.execute(
+          sql`select id from ${routineTriggers} where ${routineTriggers.id} = ${trigger.id} and ${routineTriggers.companyId} = ${routine.companyId} for update`,
+        );
+        trigger = await txDb
+          .select()
+          .from(routineTriggers)
+          .where(
+            and(
+              eq(routineTriggers.id, trigger.id),
+              eq(routineTriggers.companyId, routine.companyId),
+            ),
+          )
+          .then((rows) => rows[0] ?? null);
+        if (!trigger) throw conflict("Routine trigger no longer exists");
+        if (trigger.routineId !== routine.id) throw forbidden("Trigger does not belong to routine");
+        if (!trigger.enabled) throw conflict("Routine trigger is not active");
+      }
+
+      const routineVariables = routine.variables ?? [];
+      // Apply explicit variableOverrides on top of stored defaults first, then
+      // run through the full resolver so type coercion and required-field checks apply.
+      const effectiveVariables = input.variableOverrides
+        ? { ...(input.variables ?? {}), ...resolveRoutineRunVariables(routine, input.variableOverrides) }
+        : input.variables;
+      const resolvedVariables = resolveRoutineVariableValues(routineVariables, {
+        source: input.source,
+        payload: input.payload,
+        variables: effectiveVariables,
+      });
+      const interpolationContext = { ...getBuiltinRoutineVariableValues(), ...resolvedVariables };
+      const interpolatedTitle = interpolateRoutineTemplate(routine.title, interpolationContext) ?? routine.title;
+      const interpolatedDescription = interpolateRoutineTemplate(routine.description, interpolationContext);
+      const mergedPayload = mergeRoutineRunPayload(input.payload ?? null, resolvedVariables);
 
       if (input.idempotencyKey) {
         const existing = await txDb
@@ -698,7 +737,7 @@ export function routineService(db: Db) {
               eq(routineRuns.routineId, input.routine.id),
               eq(routineRuns.source, input.source),
               eq(routineRuns.idempotencyKey, input.idempotencyKey),
-              input.trigger ? eq(routineRuns.triggerId, input.trigger.id) : isNull(routineRuns.triggerId),
+              trigger ? eq(routineRuns.triggerId, trigger.id) : isNull(routineRuns.triggerId),
             ),
           )
           .orderBy(desc(routineRuns.createdAt))
@@ -713,7 +752,7 @@ export function routineService(db: Db) {
         .values({
           companyId: input.routine.companyId,
           routineId: input.routine.id,
-          triggerId: input.trigger?.id ?? null,
+          triggerId: trigger?.id ?? null,
           source: input.source,
           status: "received",
           triggeredAt,
@@ -722,15 +761,15 @@ export function routineService(db: Db) {
         })
         .returning();
 
-      const nextRunAt = input.trigger?.kind === "schedule" && input.trigger.cronExpression && input.trigger.timezone
-        ? nextCronTickInTimeZone(input.trigger.cronExpression, input.trigger.timezone, triggeredAt)
+      const nextRunAt = trigger?.kind === "schedule" && trigger.cronExpression && trigger.timezone
+        ? nextCronTickInTimeZone(trigger.cronExpression, trigger.timezone, triggeredAt)
         : undefined;
 
       let createdIssue: Awaited<ReturnType<typeof issueSvc.create>> | null = null;
       try {
-        const activeIssue = await findLiveExecutionIssue(input.routine, txDb);
-        if (activeIssue && input.routine.concurrencyPolicy !== "always_enqueue") {
-          const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
+        const activeIssue = await findLiveExecutionIssue(routine, txDb);
+        if (activeIssue && routine.concurrencyPolicy !== "always_enqueue") {
+          const status = routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
           const updated = await finalizeRun(createdRun.id, {
             status,
             linkedIssueId: activeIssue.id,
@@ -739,7 +778,7 @@ export function routineService(db: Db) {
           }, txDb);
           await updateRoutineTouchedState({
             routineId: input.routine.id,
-            triggerId: input.trigger?.id ?? null,
+            triggerId: trigger?.id ?? null,
             triggeredAt,
             status,
             issueId: activeIssue.id,
@@ -757,21 +796,27 @@ export function routineService(db: Db) {
         }
 
         try {
-          createdIssue = await issueSvc.create(input.routine.companyId, {
-            projectId: input.routine.projectId,
-            goalId: input.routine.goalId,
-            parentId: input.routine.parentIssueId,
+          createdIssue = await issueSvc.create(routine.companyId, {
+            projectId: routine.projectId,
+            goalId: routine.goalId,
+            parentId: routine.parentIssueId,
             title: interpolatedTitle,
             description: interpolatedDescription,
             status: "todo",
-            priority: input.routine.priority,
-            assigneeAgentId: input.routine.assigneeAgentId,
+            priority: routine.priority,
+            assigneeAgentId: routine.assigneeAgentId,
             originKind: "routine_execution",
-            originId: input.routine.id,
+            originId: routine.id,
             originRunId: createdRun.id,
             createdByUserId: manualRunnerUserId,
             createdByAgentId: manualRunnerAgentId,
-          });
+            completionPolicyCreatorOverride: routine.agentCompletionPolicyOverride as
+              | "review_required"
+              | "agent_can_complete"
+              | null,
+            completionPolicyCreatorSource: "routine",
+            completionPolicyCreatorSourceId: routine.id,
+          }, txDb as never);
         } catch (error) {
           const isOpenExecutionConflict =
             !!error &&
@@ -780,13 +825,13 @@ export function routineService(db: Db) {
             (error as { code?: string }).code === "23505" &&
             "constraint" in error &&
             (error as { constraint?: string }).constraint === "issues_open_routine_execution_uq";
-          if (!isOpenExecutionConflict || input.routine.concurrencyPolicy === "always_enqueue") {
+          if (!isOpenExecutionConflict || routine.concurrencyPolicy === "always_enqueue") {
             throw error;
           }
 
-          const existingIssue = await findLiveExecutionIssue(input.routine, txDb);
+          const existingIssue = await findLiveExecutionIssue(routine, txDb);
           if (!existingIssue) throw error;
-          const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
+          const status = routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
           const updated = await finalizeRun(createdRun.id, {
             status,
             linkedIssueId: existingIssue.id,
@@ -795,7 +840,7 @@ export function routineService(db: Db) {
           }, txDb);
           await updateRoutineTouchedState({
             routineId: input.routine.id,
-            triggerId: input.trigger?.id ?? null,
+            triggerId: trigger?.id ?? null,
             triggeredAt,
             status,
             issueId: existingIssue.id,
@@ -828,7 +873,7 @@ export function routineService(db: Db) {
         }, txDb);
         await updateRoutineTouchedState({
           routineId: input.routine.id,
-          triggerId: input.trigger?.id ?? null,
+          triggerId: trigger?.id ?? null,
           triggeredAt,
           status: "issue_created",
           issueId: createdIssue.id,
@@ -847,10 +892,10 @@ export function routineService(db: Db) {
         }, txDb);
         // Silent-automation-failure inbox signal (Task 10, D3): the tick crashed
         // before an issue existed, so no agent run — nothing else notifies.
-        await emitRoutineFailure(failed, input.routine, txDb);
+        await emitRoutineFailure(failed, routine, txDb);
         await updateRoutineTouchedState({
           routineId: input.routine.id,
-          triggerId: input.trigger?.id ?? null,
+          triggerId: trigger?.id ?? null,
           triggeredAt,
           status: "failed",
           nextRunAt,
@@ -871,7 +916,7 @@ export function routineService(db: Db) {
           entityId: run.id,
           details: {
             routineId: input.routine.id,
-            triggerId: input.trigger?.id ?? null,
+            triggerId: run.triggerId ?? null,
             source: run.source,
             status: run.status,
           },
@@ -893,6 +938,8 @@ export function routineService(db: Db) {
       status: routine.status,
       concurrencyPolicy: routine.concurrencyPolicy,
       catchUpPolicy: routine.catchUpPolicy,
+      agentCompletionPolicyOverride:
+        routine.agentCompletionPolicyOverride as RoutineSnapshot["agentCompletionPolicyOverride"],
       variables: routine.variables ?? [],
       projectId: routine.projectId ?? null,
       goalId: routine.goalId ?? null,
@@ -1080,6 +1127,9 @@ export function routineService(db: Db) {
     },
 
     create: async (companyId: string, input: CreateRoutine, actor: Actor): Promise<Routine> => {
+      if (actor.agentId && input.agentCompletionPolicyOverride !== undefined) {
+        throw forbidden("Only human operators may override task completion policy");
+      }
       if (input.projectId) await assertProject(companyId, input.projectId);
       if (input.assigneeAgentId) await assertAssignableAgent(companyId, input.assigneeAgentId);
       if (input.goalId) await assertGoal(companyId, input.goalId);
@@ -1098,6 +1148,7 @@ export function routineService(db: Db) {
           status: input.status,
           concurrencyPolicy: input.concurrencyPolicy,
           catchUpPolicy: input.catchUpPolicy,
+          agentCompletionPolicyOverride: input.agentCompletionPolicyOverride ?? null,
           variables: input.variables ?? [],
           createdByAgentId: actor.agentId ?? null,
           createdByUserId: actor.userId ?? null,
@@ -1111,38 +1162,78 @@ export function routineService(db: Db) {
     update: async (id: string, patch: UpdateRoutine, actor: Actor): Promise<Routine | null> => {
       const existing = await getRoutineById(id);
       if (!existing) return null;
+      if (actor.agentId && patch.agentCompletionPolicyOverride !== undefined) {
+        throw forbidden("Only human operators may override task completion policy");
+      }
       // 409 conflict check: if caller provided baseRevisionId and it differs from current HEAD, reject
-      if (patch.baseRevisionId != null && patch.baseRevisionId !== (existing.latestRevisionId ?? null)) {
+      if (patch.baseRevisionId !== undefined && patch.baseRevisionId !== (existing.latestRevisionId ?? null)) {
         throw conflict("Routine has been modified since your last load. Reload and retry.");
       }
-      const nextProjectId = patch.projectId ?? existing.projectId;
-      const nextAssigneeAgentId = patch.assigneeAgentId ?? existing.assigneeAgentId;
       if (patch.projectId) await assertProject(existing.companyId, patch.projectId);
       if (patch.assigneeAgentId) await assertAssignableAgent(existing.companyId, patch.assigneeAgentId);
       if (patch.goalId) await assertGoal(existing.companyId, patch.goalId);
       if (patch.parentIssueId) await assertParentIssue(existing.companyId, patch.parentIssueId);
-      // Snapshot current state before applying the update (after assertions so phantom revisions aren't created on validation failures)
-      await createRevisionInternal(id, actor);
-      const [updated] = await db
-        .update(routines)
-        .set({
-          projectId: nextProjectId,
-          goalId: patch.goalId === undefined ? existing.goalId : patch.goalId,
-          parentIssueId: patch.parentIssueId === undefined ? existing.parentIssueId : patch.parentIssueId,
-          title: patch.title ?? existing.title,
-          description: patch.description === undefined ? existing.description : patch.description,
-          assigneeAgentId: nextAssigneeAgentId,
-          priority: patch.priority ?? existing.priority,
-          status: patch.status ?? existing.status,
-          concurrencyPolicy: patch.concurrencyPolicy ?? existing.concurrencyPolicy,
-          catchUpPolicy: patch.catchUpPolicy ?? existing.catchUpPolicy,
-          variables: patch.variables === undefined ? existing.variables : patch.variables,
-          updatedByAgentId: actor.agentId ?? null,
-          updatedByUserId: actor.userId ?? null,
-          updatedAt: new Date(),
-        })
-        .where(eq(routines.id, id))
-        .returning();
+      const updated = await db.transaction(async (tx) => {
+        const txDb = tx as unknown as Db;
+        await tx.execute(
+          sql`select id from companies where id = ${existing.companyId} for no key update`,
+        );
+        const locked = await txDb
+          .select()
+          .from(routines)
+          .where(eq(routines.id, id))
+          .for("update")
+          .then((rows) => rows[0] ?? null);
+        if (!locked) return null;
+        if (actor.agentId && locked.assigneeAgentId !== actor.agentId) {
+          throw forbidden("Agents can only manage routines assigned to themselves");
+        }
+        if (patch.baseRevisionId !== undefined && patch.baseRevisionId !== (locked.latestRevisionId ?? null)) {
+          throw conflict("Routine has been modified since your last load. Reload and retry.");
+        }
+
+        const [revision] = await txDb
+          .insert(routineRevisions)
+          .values({
+            companyId: locked.companyId,
+            routineId: locked.id,
+            snapshot: captureSnapshot(locked),
+            createdByAgentId: actor.agentId ?? null,
+            createdByUserId: actor.userId ?? null,
+          })
+          .returning();
+        if (revision) {
+          await txDb
+            .update(routines)
+            .set({ latestRevisionId: revision.id })
+            .where(eq(routines.id, id));
+        }
+
+        const [row] = await txDb
+          .update(routines)
+          .set({
+            projectId: patch.projectId ?? locked.projectId,
+            goalId: patch.goalId === undefined ? locked.goalId : patch.goalId,
+            parentIssueId: patch.parentIssueId === undefined ? locked.parentIssueId : patch.parentIssueId,
+            title: patch.title ?? locked.title,
+            description: patch.description === undefined ? locked.description : patch.description,
+            assigneeAgentId: patch.assigneeAgentId ?? locked.assigneeAgentId,
+            priority: patch.priority ?? locked.priority,
+            status: patch.status ?? locked.status,
+            concurrencyPolicy: patch.concurrencyPolicy ?? locked.concurrencyPolicy,
+            catchUpPolicy: patch.catchUpPolicy ?? locked.catchUpPolicy,
+            ...(patch.agentCompletionPolicyOverride !== undefined
+              ? { agentCompletionPolicyOverride: patch.agentCompletionPolicyOverride }
+              : {}),
+            variables: patch.variables === undefined ? locked.variables : patch.variables,
+            updatedByAgentId: actor.agentId ?? null,
+            updatedByUserId: actor.userId ?? null,
+            updatedAt: new Date(),
+          })
+          .where(eq(routines.id, id))
+          .returning();
+        return row ?? null;
+      });
       return updated ? toRoutine(updated) : null;
     },
 
@@ -1591,8 +1682,12 @@ export function routineService(db: Db) {
     restoreRevision: async (
       routineId: string,
       revisionId: string,
+      baseRevisionId: string | null | undefined,
       actor: Actor,
     ): Promise<Routine | null> => {
+      if (actor.agentId) {
+        throw forbidden("Only human operators may restore routine revisions");
+      }
       const [rev] = await db
         .select()
         .from(routineRevisions)
@@ -1603,10 +1698,21 @@ export function routineService(db: Db) {
 
       const updated = await db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
+        await tx.execute(
+          sql`select id from companies where id = ${rev.companyId} for no key update`,
+        );
 
         // Snapshot before overwriting (creates revision for the current state)
-        const preRoutine = await txDb.select().from(routines).where(eq(routines.id, routineId)).then((rows) => rows[0] ?? null);
+        const preRoutine = await txDb
+          .select()
+          .from(routines)
+          .where(eq(routines.id, routineId))
+          .for("update")
+          .then((rows) => rows[0] ?? null);
         if (preRoutine) {
+          if (baseRevisionId !== undefined && baseRevisionId !== (preRoutine.latestRevisionId ?? null)) {
+            throw conflict("Routine has been modified since your last load. Reload and retry.");
+          }
           const preSnap = captureSnapshot(preRoutine);
           const [preRev] = await txDb
             .insert(routineRevisions)
@@ -1634,6 +1740,7 @@ export function routineService(db: Db) {
             status: snap.status,
             concurrencyPolicy: snap.concurrencyPolicy,
             catchUpPolicy: snap.catchUpPolicy,
+            agentCompletionPolicyOverride: snap.agentCompletionPolicyOverride ?? null,
             variables: snap.variables,
             projectId: snap.projectId,
             goalId: snap.goalId,
@@ -1649,6 +1756,7 @@ export function routineService(db: Db) {
 
         // Snapshot the restored state as new HEAD revision
         const postRoutine = await txDb.select().from(routines).where(eq(routines.id, routineId)).then((rows) => rows[0] ?? null);
+        let finalRoutine = applyUpdated;
         if (postRoutine) {
           const postSnap = captureSnapshot(postRoutine);
           const [postRev] = await txDb
@@ -1662,31 +1770,34 @@ export function routineService(db: Db) {
             })
             .returning();
           if (postRev) {
-            await txDb.update(routines).set({ latestRevisionId: postRev.id }).where(eq(routines.id, routineId));
+            const [withLatestRevision] = await txDb
+              .update(routines)
+              .set({ latestRevisionId: postRev.id })
+              .where(eq(routines.id, routineId))
+              .returning();
+            finalRoutine = withLatestRevision ?? finalRoutine;
           }
         }
 
-        return applyUpdated;
+        // Restoring a routine invalidates every webhook secret. Keep the
+        // rotations in the restore transaction so a provider or vault failure
+        // rolls back the restored definition instead of leaving an unrotated
+        // webhook active behind a successful response.
+        const triggers = await txDb
+          .select()
+          .from(routineTriggers)
+          .where(and(eq(routineTriggers.routineId, routineId), eq(routineTriggers.kind, "webhook")));
+        const txSecretsSvc = secretService(txDb);
+        for (const trigger of triggers) {
+          if (!trigger.secretId) continue;
+          const newSecretValue = crypto.randomBytes(24).toString("hex");
+          await txSecretsSvc.rotate(trigger.secretId, { value: newSecretValue }, actor);
+        }
+
+        return finalRoutine;
       });
 
       if (!updated) return null;
-
-      // Rotate webhook trigger secrets (security property)
-      const triggers = await db
-        .select()
-        .from(routineTriggers)
-        .where(and(eq(routineTriggers.routineId, routineId), eq(routineTriggers.kind, "webhook")));
-      for (const t of triggers) {
-        if (t.secretId) {
-          try {
-            const newSecretValue = crypto.randomBytes(24).toString("hex");
-            await secretsSvc.rotate(t.secretId, { value: newSecretValue }, actor);
-          } catch (err) {
-            logger.error({ err, triggerId: t.id }, "[aoa-revision] Failed to rotate webhook secret on restore");
-            throw err;
-          }
-        }
-      }
 
       return toRoutine(updated);
     },

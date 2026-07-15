@@ -526,7 +526,9 @@ describe("InboxHub page", () => {
     // The decision now renders inside a dedicated tab (tab-first), not a preview.
     expect(await screen.findByTestId("hub-runtime-decision-body")).toBeInTheDocument();
     expect(screen.queryByRole("complementary", { name: /hub viewer/i })).toBeNull();
-    expect(await screen.findByRole("button", { name: /allow always/i })).toBeDisabled();
+    expect(await screen.findByRole("button", { name: /allow once/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /deny/i })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: /allow always/i })).toBeNull();
     expect(screen.getByText("expired")).toBeInTheDocument();
   });
 

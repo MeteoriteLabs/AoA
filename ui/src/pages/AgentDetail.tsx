@@ -87,6 +87,7 @@ import { computeAgentKpis } from "../lib/agent-kpis";
 import { formatTrustScorePercent, hasTrustScoreData } from "../lib/trust-score";
 import type { HeroKpi } from "../components/agent-detail/AgentHeroCard";
 import { formatEnvForDisplay } from "../lib/env-redaction";
+import { formatDuration } from "../lib/run-status";
 import { parseAgentDetailView, type AgentDetailView } from "../lib/agent-detail-view";
 
 const runStatusIcons: Record<string, { icon: typeof CheckCircle2; color: string }> = {
@@ -1657,7 +1658,17 @@ export function RunsTab({
  * `run.companyId`/`run.agentId` internally; `agentRouteId` is used only for
  * resume/retry navigation, and `adapterType` selects the transcript parser.
  */
-export function RunDetail({ run, agentRouteId, adapterType }: { run: HeartbeatRun; agentRouteId: string; adapterType: string }) {
+export function RunDetail({
+  run,
+  agentRouteId,
+  adapterType,
+  onOpenIssue,
+}: {
+  run: HeartbeatRun;
+  agentRouteId: string;
+  adapterType: string;
+  onOpenIssue?: (issueId: string, title: string) => void;
+}) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const metrics = runMetrics(run);
@@ -1873,6 +1884,16 @@ export function RunDetail({ run, agentRouteId, adapterType }: { run: HeartbeatRu
                     Duration: {displayDurationSec >= 60 ? `${Math.floor(displayDurationSec / 60)}m ${displayDurationSec % 60}s` : `${displayDurationSec}s`}
                   </div>
                 )}
+                {run.totalWallClockMs > 0 && (
+                  <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-muted-foreground" aria-label="Run time accounting">
+                    <dt>Total elapsed</dt>
+                    <dd>{formatDuration(run.totalWallClockMs)}</dd>
+                    <dt>Provider active</dt>
+                    <dd>{formatDuration(run.activeExecutionMs)}</dd>
+                    {run.humanQuestionWaitMs > 0 && <><dt>Waiting on human</dt><dd>{formatDuration(run.humanQuestionWaitMs)}</dd></>}
+                    {run.runtimePermissionWaitMs > 0 && <><dt>Waiting for permission</dt><dd>{formatDuration(run.runtimePermissionWaitMs)}</dd></>}
+                  </dl>
+                )}
               </div>
             )}
             {run.error && (
@@ -2016,19 +2037,37 @@ export function RunDetail({ run, agentRouteId, adapterType }: { run: HeartbeatRu
         <div className="space-y-2">
           <span className="text-xs font-medium text-muted-foreground">Tasks Touched ({touchedIssues.length})</span>
           <div className="border border-border rounded-lg divide-y divide-border">
-            {touchedIssues.map((issue) => (
-              <Link
-                key={issue.issueId}
-                to={`/issues/${issue.identifier ?? issue.issueId}`}
-                className="flex items-center justify-between w-full px-3 py-2 text-xs hover:bg-accent/20 transition-colors text-left no-underline text-inherit"
-              >
-                <div className="flex items-center gap-2 min-w-0">
-                  <StatusBadge status={issue.status} />
-                  <span className="truncate">{issue.title}</span>
-                </div>
-                <span className="font-mono text-muted-foreground shrink-0 ml-2">{issue.identifier ?? issue.issueId.slice(0, 8)}</span>
-              </Link>
-            ))}
+            {touchedIssues.map((issue) => {
+              const content = (
+                <>
+                  <div className="flex items-center gap-2 min-w-0">
+                    <StatusBadge status={issue.status} />
+                    <span className="truncate">{issue.title}</span>
+                  </div>
+                  <span className="font-mono text-muted-foreground shrink-0 ml-2">{issue.identifier ?? issue.issueId.slice(0, 8)}</span>
+                </>
+              );
+              const className = "flex items-center justify-between w-full px-3 py-2 text-xs hover:bg-accent/20 transition-colors text-left no-underline text-inherit";
+
+              return onOpenIssue ? (
+                <button
+                  key={issue.issueId}
+                  type="button"
+                  className={className}
+                  onClick={() => onOpenIssue(issue.issueId, issue.title)}
+                >
+                  {content}
+                </button>
+              ) : (
+                <Link
+                  key={issue.issueId}
+                  to={`/issues/${issue.identifier ?? issue.issueId}`}
+                  className={className}
+                >
+                  {content}
+                </Link>
+              );
+            })}
           </div>
         </div>
       )}

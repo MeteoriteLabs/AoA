@@ -77,5 +77,10 @@ describe("max-turn continuation retry scheduling helpers", () => {
       livenessState: "stalled",
       livenessReason: "adapter_did_not_succeed",
     });
+    expect(classifyCompletedRunLiveness({ outcome: "succeeded", waitingQuestionId: "question-1" })).toEqual({
+      livenessState: "waiting_on_human",
+      livenessReason: "work_question",
+      nextAction: "work_question:question-1",
+    });
   });
 });

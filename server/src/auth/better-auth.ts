@@ -117,15 +117,49 @@ export function deriveAuthTrustedOrigins(config: Config, opts?: { listenPort?: n
   return Array.from(trustedOrigins);
 }
 
-export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins?: string[]): BetterAuthInstance {
-  const baseUrl = config.authBaseUrlMode === "explicit" ? config.authPublicBaseUrl : undefined;
-  const secret = resolveBetterAuthSigningSecret(config);
-  const effectiveTrustedOrigins = trustedOrigins ?? deriveAuthTrustedOrigins(config);
+async function attemptFirstAdminBootstrap(
+  db: Db,
+  userId: string,
+  source: "user_create" | "session_create",
+  preserveSyntheticAdmin: boolean,
+): Promise<void> {
+  try {
+    const { promoteFirstUserToInstanceAdmin } = await import(
+      "../services/first-user-bootstrap.js"
+    );
+    await promoteFirstUserToInstanceAdmin(db, userId, { preserveSyntheticAdmin });
+  } catch (err) {
+    logger.error(
+      { err, userId, source },
+      "first-user admin bootstrap failed (non-fatal; will retry on next sign-in)",
+    );
+  }
+}
 
-  const authConfig = {
+/**
+ * Pure builder for the better-auth options object. Extracted so the provider
+ * configuration is unit-testable without instantiating better-auth.
+ *
+ * Google is the ONLY sign-in provider (email/password removed). The google
+ * social provider is attached only when both credentials are present; the
+ * `assertAuthProviderConfigured` gate (called at startup) is what refuses to
+ * boot a would-be-locked-out deployment.
+ */
+export function buildBetterAuthConfig(
+  db: Db,
+  config: Config,
+  trustedOrigins: string[],
+  secret: string,
+): Record<string, unknown> {
+  const baseUrl = config.authBaseUrlMode === "explicit" ? config.authPublicBaseUrl : undefined;
+
+  const authConfig: Record<string, unknown> = {
     baseURL: baseUrl,
     secret,
-    trustedOrigins: effectiveTrustedOrigins,
+    trustedOrigins,
+    // A11 — long-lived session so a local-first install authenticates to the
+    // cloud once, then operates offline until it expires (90d, refreshed daily).
+    session: { expiresIn: 60 * 60 * 24 * 90, updateAge: 60 * 60 * 24 },
     database: drizzleAdapter(db, {
       provider: "pg",
       schema: {
@@ -135,9 +169,71 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins?
         verification: authVerifications,
       },
     }),
-    emailAndPassword: {
-      enabled: true,
-      requireEmailVerification: false,
+  };
+
+  if (config.googleClientId && config.googleClientSecret) {
+    authConfig.socialProviders = {
+      google: {
+        clientId: config.googleClientId,
+        clientSecret: config.googleClientSecret,
+      },
+    };
+  }
+
+  // D6 — session-cookie hardening. better-auth applies OAuth state + PKCE for
+  // the social flow internally; here we make the cookie intent explicit.
+  // Secure follows the endpoint's exposure and transport.
+  // Public and explicit HTTPS deployments use Secure. Private authenticated
+  // deployments may intentionally use HTTP over a trusted LAN or tailnet, where
+  // browsers would drop a Secure cookie. SameSite stays Lax so the OAuth redirect
+  // round-trip keeps the callback cookie (Strict would drop it).
+  let explicitBaseUrlUsesHttps = false;
+  if (baseUrl) {
+    try {
+      explicitBaseUrlUsesHttps = new URL(baseUrl).protocol === "https:";
+    } catch {
+      // Startup configuration validates the URL. Keep direct helper calls
+      // usable for private HTTP if they receive an invalid value.
+    }
+  }
+  const useSecureCookies = config.deploymentExposure === "public" || explicitBaseUrlUsesHttps;
+  authConfig.advanced = {
+    useSecureCookies,
+    defaultCookieAttributes: {
+      httpOnly: true,
+      secure: useSecureCookies,
+      sameSite: "lax",
+    },
+  };
+
+  // RB3/A7 — the first Google user of a fresh instance becomes instance admin.
+  // Fires at real user creation and again at session creation. The service is
+  // advisory-locked + idempotent, so the session hook backfills an admin-less
+  // instance after a transient create-hook failure without blocking sign-in.
+  authConfig.databaseHooks = {
+    user: {
+      create: {
+        after: async (user: { id: string }) => {
+          await attemptFirstAdminBootstrap(
+            db,
+            user.id,
+            "user_create",
+            config.headlessBootstrap === true,
+          );
+        },
+      },
+    },
+    session: {
+      create: {
+        after: async (session: { userId: string }) => {
+          await attemptFirstAdminBootstrap(
+            db,
+            session.userId,
+            "session_create",
+            config.headlessBootstrap === true,
+          );
+        },
+      },
     },
   };
 
@@ -145,7 +241,36 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins?
     delete (authConfig as { baseURL?: string }).baseURL;
   }
 
-  return betterAuth(authConfig);
+  return authConfig;
+}
+
+/**
+ * revA R6 — fail closed on a missing auth provider.
+ *
+ * Google is the only sign-in provider. If its credentials are absent, an
+ * `authenticated` deployment would ship a login screen whose only button
+ * cannot work — an instance lockout. A `local_trusted` deployment may boot
+ * without Google ONLY when the dev escape hatch (`AOA_DEV_LOCAL_IDENTITY`) is
+ * active. Call this at startup before serving traffic.
+ */
+export function assertAuthProviderConfigured(config: Config): void {
+  const hasGoogle = Boolean(config.googleClientId && config.googleClientSecret);
+  if (hasGoogle) return;
+  if (config.deploymentMode === "local_trusted" && config.devLocalIdentity) return;
+  throw new Error(
+    "Google OAuth is not configured (GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET). " +
+      "It is the only sign-in provider; set both before starting the server" +
+      (config.deploymentMode === "local_trusted"
+        ? ", or set AOA_DEV_LOCAL_IDENTITY=1 for local development."
+        : "."),
+  );
+}
+
+export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins?: string[]): BetterAuthInstance {
+  const secret = resolveBetterAuthSigningSecret(config);
+  const effectiveTrustedOrigins = trustedOrigins ?? deriveAuthTrustedOrigins(config);
+  const authConfig = buildBetterAuthConfig(db, config, effectiveTrustedOrigins, secret);
+  return betterAuth(authConfig as Parameters<typeof betterAuth>[0]);
 }
 
 export function createBetterAuthHandler(auth: BetterAuthInstance): RequestHandler {

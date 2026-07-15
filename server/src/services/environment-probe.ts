@@ -34,6 +34,10 @@ function readString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
+export function getLocalProbeTargetPath(config: Record<string, unknown>): string | null {
+  return readString(config.path) ?? readString(config.rootFolder);
+}
+
 function isDockerSandboxProvider(provider: string): boolean {
   return provider === "sandbox-docker" || provider === "docker" || provider === "local-docker";
 }
@@ -73,16 +77,52 @@ function dockerSandboxProbe(config: Record<string, unknown>, provider: string): 
 
 export async function probeEnvironmentConfig(input: ProbeEnvironmentConfigInput): Promise<EnvironmentProbeResult> {
   if (input.driver === "local") {
-    return {
-      ok: true,
-      driver: "local",
-      summary: "Local environment configuration is valid.",
-      checks: [{
-        name: "config",
-        status: "passed",
-        message: "Local runtime does not require provider config.",
-      }],
-    };
+    const targetPath = getLocalProbeTargetPath(input.config);
+    if (!targetPath) {
+      // Back-compat: local runtime with no path has nothing to verify.
+      return {
+        ok: true,
+        driver: "local",
+        summary: "Local environment configuration is valid.",
+        checks: [{
+          name: "config",
+          status: "passed",
+          message: "Local runtime does not require provider config.",
+        }],
+      };
+    }
+    // Blocking read/write verification (revA R13 — fixes the previously
+    // non-fatal folder-create). Actually create the directory and round-trip a
+    // probe file so onboarding cannot advance against an unwritable path.
+    const { mkdir, writeFile, rm } = await import("node:fs/promises");
+    const nodePath = await import("node:path");
+    try {
+      await mkdir(targetPath, { recursive: true });
+      const probeFile = nodePath.join(targetPath, `.aoa-write-probe-${Date.now()}`);
+      await writeFile(probeFile, "ok");
+      await rm(probeFile, { force: true });
+      return {
+        ok: true,
+        driver: "local",
+        summary: `Verified read/write access to ${targetPath}.`,
+        checks: [{
+          name: "config.path",
+          status: "passed",
+          message: `Directory is writable: ${targetPath}`,
+        }],
+      };
+    } catch (err) {
+      return {
+        ok: false,
+        driver: "local",
+        summary: `Cannot write to ${targetPath}.`,
+        checks: [{
+          name: "config.path",
+          status: "failed",
+          message: err instanceof Error ? err.message : "Directory is not writable.",
+        }],
+      };
+    }
   }
 
   if (input.driver !== "sandbox") {

@@ -10,14 +10,14 @@ import { httpLogger, errorHandler } from "./middleware/index.js";
 import { actorMiddleware } from "./middleware/auth.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
 import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middleware/private-hostname-guard.js";
-import {
-  signinLimiter,
-  signupLimiter,
-  forgotPasswordLimiter,
-} from "./middleware/rate-limit.js";
 import { buildHelmetOptions } from "./services/helmet-options.js";
 import { extractInlineScriptHashes } from "./services/csp-script-hashes.js";
 import { healthRoutes } from "./routes/health.js";
+import { onboardingJourneyRoutes } from "./routes/onboarding-journey.js";
+import { onboardingRoutes } from "./routes/onboarding.js";
+import { onboardingEnvironmentRoutes } from "./routes/onboarding-environment.js";
+import { commanderVerifyRoutes } from "./routes/commander-verify.js";
+import { userProfileRoutes } from "./routes/user-profiles.js";
 import { operationsHealthRoutes } from "./routes/operations-health.js";
 import { companyRoutes } from "./routes/companies.js";
 import { agentRoutes } from "./routes/agents.js";
@@ -27,6 +27,7 @@ import { goalRoutes } from "./routes/goals.js";
 import { hubItemRoutes } from "./routes/hub-items.js";
 import { hubAutopilotRoutes } from "./routes/hub-autopilot.js";
 import { agentRuntimeDecisionRoutes } from "./routes/agent-runtime-decisions.js";
+import { workQuestionRoutes } from "./routes/work-questions.js";
 import { teamsRoutes } from "./routes/teams.js";
 import { teamImportsRoutes } from "./routes/team-imports.js";
 import { approvalRoutes } from "./routes/approvals.js";
@@ -42,6 +43,7 @@ import { sidebarBadgeRoutes } from "./routes/sidebar-badges.js";
 import { sidebarPreferencesRoutes } from "./routes/sidebar-preferences.js";
 import { inboxDismissalRoutes } from "./routes/inbox-dismissals.js";
 import { userEntityPinRoutes } from "./routes/user-entity-pins.js";
+import { userNoteRoutes } from "./routes/user-notes.js";
 import { cockpitRoutes } from "./routes/cockpit.js";
 import { llmRoutes } from "./routes/llms.js";
 import { assetRoutes } from "./routes/assets.js";
@@ -151,6 +153,7 @@ export async function createApp(
     trustProxy: boolean | number | string[];
     betterAuthHandler?: express.RequestHandler;
     resolveSession?: (req: ExpressRequest) => Promise<BetterAuthSessionResult | null>;
+    devLocalIdentity?: boolean;
   },
 ) {
   const app = express();
@@ -206,6 +209,7 @@ export async function createApp(
   // See `services/helmet-options.ts` for the full directive set.
   app.use(helmet(buildHelmetOptions({
     deploymentMode: opts.deploymentMode,
+    uiMode: opts.uiMode,
     nodeEnv: process.env.NODE_ENV,
     inlineScriptHashes,
   })));
@@ -225,6 +229,7 @@ export async function createApp(
   app.use(
     actorMiddleware(db, {
       deploymentMode: opts.deploymentMode,
+      devLocalIdentity: opts.devLocalIdentity,
       resolveSession: opts.resolveSession,
     }),
   );
@@ -232,25 +237,29 @@ export async function createApp(
   // the global body parser so POST/PUT/uploads reach the upstream unchanged.
   app.use("/preview", createPreviewRouter(db));
   app.use(express.json({ verify: captureRawBody }));
+  // Protect every board-session mutation, including the direct auth and
+  // onboarding routers mounted before the main API router below.
+  app.use("/api", boardMutationGuard());
   // Mount profile-aware auth routes (get-session with DB-loaded user, profile GET/PATCH)
   // before the betterAuthHandler catch-all so specific routes win.
   app.use("/api", authProfileRoutes(db));
-  // Per-route rate limits in front of better-auth (Sprint 4 S4-F). better-auth
-  // mounts at the wildcard /api/auth/{*authPath} below; the limiters below
-  // intercept the credential-stuffing-prone sub-paths before the wildcard. We
-  // use app.post (not app.use) so only the targeted method+path gets rate-
-  // gated; non-matching paths fall through to the wildcard handler.
+  app.use("/api", onboardingJourneyRoutes(db));
+  app.use("/api", onboardingRoutes(db));
+  app.use("/api", onboardingEnvironmentRoutes(db));
+  app.use("/api", commanderVerifyRoutes(db));
+  app.use("/api", userProfileRoutes(db));
+  // Email/password auth is removed — Google is the only provider (see
+  // buildBetterAuthConfig). The dedicated /sign-in/email, /sign-up/email and
+  // /forget-password routes and their rate limiters are gone. better-auth
+  // handles all remaining auth sub-paths (Google social start, callback,
+  // get-session, sign-out) through the wildcard below.
   if (opts.betterAuthHandler) {
-    app.post("/api/auth/sign-in/email", signinLimiter, opts.betterAuthHandler);
-    app.post("/api/auth/sign-up/email", signupLimiter, opts.betterAuthHandler);
-    app.post("/api/auth/forget-password", forgotPasswordLimiter, opts.betterAuthHandler);
     app.all("/api/auth/{*authPath}", opts.betterAuthHandler);
   }
   app.use(llmRoutes(db));
 
   // Mount API routes
   const api = Router();
-  api.use(boardMutationGuard());
   api.use(
     "/health",
     healthRoutes(db, {
@@ -280,6 +289,7 @@ export async function createApp(
   api.use(hubItemRoutes(db));
   api.use(hubAutopilotRoutes(db));
   api.use(agentRuntimeDecisionRoutes(db));
+  api.use(workQuestionRoutes(db));
   api.use(teamsRoutes(db));
   api.use(teamImportsRoutes(db));
   // Phase 6.0: memory-folders and memory-assets routes MUST mount before
@@ -345,6 +355,7 @@ export async function createApp(
   api.use(sidebarPreferencesRoutes(db));
   api.use(inboxDismissalRoutes(db));
   api.use(userEntityPinRoutes(db));
+  api.use(userNoteRoutes(db));
   api.use(
     accessRoutes(db, {
       deploymentMode: opts.deploymentMode,

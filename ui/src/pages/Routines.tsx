@@ -132,7 +132,8 @@ export function Routines() {
   });
 
   const updateRoutineStatus = useMutation({
-    mutationFn: ({ id, status }: { id: string; status: string }) => routinesApi.update(id, { status }),
+    mutationFn: ({ id, status, baseRevisionId }: { id: string; status: string; baseRevisionId: string | null }) =>
+      routinesApi.update(id, { status, baseRevisionId }),
     onMutate: ({ id }) => {
       setStatusMutationRoutineId(id);
     },
@@ -140,6 +141,8 @@ export function Routines() {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId!) }),
         queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(variables.id) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.routines.revisions(variables.id) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.routines.activity(selectedCompanyId!, variables.id) }),
       ]);
     },
     onSettled: () => {
@@ -607,12 +610,14 @@ export function Routines() {
                           updateRoutineStatus.mutate({
                             id: routine.id,
                             status: nextRoutineStatus(routine.status, routine.status !== "active"),
+                            baseRevisionId: routine.latestRevisionId ?? null,
                           })
                         }
                         onArchive={() =>
                           updateRoutineStatus.mutate({
                             id: routine.id,
                             status: routine.status === "archived" ? "active" : "archived",
+                            baseRevisionId: routine.latestRevisionId ?? null,
                           })
                         }
                       />
@@ -640,12 +645,14 @@ export function Routines() {
                 updateRoutineStatus.mutate({
                   id: routine.id,
                   status: nextRoutineStatus(routine.status, routine.status !== "active"),
+                  baseRevisionId: routine.latestRevisionId ?? null,
                 })
               }
               onArchive={() =>
                 updateRoutineStatus.mutate({
                   id: routine.id,
                   status: routine.status === "archived" ? "active" : "archived",
+                  baseRevisionId: routine.latestRevisionId ?? null,
                 })
               }
             />
@@ -738,6 +745,7 @@ export function Routines() {
                             updateRoutineStatus.mutate({
                               id: routine.id,
                               status: nextRoutineStatus(routine.status, !enabled),
+                              baseRevisionId: routine.latestRevisionId ?? null,
                             })
                           }
                         >
@@ -775,6 +783,7 @@ export function Routines() {
                               updateRoutineStatus.mutate({
                                 id: routine.id,
                                 status: nextRoutineStatus(routine.status, !enabled),
+                                baseRevisionId: routine.latestRevisionId ?? null,
                               })
                             }
                             disabled={isStatusPending || isArchived}
@@ -786,6 +795,7 @@ export function Routines() {
                               updateRoutineStatus.mutate({
                                 id: routine.id,
                                 status: routine.status === "archived" ? "active" : "archived",
+                                baseRevisionId: routine.latestRevisionId ?? null,
                               })
                             }
                             disabled={isStatusPending}

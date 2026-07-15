@@ -4,12 +4,13 @@ import {
   text,
   timestamp,
   integer,
+  bigint,
   index,
   uniqueIndex,
   jsonb,
   boolean,
 } from "drizzle-orm/pg-core";
-import { relations } from "drizzle-orm";
+import { relations, sql } from "drizzle-orm";
 import { companies } from "./companies.js";
 import { projects } from "./projects.js";
 import { agents } from "./agents.js";
@@ -273,6 +274,10 @@ export const internalAgentRuns = pgTable(
     tokenUsage: jsonb("token_usage"), // { inputTokens, outputTokens, cachedInputTokens }
     costCents: integer("cost_cents"),
     durationMs: integer("duration_ms"),
+    activeExecutionMs: bigint("active_execution_ms", { mode: "number" }).notNull().default(0),
+    humanQuestionWaitMs: bigint("human_question_wait_ms", { mode: "number" }).notNull().default(0),
+    runtimePermissionWaitMs: bigint("runtime_permission_wait_ms", { mode: "number" }).notNull().default(0),
+    totalWallClockMs: bigint("total_wall_clock_ms", { mode: "number" }).notNull().default(0),
 
     // Context
     departmentContext: uuid("department_context").references(
@@ -290,6 +295,7 @@ export const internalAgentRuns = pgTable(
     // Related entity
     relatedEntityType: text("related_entity_type"), // 'discussion' | 'task' | 'agent' | 'goal' | 'memory' | null
     relatedEntityId: uuid("related_entity_id"),
+    continuationIdempotencyKey: text("continuation_idempotency_key"),
 
     // LLM info
     provider: text("provider"), // 'anthropic' | 'openai' | 'google'
@@ -325,6 +331,9 @@ export const internalAgentRuns = pgTable(
       table.relatedEntityId,
     ),
     agentIdx: index("ia_runs_agent_idx").on(table.companyId, table.agentId),
+    continuationIdempotencyUq: uniqueIndex("ia_runs_continuation_idempotency_uq")
+      .on(table.companyId, table.continuationIdempotencyKey)
+      .where(sql`continuation_idempotency_key IS NOT NULL`),
   }),
 );
 

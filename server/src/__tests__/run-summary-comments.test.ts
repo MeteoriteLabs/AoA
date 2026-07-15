@@ -24,7 +24,8 @@ describe("formatRunSummary", () => {
     expect(result).toContain("12,450 in");
     expect(result).toContain("3,200 out");
     expect(result).toContain("$0.08");
-    expect(result).toContain("Completed");
+    expect(result).toContain("Succeeded");
+    expect(result).not.toContain("Completed");
     // No files line when empty
     expect(result).not.toContain("Files:");
   });

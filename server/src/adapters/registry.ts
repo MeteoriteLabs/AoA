@@ -168,6 +168,15 @@ function normalizeServerAdapter(adapter: ServerAdapterModule): ServerAdapterModu
   return sessionManagement ? { ...adapter, sessionManagement } : adapter;
 }
 
+// Local/provider CLI adapters persist a durable question and return control to
+// the scheduler. They do not claim same-session relay unless an adapter has a
+// real broker implementation and explicitly opts into the stricter capability
+// contract. This keeps the UI and continuation path honest for every provider.
+const PARKED_HUMAN_QUESTION_CAPABILITIES = {
+  mode: "ask_and_park",
+  preservesProducerInvocationId: true,
+} as const;
+
 function normalizeCursorCloudSession(raw: unknown): Record<string, unknown> | null {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
   const record = raw as Record<string, unknown>;
@@ -212,6 +221,7 @@ function normalizeCursorCloudSession(raw: unknown): Record<string, unknown> | nu
 
 const claudeLocalAdapter: ServerAdapterModule = {
   type: "claude_local",
+  humanQuestionCapabilities: PARKED_HUMAN_QUESTION_CAPABILITIES,
   execute: claudeExecute,
   testEnvironment: claudeTestEnvironment,
   listSkills: listClaudeSkills,
@@ -229,6 +239,7 @@ const claudeLocalAdapter: ServerAdapterModule = {
 
 const acpxLocalAdapter: ServerAdapterModule = {
   type: "acpx_local",
+  humanQuestionCapabilities: PARKED_HUMAN_QUESTION_CAPABILITIES,
   execute: acpxExecute,
   testEnvironment: acpxTestEnvironment,
   listSkills: listAcpxSkills,
@@ -247,6 +258,7 @@ const acpxLocalAdapter: ServerAdapterModule = {
 
 const codexLocalAdapter: ServerAdapterModule = {
   type: "codex_local",
+  humanQuestionCapabilities: PARKED_HUMAN_QUESTION_CAPABILITIES,
   execute: codexExecute,
   testEnvironment: codexTestEnvironment,
   listSkills: listCodexSkills,
@@ -265,6 +277,7 @@ const codexLocalAdapter: ServerAdapterModule = {
 
 const cursorLocalAdapter: ServerAdapterModule = {
   type: "cursor",
+  humanQuestionCapabilities: PARKED_HUMAN_QUESTION_CAPABILITIES,
   execute: cursorExecute,
   testEnvironment: cursorTestEnvironment,
   listSkills: listCursorSkills,
@@ -283,6 +296,7 @@ const cursorLocalAdapter: ServerAdapterModule = {
 
 const cursorCloudAdapter: ServerAdapterModule = {
   type: "cursor_cloud",
+  humanQuestionCapabilities: PARKED_HUMAN_QUESTION_CAPABILITIES,
   execute: async (ctx) => {
     const { execute } = await import("@armyofagents/adapter-cursor-cloud/server");
     return execute(ctx);
@@ -310,6 +324,7 @@ const cursorCloudAdapter: ServerAdapterModule = {
 
 const openclawAdapter: ServerAdapterModule = {
   type: "openclaw",
+  humanQuestionCapabilities: PARKED_HUMAN_QUESTION_CAPABILITIES,
   execute: openclawExecute,
   testEnvironment: openclawTestEnvironment,
   onHireApproved: openclawOnHireApproved,
@@ -322,6 +337,7 @@ const openclawAdapter: ServerAdapterModule = {
 
 const openCodeLocalAdapter: ServerAdapterModule = {
   type: "opencode_local",
+  humanQuestionCapabilities: PARKED_HUMAN_QUESTION_CAPABILITIES,
   execute: openCodeExecute,
   testEnvironment: openCodeTestEnvironment,
   listSkills: listOpenCodeSkills,
@@ -340,6 +356,7 @@ const openCodeLocalAdapter: ServerAdapterModule = {
 
 const openclawGatewayAdapter: ServerAdapterModule = {
   type: "openclaw_gateway",
+  humanQuestionCapabilities: PARKED_HUMAN_QUESTION_CAPABILITIES,
   execute: openclawGatewayExecute,
   testEnvironment: openclawGatewayTestEnvironment,
   models: openclawGatewayModels,
@@ -350,6 +367,7 @@ const openclawGatewayAdapter: ServerAdapterModule = {
 
 const geminiLocalAdapter: ServerAdapterModule = {
   type: "gemini_local",
+  humanQuestionCapabilities: PARKED_HUMAN_QUESTION_CAPABILITIES,
   execute: geminiExecute,
   testEnvironment: geminiTestEnvironment,
   listSkills: listGeminiSkills,
@@ -367,6 +385,7 @@ const geminiLocalAdapter: ServerAdapterModule = {
 
 const grokLocalAdapter: ServerAdapterModule = {
   type: "grok_local",
+  humanQuestionCapabilities: PARKED_HUMAN_QUESTION_CAPABILITIES,
   execute: grokExecute,
   testEnvironment: grokTestEnvironment,
   listSkills: listGrokSkills,
@@ -384,6 +403,7 @@ const grokLocalAdapter: ServerAdapterModule = {
 
 const piLocalAdapter: ServerAdapterModule = {
   type: "pi_local",
+  humanQuestionCapabilities: PARKED_HUMAN_QUESTION_CAPABILITIES,
   execute: piExecute,
   testEnvironment: piTestEnvironment,
   listSkills: listPiSkills,
@@ -402,6 +422,7 @@ const piLocalAdapter: ServerAdapterModule = {
 
 const hermesLocalAdapter: ServerAdapterModule = {
   type: "hermes_local",
+  humanQuestionCapabilities: PARKED_HUMAN_QUESTION_CAPABILITIES,
   execute: async (ctx) => {
     // Hermes reads its config from ctx.agent.adapterConfig — build a patched
     // agent object so env injection flows through to the child process.

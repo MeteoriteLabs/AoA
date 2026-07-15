@@ -1,6 +1,5 @@
 import { useMemo, useState, type ReactNode } from "react";
-import { Outlet, useLocation } from "@/lib/router";
-import { useDialog } from "@/context/DialogContext";
+import { Outlet, useLocation, useNavigate } from "@/lib/router";
 import { LobbyShell } from "@/components/LobbyShell";
 import { lobbyActiveItem } from "@/lib/lobbyActiveItem";
 
@@ -21,17 +20,22 @@ export interface LobbyOutletContext {
  * a secondary sidebar via the outlet context.
  */
 export function LobbyLayout() {
-  const { openOnboarding } = useDialog();
+  const navigate = useNavigate();
   const location = useLocation();
   const [secondarySidebar, setSecondarySidebar] = useState<ReactNode | null>(null);
   // Stable context identity (setSecondarySidebar is a stable useState setter) so
   // Outlet consumers don't re-render just because this layout re-rendered.
   const outletContext = useMemo<LobbyOutletContext>(() => ({ setSecondarySidebar }), []);
 
+  // ?new=1 forces the org-create step even for a returning founder who already
+  // has a (completed) selected company — otherwise /onboarding binds to that
+  // company, resolves no step, and dead-ends at the Lobby.
+  const handleCreateCompany = () => navigate("/onboarding?new=1");
+
   return (
     <LobbyShell
       activeItem={lobbyActiveItem(location.pathname)}
-      onCreateCompany={() => openOnboarding()}
+      onCreateCompany={handleCreateCompany}
       secondarySidebar={secondarySidebar}
     >
       <Outlet context={outletContext} />

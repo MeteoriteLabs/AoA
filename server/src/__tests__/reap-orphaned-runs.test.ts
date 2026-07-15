@@ -52,6 +52,8 @@ vi.mock("@armyofagents/db", () => {
     teamCoordinations: makeTable(),
     teams: makeTable(),
     discussions: makeTable(),
+    executionWorkspaces: makeTable(),
+    workspaceRuntimeServices: makeTable(),
     discussionExtractedItems: makeTable(),
     embeddingQueue: makeTable(),
   };

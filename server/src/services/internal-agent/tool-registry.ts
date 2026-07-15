@@ -96,6 +96,7 @@ import { approvalTools } from "./tools/approval-tools.js";
 // posted after each heartbeat/crew run) without a dedicated run-history tool.
 // Company-scoped in-tool (getById/listComments have no company filter).
 import { getHeartbeatContextTool } from "./tools/heartbeat-context-tool.js";
+import { askFounderCompatibilityTool, askHumanTool } from "./tools/ask-human-tool.js";
 
 export function createToolRegistry(): AgentTool[] {
   return [
@@ -190,6 +191,8 @@ export function createToolRegistry(): AgentTool[] {
     // Plan 3 Task 3 (B2) — get_heartbeat_context: task + 10 recent comments
     // (query category, team_member role, company-scoped in-tool).
     getHeartbeatContextTool,
+    askHumanTool,
+    askFounderCompatibilityTool,
   ];
 }
 

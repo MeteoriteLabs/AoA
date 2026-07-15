@@ -2,7 +2,16 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { and, eq, gte, isNull, lte } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { budgetPolicies, costEvents, financeEvents, internalAgentConfig, providerQuotaWindows, workflowTemplates } from "@armyofagents/db";
+import {
+  budgetPolicies,
+  companies as companiesTable,
+  costEvents,
+  financeEvents,
+  internalAgentConfig,
+  projects as projectsTable,
+  providerQuotaWindows,
+  workflowTemplates,
+} from "@armyofagents/db";
 import type {
   CompanyPortabilityAgentManifestEntry,
   CompanyPortabilityBudgetPolicyManifestEntry,
@@ -148,7 +157,73 @@ type ImportPlanInternal = {
   selectedIssues: CompanyPortabilityIssueManifestEntry[];
   selectedSkills: CompanyPortabilitySkillManifestEntry[];
   selectedRoutines: CompanyPortabilityRoutineManifestEntry[];
+  mutableWorkflowTemplateSlugs: Set<string>;
+  replaceWorkflowTemplateIdsBySlug: Map<string, Set<string>>;
+  workflowTemplatePolicyChangeSlugs: Set<string>;
 };
+
+type ImportAuthorizationContext = {
+  changesCompletionPolicy: boolean;
+  requiresTaskAssignmentPermission: boolean;
+  importsWorkflowTemplates: boolean;
+};
+
+function getImportAuthorizationContext(plan: ImportPlanInternal): ImportAuthorizationContext {
+  const manifest = plan.source.manifest;
+  const mutableProjectSlugs = new Set(
+    plan.preview.plan.projectPlans
+      .filter((project) => project.action !== "skip")
+      .map((project) => project.slug),
+  );
+  const mutableRoutineSlugs = new Set(
+    plan.preview.plan.routinePlans
+      .filter((routine) => routine.action !== "skip")
+      .map((routine) => routine.slug),
+  );
+  const mutableIssues = plan.selectedIssues.filter((issue) => !issue.recurring);
+  const mutableRoutines = plan.selectedRoutines.filter((routine) =>
+    mutableRoutineSlugs.has(routine.slug),
+  );
+  const companyPolicyChanges =
+    plan.include.company &&
+    !!manifest.company &&
+    (manifest.company.agentCompletionPolicyDefault !== undefined ||
+      manifest.company.agentCompletionReviewGuardrail !== undefined);
+  const projectPolicyChanges = plan.selectedProjects.some(
+    (project) =>
+      mutableProjectSlugs.has(project.slug) &&
+      project.agentCompletionPolicyDefault !== undefined,
+  );
+  const issuePolicyChanges = mutableIssues.some(
+    (issue) =>
+      issue.agentCompletionPolicyOverride !== undefined ||
+      issue.agentCompletionPolicy !== undefined,
+  );
+  const routinePolicyChanges = mutableRoutines.some(
+    (routine) => routine.agentCompletionPolicyOverride !== undefined,
+  );
+  const workflowTemplatePolicyChanges =
+    plan.include.workflowTemplates === true &&
+    plan.workflowTemplatePolicyChangeSlugs.size > 0;
+
+  const changesCompletionPolicy =
+    companyPolicyChanges ||
+    projectPolicyChanges ||
+    issuePolicyChanges ||
+    routinePolicyChanges ||
+    workflowTemplatePolicyChanges;
+  const importsAssignedIssues = mutableIssues.some(
+    (issue) => !!issue.assigneeAgentSlug,
+  );
+
+  return {
+    changesCompletionPolicy,
+    requiresTaskAssignmentPermission:
+      changesCompletionPolicy || mutableRoutines.length > 0 || importsAssignedIssues,
+    importsWorkflowTemplates:
+      plan.include.workflowTemplates === true && (manifest.workflowTemplates?.length ?? 0) > 0,
+  };
+}
 
 function sortProjectsTopologically(
   projects: CompanyPortabilityProjectManifestEntry[],
@@ -328,6 +403,14 @@ function synthesizeWorkflowTemplateSlug(name: string): string {
   return normalized.length > 0 ? normalized : "workflow-template";
 }
 
+function getWorkflowTemplateManifestSlug(
+  template: CompanyPortabilityWorkflowTemplateManifestEntry,
+): string {
+  return typeof template.slug === "string" && template.slug.length > 0
+    ? template.slug
+    : synthesizeWorkflowTemplateSlug(template.name);
+}
+
 function serializeWorkflowTemplateRow(
   row: Record<string, unknown>,
 ): CompanyPortabilityWorkflowTemplateManifestEntry {
@@ -338,6 +421,11 @@ function serializeWorkflowTemplateRow(
     description: typeof row.description === "string" ? row.description : null,
     workspaceMode:
       typeof row.workspaceMode === "string" ? row.workspaceMode : "department_default",
+    agentCompletionPolicyOverride:
+      row.agentCompletionPolicyOverride === "review_required" ||
+      row.agentCompletionPolicyOverride === "agent_can_complete"
+        ? row.agentCompletionPolicyOverride
+        : null,
     steps: Array.isArray(row.steps) ? (row.steps as unknown[]) : [],
     dependencies: Array.isArray(row.dependencies) ? (row.dependencies as unknown[]) : [],
   };
@@ -1058,6 +1146,10 @@ export function companyPortabilityService(db: Db) {
         description: company.description ?? null,
         brandColor: company.brandColor ?? null,
         requireBoardApprovalForNewAgents: company.requireBoardApprovalForNewAgents,
+        agentCompletionPolicyDefault: company.agentCompletionPolicyDefault === "agent_can_complete"
+          ? "agent_can_complete"
+          : "review_required",
+        agentCompletionReviewGuardrail: company.agentCompletionReviewGuardrail,
       };
     }
 
@@ -1170,6 +1262,11 @@ export function companyPortabilityService(db: Db) {
           targetDate: project.targetDate ?? null,
           leadAgentSlug,
           functionType: project.functionType ?? null,
+          agentCompletionPolicyDefault:
+            project.agentCompletionPolicyDefault === "review_required" ||
+            project.agentCompletionPolicyDefault === "agent_can_complete"
+              ? project.agentCompletionPolicyDefault
+              : null,
           executionWorkspacePolicy:
             (project.executionWorkspacePolicy as Record<string, unknown> | null) ?? null,
         });
@@ -1221,6 +1318,30 @@ export function companyPortabilityService(db: Db) {
             (issue.assigneeAdapterOverrides as Record<string, unknown> | null) ?? null,
           executionWorkspaceSettings:
             (issue.executionWorkspaceSettings as Record<string, unknown> | null) ?? null,
+          acceptanceCriteria: Array.isArray(issue.acceptanceCriteria)
+            ? issue.acceptanceCriteria.filter((criterion): criterion is string => typeof criterion === "string")
+            : [],
+          agentCompletionPolicyOverride:
+            issue.agentCompletionPolicyOverride === "review_required" ||
+            issue.agentCompletionPolicyOverride === "agent_can_complete"
+              ? issue.agentCompletionPolicyOverride
+              : null,
+          agentCompletionPolicy:
+            issue.agentCompletionPolicy === "agent_can_complete"
+              ? "agent_can_complete"
+              : "review_required",
+          agentCompletionPolicySource:
+            issue.agentCompletionPolicySource === "company" ||
+            issue.agentCompletionPolicySource === "department" ||
+            issue.agentCompletionPolicySource === "project" ||
+            issue.agentCompletionPolicySource === "routine" ||
+            issue.agentCompletionPolicySource === "workflow_template" ||
+            issue.agentCompletionPolicySource === "task"
+              ? issue.agentCompletionPolicySource
+              : "legacy_backfill",
+          ...(!Number.isNaN(new Date(issue.agentCompletionPolicyResolvedAt).getTime())
+            ? { agentCompletionPolicyResolvedAt: new Date(issue.agentCompletionPolicyResolvedAt).toISOString() }
+            : {}),
           metadata: null,
         });
       }
@@ -1289,6 +1410,7 @@ export function companyPortabilityService(db: Db) {
           priority: routine.priority,
           concurrencyPolicy: routine.concurrencyPolicy,
           catchUpPolicy: routine.catchUpPolicy,
+          agentCompletionPolicyOverride: routine.agentCompletionPolicyOverride ?? null,
           projectSlug,
           assigneeAgentSlug,
           variables: routine.variables.map((variable) => ({
@@ -1806,6 +1928,52 @@ export function companyPortabilityService(db: Db) {
       }
     }
 
+    const selectedWorkflowTemplates = include.workflowTemplates
+      ? (manifest.workflowTemplates ?? [])
+      : [];
+    const mutableWorkflowTemplateSlugs = new Set(
+      selectedWorkflowTemplates.map(getWorkflowTemplateManifestSlug),
+    );
+    const workflowTemplatePolicyChangeSlugs = new Set(
+      selectedWorkflowTemplates
+        .filter((template) => template.agentCompletionPolicyOverride != null)
+        .map(getWorkflowTemplateManifestSlug),
+    );
+    const replaceWorkflowTemplateIdsBySlug = new Map<string, Set<string>>();
+    if (
+      selectedWorkflowTemplates.length > 0 &&
+      (collisionStrategy === "skip" || collisionStrategy === "replace") &&
+      input.target.mode === "existing_company"
+    ) {
+      const existingWorkflowTemplateRows = (await db
+        .select({ id: workflowTemplates.id, name: workflowTemplates.name })
+        .from(workflowTemplates)
+        .where(eq(workflowTemplates.companyId, input.target.companyId))) as Array<{
+          id: string;
+          name: string;
+        }>;
+      for (const existingTemplate of existingWorkflowTemplateRows) {
+        const slug = synthesizeWorkflowTemplateSlug(existingTemplate.name);
+        const matchingTemplates = selectedWorkflowTemplates.filter(
+          (template) => getWorkflowTemplateManifestSlug(template) === slug,
+        );
+        if (matchingTemplates.length === 0) continue;
+
+        if (collisionStrategy === "skip") {
+          mutableWorkflowTemplateSlugs.delete(slug);
+          workflowTemplatePolicyChangeSlugs.delete(slug);
+          continue;
+        }
+
+        const authorizedIds = replaceWorkflowTemplateIdsBySlug.get(slug) ?? new Set<string>();
+        authorizedIds.add(existingTemplate.id);
+        replaceWorkflowTemplateIdsBySlug.set(slug, authorizedIds);
+        if (matchingTemplates.some((template) => template.agentCompletionPolicyOverride === null)) {
+          workflowTemplatePolicyChangeSlugs.add(slug);
+        }
+      }
+    }
+
     const preview: CompanyPortabilityPreviewResult = {
       include,
       targetCompanyId,
@@ -1839,6 +2007,9 @@ export function companyPortabilityService(db: Db) {
       selectedIssues,
       selectedSkills,
       selectedRoutines,
+      mutableWorkflowTemplateSlugs,
+      replaceWorkflowTemplateIdsBySlug,
+      workflowTemplatePolicyChangeSlugs,
     };
   }
 
@@ -1850,11 +2021,13 @@ export function companyPortabilityService(db: Db) {
   async function importBundle(
     input: CompanyPortabilityImport,
     actorUserId: string | null | undefined,
+    authorize?: (context: ImportAuthorizationContext) => Promise<void>,
   ): Promise<CompanyPortabilityImportResult> {
     const plan = await buildPreview(input);
     if (plan.preview.errors.length > 0) {
       throw unprocessable(`Import preview has errors: ${plan.preview.errors.join("; ")}`);
     }
+    await authorize?.(getImportAuthorizationContext(plan));
 
     const sourceManifest = plan.source.manifest;
     const warnings = [...plan.preview.warnings];
@@ -1862,6 +2035,10 @@ export function companyPortabilityService(db: Db) {
 
     let targetCompany: { id: string; name: string } | null = null;
     let companyAction: "created" | "updated" | "unchanged" = "unchanged";
+    let deferredCompanyCompletionPolicyPatch: {
+      agentCompletionPolicyDefault?: "review_required" | "agent_can_complete";
+      agentCompletionReviewGuardrail?: boolean;
+    } | null = null;
 
     if (input.target.mode === "new_company") {
       const companyName =
@@ -1876,6 +2053,12 @@ export function companyPortabilityService(db: Db) {
         requireBoardApprovalForNewAgents: include.company
           ? (sourceManifest.company?.requireBoardApprovalForNewAgents ?? true)
           : true,
+        agentCompletionPolicyDefault: include.company
+          ? (sourceManifest.company?.agentCompletionPolicyDefault ?? "review_required")
+          : "review_required",
+        agentCompletionReviewGuardrail: include.company
+          ? (sourceManifest.company?.agentCompletionReviewGuardrail ?? false)
+          : false,
       });
       await access.ensureMembership(created.id, "user", actorUserId ?? "board", "owner", "active");
       targetCompany = created;
@@ -1884,6 +2067,17 @@ export function companyPortabilityService(db: Db) {
       targetCompany = await companies.getById(input.target.companyId);
       if (!targetCompany) throw notFound("Target company not found");
       if (include.company && sourceManifest.company) {
+        const completionPolicyPatch = {
+          ...(sourceManifest.company.agentCompletionPolicyDefault !== undefined
+            ? { agentCompletionPolicyDefault: sourceManifest.company.agentCompletionPolicyDefault }
+            : {}),
+          ...(sourceManifest.company.agentCompletionReviewGuardrail !== undefined
+            ? { agentCompletionReviewGuardrail: sourceManifest.company.agentCompletionReviewGuardrail }
+            : {}),
+        };
+        deferredCompanyCompletionPolicyPatch = Object.keys(completionPolicyPatch).length > 0
+          ? completionPolicyPatch
+          : null;
         const updated = await companies.update(targetCompany.id, {
           name: sourceManifest.company.name,
           description: sourceManifest.company.description,
@@ -2074,6 +2268,10 @@ export function companyPortabilityService(db: Db) {
 
     const resultProjects: CompanyPortabilityImportResult["projects"] = [];
     const importedSlugToProjectId = new Map<string, string>();
+    const deferredProjectCompletionPolicyPatches: Array<{
+      id: string;
+      policy: "review_required" | "agent_can_complete" | null;
+    }> = [];
 
     if (include.projects) {
       const existingProjectRows = await projects.list(targetCompany.id);
@@ -2135,6 +2333,12 @@ export function companyPortabilityService(db: Db) {
           }
           importedSlugToProjectId.set(planProject.slug, updated.id);
           existingProjectSlugToId.set(normalizeProjectUrlKey(updated.name) ?? updated.id, updated.id);
+          if (manifestProject.agentCompletionPolicyDefault !== undefined) {
+            deferredProjectCompletionPolicyPatches.push({
+              id: updated.id,
+              policy: manifestProject.agentCompletionPolicyDefault,
+            });
+          }
           resultProjects.push({
             slug: planProject.slug,
             id: updated.id,
@@ -2146,7 +2350,21 @@ export function companyPortabilityService(db: Db) {
           continue;
         }
 
-        const created = await projects.create(targetCompany.id, projectPatch);
+        const deferCreatedProjectCompletionPolicy =
+          input.target.mode === "existing_company" &&
+          manifestProject.agentCompletionPolicyDefault !== undefined;
+        const created = await projects.create(targetCompany.id, {
+          ...projectPatch,
+          ...(!deferCreatedProjectCompletionPolicy && manifestProject.agentCompletionPolicyDefault !== undefined
+            ? { agentCompletionPolicyDefault: manifestProject.agentCompletionPolicyDefault }
+            : {}),
+        });
+        if (deferCreatedProjectCompletionPolicy) {
+          deferredProjectCompletionPolicyPatches.push({
+            id: created.id,
+            policy: manifestProject.agentCompletionPolicyDefault!,
+          });
+        }
         importedSlugToProjectId.set(planProject.slug, created.id);
         existingProjectSlugToId.set(normalizeProjectUrlKey(created.name) ?? created.id, created.id);
         resultProjects.push({
@@ -2234,6 +2452,38 @@ export function companyPortabilityService(db: Db) {
           });
         }
 
+        const requestedPolicySource = manifestIssue.agentCompletionPolicySource ?? "legacy_backfill" as const;
+        const portablePolicySource = requestedPolicySource === "routine" ||
+          requestedPolicySource === "workflow_template" ||
+          ((requestedPolicySource === "project" || requestedPolicySource === "department") && !projectId)
+          ? "legacy_backfill" as const
+          : requestedPolicySource;
+        const importedPolicySourceId = portablePolicySource === "company"
+          ? targetCompany.id
+          : portablePolicySource === "project" || portablePolicySource === "department"
+            ? projectId
+            : null;
+        const importedPolicyResolvedAt = manifestIssue.agentCompletionPolicyResolvedAt
+          ? new Date(manifestIssue.agentCompletionPolicyResolvedAt)
+          : null;
+        const completionPolicySnapshot = manifestIssue.agentCompletionPolicy
+          ? {
+            policy: manifestIssue.agentCompletionPolicy,
+            override: manifestIssue.agentCompletionPolicyOverride ?? null,
+            source: portablePolicySource,
+            sourceId: importedPolicySourceId,
+            resolvedAt: importedPolicyResolvedAt && !Number.isNaN(importedPolicyResolvedAt.getTime())
+              ? importedPolicyResolvedAt
+              : null,
+          }
+          : {
+            policy: "review_required" as const,
+            override: null,
+            source: "legacy_backfill" as const,
+            sourceId: null,
+            resolvedAt: null,
+          };
+
         const created = await issues.create(targetCompany.id, {
           projectId,
           title: manifestIssue.title,
@@ -2245,7 +2495,12 @@ export function companyPortabilityService(db: Db) {
           billingCode: manifestIssue.billingCode ?? null,
           assigneeAdapterOverrides: manifestIssue.assigneeAdapterOverrides ?? null,
           executionWorkspaceSettings: manifestIssue.executionWorkspaceSettings ?? null,
+          acceptanceCriteria: manifestIssue.acceptanceCriteria ?? [],
           dueDate: manifestIssue.dueDate ? new Date(manifestIssue.dueDate) : null,
+          ...(manifestIssue.agentCompletionPolicyOverride !== undefined
+            ? { agentCompletionPolicyOverride: manifestIssue.agentCompletionPolicyOverride }
+            : {}),
+          ...(completionPolicySnapshot ? { completionPolicySnapshot } : {}),
         });
 
         resultIssues.push({
@@ -2447,6 +2702,9 @@ export function companyPortabilityService(db: Db) {
           status: manifestRoutine.status,
           concurrencyPolicy: manifestRoutine.concurrencyPolicy,
           catchUpPolicy: manifestRoutine.catchUpPolicy,
+          ...(manifestRoutine.agentCompletionPolicyOverride !== undefined
+            ? { agentCompletionPolicyOverride: manifestRoutine.agentCompletionPolicyOverride }
+            : {}),
           variables: manifestRoutine.variables,
         };
 
@@ -2926,9 +3184,13 @@ export function companyPortabilityService(db: Db) {
       }
 
       for (const tpl of manifestWorkflowTemplates) {
-        const bundleSlug = typeof tpl.slug === "string" && tpl.slug.length > 0
-          ? tpl.slug
-          : synthesizeWorkflowTemplateSlug(tpl.name);
+        const bundleSlug = getWorkflowTemplateManifestSlug(tpl);
+        if (
+          plan.collisionStrategy === "skip" &&
+          !plan.mutableWorkflowTemplateSlugs.has(bundleSlug)
+        ) {
+          continue;
+        }
         const collision = existingBySlug.get(bundleSlug);
 
         if (collision) {
@@ -2937,19 +3199,32 @@ export function companyPortabilityService(db: Db) {
           }
           if (plan.collisionStrategy === "replace") {
             const existingId = typeof collision.id === "string" ? collision.id : null;
-            if (existingId) {
-              await db
-                .update(workflowTemplates)
-                .set({
-                  name: tpl.name,
-                  description: tpl.description ?? null,
-                  workspaceMode: tpl.workspaceMode,
-                  steps: tpl.steps as unknown,
-                  dependencies: tpl.dependencies as unknown,
-                  updatedAt: new Date(),
-                })
-                .where(eq(workflowTemplates.id, existingId));
+            const authorizedTemplateIds = plan.replaceWorkflowTemplateIdsBySlug.get(bundleSlug);
+            if (!existingId || !authorizedTemplateIds?.has(existingId)) {
+              warnings.push({
+                kind: "skipped_update",
+                section: "workflowTemplates",
+                message: `Skipped workflow template "${tpl.name}" because the matching template changed after import authorization. Retry the import to replace it.`,
+              });
+              continue;
             }
+            await db
+              .update(workflowTemplates)
+              .set({
+                name: tpl.name,
+                description: tpl.description ?? null,
+                workspaceMode: tpl.workspaceMode,
+                ...(tpl.agentCompletionPolicyOverride !== undefined
+                  ? { agentCompletionPolicyOverride: tpl.agentCompletionPolicyOverride }
+                  : {}),
+                steps: tpl.steps as unknown,
+                dependencies: tpl.dependencies as unknown,
+                updatedAt: new Date(),
+              })
+              .where(and(
+                eq(workflowTemplates.id, existingId),
+                eq(workflowTemplates.companyId, targetCompany.id),
+              ));
             continue;
           }
           // rename: derive a unique name + slug
@@ -2967,6 +3242,7 @@ export function companyPortabilityService(db: Db) {
             name: candidateName,
             description: tpl.description ?? null,
             workspaceMode: tpl.workspaceMode,
+            agentCompletionPolicyOverride: tpl.agentCompletionPolicyOverride ?? null,
             steps: tpl.steps as unknown,
             dependencies: tpl.dependencies as unknown,
             instantiationCount: 0,
@@ -2982,6 +3258,7 @@ export function companyPortabilityService(db: Db) {
           name: tpl.name,
           description: tpl.description ?? null,
           workspaceMode: tpl.workspaceMode,
+          agentCompletionPolicyOverride: tpl.agentCompletionPolicyOverride ?? null,
           steps: tpl.steps as unknown,
           dependencies: tpl.dependencies as unknown,
           instantiationCount: 0,
@@ -3029,6 +3306,29 @@ export function companyPortabilityService(db: Db) {
     // (before agent restoration), so a founder is guaranteed to exist here.
     if (include.agents) {
       await agents.backfillHumanAtTop(targetCompany.id);
+    }
+
+    if (
+      input.target.mode === "existing_company" &&
+      (deferredCompanyCompletionPolicyPatch || deferredProjectCompletionPolicyPatches.length > 0)
+    ) {
+      await db.transaction(async (tx) => {
+        if (
+          deferredCompanyCompletionPolicyPatch &&
+          Object.keys(deferredCompanyCompletionPolicyPatch).length > 0
+        ) {
+          await tx
+            .update(companiesTable)
+            .set({ ...deferredCompanyCompletionPolicyPatch, updatedAt: new Date() })
+            .where(eq(companiesTable.id, targetCompany!.id));
+        }
+        for (const patch of deferredProjectCompletionPolicyPatches) {
+          await tx
+            .update(projectsTable)
+            .set({ agentCompletionPolicyDefault: patch.policy, updatedAt: new Date() })
+            .where(and(eq(projectsTable.id, patch.id), eq(projectsTable.companyId, targetCompany!.id)));
+        }
+      });
     }
 
     return {

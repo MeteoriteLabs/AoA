@@ -14,6 +14,13 @@ export const companies = pgTable(
     requireBoardApprovalForNewAgents: boolean("require_board_approval_for_new_agents")
       .notNull()
       .default(true),
+    agentCompletionPolicyDefault: text("agent_completion_policy_default")
+      .notNull()
+      .default("review_required"),
+    agentCompletionReviewGuardrail: boolean("agent_completion_review_guardrail")
+      .notNull()
+      .default(false),
+    humanQuestionSlaHours: integer("human_question_sla_hours").notNull().default(24),
     vision: text("vision"),
     mission: text("mission"),
     values: text("values"),

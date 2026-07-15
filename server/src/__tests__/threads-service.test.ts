@@ -105,8 +105,15 @@ vi.mock("@armyofagents/db", () => ({
   },
   projects: {
     id: "projects_id",
+    companyId: "projects_company_id",
     name: "projects_name",
     type: "projects_type",
+    agentCompletionPolicyDefault: "projects_completion_policy",
+  },
+  companies: {
+    id: "companies_id",
+    agentCompletionPolicyDefault: "companies_completion_policy",
+    agentCompletionReviewGuardrail: "companies_review_guardrail",
   },
   activityLog: {
     id: "al_id",
@@ -196,6 +203,7 @@ function createSequenceDb(selectQueue: any[][]) {
       innerJoin: vi.fn().mockReturnThis(),
       orderBy: vi.fn().mockReturnThis(),
       limit: vi.fn().mockReturnThis(),
+      for: vi.fn().mockReturnThis(),
       then: vi.fn((fn: (rows: any[]) => any) =>
         Promise.resolve(fn(selectQueue[idx++] ?? [])),
       ),
@@ -580,6 +588,8 @@ describe("threadService.assignScopeItems — phase advance", () => {
       [{ id: "t1", companyId: "co1", visibility: "company", ownerUserId: "u1", scopeType: null, scopeId: null }], // thread
       [{ id: "entry1" }], // entries (inside tx)
       [approvedItem], // items (inside tx)
+      [{ policyDefault: "review_required", reviewGuardrail: false }],
+      [{ id: "p1", type: "department", policyDefault: null }],
       [{ id: "issue-x" }], // issue insert (inside tx)
       [], // update resultTaskId (inside tx)
       [], // update discussions.phase (inside tx, Codex #7)
@@ -775,6 +785,8 @@ describe("threadService.assignScopeItems", () => {
       [{ id: "t1", companyId: "co1", visibility: "company", ownerUserId: "u1", scopeType: null, scopeId: null }], // thread (outside tx)
       [{ id: "entry1" }], // entries query (inside tx)
       [approvedItem], // extractedItems query (inside tx)
+      [{ policyDefault: "review_required", reviewGuardrail: false }],
+      [{ id: "p1", type: "department", policyDefault: null }],
       [{ id: "issue1" }], // issue insert returning (inside tx)
       [], // update result_task_id on extracted item (inside tx)
       [], // update discussions.phase to 'assign' (inside tx, Codex #7)

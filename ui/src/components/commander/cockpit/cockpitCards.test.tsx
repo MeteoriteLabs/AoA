@@ -10,10 +10,16 @@ import type { CockpitData, CommanderOutputRef } from "@armyofagents/shared";
 
 // Mock queryKeys and cockpitApi for the panel test (panel tests come later)
 vi.mock("../../../api/cockpit", () => ({
-  cockpitApi: { get: vi.fn().mockResolvedValue({ running: [], review: [], myTasks: [], today: { reminders: [], dueTasks: [] }, discussions: [], approvals: [], pinned: [], goalsAtRisk: [], budgetPulse: null, doneToday: [], proactiveFindings: [], teammatesActivity: [] } satisfies CockpitData) },
+  cockpitApi: {
+    get: vi.fn().mockResolvedValue({ running: [], review: [], myTasks: [], today: { reminders: [], dueTasks: [] }, stickyNotes: [], inbox: [], discussions: [], approvals: [], pinned: [], goalsAtRisk: [], budgetPulse: null, doneToday: [], proactiveFindings: [], teammatesActivity: [] } satisfies CockpitData),
+    counts: vi.fn().mockResolvedValue({ activeWorkMine: 0, activeWorkManaged: 0, awaitingReview: 0, running: 0, inbox: 0, approvals: 0, discussions: 0, generatedAt: "2026-07-10T00:00:00.000Z" }),
+  },
 }));
 vi.mock("../../../lib/queryKeys", () => ({
-  queryKeys: { cockpit: (id: string) => ["cockpit", id] },
+  queryKeys: {
+    cockpit: (id: string) => ["cockpit", id],
+    cockpitCounts: (id: string) => ["cockpit", id, "counts"],
+  },
 }));
 // Phase 3d: useCockpitPin calls useToast — mock it so panel tests don't need ToastProvider.
 vi.mock("../../../context/ToastContext", () => ({
@@ -32,14 +38,19 @@ import { CockpitRunningCard } from "./CockpitRunningCard";
 import { CockpitReviewCard } from "./CockpitReviewCard";
 import { CockpitMyTasksCard } from "./CockpitMyTasksCard";
 import { CockpitTodayCard } from "./CockpitTodayCard";
+import { CockpitStickyNotesCard } from "./CockpitStickyNotesCard";
+import { CockpitInboxCard } from "./CockpitInboxCard";
 import { CockpitDiscussionsCard } from "./CockpitDiscussionsCard";
 
 // ── Data factories ─────────────────────────────────────────────────────────
 
 type RunItem = CockpitData["running"][0];
 type TaskItem = CockpitData["review"][0];
+type WorkTaskItem = NonNullable<CockpitData["activeWork"]>["mine"]["items"][0];
 type ReminderItem = CockpitData["today"]["reminders"][0];
 type DiscussionItem = CockpitData["discussions"][0];
+type NoteItem = CockpitData["stickyNotes"][0];
+type InboxItem = CockpitData["inbox"][0];
 
 function makeRun(overrides?: Partial<RunItem>): RunItem {
   return { id: "run-1", agentName: "Atlas", status: "running", startedAt: null, issueId: "issue-1", ...overrides };
@@ -58,12 +69,56 @@ function makeTask(overrides?: Partial<TaskItem>): TaskItem {
   };
 }
 
+function makeWorkTask(overrides?: Partial<WorkTaskItem>): WorkTaskItem {
+  return {
+    ...makeTask(),
+    priority: "high",
+    responsibleUserId: "u1",
+    reviewerUserId: null,
+    responsibility: {
+      reason: "assigned_to_you",
+      entityType: "user",
+      entityId: "u1",
+      label: "Assigned to you",
+    },
+    ...overrides,
+  };
+}
+
 function makeReminder(overrides?: Partial<ReminderItem>): ReminderItem {
   return { id: "rem-1", content: "Review Q2 roadmap", triggerAt: new Date().toISOString(), ...overrides };
 }
 
 function makeDiscussion(overrides?: Partial<DiscussionItem>): DiscussionItem {
   return { id: "disc-1", title: "Sprint planning", pendingItemCount: 3, reason: "pending_items", ...overrides };
+}
+
+function makeNote(overrides?: Partial<NoteItem>): NoteItem {
+  return {
+    id: "note-1",
+    title: "Hiring",
+    body: "Ask Priya about design contractor availability",
+    color: "yellow",
+    updatedAt: new Date().toISOString(),
+    ...overrides,
+  };
+}
+
+function makeInboxItem(overrides?: Partial<InboxItem>): InboxItem {
+  return {
+    id: "hub-1",
+    lane: "waiting_on_you",
+    priority: "urgent",
+    title: "Approve launch budget",
+    summary: "Budget change needs review",
+    sourceType: "approval",
+    sourceId: "approval-1",
+    relatedEntityType: "approval",
+    relatedEntityId: "approval-1",
+    unread: true,
+    createdAt: new Date().toISOString(),
+    ...overrides,
+  };
 }
 
 // ── Panel: card rendering from shared data ─────────────────────────────────
@@ -76,6 +131,8 @@ describe("CommanderCockpitPanel with shared data", () => {
       review: [],
       myTasks: [],
       today: { reminders: [], dueTasks: [] },
+      stickyNotes: [],
+      inbox: [],
       discussions: [],
       approvals: [],
       pinned: [],
@@ -101,6 +158,8 @@ describe("CommanderCockpitPanel with shared data", () => {
       review: [makeTask({ status: "in_review" })],
       myTasks: [],
       today: { reminders: [], dueTasks: [] },
+      stickyNotes: [],
+      inbox: [],
       discussions: [],
       approvals: [],
       pinned: [],
@@ -119,13 +178,15 @@ describe("CommanderCockpitPanel with shared data", () => {
     expect(screen.getByTestId("cockpit-card-review")).toBeInTheDocument();
   });
 
-  it("renders 'All clear' when all slices are empty", () => {
+  it("renders the Sticky notes card even when all work slices are empty", () => {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     qc.setQueryData(["cockpit", "comp-1"], {
       running: [],
       review: [],
       myTasks: [],
       today: { reminders: [], dueTasks: [] },
+      stickyNotes: [],
+      inbox: [],
       discussions: [],
       approvals: [],
       pinned: [],
@@ -141,7 +202,8 @@ describe("CommanderCockpitPanel with shared data", () => {
         <CommanderCockpitPanel companyId="comp-1" onCollapse={vi.fn()} />
       </QueryClientProvider>,
     );
-    expect(screen.getByText(/all clear/i)).toBeInTheDocument();
+    expect(screen.getByTestId("cockpit-card-stickyNotes")).toBeInTheDocument();
+    expect(screen.queryByText(/all clear/i)).not.toBeInTheDocument();
   });
 });
 
@@ -233,6 +295,34 @@ describe("CockpitMyTasksCard", () => {
     fireEvent.click(screen.getByText("Write docs"));
     expect(onOpenTask).toHaveBeenCalledWith("t-42", "Write docs");
   });
+
+  it("renders Mine and Managed as distinct accountable-work groups", () => {
+    render(
+      <CockpitMyTasksCard
+        activeWork={{
+          mine: { items: [makeWorkTask({ id: "mine-1", title: "My launch task" })], total: 1 },
+          managed: {
+            items: [makeWorkTask({
+              id: "managed-1",
+              title: "Agent migration",
+              responsibility: {
+                reason: "managed_agent",
+                entityType: "agent",
+                entityId: "agent-1",
+                label: "Managed: Atlas",
+              },
+            })],
+            total: 4,
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByTestId("cockpit-active-work-mine")).toHaveTextContent("My launch task");
+    expect(screen.getByTestId("cockpit-active-work-managed")).toHaveTextContent("Agent migration");
+    expect(screen.getByText("Managed: Atlas")).toBeInTheDocument();
+    expect(screen.getByTestId("cockpit-active-work-managed")).toHaveTextContent("4");
+  });
 });
 
 // ── CockpitTodayCard ───────────────────────────────────────────────────────
@@ -285,6 +375,60 @@ describe("CockpitReviewCard — Pin button", () => {
 });
 
 // ── CockpitDiscussionsCard ─────────────────────────────────────────────────
+
+describe("CockpitStickyNotesCard", () => {
+  it("renders personal notes", () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <CockpitStickyNotesCard companyId="comp-1" items={[makeNote()]} />
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByText("Hiring")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("Ask Priya about design contractor availability")).toBeInTheDocument();
+  });
+
+  it("sends note context to Commander", () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const onAsk = vi.fn();
+    render(
+      <QueryClientProvider client={qc}>
+        <CockpitStickyNotesCard companyId="comp-1" items={[makeNote()]} onAsk={onAsk} />
+      </QueryClientProvider>,
+    );
+
+    fireEvent.click(screen.getByLabelText("Ask Commander about this note"));
+    expect(onAsk).toHaveBeenCalledWith(
+      "Use this note as context: Hiring - Ask Priya about design contractor availability",
+    );
+  });
+});
+
+describe("CockpitInboxCard", () => {
+  it("renders inbox items and opens the full inbox route", () => {
+    const onOpenFullPage = vi.fn();
+    render(
+      <CockpitInboxCard
+        items={[makeInboxItem()]}
+        onOpenFullPage={onOpenFullPage}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("Approve launch budget"));
+    expect(onOpenFullPage).toHaveBeenCalledWith("/inbox/waiting/hub-1");
+  });
+
+  it("sends inbox item context to Commander", () => {
+    const onAsk = vi.fn();
+    render(<CockpitInboxCard items={[makeInboxItem()]} onAsk={onAsk} />);
+
+    fireEvent.click(screen.getByLabelText("Ask Commander about this inbox item"));
+    expect(onAsk).toHaveBeenCalledWith(
+      "Use this inbox item as context: Approve launch budget - Budget change needs review",
+    );
+  });
+});
 
 describe("CockpitDiscussionsCard", () => {
   it("renders null when items is empty", () => {
@@ -357,6 +501,8 @@ const EMPTY_COCKPIT: CockpitData = {
   review: [],
   myTasks: [],
   today: { reminders: [], dueTasks: [] },
+  stickyNotes: [],
+  inbox: [],
   discussions: [],
   approvals: [],
   pinned: [],
@@ -379,9 +525,10 @@ describe("CommanderCockpitPanel — CockpitConversationZone integration", () => 
     expect(screen.queryByText(/all clear/i)).not.toBeInTheDocument();
   });
 
-  it("'All clear' appears when BOTH conversationRefs is empty AND all cards are empty", async () => {
+  it("shows Sticky notes when conversationRefs is empty and all work slices are empty", async () => {
     renderPanelWithRefs([], EMPTY_COCKPIT);
-    expect(await screen.findByText(/all clear/i)).toBeInTheDocument();
+    expect(await screen.findByTestId("cockpit-card-stickyNotes")).toBeInTheDocument();
+    expect(screen.queryByText(/all clear/i)).not.toBeInTheDocument();
   });
 
   it("zone title is shown in the panel", () => {
