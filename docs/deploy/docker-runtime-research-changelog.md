@@ -17,8 +17,9 @@ The research effort had two connected goals:
 - Make Docker Compose a practical remote-dev deployment path with external
   pgvector Postgres, durable app data, generated first-run secrets, health
   checks, Google-OAuth `authenticated` mode (first Google sign-in becomes the
-  instance admin), and an opt-in CEO invite bootstrap helper for headless
-  setups with no Google sign-in path.
+  instance admin), and an opt-in CEO invite bootstrap helper to pre-designate
+  that admin when the instance URL is exposed before the founder signs in
+  (the invite is redeemed via Google — not a way to run without Google).
 - Make runtime research repeatable in Docker, with deterministic mocked e2e
   coverage by default and an explicit, cost-bearing real-provider lane for
   Claude, Codex, and Gemini.

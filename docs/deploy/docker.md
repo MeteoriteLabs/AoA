@@ -13,9 +13,9 @@ The default `docker-compose.yml` is the recommended remote-dev deployment. It st
 - `db`: PostgreSQL with pgvector enabled via `pgvector/pgvector:pg18`
 
 It also defines an opt-in `bootstrap` service (behind the `bootstrap` Compose
-profile) for headless setups that have no Google sign-in path. See
-[Instance admin](#instance-admin) below — you do not need it for a normal
-authenticated deploy.
+profile) for pre-issuing an admin invite. See [Instance admin](#instance-admin)
+below — you do not need it for a normal deploy, where the first Google sign-in
+becomes admin.
 
 ```sh
 docker compose up --build
@@ -66,21 +66,28 @@ Pending migrations are applied automatically in the Compose stack with `AOA_MIGR
 
 ### Instance admin
 
-In `authenticated` mode the **first user to sign in with Google becomes the
-instance admin** automatically — no invite step is needed. Just open the app and
-sign in.
+Both admin paths run in `authenticated` mode with Google configured — pick one
+by how exposed the instance is:
 
-The `bootstrap` service (a one-shot helper that mints a CEO invite URL) is for
-headless or no-Google deployments only, so it is behind an opt-in profile and
-does **not** run during a normal `docker compose up`. Run it explicitly when you
-need an invite instead of a Google sign-in:
+- **First sign-in wins (zero config).** The first user to sign in with Google
+  becomes the instance admin automatically. Best for a solo or trusted instance
+  (behind a firewall / not publicly reachable) where no one else can sign in
+  before you.
+- **Pre-issued invite (recommended when the URL is exposed before you sign in).**
+  Generate an admin invite and hand it to the intended founder, so a stranger
+  who reaches the sign-in page first can't claim admin. The `bootstrap` service
+  mints this invite; it is behind an opt-in profile and does **not** run during a
+  normal `docker compose up`. The instance must already be up (Google configured,
+  server healthy):
 
-```sh
-docker compose --profile bootstrap run --rm bootstrap
-```
+  ```sh
+  docker compose --profile bootstrap run --rm bootstrap
+  ```
 
-It exits cleanly when the instance already has an admin user; pass
-`BOOTSTRAP_FORCE=true` to mint another invite anyway.
+  It exits cleanly when the instance already has an admin user; pass
+  `BOOTSTRAP_FORCE=true` to mint another invite anyway. (The invite is redeemed
+  via Google sign-in — it designates *who* becomes admin, it is not a way to run
+  without Google.)
 
 To open a psql shell against the bundled database:
 

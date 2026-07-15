@@ -57,6 +57,11 @@ export default defineConfig({
       AOA_INSTANCE_ID: "playwright-real-provider-e2e",
       AOA_BIND: "loopback",
       AOA_DEPLOYMENT_MODE: "local_trusted",
+      // Mirror the standard e2e config: local_trusted refuses to boot without
+      // Google OAuth unless the dev escape hatch is set. Required when this lane
+      // runs standalone via `pnpm test:e2e:real-provider` (outside the research
+      // compose wrapper, which otherwise injects this process-wide).
+      AOA_DEV_LOCAL_IDENTITY: "1",
       AOA_DEPLOYMENT_EXPOSURE: "private",
       AOA_AUTH_BASE_URL_MODE: "auto",
       COREPACK_ENABLE_DOWNLOAD_PROMPT: "0",
