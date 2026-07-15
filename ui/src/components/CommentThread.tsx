@@ -34,10 +34,33 @@ interface CommentReassignment {
   assigneeUserId: string | null;
 }
 
+/** The explicit task-composer effects sent with a comment. */
+export type TaskCommentAction = "comment" | "interrupt" | "reopen" | "reassign";
+
+export interface TaskCommentActionInput {
+  isClosed: boolean;
+  reopenRequested: boolean;
+  hasActiveRun: boolean;
+  interruptRequested: boolean;
+  hasReassignment: boolean;
+}
+
+/**
+ * Keep the task composer policy visible and testable:
+ * ordinary comments never interrupt a run; reopen and reassignment are
+ * explicit mutations; interruption is only valid while a run is active.
+ */
+export function resolveTaskCommentAction(input: TaskCommentActionInput): TaskCommentAction {
+  if (input.hasReassignment) return "reassign";
+  if (input.isClosed && input.reopenRequested) return "reopen";
+  if (input.hasActiveRun && input.interruptRequested) return "interrupt";
+  return "comment";
+}
+
 interface CommentThreadProps {
   comments: CommentWithRunMeta[];
   linkedRuns?: LinkedRunItem[];
-  onAdd: (body: string, reopen?: boolean, reassignment?: CommentReassignment) => Promise<void>;
+  onAdd: (body: string, reopen?: boolean, reassignment?: CommentReassignment, interrupt?: boolean) => Promise<void>;
   issueStatus?: string;
   agentMap?: Map<string, Agent>;
   imageUploadHandler?: (file: File) => Promise<string>;
@@ -49,6 +72,8 @@ interface CommentThreadProps {
   reassignOptions?: InlineEntityOption[];
   currentAssigneeValue?: string;
   mentions?: MentionOption[];
+  /** True when this task currently has a running agent execution. */
+  hasActiveRun?: boolean;
   /**
    * When provided, agent-authored comments render a thumbs up/down widget. The
    * existingVotes map lets the widget reflect the user's prior choice without
@@ -222,12 +247,14 @@ export function CommentThread({
   reassignOptions = [],
   currentAssigneeValue = "",
   mentions: providedMentions,
+  hasActiveRun = false,
   feedbackIssueId,
   existingVotesByCommentId,
   onVoteChange,
 }: CommentThreadProps) {
   const [body, setBody] = useState("");
   const [reopen, setReopen] = useState(true);
+  const [interrupt, setInterrupt] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [attaching, setAttaching] = useState(false);
   const [reassignTarget, setReassignTarget] = useState(currentAssigneeValue);
@@ -318,13 +345,26 @@ export function CommentThread({
     if (!trimmed) return;
     const hasReassignment = enableReassign && reassignTarget !== currentAssigneeValue;
     const reassignment = hasReassignment ? parseReassignment(reassignTarget) : null;
+    const action = resolveTaskCommentAction({
+      isClosed,
+      reopenRequested: reopen,
+      hasActiveRun,
+      interruptRequested: interrupt,
+      hasReassignment: !!reassignment,
+    });
 
     setSubmitting(true);
     try {
-      await onAdd(trimmed, isClosed && reopen ? true : undefined, reassignment ?? undefined);
+      await onAdd(
+        trimmed,
+        action === "reopen" ? true : undefined,
+        reassignment ?? undefined,
+        action === "interrupt" ? true : undefined,
+      );
       setBody("");
       if (draftKey) clearDraft(draftKey);
       setReopen(false);
+      setInterrupt(false);
       setReassignTarget(currentAssigneeValue);
     } finally {
       setSubmitting(false);
@@ -344,6 +384,7 @@ export function CommentThread({
   }
 
   const canSubmit = !submitting && !!body.trim();
+  const hasReassignment = enableReassign && reassignTarget !== currentAssigneeValue;
 
   return (
     <div
@@ -412,6 +453,18 @@ export function CommentThread({
                 className="rounded border-border"
               />
               Re-open
+            </label>
+          )}
+          {hasActiveRun && !isClosed && (
+            <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={interrupt}
+                disabled={hasReassignment}
+                onChange={(e) => setInterrupt(e.target.checked)}
+                className="rounded border-border"
+              />
+              Interrupt active run
             </label>
           )}
           {enableReassign && reassignOptions.length > 0 && (
