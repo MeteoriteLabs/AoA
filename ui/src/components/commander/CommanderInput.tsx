@@ -63,6 +63,8 @@ interface CommanderInputProps {
   onBlur?: (e: React.FocusEvent<HTMLDivElement>) => void;
   /** Accepts identity-preserving refs dropped from Commander Cockpit cards. */
   onReferenceDrop?: (payload: { ref: CommanderInputRef; prompt?: string }) => void;
+  /** Sends files from clipboard paste or OS drag/drop to the parent uploader. */
+  onFilesSelected?: (files: File[]) => void;
 }
 
 const EMPTY_SLASH: SlashState = { active: false, query: "" };
@@ -75,7 +77,7 @@ const EMPTY_SLASH: SlashState = { active: false, query: "" };
  */
 export const CommanderInput = forwardRef<CommanderInputHandle, CommanderInputProps>(
   function CommanderInput(
-    { disabled, placeholder, className, onSubmit, onEmptyChange, onSlashChange, onKeyDown, onBlur, onReferenceDrop },
+    { disabled, placeholder, className, onSubmit, onEmptyChange, onSlashChange, onKeyDown, onBlur, onReferenceDrop, onFilesSelected },
     ref,
   ) {
     const rootRef = useRef<HTMLDivElement>(null);
@@ -351,21 +353,29 @@ export const CommanderInput = forwardRef<CommanderInputHandle, CommanderInputPro
     const handlePaste = useCallback(
       (e: React.ClipboardEvent<HTMLDivElement>) => {
         e.preventDefault();
+        const files = Array.from(e.clipboardData?.files ?? []);
+        if (files.length > 0 && onFilesSelected) {
+          onFilesSelected(files);
+          return;
+        }
         const text = e.clipboardData?.getData("text/plain") ?? "";
         if (text) insertTextAtCaret(text);
         emitEmpty();
         emitSlash(readSlash());
       },
-      [insertTextAtCaret, emitEmpty, emitSlash, readSlash],
+      [insertTextAtCaret, emitEmpty, emitSlash, readSlash, onFilesSelected],
     );
 
     const handleDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
-      if (disabledRef.current || !onReferenceDrop) return;
-      if (!Array.from(e.dataTransfer.types).includes(COMMANDER_INPUT_REF_DRAG_MIME)) return;
+      if (disabledRef.current) return;
+      const types = Array.from(e.dataTransfer.types);
+      const hasReference = Boolean(onReferenceDrop) && types.includes(COMMANDER_INPUT_REF_DRAG_MIME);
+      const hasFiles = Boolean(onFilesSelected) && types.includes("Files");
+      if (!hasReference && !hasFiles) return;
       e.preventDefault();
       e.dataTransfer.dropEffect = "copy";
       setDragActive(true);
-    }, [onReferenceDrop]);
+    }, [onFilesSelected, onReferenceDrop]);
 
     const handleDragLeave = useCallback((e: React.DragEvent<HTMLDivElement>) => {
       if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
@@ -373,15 +383,24 @@ export const CommanderInput = forwardRef<CommanderInputHandle, CommanderInputPro
     }, []);
 
     const handleDrop = useCallback((e: React.DragEvent<HTMLDivElement>) => {
-      if (disabledRef.current || !onReferenceDrop) return;
-      const payload = parseCommanderInputRefDragPayload(
-        e.dataTransfer.getData(COMMANDER_INPUT_REF_DRAG_MIME),
-      );
-      if (!payload) return;
+      if (disabledRef.current) return;
+      if (onReferenceDrop) {
+        const payload = parseCommanderInputRefDragPayload(
+          e.dataTransfer.getData(COMMANDER_INPUT_REF_DRAG_MIME),
+        );
+        if (payload) {
+          e.preventDefault();
+          setDragActive(false);
+          onReferenceDrop(payload);
+          return;
+        }
+      }
+      const files = Array.from(e.dataTransfer.files ?? []);
+      if (files.length === 0 || !onFilesSelected) return;
       e.preventDefault();
       setDragActive(false);
-      onReferenceDrop(payload);
-    }, [onReferenceDrop]);
+      onFilesSelected(files);
+    }, [onFilesSelected, onReferenceDrop]);
 
     // Caret moves (click / arrows) can change slash context without an input event.
     const handleSelectionShift = useCallback(() => {

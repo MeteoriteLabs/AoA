@@ -80,12 +80,18 @@ import {
 } from "./commander/CommanderInput";
 import type { CommanderInputRef, CompanySkillListItem } from "@armyofagents/shared";
 import {
+  COMPOSER_ATTACHMENT_CONTENT_TYPES,
   MAX_COMMANDER_INPUT_REFS,
   appendCommanderInputRef,
   appendCommanderInputRefsToMessage,
   commanderInputRefKey,
   commanderInputRefKindLabel,
 } from "@armyofagents/shared";
+import { assetsApi } from "../api/assets";
+import {
+  assetResponseToCommanderInputRef,
+  validateCommanderAttachmentFiles,
+} from "./commander/commanderAttachments";
 import type { CommanderContextScope } from "@armyofagents/shared";
 import type { CommanderOutputRef } from "@armyofagents/shared";
 import { useInlineWorkQuestions, WorkQuestionInlineError } from "./work-questions/WorkQuestionInlineList";
@@ -536,6 +542,10 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
   const [inputRefs, setInputRefs] = useState<CommanderInputRef[]>([]);
   const inputRefsRef = useRef<CommanderInputRef[]>([]);
   const [duplicateInputRefKey, setDuplicateInputRefKey] = useState<string | null>(null);
+  const commanderFileInputRef = useRef<HTMLInputElement>(null);
+  const uploadSequenceRef = useRef(0);
+  const [uploadingFiles, setUploadingFiles] = useState<Array<{ id: number; name: string }>>([]);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [streaming, setStreamingLocal] = useState(false);
   // Task 9: skill picker. `skillPickerOpen` = opened via the `+` menu (shows
   // all skills). `slashActive`/`slashQuery` = opened via a `/token` typed in
@@ -550,6 +560,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<CommanderInputHandle>(null);
+  const commanderFileInputRef = useRef<HTMLInputElement>(null);
   const inputBarRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -840,6 +851,10 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
     if (!conversationId) return;
     setMessages([]);
     setStreamingLocal(false);
+    inputRefsRef.current = [];
+    setInputRefs([]);
+    setUploadingFiles([]);
+    setAttachmentError(null);
   }, [conversationId]);
 
   // Populate messages from history when historyData arrives.
@@ -989,13 +1004,13 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
     async (text: string) => {
       const trimmed = text.trim();
       const refsForTurn = inputRefsRef.current;
-      if (!trimmed && refsForTurn.length === 0) return;
+      if ((!trimmed && refsForTurn.length === 0) || uploadingFiles.length > 0) return;
       const baseText = trimmed || "Use the referenced context.";
       inputRefsRef.current = [];
       setInputRefs([]);
       await sendText(appendCommanderInputRefsToMessage(baseText, refsForTurn));
     },
-    [sendText],
+    [sendText, uploadingFiles.length],
   );
 
   const addInputRef = useCallback((ref: CommanderInputRef, suggestedPrompt?: string) => {
@@ -1009,6 +1024,40 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
     }
     requestAnimationFrame(() => inputRef.current?.focus());
   }, []);
+
+  const uploadCommanderFiles = useCallback(async (files: File[]) => {
+    if (!companyId || files.length === 0 || streaming) return;
+    const attachedCount = inputRefsRef.current.filter((ref) => ref.kind === "asset").length;
+    const selection = validateCommanderAttachmentFiles(
+      files,
+      attachedCount,
+      uploadingFiles.length,
+    );
+    setAttachmentError(selection.errors.length > 0 ? selection.errors.join(" ") : null);
+
+    for (const file of selection.accepted) {
+      const uploadId = ++uploadSequenceRef.current;
+      setUploadingFiles((current) => [...current, { id: uploadId, name: file.name }]);
+      try {
+        const asset = await assetsApi.uploadFile(
+          companyId,
+          file,
+          `commander/${conversationId ?? "new"}`,
+        );
+        addInputRef(assetResponseToCommanderInputRef(asset, file.name));
+      } catch {
+        setAttachmentError(`Could not upload ${file.name}. Choose the file again to retry.`);
+      } finally {
+        setUploadingFiles((current) => current.filter((item) => item.id !== uploadId));
+      }
+    }
+  }, [addInputRef, companyId, conversationId, streaming, uploadingFiles.length]);
+
+  const handleCommanderFileInput = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files ?? []);
+    event.target.value = "";
+    void uploadCommanderFiles(files);
+  }, [uploadCommanderFiles]);
 
   useEffect(() => {
     if (!duplicateInputRefKey) return;
@@ -1044,10 +1093,10 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
     // Read the expanded directive text (skill tokens → full use_skill lines)
     // straight from the rich input; it clears itself on submit.
     const text = inputRef.current?.getText() ?? "";
-    if (!text && inputRefsRef.current.length === 0) return;
+    if ((!text && inputRefsRef.current.length === 0) || uploadingFiles.length > 0) return;
     inputRef.current?.clear();
     await submitCommanderInput(text);
-  }, [submitCommanderInput]);
+  }, [submitCommanderInput, uploadingFiles.length]);
 
   const handleStop = useCallback(() => {
     abortRef.current?.abort();
@@ -1844,6 +1893,26 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
           onClose={closePicker}
         />
         <div className="rounded-lg border border-border bg-background focus-within:ring-2 focus-within:ring-brand-focus-ring focus-within:border-brand transition-shadow">
+          <input
+            ref={commanderFileInputRef}
+            type="file"
+            multiple
+            accept={COMPOSER_ATTACHMENT_CONTENT_TYPES.join(",")}
+            className="sr-only"
+            aria-label="Attach files"
+            onChange={handleCommanderFileInput}
+          />
+          {(uploadingFiles.length > 0 || attachmentError) && (
+            <div className="border-b border-border/70 px-2 py-2 text-xs" role="status" aria-live="polite">
+              {uploadingFiles.map((file) => (
+                <div key={file.id} className="flex items-center gap-2 text-muted-foreground">
+                  <Loader2 className="size-3 animate-spin" aria-hidden="true" />
+                  <span className="truncate">Uploading {file.name}…</span>
+                </div>
+              ))}
+              {attachmentError && <p className="mt-1 text-destructive">{attachmentError}</p>}
+            </div>
+          )}
           {inputRefs.length > 0 && (
             <div
               className="flex flex-wrap gap-1.5 border-b border-border/70 px-2 py-2"
@@ -1891,6 +1960,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
             disabled={streaming}
             onSubmit={(text) => void submitCommanderInput(text)}
             onReferenceDrop={({ ref, prompt }) => addInputRef(ref, prompt)}
+            onFilesSelected={(files) => void uploadCommanderFiles(files)}
             onEmptyChange={handleEmptyChange}
             onSlashChange={handleSlashChange}
             onKeyDown={handleKeyDown}
@@ -1909,6 +1979,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
           <div className="flex items-center gap-1.5 px-2 pb-2">
             {/* + add menu (functional) */}
             <InputAddMenu
+              onAttachFile={() => commanderFileInputRef.current?.click()}
               onUseSkill={() => {
                 setPickerIndex(0);
                 setSkillPickerOpen(true);

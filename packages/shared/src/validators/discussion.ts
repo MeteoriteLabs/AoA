@@ -11,7 +11,7 @@ import {
 
 export const createDiscussionEntrySchema = z.object({
   inputType: z.enum(DISCUSSION_ENTRY_INPUT_TYPES),
-  rawContent: z.string().min(1),
+  rawContent: z.string(),
   title: z.string().optional().nullable(),
   departmentId: z.string().uuid().optional().nullable(),
   projectId: z.string().uuid().optional().nullable(),
@@ -30,6 +30,14 @@ export const createDiscussionEntrySchema = z.object({
       }),
     )
     .optional(),
+}).superRefine((entry, ctx) => {
+  if (entry.rawContent.trim().length === 0 && (entry.attachments?.length ?? 0) === 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["rawContent"],
+      message: "rawContent is required unless the entry includes an attachment",
+    });
+  }
 });
 
 export type CreateDiscussionEntry = z.infer<typeof createDiscussionEntrySchema>;

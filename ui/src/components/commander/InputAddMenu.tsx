@@ -9,10 +9,11 @@ import { cn } from "@/lib/utils";
 
 interface InputAddMenuProps {
   onUseSkill: () => void;
+  onAttachFile: () => void;
   disabled?: boolean;
 }
 
-export function InputAddMenu({ onUseSkill, disabled = false }: InputAddMenuProps) {
+export function InputAddMenu({ onUseSkill, onAttachFile, disabled = false }: InputAddMenuProps) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -36,10 +37,9 @@ export function InputAddMenu({ onUseSkill, disabled = false }: InputAddMenuProps
           <Wand2 className="size-4" aria-hidden="true" />
           Use a skill
         </DropdownMenuItem>
-        <DropdownMenuItem disabled>
+        <DropdownMenuItem onSelect={onAttachFile}>
           <Paperclip className="size-4" aria-hidden="true" />
           <span>Attach file</span>
-          <span className="ml-auto text-xs text-muted-foreground opacity-60">Coming soon</span>
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>

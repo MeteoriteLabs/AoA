@@ -39,4 +39,19 @@ describe("createDiscussionEntrySchema", () => {
     expect(parsed.parentEntryId ?? null).toBeNull();
     expect(parsed.authorAgentId ?? null).toBeNull();
   });
+
+  it("accepts an attachment-only entry", () => {
+    const parsed = createDiscussionEntrySchema.parse({
+      inputType: "write",
+      rawContent: "",
+      attachments: [{ assetId: "11111111-1111-1111-1111-111111111111" }],
+    });
+    expect(parsed.rawContent).toBe("");
+  });
+
+  it("rejects an empty entry without attachments", () => {
+    expect(() => createDiscussionEntrySchema.parse({ inputType: "write", rawContent: "  " })).toThrow(
+      "rawContent is required unless the entry includes an attachment",
+    );
+  });
 });

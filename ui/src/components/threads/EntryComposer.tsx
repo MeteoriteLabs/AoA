@@ -49,6 +49,7 @@ export interface AssetRef {
   id: string;
   name: string;
   mimeType: string;
+  previewUrl?: string;
   /** Set when this attachment is a tracked artifact (founder file-artifact upload). */
   artifactId?: string;
 }
@@ -407,7 +408,11 @@ export function EntryComposer({
               className="inline-flex items-center gap-1.5 rounded-md border border-border bg-muted/40 px-2 py-1 text-[11px] text-foreground"
               data-testid={`entry-composer-attachment-${a.name}`}
             >
-              <FileText className="h-3 w-3" />
+              {a.mimeType.startsWith("image/") && a.previewUrl ? (
+                <img src={a.previewUrl} alt="" className="h-6 w-6 rounded object-cover" />
+              ) : (
+                <FileText className="h-3 w-3" />
+              )}
               <span className="truncate max-w-[160px]">{a.name}</span>
               <button
                 type="button"

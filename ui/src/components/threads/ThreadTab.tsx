@@ -419,6 +419,7 @@ export function ThreadTab({
       id: res.assetId,
       name: res.originalFilename ?? file.name,
       mimeType: res.contentType,
+      previewUrl: res.contentPath,
     };
   }
 

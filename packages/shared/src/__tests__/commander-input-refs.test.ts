@@ -19,6 +19,16 @@ const taskRef: CommanderInputRef = {
   detail: "status=in_review",
 };
 
+const assetRef: CommanderInputRef = {
+  v: 1,
+  kind: "asset",
+  id: "asset-1",
+  label: "launch-plan.pdf",
+  route: "/api/assets/asset-1/content",
+  detail: "contentType=application/pdf | byteSize=2048",
+  source: "commander-upload",
+};
+
 describe("commander input refs", () => {
   it("builds stable keys", () => {
     expect(commanderInputRefKey(taskRef)).toBe("task:task-1");
@@ -27,6 +37,13 @@ describe("commander input refs", () => {
   it("formats references as a compact text block", () => {
     expect(formatCommanderInputRefsBlock([taskRef])).toContain(
       "Task: AOA-1 Fix cockpit | id=task-1 | route=/issues/task-1 | detail=status=in_review",
+    );
+  });
+
+  it("formats uploaded assets as typed file context", () => {
+    expect(commanderInputRefKey(assetRef)).toBe("asset:asset-1");
+    expect(formatCommanderInputRefsBlock([assetRef])).toContain(
+      "File: launch-plan.pdf | id=asset-1 | route=/api/assets/asset-1/content | source=commander-upload | detail=contentType=application/pdf | byteSize=2048",
     );
   });
 
