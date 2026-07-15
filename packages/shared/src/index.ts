@@ -1286,6 +1286,7 @@ export {
 } from "./config-schema.js";
 
 export * from "./teams.js";
+export * from "./composer-contracts.js";
 export * from "./autonomy-levels.js";
 export * from "./inbound-routing.js";
 export * from "./user-notes.js";
