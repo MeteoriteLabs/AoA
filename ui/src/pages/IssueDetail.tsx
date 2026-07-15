@@ -977,6 +977,9 @@ export function IssueDetail() {
             }}
             onAddWithAttachments={async (body, files, reopen, interrupt) => {
               await issuesApi.addCommentWithAttachments(issueId!, body, files, reopen, interrupt);
+              invalidateIssue();
+              queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(issueId!) });
+              queryClient.invalidateQueries({ queryKey: queryKeys.issues.attachments(issueId!) });
             }}
             imageUploadHandler={async (file) => {
               const attachment = await uploadAttachment.mutateAsync(file);

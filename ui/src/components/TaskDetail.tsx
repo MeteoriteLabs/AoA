@@ -1896,6 +1896,9 @@ export function TaskDetail({
                       }}
                       onAddWithAttachments={async (body, files, reopen, interrupt) => {
                         await issuesApi.addCommentWithAttachments(issue.id, body, files, reopen, interrupt);
+                        invalidateIssue();
+                        queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(issue.id) });
+                        queryClient.invalidateQueries({ queryKey: queryKeys.issues.attachments(issue.id) });
                       }}
                       imageUploadHandler={async (file) => {
                         const attachment = await uploadAttachment.mutateAsync(file);

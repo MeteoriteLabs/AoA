@@ -342,6 +342,11 @@ export function CommentThread({
       hasReassignment: !!reassignment,
     });
 
+    if (selectedFiles.length > 0 && reassignment) {
+      setAttachmentError("Remove attachments before changing the assignee.");
+      return;
+    }
+
     setSubmitting(true);
     try {
       if (selectedFiles.length > 0 && onAddWithAttachments && !reassignment) {
