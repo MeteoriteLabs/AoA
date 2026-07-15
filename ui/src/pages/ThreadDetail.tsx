@@ -951,6 +951,10 @@ export function ThreadDetail({
         className={cn(
           "flex flex-1 min-h-0 overflow-hidden",
           !embedded && "rounded-xl border border-border bg-background shadow-sm",
+          // Embedded on the full desktop page: the parent supplies no card, so
+          // separate the center + viewer into their own rounded cards (matches
+          // the home view and Commander) with a gap between them.
+          embedded && "gap-2",
         )}
       >
 
@@ -971,6 +975,7 @@ export function ThreadDetail({
         <div
           className={cn(
             "flex-1 min-w-0 h-full overflow-hidden flex flex-col",
+            embedded && "rounded-xl border border-border bg-background shadow-sm",
             mobileTab === "thread" || mobileTab === "scope" || mobileTab === "branches"
               ? "flex"
               : "hidden md:flex",
@@ -1484,6 +1489,7 @@ export function ThreadDetail({
           className={cn(
             "relative shrink-0 h-full overflow-hidden bg-muted/20 transition-[width] duration-200",
             !embedded && "border-l border-border",
+            embedded && "rounded-xl border border-border shadow-sm",
             mobileTab !== "viewer" ? "hidden md:block" : "block",
           )}
           style={{ width: viewerCollapsed ? 46 : viewerWidth }}
