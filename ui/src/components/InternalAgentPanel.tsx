@@ -89,6 +89,8 @@ import {
 } from "@armyofagents/shared";
 import { assetsApi } from "../api/assets";
 import { agentsApi } from "../api/agents";
+import { useTeamAccess } from "../hooks/useTeamAccess";
+import { useComposerDraft } from "../lib/composerDraft";
 import {
   assetResponseToCommanderInputRef,
   validateCommanderAttachmentFiles,
@@ -539,6 +541,7 @@ interface AgentPanelContentProps {
 
 export function AgentPanelContent({ conversationId, onSelectConversation, onOpenSessions, enableViewerPanel, cardChrome = false, sessionsCollapsed, onSetSessionsCollapsed }: AgentPanelContentProps = {}) {
   const { selectedCompanyId } = useCompany();
+  const { currentUser } = useTeamAccess(selectedCompanyId);
   const { breadcrumbs } = useBreadcrumbs();
   const providedContextScope = useCommanderContextScope();
   const location = useLocation();
@@ -574,6 +577,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<CommanderInputHandle>(null);
+  const hydratedCommanderDraftKeyRef = useRef<string | null>(null);
   const inputBarRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -587,6 +591,18 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
 
   const companyId = selectedCompanyId ?? "";
+  const commanderDraft = useComposerDraft(
+    companyId && currentUser?.userId
+      ? { companyId, userId: currentUser.userId, surface: "commander", entityId: conversationId ?? "new" }
+      : null,
+  );
+  useEffect(() => {
+    if (!commanderDraft.storageKey || hydratedCommanderDraftKeyRef.current === commanderDraft.storageKey) return;
+    hydratedCommanderDraftKeyRef.current = commanderDraft.storageKey;
+    if (commanderDraft.draft.text && !inputRef.current?.getText()) {
+      inputRef.current?.insertText(commanderDraft.draft.text);
+    }
+  }, [commanderDraft.storageKey, commanderDraft.draft.text]);
   const inlineQuestionsQuery = useInlineWorkQuestions(companyId, {
     sourceCommanderConversationId: conversationId ?? undefined,
   });
@@ -1034,6 +1050,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
       const baseText = trimmed || "Use the referenced context.";
       const accepted = await sendText(appendCommanderInputRefsToMessage(baseText, refsForTurn));
       if (accepted) {
+        inputRef.current?.clear();
         const remaining = settleCommanderInputRefsAfterSend(
           inputRefsRef.current,
           refsForTurn,
@@ -1138,7 +1155,6 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
     // straight from the rich input; it clears itself on submit.
     const text = inputRef.current?.getText() ?? "";
     if ((!text && inputRefsRef.current.length === 0) || uploadingFiles.length > 0) return;
-    inputRef.current?.clear();
     await submitCommanderInput(text);
   }, [submitCommanderInput, uploadingFiles.length]);
 
@@ -2040,6 +2056,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
             onSubmit={(text) => void submitCommanderInput(text)}
             onReferenceDrop={({ ref, prompt }) => addInputRef(ref, prompt)}
             onFilesSelected={(files) => void uploadCommanderFiles(files)}
+            onTextChange={(text) => commanderDraft.setDraft({ text })}
             mentionOptions={mentionAgents.filter((agent) => agent.status !== "terminated").map((agent) => ({ id: agent.id, name: agent.name }))}
             onEmptyChange={handleEmptyChange}
             onSlashChange={handleSlashChange}

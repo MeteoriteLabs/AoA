@@ -69,6 +69,7 @@ interface CommanderInputProps {
   /** Sends files from clipboard paste or OS drag/drop to the parent uploader. */
   onFilesSelected?: (files: File[]) => void;
   mentionOptions?: MentionTokenData[];
+  onTextChange?: (text: string) => void;
 }
 
 const EMPTY_SLASH: SlashState = { active: false, query: "" };
@@ -81,7 +82,7 @@ const EMPTY_SLASH: SlashState = { active: false, query: "" };
  */
 export const CommanderInput = forwardRef<CommanderInputHandle, CommanderInputProps>(
   function CommanderInput(
-    { disabled, placeholder, className, onSubmit, onEmptyChange, onSlashChange, onKeyDown, onBlur, onReferenceDrop, onFilesSelected, mentionOptions = [] },
+    { disabled, placeholder, className, onSubmit, onEmptyChange, onSlashChange, onKeyDown, onBlur, onReferenceDrop, onFilesSelected, mentionOptions = [], onTextChange },
     ref,
   ) {
     const rootRef = useRef<HTMLDivElement>(null);
@@ -229,7 +230,8 @@ export const CommanderInput = forwardRef<CommanderInputHandle, CommanderInputPro
       root.innerHTML = "";
       emitEmpty();
       emitSlash(EMPTY_SLASH);
-    }, [emitEmpty, emitSlash]);
+      onTextChange?.("");
+    }, [emitEmpty, emitSlash, onTextChange]);
 
     const getText = useCallback(
       () => (rootRef.current ? serializeRoot(rootRef.current).trim() : ""),
@@ -242,7 +244,6 @@ export const CommanderInput = forwardRef<CommanderInputHandle, CommanderInputPro
       const text = serializeRoot(root).trim();
       if (!text) return;
       onSubmitRef.current(text);
-      clear();
     }, [clear]);
 
     const insertSkill = useCallback(
@@ -369,7 +370,8 @@ export const CommanderInput = forwardRef<CommanderInputHandle, CommanderInputPro
       const next = readMention();
       setMentionState(next);
       if (!next.active) setMentionIndex(0);
-    }, [emitEmpty, emitSlash, readMention, readSlash]);
+      onTextChange?.(rootRef.current ? serializeRoot(rootRef.current) : "");
+    }, [emitEmpty, emitSlash, onTextChange, readMention, readSlash]);
 
     const handleKeyDown = useCallback(
       (e: React.KeyboardEvent<HTMLDivElement>) => {
