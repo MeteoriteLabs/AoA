@@ -18,10 +18,20 @@ import { formatDateTime } from "../lib/utils";
 import {
   resolveTaskCommentAction,
 } from "../lib/task-composer-actions";
-import { COMPOSER_ATTACHMENT_CONTENT_TYPES, COMPOSER_MAX_ATTACHMENTS, COMPOSER_MAX_ATTACHMENT_BYTES } from "@armyofagents/shared";
+import {
+  COMPOSER_ATTACHMENT_CONTENT_TYPES,
+  COMPOSER_MAX_ATTACHMENTS,
+  COMPOSER_MAX_ATTACHMENT_BYTES,
+  createComposerSubmissionId,
+} from "@armyofagents/shared";
+import { useLiveUpdates } from "../context/LiveUpdatesProvider";
 import { ComposerFrame } from "./composer/ComposerFrame";
 import { ComposerIconButton } from "./composer/ComposerIconButton";
 import { ComposerAttachmentCard } from "./composer/ComposerAttachmentCard";
+import { ComposerSendFailedBanner } from "./composer/ComposerSendFailedBanner";
+import { ComposerOfflineStrip, toComposerConnectionState } from "./composer/ComposerOfflineStrip";
+import { ComposerDropOverlay } from "./composer/ComposerDropOverlay";
+import { useComposerDragDrop } from "./composer/useComposerDragDrop";
 
 export { resolveTaskCommentAction } from "../lib/task-composer-actions";
 export type { TaskCommentAction, TaskCommentActionInput } from "../lib/task-composer-actions";
@@ -44,11 +54,24 @@ interface CommentReassignment {
   assigneeUserId: string | null;
 }
 
+/** One send attempt, snapshotted BEFORE the await (mock §5): the banner's
+ *  Retry re-sends this exact shape — same clientSubmissionId — so the server
+ *  replays instead of double-posting when the first request actually landed. */
+interface CommentSendAttempt {
+  body: string;
+  files: File[];
+  revision: number;
+  reopen?: boolean;
+  interrupt?: boolean;
+  reassignment: CommentReassignment | null;
+  clientSubmissionId: string;
+}
+
 interface CommentThreadProps {
   comments: CommentWithRunMeta[];
   linkedRuns?: LinkedRunItem[];
-  onAdd: (body: string, reopen?: boolean, reassignment?: CommentReassignment, interrupt?: boolean) => Promise<void>;
-  onAddWithAttachments?: (body: string, files: File[], reopen?: boolean, interrupt?: boolean) => Promise<void>;
+  onAdd: (body: string, reopen?: boolean, reassignment?: CommentReassignment, interrupt?: boolean, clientSubmissionId?: string) => Promise<void>;
+  onAddWithAttachments?: (body: string, files: File[], reopen?: boolean, interrupt?: boolean, clientSubmissionId?: string) => Promise<void>;
   issueStatus?: string;
   agentMap?: Map<string, Agent>;
   imageUploadHandler?: (file: File) => Promise<string>;
@@ -250,6 +273,15 @@ export function CommentThread({
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [reassignTarget, setReassignTarget] = useState(currentAssigneeValue);
   const [highlightCommentId, setHighlightCommentId] = useState<string | null>(null);
+  const [sendFailed, setSendFailed] = useState(false);
+  const lastAttemptRef = useRef<CommentSendAttempt | null>(null);
+  // Bumped on every draft-changing edit (body typing, tray add/remove, Discard)
+  // so a retry that succeeds AFTER the draft diverged skips the clears instead
+  // of wiping the newer edits (workspace latest-draft pattern).
+  const composerRevisionRef = useRef(0);
+  const { connectionState } = useLiveUpdates();
+  const composerConnection = toComposerConnectionState(connectionState);
+  const isOffline = composerConnection === "offline";
   const editorRef = useRef<MarkdownEditorRef>(null);
   const attachInputRef = useRef<HTMLInputElement | null>(null);
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -331,7 +363,57 @@ export function CommentThread({
     }
   }, [location.hash, comments]);
 
+  // Stale-snapshot guard (mock §5: failure never eats your work): once the
+  // draft diverges from the failed attempt, Retry would post stale content and
+  // its success-clear would wipe the newer edits — dismiss the banner. The next
+  // send is a normal fresh submission with a NEW clientSubmissionId.
+  const handleBodyChange = (next: string) => {
+    composerRevisionRef.current += 1;
+    setBody(next);
+    if (
+      sendFailed &&
+      !submitting &&
+      lastAttemptRef.current &&
+      next.trim() !== lastAttemptRef.current.body
+    ) {
+      setSendFailed(false);
+    }
+  };
+
+  /** Shared send path: handleSubmit mints a fresh attempt, banner Retry
+   *  replays the stored one (same clientSubmissionId). */
+  async function performSend(attempt: CommentSendAttempt) {
+    setSubmitting(true);
+    try {
+      if (attempt.files.length > 0 && onAddWithAttachments && !attempt.reassignment) {
+        await onAddWithAttachments(attempt.body, [...attempt.files], attempt.reopen, attempt.interrupt, attempt.clientSubmissionId);
+      } else {
+        await onAdd(attempt.body, attempt.reopen, attempt.reassignment ?? undefined, attempt.interrupt, attempt.clientSubmissionId);
+      }
+      setSendFailed(false);
+      lastAttemptRef.current = null;
+      // Retry-success safety: only clear when the draft still matches the
+      // snapshot — mid-flight edits must survive the success-clear.
+      if (composerRevisionRef.current === attempt.revision) {
+        setBody("");
+        setSelectedFiles([]);
+        setAttachmentError(null);
+        if (draftKey) clearDraft(draftKey);
+        setReopen(false);
+        setInterrupt(false);
+        setReassignTarget(currentAssigneeValue);
+      }
+    } catch {
+      // Draft, files, and the attempt snapshot are all kept — the shared
+      // banner offers Retry (idempotent replay) / Edit / Discard.
+      setSendFailed(true);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   async function handleSubmit() {
+    if (submitting || isOffline) return;
     const trimmed = body.trim();
     if (!trimmed && selectedFiles.length === 0) return;
     const hasReassignment = enableReassign && reassignTarget !== currentAssigneeValue;
@@ -349,33 +431,88 @@ export function CommentThread({
       return;
     }
 
-    setSubmitting(true);
-    try {
-      if (selectedFiles.length > 0 && onAddWithAttachments && !reassignment) {
-        await onAddWithAttachments(trimmed, [...selectedFiles], action === "reopen" ? true : undefined, action === "interrupt" ? true : undefined);
-      } else {
-        await onAdd(trimmed, action === "reopen" ? true : undefined, reassignment ?? undefined, action === "interrupt" ? true : undefined);
+    setSendFailed(false);
+    // Minted ONCE per submission and snapshotted BEFORE the await so the
+    // banner's Retry re-sends the exact same attempt (same clientSubmissionId
+    // → the server replays if the first request actually landed).
+    const attempt: CommentSendAttempt = {
+      body: trimmed,
+      files: [...selectedFiles],
+      revision: composerRevisionRef.current,
+      reopen: action === "reopen" ? true : undefined,
+      interrupt: action === "interrupt" ? true : undefined,
+      reassignment,
+      clientSubmissionId: createComposerSubmissionId(),
+    };
+    lastAttemptRef.current = attempt;
+    await performSend(attempt);
+  }
+
+  /** Banner Retry: re-send the IDENTICAL stored attempt (same clientSubmissionId). */
+  function handleRetryFailedSend() {
+    const attempt = lastAttemptRef.current;
+    if (!attempt || submitting || isOffline) return;
+    void performSend(attempt);
+  }
+
+  function handleDismissFailedSend() {
+    setSendFailed(false);
+  }
+
+  function handleDiscardFailedSend() {
+    lastAttemptRef.current = null;
+    setSendFailed(false);
+    setAttachmentError(null);
+    composerRevisionRef.current += 1;
+    setBody("");
+    setSelectedFiles([]);
+    if (draftKey) clearDraft(draftKey);
+  }
+
+  /** Shared validation path for the picker AND frame drag-drop (mock §5). */
+  function addCommentFiles(incoming: File[]) {
+    if (!onAddWithAttachments || incoming.length === 0) return;
+    const next = [...selectedFiles];
+    const errors: string[] = [];
+    let reachedLimit = false;
+    for (const file of incoming) {
+      if (next.length >= COMPOSER_MAX_ATTACHMENTS) {
+        reachedLimit = true;
+        continue;
       }
-      setBody("");
-      setSelectedFiles([]);
-      setAttachmentError(null);
-      if (draftKey) clearDraft(draftKey);
-      setReopen(false);
-      setInterrupt(false);
-      setReassignTarget(currentAssigneeValue);
-    } finally {
-      setSubmitting(false);
+      if (!COMPOSER_ATTACHMENT_CONTENT_TYPES.includes(file.type as (typeof COMPOSER_ATTACHMENT_CONTENT_TYPES)[number])) {
+        errors.push(`Unsupported attachment type: ${file.type || "unknown"}.`);
+        continue;
+      }
+      if (file.size > COMPOSER_MAX_ATTACHMENT_BYTES) {
+        errors.push(`${file.name} exceeds the 10 MB attachment limit.`);
+        continue;
+      }
+      next.push(file);
     }
+    if (reachedLimit) errors.unshift(`Attach up to ${COMPOSER_MAX_ATTACHMENTS} files per comment.`);
+    setAttachmentError(errors.length > 0 ? errors.join(" ") : null);
+    // Only a REAL tray change (a file actually accepted) is divergence — an
+    // all-rejected add leaves the snapshot's tray intact, so the banner stays.
+    if (next.length !== selectedFiles.length) {
+      composerRevisionRef.current += 1;
+      setSelectedFiles(next);
+      if (sendFailed && !submitting) setSendFailed(false);
+    }
+  }
+
+  function removeSelectedFile(index: number) {
+    composerRevisionRef.current += 1;
+    setSelectedFiles((current) => current.filter((_, i) => i !== index));
+    // Retry must never post a removed (possibly sensitive) file.
+    if (sendFailed && !submitting) setSendFailed(false);
   }
 
   async function handleAttachFile(evt: ChangeEvent<HTMLInputElement>) {
     const file = evt.target.files?.[0];
     if (!file) return;
     if (onAddWithAttachments) {
-      if (selectedFiles.length >= COMPOSER_MAX_ATTACHMENTS) setAttachmentError(`Attach up to ${COMPOSER_MAX_ATTACHMENTS} files per comment.`);
-      else if (!COMPOSER_ATTACHMENT_CONTENT_TYPES.includes(file.type as (typeof COMPOSER_ATTACHMENT_CONTENT_TYPES)[number])) setAttachmentError(`Unsupported attachment type: ${file.type || "unknown"}.`);
-      else if (file.size > COMPOSER_MAX_ATTACHMENT_BYTES) setAttachmentError(`${file.name} exceeds the 10 MB attachment limit.`);
-      else { setSelectedFiles((current) => [...current, file]); setAttachmentError(null); }
+      addCommentFiles([file]);
       if (attachInputRef.current) attachInputRef.current.value = "";
       return;
     }
@@ -389,7 +526,13 @@ export function CommentThread({
     }
   }
 
-  const canSubmit = !submitting && (!!body.trim() || selectedFiles.length > 0);
+  // Frame-wide drag-drop (mock §5): validation stays in addCommentFiles.
+  const { isDragActive, dragHandlers } = useComposerDragDrop({
+    onDropFiles: addCommentFiles,
+    disabled: submitting,
+  });
+
+  const canSubmit = !submitting && !isOffline && (!!body.trim() || selectedFiles.length > 0);
   const hasReassignment = enableReassign && reassignTarget !== currentAssigneeValue;
 
   return (
@@ -423,7 +566,23 @@ export function CommentThread({
         className="sticky bottom-0 z-10 shrink-0 border-t border-border bg-background pt-3"
         data-testid="task-comments-composer"
       >
-        <ComposerFrame chrome="card" density="compact" className="gap-2 p-2.5">
+        <ComposerFrame
+          chrome="card"
+          density="compact"
+          className="gap-2 p-2.5"
+          data-testid="task-comments-composer-frame"
+          dragHandlers={dragHandlers}
+        >
+        <ComposerDropOverlay active={isDragActive} />
+        <ComposerOfflineStrip state={composerConnection} />
+        {sendFailed && (
+          <ComposerSendFailedBanner
+            onRetry={handleRetryFailedSend}
+            onEdit={handleDismissFailedSend}
+            onDiscard={handleDiscardFailedSend}
+            retrying={submitting}
+          />
+        )}
         {selectedFiles.length > 0 && (
           <div className="flex flex-wrap gap-1.5" data-testid="task-comment-attachments">
             {selectedFiles.map((file, index) => (
@@ -432,7 +591,7 @@ export function CommentThread({
                 name={file.name}
                 byteSize={file.size}
                 state="ready"
-                onRemove={() => setSelectedFiles((current) => current.filter((_, i) => i !== index))}
+                onRemove={() => removeSelectedFile(index)}
               />
             ))}
           </div>
@@ -441,7 +600,7 @@ export function CommentThread({
         <MarkdownEditor
           ref={editorRef}
           value={body}
-          onChange={setBody}
+          onChange={handleBodyChange}
           placeholder="Leave a comment..."
           mentions={mentions}
           onSubmit={handleSubmit}

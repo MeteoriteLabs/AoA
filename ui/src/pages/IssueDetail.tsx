@@ -443,8 +443,8 @@ export function IssueDetail() {
   });
 
   const addComment = useMutation({
-    mutationFn: ({ body, reopen, interrupt }: { body: string; reopen?: boolean; interrupt?: boolean }) =>
-      issuesApi.addComment(issueId!, body, reopen, interrupt),
+    mutationFn: ({ body, reopen, interrupt, clientSubmissionId }: { body: string; reopen?: boolean; interrupt?: boolean; clientSubmissionId?: string }) =>
+      issuesApi.addComment(issueId!, body, reopen, interrupt, undefined, clientSubmissionId),
     onSuccess: (comment) => {
       invalidateIssue();
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(issueId!) });
@@ -968,15 +968,15 @@ export function IssueDetail() {
             currentAssigneeValue={currentAssigneeValue}
             hasActiveRun={hasLiveRuns}
             mentions={mentionOptions}
-            onAdd={async (body, reopen, reassignment, interrupt) => {
+            onAdd={async (body, reopen, reassignment, interrupt, clientSubmissionId) => {
               if (reassignment) {
                 await addCommentAndReassign.mutateAsync({ body, reopen, reassignment });
                 return;
               }
-              await addComment.mutateAsync({ body, reopen, interrupt });
+              await addComment.mutateAsync({ body, reopen, interrupt, clientSubmissionId });
             }}
-            onAddWithAttachments={async (body, files, reopen, interrupt) => {
-              await issuesApi.addCommentWithAttachments(issueId!, body, files, reopen, interrupt);
+            onAddWithAttachments={async (body, files, reopen, interrupt, clientSubmissionId) => {
+              await issuesApi.addCommentWithAttachments(issueId!, body, files, reopen, interrupt, clientSubmissionId);
               invalidateIssue();
               queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(issueId!) });
               queryClient.invalidateQueries({ queryKey: queryKeys.issues.attachments(issueId!) });
