@@ -354,6 +354,7 @@ Extract the human branch of the approve transaction into `join-approval.ts` (sin
 - Create: `server/src/services/__tests__/join-approval.test.ts`
 - Modify: `server/src/routes/access.ts` (approve handler ~2431-2576; delete local `grantsFromDefaults` at 1354-1387 and import it; keep the agent branch's own use)
 - Modify: `packages/shared/src/types/access.ts` (add `approvalSource` to the `JoinRequest` type)
+- Modify: `packages/shared/src/constants.ts` (add `JOIN_REQUEST_APPROVAL_SOURCES` + `JoinRequestApprovalSource`)
 
 - [ ] **Step 1: Write the failing service test**
 
@@ -472,7 +473,7 @@ Expected: FAIL — cannot resolve `../join-approval.js`
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { joinRequests } from "@armyofagents/db";
-import { PERMISSION_KEYS } from "@armyofagents/shared";
+import { PERMISSION_KEYS, type JoinRequestApprovalSource } from "@armyofagents/shared";
 import { accessService } from "./access.js";
 import { teamService } from "./team.js";
 import { humanCapabilitiesService } from "./human-capabilities.js";
@@ -551,7 +552,7 @@ export type ApproveHumanJoinRequestArgs = {
    *  Auto-admit: { actorType: "system", actorId: "invite_email_match" } — never
    *  attribute the approval to the invitee. */
   activityActor: { actorType: "user" | "system"; actorId: string };
-  approvalSource: "founder" | "invite_email_match";
+  approvalSource: JoinRequestApprovalSource;
 };
 
 /**
@@ -725,10 +726,17 @@ import {
 
 NOTE: the original single row-update served both types; after the split the human update lives in the service and the agent update stays inline (shown above with `approvalSource: "founder"` added). Remove the now-dead `if (existing.requestType === "human") {...}` block from the retained agent code. If `txTeam` is no longer referenced in the agent branch, delete that line.
 
-(c) `toJoinRequestResponse` (access.ts:123-126) is a destructuring spread (`const { claimSecretHash: _x, ...safe } = row; return safe;`) — once Task 2 adds the column, `approvalSource` flows through **automatically**. No code change there; just verify the response carries it. For type hygiene, add the field to the shared `JoinRequest` type in `packages/shared/src/types/access.ts` (next to `approvedByUserId`):
+(c) `toJoinRequestResponse` (access.ts:123-126) is a destructuring spread (`const { claimSecretHash: _x, ...safe } = row; return safe;`) — once Task 2 adds the column, `approvalSource` flows through **automatically**. No code change there; just verify the response carries it. For type safety (Task-2 quality-review finding: mirror the sibling `JOIN_REQUEST_TYPES`/`JOIN_REQUEST_STATUSES` pattern), add to `packages/shared/src/constants.ts` next to those:
 
 ```ts
-  approvalSource: string | null;
+export const JOIN_REQUEST_APPROVAL_SOURCES = ["founder", "invite_email_match"] as const;
+export type JoinRequestApprovalSource = (typeof JOIN_REQUEST_APPROVAL_SOURCES)[number];
+```
+
+and to the shared `JoinRequest` type in `packages/shared/src/types/access.ts` (next to `approvedByUserId`, importing the type):
+
+```ts
+  approvalSource: JoinRequestApprovalSource | null;
 ```
 
 then rebuild shared: `pnpm --filter @armyofagents/shared build`.
@@ -741,7 +749,7 @@ Run: `pnpm test:run server/src` → all green (approve-route behavior unchanged 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add server/src/services/join-approval.ts server/src/services/__tests__/join-approval.test.ts server/src/routes/access.ts packages/shared/src/types/access.ts
+git add server/src/services/join-approval.ts server/src/services/__tests__/join-approval.test.ts server/src/routes/access.ts packages/shared/src/types/access.ts packages/shared/src/constants.ts
 git commit -m "refactor(access): extract human join-approval into a shared service + seed the company human record
 
 NOTE: human-path activity details now carry approvalSource instead of
