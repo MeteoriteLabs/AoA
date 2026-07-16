@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -534,8 +535,11 @@ describe("POST /issues/:id/comments-with-attachments", () => {
     mockIssueService.getCommentByClientSubmissionId
       .mockResolvedValueOnce(null) // first send creates
       .mockResolvedValueOnce(existing); // retry replays
+    // Real attachment rows carry the sha256 of the stored bytes — the replay
+    // completion check matches on it, so the mock must mirror production.
+    const proofSha = createHash("sha256").update(Buffer.from("fake-png")).digest("hex");
     mockIssueService.listAttachments.mockResolvedValue([
-      { id: "attachment-1", issueId, issueCommentId: "comment-1", originalFilename: "proof.png", contentType: "image/png" },
+      { id: "attachment-1", issueId, issueCommentId: "comment-1", originalFilename: "proof.png", contentType: "image/png", sha256: proofSha },
     ]);
 
     const app = createApp();
@@ -559,6 +563,57 @@ describe("POST /issues/:id/comments-with-attachments", () => {
     expect(mockIssueService.createAttachment).toHaveBeenCalledTimes(1);
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
+  });
+
+  it("completes missing attachments on a retried key after a partial failure (PR #291: no silent drop)", async () => {
+    // The comment commits BEFORE the files are stored. If attachment
+    // persistence dies after that point, the client's idempotent retry finds
+    // the comment via the replay check — it must then store + record the
+    // files the original send lost, not report success with a partial set.
+    const submissionId = "sub-att-2";
+    const existing = {
+      id: "comment-1",
+      issueId,
+      companyId,
+      body: "Please inspect these screenshots",
+      authorAgentId: null,
+      authorUserId: "board-user",
+      clientSubmissionId: submissionId,
+    };
+    mockIssueService.getCommentByClientSubmissionId
+      .mockResolvedValueOnce(null) // first send creates…
+      .mockResolvedValueOnce(existing); // …retry replays
+    // First send: the attachment row insert dies after the comment committed.
+    mockIssueService.createAttachment.mockRejectedValueOnce(new Error("db blip"));
+    // Nothing landed for this comment.
+    mockIssueService.listAttachments.mockResolvedValue([]);
+
+    const app = createApp();
+    const send = () =>
+      request(app)
+        .post(`/api/issues/${issueId}/comments-with-attachments`)
+        .field("body", "Please inspect these screenshots")
+        .field("clientSubmissionId", submissionId)
+        .attach("files", Buffer.from("fake-png"), { filename: "proof.png", contentType: "image/png" });
+
+    const first = await send();
+    expect(first.status).toBe(500); // partial failure surfaced, retry offered
+
+    const retry = await send();
+    expect(retry.status).toBe(200);
+    expect(retry.body.comment.id).toBe("comment-1");
+    // The retry completed the missing attachment against the replayed comment.
+    expect(retry.body.attachments).toHaveLength(1);
+    expect(retry.body.attachments[0]).toMatchObject({
+      issueCommentId: "comment-1",
+      originalFilename: "proof.png",
+    });
+    expect(mockIssueService.createAttachment).toHaveBeenCalledTimes(2); // 1 failed + 1 completed
+    expect(mockIssueService.createAttachment).toHaveBeenLastCalledWith(
+      expect.objectContaining({ issueId, issueCommentId: "comment-1", originalFilename: "proof.png" }),
+    );
+    // Still exactly one durable comment.
+    expect(mockIssueService.addComment).toHaveBeenCalledTimes(1);
   });
 });
 

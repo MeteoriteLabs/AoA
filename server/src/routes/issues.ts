@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { discussions, type Db } from "@armyofagents/db";
@@ -1666,7 +1667,12 @@ export function issueRoutes(db: Db, storage: StorageService) {
     for (const file of files) validateAttachmentFile(file);
 
     // Idempotent retry: replay the original comment + its attachments without
-    // re-storing files, re-creating records, or re-firing control effects/wakeups.
+    // re-creating records or re-firing control effects/wakeups. The comment
+    // commits BEFORE its files below, so the original send can die with the
+    // comment durable but attachments missing — the retry re-sends the files,
+    // and the replay must COMPLETE the missing ones (matched by content hash +
+    // filename, multiset) instead of silently returning the partial set
+    // (PR #291 review).
     const clientSubmissionId =
       typeof req.body?.clientSubmissionId === "string" ? req.body.clientSubmissionId : undefined;
     if (clientSubmissionId) {
@@ -1675,6 +1681,62 @@ export function issueRoutes(db: Db, storage: StorageService) {
         const replayAttachments = (await svc.listAttachments(id)).filter(
           (a) => a.issueCommentId === replay.id,
         );
+        if (files.length > 0) {
+          const replayActor = getActorInfo(req);
+          const remaining = new Map<string, number>();
+          for (const a of replayAttachments) {
+            const key = `${a.sha256}:${a.originalFilename ?? ""}`;
+            remaining.set(key, (remaining.get(key) ?? 0) + 1);
+          }
+          for (const file of files) {
+            const contentType = validateAttachmentFile(file);
+            const sha256 = createHash("sha256").update(file.buffer).digest("hex");
+            const key = `${sha256}:${file.originalname || ""}`;
+            const already = remaining.get(key) ?? 0;
+            if (already > 0) {
+              remaining.set(key, already - 1);
+              continue;
+            }
+            const stored = await storage.putFile({
+              companyId: issue.companyId,
+              namespace: `issues/${id}`,
+              originalFilename: file.originalname || null,
+              contentType,
+              body: file.buffer,
+            });
+            const attachment = await svc.createAttachment({
+              issueId: id,
+              issueCommentId: replay.id,
+              provider: stored.provider,
+              objectKey: stored.objectKey,
+              contentType: stored.contentType,
+              byteSize: stored.byteSize,
+              sha256: stored.sha256,
+              originalFilename: stored.originalFilename,
+              createdByAgentId: replayActor.agentId,
+              createdByUserId: replayActor.actorType === "user" ? replayActor.actorId : null,
+            });
+            replayAttachments.push(attachment);
+            await logActivity(db, {
+              companyId: issue.companyId,
+              actorType: replayActor.actorType,
+              actorId: replayActor.actorId,
+              agentId: replayActor.agentId,
+              runId: replayActor.runId,
+              action: "issue.attachment_added",
+              entityType: "issue",
+              entityId: id,
+              details: {
+                attachmentId: attachment.id,
+                originalFilename: attachment.originalFilename,
+                contentType: attachment.contentType,
+                byteSize: attachment.byteSize,
+                commentId: replay.id,
+                completedOnRetry: true,
+              },
+            });
+          }
+        }
         res.status(200).json({ comment: replay, attachments: replayAttachments });
         return;
       }
