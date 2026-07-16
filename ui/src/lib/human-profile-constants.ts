@@ -56,3 +56,15 @@ export function getTimezoneOptions(): string[] {
   const supported = Intl.supportedValuesOf?.("timeZone") ?? [];
   return Array.from(new Set(["UTC", ...FALLBACK_TIMEZONE_OPTIONS, ...supported])).sort((a, b) => a.localeCompare(b));
 }
+
+/**
+ * Founder/team_lead/team_member role display labels. Shared by the Team
+ * page's Humans tab (HumansTab) and anywhere else that surfaces a raw DB
+ * role slug to a human — e.g. the invited-join terminal's "as Team Member"
+ * copy. Unknown roles fall back to the raw slug at the call site.
+ */
+export const HUMAN_ROLE_LABELS: Record<string, string> = {
+  founder: "Founder",
+  team_lead: "Team Lead",
+  team_member: "Team Member",
+};

@@ -41,7 +41,11 @@ export const onboardingApi = { getProgress: getOnboardingProgress, advance: adva
  */
 export async function fetchJourney(): Promise<PostAuthJourneyResult> {
   const res = await fetch("/api/onboarding/journey", { credentials: "include" });
-  if (!res.ok) throw new Error(`journey fetch failed: ${res.status}`);
+  if (!res.ok) {
+    // Carry the HTTP status — the terminal distinguishes a dead session (401 →
+    // back to sign-in) from a transient failure (retry next tick).
+    throw Object.assign(new Error(`journey fetch failed: ${res.status}`), { status: res.status });
+  }
   return (await res.json()) as PostAuthJourneyResult;
 }
 

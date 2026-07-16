@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { useNavigate, useSearchParams } from "@/lib/router";
+import { useLocation, useNavigate, useSearchParams } from "@/lib/router";
 import { fetchJourney, finalizeInvitedJoin } from "../api/onboarding";
+import { HUMAN_ROLE_LABELS } from "@/lib/human-profile-constants";
 
 const POLL_MS = 7000;
 
@@ -19,6 +20,11 @@ type Phase = "checking" | "pending" | "invite_invalid" | "not_approved";
  */
 export function InvitedJoinTerminal() {
   const navigate = useNavigate();
+  // Destructured to primitives: react-router's location object is stable per
+  // navigation, but the test double for it is not (fresh object per render) —
+  // depending on the whole object would re-run this effect (and repoll) on
+  // every unrelated state update. Strings compare by value either way.
+  const { pathname, search } = useLocation();
   const queryClient = useQueryClient();
   const [searchParams] = useSearchParams();
   const [phase, setPhase] = useState<Phase>("checking");
@@ -79,8 +85,12 @@ export function InvitedJoinTerminal() {
           } catch (err) {
             if (cancelled) return;
             if ((err as { status?: number }).status === 401) {
-              // Session gone — nothing to poll for. Back through sign-in.
-              navigate("/auth?next=%2Fonboarding%2Fjoin", { replace: true });
+              // Session gone — nothing to poll for. Back through sign-in,
+              // preserving the live deep link so a successful re-auth returns
+              // the user right back here.
+              navigate(`/auth?next=${encodeURIComponent(pathname + search)}`, {
+                replace: true,
+              });
               return;
             }
             // Transient — finalizedRef stays false, so the next tick retries
@@ -90,8 +100,17 @@ export function InvitedJoinTerminal() {
         } else {
           setPhase((p) => (p === "invite_invalid" ? p : "pending"));
         }
-      } catch {
-        if (!cancelled) setPhase((p) => (p === "checking" ? "pending" : p));
+      } catch (err) {
+        if (cancelled) return;
+        if ((err as { status?: number }).status === 401) {
+          // Session gone mid-poll — nothing to poll for. Back through sign-in,
+          // preserving the live deep link.
+          navigate(`/auth?next=${encodeURIComponent(pathname + search)}`, {
+            replace: true,
+          });
+          return;
+        }
+        setPhase((p) => (p === "checking" ? "pending" : p));
       }
       if (!cancelled) {
         timerRef.current = window.setTimeout(() => void tick(), POLL_MS);
@@ -102,7 +121,7 @@ export function InvitedJoinTerminal() {
       cancelled = true;
       if (timerRef.current !== null) window.clearTimeout(timerRef.current);
     };
-  }, [enter, navigate, searchParams]);
+  }, [enter, navigate, searchParams, pathname, search]);
 
   if (phase === "checking") {
     return <div className="mx-auto max-w-md py-16 text-sm text-muted-foreground">Checking your invitation…</div>;
@@ -135,7 +154,7 @@ export function InvitedJoinTerminal() {
     <div className="mx-auto max-w-md py-16 text-center">
       <h1 className="text-xl font-semibold">
         You're joining{company ? ` ${company.name}` : ""}
-        {company ? ` as ${company.role}` : ""}
+        {company ? ` as ${HUMAN_ROLE_LABELS[company.role] ?? company.role}` : ""}
       </h1>
       <p className="mt-2 text-sm text-muted-foreground">
         Your request is with the admin for approval. This page will let you in automatically the

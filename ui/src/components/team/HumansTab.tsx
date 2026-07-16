@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Users, UserPlus, Shield, ArrowRightLeft, RotateCw, X, Search, Mail } from "lucide-react";
-import type { HumanSearchResult, JoinRequest, TeamMemberSummary, TeamSummary, TeamPermissionSummary, UserRole } from "@armyofagents/shared";
+import type { HumanSearchResult, JoinRequest, TeamMemberSummary, TeamSummary, TeamPermissionSummary } from "@armyofagents/shared";
 import { useNavigate } from "@/lib/router";
 import { accessApi } from "../../api/access";
 import { teamApi } from "../../api/team";
@@ -20,15 +20,10 @@ import { Badge } from "@/components/ui/badge";
 import { ClickableDiv } from "@/components/ui/clickable-div";
 import { cn } from "@/lib/utils";
 import { getInitials } from "@/lib/initials";
+import { HUMAN_ROLE_LABELS } from "@/lib/human-profile-constants";
 import { RoleBadge } from "./RoleBadge";
 
 type RoleFilter = "all" | "founder" | "team_lead" | "team_member" | "pending";
-
-const ROLE_LABELS: Record<UserRole, string> = {
-  founder: "Founder",
-  team_lead: "Team Lead",
-  team_member: "Team Member",
-};
 
 const ROLE_FILTERS: { value: RoleFilter; label: string }[] = [
   { value: "all", label: "All" },

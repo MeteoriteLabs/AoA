@@ -7,6 +7,10 @@ const routerState = vi.hoisted(() => ({ searchParams: new URLSearchParams() }));
 vi.mock("@/lib/router", () => ({
   useNavigate: () => mockNavigate,
   useSearchParams: () => [routerState.searchParams],
+  useLocation: () => ({
+    pathname: "/onboarding/join",
+    search: routerState.searchParams.toString() ? `?${routerState.searchParams.toString()}` : "",
+  }),
 }));
 const mockRemoveQueries = vi.hoisted(() => vi.fn());
 // Stable object — the real QueryClient is render-stable; a fresh object per
@@ -54,7 +58,7 @@ describe("InvitedJoinTerminal", () => {
     render(<InvitedJoinTerminal />);
     expect(await screen.findByText(/joining/i)).toBeTruthy();
     expect(screen.getByText(/Acme/)).toBeTruthy();
-    expect(screen.getByText(/team_member/)).toBeTruthy();
+    expect(screen.getByText(/Team Member/)).toBeTruthy();
     expect(mockNavigate).not.toHaveBeenCalled();
   });
 
@@ -123,9 +127,10 @@ describe("InvitedJoinTerminal", () => {
     );
     render(<InvitedJoinTerminal />);
     await waitFor(() =>
-      expect(mockNavigate).toHaveBeenCalledWith("/auth?next=%2Fonboarding%2Fjoin", {
-        replace: true,
-      }),
+      expect(mockNavigate).toHaveBeenCalledWith(
+        `/auth?next=${encodeURIComponent("/onboarding/join")}`,
+        { replace: true },
+      ),
     );
     expect(finalizeInvitedJoin).toHaveBeenCalledTimes(1);
     // the poll loop stopped — no retry on the next interval
@@ -133,5 +138,24 @@ describe("InvitedJoinTerminal", () => {
       await vi.advanceTimersByTimeAsync(8000);
     });
     expect(finalizeInvitedJoin).toHaveBeenCalledTimes(1);
+  });
+
+  it("journey-poll 401 bails to sign-in", async () => {
+    fetchJourney.mockRejectedValue(
+      Object.assign(new Error("journey fetch failed: 401"), { status: 401 }),
+    );
+    render(<InvitedJoinTerminal />);
+    await waitFor(() =>
+      expect(mockNavigate).toHaveBeenCalledWith(
+        `/auth?next=${encodeURIComponent("/onboarding/join")}`,
+        { replace: true },
+      ),
+    );
+    expect(finalizeInvitedJoin).not.toHaveBeenCalled();
+    // the poll loop stopped — no retry on the next interval
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(8000);
+    });
+    expect(fetchJourney).toHaveBeenCalledTimes(1);
   });
 });
