@@ -630,7 +630,7 @@ describe("WorkspaceTimeline — input area", () => {
     });
 
     expect(screen.getByPlaceholderText("Message Alpha Agent...")).toBeInTheDocument();
-    expect(screen.getByText("Send")).toBeInTheDocument();
+    expect(screen.getByText("Send & wake")).toBeInTheDocument();
   });
 
   it("Send creates a comment and lets the server wake the agent", async () => {
@@ -643,7 +643,7 @@ describe("WorkspaceTimeline — input area", () => {
     const textarea = screen.getByPlaceholderText("Message Alpha Agent...");
     fireEvent.change(textarea, { target: { value: "Please review the changes" } });
 
-    const sendButton = screen.getByText("Send");
+    const sendButton = screen.getByText("Send & wake");
     fireEvent.click(sendButton);
 
     await waitFor(() => {
@@ -730,7 +730,7 @@ describe("WorkspaceTimeline — input area", () => {
 
     const textarea = screen.getByPlaceholderText("Message Alpha Agent...");
     fireEvent.change(textarea, { target: { value: "see attached" } });
-    fireEvent.click(screen.getByText("Send"));
+    fireEvent.click(screen.getByText("Send & wake"));
 
     await waitFor(() => {
       expect(issuesApiMock.addCommentWithAttachments).toHaveBeenCalledWith("issue-1", "see attached", [file]);
@@ -749,7 +749,7 @@ describe("WorkspaceTimeline — input area", () => {
     const fileInput = screen.getByTestId("workspace-chatbar-file-input") as HTMLInputElement;
     fireEvent.change(fileInput, { target: { files: [file] } });
 
-    fireEvent.click(screen.getByText("Send"));
+    fireEvent.click(screen.getByText("Send & wake"));
 
     await waitFor(() => {
       expect(issuesApiMock.addCommentWithAttachments).toHaveBeenCalledWith("issue-1", "", [file]);
@@ -787,7 +787,7 @@ describe("WorkspaceTimeline — input area", () => {
     const file = new File(["fake"], "evidence.txt", { type: "text/plain" });
     fireEvent.change(screen.getByTestId("workspace-chatbar-file-input"), { target: { files: [file] } });
     fireEvent.change(textarea, { target: { value: "Please inspect this" } });
-    fireEvent.click(screen.getByText("Send"));
+    fireEvent.click(screen.getByText("Send & wake"));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Could not send message");
     expect(screen.getByRole("alert")).toHaveTextContent("Upload failed");
@@ -799,10 +799,10 @@ describe("WorkspaceTimeline — input area", () => {
     renderTimeline();
 
     await waitFor(() => {
-      expect(screen.getByText("Send")).toBeInTheDocument();
+      expect(screen.getByText("Send & wake")).toBeInTheDocument();
     });
 
-    const sendButton = screen.getByText("Send");
+    const sendButton = screen.getByText("Send & wake");
     expect(sendButton).toBeDisabled();
   });
 

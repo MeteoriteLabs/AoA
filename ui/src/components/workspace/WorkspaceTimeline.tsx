@@ -702,18 +702,37 @@ export function WorkspaceTimeline({
               selectedModel={modelOverride}
               onModelChange={setModelOverride}
               onAttach={handleAttach}
+              onMention={() => {
+                setChatInput((prev) => (prev.length === 0 || /\s$/.test(prev) ? `${prev}@` : `${prev} @`));
+                requestAnimationFrame(() => textareaRef.current?.focus());
+              }}
               onSend={handleSend}
               sendDisabled={!canSend || sendMessage.isPending}
                 sendPending={sendMessage.isPending}
+                // The label states the actual effect: waking the agent vs
+                // queueing behind the live run (approved mock §4).
+                sendLabel={hasLiveRuns ? "Send" : "Send & wake"}
                 activeRun={hasLiveRuns}
-                interruptRequested={interruptRequested}
-                onInterruptChange={setInterruptRequested}
                 closedTask={issue?.status === "done" || issue?.status === "cancelled"}
                 reopenRequested={reopenRequested}
                 onReopenChange={setReopenRequested}
               />
           </div>
         </ComposerFrame>
+      )}
+
+      {/* Interrupt is a deliberate, separate choice BELOW the card (mock §4);
+          it remains a flag applied on the next send. */}
+      {assignedAgent && hasLiveRuns && issue?.status !== "done" && issue?.status !== "cancelled" && (
+        <label className="mx-3 -mt-1 mb-3 flex shrink-0 cursor-pointer select-none items-center gap-2 text-[11px] text-muted-foreground" data-testid="workspace-chatbar-interrupt">
+          <input
+            type="checkbox"
+            checked={interruptRequested}
+            onChange={(event) => setInterruptRequested(event.target.checked)}
+            className="rounded border-border"
+          />
+          Interrupt active run — applies to the next send
+        </label>
       )}
 
       {/* Fallback when no agent assigned */}
@@ -779,13 +798,15 @@ export function WorkspaceTimeline({
               selectedModel={modelOverride}
               onModelChange={setModelOverride}
               onAttach={handleAttach}
+              onMention={() => {
+                setChatInput((prev) => (prev.length === 0 || /\s$/.test(prev) ? `${prev}@` : `${prev} @`));
+                requestAnimationFrame(() => textareaRef.current?.focus());
+              }}
               onSend={handleSend}
               showModelLabel={false}
               sendDisabled={!canSend || sendMessage.isPending}
               sendPending={sendMessage.isPending}
               activeRun={hasLiveRuns}
-              interruptRequested={interruptRequested}
-              onInterruptChange={setInterruptRequested}
               closedTask={issue?.status === "done" || issue?.status === "cancelled"}
               reopenRequested={reopenRequested}
               onReopenChange={setReopenRequested}

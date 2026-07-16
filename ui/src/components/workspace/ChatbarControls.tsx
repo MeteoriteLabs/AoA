@@ -1,5 +1,5 @@
 // ui/src/components/workspace/ChatbarControls.tsx
-import { Paperclip, Send } from "lucide-react";
+import { AtSign, Paperclip, Send } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { shortModelName } from "./adapter-utils";
 
@@ -18,12 +18,14 @@ interface ChatbarControlsProps {
   onModelChange?: (model: string | null) => void;
   onSend: () => void;
   onAttach?: () => void;
+  /** Inserts an @ at the caret and focuses the editor (approved mock §1). */
+  onMention?: () => void;
   showModelLabel?: boolean;
   sendDisabled: boolean;
   sendPending: boolean;
+  /** Action label states what actually happens: Send / Send & wake / Comment. */
+  sendLabel?: string;
   activeRun?: boolean;
-  interruptRequested?: boolean;
-  onInterruptChange?: (value: boolean) => void;
   closedTask?: boolean;
   reopenRequested?: boolean;
   onReopenChange?: (value: boolean) => void;
@@ -35,12 +37,11 @@ export function ChatbarControls({
   selectedModel,
   onSend,
   onAttach,
+  onMention,
   showModelLabel = true,
   sendDisabled,
   sendPending,
-  activeRun = false,
-  interruptRequested = false,
-  onInterruptChange,
+  sendLabel = "Send",
   closedTask = false,
   reopenRequested = false,
   onReopenChange,
@@ -66,6 +67,19 @@ export function ChatbarControls({
           <Paperclip className="h-3.5 w-3.5" />
         </button>
 
+        {/* Mention button (approved mock §1: @ next to attach on every surface) */}
+        {onMention && (
+          <button
+            type="button"
+            onClick={onMention}
+            className="p-1 hover:bg-muted/50 rounded transition-colors text-muted-foreground hover:text-foreground"
+            title="Mention someone"
+            aria-label="Mention someone"
+          >
+            <AtSign className="h-3.5 w-3.5" />
+          </button>
+        )}
+
         {/* Read-only model label — CLI adapters manage model selection themselves */}
         {showModelLabel && (
           <span className="text-[11px] text-muted-foreground px-1.5 py-0.5 bg-muted/40 rounded">
@@ -74,18 +88,9 @@ export function ChatbarControls({
         )}
       </div>
 
+      {/* Interrupt moved BELOW the card frame (approved mock §4) — rendered by
+          the host. Re-open stays here (closed tasks have no run to interrupt). */}
       <div className="flex items-center gap-3 text-[11px] text-muted-foreground">
-        {activeRun && onInterruptChange && !closedTask && (
-          <label className="inline-flex items-center gap-1.5 cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={interruptRequested}
-              onChange={(event) => onInterruptChange(event.target.checked)}
-              className="rounded border-border"
-            />
-            Interrupt active run
-          </label>
-        )}
         {closedTask && onReopenChange && (
           <label className="inline-flex items-center gap-1.5 cursor-pointer select-none">
             <input
@@ -114,7 +119,7 @@ export function ChatbarControls({
           "Sending..."
         ) : (
           <>
-            Send
+            {sendLabel}
             <Send className="h-3 w-3 ml-1.5" />
           </>
         )}
