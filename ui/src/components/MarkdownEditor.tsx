@@ -69,6 +69,8 @@ interface MarkdownEditorProps {
 
 export interface MarkdownEditorRef {
   focus: () => void;
+  /** Insert text at the end of the document and focus (composer @ button). */
+  insertText: (text: string) => void;
 }
 
 /* ---- Mention detection helpers ---- */
@@ -359,6 +361,10 @@ const MarkdownEditorInner = forwardRef<MarkdownEditorRef, MarkdownEditorProps>(
     useImperativeHandle(forwardedRef, () => ({
       focus: () => {
         ref.current?.focus(undefined, { defaultSelection: "rootEnd" });
+      },
+      insertText: (text: string) => {
+        ref.current?.focus(undefined, { defaultSelection: "rootEnd" });
+        ref.current?.insertMarkdown(text);
       },
     }), []);
 

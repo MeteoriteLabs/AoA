@@ -2,7 +2,7 @@ import { memo, useEffect, useMemo, useRef, useState, type ChangeEvent } from "re
 import { Link, useLocation } from "react-router-dom";
 import type { IssueComment, Agent, FeedbackVote } from "@armyofagents/shared";
 import { Button } from "@/components/ui/button";
-import { Paperclip } from "lucide-react";
+import { AtSign, Paperclip } from "lucide-react";
 import { Identity } from "./Identity";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
 import { MarkdownBody } from "./MarkdownBody";
@@ -467,6 +467,15 @@ export function CommentThread({
               >
                 <Paperclip className="h-4 w-4" />
               </Button>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                onClick={() => editorRef.current?.insertText("@")}
+                title="Mention someone"
+                aria-label="Mention someone"
+              >
+                <AtSign className="h-4 w-4" />
+              </Button>
             </div>
           )}
           {isClosed && (
@@ -478,18 +487,6 @@ export function CommentThread({
                 className="rounded border-border"
               />
               Re-open
-            </label>
-          )}
-          {hasActiveRun && !isClosed && (
-            <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={interrupt}
-                disabled={hasReassignment}
-                onChange={(e) => setInterrupt(e.target.checked)}
-                className="rounded border-border"
-              />
-              Interrupt active run
             </label>
           )}
           {enableReassign && reassignOptions.length > 0 && (
@@ -537,6 +534,21 @@ export function CommentThread({
           </Button>
         </div>
         </ComposerFrame>
+
+        {/* Interrupt is a deliberate, separate choice BELOW the card (approved
+            mock §4); still a flag applied on the next send. */}
+        {hasActiveRun && !isClosed && (
+          <label className="mt-2 flex cursor-pointer select-none items-center gap-2 text-[11px] text-muted-foreground" data-testid="task-comments-interrupt">
+            <input
+              type="checkbox"
+              checked={interrupt}
+              disabled={hasReassignment}
+              onChange={(e) => setInterrupt(e.target.checked)}
+              className="rounded border-border"
+            />
+            Interrupt active run — applies to the next send
+          </label>
+        )}
       </div>
     </ComposerFrame>
   );
