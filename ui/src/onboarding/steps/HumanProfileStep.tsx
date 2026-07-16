@@ -73,7 +73,14 @@ export function HumanProfileStep({ ctx, onComplete }: StepProps) {
         socialLinks: links
           .map((url) => url.trim())
           .filter(Boolean)
-          .map((url) => ({ type: "website", label: null, url })),
+          .map((url) => ({
+            type: "website",
+            label: null,
+            // Approval-time seeding validates with z.string().url() — a
+            // schemeless paste (linkedin.com/in/ada) would silently vanish
+            // from the company profile. Default to https.
+            url: /^[a-z][a-z0-9+.-]*:\/\//i.test(url) ? url : `https://${url}`,
+          })),
       });
       await advanceOnboarding({
         companyId: ctx.companyId,

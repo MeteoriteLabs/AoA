@@ -126,7 +126,7 @@ describe("HumanProfileStep (shared; wired invited)", () => {
     expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("Grace");
   });
 
-  it("social links are trimmed, filtered, and mapped to type website", async () => {
+  it("social links are trimmed, filtered, scheme-defaulted, and mapped to type website", async () => {
     const onComplete = vi.fn();
     render(<HumanProfileStep ctx={ctx} onComplete={onComplete} onBack={() => {}} />);
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Ada" } });
@@ -134,13 +134,20 @@ describe("HumanProfileStep (shared; wired invited)", () => {
     fireEvent.change(screen.getByLabelText("Timezone"), { target: { value: "Asia/Kolkata" } });
     fireEvent.click(screen.getByText("+ Add link"));
     fireEvent.click(screen.getByText("+ Add link"));
+    fireEvent.click(screen.getByText("+ Add link"));
     fireEvent.change(screen.getByLabelText("Social link 1"), { target: { value: "https://ada.dev" } });
     fireEvent.change(screen.getByLabelText("Social link 2"), { target: { value: "   " } });
+    // Schemeless paste — the approval-time z.string().url() filter would
+    // silently drop it; the step must default to https.
+    fireEvent.change(screen.getByLabelText("Social link 3"), { target: { value: "linkedin.com/in/ada" } });
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     await waitFor(() => expect(onComplete).toHaveBeenCalled());
     expect(saveUserProfile).toHaveBeenCalledWith(
       expect.objectContaining({
-        socialLinks: [{ type: "website", label: null, url: "https://ada.dev" }],
+        socialLinks: [
+          { type: "website", label: null, url: "https://ada.dev" },
+          { type: "website", label: null, url: "https://linkedin.com/in/ada" },
+        ],
       }),
     );
   });

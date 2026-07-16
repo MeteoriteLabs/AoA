@@ -3,6 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useLocation, useNavigate, useSearchParams } from "@/lib/router";
 import { fetchJourney, finalizeInvitedJoin } from "../api/onboarding";
 import { HUMAN_ROLE_LABELS } from "@/lib/human-profile-constants";
+import { queryKeys } from "@/lib/queryKeys";
 
 const POLL_MS = 7000;
 
@@ -14,9 +15,11 @@ type Phase = "checking" | "pending" | "invite_invalid" | "not_approved";
  * immediately (the invitation carried the approval), and a transient blip must
  * not silently downgrade an auto-admit-eligible user to founder-wait (finalize
  * is idempotent, so retrying is safe). Otherwise poll the journey until the
- * founder approves (journey→returning) or the request is rejected /
- * invalidated. Never navigates to "/" while still invited — that re-triggers
- * the join loop.
+ * founder approves (the invitation leaves the pending set) or the request is
+ * rejected / invalidated. Routing is invitation-driven, NOT journey-label
+ * driven: an existing member of another company (journey "returning") with a
+ * pending invitation here still gets the finalize attempt. Never navigates to
+ * "/" while an invitation is still pending — that re-triggers the join loop.
  */
 export function InvitedJoinTerminal() {
   const navigate = useNavigate();
@@ -32,10 +35,13 @@ export function InvitedJoinTerminal() {
   const timerRef = useRef<number | null>(null);
   const finalizedRef = useRef(false);
 
-  const enter = useCallback(() => {
-    // Evict the gate's cached pre-approval `invited` journey — otherwise the
-    // index gate can bounce us straight back to /onboarding/join.
+  const enter = useCallback(async () => {
+    // Evict the gate's cached pre-approval journey AND refresh the companies
+    // list (the root CompanyContext subscription cached an empty list from
+    // before membership existed — without this, a just-admitted teammate lands
+    // on the founder-oriented empty Lobby).
     queryClient.removeQueries({ queryKey: ["onboarding", "journey"], exact: true });
+    await queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
     navigate("/", { replace: true });
   }, [navigate, queryClient]);
 
@@ -45,34 +51,45 @@ export function InvitedJoinTerminal() {
       try {
         const j = await fetchJourney();
         if (cancelled) return;
-        if (j.journey === "returning") {
-          enter();
-          return;
-        }
-        if (j.journey !== "invited") {
-          // No membership and no pending invitation left → rejected/expired.
+        // Invitation-driven: the journey label alone can't route this page —
+        // "returning" means a membership exists SOMEWHERE (the resolver returns
+        // it for members of any company), so an existing member with a pending
+        // invitation for the target company must still get the finalize
+        // attempt, not a bounce to "/". Prefer the deep-linked ?company=
+        // (InviteLanding passes it) when it is one of the caller's pending
+        // invitations; else the resolver's target (invited) or the first
+        // pending invitation (returning).
+        const deepLinked = searchParams.get("company");
+        const invitations = j.pendingInvitations ?? [];
+        const targetId =
+          (deepLinked && invitations.some((p) => p.companyId === deepLinked)
+            ? deepLinked
+            : j.journey === "invited"
+              ? j.targetCompanyId
+              : invitations[0]?.companyId) ?? null;
+        const inv = invitations.find((p) => p.companyId === targetId) ?? null;
+
+        if (!inv) {
+          // No pending invitation remains for the target.
+          if (j.journey === "returning") {
+            // Approved (the invitation left the pending set) — or simply an
+            // existing member with nothing pending here: enter the app.
+            await enter();
+            return;
+          }
+          // founder/no-invitation: the request was rejected or the invite died.
           setPhase("not_approved");
           return;
         }
-        // Prefer the deep-linked ?company= (InviteLanding passes it) when it is
-        // one of the caller's pending invitations; else the resolver's target.
-        const deepLinked = searchParams.get("company");
-        const targetId =
-          (deepLinked && j.pendingInvitations.some((p) => p.companyId === deepLinked)
-            ? deepLinked
-            : j.targetCompanyId) ?? null;
-        const inv =
-          j.pendingInvitations.find((p) => p.companyId === targetId) ??
-          j.pendingInvitations[0] ??
-          null;
-        if (inv) setCompany({ name: inv.companyName, role: inv.role });
+
+        setCompany({ name: inv.companyName, role: inv.role });
         if (!finalizedRef.current && targetId) {
           try {
             const result = await finalizeInvitedJoin(targetId);
             if (cancelled) return;
             finalizedRef.current = true;
             if (result.admitted) {
-              enter();
+              await enter();
               return;
             }
             if (result.status === "rejected") {
