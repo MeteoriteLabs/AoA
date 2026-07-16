@@ -1,5 +1,5 @@
-import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
 import { ComposerFrame } from "./ComposerFrame";
 
 describe("ComposerFrame", () => {
@@ -9,6 +9,26 @@ describe("ComposerFrame", () => {
     expect(frame).toHaveAttribute("data-composer-frame");
     expect(frame).toHaveAttribute("data-density", "compact");
     expect(frame).toHaveTextContent("editor");
+  });
+
+  it("base class list includes relative (drop overlay anchor) and never overflow", () => {
+    render(<ComposerFrame data-testid="f"><div /></ComposerFrame>);
+    const el = screen.getByTestId("f");
+    expect(el.className).toContain("relative");
+    expect(el.className).not.toContain("overflow-hidden");
+    expect(el.className).not.toContain("overflow-clip");
+    expect(el.className).not.toMatch(/\boverflow-/);
+  });
+
+  it("spreads dragHandlers onto the wrapper div", () => {
+    const onDragEnter = vi.fn();
+    render(
+      <ComposerFrame data-testid="f" dragHandlers={{ onDragEnter }}>
+        <div />
+      </ComposerFrame>,
+    );
+    fireEvent.dragEnter(screen.getByTestId("f"));
+    expect(onDragEnter).toHaveBeenCalledTimes(1);
   });
 
   it("card chrome renders the bordered focus-glow card (Quiet Operator)", () => {

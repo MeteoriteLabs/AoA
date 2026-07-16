@@ -1,4 +1,4 @@
-import type { CSSProperties, ReactNode } from "react";
+import type { CSSProperties, DOMAttributes, ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
 export type ComposerDensity = "comfortable" | "compact" | "mobile";
@@ -24,10 +24,18 @@ export interface ComposerFrameProps {
   "data-thread-id"?: string;
   "data-reply"?: string;
   "data-parent-entry-id"?: string;
+  /**
+   * Frame-wide drag-drop handlers (see useComposerDragDrop). Optional —
+   * surfaces that don't support drop-to-attach omit this.
+   */
+  dragHandlers?: Pick<
+    DOMAttributes<HTMLDivElement>,
+    "onDragEnter" | "onDragOver" | "onDragLeave" | "onDrop"
+  >;
 }
 
 /** Shared Quiet Operator frame: status/context, tray, editor, controls, error. */
-export function ComposerFrame({ density = "comfortable", chrome = "bare", children, className, style, "data-testid": testId, "data-thread-id": threadId, "data-reply": reply, "data-parent-entry-id": parentEntryId }: ComposerFrameProps) {
+export function ComposerFrame({ density = "comfortable", chrome = "bare", children, className, style, "data-testid": testId, "data-thread-id": threadId, "data-reply": reply, "data-parent-entry-id": parentEntryId, dragHandlers }: ComposerFrameProps) {
   return (
     <div
       data-composer-frame
@@ -38,8 +46,12 @@ export function ComposerFrame({ density = "comfortable", chrome = "bare", childr
       data-reply={reply}
       data-parent-entry-id={parentEntryId}
       style={style}
+      {...dragHandlers}
       className={cn(
-        "composer-frame flex min-w-0 flex-col",
+        // "relative" anchors ComposerDropOverlay's absolute inset-0 — never
+        // add an overflow class here (mention popovers render absolute
+        // bottom-full INSIDE the frame and would be clipped).
+        "composer-frame relative flex min-w-0 flex-col",
         // Dark-theme perceivability: border-border on bg-background is near-black
         // on near-black (user-verified invisible). border-strong + the field
         // surface tone give the card real contrast against both the pane and
