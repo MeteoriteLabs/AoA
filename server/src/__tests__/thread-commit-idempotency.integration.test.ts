@@ -778,6 +778,68 @@ describe.skipIf(process.platform === "win32")("thread-commit idempotency (real D
     expect(finalRow[0].committed_entry_id).toBeTruthy();
   });
 
+  // Test 9b — same-key composer sends must not drift the denormalized counters
+  // (PR #291 review). Two independent connections race addEntry with the SAME
+  // clientSubmissionId: both can miss the replay pre-check; the loser's insert
+  // no-ops via the (discussion_id, client_submission_id) partial unique index,
+  // and its transaction must ABORT so its entrySeq/entryCount/lastEntryAt bump
+  // rolls back. Timing-independent: whatever the interleaving (pre-check catch
+  // vs conflict path), the end state is exactly ONE entry per key, and
+  // entry_count == entry_seq == number of durable entries. Five raced pairs on
+  // one thread widen the window so at least some pairs hit the conflict path.
+  it("racing the same clientSubmissionId on two connections never drifts entryCount/entrySeq", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const [t9b] = rowsOf(
+      await db.execute(sql`
+        INSERT INTO discussions (id, company_id, status, created_by)
+        VALUES (gen_random_uuid(), ${companyId}, 'active', 'integration-test')
+        RETURNING id
+      `),
+    );
+    const t9bId = String(t9b.id);
+    const db2 = createDb(connectionString) as Db;
+    const svc1 = discussionService(db);
+    const svc2 = discussionService(db2);
+
+    const PAIRS = 5;
+    for (let i = 0; i < PAIRS; i++) {
+      const key = `race:${i}:${randomUUID()}`;
+      const [a, b] = await Promise.all([
+        svc1.addEntry(
+          companyId,
+          t9bId,
+          { inputType: "write", rawContent: `raced entry ${i}`, clientSubmissionId: key },
+          "integration-test",
+        ),
+        svc2.addEntry(
+          companyId,
+          t9bId,
+          { inputType: "write", rawContent: `raced entry ${i}`, clientSubmissionId: key },
+          "integration-test",
+        ),
+      ]);
+      // Both callers converge on the same durable row.
+      expect(a?.id).toBeTruthy();
+      expect(b?.id).toBe(a?.id);
+    }
+
+    // Exactly one entry per key, and the denormalized counters match reality —
+    // no +1-with-no-row drift, no burned seq from a rolled-back loser.
+    const [entries] = rowsOf(
+      await db.execute(sql`
+        SELECT count(*)::int AS n FROM discussion_entries WHERE discussion_id = ${t9bId}
+      `),
+    );
+    expect(Number(entries.n)).toBe(PAIRS);
+    const [counters] = rowsOf(
+      await db.execute(sql`
+        SELECT entry_count::int AS c, entry_seq::int AS s FROM discussions WHERE id = ${t9bId}
+      `),
+    );
+    expect(Number(counters.c)).toBe(PAIRS);
+    expect(Number(counters.s)).toBe(PAIRS);
+  });
+
   // Test 10 — convene wakeup dedup discriminated by stable sourceActionId (PR-B2 / #202 P2).
   //
   // Two genuinely-DISTINCT convene_agent actions to the SAME target on the SAME thread

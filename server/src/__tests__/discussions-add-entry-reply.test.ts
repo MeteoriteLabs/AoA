@@ -303,6 +303,55 @@ describe("discussionService.addEntry — parentEntryId", () => {
     expect(db.transaction).not.toHaveBeenCalled();
   });
 
+  it("rolls back the counter bump when the insert loses a same-key race (no entryCount drift)", async () => {
+    // Two simultaneous same-key sends can BOTH miss the replay pre-check. The
+    // loser's insert no-ops via onConflictDoNothing — but its transaction had
+    // already bumped entrySeq/entryCount. The tx must ABORT (rolling back the
+    // bump) and the service must return the winner's row (PR #291 review).
+    let txThrew: unknown = null;
+    const { db } = createCapturingDb({
+      selects: [
+        // 1. select discussion → found
+        [{ id: "disc-1", companyId: "co" }],
+        // 2. clientSubmissionId pre-check → NOT yet visible (simultaneous race)
+        [],
+        // 3. post-tx re-select → the winner's committed row
+        [{ id: "entry-winner", seq: 3, clientSubmissionId: "sub-race" }],
+      ],
+      updates: [
+        // tx.update discussions → counter bump "succeeds" inside the doomed tx
+        [{ entrySeq: 4 }],
+      ],
+      inserts: [
+        // tx.insert entry → conflict, no row returned
+        [],
+      ],
+    });
+    // Wrap the mock transaction so a throw from the callback is observable
+    // (real drizzle rolls back and rethrows on a callback throw).
+    const innerTransaction = db.transaction;
+    db.transaction = vi.fn(async (fn: (tx: any) => Promise<any>) => {
+      try {
+        return await innerTransaction(fn);
+      } catch (err) {
+        txThrew = err;
+        throw err;
+      }
+    });
+
+    const result = await discussionService(db).addEntry(
+      "co",
+      "disc-1",
+      { rawContent: "same content", inputType: "write", clientSubmissionId: "sub-race" },
+      "user:1",
+    );
+
+    // The loser's transaction ABORTED — the counter bump cannot commit.
+    expect(txThrew).not.toBeNull();
+    // …and the caller still gets the winner's durable row.
+    expect(result).toMatchObject({ id: "entry-winner" });
+  });
+
   it("records the clientSubmissionId on the inserted entry for a first Send", async () => {
     const { db, captured } = createCapturingDb({
       selects: [

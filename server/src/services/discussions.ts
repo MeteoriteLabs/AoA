@@ -125,6 +125,22 @@ async function validateEntryAttachments(
   }
 }
 
+/**
+ * Sentinel thrown inside addEntry's insert transaction when the entry insert
+ * lost a same-key race (onConflictDoNothing returned no row). Aborting the
+ * transaction rolls back the entrySeq/entryCount/lastEntryAt bump that ran
+ * before the insert — committing it would drift the denormalized entryCount
+ * (+1 with no entry) and burn a seq for a row that never landed (PR #291
+ * review). Real drizzle rolls back and rethrows on a callback throw; the
+ * caller catches this sentinel and re-selects the winner's row.
+ */
+class EntryInsertRaceLostError extends Error {
+  constructor() {
+    super("discussion entry insert lost a clientSubmissionId race");
+    this.name = "EntryInsertRaceLostError";
+  }
+}
+
 function isMemoryType(
   type: string,
 ): type is "decision" | "insight" | "context" | "reference" | "preference" {
@@ -1011,78 +1027,99 @@ export function discussionService(db: Db) {
       // row, so concurrent inserts serialize on the discussions row) instead of
       // max(seq)+1, which races. The counter bump also carries the denormalized
       // count update (Gotcha 1.2) so both land in one statement.
-      const entry = await db.transaction(async (tx) => {
-        const [{ entrySeq }] = await tx
-          .update(discussions)
-          .set({
-            entrySeq: sql`${discussions.entrySeq} + 1`,
-            entryCount: sql`${discussions.entryCount} + 1`,
-            lastEntryAt: now,
-            updatedAt: now,
-          })
-          .where(eq(discussions.id, discussionId))
-          .returning({ entrySeq: discussions.entrySeq });
+      let entry: typeof discussionEntries.$inferSelect | undefined;
+      try {
+        entry = await db.transaction(async (tx) => {
+          const [{ entrySeq }] = await tx
+            .update(discussions)
+            .set({
+              entrySeq: sql`${discussions.entrySeq} + 1`,
+              entryCount: sql`${discussions.entryCount} + 1`,
+              lastEntryAt: now,
+              updatedAt: now,
+            })
+            .where(eq(discussions.id, discussionId))
+            .returning({ entrySeq: discussions.entrySeq });
 
-        const [inserted] = await tx
-          .insert(discussionEntries)
-          .values({
-            discussionId,
-            inputType: data.inputType,
-            rawContent: data.rawContent,
-            title: data.title ?? null,
-            departmentId: data.departmentId ?? null,
-            projectId: data.projectId ?? null,
-            goalId: data.goalId ?? null,
-            sourceInfo: data.sourceInfo ?? null,
-            parentEntryId: data.parentEntryId ?? null,
-            authorAgentId: data.authorAgentId ?? null,
-            // #197: idempotency anchor for action-gated commits; null for normal entries.
-            sourceActionId: data.sourceActionId ?? null,
-            clientSubmissionId,
-            // QA-BUG-015: discuss-phase entries are NOT auto-extracted. Mark
-            // 'skipped' so the (gated-off) durable drain never picks them up
-            // and the UI doesn't show a misleading "pending extraction"
-            // state. Extraction happens later, deliberately, via Memory
-            // Keeper at phase=done or Adjutant's extract_memory_candidates.
-            extractionStatus: "skipped",
-            seq: entrySeq,
-            createdBy: actorId,
-          })
-          // Concurrency backstop for the replay check above: a truly simultaneous
-          // duplicate key resolves to one row via the partial unique index.
-          // TARGETED at that index only (CI integration catch, 2026-07-16): an
-          // unqualified DO NOTHING also swallowed source_action_id conflicts —
-          // which the gated-commit machinery RELIES on throwing (#197
-          // isUniqueViolation check) — and would silently drop a seq collision.
-          // With the arbiter scoped, a NULL-key row can never match it, so all
-          // other unique violations raise exactly as before.
-          .onConflictDoNothing({
-            target: [discussionEntries.discussionId, discussionEntries.clientSubmissionId],
-            where: sql`client_submission_id IS NOT NULL`,
-          })
-          .returning();
+          const [inserted] = await tx
+            .insert(discussionEntries)
+            .values({
+              discussionId,
+              inputType: data.inputType,
+              rawContent: data.rawContent,
+              title: data.title ?? null,
+              departmentId: data.departmentId ?? null,
+              projectId: data.projectId ?? null,
+              goalId: data.goalId ?? null,
+              sourceInfo: data.sourceInfo ?? null,
+              parentEntryId: data.parentEntryId ?? null,
+              authorAgentId: data.authorAgentId ?? null,
+              // #197: idempotency anchor for action-gated commits; null for normal entries.
+              sourceActionId: data.sourceActionId ?? null,
+              clientSubmissionId,
+              // QA-BUG-015: discuss-phase entries are NOT auto-extracted. Mark
+              // 'skipped' so the (gated-off) durable drain never picks them up
+              // and the UI doesn't show a misleading "pending extraction"
+              // state. Extraction happens later, deliberately, via Memory
+              // Keeper at phase=done or Adjutant's extract_memory_candidates.
+              extractionStatus: "skipped",
+              seq: entrySeq,
+              createdBy: actorId,
+            })
+            // Concurrency backstop for the replay check above: a truly simultaneous
+            // duplicate key resolves to one row via the partial unique index.
+            // TARGETED at that index only (CI integration catch, 2026-07-16): an
+            // unqualified DO NOTHING also swallowed source_action_id conflicts —
+            // which the gated-commit machinery RELIES on throwing (#197
+            // isUniqueViolation check) — and would silently drop a seq collision.
+            // With the arbiter scoped, a NULL-key row can never match it, so all
+            // other unique violations raise exactly as before.
+            .onConflictDoNothing({
+              target: [discussionEntries.discussionId, discussionEntries.clientSubmissionId],
+              where: sql`client_submission_id IS NOT NULL`,
+            })
+            .returning();
 
-        // Phase E1: link attachments (assets or artifacts) to the entry in the
-        // same transaction so the entry+attachments commit atomically.
-        if (inserted && data.attachments && data.attachments.length > 0) {
-          const rows = data.attachments
-            .filter((a) => a.assetId || a.artifactId)
-            .map((a) => ({
-              discussionEntryId: inserted.id,
-              assetId: a.assetId ?? null,
-              artifactId: a.artifactId ?? null,
-            }));
-          if (rows.length > 0) {
-            await tx.insert(discussionEntryAttachments).values(rows);
+          // Lost the same-key insert race → ABORT so the counter bump above
+          // rolls back with the transaction. Only the client-submission arbiter
+          // can swallow an insert (any other unique violation throws), so a
+          // missing row here always means a simultaneous-duplicate loser.
+          if (!inserted) {
+            throw new EntryInsertRaceLostError();
           }
-        }
 
-        return inserted;
-      });
+          // Phase E1: link attachments (assets or artifacts) to the entry in the
+          // same transaction so the entry+attachments commit atomically.
+          if (data.attachments && data.attachments.length > 0) {
+            const rows = data.attachments
+              .filter((a) => a.assetId || a.artifactId)
+              .map((a) => ({
+                discussionEntryId: inserted.id,
+                assetId: a.assetId ?? null,
+                artifactId: a.artifactId ?? null,
+              }));
+            if (rows.length > 0) {
+              await tx.insert(discussionEntryAttachments).values(rows);
+            }
+          }
+
+          return inserted;
+        });
+      } catch (err) {
+        if (!(err instanceof EntryInsertRaceLostError)) throw err;
+        entry = undefined;
+      }
 
       // Lost the insert race → the winning entry already fired its side-effects.
       // Return it without re-publishing events, re-arming crew, or re-logging.
-      if (!entry && clientSubmissionId) {
+      // (Only the client-submission arbiter can swallow the insert, so the key
+      // is always non-null on this path.)
+      if (!entry) {
+        if (!clientSubmissionId) {
+          throw new Error(
+            "discussion entry insert returned no row without a clientSubmissionId",
+          );
+        }
         return db
           .select()
           .from(discussionEntries)
