@@ -1,13 +1,24 @@
 import { Router, type Request, type Response } from "express";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { authUsers, invites, joinRequests } from "@armyofagents/db";
 import { parseInviteRoleMetadata } from "../services/team.js";
+import { claimInviteAndFileJoinRequest } from "../services/invite-claim.js";
 import {
   approveHumanJoinRequestTx,
   autoAdmitApprovalIdentity,
   buildHumanJoinApprovalServices,
 } from "../services/join-approval.js";
+
+/** Mirrors routes/access.ts requestIp (not exported there). */
+function requestIp(req: Request) {
+  const forwarded = req.header("x-forwarded-for");
+  if (forwarded) {
+    const first = forwarded.split(",")[0]?.trim();
+    if (first) return first;
+  }
+  return req.ip || "unknown";
+}
 
 /**
  * Invited auto-admit (spec §8): the invitation carries the approval. Fired by
@@ -17,6 +28,12 @@ import {
  * else the request stays pending for founder approval. Invite validity was
  * established AT ACCEPT (10-minute TTL, consumed on accept) — expiresAt is NOT
  * re-checked; only a defensive revokedAt check remains.
+ *
+ * Tokenless entry: when NO join_request exists (the user signed in without
+ * ever clicking the invite link), an OPEN invite matching the caller's
+ * VERIFIED email is claimed atomically (accept + file) and the finalize
+ * continues with the fresh request. Unlike the filed path, expiry gates the
+ * tokenless claim — nothing was accepted yet.
  */
 export function onboardingJoinRoutes(db: Db): Router {
   const router = Router();
@@ -34,7 +51,7 @@ export function onboardingJoinRoutes(db: Db): Router {
       return;
     }
 
-    const request = await db
+    let request: { id: string; inviteId: string; status: string } | null = await db
       .select()
       .from(joinRequests)
       .where(
@@ -48,8 +65,49 @@ export function onboardingJoinRoutes(db: Db): Router {
       .limit(1)
       .then((rows) => rows[0] ?? null);
     if (!request) {
-      res.status(404).json({ error: "no join request for this company" });
-      return;
+      // Tokenless invited entry: no join_request means the token-accept path
+      // never ran. Look for an OPEN invite matching the caller's VERIFIED
+      // email; if one exists, claim it atomically (accept + file) and continue
+      // into the normal finalize with the fresh request. Expiry gates THIS
+      // lookup at claim time — nothing was accepted yet.
+      const caller = await db
+        .select({ email: authUsers.email, emailVerified: authUsers.emailVerified })
+        .from(authUsers)
+        .where(eq(authUsers.id, actor.userId))
+        .then((rows) => rows[0] ?? null);
+      const callerEmail = caller?.email ?? null;
+      const openInvite =
+        caller?.emailVerified && callerEmail
+          ? await db
+              .select()
+              .from(invites)
+              .where(
+                and(
+                  eq(invites.companyId, companyId),
+                  isNull(invites.acceptedAt),
+                  isNull(invites.revokedAt),
+                  gt(invites.expiresAt, new Date()),
+                  eq(invites.inviteType, "company_join"),
+                  inArray(invites.allowedJoinTypes, ["human", "both"]),
+                  sql`lower(${invites.defaultsPayload} -> 'teamInvite' ->> 'email') = lower(${callerEmail})`,
+                ),
+              )
+              .orderBy(desc(invites.createdAt)) // newest invite wins (a re-invite may carry a new role)
+              .limit(1)
+              .then((rows) => rows[0] ?? null)
+          : null;
+      if (!openInvite) {
+        res.status(404).json({ error: "no join request or open invitation for this company" });
+        return;
+      }
+      const claimed = await claimInviteAndFileJoinRequest(db, {
+        inviteId: openInvite.id,
+        companyId,
+        userId: actor.userId,
+        email: callerEmail,
+        requestIp: requestIp(req),
+      });
+      request = { id: claimed.id, inviteId: openInvite.id, status: claimed.status };
     }
     if (request.status === "approved") {
       res.json({ admitted: true, status: "approved" });

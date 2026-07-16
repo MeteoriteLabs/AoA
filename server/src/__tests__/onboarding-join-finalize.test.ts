@@ -7,7 +7,13 @@ vi.mock("@armyofagents/db", () => ({
 }));
 vi.mock("drizzle-orm", () => ({
   and: (...a: unknown[]) => a, eq: (...a: unknown[]) => a, desc: (a: unknown) => a,
+  gt: (...a: unknown[]) => a, isNull: (...a: unknown[]) => a, inArray: (...a: unknown[]) => a,
+  sql: (strings: TemplateStringsArray, ...vals: unknown[]) => ({ sql: strings.join("?"), bindings: vals }),
 }));
+const claim = vi.hoisted(() =>
+  vi.fn(async (): Promise<{ id: string; status: string }> => ({ id: "r9", status: "pending_approval" })),
+);
+vi.mock("../services/invite-claim.js", () => ({ claimInviteAndFileJoinRequest: claim }));
 const approveTx = vi.hoisted(() =>
   vi.fn(async (): Promise<{ id: string; status: string } | null> => ({ id: "r1", status: "approved" })),
 );
@@ -68,7 +74,9 @@ function handler(db: never) {
 function call(db: never, body: Record<string, unknown>, actor: Record<string, unknown> = { type: "board", userId: "u1" }) {
   const json = vi.fn();
   const status = vi.fn().mockReturnValue({ json });
-  return handler(db)({ actor, body }, { json, status }).then(() => ({ json, status }));
+  // header/ip back the requestIp() helper on the tokenless claim path.
+  const req = { actor, body, header: () => undefined, ip: "203.0.113.7" };
+  return handler(db)(req, { json, status }).then(() => ({ json, status }));
 }
 
 const pendingRequest = { id: "r1", inviteId: "i1", status: "pending_approval" };
@@ -167,6 +175,99 @@ describe("POST /onboarding/join/finalize", () => {
     const { db } = createSequenceDb([]);
     const { status } = await call(db, {});
     expect(status).toHaveBeenCalledWith(400);
+  });
+
+  describe("tokenless entry (no filed join_request)", () => {
+    const openInvite = {
+      id: "i9",
+      companyId: "c1",
+      revokedAt: null,
+      defaultsPayload: { teamInvite: { email: "ada@x.com", role: "team_member" } },
+    };
+
+    it("claims a matching open invite, files the request, then admits", async () => {
+      const { db } = createSequenceDb([
+        [], // no join_request for the company
+        [{ email: "ada@x.com", emailVerified: true }], // caller (tokenless lookup)
+        [openInvite], // open invite matched by verified email
+        [{ ...validInvite, id: "i9" }], // invite re-select (existing finalize flow)
+        [{ email: "ADA@X.COM", emailVerified: true }], // caller re-select (existing flow)
+      ]);
+      const { json } = await call(db, { companyId: "c1" });
+      expect(claim).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          inviteId: "i9",
+          companyId: "c1",
+          userId: "u1",
+          email: "ada@x.com",
+          requestIp: "203.0.113.7",
+        }),
+      );
+      expect(approveTx).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        expect.objectContaining({ requestId: "r9" }),
+      );
+      expect(json).toHaveBeenCalledWith({ admitted: true, status: "approved" });
+    });
+
+    it("short-circuits admitted when the claim's race winner is already approved", async () => {
+      claim.mockResolvedValueOnce({ id: "r9", status: "approved" });
+      const { db } = createSequenceDb([
+        [],
+        [{ email: "ada@x.com", emailVerified: true }],
+        [openInvite],
+      ]);
+      const { json } = await call(db, { companyId: "c1" });
+      expect(json).toHaveBeenCalledWith({ admitted: true, status: "approved" });
+      expect(approveTx).not.toHaveBeenCalled();
+    });
+
+    it("404s when no open invite matches either", async () => {
+      const { db } = createSequenceDb([
+        [], // no join_request
+        [{ email: "ada@x.com", emailVerified: true }],
+        [], // no open invite
+      ]);
+      const { status } = await call(db, { companyId: "c1" });
+      expect(status).toHaveBeenCalledWith(404);
+      expect(claim).not.toHaveBeenCalled();
+    });
+
+    it("never claims for an unverified email (invite lookup skipped)", async () => {
+      const { db } = createSequenceDb([
+        [], // no join_request
+        [{ email: "ada@x.com", emailVerified: false }],
+        // Would-be open invite: MUST NOT be consumed — the lookup is gated on a
+        // verified email.
+        [openInvite],
+      ]);
+      const { status } = await call(db, { companyId: "c1" });
+      expect(status).toHaveBeenCalledWith(404);
+      expect(claim).not.toHaveBeenCalled();
+    });
+
+    it("expiry gates the tokenless path — the open-invite lookup binds expiresAt (an expired invite → 404)", async () => {
+      // The sequence db can't evaluate SQL: an EXPIRED invite comes back as an
+      // empty result set. Regression-lock the WHERE bindings instead — unlike
+      // the filed-request path above (validity established at token accept),
+      // the tokenless lookup must re-check expiry at claim time.
+      const { db, whereCalls } = createSequenceDb([
+        [], // no join_request
+        [{ email: "ada@x.com", emailVerified: true }],
+        [], // the expired invite is excluded by SQL
+      ]);
+      const { status } = await call(db, { companyId: "c1" });
+      expect(status).toHaveBeenCalledWith(404);
+      expect(claim).not.toHaveBeenCalled();
+      const inviteLookup = JSON.stringify(whereCalls[2]);
+      expect(inviteLookup).toContain('"expiresAt"');
+      expect(inviteLookup).toContain('"acceptedAt"');
+      expect(inviteLookup).toContain('"revokedAt"');
+      expect(inviteLookup).toContain('"inviteType"');
+      expect(inviteLookup).toContain('"allowedJoinTypes"');
+    });
   });
 
   it("reports pending when the approval races to null", async () => {
