@@ -261,6 +261,129 @@ describe("EntryComposer — attachments", () => {
   });
 });
 
+describe("EntryComposer — B-states (mock §5)", () => {
+  it("keeps a failed upload as a failed card whose Retry re-uploads it", async () => {
+    const upload = vi.fn()
+      .mockRejectedValueOnce(new Error("upload boom"))
+      .mockResolvedValue({ id: "asset-1", name: "test.png", mimeType: "image/png" });
+    renderWithProviders(
+      <EntryComposer
+        threadId="thread-1"
+        agents={agents}
+        users={users}
+        onUpload={upload}
+        onSubmit={vi.fn()}
+      />,
+    );
+    const input = screen.getByTestId("entry-composer-file-input") as HTMLInputElement;
+    fireEvent.change(input, {
+      target: { files: [new File(["x"], "test.png", { type: "image/png" })] },
+    });
+    const failedCard = await screen.findByTestId("entry-composer-attachment-test.png");
+    expect(failedCard).toHaveAttribute("data-state", "failed");
+    expect(failedCard.textContent).toContain("Failed to upload");
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("entry-composer-attachment-test.png")).toHaveAttribute(
+        "data-state",
+        "ready",
+      ),
+    );
+    expect(upload).toHaveBeenCalledTimes(2);
+  });
+
+  it("removes a failed upload card without retrying", async () => {
+    const upload = vi.fn().mockRejectedValue(new Error("upload boom"));
+    renderWithProviders(
+      <EntryComposer
+        threadId="thread-1"
+        agents={agents}
+        users={users}
+        onUpload={upload}
+        onSubmit={vi.fn()}
+      />,
+    );
+    const input = screen.getByTestId("entry-composer-file-input") as HTMLInputElement;
+    fireEvent.change(input, {
+      target: { files: [new File(["x"], "test.png", { type: "image/png" })] },
+    });
+    await screen.findByTestId("entry-composer-attachment-test.png");
+    fireEvent.click(screen.getByRole("button", { name: "Remove test.png" }));
+    expect(screen.queryByTestId("entry-composer-attachment-test.png")).not.toBeInTheDocument();
+    expect(upload).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows the drop overlay on dragenter and uploads dropped files", async () => {
+    const upload = vi.fn().mockResolvedValue({
+      id: "asset-1",
+      name: "drop.png",
+      mimeType: "image/png",
+    });
+    renderWithProviders(
+      <EntryComposer
+        threadId="thread-1"
+        agents={agents}
+        users={users}
+        onUpload={upload}
+        onSubmit={vi.fn()}
+      />,
+    );
+    const frame = screen.getByTestId("entry-composer");
+    fireEvent.dragEnter(frame, { dataTransfer: { types: ["Files"], files: [] } });
+    expect(screen.getByTestId("composer-drop-overlay")).toBeInTheDocument();
+
+    const file = new File(["x"], "drop.png", { type: "image/png" });
+    fireEvent.drop(frame, { dataTransfer: { types: ["Files"], files: [file] } });
+    expect(screen.queryByTestId("composer-drop-overlay")).not.toBeInTheDocument();
+    await waitFor(() => expect(upload).toHaveBeenCalledWith(file));
+    await screen.findByTestId("entry-composer-attachment-drop.png");
+  });
+
+  it("renders the host-provided failureBanner inside the frame", () => {
+    renderWithProviders(
+      <EntryComposer
+        threadId="thread-1"
+        agents={agents}
+        users={users}
+        onSubmit={vi.fn()}
+        failureBanner={<div data-testid="test-failure-banner">failed</div>}
+      />,
+    );
+    expect(screen.getByTestId("entry-composer")).toContainElement(
+      screen.getByTestId("test-failure-banner"),
+    );
+  });
+
+  it("clears text and attachments when clearSignal bumps", async () => {
+    const user = userEvent.setup();
+    const upload = vi.fn().mockResolvedValue({
+      id: "asset-1",
+      name: "test.png",
+      mimeType: "image/png",
+    });
+    const props = {
+      threadId: "thread-1",
+      agents,
+      users,
+      onUpload: upload,
+      onSubmit: vi.fn(),
+    };
+    const view = renderWithProviders(<EntryComposer {...props} clearSignal={0} />);
+    const ta = screen.getByTestId("entry-composer-textarea") as HTMLTextAreaElement;
+    await user.type(ta, "draft to discard");
+    const input = screen.getByTestId("entry-composer-file-input") as HTMLInputElement;
+    fireEvent.change(input, {
+      target: { files: [new File(["x"], "test.png", { type: "image/png" })] },
+    });
+    await screen.findByTestId("entry-composer-attachment-test.png");
+
+    view.rerender(<EntryComposer {...props} clearSignal={1} />);
+    expect(ta.value).toBe("");
+    expect(screen.queryByTestId("entry-composer-attachment-test.png")).not.toBeInTheDocument();
+  });
+});
+
 describe("EntryComposer — reply mode", () => {
   it("renders reply-mode UI when parentEntryId is set", () => {
     renderWithProviders(

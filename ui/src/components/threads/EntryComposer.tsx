@@ -33,6 +33,8 @@ import {
   type EntrySuggestion,
 } from "./EntryAutocompleteList";
 import { ComposerFrame } from "../composer/ComposerFrame";
+import { ComposerDropOverlay } from "../composer/ComposerDropOverlay";
+import { useComposerDragDrop } from "../composer/useComposerDragDrop";
 
 /* ─── Public types ─── */
 
@@ -95,6 +97,18 @@ export interface EntryComposerProps {
   /** Optional host-owned text draft. Omit for the native uncontrolled composer. */
   draftText?: string;
   onDraftTextChange?: (text: string) => void;
+  /**
+   * Host-owned send-failed banner (mock §5), rendered at the top of the frame
+   * above the attachments tray. The host (ThreadTab) owns the failure state and
+   * the Retry/Edit/Discard actions.
+   */
+  failureBanner?: React.ReactNode;
+  /**
+   * Bump this number to fully clear the composer (text, mentions, attachments,
+   * failed uploads, errors) — used by the host's Discard action and a
+   * successful banner Retry, which bypass the normal submit-success clear.
+   */
+  clearSignal?: number;
 }
 
 /* ─── Helpers ─── */
@@ -150,6 +164,8 @@ export function EntryComposer({
   myInitials = "Me",
   draftText,
   onDraftTextChange,
+  failureBanner,
+  clearSignal,
 }: EntryComposerProps) {
   const [uncontrolledText, setUncontrolledText] = useState("");
   const text = draftText ?? uncontrolledText;
@@ -165,10 +181,29 @@ export function EntryComposer({
   const [autocompleteIndex, setAutocompleteIndex] = useState(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [uploadingFiles, setUploadingFiles] = useState<string[]>([]);
+  // Mock §5: failed eager uploads are RETAINED (with the original File) so the
+  // tray can offer a per-card Retry instead of silently dropping the file.
+  const [failedFiles, setFailedFiles] = useState<Array<{ name: string; file: File }>>([]);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Host-driven full clear (Discard / successful banner Retry). Skip the mount
+  // run — only a *change* in the signal clears.
+  const lastClearSignal = useRef(clearSignal);
+  useEffect(() => {
+    if (clearSignal === undefined || clearSignal === lastClearSignal.current) return;
+    lastClearSignal.current = clearSignal;
+    if (draftText === undefined) setUncontrolledText("");
+    onDraftTextChange?.("");
+    setMentions([]);
+    setAttachments([]);
+    setFailedFiles([]);
+    setAttachmentError(null);
+    setAutocompleteOpen(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clearSignal]);
 
   const suggestions = useMemo<EntrySuggestion[]>(() => {
     if (!autocompleteOpen) return [];
@@ -287,12 +322,27 @@ export function EntryComposer({
     }
   }
 
-  async function handleFileChange(e: ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(e.target.files ?? []);
-    // Reset the input so picking the same file twice still triggers onChange.
-    if (fileInputRef.current) fileInputRef.current.value = "";
+  /** Upload one file; on failure retain it as a failed card (mock §5 Retry). */
+  async function uploadOne(file: File) {
+    if (!onUpload) return;
+    setUploadingFiles((prev) => [...prev, file.name]);
+    try {
+      const asset = await onUpload(file);
+      setAttachments((prev) => [...prev, asset]);
+    } catch {
+      setFailedFiles((prev) =>
+        prev.some((f) => f.name === file.name) ? prev : [...prev, { name: file.name, file }],
+      );
+    } finally {
+      setUploadingFiles((prev) => prev.filter((n) => n !== file.name));
+    }
+  }
+
+  /** Shared validation + eager-upload loop for the picker AND drag-drop. */
+  async function handleFiles(files: File[]) {
     if (files.length === 0 || !onUpload) return;
-    const available = COMPOSER_MAX_ATTACHMENTS - attachments.length - uploadingFiles.length;
+    const available =
+      COMPOSER_MAX_ATTACHMENTS - attachments.length - uploadingFiles.length - failedFiles.length;
     if (files.length > available) {
       setAttachmentError(`Attach up to ${COMPOSER_MAX_ATTACHMENTS} files per message.`);
     }
@@ -308,21 +358,36 @@ export function EntryComposer({
       return true;
     });
     for (const file of accepted) {
-      setUploadingFiles((prev) => [...prev, file.name]);
-      try {
-        const asset = await onUpload(file);
-        setAttachments((prev) => [...prev, asset]);
-      } catch {
-        setAttachmentError(`Could not upload ${file.name}. Retry from the file picker.`);
-      } finally {
-        setUploadingFiles((prev) => prev.filter((n) => n !== file.name));
-      }
+      await uploadOne(file);
     }
+  }
+
+  async function handleFileChange(e: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(e.target.files ?? []);
+    // Reset the input so picking the same file twice still triggers onChange.
+    if (fileInputRef.current) fileInputRef.current.value = "";
+    await handleFiles(files);
   }
 
   function removeAttachment(id: string) {
     setAttachments((prev) => prev.filter((a) => a.id !== id));
   }
+
+  function retryFailedFile(entry: { name: string; file: File }) {
+    setFailedFiles((prev) => prev.filter((f) => f.name !== entry.name));
+    void uploadOne(entry.file);
+  }
+
+  function removeFailedFile(name: string) {
+    setFailedFiles((prev) => prev.filter((f) => f.name !== name));
+  }
+
+  // Mock §5: frame-wide drag-drop; dropped files run the SAME validation +
+  // eager-upload path as the picker.
+  const { isDragActive, dragHandlers } = useComposerDragDrop({
+    onDropFiles: (files) => void handleFiles(files),
+    disabled: disabled || isSubmitting,
+  });
 
   async function handleSubmit() {
     const trimmed = text.trim();
@@ -365,10 +430,17 @@ export function EntryComposer({
       data-reply={isReply ? "true" : undefined}
       data-parent-entry-id={parentEntryId ?? undefined}
       density="comfortable"
+      dragHandlers={dragHandlers}
     >
+      <ComposerDropOverlay active={isDragActive} />
+
+      {failureBanner}
+
+      {/* Chrome-free wrapper: hosts pass either plain receipt text or a
+          self-chromed strip (ComposerOfflineStrip) — no double box. */}
       {hint && (
         <div
-          className="mb-2 rounded-md border border-border bg-muted/40 px-3 py-1.5 text-xs text-muted-foreground"
+          className="mb-1 px-1 text-xs text-muted-foreground"
           data-testid="entry-composer-hint"
         >
           {hint}
@@ -399,7 +471,7 @@ export function EntryComposer({
       )}
 
       {/* Inline attachment previews */}
-      {(attachments.length > 0 || uploadingFiles.length > 0) && (
+      {(attachments.length > 0 || uploadingFiles.length > 0 || failedFiles.length > 0) && (
         <div
           className="flex flex-wrap gap-2 mb-2"
           data-testid="entry-composer-attachments"
@@ -421,6 +493,16 @@ export function EntryComposer({
               name={name}
               state="uploading"
               onRemove={() => {}}
+            />
+          ))}
+          {failedFiles.map((f) => (
+            <ComposerAttachmentCard
+              key={`failed-${f.name}`}
+              name={f.name}
+              state="failed"
+              onRetry={() => retryFailedFile(f)}
+              onRemove={() => removeFailedFile(f.name)}
+              data-testid={`entry-composer-attachment-${f.name}`}
             />
           ))}
         </div>

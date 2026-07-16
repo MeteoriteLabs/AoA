@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeAll } from "vitest";
 import { QueryClient } from "@tanstack/react-query";
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderWithProviders } from "../../../__tests__/test-utils";
 import { ThreadTab } from "../ThreadTab";
@@ -26,6 +26,20 @@ vi.mock("../../../context/DialogContext", () => ({
     openDiscussionCapture: vi.fn(),
   }),
 }));
+
+// Mutable connection state so the B-state tests can flip the composer offline.
+const liveState = vi.hoisted(() => ({ connectionState: "open" }));
+vi.mock("../../../context/LiveUpdatesProvider", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../context/LiveUpdatesProvider")>();
+  return {
+    ...actual,
+    useLiveUpdates: () => ({
+      connectionState: liveState.connectionState,
+      workingAgentsByThread: {},
+      presenceByThread: {},
+    }),
+  };
+});
 
 vi.mock("../../../api/discussions", () => ({
   discussionsApi: {
@@ -259,7 +273,7 @@ describe("ThreadTab", () => {
     expect(await screen.findByTestId("thread-send-receipt")).toHaveTextContent("Sent");
   });
 
-  it("shows a failed receipt and removes the optimistic echo when sending fails", async () => {
+  it("shows the send-failed banner with the draft intact when sending fails", async () => {
     const { fireEvent } = await import("@testing-library/react");
     const { discussionsApi } = await import("../../../api/discussions");
     vi.mocked(discussionsApi.addEntry).mockRejectedValueOnce(new Error("network error"));
@@ -279,8 +293,145 @@ describe("ThreadTab", () => {
     });
     fireEvent.click(screen.getByTestId("entry-composer-submit"));
 
-    expect(await screen.findByText("Not sent. Try again.")).toBeInTheDocument();
+    expect(await screen.findByTestId("composer-send-failed-banner")).toBeInTheDocument();
+    // The old inline receipt copy is gone — the banner replaces it.
+    expect(screen.queryByText("Not sent. Try again.")).not.toBeInTheDocument();
     expect(screen.getByTestId("entry-composer-textarea")).toHaveValue("message that fails");
+  });
+
+  it("Retry re-sends the identical payload with the SAME clientSubmissionId, then clears", async () => {
+    const { fireEvent } = await import("@testing-library/react");
+    const { discussionsApi } = await import("../../../api/discussions");
+    vi.mocked(discussionsApi.addEntry).mockClear();
+    vi.mocked(discussionsApi.addEntry).mockRejectedValueOnce(new Error("network error"));
+
+    renderWithProviders(
+      <ThreadTab
+        threadId="thread-1"
+        companyId="comp-1"
+        entries={[]}
+        isLoading={false}
+        isError={false}
+        onRetry={vi.fn()}
+      />,
+    );
+    fireEvent.change(screen.getByTestId("entry-composer-textarea"), {
+      target: { value: "retry me" },
+    });
+    fireEvent.click(screen.getByTestId("entry-composer-submit"));
+    const banner = await screen.findByTestId("composer-send-failed-banner");
+
+    const firstBody = vi.mocked(discussionsApi.addEntry).mock
+      .calls[0][2] as Record<string, unknown>;
+    expect(typeof firstBody.clientSubmissionId).toBe("string");
+    expect((firstBody.clientSubmissionId as string).length).toBeGreaterThan(0);
+
+    fireEvent.click(within(banner).getByRole("button", { name: "Retry" }));
+    await waitFor(() =>
+      expect(vi.mocked(discussionsApi.addEntry)).toHaveBeenCalledTimes(2),
+    );
+    const secondBody = vi.mocked(discussionsApi.addEntry).mock
+      .calls[1][2] as Record<string, unknown>;
+    // Identical body — same clientSubmissionId means the server replays, never duplicates.
+    expect(secondBody).toEqual(firstBody);
+
+    await waitFor(() =>
+      expect(screen.queryByTestId("composer-send-failed-banner")).not.toBeInTheDocument(),
+    );
+    // Retry success clears the composer like a normal send.
+    expect(screen.getByTestId("entry-composer-textarea")).toHaveValue("");
+  });
+
+  it("a fresh submission after Edit mints a NEW clientSubmissionId", async () => {
+    const { fireEvent } = await import("@testing-library/react");
+    const { discussionsApi } = await import("../../../api/discussions");
+    vi.mocked(discussionsApi.addEntry).mockClear();
+    vi.mocked(discussionsApi.addEntry).mockRejectedValueOnce(new Error("network error"));
+
+    renderWithProviders(
+      <ThreadTab
+        threadId="thread-1"
+        companyId="comp-1"
+        entries={[]}
+        isLoading={false}
+        isError={false}
+        onRetry={vi.fn()}
+      />,
+    );
+    fireEvent.change(screen.getByTestId("entry-composer-textarea"), {
+      target: { value: "first try" },
+    });
+    fireEvent.click(screen.getByTestId("entry-composer-submit"));
+    await screen.findByTestId("composer-send-failed-banner");
+
+    // Edit dismisses the banner but keeps the draft.
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    expect(screen.queryByTestId("composer-send-failed-banner")).not.toBeInTheDocument();
+    expect(screen.getByTestId("entry-composer-textarea")).toHaveValue("first try");
+
+    fireEvent.change(screen.getByTestId("entry-composer-textarea"), {
+      target: { value: "second try" },
+    });
+    fireEvent.click(screen.getByTestId("entry-composer-submit"));
+    await waitFor(() =>
+      expect(vi.mocked(discussionsApi.addEntry)).toHaveBeenCalledTimes(2),
+    );
+    const first = vi.mocked(discussionsApi.addEntry).mock.calls[0][2] as Record<string, unknown>;
+    const second = vi.mocked(discussionsApi.addEntry).mock.calls[1][2] as Record<string, unknown>;
+    expect(second.clientSubmissionId).not.toBe(first.clientSubmissionId);
+  });
+
+  it("Discard clears the banner and the composer draft", async () => {
+    const { fireEvent } = await import("@testing-library/react");
+    const { discussionsApi } = await import("../../../api/discussions");
+    vi.mocked(discussionsApi.addEntry).mockClear();
+    vi.mocked(discussionsApi.addEntry).mockRejectedValueOnce(new Error("network error"));
+
+    renderWithProviders(
+      <ThreadTab
+        threadId="thread-1"
+        companyId="comp-1"
+        entries={[]}
+        isLoading={false}
+        isError={false}
+        onRetry={vi.fn()}
+      />,
+    );
+    fireEvent.change(screen.getByTestId("entry-composer-textarea"), {
+      target: { value: "discard me" },
+    });
+    fireEvent.click(screen.getByTestId("entry-composer-submit"));
+    await screen.findByTestId("composer-send-failed-banner");
+
+    fireEvent.click(screen.getByRole("button", { name: "Discard" }));
+    expect(screen.queryByTestId("composer-send-failed-banner")).not.toBeInTheDocument();
+    expect(screen.getByTestId("entry-composer-textarea")).toHaveValue("");
+    // No resend happened.
+    expect(vi.mocked(discussionsApi.addEntry)).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders the shared offline strip through the composer hint when offline", () => {
+    liveState.connectionState = "offline";
+    try {
+      renderWithProviders(
+        <ThreadTab
+          threadId="thread-1"
+          companyId="comp-1"
+          entries={[]}
+          isLoading={false}
+          isError={false}
+          onRetry={vi.fn()}
+        />,
+      );
+      const hint = screen.getByTestId("thread-composer-offline-hint");
+      const strip = screen.getByTestId("composer-offline-strip");
+      expect(hint).toContainElement(strip);
+      expect(strip.textContent).toContain(
+        "You're offline — draft saved. We'll send when you're back.",
+      );
+    } finally {
+      liveState.connectionState = "open";
+    }
   });
 
   it("invalidates the discussion detail after archiving an inline artifact", async () => {

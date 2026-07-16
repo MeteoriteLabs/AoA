@@ -19,6 +19,9 @@ import { useLiveUpdates } from "../../context/LiveUpdatesProvider";
 import { queryKeys } from "../../lib/queryKeys";
 import { EntryRow } from "./EntryRow";
 import { EntryComposer, type AgentRef, type AssetRef, type UserRef } from "./EntryComposer";
+import { ComposerSendFailedBanner } from "../composer/ComposerSendFailedBanner";
+import { ComposerOfflineStrip, toComposerConnectionState } from "../composer/ComposerOfflineStrip";
+import { createComposerSubmissionId } from "@armyofagents/shared";
 import { PresenceStrip } from "./PresenceStrip";
 import { Button } from "@/components/ui/button";
 import { RefreshCw } from "lucide-react";
@@ -35,7 +38,23 @@ import { WorkQuestionPanel } from "../work-questions/WorkQuestionPanel";
 const SUMMONING_TIMEOUT_MS = 20_000;
 const SEND_RECEIPT_TIMEOUT_MS = 4_000;
 
-type SendReceipt = "sending" | "sent" | "failed" | null;
+// Mock §5: "failed" is no longer a receipt — send failure raises the
+// ComposerSendFailedBanner (Retry/Edit/Discard) instead of inline copy.
+type SendReceipt = "sending" | "sent" | null;
+
+/** The exact mutation body of a failed send, retained for an idempotent Retry. */
+type AddEntryPayload = {
+  rawContent: string;
+  attachments: AssetRef[];
+  parentEntryId: string | null;
+  /**
+   * Client-minted idempotency key (server replay at POST …/entries).
+   * Minted ONCE per submission — Retry re-sends the identical body so an
+   * ambiguous failure (request landed, response lost) replays instead of
+   * double-posting. A NEW submission mints a NEW id.
+   */
+  clientSubmissionId: string;
+};
 
 /* ════════════════════════════════════════════════════════════════════════
    ThreadTab
@@ -101,6 +120,14 @@ export function ThreadTab({
   // before the server round-trip lands (today the mutation only invalidates). ──
   const [optimisticEntries, setOptimisticEntries] = useState<DiscussionEntry[]>([]);
   const [sendReceipt, setSendReceipt] = useState<SendReceipt>(null);
+
+  // Mock §5 send-failed banner state. The last-attempted payload lives in a ref
+  // (stored BEFORE awaiting the mutation) so BOTH failure sites — the submit
+  // catch here and EntryComposer's onSubmitError — can offer an identical Retry.
+  const [sendFailed, setSendFailed] = useState(false);
+  const [retrying, setRetrying] = useState(false);
+  const [composerClearSignal, setComposerClearSignal] = useState(0);
+  const lastAttemptedPayloadRef = useRef<AddEntryPayload | null>(null);
 
   useEffect(() => {
     if (sendReceipt !== "sent") return;
@@ -223,15 +250,15 @@ export function ThreadTab({
   };
 
   const addEntryMutation = useMutation({
-    mutationFn: (payload: {
-      rawContent: string;
-      attachments: AssetRef[];
-      parentEntryId: string | null;
-    }) =>
+    mutationFn: (payload: AddEntryPayload) =>
       discussionsApi.addEntry(companyId, threadId, {
         rawContent: payload.rawContent,
         inputType: "write",
         parentEntryId: payload.parentEntryId,
+        // First UI consumer of the server-side idempotent replay (validator
+        // packages/shared/src/validators/discussion.ts; replay in
+        // server/src/routes/discussions.ts POST …/entries).
+        clientSubmissionId: payload.clientSubmissionId,
         // Phase E1: pass attachment ids so the server links them in the same txn.
         // Artifact Lifecycle P1: founder file-artifact uploads carry an
         // `artifactId` — route those to { artifactId } so the server links the
@@ -346,6 +373,8 @@ export function ThreadTab({
     }
 
     setSendReceipt("sending");
+    // A fresh submission supersedes any previous failure (and mints a NEW id).
+    setSendFailed(false);
 
     // Task 5.4: optimistically surface a "Summoning {names}…" chip for any
     // @mentioned crew agent, immediately — replaced by the real presence pill
@@ -396,21 +425,56 @@ export function ThreadTab({
       setOptimisticEntries((prev) => [...prev, optimistic]);
     }
 
+    // Minted ONCE per submission; stored BEFORE the await so the banner's Retry
+    // (from either failure site) re-sends the exact same body — the server's
+    // clientSubmissionId replay makes an ambiguous failure safe to retry.
+    const mutationPayload: AddEntryPayload = {
+      rawContent: payload.text,
+      attachments: payload.attachments,
+      parentEntryId: payload.parentEntryId,
+      clientSubmissionId: createComposerSubmissionId(),
+    };
+    lastAttemptedPayloadRef.current = mutationPayload;
+
     try {
-      await addEntryMutation.mutateAsync({
-        rawContent: payload.text,
-        attachments: payload.attachments,
-        parentEntryId: payload.parentEntryId,
-      });
+      await addEntryMutation.mutateAsync(mutationPayload);
+      lastAttemptedPayloadRef.current = null;
       setSendReceipt("sent");
     } catch (error) {
       // On failure, drop the optimistic echo (mutation's onError already toasts).
       setOptimisticEntries((prev) => prev.filter((o) => o.rawContent !== payload.text));
-      setSendReceipt("failed");
+      setSendReceipt(null);
+      setSendFailed(true);
       // Let EntryComposer retain the immutable submission snapshot. Swallowing
       // this error causes it to clear the user's draft and uploaded attachments.
       throw error;
     }
+  }
+
+  /** Banner Retry: re-send the IDENTICAL stored payload (same clientSubmissionId). */
+  async function handleRetryFailedSend() {
+    const payload = lastAttemptedPayloadRef.current;
+    if (!payload || retrying) return;
+    setRetrying(true);
+    try {
+      await addEntryMutation.mutateAsync(payload);
+      lastAttemptedPayloadRef.current = null;
+      setSendFailed(false);
+      setSendReceipt("sent");
+      // The original submit's success path clears the composer inside
+      // EntryComposer; a banner Retry bypasses that path, so clear via signal.
+      setComposerClearSignal((n) => n + 1);
+    } catch {
+      // Still failing — the banner stays up (mutation onError already toasts).
+    } finally {
+      setRetrying(false);
+    }
+  }
+
+  function handleDiscardFailedSend() {
+    lastAttemptedPayloadRef.current = null;
+    setSendFailed(false);
+    setComposerClearSignal((n) => n + 1);
   }
 
   async function handleUpload(file: File): Promise<AssetRef> {
@@ -494,30 +558,38 @@ export function ThreadTab({
         users={composerUsers}
         onUpload={handleUpload}
         onSubmit={handleComposerSubmit}
-        onSubmitError={() => setSendReceipt("failed")}
+        onSubmitError={() => {
+          // Covers EntryComposer-internal throw paths too — the payload was
+          // already snapshotted into lastAttemptedPayloadRef before the await.
+          setSendReceipt(null);
+          setSendFailed(true);
+        }}
         disabled={isDisconnected || addEntryMutation.isPending}
         myInitials={myInitials}
         draftText={draftText}
         onDraftTextChange={onDraftTextChange}
+        clearSignal={composerClearSignal}
+        failureBanner={
+          sendFailed ? (
+            <ComposerSendFailedBanner
+              onRetry={() => void handleRetryFailedSend()}
+              onEdit={() => setSendFailed(false)}
+              onDiscard={handleDiscardFailedSend}
+              retrying={retrying}
+            />
+          ) : undefined
+        }
         hint={
           isDisconnected
             ? (
                 <span data-testid="thread-composer-offline-hint">
-                  {isOffline ? "You're offline — messages won't send" : "Reconnecting…"}
+                  <ComposerOfflineStrip state={toComposerConnectionState(connectionState)} />
                 </span>
               )
             : sendReceipt
               ? (
-                  <span
-                    aria-live="polite"
-                    data-testid="thread-send-receipt"
-                    className={sendReceipt === "failed" ? "text-destructive" : undefined}
-                  >
-                    {sendReceipt === "sending"
-                      ? "Sending..."
-                      : sendReceipt === "sent"
-                        ? "Sent"
-                        : "Not sent. Try again."}
+                  <span aria-live="polite" data-testid="thread-send-receipt">
+                    {sendReceipt === "sending" ? "Sending..." : "Sent"}
                   </span>
                 )
               : undefined
