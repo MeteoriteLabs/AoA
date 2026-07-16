@@ -1412,6 +1412,12 @@ git commit -m "feat(onboarding): shared HumanProfileStep — invited journey col
 
 ### Task 8: `InvitedJoinTerminal` + OnboardingFlow wiring
 
+> **Amendments carried from the Task-6 quality review (implement WITH this task):**
+> 1. `finalizeInvitedJoin` (ui/src/api/onboarding.ts) attaches the HTTP status to its error: `throw Object.assign(new Error(\`finalize failed: ${res.status}\`), { status: res.status });`
+> 2. The terminal must NOT call finalize only on the first tick — a transient failure would silently downgrade an auto-admit-eligible user to founder-wait. Instead: keep attempting finalize on each poll tick until it returns a definitive response (any `{admitted, status}` body), tracked via a ref; a thrown error with `status === 401` → session gone → `navigate("/auth?next=/onboarding/join", { replace: true })`; other throws → retry next tick (finalize is idempotent).
+> 3. Server-test hardening in `server/src/__tests__/onboarding-join-finalize.test.ts`: (a) capture `where()` args in the sequence-db and assert the request lookup binds `requestingUserId` to the actor ("u1") — the self-scoping WHERE must be regression-locked; (b) add the 400 missing-companyId test (direct handler call with the res.status mock); (c) add a raced-null test (`approveTx` resolves null → `{admitted:false,status:"pending"}`).
+> 4. Terminal tests additionally cover: transient finalize throw → retried on next tick; 401 throw → navigates to /auth.
+
 **Files:**
 - Create: `ui/src/onboarding/InvitedJoinTerminal.tsx`
 - Create: `ui/src/onboarding/__tests__/InvitedJoinTerminal.test.tsx`
