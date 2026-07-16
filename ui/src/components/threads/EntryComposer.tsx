@@ -450,7 +450,7 @@ export function EntryComposer({
             }}
             placeholder={placeholder ?? (isReply ? "Reply…" : "Reply… @mention to summon crew")}
             rows={1}
-            className="flex-1 bg-transparent py-2.5 text-sm text-foreground placeholder:text-muted-foreground/50 outline-none resize-none min-h-[40px] max-h-[120px]"
+            className="block w-full bg-transparent py-2.5 text-sm text-foreground placeholder:text-muted-foreground/50 outline-none resize-none min-h-[40px] max-h-[120px]"
             style={{ lineHeight: "1.4" }}
             disabled={disabled || isSubmitting}
             aria-label={isReply ? "Write a reply" : "Write a message"}
