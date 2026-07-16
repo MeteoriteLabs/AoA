@@ -30,3 +30,18 @@ export async function advanceStep(page: Page, buttonName: RegExp, nextHeading: R
   await page.getByRole("button", { name: buttonName }).click();
   await page.getByRole("heading", { name: nextHeading }).waitFor({ state: "visible", timeout: 15_000 });
 }
+
+/**
+ * Drive the founder's Human Operating Profile step (the same rich step the
+ * invited journey uses): Name + Title + Timezone are required before Continue
+ * enables. Does NOT click Continue — callers advance so they can screenshot
+ * or assert first.
+ */
+export async function fillFounderProfileStep(page: Page, name = "E2E Founder"): Promise<void> {
+  await expect(page.getByRole("heading", { name: /set up your profile/i })).toBeVisible({
+    timeout: 15_000,
+  });
+  await page.getByLabel("Name", { exact: true }).fill(name);
+  await page.getByLabel("Title", { exact: true }).selectOption("Founder");
+  await page.getByLabel("Timezone", { exact: true }).selectOption("UTC");
+}

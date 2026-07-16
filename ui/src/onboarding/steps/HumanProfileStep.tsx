@@ -9,11 +9,13 @@ const FIELD =
   "w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring";
 
 /**
- * Shared Human Operating Profile step (spec §6). Journey-agnostic; wired for
- * the INVITED journey now (supersedes the bare ProfileStep there — founder
- * wiring is a later follow-up). Writes the GLOBAL user profile — the company
- * record is materialized by the approval transaction (spec §7). Name + Title +
- * Timezone are required (spec decision 1); Bio + Social links are optional.
+ * Shared Human Operating Profile step (spec §6). Journey-agnostic and wired
+ * for BOTH journeys (founder + invited) — it superseded and replaced the bare
+ * name-only ProfileStep. Runs on the user layer (companyId may be null):
+ * writes the GLOBAL user profile only — the company record is materialized
+ * later (invited: the approval transaction, spec §7; founder: lazily).
+ * Name + Title + Timezone are required (spec decision 1); Bio + Social links
+ * are optional.
  */
 export function HumanProfileStep({ ctx, onComplete }: StepProps) {
   const timezoneOptions = useMemo(() => getTimezoneOptions(), []);

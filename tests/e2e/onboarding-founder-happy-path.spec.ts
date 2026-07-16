@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { freshOnboardingState } from "./helpers/onboarding-e2e";
+import { freshOnboardingState, fillFounderProfileStep } from "./helpers/onboarding-e2e";
 
 // Selectors below were validated against the live app during Plan-1 planning
 // (the full founder flow was driven end-to-end in a browser).
@@ -13,14 +13,15 @@ test("founder completes profile → org → environment → commander → verify
 }) => {
   await page.goto("/onboarding");
 
-  // Profile
-  await expect(page.getByRole("heading", { name: /your profile/i })).toBeVisible({ timeout: 15_000 });
-  await page.getByRole("textbox").first().fill("E2E Founder");
+  // Profile — founders get the full Human Operating Profile step (Name +
+  // Title + Timezone required; the bare name-only step was retired).
+  await fillFounderProfileStep(page, "E2E Founder");
   await page.getByRole("button", { name: /continue/i }).click();
 
   // Organization
+  const orgName = `E2E-Test-Org-${Date.now()}`;
   await expect(page.getByRole("heading", { name: /create your organization/i })).toBeVisible();
-  await page.getByRole("textbox").first().fill(`E2E-Test-Org-${Date.now()}`);
+  await page.getByRole("textbox").first().fill(orgName);
   await page.getByRole("button", { name: /continue/i }).click();
 
   // Environment — the prefilled ~/AoA path under the temp home is writable.
@@ -42,7 +43,11 @@ test("founder completes profile → org → environment → commander → verify
   await expect(page.getByRole("heading", { name: /create your first department/i })).toBeVisible({
     timeout: 20_000,
   });
-  await expect(page.getByDisplayValue(/[\\/]engineering$/i)).toBeVisible({ timeout: 15_000 });
+  // (page.getByDisplayValue is a Testing Library API that doesn't exist in
+  // Playwright — assert the prefilled value via toHaveValue instead.)
+  await expect(page.locator("input.font-mono")).toHaveValue(/[\\/]engineering$/i, {
+    timeout: 15_000,
+  });
   await page.getByRole("button", { name: /create department/i }).click();
 
   // Agent
@@ -55,8 +60,12 @@ test("founder completes profile → org → environment → commander → verify
   await expect(page.getByRole("heading", { name: /you're set up/i })).toBeVisible({ timeout: 20_000 });
   await page.getByRole("button", { name: /go to dashboard/i }).click();
 
-  // Landed in the app (a company-prefixed home).
-  await expect(page).toHaveURL(/\/[A-Z0-9]+\/home/i, { timeout: 15_000 });
+  // Landed in the app: since the Lobby redesign, "/" is the returning-user
+  // Lobby (LobbyOrOnboardingRedirect) — the new organization must be listed.
+  await expect(page.getByRole("heading", { name: /welcome back/i })).toBeVisible({
+    timeout: 15_000,
+  });
+  await expect(page.getByText(orgName).first()).toBeVisible();
 
   // Progress assertion (Plan 1 P2 #12): the user layer records PROFILE_SET.
   const progress = await (await request.get("/api/onboarding/progress")).json();

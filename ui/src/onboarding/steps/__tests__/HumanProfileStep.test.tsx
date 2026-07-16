@@ -126,6 +126,27 @@ describe("HumanProfileStep (shared; wired invited)", () => {
     expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("Grace");
   });
 
+  it("founder journey: runs on the user layer (companyId null) — global profile write + user-layer advance only", async () => {
+    const founderCtx: StepContext = { ...ctx, journey: "founder" };
+    const onComplete = vi.fn();
+    render(<HumanProfileStep ctx={founderCtx} onComplete={onComplete} onBack={() => {}} />);
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Ada" } });
+    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Founder" } });
+    fireEvent.change(screen.getByLabelText("Timezone"), { target: { value: "UTC" } });
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(() => expect(onComplete).toHaveBeenCalled());
+    // No company exists yet at the founder-journey position; the step must
+    // stay user-layer only (the mocked modules are the step's ONLY api deps).
+    expect(saveUserProfile).toHaveBeenCalledWith(
+      expect.objectContaining({ displayName: "Ada", title: "Founder", timezone: "UTC" }),
+    );
+    expect(advanceOnboarding).toHaveBeenCalledWith({
+      companyId: null,
+      journey: "founder",
+      requestedState: "PROFILE_SET",
+    });
+  });
+
   it("social links are trimmed, filtered, scheme-defaulted, and mapped to type website", async () => {
     const onComplete = vi.fn();
     render(<HumanProfileStep ctx={ctx} onComplete={onComplete} onBack={() => {}} />);
@@ -157,11 +178,11 @@ describe("registry rewire", () => {
   it("still passes the guard", () => {
     expect(validateRegistry(ONBOARDING_STEPS)).toEqual([]);
   });
-  it("invited uses human-profile; founder keeps the bare profile step", () => {
+  it("both journeys use human-profile; the bare profile step is gone", () => {
     const bare = ONBOARDING_STEPS.find((s) => s.id === "profile");
     const rich = ONBOARDING_STEPS.find((s) => s.id === "human-profile");
-    expect(bare?.journeys).toEqual(["founder"]);
-    expect(rich?.journeys).toEqual(["invited"]);
+    expect(bare).toBeUndefined();
+    expect(rich?.journeys).toEqual(["founder", "invited"]);
     expect(rich?.state).toBe("PROFILE_SET");
     expect(rich?.order).toBe(1);
   });

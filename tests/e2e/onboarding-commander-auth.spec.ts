@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import { freshOnboardingState } from "./helpers/onboarding-e2e";
+import { freshOnboardingState, fillFounderProfileStep } from "./helpers/onboarding-e2e";
 
 /**
  * Track C visual + interaction coverage (Plan 3 / §6, Task 5).
@@ -20,8 +20,7 @@ test.beforeEach(async ({ request }) => {
 /** Walk profile → org → environment → commander(provider) → the Verify step. */
 async function walkToVerify(page: Page, commander: "Claude" | "Codex"): Promise<void> {
   await page.goto("/onboarding");
-  await expect(page.getByRole("heading", { name: /your profile/i })).toBeVisible({ timeout: 15_000 });
-  await page.getByRole("textbox").first().fill("Track C Founder");
+  await fillFounderProfileStep(page, "Track C Founder");
   await page.getByRole("button", { name: /continue/i }).click();
 
   await expect(page.getByRole("heading", { name: /create your organization/i })).toBeVisible();
@@ -105,17 +104,28 @@ test("needs_auth → interactive login surfaces the URL and completes on poll", 
       body: JSON.stringify({ challengeId: "ch-e2e", loginUrl: "https://claude.ai/oauth?code=E2E" }),
     }),
   );
-  await page.route("**/commander-login/ch-e2e", (route) =>
-    route.fulfill({
+  // First poll: pending (the URL panel must stay mounted long enough to be
+  // seen/screenshotted); next poll: completed → auto re-verify. Returning
+  // "completed" on the immediate first poll is a race — the panel can unmount
+  // before the visibility assertion runs.
+  let statusCalls = 0;
+  await page.route("**/commander-login/ch-e2e", (route) => {
+    statusCalls += 1;
+    return route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ status: "completed", loginUrl: "https://claude.ai/oauth?code=E2E" }),
-    }),
-  );
+      body: JSON.stringify({
+        status: statusCalls === 1 ? "pending" : "completed",
+        loginUrl: "https://claude.ai/oauth?code=E2E",
+      }),
+    });
+  });
 
   await walkToVerify(page, "Codex");
   await page.getByRole("button", { name: /^verify$/i }).click();
-  await expect(page.getByText("sign in")).toBeVisible();
+  // exact: the probe message paragraph — substring matching would also hit
+  // the "Sign in with Codex" button (strict-mode violation).
+  await expect(page.getByText("sign in", { exact: true })).toBeVisible();
 
   await page.getByRole("button", { name: /sign in with codex/i }).click();
   await expect(page.getByText("https://claude.ai/oauth?code=E2E")).toBeVisible();

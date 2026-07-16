@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { freshOnboardingState } from "./helpers/onboarding-e2e";
+import { freshOnboardingState, fillFounderProfileStep } from "./helpers/onboarding-e2e";
 
 test.beforeEach(async ({ request }) => {
   await freshOnboardingState(request);
@@ -10,9 +10,9 @@ test("captures each founder onboarding step + pins the review screen baseline", 
     page.screenshot({ path: `test-results/onboarding/founder-${name}.png`, fullPage: true });
 
   await page.goto("/onboarding");
-  await expect(page.getByRole("heading", { name: /your profile/i })).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole("heading", { name: /set up your profile/i })).toBeVisible({ timeout: 15_000 });
   await shot("01-profile");
-  await page.getByRole("textbox").first().fill("Visual Founder");
+  await fillFounderProfileStep(page, "Visual Founder");
   await page.getByRole("button", { name: /continue/i }).click();
 
   await expect(page.getByRole("heading", { name: /create your organization/i })).toBeVisible();
@@ -35,7 +35,9 @@ test("captures each founder onboarding step + pins the review screen baseline", 
 
   await expect(page.getByRole("heading", { name: /create your first department/i })).toBeVisible({ timeout: 20_000 });
   await shot("06-department");
-  await expect(page.getByDisplayValue(/[\\/]engineering$/i)).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator("input.font-mono")).toHaveValue(/[\\/]engineering$/i, {
+    timeout: 15_000,
+  });
   await page.getByRole("button", { name: /create department/i }).click();
 
   await expect(page.getByRole("heading", { name: /create your first agent/i })).toBeVisible({ timeout: 20_000 });

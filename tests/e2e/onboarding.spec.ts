@@ -11,7 +11,7 @@ import { test, expect } from "@playwright/test";
  * The e2e suite boots in local_trusted mode with the dev escape hatch
  * (AOA_DEV_LOCAL_IDENTITY=1, set in playwright.config.ts), so the synthetic
  * local-board admin is the actor and landing on `/` resolves the founder journey
- * → `/onboarding` → the "Your profile" step.
+ * → `/onboarding` → the "Set up your profile" step.
  *
  * The full deterministic click-through (profile → … → review) is tracked as A12
  * and is skipped below: the environment step performs a real mkdir+write probe

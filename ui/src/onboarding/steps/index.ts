@@ -1,5 +1,4 @@
 import { validateRegistry, type StepDefinition } from "../registry";
-import { ProfileStep } from "./ProfileStep";
 import { HumanProfileStep } from "./HumanProfileStep";
 import { OrgStep } from "./OrgStep";
 import { EnvironmentStep } from "./EnvironmentStep";
@@ -16,22 +15,12 @@ import { ReviewStep } from "./ReviewStep";
  */
 export const ONBOARDING_STEPS: StepDefinition[] = [
   {
-    id: "profile",
-    order: 1,
-    state: "PROFILE_SET",
-    journeys: ["founder"],
-    dependsOn: ["AUTHENTICATED"],
-    canSkip: false,
-    shouldInclude: () => true,
-    isComplete: (ctx) => ctx.completedStates.includes("PROFILE_SET"),
-    Component: ProfileStep,
-    title: "Your profile",
-  },
-  {
     id: "human-profile",
     order: 1,
     state: "PROFILE_SET",
-    journeys: ["invited"],
+    // Founders and invitees share the rich Human Operating Profile step; the
+    // bare name-only ProfileStep it superseded was removed.
+    journeys: ["founder", "invited"],
     dependsOn: ["AUTHENTICATED"],
     canSkip: false,
     shouldInclude: () => true,
