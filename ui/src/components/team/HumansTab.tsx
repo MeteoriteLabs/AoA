@@ -541,7 +541,7 @@ export function HumansTab({ teamSummary, permissions, isSystemAdmin, onMutationS
             )}
             <PermissionDisabledButton
               disabled={!permissions.canInviteUsers}
-              tooltip="You don't have permission to add members"
+              tooltip="You don't have permission to invite members"
             >
               <Button
                 size="sm"
@@ -549,7 +549,7 @@ export function HumansTab({ teamSummary, permissions, isSystemAdmin, onMutationS
                 disabled={!permissions.canInviteUsers}
               >
                 <UserPlus className="mr-1.5 h-4 w-4" />
-                Add Member
+                Invite teammate
               </Button>
             </PermissionDisabledButton>
           </div>
@@ -674,9 +674,9 @@ export function HumansTab({ teamSummary, permissions, isSystemAdmin, onMutationS
         {isEmpty ? (
           <EmptyState
             icon={Users}
-            message="Add your first team member"
-            description="Add a team lead or contributor directly, or send an invite link."
-            action="Add Member"
+            message="Invite your first teammate"
+            description="Create an email-bound invite link — or add someone manually."
+            action="Invite teammate"
             onAction={permissions.canInviteUsers ? () => setAddMemberOpen(true) : undefined}
           />
         ) : humanSearchQuery.isError ? (

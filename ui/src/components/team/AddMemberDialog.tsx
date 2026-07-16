@@ -16,8 +16,10 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { cn } from "@/lib/utils";
 import {
   Select,
   SelectContent,
@@ -45,7 +47,10 @@ export function AddMemberDialog({
 }: AddMemberDialogProps) {
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
-  const [mode, setMode] = useState<"direct" | "invite">("direct");
+  // Invite is the primary path: email-verified, founder-approved for
+  // strangers. Direct add bypasses verification and sits behind a confirm.
+  const [mode, setMode] = useState<"direct" | "invite">("invite");
+  const [confirmDirectOpen, setConfirmDirectOpen] = useState(false);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [role, setRole] = useState<UserRole>("team_member");
@@ -133,7 +138,8 @@ export function AddMemberDialog({
   });
 
   function reset() {
-    setMode("direct");
+    setMode("invite");
+    setConfirmDirectOpen(false);
     setName("");
     setEmail("");
     setRole("team_member");
@@ -162,6 +168,7 @@ export function AddMemberDialog({
     !(role === "team_lead" && departmentId === "none");
 
   return (
+    <>
     <Dialog
       open={open}
       onOpenChange={(nextOpen) => {
@@ -171,9 +178,9 @@ export function AddMemberDialog({
     >
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>Add Team Member</DialogTitle>
+          <DialogTitle>Invite teammate</DialogTitle>
           <DialogDescription>
-            Add a new member directly or generate an invite link.
+            Invite by email, or add someone manually.
           </DialogDescription>
         </DialogHeader>
 
@@ -195,22 +202,42 @@ export function AddMemberDialog({
             </div>
           ) : (
           <>
-          {/* Mode toggle */}
-          <div className="flex gap-2">
-            <Button
-              variant={mode === "direct" ? "default" : "outline"}
-              size="sm"
-              onClick={() => setMode("direct")}
-            >
-              Add directly
-            </Button>
-            <Button
-              variant={mode === "invite" ? "default" : "outline"}
-              size="sm"
+          {/* Mode toggle — invite is primary, manual add is demoted. */}
+          <div className="space-y-2">
+            <button
+              type="button"
+              aria-pressed={mode === "invite"}
               onClick={() => setMode("invite")}
+              className={cn(
+                "w-full rounded-lg border p-3 text-left transition-colors",
+                mode === "invite"
+                  ? "border-foreground bg-accent/40"
+                  : "border-border hover:bg-accent/20",
+              )}
             >
-              Create invite link
-            </Button>
+              <span className="block text-sm font-medium">Invite by email</span>
+              <span className="mt-0.5 block text-xs text-muted-foreground">
+                They accept a link and join with their Google account.
+              </span>
+            </button>
+            <button
+              type="button"
+              aria-pressed={mode === "direct"}
+              onClick={() => setMode("direct")}
+              className={cn(
+                "w-full rounded-lg border p-3 text-left transition-colors",
+                mode === "direct"
+                  ? "border-foreground bg-accent/40"
+                  : "border-border hover:bg-accent/20",
+              )}
+            >
+              <span className="block text-sm font-medium text-muted-foreground">
+                Add manually
+              </span>
+              <span className="mt-0.5 block text-xs text-muted-foreground">
+                Instant access, no invite or email verification.
+              </span>
+            </button>
           </div>
 
           {mode === "direct" && (
@@ -314,9 +341,10 @@ export function AddMemberDialog({
                 Cancel
               </Button>
               <Button
+                variant={mode === "direct" ? "outline" : "default"}
                 onClick={() => {
                   if (mode === "direct") {
-                    addMemberMutation.mutate();
+                    setConfirmDirectOpen(true);
                   } else {
                     inviteMutation.mutate();
                   }
@@ -332,5 +360,20 @@ export function AddMemberDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+
+    <ConfirmDialog
+      open={confirmDirectOpen}
+      onOpenChange={setConfirmDirectOpen}
+      title="Add without email verification?"
+      description="This grants immediate access with no email verification. Continue?"
+      confirmLabel="Add member now"
+      destructive={false}
+      disabled={addMemberMutation.isPending}
+      onConfirm={() => {
+        setConfirmDirectOpen(false);
+        addMemberMutation.mutate();
+      }}
+    />
+    </>
   );
 }

@@ -1,9 +1,10 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { accessApi } from "../../../api/access";
+import { teamApi } from "../../../api/team";
 import { AddMemberDialog } from "../AddMemberDialog";
 
 const pushToast = vi.fn();
@@ -73,6 +74,7 @@ describe("AddMemberDialog — invite link mechanics", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(accessApi.createCompanyInvite).mockResolvedValue(inviteResponse());
+    vi.mocked(teamApi.addMember).mockResolvedValue({ userId: "user-2" });
   });
 
   it("shows the created link with honest TTL, auto-copies it, and offers only Done", async () => {
@@ -82,7 +84,6 @@ describe("AddMemberDialog — invite link mechanics", () => {
       .spyOn(navigator.clipboard, "writeText")
       .mockResolvedValue(undefined);
 
-    await user.click(screen.getByRole("button", { name: "Create invite link" }));
     await user.type(screen.getByLabelText("Email"), "ada@example.com");
     await user.click(screen.getByRole("button", { name: "Create link" }));
 
@@ -105,7 +106,6 @@ describe("AddMemberDialog — invite link mechanics", () => {
     const user = userEvent.setup();
     renderDialog();
 
-    await user.click(screen.getByRole("button", { name: "Create invite link" }));
     await user.type(screen.getByLabelText("Email"), "ada@example.com");
     await user.click(screen.getByRole("button", { name: "Create link" }));
 
@@ -118,7 +118,6 @@ describe("AddMemberDialog — invite link mechanics", () => {
     const user = userEvent.setup();
     renderDialog();
 
-    await user.click(screen.getByRole("button", { name: "Create invite link" }));
     await user.type(screen.getByLabelText("Email"), "ada@example.com");
     await user.click(screen.getByRole("button", { name: "Create link" }));
 
@@ -133,25 +132,93 @@ describe("AddMemberDialog — invite link mechanics", () => {
     expect(screen.getByRole("button", { name: "Create link" })).toBeInTheDocument();
   });
 
-  it("explains the email binding under the email field in invite mode", async () => {
-    const user = userEvent.setup();
+  it("explains the email binding under the email field in invite mode", () => {
     renderDialog();
-
-    await user.click(screen.getByRole("button", { name: "Create invite link" }));
-    expect(
-      screen.getByText(/The link is tied to this email/),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/The link is tied to this email/)).toBeInTheDocument();
   });
 
   it("closes and resets via Done after creating a link", async () => {
     const user = userEvent.setup();
     const { onOpenChange } = renderDialog();
 
-    await user.click(screen.getByRole("button", { name: "Create invite link" }));
     await user.type(screen.getByLabelText("Email"), "ada@example.com");
     await user.click(screen.getByRole("button", { name: "Create link" }));
 
     await user.click(await screen.findByRole("button", { name: "Done" }));
     expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+});
+
+describe("AddMemberDialog — invite is the primary path", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(accessApi.createCompanyInvite).mockResolvedValue(inviteResponse());
+    vi.mocked(teamApi.addMember).mockResolvedValue({ userId: "user-2" });
+  });
+
+  it("defaults to invite mode with descriptive toggles", () => {
+    renderDialog();
+
+    expect(screen.getByRole("button", { name: /Invite by email/ })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getByRole("button", { name: /Add manually/ })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+    expect(
+      screen.getByText("They accept a link and join with their Google account."),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Instant access, no invite or email verification."),
+    ).toBeInTheDocument();
+    // Invite mode: no Name field, submit is Create link.
+    expect(screen.queryByLabelText("Name")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create link" })).toBeInTheDocument();
+  });
+
+  it("gates direct add behind an explicit confirmation", async () => {
+    const user = userEvent.setup();
+    renderDialog();
+
+    await user.click(screen.getByRole("button", { name: /Add manually/ }));
+    await user.type(screen.getByLabelText("Name"), "Ada Lovelace");
+    await user.type(screen.getByLabelText("Email"), "ada@example.com");
+    await user.click(screen.getByRole("button", { name: "Add Member" }));
+
+    // Nothing happens until the founder confirms.
+    expect(teamApi.addMember).not.toHaveBeenCalled();
+    expect(
+      await screen.findByText(
+        "This grants immediate access with no email verification. Continue?",
+      ),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Add member now" }));
+    await waitFor(() => {
+      expect(teamApi.addMember).toHaveBeenCalledWith("company-1", {
+        name: "Ada Lovelace",
+        email: "ada@example.com",
+        role: "team_member",
+        projectId: null,
+        parentType: null,
+        parentId: null,
+      });
+    });
+  });
+
+  it("cancelling the confirmation does not add the member", async () => {
+    const user = userEvent.setup();
+    renderDialog();
+
+    await user.click(screen.getByRole("button", { name: /Add manually/ }));
+    await user.type(screen.getByLabelText("Name"), "Ada Lovelace");
+    await user.type(screen.getByLabelText("Email"), "ada@example.com");
+    await user.click(screen.getByRole("button", { name: "Add Member" }));
+
+    const confirm = await screen.findByRole("alertdialog");
+    await user.click(within(confirm).getByRole("button", { name: "Cancel" }));
+    expect(teamApi.addMember).not.toHaveBeenCalled();
   });
 });
