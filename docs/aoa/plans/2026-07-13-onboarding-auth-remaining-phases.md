@@ -35,6 +35,9 @@ Polish items the Session-2 audit surfaced but scoped out. All founder-facing, al
 
 ## Track B — Invited-teammate journey (the big deferred piece)
 
+> **STATUS 2026-07-16: IMPLEMENTED** on branch feat/invited-teammate-journey — reframed + built per docs/aoa/plans/2026-07-16-invited-teammate-journey-{scope,plan}.md (guided Human Operating Profile step, auto-admit on verified email match, polling terminal, approval-time seeding). Remaining: live 2nd-account validation + Track D e2e.
+
+
 The core multi-human story. Today the invited path is safely **gated** (Session-2 terminal "pending approval" page) so no one loops — but a teammate can't actually complete a guided join. This builds the real flow. **Requires a 2nd Google account to validate end-to-end.**
 
 Three interlocking parts (all originally Stage D; see HANDOFF §6):

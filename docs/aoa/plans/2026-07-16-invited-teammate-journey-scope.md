@@ -1,6 +1,6 @@
 # Invited-Teammate Onboarding Journey — Design (Track B)
 
-> **Status:** design approved via brainstorm 2026-07-16 (amended same day: auto-admit on verified email match). Next: implementation plan (writing-plans) → TDD execution.
+> **Status:** IMPLEMENTED 2026-07-16 — all 11 plan tasks executed subagent-driven with two-stage review per task (see `2026-07-16-invited-teammate-journey-plan.md`). Server 7,867 / UI 3,373 tests green, typechecks clean. Live multi-account validation + e2e remain (plan §Post-plan notes / Track D).
 > **Branch:** `feat/invited-teammate-journey` (off `main` after PR #287 merged the founder onboarding + auth redesign).
 > **Predecessor:** `docs/aoa/plans/2026-07-13-onboarding-auth-remaining-phases.md` §Track B (this supersedes that section's framing — see "Reframing" below).
 
