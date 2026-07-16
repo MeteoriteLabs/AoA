@@ -20,7 +20,6 @@ import { Badge } from "@/components/ui/badge";
 import { ClickableDiv } from "@/components/ui/clickable-div";
 import { cn } from "@/lib/utils";
 import { getInitials } from "@/lib/initials";
-import { HUMAN_ROLE_LABELS } from "@/lib/human-profile-constants";
 import { RoleBadge } from "./RoleBadge";
 
 type RoleFilter = "all" | "founder" | "team_lead" | "team_member" | "pending";

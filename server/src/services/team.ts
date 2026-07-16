@@ -31,11 +31,12 @@ import type {
   UpdateTeamMemberRole,
   UserRole,
 } from "@armyofagents/shared";
-import { PERMISSION_KEYS } from "@armyofagents/shared";
+import { PERMISSION_KEYS, humanSocialLinkSchema } from "@armyofagents/shared";
 import { conflict, notFound } from "../errors.js";
 import { accessService } from "./access.js";
 import { humanCapabilitiesService } from "./human-capabilities.js";
 import { orgHierarchyService } from "./org-hierarchy.js";
+import { getUserProfile } from "./user-profiles.js";
 
 const TEAM_INVITE_KEY = "teamInvite";
 const OPEN_WORKLOAD_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
@@ -745,6 +746,30 @@ export function teamService(db: Db) {
     );
 
     await humanCapabilities.ensureStandardDocuments(companyId, userId, addedByUserId);
+
+    // Converge with the invited path (join-approval.ts): manually-added humans
+    // also get a company profile row materialized from their global profile.
+    try {
+      const globalProfile = await getUserProfile(db, userId);
+      const socialLinks = (globalProfile?.socialLinks ?? []).flatMap((link) => {
+        const parsed = humanSocialLinkSchema.safeParse(link);
+        return parsed.success ? [parsed.data] : [];
+      });
+      await updateCompanyUserProfile(
+        companyId,
+        userId,
+        {
+          displayName: globalProfile?.displayName ?? null,
+          title: globalProfile?.title ?? null,
+          bio: globalProfile?.bio ?? null,
+          socialLinks,
+          timezone: globalProfile?.timezone ?? null,
+        },
+        addedByUserId,
+      );
+    } catch {
+      // best-effort — never fail the add
+    }
 
     return { userId };
   }
