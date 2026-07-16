@@ -23,6 +23,9 @@ export const joinRequests = pgTable(
     claimSecretConsumedAt: timestamp("claim_secret_consumed_at", { withTimezone: true }),
     createdAgentId: uuid("created_agent_id").references(() => agents.id, { onDelete: "set null" }),
     approvedByUserId: text("approved_by_user_id"),
+    /** How the approval happened: "founder" (manual) | "invite_email_match"
+     *  (auto-admit — the invitation carried the approval). Null on legacy rows. */
+    approvalSource: text("approval_source"),
     approvedAt: timestamp("approved_at", { withTimezone: true }),
     rejectedByUserId: text("rejected_by_user_id"),
     rejectedAt: timestamp("rejected_at", { withTimezone: true }),

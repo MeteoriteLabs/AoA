@@ -1198,6 +1198,13 @@
       "when": 1784026975382,
       "tag": "0170_blue_princess_powerful",
       "breakpoints": true
+    },
+    {
+      "idx": 171,
+      "version": "7",
+      "when": 1784188054597,
+      "tag": "0171_talented_hydra",
+      "breakpoints": true
     }
   ]
 }
