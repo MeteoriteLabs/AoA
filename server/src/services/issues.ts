@@ -2419,8 +2419,13 @@ export function issueService(db: Db) {
             clientSubmissionId,
           })
           // Concurrency backstop for the route-level replay check: two in-flight
-          // retries of the same key resolve to one row via the partial unique index.
-          .onConflictDoNothing()
+          // retries of the same key resolve to one row via the partial unique
+          // index. Targeted at that index (2026-07-16) so any OTHER unique
+          // violation on issue_comments raises instead of being swallowed.
+          .onConflictDoNothing({
+            target: [issueComments.companyId, issueComments.clientSubmissionId],
+            where: sql`client_submission_id IS NOT NULL`,
+          })
           .returning();
 
         // Lost the insert race → the original already ran its side-effects. Return

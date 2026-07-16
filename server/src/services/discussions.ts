@@ -1050,7 +1050,16 @@ export function discussionService(db: Db) {
           })
           // Concurrency backstop for the replay check above: a truly simultaneous
           // duplicate key resolves to one row via the partial unique index.
-          .onConflictDoNothing()
+          // TARGETED at that index only (CI integration catch, 2026-07-16): an
+          // unqualified DO NOTHING also swallowed source_action_id conflicts —
+          // which the gated-commit machinery RELIES on throwing (#197
+          // isUniqueViolation check) — and would silently drop a seq collision.
+          // With the arbiter scoped, a NULL-key row can never match it, so all
+          // other unique violations raise exactly as before.
+          .onConflictDoNothing({
+            target: [discussionEntries.discussionId, discussionEntries.clientSubmissionId],
+            where: sql`client_submission_id IS NOT NULL`,
+          })
           .returning();
 
         // Phase E1: link attachments (assets or artifacts) to the entry in the

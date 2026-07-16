@@ -80,8 +80,13 @@ export function conversationService(db: Db) {
           clientSubmissionId: message.clientSubmissionId ?? null,
         })
         // Concurrency backstop for the replay check in agent-loop.chat(): a
-        // simultaneous duplicate key resolves to one row via the partial index.
-        .onConflictDoNothing()
+        // simultaneous duplicate key resolves to one row via the partial
+        // index. Targeted at that index (2026-07-16) so any OTHER unique
+        // violation raises instead of being swallowed.
+        .onConflictDoNothing({
+          target: [internalAgentMessages.conversationId, internalAgentMessages.clientSubmissionId],
+          where: sql`client_submission_id IS NOT NULL`,
+        })
         .returning()
         .then((rows: any[]) => rows[0]);
 
