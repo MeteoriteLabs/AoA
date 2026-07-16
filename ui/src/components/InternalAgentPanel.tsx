@@ -95,6 +95,7 @@ import {
   assetResponseToCommanderInputRef,
   validateCommanderAttachmentFiles,
 } from "./commander/commanderAttachments";
+import { ComposerFrame } from "./composer/ComposerFrame";
 import type { CommanderContextScope } from "@armyofagents/shared";
 import type { CommanderOutputRef } from "@armyofagents/shared";
 import { useInlineWorkQuestions, WorkQuestionInlineError } from "./work-questions/WorkQuestionInlineList";
@@ -1958,7 +1959,10 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
           onFilteredChange={handleFilteredSkillsChange}
           onClose={closePicker}
         />
-        <div className="rounded-lg border border-border bg-background focus-within:ring-2 focus-within:ring-brand-focus-ring focus-within:border-brand transition-shadow">
+        {/* Honest delta vs the previous bespoke div: +shadow-sm, +flex-col/min-w-0
+            base, +data-composer-frame attribute. NO overflow — the mention popover
+            renders absolute bottom-full INSIDE this frame. */}
+        <ComposerFrame chrome="card" data-testid="commander-composer-frame">
           <input
             ref={commanderFileInputRef}
             type="file"
@@ -2156,7 +2160,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
               </button>
             )}
           </div>
-        </div>
+        </ComposerFrame>
       </div>
     </div>
   );
