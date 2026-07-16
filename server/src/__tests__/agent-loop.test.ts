@@ -208,6 +208,32 @@ describe("agentLoopService.chat — idempotent retry (clientSubmissionId)", () =
     expect(cliChat).not.toHaveBeenCalled();
   });
 
+  it("re-runs the turn when the prior user message has no persisted reply (send died mid-turn)", async () => {
+    // The key was recorded, but the original send failed before any assistant
+    // message was persisted (config error / CLI crash). Retry must fall through
+    // to a fresh run — NOT return an empty success that suppresses the turn.
+    getMessageByClientSubmissionId.mockResolvedValue({ id: "user-orig", createdAt: new Date(0) });
+    getAssistantReplyAfter.mockResolvedValue(null);
+    scriptStream([
+      { type: "text", delta: "Recovered answer" },
+      { type: "done", summary: { runId: "", toolsCalled: [], durationMs: 0, costCents: 0, tokenUsage: { inputTokens: 0, outputTokens: 0 } } },
+    ]);
+
+    const svc = agentLoopService(dbWithConfig({ cliTool: "claude_cli", executionMode: "cli" }));
+    const out = await drainWithKey(svc, "sub-orphan");
+
+    // The CLI actually ran and the caller got the fresh reply.
+    expect(cliChat).toHaveBeenCalledTimes(1);
+    expect(out.some((c) => c.type === "text" && c.delta === "Recovered answer")).toBe(true);
+    // The existing user row is reused — no duplicate user message is persisted.
+    const userCalls = appendMessage.mock.calls.filter((c) => (c[1] as any).role === "user");
+    expect(userCalls).toHaveLength(0);
+    // The recovered assistant reply IS persisted.
+    const assistantCalls = appendMessage.mock.calls.filter((c) => (c[1] as any).role === "assistant");
+    expect(assistantCalls).toHaveLength(1);
+    expect((assistantCalls[0][1] as any).content).toBe("Recovered answer");
+  });
+
   it("runs normally when the key has not been seen before", async () => {
     getMessageByClientSubmissionId.mockResolvedValue(null);
     scriptStream([

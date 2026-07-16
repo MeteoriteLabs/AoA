@@ -158,10 +158,16 @@ export function agentLoopService(db: Db, storage?: RuntimeAttachmentStorage) {
           return;
         }
 
-        // 1b. Idempotent retry: if this exact Send was already recorded, replay
-        // the original turn — stream its persisted assistant reply (if any) and
-        // stop — WITHOUT persisting a duplicate user message or starting a second
-        // CLI run. The partial unique index on the message is the race backstop.
+        // 1b. Idempotent retry: if this exact Send was already recorded AND the
+        // turn completed (a persisted assistant reply exists), replay the
+        // original reply — WITHOUT persisting a duplicate user message or
+        // starting a second CLI run. If the user turn persisted but the send
+        // died before any assistant reply was recorded (config error, CLI
+        // crash), fall through and RE-RUN the turn, reusing the existing user
+        // row — an empty "success" here would permanently suppress the turn
+        // for this submission id (PR #291 review). The partial unique index on
+        // the message is the race backstop.
+        let reuseExistingUserRow = false;
         if (params.clientSubmissionId) {
           const priorUser = await convService.getMessageByClientSubmissionId(
             conversation.id,
@@ -174,19 +180,23 @@ export function agentLoopService(db: Db, storage?: RuntimeAttachmentStorage) {
             );
             if (reply?.content) {
               yield { type: "text", delta: reply.content };
+              return;
             }
-            return;
+            reuseExistingUserRow = true;
           }
         }
 
-        // 2. Persist the user message
-        await convService.appendMessage(conversation.id, {
-          role: "user",
-          content: params.content,
-          pageContext: params.pageContext ?? null,
-          departmentContext: params.departmentContext ?? null,
-          clientSubmissionId: params.clientSubmissionId ?? null,
-        });
+        // 2. Persist the user message (skipped when re-running an orphaned
+        // turn whose user row already exists from the failed original send).
+        if (!reuseExistingUserRow) {
+          await convService.appendMessage(conversation.id, {
+            role: "user",
+            content: params.content,
+            pageContext: params.pageContext ?? null,
+            departmentContext: params.departmentContext ?? null,
+            clientSubmissionId: params.clientSubmissionId ?? null,
+          });
+        }
 
         // 2b. Runtime attachment delivery (v1 — text only). Resolve company-owned
         // attachment content server-side and fold it into the message shown to the
