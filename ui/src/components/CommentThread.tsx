@@ -20,6 +20,7 @@ import {
 } from "../lib/task-composer-actions";
 import { COMPOSER_ATTACHMENT_CONTENT_TYPES, COMPOSER_MAX_ATTACHMENTS, COMPOSER_MAX_ATTACHMENT_BYTES } from "@armyofagents/shared";
 import { ComposerFrame } from "./composer/ComposerFrame";
+import { ComposerAttachmentCard } from "./composer/ComposerAttachmentCard";
 
 export { resolveTaskCommentAction } from "../lib/task-composer-actions";
 export type { TaskCommentAction, TaskCommentActionInput } from "../lib/task-composer-actions";
@@ -414,20 +415,28 @@ export function CommentThread({
         {liveRunSlot ? <div className="mt-3">{liveRunSlot}</div> : null}
       </div>
 
+      {/* Sticky positioning stays OUTSIDE the card (card chrome on a sticky
+          scroll sibling breaks the layout); the Quiet Operator frame wraps only
+          the composer content. */}
       <div
-        className="sticky bottom-0 z-10 shrink-0 space-y-2 border-t border-border bg-background pt-3"
+        className="sticky bottom-0 z-10 shrink-0 border-t border-border bg-background pt-3"
         data-testid="task-comments-composer"
       >
+        <ComposerFrame chrome="card" density="compact" className="gap-2 p-2.5">
         {selectedFiles.length > 0 && (
-          <div className="mb-2 flex flex-wrap gap-1.5" data-testid="task-comment-attachments">
+          <div className="flex flex-wrap gap-1.5" data-testid="task-comment-attachments">
             {selectedFiles.map((file, index) => (
-              <button key={`${file.name}-${file.size}-${index}`} type="button" className="rounded-md bg-muted/60 px-2 py-1 text-xs" onClick={() => setSelectedFiles((current) => current.filter((_, i) => i !== index))} title="Remove attachment">
-                {file.name}
-              </button>
+              <ComposerAttachmentCard
+                key={`${file.name}-${file.size}-${index}`}
+                name={file.name}
+                byteSize={file.size}
+                state="ready"
+                onRemove={() => setSelectedFiles((current) => current.filter((_, i) => i !== index))}
+              />
             ))}
           </div>
         )}
-        {attachmentError && <div className="mb-2 text-xs text-destructive" role="alert">{attachmentError}</div>}
+        {attachmentError && <div className="text-xs text-destructive" role="alert">{attachmentError}</div>}
         <MarkdownEditor
           ref={editorRef}
           value={body}
@@ -437,6 +446,7 @@ export function CommentThread({
           onSubmit={handleSubmit}
           imageUploadHandler={imageUploadHandler}
           contentClassName="min-h-[60px] text-sm"
+          bordered={false}
         />
         <div className="flex items-center justify-end gap-3">
           {onAttachImage && (
@@ -522,10 +532,11 @@ export function CommentThread({
               }}
             />
           )}
-          <Button size="sm" disabled={!canSubmit} onClick={handleSubmit}>
+          <Button size="sm" className="bg-brand text-white hover:bg-brand/90" disabled={!canSubmit} onClick={handleSubmit}>
             {submitting ? "Posting..." : "Comment"}
           </Button>
         </div>
+        </ComposerFrame>
       </div>
     </ComposerFrame>
   );
