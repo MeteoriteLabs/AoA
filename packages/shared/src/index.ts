@@ -988,6 +988,7 @@ export {
   transferAdminSchema,
   reassignAndRemoveSchema,
   STANDARD_HUMAN_CAPABILITY_DOCUMENTS,
+  humanSocialLinkSchema,
   createHumanCapabilityDocumentSchema,
   updateHumanCapabilityDocumentSchema,
   updateCompanyUserProfileSchema,

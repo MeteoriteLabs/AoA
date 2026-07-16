@@ -306,6 +306,7 @@ export {
   reassignAndRemoveSchema,
   HUMAN_SOCIAL_LINK_TYPES,
   STANDARD_HUMAN_CAPABILITY_DOCUMENTS,
+  humanSocialLinkSchema,
   createHumanCapabilityDocumentSchema,
   updateHumanCapabilityDocumentSchema,
   updateCompanyUserProfileSchema,

@@ -3,7 +3,7 @@ import type { Db } from "@armyofagents/db";
 import { joinRequests } from "@armyofagents/db";
 import {
   PERMISSION_KEYS,
-  type HumanSocialLink,
+  humanSocialLinkSchema,
   type JoinRequestApprovalSource,
 } from "@armyofagents/shared";
 import { accessService } from "./access.js";
@@ -64,6 +64,26 @@ export function buildHumanJoinApprovalServices(txDb: Db): HumanJoinApprovalServi
     access: accessService(txDb),
     team: teamService(txDb),
     capabilities: humanCapabilitiesService(txDb),
+  };
+}
+
+/** Founder/manual approval identity — preserves the route's original attribution semantics. */
+export function founderApprovalIdentity(opts: { actorUserId: string | null; localImplicit: boolean }) {
+  return {
+    approvedByUserId: opts.actorUserId ?? (opts.localImplicit ? "local-board" : null),
+    attributionUserId: opts.actorUserId ?? null,
+    activityActor: { actorType: "user" as const, actorId: opts.actorUserId ?? "board" },
+    approvalSource: "founder" as const,
+  };
+}
+
+/** Auto-admit identity — the invitation carried the approval; never impersonates anyone. */
+export function autoAdmitApprovalIdentity() {
+  return {
+    approvedByUserId: null,
+    attributionUserId: null,
+    activityActor: { actorType: "system" as const, actorId: "invite_email_match" },
+    approvalSource: "invite_email_match" as const,
   };
 }
 
@@ -136,30 +156,40 @@ export async function approveHumanJoinRequestTx(
   );
 
   // Materialize the company Human Operating Profile from the GLOBAL profile +
-  // seed the 6 standard capability-doc stubs. Best-effort: a seeding failure
-  // must never fail the approval (membership/role/grants are already correct).
+  // seed the 6 standard capability-doc stubs. Best-effort: the nested
+  // transaction (SAVEPOINT) confines even SQL-level seeding failures so they
+  // can never fail or mask the approval; JS-level throws are caught the same
+  // way. The injected services stay bound to the OUTER txDb — same session, so
+  // the savepoint still scopes their statements; the nested callback exists
+  // purely to create the savepoint.
   try {
-    const globalProfile = await getUserProfile(txDb, args.requestingUserId);
-    await services.team.updateCompanyUserProfile(
-      args.companyId,
-      args.requestingUserId,
-      {
-        displayName: globalProfile?.displayName ?? null,
-        title: globalProfile?.title ?? null,
-        bio: globalProfile?.bio ?? null,
-        // Global profile stores `type: string`; the company-profile input
-        // narrows it to the HumanSocialLink literal union. Values originate
-        // from the same validated link-type set, so the cast is safe.
-        socialLinks: (globalProfile?.socialLinks ?? []) as HumanSocialLink[],
-        timezone: globalProfile?.timezone ?? null,
-      },
-      args.attributionUserId,
-    );
-    await services.capabilities.ensureStandardDocuments(
-      args.companyId,
-      args.requestingUserId,
-      args.attributionUserId,
-    );
+    await txDb.transaction(async () => {
+      const globalProfile = await getUserProfile(txDb, args.requestingUserId);
+      // The global PATCH route only Array.isArray-checks socialLinks, so
+      // parse-filter each link through the shared validator instead of
+      // trusting the stored shape.
+      const socialLinks = (globalProfile?.socialLinks ?? []).flatMap((link) => {
+        const parsed = humanSocialLinkSchema.safeParse(link);
+        return parsed.success ? [parsed.data] : [];
+      });
+      await services.team.updateCompanyUserProfile(
+        args.companyId,
+        args.requestingUserId,
+        {
+          displayName: globalProfile?.displayName ?? null,
+          title: globalProfile?.title ?? null,
+          bio: globalProfile?.bio ?? null,
+          socialLinks,
+          timezone: globalProfile?.timezone ?? null,
+        },
+        args.attributionUserId,
+      );
+      await services.capabilities.ensureStandardDocuments(
+        args.companyId,
+        args.requestingUserId,
+        args.attributionUserId,
+      );
+    });
   } catch (err) {
     logger.warn(
       { err, companyId: args.companyId, userId: args.requestingUserId },
@@ -178,7 +208,11 @@ export async function approveHumanJoinRequestTx(
     action: "join.approved",
     entityType: "join_request",
     entityId: args.requestId,
-    details: { requestType: "human", approvalSource: args.approvalSource },
+    details: {
+      requestType: "human",
+      approvalSource: args.approvalSource,
+      inviteId: args.invite.id,
+    },
   });
   return row;
 }

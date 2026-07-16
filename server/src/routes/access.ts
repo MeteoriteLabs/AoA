@@ -56,6 +56,7 @@ import { hubItemsService } from "../services/hub-items.js";
 import {
   approveHumanJoinRequestTx,
   buildHumanJoinApprovalServices,
+  founderApprovalIdentity,
   grantsFromDefaults,
 } from "../services/join-approval.js";
 
@@ -2411,11 +2412,10 @@ export function accessRoutes(
               id: invite.id,
               defaultsPayload: invite.defaultsPayload as Record<string, unknown> | null,
             },
-            approvedByUserId:
-              req.actor.userId ?? (isLocalImplicit(req) ? "local-board" : null),
-            attributionUserId: req.actor.userId ?? null, // original grants/role semantics
-            activityActor: { actorType: "user", actorId: req.actor.userId ?? "board" },
-            approvalSource: "founder",
+            ...founderApprovalIdentity({
+              actorUserId: req.actor.userId ?? null,
+              localImplicit: isLocalImplicit(req),
+            }),
           });
         }
 

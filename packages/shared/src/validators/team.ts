@@ -33,7 +33,7 @@ const socialLinkLabelSchema = z
   .optional()
   .transform((value) => (value && value.length > 0 ? value : null));
 
-const humanSocialLinkSchema = z
+export const humanSocialLinkSchema = z
   .object({
     type: z.enum(HUMAN_SOCIAL_LINK_TYPES),
     label: socialLinkLabelSchema,

@@ -21,12 +21,20 @@ vi.mock("../access.js", () => ({ accessService: () => ({}) }));
 vi.mock("../team.js", () => ({ teamService: () => ({}) }));
 vi.mock("../human-capabilities.js", () => ({ humanCapabilitiesService: () => ({}) }));
 
-import { approveHumanJoinRequestTx, grantsFromDefaults } from "../join-approval.js";
+import {
+  approveHumanJoinRequestTx,
+  autoAdmitApprovalIdentity,
+  founderApprovalIdentity,
+  grantsFromDefaults,
+} from "../join-approval.js";
 
 function makeTxDb(updatedRow: Record<string, unknown> | null) {
-  return {
-    update: () => ({ set: () => ({ where: () => ({ returning: async () => (updatedRow ? [updatedRow] : []) }) }) }),
+  const setCalls: Array<Record<string, unknown>> = [];
+  const db = {
+    update: () => ({ set: (v: Record<string, unknown>) => { setCalls.push(v); return { where: () => ({ returning: async () => (updatedRow ? [updatedRow] : []) }) }; } }),
+    transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn({}),
   } as never;
+  return { db, setCalls };
 }
 
 function makeServices() {
@@ -39,7 +47,13 @@ function makeServices() {
 
 const args = {
   companyId: "c1", requestId: "r1", requestingUserId: "u1",
-  invite: { id: "i1", defaultsPayload: { teamInvite: { role: "team_member", email: "ada@x.com" } } as Record<string, unknown> },
+  invite: {
+    id: "i1",
+    defaultsPayload: {
+      teamInvite: { role: "team_member", email: "ada@x.com" },
+      human: { grants: [{ permissionKey: "tasks:assign", scope: null }] },
+    } as Record<string, unknown>,
+  },
   approvedByUserId: null,
   attributionUserId: null,
   activityActor: { actorType: "system" as const, actorId: "invite_email_match" },
@@ -51,9 +65,20 @@ describe("approveHumanJoinRequestTx", () => {
 
   it("approves: row update + membership + grants + role + seeding + hub + activity", async () => {
     const services = makeServices();
-    const row = await approveHumanJoinRequestTx(makeTxDb({ id: "r1", status: "approved" }), services as never, args);
+    const { db, setCalls } = makeTxDb({ id: "r1", status: "approved" });
+    const row = await approveHumanJoinRequestTx(db, services as never, args);
     expect(row).toEqual({ id: "r1", status: "approved" });
+    expect(setCalls[0]).toMatchObject({
+      status: "approved",
+      approvedByUserId: null,
+      approvalSource: "invite_email_match",
+    });
     expect(services.access.ensureMembership).toHaveBeenCalledWith("c1", "user", "u1", "member", "active");
+    expect(services.access.setPrincipalGrants).toHaveBeenCalledWith(
+      "c1", "user", "u1",
+      [{ permissionKey: "tasks:assign", scope: null }],
+      null,
+    );
     expect(services.team.applyInviteRole).toHaveBeenCalledWith("c1", "u1", args.invite.defaultsPayload, null);
     // seeding copies the GLOBAL profile (incl timezone) into the company profile
     expect(services.team.updateCompanyUserProfile).toHaveBeenCalledWith(
@@ -67,13 +92,14 @@ describe("approveHumanJoinRequestTx", () => {
       action: "join.approved",
       actorType: "system",
       actorId: "invite_email_match",
-      details: { requestType: "human", approvalSource: "invite_email_match" },
+      details: { requestType: "human", approvalSource: "invite_email_match", inviteId: "i1" },
     }));
   });
 
   it("returns null (no side effects) when the row is no longer pending (race)", async () => {
     const services = makeServices();
-    const row = await approveHumanJoinRequestTx(makeTxDb(null), services as never, args);
+    const { db } = makeTxDb(null);
+    const row = await approveHumanJoinRequestTx(db, services as never, args);
     expect(row).toBeNull();
     expect(services.access.ensureMembership).not.toHaveBeenCalled();
     expect(reconcile).not.toHaveBeenCalled();
@@ -82,9 +108,30 @@ describe("approveHumanJoinRequestTx", () => {
   it("seeding failure is non-fatal — approval still completes", async () => {
     const services = makeServices();
     services.team.updateCompanyUserProfile = vi.fn(async () => { throw new Error("boom"); });
-    const row = await approveHumanJoinRequestTx(makeTxDb({ id: "r1" }), services as never, args);
+    const { db } = makeTxDb({ id: "r1" });
+    const row = await approveHumanJoinRequestTx(db, services as never, args);
     expect(row).toEqual({ id: "r1" });
     expect(reconcile).toHaveBeenCalled(); // hub/activity still run
+  });
+});
+
+describe("approval identity factories", () => {
+  it("founderApprovalIdentity: local-implicit board actor without a userId", () => {
+    expect(founderApprovalIdentity({ actorUserId: null, localImplicit: true })).toEqual({
+      approvedByUserId: "local-board",
+      attributionUserId: null,
+      activityActor: { actorType: "user", actorId: "board" },
+      approvalSource: "founder",
+    });
+  });
+
+  it("autoAdmitApprovalIdentity: all-null system preset — never impersonates anyone", () => {
+    expect(autoAdmitApprovalIdentity()).toEqual({
+      approvedByUserId: null,
+      attributionUserId: null,
+      activityActor: { actorType: "system", actorId: "invite_email_match" },
+      approvalSource: "invite_email_match",
+    });
   });
 });
 
