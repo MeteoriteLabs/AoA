@@ -4,6 +4,7 @@ import type { Project, TeamMemberSummary, UserRole } from "@armyofagents/shared"
 import { accessApi } from "../../api/access";
 import { teamApi } from "../../api/team";
 import { queryKeys } from "../../lib/queryKeys";
+import { formatInviteExpiry, toAbsoluteInviteUrl } from "../../lib/invite-expiry";
 import { useToast } from "../../context/ToastContext";
 import { Button } from "@/components/ui/button";
 import {
@@ -51,6 +52,8 @@ export function AddMemberDialog({
   const [departmentId, setDepartmentId] = useState<string>("none");
   const [reportsToId, setReportsToId] = useState<string>("none");
   const [inviteUrl, setInviteUrl] = useState<string | null>(null);
+  const [inviteExpiresAt, setInviteExpiresAt] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
 
   const departmentOptions = useMemo(
     () => departments.filter((d) => d.type === "department"),
@@ -108,9 +111,24 @@ export function AddMemberDialog({
         },
       }),
     onSuccess: async (result) => {
-      setInviteUrl(result.inviteUrl);
+      // Server returns an absolute URL; prefix the origin if a relative
+      // path ever slips through so the copied link still works.
+      const absoluteUrl = toAbsoluteInviteUrl(result.inviteUrl);
+      setInviteUrl(absoluteUrl);
+      setInviteExpiresAt(result.expiresAt ?? null);
+      // Auto-copy so the founder can paste immediately; clipboard access can
+      // be denied outside secure contexts — the manual Copy button remains.
+      try {
+        await navigator.clipboard.writeText(absoluteUrl);
+        setCopied(true);
+      } catch {
+        setCopied(false);
+      }
       await queryClient.invalidateQueries({ queryKey: queryKeys.team.summary(companyId) });
-      pushToast({ title: "Invite created", body: email.trim(), tone: "success" });
+      pushToast({ title: "Invite link created", body: email.trim(), tone: "success" });
+    },
+    onError: (err: Error) => {
+      pushToast({ title: "Failed to create invite", body: err.message, tone: "error" });
     },
   });
 
@@ -122,12 +140,19 @@ export function AddMemberDialog({
     setDepartmentId("none");
     setReportsToId("none");
     setInviteUrl(null);
+    setInviteExpiresAt(null);
+    setCopied(false);
   }
 
   async function copyInviteLink() {
     if (!inviteUrl) return;
-    await navigator.clipboard.writeText(inviteUrl);
-    pushToast({ title: "Invite link copied", tone: "success" });
+    try {
+      await navigator.clipboard.writeText(inviteUrl);
+      setCopied(true);
+      pushToast({ title: "Invite link copied", tone: "success" });
+    } catch {
+      pushToast({ title: "Couldn't access the clipboard", body: "Copy the link manually.", tone: "error" });
+    }
   }
 
   const isPending = addMemberMutation.isPending || inviteMutation.isPending;
@@ -153,12 +178,29 @@ export function AddMemberDialog({
         </DialogHeader>
 
         <DialogBody className="space-y-4">
+          {inviteUrl ? (
+            <div className="space-y-1.5 rounded-lg border border-border bg-muted/30 p-3">
+              <Label htmlFor="invite-link">Invite Link</Label>
+              <Input id="invite-link" readOnly value={inviteUrl} />
+              <div className="flex items-center gap-2">
+                <Button variant="outline" size="sm" onClick={copyInviteLink}>
+                  {copied ? "Copied" : "Copy link"}
+                </Button>
+                {inviteExpiresAt && (
+                  <span className="text-xs text-muted-foreground">
+                    This link {formatInviteExpiry(inviteExpiresAt)}.
+                  </span>
+                )}
+              </div>
+            </div>
+          ) : (
+          <>
           {/* Mode toggle */}
           <div className="flex gap-2">
             <Button
               variant={mode === "direct" ? "default" : "outline"}
               size="sm"
-              onClick={() => { setMode("direct"); setInviteUrl(null); }}
+              onClick={() => setMode("direct")}
             >
               Add directly
             </Button>
@@ -167,7 +209,7 @@ export function AddMemberDialog({
               size="sm"
               onClick={() => setMode("invite")}
             >
-              Send invite link
+              Create invite link
             </Button>
           </div>
 
@@ -192,6 +234,13 @@ export function AddMemberDialog({
               placeholder="person@company.com"
               type="email"
             />
+            {mode === "invite" && (
+              <p className="text-xs text-muted-foreground">
+                The link is tied to this email — when they sign in with Google using
+                it, they're admitted automatically. Anyone else who opens the link
+                waits for your approval.
+              </p>
+            )}
           </div>
 
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -247,39 +296,39 @@ export function AddMemberDialog({
               </SelectContent>
             </Select>
           </div>
-
-          {inviteUrl && (
-            <div className="space-y-1.5 rounded-lg border border-border bg-muted/30 p-3">
-              <Label htmlFor="invite-link">Invite Link</Label>
-              <Input id="invite-link" readOnly value={inviteUrl} />
-              <Button variant="outline" size="sm" onClick={copyInviteLink}>
-                Copy link
-              </Button>
-            </div>
+          </>
           )}
         </DialogBody>
 
         <DialogFooter>
-          <Button
-            variant="ghost"
-            onClick={() => { onOpenChange(false); reset(); }}
-          >
-            Cancel
-          </Button>
-          <Button
-            onClick={() => {
-              if (mode === "direct") {
-                addMemberMutation.mutate();
-              } else {
-                inviteMutation.mutate();
-              }
-            }}
-            disabled={isPending || !canSubmit}
-          >
-            {isPending
-              ? (mode === "direct" ? "Adding..." : "Sending...")
-              : (mode === "direct" ? "Add Member" : "Send invite")}
-          </Button>
+          {inviteUrl ? (
+            <Button onClick={() => { onOpenChange(false); reset(); }}>
+              Done
+            </Button>
+          ) : (
+            <>
+              <Button
+                variant="ghost"
+                onClick={() => { onOpenChange(false); reset(); }}
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={() => {
+                  if (mode === "direct") {
+                    addMemberMutation.mutate();
+                  } else {
+                    inviteMutation.mutate();
+                  }
+                }}
+                disabled={isPending || !canSubmit}
+              >
+                {isPending
+                  ? (mode === "direct" ? "Adding..." : "Creating...")
+                  : (mode === "direct" ? "Add Member" : "Create link")}
+              </Button>
+            </>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>

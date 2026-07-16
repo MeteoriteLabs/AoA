@@ -17,6 +17,11 @@ type JoinRequestManagerCandidate = {
 };
 
 const COMPANY_INVITE_TTL_MS = 10 * 60 * 1000;
+// Email-bound team invites live for 7 days: the verified-email match at
+// accept time is the real gate for these invites — link secrecy is secondary.
+// Open/agent invites keep the short COMPANY_INVITE_TTL_MS window because the
+// link itself is the only gate.
+const EMAIL_INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -169,8 +174,26 @@ function toAuthorizationHeaderValue(rawToken: string): string {
   return /^bearer\s+/i.test(trimmed) ? trimmed : `Bearer ${trimmed}`;
 }
 
-export function companyInviteExpiresAt(nowMs: number = Date.now()) {
-  return new Date(nowMs + COMPANY_INVITE_TTL_MS);
+/**
+ * True when the invite's defaults payload binds it to a specific email
+ * (a team invite created for one person). These invites are gated by the
+ * verified-email match at accept time, so they get the long TTL.
+ */
+export function inviteDefaultsHaveBoundEmail(defaultsPayload: unknown): boolean {
+  if (!isPlainObject(defaultsPayload)) return false;
+  const teamInvite = (defaultsPayload as Record<string, unknown>).teamInvite;
+  if (!isPlainObject(teamInvite)) return false;
+  return Boolean(nonEmptyTrimmedString((teamInvite as Record<string, unknown>).email));
+}
+
+export function companyInviteExpiresAt(
+  defaultsPayload: unknown = null,
+  nowMs: number = Date.now(),
+) {
+  const ttlMs = inviteDefaultsHaveBoundEmail(defaultsPayload)
+    ? EMAIL_INVITE_TTL_MS
+    : COMPANY_INVITE_TTL_MS;
+  return new Date(nowMs + ttlMs);
 }
 
 export function buildJoinDefaultsPayloadForAccept(input: {
@@ -332,7 +355,7 @@ export function resolveJoinRequestAgentManagerId(
   return (apexCxo ?? cxoCandidates[0] ?? null)?.id ?? null;
 }
 
-function requestBaseUrl(req: {
+export function requestBaseUrl(req: {
   protocol?: string;
   header(name: string): string | undefined;
 }) {

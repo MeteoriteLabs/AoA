@@ -9,6 +9,7 @@ import { projectsApi } from "../../api/projects";
 import { useCompany } from "../../context/CompanyContext";
 import { useToast } from "../../context/ToastContext";
 import { queryKeys } from "../../lib/queryKeys";
+import { formatInviteExpiry, toAbsoluteInviteUrl } from "../../lib/invite-expiry";
 import { AddMemberDialog } from "./AddMemberDialog";
 import { TransferAdminDialog } from "./TransferAdminDialog";
 import { EmptyState } from "../EmptyState";
@@ -126,23 +127,38 @@ function MemberCard({
   );
 }
 
+export interface ResendLinkResult {
+  email: string | null;
+  url: string;
+  expiresAt: string;
+}
+
 function InviteCard({
   invite,
   canManage,
   onMutationSuccess,
+  onResent,
 }: {
   invite: TeamSummary["pendingInvites"][number];
   canManage: boolean;
   onMutationSuccess: () => Promise<void>;
+  onResent: (result: ResendLinkResult) => void;
 }) {
   const { selectedCompanyId } = useCompany();
   const { pushToast } = useToast();
 
   const resendMutation = useMutation({
     mutationFn: () => teamApi.resendInvite(selectedCompanyId!, invite.id),
-    onSuccess: async () => {
+    onSuccess: async (result) => {
+      // Resend rotates the token — surface the fresh link (this card is about
+      // to be replaced by the new invite row, so the link lives in the parent).
+      onResent({
+        email: invite.email,
+        url: toAbsoluteInviteUrl(result.inviteUrl),
+        expiresAt: result.expiresAt,
+      });
       await onMutationSuccess();
-      pushToast({ title: "Invite resent", tone: "success" });
+      pushToast({ title: "Invite recreated", body: "A fresh link is ready to copy.", tone: "success" });
     },
     onError: (err: Error) => {
       pushToast({ title: "Failed to resend invite", body: err.message, tone: "error" });
@@ -186,7 +202,10 @@ function InviteCard({
       {/* Footer */}
       <div className="flex items-center justify-between border-t border-dashed border-border/50 pt-2.5">
         <span className="text-[11px] text-muted-foreground">
-          Expires {new Date(invite.expiresAt).toLocaleDateString()}
+          {(() => {
+            const expiry = formatInviteExpiry(invite.expiresAt);
+            return expiry ? expiry.charAt(0).toUpperCase() + expiry.slice(1) : "";
+          })()}
         </span>
         {canManage && (
           <div className="flex items-center gap-1">
@@ -195,6 +214,7 @@ function InviteCard({
                 <Button
                   variant="ghost"
                   size="icon-xs"
+                  aria-label="Resend invite"
                   onClick={() => resendMutation.mutate()}
                   disabled={resendMutation.isPending || revokeMutation.isPending}
                 >
@@ -208,6 +228,7 @@ function InviteCard({
                 <Button
                   variant="ghost"
                   size="icon-xs"
+                  aria-label="Revoke invite"
                   className="text-muted-foreground hover:text-destructive"
                   onClick={() => revokeMutation.mutate()}
                   disabled={resendMutation.isPending || revokeMutation.isPending}
@@ -370,11 +391,30 @@ function JoinRequestCard({
 
 export function HumansTab({ teamSummary, permissions, isSystemAdmin, onMutationSuccess }: HumansTabProps) {
   const { selectedCompanyId } = useCompany();
+  const { pushToast } = useToast();
   const queryClient = useQueryClient();
   const [addMemberOpen, setAddMemberOpen] = useState(false);
   const [transferAdminOpen, setTransferAdminOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [roleFilter, setRoleFilter] = useState<RoleFilter>("all");
+  const [resendLink, setResendLink] = useState<ResendLinkResult | null>(null);
+  const [resendCopied, setResendCopied] = useState(false);
+
+  const handleResent = useCallback((result: ResendLinkResult) => {
+    setResendLink(result);
+    setResendCopied(false);
+  }, []);
+
+  async function copyResendLink() {
+    if (!resendLink) return;
+    try {
+      await navigator.clipboard.writeText(resendLink.url);
+      setResendCopied(true);
+      pushToast({ title: "Invite link copied", tone: "success" });
+    } catch {
+      pushToast({ title: "Couldn't access the clipboard", body: "Copy the link manually.", tone: "error" });
+    }
+  }
 
   const { data: projects } = useQuery({
     queryKey: selectedCompanyId ? queryKeys.projects.list(selectedCompanyId) : ["projects", "none"],
@@ -601,6 +641,35 @@ export function HumansTab({ teamSummary, permissions, isSystemAdmin, onMutationS
           </div>
         </div>
 
+        {/* Fresh link after a resend — the token rotated, so this is the only
+            place the founder can grab the new URL. */}
+        {resendLink && (
+          <div className="space-y-1.5 rounded-lg border border-border bg-muted/30 p-3">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-medium">
+                New invite link{resendLink.email ? ` for ${resendLink.email}` : ""}
+              </span>
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                aria-label="Dismiss new invite link"
+                onClick={() => setResendLink(null)}
+              >
+                <X className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+            <Input readOnly value={resendLink.url} aria-label="New invite link URL" />
+            <div className="flex items-center gap-2">
+              <Button variant="outline" size="sm" onClick={copyResendLink}>
+                {resendCopied ? "Copied" : "Copy link"}
+              </Button>
+              <span className="text-xs text-muted-foreground">
+                This link {formatInviteExpiry(resendLink.expiresAt)}.
+              </span>
+            </div>
+          </div>
+        )}
+
         {/* Grid */}
         {isEmpty ? (
           <EmptyState
@@ -643,6 +712,7 @@ export function HumansTab({ teamSummary, permissions, isSystemAdmin, onMutationS
                 invite={invite}
                 canManage={permissions.canInviteUsers}
                 onMutationSuccess={invalidateTeam}
+                onResent={handleResent}
               />
             ))}
             {filteredJoinRequests.map((request) => (

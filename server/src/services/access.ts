@@ -12,13 +12,13 @@ import {
 } from "@armyofagents/db";
 import type { PermissionKey, PrincipalType } from "@armyofagents/shared";
 import { conflict, notFound } from "../errors.js";
+import { companyInviteExpiresAt } from "../routes/access-helpers.js";
 import { orgHierarchyService } from "./org-hierarchy.js";
 
 const INVITE_TOKEN_PREFIX = "aoa_invite_";
 const INVITE_TOKEN_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
 const INVITE_TOKEN_SUFFIX_LENGTH = 24;
 const INVITE_TOKEN_MAX_RETRIES = 5;
-const COMPANY_INVITE_TTL_MS = 10 * 60 * 1000;
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -388,7 +388,9 @@ export function accessService(db: Db) {
             tokenHash: hashToken(candidateToken),
             allowedJoinTypes: oldInvite.allowedJoinTypes,
             defaultsPayload: oldInvite.defaultsPayload,
-            expiresAt: new Date(Date.now() + COMPANY_INVITE_TTL_MS),
+            // Payload-aware TTL: email-bound team invites keep their 7-day
+            // window on resend; open/agent invites keep the 10-minute one.
+            expiresAt: companyInviteExpiresAt(oldInvite.defaultsPayload),
             invitedByUserId: oldInvite.invitedByUserId,
           })
           .returning()

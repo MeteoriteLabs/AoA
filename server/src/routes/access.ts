@@ -42,6 +42,7 @@ import {
   teamService,
 } from "../services/index.js";
 import { assertCompanyAccess } from "./authz.js";
+import { companyInviteExpiresAt } from "./access-helpers.js";
 import {
   claimBoardOwnership,
   inspectBoardClaimChallenge
@@ -68,7 +69,6 @@ const INVITE_TOKEN_PREFIX = "aoa_invite_";
 const INVITE_TOKEN_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
 const INVITE_TOKEN_SUFFIX_LENGTH = 8;
 const INVITE_TOKEN_MAX_RETRIES = 5;
-const COMPANY_INVITE_TTL_MS = 10 * 60 * 1000;
 
 function createInviteToken() {
   const bytes = randomBytes(INVITE_TOKEN_SUFFIX_LENGTH);
@@ -81,10 +81,6 @@ function createInviteToken() {
 
 function createClaimSecret() {
   return `aoa_claim_${randomBytes(24).toString("hex")}`;
-}
-
-export function companyInviteExpiresAt(nowMs: number = Date.now()) {
-  return new Date(nowMs + COMPANY_INVITE_TTL_MS);
 }
 
 function tokenHashesMatch(left: string, right: string) {
@@ -1686,15 +1682,18 @@ export function accessRoutes(
         typeof req.body.agentMessage === "string"
           ? req.body.agentMessage.trim() || null
           : null;
+      const defaultsPayload = mergeInviteDefaults(
+        req.body.defaultsPayload ?? null,
+        normalizedAgentMessage
+      );
       const insertValues = {
         companyId,
         inviteType: "company_join" as const,
         allowedJoinTypes: req.body.allowedJoinTypes,
-        defaultsPayload: mergeInviteDefaults(
-          req.body.defaultsPayload ?? null,
-          normalizedAgentMessage
-        ),
-        expiresAt: companyInviteExpiresAt(),
+        defaultsPayload,
+        // Email-bound team invites get the long TTL (see access-helpers.ts):
+        // the verified-email match is the real gate, link secrecy is secondary.
+        expiresAt: companyInviteExpiresAt(defaultsPayload),
         invitedByUserId: req.actor.userId ?? null
       };
 
@@ -1745,10 +1744,14 @@ export function accessRoutes(
       });
 
       const inviteSummary = toInviteSummaryResponse(req, token, created);
+      const inviteBaseUrl = requestBaseUrl(req);
+      const invitePath = `/invite/${token}`;
       res.status(201).json({
         ...created,
         token,
-        inviteUrl: `/invite/${token}`,
+        // Absolute so copying the link verbatim works outside this browser.
+        // Falls back to the path when no Host header is available.
+        inviteUrl: inviteBaseUrl ? `${inviteBaseUrl}${invitePath}` : invitePath,
         onboardingTextPath: inviteSummary.onboardingTextPath,
         onboardingTextUrl: inviteSummary.onboardingTextUrl,
         inviteMessage: inviteSummary.inviteMessage
