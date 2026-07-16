@@ -4,6 +4,13 @@ import { authUsers } from "@armyofagents/db";
 import type { CurrentUserProfile, UpdateCurrentUserProfile } from "@armyofagents/shared";
 import { unauthorized } from "../errors.js";
 
+/**
+ * The user-table-backed slice of {@link CurrentUserProfile}. `isInstanceAdmin`
+ * is actor-derived (instance_user_roles / local_implicit), not a user column —
+ * the route (routes/auth-profile.ts) composes it onto every response.
+ */
+export type UserProfileRecord = Omit<CurrentUserProfile, "isInstanceAdmin">;
+
 function toProfile(row: {
   id: string;
   email: string | null;
@@ -11,7 +18,7 @@ function toProfile(row: {
   displayName: string | null;
   image: string | null;
   avatarUrl: string | null;
-}): CurrentUserProfile {
+}): UserProfileRecord {
   return {
     id: row.id,
     email: row.email ?? null,
@@ -22,7 +29,7 @@ function toProfile(row: {
 
 export function userProfileService(db: Db) {
   return {
-    async load(userId: string): Promise<CurrentUserProfile> {
+    async load(userId: string): Promise<UserProfileRecord> {
       const row = await db
         .select({
           id: authUsers.id,
@@ -43,7 +50,7 @@ export function userProfileService(db: Db) {
     async update(
       userId: string,
       patch: UpdateCurrentUserProfile,
-    ): Promise<CurrentUserProfile> {
+    ): Promise<UserProfileRecord> {
       const updates: Record<string, unknown> = { updatedAt: new Date() };
       if (patch.displayName !== undefined) updates.displayName = patch.displayName;
       if (patch.avatarUrl !== undefined) updates.avatarUrl = patch.avatarUrl;

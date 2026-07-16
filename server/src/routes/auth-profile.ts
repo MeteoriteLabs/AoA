@@ -5,11 +5,13 @@ import { updateCurrentUserProfileSchema } from "@armyofagents/shared";
 import { unauthorized } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { userProfileService } from "../services/index.js";
+import type { UserProfileRecord } from "../services/user-profile.js";
+import { canManageInstanceSettings } from "./authz.js";
 
 // In local_trusted deployments the actor is a synthetic "local-board" user that
 // has no row in the `user` table, so DB lookup would 401. Return a fixed
 // profile for that case; persistence (PATCH) still requires a real user.
-function localImplicitProfile(userId: string): CurrentUserProfile {
+function localImplicitProfile(userId: string): UserProfileRecord {
   return {
     id: userId,
     email: null,
@@ -51,7 +53,13 @@ export function authProfileRoutes(db: Db) {
       throw unauthorized("Board authentication required");
     }
 
-    res.json(await loadActingUser(req.actor.userId, req.actor.source));
+    const profile: CurrentUserProfile = {
+      ...(await loadActingUser(req.actor.userId, req.actor.source)),
+      // Same source of truth as assertCanManageInstanceSettings — the auth
+      // middleware computed this from instance_user_roles.
+      isInstanceAdmin: canManageInstanceSettings(req),
+    };
+    res.json(profile);
   });
 
   router.patch(
@@ -65,7 +73,14 @@ export function authProfileRoutes(db: Db) {
         throw unauthorized("Cannot edit profile for the local board user");
       }
 
-      res.json(await service.update(req.actor.userId, req.body));
+      // Include the flag here too — the UI writes the PATCH response into the
+      // profile query cache (Me.tsx setQueryData), so dropping it would make
+      // an admin's instance-Settings chrome disappear after a profile save.
+      const profile: CurrentUserProfile = {
+        ...(await service.update(req.actor.userId, req.body)),
+        isInstanceAdmin: canManageInstanceSettings(req),
+      };
+      res.json(profile);
     },
   );
 

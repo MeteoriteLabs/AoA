@@ -23,6 +23,7 @@ import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToast } from "../context/ToastContext";
 import { useLiveAgentCount } from "../hooks/useLiveAgentCount";
+import { useTeamAccess } from "../hooks/useTeamAccess";
 import { queryKeys } from "../lib/queryKeys";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -628,12 +629,20 @@ export function Dashboard() {
     },
   });
 
+  // N2: POST /suggestions/detect is founder-gated server-side — firing it for
+  // every user guaranteed a 403 on each Home load for non-founders. Gate the
+  // trigger on the founder role (instance admins report role "founder" via the
+  // team summary, so local_trusted keeps working).
+  const { role: teamRole } = useTeamAccess(selectedCompanyId);
+  const isFounder = teamRole === "founder";
+
   useEffect(() => {
-    if (!selectedCompanyId) return;
+    if (!selectedCompanyId || !isFounder) return;
     detectSuggestions.mutate(selectedCompanyId);
-    // Trigger detection when the page loads for the active company.
+    // Trigger detection when the page loads for the active company (once the
+    // founder role is confirmed).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedCompanyId]);
+  }, [selectedCompanyId, isFounder]);
 
   const acceptSuggestion = useMutation({
     mutationFn: ({ companyId, suggestionId }: { companyId: string; suggestionId: string }) =>

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { LogOut } from "lucide-react";
 import type { PatchInstanceGeneralSettings } from "@armyofagents/shared";
@@ -15,14 +15,22 @@ import { InstanceHealthTab } from "@/components/settings/InstanceHealthTab";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { feedbackApi } from "@/api/feedback";
 import { authApi } from "@/api/auth";
+import { ApiError } from "@/api/client";
+import { useCompany } from "@/context/CompanyContext";
 import { Button } from "@/components/ui/button";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
 import { healthApi } from "@/api/health";
 import { LobbyShellMobileMenuButton } from "@/components/LobbyShell";
 
+function isForbiddenError(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 403;
+}
+
 export function InstanceSettingsPage() {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  const { selectedCompany } = useCompany();
   const [searchParams] = useSearchParams();
   const activeTab = searchParams.get("tab") ?? "general";
   const [actionError, setActionError] = useState<string | null>(null);
@@ -106,6 +114,40 @@ export function InstanceSettingsPage() {
   const enableIsolatedWorkspaces = experimentalQuery.data?.enableIsolatedWorkspaces === true;
   const autoRestartDevServerWhenIdle = experimentalQuery.data?.autoRestartDevServerWhenIdle === true;
   const enableWorkspaceTtlSweeper = experimentalQuery.data?.enableWorkspaceTtlSweeper === true;
+
+  // N2: a non-instance-admin who reaches this page (deep link, stale tab) gets
+  // a purposeful state instead of "Failed to load general settings." — every
+  // instance-settings query 403s for them, so a 403 on either query means the
+  // whole page is off-limits. Non-403 failures keep the per-tab error copy.
+  const accessDenied =
+    isForbiddenError(generalQuery.error) || isForbiddenError(experimentalQuery.error);
+  if (accessDenied) {
+    const companySettingsPath = selectedCompany
+      ? `/${selectedCompany.issuePrefix}/settings`
+      : "/";
+    return (
+      <div className="mx-auto w-full max-w-[1080px] px-4 py-6 sm:px-6 sm:py-7 md:px-10 md:py-9">
+        <LobbyShellMobileMenuButton className="mb-4" />
+        <div className="mb-5">
+          <h1 className="text-[1.55rem] font-bold tracking-tight">
+            Instance settings<span className="text-brand">.</span>
+          </h1>
+        </div>
+        <section className="max-w-xl rounded-xl border border-border bg-card p-6">
+          <h2 className="text-base font-semibold">
+            Instance settings require instance-admin access
+          </h2>
+          <p className="mt-2 text-sm text-muted-foreground">
+            Looking for your organization's settings? Open your company and go to
+            Settings there.
+          </p>
+          <Button className="mt-4" onClick={() => navigate(companySettingsPath)}>
+            {selectedCompany ? "Open company settings" : "Back to Lobby"}
+          </Button>
+        </section>
+      </div>
+    );
+  }
 
   return (
     <div className="mx-auto w-full max-w-[1080px] px-4 py-6 sm:px-6 sm:py-7 md:px-10 md:py-9">

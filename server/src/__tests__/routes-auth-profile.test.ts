@@ -80,7 +80,47 @@ describe("auth profile routes", () => {
       email: "user@example.com",
       displayName: "User One",
       avatarUrl: "https://example.com/a.png",
+      isInstanceAdmin: false,
     });
+  });
+
+  it("GET /api/auth/profile reports isInstanceAdmin: true for instance admins", async () => {
+    mockUserProfileService.load.mockResolvedValue({
+      id: "admin-1",
+      email: "admin@example.com",
+      displayName: "Admin One",
+      avatarUrl: null,
+    });
+
+    const app = createApp({
+      type: "board",
+      userId: "admin-1",
+      source: "session",
+      isInstanceAdmin: true,
+    });
+    const res = await request(app).get("/api/auth/profile");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.isInstanceAdmin).toBe(true);
+  });
+
+  it("GET /api/auth/profile reports isInstanceAdmin: true for the local_implicit board user", async () => {
+    const app = createApp({
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+    const res = await request(app).get("/api/auth/profile");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({
+      id: "local-board",
+      displayName: "Local Board",
+      isInstanceAdmin: true,
+    });
+    // Synthetic local-board actor never hits the user table.
+    expect(mockUserProfileService.load).not.toHaveBeenCalled();
   });
 
   it("PATCH /api/auth/profile updates displayName", async () => {
@@ -103,6 +143,9 @@ describe("auth profile routes", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.displayName).toBe("New Name");
+    // PATCH must carry the flag too — the UI writes this response into the
+    // profile query cache, so omitting it would erase the flag client-side.
+    expect(res.body.isInstanceAdmin).toBe(false);
     expect(mockUserProfileService.update).toHaveBeenCalledWith("user-1", {
       displayName: "New Name",
     });

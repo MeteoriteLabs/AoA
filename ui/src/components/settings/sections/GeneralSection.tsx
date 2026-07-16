@@ -127,7 +127,7 @@ Then after you've connected to AoA (exchanged keys etc.) you MUST review and fol
 }
 
 export function GeneralSection() {
-  const { selectedCompany, selectedCompanyId } = useCompany();
+  const { selectedCompany, selectedCompanyId, companies, loading: companiesLoading } = useCompany();
   const { preference, setPreference } = useTheme();
   const queryClient = useQueryClient();
 
@@ -276,6 +276,17 @@ export function GeneralSection() {
   }, [selectedCompanyId]);
 
   if (!selectedCompany) {
+    // N2: only show the dead-end copy when there is genuinely no company.
+    // While companies are loading — or loaded but bootstrap selection hasn't
+    // resolved yet (it lands in a post-render effect) — show a quiet loading
+    // state instead of flashing "No company selected" at users who have one.
+    if (companiesLoading || companies.length > 0) {
+      return (
+        <div className="p-8 text-sm text-muted-foreground" aria-busy="true">
+          Loading company settings...
+        </div>
+      );
+    }
     return (
       <div className="p-8 text-sm text-muted-foreground">
         No company selected. Select a company from the switcher above.

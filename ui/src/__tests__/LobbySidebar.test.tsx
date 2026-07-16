@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { screen } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderWithProviders, mockCompanyContext } from "./test-utils";
 import { LobbySidebar } from "../components/LobbySidebar";
@@ -23,6 +23,15 @@ vi.mock("@/context/CompanyContext", () => ({
 // UserMenu pulls in profile/auth queries; stub it for sidebar isolation.
 vi.mock("@/components/UserMenu", () => ({
   UserMenu: () => <div data-testid="user-menu" />,
+}));
+
+// The sidebar gates the instance-Settings row on profileApi.get().isInstanceAdmin.
+// Default to admin so the pre-existing tests (which assert the row) keep passing.
+const mockProfileGet = vi.fn();
+vi.mock("@/api/profile", () => ({
+  profileApi: {
+    get: (...args: unknown[]) => mockProfileGet(...args),
+  },
 }));
 
 // Tooltip from Radix needs a TooltipProvider context, which the test renderer
@@ -56,6 +65,13 @@ describe("LobbySidebar", () => {
     onCreateCompany.mockClear();
     mockCompanyContext.companies = [];
     mockCompanyContext.loading = false;
+    mockProfileGet.mockResolvedValue({
+      id: "user-1",
+      email: "user@example.com",
+      displayName: "User One",
+      avatarUrl: null,
+      isInstanceAdmin: true,
+    });
     // Reset persisted collapse preference between tests so default is expanded.
     try {
       localStorage.removeItem("aoa.lobby.sidebar-collapsed");
@@ -82,13 +98,14 @@ describe("LobbySidebar", () => {
     expect(onCreateCompany).toHaveBeenCalledTimes(1);
   });
 
-  it("renders Organizations (active), Marketplace, Learn, Documentation, Settings", () => {
+  it("renders Organizations (active), Marketplace, Learn, Documentation, Settings", async () => {
     renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
     expect(screen.getByRole("button", { name: /organizations/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /marketplace/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /learn/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /documentation/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /settings/i })).toBeInTheDocument();
+    // Settings appears once the profile query resolves (instance admin).
+    expect(await screen.findByRole("button", { name: /settings/i })).toBeInTheDocument();
   });
 
   it("Organizations row is the active item (data-active=true)", () => {
@@ -117,8 +134,37 @@ describe("LobbySidebar", () => {
   it("clicking Settings navigates to /instance/settings", async () => {
     const user = userEvent.setup();
     renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
-    await user.click(screen.getByRole("button", { name: /settings/i }));
+    await user.click(await screen.findByRole("button", { name: /settings/i }));
     expect(mockNavigate).toHaveBeenCalledWith("/instance/settings", undefined);
+  });
+
+  // --- Instance-Settings row gating (N2) ---
+
+  it("hides the Settings row (and System section header) for non-instance-admins", async () => {
+    mockProfileGet.mockResolvedValue({
+      id: "user-2",
+      email: "teammate@example.com",
+      displayName: "Teammate",
+      avatarUrl: null,
+      isInstanceAdmin: false,
+    });
+    renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
+    // Wait for the profile query to settle, then assert absence.
+    await waitFor(() => expect(mockProfileGet).toHaveBeenCalled());
+    expect(screen.queryByRole("button", { name: /settings/i })).toBeNull();
+    expect(screen.queryByText("System")).toBeNull();
+  });
+
+  it("does not flash the Settings row while the profile is still loading (default hidden)", () => {
+    mockProfileGet.mockReturnValue(new Promise(() => {})); // never resolves
+    renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
+    expect(screen.queryByRole("button", { name: /settings/i })).toBeNull();
+  });
+
+  it("shows the Settings row for instance admins", async () => {
+    renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
+    expect(await screen.findByRole("button", { name: /settings/i })).toBeInTheDocument();
+    expect(screen.getByText("System")).toBeInTheDocument();
   });
 
   it("has an aside element", () => {
