@@ -104,8 +104,10 @@ test.describe("composer gaps", () => {
     const thread = await createThread(request, company.id, `Frame containment ${Date.now()}`);
     await page.goto(`/${company.issuePrefix}/discussions/${thread.id}`);
 
-    await expect(page.getByTestId("file-artifact-upload")).toBeVisible({ timeout: 15_000 });
-    await page.getByTestId("file-artifact-input").setInputFiles({
+    // Mock v2: 📎 plain attach is the composer's only upload entry (the
+    // file-artifact control was removed).
+    await expect(page.getByTestId("entry-composer-attach-button")).toBeVisible({ timeout: 15_000 });
+    await page.getByTestId("entry-composer-file-input").setInputFiles({
       name: "notes.txt",
       mimeType: "text/plain",
       buffer: Buffer.from("containment check"),
