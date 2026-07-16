@@ -10,4 +10,24 @@ describe("ComposerFrame", () => {
     expect(frame).toHaveAttribute("data-density", "compact");
     expect(frame).toHaveTextContent("editor");
   });
+
+  it("card chrome renders the bordered focus-glow card (Quiet Operator)", () => {
+    render(<ComposerFrame chrome="card" data-testid="f"><div /></ComposerFrame>);
+    const el = screen.getByTestId("f");
+    expect(el.className).toContain("rounded-lg");
+    expect(el.className).toContain("border-border");
+    expect(el.className).toContain("focus-within:ring-2");
+    expect(el.className).toContain("shadow-sm");
+    // P1 review finding: the frame must NEVER clip — the mention popovers render
+    // absolute bottom-full INSIDE it and Playwright toBeVisible can't see clipping.
+    expect(el.className).not.toContain("overflow-hidden");
+    expect(el.className).not.toContain("overflow-clip");
+  });
+
+  it("bare chrome (default) adds no card classes", () => {
+    render(<ComposerFrame data-testid="f"><div /></ComposerFrame>);
+    const el = screen.getByTestId("f");
+    expect(el.className).not.toContain("rounded-lg");
+    expect(el.className).not.toContain("shadow-sm");
+  });
 });
