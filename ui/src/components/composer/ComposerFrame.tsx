@@ -40,8 +40,12 @@ export function ComposerFrame({ density = "comfortable", chrome = "bare", childr
       style={style}
       className={cn(
         "composer-frame flex min-w-0 flex-col",
+        // Dark-theme perceivability: border-border on bg-background is near-black
+        // on near-black (user-verified invisible). border-strong + the field
+        // surface tone give the card real contrast against both the pane and
+        // the host strip, matching the LobbyCompanyCard prominence pattern.
         chrome === "card" &&
-          "rounded-lg border border-border bg-background shadow-sm focus-within:ring-2 focus-within:ring-brand-focus-ring focus-within:border-brand transition-shadow",
+          "rounded-lg border border-border-strong bg-field shadow-sm focus-within:ring-2 focus-within:ring-brand-focus-ring focus-within:border-brand transition-shadow",
         density === "comfortable" && "gap-0",
         density === "compact" && "text-[0.95em]",
         density === "mobile" && "pb-[env(safe-area-inset-bottom)]",
