@@ -1205,6 +1205,13 @@
       "when": 1784188054597,
       "tag": "0171_talented_hydra",
       "breakpoints": true
+    },
+    {
+      "idx": 172,
+      "version": "7",
+      "when": 1784204690264,
+      "tag": "0172_narrow_oracle",
+      "breakpoints": true
     }
   ]
 }
