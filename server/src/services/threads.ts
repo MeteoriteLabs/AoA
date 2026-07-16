@@ -118,8 +118,11 @@ export function canViewThread(
 ): boolean {
   if (viewer.role === "founder") return true;
   if (thread.ownerUserId == null) {
-    // Unclaimed — only leads with scope can see it
-    return viewer.role === "team_lead" && viewer.hasScopeAccess;
+    // Unclaimed — leads with scope can see it, and so can explicit participants
+    // (humans invited in, and crew agents the orchestrator engaged — a fresh
+    // thread is unclaimed until someone takes ownership, and proactive crew
+    // discussion must work in exactly that state).
+    return (viewer.role === "team_lead" && viewer.hasScopeAccess) || viewer.isParticipant;
   }
   if (thread.visibility === "private") return viewer.isParticipant;
   // department / company: scope access OR participant
@@ -394,6 +397,25 @@ async function assertCanAccessThread(
     { role: actor.role, hasScopeAccess, isParticipant },
   );
   if (!ok) throw notFound("Thread not found");
+}
+
+/**
+ * Server-internal orchestration primitive: register a crew agent as a thread
+ * participant (idempotent). Called from the crew post chokepoints when the
+ * server itself engages an agent on a thread (controller turn, dispatcher
+ * summon) — the engagement IS the authorization, so no actor check here.
+ * Never expose this to externally reachable routes.
+ */
+export async function ensureAgentParticipant(
+  db: Db,
+  companyId: string,
+  threadId: string,
+  agentId: string,
+): Promise<void> {
+  await db
+    .insert(threadParticipants)
+    .values({ companyId, threadId, principalType: "agent", principalId: agentId, role: "member" })
+    .onConflictDoNothing();
 }
 
 /**

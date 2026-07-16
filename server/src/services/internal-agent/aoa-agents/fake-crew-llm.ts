@@ -229,6 +229,10 @@ async function defaultAddEntry(
   actorId: string,
 ): Promise<unknown> {
   const { discussionService } = await import("../../discussions.js");
+  // Mirror the real crew path (post-entry-tool): the server engaged this agent,
+  // so register it as a participant before the authz-checked post.
+  const { ensureAgentParticipant } = await import("../../threads.js");
+  await ensureAgentParticipant(db, companyId, threadId, data.authorAgentId ?? actorId);
   return discussionService(db).addEntry(companyId, threadId, data, actorId, {
     userId: data.authorAgentId ?? actorId,
     role: "team_member",

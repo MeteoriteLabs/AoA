@@ -84,6 +84,14 @@ export function createPostEntryTool(): AgentTool {
         };
       }
 
+      // The server engaged this agent on the thread (dispatcher/controller run) —
+      // register it as a participant so the posting authz recognizes it. Without
+      // this, a crew agent's first post 404s on any thread it can't otherwise view.
+      if (ctx.agentId) {
+        const { ensureAgentParticipant } = await import("../../threads.js");
+        await ensureAgentParticipant(ctx.db, ctx.companyId, threadId as string, ctx.agentId);
+      }
+
       const entry = await ctx.services.discussions.addEntry(
         ctx.companyId,
         threadId as string,
