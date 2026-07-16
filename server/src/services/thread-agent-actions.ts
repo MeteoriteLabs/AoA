@@ -26,7 +26,7 @@ import {
 import { discussionService } from "./discussions.js";
 import { threadScopeVersionService } from "./thread-scope-versions.js";
 import { artifactService } from "./artifacts.js";
-import { threadService, parseMentions, processMentions } from "./threads.js";
+import { threadService, parseMentions, processMentions, ensureAgentParticipant } from "./threads.js";
 import { buildConveneWakeupDedupKey } from "./internal-agent/tools/thread-action-keys.js";
 import { resolveRoleToAgentId } from "./internal-agent/tools/crew-role-map.js";
 import { resolveScopeAutoAcceptGate, dispatchCreatedCrewTasks } from "./crew-task-service.js";
@@ -667,6 +667,15 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
               result.blocked += 1;
               continue;
             }
+
+            // Same boundary as post-entry-tool.ts: the server engaged this agent
+            // on the thread (gated crew run) — register it as a participant
+            // BEFORE committing its reply, or the posting authz inside addEntry
+            // 404s ("Thread not found") on any thread the agent can't otherwise
+            // view. Third chokepoint of the crew-posting fix (live-QA 2026-07-16).
+            // (Cast: DbLike is this service's loose structural handle; the
+            // helper only runs insert().values().onConflictDoNothing().)
+            await ensureAgentParticipant(actionDb as unknown as Db, input.companyId, input.threadId, action.agentId);
 
             let entry: { id: string };
             try {

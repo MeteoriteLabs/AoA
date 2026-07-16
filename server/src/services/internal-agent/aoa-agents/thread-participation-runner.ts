@@ -152,23 +152,38 @@ export function makeThreadParticipationRunner(
         //   - none produced     → the agent genuinely posted nothing → throw.
         const post = result.runId
           ? await inspectRunPostReply(db, result.runId)
-          : { produced: false, suppressedStale: false };
+          : { produced: false, suppressedStale: false, statuses: [] as string[], blockedReasons: [] as string[] };
 
         if (post.produced) {
-          log.info(
-            {
-              threadId,
-              agentId,
-              role,
-              effectiveAutonomy,
-              beforeAgentEntryCount,
-              afterAgentEntryCount,
-              suppressedStale: post.suppressedStale,
-            },
-            post.suppressedStale
-              ? "participation runner: post_reply suppressed as stale — benign, no agent entry expected"
-              : "participation runner: post_reply produced but no new entry counted — treating as benign",
-          );
+          // Live-QA 2026-07-16: a `failed` post_reply row (e.g. blocked by
+          // posting authz) is retryable by the commit CAS, so we still return
+          // benignly — but it is NOT silent: warn with the statuses and
+          // blocked reasons so a systematically failing commit is visible.
+          const hasFailedRow = post.statuses.some((s) => s === "failed" || s === "blocked_policy");
+          const logPayload = {
+            threadId,
+            agentId,
+            role,
+            effectiveAutonomy,
+            beforeAgentEntryCount,
+            afterAgentEntryCount,
+            suppressedStale: post.suppressedStale,
+            postReplyStatuses: post.statuses,
+            postReplyBlockedReasons: post.blockedReasons,
+          };
+          if (hasFailedRow) {
+            log.warn(
+              logPayload,
+              "participation runner: post_reply produced but its commit FAILED — row stays retryable; investigate blocked reasons",
+            );
+          } else {
+            log.info(
+              logPayload,
+              post.suppressedStale
+                ? "participation runner: post_reply suppressed as stale — benign, no agent entry expected"
+                : "participation runner: post_reply produced but no new entry counted — treating as benign",
+            );
+          }
           return "";
         }
 
@@ -270,9 +285,12 @@ async function countAgentThreadEntries(db: Db, threadId: string, agentId: string
 async function inspectRunPostReply(
   db: Db,
   runId: string,
-): Promise<{ produced: boolean; suppressedStale: boolean }> {
+): Promise<{ produced: boolean; suppressedStale: boolean; statuses: string[]; blockedReasons: string[] }> {
   const rows = await db
-    .select({ status: threadAgentActions.status })
+    .select({
+      status: threadAgentActions.status,
+      blockedReason: threadAgentActions.blockedReason,
+    })
     .from(threadAgentActions)
     .where(
       and(
@@ -281,8 +299,13 @@ async function inspectRunPostReply(
       ),
     );
   if (rows.length === 0) {
-    return { produced: false, suppressedStale: false };
+    return { produced: false, suppressedStale: false, statuses: [], blockedReasons: [] };
   }
   const suppressedStale = rows.every((r) => r.status === "suppressed_stale");
-  return { produced: true, suppressedStale };
+  return {
+    produced: true,
+    suppressedStale,
+    statuses: rows.map((r) => String(r.status)),
+    blockedReasons: rows.map((r) => r.blockedReason).filter((r): r is string => Boolean(r)),
+  };
 }

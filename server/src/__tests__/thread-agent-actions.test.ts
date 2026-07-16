@@ -15,8 +15,9 @@ vi.mock("../services/internal-agent/tools/crew-role-map.js", () => ({
 // ../services/threads.js so the real (pure) parseMentions runs but
 // processMentions is a spy we can assert on — and threadService stays a callable
 // stub (used only as the default advance_phase committer, never in these tests).
-const { mockProcessMentions, realParseMentions } = vi.hoisted(() => ({
+const { mockProcessMentions, mockEnsureAgentParticipant, realParseMentions } = vi.hoisted(() => ({
   mockProcessMentions: vi.fn().mockResolvedValue(undefined),
+  mockEnsureAgentParticipant: vi.fn().mockResolvedValue(undefined),
   realParseMentions: (text: string) => {
     const regex = /(?:^|\s)@(\w+)/g;
     const seen = new Set<string>();
@@ -34,6 +35,7 @@ const { mockProcessMentions, realParseMentions } = vi.hoisted(() => ({
 vi.mock("../services/threads.js", () => ({
   parseMentions: realParseMentions,
   processMentions: mockProcessMentions,
+  ensureAgentParticipant: mockEnsureAgentParticipant,
   threadService: vi.fn(() => ({ advancePhase: vi.fn() })),
 }));
 
@@ -437,6 +439,39 @@ describe("threadAgentActionService", () => {
       status: "committed",
       committedEntryId: "entry-committed",
     }));
+  });
+
+  it("registers the committing agent as a thread participant BEFORE addEntry (third authz chokepoint)", async () => {
+    // Live-QA regression 2026-07-16: a crew agent's gated post_reply commit hit
+    // assertCanPostToThread with an agent that was never registered as a
+    // participant → 404 "Thread not found" → action row `failed` and the reply
+    // silently never landed. The direct tool path (post-entry-tool.ts) and the
+    // fake-crew path already register the participant; the commit path is the
+    // third chokepoint and must do the same.
+    const db = createSequenceDb({ selects: [[baseAction]], updates: [[{ ...baseAction, status: "committed" }]] });
+    const addEntry = vi.fn().mockResolvedValue({ id: "entry-committed" });
+
+    await threadAgentActionService(db as never, {
+      compareFreshnessSnapshot: vi.fn().mockResolvedValue({ fresh: true }),
+      discussions: { addEntry },
+      scopeVersions: { createDraftFromThread: vi.fn() },
+    }).commitThreadAgentActions({
+      companyId: "company-1",
+      threadId: "thread-1",
+      runId: "run-1",
+    });
+
+    expect(mockEnsureAgentParticipant).toHaveBeenCalledWith(
+      expect.anything(),
+      "company-1",
+      "thread-1",
+      "agent-1",
+    );
+    // Registration must precede the post — otherwise the authz inside addEntry
+    // still sees a non-participant.
+    const registeredAt = mockEnsureAgentParticipant.mock.invocationCallOrder[0];
+    const postedAt = addEntry.mock.invocationCallOrder[0];
+    expect(registeredAt).toBeLessThan(postedAt);
   });
 
   it("threads sourceInfo from the action payload through addEntry on a committed post_reply (fix (f))", async () => {
