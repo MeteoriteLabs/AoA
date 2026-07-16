@@ -307,7 +307,7 @@ export function InviteLandingPage() {
           </div>
         )}
 
-        {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
+        {error && <p className="mt-3 text-xs text-destructive">{error}</p>}
 
         <Button
           className="mt-5"

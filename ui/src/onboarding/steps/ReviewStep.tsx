@@ -19,10 +19,9 @@ function Row({ label, value }: { label: string; value?: string }) {
 
 /**
  * "You're set up" review step (Stage C / order 8). Summarizes what onboarding
- * created, then finishes: both actions advance SETUP_COMPLETE and call
+ * created, then finishes: "Go to dashboard" advances SETUP_COMPLETE and calls
  * onComplete — the FlowEngine resolves no next step and navigates to the
- * dashboard via onFinished. "Start walkthrough" reserves the Phase-2
- * transition; the walkthrough itself is out of scope here.
+ * dashboard via onFinished.
  */
 export function ReviewStep({ ctx, onComplete }: StepProps) {
   const [summary, setSummary] = useState<Summary>({});
@@ -81,14 +80,9 @@ export function ReviewStep({ ctx, onComplete }: StepProps) {
         />
       </div>
       {error && <p className="mt-3 text-xs text-destructive">{error}</p>}
-      <div className="mt-4 flex gap-2">
-        <Button variant="outline" className="flex-1" onClick={() => void finish()} disabled={busy}>
-          Start walkthrough
-        </Button>
-        <Button className="flex-1" onClick={() => void finish()} disabled={busy}>
-          Go to dashboard
-        </Button>
-      </div>
+      <Button className="mt-4 w-full" onClick={() => void finish()} disabled={busy}>
+        Go to dashboard
+      </Button>
     </div>
   );
 }

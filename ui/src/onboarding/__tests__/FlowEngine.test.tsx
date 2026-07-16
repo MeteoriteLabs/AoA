@@ -19,7 +19,9 @@ function makeRegistry(advance: (s: OnboardingState) => void): StepDefinition[] {
         >
           {id}
         </button>
-        <button data-testid={`back-${id}`} onClick={onBack}>back</button>
+        {/* "step-local-back", not "back": the engine chrome renders its own
+            "Back" button — an ambiguous name would strict-mode-collide. */}
+        <button data-testid={`back-${id}`} onClick={onBack}>step-local-back</button>
       </div>
     );
     return {
@@ -95,6 +97,42 @@ describe("FlowEngine (Stage B / B6)", () => {
     await waitFor(() => screen.getByTestId("step-profile"));
     fireEvent.click(screen.getByTestId("step-profile"));
     await waitFor(() => screen.getByTestId("step-org"));
+  });
+
+  it("renders the shared chrome: 'Step N of M' position chip + a central Back control", async () => {
+    const api: FlowEngineApi = {
+      getProgress: async () => ({ completedStates: ["AUTHENTICATED", "PROFILE_SET"] }),
+    };
+    render(
+      <FlowEngine userId="u1" companyId={null} journey="founder" api={api} registry={makeRegistry(() => {})} />,
+    );
+
+    await waitFor(() => screen.getByTestId("step-org"));
+    expect(screen.getByTestId("onboarding-step-position").textContent).toBe("Step 2 of 2");
+
+    // Central Back (rendered by the engine, not the step) walks to the
+    // previous completed step; the chip follows.
+    fireEvent.click(screen.getByRole("button", { name: /^back$/i }));
+    await waitFor(() => screen.getByTestId("step-profile"));
+    expect(screen.getByTestId("onboarding-step-position").textContent).toBe("Step 1 of 2");
+  });
+
+  it("central Back on the first step falls through to the onBack prop", async () => {
+    const api: FlowEngineApi = { getProgress: async () => ({ completedStates: ["AUTHENTICATED"] }) };
+    const onBack = vi.fn();
+    render(
+      <FlowEngine
+        userId="u1"
+        companyId={null}
+        journey="founder"
+        api={api}
+        registry={makeRegistry(() => {})}
+        onBack={onBack}
+      />,
+    );
+    await waitFor(() => screen.getByTestId("step-profile"));
+    fireEvent.click(screen.getByRole("button", { name: /^back$/i }));
+    expect(onBack).toHaveBeenCalledOnce();
   });
 
   it("ignores a stale user-layer reload after switching to the company layer", async () => {

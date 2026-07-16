@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { X } from "lucide-react";
 import type { StepProps } from "../registry";
 import { getUserProfile, saveUserProfile } from "../../api/userProfile";
 import { advanceOnboarding } from "../../api/onboarding";
@@ -140,14 +141,23 @@ export function HumanProfileStep({ ctx, onComplete }: StepProps) {
       <div className="mt-3">
         <span className="mb-1 block text-xs text-muted-foreground">Social links (optional)</span>
         {links.map((url, i) => (
-          <input
-            key={i}
-            aria-label={`Social link ${i + 1}`}
-            className={`${FIELD} mt-1`}
-            placeholder="https://…"
-            value={url}
-            onChange={(e) => setLinks((prev) => prev.map((v, j) => (j === i ? e.target.value : v)))}
-          />
+          <div key={i} className="mt-1 flex items-center gap-1">
+            <input
+              aria-label={`Social link ${i + 1}`}
+              className={FIELD}
+              placeholder="https://…"
+              value={url}
+              onChange={(e) => setLinks((prev) => prev.map((v, j) => (j === i ? e.target.value : v)))}
+            />
+            <button
+              type="button"
+              aria-label={`Remove social link ${i + 1}`}
+              className="shrink-0 rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+              onClick={() => setLinks((prev) => prev.filter((_, j) => j !== i))}
+            >
+              <X className="h-3.5 w-3.5" aria-hidden />
+            </button>
+          </div>
         ))}
         <button
           type="button"

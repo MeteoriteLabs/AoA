@@ -1,5 +1,7 @@
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { ChevronLeft } from "lucide-react";
 import type { OnboardingJourney, OnboardingState } from "@armyofagents/shared";
+import { Button } from "@/components/ui/button";
 import {
   resolveNextStep,
   ONBOARDING_REGISTRY,
@@ -121,11 +123,34 @@ export function FlowEngine({
   }
 
   const Step = step.Component;
+  const stepNumber = applicableSteps.findIndex((candidate) => candidate.id === step.id) + 1;
   return (
-    <Suspense
-      fallback={<div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading step…</div>}
-    >
-      <Step ctx={ctx} onComplete={() => void handleComplete()} onBack={handleBack} />
-    </Suspense>
+    <div>
+      {/* Shared step chrome: one Back affordance + a "Step N of M" position
+          chip for every step (steps no longer render their own Back). The
+          chip hides on single-step journeys where it carries no information. */}
+      <div className="mx-auto -mb-6 flex max-w-md items-center justify-between pt-6 text-xs text-muted-foreground">
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="-ml-2 gap-1 text-muted-foreground"
+          onClick={handleBack}
+        >
+          <ChevronLeft className="h-3.5 w-3.5" aria-hidden />
+          Back
+        </Button>
+        {stepNumber > 0 && applicableSteps.length > 1 && (
+          <span data-testid="onboarding-step-position">
+            Step {stepNumber} of {applicableSteps.length}
+          </span>
+        )}
+      </div>
+      <Suspense
+        fallback={<div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading step…</div>}
+      >
+        <Step ctx={ctx} onComplete={() => void handleComplete()} onBack={handleBack} />
+      </Suspense>
+    </div>
   );
 }

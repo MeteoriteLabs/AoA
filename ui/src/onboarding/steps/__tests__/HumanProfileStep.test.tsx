@@ -172,6 +172,29 @@ describe("HumanProfileStep (shared; wired invited)", () => {
       }),
     );
   });
+
+  it("social link rows can be removed (X button drops the row and its value)", async () => {
+    const onComplete = vi.fn();
+    render(<HumanProfileStep ctx={ctx} onComplete={onComplete} onBack={() => {}} />);
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Ada" } });
+    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Engineer" } });
+    fireEvent.change(screen.getByLabelText("Timezone"), { target: { value: "UTC" } });
+    fireEvent.click(screen.getByText("+ Add link"));
+    fireEvent.click(screen.getByText("+ Add link"));
+    fireEvent.change(screen.getByLabelText("Social link 1"), { target: { value: "https://drop.me" } });
+    fireEvent.change(screen.getByLabelText("Social link 2"), { target: { value: "https://ada.dev" } });
+    fireEvent.click(screen.getByLabelText("Remove social link 1"));
+    // The remaining row shifted up to slot 1 and kept its value.
+    expect((screen.getByLabelText("Social link 1") as HTMLInputElement).value).toBe("https://ada.dev");
+    expect(screen.queryByLabelText("Social link 2")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(() => expect(onComplete).toHaveBeenCalled());
+    expect(saveUserProfile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        socialLinks: [{ type: "website", label: null, url: "https://ada.dev" }],
+      }),
+    );
+  });
 });
 
 describe("registry rewire", () => {

@@ -37,7 +37,7 @@ function installHint(): string {
  * login (Plan 3 §6.1/§6.2) — then we auto re-verify. The live device flow is
  * dogfood-verified; CI covers the key-paste + poll-to-completed wiring.
  */
-export function VerifyStep({ ctx, onComplete, onBack }: StepProps) {
+export function VerifyStep({ ctx, onComplete }: StepProps) {
   const [outcome, setOutcome] = useState<Outcome>("idle");
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -165,7 +165,7 @@ export function VerifyStep({ ctx, onComplete, onBack }: StepProps) {
       </p>
 
       {outcome === "not_installed" && (
-        <div className="mt-4 rounded-md border border-amber-300/60 bg-amber-50/40 p-3 text-xs space-y-2">
+        <div className="mt-4 rounded-md border border-amber-300/60 bg-amber-50/40 dark:border-amber-500/30 dark:bg-amber-950/40 p-3 text-xs space-y-2">
           <p>The CLI isn't installed or isn't on your PATH.</p>
           <p className="text-muted-foreground">{installHint()}</p>
           {message && <p className="text-muted-foreground">{message}</p>}
@@ -173,7 +173,7 @@ export function VerifyStep({ ctx, onComplete, onBack }: StepProps) {
         </div>
       )}
       {outcome === "needs_auth" && (
-        <div className="mt-4 rounded-md border border-amber-300/60 bg-amber-50/40 p-3 text-xs space-y-3">
+        <div className="mt-4 rounded-md border border-amber-300/60 bg-amber-50/40 dark:border-amber-500/30 dark:bg-amber-950/40 p-3 text-xs space-y-3">
           <p>The {providerLabel} CLI is installed but needs sign-in. Choose one — no terminal required:</p>
           {message && <p className="text-muted-foreground">{message}</p>}
 
@@ -214,29 +214,29 @@ export function VerifyStep({ ctx, onComplete, onBack }: StepProps) {
               </div>
 
               {login ? (
-            <div className="space-y-1">
-              <p>
-                Open this link to finish signing in, then keep this tab open — we'll continue
-                automatically:
-              </p>
-              <a
-                href={login.loginUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="block break-all font-mono text-[11px] underline"
-              >
-                {login.loginUrl}
-              </a>
-              <p className="text-muted-foreground">Waiting for sign-in… ({login.status})</p>
-            </div>
-          ) : (
-            <Button
-              type="button"
-              variant="secondary"
-              className="w-full"
-              onClick={() => void startLogin()}
-              disabled={authBusy || !provider}
-            >
+                <div className="space-y-1">
+                  <p>
+                    Open this link to finish signing in, then keep this tab open — we'll continue
+                    automatically:
+                  </p>
+                  <a
+                    href={login.loginUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="block break-all font-mono text-[11px] underline"
+                  >
+                    {login.loginUrl}
+                  </a>
+                  <p className="text-muted-foreground">Waiting for sign-in… ({login.status})</p>
+                </div>
+              ) : (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  className="w-full"
+                  onClick={() => void startLogin()}
+                  disabled={authBusy || !provider}
+                >
                   {authBusy ? "Working…" : `Sign in with ${providerLabel}`}
                 </Button>
               )}
@@ -252,9 +252,6 @@ export function VerifyStep({ ctx, onComplete, onBack }: StepProps) {
 
       <Button className="mt-4 w-full" onClick={() => void check()} disabled={busy}>
         {busy ? "Checking…" : outcome === "idle" ? "Verify" : "Check again"}
-      </Button>
-      <Button type="button" variant="ghost" className="mt-2 w-full" onClick={onBack}>
-        Back to choose Claude or Codex
       </Button>
     </div>
   );
