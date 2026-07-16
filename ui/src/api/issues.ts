@@ -108,6 +108,9 @@ export const issuesApi = {
     reopen?: boolean,
     interrupt?: boolean,
     structured?: Pick<IssueComment, "authorType" | "presentation" | "metadata">,
+    /** Idempotency key (mock §5): the server replays the original comment when
+     *  the same submission is retried, so an ambiguous failure never double-posts. */
+    clientSubmissionId?: string,
   ) =>
     api.post<IssueComment>(
       `/issues/${id}/comments`,
@@ -118,6 +121,7 @@ export const issuesApi = {
         ...(structured?.authorType === undefined ? {} : { authorType: structured.authorType }),
         ...(structured?.presentation === undefined ? {} : { presentation: structured.presentation }),
         ...(structured?.metadata === undefined ? {} : { metadata: structured.metadata }),
+        ...(clientSubmissionId === undefined ? {} : { clientSubmissionId }),
       },
     ),
   addCommentWithAttachments: (
@@ -126,11 +130,14 @@ export const issuesApi = {
     files: File[],
     reopen?: boolean,
     interrupt?: boolean,
+    /** Idempotency key (mock §5) — same replay semantics as addComment. */
+    clientSubmissionId?: string,
   ) => {
     const form = new FormData();
     form.append("body", body);
     if (reopen !== undefined) form.append("reopen", String(reopen));
     if (interrupt !== undefined) form.append("interrupt", String(interrupt));
+    if (clientSubmissionId !== undefined) form.append("clientSubmissionId", clientSubmissionId);
     for (const file of files) {
       form.append("files", file);
     }

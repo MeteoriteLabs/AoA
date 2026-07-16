@@ -19,6 +19,7 @@ import {
   COMPOSER_ATTACHMENT_CONTENT_TYPES,
   COMPOSER_MAX_ATTACHMENTS,
   COMPOSER_MAX_ATTACHMENT_BYTES,
+  createComposerSubmissionId,
   type IssueComment,
   type Agent,
   type WorkQuestionDetail,
@@ -36,8 +37,13 @@ import { WorkQuestionPanel } from "../work-questions/WorkQuestionPanel";
 import { resolveTaskCommentAction } from "../../lib/task-composer-actions";
 import { useComposerDraft } from "../../lib/composerDraft";
 import { useTeamAccess } from "../../hooks/useTeamAccess";
+import { useLiveUpdates } from "../../context/LiveUpdatesProvider";
 import { ComposerFrame } from "../composer/ComposerFrame";
 import { ComposerAttachmentCard } from "../composer/ComposerAttachmentCard";
+import { ComposerSendFailedBanner } from "../composer/ComposerSendFailedBanner";
+import { ComposerOfflineStrip, toComposerConnectionState } from "../composer/ComposerOfflineStrip";
+import { ComposerDropOverlay } from "../composer/ComposerDropOverlay";
+import { useComposerDragDrop } from "../composer/useComposerDragDrop";
 
 export type TimelineItem =
   | { kind: "run"; ts: string; data: RunForIssue }
@@ -75,6 +81,18 @@ function liveRunToTimelineRun(run: LiveRunForIssue | ActiveRunForIssue): RunForI
   };
 }
 
+/** One send attempt, snapshotted BEFORE the mutate (mock §5): the banner's
+ *  Retry re-sends this exact shape — same clientSubmissionId — so the server
+ *  replays instead of double-posting when the first request actually landed. */
+interface SendAttempt {
+  text: string;
+  files: File[];
+  revision: number;
+  reopen?: boolean;
+  interrupt?: boolean;
+  clientSubmissionId: string;
+}
+
 interface WorkspaceTimelineProps {
   issueId: string;
   /** When true, renders in compact mode for TaskSlideOver */
@@ -101,7 +119,14 @@ export function WorkspaceTimeline({
   const [chatInput, setChatInput] = useState("");
   const [modelOverride, setModelOverride] = useState<string | null>(null);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  // composerError is for VALIDATION errors (attachment type/size/count).
+  // Send failures raise the ComposerSendFailedBanner via sendFailed instead.
   const [composerError, setComposerError] = useState<string | null>(null);
+  const [sendFailed, setSendFailed] = useState(false);
+  const lastAttemptRef = useRef<SendAttempt | null>(null);
+  const { connectionState } = useLiveUpdates();
+  const composerConnection = toComposerConnectionState(connectionState);
+  const isOffline = composerConnection === "offline";
   const composerDraft = useComposerDraft(
     selectedCompanyId && currentUser?.userId
       ? { companyId: selectedCompanyId, userId: currentUser.userId, surface: "task", entityId: issueId }
@@ -143,6 +168,19 @@ export function WorkspaceTimeline({
     composerRevisionRef.current += 1;
     setChatInput(e.target.value);
     setComposerError(null);
+    // Stale-snapshot guard (mock §5: failure never eats your work): once the
+    // draft diverges from the failed attempt, Retry would post stale content
+    // and its success-clear would wipe the newer edits — dismiss the banner.
+    // The ref is kept (nothing double-posts); the next send is a normal fresh
+    // submission with a NEW clientSubmissionId.
+    if (
+      sendFailed &&
+      !sendMessage.isPending &&
+      lastAttemptRef.current &&
+      e.target.value.trim() !== lastAttemptRef.current.text
+    ) {
+      setSendFailed(false);
+    }
     mention.refresh(e.target.value, e.target.selectionStart ?? e.target.value.length);
     // Auto-grow: reset to 1 row then expand to content, max 4 rows
     const ta = e.target;
@@ -362,20 +400,12 @@ export function WorkspaceTimeline({
   // --- Mutations ---
 
   const sendMessage = useMutation({
-    mutationFn: async ({ text, files, reopen, interrupt }: { text: string; files: File[]; revision: number; reopen?: boolean; interrupt?: boolean }) => {
+    mutationFn: async ({ text, files, reopen, interrupt, clientSubmissionId }: SendAttempt) => {
       if (files.length > 0) {
-        if (reopen !== undefined || interrupt !== undefined) {
-          await issuesApi.addCommentWithAttachments(issueId, text, files, reopen, interrupt);
-        } else {
-          await issuesApi.addCommentWithAttachments(issueId, text, files);
-        }
+        await issuesApi.addCommentWithAttachments(issueId, text, files, reopen, interrupt, clientSubmissionId);
         return;
       }
-      if (reopen !== undefined || interrupt !== undefined) {
-        await issuesApi.addComment(issueId, text, reopen, interrupt);
-      } else {
-        await issuesApi.addComment(issueId, text);
-      }
+      await issuesApi.addComment(issueId, text, reopen, interrupt, undefined, clientSubmissionId);
     },
     onSuccess: (_data, submitted) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(issueId) });
@@ -383,6 +413,8 @@ export function WorkspaceTimeline({
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.runs(issueId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.attachments(issueId) });
       setComposerError(null);
+      setSendFailed(false);
+      lastAttemptRef.current = null;
       if (composerRevisionRef.current === submitted.revision) {
         setChatInput("");
         setSelectedFiles([]);
@@ -392,9 +424,10 @@ export function WorkspaceTimeline({
         setReopenRequested(true);
       }
     },
-    onError: (error) => {
-      const detail = error instanceof Error && error.message ? ` ${error.message}` : "";
-      setComposerError(`Could not send message. Your draft and attachments were kept.${detail}`);
+    onError: () => {
+      // The draft, attachments, and lastAttemptRef snapshot are all kept —
+      // the shared banner offers Retry (idempotent replay) / Edit / Discard.
+      setSendFailed(true);
     },
     onSettled: () => {
       sendInFlightRef.current = false;
@@ -447,10 +480,18 @@ export function WorkspaceTimeline({
     setComposerError(null);
   };
 
+  // Frame-wide drag-drop (mock §5): ONE hook instance shared by both chatbar
+  // branches (only one renders at a time). Validation stays in addComposerFiles.
+  const { isDragActive, dragHandlers } = useComposerDragDrop({
+    onDropFiles: addComposerFiles,
+    disabled: sendMessage.isPending,
+  });
+
   const handleSend = () => {
-    if (!canSend || sendInFlightRef.current || sendMessage.isPending) return;
+    if (!canSend || sendInFlightRef.current || sendMessage.isPending || isOffline) return;
     sendInFlightRef.current = true;
     setComposerError(null);
+    setSendFailed(false);
     const isClosed = issue?.status === "done" || issue?.status === "cancelled";
     const action = resolveTaskCommentAction({
       isClosed,
@@ -459,13 +500,41 @@ export function WorkspaceTimeline({
       interruptRequested,
       hasReassignment: false,
     });
-    sendMessage.mutate({
+    // Minted ONCE per submission and snapshotted BEFORE the mutate so the
+    // banner's Retry re-sends the exact same attempt (same clientSubmissionId
+    // → the server replays if the first request actually landed).
+    const attempt: SendAttempt = {
       text: chatInput.trim(),
       files: [...selectedFiles],
       revision: composerRevisionRef.current,
       reopen: action === "reopen" ? true : undefined,
       interrupt: action === "interrupt" ? true : undefined,
-    });
+      clientSubmissionId: createComposerSubmissionId(),
+    };
+    lastAttemptRef.current = attempt;
+    sendMessage.mutate(attempt);
+  };
+
+  /** Banner Retry: re-send the IDENTICAL stored attempt (same clientSubmissionId). */
+  const handleRetryFailedSend = () => {
+    const attempt = lastAttemptRef.current;
+    if (!attempt || sendInFlightRef.current || sendMessage.isPending) return;
+    sendInFlightRef.current = true;
+    sendMessage.mutate(attempt);
+  };
+
+  const handleDismissFailedSend = () => {
+    setSendFailed(false);
+  };
+
+  const handleDiscardFailedSend = () => {
+    lastAttemptRef.current = null;
+    setSendFailed(false);
+    setComposerError(null);
+    composerRevisionRef.current += 1;
+    setChatInput("");
+    setSelectedFiles([]);
+    composerDraft.clearDraft();
   };
 
   const handleComposerKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -482,18 +551,27 @@ export function WorkspaceTimeline({
     addComposerFiles(files);
   };
 
-  const handleComposerDrop = (e: React.DragEvent<HTMLTextAreaElement>) => {
-    const files = Array.from(e.dataTransfer?.files ?? []);
-    if (files.length === 0) return;
-    e.preventDefault();
-    addComposerFiles(files);
-  };
-
   const chatbarRunState =
     hasLiveRuns ? "running"
       : issue?.status === "done" ? "done"
         : issue?.status === "blocked" ? "blocked"
           : "idle";
+
+  // Shared B-state chrome for both chatbar branches (mock §5): offline strip
+  // at the top, then the send-failed banner — above the status row/textarea.
+  const composerStateBanners = (sendFailed || composerConnection !== "connected") ? (
+    <div className="px-2 pt-2">
+      <ComposerOfflineStrip state={composerConnection} />
+      {sendFailed && (
+        <ComposerSendFailedBanner
+          onRetry={handleRetryFailedSend}
+          onEdit={handleDismissFailedSend}
+          onDiscard={handleDiscardFailedSend}
+          retrying={sendMessage.isPending}
+        />
+      )}
+    </div>
+  ) : null;
 
   return (
     <div className={cn("relative flex min-h-0 flex-1 flex-col overflow-hidden", className)} data-testid="workspace-timeline">
@@ -645,7 +723,9 @@ export function WorkspaceTimeline({
       )}
 
       {assignedAgent && (
-        <ComposerFrame chrome="card" density={compact ? "compact" : "comfortable"} className="shrink-0 mx-3 mb-3" data-testid="workspace-chatbar">
+        <ComposerFrame chrome="card" density={compact ? "compact" : "comfortable"} className="shrink-0 mx-3 mb-3" data-testid="workspace-chatbar" dragHandlers={dragHandlers}>
+          <ComposerDropOverlay active={isDragActive} />
+          {composerStateBanners}
           {/* Status row */}
           <ChatbarStatusRow
             agentName={assignedAgent.name}
@@ -700,8 +780,6 @@ export function WorkspaceTimeline({
                 mention.refresh(t.value, t.selectionStart ?? t.value.length);
               }}
               onPaste={handleComposerPaste}
-              onDragOver={(e) => { if (e.dataTransfer.types.includes("Files")) e.preventDefault(); }}
-              onDrop={handleComposerDrop}
             />
           </div>
 
@@ -741,7 +819,7 @@ export function WorkspaceTimeline({
               onAttach={handleAttach}
               onMention={mention.openViaButton}
               onSend={handleSend}
-              sendDisabled={!canSend || sendMessage.isPending}
+              sendDisabled={!canSend || sendMessage.isPending || isOffline}
                 sendPending={sendMessage.isPending}
                 // The label states the actual effect: waking the agent vs
                 // queueing behind the live run (approved mock §4).
@@ -771,7 +849,9 @@ export function WorkspaceTimeline({
 
       {/* Fallback when no agent assigned */}
       {!assignedAgent && (
-        <ComposerFrame chrome="card" density={compact ? "compact" : "comfortable"} className="shrink-0 mx-3 mb-3" data-testid="workspace-chatbar-fallback">
+        <ComposerFrame chrome="card" density={compact ? "compact" : "comfortable"} className="shrink-0 mx-3 mb-3" data-testid="workspace-chatbar-fallback" dragHandlers={dragHandlers}>
+          <ComposerDropOverlay active={isDragActive} />
+          {composerStateBanners}
           <ChatbarStatusRow
             agentName="No agent assigned"
             adapterType="process"
@@ -822,8 +902,6 @@ export function WorkspaceTimeline({
                 mention.refresh(t.value, t.selectionStart ?? t.value.length);
               }}
               onPaste={handleComposerPaste}
-              onDragOver={(e) => { if (e.dataTransfer.types.includes("Files")) e.preventDefault(); }}
-              onDrop={handleComposerDrop}
             />
           </div>
           <input
@@ -850,7 +928,7 @@ export function WorkspaceTimeline({
               onMention={mention.openViaButton}
               onSend={handleSend}
               showModelLabel={false}
-              sendDisabled={!canSend || sendMessage.isPending}
+              sendDisabled={!canSend || sendMessage.isPending || isOffline}
               sendPending={sendMessage.isPending}
               activeRun={hasLiveRuns}
               closedTask={issue?.status === "done" || issue?.status === "cancelled"}

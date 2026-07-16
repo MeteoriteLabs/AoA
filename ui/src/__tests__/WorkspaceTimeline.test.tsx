@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor, fireEvent, act } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent, act, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { COMPOSER_MAX_ATTACHMENT_BYTES } from "@armyofagents/shared";
@@ -143,6 +143,21 @@ vi.mock("../api/work-questions", () => ({
   ),
 }));
 
+// Mutable connection state for the shared offline strip (B-states, mock §5).
+const liveState = vi.hoisted(() => ({ connectionState: "open" }));
+
+vi.mock("../context/LiveUpdatesProvider", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../context/LiveUpdatesProvider")>();
+  return {
+    ...actual,
+    useLiveUpdates: () => ({
+      connectionState: liveState.connectionState,
+      workingAgentsByThread: {},
+      presenceByThread: {},
+    }),
+  };
+});
+
 vi.mock("../context/ToastContext", () => ({
   useToast: () => ({ pushToast: vi.fn(), toasts: [], dismissToast: vi.fn(), clearToasts: vi.fn() }),
 }));
@@ -227,6 +242,7 @@ function makeLiveRun(id = "run-live-scroll") {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  liveState.connectionState = "open";
   issuesApiMock.get.mockResolvedValue(mockIssue);
   issuesApiMock.listComments.mockResolvedValue(mockComments);
   issuesApiMock.listAttachments.mockResolvedValue([]);
@@ -647,7 +663,14 @@ describe("WorkspaceTimeline — input area", () => {
     fireEvent.click(sendButton);
 
     await waitFor(() => {
-      expect(issuesApiMock.addComment).toHaveBeenCalledWith("issue-1", "Please review the changes");
+      expect(issuesApiMock.addComment).toHaveBeenCalledWith(
+        "issue-1",
+        "Please review the changes",
+        undefined,
+        undefined,
+        undefined,
+        expect.any(String),
+      );
     });
 
     expect(agentsApiMock.wakeup).not.toHaveBeenCalled();
@@ -666,7 +689,14 @@ describe("WorkspaceTimeline — input area", () => {
     fireEvent.keyDown(textarea, { key: "Enter" });
 
     await waitFor(() => {
-      expect(issuesApiMock.addComment).toHaveBeenCalledWith("issue-1", "First line");
+      expect(issuesApiMock.addComment).toHaveBeenCalledWith(
+        "issue-1",
+        "First line",
+        undefined,
+        undefined,
+        undefined,
+        expect.any(String),
+      );
     });
   });
 
@@ -711,7 +741,14 @@ describe("WorkspaceTimeline — input area", () => {
     fireEvent.click(screen.getByText("Send"));
 
     await waitFor(() => {
-      expect(issuesApiMock.addCommentWithAttachments).toHaveBeenCalledWith("issue-1", "", [file]);
+      expect(issuesApiMock.addCommentWithAttachments).toHaveBeenCalledWith(
+        "issue-1",
+        "",
+        [file],
+        undefined,
+        undefined,
+        expect.any(String),
+      );
     });
   });
 
@@ -733,7 +770,14 @@ describe("WorkspaceTimeline — input area", () => {
     fireEvent.click(screen.getByText("Send & wake"));
 
     await waitFor(() => {
-      expect(issuesApiMock.addCommentWithAttachments).toHaveBeenCalledWith("issue-1", "see attached", [file]);
+      expect(issuesApiMock.addCommentWithAttachments).toHaveBeenCalledWith(
+        "issue-1",
+        "see attached",
+        [file],
+        undefined,
+        undefined,
+        expect.any(String),
+      );
     });
     expect(agentsApiMock.wakeup).not.toHaveBeenCalled();
   });
@@ -752,7 +796,14 @@ describe("WorkspaceTimeline — input area", () => {
     fireEvent.click(screen.getByText("Send & wake"));
 
     await waitFor(() => {
-      expect(issuesApiMock.addCommentWithAttachments).toHaveBeenCalledWith("issue-1", "", [file]);
+      expect(issuesApiMock.addCommentWithAttachments).toHaveBeenCalledWith(
+        "issue-1",
+        "",
+        [file],
+        undefined,
+        undefined,
+        expect.any(String),
+      );
     });
   });
 
@@ -779,7 +830,7 @@ describe("WorkspaceTimeline — input area", () => {
     expect(issuesApiMock.addCommentWithAttachments).not.toHaveBeenCalled();
   });
 
-  it("keeps the draft and selected files when sending fails", async () => {
+  it("keeps the draft and selected files when sending fails and raises the banner", async () => {
     issuesApiMock.addCommentWithAttachments.mockRejectedValueOnce(new Error("Upload failed"));
     renderTimeline();
 
@@ -789,8 +840,10 @@ describe("WorkspaceTimeline — input area", () => {
     fireEvent.change(textarea, { target: { value: "Please inspect this" } });
     fireEvent.click(screen.getByText("Send & wake"));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("Could not send message");
-    expect(screen.getByRole("alert")).toHaveTextContent("Upload failed");
+    // The send-failure message lives in the shared banner now — the old inline
+    // "Could not send message" composerError copy is gone (mock §5).
+    expect(await screen.findByTestId("composer-send-failed-banner")).toBeInTheDocument();
+    expect(screen.queryByText(/Could not send message/)).not.toBeInTheDocument();
     expect(textarea).toHaveValue("Please inspect this");
     expect(screen.getByText("evidence.txt")).toBeInTheDocument();
   });
@@ -895,6 +948,138 @@ describe("WorkspaceTimeline — chatbar live state", () => {
     expect(chatbar).toHaveAttribute("data-chrome", "card");
     expect(chatbar.className).toContain("rounded-lg");
     expect(chatbar.className).not.toContain("overflow-hidden");
+  });
+});
+
+describe("WorkspaceTimeline — B-states (mock §5)", () => {
+  it("Retry re-sends the IDENTICAL args including the same clientSubmissionId, then clears", async () => {
+    issuesApiMock.addComment.mockRejectedValueOnce(new Error("network error"));
+    renderTimeline();
+
+    const textarea = await screen.findByPlaceholderText("Message Alpha Agent...");
+    fireEvent.change(textarea, { target: { value: "retry me" } });
+    fireEvent.click(screen.getByText("Send & wake"));
+
+    const banner = await screen.findByTestId("composer-send-failed-banner");
+    expect(textarea).toHaveValue("retry me");
+
+    const firstCall = issuesApiMock.addComment.mock.calls[0];
+    const submissionId = firstCall[5];
+    expect(typeof submissionId).toBe("string");
+    expect((submissionId as string).length).toBeGreaterThan(0);
+
+    fireEvent.click(within(banner).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(issuesApiMock.addComment).toHaveBeenCalledTimes(2));
+    // Identical args — same clientSubmissionId means the server replays, never duplicates.
+    expect(issuesApiMock.addComment.mock.calls[1]).toEqual(firstCall);
+
+    await waitFor(() =>
+      expect(screen.queryByTestId("composer-send-failed-banner")).not.toBeInTheDocument(),
+    );
+    // Retry success clears the composer like a normal send.
+    expect(textarea).toHaveValue("");
+  });
+
+  it("dismisses the banner when the draft diverges; the next send mints a NEW clientSubmissionId", async () => {
+    issuesApiMock.addComment.mockRejectedValueOnce(new Error("network error"));
+    renderTimeline();
+
+    const textarea = await screen.findByPlaceholderText("Message Alpha Agent...");
+    fireEvent.change(textarea, { target: { value: "first try" } });
+    fireEvent.click(screen.getByText("Send & wake"));
+    await screen.findByTestId("composer-send-failed-banner");
+
+    // Keep editing past the failed snapshot — Retry would post stale content
+    // and its success-clear would wipe these edits, so the banner must go.
+    fireEvent.change(textarea, { target: { value: "first try plus newer edits" } });
+    expect(screen.queryByTestId("composer-send-failed-banner")).not.toBeInTheDocument();
+    expect(textarea).toHaveValue("first try plus newer edits");
+
+    fireEvent.click(screen.getByText("Send & wake"));
+    await waitFor(() => expect(issuesApiMock.addComment).toHaveBeenCalledTimes(2));
+    const first = issuesApiMock.addComment.mock.calls[0];
+    const second = issuesApiMock.addComment.mock.calls[1];
+    expect(second[1]).toBe("first try plus newer edits");
+    expect(second[5]).not.toBe(first[5]);
+  });
+
+  it("Edit dismisses the banner but keeps the draft", async () => {
+    issuesApiMock.addComment.mockRejectedValueOnce(new Error("network error"));
+    renderTimeline();
+
+    const textarea = await screen.findByPlaceholderText("Message Alpha Agent...");
+    fireEvent.change(textarea, { target: { value: "edit me" } });
+    fireEvent.click(screen.getByText("Send & wake"));
+    const banner = await screen.findByTestId("composer-send-failed-banner");
+
+    fireEvent.click(within(banner).getByRole("button", { name: "Edit" }));
+    expect(screen.queryByTestId("composer-send-failed-banner")).not.toBeInTheDocument();
+    expect(textarea).toHaveValue("edit me");
+    expect(issuesApiMock.addComment).toHaveBeenCalledTimes(1);
+  });
+
+  it("Discard dismisses the banner and clears the input and selected files", async () => {
+    issuesApiMock.addCommentWithAttachments.mockRejectedValueOnce(new Error("boom"));
+    renderTimeline();
+
+    const textarea = await screen.findByPlaceholderText("Message Alpha Agent...");
+    const file = new File(["fake"], "evidence.txt", { type: "text/plain" });
+    fireEvent.change(screen.getByTestId("workspace-chatbar-file-input"), { target: { files: [file] } });
+    fireEvent.change(textarea, { target: { value: "discard me" } });
+    fireEvent.click(screen.getByText("Send & wake"));
+    const banner = await screen.findByTestId("composer-send-failed-banner");
+
+    fireEvent.click(within(banner).getByRole("button", { name: "Discard" }));
+    expect(screen.queryByTestId("composer-send-failed-banner")).not.toBeInTheDocument();
+    expect(textarea).toHaveValue("");
+    expect(screen.queryByText("evidence.txt")).not.toBeInTheDocument();
+    // No resend happened.
+    expect(issuesApiMock.addCommentWithAttachments).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows the offline strip and disables send while offline", async () => {
+    liveState.connectionState = "offline";
+    renderTimeline();
+
+    const textarea = await screen.findByPlaceholderText("Message Alpha Agent...");
+    const strip = screen.getByTestId("composer-offline-strip");
+    expect(strip.textContent).toContain("You're offline");
+
+    fireEvent.change(textarea, { target: { value: "queued while offline" } });
+    expect(screen.getByText("Send & wake")).toBeDisabled();
+
+    // The Enter shortcut must not bypass the disabled send either.
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(issuesApiMock.addComment).not.toHaveBeenCalled();
+  });
+
+  it("shows the drop overlay on frame dragEnter and attaches dropped files via the shared validation path", async () => {
+    renderTimeline();
+
+    const chatbar = await screen.findByTestId("workspace-chatbar");
+    fireEvent.dragEnter(chatbar, { dataTransfer: { types: ["Files"], files: [] } });
+    expect(screen.getByTestId("composer-drop-overlay")).toBeInTheDocument();
+
+    const file = new File(["fake"], "dropped.png", { type: "image/png" });
+    fireEvent.drop(chatbar, { dataTransfer: { types: ["Files"], files: [file] } });
+    expect(screen.queryByTestId("composer-drop-overlay")).not.toBeInTheDocument();
+    expect(await screen.findByText("dropped.png")).toBeInTheDocument();
+  });
+
+  it("frame drag-drop still routes through attachment validation (oversized dropped file rejected)", async () => {
+    renderTimeline();
+
+    const chatbar = await screen.findByTestId("workspace-chatbar");
+    const oversized = new File(["fake"], "huge.pdf", { type: "application/pdf" });
+    Object.defineProperty(oversized, "size", {
+      configurable: true,
+      value: COMPOSER_MAX_ATTACHMENT_BYTES + 1,
+    });
+    fireEvent.dragEnter(chatbar, { dataTransfer: { types: ["Files"], files: [] } });
+    fireEvent.drop(chatbar, { dataTransfer: { types: ["Files"], files: [oversized] } });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("huge.pdf exceeds the 10 MB attachment limit");
+    expect(screen.queryByText("huge.pdf")).not.toBeInTheDocument();
   });
 });
 
