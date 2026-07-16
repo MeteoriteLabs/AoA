@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 /** The on-disk format is deliberately versioned so a UI rollout can invalidate old drafts safely. */
 export const COMPOSER_DRAFT_VERSION = 1;
@@ -212,20 +212,23 @@ export function useComposerDraft(
   const [draft, setDraftState] = useState<ComposerDraftValue>(() =>
     storageKey ? readDraft(storage, storageKey, now, initialDraft) : initialDraft,
   );
-  const hydratedKey = useRef(storageKey);
-  const needsHydration = hydratedKey.current !== storageKey;
-
-  useEffect(() => {
-    if (hydratedKey.current === storageKey) return;
-    hydratedKey.current = storageKey;
+  // Hydrate SYNCHRONOUSLY on a key change (render-time state adjustment —
+  // React's "derive state from props" pattern). The hook must never commit a
+  // render pairing the NEW storageKey with the PREVIOUS entity's draft:
+  // consumers key effects on storageKey (WorkspaceTimeline mirrors draft.text
+  // into local state; InternalAgentPanel marks the key hydrated on first
+  // sight), so a one-render stale pair copies the old entity's text into the
+  // new one and drops the new entity's real saved draft (PR #291 review).
+  const [hydratedKey, setHydratedKey] = useState(storageKey);
+  if (hydratedKey !== storageKey) {
+    setHydratedKey(storageKey);
     setDraftState(storageKey ? readDraft(storage, storageKey, now, initialDraft) : initialDraft);
-  }, [initialDraft, now, storage, storageKey]);
+  }
 
   useEffect(() => {
-    // On a host transition, the hydration effect above runs before this effect
-    // but its state update is deferred. Use the render-time guard so the old
-    // draft can never be written into the new entity's key.
-    if (needsHydration || hydratedKey.current !== storageKey || !storage || !storageKey) return;
+    // With synchronous hydration above, a committed render always carries the
+    // draft that belongs to storageKey — safe to persist directly.
+    if (!storage || !storageKey) return;
     try {
       if (isComposerDraftEmpty(draft)) {
         storage.removeItem(storageKey);
@@ -235,7 +238,7 @@ export function useComposerDraft(
     } catch {
       // Quota/security errors must never disable typing or submission.
     }
-  }, [draft, needsHydration, now, options.ttlMs, storage, storageKey]);
+  }, [draft, now, options.ttlMs, storage, storageKey]);
 
   const setDraft = useCallback((next: ComposerDraftUpdater) => {
     setDraftState((previous) => {
