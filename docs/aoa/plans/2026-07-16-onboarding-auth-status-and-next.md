@@ -34,15 +34,9 @@ Push `feat/onboarding-auth-reconciled` + open the PR.
 - First CI run of the ported founder e2e on Linux — watch that lane.
 - **Migration coordination:** `codex/unified-composer` (active in another session — hands off) also mints 0171+; whichever branch lands second regenerates its migrations. Sequence the merges deliberately.
 
-### N2 — Onboarding UI polish (user-driven; list being gathered)
-Known candidates from live sessions, to be scoped with the founder:
-- **Invite-creation friction** (observed: revoke + re-create churn) — dialog clarity, invite-type choice, the 10-minute TTL surprise.
-- **"Add member" vs "Invite"** distinction — user reached for Add member when Invite was the intent; the two paths now converge on seeding, but the affordance is ambiguous.
-- **Post-join Settings hiccup** (transient, self-healed — reproduce and root-cause).
-- Copy/UX passes: consent-card wording, VerifyStep auth options presentation, teammate first-run impressions.
+### N2 — Onboarding UI polish — **✅ DONE 2026-07-17 (see §5)**
 
-### N3 — Invited e2e (Track D remainder)
-Blocked on the **mocked-Google second-identity helper** (A12 core): local_trusted e2e has a single synthetic actor, so a second verified-email user cannot exist without it. Once built: invited specs for auto-admit, consent/tokenless, pending→approve, rejected.
+### N3 — Invited e2e (Track D remainder) — **✅ DONE 2026-07-16 (see §5)**
 
 ### N4 — Recorded hardening follow-ups (small, non-blocking)
 - Global PATCH `/user-profile` accepts `socialLinks` with only an Array.isArray check (seeding-side normalization IS done; tighten the route with the shared zod schema).
@@ -62,3 +56,30 @@ The guided Discussion→Delivery demo from the Review step ("Start walkthrough" 
 - The invited-journey design authority is `2026-07-16-invited-teammate-journey-scope.md`; do not resurrect the superseded JoinOrg/JOIN_REQUESTED design.
 - `codex/unified-composer` and its worktree belong to another active session — do not touch.
 - Live-test infra: `~/.aoa/instances/onboarding-test/start.sh` (secrets local-only, never committed); rebuild UI → restart (CSP hashes computed at boot); `AOA_MIGRATION_AUTO_APPLY=true` for new migrations.
+
+---
+
+## 5. Addendum 2026-07-17 — N2 + N3 complete (12 commits, all two-stage reviewed)
+
+Every batch: implement → adversarial review → fix round → closure verify (RESOLVED). Four founder decisions locked before implementation: 7-day TTL for email-bound **human** invites, direct-add demoted behind an explicit confirmation, founders adopt HumanProfileStep, `isInstanceAdmin` exposed on the profile payload.
+
+### N3 — invited e2e + second-identity mint (`0134d88ef`, hardened `49f9fe3dd`)
+- `POST /test-support/session` mints verified better-auth users + signed session cookies (direct drizzle writes deliberately bypass `createWithHooks` — the first-admin bootstrap would promote the minted teammate and flip its journey to "returning"). Fail-closed: mounted only under local_trusted + escape hatch, in-handler 404 re-gate, real deploymentMode threaded to the secret resolver, 1h session TTL.
+- `tests/e2e/onboarding-invited.spec.ts`: link auto-admit / tokenless consent (zero join_requests before the explicit Join click, asserted across a reload) / mismatch→founder-approve→poll auto-enter / rejected terminal. 4/4 green ×3 locally (`AOA_E2E_FORCE_WINDOWS=1`).
+
+### N2-A — invite mechanics (`acd122cd9`, `5d0fc46f4`, `c3f12ab28`)
+Root causes of the live-QA invite churn: **copy-link copied a relative URL** (broken everywhere it was pasted), resend rotated the token without showing the new link, 10-min TTL surfaced nowhere (card showed date-only). Fixed: absolute URLs (`requestBaseUrl`, consolidated), payload-aware TTL — 7 days **only** for `allowedJoinTypes === "human"` + bound email (review caught the crafted agent/both payload hole), honest relative expiry everywhere, post-create Done state with auto-copy, resend banner carrying the rotated link (cleared on matching revoke), invite mutation onError, "Create invite link" labels, helper copy explaining auto-admit. Disambiguation: dialog defaults to invite mode with descriptive option buttons; direct-add demoted + ConfirmDialog ("immediate access, no email verification"); header button "Invite teammate".
+
+### N2-B — Settings/RBAC (`a7d06ef45`, `0b6af8cab`)
+Root cause of the "Settings wasn't working" report: Lobby sidebar showed **instance** Settings to everyone while the server 403s non-admins; separately Home fired founder-only `suggestions/detect` for every user. Fixed: `isInstanceAdmin` on GET+**PATCH** `/auth/profile` (PATCH too — Me.tsx writes the PATCH response into the profile cache; mass-assignment 400s via strict schema, test-pinned), LobbySidebar System section + `/me` gear both gated (default-hidden while loading), InstanceSettingsPage friendly 403 with 4xx-aware retry (react-query's default 3-retry backoff had hidden the state ~7s), Dashboard detect + Accept/Dismiss founder-gated.
+
+### N2-C — onboarding polish (`8789cc4e1`, `b5ac2afc8`, `3584982d3`, `84274cbce`, fix `03be30e40`)
+- Founders now get **HumanProfileStep** (title/timezone/bio); ProfileStep deleted; founder e2e updated via shared `fillFounderProfileStep` (also fixed latently-broken spec APIs: `getByDisplayValue` isn't Playwright; landing asserts the Lobby + new-org card).
+- FlowEngine chrome: "Step N of M" chip + central ghost Back (renders only when a completed predecessor exists — no first-step bounce); VerifyStep local back removed; walkthrough stub button removed, CTA renamed **"Finish setup"** (Lobby landing kept — the live-validated pattern); dark-mode amber callouts; removable social links; AgentStep model-name drift removed; OrgStep revisited-via-Back renders read-only instead of an empty editable field.
+- Invited surfaces: invite summary carries `companyName` ("Join {name} on AoA", leftJoin, null for bootstrap), relative expiry, title-case pills, pending spinner, Lobby card role subtitle.
+- Dead code: legacy `pages/Team.tsx` + `InviteDialog.tsx` + test removed (738 lines).
+
+### Ship-gate notes produced by this wave (feed into N1)
+- **Visual pin is win32-gated** — Linux CI has zero screenshot coverage until a CI-side `--update-snapshots` pass generates a linux baseline (comment in `onboarding-founder-visual.spec.ts` documents this; tracked follow-up). The required Linux e2e gate is **no longer at risk** on first push.
+- Baseline-regen gotcha: `--update-snapshots` silently keeps a stale PNG when the diff is inside `maxDiffPixelRatio` — visually inspect regenerated baselines.
+- Small residuals (non-blocking): OrgStep dead short-circuit in the create branch; revisited-org name shows "…" if the company fetch fails; `retryUnlessClientError` 5xx arm untested (predicate could be unit-tested directly); docs `org-structure.md` still says "Add Member"; Dashboard suggestion-card actions for non-founders now hidden (bonus fix).
