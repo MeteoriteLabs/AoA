@@ -72,6 +72,7 @@ describe("user profile service (Stage C / C1)", () => {
       avatarUrl: "https://example.com/ada.png",
       title: "Founder",
       bio: "Builds analytical engines",
+      timezone: "Asia/Kolkata",
       socialLinks: [{ type: "github", label: null, url: "https://github.com/ada" }],
     });
 
@@ -85,10 +86,16 @@ describe("user profile service (Stage C / C1)", () => {
       avatarUrl: null,
       title: "Founder",
       bio: "Builds analytical engines",
+      timezone: "Asia/Kolkata",
     });
     expect(updated.socialLinks).toEqual([
       { type: "github", label: null, url: "https://github.com/ada" },
     ]);
+
+    const cleared = await upsertUserProfile(db, "u1", {
+      timezone: null,
+    });
+    expect(cleared.timezone).toBeNull();
   });
 });
 

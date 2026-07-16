@@ -48,4 +48,15 @@ describe("PATCH /api/user-profile", () => {
       displayName: "Ada Lovelace",
     });
   });
+
+  it("forwards timezone to the upsert", async () => {
+    const db = {};
+    const res = await request(createApp(db))
+      .patch("/api/user-profile")
+      .send({ displayName: "Ada Lovelace", timezone: "Asia/Kolkata" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(profileMocks.upsert).toHaveBeenCalledWith(db, "u1",
+      expect.objectContaining({ timezone: "Asia/Kolkata" }));
+  });
 });
