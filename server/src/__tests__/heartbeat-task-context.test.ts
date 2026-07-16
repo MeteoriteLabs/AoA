@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildCurrentTaskMarkdown,
+  buildWakeCommentMarkdown,
   buildWorkQuestionContinuationMarkdown,
 } from "../services/heartbeat-task-context.js";
 
@@ -64,5 +65,33 @@ describe("heartbeat provider task context", () => {
   it("does not render malformed or unanswered continuation state", () => {
     expect(buildWorkQuestionContinuationMarkdown(null)).toBeNull();
     expect(buildWorkQuestionContinuationMarkdown({ question: { text: "Question" }, answer: { value: {} } })).toBeNull();
+  });
+});
+
+describe("buildWakeCommentMarkdown (review F11)", () => {
+  it("inlines the triggering comment with author + reason-aware heading", () => {
+    const md = buildWakeCommentMarkdown({
+      body: "@Quality Auditor please verify CONTEXT-MARKER-77419 before merge.",
+      authorLabel: "the board",
+      reason: "issue_comment_mentioned",
+    });
+    expect(md).toContain("## You Were Mentioned in a Comment");
+    expect(md).toContain("- From: the board");
+    expect(md).toContain("CONTEXT-MARKER-77419");
+  });
+
+  it("uses the plain-message heading for non-mention wakes (Send & wake)", () => {
+    const md = buildWakeCommentMarkdown({
+      body: "Please prioritize the login bug first.",
+      authorLabel: "a teammate",
+      reason: "issue_comment_added",
+    });
+    expect(md).toContain("## New Message on This Task");
+    expect(md).toContain("Please prioritize the login bug first.");
+  });
+
+  it("renders nothing for a missing or empty comment", () => {
+    expect(buildWakeCommentMarkdown(null)).toBeNull();
+    expect(buildWakeCommentMarkdown({ body: "   ", authorLabel: "the board", reason: null })).toBeNull();
   });
 });

@@ -38,6 +38,7 @@ import { logger } from "../middleware/logger.js";
 import { publishLiveEvent, threadWorkingAgents, broadcastThreadPresence } from "./live-events.js";
 import {
   buildCurrentTaskMarkdown,
+  buildWakeCommentMarkdown,
   buildWorkQuestionContinuationMarkdown,
 } from "./heartbeat-task-context.js";
 import { bindHeartbeatWorkQuestionContinuation } from "./work-question-continuation-terminal.js";
@@ -2903,8 +2904,58 @@ export function heartbeatService(db: Db) {
           .then((rows) => rows[0] ?? null)
       : null;
     if (issueContext) {
+      // Review F11 (2026-07-16): a comment-driven wake ("Send & wake" from
+      // the chatbar/Comments tab, or an @mention) must carry the triggering
+      // comment IN the prompt — the agent otherwise never sees the message
+      // unless it happens to fetch comments via MCP tools. Best-effort: a
+      // missing/deleted comment simply omits the section.
+      const wakeCommentIdForPrompt =
+        readNonEmptyString(context.wakeCommentId) ?? readNonEmptyString(context.commentId);
+      let wakeCommentSection: string | null = null;
+      if (wakeCommentIdForPrompt) {
+        try {
+          const commentRow = await db
+            .select({
+              body: issueComments.body,
+              authorAgentId: issueComments.authorAgentId,
+              authorUserId: issueComments.authorUserId,
+            })
+            .from(issueComments)
+            .where(
+              and(
+                eq(issueComments.id, wakeCommentIdForPrompt),
+                eq(issueComments.issueId, issueContext.id),
+              ),
+            )
+            .then((rows) => rows[0] ?? null);
+          if (commentRow) {
+            let authorLabel = "the board";
+            if (commentRow.authorAgentId) {
+              const authorAgent = await db
+                .select({ name: agents.name })
+                .from(agents)
+                .where(eq(agents.id, commentRow.authorAgentId))
+                .then((rows) => rows[0] ?? null);
+              authorLabel = authorAgent ? `agent ${authorAgent.name}` : "another agent";
+            } else if (commentRow.authorUserId) {
+              authorLabel = "a teammate";
+            }
+            wakeCommentSection = buildWakeCommentMarkdown({
+              body: commentRow.body,
+              authorLabel,
+              reason: readNonEmptyString(context.wakeReason),
+            });
+          }
+        } catch (err) {
+          logger.warn(
+            { err, wakeCommentId: wakeCommentIdForPrompt },
+            "failed to inline wake comment into run prompt",
+          );
+        }
+      }
       const currentTaskMarkdown = [
         buildCurrentTaskMarkdown(issueContext),
+        wakeCommentSection,
         buildWorkQuestionContinuationMarkdown(context.continuationEnvelope),
       ].filter((section): section is string => Boolean(section)).join("\n\n");
       context.currentTask = {
