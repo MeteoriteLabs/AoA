@@ -168,6 +168,7 @@ export function DepartmentStep({ ctx, onComplete }: StepProps) {
           </label>
           {useLocal && (
             <input
+              data-testid="department-local-folder"
               className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs font-mono"
               value={localPath}
               onChange={(e) => setLocalPath(e.target.value)}

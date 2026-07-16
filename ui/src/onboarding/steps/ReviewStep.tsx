@@ -19,9 +19,10 @@ function Row({ label, value }: { label: string; value?: string }) {
 
 /**
  * "You're set up" review step (Stage C / order 8). Summarizes what onboarding
- * created, then finishes: "Go to dashboard" advances SETUP_COMPLETE and calls
- * onComplete — the FlowEngine resolves no next step and navigates to the
- * dashboard via onFinished.
+ * created, then finishes: "Finish setup" advances SETUP_COMPLETE and calls
+ * onComplete — the FlowEngine resolves no next step and onFinished lands the
+ * founder in the Lobby (the hub "/"), so the CTA is honest about finishing
+ * setup rather than promising a dashboard.
  */
 export function ReviewStep({ ctx, onComplete }: StepProps) {
   const [summary, setSummary] = useState<Summary>({});
@@ -81,7 +82,7 @@ export function ReviewStep({ ctx, onComplete }: StepProps) {
       </div>
       {error && <p className="mt-3 text-xs text-destructive">{error}</p>}
       <Button className="mt-4 w-full" onClick={() => void finish()} disabled={busy}>
-        Go to dashboard
+        Finish setup
       </Button>
     </div>
   );

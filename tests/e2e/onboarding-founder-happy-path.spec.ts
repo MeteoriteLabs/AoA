@@ -45,7 +45,7 @@ test("founder completes profile → org → environment → commander → verify
   });
   // (page.getByDisplayValue is a Testing Library API that doesn't exist in
   // Playwright — assert the prefilled value via toHaveValue instead.)
-  await expect(page.locator("input.font-mono")).toHaveValue(/[\\/]engineering$/i, {
+  await expect(page.getByTestId("department-local-folder")).toHaveValue(/[\\/]engineering$/i, {
     timeout: 15_000,
   });
   await page.getByRole("button", { name: /create department/i }).click();
@@ -58,7 +58,7 @@ test("founder completes profile → org → environment → commander → verify
 
   // Review (terminal)
   await expect(page.getByRole("heading", { name: /you're set up/i })).toBeVisible({ timeout: 20_000 });
-  await page.getByRole("button", { name: /go to dashboard/i }).click();
+  await page.getByRole("button", { name: /finish setup/i }).click();
 
   // Landed in the app: since the Lobby redesign, "/" is the returning-user
   // Lobby (LobbyOrOnboardingRedirect) — the new organization must be listed.

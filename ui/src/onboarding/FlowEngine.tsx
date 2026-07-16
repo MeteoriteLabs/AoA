@@ -124,24 +124,33 @@ export function FlowEngine({
 
   const Step = step.Component;
   const stepNumber = applicableSteps.findIndex((candidate) => candidate.id === step.id) + 1;
+  // Back renders only when a COMPLETED predecessor exists to walk back to.
+  // On the first step the fallthrough (onBack → navigate "/") would bounce:
+  // the index gate resolves the same journey and sends the user straight back
+  // here — a flash-reload, not an exit.
+  const hasCompletedPredecessor =
+    stepNumber > 0 &&
+    applicableSteps.slice(0, stepNumber - 1).some((candidate) => candidate.isComplete(ctx));
   return (
     <div>
       {/* Shared step chrome: one Back affordance + a "Step N of M" position
           chip for every step (steps no longer render their own Back). The
           chip hides on single-step journeys where it carries no information. */}
-      <div className="mx-auto -mb-6 flex max-w-md items-center justify-between pt-6 text-xs text-muted-foreground">
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          className="-ml-2 gap-1 text-muted-foreground"
-          onClick={handleBack}
-        >
-          <ChevronLeft className="h-3.5 w-3.5" aria-hidden />
-          Back
-        </Button>
+      <div className="mx-auto -mb-6 flex max-w-md items-center pt-6 text-xs text-muted-foreground">
+        {hasCompletedPredecessor && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="-ml-2 gap-1 text-muted-foreground"
+            onClick={handleBack}
+          >
+            <ChevronLeft className="h-3.5 w-3.5" aria-hidden />
+            Back
+          </Button>
+        )}
         {stepNumber > 0 && applicableSteps.length > 1 && (
-          <span data-testid="onboarding-step-position">
+          <span className="ml-auto" data-testid="onboarding-step-position">
             Step {stepNumber} of {applicableSteps.length}
           </span>
         )}

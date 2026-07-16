@@ -1,6 +1,7 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { StepProps } from "../registry";
 import { useCompany } from "../../context/CompanyContext";
+import { companiesApi } from "../../api/companies";
 import { advanceOnboarding } from "../../api/onboarding";
 import {
   clearPendingOrganization,
@@ -18,6 +19,11 @@ import { Button } from "@/components/ui/button";
  * advance therefore targets the NEW companyId, not ctx.companyId (still null
  * here). Name only — mission/vision are captured later. `ensureProgress` already
  * seeds the org layer from the user layer, so the PROFILE_SET dependency holds.
+ *
+ * Revisited state: when ctx.companyId is already set (walked back from a
+ * later step, or resuming an interrupted org layer), the organization exists —
+ * render it read-only with a single Continue (re-advance) instead of an
+ * editable empty field whose input would be silently discarded.
  */
 export function OrgStep({ ctx, onComplete }: StepProps) {
   const { createCompany } = useCompany();
@@ -30,6 +36,22 @@ export function OrgStep({ ctx, onComplete }: StepProps) {
   // company POST and the onboarding PATCH. A selected org-layer company is also
   // safe to reuse when resuming an interrupted flow.
   const createdRef = useRef<PendingOrganization | null>(pendingAtMount);
+
+  const revisitedCompanyId = ctx.companyId;
+  const [revisitedName, setRevisitedName] = useState<string | null>(null);
+  useEffect(() => {
+    if (!revisitedCompanyId) return;
+    let cancelled = false;
+    companiesApi
+      .get(revisitedCompanyId)
+      .then((company) => {
+        if (!cancelled) setRevisitedName((company as { name?: string } | null)?.name ?? null);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [revisitedCompanyId]);
 
   const submit = async () => {
     const resumableCompany =
@@ -57,6 +79,47 @@ export function OrgStep({ ctx, onComplete }: StepProps) {
       setBusy(false);
     }
   };
+
+  /** Read-only re-advance for the revisited state (no create, no edit). */
+  const continueRevisited = async () => {
+    if (!revisitedCompanyId) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await advanceOnboarding({
+        companyId: revisitedCompanyId,
+        journey: ctx.journey,
+        requestedState: "ORGANIZATION_CREATED",
+      });
+      clearPendingOrganization(ctx.userId);
+      onComplete();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to continue.");
+      setBusy(false);
+    }
+  };
+
+  if (revisitedCompanyId) {
+    return (
+      <div className="mx-auto max-w-md py-10">
+        <h1 className="text-xl font-semibold">Your organization</h1>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Your organization is already created — continue to pick up where you left off.
+        </p>
+        <span className="mt-6 mb-1 block text-xs text-muted-foreground">Organization name</span>
+        <div
+          data-testid="org-revisited-name"
+          className="rounded-md border border-border bg-muted/30 px-3 py-2 text-sm"
+        >
+          {revisitedName ?? "…"}
+        </div>
+        {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
+        <Button className="mt-4 w-full" onClick={() => void continueRevisited()} disabled={busy}>
+          {busy ? "Continuing…" : "Continue"}
+        </Button>
+      </div>
+    );
+  }
 
   return (
     <div className="mx-auto max-w-md py-10">

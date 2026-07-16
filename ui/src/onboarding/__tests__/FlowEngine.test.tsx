@@ -111,13 +111,15 @@ describe("FlowEngine (Stage B / B6)", () => {
     expect(screen.getByTestId("onboarding-step-position").textContent).toBe("Step 2 of 2");
 
     // Central Back (rendered by the engine, not the step) walks to the
-    // previous completed step; the chip follows.
+    // previous completed step; the chip follows. Back then disappears — the
+    // profile step has no completed predecessor left to walk back to.
     fireEvent.click(screen.getByRole("button", { name: /^back$/i }));
     await waitFor(() => screen.getByTestId("step-profile"));
     expect(screen.getByTestId("onboarding-step-position").textContent).toBe("Step 1 of 2");
+    expect(screen.queryByRole("button", { name: /^back$/i })).toBeNull();
   });
 
-  it("central Back on the first step falls through to the onBack prop", async () => {
+  it("renders NO Back on the first step (nothing completed to walk back to — the '/' fallthrough would bounce)", async () => {
     const api: FlowEngineApi = { getProgress: async () => ({ completedStates: ["AUTHENTICATED"] }) };
     const onBack = vi.fn();
     render(
@@ -131,8 +133,8 @@ describe("FlowEngine (Stage B / B6)", () => {
       />,
     );
     await waitFor(() => screen.getByTestId("step-profile"));
-    fireEvent.click(screen.getByRole("button", { name: /^back$/i }));
-    expect(onBack).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("button", { name: /^back$/i })).toBeNull();
+    expect(onBack).not.toHaveBeenCalled();
   });
 
   it("ignores a stale user-layer reload after switching to the company layer", async () => {
