@@ -45,7 +45,7 @@ const TEAM_PERMISSION_KEYS = {
   team_member: [],
 } as const satisfies Record<UserRole, PermissionKey[]>;
 
-function parseInviteRoleMetadata(defaultsPayload: Record<string, unknown> | null | undefined) {
+export function parseInviteRoleMetadata(defaultsPayload: Record<string, unknown> | null | undefined) {
   if (!defaultsPayload) return null;
   const raw = defaultsPayload[TEAM_INVITE_KEY];
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
