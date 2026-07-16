@@ -83,7 +83,7 @@ Submit is blocked until Name + Title + Timezone are set (Name is prefilled, so e
 ## 8. Backend changes
 
 - **Extract the human-approval transaction into a shared service** callable from both the founder approve route and the new finalize path (membership + grants + role + company profile + capability stubs; idempotent; profile/capability seeding is best-effort and must NOT fail the approval).
-- **Finalize endpoint** (self-scoped; e.g. `POST /api/onboarding/join/finalize`): for the caller's own `pending_approval` human join_request on the target company — recompute the email match **fresh** (acceptor's `authUsers.email` + `emailVerified` vs `invite.defaultsPayload.teamInvite.email`, case-insensitive; invite not revoked/expired). Match → run the shared approval transaction (system-approved) → `{ admitted: true }`. No match → `{ admitted: false }` (request remains pending). Idempotent: already-approved → `{ admitted: true }`.
+- **Finalize endpoint** (self-scoped; e.g. `POST /api/onboarding/join/finalize`): for the caller's own `pending_approval` human join_request on the target company — recompute the email match **fresh** (acceptor's `authUsers.email` + `emailVerified` vs `invite.defaultsPayload.teamInvite.email`, case-insensitive; invite not revoked — expiry is NOT re-checked, see §9). Match → run the shared approval transaction (system-approved) → `{ admitted: true }`. No match → `{ admitted: false }` (request remains pending). Idempotent: already-approved → `{ admitted: true }`.
 - **Approval seeding** (both paths): upsert `company_user_profiles` from global identity + carried timezone, and `ensureStandardDocuments`. **Bonus:** apply the same company-profile insert to manual `addMember` so all three paths converge.
 - **`join_requests`** gains a small nullable column/payload to carry the invitee's timezone captured at profile submit.
 - **No new route for the journey poll** — the fallback pending state reuses `GET /api/onboarding/journey`.
@@ -92,7 +92,7 @@ Submit is blocked until Name + Title + Timezone are set (Name is prefilled, so e
 
 - **Unverified Google email** → never auto-admits; falls back to pending (matches the resolver's existing verified-email discipline).
 - **Email match is case-insensitive**; compared fresh at finalize (not a stale snapshot).
-- **Invite revoked/expired between accept and finalize** → finalize refuses; surface the reason; no dead loop.
+- **Invite validity is established AT ACCEPT, not re-checked at finalize.** Company invites carry a 10-minute TTL (`COMPANY_INVITE_TTL_MS`) and are consumed at accept — the clock keeps ticking through Google sign-in + the profile form, so re-checking `expiresAt` at finalize would degrade nearly every real auto-admit to pending. Finalize keeps only a defensive `revokedAt` check (revoke-after-accept isn't possible via the normal route — `revokeInvite` throws on accepted invites). A revoked invite surfaces a distinct "invite no longer valid" state, not generic pending. *(Amended post-review: the original "expired between accept and finalize → refuses" wording predated the TTL ground truth.)*
 - **Abandoned profile** → request stays `pending_approval`; the founder can still approve manually (graceful degradation of the auto-admit).
 - Request **rejected** → poll detects it → terminal "not approved" screen (no navigate to `/`, which would re-loop).
 - **Already a member** on re-visit → resolver returns `returning` → straight into the app; finalize is idempotent.
@@ -104,7 +104,7 @@ Submit is blocked until Name + Title + Timezone are set (Name is prefilled, so e
 ## 10. Testing strategy (TDD)
 
 - **UI unit (RTL):** `HumanProfileStep` — required-field gating (submit blocked until Name/Title/Timezone), writes global profile, advances; uses shared constants. `InvitedJoinTerminal` — calls finalize once; navigates on `admitted`; falls back to pending + poll on not-admitted; auto-navigates on `returning`; terminal "not approved" on rejection; stops polling on unmount. `InviteLanding` — routes to `/onboarding/join` after accept.
-- **Server:** finalize — admits on verified match (case-insensitive), refuses on mismatch/unverified/revoked/expired, idempotent on re-call, never impersonates the founder in the audit trail; the shared approval transaction materializes `company_user_profiles` + seeds capability stubs idempotently from BOTH trigger paths; manual `addMember` convergence; join_request timezone carry.
+- **Server:** finalize — admits on verified match (case-insensitive) even after the invite's 10-minute `expiresAt` has passed (validity was established at accept), refuses on mismatch/unverified/revoked, idempotent on re-call, never impersonates the founder in the audit trail; the shared approval transaction materializes `company_user_profiles` + seeds capability stubs idempotently from BOTH trigger paths; manual `addMember` convergence; join_request timezone carry.
 - **Shared:** constants extraction keeps `HumanDetail` behavior identical.
 - **e2e (Track D overlap, deferred):** full invited journey with a 2nd (mocked) Google identity — matched auto-admit path AND mismatch pending path. Not blocking; folds into the A12 mocked-Google helper.
 

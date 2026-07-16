@@ -352,7 +352,8 @@ Extract the human branch of the approve transaction into `join-approval.ts` (sin
 **Files:**
 - Create: `server/src/services/join-approval.ts`
 - Create: `server/src/services/__tests__/join-approval.test.ts`
-- Modify: `server/src/routes/access.ts` (approve handler ~2431-2576; delete local `grantsFromDefaults` at 1354-1387 and import it; keep the agent branch's own use; add `approvalSource` to `toJoinRequestResponse` at :123)
+- Modify: `server/src/routes/access.ts` (approve handler ~2431-2576; delete local `grantsFromDefaults` at 1354-1387 and import it; keep the agent branch's own use)
+- Modify: `packages/shared/src/types/access.ts` (add `approvalSource` to the `JoinRequest` type)
 
 - [ ] **Step 1: Write the failing service test**
 
@@ -400,7 +401,10 @@ function makeServices() {
 const args = {
   companyId: "c1", requestId: "r1", requestingUserId: "u1",
   invite: { id: "i1", defaultsPayload: { teamInvite: { role: "team_member", email: "ada@x.com" } } as Record<string, unknown> },
-  approvedByUserId: null, approvalSource: "invite_email_match" as const,
+  approvedByUserId: null,
+  attributionUserId: null,
+  activityActor: { actorType: "system" as const, actorId: "invite_email_match" },
+  approvalSource: "invite_email_match" as const,
 };
 
 describe("approveHumanJoinRequestTx", () => {
@@ -422,6 +426,8 @@ describe("approveHumanJoinRequestTx", () => {
     expect(reconcile).toHaveBeenCalledWith("c1", { sourceType: "join_request", sourceId: "r1" });
     expect(logActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: "join.approved",
+      actorType: "system",
+      actorId: "invite_email_match",
       details: { requestType: "human", approvalSource: "invite_email_match" },
     }));
   });
@@ -533,8 +539,18 @@ export type ApproveHumanJoinRequestArgs = {
   requestId: string;
   requestingUserId: string;
   invite: { id: string; defaultsPayload: Record<string, unknown> | null };
-  /** null for auto-admit — the audit trail must never impersonate the founder. */
+  /** Written to join_requests.approved_by_user_id. null for auto-admit — the
+   *  audit trail must never impersonate the founder. Founder route passes
+   *  `req.actor.userId ?? (isLocalImplicit(req) ? "local-board" : null)`. */
   approvedByUserId: string | null;
+  /** Attribution for grants/role/profile writes. Preserves the founder route's
+   *  ORIGINAL semantics (`req.actor.userId ?? null` — no local-board fallback).
+   *  null for auto-admit. */
+  attributionUserId: string | null;
+  /** Activity-log actor. Founder: { actorType: "user", actorId: req.actor.userId ?? "board" }.
+   *  Auto-admit: { actorType: "system", actorId: "invite_email_match" } — never
+   *  attribute the approval to the invitee. */
+  activityActor: { actorType: "user" | "system"; actorId: string };
   approvalSource: "founder" | "invite_email_match";
 };
 
@@ -577,13 +593,13 @@ export async function approveHumanJoinRequestTx(
     "user",
     args.requestingUserId,
     grants,
-    args.approvedByUserId,
+    args.attributionUserId,
   );
   await services.team.applyInviteRole(
     args.companyId,
     args.requestingUserId,
     args.invite.defaultsPayload,
-    args.approvedByUserId,
+    args.attributionUserId,
   );
 
   // Materialize the company Human Operating Profile from the GLOBAL profile +
@@ -601,12 +617,12 @@ export async function approveHumanJoinRequestTx(
         socialLinks: globalProfile?.socialLinks ?? [],
         timezone: globalProfile?.timezone ?? null,
       },
-      args.approvedByUserId,
+      args.attributionUserId,
     );
     await services.capabilities.ensureStandardDocuments(
       args.companyId,
       args.requestingUserId,
-      args.approvedByUserId,
+      args.attributionUserId,
     );
   } catch (err) {
     logger.warn(
@@ -621,8 +637,8 @@ export async function approveHumanJoinRequestTx(
   });
   await logActivity(txDb, {
     companyId: args.companyId,
-    actorType: "user",
-    actorId: args.approvedByUserId ?? args.requestingUserId,
+    actorType: args.activityActor.actorType,
+    actorId: args.activityActor.actorId,
     action: "join.approved",
     entityType: "join_request",
     entityId: args.requestId,
@@ -669,6 +685,8 @@ import {
             },
             approvedByUserId:
               req.actor.userId ?? (isLocalImplicit(req) ? "local-board" : null),
+            attributionUserId: req.actor.userId ?? null, // original grants/role semantics
+            activityActor: { actorType: "user", actorId: req.actor.userId ?? "board" },
             approvalSource: "founder",
           });
         }
@@ -707,11 +725,13 @@ import {
 
 NOTE: the original single row-update served both types; after the split the human update lives in the service and the agent update stays inline (shown above with `approvalSource: "founder"` added). Remove the now-dead `if (existing.requestType === "human") {...}` block from the retained agent code. If `txTeam` is no longer referenced in the agent branch, delete that line.
 
-(c) In `toJoinRequestResponse` (access.ts:123), add to the returned object literal, next to the `status` field:
+(c) `toJoinRequestResponse` (access.ts:123-126) is a destructuring spread (`const { claimSecretHash: _x, ...safe } = row; return safe;`) — once Task 2 adds the column, `approvalSource` flows through **automatically**. No code change there; just verify the response carries it. For type hygiene, add the field to the shared `JoinRequest` type in `packages/shared/src/types/access.ts` (next to `approvedByUserId`):
 
 ```ts
-    approvalSource: row.approvalSource ?? null,
+  approvalSource: string | null;
 ```
+
+then rebuild shared: `pnpm --filter @armyofagents/shared build`.
 
 - [ ] **Step 6: Server typecheck + full server suite — expect clean/green**
 
@@ -721,9 +741,15 @@ Run: `pnpm test:run server/src` → all green (approve-route behavior unchanged 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add server/src/services/join-approval.ts server/src/services/__tests__/join-approval.test.ts server/src/routes/access.ts
-git commit -m "refactor(access): extract human join-approval into a shared service + seed the company human record"
+git add server/src/services/join-approval.ts server/src/services/__tests__/join-approval.test.ts server/src/routes/access.ts packages/shared/src/types/access.ts
+git commit -m "refactor(access): extract human join-approval into a shared service + seed the company human record
+
+NOTE: human-path activity details now carry approvalSource instead of
+createdAgentId (which was always null for humans) — deliberate audit-shape
+change. Grants/role attribution preserves the original req.actor.userId ?? null."
 ```
+
+> **Fragility note (reviewer finding):** `join-approval.ts` imports sibling service modules directly (not the `services/index.js` barrel). Existing route tests that mock the barrel (e.g. `join-request-approve-race.test.ts`) still pass — the race test's losing update short-circuits before any service call — but future human-path approve tests must mock the sibling modules (`../services/join-approval.js` or its imports), not the barrel.
 
 ---
 
@@ -846,6 +872,16 @@ describe("POST /onboarding/join/finalize", () => {
     expect(json).toHaveBeenCalledWith({ admitted: false, status: "invite_invalid" });
   });
 
+  it("admits even when expiresAt has passed — validity was established at accept (10-min TTL)", async () => {
+    const db = createSequenceDb([
+      [pendingRequest],
+      [{ ...validInvite, expiresAt: new Date(Date.now() - 60_000) }],
+      [{ email: "ada@x.com", emailVerified: true }],
+    ]);
+    const { json } = await call(db, { companyId: "c1" });
+    expect(json).toHaveBeenCalledWith({ admitted: true, status: "approved" });
+  });
+
   it("is idempotent — an already-approved request reports admitted", async () => {
     const db = createSequenceDb([[{ ...pendingRequest, status: "approved" }]]);
     const { json } = await call(db, { companyId: "c1" });
@@ -946,11 +982,12 @@ export function onboardingJoinRoutes(db: Db): Router {
       .from(invites)
       .where(eq(invites.id, request.inviteId))
       .then((rows) => rows[0] ?? null);
-    if (
-      !invite ||
-      invite.revokedAt ||
-      (invite.expiresAt && new Date(invite.expiresAt).getTime() < Date.now())
-    ) {
+    // Invite validity was established AT ACCEPT (accept enforces the 10-minute
+    // COMPANY_INVITE_TTL and consumes the invite). Do NOT re-check expiresAt
+    // here — the TTL clock keeps ticking through Google sign-in + the profile
+    // form and would degrade nearly every real auto-admit to pending (spec §9,
+    // amended post-review). Keep only a defensive revokedAt check.
+    if (!invite || invite.revokedAt) {
       res.json({ admitted: false, status: "invite_invalid" });
       return;
     }
@@ -984,6 +1021,8 @@ export function onboardingJoinRoutes(db: Db): Router {
           defaultsPayload: invite.defaultsPayload as Record<string, unknown> | null,
         },
         approvedByUserId: null, // audit: never impersonate the founder
+        attributionUserId: null,
+        activityActor: { actorType: "system", actorId: "invite_email_match" },
         approvalSource: "invite_email_match",
       });
     });
@@ -1066,7 +1105,13 @@ import { validateRegistry, type StepContext } from "../../registry";
 import { ONBOARDING_STEPS } from "../index";
 
 const saveUserProfile = vi.hoisted(() => vi.fn(async (input: unknown) => input));
-vi.mock("../../../api/userProfile", () => ({ saveUserProfile }));
+const getUserProfile = vi.hoisted(() =>
+  vi.fn(async () => ({
+    userId: "u1", displayName: "Ada", avatarUrl: null, title: null,
+    bio: null, timezone: null, socialLinks: [],
+  })),
+);
+vi.mock("../../../api/userProfile", () => ({ saveUserProfile, getUserProfile }));
 vi.mock("../../../api/onboarding", () => ({
   advanceOnboarding: vi.fn(async () => ({ completedStates: ["AUTHENTICATED", "PROFILE_SET"] })),
 }));
@@ -1083,15 +1128,24 @@ const ctx: StepContext = {
 describe("HumanProfileStep (shared; wired invited)", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("blocks submit until Name + Title + Timezone are set", async () => {
+  it("prefills Name from the global profile; submit blocked until Title is chosen", async () => {
     render(<HumanProfileStep ctx={ctx} onComplete={vi.fn()} onBack={() => {}} />);
+    await waitFor(() =>
+      expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("Ada"),
+    );
     const btn = screen.getByRole("button", { name: "Continue" }) as HTMLButtonElement;
-    // name empty + no title selected → disabled (timezone auto-detects)
-    expect(btn.disabled).toBe(true);
-    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Ada" } });
-    expect(btn.disabled).toBe(true); // title still missing
+    expect(btn.disabled).toBe(true); // title still missing (timezone auto-detects)
     fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Engineer" } });
     expect(btn.disabled).toBe(false);
+  });
+
+  it("requires a name when no global profile exists yet", async () => {
+    getUserProfile.mockResolvedValueOnce(null as never);
+    render(<HumanProfileStep ctx={ctx} onComplete={vi.fn()} onBack={() => {}} />);
+    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Engineer" } });
+    expect((screen.getByRole("button", { name: "Continue" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Ada" } });
+    expect((screen.getByRole("button", { name: "Continue" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("saves the full global profile (incl timezone) then advances PROFILE_SET", async () => {
@@ -1153,9 +1207,9 @@ Expected: FAIL
 
 ```tsx
 // ui/src/onboarding/steps/HumanProfileStep.tsx
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { StepProps } from "../registry";
-import { saveUserProfile } from "../../api/userProfile";
+import { getUserProfile, saveUserProfile } from "../../api/userProfile";
 import { advanceOnboarding } from "../../api/onboarding";
 import { HUMAN_TITLE_OPTIONS, getTimezoneOptions } from "@/lib/human-profile-constants";
 import { Button } from "@/components/ui/button";
@@ -1186,6 +1240,25 @@ export function HumanProfileStep({ ctx, onComplete }: StepProps) {
   const [links, setLinks] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Prefill from the existing global profile — Name arrives from Google via the
+  // auth-synced profile (spec §5: "Name is prefilled"); a returning user
+  // resumes their saved values. User-typed values are never overwritten.
+  useEffect(() => {
+    let cancelled = false;
+    void getUserProfile()
+      .then((p) => {
+        if (cancelled || !p) return;
+        setName((v) => v || p.displayName || "");
+        setTitle((v) => v || p.title || "");
+        setBio((v) => v || p.bio || "");
+        if (p.timezone) setTimezone((v) => v || p.timezone || "");
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const canSubmit = Boolean(name.trim() && title && timezone) && !busy;
 
@@ -1340,7 +1413,11 @@ import { render, screen, waitFor, act } from "@testing-library/react";
 import { InvitedJoinTerminal } from "../InvitedJoinTerminal";
 
 const mockNavigate = vi.hoisted(() => vi.fn());
-vi.mock("@/lib/router", () => ({ useNavigate: () => mockNavigate }));
+const routerState = vi.hoisted(() => ({ searchParams: new URLSearchParams() }));
+vi.mock("@/lib/router", () => ({
+  useNavigate: () => mockNavigate,
+  useSearchParams: () => [routerState.searchParams],
+}));
 const mockRemoveQueries = vi.hoisted(() => vi.fn());
 vi.mock("@tanstack/react-query", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-query")>()),
@@ -1363,6 +1440,7 @@ describe("InvitedJoinTerminal", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.useFakeTimers({ shouldAdvanceTime: true });
+    routerState.searchParams = new URLSearchParams();
     fetchJourney.mockResolvedValue(invitedJourney);
     finalizeInvitedJoin.mockResolvedValue({ admitted: false, status: "pending" });
   });
@@ -1409,6 +1487,27 @@ describe("InvitedJoinTerminal", () => {
     render(<InvitedJoinTerminal />);
     expect(await screen.findByText(/not approved/i)).toBeTruthy();
   });
+
+  it("prefers the deep-linked ?company= over the resolver's first invitation", async () => {
+    routerState.searchParams = new URLSearchParams("company=c2");
+    fetchJourney.mockResolvedValue({
+      ...invitedJourney,
+      pendingInvitations: [
+        ...invitedJourney.pendingInvitations,
+        { companyId: "c2", companyName: "Beta", inviteId: "r2", role: "team_lead", createdAt: "" },
+      ],
+    });
+    render(<InvitedJoinTerminal />);
+    await screen.findByText(/Beta/);
+    expect(finalizeInvitedJoin).toHaveBeenCalledWith("c2");
+  });
+
+  it("invite_invalid → distinct copy, keeps polling (founder can still approve)", async () => {
+    finalizeInvitedJoin.mockResolvedValue({ admitted: false, status: "invite_invalid" });
+    render(<InvitedJoinTerminal />);
+    expect(await screen.findByText(/no longer valid/i)).toBeTruthy();
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
 });
 ```
 
@@ -1423,12 +1522,12 @@ Expected: FAIL
 // ui/src/onboarding/InvitedJoinTerminal.tsx
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "@/lib/router";
+import { useNavigate, useSearchParams } from "@/lib/router";
 import { fetchJourney, finalizeInvitedJoin } from "../api/onboarding";
 
 const POLL_MS = 7000;
 
-type Phase = "checking" | "pending" | "not_approved";
+type Phase = "checking" | "pending" | "invite_invalid" | "not_approved";
 
 /**
  * Terminal of the invited journey (spec §6). On mount: finalize once — a
@@ -1440,6 +1539,7 @@ type Phase = "checking" | "pending" | "not_approved";
 export function InvitedJoinTerminal() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const [searchParams] = useSearchParams();
   const [phase, setPhase] = useState<Phase>("checking");
   const [company, setCompany] = useState<{ name: string; role: string } | null>(null);
   const timerRef = useRef<number | null>(null);
@@ -1466,13 +1566,20 @@ export function InvitedJoinTerminal() {
           setPhase("not_approved");
           return;
         }
+        // Prefer the deep-linked ?company= (InviteLanding passes it) when it is
+        // one of the caller's pending invitations; else the resolver's target.
+        const deepLinked = searchParams.get("company");
+        const targetId =
+          (deepLinked && j.pendingInvitations.some((p) => p.companyId === deepLinked)
+            ? deepLinked
+            : j.targetCompanyId) ?? null;
         const inv =
-          j.pendingInvitations.find((p) => p.companyId === j.targetCompanyId) ??
+          j.pendingInvitations.find((p) => p.companyId === targetId) ??
           j.pendingInvitations[0] ??
           null;
         if (inv) setCompany({ name: inv.companyName, role: inv.role });
-        if (first && j.targetCompanyId) {
-          const result = await finalizeInvitedJoin(j.targetCompanyId);
+        if (first && targetId) {
+          const result = await finalizeInvitedJoin(targetId);
           if (cancelled) return;
           if (result.admitted) {
             enter();
@@ -1482,8 +1589,12 @@ export function InvitedJoinTerminal() {
             setPhase("not_approved");
             return;
           }
+          // invite_invalid: distinct copy (spec §9), but keep polling — the
+          // founder can still approve the pending request manually.
+          setPhase(result.status === "invite_invalid" ? "invite_invalid" : "pending");
+        } else {
+          setPhase((p) => (p === "invite_invalid" ? p : "pending"));
         }
-        setPhase("pending");
       } catch {
         if (!cancelled) setPhase((p) => (p === "checking" ? "pending" : p));
       }
@@ -1496,7 +1607,7 @@ export function InvitedJoinTerminal() {
       cancelled = true;
       if (timerRef.current !== null) window.clearTimeout(timerRef.current);
     };
-  }, [enter]);
+  }, [enter, searchParams]);
 
   if (phase === "checking") {
     return <div className="mx-auto max-w-md py-16 text-sm text-muted-foreground">Checking your invitation…</div>;
@@ -1508,6 +1619,19 @@ export function InvitedJoinTerminal() {
         <p className="mt-2 text-sm text-muted-foreground">
           Your request to join{company ? ` ${company.name}` : ""} wasn't approved, or the invite is no
           longer valid. Ask your admin for a new invitation.
+        </p>
+      </div>
+    );
+  }
+  if (phase === "invite_invalid") {
+    return (
+      <div className="mx-auto max-w-md py-16 text-center">
+        <h1 className="text-xl font-semibold">
+          You're joining{company ? ` ${company.name}` : ""}
+        </h1>
+        <p className="mt-2 text-sm text-muted-foreground">
+          Your invite link is no longer valid, but your request is with the admin for approval —
+          this page will let you in automatically the moment it's approved.
         </p>
       </div>
     );
@@ -1602,7 +1726,7 @@ In `acceptMutation`'s `onSuccess`, after the two `invalidateQueries` calls and t
       setResult({ kind: asBootstrap ? "bootstrap" : "join", payload });
 ```
 
-(`navigate` — confirm `useNavigate` is already imported in InviteLanding from `@/lib/router`; if not, add it. `queryClient` is already in scope from the existing `invalidateQueries` calls.)
+**InviteLanding has NO `useNavigate` today** (`InviteLanding.tsx:3` imports only `Link, useParams` from `@/lib/router`). Two additions are required: (a) extend that import to include `useNavigate`, and (b) bind it in the component body next to the existing hooks (~line 45): `const navigate = useNavigate();`. `queryClient` is already in scope from the existing `invalidateQueries` calls, and the human accept 202 response spreads the join_request row, so `payload.companyId` is present (`access.ts:2334`).
 
 - [ ] **Step 2: UI typecheck + run any existing InviteLanding tests**
 
@@ -1641,14 +1765,14 @@ git commit -m "feat(onboarding): human invite accepts continue into the guided i
           socialLinks: globalProfile?.socialLinks ?? [],
           timezone: globalProfile?.timezone ?? null,
         },
-        actorUserId ?? null,
+        addedByUserId,
       );
     } catch {
       // best-effort — never fail the add
     }
 ```
 
-(Use the exact local variable names in `addMember` for the new member's user id and the acting founder — read the surrounding function and match them. Add `import { getUserProfile } from "./user-profiles.js";` to team.ts imports. `updateCompanyUserProfile` is a sibling function in the same service closure — call it directly.)
+(Verified against `team.ts:678-682`: the member's id local is `userId` and the actor is `addedByUserId: string` (non-null — no `?? null` needed). `addMember` is NOT transaction-wrapped; `updateCompanyUserProfile` is a same-closure sibling — call it directly. Add `import { getUserProfile } from "./user-profiles.js";` to team.ts imports.)
 
 - [ ] **Step 2: Server typecheck + full suite**
 
