@@ -178,6 +178,24 @@ Use in property rows, comment headers, assignee displays, and anywhere a user/ag
 **File:** `CommentThread.tsx`
 **Usage:** Comment list with add-comment form. Used on issue and entity detail views.
 
+### ComposerFrame
+
+**File:** `composer/ComposerFrame.tsx`
+**Usage:** The shared Quiet Operator composer container (context strip → attachment tray → editor → toolbar → error row) used by Commander, Discussions, Workspace chatbars, and Task Comments. `chrome="card"` renders the bordered focus-glow card; `density` adjusts comfortable/compact/mobile. Never add an overflow property — mention popovers render `absolute bottom-full` inside the frame.
+
+```tsx
+<ComposerFrame chrome="card" density="comfortable">{trayEditorAndControls}</ComposerFrame>
+```
+
+### ComposerAttachmentCard
+
+**File:** `composer/ComposerAttachmentCard.tsx`
+**Usage:** Board-accurate attachment card inside the ComposerFrame tray: thumbnail/type icon, filename, compact size (omit when unknown), state (uploading/ready/failed), Retry (failed + retryable), Remove with per-file accessible name.
+
+```tsx
+<ComposerAttachmentCard name="brief.pdf" byteSize={421888} state="ready" onRemove={fn} />
+```
+
 ### GoalTree
 
 **File:** `GoalTree.tsx`
