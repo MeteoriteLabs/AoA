@@ -69,6 +69,10 @@ export async function finalizeInvitedJoin(companyId: string): Promise<FinalizeIn
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ companyId }),
   });
-  if (!res.ok) throw new Error(`finalize failed: ${res.status}`);
+  if (!res.ok) {
+    // Carry the HTTP status — the terminal distinguishes a dead session (401 →
+    // back to sign-in) from a transient failure (retry next tick).
+    throw Object.assign(new Error(`finalize failed: ${res.status}`), { status: res.status });
+  }
   return (await res.json()) as FinalizeInvitedJoinResult;
 }

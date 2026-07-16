@@ -54,6 +54,9 @@ vi.mock("../../onboarding/steps/OrgStep", () => ({
     return <div>org-step-direct</div>;
   },
 }));
+vi.mock("../../onboarding/InvitedJoinTerminal", () => ({
+  InvitedJoinTerminal: () => <div>invited-join-terminal</div>,
+}));
 
 describe("OnboardingFlowPage", () => {
   beforeEach(() => {
@@ -121,12 +124,12 @@ describe("OnboardingFlowPage", () => {
     });
   });
 
-  it("invited: shows a terminal pending page on finish instead of looping to /", async () => {
+  it("invited: renders the join terminal on finish instead of looping to /", async () => {
     renderWithProviders(<OnboardingFlowPage journey="invited" />);
     const finish = await screen.findByText("finish-flow");
     expect(state.flowProps.companyId).toBeNull(); // user layer
     fireEvent.click(finish);
-    expect(await screen.findByText(/awaiting approval/i)).toBeTruthy();
+    expect(await screen.findByText("invited-join-terminal")).toBeTruthy();
     // must NOT navigate to "/" — that is exactly what re-triggers the invited loop
     expect(mockNavigate).not.toHaveBeenCalledWith("/", { replace: true });
   });
