@@ -96,6 +96,7 @@ const joinRequest: JoinRequest = {
   claimSecretConsumedAt: null,
   createdAgentId: null,
   approvedByUserId: null,
+  approvalSource: null,
   approvedAt: null,
   rejectedByUserId: null,
   rejectedAt: null,

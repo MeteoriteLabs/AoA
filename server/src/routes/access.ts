@@ -21,8 +21,7 @@ import {
   listJoinRequestsQuerySchema,
   searchAdminUsersQuerySchema,
   updateMemberPermissionsSchema,
-  updateUserCompanyAccessSchema,
-  PERMISSION_KEYS
+  updateUserCompanyAccessSchema
 } from "@armyofagents/shared";
 import type { DeploymentExposure, DeploymentMode } from "@armyofagents/shared";
 import {
@@ -54,6 +53,11 @@ import {
 } from "../services/outbound-url-guard.js";
 import { buildJoinRequestHubEmit, emitHubItem } from "../services/hub-source-producers.js";
 import { hubItemsService } from "../services/hub-items.js";
+import {
+  approveHumanJoinRequestTx,
+  buildHumanJoinApprovalServices,
+  grantsFromDefaults,
+} from "../services/join-approval.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -1351,41 +1355,6 @@ async function resolveActorEmail(db: Db, req: Request): Promise<string | null> {
   return user?.email ?? null;
 }
 
-function grantsFromDefaults(
-  defaultsPayload: Record<string, unknown> | null | undefined,
-  key: "human" | "agent"
-): Array<{
-  permissionKey: (typeof PERMISSION_KEYS)[number];
-  scope: Record<string, unknown> | null;
-}> {
-  if (!defaultsPayload || typeof defaultsPayload !== "object") return [];
-  const scoped = defaultsPayload[key];
-  if (!scoped || typeof scoped !== "object") return [];
-  const grants = (scoped as Record<string, unknown>).grants;
-  if (!Array.isArray(grants)) return [];
-  const validPermissionKeys = new Set<string>(PERMISSION_KEYS);
-  const result: Array<{
-    permissionKey: (typeof PERMISSION_KEYS)[number];
-    scope: Record<string, unknown> | null;
-  }> = [];
-  for (const item of grants) {
-    if (!item || typeof item !== "object") continue;
-    const record = item as Record<string, unknown>;
-    if (typeof record.permissionKey !== "string") continue;
-    if (!validPermissionKeys.has(record.permissionKey)) continue;
-    result.push({
-      permissionKey: record.permissionKey as (typeof PERMISSION_KEYS)[number],
-      scope:
-        record.scope &&
-        typeof record.scope === "object" &&
-        !Array.isArray(record.scope)
-          ? (record.scope as Record<string, unknown>)
-          : null
-    });
-  }
-  return result;
-}
-
 type JoinRequestManagerCandidate = {
   id: string;
   role: string;
@@ -2430,8 +2399,28 @@ export function accessRoutes(
       let createdAgentId: string | null = existing.createdAgentId ?? null;
       const approved = await db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
+
+        if (existing.requestType === "human") {
+          if (!existing.requestingUserId)
+            throw conflict("Join request missing user identity");
+          return approveHumanJoinRequestTx(txDb, buildHumanJoinApprovalServices(txDb), {
+            companyId,
+            requestId,
+            requestingUserId: existing.requestingUserId,
+            invite: {
+              id: invite.id,
+              defaultsPayload: invite.defaultsPayload as Record<string, unknown> | null,
+            },
+            approvedByUserId:
+              req.actor.userId ?? (isLocalImplicit(req) ? "local-board" : null),
+            attributionUserId: req.actor.userId ?? null, // original grants/role semantics
+            activityActor: { actorType: "user", actorId: req.actor.userId ?? "board" },
+            approvalSource: "founder",
+          });
+        }
+
+        // Agent branch: the original transaction code, with approvalSource added.
         const txAccess = accessService(txDb);
-        const txTeam = teamService(txDb);
         const txAgents = agentService(txDb);
         const approvedAt = new Date();
         const row = await tx
@@ -2440,6 +2429,7 @@ export function accessRoutes(
             status: "approved",
             approvedByUserId:
               req.actor.userId ?? (isLocalImplicit(req) ? "local-board" : null),
+            approvalSource: "founder",
             approvedAt,
             createdAgentId,
             updatedAt: approvedAt
@@ -2455,34 +2445,7 @@ export function accessRoutes(
           .then((rows) => rows[0]);
         if (!row) return null;
 
-        if (existing.requestType === "human") {
-          if (!existing.requestingUserId)
-            throw conflict("Join request missing user identity");
-          await txAccess.ensureMembership(
-            companyId,
-            "user",
-            existing.requestingUserId,
-            "member",
-            "active"
-          );
-          const grants = grantsFromDefaults(
-            invite.defaultsPayload as Record<string, unknown> | null,
-            "human"
-          );
-          await txAccess.setPrincipalGrants(
-            companyId,
-            "user",
-            existing.requestingUserId,
-            grants,
-            req.actor.userId ?? null
-          );
-          await txTeam.applyInviteRole(
-            companyId,
-            existing.requestingUserId,
-            invite.defaultsPayload as Record<string, unknown> | null,
-            req.actor.userId ?? null
-          );
-        } else {
+        {
           const existingAgents = await txAgents.list(companyId);
           const managerId = resolveJoinRequestAgentManagerId(existingAgents);
           if (!managerId) {

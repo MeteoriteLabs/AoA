@@ -1,0 +1,184 @@
+import { and, eq } from "drizzle-orm";
+import type { Db } from "@armyofagents/db";
+import { joinRequests } from "@armyofagents/db";
+import {
+  PERMISSION_KEYS,
+  type HumanSocialLink,
+  type JoinRequestApprovalSource,
+} from "@armyofagents/shared";
+import { accessService } from "./access.js";
+import { teamService } from "./team.js";
+import { humanCapabilitiesService } from "./human-capabilities.js";
+import { getUserProfile } from "./user-profiles.js";
+import { hubItemsService } from "./hub-items.js";
+import { logActivity } from "./activity-log.js";
+import { logger } from "../middleware/logger.js";
+
+/**
+ * Extract permission grants from an invite defaultsPayload (moved verbatim from
+ * routes/access.ts — the founder approve route AND the invited finalize path
+ * both need it).
+ */
+export function grantsFromDefaults(
+  defaultsPayload: Record<string, unknown> | null | undefined,
+  key: "human" | "agent",
+): Array<{
+  permissionKey: (typeof PERMISSION_KEYS)[number];
+  scope: Record<string, unknown> | null;
+}> {
+  if (!defaultsPayload || typeof defaultsPayload !== "object") return [];
+  const scoped = defaultsPayload[key];
+  if (!scoped || typeof scoped !== "object") return [];
+  const grants = (scoped as Record<string, unknown>).grants;
+  if (!Array.isArray(grants)) return [];
+  const validPermissionKeys = new Set<string>(PERMISSION_KEYS);
+  const result: Array<{
+    permissionKey: (typeof PERMISSION_KEYS)[number];
+    scope: Record<string, unknown> | null;
+  }> = [];
+  for (const item of grants) {
+    if (!item || typeof item !== "object") continue;
+    const record = item as Record<string, unknown>;
+    if (typeof record.permissionKey !== "string") continue;
+    if (!validPermissionKeys.has(record.permissionKey)) continue;
+    result.push({
+      permissionKey: record.permissionKey as (typeof PERMISSION_KEYS)[number],
+      scope:
+        record.scope && typeof record.scope === "object" && !Array.isArray(record.scope)
+          ? (record.scope as Record<string, unknown>)
+          : null,
+    });
+  }
+  return result;
+}
+
+/** Tx-scoped service instances the approval needs (injected for testability). */
+export type HumanJoinApprovalServices = {
+  access: Pick<ReturnType<typeof accessService>, "ensureMembership" | "setPrincipalGrants">;
+  team: Pick<ReturnType<typeof teamService>, "applyInviteRole" | "updateCompanyUserProfile">;
+  capabilities: Pick<ReturnType<typeof humanCapabilitiesService>, "ensureStandardDocuments">;
+};
+
+export function buildHumanJoinApprovalServices(txDb: Db): HumanJoinApprovalServices {
+  return {
+    access: accessService(txDb),
+    team: teamService(txDb),
+    capabilities: humanCapabilitiesService(txDb),
+  };
+}
+
+export type ApproveHumanJoinRequestArgs = {
+  companyId: string;
+  requestId: string;
+  requestingUserId: string;
+  invite: { id: string; defaultsPayload: Record<string, unknown> | null };
+  /** Written to join_requests.approved_by_user_id. null for auto-admit — the
+   *  audit trail must never impersonate the founder. Founder route passes
+   *  `req.actor.userId ?? (isLocalImplicit(req) ? "local-board" : null)`. */
+  approvedByUserId: string | null;
+  /** Attribution for grants/role/profile writes. Preserves the founder route's
+   *  ORIGINAL semantics (`req.actor.userId ?? null` — no local-board fallback).
+   *  null for auto-admit. */
+  attributionUserId: string | null;
+  /** Activity-log actor. Founder: { actorType: "user", actorId: req.actor.userId ?? "board" }.
+   *  Auto-admit: { actorType: "system", actorId: "invite_email_match" } — never
+   *  attribute the approval to the invitee. */
+  activityActor: { actorType: "user" | "system"; actorId: string };
+  approvalSource: JoinRequestApprovalSource;
+};
+
+/**
+ * The single choke point for admitting an invited human — used by BOTH the
+ * founder approve route and the invited auto-admit finalize. Must run inside a
+ * transaction (pass the tx-scoped Db). Returns the approved row, or null when
+ * the request was no longer pending (raced).
+ */
+export async function approveHumanJoinRequestTx(
+  txDb: Db,
+  services: HumanJoinApprovalServices,
+  args: ApproveHumanJoinRequestArgs,
+) {
+  const approvedAt = new Date();
+  const row = await txDb
+    .update(joinRequests)
+    .set({
+      status: "approved",
+      approvedByUserId: args.approvedByUserId,
+      approvalSource: args.approvalSource,
+      approvedAt,
+      updatedAt: approvedAt,
+    })
+    .where(
+      and(
+        eq(joinRequests.companyId, args.companyId),
+        eq(joinRequests.id, args.requestId),
+        eq(joinRequests.status, "pending_approval"),
+      ),
+    )
+    .returning()
+    .then((rows) => rows[0] ?? null);
+  if (!row) return null;
+
+  await services.access.ensureMembership(args.companyId, "user", args.requestingUserId, "member", "active");
+  const grants = grantsFromDefaults(args.invite.defaultsPayload, "human");
+  await services.access.setPrincipalGrants(
+    args.companyId,
+    "user",
+    args.requestingUserId,
+    grants,
+    args.attributionUserId,
+  );
+  await services.team.applyInviteRole(
+    args.companyId,
+    args.requestingUserId,
+    args.invite.defaultsPayload,
+    args.attributionUserId,
+  );
+
+  // Materialize the company Human Operating Profile from the GLOBAL profile +
+  // seed the 6 standard capability-doc stubs. Best-effort: a seeding failure
+  // must never fail the approval (membership/role/grants are already correct).
+  try {
+    const globalProfile = await getUserProfile(txDb, args.requestingUserId);
+    await services.team.updateCompanyUserProfile(
+      args.companyId,
+      args.requestingUserId,
+      {
+        displayName: globalProfile?.displayName ?? null,
+        title: globalProfile?.title ?? null,
+        bio: globalProfile?.bio ?? null,
+        // Global profile stores `type: string`; the company-profile input
+        // narrows it to the HumanSocialLink literal union. Values originate
+        // from the same validated link-type set, so the cast is safe.
+        socialLinks: (globalProfile?.socialLinks ?? []) as HumanSocialLink[],
+        timezone: globalProfile?.timezone ?? null,
+      },
+      args.attributionUserId,
+    );
+    await services.capabilities.ensureStandardDocuments(
+      args.companyId,
+      args.requestingUserId,
+      args.attributionUserId,
+    );
+  } catch (err) {
+    logger.warn(
+      { err, companyId: args.companyId, userId: args.requestingUserId },
+      "join approval: human profile seeding failed (non-fatal)",
+    );
+  }
+
+  await hubItemsService(txDb).reconcile(args.companyId, {
+    sourceType: "join_request",
+    sourceId: args.requestId,
+  });
+  await logActivity(txDb, {
+    companyId: args.companyId,
+    actorType: args.activityActor.actorType,
+    actorId: args.activityActor.actorId,
+    action: "join.approved",
+    entityType: "join_request",
+    entityId: args.requestId,
+    details: { requestType: "human", approvalSource: args.approvalSource },
+  });
+  return row;
+}
