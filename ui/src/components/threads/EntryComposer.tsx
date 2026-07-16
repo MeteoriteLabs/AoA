@@ -19,7 +19,7 @@ import {
   type KeyboardEvent,
   type ChangeEvent,
 } from "react";
-import { Paperclip, SendHorizonal, X } from "lucide-react";
+import { AtSign, Paperclip, SendHorizonal, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ComposerAttachmentCard } from "../composer/ComposerAttachmentCard";
 import {
@@ -432,21 +432,9 @@ export function EntryComposer({
         </div>
       )}
 
-      <div className="flex items-center gap-2.5">
-        {/* User avatar (top-level only — replies skip the avatar for compactness) */}
-        {!isReply && (
-          <div
-            className="w-8 h-8 rounded-full flex items-center justify-center text-[11px] font-bold text-white shrink-0"
-            style={{ background: "hsl(221 22% 34%)" }}
-            aria-hidden="true"
-          >
-            {myInitials}
-          </div>
-        )}
-
-        {/* Input area — borderless inside the card frame (single-border design;
-            focus affordance is the frame's focus-within glow). */}
-        <div className="flex-1 flex items-center gap-1 px-1 relative">
+      {/* Editor row — full-width textarea; the toolbar sits below it, and there
+          is no avatar in the composer (approved mock §1/§3). */}
+      <div className="relative px-1">
           <textarea
             ref={textareaRef}
             value={text}
@@ -469,43 +457,7 @@ export function EntryComposer({
             data-testid="entry-composer-textarea"
           />
 
-          {/* Attach button */}
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            title="Attach file"
-            className="shrink-0 p-1 rounded text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40"
-            disabled={disabled || isSubmitting || !onUpload}
-            data-testid="entry-composer-attach-button"
-          >
-            <Paperclip className="h-4 w-4" />
-          </button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            multiple
-            className="hidden"
-            onChange={handleFileChange}
-            data-testid="entry-composer-file-input"
-            aria-label="File attachment input"
-          />
-
-          {canCreateFileArtifacts ? (
-            <div className="shrink-0">
-              <FileArtifactUpload
-                companyId={companyId}
-                onUploaded={(artifact) =>
-                  setAttachments((prev) => [
-                    ...prev,
-                    { id: artifact.id, name: artifact.title, mimeType: artifact.type, artifactId: artifact.id },
-                  ])
-                }
-                disabled={disabled || isSubmitting}
-              />
-            </div>
-          ) : null}
-
-          {/* Autocomplete dropdown */}
+          {/* Autocomplete dropdown — anchored to the editor row, opens above */}
           {autocompleteOpen && (
             <EntryAutocompleteList
               suggestions={suggestions}
@@ -516,16 +468,76 @@ export function EntryComposer({
           )}
         </div>
 
-        {/* Send button */}
+      {/* Toolbar row (approved mock §1): attach + mention + extras left, red
+          labeled Send bottom-right. */}
+      <div className="flex items-center gap-1 pt-1">
+        <button
+          type="button"
+          onClick={() => fileInputRef.current?.click()}
+          title="Attach file"
+          className="shrink-0 inline-flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40"
+          disabled={disabled || isSubmitting || !onUpload}
+          data-testid="entry-composer-attach-button"
+        >
+          <Paperclip className="h-4 w-4" />
+        </button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          className="hidden"
+          onChange={handleFileChange}
+          data-testid="entry-composer-file-input"
+          aria-label="File attachment input"
+        />
+        <button
+          type="button"
+          title="Mention someone"
+          aria-label="Mention someone"
+          className="shrink-0 inline-flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40"
+          disabled={disabled || isSubmitting}
+          data-testid="entry-composer-mention-button"
+          onClick={() => {
+            const next = text.length === 0 || /\s$/.test(text) ? `${text}@` : `${text} @`;
+            setText(next);
+            requestAnimationFrame(() => {
+              const ta = textareaRef.current;
+              ta?.focus();
+              ta?.setSelectionRange(next.length, next.length);
+              refreshAutocompleteState(next, next.length);
+            });
+          }}
+        >
+          <AtSign className="h-4 w-4" />
+        </button>
+
+        {canCreateFileArtifacts ? (
+          <div className="shrink-0">
+            <FileArtifactUpload
+              companyId={companyId}
+              onUploaded={(artifact) =>
+                setAttachments((prev) => [
+                  ...prev,
+                  { id: artifact.id, name: artifact.title, mimeType: artifact.type, artifactId: artifact.id },
+                ])
+              }
+              disabled={disabled || isSubmitting}
+            />
+          </div>
+        ) : null}
+
+        <div className="flex-1" />
+
         <button
           type="button"
           onClick={() => void handleSubmit()}
           disabled={(!text.trim() && attachments.length === 0) || isSubmitting || disabled || uploadingFiles.length > 0}
-          className="shrink-0 w-9 h-9 rounded-full flex items-center justify-center bg-brand transition-opacity disabled:opacity-40"
+          className="shrink-0 inline-flex h-8 items-center gap-1.5 rounded-md bg-brand px-3.5 text-xs font-semibold text-white transition-opacity disabled:opacity-40"
           aria-label={isReply ? "Send reply" : "Send"}
           data-testid="entry-composer-submit"
         >
-          <SendHorizonal className="h-4 w-4 text-white" />
+          Send
+          <SendHorizonal className="h-3.5 w-3.5" />
         </button>
       </div>
 
