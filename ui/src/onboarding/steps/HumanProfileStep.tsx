@@ -26,7 +26,7 @@ export function HumanProfileStep({ ctx, onComplete }: StepProps) {
   }, []);
   const [name, setName] = useState("");
   const [title, setTitle] = useState("");
-  const [timezone, setTimezone] = useState(detected);
+  const [timezone, setTimezone] = useState("");
   const [bio, setBio] = useState("");
   const [links, setLinks] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
@@ -34,22 +34,29 @@ export function HumanProfileStep({ ctx, onComplete }: StepProps) {
 
   // Prefill from the existing global profile — Name arrives from Google via the
   // auth-synced profile (spec §5: "Name is prefilled"); a returning user
-  // resumes their saved values. User-typed values are never overwritten.
+  // resumes their saved values. Precedence: typed value > saved profile value >
+  // browser-detected (timezone only). User-typed values are never overwritten.
   useEffect(() => {
     let cancelled = false;
     void getUserProfile()
       .then((p) => {
-        if (cancelled || !p) return;
+        if (cancelled) return;
+        if (!p) {
+          setTimezone((v) => v || detected);
+          return;
+        }
         setName((v) => v || p.displayName || "");
         setTitle((v) => v || p.title || "");
         setBio((v) => v || p.bio || "");
-        if (p.timezone) setTimezone((v) => v || p.timezone || "");
+        setTimezone((v) => v || p.timezone || detected);
       })
-      .catch(() => {});
+      .catch(() => {
+        if (!cancelled) setTimezone((v) => v || detected);
+      });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [detected]);
 
   const canSubmit = Boolean(name.trim() && title && timezone) && !busy;
 
