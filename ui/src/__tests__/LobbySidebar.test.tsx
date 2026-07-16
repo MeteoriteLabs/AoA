@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { screen, waitFor } from "@testing-library/react";
+import { act, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderWithProviders, mockCompanyContext } from "./test-utils";
 import { LobbySidebar } from "../components/LobbySidebar";
@@ -139,20 +139,48 @@ describe("LobbySidebar", () => {
   });
 
   // --- Instance-Settings row gating (N2) ---
+  //
+  // The non-admin test resolves a deferred profile INSIDE act() and asserts
+  // absence strictly post-settle; its control twin runs the exact same flush
+  // with isInstanceAdmin: true and requires the row synchronously. Together
+  // they guarantee the absence assertion is not vacuous (pre-settle the row
+  // is also hidden, so a truthiness regression could otherwise slip past).
+
+  function deferredProfile() {
+    let resolveProfile!: (value: unknown) => void;
+    mockProfileGet.mockReturnValue(new Promise((resolve) => { resolveProfile = resolve; }));
+    return (overrides: Record<string, unknown>) =>
+      act(async () => {
+        resolveProfile({
+          id: "user-2",
+          email: "teammate@example.com",
+          displayName: "Teammate",
+          avatarUrl: null,
+          ...overrides,
+        });
+        // react-query batches observer notifications on a scheduler tick — a
+        // macrotask hop is required before the resolved data reaches the hook.
+        // (Without it the control test below fails: the row never appears.)
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+  }
 
   it("hides the Settings row (and System section header) for non-instance-admins", async () => {
-    mockProfileGet.mockResolvedValue({
-      id: "user-2",
-      email: "teammate@example.com",
-      displayName: "Teammate",
-      avatarUrl: null,
-      isInstanceAdmin: false,
-    });
+    const resolveWith = deferredProfile();
     renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
-    // Wait for the profile query to settle, then assert absence.
-    await waitFor(() => expect(mockProfileGet).toHaveBeenCalled());
+    await resolveWith({ isInstanceAdmin: false });
     expect(screen.queryByRole("button", { name: /settings/i })).toBeNull();
     expect(screen.queryByText("System")).toBeNull();
+  });
+
+  it("control: the identical post-settle flush shows the row when isInstanceAdmin is true", async () => {
+    const resolveWith = deferredProfile();
+    renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
+    await resolveWith({ isInstanceAdmin: true });
+    // Must be present synchronously after the same flush the non-admin test
+    // uses — proves that flush is sufficient for the absence assertions above.
+    expect(screen.getByRole("button", { name: /settings/i })).toBeInTheDocument();
+    expect(screen.getByText("System")).toBeInTheDocument();
   });
 
   it("does not flash the Settings row while the profile is still loading (default hidden)", () => {

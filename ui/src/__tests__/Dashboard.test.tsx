@@ -209,6 +209,17 @@ describe("Dashboard", () => {
     expect(suggestionsApiMock.detect).not.toHaveBeenCalled();
   });
 
+  it("hides suggestion accept/dismiss actions for non-founders (server founder-gates them)", async () => {
+    teamAccessMock.role = "team_member";
+    renderWithProviders(<Dashboard />);
+
+    // Cards still render (suggestions are visible to everyone)...
+    expect(await screen.findByText("Turn launch prep into a task")).toBeInTheDocument();
+    // ...but the founder-only actions are gone (clicking them would 403).
+    expect(screen.queryByRole("button", { name: "Accept" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Dismiss" })).toBeNull();
+  });
+
   it("create_task accept opens the task dialog with suggestion defaults", async () => {
     const user = userEvent.setup();
     renderWithProviders(<Dashboard />);

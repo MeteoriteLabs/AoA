@@ -353,12 +353,15 @@ function SuggestionCard({
   suggestion,
   exiting,
   busy,
+  canAct,
   onAccept,
   onDismiss,
 }: {
   suggestion: Suggestion;
   exiting: boolean;
   busy: boolean;
+  /** Accept/dismiss are founder-gated server-side — hide the actions when false. */
+  canAct: boolean;
   onAccept: (suggestion: Suggestion) => void;
   onDismiss: (suggestion: Suggestion) => void;
 }) {
@@ -389,14 +392,16 @@ function SuggestionCard({
           </div>
           <div className="flex items-center justify-between gap-3">
             <span className="text-xs text-muted-foreground capitalize">{suggestion.category.replace(/_/g, " ")}</span>
-            <div className="flex items-center gap-2">
-              <Button size="sm" variant="ghost" onClick={() => onDismiss(suggestion)} disabled={busy}>
-                Dismiss
-              </Button>
-              <Button size="sm" onClick={() => onAccept(suggestion)} disabled={busy}>
-                Accept
-              </Button>
-            </div>
+            {canAct && (
+              <div className="flex items-center gap-2">
+                <Button size="sm" variant="ghost" onClick={() => onDismiss(suggestion)} disabled={busy}>
+                  Dismiss
+                </Button>
+                <Button size="sm" onClick={() => onAccept(suggestion)} disabled={busy}>
+                  Accept
+                </Button>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -925,6 +930,7 @@ export function Dashboard() {
                   suggestion={suggestion}
                   exiting={exitingSuggestionIds.includes(suggestion.id)}
                   busy={busySuggestionIds.includes(suggestion.id)}
+                  canAct={isFounder}
                   onAccept={handleAccept}
                   onDismiss={handleDismiss}
                 />

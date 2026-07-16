@@ -151,6 +151,24 @@ describe("auth profile routes", () => {
     });
   });
 
+  it("PATCH /api/auth/profile rejects mass-assignment of isInstanceAdmin (strict schema)", async () => {
+    // Pins the intent: the flag is actor-derived and response-only. If the
+    // update schema ever loses .strict() (e.g. a future .passthrough()), this
+    // request would stop 400ing and the regression surfaces here.
+    const app = createApp({
+      type: "board",
+      userId: "user-1",
+      source: "session",
+      isInstanceAdmin: false,
+    });
+    const res = await request(app)
+      .patch("/api/auth/profile")
+      .send({ displayName: "New Name", isInstanceAdmin: true });
+
+    expect(res.status).toBe(400);
+    expect(mockUserProfileService.update).not.toHaveBeenCalled();
+  });
+
   it("PATCH /api/auth/profile rejects empty displayName", async () => {
     const app = createApp({
       type: "board",

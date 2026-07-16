@@ -160,7 +160,9 @@ describe("InstanceSettingsPage 403 access state", () => {
   });
 
   it("keeps the existing failure copy for non-403 errors", async () => {
-    mockGetGeneral.mockRejectedValue(new ApiError("boom", 500, { error: "boom" }));
+    // 400: a non-403 client error — fails fast under the page's 4xx-aware
+    // retry (5xx would exercise the real 3-retry backoff and slow the test).
+    mockGetGeneral.mockRejectedValue(new ApiError("boom", 400, { error: "boom" }));
     mockGetExperimental.mockResolvedValue({
       enableIsolatedWorkspaces: false,
       autoRestartDevServerWhenIdle: false,

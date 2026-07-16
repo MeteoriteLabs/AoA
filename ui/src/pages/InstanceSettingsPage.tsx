@@ -27,6 +27,15 @@ function isForbiddenError(error: unknown): boolean {
   return error instanceof ApiError && error.status === 403;
 }
 
+// The app-level QueryClient keeps react-query's default retry (3 attempts with
+// backoff), which would sit on "Loading..." for ~7s firing doomed 403s before
+// the friendly access state can render. 4xx responses are deterministic —
+// surface them immediately; keep the retry budget for transient 5xx/network.
+function retryUnlessClientError(failureCount: number, error: Error): boolean {
+  if (error instanceof ApiError && error.status < 500) return false;
+  return failureCount < 3;
+}
+
 export function InstanceSettingsPage() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -55,6 +64,7 @@ export function InstanceSettingsPage() {
   const generalQuery = useQuery({
     queryKey: queryKeys.instanceSettings.general,
     queryFn: () => instanceSettingsApi.getGeneral(),
+    retry: retryUnlessClientError,
   });
 
   const healthQuery = useQuery({
@@ -81,6 +91,7 @@ export function InstanceSettingsPage() {
   const experimentalQuery = useQuery({
     queryKey: queryKeys.instanceSettings.experimental,
     queryFn: () => instanceSettingsApi.getExperimental(),
+    retry: retryUnlessClientError,
   });
 
   const experimentalMutation = useMutation({
