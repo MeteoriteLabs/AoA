@@ -154,6 +154,17 @@ export function ThreadTab({
     return latest !== null && latest.trim() !== payload.rawContent.trim();
   }
 
+  // Entity switch (threadId change): the send-failed banner + attempt snapshot
+  // belong to the PREVIOUS thread — Retry must never post into a different
+  // thread. ONLY the banner/snapshot state resets here: the composer draft is
+  // per-thread already, so no clearSignal bump (that would wipe the new
+  // thread's draft).
+  useEffect(() => {
+    lastAttemptedPayloadRef.current = null;
+    attachmentsChangedSinceAttemptRef.current = false;
+    setSendFailed(false);
+  }, [threadId]);
+
   useEffect(() => {
     if (sendReceipt !== "sent") return;
     const timeout = window.setTimeout(() => setSendReceipt(null), SEND_RECEIPT_TIMEOUT_MS);
@@ -479,10 +490,11 @@ export function ThreadTab({
     }
   }
 
-  /** Banner Retry: re-send the IDENTICAL stored payload (same clientSubmissionId). */
+  /** Banner Retry: re-send the IDENTICAL stored payload (same clientSubmissionId).
+   *  Gated offline like the submit path (and the other three surfaces). */
   async function handleRetryFailedSend() {
     const payload = lastAttemptedPayloadRef.current;
-    if (!payload || retrying) return;
+    if (!payload || retrying || isDisconnected) return;
     setRetrying(true);
     try {
       await addEntryMutation.mutateAsync(payload);

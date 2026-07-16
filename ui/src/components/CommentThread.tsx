@@ -327,6 +327,18 @@ export function CommentThread({
     setBody(loadDraft(draftKey));
   }, [draftKey]);
 
+  // Entity switch (draftKey change): the send-failed banner + attempt snapshot
+  // + tray belong to the PREVIOUS task — Retry must never post into a
+  // different task. The revision bump keeps a still-in-flight send from the
+  // previous task from re-arming the banner or clearing the new task's state.
+  useEffect(() => {
+    composerRevisionRef.current += 1;
+    lastAttemptRef.current = null;
+    setSendFailed(false);
+    setSelectedFiles([]);
+    setAttachmentError(null);
+  }, [draftKey]);
+
   useEffect(() => {
     if (!draftKey) return;
     if (draftTimer.current) clearTimeout(draftTimer.current);

@@ -107,18 +107,27 @@ function renderThread(overrides: Partial<React.ComponentProps<typeof CommentThre
   const onAdd = vi.fn().mockResolvedValue(undefined);
   const onAddWithAttachments = vi.fn().mockResolvedValue(undefined);
   const onAttachImage = vi.fn().mockResolvedValue(undefined);
-  const result = render(
+  const makeUi = (next: Partial<React.ComponentProps<typeof CommentThread>>) => (
     <MemoryRouter>
       <CommentThread
         comments={[]}
         onAdd={onAdd}
         onAddWithAttachments={onAddWithAttachments}
         onAttachImage={onAttachImage}
-        {...overrides}
+        {...next}
       />
-    </MemoryRouter>,
+    </MemoryRouter>
   );
-  return { ...result, onAdd, onAddWithAttachments, onAttachImage };
+  const result = render(makeUi(overrides));
+  return {
+    ...result,
+    onAdd,
+    onAddWithAttachments,
+    onAttachImage,
+    // Same mounted thread, new props — simulates switching tasks (draftKey).
+    rerenderThread: (next: Partial<React.ComponentProps<typeof CommentThread>>) =>
+      result.rerender(makeUi(next)),
+  };
 }
 
 function editor() {
@@ -355,6 +364,59 @@ describe("CommentThread — B-states (mock §5)", () => {
     // …but the success-clear must NOT wipe the newer control state or draft.
     expect((screen.getByTestId("assignee-selector-mock") as HTMLSelectElement).value).toBe("agent:agent-b");
     expect(editor()).toHaveValue("hold my draft");
+  });
+
+  it("a control change mid-retry keeps a FAILED retry from re-arming the stale banner", async () => {
+    const { onAdd } = renderThread({
+      enableReassign: true,
+      reassignOptions: [
+        { id: "agent:agent-a", label: "Agent A" },
+        { id: "agent:agent-b", label: "Agent B" },
+      ],
+    });
+    onAdd.mockRejectedValueOnce(new Error("network error"));
+
+    fireEvent.change(screen.getByTestId("assignee-selector-mock"), { target: { value: "agent:agent-a" } });
+    fireEvent.change(editor(), { target: { value: "stale snapshot" } });
+    fireEvent.click(screen.getByRole("button", { name: "Comment" }));
+    const banner = await screen.findByTestId("composer-send-failed-banner");
+
+    // Retry hangs; the user changes a control while it is in flight (the
+    // control-change dismiss is locked during retry — banner stays up).
+    let rejectRetry!: (err: Error) => void;
+    onAdd.mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { rejectRetry = reject; }));
+    fireEvent.click(within(banner).getByRole("button", { name: "Retry" }));
+    fireEvent.change(screen.getByTestId("assignee-selector-mock"), { target: { value: "agent:agent-b" } });
+    expect(screen.getByTestId("composer-send-failed-banner")).toBeInTheDocument();
+
+    // The failed retry must NOT re-arm the banner over the stale snapshot —
+    // a second Retry would post the OLD reassignment the user moved away from.
+    await act(async () => { rejectRetry(new Error("still failing")); });
+    await waitFor(() =>
+      expect(screen.queryByTestId("composer-send-failed-banner")).not.toBeInTheDocument(),
+    );
+    expect(onAdd).toHaveBeenCalledTimes(2);
+  });
+
+  it("switching tasks (draftKey) clears the banner, snapshot, and tray — Retry must never post into a different task", async () => {
+    const { onAddWithAttachments, rerenderThread } = renderThread({ draftKey: "comment-draft-task-a" });
+    onAddWithAttachments.mockRejectedValueOnce(new Error("boom"));
+
+    const frame = screen.getByTestId("task-comments-composer-frame");
+    dropFile(frame, new File(["fake"], "task-a-file.txt", { type: "text/plain" }));
+    expect(await screen.findByText("task-a-file.txt")).toBeInTheDocument();
+    fireEvent.change(editor(), { target: { value: "meant for task A" } });
+    fireEvent.click(screen.getByRole("button", { name: "Comment" }));
+    await screen.findByTestId("composer-send-failed-banner");
+
+    // Entity switch: same mounted thread, different task.
+    rerenderThread({ draftKey: "comment-draft-task-b" });
+
+    expect(screen.queryByTestId("composer-send-failed-banner")).not.toBeInTheDocument();
+    // The tray must not leak into the other task either.
+    expect(screen.queryByText("task-a-file.txt")).not.toBeInTheDocument();
+    // The snapshot is unreachable — nothing was re-sent anywhere.
+    expect(onAddWithAttachments).toHaveBeenCalledTimes(1);
   });
 
   it("frame drag-drop still routes through attachment validation (oversized dropped file rejected)", async () => {

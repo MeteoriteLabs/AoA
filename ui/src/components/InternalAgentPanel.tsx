@@ -931,6 +931,13 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
     setUploadingFiles([]);
     setFailedUploads([]);
     setAttachmentError(null);
+    // Entity switch: the send-failed banner + attempt snapshot belong to the
+    // PREVIOUS conversation — Retry must never post into a different one. The
+    // revision bump keeps a still-in-flight send from the previous
+    // conversation from re-arming the banner or clearing the new draft.
+    composerRevisionRef.current += 1;
+    lastAttemptRef.current = null;
+    setSendFailed(false);
   }, [conversationId]);
 
   // Populate messages from history when historyData arrives.

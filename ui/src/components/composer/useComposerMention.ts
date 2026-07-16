@@ -169,7 +169,9 @@ export function useComposerMention({ companyId, value, onChange, focusAt }: UseC
     options,
     // Teammates still loading (F8): the menu shows a "Loading teammates…" row
     // instead of a misleading "No matches" while the agents query is in flight.
-    loading: open && (isLoading || isFetching),
+    // A background refetch with cached agents is NOT loading — the list is
+    // already showing real options and must not flicker into the loading row.
+    loading: open && (isLoading || (isFetching && agents.length === 0)),
     index,
     setIndex,
     refresh,

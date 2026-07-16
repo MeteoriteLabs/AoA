@@ -160,15 +160,22 @@ function completingStream(): AsyncGenerator<unknown> {
   return (async function* () {})();
 }
 
-function renderPanel() {
+function renderPanel(props: React.ComponentProps<typeof AgentPanelContent> = {}) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, refetchInterval: false } },
   });
-  return render(
+  const makeUi = (p: React.ComponentProps<typeof AgentPanelContent>) => (
     <QueryClientProvider client={client}>
-      <AgentPanelContent />
-    </QueryClientProvider>,
+      <AgentPanelContent {...p} />
+    </QueryClientProvider>
   );
+  const result = render(makeUi(props));
+  return {
+    ...result,
+    // Same mounted panel, new props — simulates switching conversations.
+    rerenderPanel: (next: React.ComponentProps<typeof AgentPanelContent>) =>
+      result.rerender(makeUi(next)),
+  };
 }
 
 function composerInput(): HTMLElement {
@@ -350,6 +357,23 @@ describe("Commander composer — B-states (mock §5)", () => {
     // The uploaded asset lands in the refs tray (validateCommanderAttachmentFiles path).
     expect(await screen.findByTestId("commander-input-refs")).toHaveTextContent("notes.txt");
     expect(screen.queryByTestId("composer-drop-overlay")).not.toBeInTheDocument();
+  });
+
+  it("switching conversations clears the banner and snapshot — Retry must never post into a different conversation", async () => {
+    const { rerenderPanel } = renderPanel({ conversationId: "conv-a" });
+    const box = typeInComposer("meant for conversation A");
+    sendViaEnter(box);
+    await screen.findByTestId("composer-send-failed-banner");
+    expect(streamState.calls).toHaveLength(1);
+
+    // Entity switch: same mounted panel, different conversation.
+    rerenderPanel({ conversationId: "conv-b" });
+
+    await waitFor(() =>
+      expect(screen.queryByTestId("composer-send-failed-banner")).not.toBeInTheDocument(),
+    );
+    // The snapshot is unreachable — nothing was re-sent anywhere.
+    expect(streamState.calls).toHaveLength(1);
   });
 
   it("keeps existing composer affordances intact (aria contract)", () => {

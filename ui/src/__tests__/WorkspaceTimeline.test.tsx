@@ -200,12 +200,13 @@ function renderTimeline(props: Partial<React.ComponentProps<typeof WorkspaceTime
     },
   });
 
-  const makeUi = () => (
+  const makeUi = (extra: Partial<React.ComponentProps<typeof WorkspaceTimeline>> = {}) => (
     <QueryClientProvider client={queryClient}>
       <MemoryRouter>
         <WorkspaceTimeline
           issueId="issue-1"
           {...props}
+          {...extra}
         />
       </MemoryRouter>
     </QueryClientProvider>
@@ -214,8 +215,14 @@ function renderTimeline(props: Partial<React.ComponentProps<typeof WorkspaceTime
   const result = render(makeUi());
 
   // Fresh element tree each time so mocked hook values (e.g. liveState) that
-  // changed since the first render are re-read.
-  return { ...result, queryClient, rerenderTimeline: () => result.rerender(makeUi()) };
+  // changed since the first render are re-read. Pass `extra` props to simulate
+  // an entity switch (e.g. a different issueId) on the SAME mounted component.
+  return {
+    ...result,
+    queryClient,
+    rerenderTimeline: (extra: Partial<React.ComponentProps<typeof WorkspaceTimeline>> = {}) =>
+      result.rerender(makeUi(extra)),
+  };
 }
 
 function setScrollMetrics(element: HTMLElement, metrics: { scrollHeight: number; clientHeight: number; scrollTop: number }) {
@@ -1190,6 +1197,96 @@ describe("WorkspaceTimeline — B-states (mock §5)", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent("huge.pdf exceeds the 10 MB attachment limit");
     expect(screen.queryByText("huge.pdf")).not.toBeInTheDocument();
+  });
+
+  it("unchecking interrupt after a failure dismisses the banner — Retry must never post a stale interrupt", async () => {
+    heartbeatsApiMock.liveRunsForIssue.mockResolvedValue([makeLiveRun("run-live-int")]);
+    issuesApiMock.addComment.mockRejectedValueOnce(new Error("network error"));
+    renderTimeline();
+
+    const interrupt = within(await screen.findByTestId("workspace-chatbar-interrupt")).getByRole("checkbox");
+    fireEvent.click(interrupt);
+    const textarea = screen.getByPlaceholderText("Message Alpha Agent...");
+    fireEvent.change(textarea, { target: { value: "stop and do this instead" } });
+    fireEvent.click(screen.getByText("Send"));
+    await screen.findByTestId("composer-send-failed-banner");
+    // The failed attempt snapshotted interrupt: true.
+    expect(issuesApiMock.addComment.mock.calls[0][3]).toBe(true);
+
+    // Unchecking interrupt is divergence — Retry would still interrupt the run.
+    fireEvent.click(interrupt);
+    expect(screen.queryByTestId("composer-send-failed-banner")).not.toBeInTheDocument();
+    expect(issuesApiMock.addComment).toHaveBeenCalledTimes(1);
+  });
+
+  it("toggling Re-open after a failure dismisses the banner", async () => {
+    issuesApiMock.get.mockResolvedValue({ ...mockIssue, status: "done" });
+    issuesApiMock.addComment.mockRejectedValueOnce(new Error("network error"));
+    renderTimeline();
+
+    const textarea = await screen.findByPlaceholderText("Message Alpha Agent...");
+    fireEvent.change(textarea, { target: { value: "reopen flip" } });
+    fireEvent.click(screen.getByText("Send & wake"));
+    await screen.findByTestId("composer-send-failed-banner");
+    // The failed attempt snapshotted reopen: true (the default on a closed task).
+    expect(issuesApiMock.addComment.mock.calls[0][2]).toBe(true);
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /Re-open task/i }));
+    expect(screen.queryByTestId("composer-send-failed-banner")).not.toBeInTheDocument();
+    expect(issuesApiMock.addComment).toHaveBeenCalledTimes(1);
+  });
+
+  it("a retry that succeeds AFTER an interrupt toggle mid-flight keeps the newer toggle and draft (revision guard)", async () => {
+    heartbeatsApiMock.liveRunsForIssue.mockResolvedValue([makeLiveRun("run-live-rev")]);
+    issuesApiMock.addComment.mockRejectedValueOnce(new Error("network error"));
+    renderTimeline();
+
+    const textarea = await screen.findByPlaceholderText("Message Alpha Agent...");
+    fireEvent.change(textarea, { target: { value: "hold my draft" } });
+    fireEvent.click(screen.getByText("Send"));
+    const banner = await screen.findByTestId("composer-send-failed-banner");
+
+    // Retry hangs; while it is in flight the user opts INTO interrupting.
+    let resolveRetry!: () => void;
+    issuesApiMock.addComment.mockImplementationOnce(
+      () => new Promise<void>((resolve) => { resolveRetry = resolve; }),
+    );
+    fireEvent.click(within(banner).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(issuesApiMock.addComment).toHaveBeenCalledTimes(2));
+
+    const interrupt = within(screen.getByTestId("workspace-chatbar-interrupt")).getByRole("checkbox");
+    fireEvent.click(interrupt);
+
+    await act(async () => { resolveRetry(); });
+    await waitFor(() =>
+      expect(screen.queryByTestId("composer-send-failed-banner")).not.toBeInTheDocument(),
+    );
+    // Retry itself posted the ORIGINAL snapshot (no interrupt)…
+    expect(issuesApiMock.addComment.mock.calls[1]).toEqual(issuesApiMock.addComment.mock.calls[0]);
+    // …but the success-clear must NOT wipe the newer control state or draft.
+    expect(interrupt).toBeChecked();
+    expect(textarea).toHaveValue("hold my draft");
+  });
+
+  it("switching tasks clears the banner, snapshot, and tray — Retry must never post into a different task", async () => {
+    issuesApiMock.addCommentWithAttachments.mockRejectedValueOnce(new Error("boom"));
+    const { rerenderTimeline } = renderTimeline();
+
+    const textarea = await screen.findByPlaceholderText("Message Alpha Agent...");
+    const file = new File(["fake"], "task-a-file.txt", { type: "text/plain" });
+    fireEvent.change(screen.getByTestId("workspace-chatbar-file-input"), { target: { files: [file] } });
+    fireEvent.change(textarea, { target: { value: "meant for task A" } });
+    fireEvent.click(screen.getByText("Send & wake"));
+    await screen.findByTestId("composer-send-failed-banner");
+
+    // Entity switch: same mounted component, different task.
+    rerenderTimeline({ issueId: "issue-2" });
+
+    expect(screen.queryByTestId("composer-send-failed-banner")).not.toBeInTheDocument();
+    // The tray must not leak into the other task either.
+    await waitFor(() => expect(screen.queryByText("task-a-file.txt")).not.toBeInTheDocument());
+    // The snapshot is unreachable — nothing was re-sent anywhere.
+    expect(issuesApiMock.addCommentWithAttachments).toHaveBeenCalledTimes(1);
   });
 });
 

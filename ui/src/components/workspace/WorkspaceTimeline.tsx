@@ -169,6 +169,30 @@ export function WorkspaceTimeline({
     if (sendFailed && !sendMessage.isPending) setSendFailed(false);
   };
 
+  // Control changes (reopen / interrupt) are part of the snapshot: Retry would
+  // post the OLD flags and the success-clear would reset the newer choice —
+  // dismiss the banner and mark divergence (same "Retry must never post what
+  // the user changed" principle as the tray; CommentThread peer pattern). The
+  // revision bump also keeps a mid-flight retry success from clearing the
+  // newer state.
+  const dismissBannerOnControlChange = () => {
+    composerRevisionRef.current += 1;
+    if (sendFailed && !sendMessage.isPending) setSendFailed(false);
+  };
+
+  // Entity switch (issueId change): the banner + attempt snapshot + tray all
+  // belong to the PREVIOUS task — Retry must never post into a different task.
+  // The revision bump keeps a still-in-flight send from the previous task from
+  // re-arming the banner (onError) or clearing the new task's state
+  // (onSuccess). The draft text itself is per-task via composerDraft above.
+  useEffect(() => {
+    composerRevisionRef.current += 1;
+    lastAttemptRef.current = null;
+    setSendFailed(false);
+    setSelectedFiles([]);
+    setComposerError(null);
+  }, [issueId]);
+
   // Shared @mention (mock v2): the @ button opens the picker and a trailing
   // `@token` opens the same list inline. Server-side, task/workspace comment
   // mentions wake the mentioned agents (issues.ts findMentionedAgents).
@@ -853,7 +877,10 @@ export function WorkspaceTimeline({
                 activeRun={hasLiveRuns}
                 closedTask={issue?.status === "done" || issue?.status === "cancelled"}
                 reopenRequested={reopenRequested}
-                onReopenChange={setReopenRequested}
+                onReopenChange={(value) => {
+                  setReopenRequested(value);
+                  dismissBannerOnControlChange();
+                }}
               />
           </div>
         </ComposerFrame>
@@ -866,7 +893,10 @@ export function WorkspaceTimeline({
           <input
             type="checkbox"
             checked={interruptRequested}
-            onChange={(event) => setInterruptRequested(event.target.checked)}
+            onChange={(event) => {
+              setInterruptRequested(event.target.checked);
+              dismissBannerOnControlChange();
+            }}
             className="rounded border-border"
           />
           Interrupt active run — applies to the next send
@@ -960,7 +990,10 @@ export function WorkspaceTimeline({
               activeRun={hasLiveRuns}
               closedTask={issue?.status === "done" || issue?.status === "cancelled"}
               reopenRequested={reopenRequested}
-              onReopenChange={setReopenRequested}
+              onReopenChange={(value) => {
+                setReopenRequested(value);
+                dismissBannerOnControlChange();
+              }}
             />
           </div>
         </ComposerFrame>

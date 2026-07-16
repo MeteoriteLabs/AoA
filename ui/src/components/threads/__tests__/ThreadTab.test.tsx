@@ -540,6 +540,77 @@ describe("ThreadTab", () => {
     );
   });
 
+  it("switching threads clears the banner and snapshot — Retry must never post into a different thread", async () => {
+    const { fireEvent } = await import("@testing-library/react");
+    const { discussionsApi } = await import("../../../api/discussions");
+    vi.mocked(discussionsApi.addEntry).mockClear();
+    vi.mocked(discussionsApi.addEntry).mockRejectedValueOnce(new Error("network error"));
+
+    const makeUi = (threadId: string) => (
+      <ThreadTab
+        threadId={threadId}
+        companyId="comp-1"
+        entries={[]}
+        isLoading={false}
+        isError={false}
+        onRetry={vi.fn()}
+      />
+    );
+    const { rerender } = renderWithProviders(makeUi("thread-1"));
+    fireEvent.change(screen.getByTestId("entry-composer-textarea"), {
+      target: { value: "meant for thread 1" },
+    });
+    fireEvent.click(screen.getByTestId("entry-composer-submit"));
+    await screen.findByTestId("composer-send-failed-banner");
+
+    // Entity switch: same mounted tab, different thread.
+    rerender(makeUi("thread-2"));
+
+    expect(screen.queryByTestId("composer-send-failed-banner")).not.toBeInTheDocument();
+    // The snapshot is unreachable — nothing was re-sent anywhere.
+    expect(vi.mocked(discussionsApi.addEntry)).toHaveBeenCalledTimes(1);
+  });
+
+  it("banner Retry is a no-op while disconnected", async () => {
+    const { fireEvent, act } = await import("@testing-library/react");
+    const { discussionsApi } = await import("../../../api/discussions");
+    vi.mocked(discussionsApi.addEntry).mockClear();
+    vi.mocked(discussionsApi.addEntry).mockRejectedValueOnce(new Error("network error"));
+
+    // Fresh element each render — an identical element reference lets React
+    // bail out of re-rendering, so the flipped liveState would never be read.
+    const makeUi = () => (
+      <ThreadTab
+        threadId="thread-1"
+        companyId="comp-1"
+        entries={[]}
+        isLoading={false}
+        isError={false}
+        onRetry={vi.fn()}
+      />
+    );
+    const { rerender } = renderWithProviders(makeUi());
+    fireEvent.change(screen.getByTestId("entry-composer-textarea"), {
+      target: { value: "retry offline" },
+    });
+    fireEvent.click(screen.getByTestId("entry-composer-submit"));
+    const banner = await screen.findByTestId("composer-send-failed-banner");
+
+    liveState.connectionState = "offline";
+    try {
+      rerender(makeUi());
+      fireEvent.click(within(banner).getByRole("button", { name: "Retry" }));
+      // Flush the (would-be) async retry before asserting nothing was sent.
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      expect(vi.mocked(discussionsApi.addEntry)).toHaveBeenCalledTimes(1);
+      expect(screen.getByTestId("composer-send-failed-banner")).toBeInTheDocument();
+    } finally {
+      liveState.connectionState = "open";
+    }
+  });
+
   it("renders the shared offline strip through the composer hint when offline", () => {
     liveState.connectionState = "offline";
     try {
