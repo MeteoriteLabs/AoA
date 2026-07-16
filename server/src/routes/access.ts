@@ -799,7 +799,11 @@ function normalizeAgentDefaultsForJoin(input: {
 function toInviteSummaryResponse(
   req: Request,
   token: string,
-  invite: typeof invites.$inferSelect
+  invite: typeof invites.$inferSelect,
+  // Optional so agent-manifest/create call sites stay unchanged; the public
+  // GET /invites/:token summary resolves it (joined in the invite lookup) so
+  // the landing page can name the company being joined.
+  companyName: string | null = null
 ) {
   const baseUrl = requestBaseUrl(req);
   const onboardingPath = `/api/invites/${token}/onboarding`;
@@ -808,6 +812,7 @@ function toInviteSummaryResponse(
   return {
     id: invite.id,
     companyId: invite.companyId,
+    companyName,
     inviteType: invite.inviteType,
     allowedJoinTypes: invite.allowedJoinTypes,
     expiresAt: invite.expiresAt,
@@ -1757,11 +1762,15 @@ export function accessRoutes(
   router.get("/invites/:token", async (req, res) => {
     const token = (req.params.token as string).trim();
     if (!token) throw notFound("Invite not found");
-    const invite = await db
-      .select()
+    // Left join: resolve the company name in the same query so the landing
+    // page can say "Join {name} on AoA" (bootstrap invites have no company).
+    const row = await db
+      .select({ invite: invites, companyName: companies.name })
       .from(invites)
+      .leftJoin(companies, eq(invites.companyId, companies.id))
       .where(eq(invites.tokenHash, hashToken(token)))
       .then((rows) => rows[0] ?? null);
+    const invite = row?.invite ?? null;
     if (
       !invite ||
       invite.revokedAt ||
@@ -1771,7 +1780,7 @@ export function accessRoutes(
       throw notFound("Invite not found");
     }
 
-    res.json(toInviteSummaryResponse(req, token, invite));
+    res.json(toInviteSummaryResponse(req, token, invite, row?.companyName ?? null));
   });
 
   router.get("/invites/:token/onboarding", async (req, res) => {

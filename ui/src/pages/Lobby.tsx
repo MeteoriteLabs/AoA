@@ -11,6 +11,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { LobbyCompanyCard } from "@/components/LobbyCompanyCard";
 import { LobbyEmptyState } from "@/components/LobbyEmptyState";
 import { LobbyShellMobileMenuButton } from "@/components/LobbyShell";
+import { HUMAN_ROLE_LABELS } from "@/lib/human-profile-constants";
 
 function deriveFirstName(
   displayName: string | undefined,
@@ -138,7 +139,8 @@ export function Lobby({
                   Invitation to {invitation.companyName}
                 </span>
                 <span className="mt-0.5 block text-xs text-muted-foreground">
-                  You have been invited to join this organization.
+                  Join as {HUMAN_ROLE_LABELS[invitation.role] ?? invitation.role} · review to
+                  accept
                 </span>
               </span>
               <span className="text-xs font-semibold text-brand">Review</span>

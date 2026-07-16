@@ -148,6 +148,8 @@ describe("Lobby", () => {
     );
 
     expect(screen.getByText("Invitation to Future Labs")).toBeInTheDocument();
+    // Subtitle names the role the invite grants (HUMAN_ROLE_LABELS).
+    expect(screen.getByText(/join as team member/i)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /review invitation to future labs/i }));
     expect(mockNavigate).toHaveBeenCalledWith("/onboarding/join?company=invited-co", undefined);
   });

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Loader2 } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useLocation, useNavigate, useSearchParams } from "@/lib/router";
 import { Button } from "@/components/ui/button";
@@ -221,6 +222,11 @@ export function InvitedJoinTerminal() {
       <p className="mt-2 text-sm text-muted-foreground">
         Your request is with the admin for approval. This page will let you in automatically the
         moment it's approved — you can also come back later.
+      </p>
+      {/* The page polls every 7s — show that it is alive, not stuck. */}
+      <p className="mt-4 flex items-center justify-center gap-1.5 text-xs text-muted-foreground">
+        <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+        Checking for approval…
       </p>
     </div>
   );

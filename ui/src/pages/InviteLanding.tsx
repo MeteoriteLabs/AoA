@@ -5,6 +5,7 @@ import { accessApi } from "../api/access";
 import { authApi } from "../api/auth";
 import { healthApi } from "../api/health";
 import { requiresBoardSession } from "../lib/authGate";
+import { formatInviteExpiry } from "../lib/invite-expiry";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { AGENT_ADAPTER_TYPES } from "@armyofagents/shared";
@@ -28,9 +29,10 @@ const adapterLabels: Record<string, string> = {
 
 const ENABLED_INVITE_ADAPTERS = new Set(["claude_local", "codex_local", "opencode_local", "cursor"]);
 
-function dateTime(value: string) {
-  return new Date(value).toLocaleString();
-}
+const JOIN_TYPE_LABELS: Record<JoinType, string> = {
+  human: "Join as a human",
+  agent: "Connect an agent",
+};
 
 function readNestedString(value: unknown, path: string[]): string | null {
   let current: unknown = value;
@@ -237,9 +239,15 @@ export function InviteLandingPage() {
     <div className="mx-auto max-w-xl py-10">
       <div className="rounded-lg border border-border bg-card p-6">
         <h1 className="text-xl font-semibold">
-          {invite.inviteType === "bootstrap_ceo" ? "Bootstrap your AoA instance" : "Join this AoA company"}
+          {invite.inviteType === "bootstrap_ceo"
+            ? "Bootstrap your AoA instance"
+            : invite.companyName
+              ? `Join ${invite.companyName} on AoA`
+              : "Join this AoA company"}
         </h1>
-        <p className="mt-2 text-sm text-muted-foreground">Invite expires {dateTime(invite.expiresAt)}.</p>
+        {/* Relative, honest expiry ("expires in 6 days" / "expires in 4 min" /
+            "expired") — email-bound human invites live 7 days, others 10 min. */}
+        <p className="mt-2 text-sm text-muted-foreground">Invite {formatInviteExpiry(invite.expiresAt)}.</p>
 
         {invite.inviteType !== "bootstrap_ceo" && (
           <div className="mt-5 flex gap-2">
@@ -254,7 +262,7 @@ export function InviteLandingPage() {
                     : "border-border bg-background text-foreground"
                 }`}
               >
-                Join as {type}
+                {JOIN_TYPE_LABELS[type]}
               </button>
             ))}
           </div>

@@ -93,12 +93,13 @@ test("link accept → profile → auto-admit lands inside the company", async ({
   try {
     const tPage = await context.newPage();
 
-    // Invite landing (already signed in via the minted cookie).
+    // Invite landing (already signed in via the minted cookie) — the landing
+    // names the company being joined.
     await tPage.goto(`/invite/${invite.token}`);
-    await expect(tPage.getByRole("heading", { name: /join this aoa company/i })).toBeVisible({
+    await expect(tPage.getByRole("heading", { name: `Join ${companyName} on AoA` })).toBeVisible({
       timeout: 20_000,
     });
-    await tPage.getByRole("button", { name: /join as human/i }).click();
+    await tPage.getByRole("button", { name: /join as a human/i }).click();
     await tPage.getByRole("button", { name: /submit join request/i }).click();
 
     // Accept hands off into the guided invited onboarding.
@@ -184,7 +185,7 @@ test("email mismatch stays pending; founder approval auto-enters via polling", a
   try {
     const tPage = await context.newPage();
     await tPage.goto(`/invite/${invite.token}`);
-    await expect(tPage.getByRole("heading", { name: /join this aoa company/i })).toBeVisible({
+    await expect(tPage.getByRole("heading", { name: `Join ${companyName} on AoA` })).toBeVisible({
       timeout: 20_000,
     });
     await tPage.getByRole("button", { name: /submit join request/i }).click();
@@ -230,7 +231,7 @@ test("rejection surfaces the not-approved terminal", async ({ request, browser }
   try {
     const tPage = await context.newPage();
     await tPage.goto(`/invite/${invite.token}`);
-    await expect(tPage.getByRole("heading", { name: /join this aoa company/i })).toBeVisible({
+    await expect(tPage.getByRole("heading", { name: `Join ${companyName} on AoA` })).toBeVisible({
       timeout: 20_000,
     });
     await tPage.getByRole("button", { name: /submit join request/i }).click();

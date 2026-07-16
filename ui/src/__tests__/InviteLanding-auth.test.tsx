@@ -59,6 +59,39 @@ describe("InviteLandingPage authentication", () => {
     });
   });
 
+  it("names the company in the heading when the summary carries companyName", async () => {
+    mocks.getHealth.mockResolvedValue({ status: "ok", deploymentMode: "local_trusted" });
+    mocks.getInvite.mockResolvedValue({
+      id: "invite-1",
+      companyId: "company-42",
+      companyName: "Acme Rockets",
+      inviteType: "company_join",
+      allowedJoinTypes: "both",
+      expiresAt: new Date(Date.now() + 6 * 86_400_000).toISOString(),
+    });
+
+    renderPage();
+
+    expect(
+      await screen.findByRole("heading", { name: "Join Acme Rockets on AoA" }),
+    ).toBeInTheDocument();
+    // Relative, honest expiry copy (formatInviteExpiry) — not a raw timestamp.
+    expect(screen.getByText(/invite expires in 6 days\./i)).toBeInTheDocument();
+    // Title-case pills.
+    expect(screen.getByRole("button", { name: "Join as a human" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Connect an agent" })).toBeInTheDocument();
+  });
+
+  it("falls back to the generic heading when the summary has no companyName", async () => {
+    mocks.getHealth.mockResolvedValue({ status: "ok", deploymentMode: "local_trusted" });
+
+    renderPage();
+
+    expect(
+      await screen.findByRole("heading", { name: /join this aoa company/i }),
+    ).toBeInTheDocument();
+  });
+
   it("requires sign-in for human acceptance when local_trusted has Google auth ready", async () => {
     mocks.getHealth.mockResolvedValue({
       status: "ok",
@@ -85,7 +118,7 @@ describe("InviteLandingPage authentication", () => {
 
     renderPage();
 
-    fireEvent.click(await screen.findByRole("button", { name: /join as agent/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /connect an agent/i }));
     fireEvent.change(screen.getByLabelText(/agent name/i), { target: { value: "Scout" } });
 
     expect(screen.queryByText(/sign in or create an account/i)).not.toBeInTheDocument();
