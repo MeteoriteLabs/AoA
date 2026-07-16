@@ -33,17 +33,22 @@ export function ComposerSendFailedBanner({
         >
           {retrying ? "Retrying…" : "Retry"}
         </button>
+        {/* ALL actions lock while retrying: Discard cannot cancel the in-flight
+            request (the message may still post after "discarding"), and Edit
+            invites edits the retry-success clear would wipe. */}
         <button
           type="button"
           onClick={onEdit}
-          className="rounded-md border border-border px-2.5 py-1 text-foreground hover:bg-muted/60"
+          disabled={retrying}
+          className="rounded-md border border-border px-2.5 py-1 text-foreground hover:bg-muted/60 disabled:opacity-40 disabled:pointer-events-none"
         >
           Edit
         </button>
         <button
           type="button"
           onClick={onDiscard}
-          className="rounded-md border border-border px-2.5 py-1 text-muted-foreground hover:bg-muted/60"
+          disabled={retrying}
+          className="rounded-md border border-border px-2.5 py-1 text-muted-foreground hover:bg-muted/60 disabled:opacity-40 disabled:pointer-events-none"
         >
           Discard
         </button>

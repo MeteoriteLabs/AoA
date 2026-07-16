@@ -381,6 +381,49 @@ describe("ThreadTab", () => {
     expect(second.clientSubmissionId).not.toBe(first.clientSubmissionId);
   });
 
+  it("dismisses the banner when the draft diverges from the failed snapshot; the next send is a fresh submission with a NEW clientSubmissionId", async () => {
+    const { fireEvent } = await import("@testing-library/react");
+    const { discussionsApi } = await import("../../../api/discussions");
+    vi.mocked(discussionsApi.addEntry).mockClear();
+    vi.mocked(discussionsApi.addEntry).mockRejectedValueOnce(new Error("network error"));
+
+    renderWithProviders(
+      <ThreadTab
+        threadId="thread-1"
+        companyId="comp-1"
+        entries={[]}
+        isLoading={false}
+        isError={false}
+        onRetry={vi.fn()}
+      />,
+    );
+    fireEvent.change(screen.getByTestId("entry-composer-textarea"), {
+      target: { value: "first try" },
+    });
+    fireEvent.click(screen.getByTestId("entry-composer-submit"));
+    await screen.findByTestId("composer-send-failed-banner");
+
+    // Keep editing past the failed snapshot — Retry would post stale content
+    // and its success-clear would wipe these edits, so the banner must go.
+    fireEvent.change(screen.getByTestId("entry-composer-textarea"), {
+      target: { value: "first try plus newer edits" },
+    });
+    expect(screen.queryByTestId("composer-send-failed-banner")).not.toBeInTheDocument();
+    expect(screen.getByTestId("entry-composer-textarea")).toHaveValue(
+      "first try plus newer edits",
+    );
+
+    // The next send goes through the normal submit path with a fresh id.
+    fireEvent.click(screen.getByTestId("entry-composer-submit"));
+    await waitFor(() =>
+      expect(vi.mocked(discussionsApi.addEntry)).toHaveBeenCalledTimes(2),
+    );
+    const first = vi.mocked(discussionsApi.addEntry).mock.calls[0][2] as Record<string, unknown>;
+    const second = vi.mocked(discussionsApi.addEntry).mock.calls[1][2] as Record<string, unknown>;
+    expect(second.rawContent).toBe("first try plus newer edits");
+    expect(second.clientSubmissionId).not.toBe(first.clientSubmissionId);
+  });
+
   it("Discard clears the banner and the composer draft", async () => {
     const { fireEvent } = await import("@testing-library/react");
     const { discussionsApi } = await import("../../../api/discussions");

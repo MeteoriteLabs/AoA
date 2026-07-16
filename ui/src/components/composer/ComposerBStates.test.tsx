@@ -20,11 +20,19 @@ describe("ComposerSendFailedBanner", () => {
     expect(onDiscard).toHaveBeenCalledTimes(1);
   });
 
-  it("disables Retry while retrying", () => {
+  it("disables ALL actions while retrying — Discard can't cancel an in-flight send and Edit invites edits the success-clear would wipe", () => {
+    const onEdit = vi.fn();
+    const onDiscard = vi.fn();
     render(
-      <ComposerSendFailedBanner onRetry={vi.fn()} onEdit={vi.fn()} onDiscard={vi.fn()} retrying />,
+      <ComposerSendFailedBanner onRetry={vi.fn()} onEdit={onEdit} onDiscard={onDiscard} retrying />,
     );
     expect(screen.getByText("Retrying…")).toBeDisabled();
+    expect(screen.getByText("Edit")).toBeDisabled();
+    expect(screen.getByText("Discard")).toBeDisabled();
+    fireEvent.click(screen.getByText("Edit"));
+    fireEvent.click(screen.getByText("Discard"));
+    expect(onEdit).not.toHaveBeenCalled();
+    expect(onDiscard).not.toHaveBeenCalled();
   });
 });
 

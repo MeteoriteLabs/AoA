@@ -477,6 +477,27 @@ export function ThreadTab({
     setComposerClearSignal((n) => n + 1);
   }
 
+  /**
+   * Stale-snapshot guard (mock §5: failure never eats your work): if the user
+   * keeps editing while the banner is up, Retry would post the PRE-EDIT
+   * snapshot and its success-clear would wipe the newer edits. The moment the
+   * draft diverges from the snapshot, auto-dismiss the banner — the ref is
+   * kept (nothing double-posts); the user just sends normally with a fresh id.
+   * EntryComposer reports every text change here, in both controlled and
+   * uncontrolled draft modes.
+   */
+  function handleComposerDraftChange(text: string) {
+    if (
+      sendFailed &&
+      !retrying &&
+      lastAttemptedPayloadRef.current &&
+      text !== lastAttemptedPayloadRef.current.rawContent
+    ) {
+      setSendFailed(false);
+    }
+    onDraftTextChange?.(text);
+  }
+
   async function handleUpload(file: File): Promise<AssetRef> {
     const res = await assetsApi.uploadFile(companyId, file, "discussion-entries");
     return {
@@ -567,7 +588,7 @@ export function ThreadTab({
         disabled={isDisconnected || addEntryMutation.isPending}
         myInitials={myInitials}
         draftText={draftText}
-        onDraftTextChange={onDraftTextChange}
+        onDraftTextChange={handleComposerDraftChange}
         clearSignal={composerClearSignal}
         failureBanner={
           sendFailed ? (
