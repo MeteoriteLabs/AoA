@@ -33,12 +33,16 @@ function requestIp(req: Request) {
  * ever clicking the invite link), an OPEN invite matching the caller's
  * VERIFIED email is claimed atomically (accept + file) and the finalize
  * continues with the fresh request. Unlike the filed path, expiry gates the
- * tokenless claim — nothing was accepted yet.
+ * tokenless claim — nothing was accepted yet. This claim requires
+ * `body.acceptOpenInvite === true` (the server-side consent assertion mirroring
+ * the terminal's "Join {company}" click) — without it, the endpoint behaves as
+ * if no open invite existed at all.
  *
  * Rejected-then-reinvited: when the NEWEST request is rejected but an OPEN
  * matching invite exists, that invite is necessarily a fresh re-invite (the
  * rejected request's invite was consumed at accept) — claim it and continue,
- * instead of reporting the stale rejection forever.
+ * instead of reporting the stale rejection forever. Same `acceptOpenInvite`
+ * gate applies.
  */
 export function onboardingJoinRoutes(db: Db): Router {
   const router = Router();
@@ -55,6 +59,13 @@ export function onboardingJoinRoutes(db: Db): Router {
       res.status(400).json({ error: "companyId is required" });
       return;
     }
+    // Server-side consent assertion for the open-invite CLAIM branch below —
+    // mirrors the terminal's "Join {company}" click. Token-accepted requests
+    // carried consent at link-click (the filed path, unaffected by this flag);
+    // the tokenless/re-invite claim has no such moment, so the client gate
+    // alone isn't a security boundary — a future non-UI caller of finalize
+    // must not be able to silently inherit tokenless auto-admit.
+    const acceptOpenInvite = body.acceptOpenInvite === true;
 
     let request: { id: string; inviteId: string; status: string } | null = await db
       .select()
@@ -70,6 +81,17 @@ export function onboardingJoinRoutes(db: Db): Router {
       .limit(1)
       .then((rows) => rows[0] ?? null);
     if (!request || request.status === "rejected") {
+      if (!acceptOpenInvite) {
+        // No server-side consent assertion for the claim — behave exactly as
+        // if no open invite existed. Do NOT leak whether a matching invite
+        // exists (that would let an unconsented caller probe invite state).
+        if (request) {
+          res.json({ admitted: false, status: "rejected" });
+          return;
+        }
+        res.status(404).json({ error: "no join request or open invitation for this company" });
+        return;
+      }
       // Tokenless invited entry (no join_request — the token-accept path never
       // ran) OR rejected-then-reinvited (the newest request is a dead rejection;
       // any OPEN matching invite is necessarily a fresh re-invite, since the

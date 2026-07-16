@@ -65,13 +65,21 @@ export type FinalizeInvitedJoinResult = {
  * Invited auto-admit (spec §8): asks the server to finalize the caller's own
  * join request for the company — admits immediately when the verified email
  * matches the invite; otherwise the request stays pending for the founder.
+ *
+ * `opts.acceptOpenInvite` is the server-side consent assertion for the
+ * tokenless/re-invite CLAIM branch (mirrors the terminal's "Join {company}"
+ * click) — omit it for the filed-request path, which carried consent at
+ * token-accept time.
  */
-export async function finalizeInvitedJoin(companyId: string): Promise<FinalizeInvitedJoinResult> {
+export async function finalizeInvitedJoin(
+  companyId: string,
+  opts?: { acceptOpenInvite?: boolean },
+): Promise<FinalizeInvitedJoinResult> {
   const res = await fetch("/api/onboarding/join/finalize", {
     method: "POST",
     credentials: "include",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ companyId }),
+    body: JSON.stringify({ companyId, ...(opts?.acceptOpenInvite ? { acceptOpenInvite: true } : {}) }),
   });
   if (!res.ok) {
     // Carry the HTTP status — the terminal distinguishes a dead session (401 →

@@ -28,7 +28,10 @@ type Phase = "checking" | "consent" | "pending" | "invite_invalid" | "not_approv
  * removed, so an explicit "Join {company}" click stands in for it; only then
  * does finalize claim + file + auto-admit. Polling continues under the consent
  * card — a revoked/expired invite drops out of the pending set and the
- * not-approved/enter branches take over.
+ * not-approved/enter branches take over. This gate is defense-in-depth only:
+ * the click also sets `acceptOpenInvite: true` on the finalize call, which the
+ * server independently requires for the claim branch (it does not trust the
+ * client not to skip this component).
  */
 export function InvitedJoinTerminal() {
   const navigate = useNavigate();
@@ -104,7 +107,13 @@ export function InvitedJoinTerminal() {
           setPhase("consent");
         } else if (!finalizedRef.current && targetId) {
           try {
-            const result = await finalizeInvitedJoin(targetId);
+            // The consent flag is the server-side assertion mirroring the
+            // "Join {company}" click below — only the tokenless path
+            // (filed === false) reaches this call post-consent; the filed
+            // path carried consent at token-accept time and stays bare.
+            const result = await (inv.filed === false
+              ? finalizeInvitedJoin(targetId, { acceptOpenInvite: true })
+              : finalizeInvitedJoin(targetId));
             if (cancelled) return;
             finalizedRef.current = true;
             if (result.admitted) {

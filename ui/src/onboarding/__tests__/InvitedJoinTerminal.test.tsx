@@ -52,6 +52,9 @@ describe("InvitedJoinTerminal", () => {
     finalizeInvitedJoin.mockResolvedValue({ admitted: true, status: "approved" });
     render(<InvitedJoinTerminal />);
     await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/", { replace: true }));
+    // Filed path (consent captured at token-accept time) — bare call, no
+    // acceptOpenInvite flag. The single-arg exact match also proves no second
+    // argument was passed.
     expect(finalizeInvitedJoin).toHaveBeenCalledWith("c1");
     expect(mockRemoveQueries).toHaveBeenCalledWith({ queryKey: ["onboarding", "journey"], exact: true });
     // Companies list must be refreshed (the pre-membership cache is stale) and
@@ -114,6 +117,7 @@ describe("InvitedJoinTerminal", () => {
     });
     render(<InvitedJoinTerminal />);
     await screen.findByText(/Beta/);
+    // Filed path — bare call, no acceptOpenInvite flag.
     expect(finalizeInvitedJoin).toHaveBeenCalledWith("c2");
   });
 
@@ -125,6 +129,7 @@ describe("InvitedJoinTerminal", () => {
     finalizeInvitedJoin.mockResolvedValue({ admitted: true, status: "approved" });
     render(<InvitedJoinTerminal />);
     await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/", { replace: true }));
+    // Filed path — bare call, no acceptOpenInvite flag.
     expect(finalizeInvitedJoin).toHaveBeenCalledWith("c1");
   });
 
@@ -209,7 +214,9 @@ describe("InvitedJoinTerminal", () => {
       expect(mockNavigate).not.toHaveBeenCalled();
       fireEvent.click(screen.getByRole("button", { name: /join acme/i }));
       await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/", { replace: true }));
-      expect(finalizeInvitedJoin).toHaveBeenCalledWith("c1");
+      // The consent-click finalize is the tokenless CLAIM branch — it must
+      // carry the server-side consent assertion.
+      expect(finalizeInvitedJoin).toHaveBeenCalledWith("c1", { acceptOpenInvite: true });
     });
 
     it("click → finalize pending → pending screen (request now filed)", async () => {
@@ -218,7 +225,7 @@ describe("InvitedJoinTerminal", () => {
       render(<InvitedJoinTerminal />);
       fireEvent.click(await screen.findByRole("button", { name: /join acme/i }));
       expect(await screen.findByText(/with the admin for approval/i)).toBeTruthy();
-      expect(finalizeInvitedJoin).toHaveBeenCalledWith("c1");
+      expect(finalizeInvitedJoin).toHaveBeenCalledWith("c1", { acceptOpenInvite: true });
       expect(mockNavigate).not.toHaveBeenCalled();
     });
 

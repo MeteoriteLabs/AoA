@@ -193,7 +193,7 @@ describe("POST /onboarding/join/finalize", () => {
         [{ ...validInvite, id: "i9" }], // invite re-select (existing finalize flow)
         [{ email: "ADA@X.COM", emailVerified: true }], // caller re-select (existing flow)
       ]);
-      const { json } = await call(db, { companyId: "c1" });
+      const { json } = await call(db, { companyId: "c1", acceptOpenInvite: true });
       expect(claim).toHaveBeenCalledWith(
         expect.anything(),
         expect.objectContaining({
@@ -219,7 +219,7 @@ describe("POST /onboarding/join/finalize", () => {
         [{ email: "ada@x.com", emailVerified: true }],
         [openInvite],
       ]);
-      const { json } = await call(db, { companyId: "c1" });
+      const { json } = await call(db, { companyId: "c1", acceptOpenInvite: true });
       expect(json).toHaveBeenCalledWith({ admitted: true, status: "approved" });
       expect(approveTx).not.toHaveBeenCalled();
     });
@@ -230,7 +230,7 @@ describe("POST /onboarding/join/finalize", () => {
         [{ email: "ada@x.com", emailVerified: true }],
         [], // no open invite
       ]);
-      const { status } = await call(db, { companyId: "c1" });
+      const { status } = await call(db, { companyId: "c1", acceptOpenInvite: true });
       expect(status).toHaveBeenCalledWith(404);
       expect(claim).not.toHaveBeenCalled();
     });
@@ -243,8 +243,22 @@ describe("POST /onboarding/join/finalize", () => {
         // verified email.
         [openInvite],
       ]);
-      const { status } = await call(db, { companyId: "c1" });
+      const { status } = await call(db, { companyId: "c1", acceptOpenInvite: true });
       expect(status).toHaveBeenCalledWith(404);
+      expect(claim).not.toHaveBeenCalled();
+    });
+
+    it("refuses the claim without acceptOpenInvite — 404, no leak, no lookup", async () => {
+      // Same shape as the successful case above (a matching open invite DOES
+      // exist), but the flag is absent. Only one select is configured — a
+      // caller/openInvite lookup would exhaust it and fail the test, proving
+      // the gate short-circuits before any query.
+      const { db } = createSequenceDb([
+        [], // no join_request
+      ]);
+      const { status, json } = await call(db, { companyId: "c1" });
+      expect(status).toHaveBeenCalledWith(404);
+      expect(json).toHaveBeenCalledWith({ error: "no join request or open invitation for this company" });
       expect(claim).not.toHaveBeenCalled();
     });
 
@@ -258,7 +272,7 @@ describe("POST /onboarding/join/finalize", () => {
         [{ email: "ada@x.com", emailVerified: true }],
         [], // the expired invite is excluded by SQL
       ]);
-      const { status } = await call(db, { companyId: "c1" });
+      const { status } = await call(db, { companyId: "c1", acceptOpenInvite: true });
       expect(status).toHaveBeenCalledWith(404);
       expect(claim).not.toHaveBeenCalled();
       const inviteLookup = JSON.stringify(whereCalls[2]);
@@ -289,7 +303,7 @@ describe("POST /onboarding/join/finalize", () => {
         [{ ...validInvite, id: "i9" }], // invite re-select (existing finalize flow)
         [{ email: "ADA@X.COM", emailVerified: true }], // caller re-select (existing flow)
       ]);
-      const { json } = await call(db, { companyId: "c1" });
+      const { json } = await call(db, { companyId: "c1", acceptOpenInvite: true });
       expect(claim).toHaveBeenCalledWith(
         expect.anything(),
         expect.objectContaining({ inviteId: "i9", companyId: "c1", userId: "u1" }),
@@ -308,6 +322,18 @@ describe("POST /onboarding/join/finalize", () => {
         [{ email: "ada@x.com", emailVerified: true }],
         [], // no open invite
       ]);
+      const { json } = await call(db, { companyId: "c1", acceptOpenInvite: true });
+      expect(json).toHaveBeenCalledWith({ admitted: false, status: "rejected" });
+      expect(claim).not.toHaveBeenCalled();
+      expect(approveTx).not.toHaveBeenCalled();
+    });
+
+    it("refuses the claim without acceptOpenInvite — plain rejected passthrough, no lookup", async () => {
+      // A fresh open invite DOES exist (same shape as the successful case
+      // above), but the flag is absent. Only the rejected request is
+      // configured — a caller/open-invite lookup would exhaust the sequence
+      // and fail the test, proving the gate short-circuits before any query.
+      const { db } = createSequenceDb([[{ ...pendingRequest, status: "rejected" }]]);
       const { json } = await call(db, { companyId: "c1" });
       expect(json).toHaveBeenCalledWith({ admitted: false, status: "rejected" });
       expect(claim).not.toHaveBeenCalled();
