@@ -2,6 +2,7 @@ import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import type { Db } from "@armyofagents/db";
 import { authSessions, authUsers, onboardingProgress } from "@armyofagents/db";
+import type { DeploymentMode } from "@armyofagents/shared";
 import { eq } from "drizzle-orm";
 import type { Config } from "../config.js";
 import { resolveBetterAuthSigningSecret } from "../auth/better-auth.js";
@@ -15,15 +16,24 @@ import { resolveBetterAuthSigningSecret } from "../auth/better-auth.js";
  */
 const SESSION_COOKIE_NAME = "better-auth.session_token";
 
-/** Mirrors the better-auth session config in buildBetterAuthConfig (A11: 90d). */
-const SESSION_TTL_MS = 90 * 24 * 60 * 60 * 1000;
+/**
+ * Deliberately SHORT — 1 hour, not the production 90d (buildBetterAuthConfig
+ * A11). A minted session must not outlive the dev-hatch phase it was created
+ * for; e2e specs need minutes. (better-auth refreshes ACTIVELY-USED sessions
+ * per its updateAge policy like any real session — the short TTL bounds
+ * dormant minted cookies, which is the risk here.)
+ */
+const SESSION_TTL_MS = 60 * 60 * 1000;
 
 /**
  * Test-only routes for e2e isolation. MOUNTED ONLY in local_trusted + the e2e
  * escape hatch (see app.ts) — never in authenticated mode. Each route is
  * self-scoped to req.actor (a spec can only reset its own state).
  */
-export function testSupportRoutes(db: Db): Router {
+export function testSupportRoutes(
+  db: Db,
+  opts: { deploymentMode: DeploymentMode },
+): Router {
   const router = Router();
 
   // Clear the acting user's onboarding_progress (user + org layers) so the next
@@ -61,7 +71,23 @@ export function testSupportRoutes(db: Db): Router {
   //
   // Idempotent per email: re-minting reuses the existing user (re-verifying the
   // email) and issues a fresh session.
+  //
+  // Side effect worth knowing on a PERSISTENT dev instance: the minted user is
+  // a REAL user (`realUserExists`), so after the first mint the dev escape
+  // hatch refuses to boot (assertEscapeHatchAllowed, RB4/R5) unless
+  // AOA_DEV_LOCAL_IDENTITY_FORCE=1 is set. Throwaway e2e homes never notice.
   router.post("/test-support/session", async (req: Request, res: Response) => {
+    // Defense-in-depth: re-assert the mount gate INSIDE the handler. The mount
+    // in app.ts is the primary gate, but a session-minting endpoint is
+    // dangerous enough that a future mount refactor must not be able to expose
+    // it silently. 404 (not 403) — don't advertise its existence.
+    if (
+      opts.deploymentMode !== "local_trusted" ||
+      process.env.AOA_DEV_LOCAL_IDENTITY !== "1"
+    ) {
+      res.status(404).json({ error: "Not found" });
+      return;
+    }
     const actor = req.actor;
     if (actor.type !== "board" || !actor.userId) {
       res.status(401).json({ error: "authentication required" });
@@ -129,10 +155,11 @@ export function testSupportRoutes(db: Db): Router {
     });
 
     // Same resolver the real better-auth instance uses (env override or the
-    // local_trusted dev fallback). The router only mounts in local_trusted, so
-    // passing that mode is truthful — the resolver reads nothing else.
+    // local_trusted dev fallback), fed the REAL deployment mode threaded from
+    // app.ts — so the resolver's fail-closed throw in non-local modes keeps
+    // its teeth. The resolver reads nothing else off the config.
     const secret = resolveBetterAuthSigningSecret({
-      deploymentMode: "local_trusted",
+      deploymentMode: opts.deploymentMode,
     } as Pick<Config, "deploymentMode"> as Config);
     const signature = createHmac("sha256", secret).update(token).digest("base64");
     const cookieValue = encodeURIComponent(`${token}.${signature}`);

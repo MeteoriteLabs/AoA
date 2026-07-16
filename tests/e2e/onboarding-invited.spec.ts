@@ -70,7 +70,10 @@ async function completeProfileStep(page: Page, name = "E2E Invitee") {
 /** The admitted teammate lands on "/" INSIDE the company (not the empty lobby). */
 async function expectInsideCompany(page: Page, companyName: string, timeout = 30_000) {
   await expect(page.getByRole("heading", { name: /welcome back/i })).toBeVisible({ timeout });
-  await expect(page.getByText(companyName)).toBeVisible();
+  // .first(): the company name may legitimately render more than once on the
+  // landed page (card title, subtitles, …) — any visible occurrence proves the
+  // membership rendered, and strict mode must not flake on a second mention.
+  await expect(page.getByText(companyName).first()).toBeVisible();
   expect(new URL(page.url()).pathname).toBe("/");
 }
 

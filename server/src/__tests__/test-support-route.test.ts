@@ -27,14 +27,18 @@ import { memoryAdapter } from "better-auth/adapters/memory";
 import { authSessions, authUsers } from "@armyofagents/db";
 import { testSupportRoutes } from "../routes/test-support.js";
 
-function makeApp(db: unknown, actor: Record<string, unknown> = { type: "board", userId: "local-board" }) {
+function makeApp(
+  db: unknown,
+  actor: Record<string, unknown> = { type: "board", userId: "local-board" },
+  deploymentMode: "local_trusted" | "authenticated" = "local_trusted",
+) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
     (req as { actor: unknown }).actor = actor as never;
     next();
   });
-  app.use("/api", testSupportRoutes(db as never));
+  app.use("/api", testSupportRoutes(db as never, { deploymentMode }));
   return app;
 }
 
@@ -103,22 +107,50 @@ const SESSION_SECONDS = { expiresIn: 60 * 60 * 24 * 90, updateAge: 60 * 60 * 24 
 describe("POST /api/test-support/session (e2e second-identity mint)", () => {
   const SECRET_ENV = "BETTER_AUTH_SECRET";
   const FALLBACK_ENV = "AOA_AGENT_JWT_SECRET";
+  const HATCH_ENV = "AOA_DEV_LOCAL_IDENTITY";
   let savedSecret: string | undefined;
   let savedFallback: string | undefined;
+  let savedHatch: string | undefined;
 
   beforeEach(() => {
     savedSecret = process.env[SECRET_ENV];
     savedFallback = process.env[FALLBACK_ENV];
+    savedHatch = process.env[HATCH_ENV];
     // Pin the signing secret so the route and the verifying better-auth
     // instance below provably share it.
     process.env[SECRET_ENV] = "unit-mint-secret";
     delete process.env[FALLBACK_ENV];
+    // The in-handler defense-in-depth gate requires the dev escape hatch.
+    process.env[HATCH_ENV] = "1";
   });
   afterEach(() => {
     if (savedSecret === undefined) delete process.env[SECRET_ENV];
     else process.env[SECRET_ENV] = savedSecret;
     if (savedFallback === undefined) delete process.env[FALLBACK_ENV];
     else process.env[FALLBACK_ENV] = savedFallback;
+    if (savedHatch === undefined) delete process.env[HATCH_ENV];
+    else process.env[HATCH_ENV] = savedHatch;
+  });
+
+  it("404 when the deployment mode is not local_trusted (in-handler gate)", async () => {
+    const { db, users, sessions } = makeMintDb();
+    const res = await request(makeApp(db, undefined, "authenticated"))
+      .post("/api/test-support/session")
+      .send({ email: "a@b.test" });
+    expect(res.status).toBe(404);
+    expect(users).toHaveLength(0);
+    expect(sessions).toHaveLength(0);
+  });
+
+  it("404 when the dev escape hatch env is not set (in-handler gate)", async () => {
+    delete process.env[HATCH_ENV];
+    const { db, users, sessions } = makeMintDb();
+    const res = await request(makeApp(db))
+      .post("/api/test-support/session")
+      .send({ email: "a@b.test" });
+    expect(res.status).toBe(404);
+    expect(users).toHaveLength(0);
+    expect(sessions).toHaveLength(0);
   });
 
   it("401 for a non-board actor", async () => {
@@ -160,6 +192,10 @@ describe("POST /api/test-support/session (e2e second-identity mint)", () => {
     });
     expect(sessions).toHaveLength(1);
     expect(sessions[0]).toMatchObject({ userId: body.userId });
+    // Short-lived by design: ~1 hour, never the production 90d.
+    const ttlMs = new Date(body.expiresAt).getTime() - Date.now();
+    expect(ttlMs).toBeGreaterThan(50 * 60 * 1000);
+    expect(ttlMs).toBeLessThanOrEqual(60 * 60 * 1000);
 
     // ROUND-TRIP PROOF: hand the minted rows + cookie to a REAL betterAuth
     // instance (memory adapter, same secret + session config as production)

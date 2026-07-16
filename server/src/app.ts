@@ -253,7 +253,7 @@ export async function createApp(
   // Test-only e2e support — fail-closed: local_trusted + the e2e escape hatch
   // only, never in authenticated mode.
   if (opts.deploymentMode === "local_trusted" && process.env.AOA_DEV_LOCAL_IDENTITY === "1") {
-    app.use("/api", testSupportRoutes(db));
+    app.use("/api", testSupportRoutes(db, { deploymentMode: opts.deploymentMode }));
   }
   app.use("/api", onboardingEnvironmentRoutes(db));
   app.use("/api", commanderVerifyRoutes(db));
