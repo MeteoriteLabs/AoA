@@ -7,6 +7,9 @@ vi.mock("../services/threads.js", () => ({
     return [...text.matchAll(/(?:^|\s)@(\w+)/g)].map((m) => ({ raw: `@${m[1]}`, name: m[1] }));
   }),
   processMentions: vi.fn().mockResolvedValue(undefined),
+  // Crew-posting fix: the tool registers the posting agent as a participant
+  // before addEntry (server-internal, idempotent). No-op here.
+  ensureAgentParticipant: vi.fn().mockResolvedValue(undefined),
 }));
 
 import { createPostEntryTool } from "../services/internal-agent/tools/post-entry-tool.js";

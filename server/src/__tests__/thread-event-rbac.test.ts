@@ -25,17 +25,23 @@ describe("filterThreadEventRecipients (envelope RBAC)", () => {
     expect(out).toEqual(["s1", "s2", "s3"]);
   });
 
-  it("delivers an unclaimed thread event only to leads with scope (+ founder)", () => {
+  it("delivers an unclaimed thread event to leads with scope, participants, and founder", () => {
+    // Crew-posting fix (2026-07-16): participants may view unclaimed threads —
+    // a summoned member/agent must see replies in a thread nobody has claimed
+    // yet. canViewThread's unclaimed branch is (lead && scope) || participant,
+    // and this fan-out filter mirrors it. Non-participant members stay blocked.
     const unclaimed = { ownerUserId: null, visibility: "company" as const };
     const leadSubs = [
       { id: "lead", role: "team_lead" as const, hasScopeAccess: true, isParticipant: false },
       { id: "member", role: "team_member" as const, hasScopeAccess: true, isParticipant: true },
+      { id: "outsider", role: "team_member" as const, hasScopeAccess: true, isParticipant: false },
       { id: "founder", role: "founder" as const, hasScopeAccess: false, isParticipant: false },
     ];
     const out = filterThreadEventRecipients(unclaimed, leadSubs).map((s) => s.id);
     expect(out).toContain("lead");
     expect(out).toContain("founder");
-    expect(out).not.toContain("member"); // member can't see an unclaimed thread
+    expect(out).toContain("member"); // participant — summoned into the thread
+    expect(out).not.toContain("outsider"); // scope alone is not enough on unclaimed
   });
 
   it("returns an empty list when no subscriber qualifies", () => {
