@@ -1,6 +1,7 @@
 // ui/src/components/workspace/ChatbarControls.tsx
-import { AtSign, Paperclip, Send } from "lucide-react";
+import { AtSign, Mic, Paperclip, Send } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { ComposerIconButton } from "../composer/ComposerIconButton";
 import { shortModelName } from "./adapter-utils";
 
 interface ChatbarControlsProps {
@@ -52,41 +53,31 @@ export function ChatbarControls({
   const displayModel = effectiveModel ? shortModelName(effectiveModel) : adapterType;
 
   return (
-    <div className="flex items-center gap-2 px-3 py-1.5">
-      {/* Left: attach + model selector */}
-      <div className="flex items-center gap-1.5">
-        {/* Attach button */}
-        <button
-          type="button"
-          onClick={onAttach}
-          disabled={!onAttach}
-          className="p-1 hover:bg-muted/50 rounded transition-colors text-muted-foreground hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed"
-          title="Attach file"
-          aria-label="Attach file"
+    <div className="flex items-center gap-1 px-2 py-1.5">
+      {/* Common set (mock v2): 📎 attach · @ mention · 🎤 voice placeholder */}
+      <ComposerIconButton
+        onClick={onAttach}
+        disabled={!onAttach}
+        title="Attach file"
+        aria-label="Attach file"
+      >
+        <Paperclip className="h-4 w-4" />
+      </ComposerIconButton>
+
+      {onMention && (
+        <ComposerIconButton
+          onClick={onMention}
+          title="Mention someone"
+          aria-label="Mention someone"
+          data-testid="workspace-chatbar-mention-button"
         >
-          <Paperclip className="h-3.5 w-3.5" />
-        </button>
+          <AtSign className="h-4 w-4" />
+        </ComposerIconButton>
+      )}
 
-        {/* Mention button (approved mock §1: @ next to attach on every surface) */}
-        {onMention && (
-          <button
-            type="button"
-            onClick={onMention}
-            className="p-1 hover:bg-muted/50 rounded transition-colors text-muted-foreground hover:text-foreground"
-            title="Mention someone"
-            aria-label="Mention someone"
-          >
-            <AtSign className="h-3.5 w-3.5" />
-          </button>
-        )}
-
-        {/* Read-only model label — CLI adapters manage model selection themselves */}
-        {showModelLabel && (
-          <span className="text-[11px] text-muted-foreground px-1.5 py-0.5 bg-muted/40 rounded">
-            {displayModel}
-          </span>
-        )}
-      </div>
+      <ComposerIconButton title="Voice input" aria-label="Voice input" comingSoon>
+        <Mic className="h-4 w-4" />
+      </ComposerIconButton>
 
       {/* Interrupt moved BELOW the card frame (approved mock §4) — rendered by
           the host. Re-open stays here (closed tasks have no run to interrupt). */}
@@ -106,6 +97,14 @@ export function ChatbarControls({
 
       {/* Spacer */}
       <div className="flex-1" />
+
+      {/* Config chip right-aligned before the action (mock v2) — read-only
+          model/adapter label; CLI adapters manage model selection themselves. */}
+      {showModelLabel && (
+        <span className="text-[11px] text-muted-foreground px-2 py-0.5 bg-muted/40 border border-border rounded-md shrink-0">
+          {displayModel}
+        </span>
+      )}
 
       {/* Right: send button — brand red is reserved for the primary Send/Stop
           action (Quiet Operator, scope §14). */}

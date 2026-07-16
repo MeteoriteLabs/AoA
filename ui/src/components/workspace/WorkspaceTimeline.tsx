@@ -25,6 +25,8 @@ import {
 } from "@armyofagents/shared";
 import { ChatbarStatusRow } from "./ChatbarStatusRow";
 import { ChatbarControls } from "./ChatbarControls";
+import { ComposerMentionMenu } from "../composer/ComposerMentionMenu";
+import { useComposerMention } from "../composer/useComposerMention";
 import { useRunTokens } from "./useRunTokens";
 import { useLatestTodos } from "./useLatestTodos";
 import { getContextLimit } from "./adapter-utils";
@@ -119,10 +121,29 @@ export function WorkspaceTimeline({
   const [highlightedAnchorId, setHighlightedAnchorId] = useState<string | null>(null);
   const [anchorAnnouncement, setAnchorAnnouncement] = useState("");
 
+  // Shared @mention (mock v2): the @ button opens the picker and a trailing
+  // `@token` opens the same list inline. Server-side, task/workspace comment
+  // mentions wake the mentioned agents (issues.ts findMentionedAgents).
+  const mention = useComposerMention({
+    companyId: selectedCompanyId,
+    value: chatInput,
+    onChange: (next) => {
+      composerRevisionRef.current += 1;
+      setChatInput(next);
+    },
+    focusAt: (pos) => {
+      const ta = textareaRef.current;
+      if (!ta) return;
+      ta.focus();
+      ta.setSelectionRange(pos, pos);
+    },
+  });
+
   const handleTextareaChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     composerRevisionRef.current += 1;
     setChatInput(e.target.value);
     setComposerError(null);
+    mention.refresh(e.target.value, e.target.selectionStart ?? e.target.value.length);
     // Auto-grow: reset to 1 row then expand to content, max 4 rows
     const ta = e.target;
     ta.style.height = "auto";
@@ -448,6 +469,7 @@ export function WorkspaceTimeline({
   };
 
   const handleComposerKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (mention.handleKeyDown(e)) return; // picker owns ↑/↓/Enter/Esc while open
     if (e.key !== "Enter" || e.shiftKey || e.nativeEvent.isComposing) return;
     e.preventDefault();
     handleSend();
@@ -653,7 +675,16 @@ export function WorkspaceTimeline({
           )}
 
           {/* Textarea */}
-          <div className="border-t border-border/50">
+          <div className="relative border-t border-border/50">
+            {mention.open && (
+              <ComposerMentionMenu
+                options={mention.options}
+                selectionIndex={mention.index}
+                onSelect={mention.select}
+                onHover={mention.setIndex}
+                testIdPrefix="workspace-mention"
+              />
+            )}
             <textarea
               ref={textareaRef}
               className="w-full bg-transparent px-3 py-2 text-sm resize-none focus:outline-none placeholder:text-muted-foreground/50"
@@ -702,10 +733,7 @@ export function WorkspaceTimeline({
               selectedModel={modelOverride}
               onModelChange={setModelOverride}
               onAttach={handleAttach}
-              onMention={() => {
-                setChatInput((prev) => (prev.length === 0 || /\s$/.test(prev) ? `${prev}@` : `${prev} @`));
-                requestAnimationFrame(() => textareaRef.current?.focus());
-              }}
+              onMention={mention.openViaButton}
               onSend={handleSend}
               sendDisabled={!canSend || sendMessage.isPending}
                 sendPending={sendMessage.isPending}
@@ -763,7 +791,16 @@ export function WorkspaceTimeline({
               </div>
             </div>
           )}
-          <div className="border-t border-border/50">
+          <div className="relative border-t border-border/50">
+            {mention.open && (
+              <ComposerMentionMenu
+                options={mention.options}
+                selectionIndex={mention.index}
+                onSelect={mention.select}
+                onHover={mention.setIndex}
+                testIdPrefix="workspace-mention"
+              />
+            )}
             <textarea
               ref={textareaRef}
               className="w-full bg-transparent px-3 py-2 text-sm resize-none focus:outline-none placeholder:text-muted-foreground/50"
@@ -798,10 +835,7 @@ export function WorkspaceTimeline({
               selectedModel={modelOverride}
               onModelChange={setModelOverride}
               onAttach={handleAttach}
-              onMention={() => {
-                setChatInput((prev) => (prev.length === 0 || /\s$/.test(prev) ? `${prev}@` : `${prev} @`));
-                requestAnimationFrame(() => textareaRef.current?.focus());
-              }}
+              onMention={mention.openViaButton}
               onSend={handleSend}
               showModelLabel={false}
               sendDisabled={!canSend || sendMessage.isPending}
