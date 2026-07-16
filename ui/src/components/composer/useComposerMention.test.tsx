@@ -11,6 +11,7 @@ import { describe, expect, it, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
+import { agentsApi } from "@/api/agents";
 import { useComposerMention } from "./useComposerMention";
 
 vi.mock("@/api/agents", () => ({
@@ -88,6 +89,37 @@ describe("useComposerMention (range-based)", () => {
     hook.rerender({ value: "hello @" });
     act(() => hook.result.current.select({ id: "a2", name: "Memory Keeper", type: "agent" }));
     expect(h.getValue()).toBe("hello @Memory Keeper ");
+  });
+
+  it("F8: exposes loading while the agents query is in flight, false once it settles", async () => {
+    let resolveAgents!: (agents: Array<Record<string, unknown>>) => void;
+    vi.mocked(agentsApi.list).mockImplementationOnce(
+      () =>
+        new Promise<Array<Record<string, unknown>>>((resolve) => {
+          resolveAgents = resolve;
+        }) as unknown as ReturnType<typeof agentsApi.list>,
+    );
+    const h = makeHarness("@");
+    const hook = h.render();
+    act(() => hook.result.current.refresh("@", 1));
+    expect(hook.result.current.open).toBe(true);
+
+    // Query in flight + zero options: the menu would otherwise say "No matches".
+    await vi.waitFor(() => expect(hook.result.current.loading).toBe(true));
+    expect(hook.result.current.options).toHaveLength(0);
+
+    await act(async () => {
+      resolveAgents([{ id: "a1", name: "Scout", status: "idle" }]);
+    });
+    await vi.waitFor(() => expect(hook.result.current.loading).toBe(false));
+    expect(hook.result.current.options.map((o) => o.name)).toContain("Scout");
+  });
+
+  it("F8: loading is false while the menu is closed (query disabled)", () => {
+    const h = makeHarness("");
+    const hook = h.render();
+    expect(hook.result.current.open).toBe(false);
+    expect(hook.result.current.loading).toBe(false);
   });
 
   it("F5: filters options with includes, not startsWith", async () => {

@@ -416,7 +416,12 @@ export function CommentThread({
     } catch {
       // Draft, files, and the attempt snapshot are all kept — the shared
       // banner offers Retry (idempotent replay) / Edit / Discard.
-      setSendFailed(true);
+      // Mid-flight divergence guard (stale-banner residual): if the draft,
+      // tray, or controls moved while this send/retry was in flight (the
+      // dismiss is suppressed while submitting), the snapshot is stale — a
+      // re-armed banner's Retry would post it (e.g. a removed attachment).
+      // Leave the banner down; the user sends fresh with a NEW submission id.
+      setSendFailed(composerRevisionRef.current === attempt.revision);
     } finally {
       setSubmitting(false);
     }

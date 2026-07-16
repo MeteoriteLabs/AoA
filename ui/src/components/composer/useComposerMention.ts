@@ -67,7 +67,7 @@ export function useComposerMention({ companyId, value, onChange, focusAt }: UseC
 
   // Server-side @mention resolution on comments matches org + aoa agents
   // (issues.ts findMentionedAgents) — offer the same set in the picker.
-  const { data: agents = [] } = useQuery({
+  const { data: agents = [], isLoading, isFetching } = useQuery({
     queryKey: ["composer-mention-agents", companyId],
     queryFn: async () => {
       const [org, aoa] = await Promise.all([
@@ -167,6 +167,9 @@ export function useComposerMention({ companyId, value, onChange, focusAt }: UseC
   return {
     open,
     options,
+    // Teammates still loading (F8): the menu shows a "Loading teammates…" row
+    // instead of a misleading "No matches" while the agents query is in flight.
+    loading: open && (isLoading || isFetching),
     index,
     setIndex,
     refresh,

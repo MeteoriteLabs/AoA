@@ -436,10 +436,15 @@ export function WorkspaceTimeline({
         setReopenRequested(true);
       }
     },
-    onError: () => {
+    onError: (_error, submitted) => {
       // The draft, attachments, and lastAttemptRef snapshot are all kept —
       // the shared banner offers Retry (idempotent replay) / Edit / Discard.
-      setSendFailed(true);
+      // Mid-flight divergence guard (stale-banner residual): if the draft or
+      // tray moved while this send/retry was in flight (the dismiss is
+      // suppressed while pending), the snapshot is stale — a re-armed banner's
+      // Retry would post it (e.g. a removed attachment). Leave the banner
+      // down; the user sends fresh with a NEW clientSubmissionId.
+      setSendFailed(composerRevisionRef.current === submitted.revision);
     },
     onSettled: () => {
       sendInFlightRef.current = false;
@@ -475,12 +480,15 @@ export function WorkspaceTimeline({
     }
     if (reachedLimit) errors.unshift(`Attach up to ${COMPOSER_MAX_ATTACHMENTS} files per message.`);
 
-    composerRevisionRef.current += 1;
-    setSelectedFiles(next);
     setComposerError(errors.length > 0 ? errors.join(" ") : null);
     // Only a REAL tray change (a file actually accepted) is divergence — an
-    // all-rejected add leaves the snapshot's tray intact, so the banner stays.
-    if (next.length !== selectedFiles.length) dismissBannerOnTrayChange();
+    // all-rejected add leaves the snapshot's tray intact, so the banner stays
+    // and the revision doesn't move (matches CommentThread's addCommentFiles).
+    if (next.length !== selectedFiles.length) {
+      composerRevisionRef.current += 1;
+      setSelectedFiles(next);
+      dismissBannerOnTrayChange();
+    }
   };
 
   const handleFilesSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -779,6 +787,7 @@ export function WorkspaceTimeline({
                 selectionIndex={mention.index}
                 onSelect={mention.select}
                 onHover={mention.setIndex}
+                loading={mention.loading}
                 testIdPrefix="workspace-mention"
               />
             )}
@@ -901,6 +910,7 @@ export function WorkspaceTimeline({
                 selectionIndex={mention.index}
                 onSelect={mention.select}
                 onHover={mention.setIndex}
+                loading={mention.loading}
                 testIdPrefix="workspace-mention"
               />
             )}

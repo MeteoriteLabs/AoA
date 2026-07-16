@@ -1141,6 +1141,41 @@ describe("WorkspaceTimeline — B-states (mock §5)", () => {
     expect(screen.getByTestId("composer-send-failed-banner")).toBeInTheDocument();
   });
 
+  it("mid-retry divergence never re-arms the stale banner (removed file stays unreachable)", async () => {
+    issuesApiMock.addCommentWithAttachments.mockRejectedValueOnce(new Error("boom"));
+    renderTimeline();
+
+    const textarea = await screen.findByPlaceholderText("Message Alpha Agent...");
+    const file = new File(["fake"], "sensitive.txt", { type: "text/plain" });
+    fireEvent.change(screen.getByTestId("workspace-chatbar-file-input"), { target: { files: [file] } });
+    fireEvent.change(textarea, { target: { value: "with file" } });
+    fireEvent.click(screen.getByText("Send & wake"));
+    const banner = await screen.findByTestId("composer-send-failed-banner");
+
+    // Hang the retry so we can mutate the tray while it is in flight.
+    let rejectRetry!: (err: Error) => void;
+    issuesApiMock.addCommentWithAttachments.mockImplementationOnce(
+      () => new Promise((_resolve, reject) => { rejectRetry = reject; }),
+    );
+    fireEvent.click(within(banner).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(issuesApiMock.addCommentWithAttachments).toHaveBeenCalledTimes(2));
+
+    // Divergence while retrying: the dismiss is suppressed (banner shows Retrying…)…
+    fireEvent.click(screen.getByRole("button", { name: "Remove sensitive.txt" }));
+    expect(screen.getByTestId("composer-send-failed-banner")).toBeInTheDocument();
+
+    // …but when the retry fails, the failure path must NOT re-arm the stale
+    // snapshot — a second Retry would post the removed (possibly sensitive) file.
+    await act(async () => {
+      rejectRetry(new Error("still failing"));
+    });
+    await waitFor(() =>
+      expect(screen.queryByTestId("composer-send-failed-banner")).not.toBeInTheDocument(),
+    );
+    // The stale snapshot stayed unreachable — nothing was re-sent.
+    expect(issuesApiMock.addCommentWithAttachments).toHaveBeenCalledTimes(2);
+  });
+
   it("frame drag-drop still routes through attachment validation (oversized dropped file rejected)", async () => {
     renderTimeline();
 

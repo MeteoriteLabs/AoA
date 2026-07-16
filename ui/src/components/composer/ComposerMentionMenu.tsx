@@ -30,6 +30,8 @@ export interface ComposerMentionMenuProps {
   selectionIndex: number;
   onSelect: (option: MentionOption) => void;
   onHover?: (index: number) => void;
+  /** Teammates query still in flight (F8) — shows a loading row instead of "No matches". */
+  loading?: boolean;
   /** Testid prefix — defaults to the shared name; Discussion passes its legacy one. */
   testIdPrefix?: string;
   /** Extra classes on the popover (anchor tweaks per surface). */
@@ -41,10 +43,26 @@ export function ComposerMentionMenu({
   selectionIndex,
   onSelect,
   onHover,
+  loading = false,
   testIdPrefix = "composer-mention",
   className,
 }: ComposerMentionMenuProps) {
   if (options.length === 0) {
+    // While teammates are still loading, "No matches" would be a lie (F8) —
+    // show a quiet loading row until the query settles.
+    if (loading) {
+      return (
+        <div
+          className={cn(
+            "composer-mention-loading absolute bottom-full left-0 mb-1 w-72 rounded-md border border-border bg-popover px-3 py-2 text-xs text-muted-foreground shadow-md",
+            className,
+          )}
+          data-testid={`${testIdPrefix}-loading`}
+        >
+          Loading teammates…
+        </div>
+      );
+    }
     return (
       <div
         className={cn(

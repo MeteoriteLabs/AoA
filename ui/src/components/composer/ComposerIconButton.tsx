@@ -31,7 +31,7 @@ export const ComposerIconButton = forwardRef<
       ref={ref}
       type={type ?? "button"}
       disabled={disabled || comingSoon}
-      title={comingSoon ? `${title ?? "Coming soon"} — coming soon` : title}
+      title={comingSoon ? (title ? `${title} — coming soon` : "Coming soon") : title}
       className={cn(
         "shrink-0 inline-flex size-8 items-center justify-center rounded-md text-muted-foreground transition-colors",
         comingSoon

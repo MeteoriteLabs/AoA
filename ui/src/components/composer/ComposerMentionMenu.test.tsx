@@ -30,6 +30,23 @@ describe("ComposerMentionMenu", () => {
   it("shows the empty state when nothing matches", () => {
     render(<ComposerMentionMenu options={[]} selectionIndex={0} onSelect={() => {}} />);
     expect(screen.getByTestId("composer-mention-empty").textContent).toContain("No matches");
+    expect(screen.queryByTestId("composer-mention-loading")).not.toBeInTheDocument();
+  });
+
+  it("shows the loading row instead of 'No matches' while teammates load (F8)", () => {
+    render(<ComposerMentionMenu options={[]} selectionIndex={0} onSelect={() => {}} loading />);
+    expect(screen.getByTestId("composer-mention-loading").textContent).toContain(
+      "Loading teammates",
+    );
+    expect(screen.queryByTestId("composer-mention-empty")).not.toBeInTheDocument();
+  });
+
+  it("ignores loading once options exist — the real list renders", () => {
+    render(
+      <ComposerMentionMenu options={OPTIONS} selectionIndex={0} onSelect={() => {}} loading />,
+    );
+    expect(screen.getByTestId("composer-mention")).toBeTruthy();
+    expect(screen.queryByTestId("composer-mention-loading")).not.toBeInTheDocument();
   });
 
   it("honors a legacy testid prefix (Discussion delegate)", () => {
@@ -70,7 +87,17 @@ describe("ComposerIconButton", () => {
     const btn = screen.getByRole("button", { name: "Voice input" });
     expect((btn as HTMLButtonElement).disabled).toBe(true);
     expect(btn.className).toContain("opacity-40");
-    expect(btn.getAttribute("title")).toMatch(/coming soon/i);
+    expect(btn.getAttribute("title")).toBe("Voice input — coming soon");
+  });
+
+  it("comingSoon without a title renders a single 'Coming soon', never doubled (F7)", () => {
+    render(
+      <ComposerIconButton aria-label="Voice input" comingSoon>
+        m
+      </ComposerIconButton>,
+    );
+    const btn = screen.getByRole("button", { name: "Voice input" });
+    expect(btn.getAttribute("title")).toBe("Coming soon");
   });
 });
 

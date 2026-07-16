@@ -268,6 +268,52 @@ describe("Commander composer — B-states (mock §5)", () => {
     expect(box.textContent).toBe("original message, edited");
   });
 
+  it("mid-retry divergence never re-arms the stale banner (removed ref stays unreachable)", async () => {
+    uploadFileMock.mockResolvedValue({
+      assetId: "asset-1",
+      originalFilename: "notes.txt",
+      contentPath: "/api/assets/asset-1/content",
+      contentType: "text/plain",
+      byteSize: 5,
+    });
+    renderPanel();
+
+    // Attach a ref, then fail the first send — banner up with the snapshot.
+    const frame = screen.getByTestId("commander-composer-frame");
+    const file = new File(["hello"], "notes.txt", { type: "text/plain" });
+    fireEvent.drop(frame, { dataTransfer: { types: ["Files"], files: [file] } });
+    expect(await screen.findByTestId("commander-input-refs")).toHaveTextContent("notes.txt");
+
+    const box = typeInComposer("send with the file");
+    sendViaEnter(box);
+    const banner = await screen.findByTestId("composer-send-failed-banner");
+    expect(streamState.calls).toHaveLength(1);
+
+    // Hang the retry so we can mutate the refs tray while it is in flight.
+    let failRetry!: () => void;
+    const retryGate = new Promise<void>((resolve) => { failRetry = resolve; });
+    streamState.impl = () =>
+      (async function* () {
+        await retryGate;
+        throw new Error("still failing");
+      })();
+    fireEvent.click(within(banner).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(streamState.calls).toHaveLength(2));
+
+    // Divergence while retrying: the dismiss is suppressed (banner shows Retrying…)…
+    fireEvent.click(screen.getByRole("button", { name: "Remove notes.txt reference" }));
+    expect(screen.getByTestId("composer-send-failed-banner")).toBeInTheDocument();
+
+    // …but when the retry fails, the failure path must NOT re-arm the stale
+    // snapshot — a second Retry would post the removed (possibly sensitive) ref.
+    failRetry();
+    await waitFor(() =>
+      expect(screen.queryByTestId("composer-send-failed-banner")).not.toBeInTheDocument(),
+    );
+    // The stale snapshot stayed unreachable — nothing was re-sent.
+    expect(streamState.calls).toHaveLength(2);
+  });
+
   it("shows the offline strip and disables Send while offline", async () => {
     liveState.connectionState = "offline";
     renderPanel();

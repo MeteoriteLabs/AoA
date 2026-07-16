@@ -132,6 +132,27 @@ export function ThreadTab({
   // lets the retry-success path skip the clearSignal bump when the draft
   // diverged WHILE the retry was in flight (edits must never be wiped).
   const latestDraftTextRef = useRef<string | null>(null);
+  // Attachment-tray changes since the snapshot was minted (stale-banner
+  // residual): the dismiss-on-tray-change guard is locked while retrying, so
+  // this flag is how the failure paths know the snapshot went stale mid-flight.
+  // Reset whenever a fresh attempt is snapshotted.
+  const attachmentsChangedSinceAttemptRef = useRef(false);
+
+  /**
+   * Stale-banner residual (cross-surface): true when the composer diverged
+   * from the snapshotted attempt — the draft text differs from the attempt's
+   * rawContent OR the attachment tray changed since the snapshot. A failure
+   * path must never (re-)arm the banner then: its Retry would post the stale
+   * snapshot (e.g. a removed attachment). The user has diverged; they'll send
+   * fresh with a NEW clientSubmissionId.
+   */
+  function draftDivergedFromAttempt(): boolean {
+    const payload = lastAttemptedPayloadRef.current;
+    if (!payload) return false;
+    if (attachmentsChangedSinceAttemptRef.current) return true;
+    const latest = latestDraftTextRef.current;
+    return latest !== null && latest.trim() !== payload.rawContent.trim();
+  }
 
   useEffect(() => {
     if (sendReceipt !== "sent") return;
@@ -439,6 +460,7 @@ export function ThreadTab({
       clientSubmissionId: createComposerSubmissionId(),
     };
     lastAttemptedPayloadRef.current = mutationPayload;
+    attachmentsChangedSinceAttemptRef.current = false;
 
     try {
       await addEntryMutation.mutateAsync(mutationPayload);
@@ -448,7 +470,9 @@ export function ThreadTab({
       // On failure, drop the optimistic echo (mutation's onError already toasts).
       setOptimisticEntries((prev) => prev.filter((o) => o.rawContent !== payload.text));
       setSendReceipt(null);
-      setSendFailed(true);
+      // Never arm a stale banner: if the composer diverged while the send was
+      // in flight, Retry would post the stale snapshot — leave it dismissed.
+      setSendFailed(!draftDivergedFromAttempt());
       // Let EntryComposer retain the immutable submission snapshot. Swallowing
       // this error causes it to clear the user's draft and uploaded attachments.
       throw error;
@@ -471,11 +495,18 @@ export function ThreadTab({
       // divergence dismiss is locked during retry) — clearing then would wipe
       // the newer edits. The message posted; the edits stay as a fresh draft.
       const latest = latestDraftTextRef.current;
-      if (latest === null || latest.trim() === payload.rawContent.trim()) {
+      if (
+        (latest === null || latest.trim() === payload.rawContent.trim()) &&
+        !attachmentsChangedSinceAttemptRef.current
+      ) {
         setComposerClearSignal((n) => n + 1);
       }
     } catch {
-      // Still failing — the banner stays up (mutation onError already toasts).
+      // Still failing — the banner stays up (mutation onError already toasts)
+      // UNLESS the composer diverged mid-retry (the divergence dismiss is
+      // locked while retrying): a stale banner's Retry would post the old
+      // snapshot (e.g. a removed attachment), so drop it now instead.
+      if (draftDivergedFromAttempt()) setSendFailed(false);
     } finally {
       setRetrying(false);
     }
@@ -516,6 +547,9 @@ export function ThreadTab({
    * the banner (locked while retrying, same as the text-divergence guard).
    */
   function handleComposerAttachmentsChanged() {
+    // Recorded even while retrying (when the dismiss below is locked) so the
+    // failure paths know the snapshot went stale and never re-arm the banner.
+    attachmentsChangedSinceAttemptRef.current = true;
     if (sendFailed && !retrying) setSendFailed(false);
   }
 
@@ -603,8 +637,10 @@ export function ThreadTab({
         onSubmitError={() => {
           // Covers EntryComposer-internal throw paths too — the payload was
           // already snapshotted into lastAttemptedPayloadRef before the await.
+          // Same stale-banner guard as the submit catch: never arm the banner
+          // over a snapshot the composer has already diverged from.
           setSendReceipt(null);
-          setSendFailed(true);
+          setSendFailed(!draftDivergedFromAttempt());
         }}
         disabled={isDisconnected || addEntryMutation.isPending}
         myInitials={myInitials}

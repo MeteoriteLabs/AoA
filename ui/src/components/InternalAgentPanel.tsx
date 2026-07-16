@@ -1108,7 +1108,12 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
       } else {
         // Failure never eats your work (mock §5): the draft + attached refs are
         // all kept — the shared banner offers Retry / Edit / Discard.
-        setSendFailed(true);
+        // Mid-flight divergence guard (stale-banner residual): if the draft or
+        // refs tray moved while this send/retry was in flight (the dismiss is
+        // suppressed while streaming), the snapshot is stale — a re-armed
+        // banner's Retry would post it (e.g. a removed reference). Leave the
+        // banner down; the user sends fresh with a NEW clientSubmissionId.
+        setSendFailed(composerRevisionRef.current === attempt.revision);
       }
     },
     [sendText],
@@ -2258,7 +2263,9 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
             <TooltipProvider>
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <ComposerIconButton aria-label="Voice input" title="Voice input" comingSoon>
+                  {/* No native `title` — the Radix TooltipContent below is the
+                      single tooltip (a native title would double up on hover). */}
+                  <ComposerIconButton aria-label="Voice input" comingSoon>
                     <Mic className="size-4" aria-hidden="true" />
                   </ComposerIconButton>
                 </TooltipTrigger>
