@@ -787,6 +787,12 @@ const approveTx = vi.hoisted(() => vi.fn(async () => ({ id: "r1", status: "appro
 vi.mock("../services/join-approval.js", () => ({
   approveHumanJoinRequestTx: approveTx,
   buildHumanJoinApprovalServices: () => ({}),
+  autoAdmitApprovalIdentity: () => ({
+    approvedByUserId: null,
+    attributionUserId: null,
+    activityActor: { actorType: "system", actorId: "invite_email_match" },
+    approvalSource: "invite_email_match",
+  }),
 }));
 vi.mock("../services/team.js", () => ({
   parseInviteRoleMetadata: (p: Record<string, unknown> | null) =>
@@ -933,6 +939,7 @@ import { authUsers, invites, joinRequests } from "@armyofagents/db";
 import { parseInviteRoleMetadata } from "../services/team.js";
 import {
   approveHumanJoinRequestTx,
+  autoAdmitApprovalIdentity,
   buildHumanJoinApprovalServices,
 } from "../services/join-approval.js";
 
@@ -1028,10 +1035,9 @@ export function onboardingJoinRoutes(db: Db): Router {
           id: invite.id,
           defaultsPayload: invite.defaultsPayload as Record<string, unknown> | null,
         },
-        approvedByUserId: null, // audit: never impersonate the founder
-        attributionUserId: null,
-        activityActor: { actorType: "system", actorId: "invite_email_match" },
-        approvalSource: "invite_email_match",
+        // The preset factory keeps the three-identity contract unmisusable
+        // (never impersonates the founder or the invitee).
+        ...autoAdmitApprovalIdentity(),
       });
     });
     res.json(approved ? { admitted: true, status: "approved" } : { admitted: false, status: "pending" });
@@ -1822,3 +1828,4 @@ git commit -m "docs(onboarding): Track B spec/roadmap status — invited journey
 - **Live validation** needs a **second Google account**: founder invites it (email-targeted) on the isolated authenticated instance (`bash ~/.aoa/instances/onboarding-test/start.sh`, rebuild UI first) → matched auto-admit path; then an open-link/mismatch invite → pending + founder-approve path. The USER performs all Google logins.
 - **e2e** (matched + mismatch paths) folds into Track D / A12 (mocked-Google helper) — explicitly deferred.
 - **Known accepted gaps:** an invitee whose PROFILE_SET predates this feature skips the profile step → timezone null on the company profile (fill later on the Human page). Open-link invites always take the pending path (by design).
+- **Review follow-ups (recorded during execution, not blocking):** (1) wrap the seeding block in `approveHumanJoinRequestTx` in a nested `txDb.transaction(...)` (SAVEPOINT) so best-effort also holds for DB-level failures — today a DB-level seeding error cleanly rolls back the whole approval (retryable, no corruption), a JS-level one is swallowed as designed. (2) The global PATCH `/user-profile` route accepts `socialLinks` with only an Array.isArray check — pre-existing laxity surfaced by the seeding copy path; consider zod-validating against HUMAN_SOCIAL_LINK_TYPES or normalizing during seeding.
