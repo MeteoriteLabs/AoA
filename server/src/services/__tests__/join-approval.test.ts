@@ -11,7 +11,10 @@ vi.mock("../activity-log.js", () => ({ logActivity }));
 const getUserProfile = vi.hoisted(() =>
   vi.fn(async () => ({
     userId: "u1", displayName: "Ada", avatarUrl: null, title: "Engineer",
-    bio: "hi", timezone: "Asia/Kolkata", socialLinks: [],
+    bio: "hi", timezone: "Asia/Kolkata",
+    // One valid link + one malformed item: the seeding path must parse-filter
+    // through humanSocialLinkSchema instead of trusting the stored shape.
+    socialLinks: [{ type: "website", label: null, url: "https://ada.dev" }, { bogus: true }],
   })),
 );
 vi.mock("../user-profiles.js", () => ({ getUserProfile }));
@@ -80,10 +83,14 @@ describe("approveHumanJoinRequestTx", () => {
       null,
     );
     expect(services.team.applyInviteRole).toHaveBeenCalledWith("c1", "u1", args.invite.defaultsPayload, null);
-    // seeding copies the GLOBAL profile (incl timezone) into the company profile
+    // seeding copies the GLOBAL profile (incl timezone) into the company profile;
+    // socialLinks are parse-filtered — the malformed item is dropped (exact match).
     expect(services.team.updateCompanyUserProfile).toHaveBeenCalledWith(
       "c1", "u1",
-      expect.objectContaining({ displayName: "Ada", title: "Engineer", timezone: "Asia/Kolkata" }),
+      expect.objectContaining({
+        displayName: "Ada", title: "Engineer", timezone: "Asia/Kolkata",
+        socialLinks: [{ type: "website", label: null, url: "https://ada.dev" }],
+      }),
       null,
     );
     expect(services.capabilities.ensureStandardDocuments).toHaveBeenCalledWith("c1", "u1", null);

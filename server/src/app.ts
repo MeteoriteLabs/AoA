@@ -15,6 +15,7 @@ import { extractInlineScriptHashes } from "./services/csp-script-hashes.js";
 import { healthRoutes } from "./routes/health.js";
 import { onboardingJourneyRoutes } from "./routes/onboarding-journey.js";
 import { onboardingRoutes } from "./routes/onboarding.js";
+import { onboardingJoinRoutes } from "./routes/onboarding-join.js";
 import { onboardingEnvironmentRoutes } from "./routes/onboarding-environment.js";
 import { commanderVerifyRoutes } from "./routes/commander-verify.js";
 import { userProfileRoutes } from "./routes/user-profiles.js";
@@ -245,6 +246,7 @@ export async function createApp(
   app.use("/api", authProfileRoutes(db));
   app.use("/api", onboardingJourneyRoutes(db));
   app.use("/api", onboardingRoutes(db));
+  app.use("/api", onboardingJoinRoutes(db));
   app.use("/api", onboardingEnvironmentRoutes(db));
   app.use("/api", commanderVerifyRoutes(db));
   app.use("/api", userProfileRoutes(db));

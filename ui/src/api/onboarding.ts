@@ -51,3 +51,24 @@ export function destinationForJourney(j: PostAuthJourneyResult): string {
   if (j.journey === "invited") return `/onboarding/join?company=${j.targetCompanyId ?? ""}`;
   return "/onboarding";
 }
+
+export type FinalizeInvitedJoinResult = {
+  admitted: boolean;
+  status: "approved" | "pending" | "rejected" | "invite_invalid";
+};
+
+/**
+ * Invited auto-admit (spec §8): asks the server to finalize the caller's own
+ * join request for the company — admits immediately when the verified email
+ * matches the invite; otherwise the request stays pending for the founder.
+ */
+export async function finalizeInvitedJoin(companyId: string): Promise<FinalizeInvitedJoinResult> {
+  const res = await fetch("/api/onboarding/join/finalize", {
+    method: "POST",
+    credentials: "include",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ companyId }),
+  });
+  if (!res.ok) throw new Error(`finalize failed: ${res.status}`);
+  return (await res.json()) as FinalizeInvitedJoinResult;
+}
