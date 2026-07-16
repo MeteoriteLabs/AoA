@@ -15,7 +15,11 @@ import { getSafeServingHeaders } from "../services/asset-serving-safety.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 
 const MAX_ASSET_IMAGE_BYTES = Number(process.env.AOA_ATTACHMENT_MAX_BYTES) || 10 * 1024 * 1024;
-const MAX_ASSET_FILE_BYTES = Number(process.env.AOA_ATTACHMENT_MAX_BYTES) || COMPOSER_MAX_ATTACHMENT_BYTES;
+// General asset upload contract (artifacts, API consumers, uploadFileArtifact):
+// all content types, documented AOA_FILE_MAX_BYTES default 50 MB. Composer
+// restrictions must NOT narrow this shared route (PR #291 review) — they apply
+// only to composer-namespaced uploads below.
+const MAX_ASSET_FILE_BYTES = Number(process.env.AOA_FILE_MAX_BYTES) || 50 * 1024 * 1024;
 const ALLOWED_IMAGE_CONTENT_TYPES = new Set([
   "image/png",
   "image/jpeg",
@@ -23,7 +27,16 @@ const ALLOWED_IMAGE_CONTENT_TYPES = new Set([
   "image/webp",
   "image/gif",
 ]);
-const ALLOWED_FILE_CONTENT_TYPES = new Set<string>(COMPOSER_ATTACHMENT_CONTENT_TYPES);
+// Unified-composer contract, enforced server-side only for uploads bound for a
+// composer surface. The thread composer uploads under "discussion-entries"
+// (ThreadTab.handleUpload) and Commander under "commander/<conversationId>"
+// (InternalAgentPanel) — both validate client-side too; this is the
+// defense-in-depth for well-formed composer clients without breaking the
+// general asset route for everything else.
+const COMPOSER_ALLOWED_FILE_CONTENT_TYPES = new Set<string>(COMPOSER_ATTACHMENT_CONTENT_TYPES);
+function isComposerUploadNamespace(namespace: string): boolean {
+  return namespace === "discussion-entries" || namespace.startsWith("commander/");
+}
 
 export function assetRoutes(db: Db, storage: StorageService) {
   const router = Router();
@@ -187,9 +200,15 @@ export function assetRoutes(db: Db, storage: StorageService) {
 
     const namespaceSuffix = parsedMeta.data.namespace ?? "files";
     const contentType = (file.mimetype || "application/octet-stream").toLowerCase();
-    if (!ALLOWED_FILE_CONTENT_TYPES.has(contentType)) {
-      res.status(415).json({ error: `Unsupported attachment type: ${contentType}` });
-      return;
+    if (isComposerUploadNamespace(namespaceSuffix)) {
+      if (!COMPOSER_ALLOWED_FILE_CONTENT_TYPES.has(contentType)) {
+        res.status(415).json({ error: `Unsupported attachment type: ${contentType}` });
+        return;
+      }
+      if (file.buffer.length > COMPOSER_MAX_ATTACHMENT_BYTES) {
+        res.status(422).json({ error: `Attachment exceeds ${COMPOSER_MAX_ATTACHMENT_BYTES} bytes` });
+        return;
+      }
     }
     const actor = getActorInfo(req);
     const stored = await storage.putFile({
