@@ -453,6 +453,93 @@ describe("ThreadTab", () => {
     expect(vi.mocked(discussionsApi.addEntry)).toHaveBeenCalledTimes(1);
   });
 
+  it("attachment tray changes dismiss the send-failed banner", async () => {
+    const { fireEvent } = await import("@testing-library/react");
+    const { discussionsApi } = await import("../../../api/discussions");
+    vi.mocked(discussionsApi.addEntry).mockClear();
+    vi.mocked(discussionsApi.addEntry).mockRejectedValueOnce(new Error("network error"));
+
+    renderWithProviders(
+      <ThreadTab
+        threadId="thread-1"
+        companyId="comp-1"
+        entries={[]}
+        isLoading={false}
+        isError={false}
+        onRetry={vi.fn()}
+      />,
+    );
+    fireEvent.change(screen.getByTestId("entry-composer-textarea"), {
+      target: { value: "tray change incoming" },
+    });
+    fireEvent.click(screen.getByTestId("entry-composer-submit"));
+    await screen.findByTestId("composer-send-failed-banner");
+
+    // Adding (or removing) an attachment diverges from the failed snapshot —
+    // Retry would post WITHOUT the new file (or WITH a removed one), so any
+    // tray mutation dismisses the banner.
+    fireEvent.change(screen.getByTestId("entry-composer-file-input"), {
+      target: { files: [new File(["x"], "new.txt", { type: "text/plain" })] },
+    });
+    await waitFor(() =>
+      expect(screen.queryByTestId("composer-send-failed-banner")).not.toBeInTheDocument(),
+    );
+    // The draft itself is untouched.
+    expect(screen.getByTestId("entry-composer-textarea")).toHaveValue("tray change incoming");
+    expect(vi.mocked(discussionsApi.addEntry)).toHaveBeenCalledTimes(1);
+  });
+
+  it("edits made while a retry is in flight are not wiped by the retry-success clear", async () => {
+    const { fireEvent, act } = await import("@testing-library/react");
+    const { discussionsApi } = await import("../../../api/discussions");
+    vi.mocked(discussionsApi.addEntry).mockClear();
+    vi.mocked(discussionsApi.addEntry).mockRejectedValueOnce(new Error("network error"));
+
+    renderWithProviders(
+      <ThreadTab
+        threadId="thread-1"
+        companyId="comp-1"
+        entries={[]}
+        isLoading={false}
+        isError={false}
+        onRetry={vi.fn()}
+      />,
+    );
+    fireEvent.change(screen.getByTestId("entry-composer-textarea"), {
+      target: { value: "first try" },
+    });
+    fireEvent.click(screen.getByTestId("entry-composer-submit"));
+    const banner = await screen.findByTestId("composer-send-failed-banner");
+
+    // Make the retry hang so the draft can change mid-flight.
+    let resolveRetry!: (value: unknown) => void;
+    vi.mocked(discussionsApi.addEntry).mockImplementationOnce(
+      () => new Promise((res) => { resolveRetry = res; }) as never,
+    );
+    fireEvent.click(within(banner).getByRole("button", { name: "Retry" }));
+    // The mutation dispatch is async — wait until the retry is truly in flight.
+    await waitFor(() =>
+      expect(vi.mocked(discussionsApi.addEntry)).toHaveBeenCalledTimes(2),
+    );
+
+    // The (host-owned) draft diverges while the retry is in flight.
+    fireEvent.change(screen.getByTestId("entry-composer-textarea"), {
+      target: { value: "first try edited mid-flight" },
+    });
+
+    await act(async () => {
+      resolveRetry({ id: "entry-new" });
+    });
+
+    await waitFor(() =>
+      expect(screen.queryByTestId("composer-send-failed-banner")).not.toBeInTheDocument(),
+    );
+    // The retry-success clear must NOT wipe the newer edits.
+    expect(screen.getByTestId("entry-composer-textarea")).toHaveValue(
+      "first try edited mid-flight",
+    );
+  });
+
   it("renders the shared offline strip through the composer hint when offline", () => {
     liveState.connectionState = "offline";
     try {

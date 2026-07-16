@@ -384,6 +384,77 @@ describe("EntryComposer — B-states (mock §5)", () => {
   });
 });
 
+describe("EntryComposer — onAttachmentsChanged", () => {
+  it("fires on upload success, failed upload, attachment remove, and failed-card remove", async () => {
+    const onAttachmentsChanged = vi.fn();
+    const upload = vi.fn()
+      .mockResolvedValueOnce({ id: "asset-ok", name: "ok.png", mimeType: "image/png" })
+      .mockRejectedValueOnce(new Error("upload down"));
+    renderWithProviders(
+      <EntryComposer
+        threadId="thread-1"
+        agents={agents}
+        users={users}
+        onSubmit={vi.fn()}
+        onUpload={upload}
+        onAttachmentsChanged={onAttachmentsChanged}
+      />,
+    );
+    const input = screen.getByTestId("entry-composer-file-input") as HTMLInputElement;
+
+    // 1) successful eager upload lands in the tray
+    fireEvent.change(input, {
+      target: { files: [new File(["x"], "ok.png", { type: "image/png" })] },
+    });
+    await screen.findByTestId("entry-composer-attachment-ok.png");
+    expect(onAttachmentsChanged).toHaveBeenCalledTimes(1);
+
+    // 2) a failed upload retained as a failed card is a tray change too
+    fireEvent.change(input, {
+      target: { files: [new File(["x"], "bad.png", { type: "image/png" })] },
+    });
+    const failedCard = await screen.findByTestId("entry-composer-attachment-bad.png");
+    expect(failedCard).toHaveAttribute("data-state", "failed");
+    expect(onAttachmentsChanged).toHaveBeenCalledTimes(2);
+
+    // 3) removing the ready attachment
+    fireEvent.click(screen.getByRole("button", { name: "Remove ok.png" }));
+    expect(onAttachmentsChanged).toHaveBeenCalledTimes(3);
+
+    // 4) removing the failed card
+    fireEvent.click(screen.getByRole("button", { name: "Remove bad.png" }));
+    expect(onAttachmentsChanged).toHaveBeenCalledTimes(4);
+  });
+
+  it("does NOT fire for the host-driven clearSignal wipe", async () => {
+    const onAttachmentsChanged = vi.fn();
+    const upload = vi.fn().mockResolvedValue({
+      id: "asset-1",
+      name: "test.png",
+      mimeType: "image/png",
+    });
+    const props = {
+      threadId: "thread-1",
+      agents,
+      users,
+      onUpload: upload,
+      onSubmit: vi.fn(),
+      onAttachmentsChanged,
+    };
+    const view = renderWithProviders(<EntryComposer {...props} clearSignal={0} />);
+    const input = screen.getByTestId("entry-composer-file-input") as HTMLInputElement;
+    fireEvent.change(input, {
+      target: { files: [new File(["x"], "test.png", { type: "image/png" })] },
+    });
+    await screen.findByTestId("entry-composer-attachment-test.png");
+    onAttachmentsChanged.mockClear();
+
+    view.rerender(<EntryComposer {...props} clearSignal={1} />);
+    expect(screen.queryByTestId("entry-composer-attachment-test.png")).not.toBeInTheDocument();
+    expect(onAttachmentsChanged).not.toHaveBeenCalled();
+  });
+});
+
 describe("EntryComposer — reply mode", () => {
   it("renders reply-mode UI when parentEntryId is set", () => {
     renderWithProviders(

@@ -109,6 +109,14 @@ export interface EntryComposerProps {
    * successful banner Retry, which bypass the normal submit-success clear.
    */
   clearSignal?: number;
+  /**
+   * Fired whenever the attachment tray changes by USER action (upload
+   * success/failure, remove, failed-card remove/retry) — NOT for host-driven
+   * clearSignal wipes or the submit-success clear. Lets the host treat any
+   * tray mutation as divergence from a failed-send snapshot (mock §5: the
+   * banner's Retry must never post a removed file or drop a newly added one).
+   */
+  onAttachmentsChanged?: () => void;
 }
 
 /* ─── Helpers ─── */
@@ -166,6 +174,7 @@ export function EntryComposer({
   onDraftTextChange,
   failureBanner,
   clearSignal,
+  onAttachmentsChanged,
 }: EntryComposerProps) {
   const [uncontrolledText, setUncontrolledText] = useState("");
   const text = draftText ?? uncontrolledText;
@@ -335,6 +344,8 @@ export function EntryComposer({
       );
     } finally {
       setUploadingFiles((prev) => prev.filter((n) => n !== file.name));
+      // Both outcomes changed the tray (ready card OR retained failed card).
+      onAttachmentsChanged?.();
     }
   }
 
@@ -371,15 +382,18 @@ export function EntryComposer({
 
   function removeAttachment(id: string) {
     setAttachments((prev) => prev.filter((a) => a.id !== id));
+    onAttachmentsChanged?.();
   }
 
   function retryFailedFile(entry: { name: string; file: File }) {
     setFailedFiles((prev) => prev.filter((f) => f.name !== entry.name));
+    // uploadOne notifies onAttachmentsChanged on either outcome.
     void uploadOne(entry.file);
   }
 
   function removeFailedFile(name: string) {
     setFailedFiles((prev) => prev.filter((f) => f.name !== name));
+    onAttachmentsChanged?.();
   }
 
   // Mock §5: frame-wide drag-drop; dropped files run the SAME validation +

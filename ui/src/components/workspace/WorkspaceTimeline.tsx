@@ -146,6 +146,29 @@ export function WorkspaceTimeline({
   const [highlightedAnchorId, setHighlightedAnchorId] = useState<string | null>(null);
   const [anchorAnnouncement, setAnchorAnnouncement] = useState("");
 
+  // Stale-snapshot guard (mock §5: failure never eats your work): once the
+  // draft diverges from the failed attempt, Retry would post stale content and
+  // its success-clear would wipe the newer edits — dismiss the banner. The ref
+  // is kept (nothing double-posts); the next send is a normal fresh submission
+  // with a NEW clientSubmissionId. Called from EVERY text-changing path
+  // (textarea typing AND mention inserts).
+  const dismissBannerOnDivergence = (nextText: string) => {
+    if (
+      sendFailed &&
+      !sendMessage.isPending &&
+      lastAttemptRef.current &&
+      nextText.trim() !== lastAttemptRef.current.text
+    ) {
+      setSendFailed(false);
+    }
+  };
+
+  // Any attachment-tray mutation IS divergence: Retry would post the snapshot
+  // including a removed (possibly sensitive) file, or without a newly added one.
+  const dismissBannerOnTrayChange = () => {
+    if (sendFailed && !sendMessage.isPending) setSendFailed(false);
+  };
+
   // Shared @mention (mock v2): the @ button opens the picker and a trailing
   // `@token` opens the same list inline. Server-side, task/workspace comment
   // mentions wake the mentioned agents (issues.ts findMentionedAgents).
@@ -155,6 +178,7 @@ export function WorkspaceTimeline({
     onChange: (next) => {
       composerRevisionRef.current += 1;
       setChatInput(next);
+      dismissBannerOnDivergence(next);
     },
     focusAt: (pos) => {
       const ta = textareaRef.current;
@@ -168,19 +192,7 @@ export function WorkspaceTimeline({
     composerRevisionRef.current += 1;
     setChatInput(e.target.value);
     setComposerError(null);
-    // Stale-snapshot guard (mock §5: failure never eats your work): once the
-    // draft diverges from the failed attempt, Retry would post stale content
-    // and its success-clear would wipe the newer edits — dismiss the banner.
-    // The ref is kept (nothing double-posts); the next send is a normal fresh
-    // submission with a NEW clientSubmissionId.
-    if (
-      sendFailed &&
-      !sendMessage.isPending &&
-      lastAttemptRef.current &&
-      e.target.value.trim() !== lastAttemptRef.current.text
-    ) {
-      setSendFailed(false);
-    }
+    dismissBannerOnDivergence(e.target.value);
     mention.refresh(e.target.value, e.target.selectionStart ?? e.target.value.length);
     // Auto-grow: reset to 1 row then expand to content, max 4 rows
     const ta = e.target;
@@ -466,6 +478,9 @@ export function WorkspaceTimeline({
     composerRevisionRef.current += 1;
     setSelectedFiles(next);
     setComposerError(errors.length > 0 ? errors.join(" ") : null);
+    // Only a REAL tray change (a file actually accepted) is divergence — an
+    // all-rejected add leaves the snapshot's tray intact, so the banner stays.
+    if (next.length !== selectedFiles.length) dismissBannerOnTrayChange();
   };
 
   const handleFilesSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -478,6 +493,8 @@ export function WorkspaceTimeline({
     composerRevisionRef.current += 1;
     setSelectedFiles((files) => files.filter((_, i) => i !== index));
     setComposerError(null);
+    // Retry must never post a removed (possibly sensitive) file.
+    dismissBannerOnTrayChange();
   };
 
   // Frame-wide drag-drop (mock §5): ONE hook instance shared by both chatbar
@@ -518,7 +535,7 @@ export function WorkspaceTimeline({
   /** Banner Retry: re-send the IDENTICAL stored attempt (same clientSubmissionId). */
   const handleRetryFailedSend = () => {
     const attempt = lastAttemptRef.current;
-    if (!attempt || sendInFlightRef.current || sendMessage.isPending) return;
+    if (!attempt || sendInFlightRef.current || sendMessage.isPending || isOffline) return;
     sendInFlightRef.current = true;
     sendMessage.mutate(attempt);
   };

@@ -128,6 +128,10 @@ export function ThreadTab({
   const [retrying, setRetrying] = useState(false);
   const [composerClearSignal, setComposerClearSignal] = useState(0);
   const lastAttemptedPayloadRef = useRef<AddEntryPayload | null>(null);
+  // Latest composer text as reported by EntryComposer (both draft modes) —
+  // lets the retry-success path skip the clearSignal bump when the draft
+  // diverged WHILE the retry was in flight (edits must never be wiped).
+  const latestDraftTextRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (sendReceipt !== "sent") return;
@@ -463,7 +467,13 @@ export function ThreadTab({
       setSendReceipt("sent");
       // The original submit's success path clears the composer inside
       // EntryComposer; a banner Retry bypasses that path, so clear via signal.
-      setComposerClearSignal((n) => n + 1);
+      // EXCEPT when the draft diverged WHILE the retry was in flight (the
+      // divergence dismiss is locked during retry) — clearing then would wipe
+      // the newer edits. The message posted; the edits stay as a fresh draft.
+      const latest = latestDraftTextRef.current;
+      if (latest === null || latest.trim() === payload.rawContent.trim()) {
+        setComposerClearSignal((n) => n + 1);
+      }
     } catch {
       // Still failing — the banner stays up (mutation onError already toasts).
     } finally {
@@ -487,6 +497,7 @@ export function ThreadTab({
    * uncontrolled draft modes.
    */
   function handleComposerDraftChange(text: string) {
+    latestDraftTextRef.current = text;
     if (
       sendFailed &&
       !retrying &&
@@ -496,6 +507,16 @@ export function ThreadTab({
       setSendFailed(false);
     }
     onDraftTextChange?.(text);
+  }
+
+  /**
+   * Any attachment-tray mutation (add/remove/failed-card change) IS divergence
+   * from the failed snapshot: Retry would post the snapshot including a
+   * removed (possibly sensitive) file, or without a newly added one — dismiss
+   * the banner (locked while retrying, same as the text-divergence guard).
+   */
+  function handleComposerAttachmentsChanged() {
+    if (sendFailed && !retrying) setSendFailed(false);
   }
 
   async function handleUpload(file: File): Promise<AssetRef> {
@@ -589,6 +610,7 @@ export function ThreadTab({
         myInitials={myInitials}
         draftText={draftText}
         onDraftTextChange={handleComposerDraftChange}
+        onAttachmentsChanged={handleComposerAttachmentsChanged}
         clearSignal={composerClearSignal}
         failureBanner={
           sendFailed ? (

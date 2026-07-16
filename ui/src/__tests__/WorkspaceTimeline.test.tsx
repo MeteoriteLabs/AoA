@@ -200,7 +200,7 @@ function renderTimeline(props: Partial<React.ComponentProps<typeof WorkspaceTime
     },
   });
 
-  const result = render(
+  const makeUi = () => (
     <QueryClientProvider client={queryClient}>
       <MemoryRouter>
         <WorkspaceTimeline
@@ -208,10 +208,14 @@ function renderTimeline(props: Partial<React.ComponentProps<typeof WorkspaceTime
           {...props}
         />
       </MemoryRouter>
-    </QueryClientProvider>,
+    </QueryClientProvider>
   );
 
-  return { ...result, queryClient };
+  const result = render(makeUi());
+
+  // Fresh element tree each time so mocked hook values (e.g. liveState) that
+  // changed since the first render are re-read.
+  return { ...result, queryClient, rerenderTimeline: () => result.rerender(makeUi()) };
 }
 
 function setScrollMetrics(element: HTMLElement, metrics: { scrollHeight: number; clientHeight: number; scrollTop: number }) {
@@ -1064,6 +1068,77 @@ describe("WorkspaceTimeline — B-states (mock §5)", () => {
     fireEvent.drop(chatbar, { dataTransfer: { types: ["Files"], files: [file] } });
     expect(screen.queryByTestId("composer-drop-overlay")).not.toBeInTheDocument();
     expect(await screen.findByText("dropped.png")).toBeInTheDocument();
+  });
+
+  it("removing a selected file dismisses the banner — Retry must never post a removed file", async () => {
+    issuesApiMock.addCommentWithAttachments.mockRejectedValueOnce(new Error("boom"));
+    renderTimeline();
+
+    const textarea = await screen.findByPlaceholderText("Message Alpha Agent...");
+    const file = new File(["fake"], "sensitive.txt", { type: "text/plain" });
+    fireEvent.change(screen.getByTestId("workspace-chatbar-file-input"), { target: { files: [file] } });
+    fireEvent.change(textarea, { target: { value: "with file" } });
+    fireEvent.click(screen.getByText("Send & wake"));
+    await screen.findByTestId("composer-send-failed-banner");
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove sensitive.txt" }));
+    expect(screen.queryByTestId("composer-send-failed-banner")).not.toBeInTheDocument();
+    // No resend happened — the stale snapshot (with the removed file) is unreachable.
+    expect(issuesApiMock.addCommentWithAttachments).toHaveBeenCalledTimes(1);
+  });
+
+  it("adding a file dismisses the banner; a fully rejected add leaves it up", async () => {
+    issuesApiMock.addComment.mockRejectedValueOnce(new Error("network error"));
+    renderTimeline();
+
+    const textarea = await screen.findByPlaceholderText("Message Alpha Agent...");
+    fireEvent.change(textarea, { target: { value: "text only" } });
+    fireEvent.click(screen.getByText("Send & wake"));
+    await screen.findByTestId("composer-send-failed-banner");
+
+    // A rejected file leaves the tray unchanged — no divergence, banner stays.
+    const unsupported = new File(["fake"], "script.exe", { type: "application/x-msdownload" });
+    fireEvent.change(screen.getByTestId("workspace-chatbar-file-input"), { target: { files: [unsupported] } });
+    expect(screen.getByTestId("composer-send-failed-banner")).toBeInTheDocument();
+
+    const file = new File(["fake"], "added.png", { type: "image/png" });
+    fireEvent.change(screen.getByTestId("workspace-chatbar-file-input"), { target: { files: [file] } });
+    expect(screen.queryByTestId("composer-send-failed-banner")).not.toBeInTheDocument();
+  });
+
+  it("the @ mention button insert dismisses the banner (divergence via mention.onChange)", async () => {
+    issuesApiMock.addComment.mockRejectedValueOnce(new Error("network error"));
+    renderTimeline();
+
+    const textarea = await screen.findByPlaceholderText("Message Alpha Agent...");
+    fireEvent.change(textarea, { target: { value: "mention me" } });
+    fireEvent.click(screen.getByText("Send & wake"));
+    await screen.findByTestId("composer-send-failed-banner");
+
+    fireEvent.click(screen.getByRole("button", { name: "Mention someone" }));
+    expect(screen.queryByTestId("composer-send-failed-banner")).not.toBeInTheDocument();
+  });
+
+  it("Retry is a no-op while offline", async () => {
+    issuesApiMock.addComment.mockRejectedValueOnce(new Error("network error"));
+    const { rerenderTimeline } = renderTimeline();
+
+    const textarea = await screen.findByPlaceholderText("Message Alpha Agent...");
+    fireEvent.change(textarea, { target: { value: "retry offline" } });
+    fireEvent.click(screen.getByText("Send & wake"));
+    await screen.findByTestId("composer-send-failed-banner");
+
+    liveState.connectionState = "offline";
+    rerenderTimeline();
+
+    const banner = screen.getByTestId("composer-send-failed-banner");
+    fireEvent.click(within(banner).getByRole("button", { name: "Retry" }));
+    // Flush the (would-be) async mutation before asserting nothing was sent.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(issuesApiMock.addComment).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("composer-send-failed-banner")).toBeInTheDocument();
   });
 
   it("frame drag-drop still routes through attachment validation (oversized dropped file rejected)", async () => {
