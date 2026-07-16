@@ -97,6 +97,7 @@ import {
   validateCommanderAttachmentFiles,
 } from "./commander/commanderAttachments";
 import { ComposerFrame } from "./composer/ComposerFrame";
+import { ComposerIconButton } from "./composer/ComposerIconButton";
 import type { CommanderContextScope } from "@armyofagents/shared";
 import type { CommanderOutputRef } from "@armyofagents/shared";
 import { useInlineWorkQuestions, WorkQuestionInlineError } from "./work-questions/WorkQuestionInlineList";
@@ -2089,15 +2090,13 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
             <TooltipProvider>
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <button
-                    type="button"
+                  <ComposerIconButton
                     disabled={streaming}
                     aria-label="Attach file"
-                    className="size-8 rounded-full flex items-center justify-center shrink-0 text-muted-foreground hover:text-foreground hover:bg-muted/60 disabled:opacity-40"
                     onClick={() => commanderFileInputRef.current?.click()}
                   >
                     <Paperclip className="size-4" aria-hidden="true" />
-                  </button>
+                  </ComposerIconButton>
                 </TooltipTrigger>
                 <TooltipContent side="top">Attach file</TooltipContent>
               </Tooltip>
@@ -2107,26 +2106,35 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
             <TooltipProvider>
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <button
-                    type="button"
+                  <ComposerIconButton
                     disabled={streaming}
                     aria-label="Mention a teammate"
-                    className="size-8 rounded-full flex items-center justify-center shrink-0 text-muted-foreground hover:text-foreground hover:bg-muted/60 disabled:opacity-40"
                     onClick={() => {
                       inputRef.current?.focus();
                       inputRef.current?.insertText("@");
                     }}
                   >
                     <AtSign className="size-4" aria-hidden="true" />
-                  </button>
+                  </ComposerIconButton>
                 </TooltipTrigger>
                 <TooltipContent side="top">Mention a teammate</TooltipContent>
               </Tooltip>
             </TooltipProvider>
 
+            {/* Voice (disabled, coming soon) */}
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <ComposerIconButton aria-label="Voice input" title="Voice input" comingSoon>
+                    <Mic className="size-4" aria-hidden="true" />
+                  </ComposerIconButton>
+                </TooltipTrigger>
+                <TooltipContent side="top">Coming soon</TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+
             {/* Extras slot: + add menu (attach via menu + Use a skill) */}
             <InputAddMenu
-              onAttachFile={() => commanderFileInputRef.current?.click()}
               onUseSkill={() => {
                 setPickerIndex(0);
                 setSkillPickerOpen(true);
@@ -2136,23 +2144,6 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
               }}
               disabled={streaming}
             />
-
-            {/* Voice (disabled, coming soon) */}
-            <TooltipProvider>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button
-                    type="button"
-                    disabled
-                    aria-disabled="true"
-                    className="size-8 rounded-full flex items-center justify-center shrink-0 text-muted-foreground opacity-40 cursor-not-allowed"
-                  >
-                    <Mic className="size-4" aria-hidden="true" />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="top">Coming soon</TooltipContent>
-              </Tooltip>
-            </TooltipProvider>
 
             {/* Spacer */}
             <div className="flex-1" />
