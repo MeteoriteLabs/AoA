@@ -31,6 +31,27 @@ vi.mock("./MarkdownBody", () => ({
   MarkdownBody: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
 }));
 
+// The real InlineEntitySelector is a popover combobox; the control contract
+// only needs value/options/onChange, so mock it as a plain select.
+vi.mock("./InlineEntitySelector", () => ({
+  InlineEntitySelector: ({ value, options, onChange }: {
+    value: string;
+    options: Array<{ id: string; label: string }>;
+    onChange: (next: string) => void;
+  }) => (
+    <select
+      data-testid="assignee-selector-mock"
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+    >
+      <option value="">Assignee</option>
+      {options.map((option) => (
+        <option key={option.id} value={option.id}>{option.label}</option>
+      ))}
+    </select>
+  ),
+}));
+
 // Mutable connection state for the shared offline strip (B-states, mock §5).
 const liveState = vi.hoisted(() => ({ connectionState: "open" }));
 
@@ -251,6 +272,89 @@ describe("CommentThread — B-states (mock §5)", () => {
     fireEvent.drop(frame, { dataTransfer: { types: ["Files"], files: [file] } });
     expect(screen.queryByTestId("composer-drop-overlay")).not.toBeInTheDocument();
     expect(await screen.findByText("dropped.png")).toBeInTheDocument();
+  });
+
+  it("changing the assignee after a failure dismisses the banner — Retry must never post a stale reassignment", async () => {
+    const { onAdd } = renderThread({
+      enableReassign: true,
+      reassignOptions: [
+        { id: "agent:agent-a", label: "Agent A" },
+        { id: "agent:agent-b", label: "Agent B" },
+      ],
+    });
+    onAdd.mockRejectedValueOnce(new Error("network error"));
+
+    fireEvent.change(screen.getByTestId("assignee-selector-mock"), { target: { value: "agent:agent-a" } });
+    fireEvent.change(editor(), { target: { value: "reassign please" } });
+    fireEvent.click(screen.getByRole("button", { name: "Comment" }));
+    await screen.findByTestId("composer-send-failed-banner");
+    expect(onAdd.mock.calls[0][2]).toEqual({ assigneeAgentId: "agent-a", assigneeUserId: null });
+
+    // Switching the target after the failure: Retry would post the OLD
+    // reassignment and the success-clear would silently discard the new one.
+    fireEvent.change(screen.getByTestId("assignee-selector-mock"), { target: { value: "agent:agent-b" } });
+    expect(screen.queryByTestId("composer-send-failed-banner")).not.toBeInTheDocument();
+    expect(onAdd).toHaveBeenCalledTimes(1);
+  });
+
+  it("toggling interrupt after a failure dismisses the banner", async () => {
+    const { onAdd } = renderThread({ hasActiveRun: true });
+    onAdd.mockRejectedValueOnce(new Error("network error"));
+
+    fireEvent.change(editor(), { target: { value: "interrupt flip" } });
+    fireEvent.click(screen.getByRole("button", { name: "Comment" }));
+    await screen.findByTestId("composer-send-failed-banner");
+
+    const interruptBox = within(screen.getByTestId("task-comments-interrupt")).getByRole("checkbox");
+    fireEvent.click(interruptBox);
+    expect(screen.queryByTestId("composer-send-failed-banner")).not.toBeInTheDocument();
+    expect(onAdd).toHaveBeenCalledTimes(1);
+  });
+
+  it("toggling reopen after a failure dismisses the banner", async () => {
+    const { onAdd } = renderThread({ issueStatus: "done" });
+    onAdd.mockRejectedValueOnce(new Error("network error"));
+
+    fireEvent.change(editor(), { target: { value: "reopen flip" } });
+    fireEvent.click(screen.getByRole("button", { name: "Comment" }));
+    await screen.findByTestId("composer-send-failed-banner");
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /Re-open/i }));
+    expect(screen.queryByTestId("composer-send-failed-banner")).not.toBeInTheDocument();
+    expect(onAdd).toHaveBeenCalledTimes(1);
+  });
+
+  it("a retry that succeeds AFTER the assignee changed skips the clears (revision guard)", async () => {
+    const { onAdd } = renderThread({
+      enableReassign: true,
+      reassignOptions: [
+        { id: "agent:agent-a", label: "Agent A" },
+        { id: "agent:agent-b", label: "Agent B" },
+      ],
+    });
+    onAdd.mockRejectedValueOnce(new Error("network error"));
+
+    fireEvent.change(screen.getByTestId("assignee-selector-mock"), { target: { value: "agent:agent-a" } });
+    fireEvent.change(editor(), { target: { value: "hold my draft" } });
+    fireEvent.click(screen.getByRole("button", { name: "Comment" }));
+    const banner = await screen.findByTestId("composer-send-failed-banner");
+
+    // Retry hangs; while it is in flight the user picks a different assignee.
+    let resolveRetry!: () => void;
+    onAdd.mockImplementationOnce(() => new Promise<void>((resolve) => { resolveRetry = resolve; }));
+    fireEvent.click(within(banner).getByRole("button", { name: "Retry" }));
+    fireEvent.change(screen.getByTestId("assignee-selector-mock"), { target: { value: "agent:agent-b" } });
+
+    await act(async () => { resolveRetry(); });
+    await waitFor(() =>
+      expect(screen.queryByTestId("composer-send-failed-banner")).not.toBeInTheDocument(),
+    );
+    // Retry itself posted the ORIGINAL snapshot (assignee A)…
+    expect(onAdd).toHaveBeenCalledTimes(2);
+    expect(onAdd.mock.calls[1][2]).toEqual({ assigneeAgentId: "agent-a", assigneeUserId: null });
+    // …but the success-clear must NOT wipe the newer control state or draft.
+    expect((screen.getByTestId("assignee-selector-mock") as HTMLSelectElement).value).toBe("agent:agent-b");
+    expect(editor()).toHaveValue("hold my draft");
   });
 
   it("frame drag-drop still routes through attachment validation (oversized dropped file rejected)", async () => {

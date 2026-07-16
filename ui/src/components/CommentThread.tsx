@@ -380,6 +380,16 @@ export function CommentThread({
     }
   };
 
+  // Control changes (assignee / reopen / interrupt) are part of the snapshot:
+  // Retry would post the OLD values and the success-clear would reset the
+  // newer choice — dismiss the banner and mark divergence (same "Retry must
+  // never post what the user changed" principle as the tray). The revision
+  // bump also keeps a mid-flight retry success from clearing the newer state.
+  function dismissBannerOnControlChange() {
+    composerRevisionRef.current += 1;
+    if (sendFailed && !submitting) setSendFailed(false);
+  }
+
   /** Shared send path: handleSubmit mints a fresh attempt, banner Retry
    *  replays the stored one (same clientSubmissionId). */
   async function performSend(attempt: CommentSendAttempt) {
@@ -651,7 +661,10 @@ export function CommentThread({
               <input
                 type="checkbox"
                 checked={reopen}
-                onChange={(e) => setReopen(e.target.checked)}
+                onChange={(e) => {
+                  setReopen(e.target.checked);
+                  dismissBannerOnControlChange();
+                }}
                 className="rounded border-border"
               />
               Re-open
@@ -665,7 +678,10 @@ export function CommentThread({
               noneLabel="No assignee"
               searchPlaceholder="Search assignees..."
               emptyMessage="No assignees found."
-              onChange={setReassignTarget}
+              onChange={(next) => {
+                setReassignTarget(next);
+                dismissBannerOnControlChange();
+              }}
               className="text-xs h-8"
               renderTriggerValue={(option) => {
                 if (!option) return <span className="text-muted-foreground">Assignee</span>;
@@ -711,7 +727,10 @@ export function CommentThread({
               type="checkbox"
               checked={interrupt}
               disabled={hasReassignment}
-              onChange={(e) => setInterrupt(e.target.checked)}
+              onChange={(e) => {
+                setInterrupt(e.target.checked);
+                dismissBannerOnControlChange();
+              }}
               className="rounded border-border"
             />
             Interrupt active run — applies to the next send
