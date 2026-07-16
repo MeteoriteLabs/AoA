@@ -8,9 +8,10 @@ import { cleanupTestCompanies, seedCompany } from "./helpers/seed-company";
  *  - An asset-backed artifact attached to a discussion entry renders an inline
  *    file chip (InlineArtifactCard → `artifact-file-chip`) with a working
  *    download link and a founder-gated archive/unarchive control.
- *  - The founder file-artifact upload control in the composer
- *    (FileArtifactUpload → `file-artifact-upload`) uploads a file, attaches it
- *    as a tracked artifact, and the sent entry shows the inline chip.
+ *  - Mock v2 (2026-07-16): the composer's File-artifact control was REMOVED —
+ *    📎 plain attach is the only composer upload entry, and a guard test below
+ *    asserts the control stays gone. Artifact creation lives outside composers
+ *    (agents / MCP / API), covered by the chip test above.
  *
  * Founder gating note (load-bearing for the archive control): the e2e webServer
  * boots in local_trusted mode, where `ensureLocalTrustedBoardPrincipal`

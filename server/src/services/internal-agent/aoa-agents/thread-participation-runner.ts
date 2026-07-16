@@ -155,11 +155,14 @@ export function makeThreadParticipationRunner(
           : { produced: false, suppressedStale: false, statuses: [] as string[], blockedReasons: [] as string[] };
 
         if (post.produced) {
-          // Live-QA 2026-07-16: a `failed` post_reply row (e.g. blocked by
-          // posting authz) is retryable by the commit CAS, so we still return
-          // benignly — but it is NOT silent: warn with the statuses and
-          // blocked reasons so a systematically failing commit is visible.
-          const hasFailedRow = post.statuses.some((s) => s === "failed" || s === "blocked_policy");
+          // Live-QA 2026-07-16: a `failed` post_reply row is retryable by the
+          // commit CAS (status IN ('proposed','failed')), while `blocked_policy`
+          // is TERMINAL — say which one, so an operator doesn't wait on a retry
+          // that will never come. We still return benignly either way, but the
+          // outcome is NOT silent.
+          const hasRetryableFailure = post.statuses.includes("failed");
+          const hasTerminalBlock = post.statuses.includes("blocked_policy");
+          const hasFailedRow = hasRetryableFailure || hasTerminalBlock;
           const logPayload = {
             threadId,
             agentId,
@@ -174,7 +177,9 @@ export function makeThreadParticipationRunner(
           if (hasFailedRow) {
             log.warn(
               logPayload,
-              "participation runner: post_reply produced but its commit FAILED — row stays retryable; investigate blocked reasons",
+              hasTerminalBlock && !hasRetryableFailure
+                ? "participation runner: post_reply commit BLOCKED (terminal — will not retry); investigate blocked reasons"
+                : "participation runner: post_reply produced but its commit FAILED — row stays retryable; investigate blocked reasons",
             );
           } else {
             log.info(

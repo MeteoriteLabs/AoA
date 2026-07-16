@@ -81,7 +81,14 @@ describe("detectTrailingMention", () => {
     ["hi @Adj more", 7, "Adj"], // caret inside — only text up to caret counts
     ["no mention", 10, null],
     ["email@host", 10, null], // @ must follow start or whitespace
-  ])("%s (caret %i) → %s", (text, caret, expected) => {
-    expect(detectTrailingMention(text as string, caret as number)).toBe(expected);
+  ])("%s (caret %i) → token %s", (text, caret, expected) => {
+    const hit = detectTrailingMention(text as string, caret as number);
+    expect(hit?.token ?? null).toBe(expected);
+  });
+
+  it("returns the exact range of the token so select() can replace mid-text (F1)", () => {
+    // "hello  world" with "@S" typed at caret 6 → "hello @S world", caret 8.
+    const hit = detectTrailingMention("hello @S world", 8);
+    expect(hit).toEqual({ token: "S", start: 6, end: 8 });
   });
 });

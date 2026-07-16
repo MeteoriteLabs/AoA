@@ -9,17 +9,32 @@
  * this hook brings the remaining surfaces up to the same contract with the
  * company's agents as mention targets (the server wakes @mentioned agents on
  * task/workspace comments — issues.ts findMentionedAgents).
+ *
+ * RANGE-BASED (review findings F1/F2/F9, 2026-07-16): the hook tracks the
+ * exact {start, end} of the live token from the caret-anchored refresh —
+ * select() replaces THAT range (never a regex against the end of the whole
+ * value), and the menu closes automatically whenever the input value changes
+ * through any path the hook didn't drive (send-clear, programmatic reset).
  */
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { agentsApi } from "@/api/agents";
 import type { MentionOption } from "./ComposerMentionMenu";
 
-/** Detect a trailing `@token` (same rule as EntryComposer/threads). */
-export function detectTrailingMention(text: string, caret: number): string | null {
+/**
+ * Detect an `@token` immediately before the caret (start-or-whitespace
+ * boundary, same rule as EntryComposer/threads). Returns the token AND its
+ * range so the caller can replace exactly what the user typed.
+ */
+export function detectTrailingMention(
+  text: string,
+  caret: number,
+): { token: string; start: number; end: number } | null {
   const upToCaret = text.slice(0, caret);
   const match = /(^|\s)@([\w-]*)$/.exec(upToCaret);
-  return match ? match[2] : null;
+  if (!match) return null;
+  const token = match[2];
+  return { token, start: caret - token.length - 1, end: caret };
 }
 
 export interface UseComposerMentionArgs {
@@ -32,9 +47,23 @@ export interface UseComposerMentionArgs {
 }
 
 export function useComposerMention({ companyId, value, onChange, focusAt }: UseComposerMentionArgs) {
-  const [open, setOpen] = useState(false);
+  // Single source of truth: a non-null range = menu open on that token.
+  const [range, setRange] = useState<{ start: number; end: number } | null>(null);
   const [query, setQuery] = useState("");
   const [index, setIndex] = useState(0);
+  // The last value the hook itself saw/produced. Any other change to the
+  // input (send cleared it, a draft restore, etc.) closes the menu — a
+  // lingering popover over text it no longer describes is finding F2.
+  const lastSeenValueRef = useRef(value);
+
+  useEffect(() => {
+    if (value !== lastSeenValueRef.current) {
+      lastSeenValueRef.current = value;
+      setRange(null);
+    }
+  }, [value]);
+
+  const open = range !== null;
 
   // Server-side @mention resolution on comments matches org + aoa agents
   // (issues.ts findMentionedAgents) — offer the same set in the picker.
@@ -56,46 +85,54 @@ export function useComposerMention({ companyId, value, onChange, focusAt }: UseC
     () =>
       (agents as Array<{ id: string; name: string; status?: string; icon?: string | null }>)
         .filter((a) => a.status !== "terminated")
-        .filter((a) => a.name.toLowerCase().startsWith(query.toLowerCase()))
+        // `includes`, not `startsWith` — Discussion and Commander both match
+        // anywhere in the name; the surfaces must behave identically (F5).
+        .filter((a) => a.name.toLowerCase().includes(query.toLowerCase()))
         .slice(0, 8)
         .map((a) => ({ id: a.id, name: a.name, type: "agent" as const, icon: a.icon ?? null })),
     [agents, query],
   );
 
-  /** Re-evaluate on every text/caret change (wire to onChange/onSelect). */
+  /** Re-evaluate on every text/caret change (wire to onChange AND onSelect). */
   const refresh = useCallback((text: string, caret: number) => {
-    const token = detectTrailingMention(text, caret);
-    if (token === null) {
-      setOpen(false);
+    lastSeenValueRef.current = text;
+    const hit = detectTrailingMention(text, caret);
+    if (!hit) {
+      setRange(null);
       return;
     }
-    setQuery(token);
+    setQuery(hit.token);
     setIndex(0);
-    setOpen(true);
+    setRange({ start: hit.start, end: hit.end });
   }, []);
 
-  /** @ button: append "@" (space-separated) and open the picker. */
+  /** @ button: append "@" (space-separated) and open the picker on it. */
   const openViaButton = useCallback(() => {
     const next = value.length === 0 || /\s$/.test(value) ? `${value}@` : `${value} @`;
+    lastSeenValueRef.current = next;
     onChange(next);
     setQuery("");
     setIndex(0);
-    setOpen(true);
+    setRange({ start: next.length - 1, end: next.length });
     requestAnimationFrame(() => focusAt(next.length));
   }, [value, onChange, focusAt]);
 
-  /** Replace the trailing @token with the picked mention. */
+  /** Replace the tracked token range with the picked mention. */
   const select = useCallback(
     (option: MentionOption) => {
-      const caretText = value;
-      const match = /(^|\s)@([\w-]*)$/.exec(caretText);
-      const start = match ? caretText.length - match[2].length - 1 : caretText.length;
-      const next = `${caretText.slice(0, start)}@${option.name} `;
+      if (!range) return;
+      // Clamp defensively — the value may have grown/shrunk since the range
+      // was captured (we close on external changes, but belt-and-braces).
+      const start = Math.min(range.start, value.length);
+      const end = Math.min(range.end, value.length);
+      const inserted = `@${option.name} `;
+      const next = `${value.slice(0, start)}${inserted}${value.slice(end)}`;
+      lastSeenValueRef.current = next;
       onChange(next);
-      setOpen(false);
-      requestAnimationFrame(() => focusAt(next.length));
+      setRange(null);
+      requestAnimationFrame(() => focusAt(start + inserted.length));
     },
-    [value, onChange, focusAt],
+    [range, value, onChange, focusAt],
   );
 
   /** Keyboard contract while open: ↑/↓ navigate, Enter picks, Esc closes. */
@@ -119,7 +156,7 @@ export function useComposerMention({ companyId, value, onChange, focusAt }: UseC
       }
       if (e.key === "Escape") {
         e.preventDefault();
-        setOpen(false);
+        setRange(null);
         return true;
       }
       return false;
@@ -136,6 +173,6 @@ export function useComposerMention({ companyId, value, onChange, focusAt }: UseC
     openViaButton,
     select,
     handleKeyDown,
-    close: () => setOpen(false),
+    close: () => setRange(null),
   };
 }

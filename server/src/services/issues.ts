@@ -2637,7 +2637,19 @@ export function issueService(db: Db) {
       // platform stays excluded — platform agents are not mentionable by users.
       const rows = await db.select({ id: agents.id, name: agents.name })
         .from(agents).where(and(eq(agents.companyId, companyId), inArray(agents.kind, ["org", "aoa"])));
-      return rows.filter(a => tokens.has(a.name.toLowerCase())).map(a => a.id);
+      // Multi-word names ("Memory Keeper") can never appear as a single
+      // whitespace-delimited token, so the token pass alone made them
+      // unmentionable (review F3, 2026-07-16) — the composer @ pickers offer
+      // exactly these names. Second pass: case-insensitive "@Full Name"
+      // substring for names containing whitespace.
+      const lowerBody = body.toLowerCase();
+      return rows
+        .filter((a) => {
+          const name = a.name.toLowerCase();
+          if (tokens.has(name)) return true;
+          return /\s/.test(name) && lowerBody.includes(`@${name}`);
+        })
+        .map((a) => a.id);
     },
 
     resolveAgentKinds: async (ids: string[]): Promise<Map<string, string>> => {

@@ -65,8 +65,6 @@ export interface Mention {
 
 export interface EntryComposerProps {
   threadId: string;
-  /** Company scope — used by the founder file-artifact upload control. */
-  companyId: string;
   parentEntryId?: string | null;
   agents: AgentRef[];
   users: UserRef[];
@@ -139,7 +137,6 @@ function detectMentionToken(
 
 export function EntryComposer({
   threadId,
-  companyId,
   parentEntryId = null,
   agents,
   users,

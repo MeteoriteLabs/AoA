@@ -693,6 +693,12 @@ export function WorkspaceTimeline({
               value={chatInput}
               onChange={handleTextareaChange}
               onKeyDown={handleComposerKeyDown}
+              onSelect={(e) => {
+                // Caret moves (click/arrows) re-evaluate the mention token so
+                // the menu can't go stale against a moved caret (F9).
+                const t = e.currentTarget;
+                mention.refresh(t.value, t.selectionStart ?? t.value.length);
+              }}
               onPaste={handleComposerPaste}
               onDragOver={(e) => { if (e.dataTransfer.types.includes("Files")) e.preventDefault(); }}
               onDrop={handleComposerDrop}
@@ -809,6 +815,12 @@ export function WorkspaceTimeline({
               value={chatInput}
               onChange={handleTextareaChange}
               onKeyDown={handleComposerKeyDown}
+              onSelect={(e) => {
+                // Caret moves (click/arrows) re-evaluate the mention token so
+                // the menu can't go stale against a moved caret (F9).
+                const t = e.currentTarget;
+                mention.refresh(t.value, t.selectionStart ?? t.value.length);
+              }}
               onPaste={handleComposerPaste}
               onDragOver={(e) => { if (e.dataTransfer.types.includes("Files")) e.preventDefault(); }}
               onDrop={handleComposerDrop}

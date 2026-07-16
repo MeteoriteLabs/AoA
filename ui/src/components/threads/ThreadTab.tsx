@@ -490,7 +490,6 @@ export function ThreadTab({
     <div data-testid="thread-composer">
       <EntryComposer
         threadId={threadId}
-        companyId={companyId}
         agents={composerAgents}
         users={composerUsers}
         onUpload={handleUpload}

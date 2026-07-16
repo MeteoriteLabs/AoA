@@ -169,4 +169,34 @@ describe("findMentionedAgents resolves kind='aoa' agents (B1 contract)", () => {
       "eq(agents.kind, 'org') should not be called — that was the old pre-B1 predicate"
     ).toBe(false);
   });
+
+  // Review F3 (2026-07-16): the whitespace-delimited tokenizer parsed
+  // "@Memory Keeper" as token "memory" — a standard crew agent that the
+  // composer @ pickers offer could never be woken by mention. Multi-word
+  // names now also match via a case-insensitive "@Full Name" substring pass.
+  it("resolves multi-word agent names ('@Memory Keeper') via the full-name pass", async () => {
+    const rows = [
+      { id: "a-mk", name: "Memory Keeper" },
+      { id: "a-scout", name: "Scout" },
+      { id: "a-adj", name: "Adjutant" },
+    ];
+    const db: any = { select: () => makeSelectChain(rows) };
+    const svc = issueService(db);
+
+    const out = await svc.findMentionedAgents(
+      "co-1",
+      "Please review @Memory Keeper and @Scout, thanks",
+    );
+    expect(out).toContain("a-mk"); // full-name pass
+    expect(out).toContain("a-scout"); // token pass
+    expect(out).not.toContain("a-adj"); // not mentioned
+
+    // Case-insensitive + trailing punctuation on the single-word token.
+    const out2 = await svc.findMentionedAgents("co-1", "cc @memory keeper.");
+    expect(out2).toEqual(["a-mk"]);
+
+    // The bare word "memory" without the full name must NOT wake Memory Keeper.
+    const out3 = await svc.findMentionedAgents("co-1", "the @memory system is slow");
+    expect(out3).toEqual([]);
+  });
 });
