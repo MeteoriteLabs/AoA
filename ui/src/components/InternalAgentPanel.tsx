@@ -87,6 +87,7 @@ import {
   appendCommanderInputRefsToMessage,
   commanderInputRefKey,
   commanderInputRefKindLabel,
+  createComposerSubmissionId,
 } from "@armyofagents/shared";
 import { assetsApi } from "../api/assets";
 import { agentsApi } from "../api/agents";
@@ -98,6 +99,11 @@ import {
 } from "./commander/commanderAttachments";
 import { ComposerFrame } from "./composer/ComposerFrame";
 import { ComposerIconButton } from "./composer/ComposerIconButton";
+import { ComposerSendFailedBanner } from "./composer/ComposerSendFailedBanner";
+import { ComposerOfflineStrip, toComposerConnectionState } from "./composer/ComposerOfflineStrip";
+import { ComposerDropOverlay } from "./composer/ComposerDropOverlay";
+import { useComposerDragDrop } from "./composer/useComposerDragDrop";
+import { useLiveUpdates } from "../context/LiveUpdatesProvider";
 import type { CommanderContextScope } from "@armyofagents/shared";
 import type { CommanderOutputRef } from "@armyofagents/shared";
 import { useInlineWorkQuestions, WorkQuestionInlineError } from "./work-questions/WorkQuestionInlineList";
@@ -542,6 +548,25 @@ interface AgentPanelContentProps {
   onSetSessionsCollapsed?: (value: boolean) => void;
 }
 
+/**
+ * Snapshot of one Commander submission (B-states, mock §5). Minted ONCE per
+ * submission BEFORE the send so the failed-send banner's Retry replays the
+ * EXACT attempt — same expanded message, same attachment ids, and the same
+ * clientSubmissionId (the server-side agent-loop replay dedupes if the first
+ * request actually landed). `revision` is the composer revision at snapshot
+ * time: a retry-success only clears the input when nothing diverged since.
+ */
+interface CommanderSendAttempt {
+  /** Trimmed raw input text — divergence comparisons only. */
+  rawText: string;
+  /** Fully expanded outgoing message (refs appended). */
+  message: string;
+  attachmentAssetIds: string[];
+  refsForTurn: CommanderInputRef[];
+  revision: number;
+  clientSubmissionId: string;
+}
+
 export function AgentPanelContent({ conversationId, onSelectConversation, onOpenSessions, enableViewerPanel, cardChrome = false, sessionsCollapsed, onSetSessionsCollapsed }: AgentPanelContentProps = {}) {
   const { selectedCompanyId } = useCompany();
   const { currentUser } = useTeamAccess(selectedCompanyId);
@@ -567,6 +592,18 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
   const [failedUploads, setFailedUploads] = useState<Array<{ id: number; file: File }>>([]);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [streaming, setStreamingLocal] = useState(false);
+  // ─── Composer B-states (mock §5) ────────────────────────────────────────
+  const [sendFailed, setSendFailed] = useState(false);
+  const lastAttemptRef = useRef<CommanderSendAttempt | null>(null);
+  // Bumped on every draft-changing edit (typing, ref add/remove, Discard) so a
+  // retry that succeeds AFTER the draft diverged skips the clears instead of
+  // wiping the newer edits (peer pattern: CommentThread / WorkspaceTimeline).
+  const composerRevisionRef = useRef(0);
+  // Mirror of `streaming` readable from stable callbacks (divergence guards).
+  const streamingRef = useRef(false);
+  const { connectionState } = useLiveUpdates();
+  const composerConnection = toComposerConnectionState(connectionState);
+  const isOffline = composerConnection === "offline";
   // Task 9: skill picker. `skillPickerOpen` = opened via the `+` menu (shows
   // all skills). `slashActive`/`slashQuery` = opened via a `/token` typed in
   // the textarea. The picker is open when either source is active.
@@ -974,10 +1011,11 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
   );
 
   const sendText = useCallback(
-    async (text: string, attachmentAssetIds?: string[]): Promise<boolean> => {
+    async (text: string, attachmentAssetIds?: string[], clientSubmissionId?: string): Promise<boolean> => {
       if (!text || !companyId || streaming) return false;
 
       setStreamingLocal(true);
+      streamingRef.current = true;
       setIsStreaming(true);
 
       // Add user message
@@ -1007,7 +1045,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
       let accepted = false;
 
       try {
-        const stream = streamAgentChat(companyId, text, pageContext, controller.signal, conversationId, contextScope, attachmentAssetIds);
+        const stream = streamAgentChat(companyId, text, pageContext, controller.signal, conversationId, contextScope, attachmentAssetIds, clientSubmissionId);
 
         for await (const event of stream) {
           handleSSEEvent(event, assistantId);
@@ -1034,6 +1072,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
           ),
         );
         setStreamingLocal(false);
+        streamingRef.current = false;
         setIsStreaming(false);
         abortRef.current = null;
         // Refresh conversation from server
@@ -1045,35 +1084,92 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
     [companyId, streaming, pageContext, setIsStreaming, queryClient, conversationId, contextScope],
   );
 
+  /** Shared send path: submitCommanderInput mints a fresh attempt, the failed-send
+   *  banner's Retry replays the stored one (same clientSubmissionId). */
+  const performCommanderSend = useCallback(
+    async (attempt: CommanderSendAttempt) => {
+      const accepted = await sendText(attempt.message, attempt.attachmentAssetIds, attempt.clientSubmissionId);
+      if (accepted) {
+        setSendFailed(false);
+        lastAttemptRef.current = null;
+        // Retry-success safety: only clear when the draft still matches the
+        // snapshot — mid-flight edits/ref changes must survive the clear.
+        if (composerRevisionRef.current === attempt.revision) {
+          inputRef.current?.clear();
+          const remaining = settleCommanderInputRefsAfterSend(
+            inputRefsRef.current,
+            attempt.refsForTurn,
+            true,
+          );
+          inputRefsRef.current = remaining;
+          setInputRefs(remaining);
+          setAttachmentError(null);
+        }
+      } else {
+        // Failure never eats your work (mock §5): the draft + attached refs are
+        // all kept — the shared banner offers Retry / Edit / Discard.
+        setSendFailed(true);
+      }
+    },
+    [sendText],
+  );
+
   const submitCommanderInput = useCallback(
     async (text: string) => {
       const trimmed = text.trim();
       const refsForTurn = inputRefsRef.current;
-      if ((!trimmed && refsForTurn.length === 0) || uploadingFiles.length > 0) return;
+      if ((!trimmed && refsForTurn.length === 0) || uploadingFiles.length > 0 || isOffline) return;
+      setSendFailed(false);
       const baseText = trimmed || "Use the referenced context.";
-      const attachmentAssetIds = refsForTurn
-        .filter((r) => r.kind === "asset")
-        .map((r) => r.id);
-      const accepted = await sendText(
-        appendCommanderInputRefsToMessage(baseText, refsForTurn),
-        attachmentAssetIds,
-      );
-      if (accepted) {
-        inputRef.current?.clear();
-        const remaining = settleCommanderInputRefsAfterSend(
-          inputRefsRef.current,
-          refsForTurn,
-          true,
-        );
-        inputRefsRef.current = remaining;
-        setInputRefs(remaining);
-        setAttachmentError(null);
-      } else {
-        setAttachmentError("Message was not sent. Your attached files are still here.");
-      }
+      // Minted ONCE per submission and snapshotted BEFORE the await so the
+      // banner's Retry re-sends the exact same attempt (same clientSubmissionId
+      // → the server replays if the first request actually landed).
+      const attempt: CommanderSendAttempt = {
+        rawText: trimmed,
+        message: appendCommanderInputRefsToMessage(baseText, refsForTurn),
+        attachmentAssetIds: refsForTurn.filter((r) => r.kind === "asset").map((r) => r.id),
+        refsForTurn,
+        revision: composerRevisionRef.current,
+        clientSubmissionId: createComposerSubmissionId(),
+      };
+      lastAttemptRef.current = attempt;
+      await performCommanderSend(attempt);
     },
-    [sendText, uploadingFiles.length],
+    [performCommanderSend, uploadingFiles.length, isOffline],
   );
+
+  /** Banner Retry: re-send the IDENTICAL stored attempt (same clientSubmissionId). */
+  const handleRetryFailedSend = useCallback(() => {
+    const attempt = lastAttemptRef.current;
+    if (!attempt || streamingRef.current || isOffline) return;
+    void performCommanderSend(attempt);
+  }, [performCommanderSend, isOffline]);
+
+  const handleEditFailedSend = useCallback(() => {
+    setSendFailed(false);
+  }, []);
+
+  const handleDiscardFailedSend = useCallback(() => {
+    lastAttemptRef.current = null;
+    setSendFailed(false);
+    composerRevisionRef.current += 1;
+    inputRef.current?.clear();
+    inputRefsRef.current = [];
+    setInputRefs([]);
+    setAttachmentError(null);
+  }, []);
+
+  // Stale-snapshot guard (mock §5: failure never eats your work): once the
+  // draft diverges from the failed attempt, Retry would post stale content and
+  // its success-clear would wipe the newer edits — dismiss the banner. The next
+  // send is a normal fresh submission with a NEW clientSubmissionId.
+  const handleComposerTextChange = useCallback((text: string) => {
+    composerRevisionRef.current += 1;
+    const attempt = lastAttemptRef.current;
+    if (attempt && !streamingRef.current && text.trim() !== attempt.rawText) {
+      setSendFailed(false);
+    }
+  }, []);
 
   const addInputRef = useCallback((ref: CommanderInputRef, suggestedPrompt?: string) => {
     const next = buildCommanderInputRefState(inputRefsRef.current, ref);
@@ -1081,6 +1177,13 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
     inputRefsRef.current = refs;
     setInputRefs(refs);
     setDuplicateInputRefKey(next.duplicateKey);
+    // Only a REAL tray change (a ref actually added) is divergence — Retry
+    // must never post attachments the failed attempt didn't include, so the
+    // banner goes down and the next send mints a fresh submission.
+    if (next.duplicateKey === null) {
+      composerRevisionRef.current += 1;
+      if (!streamingRef.current) setSendFailed(false);
+    }
     if (suggestedPrompt && next.duplicateKey === null) {
       inputRef.current?.insertText(suggestedPrompt);
     }
@@ -1129,6 +1232,13 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
     void uploadCommanderFiles(files);
   }, [uploadCommanderFiles]);
 
+  // Frame-wide drag-drop (mock §5): validation stays in uploadCommanderFiles
+  // (validateCommanderAttachmentFiles) — the hook only detects + hands over.
+  const { isDragActive, dragHandlers } = useComposerDragDrop({
+    onDropFiles: (files: File[]) => void uploadCommanderFiles(files),
+    disabled: streaming,
+  });
+
   useEffect(() => {
     if (!duplicateInputRefKey) return;
     const timer = window.setTimeout(() => setDuplicateInputRefKey(null), 1200);
@@ -1141,6 +1251,9 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
     inputRefsRef.current = refs;
     setInputRefs(refs);
     setDuplicateInputRefKey((current) => (current === key ? null : current));
+    // Retry must never post a removed (possibly sensitive) attachment.
+    composerRevisionRef.current += 1;
+    if (!streamingRef.current) setSendFailed(false);
   }, []);
 
   const handleOpenInputRef = useCallback(
@@ -1964,7 +2077,24 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
         {/* Honest delta vs the previous bespoke div: +shadow-sm, +flex-col/min-w-0
             base, +data-composer-frame attribute. NO overflow — the mention popover
             renders absolute bottom-full INSIDE this frame. */}
-        <ComposerFrame chrome="card" data-testid="commander-composer-frame">
+        <ComposerFrame chrome="card" data-testid="commander-composer-frame" dragHandlers={dragHandlers}>
+          <ComposerDropOverlay active={isDragActive} />
+          {/* B-states (mock §5): offline strip + failed-send banner, above the
+              attachments strip. Wrapper renders only when either is visible so
+              the connected/no-failure frame keeps its exact spacing. */}
+          {(composerConnection !== "connected" || sendFailed) && (
+            <div className="px-2 pt-2">
+              <ComposerOfflineStrip state={composerConnection} />
+              {sendFailed && (
+                <ComposerSendFailedBanner
+                  onRetry={handleRetryFailedSend}
+                  onEdit={handleEditFailedSend}
+                  onDiscard={handleDiscardFailedSend}
+                  retrying={streaming}
+                />
+              )}
+            </div>
+          )}
           <input
             ref={commanderFileInputRef}
             type="file"
@@ -2068,7 +2198,10 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
             onSubmit={(text) => void submitCommanderInput(text)}
             onReferenceDrop={({ ref, prompt }) => addInputRef(ref, prompt)}
             onFilesSelected={(files) => void uploadCommanderFiles(files)}
-            onTextChange={(text) => commanderDraft.setDraft({ text })}
+            onTextChange={(text) => {
+              commanderDraft.setDraft({ text });
+              handleComposerTextChange(text);
+            }}
             mentionOptions={mentionAgents.filter((agent) => agent.status !== "terminated").map((agent) => ({ id: agent.id, name: agent.name }))}
             onEmptyChange={handleEmptyChange}
             onSlashChange={handleSlashChange}
@@ -2163,7 +2296,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
               <button
                 type="button"
                 onClick={handleSend}
-                disabled={(inputEmpty && inputRefs.length === 0) || uploadingFiles.length > 0}
+                disabled={(inputEmpty && inputRefs.length === 0) || uploadingFiles.length > 0 || isOffline}
                 aria-label="Send message"
                 className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-brand px-3.5 text-xs font-semibold text-white hover:bg-brand-hover transition-colors focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-brand-focus-ring disabled:opacity-40 disabled:pointer-events-none"
               >
