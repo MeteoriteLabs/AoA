@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor, act } from "@testing-library/react";
+import { render, screen, waitFor, act, fireEvent } from "@testing-library/react";
 import { InvitedJoinTerminal } from "../InvitedJoinTerminal";
 import { queryKeys } from "@/lib/queryKeys";
 
@@ -33,7 +33,7 @@ const invitedJourney = {
   journey: "invited",
   targetCompanyId: "c1",
   pendingInvitations: [
-    { companyId: "c1", companyName: "Acme", inviteId: "r1", role: "team_member", createdAt: "" },
+    { companyId: "c1", companyName: "Acme", inviteId: "r1", role: "team_member", createdAt: "", filed: true },
   ],
   inviteToken: null,
 };
@@ -109,7 +109,7 @@ describe("InvitedJoinTerminal", () => {
       ...invitedJourney,
       pendingInvitations: [
         ...invitedJourney.pendingInvitations,
-        { companyId: "c2", companyName: "Beta", inviteId: "r2", role: "team_lead", createdAt: "" },
+        { companyId: "c2", companyName: "Beta", inviteId: "r2", role: "team_lead", createdAt: "", filed: true },
       ],
     });
     render(<InvitedJoinTerminal />);
@@ -186,6 +186,54 @@ describe("InvitedJoinTerminal", () => {
       await vi.advanceTimersByTimeAsync(8000);
     });
     expect(finalizeInvitedJoin).toHaveBeenCalledTimes(1);
+  });
+
+  describe("consent gate (tokenless detection, filed: false)", () => {
+    const tokenlessJourney = {
+      ...invitedJourney,
+      pendingInvitations: [
+        { companyId: "c1", companyName: "Acme", inviteId: "i9", role: "team_member", createdAt: "", filed: false },
+      ],
+    };
+
+    it("renders the consent card and does NOT finalize until Join is clicked; click → finalize → enter", async () => {
+      fetchJourney.mockResolvedValue(tokenlessJourney);
+      finalizeInvitedJoin.mockResolvedValue({ admitted: true, status: "approved" });
+      render(<InvitedJoinTerminal />);
+      expect(await screen.findByText(/invited to join Acme as Team Member/i)).toBeTruthy();
+      // Polling continues, but no tick may auto-finalize a tokenless invite.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(8000);
+      });
+      expect(finalizeInvitedJoin).not.toHaveBeenCalled();
+      expect(mockNavigate).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole("button", { name: /join acme/i }));
+      await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/", { replace: true }));
+      expect(finalizeInvitedJoin).toHaveBeenCalledWith("c1");
+    });
+
+    it("click → finalize pending → pending screen (request now filed)", async () => {
+      fetchJourney.mockResolvedValue(tokenlessJourney);
+      finalizeInvitedJoin.mockResolvedValue({ admitted: false, status: "pending" });
+      render(<InvitedJoinTerminal />);
+      fireEvent.click(await screen.findByRole("button", { name: /join acme/i }));
+      expect(await screen.findByText(/with the admin for approval/i)).toBeTruthy();
+      expect(finalizeInvitedJoin).toHaveBeenCalledWith("c1");
+      expect(mockNavigate).not.toHaveBeenCalled();
+    });
+
+    it("invite revoked while the consent card is shown → not-approved terminal, never finalizes", async () => {
+      fetchJourney.mockResolvedValue(tokenlessJourney);
+      render(<InvitedJoinTerminal />);
+      expect(await screen.findByText(/invited to join/i)).toBeTruthy();
+      // Revocation removes the invitation from the pending set.
+      fetchJourney.mockResolvedValue({ ...invitedJourney, journey: "founder", pendingInvitations: [] });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(8000);
+      });
+      expect(await screen.findByText(/not approved/i)).toBeTruthy();
+      expect(finalizeInvitedJoin).not.toHaveBeenCalled();
+    });
   });
 
   it("journey-poll 401 bails to sign-in", async () => {

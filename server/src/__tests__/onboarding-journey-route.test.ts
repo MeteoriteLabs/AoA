@@ -7,11 +7,13 @@ import {
 } from "../routes/onboarding-journey.js";
 
 // Sequence mock: each awaited query resolves the next canned result set.
-// `_whereCalls` captures each where() condition (REAL drizzle-orm SQL objects —
-// this file does not mock drizzle) so tests can regression-lock query gates.
+// `_whereCalls` / `_orderByCalls` capture each where()/orderBy() argument list
+// (REAL drizzle-orm SQL objects — this file does not mock drizzle) so tests
+// can regression-lock query gates and ordering.
 function seqDb(results: unknown[][]) {
   let i = 0;
   const whereCalls: unknown[] = [];
+  const orderByCalls: unknown[][] = [];
   const builder = (): any =>
     new Proxy(
       {},
@@ -26,11 +28,17 @@ function seqDb(results: unknown[][]) {
               return builder();
             };
           }
+          if (prop === "orderBy") {
+            return (...args: unknown[]) => {
+              orderByCalls.push(args);
+              return builder();
+            };
+          }
           return () => builder();
         },
       },
     );
-  return { select: () => builder(), _whereCalls: whereCalls } as any;
+  return { select: () => builder(), _whereCalls: whereCalls, _orderByCalls: orderByCalls } as any;
 }
 
 /**
@@ -47,6 +55,30 @@ function conditionColumns(cond: unknown): string[] {
   };
   walk(cond);
   return out;
+}
+
+/**
+ * Recursively collect the literal SQL text chunks of a real drizzle-orm SQL
+ * node (StringChunks carry `value: string[]`) — regression-locks raw SQL like
+ * `btrim(...)` and `desc` without stringifying circular Column/Table refs.
+ */
+function sqlText(node: unknown): string {
+  const out: string[] = [];
+  const walk = (c: unknown) => {
+    if (!c) return;
+    if (Array.isArray(c)) {
+      c.forEach(walk);
+      return;
+    }
+    if (typeof c !== "object") return;
+    const rec = c as Record<string, unknown>;
+    if (Array.isArray(rec.value) && rec.value.every((v) => typeof v === "string")) {
+      out.push((rec.value as string[]).join(""));
+    }
+    if (Array.isArray(rec.queryChunks)) rec.queryChunks.forEach(walk);
+  };
+  walk(node);
+  return out.join(" ");
 }
 
 describe("getJourneyForUser (A5 + RB7/RB9 wiring)", () => {
@@ -74,6 +106,7 @@ describe("getJourneyForUser (A5 + RB7/RB9 wiring)", () => {
         inviteId: "i2",
         role: "team_lead",
         createdAt: "2026-07-12T00:00:00.000Z",
+        filed: true,
       },
     ]);
   });
@@ -188,7 +221,9 @@ describe("getJourneyForUser — open-invite detection (tokenless invited entry)"
     const r = await getJourneyForUser(db, { userId: "u1" });
     expect(r.journey).toBe("invited");
     expect(r.targetCompanyId).toBe("c2");
-    // inviteId here is the INVITE id (no join_request exists yet).
+    // inviteId here is the INVITE id (no join_request exists yet) — and
+    // `filed: false` marks it as consent-gated (no join_request was filed;
+    // the terminal must not auto-finalize).
     expect(r.pendingInvitations).toEqual([
       {
         companyId: "c2",
@@ -196,8 +231,84 @@ describe("getJourneyForUser — open-invite detection (tokenless invited entry)"
         inviteId: "i9",
         role: "team_lead",
         createdAt: "2026-07-12T00:00:00.000Z",
+        filed: false,
       },
     ]);
+  });
+
+  it("marks FILED join_request invitations filed: true (auto-finalize allowed)", async () => {
+    const db = seqDb([
+      [{ email: "u@x.com", emailVerified: true }],
+      [], // memberships
+      [
+        {
+          inviteId: "jr-invite",
+          companyId: "c2",
+          companyName: "Beta",
+          createdAt: new Date("2026-07-12T00:00:00Z"),
+          defaults: null,
+        },
+      ],
+      [], // open invites
+    ]);
+    const r = await getJourneyForUser(db, { userId: "u1" });
+    expect(r.pendingInvitations).toHaveLength(1);
+    expect(r.pendingInvitations[0].filed).toBe(true);
+  });
+
+  it("newest open invite per company wins (parity with finalize's desc(createdAt) claim)", async () => {
+    const db = seqDb([
+      [{ email: "u@x.com", emailVerified: true }],
+      [], // memberships
+      [], // filed join_requests
+      [
+        // SQL returns newest-first (desc(createdAt)); the merge keeps the first
+        // row per company.
+        {
+          inviteId: "i-new",
+          companyId: "c2",
+          companyName: "Beta",
+          createdAt: new Date("2026-07-14T00:00:00Z"),
+          defaults: { teamInvite: { role: "team_lead" } },
+        },
+        {
+          inviteId: "i-old",
+          companyId: "c2",
+          companyName: "Beta",
+          createdAt: new Date("2026-07-10T00:00:00Z"),
+          defaults: null,
+        },
+      ],
+    ]);
+    const r = await getJourneyForUser(db, { userId: "u1" });
+    expect(r.pendingInvitations).toHaveLength(1);
+    expect(r.pendingInvitations[0].inviteId).toBe("i-new");
+    expect(r.pendingInvitations[0].role).toBe("team_lead");
+    // Structural lock: the open-invite query itself orders desc(createdAt) —
+    // the merge's first-row-wins only picks the newest if SQL sorts it first.
+    const openInviteOrderBy = (db._orderByCalls as unknown[][]).find((args) =>
+      args.some((a) => conditionColumns(a).includes("created_at")),
+    );
+    expect(openInviteOrderBy).toBeDefined();
+    expect(sqlText(openInviteOrderBy)).toContain("desc");
+  });
+
+  it("trims the invite email in SQL (btrim) — padded invite emails match like the admit gate", async () => {
+    const db = seqDb([
+      [{ email: "u@x.com", emailVerified: true }],
+      [], // memberships
+      [], // filed join_requests
+      [], // open invites
+    ]);
+    await getJourneyForUser(db, { userId: "u1" });
+    const openInviteWhere = (db._whereCalls as unknown[]).find((c) =>
+      conditionColumns(c).includes("expires_at"),
+    );
+    expect(openInviteWhere).toBeDefined();
+    const text = sqlText(openInviteWhere);
+    expect(text).toContain("lower(btrim(");
+    // Both sides trimmed: the jsonb-extracted invite email AND the caller email.
+    expect(text.match(/btrim/g)?.length).toBeGreaterThanOrEqual(2);
   });
 
   it("does NOT run open-invite detection for an unverified email", async () => {

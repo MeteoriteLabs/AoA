@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useLocation, useNavigate, useSearchParams } from "@/lib/router";
+import { Button } from "@/components/ui/button";
 import { fetchJourney, finalizeInvitedJoin } from "../api/onboarding";
 import { HUMAN_ROLE_LABELS } from "@/lib/human-profile-constants";
 import { queryKeys } from "@/lib/queryKeys";
 
 const POLL_MS = 7000;
 
-type Phase = "checking" | "pending" | "invite_invalid" | "not_approved";
+type Phase = "checking" | "consent" | "pending" | "invite_invalid" | "not_approved";
 
 /**
  * Terminal of the invited journey (spec §6). Attempts finalize on every poll
@@ -20,6 +21,14 @@ type Phase = "checking" | "pending" | "invite_invalid" | "not_approved";
  * driven: an existing member of another company (journey "returning") with a
  * pending invitation here still gets the finalize attempt. Never navigates to
  * "/" while an invitation is still pending — that re-triggers the join loop.
+ *
+ * Consent gate: a tokenlessly-DETECTED invitation (`filed === false` — no
+ * join_request exists; the user never clicked the invite link) is NEVER
+ * auto-finalized. Clicking the link was the consent moment the detection path
+ * removed, so an explicit "Join {company}" click stands in for it; only then
+ * does finalize claim + file + auto-admit. Polling continues under the consent
+ * card — a revoked/expired invite drops out of the pending set and the
+ * not-approved/enter branches take over.
  */
 export function InvitedJoinTerminal() {
   const navigate = useNavigate();
@@ -32,6 +41,10 @@ export function InvitedJoinTerminal() {
   const [searchParams] = useSearchParams();
   const [phase, setPhase] = useState<Phase>("checking");
   const [company, setCompany] = useState<{ name: string; role: string } | null>(null);
+  // Explicit consent for tokenless-detected invitations (filed === false).
+  // State (not a ref) so flipping it re-runs the poll effect immediately —
+  // the fresh tick performs the finalize the consent unlocked.
+  const [consented, setConsented] = useState(false);
   const timerRef = useRef<number | null>(null);
   const finalizedRef = useRef(false);
 
@@ -83,7 +96,13 @@ export function InvitedJoinTerminal() {
         }
 
         setCompany({ name: inv.companyName, role: inv.role });
-        if (!finalizedRef.current && targetId) {
+        if (inv.filed === false && !consented && !finalizedRef.current) {
+          // Tokenlessly-detected open invite: joining requires an explicit
+          // click — auto-finalize would admit the user into an org they never
+          // agreed to join. Keep polling (revoke/expiry removes the invitation
+          // and the branches above take over).
+          setPhase("consent");
+        } else if (!finalizedRef.current && targetId) {
           try {
             const result = await finalizeInvitedJoin(targetId);
             if (cancelled) return;
@@ -138,10 +157,27 @@ export function InvitedJoinTerminal() {
       cancelled = true;
       if (timerRef.current !== null) window.clearTimeout(timerRef.current);
     };
-  }, [enter, navigate, searchParams, pathname, search]);
+  }, [enter, navigate, searchParams, pathname, search, consented]);
 
   if (phase === "checking") {
     return <div className="mx-auto max-w-md py-16 text-sm text-muted-foreground">Checking your invitation…</div>;
+  }
+  if (phase === "consent") {
+    return (
+      <div className="mx-auto max-w-md py-16 text-center">
+        <h1 className="text-xl font-semibold">
+          You've been invited to join{company ? ` ${company.name}` : " a company"}
+          {company ? ` as ${HUMAN_ROLE_LABELS[company.role] ?? company.role}` : ""}
+        </h1>
+        <p className="mt-2 text-sm text-muted-foreground">
+          Joining shares your profile with the team and gives you access to the company workspace.
+          You'll only become a member if you choose to join.
+        </p>
+        <Button className="mt-6" disabled={consented} onClick={() => setConsented(true)}>
+          {consented ? "Joining…" : `Join${company ? ` ${company.name}` : ""}`}
+        </Button>
+      </div>
+    );
   }
   if (phase === "not_approved") {
     return (

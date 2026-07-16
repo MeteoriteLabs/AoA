@@ -141,6 +141,7 @@ describe("Lobby", () => {
             inviteId: "invite-1",
             role: "team_member",
             createdAt: "2026-07-13T00:00:00.000Z",
+            filed: true,
           },
         ]}
       />,

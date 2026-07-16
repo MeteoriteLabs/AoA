@@ -34,6 +34,11 @@ function requestIp(req: Request) {
  * VERIFIED email is claimed atomically (accept + file) and the finalize
  * continues with the fresh request. Unlike the filed path, expiry gates the
  * tokenless claim — nothing was accepted yet.
+ *
+ * Rejected-then-reinvited: when the NEWEST request is rejected but an OPEN
+ * matching invite exists, that invite is necessarily a fresh re-invite (the
+ * rejected request's invite was consumed at accept) — claim it and continue,
+ * instead of reporting the stale rejection forever.
  */
 export function onboardingJoinRoutes(db: Db): Router {
   const router = Router();
@@ -64,12 +69,15 @@ export function onboardingJoinRoutes(db: Db): Router {
       .orderBy(desc(joinRequests.createdAt))
       .limit(1)
       .then((rows) => rows[0] ?? null);
-    if (!request) {
-      // Tokenless invited entry: no join_request means the token-accept path
-      // never ran. Look for an OPEN invite matching the caller's VERIFIED
-      // email; if one exists, claim it atomically (accept + file) and continue
-      // into the normal finalize with the fresh request. Expiry gates THIS
-      // lookup at claim time — nothing was accepted yet.
+    if (!request || request.status === "rejected") {
+      // Tokenless invited entry (no join_request — the token-accept path never
+      // ran) OR rejected-then-reinvited (the newest request is a dead rejection;
+      // any OPEN matching invite is necessarily a fresh re-invite, since the
+      // rejected request's invite was consumed at accept). Look for an OPEN
+      // invite matching the caller's VERIFIED email; if one exists, claim it
+      // atomically (accept + file) and continue into the normal finalize with
+      // the fresh request. Expiry gates THIS lookup at claim time — nothing was
+      // accepted yet.
       const caller = await db
         .select({ email: authUsers.email, emailVerified: authUsers.emailVerified })
         .from(authUsers)
@@ -89,7 +97,9 @@ export function onboardingJoinRoutes(db: Db): Router {
                   gt(invites.expiresAt, new Date()),
                   eq(invites.inviteType, "company_join"),
                   inArray(invites.allowedJoinTypes, ["human", "both"]),
-                  sql`lower(${invites.defaultsPayload} -> 'teamInvite' ->> 'email') = lower(${callerEmail})`,
+                  // btrim: padded invite emails must match like the admit gate,
+                  // which trims both sides before comparing.
+                  sql`lower(btrim(${invites.defaultsPayload} -> 'teamInvite' ->> 'email')) = lower(btrim(${callerEmail}))`,
                 ),
               )
               .orderBy(desc(invites.createdAt)) // newest invite wins (a re-invite may carry a new role)
@@ -97,6 +107,11 @@ export function onboardingJoinRoutes(db: Db): Router {
               .then((rows) => rows[0] ?? null)
           : null;
       if (!openInvite) {
+        if (request) {
+          // Rejected and no fresh invite — the rejection stands.
+          res.json({ admitted: false, status: "rejected" });
+          return;
+        }
         res.status(404).json({ error: "no join request or open invitation for this company" });
         return;
       }

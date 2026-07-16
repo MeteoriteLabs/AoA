@@ -15,13 +15,19 @@ vi.mock("../services/hub-source-producers.js", () => ({
 import { claimInviteAndFileJoinRequest } from "../services/invite-claim.js";
 
 /**
- * Mock tx: update().set().where() resolves; insert().values(v).onConflictDoNothing().returning()
- * yields `insertResult`; select().from().where() (reselect) yields `reselectResult`.
+ * Mock tx: update().set().where().returning() yields `updateResult` (default:
+ * one row — the guarded invite-accept matched); insert().values(v)
+ * .onConflictDoNothing().returning() yields `insertResult`;
+ * select().from().where() (reselect) yields `reselectResult`.
  */
-function makeDb(opts: { insertResult: unknown[]; reselectResult?: unknown[] }) {
+function makeDb(opts: { insertResult: unknown[]; reselectResult?: unknown[]; updateResult?: unknown[] }) {
   const inserted: unknown[] = [];
   const tx = {
-    update: () => ({ set: () => ({ where: async () => {} }) }),
+    update: () => ({
+      set: () => ({
+        where: () => ({ returning: async () => opts.updateResult ?? [{ id: "inv1" }] }),
+      }),
+    }),
     insert: () => ({
       values: (v: unknown) => {
         inserted.push(v);
@@ -70,5 +76,15 @@ describe("claimInviteAndFileJoinRequest (tokenless invited entry)", () => {
       reselectResult: [{ id: "other", status: "pending_approval", requestType: "agent", requestingUserId: null }],
     });
     await expect(claimInviteAndFileJoinRequest(db, base)).rejects.toThrow();
+  });
+
+  it("throws and files NOTHING when the invite was revoked/consumed between the route SELECT and the claim tx", async () => {
+    // The guarded UPDATE matches zero rows (acceptedAt/revokedAt no longer
+    // null) — filing a request against a dead invite would be junk nobody can
+    // approve from. The tx must abort before the insert.
+    const db = makeDb({ updateResult: [], insertResult: [] });
+    await expect(claimInviteAndFileJoinRequest(db, base)).rejects.toThrow(/no longer open/);
+    expect((db as unknown as { _inserted: unknown[] })._inserted).toHaveLength(0);
+    expect(emitHubItem).not.toHaveBeenCalled();
   });
 });

@@ -267,6 +267,51 @@ describe("POST /onboarding/join/finalize", () => {
       expect(inviteLookup).toContain('"revokedAt"');
       expect(inviteLookup).toContain('"inviteType"');
       expect(inviteLookup).toContain('"allowedJoinTypes"');
+      // Trim parity with the admit gate: both sides of the email match are
+      // btrim()ed in SQL, so a padded invite email still matches.
+      expect(inviteLookup).toContain("btrim");
+    });
+  });
+
+  describe("rejected-then-reinvited (newest request rejected, fresh open invite)", () => {
+    const freshInvite = {
+      id: "i9",
+      companyId: "c1",
+      revokedAt: null,
+      defaultsPayload: { teamInvite: { email: "ada@x.com", role: "team_member" } },
+    };
+
+    it("claims the fresh invite and continues (admits on a verified match)", async () => {
+      const { db } = createSequenceDb([
+        [{ ...pendingRequest, status: "rejected" }], // newest request = rejected
+        [{ email: "ada@x.com", emailVerified: true }], // caller (open-invite lookup)
+        [freshInvite], // fresh open invite (the rejected one was consumed at accept)
+        [{ ...validInvite, id: "i9" }], // invite re-select (existing finalize flow)
+        [{ email: "ADA@X.COM", emailVerified: true }], // caller re-select (existing flow)
+      ]);
+      const { json } = await call(db, { companyId: "c1" });
+      expect(claim).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ inviteId: "i9", companyId: "c1", userId: "u1" }),
+      );
+      expect(approveTx).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        expect.objectContaining({ requestId: "r9" }),
+      );
+      expect(json).toHaveBeenCalledWith({ admitted: true, status: "approved" });
+    });
+
+    it("stays rejected when NO open invite exists (no dead-end escape without a re-invite)", async () => {
+      const { db } = createSequenceDb([
+        [{ ...pendingRequest, status: "rejected" }],
+        [{ email: "ada@x.com", emailVerified: true }],
+        [], // no open invite
+      ]);
+      const { json } = await call(db, { companyId: "c1" });
+      expect(json).toHaveBeenCalledWith({ admitted: false, status: "rejected" });
+      expect(claim).not.toHaveBeenCalled();
+      expect(approveTx).not.toHaveBeenCalled();
     });
   });
 

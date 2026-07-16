@@ -72,6 +72,12 @@ export type PendingInvitation = {
   /** The role the invite grants (founder | team_lead | team_member). */
   role: string;
   createdAt: string;
+  /**
+   * True when a join_request is already filed (the user accepted the invite
+   * link). False = an open invite detected by verified-email match — requires
+   * explicit consent before joining.
+   */
+  filed: boolean;
 };
 
 /**
