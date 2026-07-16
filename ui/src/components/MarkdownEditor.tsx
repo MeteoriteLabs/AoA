@@ -364,7 +364,14 @@ const MarkdownEditorInner = forwardRef<MarkdownEditorRef, MarkdownEditorProps>(
       },
       insertText: (text: string) => {
         ref.current?.focus(undefined, { defaultSelection: "rootEnd" });
-        ref.current?.insertMarkdown(text);
+        // Insert via execCommand (same as decorateProjectMentions' replacement
+        // path) instead of insertMarkdown: it types into the contenteditable at
+        // the caret and fires real input events, so the @mention detector runs
+        // — the toolbar @ button must open the same picker typing @ does
+        // (approved mock v2). insertMarkdown bypasses those events.
+        requestAnimationFrame(() => {
+          document.execCommand("insertText", false, text);
+        });
       },
     }), []);
 

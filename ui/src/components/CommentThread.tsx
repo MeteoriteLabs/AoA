@@ -2,7 +2,7 @@ import { memo, useEffect, useMemo, useRef, useState, type ChangeEvent } from "re
 import { Link, useLocation } from "react-router-dom";
 import type { IssueComment, Agent, FeedbackVote } from "@armyofagents/shared";
 import { Button } from "@/components/ui/button";
-import { AtSign, Paperclip } from "lucide-react";
+import { AtSign, Mic, Paperclip } from "lucide-react";
 import { Identity } from "./Identity";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
 import { MarkdownBody } from "./MarkdownBody";
@@ -20,6 +20,7 @@ import {
 } from "../lib/task-composer-actions";
 import { COMPOSER_ATTACHMENT_CONTENT_TYPES, COMPOSER_MAX_ATTACHMENTS, COMPOSER_MAX_ATTACHMENT_BYTES } from "@armyofagents/shared";
 import { ComposerFrame } from "./composer/ComposerFrame";
+import { ComposerIconButton } from "./composer/ComposerIconButton";
 import { ComposerAttachmentCard } from "./composer/ComposerAttachmentCard";
 
 export { resolveTaskCommentAction } from "../lib/task-composer-actions";
@@ -458,24 +459,32 @@ export function CommentThread({
                 className="hidden"
                 onChange={handleAttachFile}
               />
-              <Button
-                variant="ghost"
-                size="icon-sm"
+              <ComposerIconButton
                 onClick={() => attachInputRef.current?.click()}
                 disabled={attaching}
                 title="Attach file"
+                aria-label="Attach file"
               >
                 <Paperclip className="h-4 w-4" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                onClick={() => editorRef.current?.insertText("@")}
+              </ComposerIconButton>
+              <ComposerIconButton
+                onClick={() => {
+                  // Boundary-safe insert: the editor's mention detector only
+                  // fires on start-or-whitespace + "@", so glue a space on when
+                  // the body doesn't end with one (mock v2: the @ button always
+                  // opens the picker).
+                  const needsSpace = body.length > 0 && !/\s$/.test(body);
+                  editorRef.current?.insertText(needsSpace ? " @" : "@");
+                }}
                 title="Mention someone"
                 aria-label="Mention someone"
+                data-testid="task-comments-mention-button"
               >
                 <AtSign className="h-4 w-4" />
-              </Button>
+              </ComposerIconButton>
+              <ComposerIconButton title="Voice input" aria-label="Voice input" comingSoon>
+                <Mic className="h-4 w-4" />
+              </ComposerIconButton>
             </div>
           )}
           {isClosed && (
