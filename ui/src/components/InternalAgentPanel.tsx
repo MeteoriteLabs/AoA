@@ -11,6 +11,7 @@ import {
   Loader2,
   MessageSquarePlus,
   Mic,
+  Paperclip,
   PanelLeft,
   Send,
   Square,
@@ -2082,20 +2083,25 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
               }
             }}
           />
-          {/* Controls row */}
+          {/* Controls row — approved mock §1/§2 order: attach + mention first,
+              surface extras (+ skills, voice) after them. */}
           <div className="flex items-center gap-1.5 px-2 pb-2">
-            {/* + add menu (functional) */}
-            <InputAddMenu
-              onAttachFile={() => commanderFileInputRef.current?.click()}
-              onUseSkill={() => {
-                setPickerIndex(0);
-                setSkillPickerOpen(true);
-                // Focus the textarea so ↑/↓/Enter drive the picker. Defer past
-                // the dropdown's own focus-restore on close.
-                requestAnimationFrame(() => inputRef.current?.focus());
-              }}
-              disabled={streaming}
-            />
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    disabled={streaming}
+                    aria-label="Attach file"
+                    className="size-8 rounded-full flex items-center justify-center shrink-0 text-muted-foreground hover:text-foreground hover:bg-muted/60 disabled:opacity-40"
+                    onClick={() => commanderFileInputRef.current?.click()}
+                  >
+                    <Paperclip className="size-4" aria-hidden="true" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="top">Attach file</TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
 
             {/* Structured @mention picker */}
             <TooltipProvider>
@@ -2117,6 +2123,19 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
                 <TooltipContent side="top">Mention a teammate</TooltipContent>
               </Tooltip>
             </TooltipProvider>
+
+            {/* Extras slot: + add menu (attach via menu + Use a skill) */}
+            <InputAddMenu
+              onAttachFile={() => commanderFileInputRef.current?.click()}
+              onUseSkill={() => {
+                setPickerIndex(0);
+                setSkillPickerOpen(true);
+                // Focus the textarea so ↑/↓/Enter drive the picker. Defer past
+                // the dropdown's own focus-restore on close.
+                requestAnimationFrame(() => inputRef.current?.focus());
+              }}
+              disabled={streaming}
+            />
 
             {/* Voice (disabled, coming soon) */}
             <TooltipProvider>
@@ -2144,9 +2163,10 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
                 type="button"
                 onClick={handleStop}
                 aria-label="Stop generation"
-                className="size-8 rounded-full flex items-center justify-center shrink-0 bg-[color:var(--error,#ef4444)] text-white hover:opacity-90 transition-opacity focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-brand-focus-ring"
+                className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-brand px-3 text-xs font-semibold text-white hover:opacity-90 transition-opacity focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-brand-focus-ring"
               >
-                <Square className="size-3.5 fill-current" aria-hidden="true" />
+                <Square className="size-3 fill-current" aria-hidden="true" />
+                Stop
               </button>
             ) : (
               <button
@@ -2154,9 +2174,10 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
                 onClick={handleSend}
                 disabled={(inputEmpty && inputRefs.length === 0) || uploadingFiles.length > 0}
                 aria-label="Send message"
-                className="size-8 rounded-full flex items-center justify-center shrink-0 bg-brand text-white hover:bg-brand-hover transition-colors focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-brand-focus-ring disabled:opacity-40 disabled:pointer-events-none"
+                className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-brand px-3.5 text-xs font-semibold text-white hover:bg-brand-hover transition-colors focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-brand-focus-ring disabled:opacity-40 disabled:pointer-events-none"
               >
-                <Send className="size-4" aria-hidden="true" />
+                Send
+                <Send className="size-3.5" aria-hidden="true" />
               </button>
             )}
           </div>
