@@ -1,0 +1,98 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { HumanProfileStep } from "../HumanProfileStep";
+import { validateRegistry, type StepContext } from "../../registry";
+import { ONBOARDING_STEPS } from "../index";
+
+const saveUserProfile = vi.hoisted(() => vi.fn(async (input: unknown) => input));
+const getUserProfile = vi.hoisted(() =>
+  vi.fn(async () => ({
+    userId: "u1", displayName: "Ada", avatarUrl: null, title: null,
+    bio: null, timezone: null, socialLinks: [],
+  })),
+);
+vi.mock("../../../api/userProfile", () => ({ saveUserProfile, getUserProfile }));
+vi.mock("../../../api/onboarding", () => ({
+  advanceOnboarding: vi.fn(async () => ({ completedStates: ["AUTHENTICATED", "PROFILE_SET"] })),
+}));
+
+import { advanceOnboarding } from "../../../api/onboarding";
+
+const ctx: StepContext = {
+  userId: "u1",
+  companyId: null, // invited runs on the user layer
+  journey: "invited",
+  completedStates: ["AUTHENTICATED"],
+};
+
+describe("HumanProfileStep (shared; wired invited)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("prefills Name from the global profile; submit blocked until Title is chosen", async () => {
+    render(<HumanProfileStep ctx={ctx} onComplete={vi.fn()} onBack={() => {}} />);
+    await waitFor(() =>
+      expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("Ada"),
+    );
+    const btn = screen.getByRole("button", { name: "Continue" }) as HTMLButtonElement;
+    expect(btn.disabled).toBe(true); // title still missing (timezone auto-detects)
+    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Engineer" } });
+    expect(btn.disabled).toBe(false);
+  });
+
+  it("requires a name when no global profile exists yet", async () => {
+    getUserProfile.mockResolvedValueOnce(null as never);
+    render(<HumanProfileStep ctx={ctx} onComplete={vi.fn()} onBack={() => {}} />);
+    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Engineer" } });
+    expect((screen.getByRole("button", { name: "Continue" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Ada" } });
+    expect((screen.getByRole("button", { name: "Continue" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("saves the full global profile (incl timezone) then advances PROFILE_SET", async () => {
+    const onComplete = vi.fn();
+    render(<HumanProfileStep ctx={ctx} onComplete={onComplete} onBack={() => {}} />);
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Ada" } });
+    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Engineer" } });
+    fireEvent.change(screen.getByLabelText("Timezone"), { target: { value: "Asia/Kolkata" } });
+    fireEvent.change(screen.getByLabelText("Short bio (optional)"), { target: { value: "hi" } });
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(() => expect(onComplete).toHaveBeenCalled());
+    expect(saveUserProfile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        displayName: "Ada",
+        title: "Engineer",
+        timezone: "Asia/Kolkata",
+        bio: "hi",
+      }),
+    );
+    expect(advanceOnboarding).toHaveBeenCalledWith({
+      companyId: null,
+      journey: "invited",
+      requestedState: "PROFILE_SET",
+    });
+  });
+
+  it("surfaces a save failure and re-enables the button", async () => {
+    saveUserProfile.mockRejectedValueOnce(new Error("save blew up"));
+    render(<HumanProfileStep ctx={ctx} onComplete={vi.fn()} onBack={() => {}} />);
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Ada" } });
+    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Engineer" } });
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    expect(await screen.findByText("save blew up")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Continue" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+});
+
+describe("registry rewire", () => {
+  it("still passes the guard", () => {
+    expect(validateRegistry(ONBOARDING_STEPS)).toEqual([]);
+  });
+  it("invited uses human-profile; founder keeps the bare profile step", () => {
+    const bare = ONBOARDING_STEPS.find((s) => s.id === "profile");
+    const rich = ONBOARDING_STEPS.find((s) => s.id === "human-profile");
+    expect(bare?.journeys).toEqual(["founder"]);
+    expect(rich?.journeys).toEqual(["invited"]);
+    expect(rich?.state).toBe("PROFILE_SET");
+    expect(rich?.order).toBe(1);
+  });
+});
