@@ -128,6 +128,8 @@ function MemberCard({
 }
 
 export interface ResendLinkResult {
+  /** Id of the NEW invite the rotated link belongs to. */
+  inviteId: string;
   email: string | null;
   url: string;
   expiresAt: string;
@@ -138,11 +140,13 @@ function InviteCard({
   canManage,
   onMutationSuccess,
   onResent,
+  onRevoked,
 }: {
   invite: TeamSummary["pendingInvites"][number];
   canManage: boolean;
   onMutationSuccess: () => Promise<void>;
   onResent: (result: ResendLinkResult) => void;
+  onRevoked: (inviteId: string) => void;
 }) {
   const { selectedCompanyId } = useCompany();
   const { pushToast } = useToast();
@@ -153,6 +157,7 @@ function InviteCard({
       // Resend rotates the token — surface the fresh link (this card is about
       // to be replaced by the new invite row, so the link lives in the parent).
       onResent({
+        inviteId: result.inviteId,
         email: invite.email,
         url: toAbsoluteInviteUrl(result.inviteUrl),
         expiresAt: result.expiresAt,
@@ -168,6 +173,8 @@ function InviteCard({
   const revokeMutation = useMutation({
     mutationFn: () => teamApi.revokeInvite(selectedCompanyId!, invite.id),
     onSuccess: async () => {
+      // The link is dead now — retract any banner still offering it.
+      onRevoked(invite.id);
       await onMutationSuccess();
       pushToast({ title: "Invite revoked", tone: "success" });
     },
@@ -403,6 +410,11 @@ export function HumansTab({ teamSummary, permissions, isSystemAdmin, onMutationS
   const handleResent = useCallback((result: ResendLinkResult) => {
     setResendLink(result);
     setResendCopied(false);
+  }, []);
+
+  const handleRevoked = useCallback((inviteId: string) => {
+    // Revoking the invite the banner belongs to makes its link dead.
+    setResendLink((prev) => (prev?.inviteId === inviteId ? null : prev));
   }, []);
 
   async function copyResendLink() {
@@ -713,6 +725,7 @@ export function HumansTab({ teamSummary, permissions, isSystemAdmin, onMutationS
                 canManage={permissions.canInviteUsers}
                 onMutationSuccess={invalidateTeam}
                 onResent={handleResent}
+                onRevoked={handleRevoked}
               />
             ))}
             {filteredJoinRequests.map((request) => (

@@ -388,9 +388,13 @@ export function accessService(db: Db) {
             tokenHash: hashToken(candidateToken),
             allowedJoinTypes: oldInvite.allowedJoinTypes,
             defaultsPayload: oldInvite.defaultsPayload,
-            // Payload-aware TTL: email-bound team invites keep their 7-day
-            // window on resend; open/agent invites keep the 10-minute one.
-            expiresAt: companyInviteExpiresAt(oldInvite.defaultsPayload),
+            // Payload-aware TTL: human-only email-bound team invites keep
+            // their 7-day window on resend; agent/both/open invites keep
+            // the 10-minute one.
+            expiresAt: companyInviteExpiresAt(
+              oldInvite.defaultsPayload,
+              oldInvite.allowedJoinTypes,
+            ),
             invitedByUserId: oldInvite.invitedByUserId,
           })
           .returning()

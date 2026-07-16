@@ -136,7 +136,7 @@ describe("POST /onboarding/join/finalize", () => {
     expect(json).toHaveBeenCalledWith({ admitted: false, status: "invite_invalid" });
   });
 
-  it("admits even when expiresAt has passed — validity was established at accept (10-min TTL)", async () => {
+  it("admits even when expiresAt has passed — validity was established at accept (payload-aware TTL)", async () => {
     const { db } = createSequenceDb([
       [pendingRequest],
       [{ ...validInvite, expiresAt: new Date(Date.now() - 60_000) }],

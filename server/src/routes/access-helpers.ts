@@ -188,11 +188,16 @@ export function inviteDefaultsHaveBoundEmail(defaultsPayload: unknown): boolean 
 
 export function companyInviteExpiresAt(
   defaultsPayload: unknown = null,
+  allowedJoinTypes: string | null = null,
   nowMs: number = Date.now(),
 ) {
-  const ttlMs = inviteDefaultsHaveBoundEmail(defaultsPayload)
-    ? EMAIL_INVITE_TTL_MS
-    : COMPANY_INVITE_TTL_MS;
+  // The 7-day TTL requires the invite to be human-ONLY as well as
+  // email-bound: an "agent"/"both" invite's agent-join half is gated by
+  // link secrecy alone (no email verification), so it keeps the short TTL.
+  const ttlMs =
+    allowedJoinTypes === "human" && inviteDefaultsHaveBoundEmail(defaultsPayload)
+      ? EMAIL_INVITE_TTL_MS
+      : COMPANY_INVITE_TTL_MS;
   return new Date(nowMs + ttlMs);
 }
 

@@ -304,4 +304,41 @@ describe("HumansTab", () => {
     expect(clipboardSpy).toHaveBeenCalledWith("https://aoa.example.com/invite/tok-2");
     expect(await screen.findByRole("button", { name: "Copied" })).toBeInTheDocument();
   });
+
+  it("clears the resend banner when the invite it belongs to is revoked", async () => {
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    vi.mocked(teamApi.resendInvite).mockResolvedValue({
+      inviteId: "invite-2",
+      token: "tok-2",
+      inviteUrl: "https://aoa.example.com/invite/tok-2",
+      expiresAt,
+    });
+    vi.mocked(teamApi.revokeInvite).mockResolvedValue({ ok: true });
+    const user = userEvent.setup();
+    const { rerender } = renderHumansTab({ summary: pendingInviteSummary });
+
+    await user.click(await screen.findByRole("button", { name: "Resend invite" }));
+    expect(await screen.findByText("New invite link for ada@example.com")).toBeInTheDocument();
+
+    // The refetched summary now shows the rotated invite (invite-2).
+    const rotatedSummary: TeamSummary = {
+      ...teamSummary,
+      pendingInvites: [{ ...pendingInviteSummary.pendingInvites[0]!, id: "invite-2" }],
+    };
+    rerender(
+      <HumansTab
+        teamSummary={rotatedSummary}
+        highlightId={null}
+        permissions={teamSummary.currentUser!.permissions}
+        isSystemAdmin={false}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Revoke invite" }));
+    await waitFor(() => {
+      expect(teamApi.revokeInvite).toHaveBeenCalledWith("company-1", "invite-2");
+    });
+    // The banner offered a now-dead link — it must be gone.
+    expect(screen.queryByText("New invite link for ada@example.com")).not.toBeInTheDocument();
+  });
 });

@@ -42,7 +42,7 @@ import {
   teamService,
 } from "../services/index.js";
 import { assertCompanyAccess } from "./authz.js";
-import { companyInviteExpiresAt } from "./access-helpers.js";
+import { companyInviteExpiresAt, requestBaseUrl } from "./access-helpers.js";
 import {
   claimBoardOwnership,
   inspectBoardClaimChallenge
@@ -90,15 +90,6 @@ function tokenHashesMatch(left: string, right: string) {
     leftBytes.length === rightBytes.length &&
     timingSafeEqual(leftBytes, rightBytes)
   );
-}
-
-function requestBaseUrl(req: Request) {
-  const forwardedProto = req.header("x-forwarded-proto");
-  const proto = forwardedProto?.split(",")[0]?.trim() || req.protocol || "http";
-  const host =
-    req.header("x-forwarded-host")?.split(",")[0]?.trim() || req.header("host");
-  if (!host) return "";
-  return `${proto}://${host}`;
 }
 
 function readSkillMarkdown(skillName: string): string | null {
@@ -1691,9 +1682,13 @@ export function accessRoutes(
         inviteType: "company_join" as const,
         allowedJoinTypes: req.body.allowedJoinTypes,
         defaultsPayload,
-        // Email-bound team invites get the long TTL (see access-helpers.ts):
-        // the verified-email match is the real gate, link secrecy is secondary.
-        expiresAt: companyInviteExpiresAt(defaultsPayload),
+        // Human-only email-bound team invites get the long TTL (see
+        // access-helpers.ts): the verified-email match is the real gate,
+        // link secrecy is secondary. Agent/both invites keep 10 minutes.
+        expiresAt: companyInviteExpiresAt(
+          defaultsPayload,
+          req.body.allowedJoinTypes
+        ),
         invitedByUserId: req.actor.userId ?? null
       };
 

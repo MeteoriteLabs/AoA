@@ -26,7 +26,8 @@ function requestIp(req: Request) {
  * the CALLER's own pending human join_request. Admits iff the caller's VERIFIED
  * email matches the invited email (case-insensitive), computed fresh here —
  * else the request stays pending for founder approval. Invite validity was
- * established AT ACCEPT (10-minute TTL, consumed on accept) — expiresAt is NOT
+ * established AT ACCEPT (payload-aware TTL — email-bound human invites live
+ * 7 days, others 10 minutes; consumed on accept) — expiresAt is NOT
  * re-checked; only a defensive revokedAt check remains.
  *
  * Tokenless entry: when NO join_request exists (the user signed in without
@@ -160,8 +161,9 @@ export function onboardingJoinRoutes(db: Db): Router {
       .from(invites)
       .where(eq(invites.id, request.inviteId))
       .then((rows) => rows[0] ?? null);
-    // Validity was established AT ACCEPT (accept enforces the 10-minute TTL and
-    // consumes the invite). Do NOT re-check expiresAt here — the clock keeps
+    // Validity was established AT ACCEPT (accept enforces the payload-aware
+    // invite TTL — 7 days for email-bound human invites, 10 minutes otherwise —
+    // and consumes the invite). Do NOT re-check expiresAt here — the clock keeps
     // ticking through sign-in + the profile form and would degrade nearly every
     // real auto-admit to pending (spec §9). Keep only a defensive revokedAt check.
     if (!invite || invite.revokedAt) {
