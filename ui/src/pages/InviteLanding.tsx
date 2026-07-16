@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, useParams } from "@/lib/router";
+import { Link, useNavigate, useParams } from "@/lib/router";
 import { accessApi } from "../api/access";
 import { authApi } from "../api/auth";
 import { healthApi } from "../api/health";
@@ -43,6 +43,7 @@ function readNestedString(value: unknown, path: string[]): string | null {
 
 export function InviteLandingPage() {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const params = useParams();
   const token = (params.token ?? "").trim();
   const [joinType, setJoinType] = useState<JoinType>("human");
@@ -110,6 +111,14 @@ export function InviteLandingPage() {
       await queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
       const asBootstrap =
         payload && typeof payload === "object" && "bootstrapAccepted" in (payload as Record<string, unknown>);
+      if (!asBootstrap && joinType === "human") {
+        // Human accepts continue into the guided invited onboarding (profile →
+        // auto-admit/pending) instead of the inline "request submitted" screen.
+        const companyId = (payload as { companyId?: string | null })?.companyId ?? "";
+        queryClient.removeQueries({ queryKey: ["onboarding", "journey"], exact: true });
+        navigate(`/onboarding/join?company=${encodeURIComponent(companyId)}`, { replace: true });
+        return;
+      }
       setResult({ kind: asBootstrap ? "bootstrap" : "join", payload });
     },
     onError: (err) => {

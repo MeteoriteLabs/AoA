@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   getSession: vi.fn(),
   getInvite: vi.fn(),
   acceptInvite: vi.fn(),
+  navigate: vi.fn(),
 }));
 
 vi.mock("../api/health", () => ({
@@ -24,6 +25,7 @@ vi.mock("../api/access", () => ({
 }));
 vi.mock("@/lib/router", () => ({
   useParams: () => ({ token: "invite-token" }),
+  useNavigate: () => mocks.navigate,
   Link: ({ to, children }: { to: string; children: ReactNode }) => <a href={to}>{children}</a>,
 }));
 
@@ -36,11 +38,12 @@ function renderPage() {
       mutations: { retry: false },
     },
   });
-  return render(
+  const view = render(
     <QueryClientProvider client={queryClient}>
       <InviteLandingPage />
     </QueryClientProvider>,
   );
+  return { ...view, queryClient };
 }
 
 describe("InviteLandingPage authentication", () => {
@@ -98,6 +101,11 @@ describe("InviteLandingPage authentication", () => {
         capabilities: null,
       });
     });
+
+    // Agent accepts keep their inline result screen (claim-secret display) —
+    // only human accepts redirect into the guided invited flow.
+    expect(await screen.findByText(/join request submitted/i)).toBeInTheDocument();
+    expect(mocks.navigate).not.toHaveBeenCalled();
   });
 
   it("keeps legacy local_trusted human acceptance compatible without authReady", async () => {
@@ -129,5 +137,55 @@ describe("InviteLandingPage authentication", () => {
     await waitFor(() => {
       expect(mocks.acceptInvite).toHaveBeenCalledWith("invite-token", { requestType: "human" });
     });
+  });
+
+  it("routes a successful human accept into the guided invited flow instead of the inline result screen", async () => {
+    mocks.getHealth.mockResolvedValue({
+      status: "ok",
+      deploymentMode: "local_trusted",
+      authReady: true,
+    });
+    mocks.getSession.mockResolvedValue({ user: { id: "user-1" } });
+    mocks.acceptInvite.mockResolvedValue({ id: "join-1", companyId: "company-42" });
+
+    const { queryClient } = renderPage();
+    const removeQueriesSpy = vi.spyOn(queryClient, "removeQueries");
+
+    const submitButton = await screen.findByRole("button", { name: /submit join request/i });
+    fireEvent.click(submitButton);
+
+    await waitFor(() => {
+      expect(mocks.navigate).toHaveBeenCalledWith(
+        "/onboarding/join?company=company-42",
+        { replace: true },
+      );
+    });
+
+    expect(removeQueriesSpy).toHaveBeenCalledWith({ queryKey: ["onboarding", "journey"], exact: true });
+    expect(screen.queryByText(/join request submitted/i)).not.toBeInTheDocument();
+  });
+
+  it("does not redirect a bootstrap-CEO accept (keeps the inline bootstrap-complete screen)", async () => {
+    mocks.getHealth.mockResolvedValue({
+      status: "ok",
+      deploymentMode: "local_trusted",
+      authReady: true,
+    });
+    mocks.getSession.mockResolvedValue({ user: { id: "user-1" } });
+    mocks.getInvite.mockResolvedValue({
+      id: "invite-1",
+      inviteType: "bootstrap_ceo",
+      allowedJoinTypes: "both",
+      expiresAt: "2026-08-01T00:00:00.000Z",
+    });
+    mocks.acceptInvite.mockResolvedValue({ id: "join-1", bootstrapAccepted: true, companyId: "company-42" });
+
+    renderPage();
+
+    const submitButton = await screen.findByRole("button", { name: /accept bootstrap invite/i });
+    fireEvent.click(submitButton);
+
+    expect(await screen.findByText(/bootstrap complete/i)).toBeInTheDocument();
+    expect(mocks.navigate).not.toHaveBeenCalled();
   });
 });
