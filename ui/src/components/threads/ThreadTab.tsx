@@ -497,7 +497,6 @@ export function ThreadTab({
         onSubmit={handleComposerSubmit}
         onSubmitError={() => setSendReceipt("failed")}
         disabled={isDisconnected || addEntryMutation.isPending}
-        canCreateFileArtifacts={canManageArtifacts}
         myInitials={myInitials}
         draftText={draftText}
         onDraftTextChange={onDraftTextChange}

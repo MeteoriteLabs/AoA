@@ -225,7 +225,9 @@ describe("EntryComposer — attachments", () => {
     expect(screen.queryByTestId("file-artifact-upload")).not.toBeInTheDocument();
   });
 
-  it("renders the tracked file-artifact upload when allowed", () => {
+  it("never renders the file-artifact control and shows the dim mic placeholder (mock v2)", () => {
+    // Mock v2: 📎 is the ONLY attach entry — the File-artifact button was
+    // removed from the composer. The mic is present (disabled) for placement.
     renderWithProviders(
       <EntryComposer
         threadId="thread-1"
@@ -233,10 +235,12 @@ describe("EntryComposer — attachments", () => {
         agents={agents}
         users={users}
         onSubmit={vi.fn()}
-        canCreateFileArtifacts
       />,
     );
-    expect(screen.getByTestId("file-artifact-upload")).toBeInTheDocument();
+    expect(screen.queryByTestId("file-artifact-upload")).not.toBeInTheDocument();
+    const mic = screen.getByTestId("entry-composer-mic-button") as HTMLButtonElement;
+    expect(mic.disabled).toBe(true);
+    expect(mic.title).toMatch(/coming soon/i);
   });
 
   it("renders an attachment preview after the file is uploaded", async () => {

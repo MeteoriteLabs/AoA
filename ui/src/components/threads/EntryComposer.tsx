@@ -19,9 +19,10 @@ import {
   type KeyboardEvent,
   type ChangeEvent,
 } from "react";
-import { AtSign, Paperclip, SendHorizonal, X } from "lucide-react";
+import { AtSign, Mic, Paperclip, SendHorizonal, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ComposerAttachmentCard } from "../composer/ComposerAttachmentCard";
+import { ComposerIconButton } from "../composer/ComposerIconButton";
 import {
   COMPOSER_ATTACHMENT_CONTENT_TYPES,
   COMPOSER_MAX_ATTACHMENTS,
@@ -31,7 +32,6 @@ import {
   EntryAutocompleteList,
   type EntrySuggestion,
 } from "./EntryAutocompleteList";
-import { FileArtifactUpload } from "./FileArtifactUpload";
 import { ComposerFrame } from "../composer/ComposerFrame";
 
 /* ─── Public types ─── */
@@ -86,8 +86,6 @@ export interface EntryComposerProps {
   onSubmitError?: (error: unknown) => void;
   /** Composer is disabled (offline, error, etc.) and visually shows it. */
   disabled?: boolean;
-  /** Founder-only control for creating tracked file artifacts. */
-  canCreateFileArtifacts?: boolean;
   /** Optional inline hint shown above the input (e.g. offline notice). */
   hint?: React.ReactNode;
   /** Placeholder override. */
@@ -149,7 +147,6 @@ export function EntryComposer({
   onSubmit,
   onSubmitError,
   disabled = false,
-  canCreateFileArtifacts = false,
   hint,
   placeholder,
   onCancelReply,
@@ -471,16 +468,14 @@ export function EntryComposer({
       {/* Toolbar row (approved mock §1): attach + mention + extras left, red
           labeled Send bottom-right. */}
       <div className="flex items-center gap-1 pt-1">
-        <button
-          type="button"
+        <ComposerIconButton
           onClick={() => fileInputRef.current?.click()}
           title="Attach file"
-          className="shrink-0 inline-flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40"
           disabled={disabled || isSubmitting || !onUpload}
           data-testid="entry-composer-attach-button"
         >
           <Paperclip className="h-4 w-4" />
-        </button>
+        </ComposerIconButton>
         <input
           ref={fileInputRef}
           type="file"
@@ -490,11 +485,9 @@ export function EntryComposer({
           data-testid="entry-composer-file-input"
           aria-label="File attachment input"
         />
-        <button
-          type="button"
+        <ComposerIconButton
           title="Mention someone"
           aria-label="Mention someone"
-          className="shrink-0 inline-flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40"
           disabled={disabled || isSubmitting}
           data-testid="entry-composer-mention-button"
           onClick={() => {
@@ -509,22 +502,17 @@ export function EntryComposer({
           }}
         >
           <AtSign className="h-4 w-4" />
-        </button>
-
-        {canCreateFileArtifacts ? (
-          <div className="shrink-0">
-            <FileArtifactUpload
-              companyId={companyId}
-              onUploaded={(artifact) =>
-                setAttachments((prev) => [
-                  ...prev,
-                  { id: artifact.id, name: artifact.title, mimeType: artifact.type, artifactId: artifact.id },
-                ])
-              }
-              disabled={disabled || isSubmitting}
-            />
-          </div>
-        ) : null}
+        </ComposerIconButton>
+        {/* Mock v2: mic present on every surface for placement — voice input
+            for composers isn't built yet, so it renders the dim placeholder. */}
+        <ComposerIconButton
+          title="Voice input"
+          aria-label="Voice input"
+          comingSoon
+          data-testid="entry-composer-mic-button"
+        >
+          <Mic className="h-4 w-4" />
+        </ComposerIconButton>
 
         <div className="flex-1" />
 

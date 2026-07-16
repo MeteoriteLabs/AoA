@@ -96,23 +96,18 @@ test.describe("artifact lifecycle (Discussions)", () => {
     await expect(page.getByTestId("artifact-action-error")).toHaveCount(0);
   });
 
-  test("founder uploads a file artifact through the composer", async ({ page, request }) => {
+  // Mock v2 (2026-07-16): the composer's File-artifact button was REMOVED — 📎
+  // plain attach is the only composer upload entry. Artifact creation moved out
+  // of composers (agents/MCP/API paths keep their own coverage above). The
+  // composer upload flow itself is covered by composer-gaps.spec.ts.
+  test("composer offers plain attach only — no file-artifact control", async ({ page, request }) => {
     const company = await seedCompany(request, `E2E-Artifact-Life-${Date.now()}`);
     const thread = await jsonOrThrow<{ id: string }>(
       await request.post(`/api/companies/${company.id}/discussions`, { data: { title: `Upload ${Date.now()}` } }),
       "create thread",
     );
     await page.goto(`/${company.issuePrefix}/discussions/${thread.id}`);
-    await expect(page.getByTestId("file-artifact-upload")).toBeVisible({ timeout: 15_000 });
-
-    await page
-      .getByTestId("file-artifact-input")
-      .setInputFiles({ name: "notes.txt", mimeType: "text/plain", buffer: Buffer.from("hello") });
-    await expect(page.getByTestId("entry-composer-attachments")).toBeVisible({ timeout: 15_000 });
-    await page.getByTestId("entry-composer-textarea").fill("Sharing my notes file.");
-    await page.keyboard.press("Control+Enter");
-
-    await expect(page.getByTestId("artifact-file-chip").first()).toBeVisible({ timeout: 15_000 });
-    await page.screenshot({ path: "artifact-founder-upload-live.png", fullPage: false });
+    await expect(page.getByTestId("entry-composer-attach-button")).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByTestId("file-artifact-upload")).toHaveCount(0);
   });
 });
