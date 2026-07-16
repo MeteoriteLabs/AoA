@@ -27,14 +27,25 @@ export const createDiscussionEntrySchema = z.object({
   // each via discussion_entry_attachments after the entry is inserted.
   attachments: z
     .array(
-      z.object({
-        assetId: z.string().uuid().optional().nullable(),
-        artifactId: z.string().uuid().optional().nullable(),
-      }),
+      z
+        .object({
+          assetId: z.string().uuid().optional().nullable(),
+          artifactId: z.string().uuid().optional().nullable(),
+        })
+        // {} / { assetId: null, artifactId: null } would be silently dropped
+        // by the server before insert — and would let a blank entry slip
+        // through the attachment-only exemption below (PR #291 review).
+        .refine((a) => Boolean(a.assetId || a.artifactId), {
+          message: "Attachment must reference an assetId or artifactId",
+        }),
     )
     .optional(),
 }).superRefine((entry, ctx) => {
-  if (entry.rawContent.trim().length === 0 && (entry.attachments?.length ?? 0) === 0) {
+  // Belt-and-braces: count only attachments carrying a real reference, so the
+  // blank-entry guard cannot be bypassed even if the item schema loosens.
+  const realAttachments =
+    entry.attachments?.filter((a) => a.assetId || a.artifactId).length ?? 0;
+  if (entry.rawContent.trim().length === 0 && realAttachments === 0) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ["rawContent"],

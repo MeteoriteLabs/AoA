@@ -54,4 +54,43 @@ describe("createDiscussionEntrySchema", () => {
       "rawContent is required unless the entry includes an attachment",
     );
   });
+
+  it("rejects an attachment item that references neither an asset nor an artifact", () => {
+    // {} and { assetId: null, artifactId: null } would be filtered out by the
+    // server before insert — accepting them here lets a blank entry slip
+    // through the attachment-only exemption (PR #291 review).
+    expect(() =>
+      createDiscussionEntrySchema.parse({
+        inputType: "write",
+        rawContent: "text",
+        attachments: [{}],
+      }),
+    ).toThrow();
+    expect(() =>
+      createDiscussionEntrySchema.parse({
+        inputType: "write",
+        rawContent: "text",
+        attachments: [{ assetId: null, artifactId: null }],
+      }),
+    ).toThrow();
+  });
+
+  it("rejects a blank entry whose only attachments carry no real reference", () => {
+    expect(() =>
+      createDiscussionEntrySchema.parse({
+        inputType: "write",
+        rawContent: "   ",
+        attachments: [{ assetId: null, artifactId: null }],
+      }),
+    ).toThrow();
+  });
+
+  it("accepts an artifact-only attachment entry", () => {
+    const parsed = createDiscussionEntrySchema.parse({
+      inputType: "write",
+      rawContent: "",
+      attachments: [{ artifactId: "33333333-3333-3333-3333-333333333333" }],
+    });
+    expect(parsed.attachments?.[0]?.artifactId).toBe("33333333-3333-3333-3333-333333333333");
+  });
 });
