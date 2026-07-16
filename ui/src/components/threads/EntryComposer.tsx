@@ -19,8 +19,9 @@ import {
   type KeyboardEvent,
   type ChangeEvent,
 } from "react";
-import { Paperclip, SendHorizonal, X, FileText, Loader2 } from "lucide-react";
+import { Paperclip, SendHorizonal, X } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { ComposerAttachmentCard } from "../composer/ComposerAttachmentCard";
 import {
   COMPOSER_ATTACHMENT_CONTENT_TYPES,
   COMPOSER_MAX_ATTACHMENTS,
@@ -51,6 +52,8 @@ export interface AssetRef {
   name: string;
   mimeType: string;
   previewUrl?: string;
+  /** Upload byte size for the tray card's compact label; absent on the artifact path. */
+  byteSize?: number;
   /** Set when this attachment is a tracked artifact (founder file-artifact upload). */
   artifactId?: string;
 }
@@ -353,12 +356,16 @@ export function EntryComposer({
   const isReply = !!parentEntryId;
 
   return (
-    <ComposerFrame
+    <div
       className={cn(
-        "shrink-0 px-4 py-3 border-t border-border relative",
+        "shrink-0 px-4 py-3 border-t border-border",
         isReply && "border-l-2 border-l-primary/50",
       )}
       style={{ background: "var(--card, #161a20)" }}
+    >
+    <ComposerFrame
+      chrome="card"
+      className="relative px-3 py-2.5"
       data-testid="entry-composer"
       data-thread-id={threadId}
       data-reply={isReply ? "true" : undefined}
@@ -367,8 +374,7 @@ export function EntryComposer({
     >
       {hint && (
         <div
-          className="mb-2 rounded-md px-3 py-1.5 text-xs text-muted-foreground"
-          style={{ background: "hsl(38 20% 10%)", border: "1px solid rgba(217,169,56,0.25)" }}
+          className="mb-2 rounded-md border border-border bg-muted/40 px-3 py-1.5 text-xs text-muted-foreground"
           data-testid="entry-composer-hint"
         >
           {hint}
@@ -405,35 +411,23 @@ export function EntryComposer({
           data-testid="entry-composer-attachments"
         >
           {attachments.map((a) => (
-            <span
+            <ComposerAttachmentCard
               key={a.id}
-              className="inline-flex items-center gap-1.5 rounded-md border border-border bg-muted/40 px-2 py-1 text-[11px] text-foreground"
+              name={a.name}
+              byteSize={a.byteSize}
+              state="ready"
+              previewUrl={a.mimeType.startsWith("image/") ? a.previewUrl : undefined}
+              onRemove={() => removeAttachment(a.id)}
               data-testid={`entry-composer-attachment-${a.name}`}
-            >
-              {a.mimeType.startsWith("image/") && a.previewUrl ? (
-                <img src={a.previewUrl} alt="" className="h-6 w-6 rounded object-cover" />
-              ) : (
-                <FileText className="h-3 w-3" />
-              )}
-              <span className="truncate max-w-[160px]">{a.name}</span>
-              <button
-                type="button"
-                onClick={() => removeAttachment(a.id)}
-                className="text-muted-foreground hover:text-foreground"
-                aria-label={`Remove ${a.name}`}
-              >
-                <X className="h-3 w-3" />
-              </button>
-            </span>
+            />
           ))}
           {uploadingFiles.map((name) => (
-            <span
+            <ComposerAttachmentCard
               key={`uploading-${name}`}
-              className="inline-flex items-center gap-1.5 rounded-md border border-border bg-muted/30 px-2 py-1 text-[11px] text-muted-foreground"
-            >
-              <Loader2 className="h-3 w-3 animate-spin" />
-              <span className="truncate max-w-[160px]">{name}</span>
-            </span>
+              name={name}
+              state="uploading"
+              onRemove={() => {}}
+            />
           ))}
         </div>
       )}
@@ -450,13 +444,9 @@ export function EntryComposer({
           </div>
         )}
 
-        {/* Input area */}
-        <div
-          className={cn(
-            "flex-1 flex items-center gap-1 rounded-xl border border-border/80 px-3 focus-within:border-border relative",
-          )}
-          style={{ background: "var(--field, #0e1014)" }}
-        >
+        {/* Input area — borderless inside the card frame (single-border design;
+            focus affordance is the frame's focus-within glow). */}
+        <div className="flex-1 flex items-center gap-1 px-1 relative">
           <textarea
             ref={textareaRef}
             value={text}
@@ -531,8 +521,7 @@ export function EntryComposer({
           type="button"
           onClick={() => void handleSubmit()}
           disabled={(!text.trim() && attachments.length === 0) || isSubmitting || disabled || uploadingFiles.length > 0}
-          className="shrink-0 w-9 h-9 rounded-full flex items-center justify-center transition-opacity disabled:opacity-40"
-          style={{ background: "#b82d1c" }}
+          className="shrink-0 w-9 h-9 rounded-full flex items-center justify-center bg-brand transition-opacity disabled:opacity-40"
           aria-label={isReply ? "Send reply" : "Send"}
           data-testid="entry-composer-submit"
         >
@@ -573,5 +562,6 @@ export function EntryComposer({
         </div>
       )}
     </ComposerFrame>
+    </div>
   );
 }

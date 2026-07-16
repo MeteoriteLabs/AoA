@@ -420,6 +420,7 @@ export function ThreadTab({
       name: res.originalFilename ?? file.name,
       mimeType: res.contentType,
       previewUrl: res.contentPath,
+      byteSize: res.byteSize,
     };
   }
 

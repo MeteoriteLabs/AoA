@@ -13,6 +13,8 @@ export interface ComposerAttachmentCardProps {
   onRemove: () => void;
   /** Failed uploads offer Retry only when the host retained the File to retry. */
   onRetry?: () => void;
+  /** Override for hosts with load-bearing legacy testids. */
+  "data-testid"?: string;
 }
 
 /** Compact human size: 412 KB / 1.5 MB (1 decimal for MB, none for KB). */
@@ -33,6 +35,7 @@ export function ComposerAttachmentCard({
   previewUrl,
   onRemove,
   onRetry,
+  "data-testid": testId,
 }: ComposerAttachmentCardProps) {
   return (
     <span
@@ -42,7 +45,7 @@ export function ComposerAttachmentCard({
           ? "border-destructive/40 bg-destructive/10 text-destructive"
           : "border-border bg-muted/40 text-foreground",
       )}
-      data-testid={`composer-attachment-${name}`}
+      data-testid={testId ?? `composer-attachment-${name}`}
       data-state={state}
     >
       {previewUrl ? (
