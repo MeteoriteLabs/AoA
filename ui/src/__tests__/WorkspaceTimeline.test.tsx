@@ -876,5 +876,25 @@ describe("WorkspaceTimeline — chatbar live state", () => {
     expect(chatbar).toHaveTextContent("Alpha Agent");
     expect(chatbar).toHaveTextContent("Working");
   });
+
+  it("states 'Queued after current run' inside the frame while a run is live (Board 1 §3)", async () => {
+    heartbeatsApiMock.liveRunsForIssue.mockResolvedValue([makeLiveRun("run-live-queued")]);
+
+    renderTimeline();
+
+    const notice = await screen.findByTestId("workspace-chatbar-queued-notice");
+    expect(notice).toHaveTextContent("Queued after current run");
+    // The notice lives INSIDE the composer frame, per the containment contract.
+    expect(screen.getByTestId("workspace-chatbar").contains(notice)).toBe(true);
+  });
+
+  it("chatbar carries the Quiet Operator card chrome without overflow clipping", async () => {
+    renderTimeline();
+
+    const chatbar = await screen.findByTestId("workspace-chatbar");
+    expect(chatbar).toHaveAttribute("data-chrome", "card");
+    expect(chatbar.className).toContain("rounded-lg");
+    expect(chatbar.className).not.toContain("overflow-hidden");
+  });
 });
 

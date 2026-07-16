@@ -35,6 +35,7 @@ import { resolveTaskCommentAction } from "../../lib/task-composer-actions";
 import { useComposerDraft } from "../../lib/composerDraft";
 import { useTeamAccess } from "../../hooks/useTeamAccess";
 import { ComposerFrame } from "../composer/ComposerFrame";
+import { ComposerAttachmentCard } from "../composer/ComposerAttachmentCard";
 
 export type TimelineItem =
   | { kind: "run"; ts: string; data: RunForIssue }
@@ -622,7 +623,7 @@ export function WorkspaceTimeline({
       )}
 
       {assignedAgent && (
-        <ComposerFrame density={compact ? "compact" : "comfortable"} className="shrink-0 mx-3 mb-3 border border-border rounded-lg overflow-hidden bg-background" data-testid="workspace-chatbar">
+        <ComposerFrame chrome="card" density={compact ? "compact" : "comfortable"} className="shrink-0 mx-3 mb-3" data-testid="workspace-chatbar">
           {/* Status row */}
           <ChatbarStatusRow
             agentName={assignedAgent.name}
@@ -637,17 +638,15 @@ export function WorkspaceTimeline({
 
           {selectedFiles.length > 0 && (
             <div className="border-t border-border/50 px-3 py-1.5">
-              <div className="flex flex-wrap gap-1">
+              <div className="flex flex-wrap gap-1.5">
                 {selectedFiles.map((file, index) => (
-                  <button
+                  <ComposerAttachmentCard
                     key={`${file.name}-${file.size}-${index}`}
-                    type="button"
-                    onClick={() => removeSelectedFile(index)}
-                    className="max-w-full truncate rounded-md bg-muted/60 px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground"
-                    title="Remove attachment"
-                  >
-                    {file.name}
-                  </button>
+                    name={file.name}
+                    byteSize={file.size}
+                    state="ready"
+                    onRemove={() => removeSelectedFile(index)}
+                  />
                 ))}
               </div>
             </div>
@@ -684,6 +683,17 @@ export function WorkspaceTimeline({
             </div>
           )}
 
+          {/* Board 1 §3: an active run means a normal send queues behind it —
+              state that BEFORE submission instead of implying an instant reply. */}
+          {hasLiveRuns && !interruptRequested && (
+            <div
+              className="border-t border-border/50 px-3 py-1.5 text-[11px] text-muted-foreground"
+              data-testid="workspace-chatbar-queued-notice"
+            >
+              Queued after current run
+            </div>
+          )}
+
           {/* Controls row */}
           <div className="border-t border-border/50">
               <ChatbarControls
@@ -708,7 +718,7 @@ export function WorkspaceTimeline({
 
       {/* Fallback when no agent assigned */}
       {!assignedAgent && (
-        <ComposerFrame density={compact ? "compact" : "comfortable"} className="shrink-0 mx-3 mb-3 border border-border rounded-lg overflow-hidden bg-background" data-testid="workspace-chatbar-fallback">
+        <ComposerFrame chrome="card" density={compact ? "compact" : "comfortable"} className="shrink-0 mx-3 mb-3" data-testid="workspace-chatbar-fallback">
           <ChatbarStatusRow
             agentName="No agent assigned"
             adapterType="process"
@@ -721,17 +731,15 @@ export function WorkspaceTimeline({
           />
           {selectedFiles.length > 0 && (
             <div className="border-t border-border/50 px-3 py-1.5">
-              <div className="flex flex-wrap gap-1">
+              <div className="flex flex-wrap gap-1.5">
                 {selectedFiles.map((file, index) => (
-                  <button
+                  <ComposerAttachmentCard
                     key={`${file.name}-${file.size}-${index}`}
-                    type="button"
-                    onClick={() => removeSelectedFile(index)}
-                    className="max-w-full truncate rounded-md bg-muted/60 px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground"
-                    title="Remove attachment"
-                  >
-                    {file.name}
-                  </button>
+                    name={file.name}
+                    byteSize={file.size}
+                    state="ready"
+                    onRemove={() => removeSelectedFile(index)}
+                  />
                 ))}
               </div>
             </div>

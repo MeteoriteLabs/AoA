@@ -102,10 +102,11 @@ export function ChatbarControls({
       {/* Spacer */}
       <div className="flex-1" />
 
-      {/* Right: send button */}
+      {/* Right: send button — brand red is reserved for the primary Send/Stop
+          action (Quiet Operator, scope §14). */}
       <Button
         size="sm"
-        className="h-7 text-xs px-3"
+        className="h-7 text-xs px-3 bg-brand text-white hover:bg-brand/90"
         disabled={sendDisabled}
         onClick={onSend}
       >
