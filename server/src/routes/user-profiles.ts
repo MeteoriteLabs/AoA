@@ -35,6 +35,7 @@ export function userProfileRoutes(db: Db): Router {
     }
     if (typeof body.title === "string" || body.title === null) input.title = body.title;
     if (typeof body.bio === "string" || body.bio === null) input.bio = body.bio;
+    if (typeof body.timezone === "string" || body.timezone === null) input.timezone = body.timezone;
     if (Array.isArray(body.socialLinks)) input.socialLinks = body.socialLinks as never[];
 
     const profile = await upsertUserProfile(db, actor.userId, input);

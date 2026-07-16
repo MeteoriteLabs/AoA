@@ -6,6 +6,7 @@ export type UserProfile = {
   avatarUrl: string | null;
   title: string | null;
   bio: string | null;
+  timezone: string | null;
   socialLinks: UserProfileSocialLink[];
 };
 
