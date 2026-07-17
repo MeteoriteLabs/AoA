@@ -34,6 +34,7 @@ import { shouldDispatchIssueWakeup } from "./issues-planning-mode-dispatch.js";
 import { enqueueIssueAssigneeWakeup } from "../services/issue-assignee-wakeup.js";
 import { documentService } from "../services/documents.js";
 import { getSafeServingHeaders } from "../services/asset-serving-safety.js";
+import { sniffAndVerifyContentType } from "../services/asset-content-guard.js";
 import { issueDocumentKeySchema, upsertIssueDocumentSchema } from "@armyofagents/shared";
 import { createEagerWorkspaceForIssue } from "../services/eager-workspace.js";
 import { canDelegateToTarget, type WakeSkippedReason } from "../services/task-policy.js";
@@ -140,6 +141,17 @@ export function issueRoutes(db: Db, storage: StorageService) {
     if (file.buffer.length <= 0) {
       throw unprocessable("Attachment is empty");
     }
+    return contentType;
+  }
+
+  // P2 (PR #291 round-3 review): allowlist + byte-sniff a task-comment
+  // attachment. `sniffAndVerifyContentType` re-checks the bytes against the
+  // shared composer allowlist; `image/jpg` is a legacy alias for `image/jpeg`
+  // (identical magic bytes), so normalize it for the sniff while preserving the
+  // caller's declared type on the stored/returned record.
+  function sniffCommentAttachment(file: { mimetype: string; buffer: Buffer }) {
+    const contentType = validateAttachmentFile(file);
+    sniffAndVerifyContentType(file.buffer, contentType === "image/jpg" ? "image/jpeg" : contentType);
     return contentType;
   }
 
@@ -1600,6 +1612,14 @@ export function issueRoutes(db: Db, storage: StorageService) {
       clientSubmissionId,
     });
 
+    // Lost the insert race (both same-key requests passed the pre-check): return
+    // the winner's comment WITHOUT re-logging activity or re-firing wakeups —
+    // the winner already did (PR #291 round-3 review).
+    if ((comment as { replayed?: boolean }).replayed) {
+      res.status(200).json(comment);
+      return;
+    }
+
     await logActivity(db, {
       companyId: currentIssue.companyId,
       actorType: actor.actorType,
@@ -1663,7 +1683,11 @@ export function issueRoutes(db: Db, storage: StorageService) {
     }
 
     const files = ((req as Request & { files?: Express.Multer.File[] }).files ?? []);
-    for (const file of files) validateAttachmentFile(file);
+    // P2 (PR #291 round-3 review): task comments are a unified-composer upload
+    // path — never trust the multipart mimetype. Validate the allowlist AND
+    // sniff the real bytes so a caller cannot mislabel arbitrary content as an
+    // allowed image/PDF/text type (mirrors the /assets/files composer guard).
+    for (const file of files) sniffCommentAttachment(file);
 
     // Idempotent retry: replay the original comment + its attachments without
     // re-creating records or re-firing control effects/wakeups. The comment
@@ -1672,63 +1696,71 @@ export function issueRoutes(db: Db, storage: StorageService) {
     // and the replay must COMPLETE the missing ones (matched by content hash +
     // filename, multiset) instead of silently returning the partial set
     // (PR #291 review).
+    //
+    // The same completion path serves the route-level replay pre-check AND the
+    // insert-race loser (addComment returns `replayed` when it lost the race),
+    // so neither re-fires post-insert side-effects (PR #291 round-3 review).
+    const respondWithReplayedComment = async (replay: { id: string }) => {
+      let replayAttachments = (await svc.listAttachments(id)).filter(
+        (a) => a.issueCommentId === replay.id,
+      );
+      if (files.length > 0) {
+        const replayActor = getActorInfo(req);
+        // C6 (PR #291 review): serialize the completion so two concurrent
+        // same-key retries cannot each create the same missing attachment.
+        // The advisory lock lives inside the service transaction; `store`
+        // runs there only for genuinely-missing files.
+        const { created, all } = await svc.completeMissingCommentAttachments({
+          companyId: issue.companyId,
+          issueId: id,
+          commentId: replay.id,
+          createdByAgentId: replayActor.agentId,
+          createdByUserId: replayActor.actorType === "user" ? replayActor.actorId : null,
+          files: files.map((file) => ({
+            contentType: validateAttachmentFile(file),
+            buffer: file.buffer,
+            originalFilename: file.originalname || null,
+          })),
+          store: (file) =>
+            storage.putFile({
+              companyId: issue.companyId,
+              namespace: `issues/${id}`,
+              originalFilename: file.originalFilename,
+              contentType: file.contentType,
+              body: file.buffer,
+            }),
+        });
+        replayAttachments = all;
+        for (const attachment of created) {
+          await logActivity(db, {
+            companyId: issue.companyId,
+            actorType: replayActor.actorType,
+            actorId: replayActor.actorId,
+            agentId: replayActor.agentId,
+            runId: replayActor.runId,
+            action: "issue.attachment_added",
+            entityType: "issue",
+            entityId: id,
+            details: {
+              attachmentId: attachment.id,
+              originalFilename: attachment.originalFilename,
+              contentType: attachment.contentType,
+              byteSize: attachment.byteSize,
+              commentId: replay.id,
+              completedOnRetry: true,
+            },
+          });
+        }
+      }
+      res.status(200).json({ comment: replay, attachments: replayAttachments });
+    };
+
     const clientSubmissionId =
       typeof req.body?.clientSubmissionId === "string" ? req.body.clientSubmissionId : undefined;
     if (clientSubmissionId) {
       const replay = await svc.getCommentByClientSubmissionId(issue.companyId, id, clientSubmissionId);
       if (replay) {
-        let replayAttachments = (await svc.listAttachments(id)).filter(
-          (a) => a.issueCommentId === replay.id,
-        );
-        if (files.length > 0) {
-          const replayActor = getActorInfo(req);
-          // C6 (PR #291 review): serialize the completion so two concurrent
-          // same-key retries cannot each create the same missing attachment.
-          // The advisory lock lives inside the service transaction; `store`
-          // runs there only for genuinely-missing files.
-          const { created, all } = await svc.completeMissingCommentAttachments({
-            companyId: issue.companyId,
-            issueId: id,
-            commentId: replay.id,
-            createdByAgentId: replayActor.agentId,
-            createdByUserId: replayActor.actorType === "user" ? replayActor.actorId : null,
-            files: files.map((file) => ({
-              contentType: validateAttachmentFile(file),
-              buffer: file.buffer,
-              originalFilename: file.originalname || null,
-            })),
-            store: (file) =>
-              storage.putFile({
-                companyId: issue.companyId,
-                namespace: `issues/${id}`,
-                originalFilename: file.originalFilename,
-                contentType: file.contentType,
-                body: file.buffer,
-              }),
-          });
-          replayAttachments = all;
-          for (const attachment of created) {
-            await logActivity(db, {
-              companyId: issue.companyId,
-              actorType: replayActor.actorType,
-              actorId: replayActor.actorId,
-              agentId: replayActor.agentId,
-              runId: replayActor.runId,
-              action: "issue.attachment_added",
-              entityType: "issue",
-              entityId: id,
-              details: {
-                attachmentId: attachment.id,
-                originalFilename: attachment.originalFilename,
-                contentType: attachment.contentType,
-                byteSize: attachment.byteSize,
-                commentId: replay.id,
-                completedOnRetry: true,
-              },
-            });
-          }
-        }
-        res.status(200).json({ comment: replay, attachments: replayAttachments });
+        await respondWithReplayedComment(replay);
         return;
       }
     }
@@ -1759,6 +1791,15 @@ export function issueRoutes(db: Db, storage: StorageService) {
       userId: actor.actorType === "user" ? actor.actorId : undefined,
       clientSubmissionId,
     });
+
+    // Lost the insert race (both same-key requests passed the pre-check): the
+    // winner already created + linked the comment. Complete missing attachments
+    // through the serialized path and return WITHOUT re-storing files or
+    // re-firing activity/wakeups (PR #291 round-3 review).
+    if ((comment as { replayed?: boolean }).replayed) {
+      await respondWithReplayedComment(comment);
+      return;
+    }
 
     const attachments = [];
     for (const file of files) {

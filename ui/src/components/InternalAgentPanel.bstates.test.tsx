@@ -160,6 +160,15 @@ function completingStream(): AsyncGenerator<unknown> {
   return (async function* () {})();
 }
 
+// The server can emit an SSE `error` event (CLI failure mid-stream, or the
+// idempotency "already being processed" response) and then END the generator
+// NORMALLY — no throw. The client must still treat this as a failed send.
+function erroringStream(): AsyncGenerator<unknown> {
+  return (async function* () {
+    yield { event: "error", data: { code: "INTERNAL", message: "CLI failed mid-stream" } };
+  })();
+}
+
 function renderPanel(props: React.ComponentProps<typeof AgentPanelContent> = {}) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, refetchInterval: false } },
@@ -232,6 +241,26 @@ describe("Commander composer — B-states (mock §5)", () => {
     expect(second[7]).toBe(first[7]);
     // Retry-success clears the (non-diverged) draft.
     await waitFor(() => expect(composerInput().textContent).toBe(""));
+  });
+
+  it("raises the failed-send banner on an SSE error event (stream ends normally, no throw) — round-3 #3", async () => {
+    streamState.impl = erroringStream;
+    renderPanel();
+    const box = typeInComposer("run the deploy");
+    sendViaEnter(box);
+
+    // The error event must surface the banner and retain the draft — NOT be
+    // reported as an accepted send.
+    const banner = await screen.findByTestId("composer-send-failed-banner");
+    expect(box.textContent).toBe("run the deploy");
+    // Retry replays the identical attempt (same clientSubmissionId).
+    streamState.impl = completingStream;
+    fireEvent.click(within(banner).getByRole("button", { name: "Retry" }));
+    await waitFor(() =>
+      expect(screen.queryByTestId("composer-send-failed-banner")).not.toBeInTheDocument(),
+    );
+    expect(streamState.calls).toHaveLength(2);
+    expect(streamState.calls[1][7]).toBe(streamState.calls[0][7]);
   });
 
   it("dismisses the banner on Edit but keeps the draft; the next send mints a NEW clientSubmissionId", async () => {

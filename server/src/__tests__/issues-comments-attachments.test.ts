@@ -11,6 +11,10 @@ const leadAgentId = "55555555-5555-4555-8555-555555555555";
 const otherLeadAgentId = "66666666-6666-4666-8666-666666666666";
 const parentIssueId = "77777777-7777-4777-8777-777777777777";
 
+// A real PNG magic-byte header so the round-3 byte-sniff guard accepts these
+// image/png uploads (the endpoint no longer trusts the multipart mimetype).
+const validPng = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x00]);
+
 function makeIssue(overrides: Record<string, unknown> = {}) {
   return {
     id: issueId,
@@ -245,7 +249,7 @@ describe("POST /issues/:id/comments-with-attachments", () => {
     const res = await request(createApp())
       .post(`/api/issues/${issueId}/comments-with-attachments`)
       .field("body", "Please inspect these screenshots")
-      .attach("files", Buffer.from("fake-png"), { filename: "proof.png", contentType: "image/png" });
+      .attach("files", validPng, { filename: "proof.png", contentType: "image/png" });
 
     expect(res.status).toBe(201);
     expect(res.body.comment.body).toBe("Please inspect these screenshots");
@@ -294,7 +298,7 @@ describe("POST /issues/:id/comments-with-attachments", () => {
     const res = await request(createApp())
       .post(`/api/issues/${issueId}/comments-with-attachments`)
       .field("body", "Please take a look")
-      .attach("files", Buffer.from("fake-png"), { filename: "proof.png", contentType: "image/png" });
+      .attach("files", validPng, { filename: "proof.png", contentType: "image/png" });
 
     expect(res.status).toBe(201);
     await vi.waitFor(() =>
@@ -321,7 +325,7 @@ describe("POST /issues/:id/comments-with-attachments", () => {
       .post(`/api/issues/${issueId}/comments-with-attachments`)
       .field("body", "Reopen with evidence")
       .field("reopen", "true")
-      .attach("files", Buffer.from("fake-png"), { filename: "proof.png", contentType: "image/png" });
+      .attach("files", validPng, { filename: "proof.png", contentType: "image/png" });
 
     expect(res.status).toBe(201);
     expect(mockIssueService.update).toHaveBeenCalledWith(issueId, { status: "todo" });
@@ -374,7 +378,7 @@ describe("POST /issues/:id/comments-with-attachments", () => {
       .post(`/api/issues/${issueId}/comments-with-attachments`)
       .field("body", "Reopen this planning task")
       .field("reopen", "true")
-      .attach("files", Buffer.from("fake-png"), { filename: "proof.png", contentType: "image/png" });
+      .attach("files", validPng, { filename: "proof.png", contentType: "image/png" });
 
     expect(res.status).toBe(201);
     expect(mockIssueService.update).toHaveBeenCalledWith(issueId, { status: "todo" });
@@ -401,7 +405,7 @@ describe("POST /issues/:id/comments-with-attachments", () => {
       .post(`/api/issues/${issueId}/comments-with-attachments`)
       .field("body", "Stop and inspect this")
       .field("interrupt", "true")
-      .attach("files", Buffer.from("fake-png"), { filename: "proof.png", contentType: "image/png" });
+      .attach("files", validPng, { filename: "proof.png", contentType: "image/png" });
 
     expect(res.status).toBe(201);
     expect(mockHeartbeatService.getRun).toHaveBeenCalledWith("run-active");
@@ -451,7 +455,7 @@ describe("POST /issues/:id/comments-with-attachments", () => {
       .post(`/api/issues/${issueId}/comments-with-attachments`)
       .field("body", "Try to interrupt with evidence")
       .field("interrupt", "true")
-      .attach("files", Buffer.from("fake-png"), { filename: "proof.png", contentType: "image/png" });
+      .attach("files", validPng, { filename: "proof.png", contentType: "image/png" });
 
     expect(res.status).toBe(403);
     expect(res.body).toMatchObject({
@@ -482,7 +486,7 @@ describe("POST /issues/:id/comments-with-attachments", () => {
     const res = await request(createApp())
       .post(`/api/issues/${issueId}/comments-with-attachments`)
       .field("body", "Here is context for planning")
-      .attach("files", Buffer.from("fake-png"), { filename: "context.png", contentType: "image/png" });
+      .attach("files", validPng, { filename: "context.png", contentType: "image/png" });
 
     expect(res.status).toBe(201);
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -496,7 +500,7 @@ describe("POST /issues/:id/comments-with-attachments", () => {
     const res = await request(createApp())
       .post(`/api/issues/${issueId}/comments-with-attachments`)
       .field("body", "@Beta please inspect this")
-      .attach("files", Buffer.from("fake-png"), { filename: "context.png", contentType: "image/png" });
+      .attach("files", validPng, { filename: "context.png", contentType: "image/png" });
 
     expect(res.status).toBe(201);
     await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
@@ -522,6 +526,63 @@ describe("POST /issues/:id/comments-with-attachments", () => {
     expect(res.status).toBe(422);
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
     expect(mockIssueService.createAttachment).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("rejects a comment attachment whose bytes do not match the declared type (round-3 #5)", async () => {
+    // The endpoint must sniff the real bytes, not trust the multipart mimetype:
+    // arbitrary content labeled as an allowed image is rejected before any
+    // comment or attachment is created.
+    const res = await request(createApp())
+      .post(`/api/issues/${issueId}/comments-with-attachments`)
+      .field("body", "Spoofed screenshot")
+      .attach("files", Buffer.from("this is not a real png"), { filename: "evil.png", contentType: "image/png" });
+
+    expect(res.status).toBe(422);
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockIssueService.createAttachment).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("skips re-storing attachments and re-waking when addComment loses the insert race (round-3 #4)", async () => {
+    // Two same-key requests both pass the route-level replay pre-check (neither
+    // committed yet). The loser's insert is swallowed; addComment returns the
+    // winner's row flagged `replayed`. The loser must NOT re-store files or
+    // re-fire wakeups — it completes through the serialized (advisory-locked)
+    // path, which finds nothing missing.
+    const submissionId = "sub-race-loser";
+    const winner = {
+      id: "comment-1",
+      issueId,
+      companyId,
+      body: "Please inspect these screenshots",
+      authorAgentId: null,
+      authorUserId: "board-user",
+      clientSubmissionId: submissionId,
+    };
+    mockIssueService.getCommentByClientSubmissionId.mockResolvedValue(null); // pre-check missed it
+    mockIssueService.addComment.mockResolvedValue({ ...winner, replayed: true });
+    const winnerAttachment = {
+      id: "attachment-1", issueId, issueCommentId: "comment-1", originalFilename: "proof.png", contentType: "image/png",
+    };
+    mockIssueService.listAttachments.mockResolvedValue([winnerAttachment]);
+    mockIssueService.completeMissingCommentAttachments.mockResolvedValue({
+      created: [],
+      all: [winnerAttachment],
+    });
+
+    const res = await request(createApp())
+      .post(`/api/issues/${issueId}/comments-with-attachments`)
+      .field("body", "Please inspect these screenshots")
+      .field("clientSubmissionId", submissionId)
+      .attach("files", validPng, { filename: "proof.png", contentType: "image/png" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.comment.id).toBe("comment-1");
+    // No direct re-store, no re-wake; only the serialized completion runs.
+    expect(mockIssueService.createAttachment).not.toHaveBeenCalled();
+    expect(mockIssueService.completeMissingCommentAttachments).toHaveBeenCalledTimes(1);
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
@@ -556,7 +617,7 @@ describe("POST /issues/:id/comments-with-attachments", () => {
         .post(`/api/issues/${issueId}/comments-with-attachments`)
         .field("body", "Please inspect these screenshots")
         .field("clientSubmissionId", submissionId)
-        .attach("files", Buffer.from("fake-png"), { filename: "proof.png", contentType: "image/png" });
+        .attach("files", validPng, { filename: "proof.png", contentType: "image/png" });
 
     const first = await send();
     const retry = await send();
@@ -615,7 +676,7 @@ describe("POST /issues/:id/comments-with-attachments", () => {
         .post(`/api/issues/${issueId}/comments-with-attachments`)
         .field("body", "Please inspect these screenshots")
         .field("clientSubmissionId", submissionId)
-        .attach("files", Buffer.from("fake-png"), { filename: "proof.png", contentType: "image/png" });
+        .attach("files", validPng, { filename: "proof.png", contentType: "image/png" });
 
     const first = await send();
     expect(first.status).toBe(500); // partial failure surfaced, retry offered
@@ -733,6 +794,23 @@ describe("POST /issues/:id/comments — idempotent retry (clientSubmissionId)", 
     expect(mockIssueService.addComment).toHaveBeenCalledTimes(1);
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns the winner's comment without re-firing wakeups when addComment loses the insert race (round-3 #4)", async () => {
+    // Both same-key requests pass the pre-check; the loser's insert is swallowed
+    // and addComment returns the winner's row flagged `replayed`. The route must
+    // return it (200) without re-logging activity or re-firing wakeups.
+    mockIssueService.getCommentByClientSubmissionId.mockResolvedValue(null);
+    mockIssueService.addComment.mockResolvedValue({ ...existingComment, replayed: true });
+
+    const res = await request(createApp())
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Please inspect the logs", clientSubmissionId: submissionId });
+
+    expect(res.status).toBe(200);
+    expect(res.body.id).toBe("comment-1");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
   it("passes the clientSubmissionId through to addComment on the create path", async () => {

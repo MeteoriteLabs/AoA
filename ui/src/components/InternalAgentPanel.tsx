@@ -1050,14 +1050,22 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
       const controller = new AbortController();
       abortRef.current = controller;
       let accepted = false;
+      // A server-emitted SSE `error` event (CLI failure mid-stream, or the
+      // "already being processed" idempotency response) ends the generator
+      // NORMALLY rather than throwing. Without tracking it, the loop would fall
+      // through to `accepted = true` and suppress the failed-send banner even
+      // though no reply was produced — breaking the idempotent Retry flow
+      // (PR #291 round-3 review).
+      let sawError = false;
 
       try {
         const stream = streamAgentChat(companyId, text, pageContext, controller.signal, conversationId, contextScope, attachmentAssetIds, clientSubmissionId);
 
         for await (const event of stream) {
+          if (event.event === "error") sawError = true;
           handleSSEEvent(event, assistantId);
         }
-        accepted = true;
+        accepted = !sawError;
       } catch (err) {
         if ((err as Error).name === "AbortError") {
           // Stop generation happens after the server accepted the user turn.

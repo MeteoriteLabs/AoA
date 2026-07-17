@@ -89,6 +89,11 @@ vi.mock("../services/assets.js", () => ({
 
 import { Readable } from "node:stream";
 import { agentLoopService } from "../services/internal-agent/agent-loop.js";
+import {
+  claimCommanderTurn,
+  commanderTurnKey,
+  releaseCommanderTurn,
+} from "../services/internal-agent/commander-turn-registry.js";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -266,6 +271,60 @@ describe("agentLoopService.chat — idempotent retry (clientSubmissionId)", () =
 
     expect(cliChat).not.toHaveBeenCalled();
     expect(out.some((c) => c.type === "error" && /already being processed/i.test(c.message))).toBe(true);
+  });
+
+  it("replays a completed tool-only turn (empty content, toolCalls set) instead of re-running — round-3 #2", async () => {
+    // A tool-only turn legitimately persists with empty content but a toolCalls
+    // array. Gating replay on non-empty content would misclassify it as
+    // unfinished and re-run the CLI, double-executing its tools. The linked
+    // assistant row alone must count as a completed reply → replay its events.
+    getMessageByClientSubmissionId.mockResolvedValue({ id: "user-tool", createdAt: new Date(0) });
+    getAssistantReplyForUserMessage.mockResolvedValue({
+      id: "asst-tool",
+      content: null,
+      toolCalls: [{ id: "t1", name: "search_tasks", input: { q: "x" }, success: true, summary: "Found 3" }],
+      outputRefs: null,
+      reasoning: null,
+    });
+
+    const svc = agentLoopService(dbWithConfig({ cliTool: "claude_cli", executionMode: "cli" }));
+    const out = await drainWithKey(svc, "sub-tool");
+
+    // No CLI run, no new persistence — pure replay of the recorded turn.
+    expect(cliChat).not.toHaveBeenCalled();
+    expect(appendMessage).not.toHaveBeenCalled();
+    // The persisted tool call is streamed back as tool_call + tool_result.
+    expect(out.some((c) => c.type === "tool_call" && c.name === "search_tasks")).toBe(true);
+    expect(
+      out.some(
+        (c) => c.type === "tool_result" && c.name === "search_tasks" && c.result?.summary === "Found 3",
+      ),
+    ).toBe(true);
+    // No empty text chunk is emitted for a content-less turn.
+    expect(out.some((c) => c.type === "text")).toBe(false);
+  });
+
+  it("does NOT re-run when the original same-key turn is still streaming in-process — round-3 #1", async () => {
+    // The prior user row exists with no linked reply because the ORIGINAL
+    // request is still streaming here (not dead). Re-running would double-execute
+    // the turn + its tools. The in-process claim registry distinguishes this
+    // from a genuinely-dead orphan (which stays re-runnable — see the test
+    // below): claimed → report in-progress, never re-run.
+    const key = commanderTurnKey("conv-1", "sub-inflight");
+    claimCommanderTurn(key);
+    try {
+      getMessageByClientSubmissionId.mockResolvedValue({ id: "user-live", createdAt: new Date() });
+      getAssistantReplyForUserMessage.mockResolvedValue(null);
+
+      const svc = agentLoopService(dbWithConfig({ cliTool: "claude_cli", executionMode: "cli" }));
+      const out = await drainWithKey(svc, "sub-inflight");
+
+      expect(cliChat).not.toHaveBeenCalled();
+      expect(appendMessage).not.toHaveBeenCalled();
+      expect(out.some((c) => c.type === "error" && /already being processed/i.test(c.message))).toBe(true);
+    } finally {
+      releaseCommanderTurn(key);
+    }
   });
 
   it("re-runs the turn when the prior user message has no persisted reply (send died mid-turn)", async () => {

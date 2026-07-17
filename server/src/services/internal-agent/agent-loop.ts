@@ -3,6 +3,12 @@ import type { Db } from "@armyofagents/db";
 import { internalAgentConfig, agents } from "@armyofagents/db";
 import type { CommanderContextScope, CommanderOutputRef } from "@armyofagents/shared";
 import type { ToolResult } from "./types.js";
+import {
+  claimCommanderTurn,
+  commanderTurnKey,
+  isCommanderTurnInFlight,
+  releaseCommanderTurn,
+} from "./commander-turn-registry.js";
 import { conversationService } from "./conversation.js";
 import { cliModeService } from "./cli-mode.js";
 import { agentInstructionsService } from "../agent-instructions.js";
@@ -92,6 +98,54 @@ export interface ChatInput {
   attachmentAssetIds?: string[];
 }
 
+/**
+ * Reconstruct the stream chunks for a persisted assistant reply so an idempotent
+ * retry REPLAYS the original turn instead of re-running the CLI (PR #291 review).
+ *
+ * A completed turn may legitimately have EMPTY content when it was tool-calls
+ * only — the persistence gate saves such rows (toolCalls present). Gating replay
+ * on non-empty content would misclassify a completed tool-only turn as
+ * "unfinished → re-run" and double-execute its tools. The existence of the
+ * linked assistant row is therefore sufficient for replay; here we stream its
+ * reasoning, tool calls/results, and content back as the original run would.
+ */
+function* replayPersistedReply(reply: {
+  content?: string | null;
+  reasoning?: string | null;
+  toolCalls?: unknown;
+  outputRefs?: unknown;
+}): Generator<AgentStreamChunk> {
+  if (reply.reasoning) {
+    yield { type: "reasoning", delta: reply.reasoning };
+  }
+  const calls = Array.isArray(reply.toolCalls)
+    ? (reply.toolCalls as Array<{ id?: string; name?: string; input?: unknown; success?: boolean; summary?: string; result?: unknown }>)
+    : [];
+  const refs = Array.isArray(reply.outputRefs) ? (reply.outputRefs as CommanderOutputRef[]) : [];
+  let refsEmitted = false;
+  for (const tc of calls) {
+    const name = tc.name ?? "unknown";
+    yield { type: "tool_call", id: tc.id ?? "", name, input: tc.input };
+    const result: ToolResult = {
+      success: tc.success ?? true,
+      summary: typeof tc.summary === "string" ? tc.summary : "",
+      data: tc.result,
+    };
+    const chunk: AgentStreamChunk = { type: "tool_result", name, result };
+    if (tc.id) (chunk as { id?: string }).id = tc.id;
+    // Re-attach the turn's merged output refs to the first tool_result so the
+    // Commander viewer re-hydrates on replay (the row stores refs turn-level).
+    if (!refsEmitted && refs.length > 0) {
+      (chunk as { refs?: CommanderOutputRef[] }).refs = refs;
+      refsEmitted = true;
+    }
+    yield chunk;
+  }
+  if (reply.content) {
+    yield { type: "text", delta: reply.content };
+  }
+}
+
 // ── Service ──────────────────────────────────────────────────────────────────
 
 /**
@@ -135,6 +189,10 @@ export function agentLoopService(db: Db, storage?: RuntimeAttachmentStorage) {
 
   return {
     async *chat(params: ChatInput): AsyncGenerator<AgentStreamChunk> {
+      // In-process claim held for this turn's CLI run (PR #291 review, #1). Set
+      // once we commit to running; released in the finally so a concurrent
+      // duplicate can distinguish "still running here" from "dead orphan".
+      let claimKey: string | null = null;
       try {
         // 1. Get/create active conversation
         const conversation = params.conversationId
@@ -161,12 +219,14 @@ export function agentLoopService(db: Db, storage?: RuntimeAttachmentStorage) {
         // 1b. Idempotent retry: if this exact Send was already recorded AND the
         // turn completed (a persisted assistant reply exists), replay the
         // original reply — WITHOUT persisting a duplicate user message or
-        // starting a second CLI run. If the user turn persisted but the send
-        // died before any assistant reply was recorded (config error, CLI
-        // crash), fall through and RE-RUN the turn, reusing the existing user
-        // row — an empty "success" here would permanently suppress the turn
-        // for this submission id (PR #291 review). The partial unique index on
-        // the message is the race backstop.
+        // starting a second CLI run. If the user turn persisted but no assistant
+        // reply was recorded, the original send either (a) is STILL RUNNING in
+        // this process or (b) died (config error, CLI crash). Those two states
+        // are otherwise indistinguishable, so we consult the in-process claim
+        // registry: still-running → signal in-progress (never re-run — that
+        // would double-execute the turn + its tools); ended → re-run reusing the
+        // existing user row (round-2 Retry-after-error recovery). The partial
+        // unique index on the message is the simultaneous-insert backstop.
         let reuseExistingUserRow = false;
         // The persisted user message this turn's reply must be linked to. Set on
         // both the fresh-insert and reuse-existing paths so the assistant row we
@@ -185,8 +245,24 @@ export function agentLoopService(db: Db, storage?: RuntimeAttachmentStorage) {
               conversation.id,
               priorUser.id,
             );
-            if (reply?.content) {
-              yield { type: "text", delta: reply.content };
+            // #2 (round-3): ANY linked assistant row is a completed reply — a
+            // tool-only turn legitimately has empty content. Replay it (stream
+            // its tool events/content) rather than re-running the CLI.
+            if (reply) {
+              yield* replayPersistedReply(reply);
+              return;
+            }
+            // #1 (round-3): no linked reply. If the original request is still
+            // streaming HERE, do not re-run (it would double-execute).
+            if (
+              isCommanderTurnInFlight(
+                commanderTurnKey(conversation.id, params.clientSubmissionId),
+              )
+            ) {
+              yield {
+                type: "error",
+                message: "This message is already being processed.",
+              };
               return;
             }
             reuseExistingUserRow = true;
@@ -221,8 +297,9 @@ export function agentLoopService(db: Db, storage?: RuntimeAttachmentStorage) {
                   conversation.id,
                   winner.id,
                 );
-                if (reply?.content) {
-                  yield { type: "text", delta: reply.content };
+                // #2 (round-3): replay ANY linked reply, incl. a tool-only turn.
+                if (reply) {
+                  yield* replayPersistedReply(reply);
                   return;
                 }
               }
@@ -234,6 +311,15 @@ export function agentLoopService(db: Db, storage?: RuntimeAttachmentStorage) {
             return;
           }
           userMessageId = insertedUser.id;
+        }
+
+        // Claim the turn for the lifetime of its CLI run (#1). Now that a user
+        // row exists (fresh or reused) and we are committed to running, a
+        // concurrent same-key request will see this claim and report in-progress
+        // instead of re-running. Released in the finally below.
+        if (params.clientSubmissionId) {
+          claimKey = commanderTurnKey(conversation.id, params.clientSubmissionId);
+          claimCommanderTurn(claimKey);
         }
 
         // 2b. Runtime attachment delivery (v1 — text only). Resolve company-owned
@@ -487,6 +573,11 @@ export function agentLoopService(db: Db, storage?: RuntimeAttachmentStorage) {
             tokenUsage: { inputTokens: 0, outputTokens: 0 },
           },
         };
+      } finally {
+        // Release the in-process turn claim (#1) whether the run completed,
+        // errored, or the consumer abandoned the stream early. Once released, a
+        // same-key retry of a genuinely-dead turn can re-run (Retry recovery).
+        if (claimKey) releaseCommanderTurn(claimKey);
       }
     },
   };

@@ -2428,8 +2428,12 @@ export function issueService(db: Db) {
           })
           .returning();
 
-        // Lost the insert race → the original already ran its side-effects. Return
-        // the existing row without re-touching recency or reconciling the hub.
+        // Lost the insert race → the original already ran its side-effects.
+        // Return the existing row FLAGGED as a replay so the route skips its
+        // post-insert side-effects (activity/wakeups; attachment re-store) —
+        // otherwise two same-key requests that both passed the route-level
+        // replay pre-check would each fire them on the same durable comment
+        // (PR #291 round-3 review, mirrors discussions.ts addEntry `replayed`).
         if (!created && clientSubmissionId) {
           return tx
             .select()
@@ -2440,7 +2444,7 @@ export function issueService(db: Db) {
                 eq(issueComments.clientSubmissionId, clientSubmissionId),
               ),
             )
-            .then((rows) => rows[0]);
+            .then((rows) => ({ ...rows[0], replayed: true as const }));
         }
 
         // Update issue's updatedAt so comment activity is reflected in recency sorting
