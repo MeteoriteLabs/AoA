@@ -3,11 +3,6 @@ import type { Db } from "@armyofagents/db";
 import { internalAgentConfig, agents } from "@armyofagents/db";
 import type { CommanderContextScope, CommanderOutputRef } from "@armyofagents/shared";
 import type { ToolResult } from "./types.js";
-import {
-  commanderTurnKey,
-  releaseCommanderTurn,
-  tryClaimCommanderTurn,
-} from "./commander-turn-registry.js";
 import { conversationService } from "./conversation.js";
 import { cliModeService } from "./cli-mode.js";
 import { agentInstructionsService } from "../agent-instructions.js";
@@ -221,10 +216,10 @@ export function agentLoopService(db: Db, storage?: RuntimeAttachmentStorage) {
 
   return {
     async *chat(params: ChatInput): AsyncGenerator<AgentStreamChunk> {
-      // In-process claim held for this turn's CLI run (PR #291 review, #1). Set
-      // once we commit to running; released in the finally so a concurrent
-      // duplicate can distinguish "still running here" from "dead orphan".
-      let claimKey: string | null = null;
+      // Durable cross-instance turn claim (PR #291 round-6, #1). Set to the user
+      // message id once THIS request wins the DB CAS; released to 'done' (reply
+      // persisted → retries replay) or 'failed' (no reply → retries reclaim).
+      let claimedUserMessageId: string | null = null;
       try {
         // 1. Get/create active conversation
         const conversation = params.conversationId
@@ -252,13 +247,9 @@ export function agentLoopService(db: Db, storage?: RuntimeAttachmentStorage) {
         // turn completed (a persisted assistant reply exists), replay the
         // original reply — WITHOUT persisting a duplicate user message or
         // starting a second CLI run. If the user turn persisted but no assistant
-        // reply was recorded, the original send either (a) is STILL RUNNING in
-        // this process or (b) died (config error, CLI crash). Those two states
-        // are otherwise indistinguishable, so we consult the in-process claim
-        // registry: still-running → signal in-progress (never re-run — that
-        // would double-execute the turn + its tools); ended → re-run reusing the
-        // existing user row (round-2 Retry-after-error recovery). The partial
-        // unique index on the message is the simultaneous-insert backstop.
+        // reply was recorded, the durable claim CAS below decides whether we may
+        // re-run (we own it / it's reclaimable) or must defer to the owner. The
+        // partial unique index on the message is the simultaneous-insert backstop.
         let reuseExistingUserRow = false;
         // The persisted user message this turn's reply must be linked to. Set on
         // both the fresh-insert and reuse-existing paths so the assistant row we
@@ -284,45 +275,16 @@ export function agentLoopService(db: Db, storage?: RuntimeAttachmentStorage) {
               yield* replayPersistedReply(reply);
               return;
             }
-            // #1 (round-3/4): no linked reply. Atomically claim the turn here at
-            // the decision point — a single check-and-set with no `await` in
-            // between, so two near-simultaneous retries cannot both acquire it.
-            // The loser (claim already held → original still streaming HERE)
-            // reports in-progress instead of re-running (which would double-run
-            // the turn + its tools).
-            const key = commanderTurnKey(conversation.id, params.clientSubmissionId);
-            if (!tryClaimCommanderTurn(key)) {
-              yield {
-                type: "error",
-                message: "This message is already being processed.",
-              };
-              return;
-            }
-            claimKey = key;
+            // No linked reply yet. Reuse the row; the durable CAS below is the
+            // arbiter of whether we may run.
             reuseExistingUserRow = true;
             userMessageId = priorUser.id;
           }
         }
 
-        // 2. Persist the user message (skipped when re-running an orphaned
-        // turn whose user row already exists from the failed original send).
+        // 2. Persist the user message (skipped when re-running a turn whose user
+        // row already exists from a prior send).
         if (!reuseExistingUserRow) {
-          // #1 (round-5): claim BEFORE inserting. appendMessage commits the user
-          // row and then AWAITS a separate conversation-counter update; a
-          // duplicate that finds the committed row during that gap would
-          // tryClaim + start the CLI while THIS request also runs. Claiming
-          // first closes the gap (and serializes two fresh same-key sends
-          // in-process — the loser never inserts; the DB unique index remains
-          // the cross-process backstop). A loser must NOT start a second run.
-          if (params.clientSubmissionId) {
-            const key = commanderTurnKey(conversation.id, params.clientSubmissionId);
-            if (!tryClaimCommanderTurn(key)) {
-              yield* replayWinnerOrSignalInProgress(convService, conversation.id, params.clientSubmissionId);
-              return;
-            }
-            claimKey = key;
-          }
-
           const insertedUser = await convService.appendMessage(conversation.id, {
             role: "user",
             content: params.content,
@@ -331,15 +293,10 @@ export function agentLoopService(db: Db, storage?: RuntimeAttachmentStorage) {
             clientSubmissionId: params.clientSubmissionId ?? null,
           });
           // C3 (PR #291 review): a same-key request that lost the unique-index
-          // race gets back an undefined insert (a duplicate inserted first,
-          // cross-process or before our in-process claim on another instance).
-          // Release our claim and defer to the winner — replay its reply if it
-          // persisted, otherwise report in-progress. Never start a second run.
+          // insert race gets back an undefined insert — the winner owns the turn.
+          // Defer to it (replay its reply if persisted, else in-progress); never
+          // start a second run.
           if (!insertedUser) {
-            if (claimKey) {
-              releaseCommanderTurn(claimKey);
-              claimKey = null;
-            }
             yield* replayWinnerOrSignalInProgress(
               convService,
               conversation.id,
@@ -348,6 +305,27 @@ export function agentLoopService(db: Db, storage?: RuntimeAttachmentStorage) {
             return;
           }
           userMessageId = insertedUser.id;
+        }
+
+        // 2a. Durable, cross-instance turn claim (PR #291 round-6, #1). Both the
+        // fresh and reuse paths converge here once the user row exists. ONE
+        // atomic DB CAS decides ownership across ALL Node processes/workers — an
+        // in-process Set could not (each process kept its own, so two retries on
+        // different workers both "claimed" and both ran the turn + its tools).
+        // The message unique index only dedups rows; it does not gate this
+        // prior-row run path. A CAS loser defers to the owner (replay its reply,
+        // or in-progress) and never starts a second CLI run.
+        if (params.clientSubmissionId && userMessageId) {
+          const claimed = await convService.claimTurn(userMessageId);
+          if (!claimed) {
+            yield* replayWinnerOrSignalInProgress(
+              convService,
+              conversation.id,
+              params.clientSubmissionId,
+            );
+            return;
+          }
+          claimedUserMessageId = userMessageId;
         }
 
         // 2b. Runtime attachment delivery (v1 — text only). Resolve company-owned
@@ -553,7 +531,9 @@ export function agentLoopService(db: Db, storage?: RuntimeAttachmentStorage) {
           yield chunk;
         }
 
-        if (accumulatedAssistant.trim() || turnToolCalls.length > 0 || accumulatedReasoning.trim()) {
+        const turnProducedReply =
+          Boolean(accumulatedAssistant.trim()) || turnToolCalls.length > 0 || Boolean(accumulatedReasoning.trim());
+        if (turnProducedReply) {
           // Assistant replies have no originating page / department-persona
           // context (those describe where the USER was), so we omit them —
           // appendMessage defaults the optional fields to null, matching the
@@ -574,6 +554,20 @@ export function agentLoopService(db: Db, storage?: RuntimeAttachmentStorage) {
           });
         }
 
+        // Release the durable claim (PR #291 round-6, #1). 'done' when a reply
+        // persisted (retries replay it); 'failed' when the turn produced nothing
+        // — error-only, empty, or config failure — so a retry can reclaim + re-
+        // run (round-2 Retry-after-error recovery). Persist the reply BEFORE
+        // marking done so a retry arriving in that window replays, never re-runs.
+        if (claimedUserMessageId) {
+          try {
+            await convService.finishTurn(claimedUserMessageId, turnProducedReply ? "done" : "failed");
+          } catch {
+            // Best-effort: a failed status update leaves the row 'running' until
+            // the staleness window reclaims it — never affects the delivered reply.
+          }
+        }
+
         // Post-turn compaction (graceful: never blocks/raises into the turn).
         try {
           await convService.summarizeIfNeeded(conversation.id, (transcript) =>
@@ -587,6 +581,15 @@ export function agentLoopService(db: Db, storage?: RuntimeAttachmentStorage) {
           // swallow — a failed compaction must never affect the delivered reply
         }
       } catch (err: any) {
+        // Mark the durable claim 'failed' so a retry can reclaim + re-run the
+        // turn (#1). Best-effort — never let it mask the original error.
+        if (claimedUserMessageId) {
+          try {
+            await convService.finishTurn(claimedUserMessageId, "failed");
+          } catch {
+            // swallow: staleness reclaim is the backstop.
+          }
+        }
         yield {
           type: "error",
           message: err?.message ?? "An unexpected error occurred.",
@@ -601,11 +604,6 @@ export function agentLoopService(db: Db, storage?: RuntimeAttachmentStorage) {
             tokenUsage: { inputTokens: 0, outputTokens: 0 },
           },
         };
-      } finally {
-        // Release the in-process turn claim (#1) whether the run completed,
-        // errored, or the consumer abandoned the stream early. Once released, a
-        // same-key retry of a genuinely-dead turn can re-run (Retry recovery).
-        if (claimKey) releaseCommanderTurn(claimKey);
       }
     },
   };

@@ -233,6 +233,18 @@ export const internalAgentMessages = pgTable(
     // Nullable: user/system/tool rows and legacy assistant rows carry none.
     replyToUserMessageId: uuid("reply_to_user_message_id"),
 
+    // Durable cross-instance turn claim (PR #291 round-6 review). Meaningful on
+    // USER rows carrying a clientSubmissionId: the CLI run is claimed via an
+    // atomic CAS (turn_status NULL/'failed'/stale-'running' → 'running') so that
+    // two retries handled by DIFFERENT Node processes cannot both execute the
+    // turn — the in-process Set could not guarantee that across workers, and the
+    // message unique index only dedups rows, not the prior-row run path.
+    //   NULL → never claimed (fresh row) | 'running' → in flight (see
+    //   turn_claimed_at for staleness) | 'done' → completed (reply persisted) |
+    //   'failed' → ended without a reply (reclaimable by a retry).
+    turnStatus: text("turn_status"),
+    turnClaimedAt: timestamp("turn_claimed_at", { withTimezone: true }),
+
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

@@ -1,0 +1,2 @@
+ALTER TABLE "internal_agent_messages" ADD COLUMN IF NOT EXISTS "turn_status" text;--> statement-breakpoint
+ALTER TABLE "internal_agent_messages" ADD COLUMN IF NOT EXISTS "turn_claimed_at" timestamp with time zone;

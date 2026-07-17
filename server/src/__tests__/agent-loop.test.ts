@@ -34,6 +34,9 @@ const getOrCreateActive = vi.fn(async () => ({ id: "conv-1" }));
 const getById = vi.fn(async () => ({ id: "conv-1", companyId: "co-1", userId: "user-1" }));
 const getMessageByClientSubmissionId = vi.fn(async () => null as any);
 const getAssistantReplyForUserMessage = vi.fn(async () => null as any);
+// PR #291 round-6: the durable turn claim CAS + release. Default: claim wins.
+const claimTurn = vi.fn(async () => true);
+const finishTurn = vi.fn(async () => undefined);
 vi.mock("../services/internal-agent/conversation.js", () => ({
   conversationService: vi.fn(() => ({
     getOrCreateActive,
@@ -41,6 +44,8 @@ vi.mock("../services/internal-agent/conversation.js", () => ({
     appendMessage,
     getMessageByClientSubmissionId,
     getAssistantReplyForUserMessage,
+    claimTurn,
+    finishTurn,
   })),
 }));
 
@@ -89,11 +94,6 @@ vi.mock("../services/assets.js", () => ({
 
 import { Readable } from "node:stream";
 import { agentLoopService } from "../services/internal-agent/agent-loop.js";
-import {
-  claimCommanderTurn,
-  commanderTurnKey,
-  releaseCommanderTurn,
-} from "../services/internal-agent/commander-turn-registry.js";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -133,6 +133,8 @@ beforeEach(() => {
   getById.mockResolvedValue({ id: "conv-1", companyId: "co-1", userId: "user-1" });
   getMessageByClientSubmissionId.mockResolvedValue(null);
   getAssistantReplyForUserMessage.mockResolvedValue(null);
+  claimTurn.mockResolvedValue(true);
+  finishTurn.mockResolvedValue(undefined);
 });
 
 describe("agentLoopService.chat — runtime attachment delivery (text)", () => {
@@ -304,54 +306,69 @@ describe("agentLoopService.chat — idempotent retry (clientSubmissionId)", () =
     expect(out.some((c) => c.type === "text")).toBe(false);
   });
 
-  it("does NOT re-run when the original same-key turn is still streaming in-process — round-3 #1", async () => {
-    // The prior user row exists with no linked reply because the ORIGINAL
-    // request is still streaming here (not dead). Re-running would double-execute
-    // the turn + its tools. The in-process claim registry distinguishes this
-    // from a genuinely-dead orphan (which stays re-runnable — see the test
-    // below): claimed → report in-progress, never re-run.
-    const key = commanderTurnKey("conv-1", "sub-inflight");
-    claimCommanderTurn(key);
-    try {
-      getMessageByClientSubmissionId.mockResolvedValue({ id: "user-live", createdAt: new Date() });
-      getAssistantReplyForUserMessage.mockResolvedValue(null);
+  it("does NOT re-run when another worker owns the turn (reuse path, durable CAS loses) — round-6 #1", async () => {
+    // The prior user row exists with no linked reply, and the durable claim CAS
+    // returns false because ANOTHER process/worker owns the running turn. The
+    // request must defer (in-progress here, no reply yet) and never run the CLI.
+    getMessageByClientSubmissionId.mockResolvedValue({ id: "user-live", createdAt: new Date() });
+    getAssistantReplyForUserMessage.mockResolvedValue(null);
+    claimTurn.mockResolvedValue(false); // another instance holds the durable claim
 
-      const svc = agentLoopService(dbWithConfig({ cliTool: "claude_cli", executionMode: "cli" }));
-      const out = await drainWithKey(svc, "sub-inflight");
+    const svc = agentLoopService(dbWithConfig({ cliTool: "claude_cli", executionMode: "cli" }));
+    const out = await drainWithKey(svc, "sub-inflight");
 
-      expect(cliChat).not.toHaveBeenCalled();
-      expect(appendMessage).not.toHaveBeenCalled();
-      expect(out.some((c) => c.type === "error" && /already being processed/i.test(c.message))).toBe(true);
-    } finally {
-      releaseCommanderTurn(key);
-    }
+    expect(claimTurn).toHaveBeenCalledWith("user-live");
+    expect(cliChat).not.toHaveBeenCalled();
+    expect(out.some((c) => c.type === "error" && /already being processed/i.test(c.message))).toBe(true);
   });
 
-  it("does NOT run the CLI on the FRESH path when the turn claim is already held — round-5 #1", async () => {
-    // No prior user row (fresh send), but a concurrent same-key request already
-    // holds the atomic claim (it inserted the row + is running). The fresh path
-    // must acquire the claim via tryClaim BEFORE inserting; losing it means it
-    // must NOT insert a row or start a second CLI run — it defers to the winner
-    // (in-progress here, since no reply has landed yet).
-    const key = commanderTurnKey("conv-1", "sub-fresh-contended");
-    claimCommanderTurn(key);
-    try {
-      getMessageByClientSubmissionId.mockResolvedValue(null); // fresh: no prior row at pre-check
-      getAssistantReplyForUserMessage.mockResolvedValue(null);
+  it("does NOT run the CLI on the FRESH path when the durable claim CAS loses — round-6 #1", async () => {
+    // Fresh send: no prior row, our insert wins, but between the insert and our
+    // CAS another worker claimed the same row (cross-instance). The CAS returns
+    // false → we defer and never start a second CLI run. (No reply yet → in-
+    // progress.)
+    getMessageByClientSubmissionId.mockResolvedValue(null); // fresh at pre-check
+    getAssistantReplyForUserMessage.mockResolvedValue(null);
+    appendMessage.mockResolvedValueOnce({ id: "user-fresh" }); // our insert wins
+    claimTurn.mockResolvedValue(false); // another worker owns the durable claim
 
-      const svc = agentLoopService(dbWithConfig({ cliTool: "claude_cli", executionMode: "cli" }));
-      const out = await drainWithKey(svc, "sub-fresh-contended");
+    const svc = agentLoopService(dbWithConfig({ cliTool: "claude_cli", executionMode: "cli" }));
+    const out = await drainWithKey(svc, "sub-fresh-contended");
 
-      // Never inserted a duplicate user row and never started a run.
-      expect(appendMessage).not.toHaveBeenCalled();
-      expect(cliChat).not.toHaveBeenCalled();
-      expect(out.some((c) => c.type === "error" && /already being processed/i.test(c.message))).toBe(true);
-    } finally {
-      releaseCommanderTurn(key);
-    }
+    expect(claimTurn).toHaveBeenCalledWith("user-fresh");
+    expect(cliChat).not.toHaveBeenCalled();
+    expect(out.some((c) => c.type === "error" && /already being processed/i.test(c.message))).toBe(true);
   });
 
-  it("re-runs the turn when the prior user message has no persisted reply (send died mid-turn)", async () => {
+  it("re-runs the turn when the prior user message has no persisted reply and the CAS is won (send died mid-turn)", async () => {
+    // The key was recorded, but the original send failed before any assistant
+    // message was persisted (config error / CLI crash). The durable CAS reclaims
+    // the row ('failed'/stale → running), so retry re-runs — NOT an empty success.
+    getMessageByClientSubmissionId.mockResolvedValue({ id: "user-orig", createdAt: new Date(0) });
+    getAssistantReplyForUserMessage.mockResolvedValue(null);
+    claimTurn.mockResolvedValue(true); // reclaimed the dead turn
+    scriptStream([
+      { type: "text", delta: "Recovered answer" },
+      { type: "done", summary: { runId: "", toolsCalled: [], durationMs: 0, costCents: 0, tokenUsage: { inputTokens: 0, outputTokens: 0 } } },
+    ]);
+
+    const svc = agentLoopService(dbWithConfig({ cliTool: "claude_cli", executionMode: "cli" }));
+    const out = await drainWithKey(svc, "sub-orphan");
+
+    // The CLI actually ran and the caller got the fresh reply.
+    expect(cliChat).toHaveBeenCalledTimes(1);
+    expect(out.some((c) => c.type === "text" && c.delta === "Recovered answer")).toBe(true);
+    // The existing user row is reused — no duplicate user message is persisted.
+    const userCalls = appendMessage.mock.calls.filter((c) => (c[1] as any).role === "user");
+    expect(userCalls).toHaveLength(0);
+    // The recovered assistant reply IS persisted, and the turn is marked done.
+    const assistantCalls = appendMessage.mock.calls.filter((c) => (c[1] as any).role === "assistant");
+    expect(assistantCalls).toHaveLength(1);
+    expect((assistantCalls[0][1] as any).content).toBe("Recovered answer");
+    expect(finishTurn).toHaveBeenCalledWith("user-orig", "done");
+  });
+
+  it("runs normally when the key has not been seen before", async () => {
     // The key was recorded, but the original send failed before any assistant
     // message was persisted (config error / CLI crash). Retry must fall through
     // to a fresh run — NOT return an empty success that suppresses the turn.

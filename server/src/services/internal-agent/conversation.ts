@@ -24,6 +24,18 @@ export interface MessageInput {
 
 const MESSAGE_THRESHOLD = 20;
 
+/**
+ * Staleness window for a durable Commander turn claim (PR #291 round-6). A row
+ * left 'running' longer than this is presumed abandoned (its process died
+ * mid-turn) and becomes reclaimable by a retry. Balances two failure modes:
+ *   - too short → a legitimately long agentic turn (many tool calls) could be
+ *     reclaimed and double-run;
+ *   - too long → a dead turn stays un-retryable for the whole window.
+ * The CLI idle timeout is 30 min (cli-mode.ts), so most turns finish well under
+ * 10 min; a turn still 'running' after 10 min is almost certainly abandoned.
+ */
+export const COMMANDER_TURN_STALE_MINUTES = 10;
+
 export function conversationService(db: Db) {
   return {
     async getOrCreateActive(companyId: string, userId: string) {
@@ -148,6 +160,46 @@ export function conversationService(db: Db) {
         .orderBy(internalAgentMessages.createdAt, internalAgentMessages.id)
         .limit(1)
         .then((rows: any[]) => rows[0] ?? null);
+    },
+
+    /**
+     * Durable, cross-instance turn claim (PR #291 round-6). ONE atomic CAS:
+     * flip the user row to 'running' only if it is unclaimed (NULL), previously
+     * failed, or a STALE 'running' (its owner presumably died). Returns true iff
+     * THIS caller won the claim — Postgres serializes the conditional UPDATE, so
+     * exactly one of N racing processes gets the row back. A false result means
+     * another process/worker owns the turn (running & fresh, or already done);
+     * the caller must NOT start a second CLI run.
+     */
+    async claimTurn(userMessageId: string): Promise<boolean> {
+      const result = await db.execute(sql`
+        UPDATE internal_agent_messages
+        SET turn_status = 'running', turn_claimed_at = now()
+        WHERE id = ${userMessageId}
+          AND (
+            turn_status IS NULL
+            OR turn_status = 'failed'
+            OR (turn_status = 'running'
+                AND turn_claimed_at < now() - ${sql.raw(String(COMMANDER_TURN_STALE_MINUTES))} * interval '1 minute')
+          )
+        RETURNING id
+      `);
+      const rows = Array.isArray(result)
+        ? result
+        : ((result as { rows?: unknown[] })?.rows ?? []);
+      return rows.length > 0;
+    },
+
+    /**
+     * Release a claimed turn (PR #291 round-6). 'done' = a reply persisted (a
+     * retry replays it, never re-runs); 'failed' = the turn ended without a
+     * reply (config/CLI error, empty turn) so a retry can reclaim + re-run.
+     */
+    async finishTurn(userMessageId: string, status: "done" | "failed"): Promise<void> {
+      await db
+        .update(internalAgentMessages)
+        .set({ turnStatus: status })
+        .where(eq(internalAgentMessages.id, userMessageId));
     },
 
     async getRecentMessages(conversationId: string, limit = 50) {
