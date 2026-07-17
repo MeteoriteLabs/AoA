@@ -2,13 +2,52 @@ import { Router, type Request, type Response } from "express";
 import { and, desc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { authUsers, invites, joinRequests } from "@armyofagents/db";
+import { ROLE_RANK, type PermissionKey } from "@armyofagents/shared";
 import { parseInviteRoleMetadata } from "../services/team.js";
 import { claimInviteAndFileJoinRequest } from "../services/invite-claim.js";
 import {
   approveHumanJoinRequestTx,
   autoAdmitApprovalIdentity,
   buildHumanJoinApprovalServices,
+  grantsFromDefaults,
 } from "../services/join-approval.js";
+
+/**
+ * Permission grants that must NEVER be conferred by an unattended email-match
+ * auto-admit — each hands the invitee governance authority (permission
+ * delegation, join approval, or further invitation), i.e. the keys an attacker
+ * would target to bootstrap control of the company. An invite carrying any of
+ * these requires an explicit founder approval click via the normal manual path.
+ */
+const PRIVILEGED_AUTO_ADMIT_GRANT_KEYS = new Set<PermissionKey>([
+  "users:manage_permissions",
+  "joins:approve",
+  "users:invite",
+]);
+
+/**
+ * True when the invite would confer authority ABOVE an ordinary member/lead —
+ * a role above `team_lead` (i.e. founder) or any privileged permission grant.
+ * Such invites are the P1 privilege-escalation vector (Codex round-5): the
+ * verified-email match is the only auto-admit gate, so a malicious/over-broad
+ * invite row pointed at an attacker-controlled verified email would otherwise
+ * mint a founder account with no founder approval. This is the defense-in-depth
+ * SINK — it refuses privileged auto-admit regardless of how the invite row was
+ * created (before the creation-time clamp shipped, or via a future bypass),
+ * while leaving ordinary team_member/team_lead + non-privileged-grant invites on
+ * the fast path.
+ */
+function inviteConfersPrivilegedAuthority(
+  defaultsPayload: Record<string, unknown> | null,
+): boolean {
+  const requestedRole = parseInviteRoleMetadata(defaultsPayload)?.role ?? null;
+  if (requestedRole && (ROLE_RANK[requestedRole] ?? 0) > ROLE_RANK.team_lead) {
+    return true;
+  }
+  return grantsFromDefaults(defaultsPayload, "human").some((grant) =>
+    PRIVILEGED_AUTO_ADMIT_GRANT_KEYS.has(grant.permissionKey),
+  );
+}
 
 /** Mirrors routes/access.ts requestIp (not exported there). */
 function requestIp(req: Request) {
@@ -185,6 +224,23 @@ export function onboardingJoinRoutes(db: Db): Router {
         user.email.trim().toLowerCase() === invitedEmail.trim().toLowerCase(),
     );
     if (!matched) {
+      res.json({ admitted: false, status: "pending" });
+      return;
+    }
+
+    // Defense in depth (P1, Codex round-5): the verified-email match above is
+    // the ONLY auto-admit gate, and the invite's role + grants are applied
+    // verbatim by approveHumanJoinRequestTx. NEVER let an unattended match
+    // confer founder-tier authority — even if a malicious or over-broad invite
+    // row already exists (minted before the creation-time clamp, or via a future
+    // bypass). Privileged invites fall back to manual founder approval: leave
+    // the request pending. Ordinary team_member/team_lead invites and
+    // non-privileged grants keep the (live-validated) fast-path auto-admit.
+    if (
+      inviteConfersPrivilegedAuthority(
+        invite.defaultsPayload as Record<string, unknown> | null,
+      )
+    ) {
       res.json({ admitted: false, status: "pending" });
       return;
     }

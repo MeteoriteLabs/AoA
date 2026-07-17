@@ -26,12 +26,27 @@ vi.mock("../services/join-approval.js", () => ({
     activityActor: { actorType: "system", actorId: "invite_email_match" },
     approvalSource: "invite_email_match",
   }),
+  // Faithful-enough stand-in for the real grantsFromDefaults: reads
+  // defaultsPayload[key].grants and keeps well-formed { permissionKey } entries.
+  grantsFromDefaults: (p: Record<string, unknown> | null, key: "human" | "agent") => {
+    const scoped = p && (p as Record<string, unknown>)[key];
+    const grants =
+      scoped && typeof scoped === "object" && Array.isArray((scoped as { grants?: unknown }).grants)
+        ? (scoped as { grants: Array<Record<string, unknown>> }).grants
+        : [];
+    return grants
+      .filter((g) => g && typeof g.permissionKey === "string")
+      .map((g) => ({ permissionKey: g.permissionKey as string, scope: null }));
+  },
 }));
 vi.mock("../services/team.js", () => ({
-  parseInviteRoleMetadata: (p: Record<string, unknown> | null) =>
-    p && (p as { teamInvite?: { email?: string } }).teamInvite?.email
-      ? { email: (p as { teamInvite: { email: string } }).teamInvite.email, role: "team_member", projectId: null, parentId: null }
-      : null,
+  // Reads the role straight from the payload (defaults to team_member) so the
+  // privileged-auto-admit sink guard can be exercised for founder-tier roles.
+  parseInviteRoleMetadata: (p: Record<string, unknown> | null) => {
+    const teamInvite = p && (p as { teamInvite?: { email?: string; role?: string } }).teamInvite;
+    if (!teamInvite?.email) return null;
+    return { email: teamInvite.email, role: teamInvite.role ?? "team_member", projectId: null, parentId: null };
+  },
 }));
 
 import { onboardingJoinRoutes } from "../routes/onboarding-join.js";
@@ -338,6 +353,68 @@ describe("POST /onboarding/join/finalize", () => {
       expect(json).toHaveBeenCalledWith({ admitted: false, status: "rejected" });
       expect(claim).not.toHaveBeenCalled();
       expect(approveTx).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("privileged auto-admit refusal (P1 defense-in-depth sink)", () => {
+    const callerVerified = { email: "ada@x.com", emailVerified: true };
+
+    it("does NOT auto-admit a founder-role invite even on a verified email match", async () => {
+      const founderInvite = {
+        id: "i1",
+        revokedAt: null,
+        expiresAt: null,
+        defaultsPayload: { teamInvite: { email: "ada@x.com", role: "founder" } },
+      };
+      const { db } = createSequenceDb([[pendingRequest], [founderInvite], [callerVerified]]);
+      const { json } = await call(db, { companyId: "c1" });
+      expect(approveTx).not.toHaveBeenCalled();
+      expect(json).toHaveBeenCalledWith({ admitted: false, status: "pending" });
+    });
+
+    it("does NOT auto-admit an invite carrying a privileged grant (users:manage_permissions)", async () => {
+      const privilegedGrantInvite = {
+        id: "i1",
+        revokedAt: null,
+        expiresAt: null,
+        defaultsPayload: {
+          teamInvite: { email: "ada@x.com", role: "team_member" },
+          human: { grants: [{ permissionKey: "users:manage_permissions" }] },
+        },
+      };
+      const { db } = createSequenceDb([[pendingRequest], [privilegedGrantInvite], [callerVerified]]);
+      const { json } = await call(db, { companyId: "c1" });
+      expect(approveTx).not.toHaveBeenCalled();
+      expect(json).toHaveBeenCalledWith({ admitted: false, status: "pending" });
+    });
+
+    it("REGRESSION: still auto-admits an ordinary team_lead invite on a verified match", async () => {
+      const leadInvite = {
+        id: "i1",
+        revokedAt: null,
+        expiresAt: null,
+        defaultsPayload: { teamInvite: { email: "ada@x.com", role: "team_lead" } },
+      };
+      const { db } = createSequenceDb([[pendingRequest], [leadInvite], [callerVerified]]);
+      const { json } = await call(db, { companyId: "c1" });
+      expect(approveTx).toHaveBeenCalled();
+      expect(json).toHaveBeenCalledWith({ admitted: true, status: "approved" });
+    });
+
+    it("REGRESSION: still auto-admits a non-privileged grant (tasks:assign) on a verified match", async () => {
+      const okGrantInvite = {
+        id: "i1",
+        revokedAt: null,
+        expiresAt: null,
+        defaultsPayload: {
+          teamInvite: { email: "ada@x.com", role: "team_member" },
+          human: { grants: [{ permissionKey: "tasks:assign" }] },
+        },
+      };
+      const { db } = createSequenceDb([[pendingRequest], [okGrantInvite], [callerVerified]]);
+      const { json } = await call(db, { companyId: "c1" });
+      expect(approveTx).toHaveBeenCalled();
+      expect(json).toHaveBeenCalledWith({ admitted: true, status: "approved" });
     });
   });
 

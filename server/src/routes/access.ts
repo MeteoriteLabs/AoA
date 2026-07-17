@@ -60,6 +60,7 @@ import {
   founderApprovalIdentity,
   grantsFromDefaults,
 } from "../services/join-approval.js";
+import { parseInviteRoleMetadata } from "../services/team.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -1674,6 +1675,82 @@ export function accessRoutes(
     async (req, res) => {
       const companyId = req.params.companyId as string;
       await assertCompanyPermission(req, companyId, "users:invite");
+
+      // ── P1 privilege-escalation clamp (Codex round-5, root-cause seam) ──────
+      // `users:invite` is delegable to non-founders, but the invite's
+      // defaultsPayload (teamInvite.role + human/agent grants) is applied
+      // VERBATIM at approval/auto-admit. Without this clamp a non-founder holding
+      // only `users:invite` could mint a role:"founder" (or privileged-grant)
+      // invite pointed at an email they control and self-escalate to founder
+      // with no founder approval. Clamp the requested role + grants to the
+      // CREATOR's OWN authority BEFORE the invite is ever persisted.
+      //
+      // Authority is resolved via the same helpers the rest of RBAC uses (never
+      // hand-rolled): team.getUserRole → effective role (maps instance_admin →
+      // founder); access.canUser → held permission grants (instance_admin ⇒
+      // true). Founders / instance admins keep full capability. Agents and the
+      // local_trusted synthetic board actor are exempt — agents do not drive the
+      // human onboarding auto-admit, and local_implicit is a single trust
+      // boundary where assertCompanyPermission already short-circuits.
+      if (req.actor.type === "board" && !isLocalImplicit(req) && req.actor.userId) {
+        const rawDefaults =
+          req.body.defaultsPayload &&
+          typeof req.body.defaultsPayload === "object" &&
+          !Array.isArray(req.body.defaultsPayload)
+            ? (req.body.defaultsPayload as Record<string, unknown>)
+            : null;
+        if (rawDefaults) {
+          const creatorId = req.actor.userId;
+          const { role: creatorRole } = await team.getUserRole(companyId, creatorId);
+          const creatorIsFounder = creatorRole === "founder"; // getUserRole maps instance_admin → founder
+
+          if (!creatorIsFounder) {
+            // (1) Role clamp: only a founder (or instance admin) may mint a
+            //     founder invite. Non-founders may still invite team_lead /
+            //     team_member (the intended delegation).
+            if (parseInviteRoleMetadata(rawDefaults)?.role === "founder") {
+              throw forbidden("Only founders can invite new founders");
+            }
+
+            // (2) Grants clamp: embedding permission grants is delegation, which
+            //     the member-permissions route gates on `users:manage_permissions`
+            //     — mirror that here, and additionally enforce the floor that a
+            //     creator can NEVER embed a permission key they do not themselves
+            //     hold. Covers human AND agent grants (both applied verbatim at
+            //     approval time).
+            const embeddedGrants = [
+              ...grantsFromDefaults(rawDefaults, "human"),
+              ...grantsFromDefaults(rawDefaults, "agent"),
+            ];
+            if (embeddedGrants.length > 0) {
+              const canDelegateGrants = await access.canUser(
+                companyId,
+                creatorId,
+                "users:manage_permissions",
+              );
+              if (!canDelegateGrants) {
+                throw forbidden(
+                  "You need users:manage_permissions to embed permission grants in an invite",
+                );
+              }
+              for (const grant of embeddedGrants) {
+                const creatorHoldsKey = await access.canUser(
+                  companyId,
+                  creatorId,
+                  grant.permissionKey,
+                );
+                if (!creatorHoldsKey) {
+                  throw forbidden(
+                    `You cannot grant a permission you do not hold: ${grant.permissionKey}`,
+                  );
+                }
+              }
+            }
+          }
+        }
+      }
+      // ────────────────────────────────────────────────────────────────────────
+
       const normalizedAgentMessage =
         typeof req.body.agentMessage === "string"
           ? req.body.agentMessage.trim() || null
