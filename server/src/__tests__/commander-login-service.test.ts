@@ -908,24 +908,23 @@ describe("commander-login service (Plan 3 T4)", () => {
 
   // ── Codex round-8 concurrency hardening ──────────────────────────────────
 
-  it("(P1) overlapping same-company starts: B takes over A's pid-null row → A's backfill sees 0 rows → A self-terminates + aborts; ONE surviving child", async () => {
-    // The claim→backfill window (Codex round-8 P1 :222). A's `claim` inserts a
-    // pending row (pid null) and spawns child A. Before A's pid backfill lands, B's
-    // `claim` runs: it finds A's pending row, `onExisting` permits same-company
-    // takeover but CANNOT kill A's child (pid still null → the `pid != null` guard
-    // skips), deletes A's row, and spawns child B. A's later backfill then affects
-    // ZERO rows without throwing. Without the fix A would sail on — awaiting its
-    // URL + wiring completion — leaving child A orphaned, dueling child B for the
-    // codex :1455 port + credential home. The fix: a 0-row backfill means superseded
-    // → terminate OUR OWN live child and abort (409), converging to one child.
+  it("(P1) 0-row-backfill BACKSTOP: A's in-flight row is concurrently REMOVED (cancel/reaper) → A's backfill sees 0 rows → A self-terminates + aborts (defense-in-depth behind F1)", async () => {
+    // The round-8 0-row-backfill self-terminate (Codex round-8 P1 :222), retained as
+    // DEFENSE-IN-DEPTH behind the F1 refusal (round-8 review). F1 now stops a
+    // concurrent SAME-company start from ever DELETING an in-flight (pid-null) row
+    // (its `onExisting` refuses the takeover → 409; see (F1)), so the ONLY residual
+    // way A's pending row disappears before its pid backfill lands is a concurrent
+    // REMOVAL — a founder `cancel` or the boot `reapOrphans` racing the spawn window
+    // (both remove a pid-null pending row). When that happens A's backfill affects
+    // ZERO rows WITHOUT throwing: A is the LOSER and its just-spawned child would be
+    // an orphan holding the codex :1455 port + credential home. The backstop detects
+    // the 0-row result → terminate OUR OWN live child and abort (409). No orphan.
     const store = memStore();
     const fA = fakeRun(100, 100);
-    const fB = fakeRun(200, 200);
-    let call = 0;
     let seq = 0;
     const terminate = vi.fn();
 
-    // Hold A's pid backfill open until B has completed its takeover, deterministically.
+    // Hold A's pid backfill open until we've removed its row concurrently.
     let releaseABackfill!: () => void;
     const aBackfillGate = new Promise<void>((r) => {
       releaseABackfill = r;
@@ -943,7 +942,7 @@ describe("commander-login service (Plan 3 T4)", () => {
     const svc = createCommanderLoginService({
       store,
       resolveAuthHome: () => "/home/.codex",
-      runLogin: () => (call++ === 0 ? fA.run : fB.run),
+      runLogin: () => fA.run,
       credentialPresent: async () => true,
       terminate,
       newId: () => `ch-${++seq}`,
@@ -955,25 +954,146 @@ describe("commander-login service (Plan 3 T4)", () => {
     const pA = svc.startChallenge({ companyId: "c1", provider: "openai", startedByUserId: "u1" });
     await new Promise((r) => setImmediate(r)); // let A reach the gate
 
-    // Start B (same company) → takes over ch-1 (pid null, no kill), inserts ch-2, spawns child B.
-    const pB = svc.startChallenge({ companyId: "c1", provider: "openai", startedByUserId: "u1" });
-    fB.resolveUrl("https://chatgpt.com/device?code=B");
-    const bResult = await pB;
-    expect(bResult.challengeId).toBe("ch-2");
+    // A concurrent removal — a founder `cancel` or the boot `reapOrphans` clearing the
+    // pid-null pending row — deletes ch-1 while A is mid-spawn (the residual path F1
+    // leaves for this backstop; a same-company start can no longer do this).
+    expect(store.rows.has("ch-1")).toBe(true);
+    await store.remove("ch-1");
 
-    // Release A's backfill → update(ch-1) now affects 0 rows (row deleted by B).
+    // Release A's backfill → update(ch-1) now affects 0 rows (row concurrently removed).
     releaseABackfill();
     await expect(pA).rejects.toBeInstanceOf(LoginChallengeConflictError);
 
-    // A self-terminated its OWN live child; B's child is untouched.
+    // A self-terminated its OWN live child (in-memory handle → unconditional kill),
+    // never routed through the persisted-pid seam, and left no stranded row.
     expect(fA.handle.terminate).toHaveBeenCalledTimes(1);
-    expect(fB.handle.terminate).not.toHaveBeenCalled();
-    // A never routed through the persisted-pid seam (it killed its live handle).
     expect(terminate).not.toHaveBeenCalled();
-    // Single-flight holds: exactly one surviving pending row — B's.
+    const pending = [...store.rows.values()].filter((r) => r.status === "pending");
+    expect(pending).toHaveLength(0);
+  });
+
+  it("(F1) B REFUSES to take over A's IN-FLIGHT pid-null row → 409, no delete, no second child; A's backfill wins → ONE child", async () => {
+    // The residual two-children window round-8 left open (round-8 review F1). Round-8
+    // closed ONLY the ordering where B's DELETE beats A's pid backfill (A sees 0 rows
+    // → self-terminates). The OTHER ordering still orphaned a child: A claims (row A,
+    // pid null) + spawns child A; B claims (the advisory lock is FREE — A releases it
+    // at claim-commit, before spawn+backfill), its SELECT reads row A while pid is
+    // STILL null → `onExisting` can't identity-verify-kill (guarded on pid != null) →
+    // pre-fix it DELETES row A, inserts row B, spawns child B; then A's pid backfill
+    // WINS the row-lock race against B's delete → A matches 1 row → A does NOT
+    // self-terminate → child A lives on as an orphan dueling child B for the codex
+    // :1455 port + shared credential home. The fix makes `onExisting` REFUSE the
+    // takeover of a pid-null (mid-spawn) row: throw a conflict so B backs off (409)
+    // instead of deleting A's in-flight row. Then A's backfill always succeeds → one
+    // child. (The round-8 0-row self-terminate stays as defense-in-depth.)
+    const store = memStore();
+    const fA = fakeRun(100, 100);
+    const fB = fakeRun(200, 200);
+    let call = 0;
+    let seq = 0;
+    const terminate = vi.fn();
+    const runLogin = vi.fn(() => (call++ === 0 ? fA.run : fB.run));
+
+    // Hold A's pid backfill open so B runs its claim while A's row is still pid-null.
+    let releaseABackfill!: () => void;
+    const aBackfillGate = new Promise<void>((r) => {
+      releaseABackfill = r;
+    });
+    const baseUpdate = store.update.bind(store);
+    let gatedOnce = false;
+    store.update = async (id, patch) => {
+      if (id === "ch-1" && "pid" in patch && !gatedOnce) {
+        gatedOnce = true;
+        await aBackfillGate;
+      }
+      return baseUpdate(id, patch);
+    };
+
+    const svc = createCommanderLoginService({
+      store,
+      resolveAuthHome: () => "/home/.codex",
+      runLogin,
+      credentialPresent: async () => true,
+      terminate,
+      newId: () => `ch-${++seq}`,
+      env: () => ({}) as never,
+      setDeadlineTimer: () => () => {},
+    });
+
+    // Start A → claim inserts ch-1 (pid null), spawns child A, suspends at the gated backfill.
+    const pA = svc.startChallenge({ companyId: "c1", provider: "openai", startedByUserId: "u1" });
+    await new Promise((r) => setImmediate(r)); // let A commit its claim + spawn + reach the gate
+
+    // Start B (same company) while A's row is still IN-FLIGHT (pid null).
+    const pB = svc.startChallenge({ companyId: "c1", provider: "openai", startedByUserId: "u1" });
+    // Resolve fB's URL up front so a pre-fix run (B DOES spawn) completes fast instead
+    // of hanging on URL discovery — keeps the RED clean rather than a timeout. Post-fix
+    // B never spawns, so this resolution is an ignored no-op.
+    fB.resolveUrl("https://chatgpt.com/device?code=B");
+    await expect(pB).rejects.toBeInstanceOf(LoginChallengeConflictError); // refused → 409
+
+    // B did NOT take over: it never deleted A's in-flight row and never spawned a child.
+    expect(runLogin).toHaveBeenCalledTimes(1); // only A spawned a login child
+    expect(fB.handle.terminate).not.toHaveBeenCalled();
+    expect(store.rows.has("ch-1")).toBe(true); // A's row untouched by B
+
+    // Release A's backfill → it affects 1 row (still present) → A is NOT superseded.
+    releaseABackfill();
+    fA.resolveUrl("https://chatgpt.com/device?code=A");
+    const aResult = await pA;
+    expect(aResult.challengeId).toBe("ch-1");
+
+    // Exactly one surviving child (A's) + one pending row (A's); A never self-terminated,
+    // and no persisted-pid kill fired.
+    expect(fA.handle.terminate).not.toHaveBeenCalled();
+    expect(terminate).not.toHaveBeenCalled();
+    const survivors = [...store.rows.values()].filter((r) => r.status === "pending");
+    expect(survivors).toHaveLength(1);
+    expect(survivors[0]!.id).toBe("ch-1");
+  });
+
+  it("(F1b) a SET-pid existing row is STILL taken over (hung-login takeover preserved; only pid-null is refused)", async () => {
+    // The F1 refusal is scoped to pid-NULL (mid-spawn) rows ONLY. A row whose pid is
+    // set (backfill completed) is a REAL prior child, possibly hung — the round-2
+    // "a re-attempt cancels the prior child and starts one clean login" semantics must
+    // still hold: identity-verified-kill the prior child and replace the row.
+    const store = memStore();
+    const fresh = fakeRun(9999, 9999);
+    const terminate = vi.fn();
+    const svc = createCommanderLoginService({
+      store,
+      resolveAuthHome: () => "/home/.codex",
+      runLogin: () => fresh.run,
+      credentialPresent: async () => true,
+      terminate,
+      newId: () => "ch-fresh",
+      env: () => ({}) as never,
+      setDeadlineTimer: () => () => {},
+    });
+    const startedAt = new Date("2026-07-17T10:00:00.000Z");
+    store.rows.set("hung", {
+      id: "hung",
+      companyId: "c1",
+      provider: "openai",
+      authHome: "/home/.codex",
+      loginUrl: "https://chatgpt.com/device?code=OLD",
+      pid: 4242, // backfill COMPLETED — a real prior child
+      pgid: 4242,
+      status: "pending",
+      startedByUserId: "u1",
+      startedAt,
+    });
+    const startP = svc.startChallenge({ companyId: "c1", provider: "openai", startedByUserId: "u1" });
+    fresh.resolveUrl("https://chatgpt.com/device?code=NEW");
+    const res = await startP;
+    // Prior (pid-set, possibly hung) child killed via the identity-verified seam...
+    expect(terminate).toHaveBeenCalledWith(4242, 4242, { startedAt });
+    // ...and its row replaced by the fresh challenge (round-2 takeover semantics intact).
+    expect(store.rows.has("hung")).toBe(false);
+    expect(res.challengeId).toBe("ch-fresh");
     const pending = [...store.rows.values()].filter((r) => r.status === "pending");
     expect(pending).toHaveLength(1);
-    expect(pending[0]!.id).toBe("ch-2");
+    expect(pending[0]!.id).toBe("ch-fresh");
   });
 
   it("(P2-202) backfills the ACTUAL spawn time as startedAt so a slow claim can't make the genuine child un-killable", async () => {

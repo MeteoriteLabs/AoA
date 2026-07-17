@@ -105,8 +105,10 @@ export function drizzleChallengeStore(db: Db): ChallengeStore {
     },
     async update(id, patch) {
       // `.returning({ id })` reports rows AFFECTED (Codex round-8 P1): the pid/pgid
-      // backfill uses a 0-row result to detect that a concurrent same-company
-      // takeover deleted this row (superseded → the caller self-cleans its child).
+      // backfill uses a 0-row result to detect that a concurrent removal deleted this
+      // row (superseded → the caller self-cleans its child). Since the F1 refusal a
+      // same-company takeover can no longer delete an in-flight pid-null row; the
+      // residual remover is a founder `cancel` / the boot `reapOrphans`.
       const updated = await db
         .update(commanderLoginChallenges)
         .set({ ...patch, updatedAt: new Date(), finishedAt: patch.status && patch.status !== "pending" ? new Date() : undefined })

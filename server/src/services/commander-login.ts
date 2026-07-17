@@ -56,10 +56,11 @@ export interface ChallengeStore {
   get(id: string): Promise<ChallengeRow | null>;
   /**
    * Apply `patch` to the row and return the number of rows it AFFECTED. A return
-   * of 0 means the row no longer exists — it was concurrently removed (e.g. a
-   * same-company takeover's `claim` deleted our pending row before our pid/pgid
-   * backfill landed, Codex round-8 P1). Callers that must detect being superseded
-   * inspect this count; callers that don't simply ignore it.
+   * of 0 means the row no longer exists — it was concurrently removed before the
+   * pid/pgid backfill landed (Codex round-8 P1). Since the F1 refusal, a same-company
+   * takeover can no longer delete an in-flight pid-null row, so the residual remover
+   * is a founder `cancel` or the boot `reapOrphans` racing the spawn window. Callers
+   * that must detect being superseded inspect this count; callers that don't ignore it.
    */
   update(id: string, patch: Partial<ChallengeRow>): Promise<number>;
   remove(id: string): Promise<void>;
@@ -251,7 +252,36 @@ export function createCommanderLoginService(deps: CommanderLoginServiceDeps): Co
             `another company is already signing in with ${args.provider} at ${authHome}`,
           );
         }
-        // Identity-verified takeover kill (Codex P1, round 6 follow-on). The
+        // F1 (Codex round-8 review): REFUSE to take over an IN-FLIGHT (pid-null)
+        // same-company row. The row is durable at CLAIM time but its pid/pgid are
+        // backfilled only AFTER the child spawns — OUTSIDE this advisory-locked
+        // claim (the lock is released at claim-commit). So a concurrent same-company
+        // start can acquire the lock and land HERE while the prior start's child is
+        // still mid-spawn (pid null). We have no pid to identity-verify-kill, and
+        // silently letting the store DELETE this row opens the last two-children
+        // window: if that delete LOSES the row-lock race to the in-flight start's
+        // pid backfill, the backfill matches 1 row (NOT superseded → its round-8
+        // 0-row self-terminate never triggers) and its child lives on as an orphan
+        // while THIS start spawns a SECOND child — the two duel for the codex :1455
+        // callback port + the shared credential home until the 5-min deadline reaps
+        // one. Backing off with a 409 (throw → the claim tx rolls back, nothing
+        // deleted or inserted, exactly like the cross-company conflict) means the
+        // in-flight start's delete NEVER happens, so its backfill ALWAYS matches 1
+        // row → exactly one child. (The round-8 0-row-backfill self-terminate stays
+        // as defense-in-depth for any residual delete.) This pid-null row cannot
+        // linger and deadlock the slot: within a healthy process it resolves inside
+        // the spawn window (backfill sets pid) or is removed by `settleTerminal` on
+        // a spawn-throw / backfill-reject; a hard crash mid-spawn leaves it for the
+        // boot `reapOrphans`, which removes pid-null pending rows unconditionally.
+        if (existing.pid == null) {
+          throw new LoginChallengeConflictError(
+            `a ${args.provider} sign-in is already starting at ${authHome}`,
+          );
+        }
+        // Identity-verified takeover kill (Codex P1, round 6 follow-on). Here
+        // `existing.pid` is SET — the backfill completed, so this is a REAL prior
+        // child (possibly HUNG). This is the legitimate round-2 takeover: a
+        // re-attempt cancels the prior child and starts one clean login. The
         // single-flight slot is reclaimed whether or not the kill fires (the row
         // is removed/replaced by the store either way), but the `existing` row
         // may be DURABLE — persisted by a PRIOR process whose pid has since been
@@ -262,8 +292,7 @@ export function createCommanderLoginService(deps: CommanderLoginServiceDeps): Co
         // reaper uses — a reused pid is skipped, a genuine this-session child
         // (start time ≤ startedAt + tolerance) is still killed so the codex
         // :1455 callback port is freed for the fresh login.
-        if (existing.pid != null)
-          deps.terminate(existing.pid, existing.pgid, { startedAt: existing.startedAt });
+        deps.terminate(existing.pid, existing.pgid, { startedAt: existing.startedAt });
       },
     });
 
@@ -316,18 +345,21 @@ export function createCommanderLoginService(deps: CommanderLoginServiceDeps): Co
       throw err;
     }
     if (backfilled === 0) {
-      // Superseded (Codex round-8 P1 :222). Between our `claim` and this backfill a
-      // concurrent SAME-company start took over: its `claim` DELETED our pending row
-      // — ours still had pid: null, so that start's `onExisting` (guarded on
-      // pid != null) could NOT terminate our child — and inserted its own row. Our
-      // row is gone, so this update affected 0 rows WITHOUT throwing: we are the
-      // LOSER, and our just-spawned child is now an orphan dueling the winner's for
-      // the codex :1455 callback port + the shared credential home. Self-clean:
-      // terminate OUR OWN live child (an in-memory handle → an unconditional kill is
-      // correct here; it is NOT a persisted, possibly-reused pid) and ABORT before
-      // awaiting the URL or wiring the completion chain (either would keep the loser
-      // alive). Nothing to mark terminal — the row no longer exists. Surfaces as the
-      // 409 the route already maps, converging the slot to exactly one child.
+      // Superseded (Codex round-8 P1 :222), retained as DEFENSE-IN-DEPTH behind the
+      // F1 refusal (round-8 review). Our row is gone, so this update affected 0 rows
+      // WITHOUT throwing. F1 now stops a concurrent SAME-company start from ever
+      // DELETING our in-flight (pid-null) row — its `onExisting` refuses the takeover
+      // of a pid-null row (409) rather than deleting it — so the ONLY residual way our
+      // row disappears before this backfill lands is a concurrent REMOVAL: a founder
+      // `cancel` or the boot `reapOrphans` racing the spawn window (both remove a
+      // pid-null pending row). Whatever the cause, a 0-row result means we are the
+      // LOSER and our just-spawned child would be an orphan dueling for the codex
+      // :1455 callback port + the shared credential home. Self-clean: terminate OUR
+      // OWN live child (an in-memory handle → an unconditional kill is correct here;
+      // it is NOT a persisted, possibly-reused pid) and ABORT before awaiting the URL
+      // or wiring the completion chain (either would keep the loser alive). Nothing to
+      // mark terminal — the row no longer exists. Surfaces as the 409 the route already
+      // maps, converging the slot to exactly one child.
       try {
         run.handle.terminate();
       } catch {
