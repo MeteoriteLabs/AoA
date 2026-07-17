@@ -51,6 +51,12 @@ export function InvitedJoinTerminal() {
   const [consented, setConsented] = useState(false);
   const timerRef = useRef<number | null>(null);
   const finalizedRef = useRef(false);
+  // The company the user actually came to join, captured on the FIRST tick that
+  // resolves a target. Once the founder approves/rejects it the target leaves
+  // pendingInvitations; re-deriving from the (shrinking) list would fall through
+  // to a DIFFERENT pending invite and silently switch companies. Anchoring keeps
+  // the page bound to the original target; its outcome is resolved in `!inv`.
+  const anchoredTargetRef = useRef<string | null>(null);
 
   const enter = useCallback(async () => {
     // Evict the gate's cached pre-approval journey AND refresh the companies
@@ -78,19 +84,64 @@ export function InvitedJoinTerminal() {
         // pending invitation (returning).
         const deepLinked = searchParams.get("company");
         const invitations = j.pendingInvitations ?? [];
-        const targetId =
+        // Derive the target from the pending list — but only to SEED the anchor
+        // on the first resolving tick (see anchoredTargetRef). After that, the
+        // anchor wins so an approved/rejected target that dropped out of the
+        // pending set does NOT fall through to invitations[0] (a different invite).
+        const derivedTargetId =
           (deepLinked && invitations.some((p) => p.companyId === deepLinked)
             ? deepLinked
             : j.journey === "invited"
               ? j.targetCompanyId
               : invitations[0]?.companyId) ?? null;
+        if (anchoredTargetRef.current === null && derivedTargetId) {
+          anchoredTargetRef.current = derivedTargetId;
+        }
+        const targetId = anchoredTargetRef.current ?? derivedTargetId;
         const inv = invitations.find((p) => p.companyId === targetId) ?? null;
 
         if (!inv) {
-          // No pending invitation remains for the target.
+          // The anchored target is no longer pending — resolve ITS outcome, and
+          // never fall through to another pending invite (the multi-invite
+          // switch bug). When we already engaged finalize for this target
+          // (finalizedRef), ask it: finalize is idempotent and DEFINITIVE —
+          // admitted:true => approved, status "rejected" => rejected. That
+          // disambiguates the "returning" label, which only means a membership
+          // exists SOMEWHERE (possibly a DIFFERENT company) and so cannot tell
+          // "this target approved" from "this target rejected but I'm already a
+          // member elsewhere". A tokenless invite the user never consented to
+          // (finalizedRef still false) must never be finalized, so it skips the
+          // call and relies on the label. Finalize errors + non-definitive
+          // responses fall back to the same label below.
+          if (targetId && finalizedRef.current) {
+            try {
+              const result = await finalizeInvitedJoin(targetId);
+              if (cancelled) return;
+              if (result.admitted) {
+                await enter();
+                return;
+              }
+              if (result.status === "rejected") {
+                setPhase("not_approved");
+                return;
+              }
+            } catch (err) {
+              if (cancelled) return;
+              if ((err as { status?: number }).status === 401) {
+                // Session gone — back through sign-in, preserving the deep link.
+                navigate(`/auth?next=${encodeURIComponent(pathname + search)}`, {
+                  replace: true,
+                });
+                return;
+              }
+              // Any other error (incl. 404 = the request/invite is gone) — fall
+              // back to the journey label below.
+            }
+          }
           if (j.journey === "returning") {
-            // Approved (the invitation left the pending set) — or simply an
-            // existing member with nothing pending here: enter the app.
+            // Approved (the invitation left the pending set and a membership now
+            // exists) — or simply an existing member with nothing pending here:
+            // enter the app.
             await enter();
             return;
           }

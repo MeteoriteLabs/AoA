@@ -152,6 +152,123 @@ describe("InvitedJoinTerminal", () => {
     await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/", { replace: true }));
   });
 
+  describe("multi-invite (anchored target, Codex P2)", () => {
+    const invA = {
+      companyId: "cA",
+      companyName: "Acme",
+      inviteId: "rA",
+      role: "team_member",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      filed: true,
+    };
+    // B is tokenless (filed: false): if the page WRONGLY switched to it, it
+    // would render B's consent card ("invited to join Beta") — a loud regression.
+    const invB = {
+      companyId: "cB",
+      companyName: "Beta",
+      inviteId: "iB",
+      role: "team_lead",
+      createdAt: "2026-01-02T00:00:00.000Z",
+      filed: false,
+    };
+
+    it("APPROVE: deep-linked A approved, B still pending → enters A, never switches to B", async () => {
+      routerState.searchParams = new URLSearchParams("company=cA");
+      fetchJourney.mockResolvedValue({
+        journey: "invited",
+        targetCompanyId: "cA",
+        pendingInvitations: [invA, invB],
+        inviteToken: null,
+      });
+      finalizeInvitedJoin.mockResolvedValue({ admitted: false, status: "pending" }); // tick 1: A pending
+      render(<InvitedJoinTerminal />);
+      // Bound to A, not B.
+      await screen.findByText(/joining/i);
+      expect(screen.getByText(/Acme/)).toBeTruthy();
+      expect(screen.queryByText(/Beta/)).toBeNull();
+      // Founder approves A: it leaves the pending set (B remains) and a
+      // membership now exists → journey flips to "returning".
+      fetchJourney.mockResolvedValue({
+        journey: "returning",
+        targetCompanyId: "cA",
+        pendingInvitations: [invB],
+        inviteToken: null,
+      });
+      finalizeInvitedJoin.mockResolvedValue({ admitted: true, status: "approved" });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(8000);
+      });
+      await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/", { replace: true }));
+      // Resolved the anchored company A, never B (no finalize, no consent card).
+      expect(finalizeInvitedJoin).toHaveBeenCalledWith("cA");
+      expect(finalizeInvitedJoin).not.toHaveBeenCalledWith("cB");
+      expect(finalizeInvitedJoin).not.toHaveBeenCalledWith("cB", expect.anything());
+      expect(screen.queryByText(/Beta/)).toBeNull();
+    });
+
+    it("REJECT: deep-linked A rejected, B still pending → not-approved for A, never switches to B", async () => {
+      routerState.searchParams = new URLSearchParams("company=cA");
+      fetchJourney.mockResolvedValue({
+        journey: "invited",
+        targetCompanyId: "cA",
+        pendingInvitations: [invA, invB],
+        inviteToken: null,
+      });
+      finalizeInvitedJoin.mockResolvedValue({ admitted: false, status: "pending" }); // tick 1: A pending
+      render(<InvitedJoinTerminal />);
+      await screen.findByText(/joining/i);
+      expect(screen.getByText(/Acme/)).toBeTruthy();
+      // Founder rejects A: it leaves the pending set; B keeps the journey "invited".
+      fetchJourney.mockResolvedValue({
+        journey: "invited",
+        targetCompanyId: "cB",
+        pendingInvitations: [invB],
+        inviteToken: null,
+      });
+      finalizeInvitedJoin.mockResolvedValue({ admitted: false, status: "rejected" }); // A's outcome
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(8000);
+      });
+      expect(await screen.findByText(/not approved/i)).toBeTruthy();
+      expect(mockNavigate).not.toHaveBeenCalled();
+      expect(finalizeInvitedJoin).toHaveBeenCalledWith("cA");
+      expect(finalizeInvitedJoin).not.toHaveBeenCalledWith("cB");
+      expect(finalizeInvitedJoin).not.toHaveBeenCalledWith("cB", expect.anything());
+      expect(screen.queryByText(/Beta/)).toBeNull();
+    });
+
+    it("REJECT while a member elsewhere: journey stays 'returning' but finalize disambiguates → not-approved (no false enter)", async () => {
+      routerState.searchParams = new URLSearchParams("company=cA");
+      // journey is "returning" throughout — the user is already a member of a
+      // DIFFERENT company C, so the label alone can't tell "A approved" from
+      // "A rejected". Only the idempotent finalize can.
+      fetchJourney.mockResolvedValue({
+        journey: "returning",
+        targetCompanyId: "cC",
+        pendingInvitations: [invA, invB],
+        inviteToken: null,
+      });
+      finalizeInvitedJoin.mockResolvedValue({ admitted: false, status: "pending" });
+      render(<InvitedJoinTerminal />);
+      await screen.findByText(/joining/i);
+      expect(screen.getByText(/Acme/)).toBeTruthy();
+      // A rejected — journey STAYS "returning" (still a member of C). A label-only
+      // resolver would wrongly enter; finalize's definitive "rejected" wins.
+      fetchJourney.mockResolvedValue({
+        journey: "returning",
+        targetCompanyId: "cC",
+        pendingInvitations: [invB],
+        inviteToken: null,
+      });
+      finalizeInvitedJoin.mockResolvedValue({ admitted: false, status: "rejected" });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(8000);
+      });
+      expect(await screen.findByText(/not approved/i)).toBeTruthy();
+      expect(mockNavigate).not.toHaveBeenCalled();
+    });
+  });
+
   it("invite_invalid → distinct copy, keeps polling (founder can still approve)", async () => {
     finalizeInvitedJoin.mockResolvedValue({ admitted: false, status: "invite_invalid" });
     render(<InvitedJoinTerminal />);
