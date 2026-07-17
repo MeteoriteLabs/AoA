@@ -101,11 +101,13 @@ beforeAll(async () => {
       INSERT INTO discussions (id, company_id, title, status, created_by)
       VALUES (${discussionId}, ${companyId}, 'Outbox thread', 'active', 'user:1')
     `);
-    // Round-13 #2: seed a MULTI-WORD crew agent ("Memory Keeper") + a single-word
-    // one ("Scout") so resolveMentionTargets has a roster to match against.
+    // Round-13 #2 / round-14 #3: seed a MULTI-WORD crew agent ("Memory Keeper"),
+    // a single-word one ("Scout"), AND a single-word agent ("Memory") whose name
+    // is a PREFIX of the multi-word one — so resolveMentionTargets must resolve
+    // "@Memory Keeper" to ONLY "Memory Keeper", not also the "Memory" prefix.
     await db.execute(sql`
       INSERT INTO agents (company_id, name, kind)
-      VALUES (${companyId}, 'Memory Keeper', 'aoa'), (${companyId}, 'Scout', 'aoa')
+      VALUES (${companyId}, 'Memory Keeper', 'aoa'), (${companyId}, 'Scout', 'aoa'), (${companyId}, 'Memory', 'aoa')
     `);
   } catch (err) {
     setupError = err;
@@ -487,5 +489,31 @@ describe.skipIf(process.platform === "win32")("multi-word mention resolution (re
     const names = await outboxMentionNames(entry.id);
     expect(names).toContain("Memory Keeper");
     expect(names.filter((n) => n === "Memory Keeper")).toHaveLength(1);
+  });
+
+  // Round-14 #3: the company has BOTH a "Memory" and a "Memory Keeper" agent, so
+  // the full-name match must SUPPRESS the "Memory" prefix token it consumed.
+  it("resolves @Memory Keeper to ONLY Memory Keeper (suppresses the Memory prefix)", async () => {
+    const names = (await resolveMentionTargets(db, companyId, "@Memory Keeper please")).map(
+      (m) => m.name,
+    );
+    expect(names).toContain("Memory Keeper");
+    expect(names).not.toContain("Memory");
+  });
+
+  it("resolves a standalone @Memory to ONLY Memory", async () => {
+    const names = (await resolveMentionTargets(db, companyId, "@Memory what do you think")).map(
+      (m) => m.name,
+    );
+    expect(names).toContain("Memory");
+    expect(names).not.toContain("Memory Keeper");
+  });
+
+  it("resolves @Memory Keeper and @Memory to BOTH agents", async () => {
+    const names = (
+      await resolveMentionTargets(db, companyId, "@Memory Keeper and also @Memory please")
+    ).map((m) => m.name);
+    expect(names).toContain("Memory Keeper");
+    expect(names).toContain("Memory");
   });
 });

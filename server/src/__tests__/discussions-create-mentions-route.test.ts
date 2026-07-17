@@ -67,7 +67,7 @@ vi.mock("../middleware/rbac.js", () => ({
 }));
 
 import { discussionRoutes } from "../routes/discussions.js";
-import { processMentions } from "../services/threads.js";
+import { processMentions, resolveMentionTargets } from "../services/threads.js";
 
 // ── App harness ──────────────────────────────────────────────────────────────
 
@@ -177,6 +177,29 @@ describe("POST /discussions — first-message @mention dispatch (Finding #7)", (
       .send({ title: "Empty thread" });
 
     expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(processMentions as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+  });
+
+  it("resolves mentions BEFORE create — a roster-query failure commits nothing (round-14 #2)", async () => {
+    // Round-14 #2: resolveMentionTargets (a roster read) runs PRE-commit. If it
+    // fails, svc.create must NOT have run — otherwise the discussion+entry are
+    // durable, the request 500s, and a retry (no idempotency key) duplicates the
+    // thread while the summon stays lost.
+    (resolveMentionTargets as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error("roster query DB down"),
+    );
+
+    const app = createApp();
+    const res = await request(app)
+      .post(`/api/companies/${COMPANY_A}/discussions`)
+      .send({
+        title: "Need help",
+        entry: { inputType: "write", rawContent: "@Scout dig into this" },
+      });
+
+    // Fails cleanly with NOTHING committed (create never ran) → safe client retry.
+    expect(res.status).toBe(500);
+    expect(mockCreate).not.toHaveBeenCalled();
     expect(processMentions as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
   });
 });

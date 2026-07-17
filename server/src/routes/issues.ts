@@ -535,9 +535,23 @@ export function issueRoutes(db: Db, storage: StorageService) {
     // branch, a founder commenting on (or @mentioning a crew agent in) a crew
     // task produced no dispatch and no error. Mirrors the PATCH/update path
     // chokepoint (resolveAgentKinds → enqueueAoaMentionWakeup vs heartbeat.wakeup).
-    const aoaKinds = await svc
-      .resolveAgentKinds([...wakeups.keys()])
-      .catch(() => new Map<string, string>());
+    // Round-14 #1: a resolveAgentKinds failure must NOT silently fall back to an
+    // empty map. With no kinds, every kind='aoa' target would route down the
+    // heartbeat branch, and heartbeat.wakeup RESOLVES null (records
+    // heartbeat.skipped.aoa_kind) rather than rejecting — so the misrouted crew
+    // summon would be reported as ok:true, the claim kept, and every retry skips
+    // → a permanently lost summon. Instead, count every target as failed so the
+    // claim-gated caller releases the marker and a later retry re-resolves.
+    let aoaKinds: Map<string, string>;
+    try {
+      aoaKinds = await svc.resolveAgentKinds([...wakeups.keys()]);
+    } catch (err) {
+      logger.warn(
+        { err, issueId: currentIssue.id },
+        "resolveAgentKinds failed on issue comment — skipping dispatch so the claim releases for retry",
+      );
+      return { attempted: wakeups.size, failed: wakeups.size };
+    }
     // Round-9 #3: AWAIT the wakeup enqueues (their agent_wakeup_requests rows are
     // the durable summon) before this function resolves, so a caller that stamps
     // wakeupsEnqueuedAt after awaiting us records completion only once the rows
@@ -664,7 +678,20 @@ export function issueRoutes(db: Db, storage: StorageService) {
       await svc.notifyMentionedHumans(issue.companyId, body, issue.id, actor);
     }
 
-    const aoaKinds = await svc.resolveAgentKinds([...wakeups.keys()]).catch(() => new Map<string, string>());
+    // Round-14 #1: a resolveAgentKinds failure must NOT fall back to an empty map
+    // (that misroutes kind='aoa' targets to heartbeat.wakeup, which no-ops them
+    // as ok:true → lost crew summon). Count every target as failed so the claim
+    // releases and a retry re-resolves.
+    let aoaKinds: Map<string, string>;
+    try {
+      aoaKinds = await svc.resolveAgentKinds([...wakeups.keys()]);
+    } catch (err) {
+      logger.warn(
+        { err, issueId: issue.id },
+        "resolveAgentKinds failed on issue update — skipping dispatch so the claim releases for retry",
+      );
+      return { attempted: wakeups.size, failed: wakeups.size };
+    }
     // Round-11 #1: AWAIT the dispatches (their agent_wakeup_requests rows are the
     // durable summon) so a caller stamps the completion marker only after they land.
     // Round-13 #1: COUNT per-agent failures and return them so the claim-gated

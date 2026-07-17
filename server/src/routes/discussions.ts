@@ -616,35 +616,42 @@ export function discussionRoutes(db: Db) {
       await assertRole(db, req, companyId, "founder", "team_lead");
 
       const actor = getActorInfo(req);
+
+      // Round-14 #2: resolve the opening message's @mentions BEFORE svc.create so
+      // the roster query commits nothing on failure. resolveMentionTargets (added
+      // round-13 #2) reads the agent roster; running it AFTER the commit meant a
+      // transient roster-query blip 500'd the request with the discussion + first
+      // entry already durable — and the create endpoint has no idempotency key, so
+      // a normal client retry would DUPLICATE the thread while the summon stayed
+      // lost. Resolving pre-commit fails cleanly (nothing created → safe retry).
+      // The content is the same one svc.create will insert (req.body.entry).
+      const openingContent =
+        typeof (req.body?.entry as { rawContent?: unknown } | undefined)?.rawContent === "string"
+          ? (req.body.entry.rawContent as string)
+          : "";
+      const openingMentions = openingContent
+        ? await resolveMentionTargets(db, companyId, openingContent)
+        : [];
+
       try {
         const discussion = await svc.create(companyId, req.body, actor.actorId);
 
         // Live-QA BUG-1: a thread opened WITH a first message must dispatch any
-        // @mentions in that first message — exactly like the add-entry route
-        // does. Without this an @mention in the opening message is dropped.
-        // Fire-and-forget; the entry is already committed, so errors must not
-        // fail the request. Mirrors the /entries route's processMentions wiring.
-        if (discussion.entry) {
-          // Round-13 #2: multi-word-aware resolution so a "@Memory Keeper" in the
-          // OPENING message is summoned (this create path calls processMentions
-          // directly — it does NOT go through the addEntry outbox — so it needs
-          // the same multi-word fix as the outbox enqueue).
-          const mentions = await resolveMentionTargets(
+        // @mentions in that first message — exactly like the add-entry route does.
+        // The summon (processMentions) stays post-commit fire-and-forget (the
+        // entry is already committed, so a summon error must not fail the request);
+        // only the ROSTER RESOLUTION moved pre-commit (round-14 #2). Mentions were
+        // resolved above from the same content svc.create just inserted.
+        if (discussion.entry && openingMentions.length > 0) {
+          processMentions(
             db,
             companyId,
-            discussion.entry.rawContent ?? "",
+            discussion.id,
+            discussion.entry.id,
+            openingMentions,
+          ).catch((err) =>
+            console.error("[threads] processMentions error:", err),
           );
-          if (mentions.length > 0) {
-            processMentions(
-              db,
-              companyId,
-              discussion.id,
-              discussion.entry.id,
-              mentions,
-            ).catch((err) =>
-              console.error("[threads] processMentions error:", err),
-            );
-          }
         }
 
         res.status(201).json(discussion);

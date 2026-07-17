@@ -1089,6 +1089,34 @@ describe("POST /issues/:id/comments — idempotent retry (clientSubmissionId)", 
     expect(mockIssueService.releaseCommentWakeupDispatch).not.toHaveBeenCalled();
   });
 
+  it("RELEASES the claim and does NOT misroute when resolveAgentKinds fails (round-14 #1)", async () => {
+    // A resolveAgentKinds failure must NOT fall back to an empty map (which would
+    // route a kind='aoa' target to heartbeat.wakeup — that no-ops the crew summon
+    // and reports success). The dispatch is skipped entirely, counted as failed,
+    // so the claim releases for a retry; nothing is woken down the wrong branch.
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "todo", assigneeAgentId: null }));
+    mockIssueService.findMentionedAgents.mockResolvedValue([mentionedAgentId]);
+    mockIssueService.resolveAgentKinds.mockRejectedValue(new Error("kind lookup DB down"));
+    mockIssueService.getCommentByClientSubmissionId.mockResolvedValue({
+      ...existingComment,
+      body: "@Beta please take a look",
+      controlEffectsCompletedAt: new Date("2026-07-17T00:00:00Z"),
+      wakeupsEnqueuedAt: null,
+    });
+
+    const res = await request(createApp())
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "@Beta please take a look", clientSubmissionId: submissionId });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.claimCommentWakeupDispatch).toHaveBeenCalledWith("comment-1");
+    // Claim released (retry will re-resolve) and NOTHING was misrouted.
+    expect(mockIssueService.releaseCommentWakeupDispatch).toHaveBeenCalledWith("comment-1");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    expect(mockIssueService.enqueueAoaMentionWakeup).not.toHaveBeenCalled();
+  });
+
   it("passes the clientSubmissionId through to addComment on the create path", async () => {
     const app = createApp();
     const res = await request(app)

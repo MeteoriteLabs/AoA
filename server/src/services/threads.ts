@@ -180,46 +180,67 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+// Same @mention token shape parseMentions uses: `@` at start-of-string or after
+// whitespace, capturing the first word. `matchAll` gives us each token's INDEX so
+// resolution can be POSITION-aware (round-14 #3).
+const MENTION_TOKEN_RE = /(?:^|(?<=\s))@(\w+)/g;
+
 /**
  * Multi-word-aware mention resolution for the discussion summon paths
- * (PR #291 round-13 #2).
+ * (PR #291 round-13 #2, round-14 #3).
  *
  * The naive `parseMentions` tokenizer (`\w+`) truncates a multi-word crew name
  * such as `@Memory Keeper` to `Memory`, so the outbox worker / `processMentions`
  * (which exact-matches `agents.name`) can never resolve it and the agent is
- * never summoned — the Discussion composer picker inserts the FULL label. This
- * resolver mirrors `issues.ts findMentionedAgents`: it keeps the single-word
- * token pass (covers users + single-word agents) AND adds a pass that matches
- * each multi-word company agent name via `\B@<fullname>(?![^\s@,!?.])` — the
- * same boundary the comment side uses (round-9 #4: `@Memory Keepers` must NOT
- * match `Memory Keeper`). Returns `{ raw, name }` with the FULL resolved name so
- * `processMentions`' exact `agents.name` / `authUsers.name` match works unchanged
- * — no outbox schema change (the row still stores `{ raw, name }`). Only
- * org + aoa agents are considered (platform agents are not mentionable), exactly
- * as `findMentionedAgents` does.
+ * never summoned — the Discussion composer picker inserts the FULL label.
+ *
+ * Resolution is POSITION-aware and longest-match-wins PER `@` occurrence
+ * (round-14 #3): at each mention token, if a multi-word company agent name
+ * matches starting at that exact `@` (with the round-9 #4 trailing boundary
+ * `(?![^\s@,!?.])` — so `@Memory Keepers` does NOT match `Memory Keeper`), the
+ * full name REPLACES the single-word token it consumed. So a company with BOTH a
+ * `Memory` and a `Memory Keeper` agent resolves `@Memory Keeper` to ONLY
+ * `Memory Keeper` (not also the prefix `Memory`), a standalone `@Memory` to
+ * `Memory`, and `@Memory Keeper and @Memory` to BOTH. Returns `{ raw, name }`
+ * with the resolved name so `processMentions`' exact `agents.name` /
+ * `authUsers.name` match works unchanged — no outbox schema change. Only org+aoa
+ * agents are considered (platform agents are not mentionable), as
+ * `findMentionedAgents` does.
  */
 export async function resolveMentionTargets(
   db: Db,
   companyId: string,
   text: string,
 ): Promise<Array<{ raw: string; name: string }>> {
-  const results = parseMentions(text);
-  if (!text.includes("@")) return results;
-  const seen = new Set(results.map((m) => m.name.toLowerCase()));
+  const tokens = [...text.matchAll(MENTION_TOKEN_RE)];
+  // No mention token → no multi-word name can match either (every full-name match
+  // begins at a `@Word` token), so skip the roster query entirely.
+  if (tokens.length === 0) return [];
 
   const rows = await db
     .select({ name: agents.name })
     .from(agents)
     .where(and(eq(agents.companyId, companyId), inArray(agents.kind, ["org", "aoa"])));
+  const multiWordNames = rows.map((r) => r.name).filter((name) => /\s/.test(name));
 
-  for (const row of rows) {
-    // Single-word names are already covered by the token pass above.
-    if (!/\s/.test(row.name)) continue;
-    if (seen.has(row.name.toLowerCase())) continue;
-    const re = new RegExp(`\\B@${escapeRegExp(row.name)}(?![^\\s@,!?.])`, "i");
-    if (re.test(text)) {
-      seen.add(row.name.toLowerCase());
-      results.push({ raw: `@${row.name}`, name: row.name });
+  const results: Array<{ raw: string; name: string }> = [];
+  const seen = new Set<string>();
+  for (const token of tokens) {
+    const slice = text.slice(token.index ?? 0); // starts at this token's `@`
+    // Prefer the LONGEST multi-word agent name that matches at this `@` — the
+    // full-name match SUPPRESSES the shorter prefix token it consumed.
+    let matchedName: string | null = null;
+    for (const name of multiWordNames) {
+      const re = new RegExp(`^@${escapeRegExp(name)}(?![^\\s@,!?.])`, "i");
+      if (re.test(slice) && (!matchedName || name.length > matchedName.length)) {
+        matchedName = name;
+      }
+    }
+    const resolvedName = matchedName ?? token[1];
+    const key = resolvedName.toLowerCase();
+    if (!seen.has(key)) {
+      seen.add(key);
+      results.push({ raw: `@${resolvedName}`, name: resolvedName });
     }
   }
   return results;
