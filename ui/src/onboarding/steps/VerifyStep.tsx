@@ -7,9 +7,10 @@ import {
   saveCommanderKey,
   startCommanderLogin,
   getCommanderLoginStatus,
+  cancelCommanderLogin,
   type CommanderLoginStatus,
 } from "../../api/commander-auth";
-import type { CommanderProvider } from "@armyofagents/shared";
+import { cliToolToProvider, type CommanderProvider } from "@armyofagents/shared";
 import { Button } from "@/components/ui/button";
 
 type Outcome = "idle" | "verified" | "needs_auth" | "not_installed" | "failed";
@@ -51,14 +52,22 @@ export function VerifyStep({ ctx, onComplete }: StepProps) {
   );
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Learn which CLI the founder chose so the auth affordances name it correctly.
+  // Derive the recovery-credential provider from Commander's CLI (`cliTool`), NOT
+  // the crew `provider` — they are independent config. The verify route probes
+  // the adapter resolved from `cliTool` (server resolveCommanderAdapterType), so
+  // offering/saving a key for a DIFFERENT CLI than the one being probed would
+  // loop the founder forever (e.g. Claude Commander + OpenAI crew → OpenAI key →
+  // re-probe Claude → still blocked). Codex P2-A. `cliToolToProvider` is the
+  // shared source of truth (also drives the server); we narrow its CrewProvider
+  // result to the two Commander providers this step can recover (opencode/google
+  // have no key-paste path → provider stays null).
   useEffect(() => {
     if (!ctx.companyId) return;
     let alive = true;
     void internalAgentApi
       .getConfig(ctx.companyId)
       .then((cfg) => {
-        const p = (cfg as { provider?: string | null })?.provider;
+        const p = cliToolToProvider((cfg as { cliTool?: string | null })?.cliTool);
         if (alive && (p === "anthropic" || p === "openai")) setProvider(p);
       })
       .catch(() => {});
@@ -73,7 +82,37 @@ export function VerifyStep({ ctx, onComplete }: StepProps) {
       pollRef.current = null;
     }
   };
-  useEffect(() => clearPoll, []);
+
+  // Mirror the latest active login challenge (with the company that created it)
+  // into a ref so the empty-dep unmount cleanup below sees the CURRENT value — a
+  // plain closure would capture the initial null and never cancel anything.
+  const activeLoginRef = useRef<{ companyId: string; challengeId: string; status: CommanderLoginStatus } | null>(
+    null,
+  );
+  useEffect(() => {
+    activeLoginRef.current =
+      login && ctx.companyId
+        ? { companyId: ctx.companyId, challengeId: login.challengeId, status: login.status }
+        : null;
+  }, [login, ctx.companyId]);
+
+  // On unmount (incl. navigating Back, which unmounts this step) stop polling AND
+  // cancel a still-`pending` login. Otherwise the detached CLI child + `pending`
+  // row stay alive, and the login slot — shared by (provider, authHome) — 409s
+  // every other company until it completes/expires. A completed/failed/timeout
+  // challenge is already terminal → skip the request. Codex P2-B.
+  useEffect(() => {
+    return () => {
+      clearPoll();
+      const active = activeLoginRef.current;
+      if (active && active.status === "pending") {
+        void cancelCommanderLogin({ companyId: active.companyId, challengeId: active.challengeId }).catch(
+          () => {},
+        );
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- run once on unmount; latest state is read via activeLoginRef.
+  }, []);
 
   const check = async () => {
     if (!ctx.companyId) return;

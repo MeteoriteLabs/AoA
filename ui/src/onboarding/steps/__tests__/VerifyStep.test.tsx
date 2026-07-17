@@ -13,12 +13,22 @@ vi.mock("../../../api/client", async (importActual) => {
 vi.mock("../../../api/onboarding", () => ({
   advanceOnboarding: vi.fn(async () => ({ completedStates: [] })),
 }));
-const getConfig = vi.hoisted(() => vi.fn(async () => ({ provider: "anthropic" })));
+// Realistic base config: Commander runs the Claude CLI (`cliTool`), and the crew
+// `provider` is DELIBERATELY a different value — the Verify step must derive its
+// recovery-credential provider from `cliTool` (what the server probes), never
+// from the crew `provider` (Codex P2-A).
+const getConfig = vi.hoisted(() => vi.fn(async () => ({ cliTool: "claude_cli", provider: "openai" })));
 vi.mock("../../../api/internal-agent", () => ({ internalAgentApi: { getConfig } }));
 const saveCommanderKey = vi.hoisted(() => vi.fn(async () => ({ ok: true, secretId: "s1" })));
 const startCommanderLogin = vi.hoisted(() => vi.fn());
 const getCommanderLoginStatus = vi.hoisted(() => vi.fn());
-vi.mock("../../../api/commander-auth", () => ({ saveCommanderKey, startCommanderLogin, getCommanderLoginStatus }));
+const cancelCommanderLogin = vi.hoisted(() => vi.fn(async () => ({ ok: true })));
+vi.mock("../../../api/commander-auth", () => ({
+  saveCommanderKey,
+  startCommanderLogin,
+  getCommanderLoginStatus,
+  cancelCommanderLogin,
+}));
 
 import { advanceOnboarding } from "../../../api/onboarding";
 
@@ -119,7 +129,7 @@ describe("VerifyStep (Stage C / order 5, blocking)", () => {
 
   it("needs_auth → Codex interactive login → surfaces the verification URL while pending", async () => {
     getCommanderLoginStatus.mockResolvedValue({ status: "pending", loginUrl: "https://auth.openai.com/go?c=1" });
-    getConfig.mockResolvedValue({ provider: "openai" }); // interactive login is Codex-only
+    getConfig.mockResolvedValue({ cliTool: "codex", provider: "anthropic" }); // interactive login is Codex-only; crew provider diverges
     post.mockRejectedValueOnce(needsAuthError());
     startCommanderLogin.mockResolvedValueOnce({ challengeId: "ch-1", loginUrl: "https://auth.openai.com/go?c=1" });
     render(<VerifyStep ctx={ctx} onComplete={vi.fn()} onBack={() => {}} />);
@@ -132,7 +142,7 @@ describe("VerifyStep (Stage C / order 5, blocking)", () => {
   });
 
   it("needs_auth → Codex interactive login → polls to completed and re-verifies", async () => {
-    getConfig.mockResolvedValue({ provider: "openai" });
+    getConfig.mockResolvedValue({ cliTool: "codex", provider: "anthropic" });
     post.mockRejectedValueOnce(needsAuthError());
     startCommanderLogin.mockResolvedValueOnce({ challengeId: "ch-1", loginUrl: "https://auth.openai.com/go?c=1" });
     getCommanderLoginStatus.mockResolvedValue({ status: "completed", loginUrl: "https://auth.openai.com/go?c=1" });
@@ -149,6 +159,68 @@ describe("VerifyStep (Stage C / order 5, blocking)", () => {
       journey: "founder",
       requestedState: "COMMANDER_VERIFIED",
     });
+  });
+
+  // P2-A: the recovery-credential provider follows Commander's `cliTool` (the CLI
+  // the server verify route actually probes), NOT the independent crew `provider`.
+  it("P2-A: derives the auth provider from Commander cliTool (claude_cli), ignoring a divergent crew provider", async () => {
+    getConfig.mockResolvedValue({ cliTool: "claude_cli", provider: "openai" }); // Claude Commander, OpenAI crew
+    post.mockRejectedValueOnce(needsAuthError());
+    render(<VerifyStep ctx={ctx} onComplete={vi.fn()} onBack={() => {}} />);
+    fireEvent.click(screen.getByText("Verify"));
+    // Resolves to anthropic (matches the CLI the server probes) → Claude key path.
+    expect(await screen.findByPlaceholderText(/sk-ant/i)).toBeTruthy();
+    // NOT the OpenAI crew provider → the Codex-only interactive login is absent.
+    expect(screen.queryByRole("button", { name: /sign in with/i })).toBeNull();
+  });
+
+  it("P2-A (mirror): cliTool codex with a divergent crew provider → OpenAI/Codex auth path", async () => {
+    getConfig.mockResolvedValue({ cliTool: "codex", provider: "anthropic" }); // Codex Commander, Anthropic crew
+    post.mockRejectedValueOnce(needsAuthError());
+    render(<VerifyStep ctx={ctx} onComplete={vi.fn()} onBack={() => {}} />);
+    fireEvent.click(screen.getByText("Verify"));
+    // openai → Codex interactive login is offered; the anthropic-only sk-ant hint is not.
+    expect(await screen.findByRole("button", { name: /sign in with codex/i })).toBeTruthy();
+    expect(screen.queryByPlaceholderText(/sk-ant/i)).toBeNull();
+  });
+
+  // P2-B: a still-pending login challenge is cancelled when the founder leaves the
+  // step, releasing the detached CLI child + the shared (provider,authHome) slot.
+  it("P2-B: cancels a still-pending login challenge when the step unmounts", async () => {
+    getConfig.mockResolvedValue({ cliTool: "codex" }); // openai → interactive login available
+    post.mockRejectedValueOnce(needsAuthError());
+    startCommanderLogin.mockResolvedValueOnce({ challengeId: "ch-1", loginUrl: "https://auth.openai.com/go?c=1" });
+    getCommanderLoginStatus.mockResolvedValue({ status: "pending", loginUrl: "https://auth.openai.com/go?c=1" });
+    const { unmount } = render(<VerifyStep ctx={ctx} onComplete={vi.fn()} onBack={() => {}} />);
+    fireEvent.click(screen.getByText("Verify"));
+    fireEvent.click(await screen.findByRole("button", { name: /sign in with codex/i }));
+    await screen.findByText("https://auth.openai.com/go?c=1"); // pending challenge surfaced
+    unmount();
+    await waitFor(() =>
+      expect(cancelCommanderLogin).toHaveBeenCalledWith({ companyId: "c1", challengeId: "ch-1" }),
+    );
+  });
+
+  it("P2-B: does NOT cancel a completed challenge on unmount", async () => {
+    getConfig.mockResolvedValue({ cliTool: "codex" });
+    post.mockRejectedValueOnce(needsAuthError());
+    post.mockResolvedValueOnce({ outcome: "verified", result: { status: "pass" } });
+    startCommanderLogin.mockResolvedValueOnce({ challengeId: "ch-2", loginUrl: "https://auth.openai.com/go?c=2" });
+    getCommanderLoginStatus.mockResolvedValue({ status: "completed", loginUrl: "https://auth.openai.com/go?c=2" });
+    const onComplete = vi.fn();
+    const { unmount } = render(<VerifyStep ctx={ctx} onComplete={onComplete} onBack={() => {}} />);
+    fireEvent.click(screen.getByText("Verify"));
+    fireEvent.click(await screen.findByRole("button", { name: /sign in with codex/i }));
+    await waitFor(() => expect(onComplete).toHaveBeenCalled()); // completed → login cleared → terminal
+    unmount();
+    expect(cancelCommanderLogin).not.toHaveBeenCalled();
+  });
+
+  it("P2-B: no active challenge → no cancel on unmount", () => {
+    getConfig.mockResolvedValue({ cliTool: "claude_cli" });
+    const { unmount } = render(<VerifyStep ctx={ctx} onComplete={vi.fn()} onBack={() => {}} />);
+    unmount();
+    expect(cancelCommanderLogin).not.toHaveBeenCalled();
   });
 });
 

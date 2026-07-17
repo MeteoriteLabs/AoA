@@ -8,6 +8,8 @@ import type { CommanderProvider } from "@armyofagents/shared";
  *    raw value never comes back).
  *  - `startCommanderLogin` / `getCommanderLoginStatus` — drive the interactive
  *    device login; open `loginUrl`, poll until `completed`, then re-verify.
+ *  - `cancelCommanderLogin` — abandon a still-pending challenge (e.g. the founder
+ *    navigates away) so the detached CLI child + the shared login slot are freed.
  */
 
 export type CommanderLoginStatus = "pending" | "completed" | "failed" | "timeout";
@@ -37,4 +39,19 @@ export function getCommanderLoginStatus(args: {
   challengeId: string;
 }): Promise<{ status: CommanderLoginStatus; loginUrl: string | null }> {
   return api.get(`/companies/${args.companyId}/internal-agent/commander-login/${args.challengeId}`);
+}
+
+/**
+ * Cancel a pending login challenge (founder-gated + company-scoped server-side).
+ * Fire-and-forget from the UI: a cross-tenant or already-terminal id is a
+ * server no-op, so callers don't need to await or handle the result.
+ */
+export function cancelCommanderLogin(args: {
+  companyId: string;
+  challengeId: string;
+}): Promise<{ ok: boolean }> {
+  return api.post(
+    `/companies/${args.companyId}/internal-agent/commander-login/${args.challengeId}/cancel`,
+    {},
+  );
 }
