@@ -29,9 +29,13 @@ export const issueComments = pgTable(
   },
   (table) => ({
     issueIdx: index("issue_comments_issue_idx").on(table.issueId),
-    // Enforce one comment per (company, submission key). Partial: null keys exempt.
+    // Enforce one comment per (company, task, submission key). Scoped by issueId
+    // to match the replay lookup (getCommentByClientSubmissionId), so a client
+    // that legitimately reuses a submission id across DIFFERENT tasks does not
+    // collide — and the race fallback can never return a comment from another
+    // task (PR #291 round-4 review). Partial: null keys exempt.
     clientSubmissionUq: uniqueIndex("issue_comments_client_submission_uq")
-      .on(table.companyId, table.clientSubmissionId)
+      .on(table.companyId, table.issueId, table.clientSubmissionId)
       .where(sql`client_submission_id IS NOT NULL`),
     companyIdx: index("issue_comments_company_idx").on(table.companyId),
     companyIssueCreatedAtIdx: index("issue_comments_company_issue_created_at_idx").on(

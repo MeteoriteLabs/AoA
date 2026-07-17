@@ -586,6 +586,39 @@ describe("POST /issues/:id/comments-with-attachments", () => {
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
+  it("does NOT apply control effects (reopen/interrupt) when addComment loses the insert race (round-4 #3)", async () => {
+    // A race loser must not reopen the task or cancel a run — only the insert
+    // winner applies control effects. The reopen flag is set, but because
+    // addComment reports `replayed`, applyIssueCommentControlEffects must be
+    // skipped (svc.update / cancelRun never called).
+    const submissionId = "sub-race-control";
+    const closedIssue = makeIssue({ status: "done", executionRunId: "run-active" });
+    mockIssueService.getById.mockResolvedValue(closedIssue);
+    const winner = {
+      id: "comment-1", issueId, companyId, body: "Reopen with evidence",
+      authorAgentId: null, authorUserId: "board-user", clientSubmissionId: submissionId,
+    };
+    mockIssueService.getCommentByClientSubmissionId.mockResolvedValue(null);
+    mockIssueService.addComment.mockResolvedValue({ ...winner, replayed: true });
+    mockIssueService.listAttachments.mockResolvedValue([]);
+    mockIssueService.completeMissingCommentAttachments.mockResolvedValue({ created: [], all: [] });
+
+    const res = await request(createApp())
+      .post(`/api/issues/${issueId}/comments-with-attachments`)
+      .field("body", "Reopen with evidence")
+      .field("reopen", "true")
+      .field("interrupt", "true")
+      .field("clientSubmissionId", submissionId)
+      .attach("files", validPng, { filename: "proof.png", contentType: "image/png" });
+
+    expect(res.status).toBe(200);
+    // Control effects were NOT applied by the loser.
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
   it("replays the original comment+attachments and does not re-persist or re-wake on a retried key", async () => {
     const submissionId = "sub-att-1";
     const existing = {
@@ -809,6 +842,24 @@ describe("POST /issues/:id/comments — idempotent retry (clientSubmissionId)", 
 
     expect(res.status).toBe(200);
     expect(res.body.id).toBe("comment-1");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("does NOT apply control effects when addComment loses the insert race (round-4 #3)", async () => {
+    // Same-key race loser on the plain route: reopen requested, but the loser
+    // must skip applyIssueCommentControlEffects (svc.update never called).
+    const closedIssue = makeIssue({ status: "done" });
+    mockIssueService.getById.mockResolvedValue(closedIssue);
+    mockIssueService.getCommentByClientSubmissionId.mockResolvedValue(null);
+    mockIssueService.addComment.mockResolvedValue({ ...existingComment, replayed: true });
+
+    const res = await request(createApp())
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Please inspect the logs", reopen: true, clientSubmissionId: submissionId });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });

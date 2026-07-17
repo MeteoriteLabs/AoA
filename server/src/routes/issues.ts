@@ -278,6 +278,20 @@ export function issueRoutes(db: Db, storage: StorageService) {
     return value === true || value === "true";
   }
 
+  // Authz gate that must run BEFORE the comment is created (round-4 review): the
+  // interrupt-is-board-only rule rejects up front so a non-board caller never
+  // creates a comment. The MUTATING control effects (reopen/interrupt) are then
+  // deferred until AFTER the conflict-protected insert is WON, so a same-key
+  // race loser never reopens a task or cancels a run. Returns false (after
+  // sending 403) when the request must be rejected.
+  function assertInterruptAuthorized(req: Request, res: Response, interruptRequested: boolean): boolean {
+    if (interruptRequested && req.actor.type !== "board") {
+      res.status(403).json({ error: "Only board users can interrupt active runs from issue comments" });
+      return false;
+    }
+    return true;
+  }
+
   async function applyIssueCommentControlEffects(input: {
     req: Request;
     res: Response;
@@ -1595,16 +1609,10 @@ export function issueRoutes(db: Db, storage: StorageService) {
     }
 
     const actor = getActorInfo(req);
-    const control = await applyIssueCommentControlEffects({
-      req,
-      res,
-      issue,
-      actor,
-      reopenRequested: req.body.reopen === true,
-      interruptRequested: req.body.interrupt === true,
-    });
-    if (!control.ok) return;
-    const { currentIssue, reopened, reopenFromStatus, interruptedRunId } = control;
+    const interruptRequested = req.body.interrupt === true;
+    // Authz up front (no mutations); the reopen/interrupt effects run only after
+    // the insert is won, below (round-4 review).
+    if (!assertInterruptAuthorized(req, res, interruptRequested)) return;
 
     const comment = await svc.addComment(id, req.body.body, {
       agentId: actor.agentId ?? undefined,
@@ -1613,12 +1621,25 @@ export function issueRoutes(db: Db, storage: StorageService) {
     });
 
     // Lost the insert race (both same-key requests passed the pre-check): return
-    // the winner's comment WITHOUT re-logging activity or re-firing wakeups —
-    // the winner already did (PR #291 round-3 review).
+    // the winner's comment WITHOUT applying control effects (reopen/interrupt),
+    // logging activity, or firing wakeups — the winner already did (PR #291
+    // round-3/4 review). Only the insert winner mutates.
     if ((comment as { replayed?: boolean }).replayed) {
       res.status(200).json(comment);
       return;
     }
+
+    // Insert won → apply the deferred control effects exactly once.
+    const control = await applyIssueCommentControlEffects({
+      req,
+      res,
+      issue,
+      actor,
+      reopenRequested: req.body.reopen === true,
+      interruptRequested,
+    });
+    if (!control.ok) return;
+    const { currentIssue, reopened, reopenFromStatus, interruptedRunId } = control;
 
     await logActivity(db, {
       companyId: currentIssue.companyId,
@@ -1775,16 +1796,10 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
 
-    const control = await applyIssueCommentControlEffects({
-      req,
-      res,
-      issue,
-      actor,
-      reopenRequested: parseMultipartBoolean(req.body?.reopen),
-      interruptRequested: parseMultipartBoolean(req.body?.interrupt),
-    });
-    if (!control.ok) return;
-    const { currentIssue, reopened, reopenFromStatus, interruptedRunId } = control;
+    const interruptRequested = parseMultipartBoolean(req.body?.interrupt);
+    // Authz up front (no mutations); reopen/interrupt effects run only after the
+    // insert is won, below (round-4 review).
+    if (!assertInterruptAuthorized(req, res, interruptRequested)) return;
 
     const comment = await svc.addComment(id, body, {
       agentId: actor.agentId ?? undefined,
@@ -1794,12 +1809,25 @@ export function issueRoutes(db: Db, storage: StorageService) {
 
     // Lost the insert race (both same-key requests passed the pre-check): the
     // winner already created + linked the comment. Complete missing attachments
-    // through the serialized path and return WITHOUT re-storing files or
-    // re-firing activity/wakeups (PR #291 round-3 review).
+    // through the serialized path and return WITHOUT applying control effects
+    // (reopen/interrupt), re-storing files, or re-firing activity/wakeups
+    // (PR #291 round-3/4 review). Only the insert winner mutates.
     if ((comment as { replayed?: boolean }).replayed) {
       await respondWithReplayedComment(comment);
       return;
     }
+
+    // Insert won → apply the deferred control effects exactly once.
+    const control = await applyIssueCommentControlEffects({
+      req,
+      res,
+      issue,
+      actor,
+      reopenRequested: parseMultipartBoolean(req.body?.reopen),
+      interruptRequested,
+    });
+    if (!control.ok) return;
+    const { currentIssue, reopened, reopenFromStatus, interruptedRunId } = control;
 
     const attachments = [];
     for (const file of files) {

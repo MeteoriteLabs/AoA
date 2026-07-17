@@ -39,6 +39,18 @@ export function claimCommanderTurn(key: string): void {
   inFlight.add(key);
 }
 
+/**
+ * Atomically claim a turn: returns true if THIS caller acquired it, false if it
+ * was already held. JS is single-threaded, so the has()+add() below runs with no
+ * `await` between them and cannot interleave with another request — this is the
+ * race-safe replacement for a check-then-claim pair (PR #291 round-4 review).
+ */
+export function tryClaimCommanderTurn(key: string): boolean {
+  if (inFlight.has(key)) return false;
+  inFlight.add(key);
+  return true;
+}
+
 /** Release a turn's claim once its run finishes (call from a `finally`). */
 export function releaseCommanderTurn(key: string): void {
   inFlight.delete(key);

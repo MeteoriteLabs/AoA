@@ -6,8 +6,8 @@ import type { ToolResult } from "./types.js";
 import {
   claimCommanderTurn,
   commanderTurnKey,
-  isCommanderTurnInFlight,
   releaseCommanderTurn,
+  tryClaimCommanderTurn,
 } from "./commander-turn-registry.js";
 import { conversationService } from "./conversation.js";
 import { cliModeService } from "./cli-mode.js";
@@ -252,19 +252,21 @@ export function agentLoopService(db: Db, storage?: RuntimeAttachmentStorage) {
               yield* replayPersistedReply(reply);
               return;
             }
-            // #1 (round-3): no linked reply. If the original request is still
-            // streaming HERE, do not re-run (it would double-execute).
-            if (
-              isCommanderTurnInFlight(
-                commanderTurnKey(conversation.id, params.clientSubmissionId),
-              )
-            ) {
+            // #1 (round-3/4): no linked reply. Atomically claim the turn here at
+            // the decision point — a single check-and-set with no `await` in
+            // between, so two near-simultaneous retries cannot both acquire it.
+            // The loser (claim already held → original still streaming HERE)
+            // reports in-progress instead of re-running (which would double-run
+            // the turn + its tools).
+            const key = commanderTurnKey(conversation.id, params.clientSubmissionId);
+            if (!tryClaimCommanderTurn(key)) {
               yield {
                 type: "error",
                 message: "This message is already being processed.",
               };
               return;
             }
+            claimKey = key;
             reuseExistingUserRow = true;
             userMessageId = priorUser.id;
           }
@@ -313,11 +315,13 @@ export function agentLoopService(db: Db, storage?: RuntimeAttachmentStorage) {
           userMessageId = insertedUser.id;
         }
 
-        // Claim the turn for the lifetime of its CLI run (#1). Now that a user
-        // row exists (fresh or reused) and we are committed to running, a
+        // Claim the turn for the lifetime of its CLI run (#1). The reuse path
+        // already claimed atomically via tryClaim above; the fresh path won the
+        // DB insert (the client-submission unique index dedups concurrent
+        // inserts), so it is the definitive owner and can claim directly. A
         // concurrent same-key request will see this claim and report in-progress
         // instead of re-running. Released in the finally below.
-        if (params.clientSubmissionId) {
+        if (params.clientSubmissionId && !reuseExistingUserRow) {
           claimKey = commanderTurnKey(conversation.id, params.clientSubmissionId);
           claimCommanderTurn(claimKey);
         }

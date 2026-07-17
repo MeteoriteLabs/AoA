@@ -2420,10 +2420,11 @@ export function issueService(db: Db) {
           })
           // Concurrency backstop for the route-level replay check: two in-flight
           // retries of the same key resolve to one row via the partial unique
-          // index. Targeted at that index (2026-07-16) so any OTHER unique
-          // violation on issue_comments raises instead of being swallowed.
+          // index. Targeted at the (company, issue, submission) index (round-4:
+          // issueId added so the target matches the replay scope) so any OTHER
+          // unique violation on issue_comments raises instead of being swallowed.
           .onConflictDoNothing({
-            target: [issueComments.companyId, issueComments.clientSubmissionId],
+            target: [issueComments.companyId, issueComments.issueId, issueComments.clientSubmissionId],
             where: sql`client_submission_id IS NOT NULL`,
           })
           .returning();
@@ -2434,6 +2435,8 @@ export function issueService(db: Db) {
         // otherwise two same-key requests that both passed the route-level
         // replay pre-check would each fire them on the same durable comment
         // (PR #291 round-3 review, mirrors discussions.ts addEntry `replayed`).
+        // Scoped by issueId too (round-4) so the fallback can only ever return
+        // THIS task's comment, never another task that reused the same key.
         if (!created && clientSubmissionId) {
           return tx
             .select()
@@ -2441,6 +2444,7 @@ export function issueService(db: Db) {
             .where(
               and(
                 eq(issueComments.companyId, issue.companyId),
+                eq(issueComments.issueId, issueId),
                 eq(issueComments.clientSubmissionId, clientSubmissionId),
               ),
             )

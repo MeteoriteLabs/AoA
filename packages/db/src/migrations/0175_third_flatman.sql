@@ -1,0 +1,2 @@
+DROP INDEX IF EXISTS "issue_comments_client_submission_uq";--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "issue_comments_client_submission_uq" ON "issue_comments" USING btree ("company_id","issue_id","client_submission_id") WHERE client_submission_id IS NOT NULL;
