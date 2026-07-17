@@ -11,7 +11,11 @@ import { buildDatabaseUrl, databaseUrlFromEnv } from "../../../../scripts/compos
 // is opened; end() just tears down the (empty) pool.
 function parsedOptions(url: string): { user: string; pass: string; database: string } {
   const sql = postgres(url);
-  const { user, pass, database } = sql.options as { user: string; pass: string; database: string };
+  const { user, pass, database } = sql.options as unknown as {
+    user: string;
+    pass: string;
+    database: string;
+  };
   void sql.end({ timeout: 0 }).catch(() => {});
   return { user, pass, database };
 }
@@ -51,18 +55,22 @@ describe("buildDatabaseUrl", () => {
 });
 
 describe("databaseUrlFromEnv", () => {
-  it("applies paperclip defaults when the env is absent", () => {
-    expect(databaseUrlFromEnv({})).toBe("postgres://paperclip:paperclip@db:5432/paperclip");
+  it("returns null when no AOA_POSTGRES_PASSWORD is set (embedded-postgres deployments)", () => {
+    // quickstart / standalone docker run ship no db service — must NOT assemble
+    // an external URL, or the server flips off embedded postgres and can't connect.
+    expect(databaseUrlFromEnv({})).toBeNull();
+    expect(databaseUrlFromEnv({ AOA_POSTGRES_PASSWORD: "" })).toBeNull();
+  });
+
+  it("assembles with paperclip user/db defaults when only the password is set", () => {
+    expect(databaseUrlFromEnv({ AOA_POSTGRES_PASSWORD: "paperclip" })).toBe(
+      "postgres://paperclip:paperclip@db:5432/paperclip",
+    );
   });
 
   it("encodes a password sourced from the environment", () => {
     const url = databaseUrlFromEnv({ AOA_POSTGRES_PASSWORD: "a b/c#d" });
-    expect(parsedOptions(url).pass).toBe("a b/c#d");
-  });
-
-  it("treats an empty env password as the default (matching compose :- semantics)", () => {
-    expect(databaseUrlFromEnv({ AOA_POSTGRES_PASSWORD: "" })).toBe(
-      "postgres://paperclip:paperclip@db:5432/paperclip",
-    );
+    expect(url).not.toBeNull();
+    expect(parsedOptions(url as string).pass).toBe("a b/c#d");
   });
 });

@@ -105,9 +105,15 @@ export function buildDatabaseUrl({ user, password, db }) {
 }
 ```
 
+- `databaseUrlFromEnv` returns **null when no `AOA_POSTGRES_PASSWORD` is set** — i.e. the
+  embedded-postgres deployments (`docker-compose.quickstart.yml`, standalone `docker run`)
+  that ship no `db` service. Only the multi-service `docker-compose.yml` injects
+  `AOA_POSTGRES_*` (password defaults to `paperclip`), so only it assembles a URL. This
+  keeps the embedded paths on embedded postgres (fix for the second Codex P1 — an
+  unconditional assembly would point them at a nonexistent `db:5432` and break boot).
 - CLI mode reads `AOA_POSTGRES_USER/PASSWORD/DB` with the current defaults
-  (`paperclip` / `paperclip` / `paperclip`) and prints the URL to stdout; on an invalid
-  db name it prints the error to stderr and exits nonzero (fail-fast, before boot).
+  (`paperclip` / `paperclip` / `paperclip`), prints the URL to stdout (nothing in embedded
+  mode); on an invalid db name it prints the error to stderr and exits nonzero (fail-fast).
 - Only `user` and `password` are `encodeURIComponent`-ed; `db` is validated then placed
   literally; `db:5432` are hardcoded constants (revision D — no new `AOA_POSTGRES_HOST/PORT`
   vars, per Codex).
@@ -119,13 +125,19 @@ Immediately before `node /app/scripts/docker-bootstrap.mjs`:
 
 ```sh
 if [ -z "${DATABASE_URL:-}" ]; then
-    DATABASE_URL="$(node /app/scripts/compose-database-url.mjs)"
-    export DATABASE_URL
+    _assembled_database_url="$(node /app/scripts/compose-database-url.mjs)"
+    if [ -n "$_assembled_database_url" ]; then
+        export DATABASE_URL="$_assembled_database_url"
+    fi
+    unset _assembled_database_url
 fi
 ```
 
 - The `-z` guard means an explicitly-provided `DATABASE_URL` always wins → the research
   compose and any advanced override are untouched.
+- The `-n` inner guard means an empty print (embedded mode: no `AOA_POSTGRES_PASSWORD`)
+  leaves `DATABASE_URL` unset → embedded postgres preserved. A bad db name makes the
+  script exit nonzero, which aborts the container under `set -e` (fail-fast).
 - Runs before `docker-bootstrap.mjs` (so the baked `config.json` is correct) and before
   `exec gosu node "$@"` (so the server's `process.env.DATABASE_URL` is correct). `gosu`
   preserves the exported environment.

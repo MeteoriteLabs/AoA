@@ -29,11 +29,17 @@ export HOME="${HOME:-$AOA_HOME}"
 # Assemble DATABASE_URL from the discrete AOA_POSTGRES_* pieces, percent-encoding
 # the user/password so URL-reserved characters in a hardened password survive
 # postgres.js's URL parsing. An explicitly-provided DATABASE_URL always wins.
-# Runs before docker-bootstrap.mjs (which bakes config.json) and before the
-# final exec, so both the baked config and the server's process.env are correct.
+# The script prints nothing when no AOA_POSTGRES_PASSWORD is set (embedded-postgres
+# deployments: quickstart / standalone docker run), so DATABASE_URL stays unset and
+# the server keeps using embedded postgres. Runs before docker-bootstrap.mjs (which
+# bakes config.json) and before the final exec, so both the baked config and the
+# server's process.env are correct. A bad AOA_POSTGRES_DB exits nonzero here (set -e).
 if [ -z "${DATABASE_URL:-}" ]; then
-    DATABASE_URL="$(node /app/scripts/compose-database-url.mjs)"
-    export DATABASE_URL
+    _assembled_database_url="$(node /app/scripts/compose-database-url.mjs)"
+    if [ -n "$_assembled_database_url" ]; then
+        export DATABASE_URL="$_assembled_database_url"
+    fi
+    unset _assembled_database_url
 fi
 
 node /app/scripts/docker-bootstrap.mjs

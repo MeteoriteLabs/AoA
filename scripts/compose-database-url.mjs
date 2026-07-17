@@ -28,20 +28,30 @@ export function buildDatabaseUrl({ user, password, db }) {
 }
 
 export function databaseUrlFromEnv(env = process.env) {
+  const password = env.AOA_POSTGRES_PASSWORD;
+  // No Postgres password => this is an embedded-postgres deployment
+  // (docker-compose.quickstart.yml or the standalone `docker run` flow, which
+  // ship no `db` service). Return null so the entrypoint leaves DATABASE_URL
+  // unset and the server stays on embedded postgres. Only the multi-service
+  // docker-compose.yml injects AOA_POSTGRES_* (password defaults to paperclip),
+  // so only that stack assembles an external URL.
+  if (!password) return null;
   // `|| default` mirrors compose's `${AOA_POSTGRES_*:-paperclip}` — an empty
   // value falls back to the default, same as the `:-` expansion.
   return buildDatabaseUrl({
     user: env.AOA_POSTGRES_USER || "paperclip",
-    password: env.AOA_POSTGRES_PASSWORD || "paperclip",
+    password,
     db: env.AOA_POSTGRES_DB || "paperclip",
   });
 }
 
-// CLI entry: print the assembled URL, or fail fast (nonzero exit) on a bad db
-// name so the container aborts before boot instead of misconnecting.
+// CLI entry: print the assembled URL (nothing in embedded mode), or fail fast
+// (nonzero exit) on a bad db name so the container aborts before boot instead
+// of misconnecting.
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
-    process.stdout.write(`${databaseUrlFromEnv()}\n`);
+    const url = databaseUrlFromEnv();
+    if (url) process.stdout.write(`${url}\n`);
   } catch (error) {
     process.stderr.write(`${error?.message ?? error}\n`);
     process.exit(1);
