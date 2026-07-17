@@ -42,7 +42,11 @@ import {
   teamService,
 } from "../services/index.js";
 import { assertCompanyAccess } from "./authz.js";
-import { companyInviteExpiresAt, requestBaseUrl } from "./access-helpers.js";
+import {
+  companyInviteExpiresAt,
+  requestBaseUrl,
+  resolveInviteBaseUrl,
+} from "./access-helpers.js";
 import {
   claimBoardOwnership,
   inspectBoardClaimChallenge
@@ -1832,13 +1836,18 @@ export function accessRoutes(
       });
 
       const inviteSummary = toInviteSummaryResponse(req, token, created);
-      const inviteBaseUrl = requestBaseUrl(req);
+      // Build the auto-copied invite link from a TRUSTED origin: the configured
+      // public URL first, then a trust-proxy-gated / Host-based fallback. Never
+      // a spoofable X-Forwarded-Host (host-header injection into the copied
+      // link would disclose the invite token to an attacker origin).
+      const inviteBaseUrl = resolveInviteBaseUrl(req);
       const invitePath = `/invite/${token}`;
       res.status(201).json({
         ...created,
         token,
         // Absolute so copying the link verbatim works outside this browser.
-        // Falls back to the path when no Host header is available.
+        // Falls back to the path when no trusted origin is available (the
+        // client then prefixes its own window.location.origin).
         inviteUrl: inviteBaseUrl ? `${inviteBaseUrl}${invitePath}` : invitePath,
         onboardingTextPath: inviteSummary.onboardingTextPath,
         onboardingTextUrl: inviteSummary.onboardingTextUrl,

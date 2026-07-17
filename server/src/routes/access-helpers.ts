@@ -1,3 +1,5 @@
+import { loadConfig } from "../config.js";
+
 type JoinReplayInput = {
   requestType: "human" | "agent";
   adapterType: string | null;
@@ -360,16 +362,110 @@ export function resolveJoinRequestAgentManagerId(
   return (apexCxo ?? cxoCandidates[0] ?? null)?.id ?? null;
 }
 
-export function requestBaseUrl(req: {
+type BaseUrlRequest = {
   protocol?: string;
   header(name: string): string | undefined;
-}) {
-  const forwardedProto = req.header("x-forwarded-proto");
-  const proto = forwardedProto?.split(",")[0]?.trim() || req.protocol || "http";
-  const host =
-    req.header("x-forwarded-host")?.split(",")[0]?.trim() || req.header("host");
-  if (!host) return "";
-  return `${proto}://${host}`;
+  // Express request: `app.get("trust proxy")` returns the value installed via
+  // `app.set("trust proxy", config.trustProxy)` in app.ts. Optional so the
+  // pure helpers stay unit-testable with a minimal request stub.
+  app?: { get(name: string): unknown };
+};
+
+/**
+ * True only when Express `trust proxy` is genuinely enabled — i.e. AoA sits
+ * behind a real reverse proxy whose `X-Forwarded-*` headers can be believed.
+ * Mirrors Express' own coercion of the setting:
+ * - `true` / a positive hop count / a non-empty CIDR list → trusted
+ * - `false` / `0` / `[]` / unset → NOT trusted (a client could spoof the headers)
+ */
+export function isTrustProxyEnabled(trustProxy: unknown): boolean {
+  if (typeof trustProxy === "boolean") return trustProxy;
+  if (typeof trustProxy === "number") return trustProxy > 0;
+  if (Array.isArray(trustProxy)) return trustProxy.length > 0;
+  if (typeof trustProxy === "string") {
+    const value = trustProxy.trim().toLowerCase();
+    return value.length > 0 && value !== "false";
+  }
+  return false;
+}
+
+/**
+ * Derive the request's base origin from data we can trust.
+ *
+ * SECURITY: `X-Forwarded-Proto` / `X-Forwarded-Host` are client-controllable
+ * unless a trusted reverse proxy overwrites them. We therefore honor them ONLY
+ * when Express `trust proxy` is enabled (read from `req.app.get("trust proxy")`,
+ * overridable via `opts.trustProxy` for tests). Otherwise we fall back to the
+ * real connection `Host` header — never the forwarded host — so a spoofed
+ * `X-Forwarded-Host: evil.com` cannot poison generated URLs. No host at all →
+ * empty string, letting the client resolve relative to its own origin.
+ */
+export function requestBaseUrl(
+  req: BaseUrlRequest,
+  opts?: { trustProxy?: unknown },
+) {
+  const hostHeader = req.header("host")?.trim() || undefined;
+  const trustProxySetting =
+    opts && "trustProxy" in opts ? opts.trustProxy : req.app?.get("trust proxy");
+
+  if (isTrustProxyEnabled(trustProxySetting)) {
+    const forwardedProto = req.header("x-forwarded-proto")?.split(",")[0]?.trim();
+    const forwardedHost = req.header("x-forwarded-host")?.split(",")[0]?.trim();
+    const proto = forwardedProto || req.protocol || "http";
+    const host = forwardedHost || hostHeader;
+    if (!host) return "";
+    return `${proto}://${host}`;
+  }
+
+  if (!hostHeader) return "";
+  const proto = req.protocol || "http";
+  return `${proto}://${hostHeader}`;
+}
+
+let cachedInviteConfig: { authPublicBaseUrl: string | undefined } | null = null;
+function configuredPublicBaseUrl(): string | undefined {
+  if (!cachedInviteConfig) {
+    // Loaded lazily + memoized so importing this module (and its many
+    // unit-tested pure helpers) never eagerly evaluates process config.
+    // Deployment config is fixed for the process lifetime.
+    cachedInviteConfig = { authPublicBaseUrl: loadConfig().authPublicBaseUrl };
+  }
+  return cachedInviteConfig.authPublicBaseUrl;
+}
+
+/**
+ * Origin used to build auto-copied invite links (create + resend). Priority:
+ *   1. The configured canonical public origin (`config.authPublicBaseUrl`) —
+ *      operator-set and the same origin better-auth trusts. Used verbatim
+ *      (normalized to its origin), so headers can never override it. This is
+ *      mandatory for `authenticated`/public exposure (see index.ts), which
+ *      makes the untrusted-header path unreachable there.
+ *   2. Otherwise, the trust-proxy-gated / Host-based derivation from
+ *      `requestBaseUrl` (honors `X-Forwarded-*` only behind a trusted proxy).
+ *   3. Otherwise, an empty string so the client prefixes its own
+ *      `window.location.origin` via `toAbsoluteInviteUrl` — the origin the
+ *      founder is actually browsing, which is always safe.
+ *
+ * `opts.publicBaseUrl` (when the key is present, even as `null`) overrides the
+ * configured lookup for tests.
+ */
+export function resolveInviteBaseUrl(
+  req: BaseUrlRequest,
+  opts?: { publicBaseUrl?: string | null; trustProxy?: unknown },
+) {
+  const configuredRaw =
+    opts && "publicBaseUrl" in opts ? opts.publicBaseUrl : configuredPublicBaseUrl();
+  const configured =
+    typeof configuredRaw === "string" ? configuredRaw.trim() : "";
+  if (configured) {
+    try {
+      return new URL(configured).origin;
+    } catch {
+      // Misconfigured public URL — fall through to secure header derivation
+      // rather than emitting a broken link.
+    }
+  }
+  return requestBaseUrl(req, opts);
 }
 
 function extractInviteMessage(invite: { defaultsPayload?: unknown }) {
