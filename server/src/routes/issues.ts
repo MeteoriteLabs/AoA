@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { discussions, type Db } from "@armyofagents/db";
@@ -1678,45 +1677,37 @@ export function issueRoutes(db: Db, storage: StorageService) {
     if (clientSubmissionId) {
       const replay = await svc.getCommentByClientSubmissionId(issue.companyId, id, clientSubmissionId);
       if (replay) {
-        const replayAttachments = (await svc.listAttachments(id)).filter(
+        let replayAttachments = (await svc.listAttachments(id)).filter(
           (a) => a.issueCommentId === replay.id,
         );
         if (files.length > 0) {
           const replayActor = getActorInfo(req);
-          const remaining = new Map<string, number>();
-          for (const a of replayAttachments) {
-            const key = `${a.sha256}:${a.originalFilename ?? ""}`;
-            remaining.set(key, (remaining.get(key) ?? 0) + 1);
-          }
-          for (const file of files) {
-            const contentType = validateAttachmentFile(file);
-            const sha256 = createHash("sha256").update(file.buffer).digest("hex");
-            const key = `${sha256}:${file.originalname || ""}`;
-            const already = remaining.get(key) ?? 0;
-            if (already > 0) {
-              remaining.set(key, already - 1);
-              continue;
-            }
-            const stored = await storage.putFile({
-              companyId: issue.companyId,
-              namespace: `issues/${id}`,
+          // C6 (PR #291 review): serialize the completion so two concurrent
+          // same-key retries cannot each create the same missing attachment.
+          // The advisory lock lives inside the service transaction; `store`
+          // runs there only for genuinely-missing files.
+          const { created, all } = await svc.completeMissingCommentAttachments({
+            companyId: issue.companyId,
+            issueId: id,
+            commentId: replay.id,
+            createdByAgentId: replayActor.agentId,
+            createdByUserId: replayActor.actorType === "user" ? replayActor.actorId : null,
+            files: files.map((file) => ({
+              contentType: validateAttachmentFile(file),
+              buffer: file.buffer,
               originalFilename: file.originalname || null,
-              contentType,
-              body: file.buffer,
-            });
-            const attachment = await svc.createAttachment({
-              issueId: id,
-              issueCommentId: replay.id,
-              provider: stored.provider,
-              objectKey: stored.objectKey,
-              contentType: stored.contentType,
-              byteSize: stored.byteSize,
-              sha256: stored.sha256,
-              originalFilename: stored.originalFilename,
-              createdByAgentId: replayActor.agentId,
-              createdByUserId: replayActor.actorType === "user" ? replayActor.actorId : null,
-            });
-            replayAttachments.push(attachment);
+            })),
+            store: (file) =>
+              storage.putFile({
+                companyId: issue.companyId,
+                namespace: `issues/${id}`,
+                originalFilename: file.originalFilename,
+                contentType: file.contentType,
+                body: file.buffer,
+              }),
+          });
+          replayAttachments = all;
+          for (const attachment of created) {
             await logActivity(db, {
               companyId: issue.companyId,
               actorType: replayActor.actorType,

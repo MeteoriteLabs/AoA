@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -43,6 +42,7 @@ const mockIssueService = vi.hoisted(() => ({
   addComment: vi.fn(),
   getComment: vi.fn(),
   createAttachment: vi.fn(),
+  completeMissingCommentAttachments: vi.fn(),
   listAttachments: vi.fn(),
   getAttachmentById: vi.fn(),
   removeAttachment: vi.fn(),
@@ -187,6 +187,10 @@ beforeEach(() => {
     sha256: input.sha256,
     originalFilename: input.originalFilename,
   }));
+  // Replay-completion (C6) delegates to the serialized service method. Default:
+  // nothing missing → create nothing, no attachments. Tests that exercise the
+  // replay-completion path override this per scenario.
+  mockIssueService.completeMissingCommentAttachments.mockResolvedValue({ created: [], all: [] });
   mockIssueService.findMentionedAgents.mockResolvedValue([]);
   mockIssueService.notifyMentionedHumans.mockResolvedValue([]);
   mockHeartbeatService.wakeup.mockResolvedValue({ id: "run-1" });
@@ -535,12 +539,16 @@ describe("POST /issues/:id/comments-with-attachments", () => {
     mockIssueService.getCommentByClientSubmissionId
       .mockResolvedValueOnce(null) // first send creates
       .mockResolvedValueOnce(existing); // retry replays
-    // Real attachment rows carry the sha256 of the stored bytes — the replay
-    // completion check matches on it, so the mock must mirror production.
-    const proofSha = createHash("sha256").update(Buffer.from("fake-png")).digest("hex");
-    mockIssueService.listAttachments.mockResolvedValue([
-      { id: "attachment-1", issueId, issueCommentId: "comment-1", originalFilename: "proof.png", contentType: "image/png", sha256: proofSha },
-    ]);
+    const existingAttachment = {
+      id: "attachment-1", issueId, issueCommentId: "comment-1", originalFilename: "proof.png", contentType: "image/png",
+    };
+    mockIssueService.listAttachments.mockResolvedValue([existingAttachment]);
+    // Nothing is missing on the retry → the serialized completion creates nothing
+    // and returns the existing attachment.
+    mockIssueService.completeMissingCommentAttachments.mockResolvedValue({
+      created: [],
+      all: [existingAttachment],
+    });
 
     const app = createApp();
     const send = () =>
@@ -558,8 +566,12 @@ describe("POST /issues/:id/comments-with-attachments", () => {
     expect(retry.body.comment.id).toBe("comment-1");
     expect(retry.body.attachments).toHaveLength(1);
 
-    // The retry must not persist a second comment, re-store the file, or re-wake.
+    // The retry must not persist a second comment, and the completion is
+    // serialized through the dedicated service method (advisory-locked).
     expect(mockIssueService.addComment).toHaveBeenCalledTimes(1);
+    expect(mockIssueService.completeMissingCommentAttachments).toHaveBeenCalledTimes(1);
+    // First send used createAttachment once (create path); the retry does NOT
+    // touch createAttachment directly (it goes through the serialized method).
     expect(mockIssueService.createAttachment).toHaveBeenCalledTimes(1);
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
@@ -569,7 +581,8 @@ describe("POST /issues/:id/comments-with-attachments", () => {
     // The comment commits BEFORE the files are stored. If attachment
     // persistence dies after that point, the client's idempotent retry finds
     // the comment via the replay check — it must then store + record the
-    // files the original send lost, not report success with a partial set.
+    // files the original send lost, not report success with a partial set. The
+    // completion runs through the serialized (advisory-locked) service method.
     const submissionId = "sub-att-2";
     const existing = {
       id: "comment-1",
@@ -585,8 +598,16 @@ describe("POST /issues/:id/comments-with-attachments", () => {
       .mockResolvedValueOnce(existing); // …retry replays
     // First send: the attachment row insert dies after the comment committed.
     mockIssueService.createAttachment.mockRejectedValueOnce(new Error("db blip"));
-    // Nothing landed for this comment.
+    // Nothing landed for this comment; the retry's serialized completion stores
+    // + records the missing file.
     mockIssueService.listAttachments.mockResolvedValue([]);
+    const completedAttachment = {
+      id: "attachment-2", issueId, issueCommentId: "comment-1", originalFilename: "proof.png", contentType: "image/png",
+    };
+    mockIssueService.completeMissingCommentAttachments.mockResolvedValue({
+      created: [completedAttachment],
+      all: [completedAttachment],
+    });
 
     const app = createApp();
     const send = () =>
@@ -608,9 +629,24 @@ describe("POST /issues/:id/comments-with-attachments", () => {
       issueCommentId: "comment-1",
       originalFilename: "proof.png",
     });
-    expect(mockIssueService.createAttachment).toHaveBeenCalledTimes(2); // 1 failed + 1 completed
-    expect(mockIssueService.createAttachment).toHaveBeenLastCalledWith(
-      expect.objectContaining({ issueId, issueCommentId: "comment-1", originalFilename: "proof.png" }),
+    // The retry delegated completion to the serialized method with the file.
+    expect(mockIssueService.completeMissingCommentAttachments).toHaveBeenCalledTimes(1);
+    expect(mockIssueService.completeMissingCommentAttachments).toHaveBeenCalledWith(
+      expect.objectContaining({
+        issueId,
+        commentId: "comment-1",
+        files: expect.arrayContaining([
+          expect.objectContaining({ originalFilename: "proof.png", contentType: "image/png" }),
+        ]),
+      }),
+    );
+    // An activity row is logged for the completed-on-retry attachment.
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.attachment_added",
+        details: expect.objectContaining({ completedOnRetry: true, commentId: "comment-1" }),
+      }),
     );
     // Still exactly one durable comment.
     expect(mockIssueService.addComment).toHaveBeenCalledTimes(1);

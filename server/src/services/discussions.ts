@@ -999,7 +999,11 @@ export function discussionService(db: Db) {
             ),
           )
           .then((rows) => rows[0] ?? null);
-        if (existing) return existing;
+        // Replay: an entry for this key already exists. Flag it so the caller
+        // skips route-level side-effects (processMentions → requestParticipation)
+        // that the ORIGINAL post already fired — otherwise a same-key retry
+        // double-summons the mentioned crew (PR #291 review, C4).
+        if (existing) return { ...existing, replayed: true as const };
       }
 
       if (data.parentEntryId) {
@@ -1120,6 +1124,8 @@ export function discussionService(db: Db) {
             "discussion entry insert returned no row without a clientSubmissionId",
           );
         }
+        // Race loser: the winner already fired the entry's side-effects. Flag
+        // the replay so the caller skips processMentions et al. (PR #291, C4).
         return db
           .select()
           .from(discussionEntries)
@@ -1129,7 +1135,7 @@ export function discussionService(db: Db) {
               eq(discussionEntries.clientSubmissionId, clientSubmissionId),
             ),
           )
-          .then((rows) => rows[0]);
+          .then((rows) => ({ ...rows[0], replayed: true as const }));
       }
 
       publishLiveEvent({

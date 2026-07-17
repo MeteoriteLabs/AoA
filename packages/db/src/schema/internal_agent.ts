@@ -226,6 +226,13 @@ export const internalAgentMessages = pgTable(
     // starting a second CLI run. Nullable: assistant/system/tool rows carry none.
     clientSubmissionId: text("client_submission_id"),
 
+    // Explicit link from an assistant reply to the user message that triggered
+    // it (PR #291 review). Replay must return THIS turn's reply, not simply the
+    // first assistant row created after the user's timestamp — which could be a
+    // later, unrelated turn's reply if the original send died before replying.
+    // Nullable: user/system/tool rows and legacy assistant rows carry none.
+    replyToUserMessageId: uuid("reply_to_user_message_id"),
+
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -243,6 +250,10 @@ export const internalAgentMessages = pgTable(
       table.createdAt,
     ),
     runIdx: index("ia_messages_run_idx").on(table.runId),
+    // Replay lookup: the assistant reply linked to a given user turn.
+    replyToUserIdx: index("ia_messages_reply_to_user_idx").on(
+      table.replyToUserMessageId,
+    ),
   }),
 );
 

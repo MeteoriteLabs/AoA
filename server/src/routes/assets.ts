@@ -12,6 +12,8 @@ import {
 import type { StorageService } from "../storage/types.js";
 import { assetService, logActivity } from "../services/index.js";
 import { getSafeServingHeaders } from "../services/asset-serving-safety.js";
+import { sniffAndVerifyContentType } from "../services/asset-content-guard.js";
+import { HttpError } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 
 const MAX_ASSET_IMAGE_BYTES = Number(process.env.AOA_ATTACHMENT_MAX_BYTES) || 10 * 1024 * 1024;
@@ -208,6 +210,19 @@ export function assetRoutes(db: Db, storage: StorageService) {
       if (file.buffer.length > COMPOSER_MAX_ATTACHMENT_BYTES) {
         res.status(422).json({ error: `Attachment exceeds ${COMPOSER_MAX_ATTACHMENT_BYTES} bytes` });
         return;
+      }
+      // P2 (PR #291 review): never trust the client's declared MIME type for a
+      // composer attachment. Sniff the real bytes (magic numbers / UTF-8
+      // decodability) so a caller cannot label arbitrary bytes as an allowed
+      // image or text file and bypass the allowlist for runtime delivery.
+      try {
+        sniffAndVerifyContentType(file.buffer, contentType);
+      } catch (err) {
+        if (err instanceof HttpError) {
+          res.status(err.status).json({ error: err.message });
+          return;
+        }
+        throw err;
       }
     }
     const actor = getActorInfo(req);

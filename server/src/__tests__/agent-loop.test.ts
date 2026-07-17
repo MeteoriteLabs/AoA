@@ -33,14 +33,14 @@ const appendMessage = vi.fn(async () => ({ id: "msg" }));
 const getOrCreateActive = vi.fn(async () => ({ id: "conv-1" }));
 const getById = vi.fn(async () => ({ id: "conv-1", companyId: "co-1", userId: "user-1" }));
 const getMessageByClientSubmissionId = vi.fn(async () => null as any);
-const getAssistantReplyAfter = vi.fn(async () => null as any);
+const getAssistantReplyForUserMessage = vi.fn(async () => null as any);
 vi.mock("../services/internal-agent/conversation.js", () => ({
   conversationService: vi.fn(() => ({
     getOrCreateActive,
     getById,
     appendMessage,
     getMessageByClientSubmissionId,
-    getAssistantReplyAfter,
+    getAssistantReplyForUserMessage,
   })),
 }));
 
@@ -127,7 +127,7 @@ beforeEach(() => {
   appendMessage.mockResolvedValue({ id: "msg" });
   getById.mockResolvedValue({ id: "conv-1", companyId: "co-1", userId: "user-1" });
   getMessageByClientSubmissionId.mockResolvedValue(null);
-  getAssistantReplyAfter.mockResolvedValue(null);
+  getAssistantReplyForUserMessage.mockResolvedValue(null);
 });
 
 describe("agentLoopService.chat — runtime attachment delivery (text)", () => {
@@ -196,7 +196,7 @@ describe("agentLoopService.chat — idempotent retry (clientSubmissionId)", () =
   it("replays the original assistant reply and does NOT persist a new message or run the CLI", async () => {
     // The key was already recorded → this is a retry.
     getMessageByClientSubmissionId.mockResolvedValue({ id: "user-orig", createdAt: new Date(0) });
-    getAssistantReplyAfter.mockResolvedValue({ id: "asst-orig", content: "Original answer" });
+    getAssistantReplyForUserMessage.mockResolvedValue({ id: "asst-orig", content: "Original answer" });
 
     const svc = agentLoopService(dbWithConfig({ cliTool: "claude_cli", executionMode: "cli" }));
     const out = await drainWithKey(svc, "sub-42");
@@ -206,6 +206,66 @@ describe("agentLoopService.chat — idempotent retry (clientSubmissionId)", () =
     // …without persisting a duplicate user message or starting a CLI turn.
     expect(appendMessage).not.toHaveBeenCalled();
     expect(cliChat).not.toHaveBeenCalled();
+    // C2: the replay is looked up by explicit user-turn linkage, not by timestamp.
+    expect(getAssistantReplyForUserMessage).toHaveBeenCalledWith("conv-1", "user-orig");
+  });
+
+  it("re-runs turn A (does NOT replay a later turn B's reply) when A's send died before replying — C2", async () => {
+    // A persisted its user row but crashed before replying; a LATER turn B then
+    // completed. Retrying A must re-run A, never return B's reply. The linkage
+    // lookup returns null for A (B's reply is linked to user-B), so A re-runs.
+    // The old timestamp heuristic ("first assistant after A") would wrongly
+    // surface B's reply and permanently suppress A.
+    getMessageByClientSubmissionId.mockResolvedValue({ id: "user-A", createdAt: new Date(0) });
+    getAssistantReplyForUserMessage.mockImplementation(async (_conv: string, userId: string) =>
+      userId === "user-B" ? { id: "asst-B", content: "B's answer" } : null,
+    );
+    scriptStream([
+      { type: "text", delta: "A's fresh answer" },
+      { type: "done", summary: { runId: "", toolsCalled: [], durationMs: 0, costCents: 0, tokenUsage: { inputTokens: 0, outputTokens: 0 } } },
+    ]);
+
+    const svc = agentLoopService(dbWithConfig({ cliTool: "claude_cli", executionMode: "cli" }));
+    const out = await drainWithKey(svc, "sub-A");
+
+    // A re-ran; B's reply was never streamed.
+    expect(cliChat).toHaveBeenCalledTimes(1);
+    expect(out.some((c) => c.type === "text" && c.delta === "A's fresh answer")).toBe(true);
+    expect(out.some((c) => c.type === "text" && c.delta === "B's answer")).toBe(false);
+    // The recovered reply is back-linked to A's user turn.
+    const assistantCall = appendMessage.mock.calls.find((c) => (c[1] as any).role === "assistant");
+    expect((assistantCall?.[1] as any).replyToUserMessageId).toBe("user-A");
+  });
+
+  it("claims the submission key: a lost insert race does NOT start a second CLI turn — C3", async () => {
+    // Two same-key requests both miss the initial lookup; this one loses the
+    // unique-index race so appendMessage returns undefined. It must NOT run the
+    // CLI; instead it replays the winner's reply if present.
+    getMessageByClientSubmissionId
+      .mockResolvedValueOnce(null) // initial lookup: no row yet
+      .mockResolvedValue({ id: "user-winner", createdAt: new Date(0) }); // after lost race: winner exists
+    appendMessage.mockResolvedValueOnce(undefined as any); // lost the insert race
+    getAssistantReplyForUserMessage.mockResolvedValue({ id: "asst-winner", content: "Winner answer" });
+
+    const svc = agentLoopService(dbWithConfig({ cliTool: "claude_cli", executionMode: "cli" }));
+    const out = await drainWithKey(svc, "sub-race");
+
+    expect(cliChat).not.toHaveBeenCalled();
+    expect(out).toEqual([{ type: "text", delta: "Winner answer" }]);
+  });
+
+  it("claims the submission key: lost race with no winner reply yet reports in-progress, no CLI — C3", async () => {
+    getMessageByClientSubmissionId
+      .mockResolvedValueOnce(null)
+      .mockResolvedValue({ id: "user-winner", createdAt: new Date(0) });
+    appendMessage.mockResolvedValueOnce(undefined as any); // lost the insert race
+    getAssistantReplyForUserMessage.mockResolvedValue(null); // winner still running
+
+    const svc = agentLoopService(dbWithConfig({ cliTool: "claude_cli", executionMode: "cli" }));
+    const out = await drainWithKey(svc, "sub-race-2");
+
+    expect(cliChat).not.toHaveBeenCalled();
+    expect(out.some((c) => c.type === "error" && /already being processed/i.test(c.message))).toBe(true);
   });
 
   it("re-runs the turn when the prior user message has no persisted reply (send died mid-turn)", async () => {
@@ -213,7 +273,7 @@ describe("agentLoopService.chat — idempotent retry (clientSubmissionId)", () =
     // message was persisted (config error / CLI crash). Retry must fall through
     // to a fresh run — NOT return an empty success that suppresses the turn.
     getMessageByClientSubmissionId.mockResolvedValue({ id: "user-orig", createdAt: new Date(0) });
-    getAssistantReplyAfter.mockResolvedValue(null);
+    getAssistantReplyForUserMessage.mockResolvedValue(null);
     scriptStream([
       { type: "text", delta: "Recovered answer" },
       { type: "done", summary: { runId: "", toolsCalled: [], durationMs: 0, costCents: 0, tokenUsage: { inputTokens: 0, outputTokens: 0 } } },

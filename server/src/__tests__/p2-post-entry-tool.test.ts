@@ -114,4 +114,23 @@ describe("post_entry tool (P2.2)", () => {
     const processMentionsMock = processMentions as ReturnType<typeof vi.fn>;
     expect(processMentionsMock).not.toHaveBeenCalled();
   });
+
+  it("does NOT call processMentions when addEntry replayed an existing entry (C4)", async () => {
+    // A same-key retry / race loser: addEntry returns the winner's row flagged
+    // as a replay. The original post already summoned the crew, so re-running
+    // processMentions here would double-summon (hop bump / double participation).
+    const tool = createPostEntryTool();
+    const ctx = makeCtx();
+    (ctx.services.discussions.addEntry as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: "entry-abc-123",
+      replayed: true,
+    });
+
+    await tool.execute(
+      { threadId: "thread-1", content: "Hey @Planner please review this" },
+      ctx,
+    );
+
+    expect(processMentions as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+  });
 });

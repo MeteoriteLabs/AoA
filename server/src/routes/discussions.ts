@@ -19,7 +19,7 @@ import { discussionService, logActivity, permissionService } from "../services/i
 import { HttpError } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { assertMemoryApproval, assertRole } from "../middleware/rbac.js";
-import { threadService, parseMentions, processMentions } from "../services/threads.js";
+import { threadService, parseMentions, processMentions, assertCanPostToThread } from "../services/threads.js";
 import type { Actor } from "../services/threads.js";
 import { threadScopeVersionService } from "../services/thread-scope-versions.js";
 import { enqueueIssueAssigneeWakeup } from "../services/issue-assignee-wakeup.js";
@@ -709,6 +709,14 @@ export function discussionRoutes(db: Db) {
             ? (req.body as { clientSubmissionId: string }).clientSubmissionId
             : undefined;
         if (clientSubmissionId) {
+          // P1 (PR #291 review): authorize the thread BEFORE returning a replay.
+          // getEntryByClientSubmissionId scopes only by discussionId + key, so
+          // without this a company member (or removed participant) who knows a
+          // prior key could read an entry from a private thread, and another
+          // company's discussionId would skip the company check. Run the SAME
+          // authorization addEntry enforces so an unauthorized caller gets the
+          // identical 404 they'd get posting, whether or not a replay exists.
+          await assertCanPostToThread(db, companyId, discussionId, threadActor);
           const replay = await svc.getEntryByClientSubmissionId(discussionId, clientSubmissionId);
           if (replay) {
             res.status(200).json(replay);
@@ -724,6 +732,18 @@ export function discussionRoutes(db: Db) {
           threadActor,
         );
 
+        // C4 (PR #291 review): a simultaneous same-key submission that lost the
+        // insert race (or slipped past the pre-check) comes back flagged as a
+        // replay. The winning request already fired the entry's side-effects, so
+        // the loser must NOT re-run processMentions — otherwise the mentioned
+        // crew is summoned twice (hop-counter bump / double participation).
+        const { replayed, ...entryRow } =
+          entry as typeof entry & { replayed?: boolean };
+        if (replayed) {
+          res.status(200).json(entryRow);
+          return;
+        }
+
         // Process @mentions in the entry text (fire-and-forget; errors must not
         // fail the request since the entry is already committed).
         const rawContent: string = (req.body as { rawContent?: string }).rawContent ?? "";
@@ -734,7 +754,7 @@ export function discussionRoutes(db: Db) {
           );
         }
 
-        res.status(201).json(entry);
+        res.status(201).json(entryRow);
       } catch (err) {
         if (err instanceof HttpError) {
           res.status(err.status).json({ error: err.message });

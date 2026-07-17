@@ -298,6 +298,9 @@ describe("discussionService.addEntry — parentEntryId", () => {
     );
 
     expect(result).toMatchObject({ id: "entry-original" });
+    // C4 (PR #291 review): the replay is flagged so the route/tool skip
+    // processMentions — the original post already fired the mention summons.
+    expect((result as { replayed?: boolean }).replayed).toBe(true);
     // No new entry inserted and no counter-bumping transaction on replay.
     expect(insertSpy).not.toHaveBeenCalled();
     expect(db.transaction).not.toHaveBeenCalled();
@@ -350,6 +353,9 @@ describe("discussionService.addEntry — parentEntryId", () => {
     expect(txThrew).not.toBeNull();
     // …and the caller still gets the winner's durable row.
     expect(result).toMatchObject({ id: "entry-winner" });
+    // C4: flagged as a replay so the route skips re-running processMentions
+    // (the winner already summoned the mentioned crew).
+    expect((result as { replayed?: boolean }).replayed).toBe(true);
   });
 
   it("records the clientSubmissionId on the inserted entry for a first Send", async () => {

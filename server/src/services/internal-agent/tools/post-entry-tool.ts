@@ -111,7 +111,11 @@ export function createPostEntryTool(): AgentTool {
         },
       );
 
-      const mentions = parseMentions(content as string);
+      // C4 (PR #291 review): skip mention summons when addEntry replayed an
+      // existing entry (same-key retry / race loser) — the original post already
+      // fired them, and re-running double-summons the mentioned crew.
+      const replayed = (entry as { replayed?: boolean }).replayed === true;
+      const mentions = replayed ? [] : parseMentions(content as string);
       if (mentions.length > 0) {
         await processMentions(
           ctx.db,

@@ -1,5 +1,5 @@
 import { and, asc, desc, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { Db } from "@armyofagents/db";
 import {
   activityLog,
@@ -2550,6 +2550,166 @@ export function issueService(db: Db) {
           createdAt: attachment.createdAt,
           updatedAt: attachment.updatedAt,
         };
+      });
+    },
+
+    /**
+     * Complete the attachments missing from an already-persisted comment on an
+     * idempotent retry, serialized so concurrent same-key retries cannot each
+     * create the same file (PR #291 review, C6).
+     *
+     * The original `comments-with-attachments` send commits the comment BEFORE
+     * its files, so a crash can leave the comment durable with attachments
+     * missing; the retry re-sends the files and must complete only the ones that
+     * are absent (matched by content hash + filename, multiset). Two retries
+     * racing here would otherwise both read the same incomplete set and each
+     * insert a duplicate asset+attachment — there is no uniqueness on
+     * (comment, hash, filename), and the multiset design deliberately allows a
+     * legitimate duplicate, so we cannot lean on a unique index.
+     *
+     * A transaction-scoped Postgres advisory lock keyed on the comment id
+     * serializes the read→decide→write section: the second retry blocks until
+     * the first commits, then re-reads the now-complete set inside its own lock
+     * and finds nothing missing. `store` (object-storage put) runs inside the
+     * lock only for genuinely-missing files, so no orphan blobs are created for
+     * files that already exist.
+     */
+    completeMissingCommentAttachments: async (input: {
+      companyId: string;
+      issueId: string;
+      commentId: string;
+      files: Array<{ contentType: string; buffer: Buffer; originalFilename: string | null }>;
+      createdByAgentId?: string | null;
+      createdByUserId?: string | null;
+      store: (file: {
+        contentType: string;
+        buffer: Buffer;
+        originalFilename: string | null;
+      }) => Promise<{
+        provider: string;
+        objectKey: string;
+        contentType: string;
+        byteSize: number;
+        sha256: string;
+        originalFilename: string | null;
+      }>;
+    }) => {
+      const mapRow = (a: {
+        id: string;
+        companyId: string;
+        issueId: string;
+        issueCommentId: string | null;
+        assetId: string;
+        provider: string;
+        objectKey: string;
+        contentType: string;
+        byteSize: number;
+        sha256: string;
+        originalFilename: string | null;
+        createdByAgentId: string | null;
+        createdByUserId: string | null;
+        createdAt: Date;
+        updatedAt: Date;
+      }) => a;
+
+      return db.transaction(async (tx) => {
+        // Serialize concurrent completions for THIS comment. Namespaced by a
+        // second key so it can't collide with unrelated advisory-lock users.
+        await tx.execute(
+          sql`SELECT pg_advisory_xact_lock(hashtext(${input.commentId}), hashtext('issue_attachment_completion'))`,
+        );
+
+        const existing = await tx
+          .select({
+            id: issueAttachments.id,
+            companyId: issueAttachments.companyId,
+            issueId: issueAttachments.issueId,
+            issueCommentId: issueAttachments.issueCommentId,
+            assetId: issueAttachments.assetId,
+            provider: assets.provider,
+            objectKey: assets.objectKey,
+            contentType: assets.contentType,
+            byteSize: assets.byteSize,
+            sha256: assets.sha256,
+            originalFilename: assets.originalFilename,
+            createdByAgentId: assets.createdByAgentId,
+            createdByUserId: assets.createdByUserId,
+            createdAt: issueAttachments.createdAt,
+            updatedAt: issueAttachments.updatedAt,
+          })
+          .from(issueAttachments)
+          .innerJoin(assets, eq(issueAttachments.assetId, assets.id))
+          .where(
+            and(
+              eq(issueAttachments.issueId, input.issueId),
+              eq(issueAttachments.issueCommentId, input.commentId),
+            ),
+          )
+          .orderBy(desc(issueAttachments.createdAt));
+
+        const remaining = new Map<string, number>();
+        for (const a of existing) {
+          const key = `${a.sha256}:${a.originalFilename ?? ""}`;
+          remaining.set(key, (remaining.get(key) ?? 0) + 1);
+        }
+
+        const created: ReturnType<typeof mapRow>[] = [];
+        for (const file of input.files) {
+          const sha256 = createHash("sha256").update(file.buffer).digest("hex");
+          const key = `${sha256}:${file.originalFilename ?? ""}`;
+          const already = remaining.get(key) ?? 0;
+          if (already > 0) {
+            remaining.set(key, already - 1);
+            continue;
+          }
+
+          const stored = await input.store(file);
+          const [asset] = await tx
+            .insert(assets)
+            .values({
+              companyId: input.companyId,
+              provider: stored.provider,
+              objectKey: stored.objectKey,
+              contentType: stored.contentType,
+              byteSize: stored.byteSize,
+              sha256: stored.sha256,
+              originalFilename: stored.originalFilename,
+              createdByAgentId: input.createdByAgentId ?? null,
+              createdByUserId: input.createdByUserId ?? null,
+            })
+            .returning();
+          const [attachment] = await tx
+            .insert(issueAttachments)
+            .values({
+              companyId: input.companyId,
+              issueId: input.issueId,
+              assetId: asset.id,
+              issueCommentId: input.commentId,
+            })
+            .returning();
+
+          created.push(
+            mapRow({
+              id: attachment.id,
+              companyId: attachment.companyId,
+              issueId: attachment.issueId,
+              issueCommentId: attachment.issueCommentId,
+              assetId: attachment.assetId,
+              provider: asset.provider,
+              objectKey: asset.objectKey,
+              contentType: asset.contentType,
+              byteSize: asset.byteSize,
+              sha256: asset.sha256,
+              originalFilename: asset.originalFilename,
+              createdByAgentId: asset.createdByAgentId,
+              createdByUserId: asset.createdByUserId,
+              createdAt: attachment.createdAt,
+              updatedAt: attachment.updatedAt,
+            }),
+          );
+        }
+
+        return { created, all: [...existing.map(mapRow), ...created] };
       });
     },
 

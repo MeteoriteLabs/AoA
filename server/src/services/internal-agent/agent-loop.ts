@@ -168,34 +168,72 @@ export function agentLoopService(db: Db, storage?: RuntimeAttachmentStorage) {
         // for this submission id (PR #291 review). The partial unique index on
         // the message is the race backstop.
         let reuseExistingUserRow = false;
+        // The persisted user message this turn's reply must be linked to. Set on
+        // both the fresh-insert and reuse-existing paths so the assistant row we
+        // persist below carries an explicit back-link (PR #291 review, C2).
+        let userMessageId: string | null = null;
         if (params.clientSubmissionId) {
           const priorUser = await convService.getMessageByClientSubmissionId(
             conversation.id,
             params.clientSubmissionId,
           );
           if (priorUser) {
-            const reply = await convService.getAssistantReplyAfter(
+            // C2: replay ONLY the reply explicitly linked to this user turn, not
+            // the first assistant row after its timestamp — which could belong to
+            // a later, unrelated turn if this send died before it replied.
+            const reply = await convService.getAssistantReplyForUserMessage(
               conversation.id,
-              priorUser.createdAt,
+              priorUser.id,
             );
             if (reply?.content) {
               yield { type: "text", delta: reply.content };
               return;
             }
             reuseExistingUserRow = true;
+            userMessageId = priorUser.id;
           }
         }
 
         // 2. Persist the user message (skipped when re-running an orphaned
         // turn whose user row already exists from the failed original send).
         if (!reuseExistingUserRow) {
-          await convService.appendMessage(conversation.id, {
+          const insertedUser = await convService.appendMessage(conversation.id, {
             role: "user",
             content: params.content,
             pageContext: params.pageContext ?? null,
             departmentContext: params.departmentContext ?? null,
             clientSubmissionId: params.clientSubmissionId ?? null,
           });
+          // C3 (PR #291 review): a same-key request that lost the unique-index
+          // race gets back an undefined insert. Another in-flight request owns
+          // this submission and is running the turn — we must NOT start a second
+          // CLI run (it would execute the Commander turn + its tools twice).
+          // Replay the winner's reply if it already persisted; otherwise report
+          // that the original send is still in progress.
+          if (!insertedUser) {
+            if (params.clientSubmissionId) {
+              const winner = await convService.getMessageByClientSubmissionId(
+                conversation.id,
+                params.clientSubmissionId,
+              );
+              if (winner) {
+                const reply = await convService.getAssistantReplyForUserMessage(
+                  conversation.id,
+                  winner.id,
+                );
+                if (reply?.content) {
+                  yield { type: "text", delta: reply.content };
+                  return;
+                }
+              }
+            }
+            yield {
+              type: "error",
+              message: "This message is already being processed.",
+            };
+            return;
+          }
+          userMessageId = insertedUser.id;
         }
 
         // 2b. Runtime attachment delivery (v1 — text only). Resolve company-owned
@@ -411,6 +449,10 @@ export function agentLoopService(db: Db, storage?: RuntimeAttachmentStorage) {
           await convService.appendMessage(conversation.id, {
             role: "assistant",
             content: accumulatedAssistant,
+            // C2 (PR #291 review): back-link the reply to the user turn that
+            // produced it so an idempotent retry replays THIS reply, never a
+            // later turn's. Null only if assembly ran without a user row.
+            ...(userMessageId ? { replyToUserMessageId: userMessageId } : {}),
             ...(outputRefs ? { outputRefs } : {}),
             ...(turnToolCalls.length > 0 ? { toolCalls: turnToolCalls } : {}),
             // F5: accumulatedReasoning is already capped during accumulation — no slice needed.

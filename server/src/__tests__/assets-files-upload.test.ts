@@ -142,4 +142,45 @@ describe("POST /companies/:companyId/assets/files — composer-namespaced guard"
 
     expect(res.status).toBe(201);
   });
+
+  it("rejects composer bytes that do not match the declared MIME type (422) — C5", async () => {
+    // An allowlisted content type but the bytes are NOT a PNG — a caller trying
+    // to smuggle arbitrary bytes past the allowlist for runtime delivery.
+    const res = await request(createApp())
+      .post(`/api/companies/${companyId}/assets/files`)
+      .field("namespace", "commander/conv-1")
+      .attach("file", Buffer.from("this is plain text, not a PNG"), {
+        filename: "evil.png",
+        contentType: "image/png",
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toMatch(/does not match declared type/i);
+    expect(mockAssetService.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects composer text/plain bytes that are actually binary (422) — C5", async () => {
+    const res = await request(createApp())
+      .post(`/api/companies/${companyId}/assets/files`)
+      .field("namespace", "discussion-entries")
+      .attach("file", Buffer.from([0x00, 0x01, 0x02, 0xff]), {
+        filename: "notes.txt",
+        contentType: "text/plain",
+      });
+
+    expect(res.status).toBe(422);
+    expect(mockAssetService.create).not.toHaveBeenCalled();
+  });
+
+  it("still accepts arbitrary bytes on the general (non-composer) route — sniff is composer-only", async () => {
+    // The sniff guard must NOT narrow the shared /assets/files contract.
+    const res = await request(createApp())
+      .post(`/api/companies/${companyId}/assets/files`)
+      .attach("file", Buffer.from("not really a png"), {
+        filename: "logo.png",
+        contentType: "image/png",
+      });
+
+    expect(res.status).toBe(201);
+  });
 });

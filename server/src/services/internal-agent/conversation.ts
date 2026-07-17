@@ -1,4 +1,4 @@
-import { and, eq, desc, gt, gte, sql } from "drizzle-orm";
+import { and, eq, desc, gt, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import {
   internalAgentConversations,
@@ -19,6 +19,7 @@ export interface MessageInput {
   outputRefs?: unknown;
   reasoning?: string | null;
   clientSubmissionId?: string | null;
+  replyToUserMessageId?: string | null;
 }
 
 const MESSAGE_THRESHOLD = 20;
@@ -78,6 +79,7 @@ export function conversationService(db: Db) {
           outputRefs,
           reasoning: message.reasoning ?? null,
           clientSubmissionId: message.clientSubmissionId ?? null,
+          replyToUserMessageId: message.replyToUserMessageId ?? null,
         })
         // Concurrency backstop for the replay check in agent-loop.chat(): a
         // simultaneous duplicate key resolves to one row via the partial
@@ -122,8 +124,17 @@ export function conversationService(db: Db) {
         .then((rows: any[]) => rows[0] ?? null);
     },
 
-    /** The first assistant reply persisted at/after the given timestamp. */
-    async getAssistantReplyAfter(conversationId: string, afterCreatedAt: Date) {
+    /**
+     * The assistant reply explicitly linked to a given user turn (PR #291
+     * review). Unlike the timestamp heuristic, this cannot mis-attribute a
+     * later, unrelated turn's reply to a user message whose original send died
+     * before replying. Returns null for legacy assistant rows (no linkage),
+     * which the caller treats as "no reply yet → re-run".
+     */
+    async getAssistantReplyForUserMessage(
+      conversationId: string,
+      userMessageId: string,
+    ) {
       return db
         .select()
         .from(internalAgentMessages)
@@ -131,7 +142,7 @@ export function conversationService(db: Db) {
           and(
             eq(internalAgentMessages.conversationId, conversationId),
             eq(internalAgentMessages.role, "assistant"),
-            gte(internalAgentMessages.createdAt, afterCreatedAt),
+            eq(internalAgentMessages.replyToUserMessageId, userMessageId),
           ),
         )
         .orderBy(internalAgentMessages.createdAt, internalAgentMessages.id)
