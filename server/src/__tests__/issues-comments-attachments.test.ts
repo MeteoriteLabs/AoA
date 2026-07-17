@@ -62,6 +62,7 @@ const mockIssueService = vi.hoisted(() => ({
   enqueueAoaMentionWakeup: vi.fn(),
   getCommentByClientSubmissionId: vi.fn(),
   markCommentControlEffectsCompleted: vi.fn(),
+  markCommentWakeupsEnqueued: vi.fn(),
 }));
 
 const mockAccessService = vi.hoisted(() => ({
@@ -173,6 +174,7 @@ beforeEach(() => {
   // Default: no prior submission with this key → the create path runs.
   mockIssueService.getCommentByClientSubmissionId.mockResolvedValue(null);
   mockIssueService.markCommentControlEffectsCompleted.mockResolvedValue(undefined);
+  mockIssueService.markCommentWakeupsEnqueued.mockResolvedValue(undefined);
   mockIssueService.addComment.mockResolvedValue({
     id: "comment-1",
     issueId,
@@ -553,6 +555,7 @@ describe("POST /issues/:id/comments-with-attachments", () => {
     // re-fire wakeups — it completes through the serialized (advisory-locked)
     // path, which finds nothing missing.
     const submissionId = "sub-race-loser";
+    // A completed winner (both markers set) → the loser resumes nothing.
     const winner = {
       id: "comment-1",
       issueId,
@@ -561,6 +564,8 @@ describe("POST /issues/:id/comments-with-attachments", () => {
       authorAgentId: null,
       authorUserId: "board-user",
       clientSubmissionId: submissionId,
+      controlEffectsCompletedAt: new Date(0),
+      wakeupsEnqueuedAt: new Date(0),
     };
     mockIssueService.getCommentByClientSubmissionId.mockResolvedValue(null); // pre-check missed it
     mockIssueService.addComment.mockResolvedValue({ ...winner, replayed: true });
@@ -599,6 +604,7 @@ describe("POST /issues/:id/comments-with-attachments", () => {
     const winner = {
       id: "comment-1", issueId, companyId, body: "Reopen with evidence",
       authorAgentId: null, authorUserId: "board-user", clientSubmissionId: submissionId,
+      controlEffectsCompletedAt: new Date(0), wakeupsEnqueuedAt: new Date(0),
     };
     mockIssueService.getCommentByClientSubmissionId.mockResolvedValue(null);
     mockIssueService.addComment.mockResolvedValue({ ...winner, replayed: true });
@@ -631,6 +637,9 @@ describe("POST /issues/:id/comments-with-attachments", () => {
       authorAgentId: null,
       authorUserId: "board-user",
       clientSubmissionId: submissionId,
+      // Completed original → replay resumes no control effects / wakeups.
+      controlEffectsCompletedAt: new Date(0),
+      wakeupsEnqueuedAt: new Date(0),
     };
     mockIssueService.getCommentByClientSubmissionId
       .mockResolvedValueOnce(null) // first send creates
@@ -798,6 +807,9 @@ describe("POST /issues/:id/comments — idempotent retry (clientSubmissionId)", 
   // side-effects (wakeup/interrupt). The whole handler is gated, not just the
   // row insert — otherwise a retry could re-interrupt a run while the row dedups.
   const submissionId = "sub-1111-2222";
+  // A fully-completed original: BOTH side-effect markers set, so a replay/
+  // race-loser resumes nothing (round-7 #2/#3 completion tracking).
+  const doneMarker = new Date("2026-07-17T00:00:00Z");
   const existingComment = {
     id: "comment-1",
     issueId,
@@ -806,6 +818,8 @@ describe("POST /issues/:id/comments — idempotent retry (clientSubmissionId)", 
     authorAgentId: null,
     authorUserId: "board-user",
     clientSubmissionId: submissionId,
+    controlEffectsCompletedAt: doneMarker,
+    wakeupsEnqueuedAt: doneMarker,
   };
 
   it("replays the same comment (200) and wakes at most once on a retried key", async () => {
@@ -897,9 +911,10 @@ describe("POST /issues/:id/comments — idempotent retry (clientSubmissionId)", 
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
-  it("does NOT apply control effects when addComment loses the insert race (round-4 #3)", async () => {
-    // Same-key race loser on the plain route: reopen requested, but the loser
-    // must skip applyIssueCommentControlEffects (svc.update never called).
+  it("does NOT apply control effects when the race loser's winner already completed them (marker set, round-4 #3 / round-7 #2)", async () => {
+    // Same-key race loser on the plain route: reopen requested, but the winner
+    // already completed its control effects (existingComment markers set), so the
+    // loser resumes nothing (svc.update never called).
     const closedIssue = makeIssue({ status: "done" });
     mockIssueService.getById.mockResolvedValue(closedIssue);
     mockIssueService.getCommentByClientSubmissionId.mockResolvedValue(null);
@@ -913,6 +928,61 @@ describe("POST /issues/:id/comments — idempotent retry (clientSubmissionId)", 
     expect(mockIssueService.update).not.toHaveBeenCalled();
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("RESUMES control effects + wakeups for a race loser when the winner's markers are NULL (round-7 #2/#3)", async () => {
+    // The winner committed the comment then crashed BEFORE reopening or waking
+    // (markers null). The loser is the client's success response, so it must
+    // finish those side effects — else they are lost forever.
+    const closedIssue = makeIssue({ status: "done" });
+    mockIssueService.getById.mockResolvedValue(closedIssue);
+    mockIssueService.update.mockResolvedValue(makeIssue({ status: "todo" }));
+    mockIssueService.getCommentByClientSubmissionId.mockResolvedValue(null); // pre-check missed it
+    mockIssueService.addComment.mockResolvedValue({
+      ...existingComment,
+      controlEffectsCompletedAt: null,
+      wakeupsEnqueuedAt: null,
+      replayed: true,
+    });
+
+    const res = await request(createApp())
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Please inspect the logs", reopen: true, clientSubmissionId: submissionId });
+
+    expect(res.status).toBe(200);
+    // Control effects resumed (task was still closed) and stamped.
+    expect(mockIssueService.update).toHaveBeenCalledWith(issueId, { status: "todo" });
+    expect(mockIssueService.markCommentControlEffectsCompleted).toHaveBeenCalledWith("comment-1");
+    // Wakeups resumed and stamped.
+    await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
+    expect(mockIssueService.markCommentWakeupsEnqueued).toHaveBeenCalledWith("comment-1");
+  });
+
+  it("RESUMES only the wakeups on replay when control effects are done but wakeups are NULL (round-7 #3)", async () => {
+    // The original completed control effects (marker set) but died during
+    // activity logging before enqueuing wakeups (marker null). The @mention must
+    // still wake — resume ONLY the wakeups, not the control effects.
+    // No assignee → only the @mention wakes (isolates the wakeup-resume path).
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "todo", assigneeAgentId: null }));
+    mockIssueService.findMentionedAgents.mockResolvedValue([mentionedAgentId]);
+    mockIssueService.getCommentByClientSubmissionId.mockResolvedValue({
+      ...existingComment,
+      body: "@Beta please take a look",
+      controlEffectsCompletedAt: new Date("2026-07-17T00:00:00Z"),
+      wakeupsEnqueuedAt: null,
+    });
+
+    const res = await request(createApp())
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "@Beta please take a look", clientSubmissionId: submissionId });
+
+    expect(res.status).toBe(200);
+    // Control effects NOT re-applied (already done).
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.markCommentControlEffectsCompleted).not.toHaveBeenCalled();
+    // Wakeups resumed for the mentioned agent + stamped.
+    await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
+    expect(mockIssueService.markCommentWakeupsEnqueued).toHaveBeenCalledWith("comment-1");
   });
 
   it("passes the clientSubmissionId through to addComment on the create path", async () => {

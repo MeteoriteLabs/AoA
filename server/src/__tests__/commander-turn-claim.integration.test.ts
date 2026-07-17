@@ -106,15 +106,15 @@ describe.skipIf(process.platform === "win32")("Commander durable turn claim (rea
     expect(setupError).toBeNull();
   });
 
-  it("exactly one of two racing claims wins; the loser must defer", async () => {
+  it("exactly one of two racing claims wins; the loser gets no token", async () => {
     const msgId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1";
     await insertUserMessage(msgId, "sub-race");
     const svc = conversationService(db);
 
     // Two connections race the CAS concurrently. The conditional UPDATE
-    // serializes on the row, so exactly one sees a returned row.
+    // serializes on the row, so exactly one gets a token back.
     const [a, b] = await Promise.all([svc.claimTurn(msgId), svc.claimTurn(msgId)]);
-    expect([a, b].filter(Boolean)).toHaveLength(1);
+    expect([a, b].filter((t) => t !== null)).toHaveLength(1);
     expect(await readTurnStatus(msgId)).toBe("running");
   });
 
@@ -123,33 +123,79 @@ describe.skipIf(process.platform === "win32")("Commander durable turn claim (rea
     await insertUserMessage(msgId, "sub-fresh-running");
     const svc = conversationService(db);
 
-    expect(await svc.claimTurn(msgId)).toBe(true); // first wins
-    expect(await svc.claimTurn(msgId)).toBe(false); // still running, fresh → denied
+    expect(await svc.claimTurn(msgId)).not.toBeNull(); // first wins (token)
+    expect(await svc.claimTurn(msgId)).toBeNull(); // still running, fresh → denied
   });
 
-  it("a STALE 'running' claim is reclaimable (owner presumed dead)", async () => {
+  it("a claim younger than the 35-min window is NOT reclaimable, even at 30 min (round-7 #1)", async () => {
+    // A legit turn can idle up to the 30-min CLI idle timeout; the window (35m)
+    // must exceed that so a genuinely-alive turn is never reclaimed + double-run.
+    const msgId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa5";
+    await insertUserMessage(msgId, "sub-young");
+    const svc = conversationService(db);
+
+    expect(await svc.claimTurn(msgId)).not.toBeNull();
+    await db.execute(
+      sql`UPDATE internal_agent_messages SET turn_claimed_at = now() - interval '30 minutes' WHERE id = ${msgId}`,
+    );
+    expect(await svc.claimTurn(msgId)).toBeNull(); // 30m < 35m window → NOT reclaimable
+  });
+
+  it("a STALE 'running' claim (past the 35-min window) is reclaimable (owner presumed dead)", async () => {
     const msgId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3";
     await insertUserMessage(msgId, "sub-stale");
     const svc = conversationService(db);
 
-    expect(await svc.claimTurn(msgId)).toBe(true);
-    // Backdate the claim well past the 10-minute staleness window.
+    expect(await svc.claimTurn(msgId)).not.toBeNull();
     await db.execute(
-      sql`UPDATE internal_agent_messages SET turn_claimed_at = now() - interval '30 minutes' WHERE id = ${msgId}`,
+      sql`UPDATE internal_agent_messages SET turn_claimed_at = now() - interval '40 minutes' WHERE id = ${msgId}`,
     );
-    expect(await svc.claimTurn(msgId)).toBe(true); // reclaimed
+    expect(await svc.claimTurn(msgId)).not.toBeNull(); // 40m > 35m → reclaimed
   });
 
-  it("'done' is terminal (a retry replays, never re-runs); 'failed' is reclaimable", async () => {
+  it("a heartbeat keeps a live turn's claim from aging out; a stale reclaim's heartbeat is a no-op (round-7 #1)", async () => {
+    const msgId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa6";
+    await insertUserMessage(msgId, "sub-heartbeat");
+    const svc = conversationService(db);
+
+    const token = await svc.claimTurn(msgId);
+    expect(token).not.toBeNull();
+    // Age the lease near the window, then heartbeat with the owner token → fresh.
+    await db.execute(
+      sql`UPDATE internal_agent_messages SET turn_claimed_at = now() - interval '34 minutes' WHERE id = ${msgId}`,
+    );
+    await svc.heartbeatTurn(msgId, token!);
+    // Refreshed → a duplicate cannot reclaim it.
+    expect(await svc.claimTurn(msgId)).toBeNull();
+
+    // A WRONG token (a reclaimed old owner) cannot bump the lease.
+    await db.execute(
+      sql`UPDATE internal_agent_messages SET turn_claimed_at = now() - interval '40 minutes' WHERE id = ${msgId}`,
+    );
+    await svc.heartbeatTurn(msgId, "00000000-0000-4000-8000-000000000000");
+    // Lease still stale (heartbeat no-op) → reclaimable, which mints a NEW token.
+    const newToken = await svc.claimTurn(msgId);
+    expect(newToken).not.toBeNull();
+    expect(newToken).not.toBe(token);
+  });
+
+  it("'done'/'failed' obey the owner token; a non-owner cannot overwrite (round-7 #1)", async () => {
     const msgId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa4";
     await insertUserMessage(msgId, "sub-terminal");
     const svc = conversationService(db);
 
-    expect(await svc.claimTurn(msgId)).toBe(true);
-    await svc.finishTurn(msgId, "done");
-    expect(await svc.claimTurn(msgId)).toBe(false); // done → never reclaimed
+    const token = await svc.claimTurn(msgId);
+    expect(token).not.toBeNull();
 
-    await svc.finishTurn(msgId, "failed");
-    expect(await svc.claimTurn(msgId)).toBe(true); // failed → reclaimable
+    // A stale non-owner's finishTurn is a no-op (still running).
+    await svc.finishTurn(msgId, "11111111-1111-4111-8111-111111111111", "failed");
+    expect(await readTurnStatus(msgId)).toBe("running");
+
+    await svc.finishTurn(msgId, token!, "done");
+    expect(await readTurnStatus(msgId)).toBe("done");
+    expect(await svc.claimTurn(msgId)).toBeNull(); // done → never reclaimed
+
+    await svc.finishTurn(msgId, token!, "failed");
+    expect(await svc.claimTurn(msgId)).not.toBeNull(); // failed → reclaimable
   });
 });

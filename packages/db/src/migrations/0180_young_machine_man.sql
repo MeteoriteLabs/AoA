@@ -1,0 +1,2 @@
+ALTER TABLE "internal_agent_messages" ADD COLUMN IF NOT EXISTS "turn_claim_token" uuid;--> statement-breakpoint
+ALTER TABLE "issue_comments" ADD COLUMN IF NOT EXISTS "wakeups_enqueued_at" timestamp with time zone;

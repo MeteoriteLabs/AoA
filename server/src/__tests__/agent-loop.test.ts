@@ -34,9 +34,11 @@ const getOrCreateActive = vi.fn(async () => ({ id: "conv-1" }));
 const getById = vi.fn(async () => ({ id: "conv-1", companyId: "co-1", userId: "user-1" }));
 const getMessageByClientSubmissionId = vi.fn(async () => null as any);
 const getAssistantReplyForUserMessage = vi.fn(async () => null as any);
-// PR #291 round-6: the durable turn claim CAS + release. Default: claim wins.
-const claimTurn = vi.fn(async () => true);
+// PR #291 round-6/7: the durable turn claim CAS + lease + release. claimTurn
+// returns an owner token (or null when lost); finishTurn/heartbeatTurn take it.
+const claimTurn = vi.fn(async () => "tok-1" as string | null);
 const finishTurn = vi.fn(async () => undefined);
+const heartbeatTurn = vi.fn(async () => undefined);
 vi.mock("../services/internal-agent/conversation.js", () => ({
   conversationService: vi.fn(() => ({
     getOrCreateActive,
@@ -46,7 +48,9 @@ vi.mock("../services/internal-agent/conversation.js", () => ({
     getAssistantReplyForUserMessage,
     claimTurn,
     finishTurn,
+    heartbeatTurn,
   })),
+  COMMANDER_TURN_HEARTBEAT_MS: 60_000,
 }));
 
 const cliChat = vi.fn();
@@ -133,8 +137,9 @@ beforeEach(() => {
   getById.mockResolvedValue({ id: "conv-1", companyId: "co-1", userId: "user-1" });
   getMessageByClientSubmissionId.mockResolvedValue(null);
   getAssistantReplyForUserMessage.mockResolvedValue(null);
-  claimTurn.mockResolvedValue(true);
+  claimTurn.mockResolvedValue("tok-1");
   finishTurn.mockResolvedValue(undefined);
+  heartbeatTurn.mockResolvedValue(undefined);
 });
 
 describe("agentLoopService.chat — runtime attachment delivery (text)", () => {
@@ -314,7 +319,7 @@ describe("agentLoopService.chat — idempotent retry (clientSubmissionId)", () =
     // request must defer (in-progress here, no reply yet) and never run the CLI.
     getMessageByClientSubmissionId.mockResolvedValue({ id: "user-live", createdAt: new Date() });
     getAssistantReplyForUserMessage.mockResolvedValue(null);
-    claimTurn.mockResolvedValue(false); // another instance holds the durable claim
+    claimTurn.mockResolvedValue(null); // another instance holds the durable claim
 
     const svc = agentLoopService(dbWithConfig({ cliTool: "claude_cli", executionMode: "cli" }));
     const out = await drainWithKey(svc, "sub-inflight");
@@ -332,7 +337,7 @@ describe("agentLoopService.chat — idempotent retry (clientSubmissionId)", () =
     getMessageByClientSubmissionId.mockResolvedValue(null); // fresh at pre-check
     getAssistantReplyForUserMessage.mockResolvedValue(null);
     appendMessage.mockResolvedValueOnce({ id: "user-fresh" }); // our insert wins
-    claimTurn.mockResolvedValue(false); // another worker owns the durable claim
+    claimTurn.mockResolvedValue(null); // another worker owns the durable claim
 
     const svc = agentLoopService(dbWithConfig({ cliTool: "claude_cli", executionMode: "cli" }));
     const out = await drainWithKey(svc, "sub-fresh-contended");
@@ -348,7 +353,7 @@ describe("agentLoopService.chat — idempotent retry (clientSubmissionId)", () =
     // the row ('failed'/stale → running), so retry re-runs — NOT an empty success.
     getMessageByClientSubmissionId.mockResolvedValue({ id: "user-orig", createdAt: new Date(0) });
     getAssistantReplyForUserMessage.mockResolvedValue(null);
-    claimTurn.mockResolvedValue(true); // reclaimed the dead turn
+    claimTurn.mockResolvedValue("tok-orig"); // reclaimed the dead turn (owner token)
     scriptStream([
       { type: "text", delta: "Recovered answer" },
       { type: "done", summary: { runId: "", toolsCalled: [], durationMs: 0, costCents: 0, tokenUsage: { inputTokens: 0, outputTokens: 0 } } },
@@ -367,7 +372,33 @@ describe("agentLoopService.chat — idempotent retry (clientSubmissionId)", () =
     const assistantCalls = appendMessage.mock.calls.filter((c) => (c[1] as any).role === "assistant");
     expect(assistantCalls).toHaveLength(1);
     expect((assistantCalls[0][1] as any).content).toBe("Recovered answer");
-    expect(finishTurn).toHaveBeenCalledWith("user-orig", "done");
+    expect(finishTurn).toHaveBeenCalledWith("user-orig", "tok-orig", "done");
+  });
+
+  it("heartbeats the durable claim (with the owner token) once the throttle interval elapses mid-stream — round-7 #1", async () => {
+    // A long, actively-streaming turn must refresh its lease so it never ages
+    // into the staleness window and gets reclaimed + double-run. The heartbeat is
+    // throttled to COMMANDER_TURN_HEARTBEAT_MS, so we advance the clock past it
+    // between chunks and assert the owner token is used.
+    let t = 1_000_000;
+    const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => t);
+    getMessageByClientSubmissionId.mockResolvedValue(null); // fresh
+    appendMessage.mockResolvedValueOnce({ id: "user-hb" });
+    claimTurn.mockResolvedValue("tok-hb");
+    cliChat.mockImplementation(async function* () {
+      yield { type: "text", delta: "a" }; // baseline chunk — no heartbeat yet
+      t += 61_000; // interval elapsed
+      yield { type: "text", delta: "b" }; // this chunk triggers a heartbeat
+      yield { type: "done", summary: { runId: "", toolsCalled: [], durationMs: 0, costCents: 0, tokenUsage: { inputTokens: 0, outputTokens: 0 } } };
+    });
+
+    const svc = agentLoopService(dbWithConfig({ cliTool: "claude_cli", executionMode: "cli" }));
+    try {
+      await drainWithKey(svc, "sub-hb");
+      expect(heartbeatTurn).toHaveBeenCalledWith("user-hb", "tok-hb");
+    } finally {
+      nowSpy.mockRestore();
+    }
   });
 
   it("runs normally when the key has not been seen before", async () => {

@@ -3,7 +3,7 @@ import type { Db } from "@armyofagents/db";
 import { internalAgentConfig, agents } from "@armyofagents/db";
 import type { CommanderContextScope, CommanderOutputRef } from "@armyofagents/shared";
 import type { ToolResult } from "./types.js";
-import { conversationService } from "./conversation.js";
+import { conversationService, COMMANDER_TURN_HEARTBEAT_MS } from "./conversation.js";
 import { cliModeService } from "./cli-mode.js";
 import { agentInstructionsService } from "../agent-instructions.js";
 import { contextAssemblyService } from "./context-assembly.js";
@@ -216,10 +216,12 @@ export function agentLoopService(db: Db, storage?: RuntimeAttachmentStorage) {
 
   return {
     async *chat(params: ChatInput): AsyncGenerator<AgentStreamChunk> {
-      // Durable cross-instance turn claim (PR #291 round-6, #1). Set to the user
-      // message id once THIS request wins the DB CAS; released to 'done' (reply
-      // persisted → retries replay) or 'failed' (no reply → retries reclaim).
+      // Durable cross-instance turn claim (PR #291 round-6/7, #1). Set once THIS
+      // request wins the DB CAS; released to 'done' (reply persisted → retries
+      // replay) or 'failed' (no reply → retries reclaim). The token gates the
+      // lease so a reclaimed original owner cannot heartbeat or overwrite status.
       let claimedUserMessageId: string | null = null;
+      let claimToken: string | null = null;
       try {
         // 1. Get/create active conversation
         const conversation = params.conversationId
@@ -316,8 +318,8 @@ export function agentLoopService(db: Db, storage?: RuntimeAttachmentStorage) {
         // prior-row run path. A CAS loser defers to the owner (replay its reply,
         // or in-progress) and never starts a second CLI run.
         if (params.clientSubmissionId && userMessageId) {
-          const claimed = await convService.claimTurn(userMessageId);
-          if (!claimed) {
+          const token = await convService.claimTurn(userMessageId);
+          if (!token) {
             yield* replayWinnerOrSignalInProgress(
               convService,
               conversation.id,
@@ -326,6 +328,7 @@ export function agentLoopService(db: Db, storage?: RuntimeAttachmentStorage) {
             return;
           }
           claimedUserMessageId = userMessageId;
+          claimToken = token;
         }
 
         // 2b. Runtime attachment delivery (v1 — text only). Resolve company-owned
@@ -502,7 +505,20 @@ export function agentLoopService(db: Db, storage?: RuntimeAttachmentStorage) {
         let accumulatedReasoning = "";
         const turnRefs: CommanderOutputRef[] = [];
         const turnToolCalls: Array<{ id?: string; name: string; input?: unknown; success?: boolean; summary?: string; result?: unknown }> = [];
+        // Lease heartbeat (round-7 #1): refresh turn_claimed_at during a long
+        // stream so an actively-progressing turn never ages into the staleness
+        // window and gets reclaimed + double-run. Throttled to the heartbeat
+        // interval and best-effort — a failed bump never affects the reply.
+        let lastHeartbeatMs = Date.now();
         for await (const chunk of cliService.chat(cliParams, effectiveConfig)) {
+          if (claimedUserMessageId && claimToken && Date.now() - lastHeartbeatMs >= COMMANDER_TURN_HEARTBEAT_MS) {
+            lastHeartbeatMs = Date.now();
+            try {
+              await convService.heartbeatTurn(claimedUserMessageId, claimToken);
+            } catch {
+              // Best-effort; the staleness window is the backstop.
+            }
+          }
           if (chunk.type === "text") accumulatedAssistant += chunk.delta;
           if (chunk.type === "reasoning") {
             // F5: cap accumulation exactly — once at/over cap, stop appending and
@@ -559,9 +575,9 @@ export function agentLoopService(db: Db, storage?: RuntimeAttachmentStorage) {
         // — error-only, empty, or config failure — so a retry can reclaim + re-
         // run (round-2 Retry-after-error recovery). Persist the reply BEFORE
         // marking done so a retry arriving in that window replays, never re-runs.
-        if (claimedUserMessageId) {
+        if (claimedUserMessageId && claimToken) {
           try {
-            await convService.finishTurn(claimedUserMessageId, turnProducedReply ? "done" : "failed");
+            await convService.finishTurn(claimedUserMessageId, claimToken, turnProducedReply ? "done" : "failed");
           } catch {
             // Best-effort: a failed status update leaves the row 'running' until
             // the staleness window reclaims it — never affects the delivered reply.
@@ -583,9 +599,9 @@ export function agentLoopService(db: Db, storage?: RuntimeAttachmentStorage) {
       } catch (err: any) {
         // Mark the durable claim 'failed' so a retry can reclaim + re-run the
         // turn (#1). Best-effort — never let it mask the original error.
-        if (claimedUserMessageId) {
+        if (claimedUserMessageId && claimToken) {
           try {
-            await convService.finishTurn(claimedUserMessageId, "failed");
+            await convService.finishTurn(claimedUserMessageId, claimToken, "failed");
           } catch {
             // swallow: staleness reclaim is the backstop.
           }

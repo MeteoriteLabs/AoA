@@ -25,16 +25,26 @@ export interface MessageInput {
 const MESSAGE_THRESHOLD = 20;
 
 /**
- * Staleness window for a durable Commander turn claim (PR #291 round-6). A row
- * left 'running' longer than this is presumed abandoned (its process died
- * mid-turn) and becomes reclaimable by a retry. Balances two failure modes:
- *   - too short → a legitimately long agentic turn (many tool calls) could be
- *     reclaimed and double-run;
- *   - too long → a dead turn stays un-retryable for the whole window.
- * The CLI idle timeout is 30 min (cli-mode.ts), so most turns finish well under
- * 10 min; a turn still 'running' after 10 min is almost certainly abandoned.
+ * Staleness window for a durable Commander turn claim (PR #291 round-6, revised
+ * round-7 #1). A row whose lease has not been refreshed within this window is
+ * presumed abandoned (its process died mid-turn) and becomes reclaimable.
+ *
+ * It MUST exceed the maximum time a live turn can go without refreshing its
+ * lease. The CLI IDLE timeout is 30 min (cli-mode.ts) — a turn can sit idle up
+ * to that long between chunks before being killed — so 10 min would let a
+ * genuinely-alive-but-quiet turn be reclaimed and DOUBLE-RUN. We set the window
+ * comfortably above the idle timeout (35 min) as the crash-recovery backstop,
+ * AND the owner heartbeats `turn_claimed_at` during the stream (agent-loop) so
+ * an actively-streaming turn of any total duration never ages into the window.
  */
-export const COMMANDER_TURN_STALE_MINUTES = 10;
+export const COMMANDER_TURN_STALE_MINUTES = 35;
+
+/**
+ * How often the owner refreshes its lease during a long turn (agent-loop
+ * throttles per-chunk heartbeats to this interval). Must be well under
+ * COMMANDER_TURN_STALE_MINUTES so a live turn's lease never ages out.
+ */
+export const COMMANDER_TURN_HEARTBEAT_MS = 60_000;
 
 export function conversationService(db: Db) {
   return {
@@ -163,18 +173,20 @@ export function conversationService(db: Db) {
     },
 
     /**
-     * Durable, cross-instance turn claim (PR #291 round-6). ONE atomic CAS:
-     * flip the user row to 'running' only if it is unclaimed (NULL), previously
-     * failed, or a STALE 'running' (its owner presumably died). Returns true iff
-     * THIS caller won the claim — Postgres serializes the conditional UPDATE, so
-     * exactly one of N racing processes gets the row back. A false result means
-     * another process/worker owns the turn (running & fresh, or already done);
-     * the caller must NOT start a second CLI run.
+     * Durable, cross-instance turn claim (PR #291 round-6, round-7 #1). ONE
+     * atomic CAS: flip the user row to 'running' only if it is unclaimed (NULL),
+     * previously failed, or a STALE 'running' (lease not refreshed within the
+     * window → owner presumably died). Mints a FRESH owner token on each win and
+     * returns it — Postgres serializes the conditional UPDATE, so exactly one of
+     * N racing processes gets a token back. Returns null when another process/
+     * worker owns the turn; the caller must NOT start a second CLI run. The token
+     * gates heartbeatTurn/finishTurn so a reclaimed original owner can neither
+     * bump the new owner's lease nor overwrite its status.
      */
-    async claimTurn(userMessageId: string): Promise<boolean> {
+    async claimTurn(userMessageId: string): Promise<string | null> {
       const result = await db.execute(sql`
         UPDATE internal_agent_messages
-        SET turn_status = 'running', turn_claimed_at = now()
+        SET turn_status = 'running', turn_claimed_at = now(), turn_claim_token = gen_random_uuid()
         WHERE id = ${userMessageId}
           AND (
             turn_status IS NULL
@@ -182,24 +194,51 @@ export function conversationService(db: Db) {
             OR (turn_status = 'running'
                 AND turn_claimed_at < now() - ${sql.raw(String(COMMANDER_TURN_STALE_MINUTES))} * interval '1 minute')
           )
-        RETURNING id
+        RETURNING turn_claim_token AS "turnClaimToken"
       `);
       const rows = Array.isArray(result)
         ? result
         : ((result as { rows?: unknown[] })?.rows ?? []);
-      return rows.length > 0;
+      const token = (rows[0] as { turnClaimToken?: string } | undefined)?.turnClaimToken;
+      return token ?? null;
     },
 
     /**
-     * Release a claimed turn (PR #291 round-6). 'done' = a reply persisted (a
-     * retry replays it, never re-runs); 'failed' = the turn ended without a
+     * Refresh the lease of a turn THIS request owns (PR #291 round-7 #1). Bumps
+     * turn_claimed_at only while the token still matches and the turn is running,
+     * so an actively-streaming turn never ages into the staleness window and a
+     * reclaimed owner's heartbeat is a no-op. Best-effort — the caller swallows.
+     */
+    async heartbeatTurn(userMessageId: string, token: string): Promise<void> {
+      await db
+        .update(internalAgentMessages)
+        .set({ turnClaimedAt: new Date() })
+        .where(
+          and(
+            eq(internalAgentMessages.id, userMessageId),
+            eq(internalAgentMessages.turnClaimToken, token),
+            eq(internalAgentMessages.turnStatus, "running"),
+          ),
+        );
+    },
+
+    /**
+     * Release a claimed turn (PR #291 round-6, round-7 #1). Only the current
+     * owner (matching token) may set the terminal status, so an original owner
+     * whose stale claim was reclaimed cannot clobber the new owner. 'done' = a
+     * reply persisted (a retry replays it); 'failed' = the turn ended without a
      * reply (config/CLI error, empty turn) so a retry can reclaim + re-run.
      */
-    async finishTurn(userMessageId: string, status: "done" | "failed"): Promise<void> {
+    async finishTurn(userMessageId: string, token: string, status: "done" | "failed"): Promise<void> {
       await db
         .update(internalAgentMessages)
         .set({ turnStatus: status })
-        .where(eq(internalAgentMessages.id, userMessageId));
+        .where(
+          and(
+            eq(internalAgentMessages.id, userMessageId),
+            eq(internalAgentMessages.turnClaimToken, token),
+          ),
+        );
     },
 
     async getRecentMessages(conversationId: string, limit = 50) {

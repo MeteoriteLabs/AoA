@@ -244,6 +244,14 @@ export const internalAgentMessages = pgTable(
     //   'failed' → ended without a reply (reclaimable by a retry).
     turnStatus: text("turn_status"),
     turnClaimedAt: timestamp("turn_claimed_at", { withTimezone: true }),
+    // Owner token for the durable claim lease (PR #291 round-7 #1). claimTurn
+    // mints a fresh token on each win; heartbeatTurn/finishTurn only act when the
+    // token still matches — so a request whose stale claim was reclaimed by a
+    // duplicate can neither keep bumping the lease nor overwrite the new owner's
+    // status. turn_claimed_at is now a LEASE-FRESHNESS signal, bumped by the
+    // owner's heartbeat during a long turn so a live turn never ages into the
+    // staleness window.
+    turnClaimToken: uuid("turn_claim_token"),
 
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()

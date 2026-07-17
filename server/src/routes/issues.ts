@@ -560,6 +560,74 @@ export function issueRoutes(db: Db, storage: StorageService) {
     }
   }
 
+  // Resume any of a replayed/race-lost comment's side effects that the original
+  // request never completed (PR #291 round-7 #2 + #3). Each side effect is gated
+  // by its own completion marker so a resume finishes what's missing without
+  // double-firing what's done:
+  //   - control effects (reopen/interrupt) — resume when control_effects_completed_at
+  //     is NULL (else skip: the founder may have legitimately re-closed the task);
+  //   - @mention/assignee wakeups — resume when wakeups_enqueued_at is NULL (else
+  //     skip: comment wakeups are not idempotent and would double-wake).
+  // Returns { ok:false } when authz/control-effect handling already sent a response.
+  async function resumeIncompleteCommentSideEffects(input: {
+    req: Request;
+    res: Response;
+    issue: IssueForCommentControl;
+    comment: {
+      id: string;
+      body: string;
+      authorAgentId?: string | null;
+      controlEffectsCompletedAt?: Date | null;
+      wakeupsEnqueuedAt?: Date | null;
+    };
+    reopenRequested: boolean;
+    interruptRequested: boolean;
+  }): Promise<{ ok: boolean }> {
+    const { req, res, issue, comment, reopenRequested, interruptRequested } = input;
+    const actor = getActorInfo(req);
+
+    // Wakeup context defaults (used when control effects were already completed
+    // by the original but the wakeups were not): the current issue, no reopen.
+    let currentIssue: IssueForCommentControl = issue;
+    let reopened = false;
+    let reopenFromStatus: string | null = null;
+    let interruptedRunId: string | null = null;
+
+    if (!comment.controlEffectsCompletedAt) {
+      if (!assertInterruptAuthorized(req, res, interruptRequested)) return { ok: false };
+      const control = await applyIssueCommentControlEffects({
+        req,
+        res,
+        issue,
+        actor,
+        reopenRequested,
+        interruptRequested,
+      });
+      if (!control.ok) return { ok: false };
+      currentIssue = control.currentIssue;
+      reopened = control.reopened;
+      reopenFromStatus = control.reopenFromStatus;
+      interruptedRunId = control.interruptedRunId;
+      await svc.markCommentControlEffectsCompleted(comment.id);
+    }
+
+    if (!comment.wakeupsEnqueuedAt) {
+      void enqueueIssueCommentWakeups({
+        issue,
+        currentIssue,
+        comment,
+        body: comment.body,
+        actor,
+        reopened,
+        reopenFromStatus,
+        interruptedRunId,
+      });
+      await svc.markCommentWakeupsEnqueued(comment.id);
+    }
+
+    return { ok: true };
+  }
+
   async function normalizeIssueIdentifier(rawId: string): Promise<string> {
     if (/^[A-Z]+-\d+$/i.test(rawId)) {
       const issue = await svc.getByIdentifier(rawId);
@@ -1608,25 +1676,19 @@ export function issueRoutes(db: Db, storage: StorageService) {
     if (clientSubmissionId) {
       const replay = await svc.getCommentByClientSubmissionId(issue.companyId, id, clientSubmissionId);
       if (replay) {
-        // Deterministic completion tracking (PR #291 round-6 #2): if the marker
-        // is SET, the original send's control effects truly completed — skip
-        // them so a stale retry can't re-reopen a task the founder legitimately
-        // re-closed. If NULL, they never finished → RESUME them, then stamp.
-        if (!(replay as { controlEffectsCompletedAt?: Date | null }).controlEffectsCompletedAt) {
-          const replayActor = getActorInfo(req);
-          const replayInterrupt = req.body.interrupt === true;
-          if (!assertInterruptAuthorized(req, res, replayInterrupt)) return;
-          const control = await applyIssueCommentControlEffects({
-            req,
-            res,
-            issue,
-            actor: replayActor,
-            reopenRequested: req.body.reopen === true,
-            interruptRequested: replayInterrupt,
-          });
-          if (!control.ok) return;
-          await svc.markCommentControlEffectsCompleted(replay.id);
-        }
+        // Resume any control effects AND wakeups the original send did not
+        // complete — each gated by its own marker (PR #291 round-6 #2 + round-7
+        // #2/#3). A completed effect is skipped; a missing one is finished so a
+        // reopen/interrupt or an @mention is never lost.
+        const resumed = await resumeIncompleteCommentSideEffects({
+          req,
+          res,
+          issue,
+          comment: replay,
+          reopenRequested: req.body.reopen === true,
+          interruptRequested: req.body.interrupt === true,
+        });
+        if (!resumed.ok) return;
         res.status(200).json(replay);
         return;
       }
@@ -1644,11 +1706,20 @@ export function issueRoutes(db: Db, storage: StorageService) {
       clientSubmissionId,
     });
 
-    // Lost the insert race (both same-key requests passed the pre-check): return
-    // the winner's comment WITHOUT applying control effects (reopen/interrupt),
-    // logging activity, or firing wakeups — the winner already did (PR #291
-    // round-3/4 review). Only the insert winner mutates.
+    // Lost the insert race (both same-key requests passed the pre-check): the
+    // winner created the comment. RESUME any of its side effects that are not yet
+    // marked complete (round-7 #2/#3) — the winner may have crashed before
+    // reopening or waking — then return without re-firing completed ones.
     if ((comment as { replayed?: boolean }).replayed) {
+      const resumed = await resumeIncompleteCommentSideEffects({
+        req,
+        res,
+        issue,
+        comment: comment as typeof comment & { body: string },
+        reopenRequested: req.body.reopen === true,
+        interruptRequested,
+      });
+      if (!resumed.ok) return;
       res.status(200).json(comment);
       return;
     }
@@ -1697,6 +1768,9 @@ export function issueRoutes(db: Db, storage: StorageService) {
       reopenFromStatus,
       interruptedRunId,
     });
+    // Stamp wakeup completion (round-7 #3) so a retry skips them — the enqueue
+    // step was reached, so a replay must not re-wake.
+    if (clientSubmissionId) await svc.markCommentWakeupsEnqueued(comment.id);
 
     res.status(201).json(comment);
   });
@@ -1807,25 +1881,17 @@ export function issueRoutes(db: Db, storage: StorageService) {
     if (clientSubmissionId) {
       const replay = await svc.getCommentByClientSubmissionId(issue.companyId, id, clientSubmissionId);
       if (replay) {
-        // Deterministic completion tracking (PR #291 round-6 #2): SET marker →
-        // the original send's control effects completed, skip them; NULL → they
-        // never finished, RESUME then stamp. Prevents a stale retry re-reopening
-        // a task the founder legitimately re-closed.
-        if (!(replay as { controlEffectsCompletedAt?: Date | null }).controlEffectsCompletedAt) {
-          const replayActor = getActorInfo(req);
-          const replayInterrupt = parseMultipartBoolean(req.body?.interrupt);
-          if (!assertInterruptAuthorized(req, res, replayInterrupt)) return;
-          const control = await applyIssueCommentControlEffects({
-            req,
-            res,
-            issue,
-            actor: replayActor,
-            reopenRequested: parseMultipartBoolean(req.body?.reopen),
-            interruptRequested: replayInterrupt,
-          });
-          if (!control.ok) return;
-          await svc.markCommentControlEffectsCompleted(replay.id);
-        }
+        // Resume any control effects AND wakeups the original send did not
+        // complete — each gated by its own marker (round-6 #2 + round-7 #2/#3).
+        const resumed = await resumeIncompleteCommentSideEffects({
+          req,
+          res,
+          issue,
+          comment: replay,
+          reopenRequested: parseMultipartBoolean(req.body?.reopen),
+          interruptRequested: parseMultipartBoolean(req.body?.interrupt),
+        });
+        if (!resumed.ok) return;
         await respondWithReplayedComment(replay);
         return;
       }
@@ -1853,11 +1919,20 @@ export function issueRoutes(db: Db, storage: StorageService) {
     });
 
     // Lost the insert race (both same-key requests passed the pre-check): the
-    // winner already created + linked the comment. Complete missing attachments
-    // through the serialized path and return WITHOUT applying control effects
-    // (reopen/interrupt), re-storing files, or re-firing activity/wakeups
-    // (PR #291 round-3/4 review). Only the insert winner mutates.
+    // winner created + linked the comment. RESUME any of its side effects not yet
+    // marked complete (round-7 #2/#3) — the winner may have crashed before
+    // reopening or waking — complete missing attachments through the serialized
+    // path, and return without re-firing completed effects (round-3/4 review).
     if ((comment as { replayed?: boolean }).replayed) {
+      const resumed = await resumeIncompleteCommentSideEffects({
+        req,
+        res,
+        issue,
+        comment: comment as typeof comment & { body: string },
+        reopenRequested: parseMultipartBoolean(req.body?.reopen),
+        interruptRequested,
+      });
+      if (!resumed.ok) return;
       await respondWithReplayedComment(comment);
       return;
     }
@@ -1951,6 +2026,8 @@ export function issueRoutes(db: Db, storage: StorageService) {
       interruptedRunId,
       attachments,
     });
+    // Stamp wakeup completion (round-7 #3) so a retry skips them.
+    if (clientSubmissionId) await svc.markCommentWakeupsEnqueued(comment.id);
 
     res.status(201).json({
       comment,

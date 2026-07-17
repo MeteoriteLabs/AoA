@@ -2494,6 +2494,17 @@ export function issueService(db: Db) {
         .where(eq(issueComments.id, commentId));
     },
 
+    // Stamp the comment's @mention/assignee wakeups as enqueued (PR #291 round-7
+    // #3). Called once the insert winner reaches the wakeup step; the replay /
+    // race-loser paths resume wakeups only when this is null (so a mentioned
+    // agent is never left un-woken, and a completed wakeup is never double-fired).
+    markCommentWakeupsEnqueued: async (commentId: string) => {
+      await db
+        .update(issueComments)
+        .set({ wakeupsEnqueuedAt: new Date() })
+        .where(eq(issueComments.id, commentId));
+    },
+
     createAttachment: async (input: {
       issueId: string;
       issueCommentId?: string | null;
