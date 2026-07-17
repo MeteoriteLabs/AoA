@@ -31,7 +31,10 @@ vi.mock("@armyofagents/adapter-claude-local/server", () => ({
   runClaudeLoginStreaming: vi.fn(),
   resolveClaudeConfigHome: vi.fn(() => "/home/.claude"),
 }));
-vi.mock("../utils/terminate-process.js", () => ({ terminateByPid: vi.fn() }));
+vi.mock("../utils/terminate-process.js", () => ({
+  terminateByPid: vi.fn(),
+  terminateByPidIfMatches: vi.fn(),
+}));
 
 import { drizzleChallengeStore } from "../services/commander-login-runtime.js";
 import type { ChallengeRow } from "../services/commander-login.js";

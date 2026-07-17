@@ -82,6 +82,10 @@ function makeService(overrides: Partial<Parameters<typeof createCommanderLoginSe
     terminate,
     newId: () => `ch-${++seq}`,
     env: () => ({}) as never,
+    // No-op completion-deadline seam by default: the background completion never
+    // schedules a REAL timer, so tests that don't exercise the deadline leave no
+    // open handle. Deadline-specific tests override with a controllable fake.
+    setDeadlineTimer: () => () => {},
     ...overrides,
   });
   return { svc, store, terminate };
@@ -389,15 +393,237 @@ describe("commander-login service (Plan 3 T4)", () => {
     await new Promise((r) => setImmediate(r)); // flush — would surface as unhandledRejection otherwise
   });
 
-  it("(d) cancel → terminateByPid + record removed", async () => {
-    const f = fakeRun(333, 333);
-    const { svc, store, terminate } = makeService({ runLogin: () => f.run });
+  // ── Completion DEADLINE after URL discovery (Codex round-7 P2) ──
+  // Once the URL is surfaced the child normally finalizes from its own exit. But
+  // if the user never completes the browser flow (or closes the tab before the
+  // fire-and-forget cancel lands), the CLI can wait INDEFINITELY — the row would
+  // sit `pending` forever while the child keeps the codex :1455 callback port and
+  // the global (provider, authHome) slot, 409-ing every other company. A
+  // server-side deadline races the exit and, on elapse, kills the LIVE child and
+  // finalizes the row `timeout`. The injected `setDeadlineTimer` seam makes this
+  // deterministic (no real timers, no open handle).
+
+  it("(h) DEADLINE elapses with no exit → LIVE child terminated + row finalized `timeout`", async () => {
+    let fire: (() => void) | null = null;
+    const f = fakeRun(321, 321);
+    const { svc, store } = makeService({
+      runLogin: () => f.run,
+      setDeadlineTimer: (fn) => {
+        fire = fn;
+        return () => {};
+      },
+    });
     const startP = svc.startChallenge({ companyId: "c1", provider: "openai", startedByUserId: "u1" });
     f.resolveUrl("https://chatgpt.com/device?code=A");
-    const { challengeId } = await startP;
-    await svc.cancel("c1", challengeId);
-    expect(terminate).toHaveBeenCalledWith(333, 333);
-    expect(store.rows.has(challengeId)).toBe(false);
+    const { challengeId, completion } = await startP;
+    // The child neither exits nor is cancelled → the deadline fires.
+    expect(fire).toBeTypeOf("function");
+    fire!();
+    await completion;
+    // Kills via the LIVE in-memory handle (this process's own child → unconditional
+    // is correct), NOT the persisted-pid `deps.terminate`. The live-handle kill +
+    // `timeout` status are the deadline signature (see (h') for the
+    // timer-cleared-on-normal-exit assertion).
+    expect(f.handle.terminate).toHaveBeenCalledTimes(1);
+    expect(store.rows.get(challengeId)?.status).toBe("timeout");
+  });
+
+  it("(h') normal exit BEFORE the deadline → completed + timer cleared, and a LATE deadline fire cannot overwrite", async () => {
+    let fire: (() => void) | null = null;
+    let cancelled = false;
+    const f = fakeRun(322, 322);
+    const { svc, store } = makeService({
+      runLogin: () => f.run,
+      credentialPresent: async () => true,
+      setDeadlineTimer: (fn) => {
+        fire = fn;
+        return () => {
+          cancelled = true;
+        };
+      },
+    });
+    const startP = svc.startChallenge({ companyId: "c1", provider: "openai", startedByUserId: "u1" });
+    f.resolveUrl("https://chatgpt.com/device?code=A");
+    const { challengeId, completion } = await startP;
+    f.resolveExit(0);
+    await completion;
+    expect(store.rows.get(challengeId)?.status).toBe("completed");
+    expect(cancelled).toBe(true); // deadline timer cleared on normal completion (no leak)
+    expect(f.handle.terminate).not.toHaveBeenCalled(); // no deadline kill on the live child
+    // First-wins: a late deadline fire is ignored — must NOT overwrite `completed`.
+    fire?.();
+    await new Promise((r) => setImmediate(r));
+    expect(store.rows.get(challengeId)?.status).toBe("completed");
+  });
+
+  it("(h'') normal exit code≠0 BEFORE the deadline → failed + timer cleared (deadline never fires)", async () => {
+    let fire: (() => void) | null = null;
+    let cancelled = false;
+    const f = fakeRun(323, 323);
+    const { svc, store } = makeService({
+      runLogin: () => f.run,
+      credentialPresent: async () => false,
+      setDeadlineTimer: (fn) => {
+        fire = fn;
+        return () => {
+          cancelled = true;
+        };
+      },
+    });
+    const startP = svc.startChallenge({ companyId: "c1", provider: "openai", startedByUserId: "u1" });
+    f.resolveUrl("https://chatgpt.com/device?code=A");
+    const { challengeId, completion } = await startP;
+    f.resolveExit(1);
+    await completion;
+    expect(store.rows.get(challengeId)?.status).toBe("failed");
+    expect(cancelled).toBe(true);
+    expect(f.handle.terminate).not.toHaveBeenCalled();
+  });
+
+  // ── cancel identity-verification (Codex round-7 P1) ──
+  // The UI fires cancel-on-unmount (VerifyStep) with a challengeId the BROWSER
+  // retains across a server restart / after the CLI already exited, so the row's
+  // persisted pid can belong to an UNRELATED, reused-pid process by cancel time.
+  // `cancel` therefore mirrors reapOrphans/onExisting: it signals a kill ONLY for
+  // a still-`pending` row AND routes it through the SAME start-time identity check
+  // (no more unconditional 2-arg kill). It always removes the row (releases slot).
+  function cancelWiredService(opts: {
+    queryStartTime: (pid: number) => Date | null;
+    kill: (target: number, signal: NodeJS.Signals | number) => void;
+  }) {
+    const store = memStore();
+    const svc = createCommanderLoginService({
+      store,
+      resolveAuthHome: () => "/home/.codex",
+      runLogin: () => fakeRun().run,
+      credentialPresent: async () => true,
+      terminate: (pid, pgid, expected) =>
+        void terminateByPidIfMatches(pid, pgid, expected, {
+          platform: "linux",
+          kill: opts.kill,
+          queryStartTime: opts.queryStartTime,
+        }),
+      newId: () => "ch-x",
+      env: () => ({}) as never,
+      setDeadlineTimer: () => () => {},
+    });
+    return { svc, store };
+  }
+
+  function seedCancelRow(
+    store: ReturnType<typeof memStore>,
+    id: string,
+    startedAt: Date,
+    status: ChallengeRow["status"],
+    pid: number | null = 333,
+  ) {
+    store.rows.set(id, {
+      id,
+      companyId: "c1",
+      provider: "openai",
+      authHome: "/home/.codex",
+      loginUrl: "https://chatgpt.com/device?code=A",
+      pid,
+      pgid: pid,
+      status,
+      startedByUserId: "u1",
+      startedAt,
+    });
+  }
+
+  it("(d) cancel of a PENDING row with a GENUINE live child kills it (identity-verified) + removes the row", async () => {
+    const startedAt = new Date("2026-07-17T10:00:00.000Z");
+    const kill = vi.fn();
+    const { svc, store } = cancelWiredService({
+      // Same-session child: start time within tolerance → genuinely ours → kill.
+      queryStartTime: () => new Date(startedAt.getTime() + 200),
+      kill,
+    });
+    seedCancelRow(store, "live", startedAt, "pending", 333);
+    await svc.cancel("c1", "live");
+    expect(kill).toHaveBeenCalledWith(-333, "SIGKILL"); // legitimate live cancel still kills
+    expect(store.rows.has("live")).toBe(false); // slot released
+  });
+
+  it("(d2) cancel of a PENDING row whose pid was REUSED does NOT kill but still removes the row", async () => {
+    const startedAt = new Date("2026-07-17T10:00:00.000Z");
+    const kill = vi.fn();
+    const { svc, store } = cancelWiredService({
+      // Post-restart the pid maps to a process started 60s later → reused → skip.
+      queryStartTime: () => new Date(startedAt.getTime() + 60_000),
+      kill,
+    });
+    seedCancelRow(store, "stale", startedAt, "pending", 333);
+    await svc.cancel("c1", "stale");
+    expect(kill).not.toHaveBeenCalled(); // the exact PID-reuse harm avoided
+    expect(store.rows.has("stale")).toBe(false); // slot still released
+  });
+
+  it("(d3) cancel of a TERMINAL row (completed/failed) does NOT terminate at all but still removes the row", async () => {
+    const { svc, store, terminate } = makeService();
+    // A completed row's pid is no longer ours — the CLI exited; the OS may have
+    // reused the pid. cancel must not signal ANY kill (not even the verified one).
+    seedCancelRow(store, "done", new Date(0), "completed", 4242);
+    await svc.cancel("c1", "done");
+    expect(terminate).not.toHaveBeenCalled();
+    expect(store.rows.has("done")).toBe(false);
+
+    seedCancelRow(store, "bad", new Date(0), "failed", 4243);
+    await svc.cancel("c1", "bad");
+    expect(terminate).not.toHaveBeenCalled();
+    expect(store.rows.has("bad")).toBe(false);
+  });
+
+  it("(d-gen) NO persisted-pid kill stays unconditional: cancel + reaper + takeover ALL pass identity `startedAt`", async () => {
+    // Generalization guard: after the round-7 fix, every terminate of a PERSISTED
+    // pid (takeover in onExisting, cancel, reaper) forwards `{ startedAt }`. Only
+    // the LIVE in-memory `run.handle.terminate()` (this process's own child) may
+    // stay bare — and it never routes through `deps.terminate`.
+    const terminate = vi.fn();
+    const store = memStore();
+    const f1 = fakeRun(511, 511);
+    const f2 = fakeRun(512, 512);
+    let call = 0;
+    let seq = 0;
+    const svc = createCommanderLoginService({
+      store,
+      resolveAuthHome: () => "/home/.codex",
+      runLogin: () => (call++ === 0 ? f1.run : f2.run),
+      credentialPresent: async () => true,
+      terminate,
+      newId: () => `ch-${++seq}`,
+      env: () => ({}) as never,
+      setDeadlineTimer: () => () => {},
+    });
+    // 1) takeover (onExisting): same-company restart kills the prior child.
+    const p1 = svc.startChallenge({ companyId: "c1", provider: "openai", startedByUserId: "u1" });
+    f1.resolveUrl("https://chatgpt.com/device?code=A");
+    await p1;
+    const p2 = svc.startChallenge({ companyId: "c1", provider: "openai", startedByUserId: "u1" });
+    f2.resolveUrl("https://chatgpt.com/device?code=B");
+    const second = await p2;
+    // 2) cancel of the (pending) survivor.
+    await svc.cancel("c1", second.challengeId);
+    // 3) reaper of a durable pending orphan from another company.
+    store.rows.set("orphan", {
+      id: "orphan",
+      companyId: "c9",
+      provider: "openai",
+      authHome: "/home/.codex",
+      loginUrl: null,
+      pid: 909,
+      pgid: 909,
+      status: "pending",
+      startedByUserId: "u9",
+      startedAt: new Date("2026-07-17T09:00:00.000Z"),
+    });
+    await svc.reapOrphans();
+    // Three persisted-pid kills fired; EVERY one carried an identity object — none
+    // was the old unconditional 2-arg form.
+    expect(terminate.mock.calls.length).toBeGreaterThanOrEqual(3);
+    for (const args of terminate.mock.calls) {
+      expect(args[2]).toEqual({ startedAt: expect.any(Date) });
+    }
   });
 
   it("(d') CROSS-TENANT cancel is a silent no-op — child NOT terminated, row kept (Codex P1 #1)", async () => {

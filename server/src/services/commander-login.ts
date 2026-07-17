@@ -78,17 +78,33 @@ export interface CommanderLoginServiceDeps {
   /** Provider-specific completion evidence (codex auth.json / claude credential file). */
   credentialPresent: (provider: CommanderLoginProvider, authHome: string) => Promise<boolean>;
   /**
-   * Kill a login child by pid/pgid. Only `cancel` (a founder cancelling an
-   * in-flight login in THIS process session) calls it WITHOUT `expected` →
-   * unconditional kill, because the child was spawned by this process and its
-   * pid can't have been reused. Both `reapOrphans` (BOOT, killing DURABLE rows
-   * from a PRIOR process) AND the single-flight takeover in `startChallenge`'s
-   * `onExisting` (the existing row may likewise be a DURABLE prior-process row,
-   * because the boot reap runs un-awaited) pass `expected.startedAt` → the impl
-   * verifies the target's OS start time first, so a reused pid is NOT killed
-   * (Codex P1, round 6 + follow-on).
+   * Kill a login child by its PERSISTED pid/pgid. `expected.startedAt` is
+   * REQUIRED — every caller of this seam kills a pid that came from a DB row,
+   * which after a crash + restart may have been REUSED by an unrelated process,
+   * so the impl MUST verify the target's OS start time against `startedAt` before
+   * signalling (a reused pid is spared). All three persisted-pid paths route
+   * through here identity-verified:
+   *   - `reapOrphans` (BOOT, killing DURABLE rows from a PRIOR process),
+   *   - the single-flight takeover in `startChallenge`'s `onExisting` (the
+   *     existing row may be a DURABLE prior-process row — the boot reap runs
+   *     un-awaited, so a takeover can beat it),
+   *   - `cancel` (the UI fires cancel-on-unmount with a challengeId the BROWSER
+   *     retains across a server restart / after the CLI already exited, so the
+   *     row's pid may likewise be reused — Codex round-7 P1).
+   * The ONLY kills that stay UNCONDITIONAL are those using a LIVE in-memory child
+   * handle from the current process (`run.handle.terminate()`), which is not
+   * PID-reuse-prone and never routes through this seam (Codex P1, round 6 →
+   * round 7).
    */
-  terminate: (pid: number, pgid: number | null, expected?: { startedAt: Date }) => void;
+  terminate: (pid: number, pgid: number | null, expected: { startedAt: Date }) => void;
+  /**
+   * Schedule the post-URL completion deadline (Codex round-7 P2) and return a
+   * canceller invoked when the child finalizes FIRST. Injected so tests drive the
+   * deadline deterministically without real timers or a leaked open handle; the
+   * default (see `defaultDeadlineTimer`) uses an UNREF'd `setTimeout` so a pending
+   * deadline never keeps the process (or a test runner) alive.
+   */
+  setDeadlineTimer?: (fn: () => void, ms: number) => () => void;
   newId: () => string;
   env: () => NodeJS.ProcessEnv;
   now?: () => Date;
@@ -125,8 +141,33 @@ export interface CommanderLoginService {
   reapOrphans(): Promise<void>;
 }
 
+/**
+ * How long the lifecycle waits, AFTER the verification URL is surfaced, for the
+ * login child to finalize before it is force-terminated and the row is marked
+ * `timeout` (Codex round-7 P2). Chosen a few minutes: long enough for a real
+ * device-code flow (open browser → sign in → possibly 2FA) to complete without
+ * being cut off, short enough to reliably free the codex :1455 callback port and
+ * the global (provider, authHome) single-flight slot when a child hangs without
+ * ever exiting. If the CLI honors the device-code's own expiry it exits on its
+ * own (→ completed/failed) well before this backstop; the deadline only fires
+ * when the child neither exits nor is cancelled within the window.
+ */
+export const LOGIN_COMPLETION_DEADLINE_MS = 5 * 60_000;
+
+/**
+ * Default completion-deadline timer: an UNREF'd `setTimeout` so a pending login
+ * deadline never keeps the process (or a test runner) alive, plus a canceller
+ * that clears it. Overridable via `deps.setDeadlineTimer` for deterministic tests.
+ */
+function defaultDeadlineTimer(fn: () => void, ms: number): () => void {
+  const handle = setTimeout(fn, ms);
+  (handle as { unref?: () => void }).unref?.();
+  return () => clearTimeout(handle);
+}
+
 export function createCommanderLoginService(deps: CommanderLoginServiceDeps): CommanderLoginService {
   const now = deps.now ?? (() => new Date());
+  const setDeadlineTimer = deps.setDeadlineTimer ?? defaultDeadlineTimer;
 
   async function startChallenge(args: {
     companyId: string;
@@ -244,15 +285,67 @@ export function createCommanderLoginService(deps: CommanderLoginServiceDeps): Co
     }
     await deps.store.update(id, { loginUrl });
 
-    // Finalize asynchronously from the child's exit + credential evidence.
-    const completion = run.exitPromise
-      .then(async (code) => {
-        const ok = code === 0 && (await deps.credentialPresent(args.provider, authHome));
-        await deps.store.update(id, { status: ok ? "completed" : "failed" });
-      })
-      .catch(async () => {
-        await deps.store.update(id, { status: "failed" });
+    // Finalize asynchronously from the child's exit + credential evidence, BUT
+    // bound the wait with a completion deadline (Codex round-7 P2). After the URL
+    // is surfaced the child normally finalizes from its own exit (exit 0 +
+    // credential → completed; else failed). If the user never completes the
+    // browser flow — or closes the tab before the fire-and-forget cancel reaches
+    // the server — the CLI can wait INDEFINITELY: the exit never fires, the
+    // URL-discovery timer is already cleared, and the row would sit `pending`
+    // forever while the child keeps the codex :1455 callback port and the global
+    // (provider, authHome) slot → every OTHER company 409s until a restart. So
+    // race the exit against a server-side deadline and, on elapse, kill the LIVE
+    // child (this process's own handle → an unconditional terminate is correct
+    // here; it is NOT a persisted, possibly-reused pid) and finalize `timeout`.
+    const completion = (async () => {
+      let settled = false;
+      let cancelDeadline: (() => void) | null = null;
+
+      // First-wins finalizer: the child's exit and the deadline can land ~together
+      // (exit resolving as the timer fires). Only the FIRST outcome finalizes — we
+      // never overwrite a completed/failed with `timeout` (or vice-versa) — and we
+      // always clear the pending deadline timer so no timer/open-handle leaks past
+      // completion.
+      const finalize = async (status: ChallengeStatus): Promise<void> => {
+        if (settled) return;
+        settled = true;
+        cancelDeadline?.();
+        cancelDeadline = null;
+        await deps.store.update(id, { status });
+      };
+
+      const deadlineHit = new Promise<"deadline">((resolve) => {
+        cancelDeadline = setDeadlineTimer(() => resolve("deadline"), LOGIN_COMPLETION_DEADLINE_MS);
       });
+      // A rejection handler is attached here, so the raw `exitPromise` never
+      // becomes an unhandled rejection even when the deadline wins the race and we
+      // stop awaiting the exit.
+      const exited = run.exitPromise.then(
+        (code) => ({ kind: "exit" as const, code }),
+        () => ({ kind: "exit-error" as const }),
+      );
+
+      const outcome = await Promise.race([exited, deadlineHit]);
+      if (outcome === "deadline") {
+        try {
+          run.handle.terminate();
+        } catch {
+          /* best-effort — the row is finalized regardless */
+        }
+        await finalize("timeout");
+        return;
+      }
+      if (outcome.kind === "exit-error") {
+        await finalize("failed");
+        return;
+      }
+      const ok = outcome.code === 0 && (await deps.credentialPresent(args.provider, authHome));
+      await finalize(ok ? "completed" : "failed");
+    })().catch(() => {
+      // Completion is fire-and-forget from the route's perspective; store writes
+      // are best-effort, so a failed finalize must never surface as an unhandled
+      // rejection.
+    });
 
     return { challengeId: id, loginUrl, completion };
   }
@@ -273,7 +366,20 @@ export function createCommanderLoginService(deps: CommanderLoginServiceDeps): Co
     // Cross-tenant cancel is a silent no-op — as if absent (no distinct error
     // that would leak existence), and NEVER terminate another company's child.
     if (!row || row.companyId !== companyId) return;
-    if (row.pid != null) deps.terminate(row.pid, row.pgid);
+    // Identity-verified cancel (Codex round-7 P1). The UI fires cancel-on-unmount
+    // (VerifyStep) with a challengeId the BROWSER retains across a server restart /
+    // after the CLI already exited, so this row's persisted pid can belong to an
+    // UNRELATED, reused-pid process by now. Two guards, mirroring reapOrphans /
+    // onExisting so NO persisted-pid kill anywhere stays unconditional:
+    //   (a) only a still-`pending` row's child is ours to signal — a terminal
+    //       (completed/failed/timeout) row's pid is no longer ours; never kill it.
+    //   (b) even a pending row routes through the SAME start-time identity check —
+    //       a genuine same-session live child (start ≤ startedAt + tolerance) is
+    //       still killed (no regression to legitimate live cancel), a reused pid is
+    //       spared.
+    // Release the slot (remove the row) regardless of whether the kill fired.
+    if (row.status === "pending" && row.pid != null)
+      deps.terminate(row.pid, row.pgid, { startedAt: row.startedAt });
     await deps.store.remove(id);
   }
 

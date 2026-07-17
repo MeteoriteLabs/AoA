@@ -6,7 +6,7 @@ import { commanderLoginChallenges } from "@armyofagents/db";
 import { and, eq, sql } from "drizzle-orm";
 import { runCodexLogin, resolveSharedCodexHomeDir } from "@armyofagents/adapter-codex-local/server";
 import { runClaudeLoginStreaming, resolveClaudeConfigHome } from "@armyofagents/adapter-claude-local/server";
-import { terminateByPid, terminateByPidIfMatches } from "../utils/terminate-process.js";
+import { terminateByPidIfMatches } from "../utils/terminate-process.js";
 import {
   createCommanderLoginService,
   type ChallengeRow,
@@ -139,16 +139,15 @@ export function buildCommanderLoginService(db: Db): CommanderLoginService {
       const stat = await fs.stat(credentialFile(provider, authHome)).catch(() => null);
       return Boolean(stat?.isFile());
     },
-    // LIVE cancel (no `expected`) kills unconditionally — the child was spawned
-    // by this process, so its pid can't have been reused. The BOOT reaper AND
-    // the single-flight takeover (`onExisting`) pass `expected.startedAt` →
-    // identity-verified terminate that refuses to kill a reused pid (Codex P1,
-    // round 6 + follow-on: a durable prior-process row can be taken over before
-    // the un-awaited boot reap clears it).
-    terminate: (pid, pgid, expected) =>
-      expected
-        ? void terminateByPidIfMatches(pid, pgid, expected)
-        : terminateByPid(pid, pgid),
+    // Persisted-pid kill — ALWAYS identity-verified (Codex P1, round 6 →
+    // round 7). Every caller (BOOT reaper, single-flight takeover in `onExisting`,
+    // AND `cancel`) kills a pid read from a DB row that may have been REUSED after
+    // a crash + restart, so `terminateByPidIfMatches` checks the target's OS start
+    // time against the recorded `startedAt` and refuses to kill a reused pid. The
+    // only UNCONDITIONAL kills are the LIVE in-memory `run.handle.terminate()`
+    // calls in the service (this process's own child — not PID-reuse-prone), which
+    // never route through this seam.
+    terminate: (pid, pgid, expected) => void terminateByPidIfMatches(pid, pgid, expected),
     newId: () => randomUUID(),
     env: () => process.env,
   });

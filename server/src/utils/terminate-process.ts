@@ -17,13 +17,17 @@ import { spawnSync } from "node:child_process";
  * The `platform`/`kill`/`runTaskkill` seams exist so the branch selection is
  * unit-testable without spawning anything.
  *
- * PID-REUSE (Codex P1, round 6): `terminateByPid` kills UNCONDITIONALLY, which
- * is correct for the LIVE `cancel` path (the child was spawned by THIS process,
- * so its pid can't have been reused). It is NOT safe for the BOOT `reapOrphans`
- * path: a pid persisted by a PRIOR process may have been reused by an unrelated
- * process after a crash + restart, and killing it hits an arbitrary victim. The
- * reaper must go through {@link terminateByPidIfMatches}, which verifies the
- * target's OS start time against the recorded `startedAt` before signaling.
+ * PID-REUSE (Codex P1, round 6 → round 7): `terminateByPid` kills
+ * UNCONDITIONALLY, so it is safe ONLY for a pid we KNOW is live in the current
+ * process. Every kill of a PERSISTED pid — the BOOT `reapOrphans`, the
+ * single-flight takeover in `onExisting`, AND `cancel` — must go through
+ * {@link terminateByPidIfMatches}, because a pid persisted to a DB row may have
+ * been reused by an unrelated process after a crash + restart, and killing it
+ * would hit an arbitrary victim. `terminateByPidIfMatches` verifies the target's
+ * OS start time against the recorded `startedAt` before signalling. In the
+ * commander-login lifecycle the only remaining UNCONDITIONAL kills are the LIVE
+ * in-memory `run.handle.terminate()` handles (this process's own child), which
+ * do not use this pid-based primitive at all.
  */
 export interface TerminateByPidDeps {
   platform?: NodeJS.Platform;
