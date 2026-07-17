@@ -61,6 +61,7 @@ const mockIssueService = vi.hoisted(() => ({
   resolveAgentKinds: vi.fn(),
   enqueueAoaMentionWakeup: vi.fn(),
   getCommentByClientSubmissionId: vi.fn(),
+  markCommentControlEffectsCompleted: vi.fn(),
 }));
 
 const mockAccessService = vi.hoisted(() => ({
@@ -171,6 +172,7 @@ beforeEach(() => {
   mockIssueService.enqueueAoaMentionWakeup.mockResolvedValue(undefined);
   // Default: no prior submission with this key → the create path runs.
   mockIssueService.getCommentByClientSubmissionId.mockResolvedValue(null);
+  mockIssueService.markCommentControlEffectsCompleted.mockResolvedValue(undefined);
   mockIssueService.addComment.mockResolvedValue({
     id: "comment-1",
     issueId,
@@ -829,14 +831,17 @@ describe("POST /issues/:id/comments — idempotent retry (clientSubmissionId)", 
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
   });
 
-  it("resumes an incomplete reopen on the replay fast-path when the task is STILL closed (round-5 #2)", async () => {
+  it("resumes an incomplete reopen on the replay fast-path when the completion marker is NULL (round-6 #2)", async () => {
     // The original send committed the comment but died before reopening the task
-    // (post-insert failure). The task is still closed. A same-key Retry hits the
-    // replay fast-path — which must RESUME the reopen, not skip it.
+    // (post-insert failure), so control_effects_completed_at is NULL. A same-key
+    // Retry hits the replay fast-path — which must RESUME the reopen, then stamp.
     const stillClosed = makeIssue({ status: "done" });
     mockIssueService.getById.mockResolvedValue(stillClosed);
     mockIssueService.update.mockResolvedValue(makeIssue({ status: "todo" }));
-    mockIssueService.getCommentByClientSubmissionId.mockResolvedValue(existingComment); // replay
+    mockIssueService.getCommentByClientSubmissionId.mockResolvedValue({
+      ...existingComment,
+      controlEffectsCompletedAt: null,
+    }); // replay, effects never completed
 
     const res = await request(createApp())
       .post(`/api/issues/${issueId}/comments`)
@@ -844,26 +849,33 @@ describe("POST /issues/:id/comments — idempotent retry (clientSubmissionId)", 
 
     expect(res.status).toBe(200);
     expect(res.body.id).toBe("comment-1");
-    // The reopen was resumed by the replay (state-gated: task was still closed).
+    // The reopen was resumed and the completion marker stamped.
     expect(mockIssueService.update).toHaveBeenCalledWith(issueId, { status: "todo" });
+    expect(mockIssueService.markCommentControlEffectsCompleted).toHaveBeenCalledWith("comment-1");
     // addComment is NOT called on the replay path (no duplicate comment).
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
-  it("does NOT re-reopen on the replay fast-path when the task is already open (idempotent no-op, round-5 #2)", async () => {
-    // Normal replay: the original send already reopened the task (now open). The
-    // replay re-runs the control effects but they are state-gated → no-op, so no
-    // duplicate svc.update / activity.
-    const alreadyOpen = makeIssue({ status: "todo" });
-    mockIssueService.getById.mockResolvedValue(alreadyOpen);
-    mockIssueService.getCommentByClientSubmissionId.mockResolvedValue(existingComment); // replay
+  it("does NOT re-reopen on the replay fast-path when the completion marker is SET, even if the task was re-closed (round-6 #2)", async () => {
+    // Deterministic: the original send's control effects completed
+    // (control_effects_completed_at SET). The founder later legitimately
+    // re-closed the task. A stale retry must NOT re-reopen it — the marker, not
+    // the current task state, decides.
+    const reClosed = makeIssue({ status: "done" });
+    mockIssueService.getById.mockResolvedValue(reClosed);
+    mockIssueService.getCommentByClientSubmissionId.mockResolvedValue({
+      ...existingComment,
+      controlEffectsCompletedAt: new Date("2026-07-17T00:00:00Z"),
+    }); // replay, effects already completed
 
     const res = await request(createApp())
       .post(`/api/issues/${issueId}/comments`)
       .send({ body: "Please inspect the logs", reopen: true, clientSubmissionId: submissionId });
 
     expect(res.status).toBe(200);
+    // Marker set → control effects skipped entirely; the re-closed task stays closed.
     expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.markCommentControlEffectsCompleted).not.toHaveBeenCalled();
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });

@@ -1,0 +1,1 @@
+ALTER TABLE "issue_comments" ADD COLUMN IF NOT EXISTS "control_effects_completed_at" timestamp with time zone;

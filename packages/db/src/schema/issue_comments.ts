@@ -24,6 +24,13 @@ export const issueComments = pgTable(
     // Client-generated idempotency key for user Sends. A retried Send replays the
     // original comment. Nullable: agent/system-authored comments carry no key.
     clientSubmissionId: text("client_submission_id"),
+    // Deterministic completion marker for the comment's control effects
+    // (reopen/interrupt) — PR #291 round-6 (#2). The comment commits BEFORE its
+    // control effects, so a post-insert failure leaves them incomplete. Set once
+    // the insert winner's applyIssueCommentControlEffects succeeds. On the replay
+    // fast-path: SET → effects are truly done, skip them (a stale retry can't
+    // re-reopen a task the founder legitimately re-closed); NULL → resume them.
+    controlEffectsCompletedAt: timestamp("control_effects_completed_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

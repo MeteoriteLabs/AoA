@@ -2484,6 +2484,16 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
     },
 
+    // Stamp the comment's control effects (reopen/interrupt) as complete
+    // (PR #291 round-6 #2). Called once the insert winner's control effects
+    // succeed; the replay fast-path uses the marker to skip vs resume them.
+    markCommentControlEffectsCompleted: async (commentId: string) => {
+      await db
+        .update(issueComments)
+        .set({ controlEffectsCompletedAt: new Date() })
+        .where(eq(issueComments.id, commentId));
+    },
+
     createAttachment: async (input: {
       issueId: string;
       issueCommentId?: string | null;

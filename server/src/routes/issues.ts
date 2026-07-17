@@ -1608,18 +1608,25 @@ export function issueRoutes(db: Db, storage: StorageService) {
     if (clientSubmissionId) {
       const replay = await svc.getCommentByClientSubmissionId(issue.companyId, id, clientSubmissionId);
       if (replay) {
-        const replayActor = getActorInfo(req);
-        const replayInterrupt = req.body.interrupt === true;
-        if (!assertInterruptAuthorized(req, res, replayInterrupt)) return;
-        const control = await applyIssueCommentControlEffects({
-          req,
-          res,
-          issue,
-          actor: replayActor,
-          reopenRequested: req.body.reopen === true,
-          interruptRequested: replayInterrupt,
-        });
-        if (!control.ok) return;
+        // Deterministic completion tracking (PR #291 round-6 #2): if the marker
+        // is SET, the original send's control effects truly completed — skip
+        // them so a stale retry can't re-reopen a task the founder legitimately
+        // re-closed. If NULL, they never finished → RESUME them, then stamp.
+        if (!(replay as { controlEffectsCompletedAt?: Date | null }).controlEffectsCompletedAt) {
+          const replayActor = getActorInfo(req);
+          const replayInterrupt = req.body.interrupt === true;
+          if (!assertInterruptAuthorized(req, res, replayInterrupt)) return;
+          const control = await applyIssueCommentControlEffects({
+            req,
+            res,
+            issue,
+            actor: replayActor,
+            reopenRequested: req.body.reopen === true,
+            interruptRequested: replayInterrupt,
+          });
+          if (!control.ok) return;
+          await svc.markCommentControlEffectsCompleted(replay.id);
+        }
         res.status(200).json(replay);
         return;
       }
@@ -1656,6 +1663,8 @@ export function issueRoutes(db: Db, storage: StorageService) {
       interruptRequested,
     });
     if (!control.ok) return;
+    // Stamp control-effects completion (round-6 #2) so a retry skips them.
+    if (clientSubmissionId) await svc.markCommentControlEffectsCompleted(comment.id);
     const { currentIssue, reopened, reopenFromStatus, interruptedRunId } = control;
 
     await logActivity(db, {
@@ -1798,21 +1807,25 @@ export function issueRoutes(db: Db, storage: StorageService) {
     if (clientSubmissionId) {
       const replay = await svc.getCommentByClientSubmissionId(issue.companyId, id, clientSubmissionId);
       if (replay) {
-        // Resume any control effects the original send may not have completed
-        // (PR #291 round-5 review): the comment commits before reopen/cancel, so
-        // a retry must finish them. Idempotent + state-gated → no-op once done.
-        const replayActor = getActorInfo(req);
-        const replayInterrupt = parseMultipartBoolean(req.body?.interrupt);
-        if (!assertInterruptAuthorized(req, res, replayInterrupt)) return;
-        const control = await applyIssueCommentControlEffects({
-          req,
-          res,
-          issue,
-          actor: replayActor,
-          reopenRequested: parseMultipartBoolean(req.body?.reopen),
-          interruptRequested: replayInterrupt,
-        });
-        if (!control.ok) return;
+        // Deterministic completion tracking (PR #291 round-6 #2): SET marker →
+        // the original send's control effects completed, skip them; NULL → they
+        // never finished, RESUME then stamp. Prevents a stale retry re-reopening
+        // a task the founder legitimately re-closed.
+        if (!(replay as { controlEffectsCompletedAt?: Date | null }).controlEffectsCompletedAt) {
+          const replayActor = getActorInfo(req);
+          const replayInterrupt = parseMultipartBoolean(req.body?.interrupt);
+          if (!assertInterruptAuthorized(req, res, replayInterrupt)) return;
+          const control = await applyIssueCommentControlEffects({
+            req,
+            res,
+            issue,
+            actor: replayActor,
+            reopenRequested: parseMultipartBoolean(req.body?.reopen),
+            interruptRequested: replayInterrupt,
+          });
+          if (!control.ok) return;
+          await svc.markCommentControlEffectsCompleted(replay.id);
+        }
         await respondWithReplayedComment(replay);
         return;
       }
@@ -1859,6 +1872,8 @@ export function issueRoutes(db: Db, storage: StorageService) {
       interruptRequested,
     });
     if (!control.ok) return;
+    // Stamp control-effects completion (round-6 #2) so a retry skips them.
+    if (clientSubmissionId) await svc.markCommentControlEffectsCompleted(comment.id);
     const { currentIssue, reopened, reopenFromStatus, interruptedRunId } = control;
 
     const attachments = [];
