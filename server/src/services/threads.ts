@@ -118,8 +118,11 @@ export function canViewThread(
 ): boolean {
   if (viewer.role === "founder") return true;
   if (thread.ownerUserId == null) {
-    // Unclaimed — only leads with scope can see it
-    return viewer.role === "team_lead" && viewer.hasScopeAccess;
+    // Unclaimed — leads with scope can see it, and so can explicit participants
+    // (humans invited in, and crew agents the orchestrator engaged — a fresh
+    // thread is unclaimed until someone takes ownership, and proactive crew
+    // discussion must work in exactly that state).
+    return (viewer.role === "team_lead" && viewer.hasScopeAccess) || viewer.isParticipant;
   }
   if (thread.visibility === "private") return viewer.isParticipant;
   // department / company: scope access OR participant
@@ -168,6 +171,76 @@ export function parseMentions(text: string): Array<{ raw: string; name: string }
     if (!seen.has(name)) {
       seen.add(name);
       results.push({ raw: `@${name}`, name });
+    }
+  }
+  return results;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Same @mention token shape parseMentions uses: `@` at start-of-string or after
+// whitespace, capturing the first word. `matchAll` gives us each token's INDEX so
+// resolution can be POSITION-aware (round-14 #3).
+const MENTION_TOKEN_RE = /(?:^|(?<=\s))@(\w+)/g;
+
+/**
+ * Multi-word-aware mention resolution for the discussion summon paths
+ * (PR #291 round-13 #2, round-14 #3).
+ *
+ * The naive `parseMentions` tokenizer (`\w+`) truncates a multi-word crew name
+ * such as `@Memory Keeper` to `Memory`, so the outbox worker / `processMentions`
+ * (which exact-matches `agents.name`) can never resolve it and the agent is
+ * never summoned — the Discussion composer picker inserts the FULL label.
+ *
+ * Resolution is POSITION-aware and longest-match-wins PER `@` occurrence
+ * (round-14 #3): at each mention token, if a multi-word company agent name
+ * matches starting at that exact `@` (with the round-9 #4 trailing boundary
+ * `(?![^\s@,!?.])` — so `@Memory Keepers` does NOT match `Memory Keeper`), the
+ * full name REPLACES the single-word token it consumed. So a company with BOTH a
+ * `Memory` and a `Memory Keeper` agent resolves `@Memory Keeper` to ONLY
+ * `Memory Keeper` (not also the prefix `Memory`), a standalone `@Memory` to
+ * `Memory`, and `@Memory Keeper and @Memory` to BOTH. Returns `{ raw, name }`
+ * with the resolved name so `processMentions`' exact `agents.name` /
+ * `authUsers.name` match works unchanged — no outbox schema change. Only org+aoa
+ * agents are considered (platform agents are not mentionable), as
+ * `findMentionedAgents` does.
+ */
+export async function resolveMentionTargets(
+  db: Db,
+  companyId: string,
+  text: string,
+): Promise<Array<{ raw: string; name: string }>> {
+  const tokens = [...text.matchAll(MENTION_TOKEN_RE)];
+  // No mention token → no multi-word name can match either (every full-name match
+  // begins at a `@Word` token), so skip the roster query entirely.
+  if (tokens.length === 0) return [];
+
+  const rows = await db
+    .select({ name: agents.name })
+    .from(agents)
+    .where(and(eq(agents.companyId, companyId), inArray(agents.kind, ["org", "aoa"])));
+  const multiWordNames = rows.map((r) => r.name).filter((name) => /\s/.test(name));
+
+  const results: Array<{ raw: string; name: string }> = [];
+  const seen = new Set<string>();
+  for (const token of tokens) {
+    const slice = text.slice(token.index ?? 0); // starts at this token's `@`
+    // Prefer the LONGEST multi-word agent name that matches at this `@` — the
+    // full-name match SUPPRESSES the shorter prefix token it consumed.
+    let matchedName: string | null = null;
+    for (const name of multiWordNames) {
+      const re = new RegExp(`^@${escapeRegExp(name)}(?![^\\s@,!?.])`, "i");
+      if (re.test(slice) && (!matchedName || name.length > matchedName.length)) {
+        matchedName = name;
+      }
+    }
+    const resolvedName = matchedName ?? token[1];
+    const key = resolvedName.toLowerCase();
+    if (!seen.has(key)) {
+      seen.add(key);
+      results.push({ raw: `@${resolvedName}`, name: resolvedName });
     }
   }
   return results;
@@ -328,7 +401,22 @@ export async function processMentions(
   }
 
   if (controllerParticipations.length > 0) {
-    await Promise.allSettled(controllerParticipations);
+    // Round-9 #2: a rejected crew participation must NOT resolve this call
+    // successfully — otherwise the mention-outbox worker marks the row done and
+    // never retries, silently dropping the summon. Await all (so successes still
+    // run), then re-surface any rejections so the caller (outbox worker) can
+    // retry. The outbox enqueues ONE row per mention (per agent), so a retry
+    // re-runs only the failed agent — successes are never re-summoned.
+    const settled = await Promise.allSettled(controllerParticipations);
+    const rejected = settled.filter(
+      (s): s is PromiseRejectedResult => s.status === "rejected",
+    );
+    if (rejected.length > 0) {
+      const reasons = rejected
+        .map((r) => (r.reason instanceof Error ? r.reason.message : String(r.reason)))
+        .join("; ");
+      throw new Error(`processMentions: ${rejected.length} participation(s) failed: ${reasons}`);
+    }
   }
 }
 
@@ -338,6 +426,107 @@ export interface Actor {
   userId: string;
   role: "founder" | "team_lead" | "team_member";
   isHuman: boolean;
+  principalType?: "user" | "agent";
+}
+
+type ThreadAccessRow = {
+  id: string;
+  scopeType: string | null;
+  scopeId: string | null;
+  ownerUserId: string | null;
+  visibility: string;
+};
+
+/** Canonical visibility assertion shared by thread reads and posting. */
+async function assertCanAccessThread(
+  db: Db,
+  companyId: string,
+  thread: ThreadAccessRow,
+  actor: Actor,
+): Promise<void> {
+  if (actor.role === "founder") return;
+
+  const principalType = actor.principalType ?? "user";
+  const participantRows = await db
+    .select({ id: threadParticipants.id })
+    .from(threadParticipants)
+    .where(
+      and(
+        eq(threadParticipants.threadId, thread.id),
+        eq(threadParticipants.principalType, principalType),
+        eq(threadParticipants.principalId, actor.userId),
+      ),
+    );
+  const isParticipant = participantRows.length > 0;
+
+  let hasScopeAccess = thread.scopeType == null;
+  if (!hasScopeAccess && thread.scopeId && principalType === "user") {
+    const roleRows = await db
+      .select({ id: userRoles.id })
+      .from(userRoles)
+      .where(
+        and(
+          eq(userRoles.companyId, companyId),
+          eq(userRoles.userId, actor.userId),
+          eq(userRoles.projectId, thread.scopeId),
+        ),
+      );
+    hasScopeAccess = roleRows.length > 0;
+  }
+
+  const ok = canViewThread(
+    {
+      ownerUserId: thread.ownerUserId,
+      visibility: thread.visibility as ThreadVisibility,
+    },
+    { role: actor.role, hasScopeAccess, isParticipant },
+  );
+  if (!ok) throw notFound("Thread not found");
+}
+
+/**
+ * Server-internal orchestration primitive: register a crew agent as a thread
+ * participant (idempotent). Called from the crew post chokepoints when the
+ * server itself engages an agent on a thread (controller turn, dispatcher
+ * summon) — the engagement IS the authorization, so no actor check here.
+ * Never expose this to externally reachable routes.
+ */
+export async function ensureAgentParticipant(
+  db: Db,
+  companyId: string,
+  threadId: string,
+  agentId: string,
+): Promise<void> {
+  await db
+    .insert(threadParticipants)
+    .values({ companyId, threadId, principalType: "agent", principalId: agentId, role: "member" })
+    .onConflictDoNothing();
+}
+
+/**
+ * Assert that an actor may post to a company-scoped thread. Hidden and
+ * cross-company threads deliberately return 404 to avoid leaking existence.
+ */
+export async function assertCanPostToThread(
+  db: Db,
+  companyId: string,
+  threadId: string,
+  actor: Actor,
+): Promise<void> {
+  const thread = await db
+    .select({
+      id: discussions.id,
+      scopeType: discussions.scopeType,
+      scopeId: discussions.scopeId,
+      ownerUserId: discussions.ownerUserId,
+      visibility: discussions.visibility,
+    })
+    .from(discussions)
+    .where(and(eq(discussions.id, threadId), eq(discussions.companyId, companyId)))
+    .then((rows) => rows[0] ?? null);
+
+  if (!thread) throw notFound("Thread not found");
+  await assertCanAccessThread(db, companyId, thread, actor);
 }
 
 // ── Service factory ───────────────────────────────────────────────────────────
@@ -351,53 +540,10 @@ export function threadService(db: Db) {
    */
   async function assertCanView(
     companyId: string,
-    thread: {
-      id: string;
-      scopeType: string | null;
-      scopeId: string | null;
-      ownerUserId: string | null;
-      visibility: string;
-    },
+    thread: ThreadAccessRow,
     actor: Actor,
   ): Promise<void> {
-    if (actor.role === "founder") return;
-
-    const participantRows = await db
-      .select({ id: threadParticipants.id })
-      .from(threadParticipants)
-      .where(
-        and(
-          eq(threadParticipants.threadId, thread.id),
-          eq(threadParticipants.principalType, "user"),
-          eq(threadParticipants.principalId, actor.userId),
-        ),
-      );
-    const isParticipant = participantRows.length > 0;
-
-    // Scope access: no scope = globally accessible; scoped = must have role in that project
-    let hasScopeAccess = thread.scopeType == null;
-    if (!hasScopeAccess && thread.scopeId) {
-      const roleRows = await db
-        .select({ id: userRoles.id })
-        .from(userRoles)
-        .where(
-          and(
-            eq(userRoles.companyId, companyId),
-            eq(userRoles.userId, actor.userId),
-            eq(userRoles.projectId, thread.scopeId),
-          ),
-        );
-      hasScopeAccess = roleRows.length > 0;
-    }
-
-    const ok = canViewThread(
-      {
-        ownerUserId: thread.ownerUserId,
-        visibility: thread.visibility as ThreadVisibility,
-      },
-      { role: actor.role, hasScopeAccess, isParticipant },
-    );
-    if (!ok) throw notFound("Thread not found");
+    await assertCanAccessThread(db, companyId, thread, actor);
   }
 
   /**

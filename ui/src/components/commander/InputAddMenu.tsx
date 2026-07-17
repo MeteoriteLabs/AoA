@@ -1,4 +1,4 @@
-import { Paperclip, Plus, Wand2 } from "lucide-react";
+import { Plus, Wand2 } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -12,6 +12,12 @@ interface InputAddMenuProps {
   disabled?: boolean;
 }
 
+/**
+ * Commander's extras menu. Mock v2: "Attach file" is REMOVED — 📎 in the
+ * shared toolbar is the only attach entry. The trigger is a quiet ghost
+ * button (same visual weight as the other toolbar icons), not a filled
+ * brand circle; the red accent belongs to the Send action alone.
+ */
 export function InputAddMenu({ onUseSkill, disabled = false }: InputAddMenuProps) {
   return (
     <DropdownMenu>
@@ -21,9 +27,8 @@ export function InputAddMenu({ onUseSkill, disabled = false }: InputAddMenuProps
           disabled={disabled}
           aria-label="Add"
           className={cn(
-            "size-8 rounded-full flex items-center justify-center shrink-0",
-            "bg-brand text-white",
-            "hover:bg-brand-hover transition-colors",
+            "size-8 rounded-md flex items-center justify-center shrink-0",
+            "text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors",
             "focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-brand-focus-ring",
             "disabled:opacity-40 disabled:pointer-events-none",
           )}
@@ -35,11 +40,6 @@ export function InputAddMenu({ onUseSkill, disabled = false }: InputAddMenuProps
         <DropdownMenuItem onSelect={onUseSkill}>
           <Wand2 className="size-4" aria-hidden="true" />
           Use a skill
-        </DropdownMenuItem>
-        <DropdownMenuItem disabled>
-          <Paperclip className="size-4" aria-hidden="true" />
-          <span>Attach file</span>
-          <span className="ml-auto text-xs text-muted-foreground opacity-60">Coming soon</span>
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>

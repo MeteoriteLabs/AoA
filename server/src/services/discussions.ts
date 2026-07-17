@@ -27,11 +27,13 @@ import { issueService } from "./issues.js";
 import { memoryService } from "./memory.js";
 import { getThreadEventListener } from "./thread-events.js";
 import { threadOrchestrationService } from "./thread-orchestration.js";
-// parseMentions is a pure regex helper (no DB). threads.ts is already in the
-// module graph via live-events.ts → threads.ts, so this static import adds no
-// new load-time cost or cycle (discussions → threads is one-directional;
-// threads.ts does not import discussions.ts).
-import { parseMentions } from "./threads.js";
+// parseMentions is a pure regex helper (no DB); resolveMentionTargets adds a
+// company-agent-roster read for multi-word crew names (round-13 #2). threads.ts
+// is already in the module graph via live-events.ts → threads.ts, so this static
+// import adds no new load-time cost or cycle (discussions → threads is one-
+// directional; threads.ts does not import discussions.ts).
+import { assertCanPostToThread, parseMentions, resolveMentionTargets, type Actor } from "./threads.js";
+import { enqueueMentionOutbox } from "./mention-outbox.js";
 import { deriveThreadStage, loadLatestScopeForThreadStages } from "./thread-scope-versions.js";
 // NOTE: workspace-ttl-sweeper is imported dynamically in `update()` to keep
 // the top-level import graph free of execution-workspaces → git → child_process.
@@ -122,6 +124,22 @@ async function validateEntryAttachments(
     if (ownedArtifacts.length !== artifactIds.length) {
       throw badRequest("Attachment artifact not found");
     }
+  }
+}
+
+/**
+ * Sentinel thrown inside addEntry's insert transaction when the entry insert
+ * lost a same-key race (onConflictDoNothing returned no row). Aborting the
+ * transaction rolls back the entrySeq/entryCount/lastEntryAt bump that ran
+ * before the insert — committing it would drift the denormalized entryCount
+ * (+1 with no entry) and burn a seq for a row that never landed (PR #291
+ * review). Real drizzle rolls back and rethrows on a callback throw; the
+ * caller catches this sentinel and re-selects the winner's row.
+ */
+class EntryInsertRaceLostError extends Error {
+  constructor() {
+    super("discussion entry insert lost a clientSubmissionId race");
+    this.name = "EntryInsertRaceLostError";
   }
 }
 
@@ -347,22 +365,41 @@ async function emitEntryCreatedSideEffects(
     entry.inputType !== "scope_proposal";
 
   let hasCrewMention = false;
+  // NOTE: this best-effort gate keeps the naive parseMentions tokenizer. A
+  // multi-word crew mention ("@Memory Keeper") the SUMMON path resolves (round-13
+  // #2, resolveMentionTargets) is NOT recognized here, so the proactive Adjutant
+  // debounce may redundantly arm on that entry — the documented worst case is an
+  // extra Adjutant wake (double-drive), never a lost summon. Making this
+  // multi-word-aware would add a second per-entry roster query on the hot path;
+  // it is deferred to the comment-wakeup/mention-resolution consolidation.
   const mentionNames = isHuman
     ? parseMentions(entry.rawContent).map((m) => m.name)
     : [];
   if (mentionNames.length > 0) {
-    const crewRows = await db
-      .select({ id: agents.id })
-      .from(agents)
-      .where(
-        and(
-          eq(agents.companyId, companyId),
-          eq(agents.kind, "aoa"),
-          inArray(agents.name, mentionNames),
-        ),
-      )
-      .limit(1);
-    hasCrewMention = crewRows.length > 0;
+    // Best-effort (PR #291 round-5 review): this lookup only GATES the proactive
+    // Adjutant debounce (hasCrewMention). It runs AFTER the entry tx has
+    // committed, and it is the only `await` here that can throw — a DB blip
+    // would otherwise abort the caller (addEntry) *after* the durable entry
+    // exists, so the route never reaches processMentions (the actual @agent
+    // summon) and a same-key Retry replays past it, never summoning the agent.
+    // Swallow so the entry's critical side-effects always run; the worst case is
+    // an unnecessary Adjutant wake (double-drive), not a lost summon.
+    try {
+      const crewRows = await db
+        .select({ id: agents.id })
+        .from(agents)
+        .where(
+          and(
+            eq(agents.companyId, companyId),
+            eq(agents.kind, "aoa"),
+            inArray(agents.name, mentionNames),
+          ),
+        )
+        .limit(1);
+      hasCrewMention = crewRows.length > 0;
+    } catch (err) {
+      console.error("[threads] hasCrewMention lookup failed (best-effort):", err);
+    }
   }
 
   // Task B2: notify the thread-event listener so it can debounce and wake
@@ -703,6 +740,15 @@ export function discussionService(db: Db) {
         };
       },
       actorId: string,
+      // Round-15: the opening message's @mentions, resolved MULTI-WORD-aware by
+      // the route BEFORE this call (round-14 #2, pre-commit). Threaded in so the
+      // summon is enqueued in the SAME transaction as the first entry — a
+      // committed first entry always carries a pending discussion_mention_outbox
+      // row, exactly like addEntry. The outbox worker becomes the sole summon
+      // path for this route too (the fire-and-forget processMentions is removed),
+      // so a transient summon failure retries instead of permanently skipping the
+      // mentioned agent.
+      openingMentions?: Array<{ raw: string; name: string }>,
     ) => {
       await validateScope(db, companyId, data.scopeType, data.scopeId);
 
@@ -758,6 +804,25 @@ export function discussionService(db: Db) {
               createdBy: actorId,
             })
             .returning();
+
+          // Round-15: enqueue the opening message's @mention summons IN THIS TX,
+          // exactly as addEntry does — so a committed first entry always carries a
+          // pending outbox row and the durable worker (multi-word resolution +
+          // per-row claim + backoff, rounds 9/10/13/14) becomes the sole summon
+          // path here too. Mentions were resolved pre-commit by the route
+          // (round-14 #2). The opening entry is human-authored (createdBy=actorId,
+          // authorAgentId null); mirror addEntry's hopCount derivation off
+          // inputType so an agent-opened thread (if any) still caps the cascade.
+          if (entry && openingMentions && openingMentions.length > 0) {
+            const hopCount = data.entry.inputType === "agent" ? 1 : 0;
+            await enqueueMentionOutbox(tx as unknown as Db, {
+              companyId,
+              discussionId: discussion.id,
+              entryId: entry.id,
+              mentions: openingMentions,
+              hopCount,
+            });
+          }
         }
 
         return { ...discussion, entry };
@@ -933,9 +998,11 @@ export function discussionService(db: Db) {
         parentEntryId?: string | null;
         authorAgentId?: string | null;
         sourceActionId?: string | null;
+        clientSubmissionId?: string | null;
         attachments?: Array<{ assetId?: string | null; artifactId?: string | null }>;
       },
       actorId: string,
+      authorizationActor?: Actor,
     ) => {
       if (data.authorAgentId && data.inputType !== "agent") {
         throw badRequest(
@@ -943,6 +1010,12 @@ export function discussionService(db: Db) {
         );
       }
       await validateEntryAttachments(db, companyId, data.attachments);
+
+      // HTTP and agent entry points pass their resolved actor. Trusted internal
+      // maintenance callers may omit it, but no externally reachable route may.
+      if (authorizationActor) {
+        await assertCanPostToThread(db, companyId, discussionId, authorizationActor);
+      }
 
       // Verify discussion exists and belongs to company
       const discussion = await db
@@ -958,6 +1031,28 @@ export function discussionService(db: Db) {
 
       if (!discussion) {
         throw notFound("Discussion not found");
+      }
+
+      // Idempotent retry: a repeated Send (same key) replays the original entry
+      // without bumping the seq/count counters or re-firing extraction/summon
+      // side-effects. The partial unique index below is the concurrency backstop.
+      const clientSubmissionId = data.clientSubmissionId ?? null;
+      if (clientSubmissionId) {
+        const existing = await db
+          .select()
+          .from(discussionEntries)
+          .where(
+            and(
+              eq(discussionEntries.discussionId, discussionId),
+              eq(discussionEntries.clientSubmissionId, clientSubmissionId),
+            ),
+          )
+          .then((rows) => rows[0] ?? null);
+        // Replay: an entry for this key already exists. Flag it so the caller
+        // skips route-level side-effects (processMentions → requestParticipation)
+        // that the ORIGINAL post already fired — otherwise a same-key retry
+        // double-summons the mentioned crew (PR #291 review, C4).
+        if (existing) return { ...existing, replayed: true as const };
       }
 
       if (data.parentEntryId) {
@@ -978,6 +1073,35 @@ export function discussionService(db: Db) {
         }
       }
 
+      // Provenance boundary (PR #291 round-6 #2 security): a composer attachment
+      // that references an ASSET must reference a VALIDATED composer upload —
+      // otherwise a caller could upload via the unrestricted namespace=files path
+      // (50MB, no allowlist, no byte sniff) and launder it into a discussion
+      // attachment. Artifacts (artifactId) are versioned deliverables, not
+      // uploads, and are exempt. Checked before the tx so the counter bump never
+      // starts for a rejected request.
+      if (data.attachments && data.attachments.length > 0) {
+        const assetIds = data.attachments
+          .map((a) => a.assetId)
+          .filter((x): x is string => Boolean(x));
+        if (assetIds.length > 0) {
+          const validated = await db
+            .select({ id: assets.id })
+            .from(assets)
+            .where(
+              and(
+                eq(assets.companyId, companyId),
+                inArray(assets.id, assetIds),
+                eq(assets.composerValidated, true),
+              ),
+            );
+          const validatedIds = new Set(validated.map((r) => r.id));
+          if (assetIds.some((id) => !validatedIds.has(id))) {
+            throw badRequest("Attachment asset is not a validated composer upload");
+          }
+        }
+      }
+
       const now = new Date();
 
       // Plan 7 (D1): assign a per-thread monotonic seq for catch-up. We bump the
@@ -985,61 +1109,147 @@ export function discussionService(db: Db) {
       // row, so concurrent inserts serialize on the discussions row) instead of
       // max(seq)+1, which races. The counter bump also carries the denormalized
       // count update (Gotcha 1.2) so both land in one statement.
-      const entry = await db.transaction(async (tx) => {
-        const [{ entrySeq }] = await tx
-          .update(discussions)
-          .set({
-            entrySeq: sql`${discussions.entrySeq} + 1`,
-            entryCount: sql`${discussions.entryCount} + 1`,
-            lastEntryAt: now,
-            updatedAt: now,
-          })
-          .where(eq(discussions.id, discussionId))
-          .returning({ entrySeq: discussions.entrySeq });
+      let entry: typeof discussionEntries.$inferSelect | undefined;
+      try {
+        entry = await db.transaction(async (tx) => {
+          const [{ entrySeq }] = await tx
+            .update(discussions)
+            .set({
+              entrySeq: sql`${discussions.entrySeq} + 1`,
+              entryCount: sql`${discussions.entryCount} + 1`,
+              lastEntryAt: now,
+              updatedAt: now,
+            })
+            .where(eq(discussions.id, discussionId))
+            .returning({ entrySeq: discussions.entrySeq });
 
-        const [inserted] = await tx
-          .insert(discussionEntries)
-          .values({
-            discussionId,
-            inputType: data.inputType,
-            rawContent: data.rawContent,
-            title: data.title ?? null,
-            departmentId: data.departmentId ?? null,
-            projectId: data.projectId ?? null,
-            goalId: data.goalId ?? null,
-            sourceInfo: data.sourceInfo ?? null,
-            parentEntryId: data.parentEntryId ?? null,
-            authorAgentId: data.authorAgentId ?? null,
-            // #197: idempotency anchor for action-gated commits; null for normal entries.
-            sourceActionId: data.sourceActionId ?? null,
-            // QA-BUG-015: discuss-phase entries are NOT auto-extracted. Mark
-            // 'skipped' so the (gated-off) durable drain never picks them up
-            // and the UI doesn't show a misleading "pending extraction"
-            // state. Extraction happens later, deliberately, via Memory
-            // Keeper at phase=done or Adjutant's extract_memory_candidates.
-            extractionStatus: "skipped",
-            seq: entrySeq,
-            createdBy: actorId,
-          })
-          .returning();
+          const [inserted] = await tx
+            .insert(discussionEntries)
+            .values({
+              discussionId,
+              inputType: data.inputType,
+              rawContent: data.rawContent,
+              title: data.title ?? null,
+              departmentId: data.departmentId ?? null,
+              projectId: data.projectId ?? null,
+              goalId: data.goalId ?? null,
+              sourceInfo: data.sourceInfo ?? null,
+              parentEntryId: data.parentEntryId ?? null,
+              authorAgentId: data.authorAgentId ?? null,
+              // #197: idempotency anchor for action-gated commits; null for normal entries.
+              sourceActionId: data.sourceActionId ?? null,
+              clientSubmissionId,
+              // QA-BUG-015: discuss-phase entries are NOT auto-extracted. Mark
+              // 'skipped' so the (gated-off) durable drain never picks them up
+              // and the UI doesn't show a misleading "pending extraction"
+              // state. Extraction happens later, deliberately, via Memory
+              // Keeper at phase=done or Adjutant's extract_memory_candidates.
+              extractionStatus: "skipped",
+              seq: entrySeq,
+              createdBy: actorId,
+            })
+            // Concurrency backstop for the replay check above: a truly simultaneous
+            // duplicate key resolves to one row via the partial unique index.
+            // TARGETED at that index only (CI integration catch, 2026-07-16): an
+            // unqualified DO NOTHING also swallowed source_action_id conflicts —
+            // which the gated-commit machinery RELIES on throwing (#197
+            // isUniqueViolation check) — and would silently drop a seq collision.
+            // With the arbiter scoped, a NULL-key row can never match it, so all
+            // other unique violations raise exactly as before.
+            .onConflictDoNothing({
+              target: [discussionEntries.discussionId, discussionEntries.clientSubmissionId],
+              where: sql`client_submission_id IS NOT NULL`,
+            })
+            .returning();
 
-        // Phase E1: link attachments (assets or artifacts) to the entry in the
-        // same transaction so the entry+attachments commit atomically.
-        if (data.attachments && data.attachments.length > 0) {
-          const rows = data.attachments
-            .filter((a) => a.assetId || a.artifactId)
-            .map((a) => ({
-              discussionEntryId: inserted.id,
-              assetId: a.assetId ?? null,
-              artifactId: a.artifactId ?? null,
-            }));
-          if (rows.length > 0) {
-            await tx.insert(discussionEntryAttachments).values(rows);
+          // Lost the same-key insert race → ABORT so the counter bump above
+          // rolls back with the transaction. Only the client-submission arbiter
+          // can swallow an insert (any other unique violation throws), so a
+          // missing row here always means a simultaneous-duplicate loser.
+          if (!inserted) {
+            throw new EntryInsertRaceLostError();
           }
-        }
 
-        return inserted;
-      });
+          // Phase E1: link attachments (assets or artifacts) to the entry in the
+          // same transaction so the entry+attachments commit atomically.
+          if (data.attachments && data.attachments.length > 0) {
+            const rows = data.attachments
+              .filter((a) => a.assetId || a.artifactId)
+              .map((a) => ({
+                discussionEntryId: inserted.id,
+                assetId: a.assetId ?? null,
+                artifactId: a.artifactId ?? null,
+              }));
+            if (rows.length > 0) {
+              await tx.insert(discussionEntryAttachments).values(rows);
+            }
+          }
+
+          // Transactional outbox for @mention summons (PR #291 round-6 #3):
+          // enqueue the summon IN THE SAME TX as the entry, so a committed entry
+          // always carries a pending summon. The drain worker runs processMentions
+          // exactly once — replacing the route-level fire-and-forget call that was
+          // lost on failure and skipped by a same-key replay. This is now the SOLE
+          // summon path for addEntry callers (round-8 #1): the internal writers
+          // (post-entry-tool / thread-agent-actions) no longer call processMentions
+          // directly, so there is no double-summon.
+          // Round-13 #2: resolve mentions MULTI-WORD-aware against the company
+          // agent roster (mirrors findMentionedAgents) — the naive parseMentions
+          // \w+ tokenizer truncates "@Memory Keeper" → "Memory", which the outbox
+          // worker (this is now the SOLE summon path) can never resolve, silently
+          // dropping the summon of every multi-word-named crew agent.
+          const outboxMentions = await resolveMentionTargets(
+            tx as unknown as Db,
+            companyId,
+            data.rawContent ?? "",
+          );
+          if (outboxMentions.length > 0) {
+            // Preserve the { hopCount: 1 } the internal agent writers used to pass
+            // directly (round-8 #1): an agent-authored entry's mentions start one
+            // hop into the cascade so MAX_HOP_COUNT caps a chain the same way; a
+            // human entry starts at 0. (inputType 'agent' or an authorAgentId both
+            // mark an agent-authored reply.)
+            const hopCount =
+              data.authorAgentId != null || data.inputType === "agent" ? 1 : 0;
+            await enqueueMentionOutbox(tx as unknown as Db, {
+              companyId,
+              discussionId,
+              entryId: inserted.id,
+              mentions: outboxMentions,
+              hopCount,
+            });
+          }
+
+          return inserted;
+        });
+      } catch (err) {
+        if (!(err instanceof EntryInsertRaceLostError)) throw err;
+        entry = undefined;
+      }
+
+      // Lost the insert race → the winning entry already fired its side-effects.
+      // Return it without re-publishing events, re-arming crew, or re-logging.
+      // (Only the client-submission arbiter can swallow the insert, so the key
+      // is always non-null on this path.)
+      if (!entry) {
+        if (!clientSubmissionId) {
+          throw new Error(
+            "discussion entry insert returned no row without a clientSubmissionId",
+          );
+        }
+        // Race loser: the winner already fired the entry's side-effects. Flag
+        // the replay so the caller skips processMentions et al. (PR #291, C4).
+        return db
+          .select()
+          .from(discussionEntries)
+          .where(
+            and(
+              eq(discussionEntries.discussionId, discussionId),
+              eq(discussionEntries.clientSubmissionId, clientSubmissionId),
+            ),
+          )
+          .then((rows) => ({ ...rows[0], replayed: true as const }));
+      }
 
       publishLiveEvent({
         companyId,
@@ -1082,17 +1292,41 @@ export function discussionService(db: Db) {
       // above still wakes Adjutant after the 30s human-silence debounce so
       // the conversation moves forward; extraction waits for the right phase.
 
-      await logActivity(db, {
-        companyId,
-        actorType: "user",
-        actorId,
-        action: "discussion.entry.added",
-        entityType: "discussion_entry",
-        entityId: entry.id,
-        details: { discussionId, inputType: data.inputType },
-      });
+      // Best-effort (PR #291 round-5 review): the entry is already durable, and
+      // the route's processMentions summon still needs to run — an activity-log
+      // DB blip must not throw out of addEntry after commit (which would 500 the
+      // request and let a Retry replay past the summon). Audit-only; swallow.
+      try {
+        await logActivity(db, {
+          companyId,
+          actorType: "user",
+          actorId,
+          action: "discussion.entry.added",
+          entityType: "discussion_entry",
+          entityId: entry.id,
+          details: { discussionId, inputType: data.inputType },
+        });
+      } catch (err) {
+        console.error("[threads] discussion.entry.added activity log failed (best-effort):", err);
+      }
 
       return entry;
+    },
+
+    getEntryByClientSubmissionId: async (
+      discussionId: string,
+      clientSubmissionId: string,
+    ) => {
+      return db
+        .select()
+        .from(discussionEntries)
+        .where(
+          and(
+            eq(discussionEntries.discussionId, discussionId),
+            eq(discussionEntries.clientSubmissionId, clientSubmissionId),
+          ),
+        )
+        .then((rows) => rows[0] ?? null);
     },
 
     /**

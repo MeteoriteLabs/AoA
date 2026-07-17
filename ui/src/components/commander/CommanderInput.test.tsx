@@ -30,6 +30,7 @@ describe("CommanderInput", () => {
 
     fireEvent.drop(screen.getByRole("textbox"), {
       dataTransfer: {
+        files: [],
         getData: (type: string) =>
           type === COMMANDER_INPUT_REF_DRAG_MIME
             ? encodeCommanderInputRefDragPayload(taskRef, "Show this task")
@@ -42,4 +43,45 @@ describe("CommanderInput", () => {
       prompt: "Show this task",
     });
   });
+
+  it("forwards pasted files to the attachment uploader", () => {
+    const onFilesSelected = vi.fn();
+    const image = new File(["image"], "clipboard.png", { type: "image/png" });
+    render(
+      <CommanderInput
+        placeholder="Ask Commander"
+        onSubmit={vi.fn()}
+        onEmptyChange={vi.fn()}
+        onSlashChange={vi.fn()}
+        onFilesSelected={onFilesSelected}
+      />,
+    );
+
+    fireEvent.paste(screen.getByRole("textbox"), {
+      clipboardData: { files: [image], getData: () => "" },
+    });
+
+    expect(onFilesSelected).toHaveBeenCalledWith([image]);
+  });
+
+  it("forwards dropped OS files without treating them as Commander refs", () => {
+    const onFilesSelected = vi.fn();
+    const pdf = new File(["pdf"], "brief.pdf", { type: "application/pdf" });
+    render(
+      <CommanderInput
+        placeholder="Ask Commander"
+        onSubmit={vi.fn()}
+        onEmptyChange={vi.fn()}
+        onSlashChange={vi.fn()}
+        onFilesSelected={onFilesSelected}
+      />,
+    );
+
+    fireEvent.drop(screen.getByRole("textbox"), {
+      dataTransfer: { files: [pdf], getData: () => "" },
+    });
+
+    expect(onFilesSelected).toHaveBeenCalledWith([pdf]);
+  });
+
 });

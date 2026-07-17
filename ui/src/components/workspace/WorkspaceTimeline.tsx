@@ -15,15 +15,35 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { useToast } from "../../context/ToastContext";
 import { Activity } from "lucide-react";
-import type { IssueComment, Agent, WorkQuestionDetail } from "@armyofagents/shared";
+import {
+  COMPOSER_ATTACHMENT_CONTENT_TYPES,
+  COMPOSER_MAX_ATTACHMENTS,
+  COMPOSER_MAX_ATTACHMENT_BYTES,
+  createComposerSubmissionId,
+  type IssueComment,
+  type Agent,
+  type WorkQuestionDetail,
+} from "@armyofagents/shared";
 import { ChatbarStatusRow } from "./ChatbarStatusRow";
 import { ChatbarControls } from "./ChatbarControls";
+import { ComposerMentionMenu } from "../composer/ComposerMentionMenu";
+import { useComposerMention } from "../composer/useComposerMention";
 import { useRunTokens } from "./useRunTokens";
 import { useLatestTodos } from "./useLatestTodos";
 import { getContextLimit } from "./adapter-utils";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../../api/heartbeats";
 import { useInlineWorkQuestions, WorkQuestionInlineError } from "../work-questions/WorkQuestionInlineList";
 import { WorkQuestionPanel } from "../work-questions/WorkQuestionPanel";
+import { resolveTaskCommentAction } from "../../lib/task-composer-actions";
+import { useComposerDraft } from "../../lib/composerDraft";
+import { useTeamAccess } from "../../hooks/useTeamAccess";
+import { useLiveUpdates } from "../../context/LiveUpdatesProvider";
+import { ComposerFrame } from "../composer/ComposerFrame";
+import { ComposerAttachmentCard } from "../composer/ComposerAttachmentCard";
+import { ComposerSendFailedBanner } from "../composer/ComposerSendFailedBanner";
+import { ComposerOfflineStrip, toComposerConnectionState } from "../composer/ComposerOfflineStrip";
+import { ComposerDropOverlay } from "../composer/ComposerDropOverlay";
+import { useComposerDragDrop } from "../composer/useComposerDragDrop";
 
 export type TimelineItem =
   | { kind: "run"; ts: string; data: RunForIssue }
@@ -61,6 +81,18 @@ function liveRunToTimelineRun(run: LiveRunForIssue | ActiveRunForIssue): RunForI
   };
 }
 
+/** One send attempt, snapshotted BEFORE the mutate (mock §5): the banner's
+ *  Retry re-sends this exact shape — same clientSubmissionId — so the server
+ *  replays instead of double-posting when the first request actually landed. */
+interface SendAttempt {
+  text: string;
+  files: File[];
+  revision: number;
+  reopen?: boolean;
+  interrupt?: boolean;
+  clientSubmissionId: string;
+}
+
 interface WorkspaceTimelineProps {
   issueId: string;
   /** When true, renders in compact mode for TaskSlideOver */
@@ -76,20 +108,116 @@ export function WorkspaceTimeline({
   anchorId,
 }: WorkspaceTimelineProps) {
   const { selectedCompanyId } = useCompany();
+  const { currentUser } = useTeamAccess(selectedCompanyId);
   const queryClient = useQueryClient();
   const scrollRef = useRef<HTMLDivElement>(null);
   const isPinnedToBottomRef = useRef(true);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const composerRevisionRef = useRef(0);
+  const sendInFlightRef = useRef(false);
   const [chatInput, setChatInput] = useState("");
   const [modelOverride, setModelOverride] = useState<string | null>(null);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  // composerError is for VALIDATION errors (attachment type/size/count).
+  // Send failures raise the ComposerSendFailedBanner via sendFailed instead.
+  const [composerError, setComposerError] = useState<string | null>(null);
+  const [sendFailed, setSendFailed] = useState(false);
+  const lastAttemptRef = useRef<SendAttempt | null>(null);
+  const { connectionState } = useLiveUpdates();
+  const composerConnection = toComposerConnectionState(connectionState);
+  const isOffline = composerConnection === "offline";
+  const composerDraft = useComposerDraft(
+    selectedCompanyId && currentUser?.userId
+      ? { companyId: selectedCompanyId, userId: currentUser.userId, surface: "task", entityId: issueId }
+      : null,
+  );
+  const [interruptRequested, setInterruptRequested] = useState(false);
+  const [reopenRequested, setReopenRequested] = useState(true);
   const [hasUnseenActivity, setHasUnseenActivity] = useState(false);
+
+  useEffect(() => {
+    setChatInput(composerDraft.draft.text);
+  }, [composerDraft.storageKey]);
+
+  useEffect(() => {
+    composerDraft.setDraft({ text: chatInput });
+  }, [chatInput]);
   const [highlightedAnchorId, setHighlightedAnchorId] = useState<string | null>(null);
   const [anchorAnnouncement, setAnchorAnnouncement] = useState("");
 
+  // Stale-snapshot guard (mock §5: failure never eats your work): once the
+  // draft diverges from the failed attempt, Retry would post stale content and
+  // its success-clear would wipe the newer edits — dismiss the banner. The ref
+  // is kept (nothing double-posts); the next send is a normal fresh submission
+  // with a NEW clientSubmissionId. Called from EVERY text-changing path
+  // (textarea typing AND mention inserts).
+  const dismissBannerOnDivergence = (nextText: string) => {
+    if (
+      sendFailed &&
+      !sendMessage.isPending &&
+      lastAttemptRef.current &&
+      nextText.trim() !== lastAttemptRef.current.text
+    ) {
+      setSendFailed(false);
+    }
+  };
+
+  // Any attachment-tray mutation IS divergence: Retry would post the snapshot
+  // including a removed (possibly sensitive) file, or without a newly added one.
+  const dismissBannerOnTrayChange = () => {
+    if (sendFailed && !sendMessage.isPending) setSendFailed(false);
+  };
+
+  // Control changes (reopen / interrupt) are part of the snapshot: Retry would
+  // post the OLD flags and the success-clear would reset the newer choice —
+  // dismiss the banner and mark divergence (same "Retry must never post what
+  // the user changed" principle as the tray; CommentThread peer pattern). The
+  // revision bump also keeps a mid-flight retry success from clearing the
+  // newer state.
+  const dismissBannerOnControlChange = () => {
+    composerRevisionRef.current += 1;
+    if (sendFailed && !sendMessage.isPending) setSendFailed(false);
+  };
+
+  // Entity switch (issueId change): the banner + attempt snapshot + tray all
+  // belong to the PREVIOUS task — Retry must never post into a different task.
+  // The revision bump keeps a still-in-flight send from the previous task from
+  // re-arming the banner (onError) or clearing the new task's state
+  // (onSuccess). The draft text itself is per-task via composerDraft above.
+  useEffect(() => {
+    composerRevisionRef.current += 1;
+    lastAttemptRef.current = null;
+    setSendFailed(false);
+    setSelectedFiles([]);
+    setComposerError(null);
+  }, [issueId]);
+
+  // Shared @mention (mock v2): the @ button opens the picker and a trailing
+  // `@token` opens the same list inline. Server-side, task/workspace comment
+  // mentions wake the mentioned agents (issues.ts findMentionedAgents).
+  const mention = useComposerMention({
+    companyId: selectedCompanyId,
+    value: chatInput,
+    onChange: (next) => {
+      composerRevisionRef.current += 1;
+      setChatInput(next);
+      dismissBannerOnDivergence(next);
+    },
+    focusAt: (pos) => {
+      const ta = textareaRef.current;
+      if (!ta) return;
+      ta.focus();
+      ta.setSelectionRange(pos, pos);
+    },
+  });
+
   const handleTextareaChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    composerRevisionRef.current += 1;
     setChatInput(e.target.value);
+    setComposerError(null);
+    dismissBannerOnDivergence(e.target.value);
+    mention.refresh(e.target.value, e.target.selectionStart ?? e.target.value.length);
     // Auto-grow: reset to 1 row then expand to content, max 4 rows
     const ta = e.target;
     ta.style.height = "auto";
@@ -308,21 +436,42 @@ export function WorkspaceTimeline({
   // --- Mutations ---
 
   const sendMessage = useMutation({
-    mutationFn: async ({ text, files }: { text: string; files: File[] }) => {
+    mutationFn: async ({ text, files, reopen, interrupt, clientSubmissionId }: SendAttempt) => {
       if (files.length > 0) {
-        await issuesApi.addCommentWithAttachments(issueId, text, files);
+        await issuesApi.addCommentWithAttachments(issueId, text, files, reopen, interrupt, clientSubmissionId);
         return;
       }
-      await issuesApi.addComment(issueId, text);
+      await issuesApi.addComment(issueId, text, reopen, interrupt, undefined, clientSubmissionId);
     },
-    onSuccess: () => {
+    onSuccess: (_data, submitted) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(issueId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.liveRuns(issueId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.runs(issueId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.attachments(issueId) });
-      setChatInput("");
-      setSelectedFiles([]);
-      setModelOverride(null); // Reset model override after send
+      setComposerError(null);
+      setSendFailed(false);
+      lastAttemptRef.current = null;
+      if (composerRevisionRef.current === submitted.revision) {
+        setChatInput("");
+        setSelectedFiles([]);
+        composerDraft.clearDraft();
+        setModelOverride(null); // Reset model override after send
+        setInterruptRequested(false);
+        setReopenRequested(true);
+      }
+    },
+    onError: (_error, submitted) => {
+      // The draft, attachments, and lastAttemptRef snapshot are all kept —
+      // the shared banner offers Retry (idempotent replay) / Edit / Discard.
+      // Mid-flight divergence guard (stale-banner residual): if the draft or
+      // tray moved while this send/retry was in flight (the dismiss is
+      // suppressed while pending), the snapshot is stale — a re-armed banner's
+      // Retry would post it (e.g. a removed attachment). Leave the banner
+      // down; the user sends fresh with a NEW clientSubmissionId.
+      setSendFailed(composerRevisionRef.current === submitted.revision);
+    },
+    onSettled: () => {
+      sendInFlightRef.current = false;
     },
   });
 
@@ -332,25 +481,123 @@ export function WorkspaceTimeline({
     fileInputRef.current?.click();
   };
 
+  const addComposerFiles = (incoming: File[]) => {
+    if (incoming.length === 0) return;
+
+    const next = [...selectedFiles];
+    const errors: string[] = [];
+    let reachedLimit = false;
+    for (const file of incoming) {
+      if (next.length >= COMPOSER_MAX_ATTACHMENTS) {
+        reachedLimit = true;
+        continue;
+      }
+      if (!COMPOSER_ATTACHMENT_CONTENT_TYPES.includes(file.type as (typeof COMPOSER_ATTACHMENT_CONTENT_TYPES)[number])) {
+        errors.push(`Unsupported attachment type: ${file.type || "unknown"}.`);
+        continue;
+      }
+      if (file.size > COMPOSER_MAX_ATTACHMENT_BYTES) {
+        errors.push(`${file.name} exceeds the 10 MB attachment limit.`);
+        continue;
+      }
+      next.push(file);
+    }
+    if (reachedLimit) errors.unshift(`Attach up to ${COMPOSER_MAX_ATTACHMENTS} files per message.`);
+
+    setComposerError(errors.length > 0 ? errors.join(" ") : null);
+    // Only a REAL tray change (a file actually accepted) is divergence — an
+    // all-rejected add leaves the snapshot's tray intact, so the banner stays
+    // and the revision doesn't move (matches CommentThread's addCommentFiles).
+    if (next.length !== selectedFiles.length) {
+      composerRevisionRef.current += 1;
+      setSelectedFiles(next);
+      dismissBannerOnTrayChange();
+    }
+  };
+
   const handleFilesSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
     const incoming = Array.from(e.target.files ?? []);
-    if (incoming.length === 0) return;
-    const next = [...selectedFiles, ...incoming].slice(0, 5);
-    if (selectedFiles.length + incoming.length > 5) {
-      pushToast({ tone: "error", title: "Too many attachments", body: "Attach up to 5 files per message." });
-    }
-    setSelectedFiles(next);
     e.target.value = "";
+    addComposerFiles(incoming);
   };
 
   const removeSelectedFile = (index: number) => {
+    composerRevisionRef.current += 1;
     setSelectedFiles((files) => files.filter((_, i) => i !== index));
+    setComposerError(null);
+    // Retry must never post a removed (possibly sensitive) file.
+    dismissBannerOnTrayChange();
   };
 
+  // Frame-wide drag-drop (mock §5): ONE hook instance shared by both chatbar
+  // branches (only one renders at a time). Validation stays in addComposerFiles.
+  const { isDragActive, dragHandlers } = useComposerDragDrop({
+    onDropFiles: addComposerFiles,
+    disabled: sendMessage.isPending,
+  });
+
   const handleSend = () => {
-    if (canSend) {
-      sendMessage.mutate({ text: chatInput.trim(), files: selectedFiles });
-    }
+    if (!canSend || sendInFlightRef.current || sendMessage.isPending || isOffline) return;
+    sendInFlightRef.current = true;
+    setComposerError(null);
+    setSendFailed(false);
+    const isClosed = issue?.status === "done" || issue?.status === "cancelled";
+    const action = resolveTaskCommentAction({
+      isClosed,
+      reopenRequested,
+      hasActiveRun: hasLiveRuns,
+      interruptRequested,
+      hasReassignment: false,
+    });
+    // Minted ONCE per submission and snapshotted BEFORE the mutate so the
+    // banner's Retry re-sends the exact same attempt (same clientSubmissionId
+    // → the server replays if the first request actually landed).
+    const attempt: SendAttempt = {
+      text: chatInput.trim(),
+      files: [...selectedFiles],
+      revision: composerRevisionRef.current,
+      reopen: action === "reopen" ? true : undefined,
+      interrupt: action === "interrupt" ? true : undefined,
+      clientSubmissionId: createComposerSubmissionId(),
+    };
+    lastAttemptRef.current = attempt;
+    sendMessage.mutate(attempt);
+  };
+
+  /** Banner Retry: re-send the IDENTICAL stored attempt (same clientSubmissionId). */
+  const handleRetryFailedSend = () => {
+    const attempt = lastAttemptRef.current;
+    if (!attempt || sendInFlightRef.current || sendMessage.isPending || isOffline) return;
+    sendInFlightRef.current = true;
+    sendMessage.mutate(attempt);
+  };
+
+  const handleDismissFailedSend = () => {
+    setSendFailed(false);
+  };
+
+  const handleDiscardFailedSend = () => {
+    lastAttemptRef.current = null;
+    setSendFailed(false);
+    setComposerError(null);
+    composerRevisionRef.current += 1;
+    setChatInput("");
+    setSelectedFiles([]);
+    composerDraft.clearDraft();
+  };
+
+  const handleComposerKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (mention.handleKeyDown(e)) return; // picker owns ↑/↓/Enter/Esc while open
+    if (e.key !== "Enter" || e.shiftKey || e.nativeEvent.isComposing) return;
+    e.preventDefault();
+    handleSend();
+  };
+
+  const handleComposerPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = Array.from(e.clipboardData?.files ?? []);
+    if (files.length === 0) return;
+    e.preventDefault();
+    addComposerFiles(files);
   };
 
   const chatbarRunState =
@@ -358,6 +605,22 @@ export function WorkspaceTimeline({
       : issue?.status === "done" ? "done"
         : issue?.status === "blocked" ? "blocked"
           : "idle";
+
+  // Shared B-state chrome for both chatbar branches (mock §5): offline strip
+  // at the top, then the send-failed banner — above the status row/textarea.
+  const composerStateBanners = (sendFailed || composerConnection !== "connected") ? (
+    <div className="px-2 pt-2">
+      <ComposerOfflineStrip state={composerConnection} />
+      {sendFailed && (
+        <ComposerSendFailedBanner
+          onRetry={handleRetryFailedSend}
+          onEdit={handleDismissFailedSend}
+          onDiscard={handleDiscardFailedSend}
+          retrying={sendMessage.isPending}
+        />
+      )}
+    </div>
+  ) : null;
 
   return (
     <div className={cn("relative flex min-h-0 flex-1 flex-col overflow-hidden", className)} data-testid="workspace-timeline">
@@ -509,7 +772,9 @@ export function WorkspaceTimeline({
       )}
 
       {assignedAgent && (
-        <div className="shrink-0 mx-3 mb-3 border border-border rounded-lg overflow-hidden bg-background" data-testid="workspace-chatbar">
+        <ComposerFrame chrome="card" density={compact ? "compact" : "comfortable"} className="shrink-0 mx-3 mb-3" data-testid="workspace-chatbar" dragHandlers={dragHandlers}>
+          <ComposerDropOverlay active={isDragActive} />
+          {composerStateBanners}
           {/* Status row */}
           <ChatbarStatusRow
             agentName={assignedAgent.name}
@@ -522,8 +787,34 @@ export function WorkspaceTimeline({
             runDurationLabel={null}
           />
 
+          {selectedFiles.length > 0 && (
+            <div className="border-t border-border/50 px-3 py-1.5">
+              <div className="flex flex-wrap gap-1.5">
+                {selectedFiles.map((file, index) => (
+                  <ComposerAttachmentCard
+                    key={`${file.name}-${file.size}-${index}`}
+                    name={file.name}
+                    byteSize={file.size}
+                    state="ready"
+                    onRemove={() => removeSelectedFile(index)}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Textarea */}
-          <div className="border-t border-border/50">
+          <div className="relative border-t border-border/50">
+            {mention.open && (
+              <ComposerMentionMenu
+                options={mention.options}
+                selectionIndex={mention.index}
+                onSelect={mention.select}
+                onHover={mention.setIndex}
+                loading={mention.loading}
+                testIdPrefix="workspace-mention"
+              />
+            )}
             <textarea
               ref={textareaRef}
               className="w-full bg-transparent px-3 py-2 text-sm resize-none focus:outline-none placeholder:text-muted-foreground/50"
@@ -531,12 +822,14 @@ export function WorkspaceTimeline({
               rows={1}
               value={chatInput}
               onChange={handleTextareaChange}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                  e.preventDefault();
-                  handleSend();
-                }
+              onKeyDown={handleComposerKeyDown}
+              onSelect={(e) => {
+                // Caret moves (click/arrows) re-evaluate the mention token so
+                // the menu can't go stale against a moved caret (F9).
+                const t = e.currentTarget;
+                mention.refresh(t.value, t.selectionStart ?? t.value.length);
               }}
+              onPaste={handleComposerPaste}
             />
           </div>
 
@@ -545,46 +838,76 @@ export function WorkspaceTimeline({
             data-testid="workspace-chatbar-file-input"
             type="file"
             multiple
+            accept={COMPOSER_ATTACHMENT_CONTENT_TYPES.join(",")}
             className="hidden"
             onChange={handleFilesSelected}
           />
-          {selectedFiles.length > 0 && (
-            <div className="border-t border-border/50 px-3 py-1.5">
-              <div className="flex flex-wrap gap-1">
-                {selectedFiles.map((file, index) => (
-                  <button
-                    key={`${file.name}-${file.size}-${index}`}
-                    type="button"
-                    onClick={() => removeSelectedFile(index)}
-                    className="max-w-full truncate rounded-md bg-muted/60 px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground"
-                    title="Remove attachment"
-                  >
-                    {file.name}
-                  </button>
-                ))}
-              </div>
+          {composerError && (
+            <div className="border-t border-border/50 px-3 py-2 text-xs text-destructive" role="alert">
+              {composerError}
+            </div>
+          )}
+
+          {/* Board 1 §3: an active run means a normal send queues behind it —
+              state that BEFORE submission instead of implying an instant reply. */}
+          {hasLiveRuns && !interruptRequested && (
+            <div
+              className="border-t border-border/50 px-3 py-1.5 text-[11px] text-muted-foreground"
+              data-testid="workspace-chatbar-queued-notice"
+            >
+              Queued after current run
             </div>
           )}
 
           {/* Controls row */}
           <div className="border-t border-border/50">
-            <ChatbarControls
+              <ChatbarControls
               adapterType={agentAdapterType}
               defaultModel={agentDefaultModel}
               selectedModel={modelOverride}
               onModelChange={setModelOverride}
               onAttach={handleAttach}
+              onMention={mention.openViaButton}
               onSend={handleSend}
-              sendDisabled={!canSend || sendMessage.isPending}
-              sendPending={sendMessage.isPending}
-            />
+              sendDisabled={!canSend || sendMessage.isPending || isOffline}
+                sendPending={sendMessage.isPending}
+                // The label states the actual effect: waking the agent vs
+                // queueing behind the live run (approved mock §4).
+                sendLabel={hasLiveRuns ? "Send" : "Send & wake"}
+                activeRun={hasLiveRuns}
+                closedTask={issue?.status === "done" || issue?.status === "cancelled"}
+                reopenRequested={reopenRequested}
+                onReopenChange={(value) => {
+                  setReopenRequested(value);
+                  dismissBannerOnControlChange();
+                }}
+              />
           </div>
-        </div>
+        </ComposerFrame>
+      )}
+
+      {/* Interrupt is a deliberate, separate choice BELOW the card (mock §4);
+          it remains a flag applied on the next send. */}
+      {assignedAgent && hasLiveRuns && issue?.status !== "done" && issue?.status !== "cancelled" && (
+        <label className="mx-3 -mt-1 mb-3 flex shrink-0 cursor-pointer select-none items-center gap-2 text-[11px] text-muted-foreground" data-testid="workspace-chatbar-interrupt">
+          <input
+            type="checkbox"
+            checked={interruptRequested}
+            onChange={(event) => {
+              setInterruptRequested(event.target.checked);
+              dismissBannerOnControlChange();
+            }}
+            className="rounded border-border"
+          />
+          Interrupt active run — applies to the next send
+        </label>
       )}
 
       {/* Fallback when no agent assigned */}
       {!assignedAgent && (
-        <div className="shrink-0 mx-3 mb-3 border border-border rounded-lg overflow-hidden bg-background" data-testid="workspace-chatbar-fallback">
+        <ComposerFrame chrome="card" density={compact ? "compact" : "comfortable"} className="shrink-0 mx-3 mb-3" data-testid="workspace-chatbar-fallback" dragHandlers={dragHandlers}>
+          <ComposerDropOverlay active={isDragActive} />
+          {composerStateBanners}
           <ChatbarStatusRow
             agentName="No agent assigned"
             adapterType="process"
@@ -595,7 +918,32 @@ export function WorkspaceTimeline({
             runState={chatbarRunState}
             runDurationLabel={null}
           />
-          <div className="border-t border-border/50">
+          {selectedFiles.length > 0 && (
+            <div className="border-t border-border/50 px-3 py-1.5">
+              <div className="flex flex-wrap gap-1.5">
+                {selectedFiles.map((file, index) => (
+                  <ComposerAttachmentCard
+                    key={`${file.name}-${file.size}-${index}`}
+                    name={file.name}
+                    byteSize={file.size}
+                    state="ready"
+                    onRemove={() => removeSelectedFile(index)}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+          <div className="relative border-t border-border/50">
+            {mention.open && (
+              <ComposerMentionMenu
+                options={mention.options}
+                selectionIndex={mention.index}
+                onSelect={mention.select}
+                onHover={mention.setIndex}
+                loading={mention.loading}
+                testIdPrefix="workspace-mention"
+              />
+            )}
             <textarea
               ref={textareaRef}
               className="w-full bg-transparent px-3 py-2 text-sm resize-none focus:outline-none placeholder:text-muted-foreground/50"
@@ -603,12 +951,14 @@ export function WorkspaceTimeline({
               rows={1}
               value={chatInput}
               onChange={handleTextareaChange}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                  e.preventDefault();
-                  handleSend();
-                }
+              onKeyDown={handleComposerKeyDown}
+              onSelect={(e) => {
+                // Caret moves (click/arrows) re-evaluate the mention token so
+                // the menu can't go stale against a moved caret (F9).
+                const t = e.currentTarget;
+                mention.refresh(t.value, t.selectionStart ?? t.value.length);
               }}
+              onPaste={handleComposerPaste}
             />
           </div>
           <input
@@ -616,24 +966,13 @@ export function WorkspaceTimeline({
             data-testid="workspace-chatbar-file-input"
             type="file"
             multiple
+            accept={COMPOSER_ATTACHMENT_CONTENT_TYPES.join(",")}
             className="hidden"
             onChange={handleFilesSelected}
           />
-          {selectedFiles.length > 0 && (
-            <div className="border-t border-border/50 px-3 py-1.5">
-              <div className="flex flex-wrap gap-1">
-                {selectedFiles.map((file, index) => (
-                  <button
-                    key={`${file.name}-${file.size}-${index}`}
-                    type="button"
-                    onClick={() => removeSelectedFile(index)}
-                    className="max-w-full truncate rounded-md bg-muted/60 px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground"
-                    title="Remove attachment"
-                  >
-                    {file.name}
-                  </button>
-                ))}
-              </div>
+          {composerError && (
+            <div className="border-t border-border/50 px-3 py-2 text-xs text-destructive" role="alert">
+              {composerError}
             </div>
           )}
           <div className="border-t border-border/50">
@@ -643,13 +982,21 @@ export function WorkspaceTimeline({
               selectedModel={modelOverride}
               onModelChange={setModelOverride}
               onAttach={handleAttach}
+              onMention={mention.openViaButton}
               onSend={handleSend}
               showModelLabel={false}
-              sendDisabled={!canSend || sendMessage.isPending}
+              sendDisabled={!canSend || sendMessage.isPending || isOffline}
               sendPending={sendMessage.isPending}
+              activeRun={hasLiveRuns}
+              closedTask={issue?.status === "done" || issue?.status === "cancelled"}
+              reopenRequested={reopenRequested}
+              onReopenChange={(value) => {
+                setReopenRequested(value);
+                dismissBannerOnControlChange();
+              }}
             />
           </div>
-        </div>
+        </ComposerFrame>
       )}
     </div>
   );

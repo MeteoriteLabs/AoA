@@ -7,11 +7,12 @@ import {
   MEMORY_ITEM_LAYERS,
   BRIEF_DEDUP_ACTIONS,
   THREAD_VISIBILITIES,
+  COMPOSER_MAX_ATTACHMENTS,
 } from "../constants.js";
 
 export const createDiscussionEntrySchema = z.object({
   inputType: z.enum(DISCUSSION_ENTRY_INPUT_TYPES),
-  rawContent: z.string().min(1),
+  rawContent: z.string(),
   title: z.string().optional().nullable(),
   departmentId: z.string().uuid().optional().nullable(),
   projectId: z.string().uuid().optional().nullable(),
@@ -19,17 +20,42 @@ export const createDiscussionEntrySchema = z.object({
   sourceInfo: z.record(z.unknown()).optional().nullable(),
   parentEntryId: z.string().uuid().optional().nullable(),
   authorAgentId: z.string().uuid().optional().nullable(),
+  // Client-generated idempotency key. A retried Send (same key) replays the
+  // original entry instead of creating a duplicate or re-firing side-effects.
+  clientSubmissionId: z.string().trim().min(1).max(200).optional().nullable(),
   // Phase E1: composer can attach assets (file uploads) and artifacts
   // (e.g. an existing plan or document) when posting an entry. Server links
   // each via discussion_entry_attachments after the entry is inserted.
   attachments: z
     .array(
-      z.object({
-        assetId: z.string().uuid().optional().nullable(),
-        artifactId: z.string().uuid().optional().nullable(),
-      }),
+      z
+        .object({
+          assetId: z.string().uuid().optional().nullable(),
+          artifactId: z.string().uuid().optional().nullable(),
+        })
+        // {} / { assetId: null, artifactId: null } would be silently dropped
+        // by the server before insert — and would let a blank entry slip
+        // through the attachment-only exemption below (PR #291 review).
+        .refine((a) => Boolean(a.assetId || a.artifactId), {
+          message: "Attachment must reference an assetId or artifactId",
+        }),
     )
+    // Enforce the shared composer cap server-side (PR #291 round-6 review): a
+    // direct API caller must not attach more than the UI/composer limit.
+    .max(COMPOSER_MAX_ATTACHMENTS)
     .optional(),
+}).superRefine((entry, ctx) => {
+  // Belt-and-braces: count only attachments carrying a real reference, so the
+  // blank-entry guard cannot be bypassed even if the item schema loosens.
+  const realAttachments =
+    entry.attachments?.filter((a) => a.assetId || a.artifactId).length ?? 0;
+  if (entry.rawContent.trim().length === 0 && realAttachments === 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["rawContent"],
+      message: "rawContent is required unless the entry includes an attachment",
+    });
+  }
 });
 
 export type CreateDiscussionEntry = z.infer<typeof createDiscussionEntrySchema>;

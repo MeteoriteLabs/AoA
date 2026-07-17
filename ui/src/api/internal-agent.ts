@@ -195,6 +195,8 @@ export async function* streamAgentChat(
   signal?: AbortSignal,
   conversationId?: string | null,
   contextScope?: CommanderContextScope | null,
+  attachmentAssetIds?: string[],
+  clientSubmissionId?: string,
 ): AsyncGenerator<SSEEvent> {
   const response = await fetch(
     `/api/companies/${encodeURIComponent(companyId)}/internal-agent/chat`,
@@ -207,6 +209,11 @@ export async function* streamAgentChat(
         pageContext,
         ...(conversationId ? { conversationId } : {}),
         ...(contextScope ? { contextScope } : {}),
+        ...(attachmentAssetIds && attachmentAssetIds.length > 0 ? { attachmentAssetIds } : {}),
+        // Idempotent replay key (B-states, mock §5): the server's agent-loop
+        // replays the matching conversation turn instead of double-posting
+        // when a failed-looking request actually landed.
+        ...(clientSubmissionId ? { clientSubmissionId } : {}),
       }),
       signal,
     },

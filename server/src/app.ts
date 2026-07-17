@@ -334,7 +334,7 @@ export async function createApp(
   api.use(notificationPreferenceRoutes(db));
   api.use(notificationRoutes(db));
   api.use(workflowTemplateRoutes(db));
-  api.use(internalAgentRoutes(db));
+  api.use(internalAgentRoutes(db, opts.storageService));
   // Dev-only manual sweep triggers (Adjutant 15-min, Memory Keeper 4-hr).
   // Mounted ONLY when uiMode='vite-dev' (i.e. AOA_UI_DEV_MIDDLEWARE=true).
   // Production never sets this env var, so the routes never load there.

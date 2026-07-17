@@ -15,8 +15,9 @@ vi.mock("../services/internal-agent/tools/crew-role-map.js", () => ({
 // ../services/threads.js so the real (pure) parseMentions runs but
 // processMentions is a spy we can assert on — and threadService stays a callable
 // stub (used only as the default advance_phase committer, never in these tests).
-const { mockProcessMentions, realParseMentions } = vi.hoisted(() => ({
+const { mockProcessMentions, mockEnsureAgentParticipant, realParseMentions } = vi.hoisted(() => ({
   mockProcessMentions: vi.fn().mockResolvedValue(undefined),
+  mockEnsureAgentParticipant: vi.fn().mockResolvedValue(undefined),
   realParseMentions: (text: string) => {
     const regex = /(?:^|\s)@(\w+)/g;
     const seen = new Set<string>();
@@ -34,6 +35,7 @@ const { mockProcessMentions, realParseMentions } = vi.hoisted(() => ({
 vi.mock("../services/threads.js", () => ({
   parseMentions: realParseMentions,
   processMentions: mockProcessMentions,
+  ensureAgentParticipant: mockEnsureAgentParticipant,
   threadService: vi.fn(() => ({ advancePhase: vi.fn() })),
 }));
 
@@ -426,11 +428,50 @@ describe("threadAgentActionService", () => {
         authorAgentId: "agent-1",
       }),
       "agent:agent-1",
+      {
+        userId: "agent-1",
+        role: "team_member",
+        isHuman: false,
+        principalType: "agent",
+      },
     );
     expect(db.__updateSets).toContainEqual(expect.objectContaining({
       status: "committed",
       committedEntryId: "entry-committed",
     }));
+  });
+
+  it("registers the committing agent as a thread participant BEFORE addEntry (third authz chokepoint)", async () => {
+    // Live-QA regression 2026-07-16: a crew agent's gated post_reply commit hit
+    // assertCanPostToThread with an agent that was never registered as a
+    // participant → 404 "Thread not found" → action row `failed` and the reply
+    // silently never landed. The direct tool path (post-entry-tool.ts) and the
+    // fake-crew path already register the participant; the commit path is the
+    // third chokepoint and must do the same.
+    const db = createSequenceDb({ selects: [[baseAction]], updates: [[{ ...baseAction, status: "committed" }]] });
+    const addEntry = vi.fn().mockResolvedValue({ id: "entry-committed" });
+
+    await threadAgentActionService(db as never, {
+      compareFreshnessSnapshot: vi.fn().mockResolvedValue({ fresh: true }),
+      discussions: { addEntry },
+      scopeVersions: { createDraftFromThread: vi.fn() },
+    }).commitThreadAgentActions({
+      companyId: "company-1",
+      threadId: "thread-1",
+      runId: "run-1",
+    });
+
+    expect(mockEnsureAgentParticipant).toHaveBeenCalledWith(
+      expect.anything(),
+      "company-1",
+      "thread-1",
+      "agent-1",
+    );
+    // Registration must precede the post — otherwise the authz inside addEntry
+    // still sees a non-participant.
+    const registeredAt = mockEnsureAgentParticipant.mock.invocationCallOrder[0];
+    const postedAt = addEntry.mock.invocationCallOrder[0];
+    expect(registeredAt).toBeLessThan(postedAt);
   });
 
   it("threads sourceInfo from the action payload through addEntry on a committed post_reply (fix (f))", async () => {
@@ -460,10 +501,21 @@ describe("threadAgentActionService", () => {
       "thread-1",
       expect.objectContaining({ sourceInfo: { systemNotice: true } }),
       "agent:agent-1",
+      {
+        userId: "agent-1",
+        role: "team_member",
+        isHuman: false,
+        principalType: "agent",
+      },
     );
   });
 
-  it("convenes a mentioned crew agent on a committed post_reply via processMentions (fix (f))", async () => {
+  it("does NOT summon inline via processMentions on a committed post_reply — the outbox owns it (round-8 #1)", async () => {
+    // The @mention summon now rides the transactional outbox inside
+    // discussionService.addEntry (with hopCount:1 for this agent-authored,
+    // inputType:'agent' reply) and is drained exactly-once by the worker. Calling
+    // processMentions directly here on top of the outbox was a DOUBLE summon —
+    // removed. (The atomic enqueue is covered by the outbox integration test.)
     const action = {
       ...baseAction,
       payload: {
@@ -485,16 +537,11 @@ describe("threadAgentActionService", () => {
     });
 
     expect(result).toEqual({ committed: 1, suppressed: 0, blocked: 0, failed: 0, lostRace: 0 });
-    // Mention processing runs against the committed entry, hop-capped at 1 — the
-    // same contract as the non-gated post-entry-tool path.
-    expect(mockProcessMentions).toHaveBeenCalledWith(
-      expect.anything(),
-      "company-1",
-      "thread-1",
-      "entry-with-mention",
-      [{ raw: "@Planner", name: "Planner" }],
-      { hopCount: 1 },
-    );
+    // addEntry (which owns the outbox enqueue) posts the agent reply…
+    expect(addEntry).toHaveBeenCalledTimes(1);
+    expect(addEntry.mock.calls[0][2]).toMatchObject({ inputType: "agent", authorAgentId: expect.anything() });
+    // …and the committer no longer double-summons inline.
+    expect(mockProcessMentions).not.toHaveBeenCalled();
   });
 
   it("does not run mention processing when a committed post_reply has no @mention (fix (f))", async () => {
@@ -514,14 +561,13 @@ describe("threadAgentActionService", () => {
     expect(mockProcessMentions).not.toHaveBeenCalled();
   });
 
-  it("keeps a committed post_reply when mention processing throws (best-effort, fix (f))", async () => {
+  it("commits a post_reply with an @mention — dispatch is now the outbox worker's concern, never inline (round-8 #1)", async () => {
     const action = {
       ...baseAction,
       payload: { rawContent: "@Planner please review", parentEntryId: "entry-1" },
     };
     const db = createSequenceDb({ selects: [[action]], updates: [[{ ...action, status: "committed" }]] });
     const addEntry = vi.fn().mockResolvedValue({ id: "entry-with-mention" });
-    mockProcessMentions.mockRejectedValueOnce(new Error("dispatch offline"));
 
     const result = await threadAgentActionService(db as never, {
       compareFreshnessSnapshot: vi.fn().mockResolvedValue({ fresh: true }),
@@ -533,8 +579,9 @@ describe("threadAgentActionService", () => {
       runId: "run-1",
     });
 
-    // The reply still commits — a mention-dispatch failure must not roll it back.
+    // The reply commits and the committer never summons inline (the outbox does).
     expect(result).toEqual({ committed: 1, suppressed: 0, blocked: 0, failed: 0, lostRace: 0 });
+    expect(mockProcessMentions).not.toHaveBeenCalled();
   });
 
   it("claims a post_reply as committing before writing the discussion entry", async () => {

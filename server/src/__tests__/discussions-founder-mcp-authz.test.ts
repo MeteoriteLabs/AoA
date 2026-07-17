@@ -107,6 +107,7 @@ vi.mock("@armyofagents/db", () => ({
 // short-circuit the guard under test.
 const mockEntriesSince = vi.fn();
 const mockRouteItem    = vi.fn();
+const mockAddEntry     = vi.fn();
 
 vi.mock("../services/threads.js", () => ({
   threadService: vi.fn(() => ({
@@ -159,7 +160,7 @@ vi.mock("../services/index.js", () => ({
     list:        vi.fn(),
     create:      vi.fn(),
     update:      vi.fn(),
-    addEntry:    vi.fn(),
+    addEntry:    mockAddEntry,
     updateEntry: vi.fn(),
     approve:     vi.fn(),
     delete:      vi.fn(),
@@ -391,5 +392,27 @@ describe("buildActor — board-gate (HIGH founder-MCP authz bypass fix)", () => 
 
     expect(res.status).toBe(404);
     expect(mockGetEffectiveRole).toHaveBeenCalledWith(COMPANY_ID, OTHER_ID);
+  });
+
+  it("POST entry resolves a team_member actor and delegates authorization to the service", async () => {
+    mockGetEffectiveRole.mockResolvedValue("team_member");
+    mockAddEntry.mockResolvedValue({ id: "entry-1" });
+
+    const res = await request(makeApp(boardMember()))
+      .post(entriesUrl)
+      .send({ inputType: "write", rawContent: "Participant reply" });
+
+    expect(res.status).toBe(201);
+    expect(mockAddEntry).toHaveBeenCalledWith(
+      COMPANY_ID,
+      THREAD_ID,
+      expect.objectContaining({ rawContent: "Participant reply" }),
+      OTHER_ID,
+      expect.objectContaining({
+        userId: OTHER_ID,
+        role: "team_member",
+        isHuman: true,
+      }),
+    );
   });
 });

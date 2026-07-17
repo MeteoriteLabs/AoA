@@ -722,6 +722,7 @@ describe("cliModeService.chat — per-CLI wiring (MX4)", () => {
         userRole: "founder",
         content: "hello world",
         enabledCapabilities: [],
+        conversationId: "conversation-a",
       } as any,
       { cliTool, executionMode: "cli", ...configOverrides } as any,
     )) {
@@ -961,6 +962,7 @@ describe("cliModeService.chat — codex JSONL parse + one-shot/resume (MX-chatpa
     cliTool: string,
     content: string,
     configOverride: Record<string, unknown> = {},
+    conversationId = "conversation-a",
   ): Promise<any[]> {
     const chunks: any[] = [];
     const config = { cliTool, executionMode: "cli", ...configOverride };
@@ -971,6 +973,7 @@ describe("cliModeService.chat — codex JSONL parse + one-shot/resume (MX-chatpa
         userRole: "founder",
         content,
         enabledCapabilities: [],
+        conversationId,
       } as any,
       config as any,
     )) {
@@ -1011,7 +1014,7 @@ describe("cliModeService.chat — codex JSONL parse + one-shot/resume (MX-chatpa
     expect(vi.mocked(codexMod.writeCodexMcpConfigToml)).toHaveBeenCalledTimes(1);
 
     // The codex sessionId from the fixture is stored on the session.
-    const stored = service.getSessionStore().get("comp1:user1");
+    const stored = service.getSessionStore().get("comp1:user1:conversation-a");
     expect(stored).toBeDefined();
     expect(stored.codexSessionId).toBe("codex-sess-aaa");
   });
@@ -1080,7 +1083,7 @@ describe("cliModeService.chat — codex JSONL parse + one-shot/resume (MX-chatpa
     const service = cliModeService({} as any);
 
     await drainChat(service, "codex", "first message");
-    const afterT1 = service.getSessionStore().get("comp1:user1");
+    const afterT1 = service.getSessionStore().get("comp1:user1:conversation-a");
     expect(afterT1.codexSessionId).toBe("codex-sess-aaa");
 
     const chunks2 = await drainChat(service, "codex", "second message");
@@ -1104,8 +1107,55 @@ describe("cliModeService.chat — codex JSONL parse + one-shot/resume (MX-chatpa
       .map((c) => c.delta)
       .join("");
     expect(text2).toContain("Follow-up answer from codex.");
-    const afterT2 = service.getSessionStore().get("comp1:user1");
+    const afterT2 = service.getSessionStore().get("comp1:user1:conversation-a");
     expect(afterT2.codexSessionId).toBe("codex-sess-bbb");
+  });
+
+  it("isolates provider sessions when alternating Commander conversations A → B → A", async () => {
+    const cp = await import("node:child_process");
+    vi.mocked(cp.execSync).mockReturnValue("/usr/local/bin/codex\n" as any);
+    const conversationBTurn = [
+      JSON.stringify({ type: "thread.started", thread_id: "codex-sess-b" }),
+      JSON.stringify({
+        type: "item.completed",
+        item: { type: "agent_message", text: "Conversation B answer." },
+      }),
+      JSON.stringify({ type: "turn.completed", usage: { input_tokens: 3, output_tokens: 2 } }),
+    ].join("\n");
+    const conversationASecondTurn = [
+      JSON.stringify({ type: "thread.started", thread_id: "codex-sess-a2" }),
+      JSON.stringify({
+        type: "item.completed",
+        item: { type: "agent_message", text: "Conversation A continued." },
+      }),
+      JSON.stringify({ type: "turn.completed", usage: { input_tokens: 4, output_tokens: 2 } }),
+    ].join("\n");
+    vi.mocked(cp.spawn)
+      .mockReturnValueOnce(makeOneShotProcess({ stdout: CODEX_TURN1_JSONL }) as any)
+      .mockReturnValueOnce(makeOneShotProcess({ stdout: conversationBTurn }) as any)
+      .mockReturnValueOnce(makeOneShotProcess({ stdout: conversationASecondTurn }) as any);
+
+    const { cliModeService } = await import(
+      "../services/internal-agent/cli-mode.js"
+    );
+    const service = cliModeService({} as any);
+
+    await drainChat(service, "codex", "A first", {}, "conversation-a");
+    await drainChat(service, "codex", "B first", {}, "conversation-b");
+    await drainChat(service, "codex", "A second", {}, "conversation-a");
+
+    expect(service.getSessionStore().get("comp1:user1:conversation-a")?.codexSessionId)
+      .toBe("codex-sess-a2");
+    expect(service.getSessionStore().get("comp1:user1:conversation-b")?.codexSessionId)
+      .toBe("codex-sess-b");
+
+    const secondTurnArgs = vi.mocked(cp.spawn).mock.calls[1][1] as string[];
+    expect(secondTurnArgs).not.toContain("resume");
+
+    const thirdTurnArgs = vi.mocked(cp.spawn).mock.calls[2][1] as string[];
+    const resumeIdx = thirdTurnArgs.indexOf("resume");
+    expect(resumeIdx).toBeGreaterThan(-1);
+    expect(thirdTurnArgs[resumeIdx + 1]).toBe("codex-sess-aaa");
   });
 
   it("codex resume action_confirmation: resumed turns still surface approval chunks", async () => {
@@ -1201,7 +1251,7 @@ describe("cliModeService.chat — codex JSONL parse + one-shot/resume (MX-chatpa
       .join("");
     expect(text2).toContain("Follow-up answer from codex.");
     // sessionId refreshed from the successful fresh retry.
-    expect(service.getSessionStore().get("comp1:user1").codexSessionId).toBe(
+    expect(service.getSessionStore().get("comp1:user1:conversation-a").codexSessionId).toBe(
       "codex-sess-bbb",
     );
   });
@@ -1402,7 +1452,7 @@ describe("cliModeService.chat — codex JSONL parse + one-shot/resume (MX-chatpa
 
     // claude must NOT acquire a codex sessionId.
     expect(
-      service.getSessionStore().get("comp1:user1")?.codexSessionId,
+      service.getSessionStore().get("comp1:user1:conversation-a")?.codexSessionId,
     ).toBeUndefined();
 
     // claude writes exactly the {mcpServers:{aoa}} wrapper JSON once.
@@ -1468,7 +1518,7 @@ describe("cliModeService.chat — codex JSONL parse + one-shot/resume (MX-chatpa
 
     // Turn 1 — store the codex session id.
     await drainChat(service, "codex", "first message", { model: "gpt-4.1" });
-    const afterT1 = service.getSessionStore().get("comp1:user1");
+    const afterT1 = service.getSessionStore().get("comp1:user1:conversation-a");
     expect(afterT1.codexSessionId).toBe("codex-sess-aaa");
 
     // Turn 2 — resume with codex-compatible config.model.

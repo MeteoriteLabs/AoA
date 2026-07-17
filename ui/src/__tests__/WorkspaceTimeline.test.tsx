@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor, fireEvent, act } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent, act, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
+import { COMPOSER_MAX_ATTACHMENT_BYTES } from "@armyofagents/shared";
 import { WorkspaceTimeline } from "../components/workspace/WorkspaceTimeline";
 import { queryKeys } from "../lib/queryKeys";
 
@@ -142,6 +143,21 @@ vi.mock("../api/work-questions", () => ({
   ),
 }));
 
+// Mutable connection state for the shared offline strip (B-states, mock §5).
+const liveState = vi.hoisted(() => ({ connectionState: "open" }));
+
+vi.mock("../context/LiveUpdatesProvider", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../context/LiveUpdatesProvider")>();
+  return {
+    ...actual,
+    useLiveUpdates: () => ({
+      connectionState: liveState.connectionState,
+      workingAgentsByThread: {},
+      presenceByThread: {},
+    }),
+  };
+});
+
 vi.mock("../context/ToastContext", () => ({
   useToast: () => ({ pushToast: vi.fn(), toasts: [], dismissToast: vi.fn(), clearToasts: vi.fn() }),
 }));
@@ -184,18 +200,29 @@ function renderTimeline(props: Partial<React.ComponentProps<typeof WorkspaceTime
     },
   });
 
-  const result = render(
+  const makeUi = (extra: Partial<React.ComponentProps<typeof WorkspaceTimeline>> = {}) => (
     <QueryClientProvider client={queryClient}>
       <MemoryRouter>
         <WorkspaceTimeline
           issueId="issue-1"
           {...props}
+          {...extra}
         />
       </MemoryRouter>
-    </QueryClientProvider>,
+    </QueryClientProvider>
   );
 
-  return { ...result, queryClient };
+  const result = render(makeUi());
+
+  // Fresh element tree each time so mocked hook values (e.g. liveState) that
+  // changed since the first render are re-read. Pass `extra` props to simulate
+  // an entity switch (e.g. a different issueId) on the SAME mounted component.
+  return {
+    ...result,
+    queryClient,
+    rerenderTimeline: (extra: Partial<React.ComponentProps<typeof WorkspaceTimeline>> = {}) =>
+      result.rerender(makeUi(extra)),
+  };
 }
 
 function setScrollMetrics(element: HTMLElement, metrics: { scrollHeight: number; clientHeight: number; scrollTop: number }) {
@@ -226,6 +253,7 @@ function makeLiveRun(id = "run-live-scroll") {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  liveState.connectionState = "open";
   issuesApiMock.get.mockResolvedValue(mockIssue);
   issuesApiMock.listComments.mockResolvedValue(mockComments);
   issuesApiMock.listAttachments.mockResolvedValue([]);
@@ -629,7 +657,7 @@ describe("WorkspaceTimeline — input area", () => {
     });
 
     expect(screen.getByPlaceholderText("Message Alpha Agent...")).toBeInTheDocument();
-    expect(screen.getByText("Send")).toBeInTheDocument();
+    expect(screen.getByText("Send & wake")).toBeInTheDocument();
   });
 
   it("Send creates a comment and lets the server wake the agent", async () => {
@@ -642,14 +670,45 @@ describe("WorkspaceTimeline — input area", () => {
     const textarea = screen.getByPlaceholderText("Message Alpha Agent...");
     fireEvent.change(textarea, { target: { value: "Please review the changes" } });
 
-    const sendButton = screen.getByText("Send");
+    const sendButton = screen.getByText("Send & wake");
     fireEvent.click(sendButton);
 
     await waitFor(() => {
-      expect(issuesApiMock.addComment).toHaveBeenCalledWith("issue-1", "Please review the changes");
+      expect(issuesApiMock.addComment).toHaveBeenCalledWith(
+        "issue-1",
+        "Please review the changes",
+        undefined,
+        undefined,
+        undefined,
+        expect.any(String),
+      );
     });
 
     expect(agentsApiMock.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("sends on Enter and keeps Shift+Enter available for a newline", async () => {
+    renderTimeline();
+
+    const textarea = await screen.findByPlaceholderText("Message Alpha Agent...");
+    fireEvent.change(textarea, { target: { value: "First line" } });
+    fireEvent.keyDown(textarea, { key: "Enter", shiftKey: true });
+
+    expect(issuesApiMock.addComment).not.toHaveBeenCalled();
+    expect(textarea).toHaveValue("First line");
+
+    fireEvent.keyDown(textarea, { key: "Enter" });
+
+    await waitFor(() => {
+      expect(issuesApiMock.addComment).toHaveBeenCalledWith(
+        "issue-1",
+        "First line",
+        undefined,
+        undefined,
+        undefined,
+        expect.any(String),
+      );
+    });
   });
 
   it("renders the classic separated chatbar rows", async () => {
@@ -693,7 +752,14 @@ describe("WorkspaceTimeline — input area", () => {
     fireEvent.click(screen.getByText("Send"));
 
     await waitFor(() => {
-      expect(issuesApiMock.addCommentWithAttachments).toHaveBeenCalledWith("issue-1", "", [file]);
+      expect(issuesApiMock.addCommentWithAttachments).toHaveBeenCalledWith(
+        "issue-1",
+        "",
+        [file],
+        undefined,
+        undefined,
+        expect.any(String),
+      );
     });
   });
 
@@ -712,10 +778,17 @@ describe("WorkspaceTimeline — input area", () => {
 
     const textarea = screen.getByPlaceholderText("Message Alpha Agent...");
     fireEvent.change(textarea, { target: { value: "see attached" } });
-    fireEvent.click(screen.getByText("Send"));
+    fireEvent.click(screen.getByText("Send & wake"));
 
     await waitFor(() => {
-      expect(issuesApiMock.addCommentWithAttachments).toHaveBeenCalledWith("issue-1", "see attached", [file]);
+      expect(issuesApiMock.addCommentWithAttachments).toHaveBeenCalledWith(
+        "issue-1",
+        "see attached",
+        [file],
+        undefined,
+        undefined,
+        expect.any(String),
+      );
     });
     expect(agentsApiMock.wakeup).not.toHaveBeenCalled();
   });
@@ -731,21 +804,69 @@ describe("WorkspaceTimeline — input area", () => {
     const fileInput = screen.getByTestId("workspace-chatbar-file-input") as HTMLInputElement;
     fireEvent.change(fileInput, { target: { files: [file] } });
 
-    fireEvent.click(screen.getByText("Send"));
+    fireEvent.click(screen.getByText("Send & wake"));
 
     await waitFor(() => {
-      expect(issuesApiMock.addCommentWithAttachments).toHaveBeenCalledWith("issue-1", "", [file]);
+      expect(issuesApiMock.addCommentWithAttachments).toHaveBeenCalledWith(
+        "issue-1",
+        "",
+        [file],
+        undefined,
+        undefined,
+        expect.any(String),
+      );
     });
+  });
+
+  it("rejects unsupported and oversized attachments with inline feedback", async () => {
+    renderTimeline();
+
+    await screen.findByTestId("workspace-chatbar");
+    const fileInput = screen.getByTestId("workspace-chatbar-file-input") as HTMLInputElement;
+    const unsupported = new File(["fake"], "script.exe", { type: "application/x-msdownload" });
+    fireEvent.change(fileInput, { target: { files: [unsupported] } });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Unsupported attachment type");
+    expect(screen.queryByText("script.exe")).not.toBeInTheDocument();
+
+    const oversized = new File(["fake"], "large.pdf", { type: "application/pdf" });
+    Object.defineProperty(oversized, "size", {
+      configurable: true,
+      value: COMPOSER_MAX_ATTACHMENT_BYTES + 1,
+    });
+    fireEvent.change(fileInput, { target: { files: [oversized] } });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("large.pdf exceeds the 10 MB attachment limit");
+    expect(screen.queryByText("large.pdf")).not.toBeInTheDocument();
+    expect(issuesApiMock.addCommentWithAttachments).not.toHaveBeenCalled();
+  });
+
+  it("keeps the draft and selected files when sending fails and raises the banner", async () => {
+    issuesApiMock.addCommentWithAttachments.mockRejectedValueOnce(new Error("Upload failed"));
+    renderTimeline();
+
+    const textarea = await screen.findByPlaceholderText("Message Alpha Agent...");
+    const file = new File(["fake"], "evidence.txt", { type: "text/plain" });
+    fireEvent.change(screen.getByTestId("workspace-chatbar-file-input"), { target: { files: [file] } });
+    fireEvent.change(textarea, { target: { value: "Please inspect this" } });
+    fireEvent.click(screen.getByText("Send & wake"));
+
+    // The send-failure message lives in the shared banner now — the old inline
+    // "Could not send message" composerError copy is gone (mock §5).
+    expect(await screen.findByTestId("composer-send-failed-banner")).toBeInTheDocument();
+    expect(screen.queryByText(/Could not send message/)).not.toBeInTheDocument();
+    expect(textarea).toHaveValue("Please inspect this");
+    expect(screen.getByText("evidence.txt")).toBeInTheDocument();
   });
 
   it("Send button is disabled when input is empty", async () => {
     renderTimeline();
 
     await waitFor(() => {
-      expect(screen.getByText("Send")).toBeInTheDocument();
+      expect(screen.getByText("Send & wake")).toBeInTheDocument();
     });
 
-    const sendButton = screen.getByText("Send");
+    const sendButton = screen.getByText("Send & wake");
     expect(sendButton).toBeDisabled();
   });
 
@@ -818,6 +939,354 @@ describe("WorkspaceTimeline — chatbar live state", () => {
     const chatbar = await screen.findByTestId("workspace-chatbar");
     expect(chatbar).toHaveTextContent("Alpha Agent");
     expect(chatbar).toHaveTextContent("Working");
+  });
+
+  it("states 'Queued after current run' inside the frame while a run is live (Board 1 §3)", async () => {
+    heartbeatsApiMock.liveRunsForIssue.mockResolvedValue([makeLiveRun("run-live-queued")]);
+
+    renderTimeline();
+
+    const notice = await screen.findByTestId("workspace-chatbar-queued-notice");
+    expect(notice).toHaveTextContent("Queued after current run");
+    // The notice lives INSIDE the composer frame, per the containment contract.
+    expect(screen.getByTestId("workspace-chatbar").contains(notice)).toBe(true);
+  });
+
+  it("chatbar carries the Quiet Operator card chrome without overflow clipping", async () => {
+    renderTimeline();
+
+    const chatbar = await screen.findByTestId("workspace-chatbar");
+    expect(chatbar).toHaveAttribute("data-chrome", "card");
+    expect(chatbar.className).toContain("rounded-lg");
+    expect(chatbar.className).not.toContain("overflow-hidden");
+  });
+});
+
+describe("WorkspaceTimeline — B-states (mock §5)", () => {
+  it("Retry re-sends the IDENTICAL args including the same clientSubmissionId, then clears", async () => {
+    issuesApiMock.addComment.mockRejectedValueOnce(new Error("network error"));
+    renderTimeline();
+
+    const textarea = await screen.findByPlaceholderText("Message Alpha Agent...");
+    fireEvent.change(textarea, { target: { value: "retry me" } });
+    fireEvent.click(screen.getByText("Send & wake"));
+
+    const banner = await screen.findByTestId("composer-send-failed-banner");
+    expect(textarea).toHaveValue("retry me");
+
+    const firstCall = issuesApiMock.addComment.mock.calls[0];
+    const submissionId = firstCall[5];
+    expect(typeof submissionId).toBe("string");
+    expect((submissionId as string).length).toBeGreaterThan(0);
+
+    fireEvent.click(within(banner).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(issuesApiMock.addComment).toHaveBeenCalledTimes(2));
+    // Identical args — same clientSubmissionId means the server replays, never duplicates.
+    expect(issuesApiMock.addComment.mock.calls[1]).toEqual(firstCall);
+
+    await waitFor(() =>
+      expect(screen.queryByTestId("composer-send-failed-banner")).not.toBeInTheDocument(),
+    );
+    // Retry success clears the composer like a normal send.
+    expect(textarea).toHaveValue("");
+  });
+
+  it("dismisses the banner when the draft diverges; the next send mints a NEW clientSubmissionId", async () => {
+    issuesApiMock.addComment.mockRejectedValueOnce(new Error("network error"));
+    renderTimeline();
+
+    const textarea = await screen.findByPlaceholderText("Message Alpha Agent...");
+    fireEvent.change(textarea, { target: { value: "first try" } });
+    fireEvent.click(screen.getByText("Send & wake"));
+    await screen.findByTestId("composer-send-failed-banner");
+
+    // Keep editing past the failed snapshot — Retry would post stale content
+    // and its success-clear would wipe these edits, so the banner must go.
+    fireEvent.change(textarea, { target: { value: "first try plus newer edits" } });
+    expect(screen.queryByTestId("composer-send-failed-banner")).not.toBeInTheDocument();
+    expect(textarea).toHaveValue("first try plus newer edits");
+
+    fireEvent.click(screen.getByText("Send & wake"));
+    await waitFor(() => expect(issuesApiMock.addComment).toHaveBeenCalledTimes(2));
+    const first = issuesApiMock.addComment.mock.calls[0];
+    const second = issuesApiMock.addComment.mock.calls[1];
+    expect(second[1]).toBe("first try plus newer edits");
+    expect(second[5]).not.toBe(first[5]);
+  });
+
+  it("Edit dismisses the banner but keeps the draft", async () => {
+    issuesApiMock.addComment.mockRejectedValueOnce(new Error("network error"));
+    renderTimeline();
+
+    const textarea = await screen.findByPlaceholderText("Message Alpha Agent...");
+    fireEvent.change(textarea, { target: { value: "edit me" } });
+    fireEvent.click(screen.getByText("Send & wake"));
+    const banner = await screen.findByTestId("composer-send-failed-banner");
+
+    fireEvent.click(within(banner).getByRole("button", { name: "Edit" }));
+    expect(screen.queryByTestId("composer-send-failed-banner")).not.toBeInTheDocument();
+    expect(textarea).toHaveValue("edit me");
+    expect(issuesApiMock.addComment).toHaveBeenCalledTimes(1);
+  });
+
+  it("Discard dismisses the banner and clears the input and selected files", async () => {
+    issuesApiMock.addCommentWithAttachments.mockRejectedValueOnce(new Error("boom"));
+    renderTimeline();
+
+    const textarea = await screen.findByPlaceholderText("Message Alpha Agent...");
+    const file = new File(["fake"], "evidence.txt", { type: "text/plain" });
+    fireEvent.change(screen.getByTestId("workspace-chatbar-file-input"), { target: { files: [file] } });
+    fireEvent.change(textarea, { target: { value: "discard me" } });
+    fireEvent.click(screen.getByText("Send & wake"));
+    const banner = await screen.findByTestId("composer-send-failed-banner");
+
+    fireEvent.click(within(banner).getByRole("button", { name: "Discard" }));
+    expect(screen.queryByTestId("composer-send-failed-banner")).not.toBeInTheDocument();
+    expect(textarea).toHaveValue("");
+    expect(screen.queryByText("evidence.txt")).not.toBeInTheDocument();
+    // No resend happened.
+    expect(issuesApiMock.addCommentWithAttachments).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows the offline strip and disables send while offline", async () => {
+    liveState.connectionState = "offline";
+    renderTimeline();
+
+    const textarea = await screen.findByPlaceholderText("Message Alpha Agent...");
+    const strip = screen.getByTestId("composer-offline-strip");
+    expect(strip.textContent).toContain("You're offline");
+
+    fireEvent.change(textarea, { target: { value: "queued while offline" } });
+    expect(screen.getByText("Send & wake")).toBeDisabled();
+
+    // The Enter shortcut must not bypass the disabled send either.
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(issuesApiMock.addComment).not.toHaveBeenCalled();
+  });
+
+  it("shows the drop overlay on frame dragEnter and attaches dropped files via the shared validation path", async () => {
+    renderTimeline();
+
+    const chatbar = await screen.findByTestId("workspace-chatbar");
+    fireEvent.dragEnter(chatbar, { dataTransfer: { types: ["Files"], files: [] } });
+    expect(screen.getByTestId("composer-drop-overlay")).toBeInTheDocument();
+
+    const file = new File(["fake"], "dropped.png", { type: "image/png" });
+    fireEvent.drop(chatbar, { dataTransfer: { types: ["Files"], files: [file] } });
+    expect(screen.queryByTestId("composer-drop-overlay")).not.toBeInTheDocument();
+    expect(await screen.findByText("dropped.png")).toBeInTheDocument();
+  });
+
+  it("removing a selected file dismisses the banner — Retry must never post a removed file", async () => {
+    issuesApiMock.addCommentWithAttachments.mockRejectedValueOnce(new Error("boom"));
+    renderTimeline();
+
+    const textarea = await screen.findByPlaceholderText("Message Alpha Agent...");
+    const file = new File(["fake"], "sensitive.txt", { type: "text/plain" });
+    fireEvent.change(screen.getByTestId("workspace-chatbar-file-input"), { target: { files: [file] } });
+    fireEvent.change(textarea, { target: { value: "with file" } });
+    fireEvent.click(screen.getByText("Send & wake"));
+    await screen.findByTestId("composer-send-failed-banner");
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove sensitive.txt" }));
+    expect(screen.queryByTestId("composer-send-failed-banner")).not.toBeInTheDocument();
+    // No resend happened — the stale snapshot (with the removed file) is unreachable.
+    expect(issuesApiMock.addCommentWithAttachments).toHaveBeenCalledTimes(1);
+  });
+
+  it("adding a file dismisses the banner; a fully rejected add leaves it up", async () => {
+    issuesApiMock.addComment.mockRejectedValueOnce(new Error("network error"));
+    renderTimeline();
+
+    const textarea = await screen.findByPlaceholderText("Message Alpha Agent...");
+    fireEvent.change(textarea, { target: { value: "text only" } });
+    fireEvent.click(screen.getByText("Send & wake"));
+    await screen.findByTestId("composer-send-failed-banner");
+
+    // A rejected file leaves the tray unchanged — no divergence, banner stays.
+    const unsupported = new File(["fake"], "script.exe", { type: "application/x-msdownload" });
+    fireEvent.change(screen.getByTestId("workspace-chatbar-file-input"), { target: { files: [unsupported] } });
+    expect(screen.getByTestId("composer-send-failed-banner")).toBeInTheDocument();
+
+    const file = new File(["fake"], "added.png", { type: "image/png" });
+    fireEvent.change(screen.getByTestId("workspace-chatbar-file-input"), { target: { files: [file] } });
+    expect(screen.queryByTestId("composer-send-failed-banner")).not.toBeInTheDocument();
+  });
+
+  it("the @ mention button insert dismisses the banner (divergence via mention.onChange)", async () => {
+    issuesApiMock.addComment.mockRejectedValueOnce(new Error("network error"));
+    renderTimeline();
+
+    const textarea = await screen.findByPlaceholderText("Message Alpha Agent...");
+    fireEvent.change(textarea, { target: { value: "mention me" } });
+    fireEvent.click(screen.getByText("Send & wake"));
+    await screen.findByTestId("composer-send-failed-banner");
+
+    fireEvent.click(screen.getByRole("button", { name: "Mention someone" }));
+    expect(screen.queryByTestId("composer-send-failed-banner")).not.toBeInTheDocument();
+  });
+
+  it("Retry is a no-op while offline", async () => {
+    issuesApiMock.addComment.mockRejectedValueOnce(new Error("network error"));
+    const { rerenderTimeline } = renderTimeline();
+
+    const textarea = await screen.findByPlaceholderText("Message Alpha Agent...");
+    fireEvent.change(textarea, { target: { value: "retry offline" } });
+    fireEvent.click(screen.getByText("Send & wake"));
+    await screen.findByTestId("composer-send-failed-banner");
+
+    liveState.connectionState = "offline";
+    rerenderTimeline();
+
+    const banner = screen.getByTestId("composer-send-failed-banner");
+    fireEvent.click(within(banner).getByRole("button", { name: "Retry" }));
+    // Flush the (would-be) async mutation before asserting nothing was sent.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(issuesApiMock.addComment).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("composer-send-failed-banner")).toBeInTheDocument();
+  });
+
+  it("mid-retry divergence never re-arms the stale banner (removed file stays unreachable)", async () => {
+    issuesApiMock.addCommentWithAttachments.mockRejectedValueOnce(new Error("boom"));
+    renderTimeline();
+
+    const textarea = await screen.findByPlaceholderText("Message Alpha Agent...");
+    const file = new File(["fake"], "sensitive.txt", { type: "text/plain" });
+    fireEvent.change(screen.getByTestId("workspace-chatbar-file-input"), { target: { files: [file] } });
+    fireEvent.change(textarea, { target: { value: "with file" } });
+    fireEvent.click(screen.getByText("Send & wake"));
+    const banner = await screen.findByTestId("composer-send-failed-banner");
+
+    // Hang the retry so we can mutate the tray while it is in flight.
+    let rejectRetry!: (err: Error) => void;
+    issuesApiMock.addCommentWithAttachments.mockImplementationOnce(
+      () => new Promise((_resolve, reject) => { rejectRetry = reject; }),
+    );
+    fireEvent.click(within(banner).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(issuesApiMock.addCommentWithAttachments).toHaveBeenCalledTimes(2));
+
+    // Divergence while retrying: the dismiss is suppressed (banner shows Retrying…)…
+    fireEvent.click(screen.getByRole("button", { name: "Remove sensitive.txt" }));
+    expect(screen.getByTestId("composer-send-failed-banner")).toBeInTheDocument();
+
+    // …but when the retry fails, the failure path must NOT re-arm the stale
+    // snapshot — a second Retry would post the removed (possibly sensitive) file.
+    await act(async () => {
+      rejectRetry(new Error("still failing"));
+    });
+    await waitFor(() =>
+      expect(screen.queryByTestId("composer-send-failed-banner")).not.toBeInTheDocument(),
+    );
+    // The stale snapshot stayed unreachable — nothing was re-sent.
+    expect(issuesApiMock.addCommentWithAttachments).toHaveBeenCalledTimes(2);
+  });
+
+  it("frame drag-drop still routes through attachment validation (oversized dropped file rejected)", async () => {
+    renderTimeline();
+
+    const chatbar = await screen.findByTestId("workspace-chatbar");
+    const oversized = new File(["fake"], "huge.pdf", { type: "application/pdf" });
+    Object.defineProperty(oversized, "size", {
+      configurable: true,
+      value: COMPOSER_MAX_ATTACHMENT_BYTES + 1,
+    });
+    fireEvent.dragEnter(chatbar, { dataTransfer: { types: ["Files"], files: [] } });
+    fireEvent.drop(chatbar, { dataTransfer: { types: ["Files"], files: [oversized] } });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("huge.pdf exceeds the 10 MB attachment limit");
+    expect(screen.queryByText("huge.pdf")).not.toBeInTheDocument();
+  });
+
+  it("unchecking interrupt after a failure dismisses the banner — Retry must never post a stale interrupt", async () => {
+    heartbeatsApiMock.liveRunsForIssue.mockResolvedValue([makeLiveRun("run-live-int")]);
+    issuesApiMock.addComment.mockRejectedValueOnce(new Error("network error"));
+    renderTimeline();
+
+    const interrupt = within(await screen.findByTestId("workspace-chatbar-interrupt")).getByRole("checkbox");
+    fireEvent.click(interrupt);
+    const textarea = screen.getByPlaceholderText("Message Alpha Agent...");
+    fireEvent.change(textarea, { target: { value: "stop and do this instead" } });
+    fireEvent.click(screen.getByText("Send"));
+    await screen.findByTestId("composer-send-failed-banner");
+    // The failed attempt snapshotted interrupt: true.
+    expect(issuesApiMock.addComment.mock.calls[0][3]).toBe(true);
+
+    // Unchecking interrupt is divergence — Retry would still interrupt the run.
+    fireEvent.click(interrupt);
+    expect(screen.queryByTestId("composer-send-failed-banner")).not.toBeInTheDocument();
+    expect(issuesApiMock.addComment).toHaveBeenCalledTimes(1);
+  });
+
+  it("toggling Re-open after a failure dismisses the banner", async () => {
+    issuesApiMock.get.mockResolvedValue({ ...mockIssue, status: "done" });
+    issuesApiMock.addComment.mockRejectedValueOnce(new Error("network error"));
+    renderTimeline();
+
+    const textarea = await screen.findByPlaceholderText("Message Alpha Agent...");
+    fireEvent.change(textarea, { target: { value: "reopen flip" } });
+    fireEvent.click(screen.getByText("Send & wake"));
+    await screen.findByTestId("composer-send-failed-banner");
+    // The failed attempt snapshotted reopen: true (the default on a closed task).
+    expect(issuesApiMock.addComment.mock.calls[0][2]).toBe(true);
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /Re-open task/i }));
+    expect(screen.queryByTestId("composer-send-failed-banner")).not.toBeInTheDocument();
+    expect(issuesApiMock.addComment).toHaveBeenCalledTimes(1);
+  });
+
+  it("a retry that succeeds AFTER an interrupt toggle mid-flight keeps the newer toggle and draft (revision guard)", async () => {
+    heartbeatsApiMock.liveRunsForIssue.mockResolvedValue([makeLiveRun("run-live-rev")]);
+    issuesApiMock.addComment.mockRejectedValueOnce(new Error("network error"));
+    renderTimeline();
+
+    const textarea = await screen.findByPlaceholderText("Message Alpha Agent...");
+    fireEvent.change(textarea, { target: { value: "hold my draft" } });
+    fireEvent.click(screen.getByText("Send"));
+    const banner = await screen.findByTestId("composer-send-failed-banner");
+
+    // Retry hangs; while it is in flight the user opts INTO interrupting.
+    let resolveRetry!: () => void;
+    issuesApiMock.addComment.mockImplementationOnce(
+      () => new Promise<void>((resolve) => { resolveRetry = resolve; }),
+    );
+    fireEvent.click(within(banner).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(issuesApiMock.addComment).toHaveBeenCalledTimes(2));
+
+    const interrupt = within(screen.getByTestId("workspace-chatbar-interrupt")).getByRole("checkbox");
+    fireEvent.click(interrupt);
+
+    await act(async () => { resolveRetry(); });
+    await waitFor(() =>
+      expect(screen.queryByTestId("composer-send-failed-banner")).not.toBeInTheDocument(),
+    );
+    // Retry itself posted the ORIGINAL snapshot (no interrupt)…
+    expect(issuesApiMock.addComment.mock.calls[1]).toEqual(issuesApiMock.addComment.mock.calls[0]);
+    // …but the success-clear must NOT wipe the newer control state or draft.
+    expect(interrupt).toBeChecked();
+    expect(textarea).toHaveValue("hold my draft");
+  });
+
+  it("switching tasks clears the banner, snapshot, and tray — Retry must never post into a different task", async () => {
+    issuesApiMock.addCommentWithAttachments.mockRejectedValueOnce(new Error("boom"));
+    const { rerenderTimeline } = renderTimeline();
+
+    const textarea = await screen.findByPlaceholderText("Message Alpha Agent...");
+    const file = new File(["fake"], "task-a-file.txt", { type: "text/plain" });
+    fireEvent.change(screen.getByTestId("workspace-chatbar-file-input"), { target: { files: [file] } });
+    fireEvent.change(textarea, { target: { value: "meant for task A" } });
+    fireEvent.click(screen.getByText("Send & wake"));
+    await screen.findByTestId("composer-send-failed-banner");
+
+    // Entity switch: same mounted component, different task.
+    rerenderTimeline({ issueId: "issue-2" });
+
+    expect(screen.queryByTestId("composer-send-failed-banner")).not.toBeInTheDocument();
+    // The tray must not leak into the other task either.
+    await waitFor(() => expect(screen.queryByText("task-a-file.txt")).not.toBeInTheDocument());
+    // The snapshot is unreachable — nothing was re-sent anywhere.
+    expect(issuesApiMock.addCommentWithAttachments).toHaveBeenCalledTimes(1);
   });
 });
 

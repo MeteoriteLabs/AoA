@@ -15,10 +15,13 @@ import { cn } from "../../lib/utils";
 import { matchSlashToken } from "./skillPickerUtils";
 import {
   createSkillToken,
+  createMentionToken,
   isRootEmpty,
+  isMentionToken,
   isSkillToken,
   serializeRoot,
   type SkillTokenData,
+  type MentionTokenData,
 } from "./commanderInputModel";
 
 export interface CommanderInputHandle {
@@ -63,6 +66,10 @@ interface CommanderInputProps {
   onBlur?: (e: React.FocusEvent<HTMLDivElement>) => void;
   /** Accepts identity-preserving refs dropped from Commander Cockpit cards. */
   onReferenceDrop?: (payload: { ref: CommanderInputRef; prompt?: string }) => void;
+  /** Sends files from clipboard paste or OS drag/drop to the parent uploader. */
+  onFilesSelected?: (files: File[]) => void;
+  mentionOptions?: MentionTokenData[];
+  onTextChange?: (text: string) => void;
 }
 
 const EMPTY_SLASH: SlashState = { active: false, query: "" };
@@ -75,7 +82,7 @@ const EMPTY_SLASH: SlashState = { active: false, query: "" };
  */
 export const CommanderInput = forwardRef<CommanderInputHandle, CommanderInputProps>(
   function CommanderInput(
-    { disabled, placeholder, className, onSubmit, onEmptyChange, onSlashChange, onKeyDown, onBlur, onReferenceDrop },
+    { disabled, placeholder, className, onSubmit, onEmptyChange, onSlashChange, onKeyDown, onBlur, onReferenceDrop, onFilesSelected, mentionOptions = [], onTextChange },
     ref,
   ) {
     const rootRef = useRef<HTMLDivElement>(null);
@@ -85,6 +92,8 @@ export const CommanderInput = forwardRef<CommanderInputHandle, CommanderInputPro
     // would otherwise clobber an imperatively-added class on the next render.
     const [isEmpty, setIsEmpty] = useState(true);
     const [dragActive, setDragActive] = useState(false);
+    const [mentionState, setMentionState] = useState({ active: false, query: "" });
+    const [mentionIndex, setMentionIndex] = useState(0);
 
     // Hover card for skill tokens (shows name + description + key on hover).
     const [hoverCard, setHoverCard] = useState<{
@@ -148,6 +157,19 @@ export const CommanderInput = forwardRef<CommanderInputHandle, CommanderInputPro
       return { active: m.active, query: m.query };
     }, []);
 
+    const readMention = useCallback(() => {
+      const root = rootRef.current;
+      if (!root) return { active: false, query: "" };
+      const sel = root.ownerDocument.getSelection();
+      if (!sel || sel.rangeCount === 0 || !sel.isCollapsed) return { active: false, query: "" };
+      const range = sel.getRangeAt(0);
+      const node = range.startContainer;
+      if (node.nodeType !== Node.TEXT_NODE || !root.contains(node)) return { active: false, query: "" };
+      const text = (node.textContent ?? "").slice(0, range.startOffset);
+      const match = /(^|\s)@([\w-]*)$/.exec(text);
+      return match ? { active: true, query: match[2] } : { active: false, query: "" };
+    }, []);
+
     const insertTextAtCaret = useCallback((text: string) => {
       const root = rootRef.current;
       if (!root) return;
@@ -208,7 +230,8 @@ export const CommanderInput = forwardRef<CommanderInputHandle, CommanderInputPro
       root.innerHTML = "";
       emitEmpty();
       emitSlash(EMPTY_SLASH);
-    }, [emitEmpty, emitSlash]);
+      onTextChange?.("");
+    }, [emitEmpty, emitSlash, onTextChange]);
 
     const getText = useCallback(
       () => (rootRef.current ? serializeRoot(rootRef.current).trim() : ""),
@@ -221,7 +244,6 @@ export const CommanderInput = forwardRef<CommanderInputHandle, CommanderInputPro
       const text = serializeRoot(root).trim();
       if (!text) return;
       onSubmitRef.current(text);
-      clear();
     }, [clear]);
 
     const insertSkill = useCallback(
@@ -285,6 +307,46 @@ export const CommanderInput = forwardRef<CommanderInputHandle, CommanderInputPro
       [emitEmpty, emitSlash],
     );
 
+    const insertMention = useCallback((mention: MentionTokenData) => {
+      const root = rootRef.current;
+      if (!root) return;
+      const doc = root.ownerDocument;
+      const sel = doc.getSelection();
+      if (!sel || sel.rangeCount === 0) return;
+      let range = sel.getRangeAt(0);
+      const node = range.startContainer;
+      if (node.nodeType === Node.TEXT_NODE) {
+        const text = node.textContent ?? "";
+        const match = /(^|\s)@[\w-]*$/.exec(text.slice(0, range.startOffset));
+        if (match) {
+          const replacement = doc.createRange();
+          replacement.setStart(node, range.startOffset - match[0].length + (match[1] ? 1 : 0));
+          replacement.setEnd(node, range.startOffset);
+          replacement.deleteContents();
+          range = replacement;
+        }
+      }
+      range.deleteContents();
+      if (needsLeadingSpace(range)) {
+        const lead = doc.createTextNode(" ");
+        range.insertNode(lead);
+        range.setStartAfter(lead);
+      }
+      const token = createMentionToken(doc, mention);
+      range.insertNode(token);
+      const trail = doc.createTextNode("\u00a0");
+      range.setStartAfter(token);
+      range.insertNode(trail);
+      const after = doc.createRange();
+      after.setStartAfter(trail);
+      after.collapse(true);
+      sel.removeAllRanges();
+      sel.addRange(after);
+      setMentionState({ active: false, query: "" });
+      setMentionIndex(0);
+      emitEmpty();
+    }, [emitEmpty]);
+
     useImperativeHandle(
       ref,
       () => ({
@@ -305,12 +367,37 @@ export const CommanderInput = forwardRef<CommanderInputHandle, CommanderInputPro
     const handleInput = useCallback(() => {
       emitEmpty();
       emitSlash(readSlash());
-    }, [emitEmpty, emitSlash, readSlash]);
+      const next = readMention();
+      setMentionState(next);
+      if (!next.active) setMentionIndex(0);
+      onTextChange?.(rootRef.current ? serializeRoot(rootRef.current) : "");
+    }, [emitEmpty, emitSlash, onTextChange, readMention, readSlash]);
 
     const handleKeyDown = useCallback(
       (e: React.KeyboardEvent<HTMLDivElement>) => {
         onKeyDown?.(e);
         if (e.defaultPrevented) return;
+
+        const filteredMentions = mentionOptions
+          .filter((option) => option.name.toLowerCase().includes(mentionState.query.toLowerCase()))
+          .slice(0, 8);
+        if (mentionState.active && filteredMentions.length > 0) {
+          if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+            e.preventDefault();
+            setMentionIndex((current) => (current + (e.key === "ArrowDown" ? 1 : -1) + filteredMentions.length) % filteredMentions.length);
+            return;
+          }
+          if (e.key === "Escape") {
+            e.preventDefault();
+            setMentionState({ active: false, query: "" });
+            return;
+          }
+          if (e.key === "Enter" || e.key === "Tab") {
+            e.preventDefault();
+            insertMention(filteredMentions[mentionIndex] ?? filteredMentions[0]);
+            return;
+          }
+        }
 
         if (e.key === "Enter" && !e.shiftKey) {
           e.preventDefault();
@@ -332,10 +419,10 @@ export const CommanderInput = forwardRef<CommanderInputHandle, CommanderInputPro
           const node = range.startContainer;
           let token: HTMLElement | null = null;
           if (node.nodeType === Node.TEXT_NODE && range.startOffset === 0) {
-            if (isSkillToken(node.previousSibling)) token = node.previousSibling;
+            if (isSkillToken(node.previousSibling) || isMentionToken(node.previousSibling)) token = node.previousSibling;
           } else if (node.nodeType === Node.ELEMENT_NODE) {
             const before = node.childNodes[range.startOffset - 1];
-            if (isSkillToken(before)) token = before;
+            if (isSkillToken(before) || isMentionToken(before)) token = before;
           }
           if (token) {
             e.preventDefault();
@@ -345,27 +432,35 @@ export const CommanderInput = forwardRef<CommanderInputHandle, CommanderInputPro
           }
         }
       },
-      [onKeyDown, submit, insertTextAtCaret, emitEmpty, emitSlash, readSlash],
+      [onKeyDown, submit, insertTextAtCaret, emitEmpty, emitSlash, readSlash, insertMention, mentionIndex, mentionOptions, mentionState],
     );
 
     const handlePaste = useCallback(
       (e: React.ClipboardEvent<HTMLDivElement>) => {
         e.preventDefault();
+        const files = Array.from(e.clipboardData?.files ?? []);
+        if (files.length > 0 && onFilesSelected) {
+          onFilesSelected(files);
+          return;
+        }
         const text = e.clipboardData?.getData("text/plain") ?? "";
         if (text) insertTextAtCaret(text);
         emitEmpty();
         emitSlash(readSlash());
       },
-      [insertTextAtCaret, emitEmpty, emitSlash, readSlash],
+      [insertTextAtCaret, emitEmpty, emitSlash, readSlash, onFilesSelected],
     );
 
     const handleDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
-      if (disabledRef.current || !onReferenceDrop) return;
-      if (!Array.from(e.dataTransfer.types).includes(COMMANDER_INPUT_REF_DRAG_MIME)) return;
+      if (disabledRef.current) return;
+      const types = Array.from(e.dataTransfer.types);
+      const hasReference = Boolean(onReferenceDrop) && types.includes(COMMANDER_INPUT_REF_DRAG_MIME);
+      const hasFiles = Boolean(onFilesSelected) && types.includes("Files");
+      if (!hasReference && !hasFiles) return;
       e.preventDefault();
       e.dataTransfer.dropEffect = "copy";
       setDragActive(true);
-    }, [onReferenceDrop]);
+    }, [onFilesSelected, onReferenceDrop]);
 
     const handleDragLeave = useCallback((e: React.DragEvent<HTMLDivElement>) => {
       if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
@@ -373,15 +468,24 @@ export const CommanderInput = forwardRef<CommanderInputHandle, CommanderInputPro
     }, []);
 
     const handleDrop = useCallback((e: React.DragEvent<HTMLDivElement>) => {
-      if (disabledRef.current || !onReferenceDrop) return;
-      const payload = parseCommanderInputRefDragPayload(
-        e.dataTransfer.getData(COMMANDER_INPUT_REF_DRAG_MIME),
-      );
-      if (!payload) return;
+      if (disabledRef.current) return;
+      if (onReferenceDrop) {
+        const payload = parseCommanderInputRefDragPayload(
+          e.dataTransfer.getData(COMMANDER_INPUT_REF_DRAG_MIME),
+        );
+        if (payload) {
+          e.preventDefault();
+          setDragActive(false);
+          onReferenceDrop(payload);
+          return;
+        }
+      }
+      const files = Array.from(e.dataTransfer.files ?? []);
+      if (files.length === 0 || !onFilesSelected) return;
       e.preventDefault();
       setDragActive(false);
-      onReferenceDrop(payload);
-    }, [onReferenceDrop]);
+      onFilesSelected(files);
+    }, [onFilesSelected, onReferenceDrop]);
 
     // Caret moves (click / arrows) can change slash context without an input event.
     const handleSelectionShift = useCallback(() => {
@@ -415,6 +519,25 @@ export const CommanderInput = forwardRef<CommanderInputHandle, CommanderInputPro
 
     return (
       <>
+        {mentionState.active && mentionOptions.length > 0 && (
+          <div className="absolute bottom-full left-0 z-40 mb-1 min-w-48 max-w-xs rounded-md border border-border bg-popover p-1 shadow-lg" role="listbox" aria-label="Mention suggestions">
+            {mentionOptions
+              .filter((option) => option.name.toLowerCase().includes(mentionState.query.toLowerCase()))
+              .slice(0, 8)
+              .map((option, index) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  role="option"
+                  aria-selected={index === mentionIndex}
+                  className={cn("flex w-full items-center rounded px-2 py-1.5 text-left text-xs", index === mentionIndex && "bg-accent")}
+                  onMouseDown={(event) => { event.preventDefault(); insertMention(option); }}
+                >
+                  @{option.name}
+                </button>
+              ))}
+          </div>
+        )}
         <div
           ref={rootRef}
           role="textbox"

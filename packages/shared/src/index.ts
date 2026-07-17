@@ -332,6 +332,9 @@ export {
   type PluginBridgeErrorCode,
   DEPARTMENT_FUNCTION_TYPES,
   type DepartmentFunctionType,
+  COMPOSER_MAX_ATTACHMENTS,
+  COMPOSER_MAX_ATTACHMENT_BYTES,
+  COMPOSER_ATTACHMENT_CONTENT_TYPES,
 } from "./constants.js";
 
 export {
@@ -1286,6 +1289,7 @@ export {
 } from "./config-schema.js";
 
 export * from "./teams.js";
+export * from "./composer-contracts.js";
 export * from "./autonomy-levels.js";
 export * from "./inbound-routing.js";
 export * from "./user-notes.js";

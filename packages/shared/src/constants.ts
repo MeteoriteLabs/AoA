@@ -1,6 +1,20 @@
 export const COMPANY_STATUSES = ["active", "paused", "archived"] as const;
 export type CompanyStatus = (typeof COMPANY_STATUSES)[number];
 
+/** Shared composer attachment contract. Keep UI and server validation aligned. */
+export const COMPOSER_MAX_ATTACHMENTS = 5;
+export const COMPOSER_MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+export const COMPOSER_ATTACHMENT_CONTENT_TYPES = [
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "image/gif",
+  "application/pdf",
+  "text/plain",
+  "text/markdown",
+  "application/json",
+] as const;
+
 export const DEPLOYMENT_MODES = ["local_trusted", "authenticated"] as const;
 export type DeploymentMode = (typeof DEPLOYMENT_MODES)[number];
 

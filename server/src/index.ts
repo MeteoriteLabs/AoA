@@ -55,6 +55,8 @@ import { scheduleTtlSweeper } from "./services/workspace-ttl-sweeper.js";
 import { scheduleCleanupRetrySweeper } from "./services/workspace-cleanup-retry-sweeper.js";
 import { registerHeartbeatWatchdogSweeper } from "./services/heartbeat-watchdog.js";
 import { startEmbeddingWorker } from "./services/embeddings-worker.js";
+import { startMentionOutboxWorker } from "./services/mention-outbox-worker.js";
+import { startCommentWakeupOutboxWorker } from "./services/comment-wakeup-outbox-worker.js";
 import { resetStaleProcessing } from "./services/embeddings.js";
 import { backfillQueueCompanyIds, reconcileNullVectors } from "./services/embeddings-backfill.js";
 import { getProviderApiKey } from "./services/internal-agent/providers/index.js";
@@ -1007,11 +1009,31 @@ const embeddingWorker = startEmbeddingWorker(db as any, {
 process.once("SIGTERM", () => embeddingWorker.stop());
 process.once("SIGINT", () => embeddingWorker.stop());
 
-// Commander CLI-login reaper (Plan 3 / §6.2 Task 4). A detached `claude login`
-// / `codex login` child can outlive a hard restart with no in-memory handle to
-// kill it, so at boot we terminate any persisted `pending` challenge child by
-// PID and clear its row. Runs unconditionally (independent of the heartbeat
-// scheduler). On shutdown, the same reap terminates in-flight login children.
+// Mention-outbox drain worker (PR #291 round-6 #3). Drains
+// `discussion_mention_outbox` — the transactional summon rows enqueued in
+// addEntry's tx — and runs processMentions exactly-once (FOR UPDATE SKIP LOCKED
+// claim + mark-'done'). Replaces the route-level fire-and-forget summon that was
+// lost on failure and skipped by a same-key replay.
+const mentionOutboxWorker = startMentionOutboxWorker(db as any, { intervalMs: 2000 });
+process.once("SIGTERM", () => mentionOutboxWorker.stop());
+process.once("SIGINT", () => mentionOutboxWorker.stop());
+
+// Comment-wakeup-outbox drain worker (PR #291 round-16). Drains
+// `comment_wakeup_outbox` — the PER-TARGET comment agent-wakeup rows enqueued in
+// addComment's tx — and dispatches each exactly-once (FOR UPDATE SKIP LOCKED
+// claim + owner-guarded mark-'done'). Replaces the comment-wide wakeups_enqueued_at
+// marker + CAS, closing the crash-loses-summon and partial-failure-double-wake
+// residuals (per-target completion + worker retry).
+const commentWakeupOutboxWorker = startCommentWakeupOutboxWorker(db as any, { intervalMs: 2000 });
+process.once("SIGTERM", () => commentWakeupOutboxWorker.stop());
+process.once("SIGINT", () => commentWakeupOutboxWorker.stop());
+
+// Commander CLI-login reaper (Plan 3 / §6.2 Task 4, from PR #292). A detached
+// `claude login` / `codex login` child can outlive a hard restart with no
+// in-memory handle to kill it, so at boot we terminate any persisted `pending`
+// challenge child by PID and clear its row. Runs unconditionally (independent of
+// the heartbeat scheduler). On shutdown, the same reap terminates in-flight
+// login children.
 const commanderLoginReaper = buildCommanderLoginService(db as any);
 void commanderLoginReaper.reapOrphans().catch((err) => {
   logger.error({ err }, "startup reap of orphaned Commander login challenges failed");

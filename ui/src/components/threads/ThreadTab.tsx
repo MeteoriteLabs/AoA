@@ -19,6 +19,9 @@ import { useLiveUpdates } from "../../context/LiveUpdatesProvider";
 import { queryKeys } from "../../lib/queryKeys";
 import { EntryRow } from "./EntryRow";
 import { EntryComposer, type AgentRef, type AssetRef, type UserRef } from "./EntryComposer";
+import { ComposerSendFailedBanner } from "../composer/ComposerSendFailedBanner";
+import { ComposerOfflineStrip, toComposerConnectionState } from "../composer/ComposerOfflineStrip";
+import { createComposerSubmissionId } from "@armyofagents/shared";
 import { PresenceStrip } from "./PresenceStrip";
 import { Button } from "@/components/ui/button";
 import { RefreshCw } from "lucide-react";
@@ -35,7 +38,23 @@ import { WorkQuestionPanel } from "../work-questions/WorkQuestionPanel";
 const SUMMONING_TIMEOUT_MS = 20_000;
 const SEND_RECEIPT_TIMEOUT_MS = 4_000;
 
-type SendReceipt = "sending" | "sent" | "failed" | null;
+// Mock §5: "failed" is no longer a receipt — send failure raises the
+// ComposerSendFailedBanner (Retry/Edit/Discard) instead of inline copy.
+type SendReceipt = "sending" | "sent" | null;
+
+/** The exact mutation body of a failed send, retained for an idempotent Retry. */
+type AddEntryPayload = {
+  rawContent: string;
+  attachments: AssetRef[];
+  parentEntryId: string | null;
+  /**
+   * Client-minted idempotency key (server replay at POST …/entries).
+   * Minted ONCE per submission — Retry re-sends the identical body so an
+   * ambiguous failure (request landed, response lost) replays instead of
+   * double-posting. A NEW submission mints a NEW id.
+   */
+  clientSubmissionId: string;
+};
 
 /* ════════════════════════════════════════════════════════════════════════
    ThreadTab
@@ -101,6 +120,50 @@ export function ThreadTab({
   // before the server round-trip lands (today the mutation only invalidates). ──
   const [optimisticEntries, setOptimisticEntries] = useState<DiscussionEntry[]>([]);
   const [sendReceipt, setSendReceipt] = useState<SendReceipt>(null);
+
+  // Mock §5 send-failed banner state. The last-attempted payload lives in a ref
+  // (stored BEFORE awaiting the mutation) so BOTH failure sites — the submit
+  // catch here and EntryComposer's onSubmitError — can offer an identical Retry.
+  const [sendFailed, setSendFailed] = useState(false);
+  const [retrying, setRetrying] = useState(false);
+  const [composerClearSignal, setComposerClearSignal] = useState(0);
+  const lastAttemptedPayloadRef = useRef<AddEntryPayload | null>(null);
+  // Latest composer text as reported by EntryComposer (both draft modes) —
+  // lets the retry-success path skip the clearSignal bump when the draft
+  // diverged WHILE the retry was in flight (edits must never be wiped).
+  const latestDraftTextRef = useRef<string | null>(null);
+  // Attachment-tray changes since the snapshot was minted (stale-banner
+  // residual): the dismiss-on-tray-change guard is locked while retrying, so
+  // this flag is how the failure paths know the snapshot went stale mid-flight.
+  // Reset whenever a fresh attempt is snapshotted.
+  const attachmentsChangedSinceAttemptRef = useRef(false);
+
+  /**
+   * Stale-banner residual (cross-surface): true when the composer diverged
+   * from the snapshotted attempt — the draft text differs from the attempt's
+   * rawContent OR the attachment tray changed since the snapshot. A failure
+   * path must never (re-)arm the banner then: its Retry would post the stale
+   * snapshot (e.g. a removed attachment). The user has diverged; they'll send
+   * fresh with a NEW clientSubmissionId.
+   */
+  function draftDivergedFromAttempt(): boolean {
+    const payload = lastAttemptedPayloadRef.current;
+    if (!payload) return false;
+    if (attachmentsChangedSinceAttemptRef.current) return true;
+    const latest = latestDraftTextRef.current;
+    return latest !== null && latest.trim() !== payload.rawContent.trim();
+  }
+
+  // Entity switch (threadId change): the send-failed banner + attempt snapshot
+  // belong to the PREVIOUS thread — Retry must never post into a different
+  // thread. ONLY the banner/snapshot state resets here: the composer draft is
+  // per-thread already, so no clearSignal bump (that would wipe the new
+  // thread's draft).
+  useEffect(() => {
+    lastAttemptedPayloadRef.current = null;
+    attachmentsChangedSinceAttemptRef.current = false;
+    setSendFailed(false);
+  }, [threadId]);
 
   useEffect(() => {
     if (sendReceipt !== "sent") return;
@@ -223,15 +286,15 @@ export function ThreadTab({
   };
 
   const addEntryMutation = useMutation({
-    mutationFn: (payload: {
-      rawContent: string;
-      attachments: AssetRef[];
-      parentEntryId: string | null;
-    }) =>
+    mutationFn: (payload: AddEntryPayload) =>
       discussionsApi.addEntry(companyId, threadId, {
         rawContent: payload.rawContent,
         inputType: "write",
         parentEntryId: payload.parentEntryId,
+        // First UI consumer of the server-side idempotent replay (validator
+        // packages/shared/src/validators/discussion.ts; replay in
+        // server/src/routes/discussions.ts POST …/entries).
+        clientSubmissionId: payload.clientSubmissionId,
         // Phase E1: pass attachment ids so the server links them in the same txn.
         // Artifact Lifecycle P1: founder file-artifact uploads carry an
         // `artifactId` — route those to { artifactId } so the server links the
@@ -346,6 +409,8 @@ export function ThreadTab({
     }
 
     setSendReceipt("sending");
+    // A fresh submission supersedes any previous failure (and mints a NEW id).
+    setSendFailed(false);
 
     // Task 5.4: optimistically surface a "Summoning {names}…" chip for any
     // @mentioned crew agent, immediately — replaced by the real presence pill
@@ -396,18 +461,108 @@ export function ThreadTab({
       setOptimisticEntries((prev) => [...prev, optimistic]);
     }
 
+    // Minted ONCE per submission; stored BEFORE the await so the banner's Retry
+    // (from either failure site) re-sends the exact same body — the server's
+    // clientSubmissionId replay makes an ambiguous failure safe to retry.
+    const mutationPayload: AddEntryPayload = {
+      rawContent: payload.text,
+      attachments: payload.attachments,
+      parentEntryId: payload.parentEntryId,
+      clientSubmissionId: createComposerSubmissionId(),
+    };
+    lastAttemptedPayloadRef.current = mutationPayload;
+    attachmentsChangedSinceAttemptRef.current = false;
+
     try {
-      await addEntryMutation.mutateAsync({
-        rawContent: payload.text,
-        attachments: payload.attachments,
-        parentEntryId: payload.parentEntryId,
-      });
+      await addEntryMutation.mutateAsync(mutationPayload);
+      lastAttemptedPayloadRef.current = null;
       setSendReceipt("sent");
-    } catch {
+    } catch (error) {
       // On failure, drop the optimistic echo (mutation's onError already toasts).
       setOptimisticEntries((prev) => prev.filter((o) => o.rawContent !== payload.text));
-      setSendReceipt("failed");
+      setSendReceipt(null);
+      // Never arm a stale banner: if the composer diverged while the send was
+      // in flight, Retry would post the stale snapshot — leave it dismissed.
+      setSendFailed(!draftDivergedFromAttempt());
+      // Let EntryComposer retain the immutable submission snapshot. Swallowing
+      // this error causes it to clear the user's draft and uploaded attachments.
+      throw error;
     }
+  }
+
+  /** Banner Retry: re-send the IDENTICAL stored payload (same clientSubmissionId).
+   *  Gated offline like the submit path (and the other three surfaces). */
+  async function handleRetryFailedSend() {
+    const payload = lastAttemptedPayloadRef.current;
+    if (!payload || retrying || isDisconnected) return;
+    setRetrying(true);
+    try {
+      await addEntryMutation.mutateAsync(payload);
+      lastAttemptedPayloadRef.current = null;
+      setSendFailed(false);
+      setSendReceipt("sent");
+      // The original submit's success path clears the composer inside
+      // EntryComposer; a banner Retry bypasses that path, so clear via signal.
+      // EXCEPT when the draft diverged WHILE the retry was in flight (the
+      // divergence dismiss is locked during retry) — clearing then would wipe
+      // the newer edits. The message posted; the edits stay as a fresh draft.
+      const latest = latestDraftTextRef.current;
+      if (
+        (latest === null || latest.trim() === payload.rawContent.trim()) &&
+        !attachmentsChangedSinceAttemptRef.current
+      ) {
+        setComposerClearSignal((n) => n + 1);
+      }
+    } catch {
+      // Still failing — the banner stays up (mutation onError already toasts)
+      // UNLESS the composer diverged mid-retry (the divergence dismiss is
+      // locked while retrying): a stale banner's Retry would post the old
+      // snapshot (e.g. a removed attachment), so drop it now instead.
+      if (draftDivergedFromAttempt()) setSendFailed(false);
+    } finally {
+      setRetrying(false);
+    }
+  }
+
+  function handleDiscardFailedSend() {
+    lastAttemptedPayloadRef.current = null;
+    setSendFailed(false);
+    setComposerClearSignal((n) => n + 1);
+  }
+
+  /**
+   * Stale-snapshot guard (mock §5: failure never eats your work): if the user
+   * keeps editing while the banner is up, Retry would post the PRE-EDIT
+   * snapshot and its success-clear would wipe the newer edits. The moment the
+   * draft diverges from the snapshot, auto-dismiss the banner — the ref is
+   * kept (nothing double-posts); the user just sends normally with a fresh id.
+   * EntryComposer reports every text change here, in both controlled and
+   * uncontrolled draft modes.
+   */
+  function handleComposerDraftChange(text: string) {
+    latestDraftTextRef.current = text;
+    if (
+      sendFailed &&
+      !retrying &&
+      lastAttemptedPayloadRef.current &&
+      text !== lastAttemptedPayloadRef.current.rawContent
+    ) {
+      setSendFailed(false);
+    }
+    onDraftTextChange?.(text);
+  }
+
+  /**
+   * Any attachment-tray mutation (add/remove/failed-card change) IS divergence
+   * from the failed snapshot: Retry would post the snapshot including a
+   * removed (possibly sensitive) file, or without a newly added one — dismiss
+   * the banner (locked while retrying, same as the text-divergence guard).
+   */
+  function handleComposerAttachmentsChanged() {
+    // Recorded even while retrying (when the dismiss below is locked) so the
+    // failure paths know the snapshot went stale and never re-arm the banner.
+    attachmentsChangedSinceAttemptRef.current = true;
+    if (sendFailed && !retrying) setSendFailed(false);
   }
 
   async function handleUpload(file: File): Promise<AssetRef> {
@@ -416,6 +571,8 @@ export function ThreadTab({
       id: res.assetId,
       name: res.originalFilename ?? file.name,
       mimeType: res.contentType,
+      previewUrl: res.contentPath,
+      byteSize: res.byteSize,
     };
   }
 
@@ -485,35 +642,45 @@ export function ThreadTab({
     <div data-testid="thread-composer">
       <EntryComposer
         threadId={threadId}
-        companyId={companyId}
         agents={composerAgents}
         users={composerUsers}
         onUpload={handleUpload}
         onSubmit={handleComposerSubmit}
+        onSubmitError={() => {
+          // Covers EntryComposer-internal throw paths too — the payload was
+          // already snapshotted into lastAttemptedPayloadRef before the await.
+          // Same stale-banner guard as the submit catch: never arm the banner
+          // over a snapshot the composer has already diverged from.
+          setSendReceipt(null);
+          setSendFailed(!draftDivergedFromAttempt());
+        }}
         disabled={isDisconnected || addEntryMutation.isPending}
-        canCreateFileArtifacts={canManageArtifacts}
         myInitials={myInitials}
         draftText={draftText}
-        onDraftTextChange={onDraftTextChange}
+        onDraftTextChange={handleComposerDraftChange}
+        onAttachmentsChanged={handleComposerAttachmentsChanged}
+        clearSignal={composerClearSignal}
+        failureBanner={
+          sendFailed ? (
+            <ComposerSendFailedBanner
+              onRetry={() => void handleRetryFailedSend()}
+              onEdit={() => setSendFailed(false)}
+              onDiscard={handleDiscardFailedSend}
+              retrying={retrying}
+            />
+          ) : undefined
+        }
         hint={
           isDisconnected
             ? (
                 <span data-testid="thread-composer-offline-hint">
-                  {isOffline ? "You're offline — messages won't send" : "Reconnecting…"}
+                  <ComposerOfflineStrip state={toComposerConnectionState(connectionState)} />
                 </span>
               )
             : sendReceipt
               ? (
-                  <span
-                    aria-live="polite"
-                    data-testid="thread-send-receipt"
-                    className={sendReceipt === "failed" ? "text-destructive" : undefined}
-                  >
-                    {sendReceipt === "sending"
-                      ? "Sending..."
-                      : sendReceipt === "sent"
-                        ? "Sent"
-                        : "Not sent. Try again."}
+                  <span aria-live="polite" data-testid="thread-send-receipt">
+                    {sendReceipt === "sending" ? "Sending..." : "Sent"}
                   </span>
                 )
               : undefined

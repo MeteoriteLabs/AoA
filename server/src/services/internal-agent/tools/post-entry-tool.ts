@@ -1,5 +1,4 @@
 import type { AgentTool } from "../types.js";
-import { parseMentions, processMentions } from "../../threads.js";
 import { buildPostReplyIdempotencyKey } from "./thread-action-keys.js";
 
 export function createPostEntryTool(): AgentTool {
@@ -84,6 +83,14 @@ export function createPostEntryTool(): AgentTool {
         };
       }
 
+      // The server engaged this agent on the thread (dispatcher/controller run) —
+      // register it as a participant so the posting authz recognizes it. Without
+      // this, a crew agent's first post 404s on any thread it can't otherwise view.
+      if (ctx.agentId) {
+        const { ensureAgentParticipant } = await import("../../threads.js");
+        await ensureAgentParticipant(ctx.db, ctx.companyId, threadId as string, ctx.agentId);
+      }
+
       const entry = await ctx.services.discussions.addEntry(
         ctx.companyId,
         threadId as string,
@@ -95,19 +102,21 @@ export function createPostEntryTool(): AgentTool {
           sourceInfo: (sourceInfo as Record<string, unknown>) ?? null,
         },
         ctx.agentId ?? "aoa-agent",
+        {
+          userId: ctx.agentId ?? "aoa-agent",
+          role: "team_member",
+          isHuman: false,
+          principalType: "agent",
+        },
       );
 
-      const mentions = parseMentions(content as string);
-      if (mentions.length > 0) {
-        await processMentions(
-          ctx.db,
-          ctx.companyId,
-          threadId as string,
-          entry.id,
-          mentions,
-          { hopCount: 1 },
-        );
-      }
+      // @mention summons are enqueued to the transactional outbox INSIDE
+      // addEntry's tx (with hopCount:1 for this agent-authored entry) and drained
+      // exactly-once by the mention-outbox worker (PR #291 round-8 #1). The
+      // previous direct processMentions call here summoned AGAIN on top of the
+      // outbox — a double summon (hop bump / double participation). Removed. A
+      // replayed entry (same-key retry / race loser) never gets an outbox row, so
+      // it also cannot re-summon.
 
       return {
         success: true,

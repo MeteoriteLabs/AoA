@@ -824,8 +824,8 @@ export function TaskDetail({
   });
 
   const addComment = useMutation({
-    mutationFn: ({ body, reopen }: { body: string; reopen?: boolean }) =>
-      issuesApi.addComment(issueId!, body, reopen),
+    mutationFn: ({ body, reopen, interrupt, clientSubmissionId }: { body: string; reopen?: boolean; interrupt?: boolean; clientSubmissionId?: string }) =>
+      issuesApi.addComment(issueId!, body, reopen, interrupt, undefined, clientSubmissionId),
     onSuccess: (comment) => {
       invalidateIssue();
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(issueId!) });
@@ -845,16 +845,22 @@ export function TaskDetail({
       body,
       reopen,
       reassignment,
+      clientSubmissionId,
     }: {
       body: string;
       reopen?: boolean;
       reassignment: CommentReassignment;
+      clientSubmissionId?: string;
     }) =>
       issuesApi.update(issueId!, {
         comment: body,
         assigneeAgentId: reassignment.assigneeAgentId,
         assigneeUserId: reassignment.assigneeUserId,
         ...(reopen ? { status: "todo" } : {}),
+        // Round-10 #2: thread the submission key so a retry of the combined
+        // comment+reassign PATCH replays the comment (server dedup) instead of
+        // posting a duplicate + re-firing wakeups.
+        ...(clientSubmissionId ? { clientSubmissionId } : {}),
       }),
     onSuccess: (updated) => {
       invalidateIssue();
@@ -1878,20 +1884,27 @@ export function TaskDetail({
                       linkedRuns={timelineRuns}
                       issueStatus={issue.status}
                       agentMap={agentMap}
-                      draftKey={`aoa:issue-comment-draft:${issue.id}`}
+                      draftKey={`aoa:composer-draft:${issue.companyId}:${currentUserId ?? "unknown"}:task:${issue.id}:root`}
                       enableReassign={permissions.canAssignTasks}
                       reassignOptions={commentReassignOptions}
                       currentAssigneeValue={currentAssigneeValue}
+                      hasActiveRun={hasLiveRuns}
                       mentions={mentionOptions}
                       feedbackIssueId={issue.id}
                       existingVotesByCommentId={votesByCommentId}
                       onVoteChange={() => { void refetchFeedbackVotes(); }}
-                      onAdd={async (body, reopen, reassignment) => {
+                      onAdd={async (body, reopen, reassignment, interrupt, clientSubmissionId) => {
                         if (reassignment) {
-                          await addCommentAndReassign.mutateAsync({ body, reopen, reassignment });
+                          await addCommentAndReassign.mutateAsync({ body, reopen, reassignment, clientSubmissionId });
                           return;
                         }
-                        await addComment.mutateAsync({ body, reopen });
+                        await addComment.mutateAsync({ body, reopen, interrupt, clientSubmissionId });
+                      }}
+                      onAddWithAttachments={async (body, files, reopen, interrupt, clientSubmissionId) => {
+                        await issuesApi.addCommentWithAttachments(issue.id, body, files, reopen, interrupt, clientSubmissionId);
+                        invalidateIssue();
+                        queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(issue.id) });
+                        queryClient.invalidateQueries({ queryKey: queryKeys.issues.attachments(issue.id) });
                       }}
                       imageUploadHandler={async (file) => {
                         const attachment = await uploadAttachment.mutateAsync(file);

@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { ComposerFrame } from "@/components/composer/ComposerFrame";
+import { ComposerAttachmentCard } from "@/components/composer/ComposerAttachmentCard";
 import {
   Activity,
   BookOpen,
@@ -1404,6 +1406,38 @@ export function DesignGuide() {
           <div className="space-y-2">
             <Textarea placeholder="Leave a comment..." rows={3} />
             <Button size="sm">Comment</Button>
+          </div>
+        </div>
+      </Section>
+
+      {/* ============================================================ */}
+      {/*  COMPOSER (QUIET OPERATOR)                                    */}
+      {/* ============================================================ */}
+      <Section title="Composer (Quiet Operator)">
+        <p className="text-sm text-muted-foreground max-w-2xl">
+          One <code className="font-mono text-xs">ComposerFrame</code> across Commander, Discussions,
+          Workspace, and Task Comments: context strip → attachment tray (inside the frame) → editor →
+          toolbar with the red Send/Stop. <code className="font-mono text-xs">chrome=&quot;card&quot;</code> renders
+          the bordered focus-glow card. Never add overflow to the frame — mention popovers render inside it.
+        </p>
+        <div className="space-y-4 max-w-2xl">
+          <div>
+            <p className="text-xs text-muted-foreground mb-2">ComposerFrame chrome=&quot;card&quot; with attachment tray</p>
+            <ComposerFrame chrome="card" className="p-3 gap-2">
+              <div className="flex flex-wrap gap-2">
+                <ComposerAttachmentCard name="dashboard.png" byteSize={980_000} state="ready" onRemove={() => {}} />
+                <ComposerAttachmentCard name="brief.pdf" byteSize={421_888} state="ready" onRemove={() => {}} />
+              </div>
+              <Textarea placeholder="Message discussion… @mention to bring someone in" rows={2} className="border-0 shadow-none focus-visible:ring-0 px-0" />
+            </ComposerFrame>
+          </div>
+          <div>
+            <p className="text-xs text-muted-foreground mb-2">Attachment card states</p>
+            <div className="flex flex-wrap gap-2">
+              <ComposerAttachmentCard name="deck.pdf" byteSize={1_500_000} state="uploading" onRemove={() => {}} />
+              <ComposerAttachmentCard name="deck.pdf" byteSize={1_500_000} state="failed" onRemove={() => {}} onRetry={() => {}} />
+              <ComposerAttachmentCard name="plan.md" state="ready" onRemove={() => {}} />
+            </div>
           </div>
         </div>
       </Section>

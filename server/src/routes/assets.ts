@@ -3,13 +3,24 @@ import multer from "multer";
 import type { Db } from "@armyofagents/db";
 import { companies } from "@armyofagents/db";
 import { eq } from "drizzle-orm";
-import { createAssetImageMetadataSchema, createAssetFileMetadataSchema } from "@armyofagents/shared";
+import {
+  COMPOSER_ATTACHMENT_CONTENT_TYPES,
+  COMPOSER_MAX_ATTACHMENT_BYTES,
+  createAssetImageMetadataSchema,
+  createAssetFileMetadataSchema,
+} from "@armyofagents/shared";
 import type { StorageService } from "../storage/types.js";
 import { assetService, logActivity } from "../services/index.js";
 import { getSafeServingHeaders } from "../services/asset-serving-safety.js";
+import { sniffAndVerifyContentType } from "../services/asset-content-guard.js";
+import { HttpError } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 
 const MAX_ASSET_IMAGE_BYTES = Number(process.env.AOA_ATTACHMENT_MAX_BYTES) || 10 * 1024 * 1024;
+// General asset upload contract (artifacts, API consumers, uploadFileArtifact):
+// all content types, documented AOA_FILE_MAX_BYTES default 50 MB. Composer
+// restrictions must NOT narrow this shared route (PR #291 review) — they apply
+// only to composer-namespaced uploads below.
 const MAX_ASSET_FILE_BYTES = Number(process.env.AOA_FILE_MAX_BYTES) || 50 * 1024 * 1024;
 const ALLOWED_IMAGE_CONTENT_TYPES = new Set([
   "image/png",
@@ -18,6 +29,16 @@ const ALLOWED_IMAGE_CONTENT_TYPES = new Set([
   "image/webp",
   "image/gif",
 ]);
+// Unified-composer contract, enforced server-side only for uploads bound for a
+// composer surface. The thread composer uploads under "discussion-entries"
+// (ThreadTab.handleUpload) and Commander under "commander/<conversationId>"
+// (InternalAgentPanel) — both validate client-side too; this is the
+// defense-in-depth for well-formed composer clients without breaking the
+// general asset route for everything else.
+const COMPOSER_ALLOWED_FILE_CONTENT_TYPES = new Set<string>(COMPOSER_ATTACHMENT_CONTENT_TYPES);
+function isComposerUploadNamespace(namespace: string): boolean {
+  return namespace === "discussion-entries" || namespace.startsWith("commander/");
+}
 
 export function assetRoutes(db: Db, storage: StorageService) {
   const router = Router();
@@ -181,6 +202,35 @@ export function assetRoutes(db: Db, storage: StorageService) {
 
     const namespaceSuffix = parsedMeta.data.namespace ?? "files";
     const contentType = (file.mimetype || "application/octet-stream").toLowerCase();
+    // Trusted provenance (PR #291 round-6 #2 security): only an upload that came
+    // through a composer namespace AND passed the allowlist + size + byte-sniff
+    // guard below earns composer_validated. Attachment-binding and runtime
+    // delivery require it, so uploading via namespace=files can no longer be
+    // laundered into a composer attachment.
+    const isComposer = isComposerUploadNamespace(namespaceSuffix);
+    if (isComposer) {
+      if (!COMPOSER_ALLOWED_FILE_CONTENT_TYPES.has(contentType)) {
+        res.status(415).json({ error: `Unsupported attachment type: ${contentType}` });
+        return;
+      }
+      if (file.buffer.length > COMPOSER_MAX_ATTACHMENT_BYTES) {
+        res.status(422).json({ error: `Attachment exceeds ${COMPOSER_MAX_ATTACHMENT_BYTES} bytes` });
+        return;
+      }
+      // P2 (PR #291 review): never trust the client's declared MIME type for a
+      // composer attachment. Sniff the real bytes (magic numbers / UTF-8
+      // decodability) so a caller cannot label arbitrary bytes as an allowed
+      // image or text file and bypass the allowlist for runtime delivery.
+      try {
+        sniffAndVerifyContentType(file.buffer, contentType);
+      } catch (err) {
+        if (err instanceof HttpError) {
+          res.status(err.status).json({ error: err.message });
+          return;
+        }
+        throw err;
+      }
+    }
     const actor = getActorInfo(req);
     const stored = await storage.putFile({
       companyId,
@@ -199,6 +249,9 @@ export function assetRoutes(db: Db, storage: StorageService) {
       originalFilename: stored.originalFilename,
       createdByAgentId: actor.agentId,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+      uploadNamespace: namespaceSuffix,
+      // Only a validated composer upload is bindable as a composer attachment.
+      composerValidated: isComposer,
     });
 
     await logActivity(db, {

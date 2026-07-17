@@ -9,7 +9,7 @@ describe("InputAddMenu", () => {
     expect(screen.getByRole("button", { name: /add/i })).toBeInTheDocument();
   });
 
-  it("opening the menu shows 'Use a skill' (enabled) and 'Attach file' (disabled)", async () => {
+  it("opening the menu shows the skill action and NO attach item (mock v2)", async () => {
     const user = userEvent.setup();
     render(<InputAddMenu onUseSkill={vi.fn()} />);
 
@@ -21,11 +21,9 @@ describe("InputAddMenu", () => {
     const useSkillMenuItem = useSkillItem.closest("[role='menuitem']");
     expect(useSkillMenuItem).not.toHaveAttribute("data-disabled");
 
-    const attachFileText = screen.getByText("Attach file");
-    expect(attachFileText).toBeInTheDocument();
-    // Attach file item should be disabled
-    const attachMenuItem = attachFileText.closest("[role='menuitem']");
-    expect(attachMenuItem).toHaveAttribute("data-disabled");
+    // Mock v2: 📎 in the shared toolbar is the ONLY attach entry — the menu
+    // must not duplicate it.
+    expect(screen.queryByText("Attach file")).not.toBeInTheDocument();
   });
 
   it("clicking 'Use a skill' calls onUseSkill", async () => {

@@ -177,12 +177,14 @@ function createCapturingDb(config: {
     return {
       values: vi.fn((v: Record<string, unknown>) => {
         if (captureValues) captured.insertedEntry = v;
-        return {
-          returning: vi.fn().mockReturnThis(),
+        const chain: any = {
+          onConflictDoNothing: vi.fn(() => chain),
+          returning: vi.fn(() => chain),
           then: vi.fn((fn: (rows: any[]) => any) =>
             Promise.resolve(fn((config.inserts ?? [])[idx] ?? [])),
           ),
         };
+        return chain;
       }),
     };
   }
@@ -273,6 +275,109 @@ describe("discussionService.addEntry — parentEntryId", () => {
       discussionIdFilterCall,
       "eq(discussionEntries.discussionId, 'disc-1') must be part of the parent-entry lookup query",
     ).toBeDefined();
+  });
+
+  it("replays the existing entry for a repeated clientSubmissionId without inserting", async () => {
+    const insertSpy = vi.fn();
+    const { db } = createCapturingDb({
+      selects: [
+        // 1. select discussion → found
+        [{ id: "disc-1", companyId: "co" }],
+        // 2. clientSubmissionId lookup → already recorded
+        [{ id: "entry-original", seq: 3, clientSubmissionId: "sub-9" }],
+      ],
+    });
+    db.insert = insertSpy;
+    db.transaction = vi.fn();
+
+    const result = await discussionService(db).addEntry(
+      "co",
+      "disc-1",
+      { rawContent: "dup", inputType: "write", clientSubmissionId: "sub-9" },
+      "user:1",
+    );
+
+    expect(result).toMatchObject({ id: "entry-original" });
+    // C4 (PR #291 review): the replay is flagged so the route/tool skip
+    // processMentions — the original post already fired the mention summons.
+    expect((result as { replayed?: boolean }).replayed).toBe(true);
+    // No new entry inserted and no counter-bumping transaction on replay.
+    expect(insertSpy).not.toHaveBeenCalled();
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
+
+  it("rolls back the counter bump when the insert loses a same-key race (no entryCount drift)", async () => {
+    // Two simultaneous same-key sends can BOTH miss the replay pre-check. The
+    // loser's insert no-ops via onConflictDoNothing — but its transaction had
+    // already bumped entrySeq/entryCount. The tx must ABORT (rolling back the
+    // bump) and the service must return the winner's row (PR #291 review).
+    let txThrew: unknown = null;
+    const { db } = createCapturingDb({
+      selects: [
+        // 1. select discussion → found
+        [{ id: "disc-1", companyId: "co" }],
+        // 2. clientSubmissionId pre-check → NOT yet visible (simultaneous race)
+        [],
+        // 3. post-tx re-select → the winner's committed row
+        [{ id: "entry-winner", seq: 3, clientSubmissionId: "sub-race" }],
+      ],
+      updates: [
+        // tx.update discussions → counter bump "succeeds" inside the doomed tx
+        [{ entrySeq: 4 }],
+      ],
+      inserts: [
+        // tx.insert entry → conflict, no row returned
+        [],
+      ],
+    });
+    // Wrap the mock transaction so a throw from the callback is observable
+    // (real drizzle rolls back and rethrows on a callback throw).
+    const innerTransaction = db.transaction;
+    db.transaction = vi.fn(async (fn: (tx: any) => Promise<any>) => {
+      try {
+        return await innerTransaction(fn);
+      } catch (err) {
+        txThrew = err;
+        throw err;
+      }
+    });
+
+    const result = await discussionService(db).addEntry(
+      "co",
+      "disc-1",
+      { rawContent: "same content", inputType: "write", clientSubmissionId: "sub-race" },
+      "user:1",
+    );
+
+    // The loser's transaction ABORTED — the counter bump cannot commit.
+    expect(txThrew).not.toBeNull();
+    // …and the caller still gets the winner's durable row.
+    expect(result).toMatchObject({ id: "entry-winner" });
+    // C4: flagged as a replay so the route skips re-running processMentions
+    // (the winner already summoned the mentioned crew).
+    expect((result as { replayed?: boolean }).replayed).toBe(true);
+  });
+
+  it("records the clientSubmissionId on the inserted entry for a first Send", async () => {
+    const { db, captured } = createCapturingDb({
+      selects: [
+        // 1. discussion → found
+        [{ id: "disc-1", companyId: "co" }],
+        // 2. clientSubmissionId lookup → not seen yet
+        [],
+      ],
+      updates: [[{ entrySeq: 1 }]],
+      inserts: [[{ id: "entry-new", seq: 1, clientSubmissionId: "sub-9" }]],
+    });
+
+    await discussionService(db).addEntry(
+      "co",
+      "disc-1",
+      { rawContent: "first", inputType: "write", clientSubmissionId: "sub-9" },
+      "user:1",
+    );
+
+    expect(captured.insertedEntry?.clientSubmissionId).toBe("sub-9");
   });
 
   it("leaves parentEntryId null for a normal top-level entry", async () => {

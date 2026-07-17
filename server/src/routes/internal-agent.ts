@@ -16,7 +16,7 @@ import { assertRole } from "../middleware/rbac.js";
 import { internalAgentChatLimiter } from "../middleware/rate-limit.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { HttpError, badRequest, notFound, forbidden } from "../errors.js";
-import { agentLoopService } from "../services/internal-agent/agent-loop.js";
+import { agentLoopService, type RuntimeAttachmentStorage } from "../services/internal-agent/agent-loop.js";
 import { detectCliTool } from "../services/internal-agent/cli-mode.js";
 import { ensureCommanderAgent } from "../services/internal-agent/aoa-agents/ensure-commander.js";
 import { ensureAllCrewAgents, isCrewMarketplaceManaged } from "../services/internal-agent/aoa-agents/ensure-all-crew.js";
@@ -138,7 +138,7 @@ export async function maybeReensureAgentsOnConfigChange(
 
 // ── Route factory ────────────────────────────────────────────────────────────
 
-export function internalAgentRoutes(db: Db) {
+export function internalAgentRoutes(db: Db, storageService?: RuntimeAttachmentStorage) {
   const router = Router();
 
   // ── 2.1 Send Message (SSE Streaming) ─────────────────────────────────
@@ -191,9 +191,12 @@ export function internalAgentRoutes(db: Db) {
             provider?: string | null;
           }
         | null = null;
+      // round-8 #3: set when chat() signals an idempotent replay / in-progress
+      // defer (no CLI run) so the pre-created run row is deleted, not finalized.
+      let runSkipped = false;
 
       try {
-        const svc = agentLoopService(db);
+        const svc = agentLoopService(db, storageService);
         // Board-gated role: founder-equivalence requires a type:"board" actor.
         // MCP/agent bearer tokens are always "team_member" regardless of the
         // userId they carry (a founder-created MCP key replays the founder's
@@ -230,6 +233,8 @@ export function internalAgentRoutes(db: Db) {
           departmentContext: req.body.departmentContext ?? req.body.contextScope?.departmentId ?? undefined,
           conversationId: req.body.conversationId ?? undefined,
           contextScope: req.body.contextScope ?? undefined,
+          clientSubmissionId: req.body.clientSubmissionId ?? undefined,
+          attachmentAssetIds: req.body.attachmentAssetIds ?? undefined,
         });
 
         for await (const chunk of stream) {
@@ -295,10 +300,31 @@ export function internalAgentRoutes(db: Db) {
                 `event: reasoning\ndata: ${JSON.stringify({ text: chunk.delta })}\n\n`,
               );
               break;
+            case "run_skipped":
+              // Idempotent replay / in-progress defer — no CLI ran. Suppress the
+              // phantom run row (round-8 #3). Not forwarded to the client.
+              runSkipped = true;
+              break;
             case "done":
               finalSummary = chunk.summary;
               break;
           }
+        }
+
+        if (runSkipped) {
+          // Delete the pre-created run row so a network retry after a successful
+          // turn (or a concurrent duplicate) doesn't leave a zero-token completed
+          // / spurious failed run inflating the run list + aggregate metrics. The
+          // original request's run record is the source of truth (round-8 #3).
+          await db
+            .delete(internalAgentRuns)
+            .where(and(eq(internalAgentRuns.id, run.id), eq(internalAgentRuns.companyId, companyId)))
+            .catch(() => {});
+          res.write(
+            `event: done\ndata: ${JSON.stringify({ messageId: run.id, runId: run.id })}\n\n`,
+          );
+          res.end();
+          return;
         }
 
         // Mark run completed

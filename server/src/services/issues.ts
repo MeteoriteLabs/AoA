@@ -1,5 +1,5 @@
 import { and, asc, desc, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { Db } from "@armyofagents/db";
 import {
   activityLog,
@@ -50,6 +50,7 @@ import {
   parseProjectExecutionWorkspacePolicy,
 } from "./execution-workspace-policy.js";
 import { hubItemsService } from "./hub-items.js";
+import { enqueueCommentWakeupOutbox, markCommentWakeupsReady as markCommentWakeupsReadyOutbox, type CommentWakeupTarget } from "./comment-wakeup-outbox.js";
 import { shouldDispatchIssueWakeup } from "../routes/issues-planning-mode-dispatch.js";
 import {
   buildInitialIssueMonitorFields,
@@ -490,6 +491,11 @@ const TERMINAL_INTERNAL_AGENT_RUN_STATUSES = new Set(["completed", "failed", "ca
 
 function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, "\\$&");
+}
+
+/** Escape a string for safe literal use inside a RegExp (round-9 #4). */
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function touchedByUserCondition(companyId: string, userId: string) {
@@ -2391,6 +2397,23 @@ export function issueService(db: Db) {
         authorType?: IssueCommentAuthorType;
         presentation?: IssueCommentPresentation | null;
         metadata?: IssueCommentMetadata | null;
+        clientSubmissionId?: string;
+        // Round-17 #1: build this comment's per-target wakeups and enqueue them
+        // into comment_wakeup_outbox IN THE SAME TRANSACTION as the comment insert,
+        // so a committed comment ALWAYS carries its pending wakeup rows (no crash
+        // window between the comment commit and a separate enqueue). The callback
+        // receives the freshly-inserted comment (id + authorAgentId) so it can
+        // embed the comment id in the wakeup payloads; it runs only on a FRESH
+        // insert (a replay's rows already exist).
+        buildWakeupTargets?: (comment: {
+          id: string;
+          authorAgentId: string | null;
+        }) => Promise<CommentWakeupTarget[]>;
+        // Round-18 #2/#3: when the wakeup references post-insert side effects
+        // (attachment rows / control effects committed AFTER this tx), enqueue the
+        // rows NOT-YET-DRAINABLE with this ready_at; the route flips them ready once
+        // those effects are durable.
+        wakeupDeferUntil?: Date | null;
       },
     ) => {
       const issue = await db
@@ -2400,6 +2423,8 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
 
       if (!issue) throw notFound("Issue not found");
+
+      const clientSubmissionId = actor.clientSubmissionId ?? null;
 
       const comment = await db.transaction(async (tx) => {
         const [created] = await tx
@@ -2413,8 +2438,40 @@ export function issueService(db: Db) {
             presentation: actor.presentation ?? null,
             metadata: actor.metadata ?? null,
             body,
+            clientSubmissionId,
+          })
+          // Concurrency backstop for the route-level replay check: two in-flight
+          // retries of the same key resolve to one row via the partial unique
+          // index. Targeted at the (company, issue, submission) index (round-4:
+          // issueId added so the target matches the replay scope) so any OTHER
+          // unique violation on issue_comments raises instead of being swallowed.
+          .onConflictDoNothing({
+            target: [issueComments.companyId, issueComments.issueId, issueComments.clientSubmissionId],
+            where: sql`client_submission_id IS NOT NULL`,
           })
           .returning();
+
+        // Lost the insert race → the original already ran its side-effects.
+        // Return the existing row FLAGGED as a replay so the route skips its
+        // post-insert side-effects (activity/wakeups; attachment re-store) —
+        // otherwise two same-key requests that both passed the route-level
+        // replay pre-check would each fire them on the same durable comment
+        // (PR #291 round-3 review, mirrors discussions.ts addEntry `replayed`).
+        // Scoped by issueId too (round-4) so the fallback can only ever return
+        // THIS task's comment, never another task that reused the same key.
+        if (!created && clientSubmissionId) {
+          return tx
+            .select()
+            .from(issueComments)
+            .where(
+              and(
+                eq(issueComments.companyId, issue.companyId),
+                eq(issueComments.issueId, issueId),
+                eq(issueComments.clientSubmissionId, clientSubmissionId),
+              ),
+            )
+            .then((rows) => ({ ...rows[0], replayed: true as const }));
+        }
 
         // Update issue's updatedAt so comment activity is reflected in recency sorting
         await tx
@@ -2425,13 +2482,83 @@ export function issueService(db: Db) {
           sourceType: "issue",
           sourceId: issueId,
         });
+        // Round-17 #1: enqueue the comment's per-target wakeups IN THIS TX, so a
+        // committed comment always carries its pending wakeup rows.
+        if (actor.buildWakeupTargets) {
+          const targets = await actor.buildWakeupTargets({
+            id: created.id,
+            authorAgentId: created.authorAgentId ?? null,
+          });
+          await enqueueCommentWakeupOutbox(tx as unknown as Db, {
+            companyId: issue.companyId,
+            issueId,
+            commentId: created.id,
+            targets,
+            readyAt: actor.wakeupDeferUntil ?? null,
+          });
+        }
         return created;
       });
 
       return comment;
     },
 
+    getCommentByClientSubmissionId: async (
+      companyId: string,
+      issueId: string,
+      clientSubmissionId: string,
+    ) => {
+      return db
+        .select()
+        .from(issueComments)
+        .where(
+          and(
+            eq(issueComments.companyId, companyId),
+            eq(issueComments.issueId, issueId),
+            eq(issueComments.clientSubmissionId, clientSubmissionId),
+          ),
+        )
+        .then((rows) => rows[0] ?? null);
+    },
+
+    // Stamp the comment's control effects (reopen/interrupt) as complete
+    // (PR #291 round-6 #2). Called once the insert winner's control effects
+    // succeed; the replay fast-path uses the marker to skip vs resume them.
+    markCommentControlEffectsCompleted: async (commentId: string) => {
+      await db
+        .update(issueComments)
+        .set({ controlEffectsCompletedAt: new Date() })
+        .where(eq(issueComments.id, commentId));
+    },
+
+    // Round-16: enqueue this comment's PER-TARGET agent wakeups into the durable
+    // comment_wakeup_outbox (idempotent on (comment, agent)), replacing the
+    // comment-wide wakeups_enqueued_at marker + CAS. The background worker drains
+    // each row exactly once. Idempotent, so the fresh path and a keyed-retry
+    // re-enqueue resolve to one row per agent — closing the crash-loses-summon
+    // (worker retry + re-enqueue on retry) and partial-failure-double-wake
+    // (per-target row) residuals the marker could not.
+    enqueueCommentWakeups: async (input: {
+      companyId: string;
+      issueId: string;
+      commentId: string;
+      targets: CommentWakeupTarget[];
+      readyAt?: Date | null;
+    }): Promise<void> => {
+      await enqueueCommentWakeupOutbox(db, input);
+    },
+
+    // Round-18 #2/#3: flip a comment's DEFERRED wakeup rows to drainable, once the
+    // post-insert side effects (attachment rows / control effects) are durable.
+    markCommentWakeupsReady: async (commentId: string): Promise<void> => {
+      await markCommentWakeupsReadyOutbox(db, commentId);
+    },
+
     createAttachment: async (input: {
+      // Round-17 #1: optional explicit attachment id. The comments-with-attachments
+      // route pre-generates it so the in-transaction comment wakeup can carry the
+      // real attachment id before the file is stored.
+      id?: string;
       issueId: string;
       issueCommentId?: string | null;
       provider: string;
@@ -2481,6 +2608,7 @@ export function issueService(db: Db) {
         const [attachment] = await tx
           .insert(issueAttachments)
           .values({
+            ...(input.id ? { id: input.id } : {}),
             companyId: issue.companyId,
             issueId: issue.id,
             assetId: asset.id,
@@ -2505,6 +2633,166 @@ export function issueService(db: Db) {
           createdAt: attachment.createdAt,
           updatedAt: attachment.updatedAt,
         };
+      });
+    },
+
+    /**
+     * Complete the attachments missing from an already-persisted comment on an
+     * idempotent retry, serialized so concurrent same-key retries cannot each
+     * create the same file (PR #291 review, C6).
+     *
+     * The original `comments-with-attachments` send commits the comment BEFORE
+     * its files, so a crash can leave the comment durable with attachments
+     * missing; the retry re-sends the files and must complete only the ones that
+     * are absent (matched by content hash + filename, multiset). Two retries
+     * racing here would otherwise both read the same incomplete set and each
+     * insert a duplicate asset+attachment — there is no uniqueness on
+     * (comment, hash, filename), and the multiset design deliberately allows a
+     * legitimate duplicate, so we cannot lean on a unique index.
+     *
+     * A transaction-scoped Postgres advisory lock keyed on the comment id
+     * serializes the read→decide→write section: the second retry blocks until
+     * the first commits, then re-reads the now-complete set inside its own lock
+     * and finds nothing missing. `store` (object-storage put) runs inside the
+     * lock only for genuinely-missing files, so no orphan blobs are created for
+     * files that already exist.
+     */
+    completeMissingCommentAttachments: async (input: {
+      companyId: string;
+      issueId: string;
+      commentId: string;
+      files: Array<{ contentType: string; buffer: Buffer; originalFilename: string | null }>;
+      createdByAgentId?: string | null;
+      createdByUserId?: string | null;
+      store: (file: {
+        contentType: string;
+        buffer: Buffer;
+        originalFilename: string | null;
+      }) => Promise<{
+        provider: string;
+        objectKey: string;
+        contentType: string;
+        byteSize: number;
+        sha256: string;
+        originalFilename: string | null;
+      }>;
+    }) => {
+      const mapRow = (a: {
+        id: string;
+        companyId: string;
+        issueId: string;
+        issueCommentId: string | null;
+        assetId: string;
+        provider: string;
+        objectKey: string;
+        contentType: string;
+        byteSize: number;
+        sha256: string;
+        originalFilename: string | null;
+        createdByAgentId: string | null;
+        createdByUserId: string | null;
+        createdAt: Date;
+        updatedAt: Date;
+      }) => a;
+
+      return db.transaction(async (tx) => {
+        // Serialize concurrent completions for THIS comment. Namespaced by a
+        // second key so it can't collide with unrelated advisory-lock users.
+        await tx.execute(
+          sql`SELECT pg_advisory_xact_lock(hashtext(${input.commentId}), hashtext('issue_attachment_completion'))`,
+        );
+
+        const existing = await tx
+          .select({
+            id: issueAttachments.id,
+            companyId: issueAttachments.companyId,
+            issueId: issueAttachments.issueId,
+            issueCommentId: issueAttachments.issueCommentId,
+            assetId: issueAttachments.assetId,
+            provider: assets.provider,
+            objectKey: assets.objectKey,
+            contentType: assets.contentType,
+            byteSize: assets.byteSize,
+            sha256: assets.sha256,
+            originalFilename: assets.originalFilename,
+            createdByAgentId: assets.createdByAgentId,
+            createdByUserId: assets.createdByUserId,
+            createdAt: issueAttachments.createdAt,
+            updatedAt: issueAttachments.updatedAt,
+          })
+          .from(issueAttachments)
+          .innerJoin(assets, eq(issueAttachments.assetId, assets.id))
+          .where(
+            and(
+              eq(issueAttachments.issueId, input.issueId),
+              eq(issueAttachments.issueCommentId, input.commentId),
+            ),
+          )
+          .orderBy(desc(issueAttachments.createdAt));
+
+        const remaining = new Map<string, number>();
+        for (const a of existing) {
+          const key = `${a.sha256}:${a.originalFilename ?? ""}`;
+          remaining.set(key, (remaining.get(key) ?? 0) + 1);
+        }
+
+        const created: ReturnType<typeof mapRow>[] = [];
+        for (const file of input.files) {
+          const sha256 = createHash("sha256").update(file.buffer).digest("hex");
+          const key = `${sha256}:${file.originalFilename ?? ""}`;
+          const already = remaining.get(key) ?? 0;
+          if (already > 0) {
+            remaining.set(key, already - 1);
+            continue;
+          }
+
+          const stored = await input.store(file);
+          const [asset] = await tx
+            .insert(assets)
+            .values({
+              companyId: input.companyId,
+              provider: stored.provider,
+              objectKey: stored.objectKey,
+              contentType: stored.contentType,
+              byteSize: stored.byteSize,
+              sha256: stored.sha256,
+              originalFilename: stored.originalFilename,
+              createdByAgentId: input.createdByAgentId ?? null,
+              createdByUserId: input.createdByUserId ?? null,
+            })
+            .returning();
+          const [attachment] = await tx
+            .insert(issueAttachments)
+            .values({
+              companyId: input.companyId,
+              issueId: input.issueId,
+              assetId: asset.id,
+              issueCommentId: input.commentId,
+            })
+            .returning();
+
+          created.push(
+            mapRow({
+              id: attachment.id,
+              companyId: attachment.companyId,
+              issueId: attachment.issueId,
+              issueCommentId: attachment.issueCommentId,
+              assetId: attachment.assetId,
+              provider: asset.provider,
+              objectKey: asset.objectKey,
+              contentType: asset.contentType,
+              byteSize: asset.byteSize,
+              sha256: asset.sha256,
+              originalFilename: asset.originalFilename,
+              createdByAgentId: asset.createdByAgentId,
+              createdByUserId: asset.createdByUserId,
+              createdAt: attachment.createdAt,
+              updatedAt: attachment.updatedAt,
+            }),
+          );
+        }
+
+        return { created, all: [...existing.map(mapRow), ...created] };
       });
     },
 
@@ -2597,7 +2885,27 @@ export function issueService(db: Db) {
       // platform stays excluded — platform agents are not mentionable by users.
       const rows = await db.select({ id: agents.id, name: agents.name })
         .from(agents).where(and(eq(agents.companyId, companyId), inArray(agents.kind, ["org", "aoa"])));
-      return rows.filter(a => tokens.has(a.name.toLowerCase())).map(a => a.id);
+      // Multi-word names ("Memory Keeper") can never appear as a single
+      // whitespace-delimited token, so the token pass alone made them
+      // unmentionable (review F3, 2026-07-16) — the composer @ pickers offer
+      // exactly these names. Second pass: case-insensitive "@Full Name" match
+      // for names containing whitespace. Round-9 #4: require a real mention
+      // BOUNDARY on both sides — the leading \B@ (no word char before @, so
+      // "email@Memory Keeper" is not a mention) AND, after the full name, a
+      // non-name char (end / whitespace / , ! ? . / @) rather than a continuing
+      // name char [^\s@,!?.]. A plain substring `includes` matched any longer
+      // phrase, so "@Memory Keeper" wrongly woke on "@Memory Keepers" /
+      // "@Memory Keeper2". The after-boundary mirrors the single-word token's
+      // terminator set exactly.
+      return rows
+        .filter((a) => {
+          const name = a.name.toLowerCase();
+          if (tokens.has(name)) return true;
+          if (!/\s/.test(name)) return false;
+          const re = new RegExp(`\\B@${escapeRegExp(a.name)}(?![^\\s@,!?.])`, "i");
+          return re.test(body);
+        })
+        .map((a) => a.id);
     },
 
     resolveAgentKinds: async (ids: string[]): Promise<Map<string, string>> => {
@@ -2618,16 +2926,28 @@ export function issueService(db: Db) {
     enqueueAoaMentionWakeup: async (
       companyId: string,
       agentId: string,
-      opts: { source?: string | null; reason?: string | null; payload?: unknown },
+      opts: { source?: string | null; reason?: string | null; payload?: unknown; idempotencyKey?: string | null },
     ): Promise<void> => {
-      await db.insert(agentWakeupRequests).values({
-        companyId,
-        agentId,
-        source: opts.source ?? "automation",
-        reason: opts.reason ?? "issue_comment_mentioned",
-        payload: (opts.payload ?? null) as Record<string, unknown> | null,
-        status: "queued",
-      });
+      // Round-17 #2: when the comment_wakeup_outbox worker supplies an
+      // idempotencyKey (`comment-wakeup:<row id>`), a re-dispatch of the same
+      // outbox row (worker crashed before marking it done → reclaimed → re-drained)
+      // is a NO-OP insert via the partial unique index, so the crew agent is never
+      // double-summoned. Without a key (other callers) it stays a plain insert.
+      await db
+        .insert(agentWakeupRequests)
+        .values({
+          companyId,
+          agentId,
+          source: opts.source ?? "automation",
+          reason: opts.reason ?? "issue_comment_mentioned",
+          payload: (opts.payload ?? null) as Record<string, unknown> | null,
+          status: "queued",
+          idempotencyKey: opts.idempotencyKey ?? null,
+        })
+        .onConflictDoNothing({
+          target: [agentWakeupRequests.companyId, agentWakeupRequests.idempotencyKey],
+          where: sql`idempotency_key LIKE 'comment-wakeup:%'`,
+        });
     },
 
     /**

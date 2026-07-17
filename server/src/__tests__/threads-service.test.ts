@@ -187,7 +187,11 @@ vi.mock("../redaction.js", () => ({
   sanitizeRecord: vi.fn((r: any) => r),
 }));
 
-import { threadService, computeCreateDefaults } from "../services/threads.js";
+import {
+  assertCanPostToThread,
+  threadService,
+  computeCreateDefaults,
+} from "../services/threads.js";
 import { publishLiveEvent } from "../services/live-events.js";
 import { logActivity } from "../services/activity-log.js";
 
@@ -253,6 +257,63 @@ function createSequenceDb(selectQueue: any[][]) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+});
+
+describe("assertCanPostToThread", () => {
+  const privateThread = {
+    id: "t1",
+    companyId: "co1",
+    visibility: "private",
+    ownerUserId: "owner",
+    scopeType: null,
+    scopeId: null,
+  };
+
+  it("allows a founder to post regardless of visibility", async () => {
+    const db = createSequenceDb([[privateThread]]);
+    await expect(assertCanPostToThread(db, "co1", "t1", {
+      userId: "founder", role: "founder", isHuman: true,
+    })).resolves.toBeUndefined();
+  });
+
+  it("allows a participant to post to a private thread", async () => {
+    const db = createSequenceDb([[privateThread], [{ id: "participant" }]]);
+    await expect(assertCanPostToThread(db, "co1", "t1", {
+      userId: "member", role: "team_member", isHuman: true,
+    })).resolves.toBeUndefined();
+  });
+
+  it("hides a private thread from a nonparticipant", async () => {
+    const db = createSequenceDb([[privateThread], []]);
+    await expect(assertCanPostToThread(db, "co1", "t1", {
+      userId: "member", role: "team_member", isHuman: true,
+    })).rejects.toMatchObject({ status: 404, message: "Thread not found" });
+  });
+
+  it("allows an in-scope lead to post to a visible scoped thread", async () => {
+    const db = createSequenceDb([[
+      { ...privateThread, visibility: "department", scopeType: "project", scopeId: "p1" },
+    ], [], [{ id: "role" }]]);
+    await expect(assertCanPostToThread(db, "co1", "t1", {
+      userId: "lead", role: "team_lead", isHuman: true,
+    })).resolves.toBeUndefined();
+  });
+
+  it("hides a visible scoped thread from an out-of-scope lead", async () => {
+    const db = createSequenceDb([[
+      { ...privateThread, visibility: "department", scopeType: "project", scopeId: "p1" },
+    ], [], []]);
+    await expect(assertCanPostToThread(db, "co1", "t1", {
+      userId: "lead", role: "team_lead", isHuman: true,
+    })).rejects.toMatchObject({ status: 404, message: "Thread not found" });
+  });
+
+  it("uses the same non-disclosing 404 for missing and cross-company threads", async () => {
+    const db = createSequenceDb([[]]);
+    await expect(assertCanPostToThread(db, "co1", "other-company-thread", {
+      userId: "member", role: "team_member", isHuman: true,
+    })).rejects.toMatchObject({ status: 404, message: "Thread not found" });
+  });
 });
 
 // ── Task 2: read path ─────────────────────────────────────────────────────────

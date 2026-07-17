@@ -11,6 +11,7 @@ import {
   Loader2,
   MessageSquarePlus,
   Mic,
+  Paperclip,
   PanelLeft,
   Send,
   Square,
@@ -80,12 +81,29 @@ import {
 } from "./commander/CommanderInput";
 import type { CommanderInputRef, CompanySkillListItem } from "@armyofagents/shared";
 import {
+  COMPOSER_ATTACHMENT_CONTENT_TYPES,
   MAX_COMMANDER_INPUT_REFS,
   appendCommanderInputRef,
   appendCommanderInputRefsToMessage,
   commanderInputRefKey,
   commanderInputRefKindLabel,
+  createComposerSubmissionId,
 } from "@armyofagents/shared";
+import { assetsApi } from "../api/assets";
+import { agentsApi } from "../api/agents";
+import { useTeamAccess } from "../hooks/useTeamAccess";
+import { useComposerDraft } from "../lib/composerDraft";
+import {
+  assetResponseToCommanderInputRef,
+  validateCommanderAttachmentFiles,
+} from "./commander/commanderAttachments";
+import { ComposerFrame } from "./composer/ComposerFrame";
+import { ComposerIconButton } from "./composer/ComposerIconButton";
+import { ComposerSendFailedBanner } from "./composer/ComposerSendFailedBanner";
+import { ComposerOfflineStrip, toComposerConnectionState } from "./composer/ComposerOfflineStrip";
+import { ComposerDropOverlay } from "./composer/ComposerDropOverlay";
+import { useComposerDragDrop } from "./composer/useComposerDragDrop";
+import { useLiveUpdates } from "../context/LiveUpdatesProvider";
 import type { CommanderContextScope } from "@armyofagents/shared";
 import type { CommanderOutputRef } from "@armyofagents/shared";
 import { useInlineWorkQuestions, WorkQuestionInlineError } from "./work-questions/WorkQuestionInlineList";
@@ -145,6 +163,16 @@ export function buildCommanderInputRefState(
     refs: result.refs,
     duplicateKey: result.added ? null : result.existingKey ?? commanderInputRefKey(ref),
   };
+}
+
+export function settleCommanderInputRefsAfterSend(
+  current: readonly CommanderInputRef[],
+  sent: readonly CommanderInputRef[],
+  accepted: boolean,
+): CommanderInputRef[] {
+  if (!accepted) return [...current];
+  const sentKeys = new Set(sent.map(commanderInputRefKey));
+  return current.filter((ref) => !sentKeys.has(commanderInputRefKey(ref)));
 }
 
 export interface CommanderInputRefOpenDeps {
@@ -520,8 +548,28 @@ interface AgentPanelContentProps {
   onSetSessionsCollapsed?: (value: boolean) => void;
 }
 
+/**
+ * Snapshot of one Commander submission (B-states, mock §5). Minted ONCE per
+ * submission BEFORE the send so the failed-send banner's Retry replays the
+ * EXACT attempt — same expanded message, same attachment ids, and the same
+ * clientSubmissionId (the server-side agent-loop replay dedupes if the first
+ * request actually landed). `revision` is the composer revision at snapshot
+ * time: a retry-success only clears the input when nothing diverged since.
+ */
+interface CommanderSendAttempt {
+  /** Trimmed raw input text — divergence comparisons only. */
+  rawText: string;
+  /** Fully expanded outgoing message (refs appended). */
+  message: string;
+  attachmentAssetIds: string[];
+  refsForTurn: CommanderInputRef[];
+  revision: number;
+  clientSubmissionId: string;
+}
+
 export function AgentPanelContent({ conversationId, onSelectConversation, onOpenSessions, enableViewerPanel, cardChrome = false, sessionsCollapsed, onSetSessionsCollapsed }: AgentPanelContentProps = {}) {
   const { selectedCompanyId } = useCompany();
+  const { currentUser } = useTeamAccess(selectedCompanyId);
   const { breadcrumbs } = useBreadcrumbs();
   const providedContextScope = useCommanderContextScope();
   const location = useLocation();
@@ -536,7 +584,26 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
   const [inputRefs, setInputRefs] = useState<CommanderInputRef[]>([]);
   const inputRefsRef = useRef<CommanderInputRef[]>([]);
   const [duplicateInputRefKey, setDuplicateInputRefKey] = useState<string | null>(null);
+  const commanderFileInputRef = useRef<HTMLInputElement>(null);
+  const activeConversationIdRef = useRef(conversationId);
+  activeConversationIdRef.current = conversationId;
+  const uploadSequenceRef = useRef(0);
+  const [uploadingFiles, setUploadingFiles] = useState<Array<{ id: number; name: string }>>([]);
+  const [failedUploads, setFailedUploads] = useState<Array<{ id: number; file: File }>>([]);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [streaming, setStreamingLocal] = useState(false);
+  // ─── Composer B-states (mock §5) ────────────────────────────────────────
+  const [sendFailed, setSendFailed] = useState(false);
+  const lastAttemptRef = useRef<CommanderSendAttempt | null>(null);
+  // Bumped on every draft-changing edit (typing, ref add/remove, Discard) so a
+  // retry that succeeds AFTER the draft diverged skips the clears instead of
+  // wiping the newer edits (peer pattern: CommentThread / WorkspaceTimeline).
+  const composerRevisionRef = useRef(0);
+  // Mirror of `streaming` readable from stable callbacks (divergence guards).
+  const streamingRef = useRef(false);
+  const { connectionState } = useLiveUpdates();
+  const composerConnection = toComposerConnectionState(connectionState);
+  const isOffline = composerConnection === "offline";
   // Task 9: skill picker. `skillPickerOpen` = opened via the `+` menu (shows
   // all skills). `slashActive`/`slashQuery` = opened via a `/token` typed in
   // the textarea. The picker is open when either source is active.
@@ -550,6 +617,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<CommanderInputHandle>(null);
+  const hydratedCommanderDraftKeyRef = useRef<string | null>(null);
   const inputBarRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -563,6 +631,18 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
 
   const companyId = selectedCompanyId ?? "";
+  const commanderDraft = useComposerDraft(
+    companyId && currentUser?.userId
+      ? { companyId, userId: currentUser.userId, surface: "commander", entityId: conversationId ?? "new" }
+      : null,
+  );
+  useEffect(() => {
+    if (!commanderDraft.storageKey || hydratedCommanderDraftKeyRef.current === commanderDraft.storageKey) return;
+    hydratedCommanderDraftKeyRef.current = commanderDraft.storageKey;
+    if (commanderDraft.draft.text && !inputRef.current?.getText()) {
+      inputRef.current?.insertText(commanderDraft.draft.text);
+    }
+  }, [commanderDraft.storageKey, commanderDraft.draft.text]);
   const inlineQuestionsQuery = useInlineWorkQuestions(companyId, {
     sourceCommanderConversationId: conversationId ?? undefined,
   });
@@ -589,6 +669,12 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
     staleTime: 60 * 1000,
   });
   const allowAlwaysEnabled = runtimeSettings?.runtimeAllowAlwaysEnabled ?? true;
+  const { data: mentionAgents = [] } = useQuery({
+    queryKey: ["commander-mention-agents", companyId],
+    queryFn: () => agentsApi.list(companyId),
+    enabled: !!companyId,
+    staleTime: 60_000,
+  });
 
   // Load history when switching to a specific conversation
   const { data: historyData } = useQuery({
@@ -840,6 +926,18 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
     if (!conversationId) return;
     setMessages([]);
     setStreamingLocal(false);
+    inputRefsRef.current = [];
+    setInputRefs([]);
+    setUploadingFiles([]);
+    setFailedUploads([]);
+    setAttachmentError(null);
+    // Entity switch: the send-failed banner + attempt snapshot belong to the
+    // PREVIOUS conversation — Retry must never post into a different one. The
+    // revision bump keeps a still-in-flight send from the previous
+    // conversation from re-arming the banner or clearing the new draft.
+    composerRevisionRef.current += 1;
+    lastAttemptRef.current = null;
+    setSendFailed(false);
   }, [conversationId]);
 
   // Populate messages from history when historyData arrives.
@@ -920,10 +1018,11 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
   );
 
   const sendText = useCallback(
-    async (text: string) => {
-      if (!text || !companyId || streaming) return;
+    async (text: string, attachmentAssetIds?: string[], clientSubmissionId?: string): Promise<boolean> => {
+      if (!text || !companyId || streaming) return false;
 
       setStreamingLocal(true);
+      streamingRef.current = true;
       setIsStreaming(true);
 
       // Add user message
@@ -950,15 +1049,28 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
 
       const controller = new AbortController();
       abortRef.current = controller;
+      let accepted = false;
+      // A server-emitted SSE `error` event (CLI failure mid-stream, or the
+      // "already being processed" idempotency response) ends the generator
+      // NORMALLY rather than throwing. Without tracking it, the loop would fall
+      // through to `accepted = true` and suppress the failed-send banner even
+      // though no reply was produced — breaking the idempotent Retry flow
+      // (PR #291 round-3 review).
+      let sawError = false;
 
       try {
-        const stream = streamAgentChat(companyId, text, pageContext, controller.signal, conversationId, contextScope);
+        const stream = streamAgentChat(companyId, text, pageContext, controller.signal, conversationId, contextScope, attachmentAssetIds, clientSubmissionId);
 
         for await (const event of stream) {
+          if (event.event === "error") sawError = true;
           handleSSEEvent(event, assistantId);
         }
+        accepted = !sawError;
       } catch (err) {
-        if ((err as Error).name !== "AbortError") {
+        if ((err as Error).name === "AbortError") {
+          // Stop generation happens after the server accepted the user turn.
+          accepted = true;
+        } else {
           setMessages((prev) =>
             settleRunningToolCalls(prev, assistantId).map((m) =>
               m.id === assistantId
@@ -975,28 +1087,109 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
           ),
         );
         setStreamingLocal(false);
+        streamingRef.current = false;
         setIsStreaming(false);
         abortRef.current = null;
         // Refresh conversation from server
         queryClient.invalidateQueries({ queryKey: queryKeys.agentConversation(companyId) });
         queryClient.invalidateQueries({ queryKey: ["commander-conversations"] });
       }
+      return accepted;
     },
     [companyId, streaming, pageContext, setIsStreaming, queryClient, conversationId, contextScope],
+  );
+
+  /** Shared send path: submitCommanderInput mints a fresh attempt, the failed-send
+   *  banner's Retry replays the stored one (same clientSubmissionId). */
+  const performCommanderSend = useCallback(
+    async (attempt: CommanderSendAttempt) => {
+      const accepted = await sendText(attempt.message, attempt.attachmentAssetIds, attempt.clientSubmissionId);
+      if (accepted) {
+        setSendFailed(false);
+        lastAttemptRef.current = null;
+        // Retry-success safety: only clear when the draft still matches the
+        // snapshot — mid-flight edits/ref changes must survive the clear.
+        if (composerRevisionRef.current === attempt.revision) {
+          inputRef.current?.clear();
+          const remaining = settleCommanderInputRefsAfterSend(
+            inputRefsRef.current,
+            attempt.refsForTurn,
+            true,
+          );
+          inputRefsRef.current = remaining;
+          setInputRefs(remaining);
+          setAttachmentError(null);
+        }
+      } else {
+        // Failure never eats your work (mock §5): the draft + attached refs are
+        // all kept — the shared banner offers Retry / Edit / Discard.
+        // Mid-flight divergence guard (stale-banner residual): if the draft or
+        // refs tray moved while this send/retry was in flight (the dismiss is
+        // suppressed while streaming), the snapshot is stale — a re-armed
+        // banner's Retry would post it (e.g. a removed reference). Leave the
+        // banner down; the user sends fresh with a NEW clientSubmissionId.
+        setSendFailed(composerRevisionRef.current === attempt.revision);
+      }
+    },
+    [sendText],
   );
 
   const submitCommanderInput = useCallback(
     async (text: string) => {
       const trimmed = text.trim();
       const refsForTurn = inputRefsRef.current;
-      if (!trimmed && refsForTurn.length === 0) return;
+      if ((!trimmed && refsForTurn.length === 0) || uploadingFiles.length > 0 || isOffline) return;
+      setSendFailed(false);
       const baseText = trimmed || "Use the referenced context.";
-      inputRefsRef.current = [];
-      setInputRefs([]);
-      await sendText(appendCommanderInputRefsToMessage(baseText, refsForTurn));
+      // Minted ONCE per submission and snapshotted BEFORE the await so the
+      // banner's Retry re-sends the exact same attempt (same clientSubmissionId
+      // → the server replays if the first request actually landed).
+      const attempt: CommanderSendAttempt = {
+        rawText: trimmed,
+        message: appendCommanderInputRefsToMessage(baseText, refsForTurn),
+        attachmentAssetIds: refsForTurn.filter((r) => r.kind === "asset").map((r) => r.id),
+        refsForTurn,
+        revision: composerRevisionRef.current,
+        clientSubmissionId: createComposerSubmissionId(),
+      };
+      lastAttemptRef.current = attempt;
+      await performCommanderSend(attempt);
     },
-    [sendText],
+    [performCommanderSend, uploadingFiles.length, isOffline],
   );
+
+  /** Banner Retry: re-send the IDENTICAL stored attempt (same clientSubmissionId). */
+  const handleRetryFailedSend = useCallback(() => {
+    const attempt = lastAttemptRef.current;
+    if (!attempt || streamingRef.current || isOffline) return;
+    void performCommanderSend(attempt);
+  }, [performCommanderSend, isOffline]);
+
+  const handleEditFailedSend = useCallback(() => {
+    setSendFailed(false);
+  }, []);
+
+  const handleDiscardFailedSend = useCallback(() => {
+    lastAttemptRef.current = null;
+    setSendFailed(false);
+    composerRevisionRef.current += 1;
+    inputRef.current?.clear();
+    inputRefsRef.current = [];
+    setInputRefs([]);
+    setAttachmentError(null);
+  }, []);
+
+  // Stale-snapshot guard (mock §5: failure never eats your work): once the
+  // draft diverges from the failed attempt, Retry would post stale content and
+  // its success-clear would wipe the newer edits — dismiss the banner. The next
+  // send is a normal fresh submission with a NEW clientSubmissionId.
+  const handleComposerTextChange = useCallback((text: string) => {
+    composerRevisionRef.current += 1;
+    const attempt = lastAttemptRef.current;
+    if (attempt && !streamingRef.current && text.trim() !== attempt.rawText) {
+      setSendFailed(false);
+    }
+  }, []);
 
   const addInputRef = useCallback((ref: CommanderInputRef, suggestedPrompt?: string) => {
     const next = buildCommanderInputRefState(inputRefsRef.current, ref);
@@ -1004,11 +1197,73 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
     inputRefsRef.current = refs;
     setInputRefs(refs);
     setDuplicateInputRefKey(next.duplicateKey);
+    // Only a REAL tray change (a ref actually added) is divergence — Retry
+    // must never post attachments the failed attempt didn't include, so the
+    // banner goes down and the next send mints a fresh submission.
+    if (next.duplicateKey === null) {
+      composerRevisionRef.current += 1;
+      if (!streamingRef.current) setSendFailed(false);
+    }
     if (suggestedPrompt && next.duplicateKey === null) {
       inputRef.current?.insertText(suggestedPrompt);
     }
     requestAnimationFrame(() => inputRef.current?.focus());
   }, []);
+
+  const uploadCommanderFiles = useCallback(async (files: File[], replacingFailedId?: number) => {
+    if (!companyId || files.length === 0 || streaming) return;
+    const attachedCount = inputRefsRef.current.filter((ref) => ref.kind === "asset").length;
+    const retainedFailureCount = failedUploads.filter((item) => item.id !== replacingFailedId).length;
+    const selection = validateCommanderAttachmentFiles(
+      files,
+      attachedCount + retainedFailureCount,
+      uploadingFiles.length,
+    );
+    if (replacingFailedId !== undefined) {
+      setFailedUploads((current) => current.filter((item) => item.id !== replacingFailedId));
+    }
+    setAttachmentError(selection.errors.length > 0 ? selection.errors.join(" ") : null);
+
+    for (const file of selection.accepted) {
+      const uploadConversationId = conversationId;
+      const uploadId = ++uploadSequenceRef.current;
+      setUploadingFiles((current) => [...current, { id: uploadId, name: file.name }]);
+      try {
+        const asset = await assetsApi.uploadFile(
+          companyId,
+          file,
+          `commander/${conversationId ?? "new"}`,
+        );
+        if (activeConversationIdRef.current === uploadConversationId) {
+          addInputRef(assetResponseToCommanderInputRef(asset, file.name));
+        }
+      } catch {
+        // Round-10 #3: guard the failure path with the SAME active-conversation
+        // check the success path uses. If the user switched chats mid-upload,
+        // drop the stale failure silently — otherwise B's tray shows a failed
+        // card for A's file, and retrying it would attach A's file to B.
+        if (activeConversationIdRef.current === uploadConversationId) {
+          setFailedUploads((current) => [...current, { id: uploadId, file }]);
+          setAttachmentError(`Could not upload ${file.name}. Retry or remove it below.`);
+        }
+      } finally {
+        setUploadingFiles((current) => current.filter((item) => item.id !== uploadId));
+      }
+    }
+  }, [addInputRef, companyId, conversationId, failedUploads, streaming, uploadingFiles.length]);
+
+  const handleCommanderFileInput = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files ?? []);
+    event.target.value = "";
+    void uploadCommanderFiles(files);
+  }, [uploadCommanderFiles]);
+
+  // Frame-wide drag-drop (mock §5): validation stays in uploadCommanderFiles
+  // (validateCommanderAttachmentFiles) — the hook only detects + hands over.
+  const { isDragActive, dragHandlers } = useComposerDragDrop({
+    onDropFiles: (files: File[]) => void uploadCommanderFiles(files),
+    disabled: streaming,
+  });
 
   useEffect(() => {
     if (!duplicateInputRefKey) return;
@@ -1022,6 +1277,9 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
     inputRefsRef.current = refs;
     setInputRefs(refs);
     setDuplicateInputRefKey((current) => (current === key ? null : current));
+    // Retry must never post a removed (possibly sensitive) attachment.
+    composerRevisionRef.current += 1;
+    if (!streamingRef.current) setSendFailed(false);
   }, []);
 
   const handleOpenInputRef = useCallback(
@@ -1044,10 +1302,9 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
     // Read the expanded directive text (skill tokens → full use_skill lines)
     // straight from the rich input; it clears itself on submit.
     const text = inputRef.current?.getText() ?? "";
-    if (!text && inputRefsRef.current.length === 0) return;
-    inputRef.current?.clear();
+    if ((!text && inputRefsRef.current.length === 0) || uploadingFiles.length > 0) return;
     await submitCommanderInput(text);
-  }, [submitCommanderInput]);
+  }, [submitCommanderInput, uploadingFiles.length]);
 
   const handleStop = useCallback(() => {
     abortRef.current?.abort();
@@ -1843,7 +2100,68 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
           onFilteredChange={handleFilteredSkillsChange}
           onClose={closePicker}
         />
-        <div className="rounded-lg border border-border bg-background focus-within:ring-2 focus-within:ring-brand-focus-ring focus-within:border-brand transition-shadow">
+        {/* Honest delta vs the previous bespoke div: +shadow-sm, +flex-col/min-w-0
+            base, +data-composer-frame attribute. NO overflow — the mention popover
+            renders absolute bottom-full INSIDE this frame. */}
+        <ComposerFrame chrome="card" data-testid="commander-composer-frame" dragHandlers={dragHandlers}>
+          <ComposerDropOverlay active={isDragActive} />
+          {/* B-states (mock §5): offline strip + failed-send banner, above the
+              attachments strip. Wrapper renders only when either is visible so
+              the connected/no-failure frame keeps its exact spacing. */}
+          {(composerConnection !== "connected" || sendFailed) && (
+            <div className="px-2 pt-2">
+              <ComposerOfflineStrip state={composerConnection} />
+              {sendFailed && (
+                <ComposerSendFailedBanner
+                  onRetry={handleRetryFailedSend}
+                  onEdit={handleEditFailedSend}
+                  onDiscard={handleDiscardFailedSend}
+                  retrying={streaming}
+                />
+              )}
+            </div>
+          )}
+          <input
+            ref={commanderFileInputRef}
+            type="file"
+            multiple
+            accept={COMPOSER_ATTACHMENT_CONTENT_TYPES.join(",")}
+            className="sr-only"
+            aria-label="Attach files"
+            onChange={handleCommanderFileInput}
+          />
+          {(uploadingFiles.length > 0 || failedUploads.length > 0 || attachmentError) && (
+            <div className="border-b border-border/70 px-2 py-2 text-xs" role="status" aria-live="polite">
+              {uploadingFiles.map((file) => (
+                <div key={file.id} className="flex items-center gap-2 text-muted-foreground">
+                  <Loader2 className="size-3 animate-spin" aria-hidden="true" />
+                  <span className="truncate">Uploading {file.name}…</span>
+                </div>
+              ))}
+              {failedUploads.map((item) => (
+                <div key={item.id} className="flex items-center gap-2 text-destructive">
+                  <AlertCircle className="size-3 shrink-0" aria-hidden="true" />
+                  <span className="min-w-0 flex-1 truncate">{item.file.name} failed</span>
+                  <button
+                    type="button"
+                    className="rounded px-1 font-medium hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-focus-ring"
+                    onClick={() => void uploadCommanderFiles([item.file], item.id)}
+                  >
+                    Retry
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`Remove failed ${item.file.name} attachment`}
+                    className="rounded p-0.5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-focus-ring"
+                    onClick={() => setFailedUploads((current) => current.filter((failed) => failed.id !== item.id))}
+                  >
+                    <X className="size-3" aria-hidden="true" />
+                  </button>
+                </div>
+              ))}
+              {attachmentError && <p className="mt-1 text-destructive">{attachmentError}</p>}
+            </div>
+          )}
           {inputRefs.length > 0 && (
             <div
               className="flex flex-wrap gap-1.5 border-b border-border/70 px-2 py-2"
@@ -1859,18 +2177,32 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
                       : "border-border",
                   )}
                 >
-                  <button
-                    type="button"
-                    aria-label={`Open ${ref.label} reference`}
-                    title="Open reference"
-                    className="inline-flex min-w-0 max-w-[220px] items-center gap-1 rounded text-left hover:text-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-focus-ring"
-                    onClick={() => handleOpenInputRef(ref)}
-                  >
-                    <span className="shrink-0 font-medium text-muted-foreground">
-                      {commanderInputRefKindLabel(ref.kind)}
-                    </span>
-                    <span className="min-w-0 truncate">{ref.label}</span>
-                  </button>
+                  {ref.kind === "asset" && ref.route ? (
+                    <a
+                      href={ref.route}
+                      target="_blank"
+                      rel="noreferrer"
+                      aria-label={`Open ${ref.label} attachment`}
+                      title="Open attachment"
+                      className="inline-flex min-w-0 max-w-[220px] items-center gap-1 rounded text-left hover:text-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-focus-ring"
+                    >
+                      <span className="shrink-0 font-medium text-muted-foreground">File</span>
+                      <span className="min-w-0 truncate">{ref.label}</span>
+                    </a>
+                  ) : (
+                    <button
+                      type="button"
+                      aria-label={`Open ${ref.label} reference`}
+                      title="Open reference"
+                      className="inline-flex min-w-0 max-w-[220px] items-center gap-1 rounded text-left hover:text-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-focus-ring"
+                      onClick={() => handleOpenInputRef(ref)}
+                    >
+                      <span className="shrink-0 font-medium text-muted-foreground">
+                        {commanderInputRefKindLabel(ref.kind)}
+                      </span>
+                      <span className="min-w-0 truncate">{ref.label}</span>
+                    </button>
+                  )}
                   <button
                     type="button"
                     aria-label={`Remove ${ref.label} reference`}
@@ -1891,6 +2223,12 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
             disabled={streaming}
             onSubmit={(text) => void submitCommanderInput(text)}
             onReferenceDrop={({ ref, prompt }) => addInputRef(ref, prompt)}
+            onFilesSelected={(files) => void uploadCommanderFiles(files)}
+            onTextChange={(text) => {
+              commanderDraft.setDraft({ text });
+              handleComposerTextChange(text);
+            }}
+            mentionOptions={mentionAgents.filter((agent) => agent.status !== "terminated").map((agent) => ({ id: agent.id, name: agent.name }))}
             onEmptyChange={handleEmptyChange}
             onSlashChange={handleSlashChange}
             onKeyDown={handleKeyDown}
@@ -1905,9 +2243,58 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
               }
             }}
           />
-          {/* Controls row */}
+          {/* Controls row — approved mock §1/§2 order: attach + mention first,
+              surface extras (+ skills, voice) after them. */}
           <div className="flex items-center gap-1.5 px-2 pb-2">
-            {/* + add menu (functional) */}
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <ComposerIconButton
+                    disabled={streaming}
+                    aria-label="Attach file"
+                    onClick={() => commanderFileInputRef.current?.click()}
+                  >
+                    <Paperclip className="size-4" aria-hidden="true" />
+                  </ComposerIconButton>
+                </TooltipTrigger>
+                <TooltipContent side="top">Attach file</TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+
+            {/* Structured @mention picker */}
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <ComposerIconButton
+                    disabled={streaming}
+                    aria-label="Mention a teammate"
+                    onClick={() => {
+                      inputRef.current?.focus();
+                      inputRef.current?.insertText("@");
+                    }}
+                  >
+                    <AtSign className="size-4" aria-hidden="true" />
+                  </ComposerIconButton>
+                </TooltipTrigger>
+                <TooltipContent side="top">Mention a teammate</TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+
+            {/* Voice (disabled, coming soon) */}
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  {/* No native `title` — the Radix TooltipContent below is the
+                      single tooltip (a native title would double up on hover). */}
+                  <ComposerIconButton aria-label="Voice input" comingSoon>
+                    <Mic className="size-4" aria-hidden="true" />
+                  </ComposerIconButton>
+                </TooltipTrigger>
+                <TooltipContent side="top">Coming soon</TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+
+            {/* Extras slot: + add menu (attach via menu + Use a skill) */}
             <InputAddMenu
               onUseSkill={() => {
                 setPickerIndex(0);
@@ -1919,40 +2306,6 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
               disabled={streaming}
             />
 
-            {/* @mention (disabled, coming soon) */}
-            <TooltipProvider>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button
-                    type="button"
-                    disabled
-                    aria-disabled="true"
-                    className="size-8 rounded-full flex items-center justify-center shrink-0 text-muted-foreground opacity-40 cursor-not-allowed"
-                  >
-                    <AtSign className="size-4" aria-hidden="true" />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="top">Coming soon</TooltipContent>
-              </Tooltip>
-            </TooltipProvider>
-
-            {/* Voice (disabled, coming soon) */}
-            <TooltipProvider>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button
-                    type="button"
-                    disabled
-                    aria-disabled="true"
-                    className="size-8 rounded-full flex items-center justify-center shrink-0 text-muted-foreground opacity-40 cursor-not-allowed"
-                  >
-                    <Mic className="size-4" aria-hidden="true" />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="top">Coming soon</TooltipContent>
-              </Tooltip>
-            </TooltipProvider>
-
             {/* Spacer */}
             <div className="flex-1" />
 
@@ -1962,23 +2315,25 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
                 type="button"
                 onClick={handleStop}
                 aria-label="Stop generation"
-                className="size-8 rounded-full flex items-center justify-center shrink-0 bg-[color:var(--error,#ef4444)] text-white hover:opacity-90 transition-opacity focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-brand-focus-ring"
+                className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-brand px-3 text-xs font-semibold text-white hover:opacity-90 transition-opacity focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-brand-focus-ring"
               >
-                <Square className="size-3.5 fill-current" aria-hidden="true" />
+                <Square className="size-3 fill-current" aria-hidden="true" />
+                Stop
               </button>
             ) : (
               <button
                 type="button"
                 onClick={handleSend}
-                disabled={inputEmpty && inputRefs.length === 0}
+                disabled={(inputEmpty && inputRefs.length === 0) || uploadingFiles.length > 0 || isOffline}
                 aria-label="Send message"
-                className="size-8 rounded-full flex items-center justify-center shrink-0 bg-brand text-white hover:bg-brand-hover transition-colors focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-brand-focus-ring disabled:opacity-40 disabled:pointer-events-none"
+                className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-brand px-3.5 text-xs font-semibold text-white hover:bg-brand-hover transition-colors focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-brand-focus-ring disabled:opacity-40 disabled:pointer-events-none"
               >
-                <Send className="size-4" aria-hidden="true" />
+                Send
+                <Send className="size-3.5" aria-hidden="true" />
               </button>
             )}
           </div>
-        </div>
+        </ComposerFrame>
       </div>
     </div>
   );

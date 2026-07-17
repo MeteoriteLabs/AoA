@@ -19,7 +19,7 @@ import { discussionService, logActivity, permissionService } from "../services/i
 import { HttpError } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { assertMemoryApproval, assertRole } from "../middleware/rbac.js";
-import { threadService, parseMentions, processMentions } from "../services/threads.js";
+import { threadService, resolveMentionTargets, assertCanPostToThread } from "../services/threads.js";
 import type { Actor } from "../services/threads.js";
 import { threadScopeVersionService } from "../services/thread-scope-versions.js";
 import { enqueueIssueAssigneeWakeup } from "../services/issue-assignee-wakeup.js";
@@ -616,29 +616,29 @@ export function discussionRoutes(db: Db) {
       await assertRole(db, req, companyId, "founder", "team_lead");
 
       const actor = getActorInfo(req);
+
+      // Round-14 #2 + round-15: resolve the opening message's @mentions BEFORE
+      // svc.create (multi-word-aware roster read), then thread them INTO svc.create
+      // so the summon is enqueued in the discussion_mention_outbox IN THE SAME
+      // transaction as the first entry. This makes the durable outbox worker the
+      // SOLE summon path here too — exactly like addEntry — so a transient summon
+      // failure retries instead of permanently skipping the mentioned agent (the
+      // old fire-and-forget processMentions only logged on failure). Resolving
+      // pre-commit still fails cleanly on a roster-query blip (nothing created →
+      // safe retry; the create endpoint has no idempotency key). The content is the
+      // same one svc.create will insert (req.body.entry).
+      const openingContent =
+        typeof (req.body?.entry as { rawContent?: unknown } | undefined)?.rawContent === "string"
+          ? (req.body.entry.rawContent as string)
+          : "";
+      const openingMentions = openingContent
+        ? await resolveMentionTargets(db, companyId, openingContent)
+        : [];
+
       try {
-        const discussion = await svc.create(companyId, req.body, actor.actorId);
-
-        // Live-QA BUG-1: a thread opened WITH a first message must dispatch any
-        // @mentions in that first message — exactly like the add-entry route
-        // does. Without this an @mention in the opening message is dropped.
-        // Fire-and-forget; the entry is already committed, so errors must not
-        // fail the request. Mirrors the /entries route's processMentions wiring.
-        if (discussion.entry) {
-          const mentions = parseMentions(discussion.entry.rawContent ?? "");
-          if (mentions.length > 0) {
-            processMentions(
-              db,
-              companyId,
-              discussion.id,
-              discussion.entry.id,
-              mentions,
-            ).catch((err) =>
-              console.error("[threads] processMentions error:", err),
-            );
-          }
-        }
-
+        const discussion = await svc.create(companyId, req.body, actor.actorId, openingMentions);
+        // No direct processMentions here (round-15): svc.create enqueued the
+        // opening summon transactionally; the outbox worker drains it exactly once.
         res.status(201).json(discussion);
       } catch (err) {
         if (err instanceof HttpError) {
@@ -698,28 +698,58 @@ export function discussionRoutes(db: Db) {
       const companyId = req.params.companyId as string;
       const discussionId = req.params.discussionId as string;
       assertCompanyAccess(req, companyId);
-      await assertRole(db, req, companyId, "founder", "team_lead");
 
       const actor = getActorInfo(req);
+      const threadActor = await buildActor(req, companyId);
       try {
+        // Idempotent retry: replay the original entry without re-posting or
+        // re-firing mention summons. The DB partial-unique index is the backstop.
+        const clientSubmissionId =
+          typeof (req.body as { clientSubmissionId?: unknown }).clientSubmissionId === "string"
+            ? (req.body as { clientSubmissionId: string }).clientSubmissionId
+            : undefined;
+        if (clientSubmissionId) {
+          // P1 (PR #291 review): authorize the thread BEFORE returning a replay.
+          // getEntryByClientSubmissionId scopes only by discussionId + key, so
+          // without this a company member (or removed participant) who knows a
+          // prior key could read an entry from a private thread, and another
+          // company's discussionId would skip the company check. Run the SAME
+          // authorization addEntry enforces so an unauthorized caller gets the
+          // identical 404 they'd get posting, whether or not a replay exists.
+          await assertCanPostToThread(db, companyId, discussionId, threadActor);
+          const replay = await svc.getEntryByClientSubmissionId(discussionId, clientSubmissionId);
+          if (replay) {
+            res.status(200).json(replay);
+            return;
+          }
+        }
+
         const entry = await svc.addEntry(
           companyId,
           discussionId,
           req.body,
           actor.actorId,
+          threadActor,
         );
 
-        // Process @mentions in the entry text (fire-and-forget; errors must not
-        // fail the request since the entry is already committed).
-        const rawContent: string = (req.body as { rawContent?: string }).rawContent ?? "";
-        const mentions = parseMentions(rawContent);
-        if (mentions.length > 0) {
-          processMentions(db, companyId, discussionId, entry.id, mentions).catch(
-            (err) => console.error("[threads] processMentions error:", err),
-          );
+        // C4 (PR #291 review): a simultaneous same-key submission that lost the
+        // insert race (or slipped past the pre-check) comes back flagged as a
+        // replay. The winning request already fired the entry's side-effects, so
+        // the loser must NOT re-run processMentions — otherwise the mentioned
+        // crew is summoned twice (hop-counter bump / double participation).
+        const { replayed, ...entryRow } =
+          entry as typeof entry & { replayed?: boolean };
+        if (replayed) {
+          res.status(200).json(entryRow);
+          return;
         }
 
-        res.status(201).json(entry);
+        // @mention summons are now enqueued to discussion_mention_outbox INSIDE
+        // addEntry's transaction and drained exactly-once by the mention-outbox
+        // worker (PR #291 round-6 #3). The old route-level fire-and-forget
+        // processMentions call was lost on failure and skipped by a same-key
+        // replay — the durable outbox guarantees the summon survives both.
+        res.status(201).json(entryRow);
       } catch (err) {
         if (err instanceof HttpError) {
           res.status(err.status).json({ error: err.message });
@@ -1067,7 +1097,12 @@ export function discussionRoutes(db: Db) {
       return { userId: info.actorId, role: "founder", isHuman };
     }
     if (req.actor.type === "agent") {
-      return { userId: info.actorId, role: "team_member", isHuman: false };
+      return {
+        userId: info.actorId,
+        role: "team_member",
+        isHuman: false,
+        principalType: "agent",
+      };
     }
 
     // Non-board bearer tokens (mcp) are NEVER founder/team_lead for thread
@@ -1077,7 +1112,12 @@ export function discussionRoutes(db: Db) {
     // Confine them to team_member (participant/owner-scoped). Interactive
     // founder access is via board sessions only. (Mirrors conversation-authz.ts.)
     if (req.actor.type !== "board") {
-      return { userId: info.actorId, role: "team_member", isHuman: false };
+      return {
+        userId: info.actorId,
+        role: "team_member",
+        isHuman: false,
+        principalType: "user",
+      };
     }
 
     const perms = permissionService(db);

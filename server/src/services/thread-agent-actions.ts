@@ -26,7 +26,7 @@ import {
 import { discussionService } from "./discussions.js";
 import { threadScopeVersionService } from "./thread-scope-versions.js";
 import { artifactService } from "./artifacts.js";
-import { threadService, parseMentions, processMentions } from "./threads.js";
+import { threadService, ensureAgentParticipant } from "./threads.js";
 import { buildConveneWakeupDedupKey } from "./internal-agent/tools/thread-action-keys.js";
 import { resolveRoleToAgentId } from "./internal-agent/tools/crew-role-map.js";
 import { resolveScopeAutoAcceptGate, dispatchCreatedCrewTasks } from "./crew-task-service.js";
@@ -668,6 +668,15 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
               continue;
             }
 
+            // Same boundary as post-entry-tool.ts: the server engaged this agent
+            // on the thread (gated crew run) — register it as a participant
+            // BEFORE committing its reply, or the posting authz inside addEntry
+            // 404s ("Thread not found") on any thread the agent can't otherwise
+            // view. Third chokepoint of the crew-posting fix (live-QA 2026-07-16).
+            // (Cast: DbLike is this service's loose structural handle; the
+            // helper only runs insert().values().onConflictDoNothing().)
+            await ensureAgentParticipant(actionDb as unknown as Db, input.companyId, input.threadId, action.agentId);
+
             let entry: { id: string };
             try {
               entry = await discussionCommitter.addEntry(
@@ -687,6 +696,12 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
                   sourceActionId: action.id,
                 },
                 `agent:${action.agentId}`,
+                {
+                  userId: action.agentId,
+                  role: "team_member",
+                  isHuman: false,
+                  principalType: "agent",
+                },
               );
             } catch (err) {
               if (!isUniqueViolation(err, "discussion_entries_source_action_uq")) throw err;
@@ -729,36 +744,13 @@ export function threadAgentActionService(db: Db | DbLike, deps: ThreadAgentActio
             });
             result.committed += 1;
 
-            // Review fix (f): run mention processing on the committed entry, just
-            // like the non-gated post path (post-entry-tool.ts). Without this a
-            // "@Planner …" reply that committed through the action queue would
-            // never convene Planner — the gated path silently dropped mentions.
-            // Hop-capped at 1 (same as the non-gated path) so a chain of mentions
-            // can't spiral. Best-effort: a mention-dispatch failure must not roll
-            // back the already-committed reply, so it is caught and logged.
-            try {
-              const mentions = parseMentions(rawContent);
-              if (mentions.length > 0) {
-                await processMentions(
-                  actionDb as unknown as Db,
-                  input.companyId,
-                  input.threadId,
-                  entry.id,
-                  mentions,
-                  { hopCount: 1 },
-                );
-              }
-            } catch (mentionErr) {
-              log.warn(
-                {
-                  err: mentionErr,
-                  threadId: input.threadId,
-                  entryId: entry.id,
-                  actionId: action.id,
-                },
-                "thread-agent-actions: mention processing failed for committed post_reply — entry kept",
-              );
-            }
+            // @mention summons are enqueued to the transactional outbox INSIDE
+            // discussionCommitter.addEntry's tx (with hopCount:1 for this
+            // agent-authored, inputType:'agent' reply) and drained exactly-once by
+            // the mention-outbox worker (PR #291 round-8 #1). The previous direct
+            // processMentions call here double-summoned on top of the outbox
+            // (hop bump / double participation). Removed — the outbox is now the
+            // single summon path for this committed reply.
             continue;
           }
 

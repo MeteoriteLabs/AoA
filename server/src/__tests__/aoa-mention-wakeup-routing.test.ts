@@ -169,7 +169,10 @@ describe("F1: AoA @mention uses direct wakeup insert, never heartbeat (single ex
   });
 
   it("enqueueAoaMentionWakeup inserts ONE agent_wakeup_requests row status=queued", async () => {
-    const insertValues = vi.fn().mockResolvedValue(undefined);
+    // Round-17 #2: the insert now chains .onConflictDoNothing(...) (idempotent
+    // dedup on the comment-wakeup idempotency key).
+    const onConflictDoNothing = vi.fn().mockResolvedValue(undefined);
+    const insertValues = vi.fn().mockReturnValue({ onConflictDoNothing });
     const insertedInto: unknown[] = [];
     const db: any = { insert: (tbl: unknown) => { insertedInto.push(tbl); return { values: insertValues }; } };
     const svc = issueService(db);

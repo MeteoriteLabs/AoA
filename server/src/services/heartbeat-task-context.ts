@@ -59,6 +59,39 @@ export function buildWorkQuestionContinuationMarkdown(envelopeValue: unknown): s
   ].join("\n");
 }
 
+export interface WakeCommentContext {
+  body: string;
+  /** Human-readable author ("the board", "Maya", "agent Scout"). */
+  authorLabel: string;
+  /** Wake reason — a mention gets a sharper heading than a plain message. */
+  reason: string | null;
+}
+
+/**
+ * Inline the comment that woke this run (review F11, 2026-07-16): before this,
+ * a founder's "Send & wake" chat message or @mention woke the agent but the
+ * prompt never carried the message text — the agent only saw it if it chose
+ * to fetch comments via MCP tools. Mirrors the work-question continuation
+ * pattern above: what the human said is part of the wake, so it goes in the
+ * prompt.
+ */
+export function buildWakeCommentMarkdown(comment: WakeCommentContext | null): string | null {
+  const body = comment?.body?.trim();
+  if (!comment || !body) return null;
+  const heading =
+    comment.reason === "issue_comment_mentioned"
+      ? "## You Were Mentioned in a Comment"
+      : "## New Message on This Task";
+  return [
+    heading,
+    `- From: ${comment.authorLabel}`,
+    "",
+    body,
+    "",
+    "Address this message as part of your work on the task. Reply by posting a task comment; if it needs a human decision, use `ask_human`.",
+  ].join("\n");
+}
+
 export function buildCurrentTaskMarkdown(task: HeartbeatTaskContext): string {
   return [
     "## Current Task",

@@ -1,4 +1,5 @@
 import { Router, type Request, type Response } from "express";
+import { randomUUID } from "node:crypto";
 import multer from "multer";
 import { discussions, type Db } from "@armyofagents/db";
 import { and, eq } from "drizzle-orm";
@@ -34,8 +35,10 @@ import { shouldDispatchIssueWakeup } from "./issues-planning-mode-dispatch.js";
 import { enqueueIssueAssigneeWakeup } from "../services/issue-assignee-wakeup.js";
 import { documentService } from "../services/documents.js";
 import { getSafeServingHeaders } from "../services/asset-serving-safety.js";
+import { sniffAndVerifyContentType } from "../services/asset-content-guard.js";
 import { issueDocumentKeySchema, upsertIssueDocumentSchema } from "@armyofagents/shared";
 import { createEagerWorkspaceForIssue } from "../services/eager-workspace.js";
+import { COMMENT_WAKEUP_DEFER_GRACE_MS, type CommentWakeupTarget } from "../services/comment-wakeup-outbox.js";
 import { canDelegateToTarget, type WakeSkippedReason } from "../services/task-policy.js";
 import {
   listIssueContextBundlesForIssue,
@@ -140,6 +143,17 @@ export function issueRoutes(db: Db, storage: StorageService) {
     if (file.buffer.length <= 0) {
       throw unprocessable("Attachment is empty");
     }
+    return contentType;
+  }
+
+  // P2 (PR #291 round-3 review): allowlist + byte-sniff a task-comment
+  // attachment. `sniffAndVerifyContentType` re-checks the bytes against the
+  // shared composer allowlist; `image/jpg` is a legacy alias for `image/jpeg`
+  // (identical magic bytes), so normalize it for the sniff while preserving the
+  // caller's declared type on the stored/returned record.
+  function sniffCommentAttachment(file: { mimetype: string; buffer: Buffer }) {
+    const contentType = validateAttachmentFile(file);
+    sniffAndVerifyContentType(file.buffer, contentType === "image/jpg" ? "image/jpeg" : contentType);
     return contentType;
   }
 
@@ -266,6 +280,46 @@ export function issueRoutes(db: Db, storage: StorageService) {
     return value === true || value === "true";
   }
 
+  // Authz gate that must run BEFORE the comment is created (round-4 review): the
+  // interrupt-is-board-only rule rejects up front so a non-board caller never
+  // creates a comment. The MUTATING control effects (reopen/interrupt) are then
+  // deferred until AFTER the conflict-protected insert is WON, so a same-key
+  // race loser never reopens a task or cancels a run. Returns false (after
+  // sending 403) when the request must be rejected.
+  function assertInterruptAuthorized(req: Request, res: Response, interruptRequested: boolean): boolean {
+    if (interruptRequested && req.actor.type !== "board") {
+      res.status(403).json({ error: "Only board users can interrupt active runs from issue comments" });
+      return false;
+    }
+    return true;
+  }
+
+  // Resolve the RUNNING run an interrupt would cancel for this issue (or null):
+  // the issue's execution run if running, else the assignee's active run when it
+  // is running ON this issue. Read-only — shared by applyIssueCommentControlEffects
+  // (which then cancels it) and the round-17 #1 pre-resolve (so the in-transaction
+  // wakeup can carry interruptedRunId even though the actual cancel runs after the
+  // comment tx).
+  async function resolveInterruptTargetRunId(currentIssue: IssueForCommentControl): Promise<string | null> {
+    let runToInterrupt = currentIssue.executionRunId
+      ? await heartbeat.getRun(currentIssue.executionRunId)
+      : null;
+    if ((!runToInterrupt || runToInterrupt.status !== "running") && currentIssue.assigneeAgentId) {
+      const activeRun = await heartbeat.getActiveRunForAgent(currentIssue.assigneeAgentId);
+      const activeIssueId =
+        activeRun &&
+        activeRun.contextSnapshot &&
+        typeof activeRun.contextSnapshot === "object" &&
+        typeof (activeRun.contextSnapshot as Record<string, unknown>).issueId === "string"
+          ? ((activeRun.contextSnapshot as Record<string, unknown>).issueId as string)
+          : null;
+      if (activeRun && activeRun.status === "running" && activeIssueId === currentIssue.id) {
+        runToInterrupt = activeRun;
+      }
+    }
+    return runToInterrupt && runToInterrupt.status === "running" ? runToInterrupt.id : null;
+  }
+
   async function applyIssueCommentControlEffects(input: {
     req: Request;
     res: Response;
@@ -325,29 +379,10 @@ export function issueRoutes(db: Db, storage: StorageService) {
         return { ok: false };
       }
 
-      let runToInterrupt = currentIssue.executionRunId
-        ? await heartbeat.getRun(currentIssue.executionRunId)
-        : null;
+      const runToInterruptId = await resolveInterruptTargetRunId(currentIssue);
 
-      if (
-        (!runToInterrupt || runToInterrupt.status !== "running") &&
-        currentIssue.assigneeAgentId
-      ) {
-        const activeRun = await heartbeat.getActiveRunForAgent(currentIssue.assigneeAgentId);
-        const activeIssueId =
-          activeRun &&
-            activeRun.contextSnapshot &&
-            typeof activeRun.contextSnapshot === "object" &&
-            typeof (activeRun.contextSnapshot as Record<string, unknown>).issueId === "string"
-            ? ((activeRun.contextSnapshot as Record<string, unknown>).issueId as string)
-            : null;
-        if (activeRun && activeRun.status === "running" && activeIssueId === currentIssue.id) {
-          runToInterrupt = activeRun;
-        }
-      }
-
-      if (runToInterrupt && runToInterrupt.status === "running") {
-        const cancelled = await heartbeat.cancelRun(runToInterrupt.id);
+      if (runToInterruptId) {
+        const cancelled = await heartbeat.cancelRun(runToInterruptId);
         if (cancelled) {
           interruptedRunId = cancelled.id;
           await logActivity(db, {
@@ -368,7 +403,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
     return { ok: true, currentIssue, reopened, reopenFromStatus, interruptedRunId };
   }
 
-  async function enqueueIssueCommentWakeups(input: {
+  async function buildIssueCommentWakeupTargets(input: {
     issue: {
       id: string;
       companyId: string;
@@ -393,7 +428,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
     reopenFromStatus?: string | null;
     interruptedRunId?: string | null;
     attachments?: CommentWakeAttachment[];
-  }) {
+  }): Promise<CommentWakeupTarget[]> {
     const {
       issue,
       currentIssue,
@@ -501,37 +536,218 @@ export function issueRoutes(db: Db, storage: StorageService) {
       });
     }
 
+    // Human @mention notifications: idempotent (hub reconcile dedups) + best-
+    // effort, and about the ISSUE + body (not the comment), so it stays inline
+    // rather than in the per-agent wakeup outbox (which covers AGENT wakeups —
+    // the round-16 finding). It runs before the comment insert; a duplicate
+    // request re-notifies harmlessly.
     await svc.notifyMentionedHumans(issue.companyId, body, currentIssue.id, actor);
 
-    // Kind-aware dispatch (crew arc review #1 — CRITICAL). Crew agents (kind='aoa')
-    // run via the AoA dispatcher, NOT the heartbeat — heartbeat.wakeup refuses
-    // kind='aoa' (Decision #100) and silently drops the request. Without this
-    // branch, a founder commenting on (or @mentioning a crew agent in) a crew
-    // task produced no dispatch and no error. Mirrors the PATCH/update path
-    // chokepoint (resolveAgentKinds → enqueueAoaMentionWakeup vs heartbeat.wakeup).
-    const aoaKinds = await svc
-      .resolveAgentKinds([...wakeups.keys()])
-      .catch(() => new Map<string, string>());
-    for (const [agentId, wakeup] of wakeups.entries()) {
-      if (aoaKinds.get(agentId) === "aoa") {
-        svc
-          .enqueueAoaMentionWakeup(issue.companyId, agentId, {
-            source: wakeup?.source,
-            reason: wakeup?.reason,
-            payload: wakeup?.payload,
-          })
-          .catch((err) =>
-            logger.warn(
-              { err, issueId: currentIssue.id, agentId },
-              "failed to enqueue aoa mention wakeup on issue comment",
-            ),
-          );
-      } else {
-        heartbeat
-          .wakeup(agentId, wakeup)
-          .catch((err) => logger.warn({ err, issueId: currentIssue.id, agentId }, "failed to wake agent on issue comment"));
-      }
+    // Round-16: return the per-agent wakeup TARGETS (agentId + fully-built config)
+    // instead of dispatching here. The caller enqueues these in the comment-insert
+    // transaction (addComment) and the durable comment_wakeup_outbox worker
+    // delivers each exactly once — resolving each agent's kind (aoa vs org) at
+    // drain time (so a failed kind lookup just retries that row, never misroutes).
+    return [...wakeups.entries()].map(([agentId, wakeup]) => ({ agentId, wakeup }));
+  }
+
+  // Dispatch the wakeups for the combined comment+reassign / update PATCH path
+  // (PR #291 round-11 #1). Builds the same request-changes + assignment + @mention
+  // wakeups the PATCH always fired, but AWAITS their durable enqueue (so a caller
+  // can stamp wakeups_enqueued_at only after the summon rows exist) and is reused
+  // by both the fresh PATCH and its idempotent-replay resume — parity with the
+  // POST comment routes. buildIssueCommentWakeupTargets.
+  async function buildPatchCommentWakeupTargets(input: {
+    issue: IssueForCommentControl;
+    comment: { id: string; authorAgentId?: string | null } | null;
+    /** Comment body for @mention resolution (empty when this is a pure update). */
+    body: string;
+    actor: ReturnType<typeof getActorInfo>;
+    /** Wake issue.assigneeAgentId with issue_assigned (a reassign happened / was requested). */
+    assigneeChanged: boolean;
+    /** Wake issue.assigneeAgentId with issue_review_changes_requested. */
+    requestChanges: boolean;
+  }): Promise<CommentWakeupTarget[]> {
+    const { issue, comment, body, actor, assigneeChanged, requestChanges } = input;
+    const wakeups = new Map<string, Parameters<typeof heartbeat.wakeup>[1]>();
+
+    if (requestChanges && comment && issue.assigneeAgentId && shouldDispatchIssueWakeup(issue)) {
+      wakeups.set(issue.assigneeAgentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_review_changes_requested",
+        payload: { issueId: issue.id, commentId: comment.id, mutation: "request_changes" },
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
+        contextSnapshot: {
+          issueId: issue.id,
+          taskId: issue.id,
+          commentId: comment.id,
+          wakeCommentId: comment.id,
+          wakeReason: "issue_review_changes_requested",
+          source: "task.review",
+        },
+      });
     }
+
+    if (assigneeChanged && issue.assigneeAgentId && issue.status !== "backlog" && shouldDispatchIssueWakeup(issue)) {
+      wakeups.set(issue.assigneeAgentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: { issueId: issue.id, mutation: "update" },
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
+        contextSnapshot: { issueId: issue.id, source: "issue.update" },
+      });
+    }
+
+    if (body && comment) {
+      let mentionedIds: string[] = [];
+      try {
+        mentionedIds = await svc.findMentionedAgents(issue.companyId, body);
+      } catch (err) {
+        logger.warn({ err, issueId: issue.id }, "failed to resolve @-mentions");
+      }
+      for (const mentionedId of mentionedIds) {
+        if (wakeups.has(mentionedId)) continue;
+        if (actor.actorType === "agent" && actor.actorId === mentionedId) continue;
+        if (comment.authorAgentId === mentionedId) continue;
+        wakeups.set(mentionedId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "issue_comment_mentioned",
+          payload: { issueId: issue.id, commentId: comment.id },
+          requestedByActorType: actor.actorType,
+          requestedByActorId: actor.actorId,
+          contextSnapshot: {
+            issueId: issue.id,
+            taskId: issue.id,
+            commentId: comment.id,
+            wakeCommentId: comment.id,
+            wakeReason: "issue_comment_mentioned",
+            source: "comment.mention",
+          },
+        });
+      }
+      await svc.notifyMentionedHumans(issue.companyId, body, issue.id, actor);
+    }
+
+    // Round-16: return the per-agent wakeup TARGETS. The caller enqueues them into
+    // the durable comment_wakeup_outbox and the worker delivers each exactly once,
+    // resolving each agent's kind (aoa vs org) at drain time.
+    return [...wakeups.entries()].map(([agentId, wakeup]) => ({ agentId, wakeup }));
+  }
+
+  // Fire-and-forget DIRECT dispatch for wakeup targets NOT tied to a comment — a
+  // pure reassign / status PATCH with no comment to key the durable
+  // comment_wakeup_outbox on. A keyless one-shot reassign has no durability
+  // contract, so direct dispatch matches the pre-outbox behavior for these paths;
+  // comment-tied wakeups go through svc.enqueueCommentWakeups (durable) instead.
+  // Kinds are resolved here (round-14 #1: a lookup failure skips rather than
+  // misrouting aoa → heartbeat).
+  async function dispatchWakeupTargets(companyId: string, targets: CommentWakeupTarget[]): Promise<void> {
+    if (targets.length === 0) return;
+    let kinds: Map<string, string>;
+    try {
+      kinds = await svc.resolveAgentKinds(targets.map((t) => t.agentId));
+    } catch (err) {
+      logger.warn({ err, companyId }, "resolveAgentKinds failed on reassign wakeup dispatch — skipping");
+      return;
+    }
+    await Promise.allSettled(
+      targets.map((t) => {
+        const w = (t.wakeup ?? {}) as { source?: string | null; reason?: string | null; payload?: unknown };
+        return kinds.get(t.agentId) === "aoa"
+          ? svc
+              .enqueueAoaMentionWakeup(companyId, t.agentId, { source: w.source, reason: w.reason, payload: w.payload })
+              .catch((err) => logger.warn({ err, agentId: t.agentId }, "failed aoa reassign wakeup"))
+          : heartbeat
+              .wakeup(t.agentId, t.wakeup as Parameters<typeof heartbeat.wakeup>[1])
+              .catch((err) => logger.warn({ err, agentId: t.agentId }, "failed reassign wakeup"));
+      }),
+    );
+  }
+
+  // Resume a replayed/race-lost comment's side effects that the original request
+  // never completed. Two parts, each idempotent so a resume finishes what's
+  // missing without re-firing what's done:
+  //   - CONTROL EFFECTS (reopen/interrupt): gated by control_effects_completed_at
+  //     so a resume never re-applies them (the founder may have re-closed the task);
+  //   - @mention/assignee WAKEUPS (round-16): re-build the per-agent targets and
+  //     re-enqueue them into comment_wakeup_outbox. The enqueue is idempotent on
+  //     (comment, agent), so this is a no-op when the original already enqueued
+  //     them, and it RECOVERS the case where the original committed the comment but
+  //     crashed before enqueueing (the durable worker then delivers each once).
+  // Returns { ok:false } when authz/control-effect handling already sent a response.
+  async function resumeIncompleteCommentSideEffects(input: {
+    req: Request;
+    res: Response;
+    issue: IssueForCommentControl;
+    comment: {
+      id: string;
+      body: string;
+      authorAgentId?: string | null;
+      controlEffectsCompletedAt?: Date | null;
+    };
+    reopenRequested: boolean;
+    interruptRequested: boolean;
+    // Completed attachment rows to carry into the re-enqueued wakeup so the woken
+    // agent receives the file metadata (round-8 #2).
+    attachments?: CommentWakeAttachment[];
+  }): Promise<{ ok: boolean }> {
+    const { req, res, issue, comment, reopenRequested, interruptRequested } = input;
+    const attachments = input.attachments ?? [];
+    const actor = getActorInfo(req);
+
+    let currentIssue: IssueForCommentControl = issue;
+    let reopened = false;
+    let reopenFromStatus: string | null = null;
+    let interruptedRunId: string | null = null;
+
+    if (!comment.controlEffectsCompletedAt) {
+      if (!assertInterruptAuthorized(req, res, interruptRequested)) return { ok: false };
+      const control = await applyIssueCommentControlEffects({
+        req,
+        res,
+        issue,
+        actor,
+        reopenRequested,
+        interruptRequested,
+      });
+      if (!control.ok) return { ok: false };
+      currentIssue = control.currentIssue;
+      reopened = control.reopened;
+      reopenFromStatus = control.reopenFromStatus;
+      interruptedRunId = control.interruptedRunId;
+      await svc.markCommentControlEffectsCompleted(comment.id);
+    }
+
+    const targets = await buildIssueCommentWakeupTargets({
+      issue,
+      currentIssue,
+      comment,
+      body: comment.body,
+      actor,
+      reopened,
+      reopenFromStatus,
+      interruptedRunId,
+      attachments,
+    });
+    await svc.enqueueCommentWakeups({
+      companyId: issue.companyId,
+      issueId: issue.id,
+      commentId: comment.id,
+      targets,
+    });
+    // Round-18 #2/#3: the resumed control effects + completed attachments are now
+    // durable, so flip any DEFERRED wakeup rows ready. This recovers a comment
+    // whose original request crashed AFTER committing the (deferred) rows but
+    // BEFORE flipping them — the retry lands here and readies them explicitly
+    // (before the ready_at grace backstop would).
+    await svc.markCommentWakeupsReady(comment.id);
+
+    return { ok: true };
   }
 
   async function normalizeIssueIdentifier(rawId: string): Promise<string> {
@@ -1122,7 +1338,53 @@ export function issueRoutes(db: Db, storage: StorageService) {
     }
     if (!(await assertAgentRunCheckoutOwnership(req, res, existing))) return;
 
-    const { comment: commentBody, hiddenAt: hiddenAtRaw, ...rawUpdateFields } = req.body;
+    // Round-11 #2: EARLY idempotent-replay detection for the combined
+    // comment+reassign PATCH. If this exact submission key already produced a
+    // comment, the ORIGINAL request already applied the reassign + logged
+    // issue.updated — a retry must NOT re-PATCH the task, re-log the update, or
+    // re-fire the reassign. It only RESUMES the comment's wakeups if the original
+    // died before enqueuing them (marker null), mirroring the POST comment routes
+    // (round-9 #3). Detected BEFORE svc.update so the task is never re-mutated.
+    const earlySubmissionKey =
+      typeof req.body.clientSubmissionId === "string" ? req.body.clientSubmissionId : undefined;
+    if (earlySubmissionKey) {
+      const replay = await svc.getCommentByClientSubmissionId(existing.companyId, id, earlySubmissionKey);
+      if (replay) {
+        // Round-16: re-build + re-enqueue this comment's wakeup TARGETS
+        // idempotently (onConflictDoNothing on (comment, agent)). If the original
+        // committed the comment but died before enqueueing, this recovers it; if
+        // the rows already exist, the enqueue is a no-op. The worker then delivers
+        // each exactly once — no marker, no double-wake. Never re-PATCHes the task.
+        const reassignRequested =
+          req.body.assigneeAgentId !== undefined || req.body.assigneeUserId !== undefined;
+        const targets = await buildPatchCommentWakeupTargets({
+          issue: existing,
+          comment: replay,
+          body: replay.body,
+          actor: getActorInfo(req),
+          assigneeChanged: reassignRequested,
+          requestChanges: false,
+        });
+        await svc.enqueueCommentWakeups({
+          companyId: existing.companyId,
+          issueId: id,
+          commentId: replay.id,
+          targets,
+        });
+        res.json({ ...existing, comment: replay });
+        return;
+      }
+    }
+
+    // Strip `comment` and `clientSubmissionId` out of the fields passed to
+    // svc.update — they are NOT issue columns (clientSubmissionId is the comment
+    // idempotency key, threaded into addComment below; round-10 #2).
+    const {
+      comment: commentBody,
+      hiddenAt: hiddenAtRaw,
+      clientSubmissionId: commentClientSubmissionId,
+      ...rawUpdateFields
+    } = req.body;
     const updateFields = normalizeIssueDateFields(rawUpdateFields);
     const isRequestChangesTransition =
       existing.status === "in_review" && updateFields.status === "in_progress";
@@ -1136,6 +1398,20 @@ export function issueRoutes(db: Db, storage: StorageService) {
       });
     }
     const persistedCommentBody = requestChangesFeedback ?? commentBody;
+    // Round-12 #2: a keyed comment+reassign PATCH (the composer's combined
+    // mutation) must persist the issue reassign (svc.update) and the KEYED comment
+    // (addComment) in ONE transaction, so the keyed comment row exists if-and-only-
+    // if the reassign committed. Otherwise a crash between the two writes leaves
+    // the reassign applied with no keyed comment — and the early-replay check above
+    // (which keys off the comment) would miss it, so a retry re-PATCHes the task
+    // (clobbering a newer concurrent reassign + re-logging issue.updated). The
+    // request-changes transition already runs in its own tx below; this covers the
+    // plain keyed comment+reassign case.
+    const hasKeyedComment =
+      !isRequestChangesTransition &&
+      typeof commentClientSubmissionId === "string" &&
+      typeof persistedCommentBody === "string" &&
+      persistedCommentBody.length > 0;
     if (hiddenAtRaw !== undefined) {
       updateFields.hiddenAt = hiddenAtRaw ? new Date(hiddenAtRaw) : null;
     }
@@ -1171,8 +1447,56 @@ export function issueRoutes(db: Db, storage: StorageService) {
           const feedbackComment = await txSvc.addComment(id, requestChangesFeedback!, {
             agentId: actor.agentId ?? undefined,
             userId: actor.actorType === "user" ? actor.actorId : undefined,
+            // Round-18 #4: thread the submission key so a lost-response retry is
+            // idempotent. Without it the feedback comment is unkeyed; on retry the
+            // task is already in_progress (no longer a request-changes transition),
+            // so the retry would take the ordinary keyed path and create a SECOND
+            // feedback comment. The keyed comment lets the early-replay lookup catch
+            // the retry instead.
+            clientSubmissionId:
+              typeof commentClientSubmissionId === "string" ? commentClientSubmissionId : undefined,
+            // Round-17 #1: enqueue the review-changes wakeup IN THIS TX.
+            buildWakeupTargets: (c) =>
+              buildPatchCommentWakeupTargets({
+                issue: updatedIssue,
+                comment: c,
+                body: requestChangesFeedback ?? "",
+                actor,
+                assigneeChanged: assigneeWillChange,
+                requestChanges: true,
+              }),
           });
           return { issue: updatedIssue, comment: feedbackComment };
+        });
+        issue = persisted.issue;
+        comment = persisted.comment;
+      } else if (hasKeyedComment) {
+        // Round-12 #2 (root): reassign + keyed comment commit atomically. The
+        // update keeps its optimistic-concurrency guard (updateActor carries
+        // expectedUpdatedAt = existing.updatedAt → svc.update 409s if another
+        // operator reassigned in the meantime), and the keyed comment insert is
+        // now inside the SAME tx, so the two can never diverge. Round-17 #1: the
+        // per-agent wakeup rows are enqueued in THIS tx too, so a committed
+        // comment always carries them (no post-commit enqueue window).
+        const persisted = await db.transaction(async (txRaw) => {
+          const txSvc = issueService(txRaw as unknown as Db);
+          const updatedIssue = await txSvc.update(id, updateFields, updateActor);
+          if (!updatedIssue) return { issue: null, comment: null };
+          const keyedComment = await txSvc.addComment(id, persistedCommentBody as string, {
+            agentId: actor.agentId ?? undefined,
+            userId: actor.actorType === "user" ? actor.actorId : undefined,
+            clientSubmissionId: commentClientSubmissionId as string,
+            buildWakeupTargets: (c) =>
+              buildPatchCommentWakeupTargets({
+                issue: updatedIssue,
+                comment: c,
+                body: persistedCommentBody ?? "",
+                actor,
+                assigneeChanged: assigneeWillChange,
+                requestChanges: false,
+              }),
+          });
+          return { issue: updatedIssue, comment: keyedComment };
         });
         issue = persisted.issue;
         comment = persisted.comment;
@@ -1264,13 +1588,35 @@ export function issueRoutes(db: Db, storage: StorageService) {
     }
 
     if (persistedCommentBody && !comment) {
+      // A comment posted through the PATCH path WITHOUT a client submission key
+      // (no idempotency requested). The KEYED comment+reassign case is handled
+      // atomically inside the transaction above (round-12 #2), so `comment` is
+      // already set there and this fallback only ever runs for the unkeyed case.
+      // Round-17 #1: enqueue its wakeups IN addComment's tx so a committed comment
+      // always carries them.
       comment = await svc.addComment(id, persistedCommentBody, {
         agentId: actor.agentId ?? undefined,
         userId: actor.actorType === "user" ? actor.actorId : undefined,
+        clientSubmissionId:
+          typeof commentClientSubmissionId === "string" ? commentClientSubmissionId : undefined,
+        buildWakeupTargets: (c) =>
+          buildPatchCommentWakeupTargets({
+            issue,
+            comment: c,
+            body: persistedCommentBody,
+            actor,
+            assigneeChanged: assigneeWillChange,
+            requestChanges: isRequestChangesTransition,
+          }),
       });
     }
+    // A same-key retry replays the original comment — skip the comment's
+    // post-insert side-effects (activity + mention wakeups) below so they don't
+    // re-fire (round-10 #2). Reassignment/status effects stay idempotent via
+    // their own change checks (assigneeWillChange is false once already applied).
+    const commentReplayed = Boolean((comment as { replayed?: boolean } | null)?.replayed);
 
-    if (comment) {
+    if (comment && !commentReplayed) {
       await logActivity(db, {
         companyId: issue.companyId,
         actorType: actor.actorType,
@@ -1291,110 +1637,25 @@ export function issueRoutes(db: Db, storage: StorageService) {
 
     const assigneeChanged = assigneeWillChange;
 
-    // Merge all wakeups from this update into one enqueue per agent to avoid duplicate runs.
-    void (async () => {
-      const wakeups = new Map<string, Parameters<typeof heartbeat.wakeup>[1]>();
-
-      if (
-        isRequestChangesTransition &&
-        comment &&
-        issue.assigneeAgentId &&
-        shouldDispatchIssueWakeup(issue)
-      ) {
-        wakeups.set(issue.assigneeAgentId, {
-          source: "automation",
-          triggerDetail: "system",
-          reason: "issue_review_changes_requested",
-          payload: {
-            issueId: issue.id,
-            commentId: comment.id,
-            mutation: "request_changes",
-          },
-          requestedByActorType: actor.actorType,
-          requestedByActorId: actor.actorId,
-          contextSnapshot: {
-            issueId: issue.id,
-            taskId: issue.id,
-            commentId: comment.id,
-            wakeCommentId: comment.id,
-            wakeReason: "issue_review_changes_requested",
-            source: "task.review",
-          },
-        });
-      }
-
-      if (assigneeChanged && issue.assigneeAgentId && issue.status !== "backlog" && shouldDispatchIssueWakeup(issue)) {
-        wakeups.set(issue.assigneeAgentId, {
-          source: "assignment",
-          triggerDetail: "system",
-          reason: "issue_assigned",
-          payload: { issueId: issue.id, mutation: "update" },
-          requestedByActorType: actor.actorType,
-          requestedByActorId: actor.actorId,
-          contextSnapshot: { issueId: issue.id, source: "issue.update" },
-        });
-      }
-
-      if (persistedCommentBody && comment) {
-        let mentionedIds: string[] = [];
-        try {
-          mentionedIds = await svc.findMentionedAgents(issue.companyId, persistedCommentBody);
-        } catch (err) {
-          logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
-        }
-
-        for (const mentionedId of mentionedIds) {
-          if (wakeups.has(mentionedId)) continue;
-          if (actor.actorType === "agent" && actor.actorId === mentionedId) continue;
-          // P3-G: also check the persisted comment's authorAgentId — when an
-          // agent posts via local-board / user / service actor (e.g.
-          // local_trusted curl with no auth), actor.actorType isn't "agent"
-          // and the above check is bypassed, but authorAgentId correctly
-          // identifies the agent.
-          if (comment?.authorAgentId === mentionedId) continue;
-          wakeups.set(mentionedId, {
-            source: "automation",
-            triggerDetail: "system",
-            reason: "issue_comment_mentioned",
-            payload: { issueId: id, commentId: comment.id },
-            requestedByActorType: actor.actorType,
-            requestedByActorId: actor.actorId,
-            contextSnapshot: {
-              issueId: id,
-              taskId: id,
-              commentId: comment.id,
-              wakeCommentId: comment.id,
-              wakeReason: "issue_comment_mentioned",
-              source: "comment.mention",
-            },
-          });
-        }
-
-        // @human mention notifications — see issueService.notifyMentionedHumans for safety contract.
-        await svc.notifyMentionedHumans(issue.companyId, persistedCommentBody, issue.id, actor);
-      }
-
-      const aoaKinds = await svc
-        .resolveAgentKinds([...wakeups.keys()])
-        .catch(() => new Map<string, string>());
-      for (const [agentId, wakeup] of wakeups.entries()) {
-        if (aoaKinds.get(agentId) === "aoa") {
-          svc
-            .enqueueAoaMentionWakeup(issue.companyId, agentId, {
-              source: wakeup?.source,
-              reason: wakeup?.reason,
-              payload: wakeup?.payload,
-            })
-            .catch((err) =>
-              logger.warn({ err, issueId: issue.id, agentId }, "failed to enqueue aoa mention wakeup"),
-            );
-        } else {
-          heartbeat
-            .wakeup(agentId, wakeup)
-            .catch((err) => logger.warn({ err, issueId: issue.id, agentId }, "failed to wake agent on issue update"));
-        }
-      }
-    })();
+    // Round-17 #1: comment-tied wakeups are now enqueued INSIDE the comment-insert
+    // transaction (addComment's buildWakeupTargets above), so a committed comment
+    // always carries its pending wakeup rows — no post-commit enqueue window. The
+    // only case handled here is a PURE status/reassign with NO comment: there is
+    // no comment to key the durable outbox on, and a keyless one-shot reassign has
+    // no durability contract, so it keeps a direct fire-and-forget dispatch.
+    // (A race-loser replay set `comment.replayed`; buildWakeupTargets only ran on
+    // the winner's fresh insert, so the loser never re-enqueues.)
+    if (!comment) {
+      const targets = await buildPatchCommentWakeupTargets({
+        issue,
+        comment: null,
+        body: "",
+        actor,
+        assigneeChanged,
+        requestChanges: isRequestChangesTransition,
+      });
+      void dispatchWakeupTargets(issue.companyId, targets).catch(() => {});
+    }
 
     res.json({ ...issue, comment });
   });
@@ -1569,22 +1830,114 @@ export function issueRoutes(db: Db, storage: StorageService) {
     assertCompanyAccess(req, issue.companyId);
     if (!(await assertAgentRunCheckoutOwnership(req, res, issue))) return;
 
+    // Idempotent retry: if this exact submission was already recorded, replay the
+    // original comment. The comment commits BEFORE its control effects, so the
+    // original send can die after the comment persisted but before reopen/cancel
+    // ran; the replay must RESUME those effects, not skip them (PR #291 round-5
+    // review). reopen/interrupt are idempotent + state-gated, so a replay whose
+    // effects already completed is a no-op. Wakeups stay skipped on replay
+    // (round-3) to avoid double-waking. The DB partial-unique index is the
+    // concurrency backstop below.
+    const clientSubmissionId =
+      typeof req.body.clientSubmissionId === "string" ? req.body.clientSubmissionId : undefined;
+    if (clientSubmissionId) {
+      const replay = await svc.getCommentByClientSubmissionId(issue.companyId, id, clientSubmissionId);
+      if (replay) {
+        // Resume any control effects AND wakeups the original send did not
+        // complete — each gated by its own marker (PR #291 round-6 #2 + round-7
+        // #2/#3). A completed effect is skipped; a missing one is finished so a
+        // reopen/interrupt or an @mention is never lost.
+        const resumed = await resumeIncompleteCommentSideEffects({
+          req,
+          res,
+          issue,
+          comment: replay,
+          reopenRequested: req.body.reopen === true,
+          interruptRequested: req.body.interrupt === true,
+        });
+        if (!resumed.ok) return;
+        res.status(200).json(replay);
+        return;
+      }
+    }
+
     const actor = getActorInfo(req);
+    const interruptRequested = req.body.interrupt === true;
+    // Authz up front (no mutations); the reopen/interrupt effects run only after
+    // the insert is won, below (round-4 review).
+    if (!assertInterruptAuthorized(req, res, interruptRequested)) return;
+
+    // Round-17 #1: pre-compute the control-effect OUTCOME so the wakeup targets can
+    // be enqueued INSIDE addComment's transaction (a committed comment always
+    // carries its pending wakeups). The reopen outcome is deterministic from the
+    // pre-state (`reopen && isClosed`), and the interrupt target run is resolved
+    // read-only here; the actual reopen/interrupt MUTATIONS still run after the
+    // insert is won (below), unchanged.
+    const isClosed = issue.status === "done" || issue.status === "cancelled";
+    const willReopen = req.body.reopen === true && isClosed;
+    const preReopenFromStatus = willReopen ? issue.status : null;
+    const preInterruptedRunId = interruptRequested ? await resolveInterruptTargetRunId(issue) : null;
+    // Round-18 #3: the wakeup describes reopen/interrupt effects that are applied
+    // AFTER this comment tx commits, so DEFER the row until those effects are
+    // durable (flipped ready below). A plain comment (no reopen/interrupt) has no
+    // post-insert side effects → immediately drainable.
+    const deferWakeups = willReopen || interruptRequested;
+
+    const comment = await svc.addComment(id, req.body.body, {
+      agentId: actor.agentId ?? undefined,
+      userId: actor.actorType === "user" ? actor.actorId : undefined,
+      clientSubmissionId,
+      wakeupDeferUntil: deferWakeups ? new Date(Date.now() + COMMENT_WAKEUP_DEFER_GRACE_MS) : null,
+      buildWakeupTargets: (c) =>
+        buildIssueCommentWakeupTargets({
+          issue,
+          currentIssue: issue,
+          comment: c,
+          body: req.body.body,
+          actor,
+          reopened: willReopen,
+          reopenFromStatus: preReopenFromStatus,
+          interruptedRunId: preInterruptedRunId,
+        }),
+    });
+
+    // Lost the insert race (both same-key requests passed the pre-check): the
+    // winner created the comment. RESUME any of its side effects that are not yet
+    // marked complete (round-7 #2/#3) — the winner may have crashed before
+    // reopening or waking — then return without re-firing completed ones.
+    if ((comment as { replayed?: boolean }).replayed) {
+      const resumed = await resumeIncompleteCommentSideEffects({
+        req,
+        res,
+        issue,
+        comment: comment as typeof comment & { body: string },
+        reopenRequested: req.body.reopen === true,
+        interruptRequested,
+      });
+      if (!resumed.ok) return;
+      res.status(200).json(comment);
+      return;
+    }
+
+    // Insert won → apply the deferred control effects exactly once.
     const control = await applyIssueCommentControlEffects({
       req,
       res,
       issue,
       actor,
       reopenRequested: req.body.reopen === true,
-      interruptRequested: req.body.interrupt === true,
+      interruptRequested,
     });
     if (!control.ok) return;
+    // Stamp control-effects completion (round-6 #2) so a retry skips them.
+    if (clientSubmissionId) await svc.markCommentControlEffectsCompleted(comment.id);
     const { currentIssue, reopened, reopenFromStatus, interruptedRunId } = control;
 
-    const comment = await svc.addComment(id, req.body.body, {
-      agentId: actor.agentId ?? undefined,
-      userId: actor.actorType === "user" ? actor.actorId : undefined,
-    });
+    // Round-18 #3: the reopen/interrupt control effects are now durable → flip the
+    // deferred wakeup rows to drainable so the worker can wake the assignee (who
+    // will now see the reopened task / cancelled run). If the process crashed
+    // before this flip, the row's ready_at grace window is the backstop.
+    if (deferWakeups) await svc.markCommentWakeupsReady(comment.id);
 
     await logActivity(db, {
       companyId: currentIssue.companyId,
@@ -1605,17 +1958,11 @@ export function issueRoutes(db: Db, storage: StorageService) {
       },
     });
 
-    // Merge all wakeups from this comment into one enqueue per agent to avoid duplicate runs.
-    void enqueueIssueCommentWakeups({
-      issue,
-      currentIssue,
-      comment,
-      body: req.body.body,
-      actor,
-      reopened,
-      reopenFromStatus,
-      interruptedRunId,
-    });
+    // Round-17 #1: the comment's per-agent wakeups were enqueued INSIDE
+    // addComment's transaction above (buildWakeupTargets, from the pre-computed
+    // control-effect outcome), so a committed comment always carries its pending
+    // wakeup rows. The durable worker delivers each exactly once (per-target rows +
+    // (comment, agent) idempotency + the round-17 #2 idempotent-consumer key).
 
     res.status(201).json(comment);
   });
@@ -1649,7 +1996,105 @@ export function issueRoutes(db: Db, storage: StorageService) {
     }
 
     const files = ((req as Request & { files?: Express.Multer.File[] }).files ?? []);
-    for (const file of files) validateAttachmentFile(file);
+    // P2 (PR #291 round-3 review): task comments are a unified-composer upload
+    // path — never trust the multipart mimetype. Validate the allowlist AND
+    // sniff the real bytes so a caller cannot mislabel arbitrary content as an
+    // allowed image/PDF/text type (mirrors the /assets/files composer guard).
+    for (const file of files) sniffCommentAttachment(file);
+
+    // Idempotent retry: replay the original comment + its attachments without
+    // re-creating records or re-firing control effects/wakeups. The comment
+    // commits BEFORE its files below, so the original send can die with the
+    // comment durable but attachments missing — the retry re-sends the files,
+    // and the replay must COMPLETE the missing ones (matched by content hash +
+    // filename, multiset) instead of silently returning the partial set
+    // (PR #291 review).
+    //
+    // The same completion path serves the route-level replay pre-check AND the
+    // insert-race loser (addComment returns `replayed` when it lost the race),
+    // so neither re-fires post-insert side-effects (PR #291 round-3 review).
+    // Returns the (now-complete) attachment rows so the caller can resume wakeups
+    // with them BEFORE responding — the wakeup must not be marked done until the
+    // files are actually stored (round-8 #2).
+    const completeReplayedCommentAttachments = async (replay: { id: string }) => {
+      let replayAttachments = (await svc.listAttachments(id)).filter(
+        (a) => a.issueCommentId === replay.id,
+      );
+      if (files.length > 0) {
+        const replayActor = getActorInfo(req);
+        // C6 (PR #291 review): serialize the completion so two concurrent
+        // same-key retries cannot each create the same missing attachment.
+        // The advisory lock lives inside the service transaction; `store`
+        // runs there only for genuinely-missing files.
+        const { created, all } = await svc.completeMissingCommentAttachments({
+          companyId: issue.companyId,
+          issueId: id,
+          commentId: replay.id,
+          createdByAgentId: replayActor.agentId,
+          createdByUserId: replayActor.actorType === "user" ? replayActor.actorId : null,
+          files: files.map((file) => ({
+            contentType: validateAttachmentFile(file),
+            buffer: file.buffer,
+            originalFilename: file.originalname || null,
+          })),
+          store: (file) =>
+            storage.putFile({
+              companyId: issue.companyId,
+              namespace: `issues/${id}`,
+              originalFilename: file.originalFilename,
+              contentType: file.contentType,
+              body: file.buffer,
+            }),
+        });
+        replayAttachments = all;
+        for (const attachment of created) {
+          await logActivity(db, {
+            companyId: issue.companyId,
+            actorType: replayActor.actorType,
+            actorId: replayActor.actorId,
+            agentId: replayActor.agentId,
+            runId: replayActor.runId,
+            action: "issue.attachment_added",
+            entityType: "issue",
+            entityId: id,
+            details: {
+              attachmentId: attachment.id,
+              originalFilename: attachment.originalFilename,
+              contentType: attachment.contentType,
+              byteSize: attachment.byteSize,
+              commentId: replay.id,
+              completedOnRetry: true,
+            },
+          });
+        }
+      }
+      return replayAttachments;
+    };
+
+    const clientSubmissionId =
+      typeof req.body?.clientSubmissionId === "string" ? req.body.clientSubmissionId : undefined;
+    if (clientSubmissionId) {
+      const replay = await svc.getCommentByClientSubmissionId(issue.companyId, id, clientSubmissionId);
+      if (replay) {
+        // Round-8 #2: COMPLETE the missing attachments FIRST, then resume control
+        // effects + wakeups carrying the completed attachment rows — so the
+        // wakeup marker is never stamped before the files are stored and the
+        // woken agent receives the attachment metadata.
+        const replayAttachments = await completeReplayedCommentAttachments(replay);
+        const resumed = await resumeIncompleteCommentSideEffects({
+          req,
+          res,
+          issue,
+          comment: replay,
+          reopenRequested: parseMultipartBoolean(req.body?.reopen),
+          interruptRequested: parseMultipartBoolean(req.body?.interrupt),
+          attachments: replayAttachments,
+        });
+        if (!resumed.ok) return;
+        res.status(200).json({ comment: replay, attachments: replayAttachments });
+        return;
+      }
+    }
 
     const actor = getActorInfo(req);
     const bodyText = typeof req.body?.body === "string" ? req.body.body.trim() : "";
@@ -1661,25 +2106,101 @@ export function issueRoutes(db: Db, storage: StorageService) {
       return;
     }
 
+    const interruptRequested = parseMultipartBoolean(req.body?.interrupt);
+    // Authz up front (no mutations); reopen/interrupt effects run only after the
+    // insert is won, below (round-4 review).
+    if (!assertInterruptAuthorized(req, res, interruptRequested)) return;
+
+    // Round-17 #1: pre-validate the files + PRE-GENERATE their ids and previews so
+    // the comment wakeup — carrying attachment metadata — can be enqueued INSIDE
+    // addComment's transaction (a committed comment always has its pending wakeups),
+    // and pre-compute the control-effect outcome (deterministic reopen intent +
+    // read-only interrupt-run resolution). The files are STORED after the insert is
+    // won (external putFile can't run in the tx); the pre-generated ids are threaded
+    // into createAttachment so the stored rows match the in-tx wakeup previews.
+    const preparedFiles = files.map((file) => ({
+      file,
+      contentType: validateAttachmentFile(file),
+      attachmentId: randomUUID(),
+    }));
+    const attachmentPreviews: CommentWakeAttachment[] = preparedFiles.map((p) => ({
+      id: p.attachmentId,
+      originalFilename: p.file.originalname || null,
+      contentType: p.contentType,
+      byteSize: p.file.buffer.length,
+    }));
+    const isClosed = issue.status === "done" || issue.status === "cancelled";
+    const willReopen = parseMultipartBoolean(req.body?.reopen) && isClosed;
+    const preReopenFromStatus = willReopen ? issue.status : null;
+    const preInterruptedRunId = interruptRequested ? await resolveInterruptTargetRunId(issue) : null;
+    // Round-18 #2/#3: the wakeup references the attachment rows (stored after the
+    // comment tx) and any reopen/interrupt effect, so DEFER the row until they are
+    // durable (flipped ready after the storage loop + control effects below). The
+    // ready_at grace window is the crash backstop.
+    const deferWakeups = preparedFiles.length > 0 || willReopen || interruptRequested;
+
+    const comment = await svc.addComment(id, body, {
+      agentId: actor.agentId ?? undefined,
+      userId: actor.actorType === "user" ? actor.actorId : undefined,
+      clientSubmissionId,
+      wakeupDeferUntil: deferWakeups ? new Date(Date.now() + COMMENT_WAKEUP_DEFER_GRACE_MS) : null,
+      buildWakeupTargets: (c) =>
+        buildIssueCommentWakeupTargets({
+          issue,
+          currentIssue: issue,
+          comment: c,
+          body,
+          actor,
+          reopened: willReopen,
+          reopenFromStatus: preReopenFromStatus,
+          interruptedRunId: preInterruptedRunId,
+          attachments: attachmentPreviews,
+        }),
+    });
+
+    // Lost the insert race (both same-key requests passed the pre-check): the
+    // winner created + linked the comment. RESUME any of its side effects not yet
+    // marked complete (round-7 #2/#3) — the winner may have crashed before
+    // reopening or waking — complete missing attachments through the serialized
+    // path, and return without re-firing completed effects (round-3/4 review).
+    if ((comment as { replayed?: boolean }).replayed) {
+      // Round-8 #2: complete missing attachments FIRST, then resume side effects
+      // carrying the completed rows, then respond.
+      const replayAttachments = await completeReplayedCommentAttachments(comment);
+      const resumed = await resumeIncompleteCommentSideEffects({
+        req,
+        res,
+        issue,
+        comment: comment as typeof comment & { body: string },
+        reopenRequested: parseMultipartBoolean(req.body?.reopen),
+        interruptRequested,
+        attachments: replayAttachments,
+      });
+      if (!resumed.ok) return;
+      res.status(200).json({ comment, attachments: replayAttachments });
+      return;
+    }
+
+    // Insert won → apply the deferred control effects exactly once.
     const control = await applyIssueCommentControlEffects({
       req,
       res,
       issue,
       actor,
       reopenRequested: parseMultipartBoolean(req.body?.reopen),
-      interruptRequested: parseMultipartBoolean(req.body?.interrupt),
+      interruptRequested,
     });
     if (!control.ok) return;
+    // Stamp control-effects completion (round-6 #2) so a retry skips them.
+    if (clientSubmissionId) await svc.markCommentControlEffectsCompleted(comment.id);
     const { currentIssue, reopened, reopenFromStatus, interruptedRunId } = control;
 
-    const comment = await svc.addComment(id, body, {
-      agentId: actor.agentId ?? undefined,
-      userId: actor.actorType === "user" ? actor.actorId : undefined,
-    });
-
-    const attachments = [];
-    for (const file of files) {
-      const contentType = validateAttachmentFile(file);
+    // Explicit element type: `attachments` is now captured in the claim-gated
+    // dispatch closure below (round-12 #1), so TS can no longer infer the empty
+    // literal's type from its later synchronous use.
+    const attachments: Awaited<ReturnType<typeof svc.createAttachment>>[] = [];
+    for (const prepared of preparedFiles) {
+      const { file, contentType, attachmentId } = prepared;
       const stored = await storage.putFile({
         companyId: issue.companyId,
         namespace: `issues/${id}`,
@@ -1689,6 +2210,8 @@ export function issueRoutes(db: Db, storage: StorageService) {
       });
 
       const attachment = await svc.createAttachment({
+        // Round-17 #1: the pre-generated id already carried into the in-tx wakeup.
+        id: attachmentId,
         issueId: id,
         issueCommentId: comment.id,
         provider: stored.provider,
@@ -1741,17 +2264,14 @@ export function issueRoutes(db: Db, storage: StorageService) {
       },
     });
 
-    void enqueueIssueCommentWakeups({
-      issue,
-      currentIssue,
-      comment,
-      body,
-      actor,
-      reopened,
-      reopenFromStatus,
-      interruptedRunId,
-      attachments,
-    });
+    // Round-17 #1: the comment's per-agent wakeups (carrying the attachment
+    // previews) were enqueued INSIDE addComment's transaction above, so a committed
+    // comment always carries its pending wakeup rows. Round-18 #2/#3: they were
+    // enqueued DEFERRED — now the attachment rows + control effects are durable, so
+    // flip them ready. The worker then delivers each exactly once (per-target rows
+    // + (comment, agent) idempotency + the round-17 #2 idempotent-consumer key); a
+    // crash before this flip is covered by the ready_at grace backstop.
+    if (deferWakeups) await svc.markCommentWakeupsReady(comment.id);
 
     res.status(201).json({
       comment,

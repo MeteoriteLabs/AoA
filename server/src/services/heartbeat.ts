@@ -38,6 +38,7 @@ import { logger } from "../middleware/logger.js";
 import { publishLiveEvent, threadWorkingAgents, broadcastThreadPresence } from "./live-events.js";
 import {
   buildCurrentTaskMarkdown,
+  buildWakeCommentMarkdown,
   buildWorkQuestionContinuationMarkdown,
 } from "./heartbeat-task-context.js";
 import { bindHeartbeatWorkQuestionContinuation } from "./work-question-continuation-terminal.js";
@@ -2903,8 +2904,58 @@ export function heartbeatService(db: Db) {
           .then((rows) => rows[0] ?? null)
       : null;
     if (issueContext) {
+      // Review F11 (2026-07-16): a comment-driven wake ("Send & wake" from
+      // the chatbar/Comments tab, or an @mention) must carry the triggering
+      // comment IN the prompt — the agent otherwise never sees the message
+      // unless it happens to fetch comments via MCP tools. Best-effort: a
+      // missing/deleted comment simply omits the section.
+      const wakeCommentIdForPrompt =
+        readNonEmptyString(context.wakeCommentId) ?? readNonEmptyString(context.commentId);
+      let wakeCommentSection: string | null = null;
+      if (wakeCommentIdForPrompt) {
+        try {
+          const commentRow = await db
+            .select({
+              body: issueComments.body,
+              authorAgentId: issueComments.authorAgentId,
+              authorUserId: issueComments.authorUserId,
+            })
+            .from(issueComments)
+            .where(
+              and(
+                eq(issueComments.id, wakeCommentIdForPrompt),
+                eq(issueComments.issueId, issueContext.id),
+              ),
+            )
+            .then((rows) => rows[0] ?? null);
+          if (commentRow) {
+            let authorLabel = "the board";
+            if (commentRow.authorAgentId) {
+              const authorAgent = await db
+                .select({ name: agents.name })
+                .from(agents)
+                .where(eq(agents.id, commentRow.authorAgentId))
+                .then((rows) => rows[0] ?? null);
+              authorLabel = authorAgent ? `agent ${authorAgent.name}` : "another agent";
+            } else if (commentRow.authorUserId) {
+              authorLabel = "a teammate";
+            }
+            wakeCommentSection = buildWakeCommentMarkdown({
+              body: commentRow.body,
+              authorLabel,
+              reason: readNonEmptyString(context.wakeReason),
+            });
+          }
+        } catch (err) {
+          logger.warn(
+            { err, wakeCommentId: wakeCommentIdForPrompt },
+            "failed to inline wake comment into run prompt",
+          );
+        }
+      }
       const currentTaskMarkdown = [
         buildCurrentTaskMarkdown(issueContext),
+        wakeCommentSection,
         buildWorkQuestionContinuationMarkdown(context.continuationEnvelope),
       ].filter((section): section is string => Boolean(section)).join("\n\n");
       context.currentTask = {
@@ -5644,48 +5695,56 @@ export function heartbeatService(db: Db) {
       return mergedRun;
     }
 
-    const wakeupRequest = await db
-      .insert(agentWakeupRequests)
-      .values({
-        companyId: agent.companyId,
-        agentId,
-        source,
-        triggerDetail,
-        reason,
-        payload,
-        status: "queued",
-        requestedByActorType: opts.requestedByActorType ?? null,
-        requestedByActorId: opts.requestedByActorId ?? null,
-        idempotencyKey: opts.idempotencyKey ?? null,
-      })
-      .returning()
-      .then((rows) => rows[0]);
-
     const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
 
-    const newRun = await db
-      .insert(heartbeatRuns)
-      .values({
-        companyId: agent.companyId,
-        agentId,
-        invocationSource: source,
-        triggerDetail,
-        status: "queued",
-        wakeupRequestId: wakeupRequest.id,
-        contextSnapshot: enrichedContextSnapshot,
-        sessionIdBefore: sessionBefore,
-        humanQuestionWaitMs: inheritedHumanQuestionWaitMs,
-      })
-      .returning()
-      .then((rows) => rows[0]);
+    // PR #291 round-18 #1: create the wakeup request, its heartbeat run, and the
+    // request→run link ATOMICALLY. Previously these were three separate writes, so
+    // a crash between them could leave a `queued` agent_wakeup_requests row with no
+    // run — which the comment-wakeup outbox's idempotency check (round-17 #2) would
+    // then treat as "already dispatched" and skip, dropping the summon. With one
+    // transaction, a persisted request row ALWAYS has its run, so the existence of
+    // the keyed request row genuinely means the dispatch completed.
+    const newRun = await db.transaction(async (tx) => {
+      const wakeupRequest = await tx
+        .insert(agentWakeupRequests)
+        .values({
+          companyId: agent.companyId,
+          agentId,
+          source,
+          triggerDetail,
+          reason,
+          payload,
+          status: "queued",
+          requestedByActorType: opts.requestedByActorType ?? null,
+          requestedByActorId: opts.requestedByActorId ?? null,
+          idempotencyKey: opts.idempotencyKey ?? null,
+        })
+        .returning()
+        .then((rows) => rows[0]);
 
-    await db
-      .update(agentWakeupRequests)
-      .set({
-        runId: newRun.id,
-        updatedAt: new Date(),
-      })
-      .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+      const run = await tx
+        .insert(heartbeatRuns)
+        .values({
+          companyId: agent.companyId,
+          agentId,
+          invocationSource: source,
+          triggerDetail,
+          status: "queued",
+          wakeupRequestId: wakeupRequest.id,
+          contextSnapshot: enrichedContextSnapshot,
+          sessionIdBefore: sessionBefore,
+          humanQuestionWaitMs: inheritedHumanQuestionWaitMs,
+        })
+        .returning()
+        .then((rows) => rows[0]);
+
+      await tx
+        .update(agentWakeupRequests)
+        .set({ runId: run.id, updatedAt: new Date() })
+        .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+
+      return run;
+    });
 
     publishLiveEvent({
       companyId: newRun.companyId,

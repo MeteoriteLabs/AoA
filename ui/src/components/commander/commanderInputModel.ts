@@ -21,6 +21,7 @@ import { buildSkillDirective } from "./skillPickerUtils";
 
 /** `data-token` value identifying a skill chip. */
 export const SKILL_TOKEN_KIND = "skill";
+export const MENTION_TOKEN_KIND = "mention";
 
 /**
  * Tailwind classes for a skill token. Color comes from the `--token-skill`
@@ -37,6 +38,31 @@ export interface SkillTokenData {
   key: string;
   /** Optional skill description, stashed on the token for the hover card. */
   description?: string | null;
+}
+
+export interface MentionTokenData {
+  id: string;
+  name: string;
+}
+
+export const MENTION_TOKEN_CLASS =
+  "inline rounded px-1 py-0.5 mx-px font-medium text-[color:var(--token-mention)] " +
+  "bg-[color:var(--token-mention-bg)] select-none";
+
+export function createMentionToken(doc: Document, mention: MentionTokenData): HTMLSpanElement {
+  const span = doc.createElement("span");
+  span.dataset.token = MENTION_TOKEN_KIND;
+  span.dataset.id = mention.id;
+  span.dataset.name = mention.name;
+  span.setAttribute("contenteditable", "false");
+  span.className = MENTION_TOKEN_CLASS;
+  span.textContent = `@${mention.name}`;
+  return span;
+}
+
+export function isMentionToken(node: Node | null | undefined): node is HTMLElement {
+  return !!node && node.nodeType === Node.ELEMENT_NODE &&
+    (node as HTMLElement).dataset?.token === MENTION_TOKEN_KIND;
 }
 
 /**
@@ -82,6 +108,9 @@ function serializeNode(node: Node): string {
     const key = el.dataset.key ?? "";
     return buildSkillDirective({ name, key });
   }
+  if (el.dataset?.token === MENTION_TOKEN_KIND) {
+    return `@${el.dataset.name ?? el.textContent?.replace(/^@/, "") ?? ""}`;
+  }
   if (el.tagName === "BR") return "\n";
 
   // Generic wrapper (e.g. a stray <div>/<span> a browser inserted): recurse.
@@ -111,6 +140,6 @@ export function serializeRoot(root: HTMLElement): string {
  * (which browsers leave behind after clearing) counts as empty.
  */
 export function isRootEmpty(root: HTMLElement): boolean {
-  if (root.querySelector(`[data-token="${SKILL_TOKEN_KIND}"]`)) return false;
+  if (root.querySelector(`[data-token="${SKILL_TOKEN_KIND}"], [data-token="${MENTION_TOKEN_KIND}"]`)) return false;
   return serializeRoot(root).trim().length === 0;
 }

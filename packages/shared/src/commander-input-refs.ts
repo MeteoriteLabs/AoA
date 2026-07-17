@@ -6,6 +6,7 @@ export const COMMANDER_INPUT_REF_KINDS = [
   "inbox",
   "approval",
   "artifact",
+  "asset",
   "goal",
   "agent",
   "note",
@@ -73,6 +74,8 @@ export function commanderInputRefKindLabel(kind: CommanderInputRefKind): string 
       return "Approval";
     case "artifact":
       return "Artifact";
+    case "asset":
+      return "File";
     case "goal":
       return "Goal";
     case "agent":

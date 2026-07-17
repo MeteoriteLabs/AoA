@@ -35,7 +35,7 @@ export const assetsApi = {
   },
 
   /**
-   * Phase E1: upload any file (up to AOA_FILE_MAX_BYTES, default 50 MB) for
+   * Unified composer attachment upload (up to 10 MB per file) for
    * attachment to a discussion entry. Used by the thread composer's paperclip
    * button. Returns the new asset record.
    */

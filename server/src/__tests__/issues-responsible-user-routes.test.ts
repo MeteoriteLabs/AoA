@@ -35,9 +35,34 @@ const mockIssueService = vi.hoisted(() => ({
   create: vi.fn(),
   update: vi.fn(),
   addComment: vi.fn(),
+  // Round-18 #4: request-changes with a submission key exercises the early-replay
+  // + control-effect markers.
+  getCommentByClientSubmissionId: vi.fn(),
+  markCommentControlEffectsCompleted: vi.fn(),
+  markCommentWakeupsReady: vi.fn(),
   findMentionedAgents: vi.fn(),
   notifyMentionedHumans: vi.fn(),
   resolveAgentKinds: vi.fn(),
+  // Round-16: the route enqueues per-target wakeups here (durable outbox). This
+  // mock inlines the worker drain (resolve kind → heartbeat.wakeup / aoa) so the
+  // existing heartbeat.wakeup assertions still hold.
+  enqueueCommentWakeups: vi.fn(async (input: { companyId: string; targets: Array<{ agentId: string; wakeup: any }> }) => {
+    const kinds: Map<string, string> = await mockIssueService.resolveAgentKinds(
+      input.targets.map((t) => t.agentId),
+    );
+    for (const t of input.targets) {
+      if (kinds.get(t.agentId) === "aoa") {
+        const w = t.wakeup ?? {};
+        await mockIssueService.enqueueAoaMentionWakeup?.(input.companyId, t.agentId, {
+          source: w.source,
+          reason: w.reason,
+          payload: w.payload,
+        });
+      } else {
+        await mockHeartbeatService.wakeup(t.agentId, t.wakeup);
+      }
+    }
+  }),
 }));
 
 const mockAccessService = vi.hoisted(() => ({
@@ -160,14 +185,41 @@ describe("issue responsible user routes", () => {
   it("persists review feedback and wakes the assignee exactly once", async () => {
     mockIssueService.getById.mockResolvedValue({ ...baseIssue, status: "in_review" });
     mockIssueService.update.mockResolvedValue({ ...baseIssue, status: "in_progress" });
-    mockIssueService.addComment.mockResolvedValue({
-      id: "review-comment",
-      issueId,
-      companyId,
-      body: "Add a measurable success criterion.",
-      authorAgentId: null,
-      authorUserId: "board-user",
-    });
+    // Round-17 #1: addComment enqueues the review-changes wakeup IN ITS TX via the
+    // buildWakeupTargets callback; the mock invokes it + routes to
+    // enqueueCommentWakeups (whose inline-drain dispatches heartbeat.wakeup).
+    mockIssueService.addComment.mockImplementation(
+      async (
+        issueIdArg: string,
+        body: string,
+        actor: {
+          agentId?: string;
+          buildWakeupTargets?: (comment: {
+            id: string;
+            authorAgentId: string | null;
+          }) => Promise<Array<{ agentId: string; wakeup: unknown }>>;
+        },
+      ) => {
+        const comment = {
+          id: "review-comment",
+          issueId: issueIdArg,
+          companyId,
+          body,
+          authorAgentId: actor?.agentId ?? null,
+          authorUserId: "board-user",
+        };
+        if (actor?.buildWakeupTargets) {
+          const targets = await actor.buildWakeupTargets({ id: comment.id, authorAgentId: comment.authorAgentId });
+          await mockIssueService.enqueueCommentWakeups({
+            companyId,
+            issueId: issueIdArg,
+            commentId: comment.id,
+            targets,
+          });
+        }
+        return comment;
+      },
+    );
     mockIssueService.findMentionedAgents.mockResolvedValue([agentId]);
 
     const res = await request(createApp())
@@ -202,6 +254,63 @@ describe("issue responsible user routes", () => {
         }),
       }),
     );
+  });
+
+  it("threads clientSubmissionId into the request-changes feedback comment (round-18 #4)", async () => {
+    mockIssueService.getById.mockResolvedValue({ ...baseIssue, status: "in_review" });
+    mockIssueService.update.mockResolvedValue({ ...baseIssue, status: "in_progress" });
+    mockIssueService.getCommentByClientSubmissionId.mockResolvedValue(null);
+    mockIssueService.addComment.mockImplementation(async (issueIdArg: string, body: string) => ({
+      id: "review-comment",
+      issueId: issueIdArg,
+      companyId,
+      body,
+      authorAgentId: null,
+      authorUserId: "board-user",
+    }));
+
+    const res = await request(createApp())
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        status: "in_progress",
+        comment: "Add a measurable success criterion.",
+        clientSubmissionId: "rc-key-1",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    // The feedback comment is keyed → a lost-response retry replays it instead of
+    // creating a second feedback comment.
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      issueId,
+      "Add a measurable success criterion.",
+      expect.objectContaining({ clientSubmissionId: "rc-key-1" }),
+    );
+  });
+
+  it("replays the request-changes feedback comment on a same-key retry — no duplicate (round-18 #4)", async () => {
+    // The retry arrives after the transition already ran (task now in_progress);
+    // the early-replay lookup finds the KEYED feedback comment and short-circuits,
+    // so addComment is never called again.
+    mockIssueService.getById.mockResolvedValue({ ...baseIssue, status: "in_progress" });
+    mockIssueService.getCommentByClientSubmissionId.mockResolvedValue({
+      id: "review-comment",
+      issueId,
+      companyId,
+      body: "Add a measurable success criterion.",
+      authorAgentId: null,
+    });
+
+    const res = await request(createApp())
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        status: "in_progress",
+        comment: "Add a measurable success criterion.",
+        clientSubmissionId: "rc-key-1",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
   it("lets board users with tasks:assign create and update responsibleUserId", async () => {

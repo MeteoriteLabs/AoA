@@ -200,6 +200,7 @@ function createSequenceDb(selectQueue: any[][]) {
     selectDistinctOn: vi.fn(() => makeSelectChain()),
     insert: vi.fn(() => ({
       values: vi.fn(() => ({
+        onConflictDoNothing: vi.fn().mockReturnThis(),
         returning: vi.fn().mockReturnThis(),
         then: vi.fn((fn: (rows: any[]) => any) =>
           Promise.resolve(fn(selectQueue[selectIdx++] ?? [])),
@@ -228,6 +229,7 @@ function createSequenceDb(selectQueue: any[][]) {
         select: vi.fn(() => makeSelectChain()),
         insert: vi.fn(() => ({
           values: vi.fn(() => ({
+            onConflictDoNothing: vi.fn().mockReturnThis(),
             returning: vi.fn().mockReturnThis(),
             then: vi.fn((fn: (rows: any[]) => any) =>
               Promise.resolve(fn(selectQueue[selectIdx++] ?? [])),

@@ -69,6 +69,8 @@ interface MarkdownEditorProps {
 
 export interface MarkdownEditorRef {
   focus: () => void;
+  /** Insert text at the end of the document and focus (composer @ button). */
+  insertText: (text: string) => void;
 }
 
 /* ---- Mention detection helpers ---- */
@@ -359,6 +361,17 @@ const MarkdownEditorInner = forwardRef<MarkdownEditorRef, MarkdownEditorProps>(
     useImperativeHandle(forwardedRef, () => ({
       focus: () => {
         ref.current?.focus(undefined, { defaultSelection: "rootEnd" });
+      },
+      insertText: (text: string) => {
+        ref.current?.focus(undefined, { defaultSelection: "rootEnd" });
+        // Insert via execCommand (same as decorateProjectMentions' replacement
+        // path) instead of insertMarkdown: it types into the contenteditable at
+        // the caret and fires real input events, so the @mention detector runs
+        // — the toolbar @ button must open the same picker typing @ does
+        // (approved mock v2). insertMarkdown bypasses those events.
+        requestAnimationFrame(() => {
+          document.execCommand("insertText", false, text);
+        });
       },
     }), []);
 

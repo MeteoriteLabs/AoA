@@ -147,6 +147,8 @@ export { pluginState } from "./plugin_state.js";
 export { pluginWebhookDeliveries } from "./plugin_webhooks.js";
 export { fileImportJobs } from "./file_import_jobs.js";
 export { embeddingQueue } from "./embedding_queue.js";
+export { discussionMentionOutbox } from "./discussion_mention_outbox.js";
+export { commentWakeupOutbox } from "./comment_wakeup_outbox.js";
 
 // Marketplace
 export { marketplaceCatalogCache } from "./marketplace_catalog_cache.js";

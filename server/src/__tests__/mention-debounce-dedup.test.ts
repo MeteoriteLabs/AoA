@@ -88,6 +88,16 @@ vi.mock("@armyofagents/db", () => ({
     kind: "agents_kind",
   },
   agentWakeupRequests: { id: "awr_id" },
+  // PR #291 round-6 #3: addEntry now enqueues an @mention summon into this outbox
+  // table inside its tx, so the table object must exist on the mock.
+  discussionMentionOutbox: {
+    id: "dmo_id",
+    companyId: "dmo_company_id",
+    discussionId: "dmo_discussion_id",
+    entryId: "dmo_entry_id",
+    mentions: "dmo_mentions",
+    status: "dmo_status",
+  },
   projects: { id: "projects_id", type: "projects_type" },
   goals: { id: "goals_id" },
   threadPlanSteps: { id: "tps_id" },
@@ -164,9 +174,15 @@ function createAddEntryDb(config: { selects: any[][]; updates?: any[][]; inserts
       leftJoin: vi.fn().mockReturnThis(),
       orderBy: vi.fn().mockReturnThis(),
       limit: vi.fn().mockReturnThis(),
-      then: vi.fn((fn: (rows: any[]) => any) =>
-        Promise.resolve(fn(config.selects[selectIdx++] ?? [])),
-      ),
+      then: vi.fn((onF: (rows: any[]) => any, onR?: (e: unknown) => any) => {
+        const staged = config.selects[selectIdx++] ?? [];
+        // A staged Error simulates a DB failure on that select (e.g. the
+        // post-commit crew-mention lookup) so `await chain` rejects.
+        if (staged instanceof Error) {
+          return onR ? onR(staged) : Promise.reject(staged);
+        }
+        return Promise.resolve(onF(staged));
+      }),
     };
   }
   function makeUpdateChain() {
@@ -182,11 +198,15 @@ function createAddEntryDb(config: { selects: any[][]; updates?: any[][]; inserts
   function makeInsertChain() {
     const idx = insertIdx++;
     return {
-      values: vi.fn(() => ({
-        returning: vi.fn(() =>
-          Promise.resolve((config.inserts ?? [])[idx] ?? []),
-        ),
-      })),
+      values: vi.fn(() => {
+        const chain: any = {
+          onConflictDoNothing: vi.fn(() => chain),
+          returning: vi.fn(() =>
+            Promise.resolve((config.inserts ?? [])[idx] ?? []),
+          ),
+        };
+        return chain;
+      }),
     };
   }
   const db: any = {
@@ -196,6 +216,23 @@ function createAddEntryDb(config: { selects: any[][]; updates?: any[][]; inserts
       const tx: any = {
         update: vi.fn(() => makeUpdateChain()),
         insert: vi.fn(() => makeInsertChain()),
+        // Round-13 #2: addEntry's outbox enqueue resolves mentions multi-word-
+        // aware (resolveMentionTargets), which reads the agent roster inside the
+        // tx. Return an EMPTY roster here (sequence-neutral — does NOT consume the
+        // outer `selects` queue) so resolution falls back to the parseMentions
+        // token pass, exactly as before this change.
+        select: vi.fn(() => {
+          const chain: any = {
+            from: vi.fn(() => chain),
+            where: vi.fn(() => chain),
+            innerJoin: vi.fn(() => chain),
+            leftJoin: vi.fn(() => chain),
+            orderBy: vi.fn(() => chain),
+            limit: vi.fn(() => chain),
+            then: vi.fn((onF: (rows: any[]) => any) => Promise.resolve(onF([]))),
+          };
+          return chain;
+        }),
       };
       return fn(tx);
     }),
@@ -281,6 +318,47 @@ describe("Task 1.3 — addEntry stamps hasCrewMention on the EntryCreatedEvent",
     expect(onEntryCreatedSpy).toHaveBeenCalledTimes(1);
     expect(onEntryCreatedSpy).toHaveBeenCalledWith(
       expect.objectContaining({ id: "entry-plain", hasCrewMention: false }),
+    );
+  });
+
+  // PR #291 round-5 #3: the crew-mention lookup runs AFTER the entry tx commits.
+  // A DB blip there must NOT throw out of addEntry — otherwise the request 500s
+  // with a durable entry, and a same-key Retry replays past the route's
+  // processMentions summon (the @agent is never summoned). Best-effort: the entry
+  // still returns and the event still emits (hasCrewMention defaults to false).
+  it("does NOT throw out of addEntry when the crew-mention lookup fails (best-effort)", async () => {
+    const db = createAddEntryDb({
+      selects: [
+        [{ id: "disc-1", companyId: "co" }], // 0 discussion exists
+        new Error("db blip during crew-mention lookup") as any, // 1 crew lookup THROWS
+      ],
+      updates: [[{ entrySeq: 7 }]],
+      inserts: [
+        [
+          {
+            id: "entry-resilient",
+            discussionId: "disc-1",
+            seq: 7,
+            authorAgentId: null,
+            inputType: "write",
+            createdBy: "user:1",
+          },
+        ],
+      ],
+    });
+
+    const entry = await discussionService(db).addEntry(
+      "co",
+      "disc-1",
+      { rawContent: "@Scout please look", inputType: "write" },
+      "user:1",
+    );
+
+    // The durable entry is returned (no throw) so the route reaches processMentions.
+    expect(entry.id).toBe("entry-resilient");
+    // The side-effect event still emitted; the failed lookup degrades to false.
+    expect(onEntryCreatedSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "entry-resilient", hasCrewMention: false }),
     );
   });
 
