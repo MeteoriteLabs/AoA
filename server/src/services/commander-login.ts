@@ -54,7 +54,14 @@ export interface ChallengeStore {
    */
   claim(args: ChallengeClaimArgs): Promise<ChallengeRow>;
   get(id: string): Promise<ChallengeRow | null>;
-  update(id: string, patch: Partial<ChallengeRow>): Promise<void>;
+  /**
+   * Apply `patch` to the row and return the number of rows it AFFECTED. A return
+   * of 0 means the row no longer exists — it was concurrently removed (e.g. a
+   * same-company takeover's `claim` deleted our pending row before our pid/pgid
+   * backfill landed, Codex round-8 P1). Callers that must detect being superseded
+   * inspect this count; callers that don't simply ignore it.
+   */
+  update(id: string, patch: Partial<ChallengeRow>): Promise<number>;
   remove(id: string): Promise<void>;
   /** All rows still `pending` (orphans after a restart). */
   listActive(): Promise<ChallengeRow[]>;
@@ -155,6 +162,18 @@ export interface CommanderLoginService {
 export const LOGIN_COMPLETION_DEADLINE_MS = 5 * 60_000;
 
 /**
+ * How many times a TERMINAL status write (`completed`/`failed`/`timeout`) is
+ * retried before the lifecycle gives up and instead REMOVES the row to release
+ * the single-flight slot (Codex round-8 P2 :348). A transient reject on the
+ * terminal write must never strand the row `pending` forever — that would block
+ * the global (provider, authHome) slot even after the DB recovers, 409-ing every
+ * future login. A lost terminal status is far less harmful than a permanently
+ * stuck slot (the child is already exited/terminated on every path that writes a
+ * terminal status), so on total failure we drop the row.
+ */
+export const FINALIZE_WRITE_ATTEMPTS = 3;
+
+/**
  * Default completion-deadline timer: an UNREF'd `setTimeout` so a pending login
  * deadline never keeps the process (or a test runner) alive, plus a canceller
  * that clears it. Overridable via `deps.setDeadlineTimer` for deterministic tests.
@@ -168,6 +187,31 @@ function defaultDeadlineTimer(fn: () => void, ms: number): () => void {
 export function createCommanderLoginService(deps: CommanderLoginServiceDeps): CommanderLoginService {
   const now = deps.now ?? (() => new Date());
   const setDeadlineTimer = deps.setDeadlineTimer ?? defaultDeadlineTimer;
+
+  /**
+   * Resilient terminal-status write (Codex round-8 P2 :348 + its siblings). Write
+   * `status` to the row; on a transient reject retry a bounded number of times and,
+   * if EVERY attempt fails, best-effort REMOVE the row to release the single-flight
+   * slot. NEVER throws — every caller has already terminated/observed the child, so
+   * masking the write error and guaranteeing the slot is freed is the correct
+   * trade (a stranded `pending` row is the worse failure). Shared by the async
+   * completion `finalize` AND the synchronous spawn/backfill/url-failure cleanup
+   * paths so no terminal-status write anywhere can leave a `pending` row behind.
+   */
+  async function settleTerminal(id: string, status: ChallengeStatus): Promise<void> {
+    for (let attempt = 1; attempt <= FINALIZE_WRITE_ATTEMPTS; attempt++) {
+      try {
+        await deps.store.update(id, { status });
+        return;
+      } catch {
+        if (attempt === FINALIZE_WRITE_ATTEMPTS) {
+          await deps.store.remove(id).catch(() => {
+            /* best-effort — even remove failed; the boot reaper is the last resort */
+          });
+        }
+      }
+    }
+  }
 
   async function startChallenge(args: {
     companyId: string;
@@ -228,11 +272,25 @@ export function createCommanderLoginService(deps: CommanderLoginServiceDeps): Co
       run = deps.runLogin(args.provider, { runId: id, env });
     } catch (err) {
       // Spawn failed — release the slot (never leave a dangling `pending` row).
-      await deps.store.update(id, { status: "failed" }).catch(() => {});
+      await settleTerminal(id, "failed");
       throw err;
     }
+    // Capture the child's ACTUAL spawn instant (Codex round-8 P2 :202). `startedAt`
+    // was set at CLAIM time — before the advisory-lock wait + spawn. If that wait
+    // exceeds `terminateByPidIfMatches`'s 2s tolerance, the child's real OS start
+    // time drifts past `startedAt + tolerance`, so the identity check would
+    // misclassify the GENUINE child as a reused pid and REFUSE to kill it (a
+    // permanent un-killable orphan). Persist the real spawn time — now that `run`
+    // exists — so the identity check compares against when the child truly started.
+    // Use the `now()` clock seam (no bare Date()) so tests stay deterministic.
+    const spawnedAt = now();
+    let backfilled: number;
     try {
-      await deps.store.update(id, { pid: run.handle.pid, pgid: run.handle.pgid });
+      backfilled = await deps.store.update(id, {
+        pid: run.handle.pid,
+        pgid: run.handle.pgid,
+        startedAt: spawnedAt,
+      });
     } catch (err) {
       // The pid/pgid backfill rejected AFTER the child spawned (transient DB
       // disconnect). The child SURVIVES — holding the shared credential home
@@ -251,11 +309,34 @@ export function createCommanderLoginService(deps: CommanderLoginServiceDeps): Co
       // We throw before wiring the exit finalizer below — keep a rejecting
       // exitPromise from becoming an unhandled rejection.
       run.exitPromise.catch(() => {});
-      // Best-effort mark failed so the single-flight slot isn't falsely held; if
-      // this write also rejects we've already freed the port above. Rethrow the
-      // ORIGINAL error (not any cleanup error).
-      await deps.store.update(id, { status: "failed" }).catch(() => {});
+      // Mark failed (resilient: retries, then removes to release the slot) so the
+      // single-flight slot isn't falsely held; the port is already freed above.
+      // Rethrow the ORIGINAL error (settleTerminal never throws, so it can't mask it).
+      await settleTerminal(id, "failed");
       throw err;
+    }
+    if (backfilled === 0) {
+      // Superseded (Codex round-8 P1 :222). Between our `claim` and this backfill a
+      // concurrent SAME-company start took over: its `claim` DELETED our pending row
+      // — ours still had pid: null, so that start's `onExisting` (guarded on
+      // pid != null) could NOT terminate our child — and inserted its own row. Our
+      // row is gone, so this update affected 0 rows WITHOUT throwing: we are the
+      // LOSER, and our just-spawned child is now an orphan dueling the winner's for
+      // the codex :1455 callback port + the shared credential home. Self-clean:
+      // terminate OUR OWN live child (an in-memory handle → an unconditional kill is
+      // correct here; it is NOT a persisted, possibly-reused pid) and ABORT before
+      // awaiting the URL or wiring the completion chain (either would keep the loser
+      // alive). Nothing to mark terminal — the row no longer exists. Surfaces as the
+      // 409 the route already maps, converging the slot to exactly one child.
+      try {
+        run.handle.terminate();
+      } catch {
+        /* best-effort */
+      }
+      run.exitPromise.catch(() => {});
+      throw new LoginChallengeConflictError(
+        `a concurrent ${args.provider} sign-in superseded this attempt`,
+      );
     }
 
     let loginUrl: string;
@@ -278,12 +359,32 @@ export function createCommanderLoginService(deps: CommanderLoginServiceDeps): Co
       // timeout identically (VerifyStep), so `timeout` is contract-safe AND
       // more honest for that case; everything else stays `failed`.
       // Never leave a dangling `pending` row — it would falsely hold the lock.
+      // Resilient (retries, then removes) so a DB blip here can't strand pending,
+      // and the ORIGINAL url error still propagates (settleTerminal never throws).
       const status: ChallengeStatus =
         err instanceof Error && err.message === "login-url-timeout" ? "timeout" : "failed";
-      await deps.store.update(id, { status });
+      await settleTerminal(id, status);
       throw err;
     }
-    await deps.store.update(id, { loginUrl });
+    try {
+      await deps.store.update(id, { loginUrl });
+    } catch (err) {
+      // Sibling of the URL-discovery path (Codex round-8 audit): the loginUrl write
+      // rejected AFTER the child found its URL. The child is ALIVE — holding the
+      // credential home + codex :1455 port — and we have NOT yet wired the completion
+      // deadline below, so leaving it here would strand a LIVE child plus a `pending`
+      // row until the boot reaper. Kill it now + finalize resiliently, then rethrow
+      // the ORIGINAL error (the route maps it to 502). Neutralize the exitPromise so
+      // a post-kill rejection can't surface as an unhandled rejection.
+      try {
+        run.handle.terminate();
+      } catch {
+        /* best-effort */
+      }
+      run.exitPromise.catch(() => {});
+      await settleTerminal(id, "failed");
+      throw err;
+    }
 
     // Finalize asynchronously from the child's exit + credential evidence, BUT
     // bound the wait with a completion deadline (Codex round-7 P2). After the URL
@@ -301,17 +402,20 @@ export function createCommanderLoginService(deps: CommanderLoginServiceDeps): Co
       let settled = false;
       let cancelDeadline: (() => void) | null = null;
 
-      // First-wins finalizer: the child's exit and the deadline can land ~together
-      // (exit resolving as the timer fires). Only the FIRST outcome finalizes — we
-      // never overwrite a completed/failed with `timeout` (or vice-versa) — and we
-      // always clear the pending deadline timer so no timer/open-handle leaks past
-      // completion.
+      // First-wins finalizer: the completion outcome and the deadline can land
+      // ~together (the terminal determination resolving as the timer fires). Only
+      // the FIRST outcome finalizes — we never overwrite a completed/failed with
+      // `timeout` (or vice-versa) — and we always clear the pending deadline timer
+      // so no timer/open-handle leaks past completion. The terminal write itself is
+      // RESILIENT (Codex round-8 P2 :348): a transient reject retries, then removes
+      // the row to release the slot, so a finalize failure can never strand the row
+      // `pending` forever (which would block the global slot after the DB recovers).
       const finalize = async (status: ChallengeStatus): Promise<void> => {
         if (settled) return;
         settled = true;
         cancelDeadline?.();
         cancelDeadline = null;
-        await deps.store.update(id, { status });
+        await settleTerminal(id, status);
       };
 
       const deadlineHit = new Promise<"deadline">((resolve) => {
@@ -325,8 +429,34 @@ export function createCommanderLoginService(deps: CommanderLoginServiceDeps): Co
         () => ({ kind: "exit-error" as const }),
       );
 
-      const outcome = await Promise.race([exited, deadlineHit]);
+      // The FULL completion determination — the child's exit AND the subsequent
+      // `credentialPresent` check — must sit INSIDE the raced promise (Codex
+      // round-8 P2 :342). Previously `credentialPresent` was awaited AFTER the race
+      // had already resolved on exit, so if it HUNG (an unresponsive auth-home FS)
+      // the deadline could no longer fire and the row sat `pending` forever. Folding
+      // it in means a hang there still trips the deadline → terminate + `timeout`.
+      // The trailing `.then` reject-handler maps a `credentialPresent` REJECTION to
+      // `failed` so a late reject (after the deadline already won the race) can never
+      // surface as an unhandled rejection; a genuine HANG simply never settles and
+      // the deadline wins. When it completes in time the original semantics hold:
+      // exit 0 + credential present → completed, else failed.
+      const completed = (async (): Promise<ChallengeStatus> => {
+        const result = await exited;
+        if (result.kind === "exit-error") return "failed";
+        const ok =
+          result.code === 0 && (await deps.credentialPresent(args.provider, authHome));
+        return ok ? "completed" : "failed";
+      })().then(
+        (status) => ({ kind: "done" as const, status }),
+        () => ({ kind: "done" as const, status: "failed" as ChallengeStatus }),
+      );
+
+      const outcome = await Promise.race([completed, deadlineHit]);
       if (outcome === "deadline") {
+        // Deadline elapsed before the child finalized — it never exited, or it
+        // exited but the credential check is hanging. Kill the LIVE child (this
+        // process's own handle → an unconditional terminate is correct here) and
+        // finalize `timeout`.
         try {
           run.handle.terminate();
         } catch {
@@ -335,12 +465,7 @@ export function createCommanderLoginService(deps: CommanderLoginServiceDeps): Co
         await finalize("timeout");
         return;
       }
-      if (outcome.kind === "exit-error") {
-        await finalize("failed");
-        return;
-      }
-      const ok = outcome.code === 0 && (await deps.credentialPresent(args.provider, authHome));
-      await finalize(ok ? "completed" : "failed");
+      await finalize(outcome.status);
     })().catch(() => {
       // Completion is fire-and-forget from the route's perspective; store writes
       // are best-effort, so a failed finalize must never surface as an unhandled

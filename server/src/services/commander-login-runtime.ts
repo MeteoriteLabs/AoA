@@ -104,10 +104,15 @@ export function drizzleChallengeStore(db: Db): ChallengeStore {
       return r ? mapRow(r) : null;
     },
     async update(id, patch) {
-      await db
+      // `.returning({ id })` reports rows AFFECTED (Codex round-8 P1): the pid/pgid
+      // backfill uses a 0-row result to detect that a concurrent same-company
+      // takeover deleted this row (superseded → the caller self-cleans its child).
+      const updated = await db
         .update(commanderLoginChallenges)
         .set({ ...patch, updatedAt: new Date(), finishedAt: patch.status && patch.status !== "pending" ? new Date() : undefined })
-        .where(eq(commanderLoginChallenges.id, id));
+        .where(eq(commanderLoginChallenges.id, id))
+        .returning({ id: commanderLoginChallenges.id });
+      return updated.length;
     },
     async remove(id) {
       await db.delete(commanderLoginChallenges).where(eq(commanderLoginChallenges.id, id));

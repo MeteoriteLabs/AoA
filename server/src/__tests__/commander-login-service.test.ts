@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import {
   createCommanderLoginService,
+  LoginChallengeConflictError,
   type ChallengeStore,
   type ChallengeRow,
 } from "../services/commander-login.js";
@@ -33,8 +34,13 @@ function memStore(): ChallengeStore & { rows: Map<string, ChallengeRow> } {
       return r ? { ...r } : null;
     },
     async update(id, patch) {
+      // Return rows AFFECTED (0 when the row was concurrently removed) — mirrors the
+      // drizzle store's `.returning().length`, which the pid/pgid backfill uses to
+      // detect a same-company takeover superseding it (Codex round-8 P1).
       const r = rows.get(id);
-      if (r) rows.set(id, { ...r, ...patch });
+      if (!r) return 0;
+      rows.set(id, { ...r, ...patch });
+      return 1;
     },
     async remove(id) {
       rows.delete(id);
@@ -143,7 +149,9 @@ describe("commander-login service (Plan 3 T4)", () => {
     const startP = svc.startChallenge({ companyId: "c1", provider: "openai", startedByUserId: "u1" });
     f.resolveUrl("https://chatgpt.com/device?code=A");
     await startP;
-    expect(order.slice(0, 3)).toEqual(["claim", "spawn", "update:pgid,pid"]);
+    // The post-spawn backfill now writes the ACTUAL spawn `startedAt` alongside
+    // pid/pgid (Codex round-8 P2 :202), so the patch keys are pgid,pid,startedAt.
+    expect(order.slice(0, 3)).toEqual(["claim", "spawn", "update:pgid,pid,startedAt"]);
     // At claim time the row had no pid yet; the post-spawn update backfilled it.
     expect(store.rows.get("ch-1")).toMatchObject({ pid: 888, pgid: 888 });
   });
@@ -896,5 +904,223 @@ describe("commander-login service (Plan 3 T4)", () => {
     expect(terminate).toHaveBeenCalledTimes(1);
     expect(terminate).toHaveBeenCalledWith(4321, 4321, { startedAt: new Date(0) });
     expect([...store.rows.values()].filter((r) => r.status === "pending")).toHaveLength(0);
+  });
+
+  // ── Codex round-8 concurrency hardening ──────────────────────────────────
+
+  it("(P1) overlapping same-company starts: B takes over A's pid-null row → A's backfill sees 0 rows → A self-terminates + aborts; ONE surviving child", async () => {
+    // The claim→backfill window (Codex round-8 P1 :222). A's `claim` inserts a
+    // pending row (pid null) and spawns child A. Before A's pid backfill lands, B's
+    // `claim` runs: it finds A's pending row, `onExisting` permits same-company
+    // takeover but CANNOT kill A's child (pid still null → the `pid != null` guard
+    // skips), deletes A's row, and spawns child B. A's later backfill then affects
+    // ZERO rows without throwing. Without the fix A would sail on — awaiting its
+    // URL + wiring completion — leaving child A orphaned, dueling child B for the
+    // codex :1455 port + credential home. The fix: a 0-row backfill means superseded
+    // → terminate OUR OWN live child and abort (409), converging to one child.
+    const store = memStore();
+    const fA = fakeRun(100, 100);
+    const fB = fakeRun(200, 200);
+    let call = 0;
+    let seq = 0;
+    const terminate = vi.fn();
+
+    // Hold A's pid backfill open until B has completed its takeover, deterministically.
+    let releaseABackfill!: () => void;
+    const aBackfillGate = new Promise<void>((r) => {
+      releaseABackfill = r;
+    });
+    const baseUpdate = store.update.bind(store);
+    let gatedOnce = false;
+    store.update = async (id, patch) => {
+      if (id === "ch-1" && "pid" in patch && !gatedOnce) {
+        gatedOnce = true;
+        await aBackfillGate;
+      }
+      return baseUpdate(id, patch);
+    };
+
+    const svc = createCommanderLoginService({
+      store,
+      resolveAuthHome: () => "/home/.codex",
+      runLogin: () => (call++ === 0 ? fA.run : fB.run),
+      credentialPresent: async () => true,
+      terminate,
+      newId: () => `ch-${++seq}`,
+      env: () => ({}) as never,
+      setDeadlineTimer: () => () => {},
+    });
+
+    // Start A → claim inserts ch-1 (pid null), spawns child A, suspends at the gated backfill.
+    const pA = svc.startChallenge({ companyId: "c1", provider: "openai", startedByUserId: "u1" });
+    await new Promise((r) => setImmediate(r)); // let A reach the gate
+
+    // Start B (same company) → takes over ch-1 (pid null, no kill), inserts ch-2, spawns child B.
+    const pB = svc.startChallenge({ companyId: "c1", provider: "openai", startedByUserId: "u1" });
+    fB.resolveUrl("https://chatgpt.com/device?code=B");
+    const bResult = await pB;
+    expect(bResult.challengeId).toBe("ch-2");
+
+    // Release A's backfill → update(ch-1) now affects 0 rows (row deleted by B).
+    releaseABackfill();
+    await expect(pA).rejects.toBeInstanceOf(LoginChallengeConflictError);
+
+    // A self-terminated its OWN live child; B's child is untouched.
+    expect(fA.handle.terminate).toHaveBeenCalledTimes(1);
+    expect(fB.handle.terminate).not.toHaveBeenCalled();
+    // A never routed through the persisted-pid seam (it killed its live handle).
+    expect(terminate).not.toHaveBeenCalled();
+    // Single-flight holds: exactly one surviving pending row — B's.
+    const pending = [...store.rows.values()].filter((r) => r.status === "pending");
+    expect(pending).toHaveLength(1);
+    expect(pending[0]!.id).toBe("ch-2");
+  });
+
+  it("(P2-202) backfills the ACTUAL spawn time as startedAt so a slow claim can't make the genuine child un-killable", async () => {
+    // startedAt is set at claim time; if the advisory-lock wait + spawn exceed the
+    // 2s identity tolerance, the child's real OS start time drifts past
+    // startedAt + tolerance and the verifier misclassifies the GENUINE child as a
+    // reused pid (permanent un-killable orphan). The fix backfills the real spawn
+    // instant. Deterministic via an injected clock: claim at T0, spawn 5s later.
+    const store = memStore();
+    const f = fakeRun(444, 444);
+    const T0 = new Date("2026-07-17T10:00:00.000Z");
+    const spawnTime = new Date(T0.getTime() + 5_000);
+    const times = [T0, spawnTime]; // now(): [0]=claim row, [1]=post-spawn backfill
+    let i = 0;
+    const svc = createCommanderLoginService({
+      store,
+      resolveAuthHome: () => "/home/.codex",
+      runLogin: () => f.run,
+      credentialPresent: async () => true,
+      terminate: vi.fn(),
+      newId: () => "ch-1",
+      env: () => ({}) as never,
+      now: () => times[Math.min(i++, times.length - 1)]!,
+      setDeadlineTimer: () => () => {},
+    });
+    const startP = svc.startChallenge({ companyId: "c1", provider: "openai", startedByUserId: "u1" });
+    f.resolveUrl("https://chatgpt.com/device?code=A");
+    const { challengeId } = await startP;
+
+    const row = store.rows.get(challengeId)!;
+    // Persisted startedAt is the REAL spawn time (T0 + 5s), NOT the pre-claim T0.
+    expect(row.startedAt.getTime()).toBe(spawnTime.getTime());
+
+    // Consequence: terminateByPidIfMatches with the recorded startedAt now KILLS the
+    // genuine child (real start time within tolerance) instead of sparing it as reused.
+    const kill = vi.fn();
+    const killed = terminateByPidIfMatches(
+      row.pid!,
+      row.pgid,
+      { startedAt: row.startedAt },
+      { platform: "linux", kill, queryStartTime: () => spawnTime },
+    );
+    expect(killed).toBe(true);
+    expect(kill).toHaveBeenCalledWith(-444, "SIGKILL");
+  });
+
+  it("(P2-342) DEADLINE covers the credential check: exit(0) then credentialPresent HANGS → deadline fires → live child terminated + row `timeout`", async () => {
+    // After exit(0) the lifecycle awaits credentialPresent, which can HANG on an
+    // unresponsive auth-home FS. Previously exit had already won the race, so the
+    // deadline could no longer fire and the row sat `pending` forever. The fix folds
+    // the credential check INSIDE the raced promise so a hang still trips the deadline.
+    let fire: (() => void) | null = null;
+    const f = fakeRun(555, 555);
+    const { svc, store } = makeService({
+      runLogin: () => f.run,
+      credentialPresent: () => new Promise<boolean>(() => {}), // never settles
+      setDeadlineTimer: (fn) => {
+        fire = fn;
+        return () => {};
+      },
+    });
+    const startP = svc.startChallenge({ companyId: "c1", provider: "openai", startedByUserId: "u1" });
+    f.resolveUrl("https://chatgpt.com/device?code=A");
+    const { challengeId, completion } = await startP;
+    f.resolveExit(0); // child exits cleanly, but the credential check hangs
+    await new Promise((r) => setImmediate(r)); // let the exit propagate into the hang
+    expect(fire).toBeTypeOf("function");
+    fire!(); // deadline elapses while credentialPresent is still hanging
+    await completion;
+    expect(f.handle.terminate).toHaveBeenCalledTimes(1); // live child force-terminated
+    expect(store.rows.get(challengeId)?.status).toBe("timeout"); // NOT stranded pending
+  });
+
+  it("(P2-348) finalize terminal write that rejects on EVERY retry REMOVES the row (releases the slot) instead of stranding `pending`", async () => {
+    // If the terminal status write transiently rejects, finalize has already set
+    // `settled` + cancelled the timer; the outer catch used to swallow it, leaving
+    // the row `pending` forever and blocking the global slot after the DB recovers.
+    // The fix retries a bounded number of times, then best-effort REMOVES the row.
+    const f = fakeRun(666, 666);
+    const store = memStore();
+    const baseUpdate = store.update.bind(store);
+    const baseRemove = store.remove.bind(store);
+    let terminalWriteAttempts = 0;
+    let removed = false;
+    store.update = async (id, patch) => {
+      if (patch.status && patch.status !== "pending") {
+        terminalWriteAttempts += 1;
+        throw new Error("db-down"); // every terminal write attempt rejects
+      }
+      return baseUpdate(id, patch);
+    };
+    store.remove = async (id) => {
+      removed = true;
+      return baseRemove(id);
+    };
+    const svc = createCommanderLoginService({
+      store,
+      resolveAuthHome: () => "/home/.codex",
+      runLogin: () => f.run,
+      credentialPresent: async () => true,
+      terminate: vi.fn(),
+      newId: () => "ch-1",
+      env: () => ({}) as never,
+      setDeadlineTimer: () => () => {},
+    });
+    const startP = svc.startChallenge({ companyId: "c1", provider: "openai", startedByUserId: "u1" });
+    f.resolveUrl("https://chatgpt.com/device?code=A");
+    const { challengeId, completion } = await startP;
+    f.resolveExit(0); // would finalize `completed`, but the terminal write rejects on all retries
+    await completion;
+    expect(terminalWriteAttempts).toBe(3); // bounded retry exhausted
+    expect(removed).toBe(true); // fell back to remove → slot released
+    expect(store.rows.has(challengeId)).toBe(false); // no stranded `pending` row
+  });
+
+  it("(sib) loginUrl-write rejection AFTER URL discovery terminates the LIVE child + finalizes failed (no stranded live child + pending row)", async () => {
+    // Sibling audit: once the URL is found, `deps.store.update(id, { loginUrl })`
+    // runs BEFORE the completion deadline is wired. If that write rejects (DB blip)
+    // and we simply throw, the child is left ALIVE (holding :1455) with a `pending`
+    // row and NO deadline — stranded until the boot reaper. The path must kill the
+    // live child + finalize failed, mirroring the URL-discovery-failure path.
+    const f = fakeRun(789, 789);
+    const store = memStore();
+    const baseUpdate = store.update.bind(store);
+    store.update = async (id, patch) => {
+      if ("loginUrl" in patch) throw new Error("db-blip"); // pid backfill (no loginUrl) still succeeds
+      return baseUpdate(id, patch);
+    };
+    const svc = createCommanderLoginService({
+      store,
+      resolveAuthHome: () => "/home/.codex",
+      runLogin: () => f.run,
+      credentialPresent: async () => true,
+      terminate: vi.fn(),
+      newId: () => "ch-1",
+      env: () => ({}) as never,
+      setDeadlineTimer: () => () => {},
+    });
+    const startP = svc.startChallenge({ companyId: "c1", provider: "openai", startedByUserId: "u1" });
+    f.resolveUrl("https://chatgpt.com/device?code=A");
+    await expect(startP).rejects.toThrow(/db-blip/); // ORIGINAL error propagates
+    expect(f.handle.terminate).toHaveBeenCalledTimes(1); // live child killed → :1455 freed
+    // Row finalized failed (via settleTerminal), never left stranded `pending`.
+    const rows = [...store.rows.values()];
+    expect(rows.every((r) => r.status !== "pending")).toBe(true);
+    // A post-kill exit rejection must not surface as an unhandled rejection.
+    f.rejectExit(new Error("exit-after-kill"));
+    await new Promise((r) => setImmediate(r));
   });
 });
