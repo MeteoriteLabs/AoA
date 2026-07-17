@@ -68,6 +68,22 @@ describe("InvitedJoinTerminal", () => {
     );
   });
 
+  it("auto-admit enters and STOPS the poll loop (no over-correction into polling after navigation)", async () => {
+    // enter() is a terminal STOP: the round-13 fix keeps polling ONLY under
+    // not-approved, never after we navigate away. Prove the loop is dead by
+    // advancing time and seeing no further fetchJourney/finalize calls.
+    finalizeInvitedJoin.mockResolvedValue({ admitted: true, status: "approved" });
+    render(<InvitedJoinTerminal />);
+    await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/", { replace: true }));
+    const journeyCalls = fetchJourney.mock.calls.length;
+    const finalizeCalls = finalizeInvitedJoin.mock.calls.length;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(8000 * 3);
+    });
+    expect(fetchJourney.mock.calls.length).toBe(journeyCalls);
+    expect(finalizeInvitedJoin.mock.calls.length).toBe(finalizeCalls);
+  });
+
   it("not admitted → shows the pending screen with company + role", async () => {
     render(<InvitedJoinTerminal />);
     expect(await screen.findByText(/joining/i)).toBeTruthy();
@@ -93,10 +109,23 @@ describe("InvitedJoinTerminal", () => {
     await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/", { replace: true }));
   });
 
-  it("rejected finalize → terminal not-approved state, never navigates to /", async () => {
+  it("rejected finalize → shows not-approved AND keeps polling (a re-invite can still arrive), never navigates to /", async () => {
     finalizeInvitedJoin.mockResolvedValue({ admitted: false, status: "rejected" });
     render(<InvitedJoinTerminal />);
     expect(await screen.findByText(/not approved/i)).toBeTruthy();
+    expect(mockNavigate).not.toHaveBeenCalled();
+    // Not-approved must NOT kill the poll loop (Codex round-13 P2): the founder
+    // can still mint a replacement invite. A rejected invite leaves the pending
+    // set, so the next poll stays not-approved via the `!inv` founder path.
+    // Prove the loop is alive by observing a further fetchJourney as time
+    // advances (still not-approved, still no navigation).
+    fetchJourney.mockResolvedValue({ ...invitedJourney, journey: "founder", pendingInvitations: [] });
+    const callsAtReject = fetchJourney.mock.calls.length;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(8000);
+    });
+    expect(fetchJourney.mock.calls.length).toBeGreaterThan(callsAtReject);
+    expect(screen.getByText(/not approved/i)).toBeTruthy();
     expect(mockNavigate).not.toHaveBeenCalled();
   });
 
@@ -349,6 +378,85 @@ describe("InvitedJoinTerminal", () => {
         await vi.advanceTimersByTimeAsync(8000 * 3);
       });
       expect(finalizeInvitedJoin).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("reject-then-LATER-reinvite (Codex round-13 P2)", () => {
+    // Distinct from round-12's same-poll swap: the rejection is observed in ONE
+    // poll and the replacement invite arrives SEVERAL polls later. Pre-fix the
+    // not-approved branch bare-returned and STOPPED the loop, so the fresh
+    // inviteId never surfaced and the round-12 re-arm never fired — the re-invite
+    // needed a full page reload. Post-fix not-approved keeps polling and the
+    // consent card returns on its own.
+    const invite1 = {
+      companyId: "cA", companyName: "Acme", inviteId: "i1",
+      role: "team_member", createdAt: "2026-01-01T00:00:00.000Z", filed: false,
+    };
+    const invite2 = {
+      companyId: "cA", companyName: "Acme", inviteId: "i2",
+      role: "team_member", createdAt: "2026-01-03T00:00:00.000Z", filed: false,
+    };
+
+    it("keeps polling under not-approved so a later re-invite re-opens the consent gate without a reload", async () => {
+      routerState.searchParams = new URLSearchParams("company=cA");
+      // invite1 is tokenless → consent card, no auto-finalize.
+      fetchJourney.mockResolvedValue({
+        journey: "invited", targetCompanyId: "cA",
+        pendingInvitations: [invite1], inviteToken: null,
+      });
+      render(<InvitedJoinTerminal />);
+      expect(await screen.findByText(/invited to join Acme/i)).toBeTruthy();
+      expect(finalizeInvitedJoin).not.toHaveBeenCalled();
+      // Consent to invite1: the request files and sits pending (finalizedRef latches).
+      finalizeInvitedJoin.mockResolvedValue({ admitted: false, status: "pending" });
+      fireEvent.click(screen.getByRole("button", { name: /join acme/i }));
+      expect(await screen.findByText(/with the admin for approval/i)).toBeTruthy();
+      expect(finalizeInvitedJoin).toHaveBeenCalledWith("cA", { acceptOpenInvite: true });
+
+      // Founder REJECTS invite1 and does NOT re-invite yet: invite1 leaves the
+      // pending set (→ the `!inv` branch) and the idempotent finalize now reports
+      // rejected. This lands on not-approved in a poll of its OWN.
+      fetchJourney.mockResolvedValue({
+        journey: "founder", targetCompanyId: null,
+        pendingInvitations: [], inviteToken: null,
+      });
+      finalizeInvitedJoin.mockResolvedValue({ admitted: false, status: "rejected" });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(8000);
+      });
+      expect(await screen.findByText(/not approved/i)).toBeTruthy();
+      expect(mockNavigate).not.toHaveBeenCalled();
+
+      // RED pre-fix: not-approved bare-returned → the loop is dead, so advancing
+      // time fires no more ticks and the consent card can never come back. Prove
+      // the loop is still ALIVE by observing a further fetchJourney.
+      const callsAtReject = fetchJourney.mock.calls.length;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(8000);
+      });
+      expect(fetchJourney.mock.calls.length).toBeGreaterThan(callsAtReject);
+      expect(screen.getByText(/not approved/i)).toBeTruthy();
+
+      // LATER, the founder mints a replacement invite for the SAME company — a
+      // fresh tokenless inviteId surfaces.
+      fetchJourney.mockResolvedValue({
+        journey: "invited", targetCompanyId: "cA",
+        pendingInvitations: [invite2], inviteToken: null,
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(8000);
+      });
+      // The still-alive loop picks it up, the changed inviteId re-arms the gate,
+      // and the consent card returns — no reload.
+      const joinAgain = await screen.findByRole("button", { name: /join acme/i });
+      expect(joinAgain).toBeTruthy();
+
+      // Accepting the re-invite finalizes invite2 (the tokenless consent
+      // assertion again) and enters.
+      finalizeInvitedJoin.mockResolvedValue({ admitted: true, status: "approved" });
+      fireEvent.click(joinAgain);
+      await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/", { replace: true }));
+      expect(finalizeInvitedJoin).toHaveBeenLastCalledWith("cA", { acceptOpenInvite: true });
     });
   });
 

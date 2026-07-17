@@ -76,6 +76,19 @@ export function InvitedJoinTerminal() {
 
   useEffect(() => {
     let cancelled = false;
+    // Re-arm the poll for the NEXT tick. Extracted so the states that LOOK
+    // terminal but must keep polling (rejected / not-approved — a replacement
+    // invite can still surface and re-arm the gate, see below) schedule
+    // IDENTICALLY to the normal fall-through tail, instead of bare-returning and
+    // killing the loop (Codex round-13 P2). Guarded by `cancelled` so an unmount
+    // between an await and here never resurrects the loop. `tick` is referenced
+    // before its declaration, but only ever CALLED after both are initialized —
+    // no TDZ hazard.
+    const scheduleNext = () => {
+      if (!cancelled) {
+        timerRef.current = window.setTimeout(() => void tick(), POLL_MS);
+      }
+    };
     const tick = async () => {
       try {
         const j = await fetchJourney();
@@ -128,7 +141,15 @@ export function InvitedJoinTerminal() {
                 return;
               }
               if (result.status === "rejected") {
+                // Rejected — but KEEP POLLING (schedule, don't bare-return):
+                // the founder can still mint a REPLACEMENT invite for this same
+                // anchored company. A dead loop here would strand the tab on
+                // not-approved — the fresh inviteId would never surface and the
+                // re-arm below could never fire, forcing a full reload. Same
+                // resource profile as `pending` (which polls forever awaiting
+                // the founder); unmount cleanup stops it.
                 setPhase("not_approved");
+                scheduleNext();
                 return;
               }
             } catch (err) {
@@ -152,7 +173,11 @@ export function InvitedJoinTerminal() {
             return;
           }
           // founder/no-invitation: the request was rejected or the invite died.
+          // KEEP POLLING (same reasoning as the rejected branch above) — a
+          // replacement invite for the anchored company can still arrive and
+          // re-arm the gate, so a bare return here would force a reload too.
           setPhase("not_approved");
+          scheduleNext();
           return;
         }
 
@@ -203,7 +228,11 @@ export function InvitedJoinTerminal() {
               return;
             }
             if (result.status === "rejected") {
+              // Rejected while the invite was still in the pending set — KEEP
+              // POLLING so a replacement invite (fresh inviteId, same company)
+              // can re-arm the gate without a reload (Codex round-13 P2).
               setPhase("not_approved");
+              scheduleNext();
               return;
             }
             // invite_invalid: distinct copy (spec §9), but keep polling — the
@@ -239,9 +268,11 @@ export function InvitedJoinTerminal() {
         }
         setPhase((p) => (p === "checking" ? "pending" : p));
       }
-      if (!cancelled) {
-        timerRef.current = window.setTimeout(() => void tick(), POLL_MS);
-      }
+      // Normal fall-through (consent / pending / invite_invalid / transient
+      // error) re-arms the poll. Terminal-STOP branches (enter / 401) returned
+      // above WITHOUT scheduling; the KEEP-POLLING branches (not-approved)
+      // scheduled inline and returned. So exactly one schedule per tick.
+      scheduleNext();
     };
     void tick();
     return () => {
