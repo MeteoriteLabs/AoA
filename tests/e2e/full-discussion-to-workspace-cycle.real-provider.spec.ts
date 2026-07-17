@@ -46,11 +46,12 @@ type ScopeVersionDetail = {
 
 const RUN_REAL_PROVIDER = process.env.AOA_E2E_REAL_PROVIDER === "1";
 const REAL_PROVIDER = process.env.AOA_E2E_REAL_CREW_PROVIDER ?? "openai";
-const REAL_ADAPTER_TYPE = REAL_PROVIDER === "anthropic" ? "claude_local" : "codex_local";
-const REAL_BINARY = REAL_PROVIDER === "anthropic" ? "claude" : "codex";
+const REAL_ADAPTER_TYPE =
+  REAL_PROVIDER === "anthropic" ? "claude_local" : REAL_PROVIDER === "openai" ? "codex_local" : "gemini_local";
+const REAL_BINARY = REAL_PROVIDER === "anthropic" ? "claude" : REAL_PROVIDER === "openai" ? "codex" : "gemini";
 const REAL_MODEL =
   process.env.AOA_E2E_REAL_CREW_MODEL ??
-  (REAL_PROVIDER === "anthropic" ? "claude-sonnet-4-5-20250929" : "gpt-5.5");
+  (REAL_PROVIDER === "anthropic" ? "claude-sonnet-4-5-20250929" : REAL_PROVIDER === "openai" ? "gpt-5.5" : "gemini-2.5-pro");
 const REAL_TIMEOUT_MS = Number(process.env.AOA_E2E_REAL_CREW_TIMEOUT_MS ?? 300_000);
 const TERMINAL_RUN_STATUSES = new Set(["completed", "succeeded", "failed", "cancelled", "timed_out"]);
 const SUCCESS_RUN_STATUSES = new Set(["completed", "succeeded"]);
@@ -204,7 +205,9 @@ async function ensureCrewAdapterConfig(request: APIRequestContext, companyId: st
       model: REAL_MODEL,
       ...(REAL_PROVIDER === "anthropic"
         ? { dangerouslySkipPermissions: true }
-        : { dangerouslyBypassApprovalsAndSandbox: true }),
+        : REAL_PROVIDER === "openai"
+          ? { dangerouslyBypassApprovalsAndSandbox: true }
+          : {}),
       ...(typeof existing.instructionsFilePath === "string" ? { instructionsFilePath: existing.instructionsFilePath } : {}),
       ...(typeof existing.instructionsRootPath === "string" ? { instructionsRootPath: existing.instructionsRootPath } : {}),
       ...(typeof existing.instructionsEntryFile === "string" ? { instructionsEntryFile: existing.instructionsEntryFile } : {}),
