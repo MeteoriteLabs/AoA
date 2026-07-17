@@ -27,10 +27,32 @@ export interface ChallengeRow {
   startedAt: Date;
 }
 
+export interface ChallengeClaimArgs {
+  provider: CommanderLoginProvider;
+  authHome: string;
+  /** The new pending row to insert (pid/pgid/loginUrl null until the child spawns). */
+  row: ChallengeRow;
+  /**
+   * Called with the existing pending row for (provider, authHome) — across ALL
+   * companies — if one exists, INSIDE the store's mutual-exclusion boundary.
+   * Throw to abort the claim (nothing changes); return to take over (the
+   * existing row is removed before `row` is inserted). Conflict/takeover
+   * SEMANTICS stay in the service; the store only guarantees atomicity.
+   */
+  onExisting: (existing: ChallengeRow) => void;
+}
+
 export interface ChallengeStore {
-  insert(row: ChallengeRow): Promise<ChallengeRow>;
-  /** The single pending challenge for a (provider, authHome), across ALL companies. */
-  findPending(provider: CommanderLoginProvider, authHome: string): Promise<ChallengeRow | null>;
+  /**
+   * Atomically claim the (provider, authHome) single-flight slot:
+   * find the pending row → consult `onExisting` → remove it on takeover →
+   * insert `row`. Implementations MUST make the whole sequence mutually
+   * exclusive across concurrent claims — the `(provider, auth_home, status)`
+   * index is NON-unique, so a plain find-then-insert lets two overlapping
+   * starts both pass (Codex P1). The drizzle impl uses a transaction +
+   * `pg_advisory_xact_lock`; an in-memory store is atomic by being synchronous.
+   */
+  claim(args: ChallengeClaimArgs): Promise<ChallengeRow>;
   get(id: string): Promise<ChallengeRow | null>;
   update(id: string, patch: Partial<ChallengeRow>): Promise<void>;
   remove(id: string): Promise<void>;
@@ -82,8 +104,13 @@ export interface CommanderLoginService {
     provider: CommanderLoginProvider;
     startedByUserId: string | null;
   }): Promise<StartChallengeResult>;
-  getStatus(id: string): Promise<{ status: ChallengeStatus; loginUrl: string | null } | null>;
-  cancel(id: string): Promise<void>;
+  /** Company-scoped: a challenge owned by another company is reported absent. */
+  getStatus(
+    companyId: string,
+    id: string,
+  ): Promise<{ status: ChallengeStatus; loginUrl: string | null } | null>;
+  /** Company-scoped: a cross-tenant cancel is a silent no-op (as if absent). */
+  cancel(companyId: string, id: string): Promise<void>;
   reapOrphans(): Promise<void>;
 }
 
@@ -97,45 +124,74 @@ export function createCommanderLoginService(deps: CommanderLoginServiceDeps): Co
   }): Promise<StartChallengeResult> {
     const env = deps.env();
     const authHome = deps.resolveAuthHome(args.provider, env);
-
-    // Single-flight per (provider, authHome). A pending challenge owned by
-    // ANOTHER company blocks (409). For the SAME company, a re-attempt must not
-    // spawn a second child — two `codex login` children fight over the local
-    // callback port (:1455) and a stale PKCE URL then silently fails. So we
-    // cancel the prior child (free the port) and start ONE clean login.
-    const existing = await deps.store.findPending(args.provider, authHome);
-    if (existing) {
-      if (existing.companyId !== args.companyId) {
-        throw new LoginChallengeConflictError(
-          `another company is already signing in with ${args.provider} at ${authHome}`,
-        );
-      }
-      if (existing.pid != null) deps.terminate(existing.pid, existing.pgid);
-      await deps.store.remove(existing.id);
-    }
-
     const id = deps.newId();
-    const run = deps.runLogin(args.provider, { runId: id, env });
 
-    await deps.store.insert({
-      id,
-      companyId: args.companyId,
+    // Single-flight per (provider, authHome), decided ATOMICALLY inside the
+    // store's claim (transaction + advisory lock in the drizzle impl) — a
+    // check-then-act find→spawn→insert let two overlapping starts both spawn
+    // children that fight over the credential home + codex callback port
+    // (:1455). A pending challenge owned by ANOTHER company blocks (409). For
+    // the SAME company, a re-attempt must not leave a second child alive, so
+    // we cancel the prior child (free the port) and start ONE clean login.
+    // The row is durable BEFORE the child spawns; pid/pgid are backfilled.
+    await deps.store.claim({
       provider: args.provider,
       authHome,
-      loginUrl: null,
-      pid: run.handle.pid,
-      pgid: run.handle.pgid,
-      status: "pending",
-      startedByUserId: args.startedByUserId,
-      startedAt: now(),
+      row: {
+        id,
+        companyId: args.companyId,
+        provider: args.provider,
+        authHome,
+        loginUrl: null,
+        pid: null,
+        pgid: null,
+        status: "pending",
+        startedByUserId: args.startedByUserId,
+        startedAt: now(),
+      },
+      onExisting: (existing) => {
+        if (existing.companyId !== args.companyId) {
+          throw new LoginChallengeConflictError(
+            `another company is already signing in with ${args.provider} at ${authHome}`,
+          );
+        }
+        if (existing.pid != null) deps.terminate(existing.pid, existing.pgid);
+      },
     });
+
+    let run: LoginRunLike;
+    try {
+      run = deps.runLogin(args.provider, { runId: id, env });
+    } catch (err) {
+      // Spawn failed — release the slot (never leave a dangling `pending` row).
+      await deps.store.update(id, { status: "failed" }).catch(() => {});
+      throw err;
+    }
+    await deps.store.update(id, { pid: run.handle.pid, pgid: run.handle.pgid });
 
     let loginUrl: string;
     try {
       loginUrl = await run.urlPromise;
     } catch (err) {
+      // The child SURVIVES URL-discovery failure (it keeps holding the shared
+      // credential home and, for codex, the :1455 callback port) and the boot
+      // reaper only sweeps `pending` rows — kill it now, best-effort.
+      try {
+        run.handle.terminate();
+      } catch {
+        /* best-effort */
+      }
+      // We throw before wiring the exit finalizer below — keep a rejecting
+      // exitPromise from becoming an unhandled rejection.
+      run.exitPromise.catch(() => {});
+      // `login-url-timeout` is the runner's documented discovery-window
+      // rejection (adapter-utils streaming-login). The UI treats failed and
+      // timeout identically (VerifyStep), so `timeout` is contract-safe AND
+      // more honest for that case; everything else stays `failed`.
       // Never leave a dangling `pending` row — it would falsely hold the lock.
-      await deps.store.update(id, { status: "failed" });
+      const status: ChallengeStatus =
+        err instanceof Error && err.message === "login-url-timeout" ? "timeout" : "failed";
+      await deps.store.update(id, { status });
       throw err;
     }
     await deps.store.update(id, { loginUrl });
@@ -154,15 +210,21 @@ export function createCommanderLoginService(deps: CommanderLoginServiceDeps): Co
   }
 
   async function getStatus(
+    companyId: string,
     id: string,
   ): Promise<{ status: ChallengeStatus; loginUrl: string | null } | null> {
     const row = await deps.store.get(id);
-    return row ? { status: row.status, loginUrl: row.loginUrl } : null;
+    // Company-scoped (Codex P1): a row owned by another company is reported
+    // NOT FOUND — never leak existence (or the OAuth loginUrl) across tenants.
+    if (!row || row.companyId !== companyId) return null;
+    return { status: row.status, loginUrl: row.loginUrl };
   }
 
-  async function cancel(id: string): Promise<void> {
+  async function cancel(companyId: string, id: string): Promise<void> {
     const row = await deps.store.get(id);
-    if (!row) return;
+    // Cross-tenant cancel is a silent no-op — as if absent (no distinct error
+    // that would leak existence), and NEVER terminate another company's child.
+    if (!row || row.companyId !== companyId) return;
     if (row.pid != null) deps.terminate(row.pid, row.pgid);
     await deps.store.remove(id);
   }

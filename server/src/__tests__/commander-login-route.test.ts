@@ -84,6 +84,8 @@ describe("commander-login routes (Plan 3 T4)", () => {
     const ok = await request(makeApp()).get("/api/companies/c1/internal-agent/commander-login/ch-1");
     expect(ok.status).toBe(200);
     expect(ok.body).toEqual({ status: "pending", loginUrl: "https://x" });
+    // Codex P1 #1 — the gated companyId scopes the lookup (cross-tenant → null → 404).
+    expect(mockService.getStatus).toHaveBeenCalledWith("c1", "ch-1");
 
     mockService.getStatus.mockResolvedValueOnce(null);
     const missing = await request(makeApp()).get("/api/companies/c1/internal-agent/commander-login/ch-x");
@@ -94,7 +96,8 @@ describe("commander-login routes (Plan 3 T4)", () => {
     const res = await request(makeApp()).post("/api/companies/c1/internal-agent/commander-login/ch-1/cancel");
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ ok: true });
-    expect(mockService.cancel).toHaveBeenCalledWith("ch-1");
+    // Codex P1 #1 — the gated companyId scopes the cancel (cross-tenant → no-op).
+    expect(mockService.cancel).toHaveBeenCalledWith("c1", "ch-1");
   });
 
   it("cancel is blocked for an agent actor (401)", async () => {

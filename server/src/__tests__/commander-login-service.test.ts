@@ -5,20 +5,27 @@ import {
   type ChallengeRow,
 } from "../services/commander-login.js";
 
-/** In-memory ChallengeStore for lifecycle tests. */
+/**
+ * In-memory ChallengeStore for lifecycle tests. `claim` is synchronous
+ * in-process, so it is atomic by nature — it implements the same
+ * find→decide→remove→insert contract the drizzle store runs under a
+ * transaction + advisory lock.
+ */
 function memStore(): ChallengeStore & { rows: Map<string, ChallengeRow> } {
   const rows = new Map<string, ChallengeRow>();
   return {
     rows,
-    async insert(row) {
+    async claim({ provider, authHome, row, onExisting }) {
+      const existing =
+        [...rows.values()].find(
+          (r) => r.provider === provider && r.authHome === authHome && r.status === "pending",
+        ) ?? null;
+      if (existing) {
+        onExisting({ ...existing }); // throws → abort, nothing inserted
+        rows.delete(existing.id);
+      }
       rows.set(row.id, { ...row });
       return { ...row };
-    },
-    async findPending(provider, authHome) {
-      for (const r of rows.values()) {
-        if (r.provider === provider && r.authHome === authHome && r.status === "pending") return { ...r };
-      }
-      return null;
     },
     async get(id) {
       const r = rows.get(id);
@@ -42,13 +49,24 @@ function fakeRun(pid = 111, pgid = 111) {
   let resolveUrl!: (u: string) => void;
   let rejectUrl!: (e: Error) => void;
   let resolveExit!: (code: number | null) => void;
+  let rejectExit!: (e: Error) => void;
   const urlPromise = new Promise<string>((res, rej) => {
     resolveUrl = res;
     rejectUrl = rej;
   });
-  const exitPromise = new Promise<number | null>((res) => (resolveExit = res));
+  const exitPromise = new Promise<number | null>((res, rej) => {
+    resolveExit = res;
+    rejectExit = rej;
+  });
   const handle = { child: {} as never, pid, pgid, startedAt: new Date(0), terminate: vi.fn() };
-  return { run: { handle, urlPromise, exitPromise, authHome: "/home/.codex" }, resolveUrl, rejectUrl, resolveExit, handle };
+  return {
+    run: { handle, urlPromise, exitPromise, authHome: "/home/.codex" },
+    resolveUrl,
+    rejectUrl,
+    resolveExit,
+    rejectExit,
+    handle,
+  };
 }
 
 function makeService(overrides: Partial<Parameters<typeof createCommanderLoginService>[0]> = {}) {
@@ -86,6 +104,64 @@ describe("commander-login service (Plan 3 T4)", () => {
       status: "pending",
       loginUrl: "https://chatgpt.com/device?code=Z9",
     });
+  });
+
+  it("(a') the pending row is durable BEFORE the child spawns (claim → spawn → pid update)", async () => {
+    // Codex P1 #3 — check-then-act (findPending → spawn → insert) let two
+    // overlapping starts both spawn. The claim must commit the row first,
+    // then spawn, then backfill pid/pgid.
+    const order: string[] = [];
+    const store = memStore();
+    const baseClaim = store.claim.bind(store);
+    store.claim = async (args) => {
+      order.push("claim");
+      return baseClaim(args);
+    };
+    const baseUpdate = store.update.bind(store);
+    store.update = async (id, patch) => {
+      order.push(`update:${Object.keys(patch).sort().join(",")}`);
+      return baseUpdate(id, patch);
+    };
+    const f = fakeRun(888, 888);
+    const svc = createCommanderLoginService({
+      store,
+      resolveAuthHome: () => "/home/.codex",
+      runLogin: () => {
+        order.push("spawn");
+        return f.run;
+      },
+      credentialPresent: async () => true,
+      terminate: vi.fn(),
+      newId: () => "ch-1",
+      env: () => ({}) as never,
+    });
+    const startP = svc.startChallenge({ companyId: "c1", provider: "openai", startedByUserId: "u1" });
+    f.resolveUrl("https://chatgpt.com/device?code=A");
+    await startP;
+    expect(order.slice(0, 3)).toEqual(["claim", "spawn", "update:pgid,pid"]);
+    // At claim time the row had no pid yet; the post-spawn update backfilled it.
+    expect(store.rows.get("ch-1")).toMatchObject({ pid: 888, pgid: 888 });
+  });
+
+  it("(a'') spawn failure marks the already-durable row failed and rethrows", async () => {
+    const store = memStore();
+    const svc = createCommanderLoginService({
+      store,
+      resolveAuthHome: () => "/home/.codex",
+      runLogin: () => {
+        throw new Error("spawn-fail");
+      },
+      credentialPresent: async () => true,
+      terminate: vi.fn(),
+      newId: () => "ch-1",
+      env: () => ({}) as never,
+    });
+    await expect(
+      svc.startChallenge({ companyId: "c1", provider: "openai", startedByUserId: "u1" }),
+    ).rejects.toThrow(/spawn-fail/);
+    const rows = [...store.rows.values()];
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.status).toBe("failed"); // no dangling pending row holding the slot
   });
 
   it("(b) rejects a second start for a DIFFERENT company sharing (provider, authHome)", async () => {
@@ -132,7 +208,7 @@ describe("commander-login service (Plan 3 T4)", () => {
 
   it("(b'') cross-company start is 409 and does NOT kill the other company's child", async () => {
     const f1 = fakeRun(777, 777);
-    const { svc, terminate } = makeService({ runLogin: () => f1.run });
+    const { svc, terminate, store } = makeService({ runLogin: () => f1.run });
     const p1 = svc.startChallenge({ companyId: "c1", provider: "openai", startedByUserId: "u1" });
     f1.resolveUrl("https://chatgpt.com/device?code=A");
     await p1;
@@ -140,6 +216,10 @@ describe("commander-login service (Plan 3 T4)", () => {
       svc.startChallenge({ companyId: "c2", provider: "openai", startedByUserId: "u2" }),
     ).rejects.toMatchObject({ status: 409 });
     expect(terminate).not.toHaveBeenCalled();
+    // The conflicting claim aborted — c1's pending row is untouched, no c2 row.
+    const pending = [...store.rows.values()].filter((r) => r.status === "pending");
+    expect(pending).toHaveLength(1);
+    expect(pending[0]!.companyId).toBe("c1");
   });
 
   it("(c) getStatus → completed on exit code 0 with the credential file present", async () => {
@@ -150,7 +230,7 @@ describe("commander-login service (Plan 3 T4)", () => {
     const { challengeId, completion } = await startP;
     f.resolveExit(0);
     await completion;
-    expect((await svc.getStatus(challengeId))?.status).toBe("completed");
+    expect((await svc.getStatus("c1", challengeId))?.status).toBe("completed");
   });
 
   it("(c') getStatus → failed on exit code 0 but no credential file", async () => {
@@ -161,11 +241,11 @@ describe("commander-login service (Plan 3 T4)", () => {
     const { challengeId, completion } = await startP;
     f.resolveExit(0);
     await completion;
-    expect((await svc.getStatus(challengeId))?.status).toBe("failed");
+    expect((await svc.getStatus("c1", challengeId))?.status).toBe("failed");
   });
 
-  it("(c'') startChallenge rejects + marks failed when the URL never appears", async () => {
-    const f = fakeRun();
+  it("(c'') startChallenge rejects + marks failed + TERMINATES the child when the URL never appears", async () => {
+    const f = fakeRun(999, 999);
     const { svc, store } = makeService({ runLogin: () => f.run });
     const startP = svc.startChallenge({ companyId: "c1", provider: "openai", startedByUserId: "u1" });
     f.rejectUrl(new Error("no-url"));
@@ -173,6 +253,40 @@ describe("commander-login service (Plan 3 T4)", () => {
     // the pending row was finalized failed (not left dangling pending → no false lock)
     const rows = [...store.rows.values()];
     expect(rows.every((r) => r.status !== "pending")).toBe(true);
+    expect(rows.some((r) => r.status === "failed")).toBe(true);
+    // Codex P1 #2 — the child survives URL-discovery failure (holding the
+    // credential home + codex :1455 port) unless we kill it here: the boot
+    // reaper only sweeps `pending` rows, and this row is now `failed`.
+    expect(f.handle.terminate).toHaveBeenCalledTimes(1);
+  });
+
+  it("(c''') URL discovery timeout finalizes as `timeout` (UI treats it like failed) + terminates", async () => {
+    const f = fakeRun();
+    const { svc, store } = makeService({ runLogin: () => f.run });
+    const startP = svc.startChallenge({ companyId: "c1", provider: "openai", startedByUserId: "u1" });
+    f.rejectUrl(new Error("login-url-timeout")); // streaming-login's documented discovery-window rejection
+    await expect(startP).rejects.toThrow(/login-url-timeout/);
+    const rows = [...store.rows.values()];
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.status).toBe("timeout");
+    expect(f.handle.terminate).toHaveBeenCalledTimes(1);
+  });
+
+  it("(c'''') a rejecting exitPromise after URL failure is swallowed (no unhandled rejection)", async () => {
+    const f = fakeRun();
+    let exitHandled = false;
+    const originalCatch = f.run.exitPromise.catch.bind(f.run.exitPromise);
+    (f.run.exitPromise as { catch: unknown }).catch = (fn: (e: unknown) => unknown) => {
+      exitHandled = true;
+      return originalCatch(fn);
+    };
+    const { svc } = makeService({ runLogin: () => f.run });
+    const startP = svc.startChallenge({ companyId: "c1", provider: "openai", startedByUserId: "u1" });
+    f.rejectUrl(new Error("no-url"));
+    await expect(startP).rejects.toThrow(/no-url/);
+    expect(exitHandled).toBe(true); // service attached a no-op catch before throwing
+    f.rejectExit(new Error("exit-after-kill"));
+    await new Promise((r) => setImmediate(r)); // flush — would surface as unhandledRejection otherwise
   });
 
   it("(d) cancel → terminateByPid + record removed", async () => {
@@ -181,9 +295,33 @@ describe("commander-login service (Plan 3 T4)", () => {
     const startP = svc.startChallenge({ companyId: "c1", provider: "openai", startedByUserId: "u1" });
     f.resolveUrl("https://chatgpt.com/device?code=A");
     const { challengeId } = await startP;
-    await svc.cancel(challengeId);
+    await svc.cancel("c1", challengeId);
     expect(terminate).toHaveBeenCalledWith(333, 333);
     expect(store.rows.has(challengeId)).toBe(false);
+  });
+
+  it("(d') CROSS-TENANT cancel is a silent no-op — child NOT terminated, row kept (Codex P1 #1)", async () => {
+    const f = fakeRun(333, 333);
+    const { svc, store, terminate } = makeService({ runLogin: () => f.run });
+    const startP = svc.startChallenge({ companyId: "c1", provider: "openai", startedByUserId: "u1" });
+    f.resolveUrl("https://chatgpt.com/device?code=A");
+    const { challengeId } = await startP;
+    // Founder of company c2 guesses/leaks c1's challenge id.
+    await expect(svc.cancel("c2", challengeId)).resolves.toBeUndefined();
+    expect(terminate).not.toHaveBeenCalled();
+    expect(store.rows.get(challengeId)?.status).toBe("pending"); // login still running
+  });
+
+  it("(d'') CROSS-TENANT getStatus is NOT FOUND — never leaks status or the OAuth loginUrl (Codex P1 #1)", async () => {
+    const f = fakeRun();
+    const { svc } = makeService({ runLogin: () => f.run });
+    const startP = svc.startChallenge({ companyId: "c1", provider: "openai", startedByUserId: "u1" });
+    f.resolveUrl("https://chatgpt.com/device?code=SECRET");
+    const { challengeId } = await startP;
+    expect(await svc.getStatus("c2", challengeId)).toBeNull(); // indistinguishable from absent
+    expect((await svc.getStatus("c1", challengeId))?.loginUrl).toBe(
+      "https://chatgpt.com/device?code=SECRET",
+    );
   });
 
   it("(e) reapOrphans kills every persisted pending child and clears the rows", async () => {

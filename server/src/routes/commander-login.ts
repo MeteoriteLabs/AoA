@@ -61,7 +61,9 @@ export function commanderLoginRoutes(db: Db): Router {
     async (req: Request, res: Response) => {
       const companyId = req.params.companyId as string;
       if (!(await gate(req, res, companyId))) return;
-      const status = await service.getStatus(req.params.id as string);
+      // Company-scoped lookup (Codex P1) — another tenant's challenge id 404s
+      // instead of leaking its status/loginUrl.
+      const status = await service.getStatus(companyId, req.params.id as string);
       if (!status) {
         res.status(404).json({ error: "challenge not found" });
         return;
@@ -75,7 +77,9 @@ export function commanderLoginRoutes(db: Db): Router {
     async (req: Request, res: Response) => {
       const companyId = req.params.companyId as string;
       if (!(await gate(req, res, companyId))) return;
-      await service.cancel(req.params.id as string);
+      // Company-scoped (Codex P1) — a cross-tenant cancel is a silent no-op,
+      // never terminating another company's login child.
+      await service.cancel(companyId, req.params.id as string);
       res.json({ ok: true });
     },
   );

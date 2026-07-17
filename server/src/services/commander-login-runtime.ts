@@ -3,7 +3,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Db } from "@armyofagents/db";
 import { commanderLoginChallenges } from "@armyofagents/db";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { runCodexLogin, resolveSharedCodexHomeDir } from "@armyofagents/adapter-codex-local/server";
 import { runClaudeLoginStreaming, resolveClaudeConfigHome } from "@armyofagents/adapter-claude-local/server";
 import { terminateByPid } from "../utils/terminate-process.js";
@@ -46,37 +46,54 @@ function mapRow(r: typeof commanderLoginChallenges.$inferSelect): ChallengeRow {
   };
 }
 
-function drizzleChallengeStore(db: Db): ChallengeStore {
+/** Exported for tests (commander-login-runtime-store.test.ts). */
+export function drizzleChallengeStore(db: Db): ChallengeStore {
   return {
-    async insert(row) {
-      await db.insert(commanderLoginChallenges).values({
-        id: row.id,
-        companyId: row.companyId,
-        provider: row.provider,
-        authHome: row.authHome,
-        loginUrl: row.loginUrl,
-        pid: row.pid,
-        pgid: row.pgid,
-        status: row.status,
-        startedByUserId: row.startedByUserId,
-        startedAt: row.startedAt,
+    async claim({ provider, authHome, row, onExisting }) {
+      // Atomic single-flight claim (Codex P1): the (provider, auth_home,
+      // status) index is NON-unique, so without mutual exclusion two
+      // overlapping starts both see "no pending row" and both insert.
+      // Serialized by a transaction-scoped advisory lock on the slot key —
+      // same pattern as first-user-bootstrap.ts.
+      return await (
+        db as unknown as { transaction: <T>(fn: (tx: Db) => Promise<T>) => Promise<T> }
+      ).transaction(async (tx) => {
+        await tx.execute(
+          sql`SELECT pg_advisory_xact_lock(hashtext(${`commander-login:${provider}:${authHome}`}))`,
+        );
+        const [existing] = await tx
+          .select()
+          .from(commanderLoginChallenges)
+          .where(
+            and(
+              eq(commanderLoginChallenges.provider, provider),
+              eq(commanderLoginChallenges.authHome, authHome),
+              eq(commanderLoginChallenges.status, "pending"),
+            ),
+          )
+          .orderBy(commanderLoginChallenges.startedAt)
+          .limit(1);
+        if (existing) {
+          // Throws on conflict → transaction rolls back, nothing inserted.
+          onExisting(mapRow(existing));
+          await tx
+            .delete(commanderLoginChallenges)
+            .where(eq(commanderLoginChallenges.id, existing.id));
+        }
+        await tx.insert(commanderLoginChallenges).values({
+          id: row.id,
+          companyId: row.companyId,
+          provider: row.provider,
+          authHome: row.authHome,
+          loginUrl: row.loginUrl,
+          pid: row.pid,
+          pgid: row.pgid,
+          status: row.status,
+          startedByUserId: row.startedByUserId,
+          startedAt: row.startedAt,
+        });
+        return row;
       });
-      return row;
-    },
-    async findPending(provider, authHome) {
-      const [r] = await db
-        .select()
-        .from(commanderLoginChallenges)
-        .where(
-          and(
-            eq(commanderLoginChallenges.provider, provider),
-            eq(commanderLoginChallenges.authHome, authHome),
-            eq(commanderLoginChallenges.status, "pending"),
-          ),
-        )
-        .orderBy(commanderLoginChallenges.startedAt)
-        .limit(1);
-      return r ? mapRow(r) : null;
     },
     async get(id) {
       const [r] = await db
