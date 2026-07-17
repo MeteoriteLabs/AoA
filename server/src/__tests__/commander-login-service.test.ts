@@ -334,4 +334,150 @@ describe("commander-login service (Plan 3 T4)", () => {
     expect(terminate).toHaveBeenCalledWith(444, 444);
     expect([...store.rows.values()].filter((r) => r.status === "pending")).toHaveLength(0);
   });
+
+  it("(f) pid-backfill rejection TERMINATES the surviving child, marks the row failed, and rethrows (Codex P1 follow-on)", async () => {
+    // The atomic claim inserts a durable pending row with pid: null, then the
+    // child spawns, then the pid/pgid backfill runs. If that backfill rejects
+    // (transient DB disconnect) the child is ALREADY alive — holding the shared
+    // credential home + codex :1455 callback port — but the row stays `pending`
+    // with pid: null, which the boot reaper can't kill BY pid. So the service
+    // must terminate the child here-and-now.
+    const f = fakeRun(1234, 1234);
+    const store = memStore();
+    const baseUpdate = store.update.bind(store);
+    store.update = async (id, patch) => {
+      if ("pid" in patch) throw new Error("db-disconnect");
+      return baseUpdate(id, patch);
+    };
+    let exitHandled = false;
+    const originalCatch = f.run.exitPromise.catch.bind(f.run.exitPromise);
+    (f.run.exitPromise as { catch: unknown }).catch = (fn: (e: unknown) => unknown) => {
+      exitHandled = true;
+      return originalCatch(fn);
+    };
+    const svc = createCommanderLoginService({
+      store,
+      resolveAuthHome: () => "/home/.codex",
+      runLogin: () => f.run,
+      credentialPresent: async () => true,
+      terminate: vi.fn(),
+      newId: () => "ch-1",
+      env: () => ({}) as never,
+    });
+    await expect(
+      svc.startChallenge({ companyId: "c1", provider: "openai", startedByUserId: "u1" }),
+    ).rejects.toThrow(/db-disconnect/); // the ORIGINAL backfill error propagates
+    expect(f.handle.terminate).toHaveBeenCalledTimes(1); // child killed → :1455 freed
+    // The row is finalized `failed` — the single-flight slot is released, not
+    // left dangling as a null-pid `pending` row that nothing can clear or kill.
+    const rows = [...store.rows.values()];
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.status).toBe("failed");
+    expect(exitHandled).toBe(true); // exitPromise neutralized before throwing
+    f.rejectExit(new Error("exit-after-kill"));
+    await new Promise((r) => setImmediate(r)); // would surface as unhandledRejection otherwise
+  });
+
+  it("(f') pid-backfill rejection still terminates the child even when the failed-status write ALSO rejects", async () => {
+    // Worst case: the DB is fully unreachable, so both the pid backfill AND the
+    // compensating `failed` status write reject. Cleanup is best-effort — the
+    // terminate (the load-bearing bit that frees the port) must still fire, and
+    // the ORIGINAL error must propagate (the status-write rejection is swallowed).
+    const f = fakeRun(1234, 1234);
+    const store = memStore();
+    const baseUpdate = store.update.bind(store);
+    store.update = async (id, patch) => {
+      if ("pid" in patch) throw new Error("backfill-failed");
+      if (patch.status === "failed") throw new Error("status-write-failed");
+      return baseUpdate(id, patch);
+    };
+    const svc = createCommanderLoginService({
+      store,
+      resolveAuthHome: () => "/home/.codex",
+      runLogin: () => f.run,
+      credentialPresent: async () => true,
+      terminate: vi.fn(),
+      newId: () => "ch-1",
+      env: () => ({}) as never,
+    });
+    await expect(
+      svc.startChallenge({ companyId: "c1", provider: "openai", startedByUserId: "u1" }),
+    ).rejects.toThrow(/backfill-failed/); // original error, NOT the swallowed status-write one
+    expect(f.handle.terminate).toHaveBeenCalledTimes(1); // best-effort cleanup still killed the child
+  });
+
+  it("(g) reapOrphans REMOVES a null-pid pending row (releases the lock) without trying to terminate", async () => {
+    // A crash in the pre-backfill window (or a backfill-failure whose status
+    // write also failed) leaves a durable `pending` row with pid: null. The
+    // reaper can't kill a process it can't identify, but it MUST still clear the
+    // row to free the single-flight slot (otherwise every future login 409s).
+    const store = memStore();
+    const terminate = vi.fn();
+    const svc = createCommanderLoginService({
+      store,
+      resolveAuthHome: () => "/home/.codex",
+      runLogin: () => fakeRun().run,
+      credentialPresent: async () => true,
+      terminate,
+      newId: () => "ch-x",
+      env: () => ({}) as never,
+    });
+    store.rows.set("orphan", {
+      id: "orphan",
+      companyId: "c1",
+      provider: "openai",
+      authHome: "/home/.codex",
+      loginUrl: null,
+      pid: null,
+      pgid: null,
+      status: "pending",
+      startedByUserId: "u1",
+      startedAt: new Date(0),
+    });
+    await svc.reapOrphans();
+    expect(terminate).not.toHaveBeenCalled(); // nothing to kill — pid is null
+    expect(store.rows.has("orphan")).toBe(false); // but the slot is released
+  });
+
+  it("(g') reapOrphans handles a MIXED batch: terminates the pid row, skip-terminates but still removes the null-pid row", async () => {
+    const store = memStore();
+    const terminate = vi.fn();
+    const svc = createCommanderLoginService({
+      store,
+      resolveAuthHome: () => "/home/.codex",
+      runLogin: () => fakeRun().run,
+      credentialPresent: async () => true,
+      terminate,
+      newId: () => "ch-x",
+      env: () => ({}) as never,
+    });
+    store.rows.set("with-pid", {
+      id: "with-pid",
+      companyId: "c1",
+      provider: "openai",
+      authHome: "/home/.codex",
+      loginUrl: null,
+      pid: 4321,
+      pgid: 4321,
+      status: "pending",
+      startedByUserId: "u1",
+      startedAt: new Date(0),
+    });
+    store.rows.set("null-pid", {
+      id: "null-pid",
+      companyId: "c2",
+      provider: "anthropic",
+      authHome: "/home/.claude",
+      loginUrl: null,
+      pid: null,
+      pgid: null,
+      status: "pending",
+      startedByUserId: "u2",
+      startedAt: new Date(0),
+    });
+    await svc.reapOrphans();
+    expect(terminate).toHaveBeenCalledTimes(1);
+    expect(terminate).toHaveBeenCalledWith(4321, 4321);
+    expect([...store.rows.values()].filter((r) => r.status === "pending")).toHaveLength(0);
+  });
 });

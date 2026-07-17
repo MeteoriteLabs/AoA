@@ -167,7 +167,32 @@ export function createCommanderLoginService(deps: CommanderLoginServiceDeps): Co
       await deps.store.update(id, { status: "failed" }).catch(() => {});
       throw err;
     }
-    await deps.store.update(id, { pid: run.handle.pid, pgid: run.handle.pgid });
+    try {
+      await deps.store.update(id, { pid: run.handle.pid, pgid: run.handle.pgid });
+    } catch (err) {
+      // The pid/pgid backfill rejected AFTER the child spawned (transient DB
+      // disconnect). The child SURVIVES — holding the shared credential home
+      // and, for codex, the :1455 callback port — but the row is still `pending`
+      // with pid: null. The boot reaper terminates BY pid, so it can't kill this
+      // process; a same-company retry's `onExisting` also guards on pid != null,
+      // so it would leave this child alive and spawn a SECOND one; a different
+      // company retry gets a permanent 409. Terminate the child NOW, best-effort
+      // — this frees the port even if the compensating status write also fails,
+      // which is the load-bearing part.
+      try {
+        run.handle.terminate();
+      } catch {
+        /* best-effort */
+      }
+      // We throw before wiring the exit finalizer below — keep a rejecting
+      // exitPromise from becoming an unhandled rejection.
+      run.exitPromise.catch(() => {});
+      // Best-effort mark failed so the single-flight slot isn't falsely held; if
+      // this write also rejects we've already freed the port above. Rethrow the
+      // ORIGINAL error (not any cleanup error).
+      await deps.store.update(id, { status: "failed" }).catch(() => {});
+      throw err;
+    }
 
     let loginUrl: string;
     try {
