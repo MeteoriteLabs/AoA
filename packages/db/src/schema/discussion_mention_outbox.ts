@@ -35,6 +35,13 @@ export const discussionMentionOutbox = pgTable(
     hopCount: integer("hop_count").notNull().default(0),
     // 'pending' | 'processing' | 'done' | 'failed'
     status: text("status").notNull().default("pending"),
+    // Owner-lease token for a 'processing' claim (PR #291 round-9 #1). The worker
+    // mints a fresh token when it claims a row; it heartbeats updated_at and marks
+    // the row done/failed only while the token still matches. So if a long
+    // controller participation outlasts the stale window and another worker
+    // reclaims the row (new token), the original worker's heartbeat + terminal
+    // write become no-ops — no double summon, no clobbering the new owner.
+    claimToken: uuid("claim_token"),
     attempts: integer("attempts").notNull().default(0),
     error: text("error"),
     // null = eligible immediately; set by the worker for backoff retry scheduling.

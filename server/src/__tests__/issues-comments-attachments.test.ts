@@ -1000,6 +1000,31 @@ describe("POST /issues/:id/comments — idempotent retry (clientSubmissionId)", 
     expect(mockIssueService.markCommentWakeupsEnqueued).toHaveBeenCalledWith("comment-1");
   });
 
+  it("does NOT stamp wakeupsEnqueuedAt when the wakeup enqueue rejects — so a later retry resumes (round-9 #3)", async () => {
+    // Round-9 #3: the marker must be the LAST step, AFTER the enqueue's durable
+    // completion. If the enqueue promise rejects, the marker must not be stamped
+    // (else a later retry would skip recovery and the summon is lost).
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "todo", assigneeAgentId: null }));
+    mockIssueService.findMentionedAgents.mockResolvedValue([mentionedAgentId]);
+    // A failure INSIDE the enqueue (notifyMentionedHumans is awaited, uncaught)
+    // rejects enqueueIssueCommentWakeups before the marker step is reached.
+    mockIssueService.notifyMentionedHumans.mockRejectedValue(new Error("notify DB down"));
+    mockIssueService.getCommentByClientSubmissionId.mockResolvedValue({
+      ...existingComment,
+      body: "@Beta please take a look",
+      controlEffectsCompletedAt: new Date("2026-07-17T00:00:00Z"),
+      wakeupsEnqueuedAt: null,
+    });
+
+    const res = await request(createApp())
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "@Beta please take a look", clientSubmissionId: submissionId });
+
+    // The request fails loud (not a silent success) and the marker is NOT set.
+    expect(res.status).toBe(500);
+    expect(mockIssueService.markCommentWakeupsEnqueued).not.toHaveBeenCalled();
+  });
+
   it("passes the clientSubmissionId through to addComment on the create path", async () => {
     const app = createApp();
     const res = await request(app)

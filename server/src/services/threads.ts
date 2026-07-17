@@ -331,7 +331,22 @@ export async function processMentions(
   }
 
   if (controllerParticipations.length > 0) {
-    await Promise.allSettled(controllerParticipations);
+    // Round-9 #2: a rejected crew participation must NOT resolve this call
+    // successfully — otherwise the mention-outbox worker marks the row done and
+    // never retries, silently dropping the summon. Await all (so successes still
+    // run), then re-surface any rejections so the caller (outbox worker) can
+    // retry. The outbox enqueues ONE row per mention (per agent), so a retry
+    // re-runs only the failed agent — successes are never re-summoned.
+    const settled = await Promise.allSettled(controllerParticipations);
+    const rejected = settled.filter(
+      (s): s is PromiseRejectedResult => s.status === "rejected",
+    );
+    if (rejected.length > 0) {
+      const reasons = rejected
+        .map((r) => (r.reason instanceof Error ? r.reason.message : String(r.reason)))
+        .join("; ");
+      throw new Error(`processMentions: ${rejected.length} participation(s) failed: ${reasons}`);
+    }
   }
 }
 

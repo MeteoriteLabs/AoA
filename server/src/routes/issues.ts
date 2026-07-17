@@ -538,26 +538,39 @@ export function issueRoutes(db: Db, storage: StorageService) {
     const aoaKinds = await svc
       .resolveAgentKinds([...wakeups.keys()])
       .catch(() => new Map<string, string>());
+    // Round-9 #3: AWAIT the wakeup enqueues (their agent_wakeup_requests rows are
+    // the durable summon) before this function resolves, so a caller that stamps
+    // wakeupsEnqueuedAt after awaiting us records completion only once the rows
+    // are written — not while a fire-and-forget insert is still pending. Errors
+    // are still swallowed per-agent (one bad wakeup must not fail the others /
+    // the request); a persistently-failing individual wakeup is the honest
+    // residual noted for the resume path (no per-agent comment outbox yet).
+    const dispatches: Array<Promise<unknown>> = [];
     for (const [agentId, wakeup] of wakeups.entries()) {
       if (aoaKinds.get(agentId) === "aoa") {
-        svc
-          .enqueueAoaMentionWakeup(issue.companyId, agentId, {
-            source: wakeup?.source,
-            reason: wakeup?.reason,
-            payload: wakeup?.payload,
-          })
-          .catch((err) =>
-            logger.warn(
-              { err, issueId: currentIssue.id, agentId },
-              "failed to enqueue aoa mention wakeup on issue comment",
+        dispatches.push(
+          svc
+            .enqueueAoaMentionWakeup(issue.companyId, agentId, {
+              source: wakeup?.source,
+              reason: wakeup?.reason,
+              payload: wakeup?.payload,
+            })
+            .catch((err) =>
+              logger.warn(
+                { err, issueId: currentIssue.id, agentId },
+                "failed to enqueue aoa mention wakeup on issue comment",
+              ),
             ),
-          );
+        );
       } else {
-        heartbeat
-          .wakeup(agentId, wakeup)
-          .catch((err) => logger.warn({ err, issueId: currentIssue.id, agentId }, "failed to wake agent on issue comment"));
+        dispatches.push(
+          heartbeat
+            .wakeup(agentId, wakeup)
+            .catch((err) => logger.warn({ err, issueId: currentIssue.id, agentId }, "failed to wake agent on issue comment")),
+        );
       }
     }
+    await Promise.allSettled(dispatches);
   }
 
   // Resume any of a replayed/race-lost comment's side effects that the original
@@ -618,7 +631,11 @@ export function issueRoutes(db: Db, storage: StorageService) {
     }
 
     if (!comment.wakeupsEnqueuedAt) {
-      void enqueueIssueCommentWakeups({
+      // Round-9 #3: AWAIT the durable enqueue BEFORE stamping the marker, so a
+      // process exit between the two can't leave wakeupsEnqueuedAt set with the
+      // wakeups never dispatched (a later retry would then skip recovery). The
+      // marker is the LAST thing, after the enqueue promise resolves.
+      await enqueueIssueCommentWakeups({
         issue,
         currentIssue,
         comment,
@@ -1764,8 +1781,11 @@ export function issueRoutes(db: Db, storage: StorageService) {
       },
     });
 
-    // Merge all wakeups from this comment into one enqueue per agent to avoid duplicate runs.
-    void enqueueIssueCommentWakeups({
+    // Merge all wakeups from this comment into one enqueue per agent to avoid
+    // duplicate runs. Round-9 #3: AWAIT the durable enqueue before stamping so
+    // the marker is never set with wakeups still pending (a crash between would
+    // otherwise make a retry skip recovery).
+    await enqueueIssueCommentWakeups({
       issue,
       currentIssue,
       comment,
@@ -1775,8 +1795,6 @@ export function issueRoutes(db: Db, storage: StorageService) {
       reopenFromStatus,
       interruptedRunId,
     });
-    // Stamp wakeup completion (round-7 #3) so a retry skips them — the enqueue
-    // step was reached, so a replay must not re-wake.
     if (clientSubmissionId) await svc.markCommentWakeupsEnqueued(comment.id);
 
     res.status(201).json(comment);
@@ -2033,7 +2051,8 @@ export function issueRoutes(db: Db, storage: StorageService) {
       },
     });
 
-    void enqueueIssueCommentWakeups({
+    // Round-9 #3: await the durable enqueue before stamping the marker.
+    await enqueueIssueCommentWakeups({
       issue,
       currentIssue,
       comment,
@@ -2044,7 +2063,6 @@ export function issueRoutes(db: Db, storage: StorageService) {
       interruptedRunId,
       attachments,
     });
-    // Stamp wakeup completion (round-7 #3) so a retry skips them.
     if (clientSubmissionId) await svc.markCommentWakeupsEnqueued(comment.id);
 
     res.status(201).json({

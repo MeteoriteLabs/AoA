@@ -199,4 +199,27 @@ describe("findMentionedAgents resolves kind='aoa' agents (B1 contract)", () => {
     const out3 = await svc.findMentionedAgents("co-1", "the @memory system is slow");
     expect(out3).toEqual([]);
   });
+
+  // Round-9 #4: the multi-word match must require a boundary AFTER the full name
+  // (the single-word token's terminator semantics) — a longer phrase starting
+  // with the name must NOT wake the agent.
+  it("requires a boundary after a multi-word name — longer phrases do NOT wake it", async () => {
+    const rows = [{ id: "a-mk", name: "Memory Keeper" }];
+    const db: any = { select: () => makeSelectChain(rows) };
+    const svc = issueService(db);
+
+    // Exact name → wakes.
+    expect(await svc.findMentionedAgents("co-1", "hi @Memory Keeper")).toEqual(["a-mk"]);
+    // A continuing word char after the name → NOT a mention of Memory Keeper.
+    expect(await svc.findMentionedAgents("co-1", "hi @Memory Keepers")).toEqual([]);
+    expect(await svc.findMentionedAgents("co-1", "hi @Memory Keeper2")).toEqual([]);
+    expect(await svc.findMentionedAgents("co-1", "hi @Memory Keeperx here")).toEqual([]);
+    // Trailing punctuation IS a valid terminator → wakes.
+    expect(await svc.findMentionedAgents("co-1", "cc @Memory Keeper.")).toEqual(["a-mk"]);
+    expect(await svc.findMentionedAgents("co-1", "cc @Memory Keeper, thanks")).toEqual(["a-mk"]);
+    // A following whitespace-separated word is fine (the name is complete).
+    expect(await svc.findMentionedAgents("co-1", "@Memory Keeper please look")).toEqual(["a-mk"]);
+    // Leading word char before @ (email-like) → NOT a mention.
+    expect(await svc.findMentionedAgents("co-1", "reach foo@Memory Keeper")).toEqual([]);
+  });
 });

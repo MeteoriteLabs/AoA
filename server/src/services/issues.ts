@@ -492,6 +492,11 @@ function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, "\\$&");
 }
 
+/** Escape a string for safe literal use inside a RegExp (round-9 #4). */
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function touchedByUserCondition(companyId: string, userId: string) {
   return sql<boolean>`
     (
@@ -2834,14 +2839,22 @@ export function issueService(db: Db) {
       // Multi-word names ("Memory Keeper") can never appear as a single
       // whitespace-delimited token, so the token pass alone made them
       // unmentionable (review F3, 2026-07-16) — the composer @ pickers offer
-      // exactly these names. Second pass: case-insensitive "@Full Name"
-      // substring for names containing whitespace.
-      const lowerBody = body.toLowerCase();
+      // exactly these names. Second pass: case-insensitive "@Full Name" match
+      // for names containing whitespace. Round-9 #4: require a real mention
+      // BOUNDARY on both sides — the leading \B@ (no word char before @, so
+      // "email@Memory Keeper" is not a mention) AND, after the full name, a
+      // non-name char (end / whitespace / , ! ? . / @) rather than a continuing
+      // name char [^\s@,!?.]. A plain substring `includes` matched any longer
+      // phrase, so "@Memory Keeper" wrongly woke on "@Memory Keepers" /
+      // "@Memory Keeper2". The after-boundary mirrors the single-word token's
+      // terminator set exactly.
       return rows
         .filter((a) => {
           const name = a.name.toLowerCase();
           if (tokens.has(name)) return true;
-          return /\s/.test(name) && lowerBody.includes(`@${name}`);
+          if (!/\s/.test(name)) return false;
+          const re = new RegExp(`\\B@${escapeRegExp(a.name)}(?![^\\s@,!?.])`, "i");
+          return re.test(body);
         })
         .map((a) => a.id);
     },

@@ -1,0 +1,1 @@
+ALTER TABLE "discussion_mention_outbox" ADD COLUMN IF NOT EXISTS "claim_token" uuid;

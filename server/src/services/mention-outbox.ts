@@ -13,7 +13,7 @@
  * lost the summon on any failure.)
  */
 
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { discussionMentionOutbox } from "@armyofagents/db";
 import { logger } from "../middleware/logger.js";
@@ -31,12 +31,26 @@ export type RunMentionsFn = (
   opts?: { hopCount?: number },
 ) => Promise<void>;
 
-/** Rows still 'processing' longer than this are treated as crash-orphaned. */
-const STALE_PROCESSING_MINUTES = 5;
+/**
+ * Rows still 'processing' longer than this are treated as crash-orphaned and may
+ * be reclaimed. Round-9 #1: raised above the CLI idle timeout (30 min) so a
+ * legitimately long controller participation is never reclaimed mid-run — the
+ * worker also heartbeats the claim (below) so an actively-running row never ages
+ * into this window at all; the window is the crash-recovery backstop.
+ */
+const STALE_PROCESSING_MINUTES = 35;
+/** Heartbeat cadence for an in-flight claim (well under the stale window). */
+const HEARTBEAT_MS = 60_000;
 const DEFAULT_MAX_ATTEMPTS = 6;
 const DEFAULT_BATCH_SIZE = 20;
 
-/** Enqueue a summon row. MUST run inside the entry-insert transaction (`tx`). */
+/**
+ * Enqueue summon rows. MUST run inside the entry-insert transaction (`tx`).
+ * Round-9 #2: ONE row PER mention (per agent) — so a rejected crew participation
+ * retries only THAT agent, and agents that already succeeded (their row is
+ * 'done') are never re-summoned (requestParticipation is NOT idempotent per
+ * agent: it unconditionally increments the hop, runs the CLI, and posts a reply).
+ */
 export async function enqueueMentionOutbox(
   tx: Db,
   row: {
@@ -50,13 +64,16 @@ export async function enqueueMentionOutbox(
     hopCount?: number;
   },
 ): Promise<void> {
-  await tx.insert(discussionMentionOutbox).values({
-    companyId: row.companyId,
-    discussionId: row.discussionId,
-    entryId: row.entryId,
-    mentions: row.mentions,
-    hopCount: row.hopCount ?? 0,
-  });
+  if (row.mentions.length === 0) return;
+  await tx.insert(discussionMentionOutbox).values(
+    row.mentions.map((mention) => ({
+      companyId: row.companyId,
+      discussionId: row.discussionId,
+      entryId: row.entryId,
+      mentions: [mention],
+      hopCount: row.hopCount ?? 0,
+    })),
+  );
 }
 
 /** Default summon: lazy-import processMentions to keep its heavy crew-runner
@@ -71,6 +88,8 @@ export interface DrainOpts {
   maxAttempts?: number;
   /** Injectable for tests; defaults to the real processMentions. */
   runMentions?: RunMentionsFn;
+  /** Lease heartbeat cadence override (tests); defaults to HEARTBEAT_MS. */
+  heartbeatMs?: number;
 }
 
 export interface DrainResult {
@@ -86,6 +105,7 @@ interface ClaimedRow {
   mentions: OutboxMention[];
   attempts: number;
   hopCount: number;
+  claimToken: string;
 }
 
 function normalizeMentions(value: unknown): OutboxMention[] {
@@ -98,10 +118,27 @@ function backoffMs(attempts: number): number {
   return Math.min(60_000, 1_000 * 2 ** Math.max(0, attempts - 1));
 }
 
+/** Refresh the lease of a claim THIS worker owns (round-9 #1). No-op if the row
+ * was reclaimed (token changed) or already terminalized. Best-effort. Exported
+ * for the lease integration test. */
+export async function heartbeatClaim(db: Db, id: string, claimToken: string): Promise<void> {
+  await db
+    .update(discussionMentionOutbox)
+    .set({ updatedAt: new Date() })
+    .where(
+      and(
+        eq(discussionMentionOutbox.id, id),
+        eq(discussionMentionOutbox.claimToken, claimToken),
+        eq(discussionMentionOutbox.status, "processing"),
+      ),
+    );
+}
+
 export async function drainMentionOutbox(db: Db, opts: DrainOpts = {}): Promise<DrainResult> {
   const batchSize = Math.max(1, Math.floor(opts.batchSize ?? DEFAULT_BATCH_SIZE));
   const maxAttempts = opts.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
   const runMentions = opts.runMentions ?? defaultRunMentions;
+  const heartbeatMs = Math.max(1, opts.heartbeatMs ?? HEARTBEAT_MS);
 
   // Atomic claim: pending+due OR stale-'processing' (crash reclaim). The
   // conditional UPDATE marks rows 'processing' in the same round-trip that
@@ -117,7 +154,7 @@ export async function drainMentionOutbox(db: Db, opts: DrainOpts = {}): Promise<
         FOR UPDATE SKIP LOCKED
       )
       UPDATE discussion_mention_outbox
-      SET status = 'processing', updated_at = now()
+      SET status = 'processing', updated_at = now(), claim_token = gen_random_uuid()
       WHERE id IN (SELECT id FROM claimed)
       RETURNING
         id,
@@ -126,7 +163,8 @@ export async function drainMentionOutbox(db: Db, opts: DrainOpts = {}): Promise<
         entry_id AS "entryId",
         mentions,
         attempts,
-        hop_count AS "hopCount"
+        hop_count AS "hopCount",
+        claim_token AS "claimToken"
     `),
   );
   const rawRows = Array.isArray(result) ? result : ((result as { rows?: unknown[] })?.rows ?? []);
@@ -140,6 +178,7 @@ export async function drainMentionOutbox(db: Db, opts: DrainOpts = {}): Promise<
       mentions: normalizeMentions(row.mentions),
       attempts: Number(row.attempts ?? 0),
       hopCount: Number(row.hopCount ?? 0),
+      claimToken: String(row.claimToken),
     };
   });
 
@@ -147,14 +186,30 @@ export async function drainMentionOutbox(db: Db, opts: DrainOpts = {}): Promise<
   let failed = 0;
 
   for (const row of claimed) {
+    // Lease heartbeat (round-9 #1): refresh updated_at while runMentions is in
+    // flight — a controller participation CLI run can legitimately outlast the
+    // stale window, and without this another worker would reclaim + double-run.
+    const hb = setInterval(() => {
+      void heartbeatClaim(db, row.id, row.claimToken).catch(() => {});
+    }, heartbeatMs);
+    if (typeof (hb as { unref?: () => void }).unref === "function") (hb as { unref: () => void }).unref();
     try {
       await runMentions(db, row.companyId, row.discussionId, row.entryId, row.mentions, { hopCount: row.hopCount });
+      clearInterval(hb);
+      // Owner-guarded terminal write (round-9 #1): only mark done if we still own
+      // the claim, so a reclaimed original worker can't clobber the new owner.
       await db
         .update(discussionMentionOutbox)
         .set({ status: "done", updatedAt: new Date() })
-        .where(eq(discussionMentionOutbox.id, row.id));
+        .where(
+          and(
+            eq(discussionMentionOutbox.id, row.id),
+            eq(discussionMentionOutbox.claimToken, row.claimToken),
+          ),
+        );
       processed += 1;
     } catch (err) {
+      clearInterval(hb);
       const attempts = row.attempts + 1;
       const terminal = attempts >= maxAttempts;
       await db
@@ -166,9 +221,16 @@ export async function drainMentionOutbox(db: Db, opts: DrainOpts = {}): Promise<
           nextRetryAt: terminal ? null : new Date(Date.now() + backoffMs(attempts)),
           updatedAt: new Date(),
         })
-        .where(eq(discussionMentionOutbox.id, row.id));
+        .where(
+          and(
+            eq(discussionMentionOutbox.id, row.id),
+            eq(discussionMentionOutbox.claimToken, row.claimToken),
+          ),
+        );
       failed += 1;
       log.warn({ err, outboxId: row.id, attempts, terminal }, "mention outbox row failed");
+    } finally {
+      clearInterval(hb);
     }
   }
 

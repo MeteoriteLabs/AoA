@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sql } from "drizzle-orm";
 import { applyPendingMigrations, createDb, type Db } from "@armyofagents/db";
-import { drainMentionOutbox, enqueueMentionOutbox } from "../services/mention-outbox.js";
+import { drainMentionOutbox, enqueueMentionOutbox, heartbeatClaim } from "../services/mention-outbox.js";
 import { discussionService } from "../services/discussions.js";
 
 // PR #291 round-6 (#3) — the transactional @mention outbox must guarantee the
@@ -204,10 +204,11 @@ describe.skipIf(process.platform === "win32")("mention outbox (real DB)", () => 
       entryId,
       mentions: [{ raw: "@Nova", name: "Nova" }],
     });
-    // Simulate a worker that claimed the row then crashed mid-process.
+    // Simulate a worker that claimed the row then crashed mid-process. Past the
+    // 35-min stale window (round-9 #1), it becomes reclaimable.
     await db.execute(sql`
       UPDATE discussion_mention_outbox
-      SET status = 'processing', updated_at = now() - interval '30 minutes'
+      SET status = 'processing', updated_at = now() - interval '40 minutes'
       WHERE entry_id = ${entryId}
     `);
 
@@ -216,6 +217,111 @@ describe.skipIf(process.platform === "win32")("mention outbox (real DB)", () => 
     expect(result.processed).toBe(1);
     expect(runMentions).toHaveBeenCalledTimes(1);
     expect(await outboxStatus(entryId)).toBe("done");
+  });
+
+  // ── Round-9 #1/#2: lease / heartbeat / owner-token / per-mention rows ─────
+  // Clear any pending/processing backlog from earlier tests so `processed`
+  // counts assert on THIS test's rows alone.
+  async function nukeBacklog(): Promise<void> {
+    await db.execute(sql`UPDATE discussion_mention_outbox SET status='done' WHERE status IN ('pending','processing')`);
+  }
+  async function readRow(entryId: string): Promise<{ status: string; claim_token: string | null } | null> {
+    const rows = await db.execute(
+      sql`SELECT status, claim_token FROM discussion_mention_outbox WHERE entry_id = ${entryId}`,
+    );
+    const arr = Array.isArray(rows) ? rows : ((rows as { rows?: unknown[] })?.rows ?? []);
+    return (arr[0] as { status: string; claim_token: string | null } | undefined) ?? null;
+  }
+  async function rowIdFor(entryId: string): Promise<string> {
+    const rows = await db.execute(sql`SELECT id FROM discussion_mention_outbox WHERE entry_id = ${entryId} LIMIT 1`);
+    const arr = Array.isArray(rows) ? rows : ((rows as { rows?: unknown[] })?.rows ?? []);
+    return String((arr[0] as { id: string } | undefined)?.id ?? "");
+  }
+
+  it("a 'processing' claim younger than the stale window is NOT reclaimable; a heartbeat keeps a long claim alive (round-9 #1)", async () => {
+    await nukeBacklog();
+    const entryId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaac1";
+    await enqueueMentionOutbox(db, { companyId, discussionId, entryId, mentions: [{ raw: "@Long", name: "Long" }] });
+    const token = "dddddddd-dddd-4ddd-8ddd-ddddddddddd1";
+    // A live worker's claim, aged near the window but still fresh.
+    await db.execute(sql`
+      UPDATE discussion_mention_outbox
+      SET status = 'processing', claim_token = ${token}, updated_at = now() - interval '34 minutes'
+      WHERE entry_id = ${entryId}
+    `);
+    // 34 min < 35 min window → not reclaimable.
+    let result = await drainMentionOutbox(db, { runMentions: async () => undefined });
+    expect(result.processed).toBe(0);
+    expect((await readRow(entryId))?.status).toBe("processing");
+
+    // A heartbeat (with the owner token) refreshes updated_at → stays alive even
+    // if it would otherwise have aged past the window.
+    await db.execute(sql`UPDATE discussion_mention_outbox SET updated_at = now() - interval '40 minutes' WHERE entry_id = ${entryId}`);
+    await heartbeatClaim(db, await rowIdFor(entryId), token);
+    result = await drainMentionOutbox(db, { runMentions: async () => undefined });
+    expect(result.processed).toBe(0); // refreshed → still not reclaimable
+
+    // A heartbeat with the WRONG token is a no-op (a reclaimed old owner can't
+    // keep the lease alive).
+    await db.execute(sql`UPDATE discussion_mention_outbox SET updated_at = now() - interval '40 minutes' WHERE entry_id = ${entryId}`);
+    await heartbeatClaim(db, await rowIdFor(entryId), "00000000-0000-4000-8000-000000000000");
+    result = await drainMentionOutbox(db, { runMentions: async () => undefined });
+    expect(result.processed).toBe(1); // wrong-token heartbeat didn't refresh → reclaimed
+  });
+
+  it("a reclaimed original worker's completion is a no-op — it cannot clobber the new owner (round-9 #1)", async () => {
+    await nukeBacklog();
+    const entryId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaac2";
+    await enqueueMentionOutbox(db, { companyId, discussionId, entryId, mentions: [{ raw: "@Race", name: "Race" }] });
+    // The runMentions simulates the row being reclaimed by ANOTHER worker mid-run
+    // (its claim_token is rotated). The original worker's terminal write is then
+    // guarded by its now-stale token and must be a no-op.
+    const runMentions = vi.fn(async (_db: any, _c: string, _d: string, e: string) => {
+      await db.execute(sql`UPDATE discussion_mention_outbox SET claim_token = gen_random_uuid() WHERE entry_id = ${e}`);
+    });
+    await drainMentionOutbox(db, { runMentions });
+    // The guarded 'done' write no-ops (token no longer matches) — the row is NOT
+    // clobbered to 'done'; it stays 'processing' for the new owner to finish.
+    expect((await readRow(entryId))?.status).toBe("processing");
+  });
+
+  it("enqueues ONE outbox row PER mention so a failed agent retries without re-summoning the succeeded one (round-9 #2)", async () => {
+    await nukeBacklog();
+    const entryId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaac3";
+    await enqueueMentionOutbox(db, {
+      companyId,
+      discussionId,
+      entryId,
+      mentions: [{ raw: "@Ok", name: "Ok" }, { raw: "@Fail", name: "Fail" }],
+    });
+    // Two rows, one per mention.
+    expect(await countOutbox(entryId, "pending")).toBe(2);
+
+    // @Ok succeeds, @Fail rejects.
+    const runMentions = vi.fn(async (_db: any, _c: string, _d: string, _e: string, mentions: Array<{ name: string }>) => {
+      if (mentions[0]?.name === "Fail") throw new Error("participation rejected");
+    });
+    const first = await drainMentionOutbox(db, { runMentions, maxAttempts: 5 });
+    expect(first.processed).toBe(1); // @Ok done
+    expect(first.failed).toBe(1); // @Fail retried
+
+    // @Ok's row is done and never re-summoned; @Fail's is pending (retry).
+    const rows = await db.execute(sql`SELECT status, mentions FROM discussion_mention_outbox WHERE entry_id = ${entryId}`);
+    const arr = (Array.isArray(rows) ? rows : (rows as any).rows) as Array<{ status: string; mentions: any }>;
+    const byName = new Map(arr.map((r) => [Array.isArray(r.mentions) ? r.mentions[0]?.name : JSON.parse(r.mentions)[0]?.name, r.status]));
+    expect(byName.get("Ok")).toBe("done");
+    expect(byName.get("Fail")).toBe("pending");
+
+    // A second drain (after backoff) with @Fail now succeeding completes it —
+    // and does NOT re-run @Ok (its row is already done).
+    await db.execute(sql`UPDATE discussion_mention_outbox SET next_retry_at = now() - interval '1 minute' WHERE entry_id = ${entryId} AND status = 'pending'`);
+    const okRuns: string[] = [];
+    const runMentions2 = vi.fn(async (_db: any, _c: string, _d: string, _e: string, mentions: Array<{ name: string }>) => {
+      okRuns.push(mentions[0]?.name ?? "");
+    });
+    const second = await drainMentionOutbox(db, { runMentions: runMentions2, maxAttempts: 5 });
+    expect(second.processed).toBe(1);
+    expect(okRuns).toEqual(["Fail"]); // only the failed agent re-ran; @Ok not re-summoned
   });
 
   // ── Attachment provenance binding (round-6 #2 security) ──────────────────
