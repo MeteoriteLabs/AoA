@@ -126,6 +126,19 @@ function asCreator(role: "founder" | "team_lead" | "team_member", heldKeys: stri
   canUserMock.mockImplementation(async (_c: string, _u: string, key: string) => keys.has(key));
 }
 
+/**
+ * Configure an AGENT creator's held permission keys. Both assertCompanyPermission
+ * and the round-14 non-privileged grants floor resolve an agent principal via
+ * access.hasPermission(companyId, "agent", agentId, permissionKey), so the mock
+ * matches on the 4th (permissionKey) argument.
+ */
+function asAgentHolding(...heldKeys: string[]) {
+  const keys = new Set(heldKeys);
+  hasPermissionMock.mockImplementation(
+    async (_c: string, _pt: string, _pid: string, key: string) => keys.has(key),
+  );
+}
+
 function post(db: any, body: Record<string, unknown>, actor: Record<string, unknown> = BOARD_CREATOR) {
   return request(makeApp(db, actor)).post(`/companies/${COMPANY_ID}/invites`).send(body);
 }
@@ -333,6 +346,106 @@ describe("POST /invites — creator-authority clamp (P1)", () => {
         AGENT_ACTOR,
       );
       expect(res.status).toBe(201);
+    });
+  });
+
+  // Codex round-14 P1: the non-privileged grants floor (the "hold users:manage_permissions
+  // AND hold each embedded key" block) ran ONLY for `req.actor.type === "board"`, so an
+  // AGENT actor was EXEMPT. An agent holding just `users:invite` could embed a NON-privileged
+  // grant it does NOT itself hold (agents:create, tasks:assign, tasks:assign_scope) in a
+  // HUMAN invite — the privileged gate never fires for non-privileged keys, and the floor
+  // skipped agents — so the verified-email auto-admit path (approveHumanJoinRequestTx) applied
+  // the grant with no founder review, conferring a capability the agent never held (and, by
+  // inviting an email it controls, bootstrapping that capability into a human sockpuppet).
+  // The floor now covers agents too, resolving the agent's held keys the SAME way
+  // assertCompanyPermission does (access.hasPermission on the "agent" principal). The
+  // users:manage_permissions prerequisite is applied to agents identically to the board rule
+  // (agents create AGENTS via /api/agents, not via invite grant vectors — no legitimate
+  // agent-invite flow embeds grants without manage_permissions).
+  describe("agent-actor non-privileged grants floor (round-14 P1)", () => {
+    it("403s when an AGENT embeds a NON-privileged grant (agents:create) it does not hold", async () => {
+      // Holds users:invite (passes assertCompanyPermission) + users:manage_permissions
+      // (passes the delegate prerequisite) but NOT agents:create → the hold-each-key floor
+      // must refuse. RED before the fix: the board-only floor skipped agents entirely → 201.
+      asAgentHolding("users:invite", "users:manage_permissions");
+      const res = await post(
+        makeCreateDb(createdRow),
+        {
+          allowedJoinTypes: "human",
+          defaultsPayload: {
+            teamInvite: { email: "sock@evil.com", role: "team_member" },
+            human: { grants: [{ permissionKey: "agents:create" }] },
+          },
+        },
+        AGENT_ACTOR,
+      );
+      expect(res.status).toBe(403);
+    });
+
+    it("403s when an AGENT embeds tasks:assign it does not hold", async () => {
+      asAgentHolding("users:invite", "users:manage_permissions"); // NOT tasks:assign
+      const res = await post(
+        makeCreateDb(createdRow),
+        {
+          allowedJoinTypes: "human",
+          defaultsPayload: {
+            teamInvite: { email: "sock@evil.com", role: "team_member" },
+            human: { grants: [{ permissionKey: "tasks:assign" }] },
+          },
+        },
+        AGENT_ACTOR,
+      );
+      expect(res.status).toBe(403);
+    });
+
+    it("403s when an AGENT embeds a grant WITHOUT holding users:manage_permissions", async () => {
+      // Holds the embedded key (tasks:assign) but not the manage_permissions prerequisite —
+      // matches the board rule: manage_permissions is required to embed ANY grant.
+      asAgentHolding("users:invite", "tasks:assign");
+      const res = await post(
+        makeCreateDb(createdRow),
+        {
+          allowedJoinTypes: "human",
+          defaultsPayload: {
+            teamInvite: { email: "ada@x.com", role: "team_member" },
+            human: { grants: [{ permissionKey: "tasks:assign" }] },
+          },
+        },
+        AGENT_ACTOR,
+      );
+      expect(res.status).toBe(403);
+    });
+
+    it("allows an AGENT holding users:manage_permissions + the embedded key to delegate it", async () => {
+      asAgentHolding("users:invite", "users:manage_permissions", "tasks:assign");
+      const res = await post(
+        makeCreateDb(createdRow),
+        {
+          allowedJoinTypes: "human",
+          defaultsPayload: {
+            teamInvite: { email: "ada@x.com", role: "team_member" },
+            human: { grants: [{ permissionKey: "tasks:assign" }] },
+          },
+        },
+        AGENT_ACTOR,
+      );
+      expect(res.status).toBe(201);
+    });
+
+    it("403s when an AGENT embeds an unheld NON-privileged grant in the AGENT vector too", async () => {
+      asAgentHolding("users:invite", "users:manage_permissions"); // NOT agents:create
+      const res = await post(
+        makeCreateDb(createdRow),
+        {
+          allowedJoinTypes: "both",
+          defaultsPayload: {
+            teamInvite: { email: "sock@evil.com", role: "team_member" },
+            agent: { grants: [{ permissionKey: "agents:create" }] },
+          },
+        },
+        AGENT_ACTOR,
+      );
+      expect(res.status).toBe(403);
     });
   });
 });

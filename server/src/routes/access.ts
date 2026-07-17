@@ -23,7 +23,7 @@ import {
   updateMemberPermissionsSchema,
   updateUserCompanyAccessSchema
 } from "@armyofagents/shared";
-import type { DeploymentExposure, DeploymentMode } from "@armyofagents/shared";
+import type { DeploymentExposure, DeploymentMode, PermissionKey } from "@armyofagents/shared";
 import {
   forbidden,
   conflict,
@@ -1722,39 +1722,64 @@ export function accessRoutes(
         }
       }
 
-      // Non-privileged grants floor (unchanged from round-5): a non-founder BOARD
-      // creator must hold `users:manage_permissions` to embed ANY permission
-      // grant, and can NEVER embed a key they do not themselves hold. Privileged
-      // payloads are already refused above regardless of caller type, so this
-      // floor now only governs NON-privileged grants. Agents and local_implicit
-      // are unaffected here, exactly as before.
-      if (req.actor.type === "board" && !isLocalImplicit(req) && req.actor.userId && rawDefaults) {
-        const creatorId = req.actor.userId;
-        const { role: creatorRole } = await team.getUserRole(companyId, creatorId);
-        const creatorIsFounder = creatorRole === "founder"; // getUserRole maps instance_admin → founder
+      // Non-privileged grants floor (round-5 → extended round-14): a NON-FOUNDER
+      // creator — board user OR agent — must hold `users:manage_permissions` to
+      // embed ANY permission grant, and can NEVER embed a key it does not itself
+      // hold. Privileged payloads are already refused above regardless of caller
+      // type, so this floor now only governs NON-privileged grants (agents:create,
+      // tasks:assign, tasks:assign_scope, …).
+      //
+      // Round-14 P1: this floor previously ran ONLY for `req.actor.type === "board"`,
+      // so an AGENT holding just `users:invite` was EXEMPT — it could embed a
+      // non-privileged grant it did NOT hold in a HUMAN invite, and the
+      // verified-email auto-admit sink (approveHumanJoinRequestTx) would apply it
+      // VERBATIM with no founder review, conferring a capability the agent never
+      // held (and, by inviting an email it controls, bootstrapping that capability
+      // into a human sockpuppet). The floor now covers agents too. The creator's
+      // held permissions are resolved the SAME way assertCompanyPermission
+      // authorizes each actor: board users via access.canUser (which includes the
+      // instance-admin bypass), agents via access.hasPermission on the "agent"
+      // principal. Agents are never founders (no founder userId), matching the
+      // privileged gate above; local_implicit (loopback-trusted board) keeps full
+      // capability and is unaffected.
+      //
+      // users:manage_permissions prerequisite for agents: applied identically to
+      // the board rule. Agents create AGENTS via /api/agents, never via invite
+      // grant vectors, so no legitimate agent-invite flow embeds grants without
+      // manage_permissions — an agent must hold manage_permissions to delegate at
+      // all, AND hold each embedded key.
+      if (rawDefaults && !isLocalImplicit(req)) {
+        let creatorIsFounder = false;
+        // Resolver mirroring assertCompanyPermission's per-actor authorization.
+        let holdsKey: ((key: PermissionKey) => Promise<boolean>) | null = null;
 
-        if (!creatorIsFounder) {
+        if (req.actor.type === "board" && req.actor.userId) {
+          const creatorId = req.actor.userId;
+          const { role: creatorRole } = await team.getUserRole(companyId, creatorId);
+          creatorIsFounder = creatorRole === "founder"; // getUserRole maps instance_admin → founder
+          holdsKey = (key) => access.canUser(companyId, creatorId, key);
+        } else if (req.actor.type === "agent" && req.actor.agentId) {
+          const creatorAgentId = req.actor.agentId;
+          // Agents are never founders; resolve held grants exactly as
+          // assertCompanyPermission does for an agent principal.
+          holdsKey = (key) =>
+            access.hasPermission(companyId, "agent", creatorAgentId, key);
+        }
+
+        if (holdsKey && !creatorIsFounder) {
           const embeddedGrants = [
             ...grantsFromDefaults(rawDefaults, "human"),
             ...grantsFromDefaults(rawDefaults, "agent"),
           ];
           if (embeddedGrants.length > 0) {
-            const canDelegateGrants = await access.canUser(
-              companyId,
-              creatorId,
-              "users:manage_permissions",
-            );
+            const canDelegateGrants = await holdsKey("users:manage_permissions");
             if (!canDelegateGrants) {
               throw forbidden(
                 "You need users:manage_permissions to embed permission grants in an invite",
               );
             }
             for (const grant of embeddedGrants) {
-              const creatorHoldsKey = await access.canUser(
-                companyId,
-                creatorId,
-                grant.permissionKey,
-              );
+              const creatorHoldsKey = await holdsKey(grant.permissionKey);
               if (!creatorHoldsKey) {
                 throw forbidden(
                   `You cannot grant a permission you do not hold: ${grant.permissionKey}`,
