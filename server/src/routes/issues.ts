@@ -542,10 +542,12 @@ export function issueRoutes(db: Db, storage: StorageService) {
     // the durable summon) before this function resolves, so a caller that stamps
     // wakeupsEnqueuedAt after awaiting us records completion only once the rows
     // are written — not while a fire-and-forget insert is still pending. Errors
-    // are still swallowed per-agent (one bad wakeup must not fail the others /
-    // the request); a persistently-failing individual wakeup is the honest
-    // residual noted for the resume path (no per-agent comment outbox yet).
-    const dispatches: Array<Promise<unknown>> = [];
+    // are swallowed per-agent (one bad wakeup must not fail the others / the
+    // request), but round-13 #1: we now COUNT failures and return them so the
+    // claim-gated caller can release the marker when NO durable wakeup landed
+    // (otherwise a fully-failed dispatch resolves normally, the marker stays set,
+    // and every retry skips → the agent is never woken).
+    const dispatches: Array<Promise<{ ok: boolean }>> = [];
     for (const [agentId, wakeup] of wakeups.entries()) {
       if (aoaKinds.get(agentId) === "aoa") {
         dispatches.push(
@@ -555,22 +557,29 @@ export function issueRoutes(db: Db, storage: StorageService) {
               reason: wakeup?.reason,
               payload: wakeup?.payload,
             })
-            .catch((err) =>
+            .then(() => ({ ok: true }))
+            .catch((err) => {
               logger.warn(
                 { err, issueId: currentIssue.id, agentId },
                 "failed to enqueue aoa mention wakeup on issue comment",
-              ),
-            ),
+              );
+              return { ok: false };
+            }),
         );
       } else {
         dispatches.push(
           heartbeat
             .wakeup(agentId, wakeup)
-            .catch((err) => logger.warn({ err, issueId: currentIssue.id, agentId }, "failed to wake agent on issue comment")),
+            .then(() => ({ ok: true }))
+            .catch((err) => {
+              logger.warn({ err, issueId: currentIssue.id, agentId }, "failed to wake agent on issue comment");
+              return { ok: false };
+            }),
         );
       }
     }
-    await Promise.allSettled(dispatches);
+    const results = await Promise.all(dispatches);
+    return { attempted: results.length, failed: results.filter((r) => !r.ok).length };
   }
 
   // Dispatch the wakeups for the combined comment+reassign / update PATCH path
@@ -589,7 +598,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
     assigneeChanged: boolean;
     /** Wake issue.assigneeAgentId with issue_review_changes_requested. */
     requestChanges: boolean;
-  }): Promise<void> {
+  }): Promise<{ attempted: number; failed: number }> {
     const { issue, comment, body, actor, assigneeChanged, requestChanges } = input;
     const wakeups = new Map<string, Parameters<typeof heartbeat.wakeup>[1]>();
 
@@ -658,7 +667,10 @@ export function issueRoutes(db: Db, storage: StorageService) {
     const aoaKinds = await svc.resolveAgentKinds([...wakeups.keys()]).catch(() => new Map<string, string>());
     // Round-11 #1: AWAIT the dispatches (their agent_wakeup_requests rows are the
     // durable summon) so a caller stamps the completion marker only after they land.
-    const dispatches: Array<Promise<unknown>> = [];
+    // Round-13 #1: COUNT per-agent failures and return them so the claim-gated
+    // caller releases the marker when no durable wakeup landed (a swallowed
+    // all-failed dispatch would otherwise keep the marker set forever).
+    const dispatches: Array<Promise<{ ok: boolean }>> = [];
     for (const [agentId, wakeup] of wakeups.entries()) {
       if (aoaKinds.get(agentId) === "aoa") {
         dispatches.push(
@@ -668,17 +680,26 @@ export function issueRoutes(db: Db, storage: StorageService) {
               reason: wakeup?.reason,
               payload: wakeup?.payload,
             })
-            .catch((err) => logger.warn({ err, issueId: issue.id, agentId }, "failed to enqueue aoa mention wakeup")),
+            .then(() => ({ ok: true }))
+            .catch((err) => {
+              logger.warn({ err, issueId: issue.id, agentId }, "failed to enqueue aoa mention wakeup");
+              return { ok: false };
+            }),
         );
       } else {
         dispatches.push(
           heartbeat
             .wakeup(agentId, wakeup)
-            .catch((err) => logger.warn({ err, issueId: issue.id, agentId }, "failed to wake agent on issue update")),
+            .then(() => ({ ok: true }))
+            .catch((err) => {
+              logger.warn({ err, issueId: issue.id, agentId }, "failed to wake agent on issue update");
+              return { ok: false };
+            }),
         );
       }
     }
-    await Promise.allSettled(dispatches);
+    const results = await Promise.all(dispatches);
+    return { attempted: results.length, failed: results.filter((r) => !r.ok).length };
   }
 
   // Run a comment's wakeup dispatch behind an atomic CLAIM (PR #291 round-12 #1).
@@ -687,21 +708,37 @@ export function issueRoutes(db: Db, storage: StorageService) {
   // wakeups_enqueued_at = NULL; without a claim they would BOTH dispatch and
   // double-wake the agent. claimCommentWakeupDispatch is a conditional CAS that
   // lets exactly ONE win (it stamps the marker); the loser returns false and
-  // skips. On a dispatch throw the claim is RELEASED (marker → null) so a later
-  // retry can recover. Residual: a hard crash between claim and dispatch leaves
-  // the marker set with wakeups unsent (agent left un-woken); the full fix is a
-  // durable comment-wakeup outbox (mirrors discussion_mention_outbox), deferred.
+  // skips. The claim is RELEASED (marker → null) so a later retry can recover in
+  // TWO cases: (a) the dispatch THROWS, and (b) round-13 #1 — the dispatch
+  // resolves normally but reports failed wakeups. The dispatch helpers swallow
+  // per-agent rejections (Promise.all over per-promise catches) and return
+  // { attempted, failed }; a fully/partly failed dispatch therefore does NOT
+  // throw, so relying on the throw alone left the marker set with no durable
+  // wakeup and every retry skipped. We release whenever failed > 0.
+  //
+  // Granularity (documented residual): on a PARTIAL failure (some wakeups landed,
+  // some didn't) we still release, so a retry re-dispatches ALL of them and
+  // re-wakes the agents whose wakeups already landed. We favour this over the
+  // alternative (keep the marker → the FAILED agents are never woken), because a
+  // lost summon is worse than a duplicate wake. Per-agent dedup (only re-waking
+  // the failed agents) needs a durable comment-wakeup outbox mirroring
+  // discussion_mention_outbox — deferred. A hard crash between the claim and the
+  // dispatch is the other residual the outbox would close.
   async function claimAndDispatchCommentWakeups(
     commentId: string,
-    dispatch: () => Promise<void>,
+    dispatch: () => Promise<{ attempted: number; failed: number }>,
   ): Promise<void> {
     const claimed = await svc.claimCommentWakeupDispatch(commentId);
     if (!claimed) return;
+    let outcome: { attempted: number; failed: number };
     try {
-      await dispatch();
+      outcome = await dispatch();
     } catch (err) {
       await svc.releaseCommentWakeupDispatch(commentId).catch(() => {});
       throw err;
+    }
+    if (outcome.failed > 0) {
+      await svc.releaseCommentWakeupDispatch(commentId).catch(() => {});
     }
   }
 

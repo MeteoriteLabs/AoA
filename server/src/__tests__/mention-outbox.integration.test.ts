@@ -6,6 +6,7 @@ import { sql } from "drizzle-orm";
 import { applyPendingMigrations, createDb, type Db } from "@armyofagents/db";
 import { drainMentionOutbox, enqueueMentionOutbox, heartbeatClaim } from "../services/mention-outbox.js";
 import { discussionService } from "../services/discussions.js";
+import { resolveMentionTargets } from "../services/threads.js";
 
 // PR #291 round-6 (#3) — the transactional @mention outbox must guarantee the
 // summon survives a post-commit failure and a same-key replay, and fire the
@@ -53,6 +54,24 @@ async function outboxStatus(entryId: string): Promise<string | null> {
   return (arr[0] as { status: string } | undefined)?.status ?? null;
 }
 
+/** All resolved mention NAMES across every outbox row for an entry. */
+async function outboxMentionNames(entryId: string): Promise<string[]> {
+  const rows = await db.execute(
+    sql`SELECT mentions FROM discussion_mention_outbox WHERE entry_id = ${entryId}`,
+  );
+  const arr = Array.isArray(rows) ? rows : ((rows as { rows?: unknown[] })?.rows ?? []);
+  const names: string[] = [];
+  for (const r of arr as Array<{ mentions: unknown }>) {
+    const parsed = typeof r.mentions === "string" ? JSON.parse(r.mentions) : r.mentions;
+    if (Array.isArray(parsed)) {
+      for (const m of parsed as Array<{ name?: string }>) {
+        if (typeof m.name === "string") names.push(m.name);
+      }
+    }
+  }
+  return names;
+}
+
 beforeAll(async () => {
   if (process.platform === "win32") return;
   try {
@@ -81,6 +100,12 @@ beforeAll(async () => {
     await db.execute(sql`
       INSERT INTO discussions (id, company_id, title, status, created_by)
       VALUES (${discussionId}, ${companyId}, 'Outbox thread', 'active', 'user:1')
+    `);
+    // Round-13 #2: seed a MULTI-WORD crew agent ("Memory Keeper") + a single-word
+    // one ("Scout") so resolveMentionTargets has a roster to match against.
+    await db.execute(sql`
+      INSERT INTO agents (company_id, name, kind)
+      VALUES (${companyId}, 'Memory Keeper', 'aoa'), (${companyId}, 'Scout', 'aoa')
     `);
   } catch (err) {
     setupError = err;
@@ -420,5 +445,47 @@ describe.skipIf(process.platform === "win32")("mention outbox (real DB)", () => 
     const second = await drainMentionOutbox(db, { runMentions, maxAttempts: 2 });
     expect(second.failed).toBe(1);
     expect(await outboxStatus(entryId)).toBe("failed");
+  });
+});
+
+// PR #291 round-13 #2 — the Discussion picker inserts the FULL label ("@Memory
+// Keeper"), but the outbox enqueue previously ran the naive parseMentions \w+
+// tokenizer, truncating it to "Memory" so the worker never resolved the crew
+// agent. resolveMentionTargets now matches complete multi-word company agent
+// names (mirroring findMentionedAgents) before enqueueing.
+describe.skipIf(process.platform === "win32")("multi-word mention resolution (real DB)", () => {
+  it("resolves a MULTI-WORD crew name the naive tokenizer would truncate", async () => {
+    const names = (await resolveMentionTargets(db, companyId, "@Memory Keeper please look")).map(
+      (m) => m.name,
+    );
+    // The full name is resolved (the raw "@Memory" token alone would never match).
+    expect(names).toContain("Memory Keeper");
+  });
+
+  it("still resolves a single-word name via the token pass", async () => {
+    const names = (await resolveMentionTargets(db, companyId, "@Scout ping")).map((m) => m.name);
+    expect(names).toContain("Scout");
+  });
+
+  it("does NOT match a longer name at the trailing boundary (round-9 #4 parity)", async () => {
+    const names = (await resolveMentionTargets(db, companyId, "@Memory Keepers rock")).map(
+      (m) => m.name,
+    );
+    // "@Memory Keepers" must not resolve to "Memory Keeper".
+    expect(names).not.toContain("Memory Keeper");
+  });
+
+  it("addEntry enqueues an outbox row that carries the RESOLVED multi-word name", async () => {
+    const entry = await discussionService(db).addEntry(
+      companyId,
+      discussionId,
+      { rawContent: "@Memory Keeper can you take this", inputType: "write" },
+      "user:1",
+    );
+    // The committed entry's outbox rows include the full "Memory Keeper" name, so
+    // the worker can resolve + summon the crew agent (exactly-once via one row).
+    const names = await outboxMentionNames(entry.id);
+    expect(names).toContain("Memory Keeper");
+    expect(names.filter((n) => n === "Memory Keeper")).toHaveLength(1);
   });
 });

@@ -49,6 +49,14 @@ vi.mock("../services/threads.js", () => ({
       name: m[1],
     })),
   ),
+  // Round-13 #2: the create route now resolves mentions multi-word-aware. In this
+  // unit harness (no agent roster) it mirrors the parseMentions token behavior.
+  resolveMentionTargets: vi.fn(async (_db: unknown, _companyId: string, text: string) =>
+    [...String(text ?? "").matchAll(/(?:^|\s)@(\w+)/g)].map((m) => ({
+      raw: `@${m[1]}`,
+      name: m[1],
+    })),
+  ),
   processMentions: mockProcessMentions,
   threadService: vi.fn(() => ({})),
 }));

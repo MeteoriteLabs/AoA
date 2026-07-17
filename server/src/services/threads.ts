@@ -176,6 +176,55 @@ export function parseMentions(text: string): Array<{ raw: string; name: string }
   return results;
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Multi-word-aware mention resolution for the discussion summon paths
+ * (PR #291 round-13 #2).
+ *
+ * The naive `parseMentions` tokenizer (`\w+`) truncates a multi-word crew name
+ * such as `@Memory Keeper` to `Memory`, so the outbox worker / `processMentions`
+ * (which exact-matches `agents.name`) can never resolve it and the agent is
+ * never summoned — the Discussion composer picker inserts the FULL label. This
+ * resolver mirrors `issues.ts findMentionedAgents`: it keeps the single-word
+ * token pass (covers users + single-word agents) AND adds a pass that matches
+ * each multi-word company agent name via `\B@<fullname>(?![^\s@,!?.])` — the
+ * same boundary the comment side uses (round-9 #4: `@Memory Keepers` must NOT
+ * match `Memory Keeper`). Returns `{ raw, name }` with the FULL resolved name so
+ * `processMentions`' exact `agents.name` / `authUsers.name` match works unchanged
+ * — no outbox schema change (the row still stores `{ raw, name }`). Only
+ * org + aoa agents are considered (platform agents are not mentionable), exactly
+ * as `findMentionedAgents` does.
+ */
+export async function resolveMentionTargets(
+  db: Db,
+  companyId: string,
+  text: string,
+): Promise<Array<{ raw: string; name: string }>> {
+  const results = parseMentions(text);
+  if (!text.includes("@")) return results;
+  const seen = new Set(results.map((m) => m.name.toLowerCase()));
+
+  const rows = await db
+    .select({ name: agents.name })
+    .from(agents)
+    .where(and(eq(agents.companyId, companyId), inArray(agents.kind, ["org", "aoa"])));
+
+  for (const row of rows) {
+    // Single-word names are already covered by the token pass above.
+    if (!/\s/.test(row.name)) continue;
+    if (seen.has(row.name.toLowerCase())) continue;
+    const re = new RegExp(`\\B@${escapeRegExp(row.name)}(?![^\\s@,!?.])`, "i");
+    if (re.test(text)) {
+      seen.add(row.name.toLowerCase());
+      results.push({ raw: `@${row.name}`, name: row.name });
+    }
+  }
+  return results;
+}
+
 /**
  * Resolve each mention to an agent or user and dispatch:
  * - agent match on a CONTROLLER-PATH thread → run the agent via the controller

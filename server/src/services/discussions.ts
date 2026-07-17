@@ -27,11 +27,12 @@ import { issueService } from "./issues.js";
 import { memoryService } from "./memory.js";
 import { getThreadEventListener } from "./thread-events.js";
 import { threadOrchestrationService } from "./thread-orchestration.js";
-// parseMentions is a pure regex helper (no DB). threads.ts is already in the
-// module graph via live-events.ts → threads.ts, so this static import adds no
-// new load-time cost or cycle (discussions → threads is one-directional;
-// threads.ts does not import discussions.ts).
-import { assertCanPostToThread, parseMentions, type Actor } from "./threads.js";
+// parseMentions is a pure regex helper (no DB); resolveMentionTargets adds a
+// company-agent-roster read for multi-word crew names (round-13 #2). threads.ts
+// is already in the module graph via live-events.ts → threads.ts, so this static
+// import adds no new load-time cost or cycle (discussions → threads is one-
+// directional; threads.ts does not import discussions.ts).
+import { assertCanPostToThread, parseMentions, resolveMentionTargets, type Actor } from "./threads.js";
 import { enqueueMentionOutbox } from "./mention-outbox.js";
 import { deriveThreadStage, loadLatestScopeForThreadStages } from "./thread-scope-versions.js";
 // NOTE: workspace-ttl-sweeper is imported dynamically in `update()` to keep
@@ -364,6 +365,13 @@ async function emitEntryCreatedSideEffects(
     entry.inputType !== "scope_proposal";
 
   let hasCrewMention = false;
+  // NOTE: this best-effort gate keeps the naive parseMentions tokenizer. A
+  // multi-word crew mention ("@Memory Keeper") the SUMMON path resolves (round-13
+  // #2, resolveMentionTargets) is NOT recognized here, so the proactive Adjutant
+  // debounce may redundantly arm on that entry — the documented worst case is an
+  // extra Adjutant wake (double-drive), never a lost summon. Making this
+  // multi-word-aware would add a second per-entry roster query on the hot path;
+  // it is deferred to the comment-wakeup/mention-resolution consolidation.
   const mentionNames = isHuman
     ? parseMentions(entry.rawContent).map((m) => m.name)
     : [];
@@ -1157,7 +1165,16 @@ export function discussionService(db: Db) {
           // summon path for addEntry callers (round-8 #1): the internal writers
           // (post-entry-tool / thread-agent-actions) no longer call processMentions
           // directly, so there is no double-summon.
-          const outboxMentions = parseMentions(data.rawContent ?? "");
+          // Round-13 #2: resolve mentions MULTI-WORD-aware against the company
+          // agent roster (mirrors findMentionedAgents) — the naive parseMentions
+          // \w+ tokenizer truncates "@Memory Keeper" → "Memory", which the outbox
+          // worker (this is now the SOLE summon path) can never resolve, silently
+          // dropping the summon of every multi-word-named crew agent.
+          const outboxMentions = await resolveMentionTargets(
+            tx as unknown as Db,
+            companyId,
+            data.rawContent ?? "",
+          );
           if (outboxMentions.length > 0) {
             // Preserve the { hopCount: 1 } the internal agent writers used to pass
             // directly (round-8 #1): an agent-authored entry's mentions start one

@@ -19,7 +19,7 @@ import { discussionService, logActivity, permissionService } from "../services/i
 import { HttpError } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { assertMemoryApproval, assertRole } from "../middleware/rbac.js";
-import { threadService, parseMentions, processMentions, assertCanPostToThread } from "../services/threads.js";
+import { threadService, resolveMentionTargets, processMentions, assertCanPostToThread } from "../services/threads.js";
 import type { Actor } from "../services/threads.js";
 import { threadScopeVersionService } from "../services/thread-scope-versions.js";
 import { enqueueIssueAssigneeWakeup } from "../services/issue-assignee-wakeup.js";
@@ -625,7 +625,15 @@ export function discussionRoutes(db: Db) {
         // Fire-and-forget; the entry is already committed, so errors must not
         // fail the request. Mirrors the /entries route's processMentions wiring.
         if (discussion.entry) {
-          const mentions = parseMentions(discussion.entry.rawContent ?? "");
+          // Round-13 #2: multi-word-aware resolution so a "@Memory Keeper" in the
+          // OPENING message is summoned (this create path calls processMentions
+          // directly — it does NOT go through the addEntry outbox — so it needs
+          // the same multi-word fix as the outbox enqueue).
+          const mentions = await resolveMentionTargets(
+            db,
+            companyId,
+            discussion.entry.rawContent ?? "",
+          );
           if (mentions.length > 0) {
             processMentions(
               db,

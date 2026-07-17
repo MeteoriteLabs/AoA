@@ -216,6 +216,23 @@ function createAddEntryDb(config: { selects: any[][]; updates?: any[][]; inserts
       const tx: any = {
         update: vi.fn(() => makeUpdateChain()),
         insert: vi.fn(() => makeInsertChain()),
+        // Round-13 #2: addEntry's outbox enqueue resolves mentions multi-word-
+        // aware (resolveMentionTargets), which reads the agent roster inside the
+        // tx. Return an EMPTY roster here (sequence-neutral — does NOT consume the
+        // outer `selects` queue) so resolution falls back to the parseMentions
+        // token pass, exactly as before this change.
+        select: vi.fn(() => {
+          const chain: any = {
+            from: vi.fn(() => chain),
+            where: vi.fn(() => chain),
+            innerJoin: vi.fn(() => chain),
+            leftJoin: vi.fn(() => chain),
+            orderBy: vi.fn(() => chain),
+            limit: vi.fn(() => chain),
+            then: vi.fn((onF: (rows: any[]) => any) => Promise.resolve(onF([]))),
+          };
+          return chain;
+        }),
       };
       return fn(tx);
     }),

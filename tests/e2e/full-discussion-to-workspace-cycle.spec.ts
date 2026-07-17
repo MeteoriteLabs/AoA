@@ -104,6 +104,16 @@ test.describe("full discussion to workspace cycle", () => {
     );
     await waitForAgentEntry(page, "Scout", /validate the user need/i);
 
+    // Round-13 #2 regression guard: a MULTI-WORD crew agent ("Memory Keeper", an
+    // auto-seeded Command Staff role) must be summonable from the composer. The
+    // outbox enqueue (the sole summon path) previously ran the naive \w+ tokenizer,
+    // truncating "@Memory Keeper" → "Memory", so the worker never resolved it and
+    // the agent was silently never summoned. The single-word "@Scout" above did
+    // NOT catch this. Kept SHORT so this never becomes the longest scoped entry
+    // (which would change the derived task title asserted below).
+    await sendThreadMessage(page, "@Memory Keeper note the constraints.");
+    await waitForAgentEntry(page, "Memory Keeper", /reviewed the thread context|contribute/i);
+
     await sendThreadMessage(
       page,
       "Please keep the summary current, then scope this into a task and memory candidate.",

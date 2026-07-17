@@ -1039,6 +1039,56 @@ describe("POST /issues/:id/comments — idempotent retry (clientSubmissionId)", 
     expect(mockIssueService.releaseCommentWakeupDispatch).toHaveBeenCalledWith("comment-1");
   });
 
+  it("RELEASES the wakeup claim when EVERY wakeup dispatch fails silently (round-13 #1)", async () => {
+    // The dispatch helper swallows per-agent rejections (Promise.all over per-
+    // promise catches), so a fully-failed dispatch resolves NORMALLY — it does
+    // not throw. Round-13 #1: the helper now reports { attempted, failed } and the
+    // claim is released when failed > 0, so a retry re-summons. Without this the
+    // marker would stay set and the mentioned agent would never be woken.
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "todo", assigneeAgentId: null }));
+    mockIssueService.findMentionedAgents.mockResolvedValue([mentionedAgentId]);
+    // The wakeup insert rejects — swallowed per-agent, so enqueue does NOT throw.
+    mockHeartbeatService.wakeup.mockRejectedValue(new Error("wakeup DB down"));
+    mockIssueService.getCommentByClientSubmissionId.mockResolvedValue({
+      ...existingComment,
+      body: "@Beta please take a look",
+      controlEffectsCompletedAt: new Date("2026-07-17T00:00:00Z"),
+      wakeupsEnqueuedAt: null,
+    });
+
+    const res = await request(createApp())
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "@Beta please take a look", clientSubmissionId: submissionId });
+
+    // Succeeds via the replay path (the dispatch didn't throw), but the claim is
+    // RELEASED because no durable wakeup landed → a later retry resumes the summon.
+    expect(res.status).toBe(200);
+    expect(mockIssueService.claimCommentWakeupDispatch).toHaveBeenCalledWith("comment-1");
+    expect(mockIssueService.releaseCommentWakeupDispatch).toHaveBeenCalledWith("comment-1");
+  });
+
+  it("KEEPS the wakeup claim when the dispatch fully succeeds (round-13 #1)", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "todo", assigneeAgentId: null }));
+    mockIssueService.findMentionedAgents.mockResolvedValue([mentionedAgentId]);
+    // heartbeat.wakeup resolves (beforeEach default) → the wakeup lands.
+    mockIssueService.getCommentByClientSubmissionId.mockResolvedValue({
+      ...existingComment,
+      body: "@Beta please take a look",
+      controlEffectsCompletedAt: new Date("2026-07-17T00:00:00Z"),
+      wakeupsEnqueuedAt: null,
+    });
+
+    const res = await request(createApp())
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "@Beta please take a look", clientSubmissionId: submissionId });
+
+    expect(res.status).toBe(200);
+    await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
+    expect(mockIssueService.claimCommentWakeupDispatch).toHaveBeenCalledWith("comment-1");
+    // All wakeups landed → the marker is KEPT (no compensating release).
+    expect(mockIssueService.releaseCommentWakeupDispatch).not.toHaveBeenCalled();
+  });
+
   it("passes the clientSubmissionId through to addComment on the create path", async () => {
     const app = createApp();
     const res = await request(app)
