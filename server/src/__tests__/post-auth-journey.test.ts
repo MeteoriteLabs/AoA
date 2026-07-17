@@ -8,6 +8,7 @@ const inv = (companyId: string, over: Partial<PendingInvitation> = {}): PendingI
   inviteId: `i-${companyId}`,
   role: "team_member",
   createdAt: "2026-07-12T00:00:00Z",
+  filed: true,
   ...over,
 });
 

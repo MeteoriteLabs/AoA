@@ -19,10 +19,10 @@ function Row({ label, value }: { label: string; value?: string }) {
 
 /**
  * "You're set up" review step (Stage C / order 8). Summarizes what onboarding
- * created, then finishes: both actions advance SETUP_COMPLETE and call
- * onComplete — the FlowEngine resolves no next step and navigates to the
- * dashboard via onFinished. "Start walkthrough" reserves the Phase-2
- * transition; the walkthrough itself is out of scope here.
+ * created, then finishes: "Finish setup" advances SETUP_COMPLETE and calls
+ * onComplete — the FlowEngine resolves no next step and onFinished lands the
+ * founder in the Lobby (the hub "/"), so the CTA is honest about finishing
+ * setup rather than promising a dashboard.
  */
 export function ReviewStep({ ctx, onComplete }: StepProps) {
   const [summary, setSummary] = useState<Summary>({});
@@ -67,7 +67,10 @@ export function ReviewStep({ ctx, onComplete }: StepProps) {
     <div className="mx-auto max-w-md py-10">
       <h1 className="text-xl font-semibold">You're set up</h1>
       <p className="mt-1 text-sm text-muted-foreground">Review your workspace, then dive in.</p>
-      <div className="mt-6 divide-y divide-border rounded-md border border-border text-sm">
+      <div
+        data-testid="review-summary"
+        className="mt-6 divide-y divide-border rounded-md border border-border text-sm"
+      >
         <Row label="Organization" value={summary.org} />
         <Row label="Environment" value="Local machine — verified" />
         <Row label="Commander" value="Configured & verified" />
@@ -78,14 +81,9 @@ export function ReviewStep({ ctx, onComplete }: StepProps) {
         />
       </div>
       {error && <p className="mt-3 text-xs text-destructive">{error}</p>}
-      <div className="mt-4 flex gap-2">
-        <Button variant="outline" className="flex-1" onClick={() => void finish()} disabled={busy}>
-          Start walkthrough
-        </Button>
-        <Button className="flex-1" onClick={() => void finish()} disabled={busy}>
-          Go to dashboard
-        </Button>
-      </div>
+      <Button className="mt-4 w-full" onClick={() => void finish()} disabled={busy}>
+        Finish setup
+      </Button>
     </div>
   );
 }

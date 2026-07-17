@@ -383,6 +383,11 @@ export type JoinRequestType = (typeof JOIN_REQUEST_TYPES)[number];
 export const JOIN_REQUEST_STATUSES = ["pending_approval", "approved", "rejected"] as const;
 export type JoinRequestStatus = (typeof JOIN_REQUEST_STATUSES)[number];
 
+/** How a join-request approval happened: "founder" (manual board approval) |
+ *  "invite_email_match" (auto-admit — the invitation carried the approval). */
+export const JOIN_REQUEST_APPROVAL_SOURCES = ["founder", "invite_email_match"] as const;
+export type JoinRequestApprovalSource = (typeof JOIN_REQUEST_APPROVAL_SOURCES)[number];
+
 export const ENVIRONMENT_DRIVERS = ["local", "ssh", "sandbox", "plugin"] as const;
 export type EnvironmentDriver = (typeof ENVIRONMENT_DRIVERS)[number];
 

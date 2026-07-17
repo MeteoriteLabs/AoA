@@ -1,7 +1,7 @@
 import { Router, type Request, type Response } from "express";
 import type { Db } from "@armyofagents/db";
 import { authUsers, companyMemberships, joinRequests, invites, companies } from "@armyofagents/db";
-import { and, eq, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import type { PostAuthJourneyResult, PendingInvitation } from "@armyofagents/shared";
 import { resolvePostAuthJourney } from "../services/post-auth-journey.js";
 
@@ -19,7 +19,10 @@ function roleFromInviteDefaults(defaults: Record<string, unknown> | null | undef
  * - `returning` if the user has any active company membership, or if an
  *   instance admin can see an existing company through the global admin bypass.
  * - `invited` if the user has an open, non-rejected human join_request they made
- *   (or, only when their email is verified, one snapshotting their email).
+ *   (or, only when their email is verified, one snapshotting their email), OR —
+ *   tokenless entry — an OPEN company-join invite matching their verified email
+ *   (the user signed in without ever clicking the invite link, so no
+ *   join_request exists yet; finalize claims it).
  * - `founder` otherwise.
  *
  * Verified-email gating reads `authUsers.emailVerified` directly (the session
@@ -87,7 +90,65 @@ export async function getJourneyForUser(
     inviteId: r.inviteId,
     role: roleFromInviteDefaults(r.defaults),
     createdAt: (r.createdAt instanceof Date ? r.createdAt : new Date(r.createdAt as string)).toISOString(),
+    filed: true,
   }));
+
+  // Tokenless invited entry: ALSO detect OPEN company-join invites matching the
+  // caller's VERIFIED email — pre-accept, so no join_request exists yet. Expiry
+  // MUST gate detection here (nothing was accepted yet), unlike filed requests
+  // whose validity was established at token-accept.
+  const openInviteRows =
+    emailVerified && email
+      ? await db
+          .select({
+            companyId: invites.companyId,
+            companyName: companies.name,
+            inviteId: invites.id,
+            createdAt: invites.createdAt,
+            defaults: invites.defaultsPayload,
+          })
+          .from(invites)
+          .innerJoin(companies, eq(companies.id, invites.companyId))
+          .where(
+            and(
+              isNull(invites.acceptedAt),
+              isNull(invites.revokedAt),
+              gt(invites.expiresAt, new Date()),
+              eq(invites.inviteType, "company_join"),
+              inArray(invites.allowedJoinTypes, ["human", "both"]),
+              isNotNull(invites.companyId),
+              // btrim: padded invite emails must match like the admit gate,
+              // which trims both sides before comparing.
+              sql`lower(btrim(${invites.defaultsPayload} -> 'teamInvite' ->> 'email')) = lower(btrim(${email}))`,
+            ),
+          )
+          // Newest first — the merge below keeps the FIRST row per company, so
+          // the surfaced invite matches the one finalize claims (it orders by
+          // desc(createdAt) too; a re-invite may carry a new role).
+          .orderBy(desc(invites.createdAt), invites.companyId)
+      : [];
+
+  // Merge open invites that don't already have a filed request (dedupe by
+  // company — the filed join_request wins, and among open invites the newest
+  // per company wins). For these entries `inviteId` is the INVITE id, not a
+  // join_request id (PendingInvitation's field covers both).
+  for (const r of openInviteRows) {
+    if (!r.companyId) continue;
+    if (pendingInvitations.some((p) => p.companyId === r.companyId)) continue;
+    pendingInvitations.push({
+      companyId: r.companyId,
+      companyName: r.companyName ?? "",
+      inviteId: r.inviteId,
+      role: roleFromInviteDefaults(r.defaults),
+      createdAt: (r.createdAt instanceof Date ? r.createdAt : new Date(r.createdAt as string)).toISOString(),
+      filed: false,
+    });
+  }
+
+  // Deterministic ordering when multiple invitations match.
+  pendingInvitations.sort(
+    (a, b) => a.createdAt.localeCompare(b.createdAt) || a.companyId.localeCompare(b.companyId),
+  );
 
   let returningCompanyIds = memberships.map((membership) => membership.companyId);
   if (returningCompanyIds.length === 0 && args.isInstanceAdmin) {

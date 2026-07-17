@@ -181,6 +181,99 @@ describe("accessService.resendInvite", () => {
     await expect(svc.resendInvite("c1", "nonexistent")).rejects.toThrow("Invite not found");
   });
 
+  it("gives a human-only email-bound invite a fresh 7-day expiry on resend", async () => {
+    const captured: Record<string, unknown>[] = [];
+    const humanInvite = { ...ACTIVE_INVITE, allowedJoinTypes: "human" };
+    const newInvite = { ...humanInvite, id: "inv-2" };
+    const db = createSequenceDb({
+      selects: [[humanInvite]], // defaultsPayload has teamInvite.email
+      updates: [[]],
+      inserts: [[newInvite]],
+    });
+    const origInsert = db.insert;
+    db.insert = (...args: unknown[]) => {
+      const chain = origInsert.call(db, ...args) as Record<string, unknown>;
+      const origValues = chain.values as (...a: unknown[]) => unknown;
+      chain.values = (vals: Record<string, unknown>) => {
+        captured.push(vals);
+        return origValues.call(chain, vals);
+      };
+      return chain as ReturnType<typeof origInsert>;
+    };
+    const svc = accessService(db as any);
+    const before = Date.now();
+    await svc.resendInvite("c1", "inv-1");
+    const after = Date.now();
+
+    expect(captured).toHaveLength(1);
+    const expiresAt = captured[0]!.expiresAt as Date;
+    const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+    expect(expiresAt.getTime()).toBeGreaterThanOrEqual(before + sevenDaysMs);
+    expect(expiresAt.getTime()).toBeLessThanOrEqual(after + sevenDaysMs);
+  });
+
+  it("keeps the 10-minute expiry on resend for 'both' join-type invites even with a bound email", async () => {
+    const captured: Record<string, unknown>[] = [];
+    // ACTIVE_INVITE is allowedJoinTypes: "both" with teamInvite.email set —
+    // the agent-join half is gated only by link secrecy, so no 7-day TTL.
+    const db = createSequenceDb({
+      selects: [[{ ...ACTIVE_INVITE }]],
+      updates: [[]],
+      inserts: [[{ ...ACTIVE_INVITE, id: "inv-2" }]],
+    });
+    const origInsert = db.insert;
+    db.insert = (...args: unknown[]) => {
+      const chain = origInsert.call(db, ...args) as Record<string, unknown>;
+      const origValues = chain.values as (...a: unknown[]) => unknown;
+      chain.values = (vals: Record<string, unknown>) => {
+        captured.push(vals);
+        return origValues.call(chain, vals);
+      };
+      return chain as ReturnType<typeof origInsert>;
+    };
+    const svc = accessService(db as any);
+    const before = Date.now();
+    await svc.resendInvite("c1", "inv-1");
+    const after = Date.now();
+
+    expect(captured).toHaveLength(1);
+    const expiresAt = captured[0]!.expiresAt as Date;
+    const tenMinutesMs = 10 * 60 * 1000;
+    expect(expiresAt.getTime()).toBeGreaterThanOrEqual(before + tenMinutesMs);
+    expect(expiresAt.getTime()).toBeLessThanOrEqual(after + tenMinutesMs);
+  });
+
+  it("keeps the 10-minute expiry on resend for invites without a bound email", async () => {
+    const captured: Record<string, unknown>[] = [];
+    const openInvite = { ...ACTIVE_INVITE, defaultsPayload: { agentMessage: "hi" } };
+    const newInvite = { ...openInvite, id: "inv-2" };
+    const db = createSequenceDb({
+      selects: [[openInvite]],
+      updates: [[]],
+      inserts: [[newInvite]],
+    });
+    const origInsert = db.insert;
+    db.insert = (...args: unknown[]) => {
+      const chain = origInsert.call(db, ...args) as Record<string, unknown>;
+      const origValues = chain.values as (...a: unknown[]) => unknown;
+      chain.values = (vals: Record<string, unknown>) => {
+        captured.push(vals);
+        return origValues.call(chain, vals);
+      };
+      return chain as ReturnType<typeof origInsert>;
+    };
+    const svc = accessService(db as any);
+    const before = Date.now();
+    await svc.resendInvite("c1", "inv-1");
+    const after = Date.now();
+
+    expect(captured).toHaveLength(1);
+    const expiresAt = captured[0]!.expiresAt as Date;
+    const tenMinutesMs = 10 * 60 * 1000;
+    expect(expiresAt.getTime()).toBeGreaterThanOrEqual(before + tenMinutesMs);
+    expect(expiresAt.getTime()).toBeLessThanOrEqual(after + tenMinutesMs);
+  });
+
   it("skips revoking if old invite already revoked", async () => {
     const revokedInvite = { ...ACTIVE_INVITE, revokedAt: new Date() };
     const newInvite = { ...ACTIVE_INVITE, id: "inv-3" };

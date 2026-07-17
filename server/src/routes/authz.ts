@@ -61,11 +61,23 @@ export function getActorInfo(req: Request) {
   };
 }
 
+/**
+ * Non-throwing form of {@link assertCanManageInstanceSettings} — the single
+ * source of truth for "can this actor manage instance settings". The
+ * isInstanceAdmin flag on board actors is computed by the auth middleware from
+ * instance_user_roles (middleware/auth.ts); the local_trusted synthetic board
+ * user (source local_implicit) is always an instance admin.
+ */
+export function canManageInstanceSettings(req: Request): boolean {
+  if (req.actor.type !== "board") return false;
+  return req.actor.source === "local_implicit" || req.actor.isInstanceAdmin === true;
+}
+
 export function assertCanManageInstanceSettings(req: Request): void {
   if (req.actor.type !== "board") {
     throw forbidden("Board access required");
   }
-  if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) {
+  if (canManageInstanceSettings(req)) {
     return;
   }
   throw forbidden("Instance admin access required");

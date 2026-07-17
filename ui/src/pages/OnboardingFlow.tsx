@@ -9,25 +9,7 @@ import { advanceOnboarding, getOnboardingProgress, onboardingApi } from "../api/
 import { FlowEngine } from "../onboarding/FlowEngine";
 import { ONBOARDING_STEPS } from "../onboarding/steps";
 import { OrgStep } from "../onboarding/steps/OrgStep";
-
-/**
- * Terminal state for the invited journey. The real JoinOrg step (request +
- * approval handshake) is deferred; until it lands, an invited user who reaches
- * the end of the built steps sees this instead of being navigated to "/" — which
- * the index gate would re-resolve as `invited` and route straight back here,
- * an infinite loop.
- */
-function InvitedPendingPage() {
-  return (
-    <div className="mx-auto max-w-md py-16 text-center">
-      <h1 className="text-xl font-semibold">Request sent</h1>
-      <p className="mt-2 text-sm text-muted-foreground">
-        Your request to join is awaiting approval from an admin. We'll let you in as soon as it's
-        approved — you can close this tab and check back later.
-      </p>
-    </div>
-  );
-}
+import { InvitedJoinTerminal } from "../onboarding/InvitedJoinTerminal";
 
 /**
  * The onboarding route (Stage B / B7). Wires the FlowEngine with the real
@@ -108,7 +90,7 @@ export function OnboardingFlowPage({ journey }: { journey: OnboardingJourney }) 
   }
 
   if (journey === "invited" && invitedDone) {
-    return <InvitedPendingPage />;
+    return <InvitedJoinTerminal />;
   }
 
   return (

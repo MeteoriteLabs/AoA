@@ -67,6 +67,7 @@ import {
 import { PageTabBar } from "../components/PageTabBar";
 import { ReassignmentDialog } from "../components/team/ReassignmentDialog";
 import { cn } from "../lib/utils";
+import { HUMAN_TITLE_OPTIONS, getTimezoneOptions } from "@/lib/human-profile-constants";
 
 const ROLE_STYLES: Record<UserRole, string> = {
   founder: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300",
@@ -101,60 +102,6 @@ const HUMAN_SOCIAL_LINK_TYPES: HumanSocialLinkType[] = [
   "medium",
   "other",
 ];
-
-const HUMAN_TITLE_OPTIONS = [
-  "Founder",
-  "Co-Founder",
-  "Founder Partner",
-  "Founder Operator",
-  "CEO",
-  "COO",
-  "CTO",
-  "CPO",
-  "Chief of Staff",
-  "General Manager",
-  "Team Lead",
-  "Product Lead",
-  "Engineering Lead",
-  "Design Lead",
-  "Marketing Lead",
-  "Sales Lead",
-  "Customer Success Lead",
-  "Operations Lead",
-  "Finance Lead",
-  "Legal Lead",
-  "People Lead",
-  "Product Manager",
-  "Engineer",
-  "Designer",
-  "Researcher",
-  "Analyst",
-  "Operator",
-  "Advisor",
-] as const;
-
-const FALLBACK_TIMEZONE_OPTIONS = [
-  "UTC",
-  "America/Los_Angeles",
-  "America/Denver",
-  "America/Chicago",
-  "America/New_York",
-  "America/Sao_Paulo",
-  "Europe/London",
-  "Europe/Berlin",
-  "Europe/Paris",
-  "Europe/Amsterdam",
-  "Asia/Dubai",
-  "Asia/Kolkata",
-  "Asia/Singapore",
-  "Asia/Tokyo",
-  "Australia/Sydney",
-] as const;
-
-function getTimezoneOptions(): string[] {
-  const supported = Intl.supportedValuesOf?.("timeZone") ?? [];
-  return Array.from(new Set(["UTC", ...FALLBACK_TIMEZONE_OPTIONS, ...supported])).sort((a, b) => a.localeCompare(b));
-}
 
 const FIELD_CLASS =
   "h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50";

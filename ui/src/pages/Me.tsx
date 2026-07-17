@@ -105,17 +105,22 @@ export function Me() {
           <ArrowLeft className="h-4 w-4" />
           Back
         </button>
-        <button
-          type="button"
-          onClick={() => navigate("/instance/settings")}
-          className={cn(
-            "flex items-center justify-center h-8 w-8 rounded-md text-muted-foreground",
-            "hover:bg-accent hover:text-foreground transition-colors",
-          )}
-          aria-label="Instance settings"
-        >
-          <Settings className="h-4 w-4" />
-        </button>
+        {/* N2: /instance/settings is instance-admin-only — hide the gear for
+            everyone else (default hidden while the profile loads, same as the
+            Lobby sidebar row). */}
+        {profileQuery.data?.isInstanceAdmin === true && (
+          <button
+            type="button"
+            onClick={() => navigate("/instance/settings")}
+            className={cn(
+              "flex items-center justify-center h-8 w-8 rounded-md text-muted-foreground",
+              "hover:bg-accent hover:text-foreground transition-colors",
+            )}
+            aria-label="Instance settings"
+          >
+            <Settings className="h-4 w-4" />
+          </button>
+        )}
       </header>
 
       <main className="flex-1 overflow-auto">

@@ -35,6 +35,9 @@ Polish items the Session-2 audit surfaced but scoped out. All founder-facing, al
 
 ## Track B — Invited-teammate journey (the big deferred piece)
 
+> **STATUS 2026-07-16: IMPLEMENTED** on branch feat/invited-teammate-journey — reframed + built per docs/aoa/plans/2026-07-16-invited-teammate-journey-{scope,plan}.md (guided Human Operating Profile step, auto-admit on verified email match, polling terminal, approval-time seeding). Remaining: live 2nd-account validation + Track D e2e.
+
+
 The core multi-human story. Today the invited path is safely **gated** (Session-2 terminal "pending approval" page) so no one loops — but a teammate can't actually complete a guided join. This builds the real flow. **Requires a 2nd Google account to validate end-to-end.**
 
 Three interlocking parts (all originally Stage D; see HANDOFF §6):
@@ -61,6 +64,9 @@ Three interlocking parts (all originally Stage D; see HANDOFF §6):
 
 ## Track C — In-app CLI login (T-CodexLogin + D8)
 
+> **STATUS 2026-07-16: IMPLEMENTED (ported).** The parallel branch's Plan 3 (encrypted API-key storage, streaming CLI-login runners + URL detector, durable login-challenge lifecycle + boot reaper, founder-gated login routes, terminal-free VerifyStep sign-in, live-QA fixes) was cherry-picked onto `feat/onboarding-auth-reconciled` with the commander_login_challenges migration regenerated as 0172 (byte-identical parity). Remaining: live smoke on the reconciled build.
+
+
 Removes the "drop to a terminal and run `claude login` / `codex login`" step in the Commander-verify gate. Independent of B; slot in anytime.
 
 - **Claude:** `claude login` is currently agent-scoped — needs a pre-agent login variant.
@@ -72,6 +78,9 @@ Removes the "drop to a terminal and run `claude login` / `codex login`" step in 
 ---
 
 ## Track D — e2e coverage (A12)
+
+> **STATUS 2026-07-16: PARTIAL (ported).** The founder e2e suite (happy-path + resume + visual) + the gated test-support reset route were ported from the parallel branch onto `feat/onboarding-auth-reconciled`. The INVITED e2e (auto-admit + consent + pending paths) remains blocked on the mocked-Google second-identity helper — local_trusted e2e has a single synthetic actor, so a second verified-email user cannot exist without it. That helper is the remaining core of A12.
+
 
 Run alongside Track B so the invited journey lands with tests.
 

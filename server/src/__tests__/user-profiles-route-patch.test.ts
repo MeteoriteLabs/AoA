@@ -48,4 +48,39 @@ describe("PATCH /api/user-profile", () => {
       displayName: "Ada Lovelace",
     });
   });
+
+  it("forwards timezone to the upsert", async () => {
+    const db = {};
+    const res = await request(createApp(db))
+      .patch("/api/user-profile")
+      .send({ displayName: "Ada Lovelace", timezone: "Asia/Kolkata" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(profileMocks.upsert).toHaveBeenCalledWith(db, "u1",
+      expect.objectContaining({ timezone: "Asia/Kolkata" }));
+  });
+
+  it("Codex P2: rejects a malformed social link with 400 instead of storing it", async () => {
+    // Was: Array.isArray-only → the malformed link was stored, then silently
+    // dropped by materializeCompanyProfileFromGlobal. Now the route must 400.
+    const res = await request(createApp({}))
+      .patch("/api/user-profile")
+      .send({ socialLinks: [{ type: "website", label: null, url: "https://not a url" }] });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(profileMocks.upsert).not.toHaveBeenCalled();
+  });
+
+  it("forwards valid social links to the upsert (200)", async () => {
+    const db = {};
+    const res = await request(createApp(db))
+      .patch("/api/user-profile")
+      .send({ socialLinks: [{ type: "website", label: null, url: "https://ada.dev" }] });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(profileMocks.upsert).toHaveBeenCalledWith(db, "u1",
+      expect.objectContaining({
+        socialLinks: [{ type: "website", label: null, url: "https://ada.dev" }],
+      }));
+  });
 });

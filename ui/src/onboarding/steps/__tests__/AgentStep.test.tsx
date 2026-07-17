@@ -69,7 +69,9 @@ describe("AgentStep (Stage C / order 7)", () => {
     getConfig.mockResolvedValue({ cliTool: "codex" });
     render(<AgentStep ctx={ctx} onComplete={vi.fn()} onBack={() => {}} />);
     // The founder can SEE what the agent runs on — the question they raised.
-    expect(await screen.findByText(/Codex · gpt-5\.5/)).toBeTruthy();
+    // No hardcoded model name: the server injects its own default at create
+    // time, and copy pinned to a model string drifts.
+    expect(await screen.findByText(/Codex \(your account's default model\)/)).toBeTruthy();
   });
 
   it("keeps Create disabled + offers a retry when the Commander config fails to load", async () => {

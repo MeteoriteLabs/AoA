@@ -1,5 +1,7 @@
 import { Router, type Request, type Response } from "express";
+import { z } from "zod";
 import type { Db } from "@armyofagents/db";
+import { humanSocialLinkSchema } from "@armyofagents/shared";
 import {
   getUserProfile,
   upsertUserProfile,
@@ -35,7 +37,21 @@ export function userProfileRoutes(db: Db): Router {
     }
     if (typeof body.title === "string" || body.title === null) input.title = body.title;
     if (typeof body.bio === "string" || body.bio === null) input.bio = body.bio;
-    if (Array.isArray(body.socialLinks)) input.socialLinks = body.socialLinks as never[];
+    if (typeof body.timezone === "string" || body.timezone === null) input.timezone = body.timezone;
+    // Per-item validation with the shared schema (N4 follow-up): the old
+    // Array.isArray-only check let a malformed link (e.g. "https://not a url")
+    // be stored, only to be silently dropped later by
+    // materializeCompanyProfileFromGlobal — the user was told "saved" while the
+    // link vanished. Reject malformed links up front so the client surfaces the
+    // 400 instead. Defense-in-depth: the client validates with the same schema.
+    if (body.socialLinks !== undefined) {
+      const parsed = z.array(humanSocialLinkSchema).safeParse(body.socialLinks);
+      if (!parsed.success) {
+        res.status(400).json({ error: "Validation error", details: parsed.error.errors });
+        return;
+      }
+      input.socialLinks = parsed.data;
+    }
 
     const profile = await upsertUserProfile(db, actor.userId, input);
     res.json({ profile });

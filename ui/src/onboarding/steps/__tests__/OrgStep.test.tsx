@@ -8,6 +8,10 @@ const createCompany = vi.fn(async (_data: { name: string }) => ({ id: "c1", name
 vi.mock("../../../context/CompanyContext", () => ({
   useCompany: () => ({ createCompany }),
 }));
+const companiesGet = vi.hoisted(() =>
+  vi.fn(async (id: string) => ({ id, name: "Acme Existing" })),
+);
+vi.mock("../../../api/companies", () => ({ companiesApi: { get: companiesGet } }));
 vi.mock("../../../api/onboarding", () => ({
   advanceOnboarding: vi.fn(async () => ({
     completedStates: ["AUTHENTICATED", "PROFILE_SET", "ORGANIZATION_CREATED"],
@@ -128,6 +132,55 @@ describe("OrgStep (Stage C / order 2)", () => {
       journey: "founder",
       requestedState: "ORGANIZATION_CREATED",
     });
+  });
+
+  it("revisited (walk-back) state is read-only: shows the created org's name, no editable field", async () => {
+    const onComplete = vi.fn();
+    render(
+      <OrgStep
+        ctx={{ ...ctx, companyId: "existing-company" }}
+        onComplete={onComplete}
+        onBack={() => {}}
+      />,
+    );
+
+    // The org already exists — an editable empty field here would silently
+    // discard whatever the founder typed (the input was never read).
+    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(screen.getByText(/already created/i)).toBeTruthy();
+    await waitFor(() =>
+      expect(screen.getByTestId("org-revisited-name").textContent).toBe("Acme Existing"),
+    );
+    expect(companiesGet).toHaveBeenCalledWith("existing-company");
+
+    fireEvent.click(screen.getByText("Continue"));
+    await waitFor(() => expect(onComplete).toHaveBeenCalled());
+    expect(createCompany).not.toHaveBeenCalled();
+    expect(advanceOnboarding).toHaveBeenCalledWith({
+      companyId: "existing-company",
+      journey: "founder",
+      requestedState: "ORGANIZATION_CREATED",
+    });
+  });
+
+  it("revisited state surfaces a failed re-advance and re-enables Continue", async () => {
+    (advanceOnboarding as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error("advance blew up"),
+    );
+    const onComplete = vi.fn();
+    render(
+      <OrgStep
+        ctx={{ ...ctx, companyId: "existing-company" }}
+        onComplete={onComplete}
+        onBack={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByText("Continue"));
+    expect(await screen.findByText("advance blew up")).toBeTruthy();
+    expect(onComplete).not.toHaveBeenCalled();
+    expect(
+      (screen.getByText("Continue").closest("button") as HTMLButtonElement).disabled,
+    ).toBe(false);
   });
 });
 

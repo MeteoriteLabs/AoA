@@ -89,4 +89,31 @@ describe("Me page", () => {
     const input = await screen.findByLabelText(/display name/i);
     expect(input).toBeDisabled();
   });
+
+  // ── Instance-settings gear gating (N2) ─────────────────────────────────────
+
+  describe("instance settings gear", () => {
+    it("hides the gear for non-instance-admins", async () => {
+      profileGet.mockResolvedValue({ ...editableProfile(), isInstanceAdmin: false });
+      renderWithProviders(<Me />);
+      // Post-settle marker: the form only renders once the profile resolved.
+      await screen.findByDisplayValue("Alice");
+      expect(screen.queryByRole("button", { name: /instance settings/i })).toBeNull();
+    });
+
+    it("hides the gear while the profile is loading (default hidden)", () => {
+      profileGet.mockReturnValue(new Promise(() => {})); // never resolves
+      renderWithProviders(<Me />);
+      expect(screen.queryByRole("button", { name: /instance settings/i })).toBeNull();
+    });
+
+    it("shows the gear for instance admins and navigates to /instance/settings", async () => {
+      const user = userEvent.setup();
+      profileGet.mockResolvedValue({ ...editableProfile(), isInstanceAdmin: true });
+      renderWithProviders(<Me />);
+      const gear = await screen.findByRole("button", { name: /instance settings/i });
+      await user.click(gear);
+      expect(mockNavigate).toHaveBeenCalledWith("/instance/settings", undefined);
+    });
+  });
 });
