@@ -230,6 +230,19 @@ export function agentLoopService(db: Db, storage?: RuntimeAttachmentStorage) {
       // lease so a reclaimed original owner cannot heartbeat or overwrite status.
       let claimedUserMessageId: string | null = null;
       let claimToken: string | null = null;
+      // Release the durable claim exactly once, owner-token-guarded. Idempotent
+      // (turnFinalized latch) so the success/error/finally paths cooperate.
+      let turnFinalized = false;
+      const finalizeClaim = async (status: "done" | "failed"): Promise<void> => {
+        if (!claimedUserMessageId || !claimToken || turnFinalized) return;
+        turnFinalized = true;
+        try {
+          await convService.finishTurn(claimedUserMessageId, claimToken, status);
+        } catch {
+          // Best-effort: a failed status update leaves the row 'running' until
+          // the staleness window reclaims it — never affects the delivered reply.
+        }
+      };
       try {
         // 1. Get/create active conversation
         const conversation = params.conversationId
@@ -585,14 +598,7 @@ export function agentLoopService(db: Db, storage?: RuntimeAttachmentStorage) {
         // — error-only, empty, or config failure — so a retry can reclaim + re-
         // run (round-2 Retry-after-error recovery). Persist the reply BEFORE
         // marking done so a retry arriving in that window replays, never re-runs.
-        if (claimedUserMessageId && claimToken) {
-          try {
-            await convService.finishTurn(claimedUserMessageId, claimToken, turnProducedReply ? "done" : "failed");
-          } catch {
-            // Best-effort: a failed status update leaves the row 'running' until
-            // the staleness window reclaims it — never affects the delivered reply.
-          }
-        }
+        await finalizeClaim(turnProducedReply ? "done" : "failed");
 
         // Post-turn compaction (graceful: never blocks/raises into the turn).
         try {
@@ -609,13 +615,7 @@ export function agentLoopService(db: Db, storage?: RuntimeAttachmentStorage) {
       } catch (err: any) {
         // Mark the durable claim 'failed' so a retry can reclaim + re-run the
         // turn (#1). Best-effort — never let it mask the original error.
-        if (claimedUserMessageId && claimToken) {
-          try {
-            await convService.finishTurn(claimedUserMessageId, claimToken, "failed");
-          } catch {
-            // swallow: staleness reclaim is the backstop.
-          }
-        }
+        await finalizeClaim("failed");
         yield {
           type: "error",
           message: err?.message ?? "An unexpected error occurred.",
@@ -630,6 +630,13 @@ export function agentLoopService(db: Db, storage?: RuntimeAttachmentStorage) {
             tokenUsage: { inputTokens: 0, outputTokens: 0 },
           },
         };
+      } finally {
+        // Round-11 #3: release the claim on ANY early return that didn't already
+        // finalize it — e.g. the config-absent path yields an error and returns
+        // WITHOUT a finishTurn, which would otherwise leave the row 'running'
+        // until the 35-min stale window and block the user's retries. Idempotent
+        // via the turnFinalized latch (no-op after done/failed).
+        await finalizeClaim("failed");
       }
     },
   };

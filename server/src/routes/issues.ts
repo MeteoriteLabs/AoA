@@ -573,6 +573,114 @@ export function issueRoutes(db: Db, storage: StorageService) {
     await Promise.allSettled(dispatches);
   }
 
+  // Dispatch the wakeups for the combined comment+reassign / update PATCH path
+  // (PR #291 round-11 #1). Builds the same request-changes + assignment + @mention
+  // wakeups the PATCH always fired, but AWAITS their durable enqueue (so a caller
+  // can stamp wakeups_enqueued_at only after the summon rows exist) and is reused
+  // by both the fresh PATCH and its idempotent-replay resume — parity with the
+  // POST comment routes' enqueueIssueCommentWakeups.
+  async function dispatchPatchCommentWakeups(input: {
+    issue: IssueForCommentControl;
+    comment: { id: string; authorAgentId?: string | null } | null;
+    /** Comment body for @mention resolution (empty when this is a pure update). */
+    body: string;
+    actor: ReturnType<typeof getActorInfo>;
+    /** Wake issue.assigneeAgentId with issue_assigned (a reassign happened / was requested). */
+    assigneeChanged: boolean;
+    /** Wake issue.assigneeAgentId with issue_review_changes_requested. */
+    requestChanges: boolean;
+  }): Promise<void> {
+    const { issue, comment, body, actor, assigneeChanged, requestChanges } = input;
+    const wakeups = new Map<string, Parameters<typeof heartbeat.wakeup>[1]>();
+
+    if (requestChanges && comment && issue.assigneeAgentId && shouldDispatchIssueWakeup(issue)) {
+      wakeups.set(issue.assigneeAgentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_review_changes_requested",
+        payload: { issueId: issue.id, commentId: comment.id, mutation: "request_changes" },
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
+        contextSnapshot: {
+          issueId: issue.id,
+          taskId: issue.id,
+          commentId: comment.id,
+          wakeCommentId: comment.id,
+          wakeReason: "issue_review_changes_requested",
+          source: "task.review",
+        },
+      });
+    }
+
+    if (assigneeChanged && issue.assigneeAgentId && issue.status !== "backlog" && shouldDispatchIssueWakeup(issue)) {
+      wakeups.set(issue.assigneeAgentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: { issueId: issue.id, mutation: "update" },
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
+        contextSnapshot: { issueId: issue.id, source: "issue.update" },
+      });
+    }
+
+    if (body && comment) {
+      let mentionedIds: string[] = [];
+      try {
+        mentionedIds = await svc.findMentionedAgents(issue.companyId, body);
+      } catch (err) {
+        logger.warn({ err, issueId: issue.id }, "failed to resolve @-mentions");
+      }
+      for (const mentionedId of mentionedIds) {
+        if (wakeups.has(mentionedId)) continue;
+        if (actor.actorType === "agent" && actor.actorId === mentionedId) continue;
+        if (comment.authorAgentId === mentionedId) continue;
+        wakeups.set(mentionedId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "issue_comment_mentioned",
+          payload: { issueId: issue.id, commentId: comment.id },
+          requestedByActorType: actor.actorType,
+          requestedByActorId: actor.actorId,
+          contextSnapshot: {
+            issueId: issue.id,
+            taskId: issue.id,
+            commentId: comment.id,
+            wakeCommentId: comment.id,
+            wakeReason: "issue_comment_mentioned",
+            source: "comment.mention",
+          },
+        });
+      }
+      await svc.notifyMentionedHumans(issue.companyId, body, issue.id, actor);
+    }
+
+    const aoaKinds = await svc.resolveAgentKinds([...wakeups.keys()]).catch(() => new Map<string, string>());
+    // Round-11 #1: AWAIT the dispatches (their agent_wakeup_requests rows are the
+    // durable summon) so a caller stamps the completion marker only after they land.
+    const dispatches: Array<Promise<unknown>> = [];
+    for (const [agentId, wakeup] of wakeups.entries()) {
+      if (aoaKinds.get(agentId) === "aoa") {
+        dispatches.push(
+          svc
+            .enqueueAoaMentionWakeup(issue.companyId, agentId, {
+              source: wakeup?.source,
+              reason: wakeup?.reason,
+              payload: wakeup?.payload,
+            })
+            .catch((err) => logger.warn({ err, issueId: issue.id, agentId }, "failed to enqueue aoa mention wakeup")),
+        );
+      } else {
+        dispatches.push(
+          heartbeat
+            .wakeup(agentId, wakeup)
+            .catch((err) => logger.warn({ err, issueId: issue.id, agentId }, "failed to wake agent on issue update")),
+        );
+      }
+    }
+    await Promise.allSettled(dispatches);
+  }
+
   // Resume any of a replayed/race-lost comment's side effects that the original
   // request never completed (PR #291 round-7 #2 + #3). Each side effect is gated
   // by its own completion marker so a resume finishes what's missing without
@@ -1240,6 +1348,40 @@ export function issueRoutes(db: Db, storage: StorageService) {
     }
     if (!(await assertAgentRunCheckoutOwnership(req, res, existing))) return;
 
+    // Round-11 #2: EARLY idempotent-replay detection for the combined
+    // comment+reassign PATCH. If this exact submission key already produced a
+    // comment, the ORIGINAL request already applied the reassign + logged
+    // issue.updated — a retry must NOT re-PATCH the task, re-log the update, or
+    // re-fire the reassign. It only RESUMES the comment's wakeups if the original
+    // died before enqueuing them (marker null), mirroring the POST comment routes
+    // (round-9 #3). Detected BEFORE svc.update so the task is never re-mutated.
+    const earlySubmissionKey =
+      typeof req.body.clientSubmissionId === "string" ? req.body.clientSubmissionId : undefined;
+    if (earlySubmissionKey) {
+      const replay = await svc.getCommentByClientSubmissionId(existing.companyId, id, earlySubmissionKey);
+      if (replay) {
+        if (!(replay as { wakeupsEnqueuedAt?: Date | null }).wakeupsEnqueuedAt) {
+          // The original never durably enqueued this comment's wakeups — resume
+          // them (await), then stamp so future retries skip (round-11 #1). Wake
+          // the CURRENTLY-assigned agent when the request targeted a reassign,
+          // plus any @mentions in the comment.
+          const reassignRequested =
+            req.body.assigneeAgentId !== undefined || req.body.assigneeUserId !== undefined;
+          await dispatchPatchCommentWakeups({
+            issue: existing,
+            comment: replay,
+            body: replay.body,
+            actor: getActorInfo(req),
+            assigneeChanged: reassignRequested,
+            requestChanges: false,
+          });
+          await svc.markCommentWakeupsEnqueued(replay.id);
+        }
+        res.json({ ...existing, comment: replay });
+        return;
+      }
+    }
+
     // Strip `comment` and `clientSubmissionId` out of the fields passed to
     // svc.update — they are NOT issue columns (clientSubmissionId is the comment
     // idempotency key, threaded into addComment below; round-10 #2).
@@ -1428,110 +1570,39 @@ export function issueRoutes(db: Db, storage: StorageService) {
 
     const assigneeChanged = assigneeWillChange;
 
-    // Merge all wakeups from this update into one enqueue per agent to avoid duplicate runs.
-    void (async () => {
-      const wakeups = new Map<string, Parameters<typeof heartbeat.wakeup>[1]>();
-
-      if (
-        isRequestChangesTransition &&
-        comment &&
-        issue.assigneeAgentId &&
-        shouldDispatchIssueWakeup(issue)
-      ) {
-        wakeups.set(issue.assigneeAgentId, {
-          source: "automation",
-          triggerDetail: "system",
-          reason: "issue_review_changes_requested",
-          payload: {
-            issueId: issue.id,
-            commentId: comment.id,
-            mutation: "request_changes",
-          },
-          requestedByActorType: actor.actorType,
-          requestedByActorId: actor.actorId,
-          contextSnapshot: {
-            issueId: issue.id,
-            taskId: issue.id,
-            commentId: comment.id,
-            wakeCommentId: comment.id,
-            wakeReason: "issue_review_changes_requested",
-            source: "task.review",
-          },
+    // Wakeup dispatch. For a KEYED comment (composer comment+reassign) the
+    // wakeup enqueue is AWAITED and the wakeups_enqueued_at marker stamped only
+    // after it lands, so a retry that reaches the early-replay check above can
+    // resume it durably (round-11 #1). A race-loser (addComment returned replayed)
+    // resumes only when the winner hasn't stamped yet. Non-keyed PATCHes (pure
+    // status/reassign, request-changes) keep the fire-and-forget dispatch for
+    // response latency.
+    if (comment && typeof commentClientSubmissionId === "string" && !isRequestChangesTransition) {
+      const alreadyEnqueued =
+        commentReplayed && Boolean((comment as { wakeupsEnqueuedAt?: Date | null }).wakeupsEnqueuedAt);
+      if (!alreadyEnqueued) {
+        await dispatchPatchCommentWakeups({
+          issue,
+          comment,
+          body: persistedCommentBody ?? "",
+          actor,
+          assigneeChanged,
+          requestChanges: false,
         });
+        await svc.markCommentWakeupsEnqueued(comment.id);
       }
-
-      if (assigneeChanged && issue.assigneeAgentId && issue.status !== "backlog" && shouldDispatchIssueWakeup(issue)) {
-        wakeups.set(issue.assigneeAgentId, {
-          source: "assignment",
-          triggerDetail: "system",
-          reason: "issue_assigned",
-          payload: { issueId: issue.id, mutation: "update" },
-          requestedByActorType: actor.actorType,
-          requestedByActorId: actor.actorId,
-          contextSnapshot: { issueId: issue.id, source: "issue.update" },
-        });
-      }
-
-      if (persistedCommentBody && comment && !commentReplayed) {
-        let mentionedIds: string[] = [];
-        try {
-          mentionedIds = await svc.findMentionedAgents(issue.companyId, persistedCommentBody);
-        } catch (err) {
-          logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
-        }
-
-        for (const mentionedId of mentionedIds) {
-          if (wakeups.has(mentionedId)) continue;
-          if (actor.actorType === "agent" && actor.actorId === mentionedId) continue;
-          // P3-G: also check the persisted comment's authorAgentId — when an
-          // agent posts via local-board / user / service actor (e.g.
-          // local_trusted curl with no auth), actor.actorType isn't "agent"
-          // and the above check is bypassed, but authorAgentId correctly
-          // identifies the agent.
-          if (comment?.authorAgentId === mentionedId) continue;
-          wakeups.set(mentionedId, {
-            source: "automation",
-            triggerDetail: "system",
-            reason: "issue_comment_mentioned",
-            payload: { issueId: id, commentId: comment.id },
-            requestedByActorType: actor.actorType,
-            requestedByActorId: actor.actorId,
-            contextSnapshot: {
-              issueId: id,
-              taskId: id,
-              commentId: comment.id,
-              wakeCommentId: comment.id,
-              wakeReason: "issue_comment_mentioned",
-              source: "comment.mention",
-            },
-          });
-        }
-
-        // @human mention notifications — see issueService.notifyMentionedHumans for safety contract.
-        await svc.notifyMentionedHumans(issue.companyId, persistedCommentBody, issue.id, actor);
-      }
-
-      const aoaKinds = await svc
-        .resolveAgentKinds([...wakeups.keys()])
-        .catch(() => new Map<string, string>());
-      for (const [agentId, wakeup] of wakeups.entries()) {
-        if (aoaKinds.get(agentId) === "aoa") {
-          svc
-            .enqueueAoaMentionWakeup(issue.companyId, agentId, {
-              source: wakeup?.source,
-              reason: wakeup?.reason,
-              payload: wakeup?.payload,
-            })
-            .catch((err) =>
-              logger.warn({ err, issueId: issue.id, agentId }, "failed to enqueue aoa mention wakeup"),
-            );
-        } else {
-          heartbeat
-            .wakeup(agentId, wakeup)
-            .catch((err) => logger.warn({ err, issueId: issue.id, agentId }, "failed to wake agent on issue update"));
-        }
-      }
-    })();
+    } else {
+      // Fire-and-forget for the non-idempotent paths (request-changes, pure
+      // update/reassign): no submission key, so no durable marker to stamp.
+      void dispatchPatchCommentWakeups({
+        issue,
+        comment: commentReplayed ? null : comment,
+        body: commentReplayed ? "" : (persistedCommentBody ?? ""),
+        actor,
+        assigneeChanged,
+        requestChanges: isRequestChangesTransition,
+      }).catch(() => {});
+    }
 
     res.json({ ...issue, comment });
   });

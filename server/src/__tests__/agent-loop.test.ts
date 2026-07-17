@@ -443,6 +443,24 @@ describe("agentLoopService.chat — idempotent retry (clientSubmissionId)", () =
     );
     expect(cliChat).toHaveBeenCalledTimes(1);
   });
+
+  it("releases the durable claim ('failed') when config is absent after the claim — round-11 #3", async () => {
+    // A keyed send claims the turn, then finds NO internal_agent_config and
+    // returns an error WITHOUT running the CLI. The claim must be released so an
+    // immediate retry can reclaim it — not left 'running' until the 35-min window.
+    getMessageByClientSubmissionId.mockResolvedValue(null); // fresh
+    appendMessage.mockResolvedValueOnce({ id: "user-noconfig" });
+    claimTurn.mockResolvedValue("tok-nc");
+    const svc = agentLoopService(dbWithConfig(null)); // no config row
+
+    const out = await drainWithKey(svc, "sub-noconfig");
+
+    // The CLI never ran; the caller got the not-configured error…
+    expect(cliChat).not.toHaveBeenCalled();
+    expect(out.some((c) => c.type === "error" && /not configured/i.test(c.message))).toBe(true);
+    // …and the claim was released 'failed' (owner-token guarded) so a retry proceeds.
+    expect(finishTurn).toHaveBeenCalledWith("user-noconfig", "tok-nc", "failed");
+  });
 });
 
 // ── Tests ──────────────────────────────────────────────────────────────────

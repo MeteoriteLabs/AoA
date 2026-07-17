@@ -1076,6 +1076,72 @@ describe("PATCH /issues/:id — comment+reassign idempotency (round-10 #2)", () 
     expect(updateArgs).not.toHaveProperty("clientSubmissionId");
     expect(updateArgs).not.toHaveProperty("comment");
   });
+
+  it("does NOT re-PATCH the task or re-log on a same-key comment+reassign Retry (round-11 #2)", async () => {
+    // A completed original: the keyed comment already exists WITH its wakeups
+    // stamped. The Retry must be detected EARLY (before svc.update) and short-
+    // circuit — no second svc.update, no duplicate issue.updated activity, no
+    // duplicate comment.
+    mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId }));
+    mockIssueService.getCommentByClientSubmissionId.mockResolvedValue({
+      id: "comment-9",
+      issueId,
+      companyId,
+      body: "please take this over",
+      authorAgentId: null,
+      wakeupsEnqueuedAt: new Date("2026-07-17T00:00:00Z"),
+    });
+
+    const res = await request(createApp())
+      .patch(`/api/issues/${issueId}`)
+      .send({ comment: "please take this over", assigneeAgentId, clientSubmissionId: "reassign-key-2" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.comment.id).toBe("comment-9");
+    // The task is NOT re-mutated and nothing re-logged / re-inserted.
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: "issue.updated" }),
+    );
+    // Marker already set → wakeups are not resumed (no double-wake).
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("RESUMES the comment's wakeups on a Retry when the marker is NULL — no re-PATCH (round-11 #1)", async () => {
+    // The original committed the comment but died before durably enqueuing its
+    // wakeups (marker null). The Retry resumes them (awaited before stamping) and
+    // never re-mutates the task. No assignee on the issue → isolate the @mention.
+    mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: null }));
+    mockIssueService.findMentionedAgents.mockResolvedValue([mentionedAgentId]);
+    mockIssueService.getCommentByClientSubmissionId.mockResolvedValue({
+      id: "comment-9",
+      issueId,
+      companyId,
+      body: "@Beta please take a look",
+      authorAgentId: null,
+      wakeupsEnqueuedAt: null,
+    });
+
+    const res = await request(createApp())
+      .patch(`/api/issues/${issueId}`)
+      .send({ comment: "@Beta please take a look", clientSubmissionId: "reassign-key-3" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.comment.id).toBe("comment-9");
+    // The task is NOT re-mutated.
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    // Wakeups RESUMED (awaited before the response) + marker stamped.
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      mentionedAgentId,
+      expect.objectContaining({ reason: "issue_comment_mentioned" }),
+    );
+    expect(mockIssueService.markCommentWakeupsEnqueued).toHaveBeenCalledWith("comment-9");
+  });
 });
 
 describe("POST /companies/:companyId/issues agent delegation", () => {
