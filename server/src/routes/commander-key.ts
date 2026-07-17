@@ -59,10 +59,24 @@ export function commanderKeyRoutes(db: Db): Router {
     const { secretId } = await persistCommanderApiKey(
       {
         writeSecret: async (a) => {
+          // The secret name is deterministic per provider ("Commander <provider>
+          // API key"), and secretService.create 409s on an active duplicate. So
+          // a founder who pastes a bad/expired key then retries a corrected one
+          // must ROTATE the existing secret's value (new company_secret_versions
+          // row, same id) rather than re-create it — otherwise the second submit
+          // 409s and the Claude/anthropic onboarding path wedges after one bad
+          // key (Codex P1). The id stays stable, so the bound secret_ref
+          // (version "latest") resolves the rotated value with no rebind.
+          const actorRef = { userId: actor.userId ?? "board", agentId: null };
+          const existing = await secrets.getByName(companyId, a.name);
+          if (existing) {
+            await secrets.rotate(existing.id, { value: a.value }, actorRef);
+            return { secretId: existing.id };
+          }
           const created = (await secrets.create(
             companyId,
             { name: a.name, key: a.key, provider: "local_encrypted", managedMode: "aoa_managed", value: a.value },
-            { userId: actor.userId ?? "board", agentId: null },
+            actorRef,
           )) as { id?: string; secretId?: string };
           const secretId = created.secretId ?? created.id;
           if (!secretId) throw new Error("secret create returned no id");
