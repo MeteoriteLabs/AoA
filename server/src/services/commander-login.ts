@@ -77,7 +77,15 @@ export interface CommanderLoginServiceDeps {
   ) => LoginRunLike;
   /** Provider-specific completion evidence (codex auth.json / claude credential file). */
   credentialPresent: (provider: CommanderLoginProvider, authHome: string) => Promise<boolean>;
-  terminate: (pid: number, pgid: number | null) => void;
+  /**
+   * Kill a login child by pid/pgid. `cancel` (a founder cancelling an in-flight
+   * login in THIS process session) calls it WITHOUT `expected` → unconditional
+   * kill, because the child was spawned by this process and its pid can't have
+   * been reused. `reapOrphans` (BOOT, killing DURABLE rows from a PRIOR process)
+   * passes `expected.startedAt` → the impl verifies the target's OS start time
+   * first, so a reused pid is NOT killed (Codex P1, round 6).
+   */
+  terminate: (pid: number, pgid: number | null, expected?: { startedAt: Date }) => void;
   newId: () => string;
   env: () => NodeJS.ProcessEnv;
   now?: () => Date;
@@ -257,7 +265,12 @@ export function createCommanderLoginService(deps: CommanderLoginServiceDeps): Co
   async function reapOrphans(): Promise<void> {
     const rows = await deps.store.listActive();
     for (const row of rows) {
-      if (row.pid != null) deps.terminate(row.pid, row.pgid);
+      // Identity-verified terminate (Codex P1, round 6): these rows were persisted
+      // by a PRIOR process, so the pid may have been reused after a crash + restart.
+      // Passing `startedAt` makes the terminate impl kill ONLY when the target's OS
+      // start time matches — a reused pid is left untouched. The row is removed
+      // either way (releases the single-flight slot), exactly as before.
+      if (row.pid != null) deps.terminate(row.pid, row.pgid, { startedAt: row.startedAt });
       await deps.store.remove(row.id);
     }
   }

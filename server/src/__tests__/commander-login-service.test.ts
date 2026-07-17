@@ -4,6 +4,7 @@ import {
   type ChallengeStore,
   type ChallengeRow,
 } from "../services/commander-login.js";
+import { terminateByPidIfMatches } from "../utils/terminate-process.js";
 
 /**
  * In-memory ChallengeStore for lifecycle tests. `claim` is synchronous
@@ -324,15 +325,106 @@ describe("commander-login service (Plan 3 T4)", () => {
     );
   });
 
-  it("(e) reapOrphans kills every persisted pending child and clears the rows", async () => {
+  it("(e) reapOrphans terminates each persisted pending child WITH its recorded identity and clears the rows", async () => {
     const f = fakeRun(444, 444);
     const { svc, store, terminate } = makeService({ runLogin: () => f.run });
     const startP = svc.startChallenge({ companyId: "c1", provider: "openai", startedByUserId: "u1" });
     f.resolveUrl("https://chatgpt.com/device?code=A");
     await startP;
+    // Capture the durable row's startedAt before the reaper removes it — the
+    // reaper must forward it so the terminate impl can reject a reused pid.
+    const pendingRow = [...store.rows.values()].find((r) => r.status === "pending")!;
     await svc.reapOrphans();
-    expect(terminate).toHaveBeenCalledWith(444, 444);
+    // Codex P1 round 6: the risky boot path forwards { startedAt } (unlike live
+    // cancel, which passes only pid/pgid).
+    expect(terminate).toHaveBeenCalledWith(444, 444, { startedAt: pendingRow.startedAt });
     expect([...store.rows.values()].filter((r) => r.status === "pending")).toHaveLength(0);
+  });
+
+  // End-to-end reaper behavior wired to the REAL identity-verifying terminate,
+  // with an injected start-time query + kill seam (no real processes). Proves the
+  // PID-reuse guard end to end: decision (kill vs skip) AND row removal.
+  function reaperWiredService(opts: {
+    queryStartTime: (pid: number) => Date | null;
+    kill: (target: number, signal: NodeJS.Signals | number) => void;
+  }) {
+    const store = memStore();
+    const svc = createCommanderLoginService({
+      store,
+      resolveAuthHome: () => "/home/.codex",
+      runLogin: () => fakeRun().run,
+      credentialPresent: async () => true,
+      terminate: (pid, pgid, expected) => {
+        // Live cancel (no `expected`) would kill directly; the reaper always
+        // passes `expected`, so this test only exercises the verified path.
+        if (expected) {
+          terminateByPidIfMatches(pid, pgid, expected, {
+            platform: "linux",
+            kill: opts.kill,
+            queryStartTime: opts.queryStartTime,
+          });
+        }
+      },
+      newId: () => "ch-x",
+      env: () => ({}) as never,
+    });
+    return { svc, store };
+  }
+
+  function seedPendingRow(store: ReturnType<typeof memStore>, startedAt: Date) {
+    store.rows.set("orphan", {
+      id: "orphan",
+      companyId: "c1",
+      provider: "openai",
+      authHome: "/home/.codex",
+      loginUrl: null,
+      pid: 4242,
+      pgid: 4242,
+      status: "pending",
+      startedByUserId: "u1",
+      startedAt,
+    });
+  }
+
+  it("(e2) reaper does NOT kill a REUSED pid (queried start time is later than startedAt) but still removes the row", async () => {
+    const startedAt = new Date("2026-07-17T10:00:00.000Z");
+    const kill = vi.fn();
+    const { svc, store } = reaperWiredService({
+      // The pid now maps to a process that started 60s later → reused after a
+      // crash + restart. Killing it would hit an unrelated victim.
+      queryStartTime: () => new Date(startedAt.getTime() + 60_000),
+      kill,
+    });
+    seedPendingRow(store, startedAt);
+    await svc.reapOrphans();
+    expect(kill).not.toHaveBeenCalled(); // the exact harm avoided
+    expect(store.rows.has("orphan")).toBe(false); // slot still released
+  });
+
+  it("(e3) reaper KILLS the genuine orphan (queried start time matches startedAt) and removes the row", async () => {
+    const startedAt = new Date("2026-07-17T10:00:00.000Z");
+    const kill = vi.fn();
+    const { svc, store } = reaperWiredService({
+      queryStartTime: () => new Date(startedAt.getTime() + 200), // our child, spawned just after
+      kill,
+    });
+    seedPendingRow(store, startedAt);
+    await svc.reapOrphans();
+    expect(kill).toHaveBeenCalledWith(-4242, "SIGKILL"); // group kill of the real orphan
+    expect(store.rows.has("orphan")).toBe(false);
+  });
+
+  it("(e4) reaper does NOT kill when identity is unestablished (query returns null) but still removes the row", async () => {
+    const startedAt = new Date("2026-07-17T10:00:00.000Z");
+    const kill = vi.fn();
+    const { svc, store } = reaperWiredService({
+      queryStartTime: () => null, // process gone / access denied / unparseable
+      kill,
+    });
+    seedPendingRow(store, startedAt);
+    await svc.reapOrphans();
+    expect(kill).not.toHaveBeenCalled(); // conservative: never kill an unverifiable pid
+    expect(store.rows.has("orphan")).toBe(false);
   });
 
   it("(f) pid-backfill rejection TERMINATES the surviving child, marks the row failed, and rethrows (Codex P1 follow-on)", async () => {
@@ -477,7 +569,7 @@ describe("commander-login service (Plan 3 T4)", () => {
     });
     await svc.reapOrphans();
     expect(terminate).toHaveBeenCalledTimes(1);
-    expect(terminate).toHaveBeenCalledWith(4321, 4321);
+    expect(terminate).toHaveBeenCalledWith(4321, 4321, { startedAt: new Date(0) });
     expect([...store.rows.values()].filter((r) => r.status === "pending")).toHaveLength(0);
   });
 });

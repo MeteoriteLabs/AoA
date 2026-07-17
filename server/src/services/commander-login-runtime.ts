@@ -6,7 +6,7 @@ import { commanderLoginChallenges } from "@armyofagents/db";
 import { and, eq, sql } from "drizzle-orm";
 import { runCodexLogin, resolveSharedCodexHomeDir } from "@armyofagents/adapter-codex-local/server";
 import { runClaudeLoginStreaming, resolveClaudeConfigHome } from "@armyofagents/adapter-claude-local/server";
-import { terminateByPid } from "../utils/terminate-process.js";
+import { terminateByPid, terminateByPidIfMatches } from "../utils/terminate-process.js";
 import {
   createCommanderLoginService,
   type ChallengeRow,
@@ -139,7 +139,14 @@ export function buildCommanderLoginService(db: Db): CommanderLoginService {
       const stat = await fs.stat(credentialFile(provider, authHome)).catch(() => null);
       return Boolean(stat?.isFile());
     },
-    terminate: terminateByPid,
+    // LIVE cancel (no `expected`) kills unconditionally — the child was spawned
+    // by this process, so its pid can't have been reused. The BOOT reaper passes
+    // `expected.startedAt` → identity-verified terminate that refuses to kill a
+    // reused pid (Codex P1, round 6).
+    terminate: (pid, pgid, expected) =>
+      expected
+        ? void terminateByPidIfMatches(pid, pgid, expected)
+        : terminateByPid(pid, pgid),
     newId: () => randomUUID(),
     env: () => process.env,
   });
