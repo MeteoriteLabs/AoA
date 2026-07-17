@@ -59,6 +59,7 @@ import {
   buildHumanJoinApprovalServices,
   founderApprovalIdentity,
   grantsFromDefaults,
+  inviteConfersPrivilegedAuthority,
 } from "../services/join-approval.js";
 import { parseInviteRoleMetadata } from "../services/team.js";
 
@@ -2480,6 +2481,41 @@ export function accessRoutes(
         .where(eq(invites.id, existing.inviteId))
         .then((rows) => rows[0] ?? null);
       if (!invite) throw notFound("Invite not found");
+
+      // ── P1 privilege-escalation clamp — MANUAL approve seam ─────────────────
+      // Symmetric with the invite-CREATION clamp (POST /invites) and the
+      // AUTO-ADMIT sink (onboarding-join finalize). `joins:approve` is delegable
+      // to non-founders, and this route applies the invite's defaultsPayload
+      // (role + grants) VERBATIM via approveHumanJoinRequestTx. Without this
+      // clamp a team_lead-level approver holding joins:approve could approve a
+      // pre-existing / agent-minted (creation-clamp-dodging) role:"founder" (or
+      // privileged-grant) invite and mint a founder with NO founder in the loop.
+      // Refuse the approval unless the approver is themselves a founder /
+      // instance admin. Authority is resolved via the SAME helper the creation
+      // clamp uses (team.getUserRole → effective role, maps instance_admin →
+      // founder), and "privileged" is the SAME shared predicate the auto-admit
+      // sink uses. The local_trusted synthetic board actor and agents are exempt
+      // — identical to the creation clamp's actor handling.
+      if (
+        existing.requestType === "human" &&
+        req.actor.type === "board" &&
+        !isLocalImplicit(req) &&
+        req.actor.userId &&
+        inviteConfersPrivilegedAuthority(
+          invite.defaultsPayload as Record<string, unknown> | null,
+        )
+      ) {
+        const { role: approverRole } = await team.getUserRole(
+          companyId,
+          req.actor.userId,
+        );
+        if (approverRole !== "founder") {
+          throw forbidden(
+            "Only founders can approve a join request that confers founder-tier authority",
+          );
+        }
+      }
+      // ────────────────────────────────────────────────────────────────────────
 
       let createdAgentId: string | null = existing.createdAgentId ?? null;
       const approved = await db.transaction(async (tx) => {

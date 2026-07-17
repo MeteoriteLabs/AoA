@@ -3,10 +3,16 @@ import type { Db } from "@armyofagents/db";
 import { joinRequests } from "@armyofagents/db";
 import {
   PERMISSION_KEYS,
+  ROLE_RANK,
   type JoinRequestApprovalSource,
+  type PermissionKey,
 } from "@armyofagents/shared";
 import { accessService } from "./access.js";
-import { teamService, materializeCompanyProfileFromGlobal } from "./team.js";
+import {
+  teamService,
+  materializeCompanyProfileFromGlobal,
+  parseInviteRoleMetadata,
+} from "./team.js";
 import { humanCapabilitiesService } from "./human-capabilities.js";
 import { hubItemsService } from "./hub-items.js";
 import { logActivity } from "./activity-log.js";
@@ -48,6 +54,47 @@ export function grantsFromDefaults(
     });
   }
   return result;
+}
+
+/**
+ * Permission grants that must NEVER be conferred without an explicit FOUNDER
+ * decision — each hands the invitee governance authority (permission
+ * delegation, join approval, or further invitation), i.e. the keys an attacker
+ * would target to bootstrap control of the company.
+ */
+export const PRIVILEGED_AUTO_ADMIT_GRANT_KEYS = new Set<PermissionKey>([
+  "users:manage_permissions",
+  "joins:approve",
+  "users:invite",
+]);
+
+/**
+ * True when an invite would confer authority ABOVE an ordinary member/lead — a
+ * role above `team_lead` (i.e. founder) or any privileged permission grant.
+ *
+ * This is the SINGLE definition of "privileged" shared by all three P1
+ * privilege-escalation seams so they can never diverge:
+ *  - invite CREATION clamp (routes/access.ts POST /invites) — a non-founder
+ *    cannot MINT such an invite;
+ *  - the unattended email-match AUTO-ADMIT sink (routes/onboarding-join.ts
+ *    finalize) — such an invite is NEVER auto-admitted (falls back to manual
+ *    founder approval);
+ *  - the manual human-APPROVE clamp (routes/access.ts approve) — a non-founder
+ *    approver cannot APPLY such an invite.
+ *
+ * Ordinary team_member/team_lead + non-privileged-grant invites stay on the
+ * fast path.
+ */
+export function inviteConfersPrivilegedAuthority(
+  defaultsPayload: Record<string, unknown> | null,
+): boolean {
+  const requestedRole = parseInviteRoleMetadata(defaultsPayload)?.role ?? null;
+  if (requestedRole && (ROLE_RANK[requestedRole] ?? 0) > ROLE_RANK.team_lead) {
+    return true;
+  }
+  return grantsFromDefaults(defaultsPayload, "human").some((grant) =>
+    PRIVILEGED_AUTO_ADMIT_GRANT_KEYS.has(grant.permissionKey),
+  );
 }
 
 /** Tx-scoped service instances the approval needs (injected for testability). */

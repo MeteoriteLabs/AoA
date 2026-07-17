@@ -38,6 +38,21 @@ vi.mock("../services/join-approval.js", () => ({
       .filter((g) => g && typeof g.permissionKey === "string")
       .map((g) => ({ permissionKey: g.permissionKey as string, scope: null }));
   },
+  // Faithful stand-in for the real (shared) predicate: role above team_lead
+  // (i.e. founder) OR any privileged human grant. Mirrors the module the finalize
+  // route now imports it from.
+  inviteConfersPrivilegedAuthority: (p: Record<string, unknown> | null) => {
+    const teamInvite = p && (p as { teamInvite?: { role?: string } }).teamInvite;
+    const role = teamInvite?.role ?? null;
+    if (role === "founder") return true;
+    const human = p && (p as { human?: { grants?: unknown } }).human;
+    const grants =
+      human && typeof human === "object" && Array.isArray((human as { grants?: unknown }).grants)
+        ? (human as { grants: Array<Record<string, unknown>> }).grants
+        : [];
+    const privileged = new Set(["users:manage_permissions", "joins:approve", "users:invite"]);
+    return grants.some((g) => typeof g?.permissionKey === "string" && privileged.has(g.permissionKey as string));
+  },
 }));
 vi.mock("../services/team.js", () => ({
   // Reads the role straight from the payload (defaults to team_member) so the

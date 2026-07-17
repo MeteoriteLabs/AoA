@@ -29,6 +29,14 @@ const materializeCompanyProfile = vi.hoisted(() => vi.fn(async () => {}));
 vi.mock("../team.js", () => ({
   teamService: () => ({}),
   materializeCompanyProfileFromGlobal: materializeCompanyProfile,
+  // The shared inviteConfersPrivilegedAuthority predicate (now in join-approval)
+  // reads the role via parseInviteRoleMetadata — pure stand-in mirroring the real
+  // one (defaults to team_member when a role is absent).
+  parseInviteRoleMetadata: (p: Record<string, unknown> | null) => {
+    const teamInvite = p && (p as { teamInvite?: { email?: string; role?: string } }).teamInvite;
+    if (!teamInvite?.email) return null;
+    return { email: teamInvite.email, role: teamInvite.role ?? "team_member", projectId: null, parentId: null };
+  },
 }));
 vi.mock("../human-capabilities.js", () => ({ humanCapabilitiesService: () => ({}) }));
 
@@ -37,6 +45,7 @@ import {
   autoAdmitApprovalIdentity,
   founderApprovalIdentity,
   grantsFromDefaults,
+  inviteConfersPrivilegedAuthority,
 } from "../join-approval.js";
 
 function makeTxDb(updatedRow: Record<string, unknown> | null) {
@@ -151,5 +160,46 @@ describe("grantsFromDefaults", () => {
       "human",
     );
     expect(grants).toEqual([{ permissionKey: "tasks:assign", scope: null }]);
+  });
+});
+
+// The single shared "privileged" predicate — the source of truth for all three
+// P1 seams (invite-create clamp, auto-admit sink, manual-approve clamp).
+describe("inviteConfersPrivilegedAuthority", () => {
+  it("true for a role:founder invite", () => {
+    expect(
+      inviteConfersPrivilegedAuthority({ teamInvite: { email: "a@x.com", role: "founder" } }),
+    ).toBe(true);
+  });
+
+  it("true for a privileged human grant (users:manage_permissions / joins:approve / users:invite)", () => {
+    for (const permissionKey of ["users:manage_permissions", "joins:approve", "users:invite"]) {
+      expect(
+        inviteConfersPrivilegedAuthority({
+          teamInvite: { email: "a@x.com", role: "team_member" },
+          human: { grants: [{ permissionKey }] },
+        }),
+      ).toBe(true);
+    }
+  });
+
+  it("false for an ordinary team_lead invite", () => {
+    expect(
+      inviteConfersPrivilegedAuthority({ teamInvite: { email: "a@x.com", role: "team_lead" } }),
+    ).toBe(false);
+  });
+
+  it("false for a team_member invite carrying only a non-privileged grant", () => {
+    expect(
+      inviteConfersPrivilegedAuthority({
+        teamInvite: { email: "a@x.com", role: "team_member" },
+        human: { grants: [{ permissionKey: "tasks:assign" }] },
+      }),
+    ).toBe(false);
+  });
+
+  it("false for a null / empty payload", () => {
+    expect(inviteConfersPrivilegedAuthority(null)).toBe(false);
+    expect(inviteConfersPrivilegedAuthority({})).toBe(false);
   });
 });
