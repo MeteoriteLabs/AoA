@@ -75,13 +75,19 @@ async function uploadAsset(
   request: APIRequestContext,
   companyId: string,
 ): Promise<{ assetId: string; originalFilename: string; contentType: string }> {
+  // Upload through the COMPOSER namespace ("discussion-entries") exactly like the
+  // real thread composer (ThreadTab.handleUpload) — so the asset is stamped
+  // composer_validated=true and can legitimately be bound as a discussion-entry
+  // attachment. A namespace=files upload is composer_validated=false and the
+  // binding boundary (addEntry) rejects it (PR #291 round-6 D provenance guard).
+  // The bytes must be a real PDF so the composer byte-sniff accepts them.
   const res = await request.post(`/api/companies/${companyId}/assets/files`, {
     multipart: {
-      namespace: "scope-handoff-e2e",
+      namespace: "discussion-entries",
       file: {
         name: "interview-notes.pdf",
         mimeType: "application/pdf",
-        buffer: Buffer.from("Interview notes: preserve source evidence in created tasks."),
+        buffer: Buffer.from("%PDF-1.4\nInterview notes: preserve source evidence in created tasks.\n%%EOF"),
       },
     },
   });
@@ -119,10 +125,21 @@ async function seedThread(
         "Keep this URL as evidence for the task handoff: https://example.com/scope-reference. Memory should be retrievable by the worker agent.",
       attachments: [{ assetId: asset.assetId }],
     },
-    {
-      rawContent: "Attach all generated artifacts so the task can carry only the selected handoff references.",
-      attachments: ARTIFACT_TYPES.map((artifactType) => ({ artifactId: artifacts[artifactType].id })),
-    },
+    // Attach every generated artifact across entries of at most
+    // COMPOSER_MAX_ATTACHMENTS (5) — the server caps a single entry's attachment
+    // array at 5 (PR #291 round-6 E). All artifacts still land on the thread as
+    // scope artifact_links, which the assertions below verify per type.
+    ...(() => {
+      const artifactRefs = ARTIFACT_TYPES.map((artifactType) => ({ artifactId: artifacts[artifactType].id }));
+      const chunks: Array<{ rawContent: string; attachments: Array<{ artifactId: string }> }> = [];
+      for (let i = 0; i < artifactRefs.length; i += 5) {
+        chunks.push({
+          rawContent: "Attach all generated artifacts so the task can carry only the selected handoff references.",
+          attachments: artifactRefs.slice(i, i + 5),
+        });
+      }
+      return chunks;
+    })(),
   ];
 
   for (const message of messages) {
