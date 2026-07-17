@@ -49,89 +49,110 @@ export function commanderKeyRoutes(db: Db): Router {
       res.status(404).json({ error: "no Commander agent configured" });
       return;
     }
+    // Capture the narrowed (non-null) id here — TS control-flow narrowing from
+    // the guard above does not survive into the db.transaction callback closure.
+    const agentId = cfg.agentId;
     const [agent] = await db
       .select({ adapterConfig: agents.adapterConfig })
       .from(agents)
-      .where(eq(agents.id, cfg.agentId))
+      .where(eq(agents.id, agentId))
       .limit(1);
     const adapterConfig = (agent?.adapterConfig as Record<string, unknown> | null) ?? {};
 
-    const secrets = secretService(db);
-    // Which branch of writeSecret ran, surfaced for the audit log. The closure
-    // (not persistCommanderApiKey) is the only place that can tell create vs
-    // rotate vs reactivate apart, and the service return type is fixed to
-    // { secretId } — so capture it here rather than threading it back through.
-    let operation: "created" | "rotated" | "reactivated" = "created";
-    const { secretId } = await persistCommanderApiKey(
-      {
-        writeSecret: async (a) => {
-          // The secret name is deterministic per provider ("Commander <provider>
-          // API key"), and secretService.create 409s on an active duplicate. So
-          // a founder who pastes a bad/expired key then retries a corrected one
-          // must ROTATE the existing secret's value (new company_secret_versions
-          // row, same id) rather than re-create it — otherwise the second submit
-          // 409s and the Claude/anthropic onboarding path wedges after one bad
-          // key (Codex P1). The id stays stable, so the bound secret_ref
-          // (version "latest") resolves the rotated value with no rebind.
-          const actorRef = { userId: actor.userId ?? "board", agentId: null };
-          const existing = await secrets.getByName(companyId, a.name);
-          if (existing) {
-            // getByName filters only deletedAt IS NULL, not status. A founder may
-            // have DISABLED or ARCHIVED this deterministic Commander secret from
-            // Settings (status "disabled"/"archived"; company_secrets has no
-            // disabledAt/archivedAt column — status is the sole switch). rotate()
-            // only appends a version + bumps latestVersion; it never touches
-            // status. So without reactivating, the value would rotate but runtime
-            // resolveSecretValue still rejects it with "Secret is not active" and
-            // pasting a fresh key could never recover verification (Codex P2).
-            // Reactivate via the canonical update() seam FIRST, then rotate, so the
-            // final state is active + newest value. (A deleted secret has deletedAt
-            // set, so getByName excludes it and the create path below runs.)
-            if (existing.status !== "active") {
-              operation = "reactivated";
-              await secrets.update(existing.id, { status: "active" });
-            } else {
-              operation = "rotated";
+    // ONE atomic transaction wraps the whole save: the vault mutation
+    // (writeSecret — create OR rotate OR reactivate+rotate), the agent
+    // adapterConfig merge, the env-binding sync, AND the audit entry. Either
+    // everything commits together or everything rolls back. This closes the
+    // Codex round-11 P2: previously the audit fired only AFTER all three
+    // mutation steps AND outside any tx, so a rejection in step 2/3 (or in
+    // rotate after a reactivation) left the committed vault mutation with NO
+    // audit entry (AGENTS.md §5 violation) and an inconsistent half-written
+    // state. Running the audit INSIDE the tx makes "every committed mutation is
+    // audited" hold by construction — a partial write can never bypass it.
+    // The secret ops (create/rotate) open their own db.transaction; on a tx
+    // handle those become savepoints (same nested-tx pattern as join-approval).
+    const secretId = await db.transaction(async (tx) => {
+      const txDb = tx as unknown as Db;
+      const secrets = secretService(txDb);
+      // Which branch of writeSecret ran, surfaced for the audit log. The closure
+      // (not persistCommanderApiKey) is the only place that can tell create vs
+      // rotate vs reactivate apart, and the service return type is fixed to
+      // { secretId } — so capture it here rather than threading it back through.
+      let operation: "created" | "rotated" | "reactivated" = "created";
+      const result = await persistCommanderApiKey(
+        {
+          writeSecret: async (a) => {
+            // The secret name is deterministic per provider ("Commander <provider>
+            // API key"), and secretService.create 409s on an active duplicate. So
+            // a founder who pastes a bad/expired key then retries a corrected one
+            // must ROTATE the existing secret's value (new company_secret_versions
+            // row, same id) rather than re-create it — otherwise the second submit
+            // 409s and the Claude/anthropic onboarding path wedges after one bad
+            // key (Codex P1). The id stays stable, so the bound secret_ref
+            // (version "latest") resolves the rotated value with no rebind.
+            const actorRef = { userId: actor.userId ?? "board", agentId: null };
+            const existing = await secrets.getByName(companyId, a.name);
+            if (existing) {
+              // getByName filters only deletedAt IS NULL, not status. A founder may
+              // have DISABLED or ARCHIVED this deterministic Commander secret from
+              // Settings (status "disabled"/"archived"; company_secrets has no
+              // disabledAt/archivedAt column — status is the sole switch). rotate()
+              // only appends a version + bumps latestVersion; it never touches
+              // status. So without reactivating, the value would rotate but runtime
+              // resolveSecretValue still rejects it with "Secret is not active" and
+              // pasting a fresh key could never recover verification (Codex P2).
+              // Reactivate via the canonical update() seam FIRST, then rotate, so the
+              // final state is active + newest value. Both run on the tx handle, so a
+              // later rotate/binding failure rolls the reactivation back too — it can
+              // never be left committed-but-unaudited. (A deleted secret has deletedAt
+              // set, so getByName excludes it and the create path below runs.)
+              if (existing.status !== "active") {
+                operation = "reactivated";
+                await secrets.update(existing.id, { status: "active" });
+              } else {
+                operation = "rotated";
+              }
+              await secrets.rotate(existing.id, { value: a.value }, actorRef);
+              return { secretId: existing.id };
             }
-            await secrets.rotate(existing.id, { value: a.value }, actorRef);
-            return { secretId: existing.id };
-          }
-          operation = "created";
-          const created = (await secrets.create(
-            companyId,
-            { name: a.name, key: a.key, provider: "local_encrypted", managedMode: "aoa_managed", value: a.value },
-            actorRef,
-          )) as { id?: string; secretId?: string };
-          const secretId = created.secretId ?? created.id;
-          if (!secretId) throw new Error("secret create returned no id");
-          return { secretId };
+            operation = "created";
+            const created = (await secrets.create(
+              companyId,
+              { name: a.name, key: a.key, provider: "local_encrypted", managedMode: "aoa_managed", value: a.value },
+              actorRef,
+            )) as { id?: string; secretId?: string };
+            const secretId = created.secretId ?? created.id;
+            if (!secretId) throw new Error("secret create returned no id");
+            return { secretId };
+          },
+          updateAgentAdapterConfig: async (a) => {
+            await txDb
+              .update(agents)
+              .set({ adapterConfig: a.adapterConfig, updatedAt: new Date() })
+              .where(eq(agents.id, a.agentId));
+          },
+          syncEnvBindings: async (a) => {
+            await secrets.syncEnvBindingsForTarget(companyId, { targetType: "agent", targetId: a.targetId }, a.env);
+          },
         },
-        updateAgentAdapterConfig: async (a) => {
-          await db
-            .update(agents)
-            .set({ adapterConfig: a.adapterConfig, updatedAt: new Date() })
-            .where(eq(agents.id, a.agentId));
-        },
-        syncEnvBindings: async (a) => {
-          await secrets.syncEnvBindingsForTarget(companyId, { targetType: "agent", targetId: a.targetId }, a.env);
-        },
-      },
-      { companyId, agentId: cfg.agentId, provider, apiKey: value, adapterConfig },
-    );
+        { companyId, agentId, provider, apiKey: value, adapterConfig },
+      );
 
-    // Audit the credential mutation (AGENTS.md §5 — log all mutating actions).
-    // Only runs after persistence SUCCEEDS, so a failed key-save logs no success.
-    // The raw key is NEVER included; the durable secret reference is entityId
-    // (unredacted), matching routes/secrets.ts. Awaited inline like the secrets
-    // route so a log failure surfaces rather than silently dropping the record.
-    await logActivity(db, {
-      companyId,
-      actorType: "user",
-      actorId: actor.userId ?? "board",
-      action: `commander.key.${operation}`,
-      entityType: "secret",
-      entityId: secretId,
-      details: { provider, secretId, operation },
+      // Audit the credential mutation (AGENTS.md §5 — log all mutating actions)
+      // INSIDE the tx, so the audit row commits atomically with the mutation and
+      // rolls back with it on failure. The raw key is NEVER included; the durable
+      // secret reference is entityId (unredacted), matching routes/secrets.ts.
+      await logActivity(txDb, {
+        companyId,
+        actorType: "user",
+        actorId: actor.userId ?? "board",
+        action: `commander.key.${operation}`,
+        entityType: "secret",
+        entityId: result.secretId,
+        details: { provider, secretId: result.secretId, operation },
+      });
+
+      return result.secretId;
     });
 
     res.json({ ok: true, secretId });

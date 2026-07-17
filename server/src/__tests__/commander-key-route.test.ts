@@ -21,7 +21,13 @@ import { commanderKeyRoutes } from "../routes/commander-key.js";
 
 function db(results: unknown[][]) {
   let i = 0;
-  return { select: () => ({ from: () => ({ where: () => ({ limit: async () => results[i++] ?? [] }) }) }) } as never;
+  const handle: Record<string, unknown> = {
+    select: () => ({ from: () => ({ where: () => ({ limit: async () => results[i++] ?? [] }) }) }),
+  };
+  // The route wraps the mutation + audit in one db.transaction; pass the handle
+  // through so the callback runs (persist/logActivity are mocked out here).
+  handle.transaction = async (fn: (tx: unknown) => Promise<unknown>) => fn(handle);
+  return handle as never;
 }
 function makeApp(dbInst: unknown, actor: Record<string, unknown> = { type: "board", userId: "u1" }) {
   const app = express();
