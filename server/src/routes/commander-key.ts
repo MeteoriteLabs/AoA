@@ -70,6 +70,20 @@ export function commanderKeyRoutes(db: Db): Router {
           const actorRef = { userId: actor.userId ?? "board", agentId: null };
           const existing = await secrets.getByName(companyId, a.name);
           if (existing) {
+            // getByName filters only deletedAt IS NULL, not status. A founder may
+            // have DISABLED or ARCHIVED this deterministic Commander secret from
+            // Settings (status "disabled"/"archived"; company_secrets has no
+            // disabledAt/archivedAt column — status is the sole switch). rotate()
+            // only appends a version + bumps latestVersion; it never touches
+            // status. So without reactivating, the value would rotate but runtime
+            // resolveSecretValue still rejects it with "Secret is not active" and
+            // pasting a fresh key could never recover verification (Codex P2).
+            // Reactivate via the canonical update() seam FIRST, then rotate, so the
+            // final state is active + newest value. (A deleted secret has deletedAt
+            // set, so getByName excludes it and the create path below runs.)
+            if (existing.status !== "active") {
+              await secrets.update(existing.id, { status: "active" });
+            }
             await secrets.rotate(existing.id, { value: a.value }, actorRef);
             return { secretId: existing.id };
           }

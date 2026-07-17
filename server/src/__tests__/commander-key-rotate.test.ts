@@ -22,7 +22,7 @@ vi.mock("../routes/authz.js", () => ({ assertCompanyAccess: vi.fn() }));
  */
 const secretsMock = vi.hoisted(() => {
   const state = {
-    byName: new Map<string, { id: string; name: string; value: string }>(),
+    byName: new Map<string, { id: string; name: string; value: string; status: string }>(),
     seq: 0,
   };
   const svc = {
@@ -31,13 +31,22 @@ const secretsMock = vi.hoisted(() => {
       if (state.byName.has(input.name)) {
         throw Object.assign(new Error(`Secret already exists: ${input.name}`), { status: 409, statusCode: 409 });
       }
-      const row = { id: `sec-${++state.seq}`, name: input.name, value: input.value };
+      const row = { id: `sec-${++state.seq}`, name: input.name, value: input.value, status: "active" };
       state.byName.set(input.name, row);
       return row;
     }),
     rotate: vi.fn(async (secretId: string, input: { value: string }) => {
+      // Mirrors the real service: rotate appends a version + value; it NEVER
+      // touches status. Reactivation must therefore happen separately.
       const row = [...state.byName.values()].find((r) => r.id === secretId);
       if (row) row.value = input.value;
+      return row ?? null;
+    }),
+    update: vi.fn(async (secretId: string, patch: { status?: string }) => {
+      // Canonical status-setting seam (svc.update) used to reactivate a
+      // disabled/archived secret back to "active".
+      const row = [...state.byName.values()].find((r) => r.id === secretId);
+      if (row && patch.status) row.status = patch.status;
       return row ?? null;
     }),
     syncEnvBindingsForTarget: vi.fn(async () => {}),
@@ -116,5 +125,58 @@ describe("POST commander-key rotate-on-retry (Codex P1)", () => {
     expect(retry.status).toBe(200);
     expect(secretsMock.svc.rotate).toHaveBeenCalledTimes(1);
     expect(secretsMock.svc.rotate).toHaveBeenCalledWith(first.body.secretId, expect.objectContaining({ value: "sk-oai-2" }), expect.anything());
+  });
+
+  it("REACTIVATES a disabled Commander secret before rotating so key-save recovers verification (Codex P2)", async () => {
+    const app = makeApp();
+    const first = await request(app).post(url).send({ provider: "anthropic", value: "sk-ant-OLD" });
+    expect(first.status).toBe(200);
+    const secretId = first.body.secretId as string;
+
+    // Founder DISABLED the secret from Settings (status -> "disabled"). getByName
+    // still returns it (deletedAt IS NULL), but resolveSecretValue would reject it
+    // as "Secret is not active" until reactivated.
+    const row = secretsMock.state.byName.get("Commander anthropic API key")!;
+    row.status = "disabled";
+
+    const save = await request(app).post(url).send({ provider: "anthropic", value: "sk-ant-NEW" });
+    expect(save.status).toBe(200);
+    expect(save.body).toEqual({ ok: true, secretId }); // same id -> binding stays valid
+    // reactivated via the canonical update() seam, then rotated
+    expect(secretsMock.svc.update).toHaveBeenCalledTimes(1);
+    expect(secretsMock.svc.update).toHaveBeenCalledWith(secretId, { status: "active" });
+    expect(secretsMock.svc.rotate).toHaveBeenCalledWith(secretId, expect.objectContaining({ value: "sk-ant-NEW" }), expect.anything());
+    // ORDER: reactivate BEFORE rotate, so the final state is active + newest value
+    expect(secretsMock.svc.update.mock.invocationCallOrder[0]).toBeLessThan(
+      secretsMock.svc.rotate.mock.invocationCallOrder[0],
+    );
+    // resolvable end state: active + rotated value
+    expect(row.status).toBe("active");
+    expect(row.value).toBe("sk-ant-NEW");
+  });
+
+  it("reactivates an ARCHIVED Commander secret as well", async () => {
+    const app = makeApp();
+    const first = await request(app).post(url).send({ provider: "anthropic", value: "sk-ant-1" });
+    expect(first.status).toBe(200);
+    const secretId = first.body.secretId as string;
+    secretsMock.state.byName.get("Commander anthropic API key")!.status = "archived";
+
+    const save = await request(app).post(url).send({ provider: "anthropic", value: "sk-ant-2" });
+    expect(save.status).toBe(200);
+    expect(secretsMock.svc.update).toHaveBeenCalledWith(secretId, { status: "active" });
+    expect(secretsMock.state.byName.get("Commander anthropic API key")?.status).toBe("active");
+  });
+
+  it("does NOT write status when the existing secret is already active (idempotent rotate)", async () => {
+    const app = makeApp();
+    const first = await request(app).post(url).send({ provider: "anthropic", value: "sk-ant-1" });
+    expect(first.status).toBe(200);
+
+    const retry = await request(app).post(url).send({ provider: "anthropic", value: "sk-ant-2" });
+    expect(retry.status).toBe(200);
+    expect(secretsMock.svc.update).not.toHaveBeenCalled(); // no spurious status write
+    expect(secretsMock.svc.rotate).toHaveBeenCalledTimes(1);
+    expect(secretsMock.state.byName.get("Commander anthropic API key")?.status).toBe("active");
   });
 });
