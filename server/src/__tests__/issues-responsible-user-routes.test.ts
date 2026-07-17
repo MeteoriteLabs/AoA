@@ -35,6 +35,11 @@ const mockIssueService = vi.hoisted(() => ({
   create: vi.fn(),
   update: vi.fn(),
   addComment: vi.fn(),
+  // Round-18 #4: request-changes with a submission key exercises the early-replay
+  // + control-effect markers.
+  getCommentByClientSubmissionId: vi.fn(),
+  markCommentControlEffectsCompleted: vi.fn(),
+  markCommentWakeupsReady: vi.fn(),
   findMentionedAgents: vi.fn(),
   notifyMentionedHumans: vi.fn(),
   resolveAgentKinds: vi.fn(),
@@ -249,6 +254,63 @@ describe("issue responsible user routes", () => {
         }),
       }),
     );
+  });
+
+  it("threads clientSubmissionId into the request-changes feedback comment (round-18 #4)", async () => {
+    mockIssueService.getById.mockResolvedValue({ ...baseIssue, status: "in_review" });
+    mockIssueService.update.mockResolvedValue({ ...baseIssue, status: "in_progress" });
+    mockIssueService.getCommentByClientSubmissionId.mockResolvedValue(null);
+    mockIssueService.addComment.mockImplementation(async (issueIdArg: string, body: string) => ({
+      id: "review-comment",
+      issueId: issueIdArg,
+      companyId,
+      body,
+      authorAgentId: null,
+      authorUserId: "board-user",
+    }));
+
+    const res = await request(createApp())
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        status: "in_progress",
+        comment: "Add a measurable success criterion.",
+        clientSubmissionId: "rc-key-1",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    // The feedback comment is keyed → a lost-response retry replays it instead of
+    // creating a second feedback comment.
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      issueId,
+      "Add a measurable success criterion.",
+      expect.objectContaining({ clientSubmissionId: "rc-key-1" }),
+    );
+  });
+
+  it("replays the request-changes feedback comment on a same-key retry — no duplicate (round-18 #4)", async () => {
+    // The retry arrives after the transition already ran (task now in_progress);
+    // the early-replay lookup finds the KEYED feedback comment and short-circuits,
+    // so addComment is never called again.
+    mockIssueService.getById.mockResolvedValue({ ...baseIssue, status: "in_progress" });
+    mockIssueService.getCommentByClientSubmissionId.mockResolvedValue({
+      id: "review-comment",
+      issueId,
+      companyId,
+      body: "Add a measurable success criterion.",
+      authorAgentId: null,
+    });
+
+    const res = await request(createApp())
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        status: "in_progress",
+        comment: "Add a measurable success criterion.",
+        clientSubmissionId: "rc-key-1",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
   it("lets board users with tasks:assign create and update responsibleUserId", async () => {

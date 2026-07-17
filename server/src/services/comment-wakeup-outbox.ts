@@ -68,6 +68,12 @@ export async function enqueueCommentWakeupOutbox(
     issueId: string;
     commentId: string;
     targets: CommentWakeupTarget[];
+    // Round-18 #2/#3: when the wakeup references post-insert side effects
+    // (attachment rows / reopen-interrupt control effects committed AFTER the
+    // comment tx), enqueue NOT-YET-DRAINABLE with ready_at = now()+grace. The
+    // route flips it to drainable once those effects are durable; the grace is the
+    // crash backstop. null/omitted = immediately drainable.
+    readyAt?: Date | null;
   },
 ): Promise<void> {
   if (row.targets.length === 0) return;
@@ -80,11 +86,26 @@ export async function enqueueCommentWakeupOutbox(
         commentId: row.commentId,
         targetAgentId: target.agentId,
         wakeup: target.wakeup as Record<string, unknown>,
+        readyAt: row.readyAt ?? null,
       })),
     )
     .onConflictDoNothing({
       target: [commentWakeupOutbox.commentId, commentWakeupOutbox.targetAgentId],
     });
+}
+
+/** Grace window before a DEFERRED wakeup row auto-becomes drainable if the route
+ *  crashed before flipping it ready (round-18 #2/#3 crash backstop). */
+export const COMMENT_WAKEUP_DEFER_GRACE_MS = 120_000;
+
+/** Flip a comment's DEFERRED wakeup rows to immediately drainable — called by the
+ *  route once the post-insert side effects (attachment rows, control effects) are
+ *  durable. Sets ready_at = now() on the comment's still-pending rows. */
+export async function markCommentWakeupsReady(db: Db, commentId: string): Promise<void> {
+  await db
+    .update(commentWakeupOutbox)
+    .set({ readyAt: new Date(), updatedAt: new Date() })
+    .where(and(eq(commentWakeupOutbox.commentId, commentId), eq(commentWakeupOutbox.status, "pending")));
 }
 
 /**
@@ -99,16 +120,27 @@ function wakeupIdempotencyKey(rowId: string): string {
 }
 
 /**
- * Default dispatch — IDEMPOTENT CONSUMER (round-17 #2). The worker is at-least-
- * once (it can crash after dispatching but before marking the row done, then
- * re-drain), and the downstream heartbeat/aoa wakeup is NOT itself idempotent. So:
+ * Default dispatch — IDEMPOTENT CONSUMER (round-17 #2, round-18 #1). The worker is
+ * at-least-once (it can crash after dispatching but before marking the row done,
+ * then re-drain), and the downstream heartbeat/aoa wakeup is NOT itself idempotent.
+ * So:
  *   1) tag every dispatch with a stable idempotency key derived from the outbox
  *      row id, and
  *   2) BEFORE dispatching, skip if an agent_wakeup_requests row already carries
- *      that key (the previous drive already dispatched it) — a cheap short-circuit
- *      for the common sequential re-drive; the partial unique index is the hard
- *      backstop for the rare concurrent stale-reclaim race (the losing insert
- *      conflicts → the row retries → this check then skips).
+ *      that key — a cheap short-circuit for the common sequential re-drive; the
+ *      partial unique index is the hard backstop for the rare concurrent stale-
+ *      reclaim race (the losing insert conflicts → the row retries → this check
+ *      then skips).
+ *
+ * Round-18 #1: this skip is a valid COMPLETION check because BOTH downstream
+ * dispatches persist the keyed agent_wakeup_requests row ATOMICALLY with their
+ * delivery: the aoa path is a single insert (row exists ⟺ the crew summon is
+ * queued for the AoA dispatcher), and heartbeat.wakeup now creates the request +
+ * its run + the link in ONE transaction (round-18 #1), so a keyed request row
+ * always has its run. Thus "a row with this key exists" genuinely means the prior
+ * dispatch completed (delivered, coalesced, or intentionally skipped) — never a
+ * torn write that would drop the summon.
+ *
  * Kind is resolved AT DRAIN time (round-14 #1: a failed lookup retries, never
  * default-routes aoa → heartbeat). Lazy imports keep the heavy trees off the
  * worker's module-load path.
@@ -121,7 +153,7 @@ const defaultRunWakeup: RunWakeupFn = async (db, row) => {
     .from(agentWakeupRequests)
     .where(and(eq(agentWakeupRequests.companyId, row.companyId), eq(agentWakeupRequests.idempotencyKey, idempotencyKey)))
     .limit(1);
-  if (already.length > 0) return; // already dispatched by a prior drive → no-op
+  if (already.length > 0) return; // prior dispatch completed (atomic) → no-op
 
   const { issueService } = await import("./issues.js");
   const kinds = await issueService(db).resolveAgentKinds([row.targetAgentId]);
@@ -168,7 +200,14 @@ async function claimOneRow(db: Db): Promise<CommentWakeupRow | null> {
     sql.raw(`
       WITH claimed AS (
         SELECT id FROM comment_wakeup_outbox
-        WHERE (status = 'pending' AND (next_retry_at IS NULL OR next_retry_at <= now()))
+        WHERE (status = 'pending'
+               AND (next_retry_at IS NULL OR next_retry_at <= now())
+               -- Round-18 #2/#3 deferred→ready gate: a row that references
+               -- post-insert side effects is not drainable until its ready_at
+               -- elapses (flipped to now() by the route once those effects are
+               -- durable; else it auto-readies after the grace window — the
+               -- crash backstop).
+               AND (ready_at IS NULL OR ready_at <= now()))
            OR (status = 'processing' AND updated_at < now() - interval '${STALE_PROCESSING_MINUTES} minutes')
         ORDER BY created_at
         LIMIT 1

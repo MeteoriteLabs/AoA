@@ -50,7 +50,7 @@ import {
   parseProjectExecutionWorkspacePolicy,
 } from "./execution-workspace-policy.js";
 import { hubItemsService } from "./hub-items.js";
-import { enqueueCommentWakeupOutbox, type CommentWakeupTarget } from "./comment-wakeup-outbox.js";
+import { enqueueCommentWakeupOutbox, markCommentWakeupsReady as markCommentWakeupsReadyOutbox, type CommentWakeupTarget } from "./comment-wakeup-outbox.js";
 import { shouldDispatchIssueWakeup } from "../routes/issues-planning-mode-dispatch.js";
 import {
   buildInitialIssueMonitorFields,
@@ -2409,6 +2409,11 @@ export function issueService(db: Db) {
           id: string;
           authorAgentId: string | null;
         }) => Promise<CommentWakeupTarget[]>;
+        // Round-18 #2/#3: when the wakeup references post-insert side effects
+        // (attachment rows / control effects committed AFTER this tx), enqueue the
+        // rows NOT-YET-DRAINABLE with this ready_at; the route flips them ready once
+        // those effects are durable.
+        wakeupDeferUntil?: Date | null;
       },
     ) => {
       const issue = await db
@@ -2489,6 +2494,7 @@ export function issueService(db: Db) {
             issueId,
             commentId: created.id,
             targets,
+            readyAt: actor.wakeupDeferUntil ?? null,
           });
         }
         return created;
@@ -2537,8 +2543,15 @@ export function issueService(db: Db) {
       issueId: string;
       commentId: string;
       targets: CommentWakeupTarget[];
+      readyAt?: Date | null;
     }): Promise<void> => {
       await enqueueCommentWakeupOutbox(db, input);
+    },
+
+    // Round-18 #2/#3: flip a comment's DEFERRED wakeup rows to drainable, once the
+    // post-insert side effects (attachment rows / control effects) are durable.
+    markCommentWakeupsReady: async (commentId: string): Promise<void> => {
+      await markCommentWakeupsReadyOutbox(db, commentId);
     },
 
     createAttachment: async (input: {

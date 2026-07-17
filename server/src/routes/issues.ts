@@ -38,7 +38,7 @@ import { getSafeServingHeaders } from "../services/asset-serving-safety.js";
 import { sniffAndVerifyContentType } from "../services/asset-content-guard.js";
 import { issueDocumentKeySchema, upsertIssueDocumentSchema } from "@armyofagents/shared";
 import { createEagerWorkspaceForIssue } from "../services/eager-workspace.js";
-import type { CommentWakeupTarget } from "../services/comment-wakeup-outbox.js";
+import { COMMENT_WAKEUP_DEFER_GRACE_MS, type CommentWakeupTarget } from "../services/comment-wakeup-outbox.js";
 import { canDelegateToTarget, type WakeSkippedReason } from "../services/task-policy.js";
 import {
   listIssueContextBundlesForIssue,
@@ -740,6 +740,12 @@ export function issueRoutes(db: Db, storage: StorageService) {
       commentId: comment.id,
       targets,
     });
+    // Round-18 #2/#3: the resumed control effects + completed attachments are now
+    // durable, so flip any DEFERRED wakeup rows ready. This recovers a comment
+    // whose original request crashed AFTER committing the (deferred) rows but
+    // BEFORE flipping them — the retry lands here and readies them explicitly
+    // (before the ready_at grace backstop would).
+    await svc.markCommentWakeupsReady(comment.id);
 
     return { ok: true };
   }
@@ -1441,6 +1447,14 @@ export function issueRoutes(db: Db, storage: StorageService) {
           const feedbackComment = await txSvc.addComment(id, requestChangesFeedback!, {
             agentId: actor.agentId ?? undefined,
             userId: actor.actorType === "user" ? actor.actorId : undefined,
+            // Round-18 #4: thread the submission key so a lost-response retry is
+            // idempotent. Without it the feedback comment is unkeyed; on retry the
+            // task is already in_progress (no longer a request-changes transition),
+            // so the retry would take the ordinary keyed path and create a SECOND
+            // feedback comment. The keyed comment lets the early-replay lookup catch
+            // the retry instead.
+            clientSubmissionId:
+              typeof commentClientSubmissionId === "string" ? commentClientSubmissionId : undefined,
             // Round-17 #1: enqueue the review-changes wakeup IN THIS TX.
             buildWakeupTargets: (c) =>
               buildPatchCommentWakeupTargets({
@@ -1863,11 +1877,17 @@ export function issueRoutes(db: Db, storage: StorageService) {
     const willReopen = req.body.reopen === true && isClosed;
     const preReopenFromStatus = willReopen ? issue.status : null;
     const preInterruptedRunId = interruptRequested ? await resolveInterruptTargetRunId(issue) : null;
+    // Round-18 #3: the wakeup describes reopen/interrupt effects that are applied
+    // AFTER this comment tx commits, so DEFER the row until those effects are
+    // durable (flipped ready below). A plain comment (no reopen/interrupt) has no
+    // post-insert side effects → immediately drainable.
+    const deferWakeups = willReopen || interruptRequested;
 
     const comment = await svc.addComment(id, req.body.body, {
       agentId: actor.agentId ?? undefined,
       userId: actor.actorType === "user" ? actor.actorId : undefined,
       clientSubmissionId,
+      wakeupDeferUntil: deferWakeups ? new Date(Date.now() + COMMENT_WAKEUP_DEFER_GRACE_MS) : null,
       buildWakeupTargets: (c) =>
         buildIssueCommentWakeupTargets({
           issue,
@@ -1912,6 +1932,12 @@ export function issueRoutes(db: Db, storage: StorageService) {
     // Stamp control-effects completion (round-6 #2) so a retry skips them.
     if (clientSubmissionId) await svc.markCommentControlEffectsCompleted(comment.id);
     const { currentIssue, reopened, reopenFromStatus, interruptedRunId } = control;
+
+    // Round-18 #3: the reopen/interrupt control effects are now durable → flip the
+    // deferred wakeup rows to drainable so the worker can wake the assignee (who
+    // will now see the reopened task / cancelled run). If the process crashed
+    // before this flip, the row's ready_at grace window is the backstop.
+    if (deferWakeups) await svc.markCommentWakeupsReady(comment.id);
 
     await logActivity(db, {
       companyId: currentIssue.companyId,
@@ -2107,11 +2133,17 @@ export function issueRoutes(db: Db, storage: StorageService) {
     const willReopen = parseMultipartBoolean(req.body?.reopen) && isClosed;
     const preReopenFromStatus = willReopen ? issue.status : null;
     const preInterruptedRunId = interruptRequested ? await resolveInterruptTargetRunId(issue) : null;
+    // Round-18 #2/#3: the wakeup references the attachment rows (stored after the
+    // comment tx) and any reopen/interrupt effect, so DEFER the row until they are
+    // durable (flipped ready after the storage loop + control effects below). The
+    // ready_at grace window is the crash backstop.
+    const deferWakeups = preparedFiles.length > 0 || willReopen || interruptRequested;
 
     const comment = await svc.addComment(id, body, {
       agentId: actor.agentId ?? undefined,
       userId: actor.actorType === "user" ? actor.actorId : undefined,
       clientSubmissionId,
+      wakeupDeferUntil: deferWakeups ? new Date(Date.now() + COMMENT_WAKEUP_DEFER_GRACE_MS) : null,
       buildWakeupTargets: (c) =>
         buildIssueCommentWakeupTargets({
           issue,
@@ -2234,9 +2266,12 @@ export function issueRoutes(db: Db, storage: StorageService) {
 
     // Round-17 #1: the comment's per-agent wakeups (carrying the attachment
     // previews) were enqueued INSIDE addComment's transaction above, so a committed
-    // comment always carries its pending wakeup rows. The durable worker delivers
-    // each exactly once (per-target rows + (comment, agent) idempotency + the
-    // round-17 #2 idempotent-consumer key).
+    // comment always carries its pending wakeup rows. Round-18 #2/#3: they were
+    // enqueued DEFERRED — now the attachment rows + control effects are durable, so
+    // flip them ready. The worker then delivers each exactly once (per-target rows
+    // + (comment, agent) idempotency + the round-17 #2 idempotent-consumer key); a
+    // crash before this flip is covered by the ready_at grace backstop.
+    if (deferWakeups) await svc.markCommentWakeupsReady(comment.id);
 
     res.status(201).json({
       comment,

@@ -53,6 +53,19 @@ export const commentWakeupOutbox = pgTable(
     error: text("error"),
     // null = eligible immediately; set by the worker for backoff retry scheduling.
     nextRetryAt: timestamp("next_retry_at", { withTimezone: true }),
+    // Deferred→ready gate (PR #291 round-18 #2/#3). The row is enqueued IN the
+    // comment-insert transaction (round-17), but the wakeup can reference
+    // post-insert side effects — the attachment rows and the reopen/interrupt
+    // control effects are committed AFTER the comment tx. So a wakeup that depends
+    // on them is enqueued with ready_at set to now()+grace: the worker's claim
+    // query EXCLUDES rows whose ready_at is still in the future, so the agent is
+    // not woken before the data it references exists. The route flips ready_at to
+    // now() once those side effects are durable (immediately drainable). If the
+    // process crashes before the flip, the grace window is the crash BACKSTOP —
+    // the row becomes drainable when ready_at elapses and dispatches with whatever
+    // landed (durability preserved). null = immediately drainable (a comment with
+    // no attachments and no control effects).
+    readyAt: timestamp("ready_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

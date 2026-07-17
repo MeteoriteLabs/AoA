@@ -68,6 +68,9 @@ const mockIssueService = vi.hoisted(() => ({
   // heartbeat.wakeup / enqueueAoaMentionWakeup — so the existing "waked agent X"
   // assertions keep exercising the same dispatch surface.
   enqueueCommentWakeups: vi.fn(),
+  // Round-18 #2/#3: the route flips DEFERRED wakeup rows ready once attachment
+  // rows / control effects are durable.
+  markCommentWakeupsReady: vi.fn(),
 }));
 
 const mockAccessService = vi.hoisted(() => ({
@@ -189,6 +192,7 @@ beforeEach(() => {
   // Default: no prior submission with this key → the create path runs.
   mockIssueService.getCommentByClientSubmissionId.mockResolvedValue(null);
   mockIssueService.markCommentControlEffectsCompleted.mockResolvedValue(undefined);
+  mockIssueService.markCommentWakeupsReady.mockResolvedValue(undefined);
   // Round-16: enqueueCommentWakeups persists per-target rows to the durable outbox;
   // a background worker drains + dispatches them. This mock INLINES that drain —
   // resolving each target's kind and routing aoa → enqueueAoaMentionWakeup, org →

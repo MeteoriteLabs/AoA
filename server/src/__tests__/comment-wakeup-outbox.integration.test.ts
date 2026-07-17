@@ -7,6 +7,7 @@ import { applyPendingMigrations, createDb, type Db } from "@armyofagents/db";
 import {
   enqueueCommentWakeupOutbox,
   drainCommentWakeupOutbox,
+  markCommentWakeupsReady,
 } from "../services/comment-wakeup-outbox.js";
 
 // PR #291 round-16 — the durable PER-TARGET comment-wakeup outbox. Mirrors the
@@ -255,6 +256,63 @@ describe.skipIf(process.platform === "win32")("comment wakeup outbox (real DB)",
     );
     await drainCommentWakeupOutbox(db, { runWakeup: boom, maxAttempts: 2 });
     expect(await rowStatus(commentId, AGENT_A)).toBe("failed");
+  });
+
+  // Round-18 #2/#3: the deferred→ready gate holds a wakeup until the side effects
+  // it references (attachments / control effects) are durable.
+  it("does NOT drain a row whose ready_at is still in the future (deferred)", async () => {
+    const commentId = nextCommentId();
+    await enqueueCommentWakeupOutbox(db, {
+      companyId,
+      issueId,
+      commentId,
+      targets: [{ agentId: AGENT_B, wakeup: { reason: "issue_commented" } }],
+      readyAt: new Date(Date.now() + 60_000),
+    });
+    const runWakeup = vi.fn(async () => undefined);
+    await drainCommentWakeupOutbox(db, { runWakeup });
+    // Not yet drainable → never dispatched, still pending.
+    expect(runWakeup.mock.calls.filter((c) => (c[1] as { commentId: string }).commentId === commentId)).toHaveLength(0);
+    expect(await rowStatus(commentId, AGENT_B)).toBe("pending");
+  });
+
+  it("drains after markCommentWakeupsReady flips ready_at", async () => {
+    const commentId = nextCommentId();
+    await enqueueCommentWakeupOutbox(db, {
+      companyId,
+      issueId,
+      commentId,
+      targets: [{ agentId: AGENT_B, wakeup: { reason: "issue_commented" } }],
+      readyAt: new Date(Date.now() + 60_000),
+    });
+    // Still deferred → not drained.
+    const before = vi.fn(async () => undefined);
+    await drainCommentWakeupOutbox(db, { runWakeup: before });
+    expect(before.mock.calls.filter((c) => (c[1] as { commentId: string }).commentId === commentId)).toHaveLength(0);
+
+    // The route flips it ready once the side effects are durable → now drainable.
+    await markCommentWakeupsReady(db, commentId);
+    const runWakeup = vi.fn(async () => undefined);
+    await drainCommentWakeupOutbox(db, { runWakeup });
+    expect(runWakeup.mock.calls.filter((c) => (c[1] as { commentId: string }).commentId === commentId)).toHaveLength(1);
+    expect(await rowStatus(commentId, AGENT_B)).toBe("done");
+  });
+
+  it("auto-drains once the ready_at grace window has elapsed (crash backstop)", async () => {
+    const commentId = nextCommentId();
+    // Simulate a crash BEFORE the ready-flip: ready_at is set (grace) but already
+    // elapsed. The worker drains it anyway (durability preserved).
+    await enqueueCommentWakeupOutbox(db, {
+      companyId,
+      issueId,
+      commentId,
+      targets: [{ agentId: AGENT_B, wakeup: { reason: "issue_commented" } }],
+      readyAt: new Date(Date.now() - 1_000),
+    });
+    const runWakeup = vi.fn(async () => undefined);
+    await drainCommentWakeupOutbox(db, { runWakeup });
+    expect(runWakeup.mock.calls.filter((c) => (c[1] as { commentId: string }).commentId === commentId)).toHaveLength(1);
+    expect(await rowStatus(commentId, AGENT_B)).toBe("done");
   });
 
   // Round-17 #2: the DEFAULT dispatch is idempotent. If the worker dispatches the
