@@ -56,6 +56,7 @@ import { scheduleCleanupRetrySweeper } from "./services/workspace-cleanup-retry-
 import { registerHeartbeatWatchdogSweeper } from "./services/heartbeat-watchdog.js";
 import { startEmbeddingWorker } from "./services/embeddings-worker.js";
 import { startMentionOutboxWorker } from "./services/mention-outbox-worker.js";
+import { startCommentWakeupOutboxWorker } from "./services/comment-wakeup-outbox-worker.js";
 import { resetStaleProcessing } from "./services/embeddings.js";
 import { backfillQueueCompanyIds, reconcileNullVectors } from "./services/embeddings-backfill.js";
 import { getProviderApiKey } from "./services/internal-agent/providers/index.js";
@@ -1015,6 +1016,16 @@ process.once("SIGINT", () => embeddingWorker.stop());
 const mentionOutboxWorker = startMentionOutboxWorker(db as any, { intervalMs: 2000 });
 process.once("SIGTERM", () => mentionOutboxWorker.stop());
 process.once("SIGINT", () => mentionOutboxWorker.stop());
+
+// Comment-wakeup-outbox drain worker (PR #291 round-16). Drains
+// `comment_wakeup_outbox` — the PER-TARGET comment agent-wakeup rows enqueued in
+// addComment's tx — and dispatches each exactly-once (FOR UPDATE SKIP LOCKED
+// claim + owner-guarded mark-'done'). Replaces the comment-wide wakeups_enqueued_at
+// marker + CAS, closing the crash-loses-summon and partial-failure-double-wake
+// residuals (per-target completion + worker retry).
+const commentWakeupOutboxWorker = startCommentWakeupOutboxWorker(db as any, { intervalMs: 2000 });
+process.once("SIGTERM", () => commentWakeupOutboxWorker.stop());
+process.once("SIGINT", () => commentWakeupOutboxWorker.stop());
 
 // Notification delivery retry worker (Phase G2, T26).
 // Sweeps `notifications` rows where `delivery_error IS NOT NULL AND

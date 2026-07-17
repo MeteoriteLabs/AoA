@@ -143,36 +143,31 @@ describe.skipIf(process.platform === "win32")("comment+reassign atomicity (real 
     expect(await issueService(db).getCommentByClientSubmissionId(companyId, issueId, key)).toBeNull();
   });
 
-  // ---- Round-12 #1: the wakeup dispatch is claimed atomically ----
+  // ---- Round-16: comment wakeups go through the durable per-target outbox ----
+  // (The former claimCommentWakeupDispatch/releaseCommentWakeupDispatch CAS is
+  // removed; its guarantees now live in comment_wakeup_outbox — see
+  // comment-wakeup-outbox.integration.test.ts for the full drain/retry/idempotency
+  // coverage. Here we assert the service enqueues per-target rows idempotently.)
 
-  it("lets exactly ONE of two concurrent claims win (no double-wake)", async () => {
+  it("enqueueCommentWakeups persists per-target rows idempotently on (comment, agent)", async () => {
     const comment = await issueService(db).addComment(issueId, "@Beta please look", {
       userId: "board-user",
-      clientSubmissionId: "claim-key-1",
+      clientSubmissionId: "wakeup-key-1",
     });
 
-    const [a, b] = await Promise.all([
-      issueService(db).claimCommentWakeupDispatch(comment.id),
-      issueService(db).claimCommentWakeupDispatch(comment.id),
-    ]);
-    // Exactly one request may dispatch; the other skips.
-    expect([a, b].filter(Boolean)).toHaveLength(1);
+    const targets = [
+      { agentId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa01", wakeup: { reason: "issue_commented" } },
+      { agentId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa02", wakeup: { reason: "issue_comment_mentioned" } },
+    ];
+    await issueService(db).enqueueCommentWakeups({ companyId, issueId, commentId: comment.id, targets });
+    // Re-enqueue the SAME targets (a keyed retry) → deduped by the unique index.
+    await issueService(db).enqueueCommentWakeups({ companyId, issueId, commentId: comment.id, targets });
 
-    // A third (later) claim also loses — the marker is set.
-    expect(await issueService(db).claimCommentWakeupDispatch(comment.id)).toBe(false);
-  });
-
-  it("re-opens the claim after a compensating release (a failed dispatch stays retryable)", async () => {
-    const comment = await issueService(db).addComment(issueId, "@Beta again", {
-      userId: "board-user",
-      clientSubmissionId: "claim-key-2",
-    });
-
-    // Winner claims, then its dispatch throws → it releases the claim.
-    expect(await issueService(db).claimCommentWakeupDispatch(comment.id)).toBe(true);
-    await issueService(db).releaseCommentWakeupDispatch(comment.id);
-
-    // A retry re-claims and dispatches (the summon is never lost).
-    expect(await issueService(db).claimCommentWakeupDispatch(comment.id)).toBe(true);
+    const rows = await db.execute(
+      sql`SELECT id FROM comment_wakeup_outbox WHERE comment_id = ${comment.id}`,
+    );
+    const arr = Array.isArray(rows) ? rows : ((rows as { rows?: unknown[] })?.rows ?? []);
+    // Exactly 2 rows (one per target) despite the double enqueue — no double-wake.
+    expect(arr).toHaveLength(2);
   });
 });

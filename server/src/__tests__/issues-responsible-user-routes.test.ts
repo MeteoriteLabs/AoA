@@ -38,6 +38,26 @@ const mockIssueService = vi.hoisted(() => ({
   findMentionedAgents: vi.fn(),
   notifyMentionedHumans: vi.fn(),
   resolveAgentKinds: vi.fn(),
+  // Round-16: the route enqueues per-target wakeups here (durable outbox). This
+  // mock inlines the worker drain (resolve kind → heartbeat.wakeup / aoa) so the
+  // existing heartbeat.wakeup assertions still hold.
+  enqueueCommentWakeups: vi.fn(async (input: { companyId: string; targets: Array<{ agentId: string; wakeup: any }> }) => {
+    const kinds: Map<string, string> = await mockIssueService.resolveAgentKinds(
+      input.targets.map((t) => t.agentId),
+    );
+    for (const t of input.targets) {
+      if (kinds.get(t.agentId) === "aoa") {
+        const w = t.wakeup ?? {};
+        await mockIssueService.enqueueAoaMentionWakeup?.(input.companyId, t.agentId, {
+          source: w.source,
+          reason: w.reason,
+          payload: w.payload,
+        });
+      } else {
+        await mockHeartbeatService.wakeup(t.agentId, t.wakeup);
+      }
+    }
+  }),
 }));
 
 const mockAccessService = vi.hoisted(() => ({

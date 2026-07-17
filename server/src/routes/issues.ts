@@ -37,6 +37,7 @@ import { getSafeServingHeaders } from "../services/asset-serving-safety.js";
 import { sniffAndVerifyContentType } from "../services/asset-content-guard.js";
 import { issueDocumentKeySchema, upsertIssueDocumentSchema } from "@armyofagents/shared";
 import { createEagerWorkspaceForIssue } from "../services/eager-workspace.js";
+import type { CommentWakeupTarget } from "../services/comment-wakeup-outbox.js";
 import { canDelegateToTarget, type WakeSkippedReason } from "../services/task-policy.js";
 import {
   listIssueContextBundlesForIssue,
@@ -394,7 +395,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
     return { ok: true, currentIssue, reopened, reopenFromStatus, interruptedRunId };
   }
 
-  async function enqueueIssueCommentWakeups(input: {
+  async function buildIssueCommentWakeupTargets(input: {
     issue: {
       id: string;
       companyId: string;
@@ -419,7 +420,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
     reopenFromStatus?: string | null;
     interruptedRunId?: string | null;
     attachments?: CommentWakeAttachment[];
-  }) {
+  }): Promise<CommentWakeupTarget[]> {
     const {
       issue,
       currentIssue,
@@ -527,73 +528,19 @@ export function issueRoutes(db: Db, storage: StorageService) {
       });
     }
 
+    // Human @mention notifications: idempotent (hub reconcile dedups) + best-
+    // effort, and about the ISSUE + body (not the comment), so it stays inline
+    // rather than in the per-agent wakeup outbox (which covers AGENT wakeups —
+    // the round-16 finding). It runs before the comment insert; a duplicate
+    // request re-notifies harmlessly.
     await svc.notifyMentionedHumans(issue.companyId, body, currentIssue.id, actor);
 
-    // Kind-aware dispatch (crew arc review #1 — CRITICAL). Crew agents (kind='aoa')
-    // run via the AoA dispatcher, NOT the heartbeat — heartbeat.wakeup refuses
-    // kind='aoa' (Decision #100) and silently drops the request. Without this
-    // branch, a founder commenting on (or @mentioning a crew agent in) a crew
-    // task produced no dispatch and no error. Mirrors the PATCH/update path
-    // chokepoint (resolveAgentKinds → enqueueAoaMentionWakeup vs heartbeat.wakeup).
-    // Round-14 #1: a resolveAgentKinds failure must NOT silently fall back to an
-    // empty map. With no kinds, every kind='aoa' target would route down the
-    // heartbeat branch, and heartbeat.wakeup RESOLVES null (records
-    // heartbeat.skipped.aoa_kind) rather than rejecting — so the misrouted crew
-    // summon would be reported as ok:true, the claim kept, and every retry skips
-    // → a permanently lost summon. Instead, count every target as failed so the
-    // claim-gated caller releases the marker and a later retry re-resolves.
-    let aoaKinds: Map<string, string>;
-    try {
-      aoaKinds = await svc.resolveAgentKinds([...wakeups.keys()]);
-    } catch (err) {
-      logger.warn(
-        { err, issueId: currentIssue.id },
-        "resolveAgentKinds failed on issue comment — skipping dispatch so the claim releases for retry",
-      );
-      return { attempted: wakeups.size, failed: wakeups.size };
-    }
-    // Round-9 #3: AWAIT the wakeup enqueues (their agent_wakeup_requests rows are
-    // the durable summon) before this function resolves, so a caller that stamps
-    // wakeupsEnqueuedAt after awaiting us records completion only once the rows
-    // are written — not while a fire-and-forget insert is still pending. Errors
-    // are swallowed per-agent (one bad wakeup must not fail the others / the
-    // request), but round-13 #1: we now COUNT failures and return them so the
-    // claim-gated caller can release the marker when NO durable wakeup landed
-    // (otherwise a fully-failed dispatch resolves normally, the marker stays set,
-    // and every retry skips → the agent is never woken).
-    const dispatches: Array<Promise<{ ok: boolean }>> = [];
-    for (const [agentId, wakeup] of wakeups.entries()) {
-      if (aoaKinds.get(agentId) === "aoa") {
-        dispatches.push(
-          svc
-            .enqueueAoaMentionWakeup(issue.companyId, agentId, {
-              source: wakeup?.source,
-              reason: wakeup?.reason,
-              payload: wakeup?.payload,
-            })
-            .then(() => ({ ok: true }))
-            .catch((err) => {
-              logger.warn(
-                { err, issueId: currentIssue.id, agentId },
-                "failed to enqueue aoa mention wakeup on issue comment",
-              );
-              return { ok: false };
-            }),
-        );
-      } else {
-        dispatches.push(
-          heartbeat
-            .wakeup(agentId, wakeup)
-            .then(() => ({ ok: true }))
-            .catch((err) => {
-              logger.warn({ err, issueId: currentIssue.id, agentId }, "failed to wake agent on issue comment");
-              return { ok: false };
-            }),
-        );
-      }
-    }
-    const results = await Promise.all(dispatches);
-    return { attempted: results.length, failed: results.filter((r) => !r.ok).length };
+    // Round-16: return the per-agent wakeup TARGETS (agentId + fully-built config)
+    // instead of dispatching here. The caller enqueues these in the comment-insert
+    // transaction (addComment) and the durable comment_wakeup_outbox worker
+    // delivers each exactly once — resolving each agent's kind (aoa vs org) at
+    // drain time (so a failed kind lookup just retries that row, never misroutes).
+    return [...wakeups.entries()].map(([agentId, wakeup]) => ({ agentId, wakeup }));
   }
 
   // Dispatch the wakeups for the combined comment+reassign / update PATCH path
@@ -601,8 +548,8 @@ export function issueRoutes(db: Db, storage: StorageService) {
   // wakeups the PATCH always fired, but AWAITS their durable enqueue (so a caller
   // can stamp wakeups_enqueued_at only after the summon rows exist) and is reused
   // by both the fresh PATCH and its idempotent-replay resume — parity with the
-  // POST comment routes' enqueueIssueCommentWakeups.
-  async function dispatchPatchCommentWakeups(input: {
+  // POST comment routes. buildIssueCommentWakeupTargets.
+  async function buildPatchCommentWakeupTargets(input: {
     issue: IssueForCommentControl;
     comment: { id: string; authorAgentId?: string | null } | null;
     /** Comment body for @mention resolution (empty when this is a pure update). */
@@ -612,7 +559,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
     assigneeChanged: boolean;
     /** Wake issue.assigneeAgentId with issue_review_changes_requested. */
     requestChanges: boolean;
-  }): Promise<{ attempted: number; failed: number }> {
+  }): Promise<CommentWakeupTarget[]> {
     const { issue, comment, body, actor, assigneeChanged, requestChanges } = input;
     const wakeups = new Map<string, Parameters<typeof heartbeat.wakeup>[1]>();
 
@@ -678,105 +625,52 @@ export function issueRoutes(db: Db, storage: StorageService) {
       await svc.notifyMentionedHumans(issue.companyId, body, issue.id, actor);
     }
 
-    // Round-14 #1: a resolveAgentKinds failure must NOT fall back to an empty map
-    // (that misroutes kind='aoa' targets to heartbeat.wakeup, which no-ops them
-    // as ok:true → lost crew summon). Count every target as failed so the claim
-    // releases and a retry re-resolves.
-    let aoaKinds: Map<string, string>;
-    try {
-      aoaKinds = await svc.resolveAgentKinds([...wakeups.keys()]);
-    } catch (err) {
-      logger.warn(
-        { err, issueId: issue.id },
-        "resolveAgentKinds failed on issue update — skipping dispatch so the claim releases for retry",
-      );
-      return { attempted: wakeups.size, failed: wakeups.size };
-    }
-    // Round-11 #1: AWAIT the dispatches (their agent_wakeup_requests rows are the
-    // durable summon) so a caller stamps the completion marker only after they land.
-    // Round-13 #1: COUNT per-agent failures and return them so the claim-gated
-    // caller releases the marker when no durable wakeup landed (a swallowed
-    // all-failed dispatch would otherwise keep the marker set forever).
-    const dispatches: Array<Promise<{ ok: boolean }>> = [];
-    for (const [agentId, wakeup] of wakeups.entries()) {
-      if (aoaKinds.get(agentId) === "aoa") {
-        dispatches.push(
-          svc
-            .enqueueAoaMentionWakeup(issue.companyId, agentId, {
-              source: wakeup?.source,
-              reason: wakeup?.reason,
-              payload: wakeup?.payload,
-            })
-            .then(() => ({ ok: true }))
-            .catch((err) => {
-              logger.warn({ err, issueId: issue.id, agentId }, "failed to enqueue aoa mention wakeup");
-              return { ok: false };
-            }),
-        );
-      } else {
-        dispatches.push(
-          heartbeat
-            .wakeup(agentId, wakeup)
-            .then(() => ({ ok: true }))
-            .catch((err) => {
-              logger.warn({ err, issueId: issue.id, agentId }, "failed to wake agent on issue update");
-              return { ok: false };
-            }),
-        );
-      }
-    }
-    const results = await Promise.all(dispatches);
-    return { attempted: results.length, failed: results.filter((r) => !r.ok).length };
+    // Round-16: return the per-agent wakeup TARGETS. The caller enqueues them into
+    // the durable comment_wakeup_outbox and the worker delivers each exactly once,
+    // resolving each agent's kind (aoa vs org) at drain time.
+    return [...wakeups.entries()].map(([agentId, wakeup]) => ({ agentId, wakeup }));
   }
 
-  // Run a comment's wakeup dispatch behind an atomic CLAIM (PR #291 round-12 #1).
-  // Two concurrent requests for the same comment — a fresh insert-winner still
-  // dispatching and a retry that passed the early-replay check — both observe
-  // wakeups_enqueued_at = NULL; without a claim they would BOTH dispatch and
-  // double-wake the agent. claimCommentWakeupDispatch is a conditional CAS that
-  // lets exactly ONE win (it stamps the marker); the loser returns false and
-  // skips. The claim is RELEASED (marker → null) so a later retry can recover in
-  // TWO cases: (a) the dispatch THROWS, and (b) round-13 #1 — the dispatch
-  // resolves normally but reports failed wakeups. The dispatch helpers swallow
-  // per-agent rejections (Promise.all over per-promise catches) and return
-  // { attempted, failed }; a fully/partly failed dispatch therefore does NOT
-  // throw, so relying on the throw alone left the marker set with no durable
-  // wakeup and every retry skipped. We release whenever failed > 0.
-  //
-  // Granularity (documented residual): on a PARTIAL failure (some wakeups landed,
-  // some didn't) we still release, so a retry re-dispatches ALL of them and
-  // re-wakes the agents whose wakeups already landed. We favour this over the
-  // alternative (keep the marker → the FAILED agents are never woken), because a
-  // lost summon is worse than a duplicate wake. Per-agent dedup (only re-waking
-  // the failed agents) needs a durable comment-wakeup outbox mirroring
-  // discussion_mention_outbox — deferred. A hard crash between the claim and the
-  // dispatch is the other residual the outbox would close.
-  async function claimAndDispatchCommentWakeups(
-    commentId: string,
-    dispatch: () => Promise<{ attempted: number; failed: number }>,
-  ): Promise<void> {
-    const claimed = await svc.claimCommentWakeupDispatch(commentId);
-    if (!claimed) return;
-    let outcome: { attempted: number; failed: number };
+  // Fire-and-forget DIRECT dispatch for wakeup targets NOT tied to a comment — a
+  // pure reassign / status PATCH with no comment to key the durable
+  // comment_wakeup_outbox on. A keyless one-shot reassign has no durability
+  // contract, so direct dispatch matches the pre-outbox behavior for these paths;
+  // comment-tied wakeups go through svc.enqueueCommentWakeups (durable) instead.
+  // Kinds are resolved here (round-14 #1: a lookup failure skips rather than
+  // misrouting aoa → heartbeat).
+  async function dispatchWakeupTargets(companyId: string, targets: CommentWakeupTarget[]): Promise<void> {
+    if (targets.length === 0) return;
+    let kinds: Map<string, string>;
     try {
-      outcome = await dispatch();
+      kinds = await svc.resolveAgentKinds(targets.map((t) => t.agentId));
     } catch (err) {
-      await svc.releaseCommentWakeupDispatch(commentId).catch(() => {});
-      throw err;
+      logger.warn({ err, companyId }, "resolveAgentKinds failed on reassign wakeup dispatch — skipping");
+      return;
     }
-    if (outcome.failed > 0) {
-      await svc.releaseCommentWakeupDispatch(commentId).catch(() => {});
-    }
+    await Promise.allSettled(
+      targets.map((t) => {
+        const w = (t.wakeup ?? {}) as { source?: string | null; reason?: string | null; payload?: unknown };
+        return kinds.get(t.agentId) === "aoa"
+          ? svc
+              .enqueueAoaMentionWakeup(companyId, t.agentId, { source: w.source, reason: w.reason, payload: w.payload })
+              .catch((err) => logger.warn({ err, agentId: t.agentId }, "failed aoa reassign wakeup"))
+          : heartbeat
+              .wakeup(t.agentId, t.wakeup as Parameters<typeof heartbeat.wakeup>[1])
+              .catch((err) => logger.warn({ err, agentId: t.agentId }, "failed reassign wakeup"));
+      }),
+    );
   }
 
-  // Resume any of a replayed/race-lost comment's side effects that the original
-  // request never completed (PR #291 round-7 #2 + #3). Each side effect is gated
-  // by its own completion marker so a resume finishes what's missing without
-  // double-firing what's done:
-  //   - control effects (reopen/interrupt) — resume when control_effects_completed_at
-  //     is NULL (else skip: the founder may have legitimately re-closed the task);
-  //   - @mention/assignee wakeups — resume when wakeups_enqueued_at is NULL (else
-  //     skip: comment wakeups are not idempotent and would double-wake).
+  // Resume a replayed/race-lost comment's side effects that the original request
+  // never completed. Two parts, each idempotent so a resume finishes what's
+  // missing without re-firing what's done:
+  //   - CONTROL EFFECTS (reopen/interrupt): gated by control_effects_completed_at
+  //     so a resume never re-applies them (the founder may have re-closed the task);
+  //   - @mention/assignee WAKEUPS (round-16): re-build the per-agent targets and
+  //     re-enqueue them into comment_wakeup_outbox. The enqueue is idempotent on
+  //     (comment, agent), so this is a no-op when the original already enqueued
+  //     them, and it RECOVERS the case where the original committed the comment but
+  //     crashed before enqueueing (the durable worker then delivers each once).
   // Returns { ok:false } when authz/control-effect handling already sent a response.
   async function resumeIncompleteCommentSideEffects(input: {
     req: Request;
@@ -787,22 +681,17 @@ export function issueRoutes(db: Db, storage: StorageService) {
       body: string;
       authorAgentId?: string | null;
       controlEffectsCompletedAt?: Date | null;
-      wakeupsEnqueuedAt?: Date | null;
     };
     reopenRequested: boolean;
     interruptRequested: boolean;
-    // Completed attachment rows to carry into the resumed wakeup so the woken
-    // agent receives the file metadata (round-8 #2). MUST be passed AFTER the
-    // attachments are actually stored — the caller completes them first, then
-    // resumes, so the wakeup marker isn't stamped before the files exist.
+    // Completed attachment rows to carry into the re-enqueued wakeup so the woken
+    // agent receives the file metadata (round-8 #2).
     attachments?: CommentWakeAttachment[];
   }): Promise<{ ok: boolean }> {
     const { req, res, issue, comment, reopenRequested, interruptRequested } = input;
     const attachments = input.attachments ?? [];
     const actor = getActorInfo(req);
 
-    // Wakeup context defaults (used when control effects were already completed
-    // by the original but the wakeups were not): the current issue, no reopen.
     let currentIssue: IssueForCommentControl = issue;
     let reopened = false;
     let reopenFromStatus: string | null = null;
@@ -826,27 +715,23 @@ export function issueRoutes(db: Db, storage: StorageService) {
       await svc.markCommentControlEffectsCompleted(comment.id);
     }
 
-    if (!comment.wakeupsEnqueuedAt) {
-      // Round-12 #1: CLAIM the wakeup dispatch atomically before firing it. A
-      // fresh insert-winner that is still dispatching and this resume path both
-      // observe wakeupsEnqueuedAt = NULL; the claim CAS lets exactly one dispatch
-      // (round-9 #3's await-before-stamp is now folded into the claim — the marker
-      // is stamped by the claim itself, before the durable enqueue, and released
-      // on a dispatch throw so a retry recovers).
-      await claimAndDispatchCommentWakeups(comment.id, () =>
-        enqueueIssueCommentWakeups({
-          issue,
-          currentIssue,
-          comment,
-          body: comment.body,
-          actor,
-          reopened,
-          reopenFromStatus,
-          interruptedRunId,
-          attachments,
-        }),
-      );
-    }
+    const targets = await buildIssueCommentWakeupTargets({
+      issue,
+      currentIssue,
+      comment,
+      body: comment.body,
+      actor,
+      reopened,
+      reopenFromStatus,
+      interruptedRunId,
+      attachments,
+    });
+    await svc.enqueueCommentWakeups({
+      companyId: issue.companyId,
+      issueId: issue.id,
+      commentId: comment.id,
+      targets,
+    });
 
     return { ok: true };
   }
@@ -1451,26 +1336,27 @@ export function issueRoutes(db: Db, storage: StorageService) {
     if (earlySubmissionKey) {
       const replay = await svc.getCommentByClientSubmissionId(existing.companyId, id, earlySubmissionKey);
       if (replay) {
-        if (!(replay as { wakeupsEnqueuedAt?: Date | null }).wakeupsEnqueuedAt) {
-          // The original never durably enqueued this comment's wakeups — resume
-          // them behind an atomic CLAIM (round-12 #1). If the ORIGINAL request is
-          // still in-flight and dispatching, this retry and the original both see
-          // the marker null; the claim CAS lets exactly one dispatch and the other
-          // skip, so the agent is never double-woken. Wake the CURRENTLY-assigned
-          // agent when the request targeted a reassign, plus any @mentions.
-          const reassignRequested =
-            req.body.assigneeAgentId !== undefined || req.body.assigneeUserId !== undefined;
-          await claimAndDispatchCommentWakeups(replay.id, () =>
-            dispatchPatchCommentWakeups({
-              issue: existing,
-              comment: replay,
-              body: replay.body,
-              actor: getActorInfo(req),
-              assigneeChanged: reassignRequested,
-              requestChanges: false,
-            }),
-          );
-        }
+        // Round-16: re-build + re-enqueue this comment's wakeup TARGETS
+        // idempotently (onConflictDoNothing on (comment, agent)). If the original
+        // committed the comment but died before enqueueing, this recovers it; if
+        // the rows already exist, the enqueue is a no-op. The worker then delivers
+        // each exactly once — no marker, no double-wake. Never re-PATCHes the task.
+        const reassignRequested =
+          req.body.assigneeAgentId !== undefined || req.body.assigneeUserId !== undefined;
+        const targets = await buildPatchCommentWakeupTargets({
+          issue: existing,
+          comment: replay,
+          body: replay.body,
+          actor: getActorInfo(req),
+          assigneeChanged: reassignRequested,
+          requestChanges: false,
+        });
+        await svc.enqueueCommentWakeups({
+          companyId: existing.companyId,
+          issueId: id,
+          commentId: replay.id,
+          targets,
+        });
         res.json({ ...existing, comment: replay });
         return;
       }
@@ -1697,40 +1583,41 @@ export function issueRoutes(db: Db, storage: StorageService) {
 
     const assigneeChanged = assigneeWillChange;
 
-    // Wakeup dispatch. For a KEYED comment (composer comment+reassign) the wakeup
-    // dispatch runs behind an atomic CLAIM (round-12 #1): the claim CAS stamps
-    // wakeups_enqueued_at and lets exactly ONE of the concurrent requests (this
-    // fresh insert-winner + any retry that reaches the early-replay check above)
-    // dispatch — the loser skips, so the agent is never double-woken. A race-loser
-    // (addComment returned replayed) resumes only when the winner hasn't stamped
-    // yet. Non-keyed PATCHes (pure status/reassign, request-changes) keep the
-    // fire-and-forget dispatch for response latency.
-    if (comment && typeof commentClientSubmissionId === "string" && !isRequestChangesTransition) {
-      const alreadyEnqueued =
-        commentReplayed && Boolean((comment as { wakeupsEnqueuedAt?: Date | null }).wakeupsEnqueuedAt);
-      if (!alreadyEnqueued) {
-        await claimAndDispatchCommentWakeups(comment.id, () =>
-          dispatchPatchCommentWakeups({
-            issue,
-            comment,
-            body: persistedCommentBody ?? "",
-            actor,
-            assigneeChanged,
-            requestChanges: false,
-          }),
-        );
-      }
-    } else {
-      // Fire-and-forget for the non-idempotent paths (request-changes, pure
-      // update/reassign): no submission key, so no durable marker to stamp.
-      void dispatchPatchCommentWakeups({
+    // Round-16: build the per-agent wakeup TARGETS, then route them:
+    //  - comment present (keyed comment+reassign, or the request-changes feedback
+    //    comment) → enqueue into the durable comment_wakeup_outbox (idempotent on
+    //    (comment, agent); the worker delivers each exactly once). Per-target rows
+    //    mean a partial failure retries only the failed agent (no double-wake), and
+    //    a keyed retry re-enqueues the same targets harmlessly (crash recovery).
+    //  - no comment (pure status/reassign) → direct fire-and-forget dispatch: there
+    //    is no comment to key the outbox on, and a keyless one-shot reassign has no
+    //    durability contract.
+    //  - race-loser replay → the original already enqueued the rows; do nothing.
+    if (comment && !commentReplayed) {
+      const targets = await buildPatchCommentWakeupTargets({
         issue,
-        comment: commentReplayed ? null : comment,
-        body: commentReplayed ? "" : (persistedCommentBody ?? ""),
+        comment,
+        body: persistedCommentBody ?? "",
         actor,
         assigneeChanged,
         requestChanges: isRequestChangesTransition,
-      }).catch(() => {});
+      });
+      await svc.enqueueCommentWakeups({
+        companyId: issue.companyId,
+        issueId: issue.id,
+        commentId: comment.id,
+        targets,
+      });
+    } else if (!comment) {
+      const targets = await buildPatchCommentWakeupTargets({
+        issue,
+        comment: null,
+        body: "",
+        actor,
+        assigneeChanged,
+        requestChanges: isRequestChangesTransition,
+      });
+      void dispatchWakeupTargets(issue.companyId, targets).catch(() => {});
     }
 
     res.json({ ...issue, comment });
@@ -2000,37 +1887,29 @@ export function issueRoutes(db: Db, storage: StorageService) {
       },
     });
 
-    // Merge all wakeups from this comment into one enqueue per agent to avoid
-    // duplicate runs. For a KEYED comment the dispatch runs behind an atomic CLAIM
-    // (round-12 #1) — the claim CAS stamps wakeups_enqueued_at and lets exactly
-    // one of the fresh-winner / concurrent replay-resume paths dispatch, so the
-    // agent is never double-woken; a dispatch throw releases the claim so a retry
-    // recovers. An UNKEYED comment has no idempotency marker → dispatch directly.
-    if (clientSubmissionId) {
-      await claimAndDispatchCommentWakeups(comment.id, () =>
-        enqueueIssueCommentWakeups({
-          issue,
-          currentIssue,
-          comment,
-          body: req.body.body,
-          actor,
-          reopened,
-          reopenFromStatus,
-          interruptedRunId,
-        }),
-      );
-    } else {
-      await enqueueIssueCommentWakeups({
-        issue,
-        currentIssue,
-        comment,
-        body: req.body.body,
-        actor,
-        reopened,
-        reopenFromStatus,
-        interruptedRunId,
-      });
-    }
+    // Round-16: build this comment's per-agent wakeup TARGETS (after control
+    // effects, so reopen/interrupt context is included) and enqueue them into the
+    // durable comment_wakeup_outbox. The worker delivers each exactly once; the
+    // per-target rows + (comment, agent) idempotency mean a partial failure retries
+    // only the failed agent (no double-wake) and a keyed retry re-enqueues the same
+    // targets harmlessly (crash recovery) — replacing the wakeups_enqueued_at
+    // marker + CAS.
+    const commentWakeupTargets = await buildIssueCommentWakeupTargets({
+      issue,
+      currentIssue,
+      comment,
+      body: req.body.body,
+      actor,
+      reopened,
+      reopenFromStatus,
+      interruptedRunId,
+    });
+    await svc.enqueueCommentWakeups({
+      companyId: issue.companyId,
+      issueId: issue.id,
+      commentId: comment.id,
+      targets: commentWakeupTargets,
+    });
 
     res.status(201).json(comment);
   });
@@ -2289,37 +2168,28 @@ export function issueRoutes(db: Db, storage: StorageService) {
       },
     });
 
-    // Round-12 #1: a KEYED comment dispatches behind an atomic CLAIM so exactly
-    // one of the fresh-winner / concurrent replay-resume paths fires the wakeup
-    // (the claim CAS stamps the marker; a dispatch throw releases it for retry).
-    // An UNKEYED comment has no idempotency marker → dispatch directly.
-    if (clientSubmissionId) {
-      await claimAndDispatchCommentWakeups(comment.id, () =>
-        enqueueIssueCommentWakeups({
-          issue,
-          currentIssue,
-          comment,
-          body,
-          actor,
-          reopened,
-          reopenFromStatus,
-          interruptedRunId,
-          attachments,
-        }),
-      );
-    } else {
-      await enqueueIssueCommentWakeups({
-        issue,
-        currentIssue,
-        comment,
-        body,
-        actor,
-        reopened,
-        reopenFromStatus,
-        interruptedRunId,
-        attachments,
-      });
-    }
+    // Round-16: build this comment's per-agent wakeup TARGETS (carrying attachment
+    // metadata) and enqueue them into the durable comment_wakeup_outbox. The worker
+    // delivers each exactly once; per-target rows + (comment, agent) idempotency
+    // give partial-failure isolation (no double-wake) and crash recovery (a keyed
+    // retry re-enqueues the same targets harmlessly) — replacing the marker + CAS.
+    const commentWakeupTargets = await buildIssueCommentWakeupTargets({
+      issue,
+      currentIssue,
+      comment,
+      body,
+      actor,
+      reopened,
+      reopenFromStatus,
+      interruptedRunId,
+      attachments,
+    });
+    await svc.enqueueCommentWakeups({
+      companyId: issue.companyId,
+      issueId: issue.id,
+      commentId: comment.id,
+      targets: commentWakeupTargets,
+    });
 
     res.status(201).json({
       comment,

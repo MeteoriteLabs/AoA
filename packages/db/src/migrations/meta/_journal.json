@@ -1282,6 +1282,13 @@
       "when": 1784285819760,
       "tag": "0182_silent_fixer",
       "breakpoints": true
+    },
+    {
+      "idx": 183,
+      "version": "7",
+      "when": 1784305276475,
+      "tag": "0183_wild_franklin_richards",
+      "breakpoints": true
     }
   ]
 }

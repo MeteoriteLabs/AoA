@@ -62,8 +62,12 @@ const mockIssueService = vi.hoisted(() => ({
   enqueueAoaMentionWakeup: vi.fn(),
   getCommentByClientSubmissionId: vi.fn(),
   markCommentControlEffectsCompleted: vi.fn(),
-  claimCommentWakeupDispatch: vi.fn(),
-  releaseCommentWakeupDispatch: vi.fn(),
+  // Round-16: the route enqueues per-target wakeups here (durable outbox). In the
+  // real system a background worker drains + dispatches them; the beforeEach mock
+  // (below) inlines that drain — resolving each target's kind and calling
+  // heartbeat.wakeup / enqueueAoaMentionWakeup — so the existing "waked agent X"
+  // assertions keep exercising the same dispatch surface.
+  enqueueCommentWakeups: vi.fn(),
 }));
 
 const mockAccessService = vi.hoisted(() => ({
@@ -170,6 +174,10 @@ function createApp(actorOverride?: Record<string, unknown>) {
   return app;
 }
 
+// Round-16: models the comment_wakeup_outbox (comment, agent) unique index so the
+// mocked inline drain (enqueueCommentWakeups impl) delivers each target once.
+const dispatchedWakeups = new Set<string>();
+
 beforeEach(() => {
   vi.clearAllMocks();
   mockAccessService.canUser.mockResolvedValue(true);
@@ -181,11 +189,41 @@ beforeEach(() => {
   // Default: no prior submission with this key → the create path runs.
   mockIssueService.getCommentByClientSubmissionId.mockResolvedValue(null);
   mockIssueService.markCommentControlEffectsCompleted.mockResolvedValue(undefined);
-  // Round-12 #1: the wakeup dispatch runs behind an atomic claim. Default: the
-  // caller WINS the claim (true) → it dispatches. Tests that exercise a race
-  // loser override this to false per scenario.
-  mockIssueService.claimCommentWakeupDispatch.mockResolvedValue(true);
-  mockIssueService.releaseCommentWakeupDispatch.mockResolvedValue(undefined);
+  // Round-16: enqueueCommentWakeups persists per-target rows to the durable outbox;
+  // a background worker drains + dispatches them. This mock INLINES that drain —
+  // resolving each target's kind and routing aoa → enqueueAoaMentionWakeup, org →
+  // heartbeat.wakeup — so the existing dispatch assertions (heartbeat.wakeup /
+  // enqueueAoaMentionWakeup called with agent X + reason Y) still hold end-to-end.
+  dispatchedWakeups.clear();
+  mockIssueService.enqueueCommentWakeups.mockImplementation(
+    async (input: {
+      companyId: string;
+      commentId: string;
+      targets: Array<{ agentId: string; wakeup: any }>;
+    }) => {
+      const kinds: Map<string, string> = await mockIssueService.resolveAgentKinds(
+        input.targets.map((t) => t.agentId),
+      );
+      for (const t of input.targets) {
+        // Model the (comment, agent) unique index + onConflictDoNothing: a target
+        // already enqueued+delivered for this comment is a no-op on re-enqueue
+        // (so a keyed retry / replay never re-wakes a succeeded target).
+        const key = `${input.commentId}:${t.agentId}`;
+        if (dispatchedWakeups.has(key)) continue;
+        dispatchedWakeups.add(key);
+        if (kinds.get(t.agentId) === "aoa") {
+          const w = t.wakeup ?? {};
+          await mockIssueService.enqueueAoaMentionWakeup(input.companyId, t.agentId, {
+            source: w.source,
+            reason: w.reason,
+            payload: w.payload,
+          });
+        } else {
+          await mockHeartbeatService.wakeup(t.agentId, t.wakeup);
+        }
+      }
+    },
+  );
   mockIssueService.addComment.mockResolvedValue({
     id: "comment-1",
     issueId,
@@ -566,7 +604,9 @@ describe("POST /issues/:id/comments-with-attachments", () => {
     // re-fire wakeups — it completes through the serialized (advisory-locked)
     // path, which finds nothing missing.
     const submissionId = "sub-race-loser";
-    // A completed winner (both markers set) → the loser resumes nothing.
+    // A completed winner → the loser's idempotent re-enqueue is deduped by the
+    // winner's already-delivered rows (round-16). Pre-seed the winner's delivery.
+    dispatchedWakeups.add(`comment-1:${assigneeAgentId}`);
     const winner = {
       id: "comment-1",
       issueId,
@@ -576,7 +616,6 @@ describe("POST /issues/:id/comments-with-attachments", () => {
       authorUserId: "board-user",
       clientSubmissionId: submissionId,
       controlEffectsCompletedAt: new Date(0),
-      wakeupsEnqueuedAt: new Date(0),
     };
     mockIssueService.getCommentByClientSubmissionId.mockResolvedValue(null); // pre-check missed it
     mockIssueService.addComment.mockResolvedValue({ ...winner, replayed: true });
@@ -767,12 +806,12 @@ describe("POST /issues/:id/comments-with-attachments", () => {
     // Still exactly one durable comment.
     expect(mockIssueService.addComment).toHaveBeenCalledTimes(1);
 
-    // Round-8 #2 / round-12 #1: the missing attachments are completed BEFORE the
-    // wakeup dispatch is claimed, so a wakeup is never claimed+stamped while the
-    // files are still absent.
-    expect(mockIssueService.claimCommentWakeupDispatch).toHaveBeenCalledTimes(1);
+    // Round-8 #2 / round-16: the missing attachments are completed BEFORE the
+    // wakeup targets are enqueued, so the enqueued wakeup carries the completed
+    // attachment metadata (never enqueued while the files are still absent).
+    expect(mockIssueService.enqueueCommentWakeups).toHaveBeenCalledTimes(1);
     expect(mockIssueService.completeMissingCommentAttachments.mock.invocationCallOrder[0]).toBeLessThan(
-      mockIssueService.claimCommentWakeupDispatch.mock.invocationCallOrder[0],
+      mockIssueService.enqueueCommentWakeups.mock.invocationCallOrder[0],
     );
     // And the resumed wakeup carries the completed attachment metadata.
     await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalled());
@@ -923,8 +962,11 @@ describe("POST /issues/:id/comments — idempotent retry (clientSubmissionId)", 
 
   it("returns the winner's comment without re-firing wakeups when addComment loses the insert race (round-3 #4)", async () => {
     // Both same-key requests pass the pre-check; the loser's insert is swallowed
-    // and addComment returns the winner's row flagged `replayed`. The route must
-    // return it (200) without re-logging activity or re-firing wakeups.
+    // and addComment returns the winner's row flagged `replayed`. Round-16: the
+    // loser re-enqueues the SAME (comment, agent) targets — idempotent, so the
+    // winner's already-delivered wakeup is NOT re-fired. Pre-seed the winner's
+    // delivery to model the (comment, agent) unique index + worker dedup.
+    dispatchedWakeups.add(`comment-1:${assigneeAgentId}`);
     mockIssueService.getCommentByClientSubmissionId.mockResolvedValue(null);
     mockIssueService.addComment.mockResolvedValue({ ...existingComment, replayed: true });
 
@@ -935,6 +977,7 @@ describe("POST /issues/:id/comments — idempotent retry (clientSubmissionId)", 
     expect(res.status).toBe(200);
     expect(res.body.id).toBe("comment-1");
     await new Promise((resolve) => setTimeout(resolve, 0));
+    // No DOUBLE wake — the winner already delivered (idempotency dedups the loser).
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
@@ -980,9 +1023,12 @@ describe("POST /issues/:id/comments — idempotent retry (clientSubmissionId)", 
     // Control effects resumed (task was still closed) and stamped.
     expect(mockIssueService.update).toHaveBeenCalledWith(issueId, { status: "todo" });
     expect(mockIssueService.markCommentControlEffectsCompleted).toHaveBeenCalledWith("comment-1");
-    // Wakeups resumed — claimed (round-12 #1) then dispatched.
+    // Round-16: wakeups resumed by RE-ENQUEUEING the per-target rows (idempotent);
+    // the inline-drain mock then delivers the assignee's reopen wake once.
+    expect(mockIssueService.enqueueCommentWakeups).toHaveBeenCalledWith(
+      expect.objectContaining({ commentId: "comment-1" }),
+    );
     await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
-    expect(mockIssueService.claimCommentWakeupDispatch).toHaveBeenCalledWith("comment-1");
   });
 
   it("RESUMES only the wakeups on replay when control effects are done but wakeups are NULL (round-7 #3)", async () => {
@@ -1007,114 +1053,64 @@ describe("POST /issues/:id/comments — idempotent retry (clientSubmissionId)", 
     // Control effects NOT re-applied (already done).
     expect(mockIssueService.update).not.toHaveBeenCalled();
     expect(mockIssueService.markCommentControlEffectsCompleted).not.toHaveBeenCalled();
-    // Wakeups resumed for the mentioned agent — claimed (round-12 #1) then dispatched.
+    // Round-16: the mentioned agent's wakeup is resumed via idempotent re-enqueue.
     await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
-    expect(mockIssueService.claimCommentWakeupDispatch).toHaveBeenCalledWith("comment-1");
+    expect(mockIssueService.enqueueCommentWakeups).toHaveBeenCalledWith(
+      expect.objectContaining({ commentId: "comment-1" }),
+    );
   });
 
-  it("RELEASES the wakeup claim when the wakeup enqueue rejects — so a later retry resumes (round-9 #3 / round-12 #1)", async () => {
-    // Round-12 #1: the claim CAS stamps wakeups_enqueued_at BEFORE dispatching. If
-    // the enqueue then rejects, the compensating release clears the marker back to
-    // NULL so a later retry re-claims and re-dispatches (the summon is never lost).
+  it("enqueues the comment's wakeups into the durable per-target outbox (round-16)", async () => {
+    // Round-16: the wakeups_enqueued_at marker + claim/release CAS are gone. The
+    // route now persists per-target wakeup rows via svc.enqueueCommentWakeups; the
+    // background worker delivers each exactly once. (Crash recovery + per-target
+    // no-double-wake are proven against real Postgres in the outbox integration
+    // suite; here we assert the route hands the targets to the durable outbox.)
     mockIssueService.getById.mockResolvedValue(makeIssue({ status: "todo", assigneeAgentId: null }));
     mockIssueService.findMentionedAgents.mockResolvedValue([mentionedAgentId]);
-    // A failure INSIDE the enqueue (notifyMentionedHumans is awaited, uncaught)
-    // rejects enqueueIssueCommentWakeups after the claim, before completion.
-    mockIssueService.notifyMentionedHumans.mockRejectedValue(new Error("notify DB down"));
-    mockIssueService.getCommentByClientSubmissionId.mockResolvedValue({
-      ...existingComment,
-      body: "@Beta please take a look",
-      controlEffectsCompletedAt: new Date("2026-07-17T00:00:00Z"),
-      wakeupsEnqueuedAt: null,
-    });
 
     const res = await request(createApp())
       .post(`/api/issues/${issueId}/comments`)
       .send({ body: "@Beta please take a look", clientSubmissionId: submissionId });
 
-    // The request fails loud (not a silent success); the claim was taken then
-    // RELEASED (marker back to null) so the summon survives for a retry.
-    expect(res.status).toBe(500);
-    expect(mockIssueService.claimCommentWakeupDispatch).toHaveBeenCalledWith("comment-1");
-    expect(mockIssueService.releaseCommentWakeupDispatch).toHaveBeenCalledWith("comment-1");
+    expect(res.status).toBe(201);
+    expect(mockIssueService.enqueueCommentWakeups).toHaveBeenCalledWith(
+      expect.objectContaining({
+        companyId,
+        issueId,
+        commentId: "comment-1",
+        targets: expect.arrayContaining([expect.objectContaining({ agentId: mentionedAgentId })]),
+      }),
+    );
   });
 
-  it("RELEASES the wakeup claim when EVERY wakeup dispatch fails silently (round-13 #1)", async () => {
-    // The dispatch helper swallows per-agent rejections (Promise.all over per-
-    // promise catches), so a fully-failed dispatch resolves NORMALLY — it does
-    // not throw. Round-13 #1: the helper now reports { attempted, failed } and the
-    // claim is released when failed > 0, so a retry re-summons. Without this the
-    // marker would stay set and the mentioned agent would never be woken.
+  it("a keyed retry re-enqueues idempotently and wakes the agent at most once (round-16)", async () => {
+    // The send + retry both hand the SAME (comment, agent) target to the outbox;
+    // the (comment, agent) unique index + worker dedup deliver it once. Modeled by
+    // the inline-drain mock's dedup set — so the mentioned agent is woken once.
     mockIssueService.getById.mockResolvedValue(makeIssue({ status: "todo", assigneeAgentId: null }));
     mockIssueService.findMentionedAgents.mockResolvedValue([mentionedAgentId]);
-    // The wakeup insert rejects — swallowed per-agent, so enqueue does NOT throw.
-    mockHeartbeatService.wakeup.mockRejectedValue(new Error("wakeup DB down"));
-    mockIssueService.getCommentByClientSubmissionId.mockResolvedValue({
-      ...existingComment,
-      body: "@Beta please take a look",
-      controlEffectsCompletedAt: new Date("2026-07-17T00:00:00Z"),
-      wakeupsEnqueuedAt: null,
-    });
+    mockIssueService.getCommentByClientSubmissionId
+      .mockResolvedValueOnce(null) // first send: fresh
+      .mockResolvedValue({
+        ...existingComment,
+        body: "@Beta please take a look",
+        controlEffectsCompletedAt: new Date("2026-07-17T00:00:00Z"),
+      });
 
-    const res = await request(createApp())
+    const app = createApp();
+    const first = await request(app)
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "@Beta please take a look", clientSubmissionId: submissionId });
+    const retry = await request(app)
       .post(`/api/issues/${issueId}/comments`)
       .send({ body: "@Beta please take a look", clientSubmissionId: submissionId });
 
-    // Succeeds via the replay path (the dispatch didn't throw), but the claim is
-    // RELEASED because no durable wakeup landed → a later retry resumes the summon.
-    expect(res.status).toBe(200);
-    expect(mockIssueService.claimCommentWakeupDispatch).toHaveBeenCalledWith("comment-1");
-    expect(mockIssueService.releaseCommentWakeupDispatch).toHaveBeenCalledWith("comment-1");
-  });
-
-  it("KEEPS the wakeup claim when the dispatch fully succeeds (round-13 #1)", async () => {
-    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "todo", assigneeAgentId: null }));
-    mockIssueService.findMentionedAgents.mockResolvedValue([mentionedAgentId]);
-    // heartbeat.wakeup resolves (beforeEach default) → the wakeup lands.
-    mockIssueService.getCommentByClientSubmissionId.mockResolvedValue({
-      ...existingComment,
-      body: "@Beta please take a look",
-      controlEffectsCompletedAt: new Date("2026-07-17T00:00:00Z"),
-      wakeupsEnqueuedAt: null,
-    });
-
-    const res = await request(createApp())
-      .post(`/api/issues/${issueId}/comments`)
-      .send({ body: "@Beta please take a look", clientSubmissionId: submissionId });
-
-    expect(res.status).toBe(200);
-    await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
-    expect(mockIssueService.claimCommentWakeupDispatch).toHaveBeenCalledWith("comment-1");
-    // All wakeups landed → the marker is KEPT (no compensating release).
-    expect(mockIssueService.releaseCommentWakeupDispatch).not.toHaveBeenCalled();
-  });
-
-  it("RELEASES the claim and does NOT misroute when resolveAgentKinds fails (round-14 #1)", async () => {
-    // A resolveAgentKinds failure must NOT fall back to an empty map (which would
-    // route a kind='aoa' target to heartbeat.wakeup — that no-ops the crew summon
-    // and reports success). The dispatch is skipped entirely, counted as failed,
-    // so the claim releases for a retry; nothing is woken down the wrong branch.
-    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "todo", assigneeAgentId: null }));
-    mockIssueService.findMentionedAgents.mockResolvedValue([mentionedAgentId]);
-    mockIssueService.resolveAgentKinds.mockRejectedValue(new Error("kind lookup DB down"));
-    mockIssueService.getCommentByClientSubmissionId.mockResolvedValue({
-      ...existingComment,
-      body: "@Beta please take a look",
-      controlEffectsCompletedAt: new Date("2026-07-17T00:00:00Z"),
-      wakeupsEnqueuedAt: null,
-    });
-
-    const res = await request(createApp())
-      .post(`/api/issues/${issueId}/comments`)
-      .send({ body: "@Beta please take a look", clientSubmissionId: submissionId });
-
-    expect(res.status).toBe(200);
-    expect(mockIssueService.claimCommentWakeupDispatch).toHaveBeenCalledWith("comment-1");
-    // Claim released (retry will re-resolve) and NOTHING was misrouted.
-    expect(mockIssueService.releaseCommentWakeupDispatch).toHaveBeenCalledWith("comment-1");
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
-    expect(mockIssueService.enqueueAoaMentionWakeup).not.toHaveBeenCalled();
+    expect(first.status).toBe(201);
+    expect(retry.status).toBe(200);
+    // Both enqueue the same target; the outbox idempotency delivers it once.
+    expect(mockIssueService.enqueueCommentWakeups).toHaveBeenCalledTimes(2);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
   });
 
   it("passes the clientSubmissionId through to addComment on the create path", async () => {
@@ -1170,10 +1166,13 @@ describe("PATCH /issues/:id — comment+reassign idempotency (round-10 #2)", () 
   });
 
   it("does NOT re-PATCH the task or re-log on a same-key comment+reassign Retry (round-11 #2)", async () => {
-    // A completed original: the keyed comment already exists WITH its wakeups
-    // stamped. The Retry must be detected EARLY (before svc.update) and short-
-    // circuit — no second svc.update, no duplicate issue.updated activity, no
-    // duplicate comment.
+    // A completed original: the keyed comment already exists and the original
+    // already delivered its wakeup. The Retry must be detected EARLY (before
+    // svc.update) and short-circuit — no second svc.update, no duplicate
+    // issue.updated activity, no duplicate comment. Round-16: the retry
+    // re-enqueues the same target idempotently; the original's delivery dedups it
+    // (pre-seed the winner's delivery to model the (comment, agent) unique index).
+    dispatchedWakeups.add(`comment-9:${assigneeAgentId}`);
     mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId }));
     mockIssueService.getCommentByClientSubmissionId.mockResolvedValue({
       id: "comment-9",
@@ -1181,7 +1180,6 @@ describe("PATCH /issues/:id — comment+reassign idempotency (round-10 #2)", () 
       companyId,
       body: "please take this over",
       authorAgentId: null,
-      wakeupsEnqueuedAt: new Date("2026-07-17T00:00:00Z"),
     });
 
     const res = await request(createApp())
@@ -1226,44 +1224,19 @@ describe("PATCH /issues/:id — comment+reassign idempotency (round-10 #2)", () 
     // The task is NOT re-mutated.
     expect(mockIssueService.update).not.toHaveBeenCalled();
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
-    // Wakeups RESUMED behind the atomic claim (round-12 #1) + dispatched.
+    // Round-16: the keyed-PATCH replay RE-ENQUEUES the comment's wakeup targets
+    // (idempotent); the inline-drain mock then delivers the @mention wake once.
+    expect(mockIssueService.enqueueCommentWakeups).toHaveBeenCalledWith(
+      expect.objectContaining({
+        commentId: "comment-9",
+        targets: expect.arrayContaining([expect.objectContaining({ agentId: mentionedAgentId })]),
+      }),
+    );
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
       mentionedAgentId,
       expect.objectContaining({ reason: "issue_comment_mentioned" }),
     );
-    expect(mockIssueService.claimCommentWakeupDispatch).toHaveBeenCalledWith("comment-9");
-  });
-
-  it("does NOT dispatch when the wakeup claim is LOST to a concurrent request (round-12 #1)", async () => {
-    // Two concurrent recovery requests both observe wakeupsEnqueuedAt = null and
-    // both reach the resume branch. The atomic claim CAS lets exactly ONE win; the
-    // LOSER (claimCommentWakeupDispatch → false) must skip dispatch so the agent is
-    // not double-woken.
-    mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: null }));
-    mockIssueService.findMentionedAgents.mockResolvedValue([mentionedAgentId]);
-    mockIssueService.getCommentByClientSubmissionId.mockResolvedValue({
-      id: "comment-9",
-      issueId,
-      companyId,
-      body: "@Beta please take a look",
-      authorAgentId: null,
-      wakeupsEnqueuedAt: null,
-    });
-    // This request LOSES the claim race.
-    mockIssueService.claimCommentWakeupDispatch.mockResolvedValue(false);
-
-    const res = await request(createApp())
-      .patch(`/api/issues/${issueId}`)
-      .send({ comment: "@Beta please take a look", clientSubmissionId: "reassign-key-4" });
-
-    expect(res.status).toBe(200);
-    expect(res.body.comment.id).toBe("comment-9");
-    // Claim attempted but lost → NO dispatch, NO re-mutation.
-    expect(mockIssueService.claimCommentWakeupDispatch).toHaveBeenCalledWith("comment-9");
-    expect(mockIssueService.update).not.toHaveBeenCalled();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 });
 

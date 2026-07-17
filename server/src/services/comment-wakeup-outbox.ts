@@ -1,0 +1,215 @@
+/**
+ * Transactional PER-TARGET outbox for issue-comment agent wakeups (PR #291
+ * round-16). A direct mirror of `mention-outbox.ts` (discussion mentions), but
+ * with ONE ROW PER TARGET so completion is tracked per-agent.
+ *
+ * `enqueueCommentWakeupOutbox` is called INSIDE the comment-insert transaction
+ * (addComment), so a committed comment always has its pending wakeup rows —
+ * closing the crash-loses-summon residual (round-16 #1): unlike the old
+ * comment-wide `wakeups_enqueued_at` marker, a crash can't leave a "done" marker
+ * with no summon, because the durable rows ARE the summon and the worker drains
+ * them after any crash. `drainCommentWakeupOutbox` is the worker tick: it claims
+ * pending / stale-'processing' rows one at a time with FOR UPDATE SKIP LOCKED,
+ * dispatches each wakeup EXACTLY ONCE, and marks 'done' or schedules a backoff
+ * retry. Because each target is its own row, a partial multi-agent failure
+ * retries ONLY the failed target — succeeded targets stay 'done' and are never
+ * re-dispatched (no double-wake, round-16 #2).
+ */
+
+import { and, eq, sql } from "drizzle-orm";
+import type { Db } from "@armyofagents/db";
+import { commentWakeupOutbox } from "@armyofagents/db";
+import { logger } from "../middleware/logger.js";
+
+const LOG_CTX = { service: "comment-wakeup-outbox" } as const;
+
+/** One wakeup target: the agent to wake + the fully-built heartbeat.wakeup config. */
+export type CommentWakeupTarget = { agentId: string; wakeup: unknown };
+
+export interface CommentWakeupRow {
+  id: string;
+  companyId: string;
+  issueId: string;
+  commentId: string;
+  targetAgentId: string;
+  wakeup: unknown;
+  attempts: number;
+  claimToken: string;
+}
+
+/** Dispatch one row's wakeup. Injectable for tests; the default resolves the
+ *  target's kind and routes aoa → enqueueAoaMentionWakeup, org → heartbeat.wakeup. */
+export type RunWakeupFn = (db: Db, row: CommentWakeupRow) => Promise<void>;
+
+/**
+ * Rows still 'processing' past this window are treated as crash-orphaned and may
+ * be reclaimed. Comment wakeups are a fast row insert (no long CLI run like the
+ * mention outbox's controller participation), so a short window is safe.
+ */
+const STALE_PROCESSING_MINUTES = 5;
+const DEFAULT_MAX_ATTEMPTS = 6;
+const DEFAULT_BATCH_SIZE = 20;
+
+/**
+ * Enqueue one outbox row PER TARGET, idempotently. Keyed on the partial unique
+ * index (comment_id, target_agent_id) via onConflictDoNothing, so re-enqueueing
+ * the SAME comment's targets — the fresh insert AND a keyed-retry that re-builds
+ * them after a crash — resolves to exactly ONE row per agent. That gives the two
+ * round-16 guarantees together: per-target exactly-once (a partial failure the
+ * worker retries never re-inserts a succeeded target → no double-wake), and
+ * crash recovery (a request that died before enqueueing is recovered by the
+ * keyed retry re-enqueueing, since the retry finds the comment and re-builds +
+ * re-enqueues the same targets harmlessly).
+ */
+export async function enqueueCommentWakeupOutbox(
+  db: Db,
+  row: {
+    companyId: string;
+    issueId: string;
+    commentId: string;
+    targets: CommentWakeupTarget[];
+  },
+): Promise<void> {
+  if (row.targets.length === 0) return;
+  await db
+    .insert(commentWakeupOutbox)
+    .values(
+      row.targets.map((target) => ({
+        companyId: row.companyId,
+        issueId: row.issueId,
+        commentId: row.commentId,
+        targetAgentId: target.agentId,
+        wakeup: target.wakeup as Record<string, unknown>,
+      })),
+    )
+    .onConflictDoNothing({
+      target: [commentWakeupOutbox.commentId, commentWakeupOutbox.targetAgentId],
+    });
+}
+
+/** Default dispatch: resolve the agent's kind AT DRAIN time (round-14 #1 — never
+ *  default-route on a failed lookup; a thrown resolution just retries the row),
+ *  then route aoa → enqueueAoaMentionWakeup, org → heartbeat.wakeup. Lazy imports
+ *  keep the heavy heartbeat/issues trees off the worker's module-load path. */
+const defaultRunWakeup: RunWakeupFn = async (db, row) => {
+  const { issueService } = await import("./issues.js");
+  const kinds = await issueService(db).resolveAgentKinds([row.targetAgentId]);
+  if (kinds.get(row.targetAgentId) === "aoa") {
+    const w = (row.wakeup ?? {}) as { source?: string | null; reason?: string | null; payload?: unknown };
+    await issueService(db).enqueueAoaMentionWakeup(row.companyId, row.targetAgentId, {
+      source: w.source,
+      reason: w.reason,
+      payload: w.payload,
+    });
+    return;
+  }
+  const { heartbeatService } = await import("./heartbeat.js");
+  await heartbeatService(db).wakeup(
+    row.targetAgentId,
+    (row.wakeup ?? {}) as Parameters<ReturnType<typeof heartbeatService>["wakeup"]>[1],
+  );
+};
+
+export interface DrainCommentWakeupOpts {
+  batchSize?: number;
+  maxAttempts?: number;
+  /** Injectable for tests; defaults to kind-resolving heartbeat/aoa dispatch. */
+  runWakeup?: RunWakeupFn;
+}
+
+export interface DrainCommentWakeupResult {
+  processed: number;
+  failed: number;
+}
+
+function backoffMs(attempts: number): number {
+  return Math.min(60_000, 1_000 * 2 ** Math.max(0, attempts - 1));
+}
+
+/** Atomically claim EXACTLY ONE eligible row (pending+due OR stale-'processing'),
+ *  marking it 'processing' with a fresh token in the same round-trip. Mirrors the
+ *  mention outbox's round-10 #1 claim-one-before-execute. */
+async function claimOneRow(db: Db): Promise<CommentWakeupRow | null> {
+  const result = await db.execute(
+    sql.raw(`
+      WITH claimed AS (
+        SELECT id FROM comment_wakeup_outbox
+        WHERE (status = 'pending' AND (next_retry_at IS NULL OR next_retry_at <= now()))
+           OR (status = 'processing' AND updated_at < now() - interval '${STALE_PROCESSING_MINUTES} minutes')
+        ORDER BY created_at
+        LIMIT 1
+        FOR UPDATE SKIP LOCKED
+      )
+      UPDATE comment_wakeup_outbox
+      SET status = 'processing', updated_at = now(), claim_token = gen_random_uuid()
+      WHERE id IN (SELECT id FROM claimed)
+      RETURNING
+        id,
+        company_id AS "companyId",
+        issue_id AS "issueId",
+        comment_id AS "commentId",
+        target_agent_id AS "targetAgentId",
+        wakeup,
+        attempts,
+        claim_token AS "claimToken"
+    `),
+  );
+  const rawRows = Array.isArray(result) ? result : ((result as { rows?: unknown[] })?.rows ?? []);
+  const r = rawRows[0] as Record<string, unknown> | undefined;
+  if (!r) return null;
+  return {
+    id: String(r.id),
+    companyId: String(r.companyId),
+    issueId: String(r.issueId),
+    commentId: String(r.commentId),
+    targetAgentId: String(r.targetAgentId),
+    wakeup: typeof r.wakeup === "string" ? JSON.parse(r.wakeup) : r.wakeup,
+    attempts: Number(r.attempts ?? 0),
+    claimToken: String(r.claimToken),
+  };
+}
+
+export async function drainCommentWakeupOutbox(
+  db: Db,
+  opts: DrainCommentWakeupOpts = {},
+): Promise<DrainCommentWakeupResult> {
+  const maxRows = Math.max(1, Math.floor(opts.batchSize ?? DEFAULT_BATCH_SIZE));
+  const maxAttempts = opts.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
+  const runWakeup = opts.runWakeup ?? defaultRunWakeup;
+
+  let processed = 0;
+  let failed = 0;
+
+  for (let i = 0; i < maxRows; i++) {
+    const row = await claimOneRow(db);
+    if (!row) break;
+
+    try {
+      await runWakeup(db, row);
+      // Owner-guarded terminal write: only mark done if we still own the claim,
+      // so a reclaimed original worker can't clobber the new owner.
+      await db
+        .update(commentWakeupOutbox)
+        .set({ status: "done", updatedAt: new Date() })
+        .where(and(eq(commentWakeupOutbox.id, row.id), eq(commentWakeupOutbox.claimToken, row.claimToken)));
+      processed += 1;
+    } catch (err) {
+      const attempts = row.attempts + 1;
+      const terminal = attempts >= maxAttempts;
+      await db
+        .update(commentWakeupOutbox)
+        .set({
+          status: terminal ? "failed" : "pending",
+          attempts,
+          error: String((err as { message?: string })?.message ?? err).slice(0, 500),
+          nextRetryAt: terminal ? null : new Date(Date.now() + backoffMs(attempts)),
+          updatedAt: new Date(),
+        })
+        .where(and(eq(commentWakeupOutbox.id, row.id), eq(commentWakeupOutbox.claimToken, row.claimToken)));
+      failed += 1;
+      logger.warn({ ...LOG_CTX, err, outboxId: row.id, attempts, terminal }, "comment wakeup outbox row failed");
+    }
+  }
+
+  return { processed, failed };
+}
