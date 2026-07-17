@@ -33,7 +33,14 @@ x-aoa-env: &aoa-env
   AOA_TRUST_PROXY: ${AOA_TRUST_PROXY:-false}
   AOA_MIGRATION_AUTO_APPLY: ${AOA_MIGRATION_AUTO_APPLY:-true}
   AOA_MIGRATION_PROMPT: ${AOA_MIGRATION_PROMPT:-}
-  DATABASE_URL: postgres://${AOA_POSTGRES_USER:-paperclip}:${AOA_POSTGRES_PASSWORD:-paperclip}@db:5432/${AOA_POSTGRES_DB:-paperclip}
+  # DATABASE_URL is assembled by scripts/docker-entrypoint.sh from the discrete
+  # AOA_POSTGRES_* pieces below (percent-encoding user/password so reserved chars
+  # in a hardened password survive postgres.js URL parsing). Left empty here so a
+  # host-shell / .env DATABASE_URL still propagates and wins over assembly.
+  DATABASE_URL: ${DATABASE_URL:-}
+  AOA_POSTGRES_USER: ${AOA_POSTGRES_USER:-paperclip}
+  AOA_POSTGRES_PASSWORD: ${AOA_POSTGRES_PASSWORD:-paperclip}
+  AOA_POSTGRES_DB: ${AOA_POSTGRES_DB:-paperclip}
   BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:-}
   AOA_AGENT_JWT_SECRET: ${AOA_AGENT_JWT_SECRET:-}
   OPENAI_API_KEY: ${OPENAI_API_KEY:-}

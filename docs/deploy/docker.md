@@ -120,8 +120,18 @@ Compose-specific variables:
 | `AOA_INSTANCE_ID` | `default` | Instance directory under `/paperclip/instances/`. |
 | `AOA_POSTGRES_IMAGE` | `pgvector/pgvector:pg18` | Database image used by the default Compose stack and `psql` tool profile. |
 | `AOA_POSTGRES_USER` | `paperclip` | Database user. |
-| `AOA_POSTGRES_PASSWORD` | `paperclip` | Database password. Set this for shared or long-lived deployments. |
-| `AOA_POSTGRES_DB` | `paperclip` | Database name. |
+| `AOA_POSTGRES_PASSWORD` | `paperclip` | Database password. Set this for shared or long-lived deployments. URL-reserved characters (`/ # ? % @ :`) are safe — the entrypoint percent-encodes the value into `DATABASE_URL` automatically, so no manual escaping is needed. |
+| `AOA_POSTGRES_DB` | `paperclip` | Database name. Must be a plain SQL identifier (`^[A-Za-z_][A-Za-z0-9_]*$`); the entrypoint rejects anything else at startup. |
+
+> **DATABASE_URL assembly.** The default multi-service stack builds `DATABASE_URL`
+> from the `AOA_POSTGRES_*` pieces above in `scripts/docker-entrypoint.sh`,
+> percent-encoding the user and password. Set your own `DATABASE_URL` (host shell
+> or `.env`) to override assembly and point at an external database.
+>
+> **Rotating the password.** Postgres stores the role password at first
+> initialization inside the `aoa-postgres` volume. Changing `AOA_POSTGRES_PASSWORD`
+> later does **not** re-set it — run `ALTER ROLE ... WITH PASSWORD ...` (e.g. via the
+> `psql` tools profile) or recreate the volume.
 | `AOA_MIGRATION_AUTO_APPLY` | `true` | Applies pending migrations during container startup. |
 | `AOA_DEPLOYMENT_MODE` | `authenticated` (`local_trusted` in quickstart) | `authenticated` requires Google OAuth; `local_trusted` allows a keyless loopback trial. |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | empty | Google OAuth client credentials. **Required** in `authenticated` mode; the server refuses to boot without them. |

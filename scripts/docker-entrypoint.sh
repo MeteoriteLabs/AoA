@@ -26,6 +26,16 @@ export AOA_INSTANCE_ID="${AOA_INSTANCE_ID:-default}"
 export AOA_CONFIG="${AOA_CONFIG:-$AOA_HOME/instances/$AOA_INSTANCE_ID/config.json}"
 export HOME="${HOME:-$AOA_HOME}"
 
+# Assemble DATABASE_URL from the discrete AOA_POSTGRES_* pieces, percent-encoding
+# the user/password so URL-reserved characters in a hardened password survive
+# postgres.js's URL parsing. An explicitly-provided DATABASE_URL always wins.
+# Runs before docker-bootstrap.mjs (which bakes config.json) and before the
+# final exec, so both the baked config and the server's process.env are correct.
+if [ -z "${DATABASE_URL:-}" ]; then
+    DATABASE_URL="$(node /app/scripts/compose-database-url.mjs)"
+    export DATABASE_URL
+fi
+
 node /app/scripts/docker-bootstrap.mjs
 
 AOA_INSTANCE_DIR=$(dirname "$AOA_CONFIG")
