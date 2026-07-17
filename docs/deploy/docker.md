@@ -122,22 +122,24 @@ Compose-specific variables:
 | `AOA_POSTGRES_USER` | `paperclip` | Database user. |
 | `AOA_POSTGRES_PASSWORD` | `paperclip` | Database password. Set this for shared or long-lived deployments. URL-reserved characters (`/ # ? % @ :`) are safe — the entrypoint percent-encodes the value into `DATABASE_URL` automatically, so no manual escaping is needed. |
 | `AOA_POSTGRES_DB` | `paperclip` | Database name. Must be a plain SQL identifier (`^[A-Za-z_][A-Za-z0-9_]*$`); the entrypoint rejects anything else at startup. |
-
-> **DATABASE_URL assembly.** The default multi-service stack builds `DATABASE_URL`
-> from the `AOA_POSTGRES_*` pieces above in `scripts/docker-entrypoint.sh`,
-> percent-encoding the user and password. Set your own `DATABASE_URL` (host shell
-> or `.env`) to override assembly and point at an external database.
->
-> **Rotating the password.** Postgres stores the role password at first
-> initialization inside the `aoa-postgres` volume. Changing `AOA_POSTGRES_PASSWORD`
-> later does **not** re-set it — run `ALTER ROLE ... WITH PASSWORD ...` (e.g. via the
-> `psql` tools profile) or recreate the volume.
 | `AOA_MIGRATION_AUTO_APPLY` | `true` | Applies pending migrations during container startup. |
-| `AOA_DEPLOYMENT_MODE` | `authenticated` (`local_trusted` in quickstart) | `authenticated` requires Google OAuth; `local_trusted` allows a keyless loopback trial. |
+| `AOA_DEPLOYMENT_MODE` | `authenticated` | Both the default stack and quickstart default to `authenticated`, which requires Google OAuth. `local_trusted` (keyless loopback) is loopback-only and not usable for a port-published container. |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | empty | Google OAuth client credentials. **Required** in `authenticated` mode; the server refuses to boot without them. |
-| `AOA_DEV_LOCAL_IDENTITY` | empty (`1` in quickstart) | Dev escape hatch that lets `local_trusted` boot without Google OAuth. Not for multi-user deploys. |
+| `AOA_DEV_LOCAL_IDENTITY` | empty | Dev escape hatch that lets `local_trusted` boot without Google OAuth. Not set by the Compose stacks; not for multi-user deploys. |
 | `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET`, `GITHUB_APP_PRIVATE_KEY_PEM`, `GITHUB_APP_WEBHOOK_SECRET` | empty | Optional GitHub App integration variables. Names match `.env.example` and server expectations. |
 | `AOA_DATA_DIR` | `./data/docker-aoa` | Quickstart-only host bind path for `docker-compose.quickstart.yml`. The default multi-service stack uses named volumes. |
+
+> **DATABASE_URL assembly.** The default multi-service stack builds `DATABASE_URL`
+> from the `AOA_POSTGRES_*` pieces in `scripts/docker-entrypoint.sh`, percent-encoding
+> the user and password (URL-reserved characters need no manual escaping). Set your own
+> `DATABASE_URL` (host shell or `.env`) to override assembly and point at an external
+> database. Quickstart and the standalone `docker run` flow set no `AOA_POSTGRES_*` and
+> stay on embedded PostgreSQL.
+>
+> **Rotating the password.** Postgres stores the role password at first initialization
+> inside the `aoa-postgres` volume. Changing `AOA_POSTGRES_PASSWORD` later does **not**
+> re-set it — run `ALTER ROLE ... WITH PASSWORD ...` (e.g. via the `psql` tools profile)
+> or recreate the volume.
 
 For S3-compatible storage:
 
