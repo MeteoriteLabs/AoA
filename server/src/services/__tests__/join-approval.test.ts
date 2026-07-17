@@ -21,7 +21,15 @@ vi.mock("../user-profiles.js", () => ({ getUserProfile }));
 vi.mock("../../middleware/logger.js", () => ({ logger: { warn: vi.fn() } }));
 // buildHumanJoinApprovalServices constructs real services — not used in these tests.
 vi.mock("../access.js", () => ({ accessService: () => ({}) }));
-vi.mock("../team.js", () => ({ teamService: () => ({}) }));
+// approveHumanJoinRequestTx now delegates company-profile seeding to the shared
+// materializeCompanyProfileFromGlobal helper (round-2 dedup) — mock it here and
+// assert the invocation; the field copy + socialLinks parse-filter are covered
+// by materialize-company-profile.test.ts.
+const materializeCompanyProfile = vi.hoisted(() => vi.fn(async () => {}));
+vi.mock("../team.js", () => ({
+  teamService: () => ({}),
+  materializeCompanyProfileFromGlobal: materializeCompanyProfile,
+}));
 vi.mock("../human-capabilities.js", () => ({ humanCapabilitiesService: () => ({}) }));
 
 import {
@@ -43,7 +51,7 @@ function makeTxDb(updatedRow: Record<string, unknown> | null) {
 function makeServices() {
   return {
     access: { ensureMembership: vi.fn(async () => {}), setPrincipalGrants: vi.fn(async () => {}) },
-    team: { applyInviteRole: vi.fn(async () => null), updateCompanyUserProfile: vi.fn(async () => ({})) },
+    team: { applyInviteRole: vi.fn(async () => null) },
     capabilities: { ensureStandardDocuments: vi.fn(async () => {}) },
   };
 }
@@ -83,16 +91,10 @@ describe("approveHumanJoinRequestTx", () => {
       null,
     );
     expect(services.team.applyInviteRole).toHaveBeenCalledWith("c1", "u1", args.invite.defaultsPayload, null);
-    // seeding copies the GLOBAL profile (incl timezone) into the company profile;
-    // socialLinks are parse-filtered — the malformed item is dropped (exact match).
-    expect(services.team.updateCompanyUserProfile).toHaveBeenCalledWith(
-      "c1", "u1",
-      expect.objectContaining({
-        displayName: "Ada", title: "Engineer", timezone: "Asia/Kolkata",
-        socialLinks: [{ type: "website", label: null, url: "https://ada.dev" }],
-      }),
-      null,
-    );
+    // seeding is delegated to the shared helper, invoked inside the savepoint with
+    // the tx handle + attribution id (the field copy + socialLinks parse-filter are
+    // covered by materialize-company-profile.test.ts).
+    expect(materializeCompanyProfile).toHaveBeenCalledWith(expect.anything(), "c1", "u1", null);
     expect(services.capabilities.ensureStandardDocuments).toHaveBeenCalledWith("c1", "u1", null);
     expect(reconcile).toHaveBeenCalledWith("c1", { sourceType: "join_request", sourceId: "r1" });
     expect(logActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
@@ -114,7 +116,7 @@ describe("approveHumanJoinRequestTx", () => {
 
   it("seeding failure is non-fatal — approval still completes", async () => {
     const services = makeServices();
-    services.team.updateCompanyUserProfile = vi.fn(async () => { throw new Error("boom"); });
+    materializeCompanyProfile.mockRejectedValueOnce(new Error("boom"));
     const { db } = makeTxDb({ id: "r1" });
     const row = await approveHumanJoinRequestTx(db, services as never, args);
     expect(row).toEqual({ id: "r1" });
