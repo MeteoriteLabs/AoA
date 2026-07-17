@@ -2499,14 +2499,37 @@ export function issueService(db: Db) {
         .where(eq(issueComments.id, commentId));
     },
 
-    // Stamp the comment's @mention/assignee wakeups as enqueued (PR #291 round-7
-    // #3). Called once the insert winner reaches the wakeup step; the replay /
-    // race-loser paths resume wakeups only when this is null (so a mentioned
-    // agent is never left un-woken, and a completed wakeup is never double-fired).
-    markCommentWakeupsEnqueued: async (commentId: string) => {
-      await db
+    // Atomically CLAIM this comment's @mention/assignee wakeup dispatch (PR #291
+    // round-12 #1). Two concurrent requests — a fresh insert-winner still
+    // dispatching and a retry that passed the early-replay check — both observe
+    // wakeups_enqueued_at = NULL; without a claim they would BOTH dispatch and
+    // double-wake the agent. This conditional CAS
+    //   UPDATE issue_comments SET wakeups_enqueued_at = now()
+    //   WHERE id = ? AND wakeups_enqueued_at IS NULL RETURNING id
+    // lets exactly ONE win: it stamps the marker and returns true; every loser
+    // gets no row (false) and skips dispatch. The marker doubles as the round-7
+    // completion flag (a replay resumes wakeups only when it is null), so a
+    // successful dispatch needs no second stamp. The winner RELEASES the claim
+    // (below) if its dispatch throws so a later retry can re-dispatch.
+    claimCommentWakeupDispatch: async (commentId: string): Promise<boolean> => {
+      const rows = await db
         .update(issueComments)
         .set({ wakeupsEnqueuedAt: new Date() })
+        .where(and(eq(issueComments.id, commentId), isNull(issueComments.wakeupsEnqueuedAt)))
+        .returning({ id: issueComments.id });
+      return rows.length > 0;
+    },
+
+    // Compensating release for claimCommentWakeupDispatch (PR #291 round-12 #1):
+    // clear the marker back to NULL after a dispatch throw so a subsequent retry
+    // re-claims and re-dispatches. Residual (documented): a hard process crash
+    // BETWEEN a successful claim and the dispatch leaves the marker set with the
+    // wakeups unsent (the mentioned agent is left un-woken) — the full fix is a
+    // durable comment-wakeup outbox mirroring discussion_mention_outbox.
+    releaseCommentWakeupDispatch: async (commentId: string): Promise<void> => {
+      await db
+        .update(issueComments)
+        .set({ wakeupsEnqueuedAt: null })
         .where(eq(issueComments.id, commentId));
     },
 

@@ -681,6 +681,30 @@ export function issueRoutes(db: Db, storage: StorageService) {
     await Promise.allSettled(dispatches);
   }
 
+  // Run a comment's wakeup dispatch behind an atomic CLAIM (PR #291 round-12 #1).
+  // Two concurrent requests for the same comment — a fresh insert-winner still
+  // dispatching and a retry that passed the early-replay check — both observe
+  // wakeups_enqueued_at = NULL; without a claim they would BOTH dispatch and
+  // double-wake the agent. claimCommentWakeupDispatch is a conditional CAS that
+  // lets exactly ONE win (it stamps the marker); the loser returns false and
+  // skips. On a dispatch throw the claim is RELEASED (marker → null) so a later
+  // retry can recover. Residual: a hard crash between claim and dispatch leaves
+  // the marker set with wakeups unsent (agent left un-woken); the full fix is a
+  // durable comment-wakeup outbox (mirrors discussion_mention_outbox), deferred.
+  async function claimAndDispatchCommentWakeups(
+    commentId: string,
+    dispatch: () => Promise<void>,
+  ): Promise<void> {
+    const claimed = await svc.claimCommentWakeupDispatch(commentId);
+    if (!claimed) return;
+    try {
+      await dispatch();
+    } catch (err) {
+      await svc.releaseCommentWakeupDispatch(commentId).catch(() => {});
+      throw err;
+    }
+  }
+
   // Resume any of a replayed/race-lost comment's side effects that the original
   // request never completed (PR #291 round-7 #2 + #3). Each side effect is gated
   // by its own completion marker so a resume finishes what's missing without
@@ -739,22 +763,25 @@ export function issueRoutes(db: Db, storage: StorageService) {
     }
 
     if (!comment.wakeupsEnqueuedAt) {
-      // Round-9 #3: AWAIT the durable enqueue BEFORE stamping the marker, so a
-      // process exit between the two can't leave wakeupsEnqueuedAt set with the
-      // wakeups never dispatched (a later retry would then skip recovery). The
-      // marker is the LAST thing, after the enqueue promise resolves.
-      await enqueueIssueCommentWakeups({
-        issue,
-        currentIssue,
-        comment,
-        body: comment.body,
-        actor,
-        reopened,
-        reopenFromStatus,
-        interruptedRunId,
-        attachments,
-      });
-      await svc.markCommentWakeupsEnqueued(comment.id);
+      // Round-12 #1: CLAIM the wakeup dispatch atomically before firing it. A
+      // fresh insert-winner that is still dispatching and this resume path both
+      // observe wakeupsEnqueuedAt = NULL; the claim CAS lets exactly one dispatch
+      // (round-9 #3's await-before-stamp is now folded into the claim — the marker
+      // is stamped by the claim itself, before the durable enqueue, and released
+      // on a dispatch throw so a retry recovers).
+      await claimAndDispatchCommentWakeups(comment.id, () =>
+        enqueueIssueCommentWakeups({
+          issue,
+          currentIssue,
+          comment,
+          body: comment.body,
+          actor,
+          reopened,
+          reopenFromStatus,
+          interruptedRunId,
+          attachments,
+        }),
+      );
     }
 
     return { ok: true };
@@ -1362,20 +1389,23 @@ export function issueRoutes(db: Db, storage: StorageService) {
       if (replay) {
         if (!(replay as { wakeupsEnqueuedAt?: Date | null }).wakeupsEnqueuedAt) {
           // The original never durably enqueued this comment's wakeups — resume
-          // them (await), then stamp so future retries skip (round-11 #1). Wake
-          // the CURRENTLY-assigned agent when the request targeted a reassign,
-          // plus any @mentions in the comment.
+          // them behind an atomic CLAIM (round-12 #1). If the ORIGINAL request is
+          // still in-flight and dispatching, this retry and the original both see
+          // the marker null; the claim CAS lets exactly one dispatch and the other
+          // skip, so the agent is never double-woken. Wake the CURRENTLY-assigned
+          // agent when the request targeted a reassign, plus any @mentions.
           const reassignRequested =
             req.body.assigneeAgentId !== undefined || req.body.assigneeUserId !== undefined;
-          await dispatchPatchCommentWakeups({
-            issue: existing,
-            comment: replay,
-            body: replay.body,
-            actor: getActorInfo(req),
-            assigneeChanged: reassignRequested,
-            requestChanges: false,
-          });
-          await svc.markCommentWakeupsEnqueued(replay.id);
+          await claimAndDispatchCommentWakeups(replay.id, () =>
+            dispatchPatchCommentWakeups({
+              issue: existing,
+              comment: replay,
+              body: replay.body,
+              actor: getActorInfo(req),
+              assigneeChanged: reassignRequested,
+              requestChanges: false,
+            }),
+          );
         }
         res.json({ ...existing, comment: replay });
         return;
@@ -1404,6 +1434,20 @@ export function issueRoutes(db: Db, storage: StorageService) {
       });
     }
     const persistedCommentBody = requestChangesFeedback ?? commentBody;
+    // Round-12 #2: a keyed comment+reassign PATCH (the composer's combined
+    // mutation) must persist the issue reassign (svc.update) and the KEYED comment
+    // (addComment) in ONE transaction, so the keyed comment row exists if-and-only-
+    // if the reassign committed. Otherwise a crash between the two writes leaves
+    // the reassign applied with no keyed comment — and the early-replay check above
+    // (which keys off the comment) would miss it, so a retry re-PATCHes the task
+    // (clobbering a newer concurrent reassign + re-logging issue.updated). The
+    // request-changes transition already runs in its own tx below; this covers the
+    // plain keyed comment+reassign case.
+    const hasKeyedComment =
+      !isRequestChangesTransition &&
+      typeof commentClientSubmissionId === "string" &&
+      typeof persistedCommentBody === "string" &&
+      persistedCommentBody.length > 0;
     if (hiddenAtRaw !== undefined) {
       updateFields.hiddenAt = hiddenAtRaw ? new Date(hiddenAtRaw) : null;
     }
@@ -1441,6 +1485,25 @@ export function issueRoutes(db: Db, storage: StorageService) {
             userId: actor.actorType === "user" ? actor.actorId : undefined,
           });
           return { issue: updatedIssue, comment: feedbackComment };
+        });
+        issue = persisted.issue;
+        comment = persisted.comment;
+      } else if (hasKeyedComment) {
+        // Round-12 #2 (root): reassign + keyed comment commit atomically. The
+        // update keeps its optimistic-concurrency guard (updateActor carries
+        // expectedUpdatedAt = existing.updatedAt → svc.update 409s if another
+        // operator reassigned in the meantime), and the keyed comment insert is
+        // now inside the SAME tx, so the two can never diverge.
+        const persisted = await db.transaction(async (txRaw) => {
+          const txSvc = issueService(txRaw as unknown as Db);
+          const updatedIssue = await txSvc.update(id, updateFields, updateActor);
+          if (!updatedIssue) return { issue: null, comment: null };
+          const keyedComment = await txSvc.addComment(id, persistedCommentBody as string, {
+            agentId: actor.agentId ?? undefined,
+            userId: actor.actorType === "user" ? actor.actorId : undefined,
+            clientSubmissionId: commentClientSubmissionId as string,
+          });
+          return { issue: updatedIssue, comment: keyedComment };
         });
         issue = persisted.issue;
         comment = persisted.comment;
@@ -1532,10 +1595,10 @@ export function issueRoutes(db: Db, storage: StorageService) {
     }
 
     if (persistedCommentBody && !comment) {
-      // Round-10 #2: a comment posted through the PATCH path (e.g. the composer's
-      // comment+reassign combined mutation) must carry the client submission key
-      // so a retry is idempotent — the (company, issue, submission) unique index
-      // dedupes it instead of creating a duplicate comment + repeated wakeups.
+      // A comment posted through the PATCH path WITHOUT a client submission key
+      // (no idempotency requested). The KEYED comment+reassign case is handled
+      // atomically inside the transaction above (round-12 #2), so `comment` is
+      // already set there and this fallback only ever runs for the unkeyed case.
       comment = await svc.addComment(id, persistedCommentBody, {
         agentId: actor.agentId ?? undefined,
         userId: actor.actorType === "user" ? actor.actorId : undefined,
@@ -1570,26 +1633,28 @@ export function issueRoutes(db: Db, storage: StorageService) {
 
     const assigneeChanged = assigneeWillChange;
 
-    // Wakeup dispatch. For a KEYED comment (composer comment+reassign) the
-    // wakeup enqueue is AWAITED and the wakeups_enqueued_at marker stamped only
-    // after it lands, so a retry that reaches the early-replay check above can
-    // resume it durably (round-11 #1). A race-loser (addComment returned replayed)
-    // resumes only when the winner hasn't stamped yet. Non-keyed PATCHes (pure
-    // status/reassign, request-changes) keep the fire-and-forget dispatch for
-    // response latency.
+    // Wakeup dispatch. For a KEYED comment (composer comment+reassign) the wakeup
+    // dispatch runs behind an atomic CLAIM (round-12 #1): the claim CAS stamps
+    // wakeups_enqueued_at and lets exactly ONE of the concurrent requests (this
+    // fresh insert-winner + any retry that reaches the early-replay check above)
+    // dispatch — the loser skips, so the agent is never double-woken. A race-loser
+    // (addComment returned replayed) resumes only when the winner hasn't stamped
+    // yet. Non-keyed PATCHes (pure status/reassign, request-changes) keep the
+    // fire-and-forget dispatch for response latency.
     if (comment && typeof commentClientSubmissionId === "string" && !isRequestChangesTransition) {
       const alreadyEnqueued =
         commentReplayed && Boolean((comment as { wakeupsEnqueuedAt?: Date | null }).wakeupsEnqueuedAt);
       if (!alreadyEnqueued) {
-        await dispatchPatchCommentWakeups({
-          issue,
-          comment,
-          body: persistedCommentBody ?? "",
-          actor,
-          assigneeChanged,
-          requestChanges: false,
-        });
-        await svc.markCommentWakeupsEnqueued(comment.id);
+        await claimAndDispatchCommentWakeups(comment.id, () =>
+          dispatchPatchCommentWakeups({
+            issue,
+            comment,
+            body: persistedCommentBody ?? "",
+            actor,
+            assigneeChanged,
+            requestChanges: false,
+          }),
+        );
       }
     } else {
       // Fire-and-forget for the non-idempotent paths (request-changes, pure
@@ -1872,20 +1937,36 @@ export function issueRoutes(db: Db, storage: StorageService) {
     });
 
     // Merge all wakeups from this comment into one enqueue per agent to avoid
-    // duplicate runs. Round-9 #3: AWAIT the durable enqueue before stamping so
-    // the marker is never set with wakeups still pending (a crash between would
-    // otherwise make a retry skip recovery).
-    await enqueueIssueCommentWakeups({
-      issue,
-      currentIssue,
-      comment,
-      body: req.body.body,
-      actor,
-      reopened,
-      reopenFromStatus,
-      interruptedRunId,
-    });
-    if (clientSubmissionId) await svc.markCommentWakeupsEnqueued(comment.id);
+    // duplicate runs. For a KEYED comment the dispatch runs behind an atomic CLAIM
+    // (round-12 #1) — the claim CAS stamps wakeups_enqueued_at and lets exactly
+    // one of the fresh-winner / concurrent replay-resume paths dispatch, so the
+    // agent is never double-woken; a dispatch throw releases the claim so a retry
+    // recovers. An UNKEYED comment has no idempotency marker → dispatch directly.
+    if (clientSubmissionId) {
+      await claimAndDispatchCommentWakeups(comment.id, () =>
+        enqueueIssueCommentWakeups({
+          issue,
+          currentIssue,
+          comment,
+          body: req.body.body,
+          actor,
+          reopened,
+          reopenFromStatus,
+          interruptedRunId,
+        }),
+      );
+    } else {
+      await enqueueIssueCommentWakeups({
+        issue,
+        currentIssue,
+        comment,
+        body: req.body.body,
+        actor,
+        reopened,
+        reopenFromStatus,
+        interruptedRunId,
+      });
+    }
 
     res.status(201).json(comment);
   });
@@ -2077,7 +2158,10 @@ export function issueRoutes(db: Db, storage: StorageService) {
     if (clientSubmissionId) await svc.markCommentControlEffectsCompleted(comment.id);
     const { currentIssue, reopened, reopenFromStatus, interruptedRunId } = control;
 
-    const attachments = [];
+    // Explicit element type: `attachments` is now captured in the claim-gated
+    // dispatch closure below (round-12 #1), so TS can no longer infer the empty
+    // literal's type from its later synchronous use.
+    const attachments: Awaited<ReturnType<typeof svc.createAttachment>>[] = [];
     for (const file of files) {
       const contentType = validateAttachmentFile(file);
       const stored = await storage.putFile({
@@ -2141,19 +2225,37 @@ export function issueRoutes(db: Db, storage: StorageService) {
       },
     });
 
-    // Round-9 #3: await the durable enqueue before stamping the marker.
-    await enqueueIssueCommentWakeups({
-      issue,
-      currentIssue,
-      comment,
-      body,
-      actor,
-      reopened,
-      reopenFromStatus,
-      interruptedRunId,
-      attachments,
-    });
-    if (clientSubmissionId) await svc.markCommentWakeupsEnqueued(comment.id);
+    // Round-12 #1: a KEYED comment dispatches behind an atomic CLAIM so exactly
+    // one of the fresh-winner / concurrent replay-resume paths fires the wakeup
+    // (the claim CAS stamps the marker; a dispatch throw releases it for retry).
+    // An UNKEYED comment has no idempotency marker → dispatch directly.
+    if (clientSubmissionId) {
+      await claimAndDispatchCommentWakeups(comment.id, () =>
+        enqueueIssueCommentWakeups({
+          issue,
+          currentIssue,
+          comment,
+          body,
+          actor,
+          reopened,
+          reopenFromStatus,
+          interruptedRunId,
+          attachments,
+        }),
+      );
+    } else {
+      await enqueueIssueCommentWakeups({
+        issue,
+        currentIssue,
+        comment,
+        body,
+        actor,
+        reopened,
+        reopenFromStatus,
+        interruptedRunId,
+        attachments,
+      });
+    }
 
     res.status(201).json({
       comment,
