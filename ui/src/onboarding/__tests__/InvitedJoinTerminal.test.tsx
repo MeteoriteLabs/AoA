@@ -298,6 +298,89 @@ describe("InvitedJoinTerminal", () => {
     });
   });
 
+  describe("deep-link authoritative after it leaves the pending set (Codex round-14 P2)", () => {
+    // The user deep-linked into cA (?company=cA) but cA was resolved (rejected
+    // or admitted) BEFORE this terminal's first tick — e.g. while they were on
+    // the profile step. On the first tick cA is ALREADY absent from
+    // pendingInvitations; only B remains. B is tokenless (filed:false) so if the
+    // page WRONGLY switched to it, it would render B's consent card ("invited to
+    // join Beta") — a loud regression. The deep link must stay authoritative:
+    // anchor cA and resolve ITS outcome via the idempotent finalize.
+    const invB = {
+      companyId: "cB",
+      companyName: "Beta",
+      inviteId: "iB",
+      role: "team_lead",
+      createdAt: "2026-01-02T00:00:00.000Z",
+      filed: false,
+    };
+
+    it("REJECT before first tick: cA already gone, B pending → not-approved for A, never anchors B", async () => {
+      routerState.searchParams = new URLSearchParams("company=cA");
+      // cA was rejected during the profile step; the resolver now points at the
+      // OTHER pending invite (cB), and cA is absent from pendingInvitations.
+      fetchJourney.mockResolvedValue({
+        journey: "invited",
+        targetCompanyId: "cB",
+        pendingInvitations: [invB],
+        inviteToken: null,
+      });
+      // The idempotent finalize reports cA's real outcome even though it left
+      // the pending set (the request row still records the rejection).
+      finalizeInvitedJoin.mockResolvedValue({ admitted: false, status: "rejected" });
+      render(<InvitedJoinTerminal />);
+      // RED pre-fix: derivation falls through to targetCompanyId/pendingInvitations[0]
+      // and anchors B → B's tokenless consent card renders, not-approved never shows.
+      expect(await screen.findByText(/not approved/i)).toBeTruthy();
+      expect(mockNavigate).not.toHaveBeenCalled();
+      // cA's outcome was resolved via finalize; B was never touched.
+      expect(finalizeInvitedJoin).toHaveBeenCalledWith("cA");
+      expect(finalizeInvitedJoin).not.toHaveBeenCalledWith("cB");
+      expect(finalizeInvitedJoin).not.toHaveBeenCalledWith("cB", expect.anything());
+      expect(screen.queryByText(/Beta/)).toBeNull();
+    });
+
+    it("ADMIT before first tick: cA left pending because the user is now a member → enters A, never B", async () => {
+      routerState.searchParams = new URLSearchParams("company=cA");
+      // Membership now exists (cA admitted), so the resolver reads "returning"
+      // and cA is gone from pendingInvitations; only B remains.
+      fetchJourney.mockResolvedValue({
+        journey: "returning",
+        targetCompanyId: "cB",
+        pendingInvitations: [invB],
+        inviteToken: null,
+      });
+      // Idempotent finalize returns admitted even though cA left the pending set.
+      finalizeInvitedJoin.mockResolvedValue({ admitted: true, status: "approved" });
+      render(<InvitedJoinTerminal />);
+      await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/", { replace: true }));
+      expect(finalizeInvitedJoin).toHaveBeenCalledWith("cA");
+      expect(finalizeInvitedJoin).not.toHaveBeenCalledWith("cB");
+      expect(finalizeInvitedJoin).not.toHaveBeenCalledWith("cB", expect.anything());
+    });
+
+    it("no-record deep link: finalize 404s for cA → degrades to not-approved, never hangs on B", async () => {
+      routerState.searchParams = new URLSearchParams("company=cA");
+      // The caller has no join_request (and no open invite) in cA at all.
+      fetchJourney.mockResolvedValue({
+        journey: "founder",
+        targetCompanyId: null,
+        pendingInvitations: [invB],
+        inviteToken: null,
+      });
+      finalizeInvitedJoin.mockRejectedValue(
+        Object.assign(new Error("finalize failed: 404"), { status: 404 }),
+      );
+      render(<InvitedJoinTerminal />);
+      // Degrades gracefully (not-approved) rather than hanging or switching to B.
+      expect(await screen.findByText(/not approved/i)).toBeTruthy();
+      expect(mockNavigate).not.toHaveBeenCalled();
+      expect(finalizeInvitedJoin).toHaveBeenCalledWith("cA");
+      expect(finalizeInvitedJoin).not.toHaveBeenCalledWith("cB");
+      expect(screen.queryByText(/Beta/)).toBeNull();
+    });
+  });
+
   describe("re-invite after reject (Codex round-12 P2)", () => {
     // invite1 and invite2 share the anchored company (cA) but carry DISTINCT
     // inviteIds — the founder rejecting invite1 and minting invite2 keeps the

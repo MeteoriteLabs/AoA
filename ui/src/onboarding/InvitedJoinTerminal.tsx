@@ -97,22 +97,29 @@ export function InvitedJoinTerminal() {
         // "returning" means a membership exists SOMEWHERE (the resolver returns
         // it for members of any company), so an existing member with a pending
         // invitation for the target company must still get the finalize
-        // attempt, not a bounce to "/". Prefer the deep-linked ?company=
-        // (InviteLanding passes it) when it is one of the caller's pending
-        // invitations; else the resolver's target (invited) or the first
-        // pending invitation (returning).
-        const deepLinked = searchParams.get("company");
+        // attempt, not a bounce to "/". Precedence for the target:
+        //   1. the explicit ?company= deep link (InviteLanding passes it) —
+        //      AUTHORITATIVE whether or not it is currently in the pending set;
+        //   2. the resolver's target (invited);
+        //   3. the first pending invitation (returning, no deep link).
+        // (1) is the round-14 fix: the deep-linked company can be resolved
+        // (rejected/admitted) BEFORE this terminal's first tick — e.g. while the
+        // user completed the profile step — so it is already absent from
+        // pendingInvitations here. It must still anchor the deep-linked company
+        // and report ITS outcome (via the idempotent finalize below), NOT fall
+        // through to targetCompanyId/pendingInvitations[0] and silently switch to
+        // a DIFFERENT pending invite. `|| null` treats an empty ?company= as no
+        // deep link (matching the prior falsy check).
+        const deepLinked = searchParams.get("company") || null;
         const invitations = j.pendingInvitations ?? [];
-        // Derive the target from the pending list — but only to SEED the anchor
-        // on the first resolving tick (see anchoredTargetRef). After that, the
-        // anchor wins so an approved/rejected target that dropped out of the
-        // pending set does NOT fall through to invitations[0] (a different invite).
+        // Derive the target — but only to SEED the anchor on the first resolving
+        // tick (see anchoredTargetRef). After that, the anchor wins so an
+        // approved/rejected target that dropped out of the pending set does NOT
+        // fall through to invitations[0] (a different invite).
         const derivedTargetId =
-          (deepLinked && invitations.some((p) => p.companyId === deepLinked)
-            ? deepLinked
-            : j.journey === "invited"
-              ? j.targetCompanyId
-              : invitations[0]?.companyId) ?? null;
+          deepLinked ??
+          (j.journey === "invited" ? j.targetCompanyId : invitations[0]?.companyId) ??
+          null;
         if (anchoredTargetRef.current === null && derivedTargetId) {
           anchoredTargetRef.current = derivedTargetId;
         }
@@ -122,17 +129,26 @@ export function InvitedJoinTerminal() {
         if (!inv) {
           // The anchored target is no longer pending — resolve ITS outcome, and
           // never fall through to another pending invite (the multi-invite
-          // switch bug). When we already engaged finalize for this target
-          // (finalizedRef), ask it: finalize is idempotent and DEFINITIVE —
-          // admitted:true => approved, status "rejected" => rejected. That
-          // disambiguates the "returning" label, which only means a membership
-          // exists SOMEWHERE (possibly a DIFFERENT company) and so cannot tell
-          // "this target approved" from "this target rejected but I'm already a
-          // member elsewhere". A tokenless invite the user never consented to
-          // (finalizedRef still false) must never be finalized, so it skips the
-          // call and relies on the label. Finalize errors + non-definitive
-          // responses fall back to the same label below.
-          if (targetId && finalizedRef.current) {
+          // switch bug). Ask the idempotent, DEFINITIVE finalize — admitted:true
+          // => approved, status "rejected" => rejected. That disambiguates the
+          // "returning" label, which only means a membership exists SOMEWHERE
+          // (possibly a DIFFERENT company) and so cannot tell "this target
+          // approved" from "this target rejected but I'm already a member
+          // elsewhere". We finalize when EITHER: we already engaged finalize for
+          // this target (finalizedRef), OR it is the explicit ?company= deep link
+          // (`targetId === deepLinked`). The deep-link case is the round-14 fix:
+          // the user came for cA, so cA's outcome is authoritative even when cA
+          // was resolved before our first tick and finalizedRef is still false —
+          // without this we would skip the call and report the WRONG (fallback)
+          // invite. This finalize is bare (no acceptOpenInvite), so it can only
+          // report a filed request's outcome (approved/rejected/pending/invalid)
+          // — it can NEVER claim/auto-admit a tokenless invite the user never
+          // consented to (a no-record deep link 404s and degrades to the label).
+          // A tokenless, non-deep-linked invite the user never consented to
+          // (finalizedRef false, not the deep link) still skips the call and
+          // relies on the label. Finalize errors + non-definitive responses fall
+          // back to the same label below.
+          if (targetId && (finalizedRef.current || targetId === deepLinked)) {
             try {
               const result = await finalizeInvitedJoin(targetId);
               if (cancelled) return;
