@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, useParams } from "@/lib/router";
+import { Link, useNavigate, useParams } from "@/lib/router";
 import { accessApi } from "../api/access";
 import { authApi } from "../api/auth";
 import { healthApi } from "../api/health";
 import { requiresBoardSession } from "../lib/authGate";
+import { formatInviteExpiry } from "../lib/invite-expiry";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { AGENT_ADAPTER_TYPES } from "@armyofagents/shared";
@@ -28,9 +29,10 @@ const adapterLabels: Record<string, string> = {
 
 const ENABLED_INVITE_ADAPTERS = new Set(["claude_local", "codex_local", "opencode_local", "cursor"]);
 
-function dateTime(value: string) {
-  return new Date(value).toLocaleString();
-}
+const JOIN_TYPE_LABELS: Record<JoinType, string> = {
+  human: "Join as a human",
+  agent: "Connect an agent",
+};
 
 function readNestedString(value: unknown, path: string[]): string | null {
   let current: unknown = value;
@@ -43,6 +45,7 @@ function readNestedString(value: unknown, path: string[]): string | null {
 
 export function InviteLandingPage() {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const params = useParams();
   const token = (params.token ?? "").trim();
   const [joinType, setJoinType] = useState<JoinType>("human");
@@ -110,6 +113,14 @@ export function InviteLandingPage() {
       await queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
       const asBootstrap =
         payload && typeof payload === "object" && "bootstrapAccepted" in (payload as Record<string, unknown>);
+      if (!asBootstrap && joinType === "human") {
+        // Human accepts continue into the guided invited onboarding (profile →
+        // auto-admit/pending) instead of the inline "request submitted" screen.
+        const companyId = (payload as { companyId?: string | null })?.companyId ?? "";
+        queryClient.removeQueries({ queryKey: ["onboarding", "journey"], exact: true });
+        navigate(`/onboarding/join?company=${encodeURIComponent(companyId)}`, { replace: true });
+        return;
+      }
       setResult({ kind: asBootstrap ? "bootstrap" : "join", payload });
     },
     onError: (err) => {
@@ -228,9 +239,15 @@ export function InviteLandingPage() {
     <div className="mx-auto max-w-xl py-10">
       <div className="rounded-lg border border-border bg-card p-6">
         <h1 className="text-xl font-semibold">
-          {invite.inviteType === "bootstrap_ceo" ? "Bootstrap your AoA instance" : "Join this AoA company"}
+          {invite.inviteType === "bootstrap_ceo"
+            ? "Bootstrap your AoA instance"
+            : invite.companyName
+              ? `Join ${invite.companyName} on AoA`
+              : "Join this AoA company"}
         </h1>
-        <p className="mt-2 text-sm text-muted-foreground">Invite expires {dateTime(invite.expiresAt)}.</p>
+        {/* Relative, honest expiry ("expires in 6 days" / "expires in 4 min" /
+            "expired") — email-bound human invites live 7 days, others 10 min. */}
+        <p className="mt-2 text-sm text-muted-foreground">Invite {formatInviteExpiry(invite.expiresAt)}.</p>
 
         {invite.inviteType !== "bootstrap_ceo" && (
           <div className="mt-5 flex gap-2">
@@ -245,7 +262,7 @@ export function InviteLandingPage() {
                     : "border-border bg-background text-foreground"
                 }`}
               >
-                Join as {type}
+                {JOIN_TYPE_LABELS[type]}
               </button>
             ))}
           </div>
@@ -298,7 +315,7 @@ export function InviteLandingPage() {
           </div>
         )}
 
-        {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
+        {error && <p className="mt-3 text-xs text-destructive">{error}</p>}
 
         <Button
           className="mt-5"

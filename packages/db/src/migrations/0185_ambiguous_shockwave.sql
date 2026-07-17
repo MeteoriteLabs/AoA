@@ -1,1 +1,0 @@
-ALTER TABLE "comment_wakeup_outbox" ADD COLUMN IF NOT EXISTS "ready_at" timestamp with time zone;

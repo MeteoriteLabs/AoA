@@ -1,1 +1,0 @@
-ALTER TABLE "discussion_mention_outbox" ADD COLUMN IF NOT EXISTS "hop_count" integer DEFAULT 0 NOT NULL;

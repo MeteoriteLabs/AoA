@@ -24,15 +24,32 @@ Data persists across restarts. To reset: `rm -rf ~/.aoa/instances/default/db`.
 
 The Docker quickstart also uses embedded PostgreSQL by default.
 
-## 2. Local PostgreSQL (Docker)
+## 2. Docker Compose PostgreSQL
 
-For a full PostgreSQL server locally:
+The default Docker Compose stack runs AoA with a durable PostgreSQL database that includes pgvector:
 
 ```sh
-docker compose up -d
+docker compose up --build -d
 ```
 
-This starts PostgreSQL 17 on `localhost:5432`. Set the connection string.
+Inside the stack, the server gets `DATABASE_URL=postgres://paperclip:paperclip@db:5432/paperclip` automatically. The database is not published on `localhost:5432` by default; it is only reachable by services on the Compose network.
+
+Open a psql shell with:
+
+```sh
+docker compose --profile tools run --rm psql
+```
+
+If you want to run the Node server on the host while using the Compose database, add a local override that publishes Postgres:
+
+```yaml
+services:
+  db:
+    ports:
+      - "5432:5432"
+```
+
+Then set the connection string for the host process.
 
 > **The server does NOT auto-load a repo-root `.env`.** It only reads `.env` from the AoA config directory — the directory containing the active `config.json` (default `~/.aoa/instances/default/`, or the nearest `.aoa/config.json` found by walking up from the working directory; see `server/src/paths.ts` and `server/src/config.ts`). Copying `.env.example` to the repo root has no effect. Either set `DATABASE_URL` inline / export it in your shell, or place the `.env` in the config directory.
 

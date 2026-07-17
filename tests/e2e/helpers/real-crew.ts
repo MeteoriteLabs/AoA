@@ -1,12 +1,12 @@
 import { expect, type APIRequestContext, type APIResponse, type TestInfo } from "@playwright/test";
 import { execFileSync } from "node:child_process";
 
-export type RealCrewProvider = "anthropic" | "openai";
+export type RealCrewProvider = "anthropic" | "openai" | "google";
 
 export type RealCrewConfig = {
   provider: RealCrewProvider;
-  adapterType: "claude_local" | "codex_local";
-  binary: "claude" | "codex";
+  adapterType: "claude_local" | "codex_local" | "gemini_local";
+  binary: "claude" | "codex" | "gemini";
   model: string;
   timeoutMs: number;
 };
@@ -25,14 +25,15 @@ export const REQUIRED_CREW_NAMES = ["Adjutant", "Chronicler", "Scout", "Planner"
 
 export function realCrewConfigFromEnv(): RealCrewConfig {
   const provider = (process.env.AOA_E2E_REAL_CREW_PROVIDER ?? "anthropic") as RealCrewProvider;
-  if (!["anthropic", "openai"].includes(provider)) {
+  if (!["anthropic", "openai", "google"].includes(provider)) {
     throw new Error(`Unsupported AOA_E2E_REAL_CREW_PROVIDER=${provider}`);
   }
-  const adapterType = provider === "anthropic" ? "claude_local" : "codex_local";
-  const binary = provider === "anthropic" ? "claude" : "codex";
+  const adapterType =
+    provider === "anthropic" ? "claude_local" : provider === "openai" ? "codex_local" : "gemini_local";
+  const binary = provider === "anthropic" ? "claude" : provider === "openai" ? "codex" : "gemini";
   const model =
     process.env.AOA_E2E_REAL_CREW_MODEL ??
-    (provider === "anthropic" ? "claude-sonnet-4-5-20250929" : "gpt-5.5");
+    (provider === "anthropic" ? "claude-sonnet-4-5-20250929" : provider === "openai" ? "gpt-5.5" : "gemini-2.5-pro");
   const timeoutMs = Number(process.env.AOA_E2E_REAL_CREW_TIMEOUT_MS ?? 420_000);
   return { provider, adapterType, binary, model, timeoutMs };
 }
@@ -77,7 +78,9 @@ export async function ensureRealCrew(
       model: config.model,
       ...(config.adapterType === "claude_local"
         ? { dangerouslySkipPermissions: true }
-        : { dangerouslyBypassApprovalsAndSandbox: true }),
+        : config.adapterType === "codex_local"
+          ? { dangerouslyBypassApprovalsAndSandbox: true }
+          : {}),
       ...(typeof existing.instructionsFilePath === "string"
         ? { instructionsFilePath: existing.instructionsFilePath }
         : {}),

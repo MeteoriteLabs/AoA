@@ -81,6 +81,8 @@
               "deploy/local-development",
               "deploy/tailscale-private-access",
               "deploy/docker",
+              "deploy/docker-research",
+              "deploy/docker-runtime-research-changelog",
               "deploy/deployment-modes",
               "deploy/database",
               "deploy/secrets",

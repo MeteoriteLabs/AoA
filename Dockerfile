@@ -2,7 +2,31 @@ FROM node:lts-trixie-slim AS base
 ARG USER_UID=1000
 ARG USER_GID=1000
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates gosu curl gh git wget ripgrep python3 \
+  && apt-get install -y --no-install-recommends \
+    bash \
+    build-essential \
+    ca-certificates \
+    curl \
+    docker-cli \
+    gh \
+    git \
+    gosu \
+    iproute2 \
+    jq \
+    less \
+    lsof \
+    netcat-openbsd \
+    openssh-client \
+    pkg-config \
+    postgresql-client \
+    procps \
+    python3 \
+    ripgrep \
+    rsync \
+    socat \
+    unzip \
+    wget \
+    zip \
   && rm -rf /var/lib/apt/lists/* \
   && corepack enable
 
@@ -55,15 +79,17 @@ LABEL org.opencontainers.image.source="https://github.com/meteoritelabs/aoa"
 
 WORKDIR /app
 COPY --chown=node:node --from=build /app /app
-RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai \
-  && apt-get update \
-  && apt-get install -y --no-install-recommends openssh-client jq \
-  && rm -rf /var/lib/apt/lists/* \
+RUN npm install --global --omit=dev \
+    @anthropic-ai/claude-code@latest \
+    @google/gemini-cli@latest \
+    @openai/codex@latest \
+    opencode-ai \
   && mkdir -p /paperclip \
   && chown node:node /paperclip
 
 COPY scripts/docker-entrypoint.sh /usr/local/bin/
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+RUN sed -i 's/\r$//' /usr/local/bin/docker-entrypoint.sh \
+  && chmod +x /usr/local/bin/docker-entrypoint.sh
 
 ENV NODE_ENV=production \
   HOME=/paperclip \
@@ -81,6 +107,7 @@ ENV NODE_ENV=production \
 
 VOLUME ["/paperclip"]
 EXPOSE 3100
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=5 CMD curl -fsS "http://127.0.0.1:${PORT:-3100}/api/health" >/dev/null || exit 1
 
 ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["node", "--import", "./server/node_modules/tsx/dist/loader.mjs", "server/dist/index.js"]

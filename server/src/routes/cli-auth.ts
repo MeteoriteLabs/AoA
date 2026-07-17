@@ -5,15 +5,7 @@ import { badRequest, notFound, unauthorized } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { cliAuthChallengeLimiter } from "../middleware/rate-limit.js";
 import { boardAuthService, logActivity } from "../services/index.js";
-
-function requestBaseUrl(req: Request) {
-  const forwardedProto = req.header("x-forwarded-proto");
-  const proto = forwardedProto?.split(",")[0]?.trim() || req.protocol || "http";
-  const host =
-    req.header("x-forwarded-host")?.split(",")[0]?.trim() || req.header("host");
-  if (!host) return "";
-  return `${proto}://${host}`;
-}
+import { resolveInviteBaseUrl } from "./access-helpers.js";
 
 function buildCliAuthApprovalPath(challengeId: string, token: string) {
   return `/cli-auth/${challengeId}?token=${encodeURIComponent(token)}`;
@@ -40,7 +32,16 @@ export function cliAuthRoutes(db: Db) {
         created.challenge.id,
         created.challengeSecret,
       );
-      const baseUrl = requestBaseUrl(req);
+      // The approval URL carries an auth token, so build it from a TRUSTED
+      // origin — the configured public URL first, then a trust-proxy-gated /
+      // real-Host fallback (same derivation as invite links). NEVER a spoofable
+      // X-Forwarded-Host: host-header injection here would point the
+      // token-bearing link at an attacker origin. `resolveInviteBaseUrl`
+      // returns "" only when there is genuinely no configured origin AND no
+      // Host header, in which case we cannot mint an absolute URL (a CLI can't
+      // resolve a relative one) and fall back to `null`, matching the prior
+      // "no host" behaviour.
+      const baseUrl = resolveInviteBaseUrl(req);
       res.status(201).json({
         id: created.challenge.id,
         token: created.challengeSecret,

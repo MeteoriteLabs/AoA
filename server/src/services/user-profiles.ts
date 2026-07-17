@@ -7,6 +7,7 @@ export type UserProfileInput = {
   avatarUrl?: string | null;
   title?: string | null;
   bio?: string | null;
+  timezone?: string | null;
   socialLinks?: UserProfileSocialLink[];
 };
 
@@ -16,6 +17,7 @@ export type UserProfile = {
   avatarUrl: string | null;
   title: string | null;
   bio: string | null;
+  timezone: string | null;
   socialLinks: UserProfileSocialLink[];
 };
 
@@ -26,6 +28,7 @@ function mapRow(row: any): UserProfile {
     avatarUrl: row.avatarUrl ?? null,
     title: row.title ?? null,
     bio: row.bio ?? null,
+    timezone: row.timezone ?? null,
     socialLinks: Array.isArray(row.socialLinks) ? row.socialLinks : [],
   };
 }
@@ -51,6 +54,7 @@ export async function upsertUserProfile(
       avatarUrl: input.avatarUrl ?? null,
       title: input.title ?? null,
       bio: input.bio ?? null,
+      timezone: input.timezone ?? null,
       socialLinks: input.socialLinks ?? [],
       updatedAt: new Date(),
     };
@@ -59,6 +63,7 @@ export async function upsertUserProfile(
     if (input.avatarUrl !== undefined) updates.avatarUrl = input.avatarUrl;
     if (input.title !== undefined) updates.title = input.title;
     if (input.bio !== undefined) updates.bio = input.bio;
+    if (input.timezone !== undefined) updates.timezone = input.timezone;
     if (input.socialLinks !== undefined) updates.socialLinks = input.socialLinks;
 
     await tx

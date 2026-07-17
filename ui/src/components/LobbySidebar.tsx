@@ -1,5 +1,8 @@
 import { useLayoutEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@/lib/router";
+import { profileApi } from "@/api/profile";
+import { queryKeys } from "@/lib/queryKeys";
 import {
   BookOpen,
   Building2,
@@ -174,6 +177,18 @@ export function LobbySidebar({
     }
   };
 
+  // Instance-Settings row gate: /instance/settings is instance-admin-only (the
+  // server 403s everyone else), so hide the row for non-admins. While the
+  // profile is loading the row stays hidden — no flash of a row that would
+  // dead-end in a 403. Deep links still resolve: InstanceSettingsPage renders
+  // a friendly access notice for non-admins.
+  const { data: profile } = useQuery({
+    queryKey: queryKeys.auth.profile,
+    queryFn: () => profileApi.get(),
+    staleTime: 60_000,
+  });
+  const showInstanceSettings = profile?.isInstanceAdmin === true;
+
   const navTo = (path: string) => {
     navigate(path);
     onNavigate?.();
@@ -303,19 +318,23 @@ export function LobbySidebar({
             onClick={() => navTo("/docs")}
           />
 
-          {!collapsed && (
-            <div className="mt-2 px-2.5 py-1 text-[0.6rem] font-semibold uppercase tracking-[0.1em] opacity-50">
-              System
-            </div>
+          {showInstanceSettings && (
+            <>
+              {!collapsed && (
+                <div className="mt-2 px-2.5 py-1 text-[0.6rem] font-semibold uppercase tracking-[0.1em] opacity-50">
+                  System
+                </div>
+              )}
+              {collapsed && <div className="my-2 mx-1 h-px bg-border-soft" aria-hidden />}
+              <LobbyNavRow
+                icon={Settings}
+                label="Settings"
+                active={activeItem === "settings"}
+                collapsed={collapsed}
+                onClick={() => navTo("/instance/settings")}
+              />
+            </>
           )}
-          {collapsed && <div className="my-2 mx-1 h-px bg-border-soft" aria-hidden />}
-          <LobbyNavRow
-            icon={Settings}
-            label="Settings"
-            active={activeItem === "settings"}
-            collapsed={collapsed}
-            onClick={() => navTo("/instance/settings")}
-          />
         </nav>
 
         {/* User menu */}

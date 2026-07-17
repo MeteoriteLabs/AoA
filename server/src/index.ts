@@ -61,6 +61,7 @@ import { resetStaleProcessing } from "./services/embeddings.js";
 import { backfillQueueCompanyIds, reconcileNullVectors } from "./services/embeddings-backfill.js";
 import { getProviderApiKey } from "./services/internal-agent/providers/index.js";
 import { scheduleNotificationRetryWorker } from "./services/notification-retry-worker.js";
+import { buildCommanderLoginService } from "./services/commander-login-runtime.js";
 import { initThreadEventListener } from "./services/thread-events.js";
 import { onBudgetExhausted } from "./services/budget-hooks.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
@@ -1026,6 +1027,19 @@ process.once("SIGINT", () => mentionOutboxWorker.stop());
 const commentWakeupOutboxWorker = startCommentWakeupOutboxWorker(db as any, { intervalMs: 2000 });
 process.once("SIGTERM", () => commentWakeupOutboxWorker.stop());
 process.once("SIGINT", () => commentWakeupOutboxWorker.stop());
+
+// Commander CLI-login reaper (Plan 3 / §6.2 Task 4, from PR #292). A detached
+// `claude login` / `codex login` child can outlive a hard restart with no
+// in-memory handle to kill it, so at boot we terminate any persisted `pending`
+// challenge child by PID and clear its row. Runs unconditionally (independent of
+// the heartbeat scheduler). On shutdown, the same reap terminates in-flight
+// login children.
+const commanderLoginReaper = buildCommanderLoginService(db as any);
+void commanderLoginReaper.reapOrphans().catch((err) => {
+  logger.error({ err }, "startup reap of orphaned Commander login challenges failed");
+});
+process.once("SIGTERM", () => void commanderLoginReaper.reapOrphans().catch(() => {}));
+process.once("SIGINT", () => void commanderLoginReaper.reapOrphans().catch(() => {}));
 
 // Notification delivery retry worker (Phase G2, T26).
 // Sweeps `notifications` rows where `delivery_error IS NOT NULL AND

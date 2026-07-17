@@ -21,10 +21,9 @@ import {
   listJoinRequestsQuerySchema,
   searchAdminUsersQuerySchema,
   updateMemberPermissionsSchema,
-  updateUserCompanyAccessSchema,
-  PERMISSION_KEYS
+  updateUserCompanyAccessSchema
 } from "@armyofagents/shared";
-import type { DeploymentExposure, DeploymentMode } from "@armyofagents/shared";
+import type { DeploymentExposure, DeploymentMode, PermissionKey } from "@armyofagents/shared";
 import {
   forbidden,
   conflict,
@@ -44,6 +43,11 @@ import {
 } from "../services/index.js";
 import { assertCompanyAccess } from "./authz.js";
 import {
+  companyInviteExpiresAt,
+  requestBaseUrl,
+  resolveInviteBaseUrl,
+} from "./access-helpers.js";
+import {
   claimBoardOwnership,
   inspectBoardClaimChallenge
 } from "../board-claim.js";
@@ -54,6 +58,13 @@ import {
 } from "../services/outbound-url-guard.js";
 import { buildJoinRequestHubEmit, emitHubItem } from "../services/hub-source-producers.js";
 import { hubItemsService } from "../services/hub-items.js";
+import {
+  approveHumanJoinRequestTx,
+  buildHumanJoinApprovalServices,
+  founderApprovalIdentity,
+  grantsFromDefaults,
+  inviteConfersPrivilegedAuthority,
+} from "../services/join-approval.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -63,7 +74,6 @@ const INVITE_TOKEN_PREFIX = "aoa_invite_";
 const INVITE_TOKEN_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
 const INVITE_TOKEN_SUFFIX_LENGTH = 8;
 const INVITE_TOKEN_MAX_RETRIES = 5;
-const COMPANY_INVITE_TTL_MS = 10 * 60 * 1000;
 
 function createInviteToken() {
   const bytes = randomBytes(INVITE_TOKEN_SUFFIX_LENGTH);
@@ -78,10 +88,6 @@ function createClaimSecret() {
   return `aoa_claim_${randomBytes(24).toString("hex")}`;
 }
 
-export function companyInviteExpiresAt(nowMs: number = Date.now()) {
-  return new Date(nowMs + COMPANY_INVITE_TTL_MS);
-}
-
 function tokenHashesMatch(left: string, right: string) {
   const leftBytes = Buffer.from(left, "utf8");
   const rightBytes = Buffer.from(right, "utf8");
@@ -89,15 +95,6 @@ function tokenHashesMatch(left: string, right: string) {
     leftBytes.length === rightBytes.length &&
     timingSafeEqual(leftBytes, rightBytes)
   );
-}
-
-function requestBaseUrl(req: Request) {
-  const forwardedProto = req.header("x-forwarded-proto");
-  const proto = forwardedProto?.split(",")[0]?.trim() || req.protocol || "http";
-  const host =
-    req.header("x-forwarded-host")?.split(",")[0]?.trim() || req.header("host");
-  if (!host) return "";
-  return `${proto}://${host}`;
 }
 
 function readSkillMarkdown(skillName: string): string | null {
@@ -807,7 +804,11 @@ function normalizeAgentDefaultsForJoin(input: {
 function toInviteSummaryResponse(
   req: Request,
   token: string,
-  invite: typeof invites.$inferSelect
+  invite: typeof invites.$inferSelect,
+  // Optional so agent-manifest/create call sites stay unchanged; the public
+  // GET /invites/:token summary resolves it (joined in the invite lookup) so
+  // the landing page can name the company being joined.
+  companyName: string | null = null
 ) {
   const baseUrl = requestBaseUrl(req);
   const onboardingPath = `/api/invites/${token}/onboarding`;
@@ -816,6 +817,7 @@ function toInviteSummaryResponse(
   return {
     id: invite.id,
     companyId: invite.companyId,
+    companyName,
     inviteType: invite.inviteType,
     allowedJoinTypes: invite.allowedJoinTypes,
     expiresAt: invite.expiresAt,
@@ -1351,41 +1353,6 @@ async function resolveActorEmail(db: Db, req: Request): Promise<string | null> {
   return user?.email ?? null;
 }
 
-function grantsFromDefaults(
-  defaultsPayload: Record<string, unknown> | null | undefined,
-  key: "human" | "agent"
-): Array<{
-  permissionKey: (typeof PERMISSION_KEYS)[number];
-  scope: Record<string, unknown> | null;
-}> {
-  if (!defaultsPayload || typeof defaultsPayload !== "object") return [];
-  const scoped = defaultsPayload[key];
-  if (!scoped || typeof scoped !== "object") return [];
-  const grants = (scoped as Record<string, unknown>).grants;
-  if (!Array.isArray(grants)) return [];
-  const validPermissionKeys = new Set<string>(PERMISSION_KEYS);
-  const result: Array<{
-    permissionKey: (typeof PERMISSION_KEYS)[number];
-    scope: Record<string, unknown> | null;
-  }> = [];
-  for (const item of grants) {
-    if (!item || typeof item !== "object") continue;
-    const record = item as Record<string, unknown>;
-    if (typeof record.permissionKey !== "string") continue;
-    if (!validPermissionKeys.has(record.permissionKey)) continue;
-    result.push({
-      permissionKey: record.permissionKey as (typeof PERMISSION_KEYS)[number],
-      scope:
-        record.scope &&
-        typeof record.scope === "object" &&
-        !Array.isArray(record.scope)
-          ? (record.scope as Record<string, unknown>)
-          : null
-    });
-  }
-  return result;
-}
-
 type JoinRequestManagerCandidate = {
   id: string;
   role: string;
@@ -1712,19 +1679,138 @@ export function accessRoutes(
     async (req, res) => {
       const companyId = req.params.companyId as string;
       await assertCompanyPermission(req, companyId, "users:invite");
+
+      // Parse the invite's defaultsPayload once — both the privileged gate (all
+      // caller types) and the non-founder BOARD grants floor below read it.
+      const rawDefaults =
+        req.body.defaultsPayload &&
+        typeof req.body.defaultsPayload === "object" &&
+        !Array.isArray(req.body.defaultsPayload)
+          ? (req.body.defaultsPayload as Record<string, unknown>)
+          : null;
+
+      // ── P1 privilege-escalation clamp (Codex round-5 + round-6, root seam) ──
+      // `users:invite` is delegable to non-founders (and to agents), but the
+      // invite's defaultsPayload (teamInvite.role + human/agent grants) is
+      // applied VERBATIM at approval / auto-admit. A "privileged" payload — a
+      // role above team_lead (founder), or a governance grant in
+      // {users:manage_permissions, joins:approve, users:invite} in EITHER the
+      // human OR the agent grant vector (the SHARED inviteConfersPrivilegedAuthority
+      // predicate) — may be MINTED only by an authenticated FOUNDER or the
+      // local_trusted synthetic human, on EVERY path, for EVERY caller type.
+      //
+      // The gate is "actor is a founder OR local_implicit", NOT "actor is board":
+      // agents are NOT exempt. The old "agents are exempt; the auto-admit sink is
+      // the backstop" reasoning was wrong: that sink only guards the unattended
+      // email-match finalize path — NOT this creation route, and NOT the sibling
+      // manual-approve route. An agent holding users:invite + joins:approve could
+      // otherwise mint a role:"founder" invite (or one conferring a governance key
+      // on a joining agent via the agent grant vector) here and self-apply it
+      // there, escalating with no founder in the loop. An agent actor has NO
+      // founder userId → it can never be a founder → refused. Founder status
+      // resolves only for a board actor with a userId (team.getUserRole →
+      // effective role, maps instance_admin → founder).
+      if (rawDefaults && inviteConfersPrivilegedAuthority(rawDefaults) && !isLocalImplicit(req)) {
+        const actorIsFounder =
+          req.actor.type === "board" && req.actor.userId
+            ? (await team.getUserRole(companyId, req.actor.userId)).role === "founder"
+            : false; // agents (and any non-board / userId-less actor) are never founders
+        if (!actorIsFounder) {
+          throw forbidden(
+            "Only founders can create an invite that confers founder role or privileged permissions",
+          );
+        }
+      }
+
+      // Non-privileged grants floor (round-5 → extended round-14): a NON-FOUNDER
+      // creator — board user OR agent — must hold `users:manage_permissions` to
+      // embed ANY permission grant, and can NEVER embed a key it does not itself
+      // hold. Privileged payloads are already refused above regardless of caller
+      // type, so this floor now only governs NON-privileged grants (agents:create,
+      // tasks:assign, tasks:assign_scope, …).
+      //
+      // Round-14 P1: this floor previously ran ONLY for `req.actor.type === "board"`,
+      // so an AGENT holding just `users:invite` was EXEMPT — it could embed a
+      // non-privileged grant it did NOT hold in a HUMAN invite, and the
+      // verified-email auto-admit sink (approveHumanJoinRequestTx) would apply it
+      // VERBATIM with no founder review, conferring a capability the agent never
+      // held (and, by inviting an email it controls, bootstrapping that capability
+      // into a human sockpuppet). The floor now covers agents too. The creator's
+      // held permissions are resolved the SAME way assertCompanyPermission
+      // authorizes each actor: board users via access.canUser (which includes the
+      // instance-admin bypass), agents via access.hasPermission on the "agent"
+      // principal. Agents are never founders (no founder userId), matching the
+      // privileged gate above; local_implicit (loopback-trusted board) keeps full
+      // capability and is unaffected.
+      //
+      // users:manage_permissions prerequisite for agents: applied identically to
+      // the board rule. Agents create AGENTS via /api/agents, never via invite
+      // grant vectors, so no legitimate agent-invite flow embeds grants without
+      // manage_permissions — an agent must hold manage_permissions to delegate at
+      // all, AND hold each embedded key.
+      if (rawDefaults && !isLocalImplicit(req)) {
+        let creatorIsFounder = false;
+        // Resolver mirroring assertCompanyPermission's per-actor authorization.
+        let holdsKey: ((key: PermissionKey) => Promise<boolean>) | null = null;
+
+        if (req.actor.type === "board" && req.actor.userId) {
+          const creatorId = req.actor.userId;
+          const { role: creatorRole } = await team.getUserRole(companyId, creatorId);
+          creatorIsFounder = creatorRole === "founder"; // getUserRole maps instance_admin → founder
+          holdsKey = (key) => access.canUser(companyId, creatorId, key);
+        } else if (req.actor.type === "agent" && req.actor.agentId) {
+          const creatorAgentId = req.actor.agentId;
+          // Agents are never founders; resolve held grants exactly as
+          // assertCompanyPermission does for an agent principal.
+          holdsKey = (key) =>
+            access.hasPermission(companyId, "agent", creatorAgentId, key);
+        }
+
+        if (holdsKey && !creatorIsFounder) {
+          const embeddedGrants = [
+            ...grantsFromDefaults(rawDefaults, "human"),
+            ...grantsFromDefaults(rawDefaults, "agent"),
+          ];
+          if (embeddedGrants.length > 0) {
+            const canDelegateGrants = await holdsKey("users:manage_permissions");
+            if (!canDelegateGrants) {
+              throw forbidden(
+                "You need users:manage_permissions to embed permission grants in an invite",
+              );
+            }
+            for (const grant of embeddedGrants) {
+              const creatorHoldsKey = await holdsKey(grant.permissionKey);
+              if (!creatorHoldsKey) {
+                throw forbidden(
+                  `You cannot grant a permission you do not hold: ${grant.permissionKey}`,
+                );
+              }
+            }
+          }
+        }
+      }
+      // ────────────────────────────────────────────────────────────────────────
+
       const normalizedAgentMessage =
         typeof req.body.agentMessage === "string"
           ? req.body.agentMessage.trim() || null
           : null;
+      const defaultsPayload = mergeInviteDefaults(
+        req.body.defaultsPayload ?? null,
+        normalizedAgentMessage
+      );
       const insertValues = {
         companyId,
         inviteType: "company_join" as const,
         allowedJoinTypes: req.body.allowedJoinTypes,
-        defaultsPayload: mergeInviteDefaults(
-          req.body.defaultsPayload ?? null,
-          normalizedAgentMessage
+        defaultsPayload,
+        // Human-only email-bound team invites get the long TTL (see
+        // access-helpers.ts): the verified-email match is the real gate,
+        // link secrecy is secondary. Agent/both invites keep 10 minutes.
+        expiresAt: companyInviteExpiresAt(
+          defaultsPayload,
+          req.body.allowedJoinTypes
         ),
-        expiresAt: companyInviteExpiresAt(),
         invitedByUserId: req.actor.userId ?? null
       };
 
@@ -1775,10 +1861,19 @@ export function accessRoutes(
       });
 
       const inviteSummary = toInviteSummaryResponse(req, token, created);
+      // Build the auto-copied invite link from a TRUSTED origin: the configured
+      // public URL first, then a trust-proxy-gated / Host-based fallback. Never
+      // a spoofable X-Forwarded-Host (host-header injection into the copied
+      // link would disclose the invite token to an attacker origin).
+      const inviteBaseUrl = resolveInviteBaseUrl(req);
+      const invitePath = `/invite/${token}`;
       res.status(201).json({
         ...created,
         token,
-        inviteUrl: `/invite/${token}`,
+        // Absolute so copying the link verbatim works outside this browser.
+        // Falls back to the path when no trusted origin is available (the
+        // client then prefixes its own window.location.origin).
+        inviteUrl: inviteBaseUrl ? `${inviteBaseUrl}${invitePath}` : invitePath,
         onboardingTextPath: inviteSummary.onboardingTextPath,
         onboardingTextUrl: inviteSummary.onboardingTextUrl,
         inviteMessage: inviteSummary.inviteMessage
@@ -1789,11 +1884,15 @@ export function accessRoutes(
   router.get("/invites/:token", async (req, res) => {
     const token = (req.params.token as string).trim();
     if (!token) throw notFound("Invite not found");
-    const invite = await db
-      .select()
+    // Left join: resolve the company name in the same query so the landing
+    // page can say "Join {name} on AoA" (bootstrap invites have no company).
+    const row = await db
+      .select({ invite: invites, companyName: companies.name })
       .from(invites)
+      .leftJoin(companies, eq(invites.companyId, companies.id))
       .where(eq(invites.tokenHash, hashToken(token)))
       .then((rows) => rows[0] ?? null);
+    const invite = row?.invite ?? null;
     if (
       !invite ||
       invite.revokedAt ||
@@ -1803,7 +1902,7 @@ export function accessRoutes(
       throw notFound("Invite not found");
     }
 
-    res.json(toInviteSummaryResponse(req, token, invite));
+    res.json(toInviteSummaryResponse(req, token, invite, row?.companyName ?? null));
   });
 
   router.get("/invites/:token/onboarding", async (req, res) => {
@@ -2427,11 +2526,72 @@ export function accessRoutes(
         .then((rows) => rows[0] ?? null);
       if (!invite) throw notFound("Invite not found");
 
+      // ── P1 privilege-escalation clamp — MANUAL approve seam ─────────────────
+      // Symmetric with the invite-CREATION clamp (POST /invites) and the
+      // AUTO-ADMIT sink (onboarding-join finalize). `joins:approve` is delegable
+      // to non-founders (and to agents), and this route applies the invite's
+      // defaultsPayload (role + grants) VERBATIM — human grants via
+      // approveHumanJoinRequestTx on the human branch, AGENT grants via
+      // grantsFromDefaults(payload, "agent") → setPrincipalGrants on the
+      // agent-hire branch below. A "privileged" payload (role above team_lead, or
+      // a governance grant in {users:manage_permissions, joins:approve,
+      // users:invite} in EITHER the human OR the agent grant vector — the SHARED
+      // inviteConfersPrivilegedAuthority predicate) may be APPLIED only by an
+      // authenticated FOUNDER or the local_trusted synthetic human.
+      //
+      // Gate: "actor is a founder OR local_implicit", NOT "actor is board" —
+      // agents are NOT exempt. It covers BOTH request branches (no requestType
+      // filter): the auto-admit sink guards ONLY the unattended human finalize
+      // path, so this manual route is the sole guard for agent-hire approvals.
+      // Without it an agent holding joins:approve could approve an agent-minted
+      // (or pre-existing) invite that confers a governance key on the joining
+      // AGENT — or a role:"founder" / privileged-human-grant invite on the human
+      // branch — with NO founder in the loop. An agent actor has NO founder
+      // userId → it can never be a founder → refused. Founder status resolves
+      // only for a board actor with a userId (team.getUserRole → effective role,
+      // maps instance_admin → founder) — the SAME helper the creation clamp uses.
+      if (
+        inviteConfersPrivilegedAuthority(
+          invite.defaultsPayload as Record<string, unknown> | null,
+        ) &&
+        !isLocalImplicit(req)
+      ) {
+        const approverIsFounder =
+          req.actor.type === "board" && req.actor.userId
+            ? (await team.getUserRole(companyId, req.actor.userId)).role === "founder"
+            : false; // agents (and any non-board / userId-less actor) are never founders
+        if (!approverIsFounder) {
+          throw forbidden(
+            "Only founders can approve a join request that confers founder role or privileged permissions",
+          );
+        }
+      }
+      // ────────────────────────────────────────────────────────────────────────
+
       let createdAgentId: string | null = existing.createdAgentId ?? null;
       const approved = await db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
+
+        if (existing.requestType === "human") {
+          if (!existing.requestingUserId)
+            throw conflict("Join request missing user identity");
+          return approveHumanJoinRequestTx(txDb, buildHumanJoinApprovalServices(txDb), {
+            companyId,
+            requestId,
+            requestingUserId: existing.requestingUserId,
+            invite: {
+              id: invite.id,
+              defaultsPayload: invite.defaultsPayload as Record<string, unknown> | null,
+            },
+            ...founderApprovalIdentity({
+              actorUserId: req.actor.userId ?? null,
+              localImplicit: isLocalImplicit(req),
+            }),
+          });
+        }
+
+        // Agent branch: the original transaction code, with approvalSource added.
         const txAccess = accessService(txDb);
-        const txTeam = teamService(txDb);
         const txAgents = agentService(txDb);
         const approvedAt = new Date();
         const row = await tx
@@ -2440,6 +2600,7 @@ export function accessRoutes(
             status: "approved",
             approvedByUserId:
               req.actor.userId ?? (isLocalImplicit(req) ? "local-board" : null),
+            approvalSource: "founder",
             approvedAt,
             createdAgentId,
             updatedAt: approvedAt
@@ -2455,34 +2616,7 @@ export function accessRoutes(
           .then((rows) => rows[0]);
         if (!row) return null;
 
-        if (existing.requestType === "human") {
-          if (!existing.requestingUserId)
-            throw conflict("Join request missing user identity");
-          await txAccess.ensureMembership(
-            companyId,
-            "user",
-            existing.requestingUserId,
-            "member",
-            "active"
-          );
-          const grants = grantsFromDefaults(
-            invite.defaultsPayload as Record<string, unknown> | null,
-            "human"
-          );
-          await txAccess.setPrincipalGrants(
-            companyId,
-            "user",
-            existing.requestingUserId,
-            grants,
-            req.actor.userId ?? null
-          );
-          await txTeam.applyInviteRole(
-            companyId,
-            existing.requestingUserId,
-            invite.defaultsPayload as Record<string, unknown> | null,
-            req.actor.userId ?? null
-          );
-        } else {
+        {
           const existingAgents = await txAgents.list(companyId);
           const managerId = resolveJoinRequestAgentManagerId(existingAgents);
           if (!managerId) {

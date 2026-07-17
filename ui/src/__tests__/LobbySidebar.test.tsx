@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { screen } from "@testing-library/react";
+import { act, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderWithProviders, mockCompanyContext } from "./test-utils";
 import { LobbySidebar } from "../components/LobbySidebar";
@@ -23,6 +23,15 @@ vi.mock("@/context/CompanyContext", () => ({
 // UserMenu pulls in profile/auth queries; stub it for sidebar isolation.
 vi.mock("@/components/UserMenu", () => ({
   UserMenu: () => <div data-testid="user-menu" />,
+}));
+
+// The sidebar gates the instance-Settings row on profileApi.get().isInstanceAdmin.
+// Default to admin so the pre-existing tests (which assert the row) keep passing.
+const mockProfileGet = vi.fn();
+vi.mock("@/api/profile", () => ({
+  profileApi: {
+    get: (...args: unknown[]) => mockProfileGet(...args),
+  },
 }));
 
 // Tooltip from Radix needs a TooltipProvider context, which the test renderer
@@ -56,6 +65,13 @@ describe("LobbySidebar", () => {
     onCreateCompany.mockClear();
     mockCompanyContext.companies = [];
     mockCompanyContext.loading = false;
+    mockProfileGet.mockResolvedValue({
+      id: "user-1",
+      email: "user@example.com",
+      displayName: "User One",
+      avatarUrl: null,
+      isInstanceAdmin: true,
+    });
     // Reset persisted collapse preference between tests so default is expanded.
     try {
       localStorage.removeItem("aoa.lobby.sidebar-collapsed");
@@ -82,13 +98,14 @@ describe("LobbySidebar", () => {
     expect(onCreateCompany).toHaveBeenCalledTimes(1);
   });
 
-  it("renders Organizations (active), Marketplace, Learn, Documentation, Settings", () => {
+  it("renders Organizations (active), Marketplace, Learn, Documentation, Settings", async () => {
     renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
     expect(screen.getByRole("button", { name: /organizations/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /marketplace/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /learn/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /documentation/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /settings/i })).toBeInTheDocument();
+    // Settings appears once the profile query resolves (instance admin).
+    expect(await screen.findByRole("button", { name: /settings/i })).toBeInTheDocument();
   });
 
   it("Organizations row is the active item (data-active=true)", () => {
@@ -117,8 +134,65 @@ describe("LobbySidebar", () => {
   it("clicking Settings navigates to /instance/settings", async () => {
     const user = userEvent.setup();
     renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
-    await user.click(screen.getByRole("button", { name: /settings/i }));
+    await user.click(await screen.findByRole("button", { name: /settings/i }));
     expect(mockNavigate).toHaveBeenCalledWith("/instance/settings", undefined);
+  });
+
+  // --- Instance-Settings row gating (N2) ---
+  //
+  // The non-admin test resolves a deferred profile INSIDE act() and asserts
+  // absence strictly post-settle; its control twin runs the exact same flush
+  // with isInstanceAdmin: true and requires the row synchronously. Together
+  // they guarantee the absence assertion is not vacuous (pre-settle the row
+  // is also hidden, so a truthiness regression could otherwise slip past).
+
+  function deferredProfile() {
+    let resolveProfile!: (value: unknown) => void;
+    mockProfileGet.mockReturnValue(new Promise((resolve) => { resolveProfile = resolve; }));
+    return (overrides: Record<string, unknown>) =>
+      act(async () => {
+        resolveProfile({
+          id: "user-2",
+          email: "teammate@example.com",
+          displayName: "Teammate",
+          avatarUrl: null,
+          ...overrides,
+        });
+        // react-query batches observer notifications on a scheduler tick — a
+        // macrotask hop is required before the resolved data reaches the hook.
+        // (Without it the control test below fails: the row never appears.)
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+  }
+
+  it("hides the Settings row (and System section header) for non-instance-admins", async () => {
+    const resolveWith = deferredProfile();
+    renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
+    await resolveWith({ isInstanceAdmin: false });
+    expect(screen.queryByRole("button", { name: /settings/i })).toBeNull();
+    expect(screen.queryByText("System")).toBeNull();
+  });
+
+  it("control: the identical post-settle flush shows the row when isInstanceAdmin is true", async () => {
+    const resolveWith = deferredProfile();
+    renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
+    await resolveWith({ isInstanceAdmin: true });
+    // Must be present synchronously after the same flush the non-admin test
+    // uses — proves that flush is sufficient for the absence assertions above.
+    expect(screen.getByRole("button", { name: /settings/i })).toBeInTheDocument();
+    expect(screen.getByText("System")).toBeInTheDocument();
+  });
+
+  it("does not flash the Settings row while the profile is still loading (default hidden)", () => {
+    mockProfileGet.mockReturnValue(new Promise(() => {})); // never resolves
+    renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
+    expect(screen.queryByRole("button", { name: /settings/i })).toBeNull();
+  });
+
+  it("shows the Settings row for instance admins", async () => {
+    renderWithProviders(<LobbySidebar onCreateCompany={onCreateCompany} />);
+    expect(await screen.findByRole("button", { name: /settings/i })).toBeInTheDocument();
+    expect(screen.getByText("System")).toBeInTheDocument();
   });
 
   it("has an aside element", () => {

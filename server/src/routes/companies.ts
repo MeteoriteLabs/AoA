@@ -17,6 +17,8 @@ import { accessService, companyPortabilityService, companyService, logActivity }
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { seedAoaNativeSkills } from "../services/internal-agent/aoa-skills-seeder.js";
 import { ensureCommanderAgent } from "../services/internal-agent/aoa-agents/ensure-commander.js";
+import { materializeCompanyProfileFromGlobal } from "../services/team.js";
+import { logger } from "../middleware/logger.js";
 
 export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) {
   const router = Router();
@@ -151,7 +153,20 @@ export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) 
     // authenticated = real multi-human board; approval is multi-person accountability.
     const requireBoardApprovalForNewAgents = opts.deploymentMode !== "local_trusted";
     const company = await svc.create({ ...req.body, requireBoardApprovalForNewAgents });
-    await access.ensureRealOperator(company.id, req.actor.userId);
+    const operatorId = await access.ensureRealOperator(company.id, req.actor.userId);
+    // Seed the founder's company Human Operating Profile from their GLOBAL
+    // profile. Onboarding's HumanProfileStep writes only the global
+    // `user_profiles` row (companyId is null at that step); without this, the
+    // founder's freshly-entered title/bio/timezone/socialLinks show blank on
+    // their own company Team page. The invited-approve and manual-add paths
+    // already materialize via the same helper — founder-create was the gap.
+    // Best-effort — never block company creation. (Codex P2)
+    await materializeCompanyProfileFromGlobal(db, company.id, operatorId, operatorId).catch((err) => {
+      logger.warn(
+        { err, companyId: company.id, userId: operatorId },
+        "company create: founder profile seeding failed (non-fatal)",
+      );
+    });
     await seedAoaNativeSkills(db, company.id).catch(() => {
       // Never block company creation on skill seeding failure
     });

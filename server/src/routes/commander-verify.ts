@@ -1,6 +1,10 @@
 import { Router, type Request, type Response } from "express";
 import type { Db } from "@armyofagents/db";
-import { classifyCommanderProbe, resolveCommanderAdapterType } from "../services/commander-verify.js";
+import {
+  classifyCommanderProbe,
+  resolveCommanderAdapterType,
+  resolveCommanderProbeConfig,
+} from "../services/commander-verify.js";
 import { findServerAdapter } from "../adapters/registry.js";
 import {
   ADAPTER_PROBE_BUSY_ERROR,
@@ -35,8 +39,10 @@ export function commanderVerifyRoutes(db: Db): Router {
       res.status(404).json({ error: `No probe available for ${adapterType}` });
       return;
     }
-    // Empty config → CLI defaults (subscription-login path), which is what
-    // Commander verify should test.
+    // §6.1 (Codex P1 #8): probe the RESOLVED Commander config (its adapter env
+    // secret_refs resolved) so a saved API key unblocks re-probe; falls back to
+    // {} = CLI defaults / subscription-login path when no key/agent is set.
+    const probeConfig = await resolveCommanderProbeConfig(db, companyId, actor.userId);
     const releaseProbeSlot = tryAcquireAdapterProbeSlot(companyId);
     if (!releaseProbeSlot) {
       res
@@ -47,7 +53,7 @@ export function commanderVerifyRoutes(db: Db): Router {
     }
 
     try {
-      const result = await adapter.testEnvironment({ companyId, adapterType, config: {} });
+      const result = await adapter.testEnvironment({ companyId, adapterType, config: probeConfig });
       const classified = classifyCommanderProbe(result);
       res.status(classified.outcome === "verified" ? 200 : 422).json(classified);
     } finally {

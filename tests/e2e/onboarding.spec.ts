@@ -11,7 +11,7 @@ import { test, expect } from "@playwright/test";
  * The e2e suite boots in local_trusted mode with the dev escape hatch
  * (AOA_DEV_LOCAL_IDENTITY=1, set in playwright.config.ts), so the synthetic
  * local-board admin is the actor and landing on `/` resolves the founder journey
- * → `/onboarding` → the "Your profile" step.
+ * → `/onboarding` → the "Set up your profile" step.
  *
  * The full deterministic click-through (profile → … → review) is tracked as A12
  * and is skipped below: the environment step performs a real mkdir+write probe
@@ -22,14 +22,8 @@ import { test, expect } from "@playwright/test";
  */
 
 test.describe("Onboarding", () => {
-  test.skip("founder journey walks the FlowEngine from profile to review (A12)", async ({ page }) => {
-    // Intended coverage once the A12 harness lands:
-    //   await page.goto("/");
-    //   await expect(page).toHaveURL(/\/onboarding$/);
-    //   await expect(page.getByRole("heading", { name: "Your profile" })).toBeVisible();
-    //   … drive each step through to the "You're set up" review …
-    await page.goto("/onboarding");
-  });
+  // The founder happy-path A12 walk now lives in onboarding-founder-happy-path.spec.ts
+  // (with resume + visual variants). This file keeps the boot/health smoke test.
 
   test("health endpoint responds (server boots in local_trusted + escape hatch)", async ({ request }) => {
     // Also guards playwright.config.ts's AOA_DEV_LOCAL_IDENTITY=1: if the escape

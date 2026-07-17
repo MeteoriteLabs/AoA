@@ -23,6 +23,7 @@ import { useDialog } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToast } from "../context/ToastContext";
 import { useLiveAgentCount } from "../hooks/useLiveAgentCount";
+import { useTeamAccess } from "../hooks/useTeamAccess";
 import { queryKeys } from "../lib/queryKeys";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -352,12 +353,15 @@ function SuggestionCard({
   suggestion,
   exiting,
   busy,
+  canAct,
   onAccept,
   onDismiss,
 }: {
   suggestion: Suggestion;
   exiting: boolean;
   busy: boolean;
+  /** Accept/dismiss are founder-gated server-side — hide the actions when false. */
+  canAct: boolean;
   onAccept: (suggestion: Suggestion) => void;
   onDismiss: (suggestion: Suggestion) => void;
 }) {
@@ -388,14 +392,16 @@ function SuggestionCard({
           </div>
           <div className="flex items-center justify-between gap-3">
             <span className="text-xs text-muted-foreground capitalize">{suggestion.category.replace(/_/g, " ")}</span>
-            <div className="flex items-center gap-2">
-              <Button size="sm" variant="ghost" onClick={() => onDismiss(suggestion)} disabled={busy}>
-                Dismiss
-              </Button>
-              <Button size="sm" onClick={() => onAccept(suggestion)} disabled={busy}>
-                Accept
-              </Button>
-            </div>
+            {canAct && (
+              <div className="flex items-center gap-2">
+                <Button size="sm" variant="ghost" onClick={() => onDismiss(suggestion)} disabled={busy}>
+                  Dismiss
+                </Button>
+                <Button size="sm" onClick={() => onAccept(suggestion)} disabled={busy}>
+                  Accept
+                </Button>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -628,12 +634,20 @@ export function Dashboard() {
     },
   });
 
+  // N2: POST /suggestions/detect is founder-gated server-side — firing it for
+  // every user guaranteed a 403 on each Home load for non-founders. Gate the
+  // trigger on the founder role (instance admins report role "founder" via the
+  // team summary, so local_trusted keeps working).
+  const { role: teamRole } = useTeamAccess(selectedCompanyId);
+  const isFounder = teamRole === "founder";
+
   useEffect(() => {
-    if (!selectedCompanyId) return;
+    if (!selectedCompanyId || !isFounder) return;
     detectSuggestions.mutate(selectedCompanyId);
-    // Trigger detection when the page loads for the active company.
+    // Trigger detection when the page loads for the active company (once the
+    // founder role is confirmed).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedCompanyId]);
+  }, [selectedCompanyId, isFounder]);
 
   const acceptSuggestion = useMutation({
     mutationFn: ({ companyId, suggestionId }: { companyId: string; suggestionId: string }) =>
@@ -916,6 +930,7 @@ export function Dashboard() {
                   suggestion={suggestion}
                   exiting={exitingSuggestionIds.includes(suggestion.id)}
                   busy={busySuggestionIds.includes(suggestion.id)}
+                  canAct={isFounder}
                   onAccept={handleAccept}
                   onDismiss={handleDismiss}
                 />

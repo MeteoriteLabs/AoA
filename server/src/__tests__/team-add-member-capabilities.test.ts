@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 const ensureStandardDocumentsMock = vi.hoisted(() => vi.fn());
+const getUserProfileMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@armyofagents/db", () => {
   const makeTable = (name: string) => {
@@ -66,6 +67,10 @@ vi.mock("../services/human-capabilities.js", () => ({
   }),
 }));
 
+vi.mock("../services/user-profiles.js", () => ({
+  getUserProfile: getUserProfileMock,
+}));
+
 vi.mock("../services/live-events.js", () => ({
   publishLiveEvent: vi.fn(),
 }));
@@ -74,9 +79,12 @@ import { teamService } from "../services/team.js";
 
 type MockRow = Record<string, unknown>;
 
-function createSequenceDb(config: { selects?: MockRow[][] } = {}) {
+function createSequenceDb(config: { selects?: MockRow[][]; inserts?: MockRow[][] } = {}) {
   let selectIdx = 0;
+  let insertIdx = 0;
+  const inserts = config.inserts ?? [];
   const insertValues: unknown[] = [];
+  const conflictUpdates: Record<string, unknown>[] = [];
 
   function makeChain(getResult: () => MockRow[]) {
     const chain: Record<string, unknown> = {};
@@ -88,6 +96,10 @@ function createSequenceDb(config: { selects?: MockRow[][] } = {}) {
       return chain;
     };
     chain.set = (..._args: unknown[]) => chain;
+    chain.onConflictDoUpdate = (value: { set?: Record<string, unknown> }) => {
+      if (value?.set) conflictUpdates.push(value.set);
+      return chain;
+    };
     chain.returning = () => chain;
     chain.then = (resolve: (v: MockRow[]) => unknown) => Promise.resolve(resolve(getResult()));
     return chain;
@@ -95,13 +107,14 @@ function createSequenceDb(config: { selects?: MockRow[][] } = {}) {
 
   const db = {
     select: (..._args: unknown[]) => makeChain(() => config.selects?.[selectIdx++] ?? []),
-    insert: (..._args: unknown[]) => makeChain(() => []),
+    insert: (..._args: unknown[]) => makeChain(() => inserts[insertIdx++] ?? []),
     update: (..._args: unknown[]) => makeChain(() => []),
     delete: (..._args: unknown[]) => makeChain(() => []),
     transaction: async (fn: (tx: unknown) => Promise<void>) => {
       await fn(db);
     },
     _insertValues: insertValues,
+    _conflictUpdates: conflictUpdates,
   };
   return db;
 }
@@ -109,6 +122,7 @@ function createSequenceDb(config: { selects?: MockRow[][] } = {}) {
 describe("teamService addMember capability seeding", () => {
   it("seeds standard human capability documents for newly added members", async () => {
     ensureStandardDocumentsMock.mockReset();
+    getUserProfileMock.mockReset();
     const db = createSequenceDb({
       selects: [
         [], // assertFounder: instance admin lookup
@@ -123,6 +137,104 @@ describe("teamService addMember capability seeding", () => {
     const result = await teamService(db as any).addMember(
       "company-1",
       { name: "Ada", email: "ada@example.com", role: "team_member" },
+      "founder-1",
+    );
+
+    expect(result.userId).toMatch(/[0-9a-f-]{36}/);
+    expect(ensureStandardDocumentsMock).toHaveBeenCalledWith("company-1", result.userId, "founder-1");
+  });
+});
+
+describe("teamService addMember profile convergence", () => {
+  it("materializes a company profile from the global profile, parse-filtering social links", async () => {
+    ensureStandardDocumentsMock.mockReset();
+    getUserProfileMock.mockReset();
+    getUserProfileMock.mockResolvedValue({
+      userId: "existing-user-1",
+      displayName: "Ada Lovelace",
+      title: "Engineer",
+      bio: "Builds computers",
+      timezone: "Europe/London",
+      socialLinks: [
+        { type: "github", label: null, url: "https://github.com/ada" },
+        { type: "not-a-real-type", url: "https://example.com/bad" },
+      ],
+    });
+
+    const db = createSequenceDb({
+      selects: [
+        [], // assertFounder: instance admin lookup
+        [{ role: "founder", projectId: null }], // assertFounder: actor role lookup
+        [], // duplicate member lookup
+        [{ id: "existing-user-1" }], // existing auth user lookup — reuse account, skip authUsers insert
+        [], // updateUserRole current role: instance admin lookup
+        [], // updateUserRole current role: existing role lookup
+      ],
+      inserts: [
+        [], // updateUserRole transaction: userRoles insert (result unused)
+        [
+          {
+            id: "profile-1",
+            companyId: "company-1",
+            userId: "existing-user-1",
+            displayName: "Ada Lovelace",
+            title: "Engineer",
+            bio: "Builds computers",
+            location: null,
+            timezone: "Europe/London",
+            socialLinks: [{ type: "github", label: null, url: "https://github.com/ada" }],
+            avatarAssetId: null,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            updatedByUserId: "founder-1",
+          },
+        ], // companyUserProfiles insert — our convergence write
+      ],
+    });
+
+    const result = await teamService(db as any).addMember(
+      "company-1",
+      { name: "Ada", email: "ada@example.com", role: "team_member" },
+      "founder-1",
+    );
+
+    expect(result.userId).toBe("existing-user-1");
+    expect(getUserProfileMock).toHaveBeenCalledWith(db, "existing-user-1");
+
+    const profileInsertValues = db._insertValues[1] as Record<string, unknown>;
+    expect(profileInsertValues).toMatchObject({
+      companyId: "company-1",
+      userId: "existing-user-1",
+      displayName: "Ada Lovelace",
+      title: "Engineer",
+      bio: "Builds computers",
+      timezone: "Europe/London",
+      updatedByUserId: "founder-1",
+    });
+    // The invalid social-link entry (unknown type) is dropped by the
+    // humanSocialLinkSchema parse-filter, same as the invited path.
+    expect(profileInsertValues.socialLinks).toEqual([{ type: "github", label: null, url: "https://github.com/ada" }]);
+  });
+
+  it("never fails addMember when profile materialization throws (best-effort)", async () => {
+    ensureStandardDocumentsMock.mockReset();
+    getUserProfileMock.mockReset();
+    getUserProfileMock.mockRejectedValue(new Error("boom"));
+
+    const db = createSequenceDb({
+      selects: [
+        [], // assertFounder: instance admin lookup
+        [{ role: "founder", projectId: null }], // assertFounder: actor role lookup
+        [], // duplicate member lookup
+        [], // existing auth user lookup (creates a new auth user)
+        [], // updateUserRole current role: instance admin lookup
+        [], // updateUserRole current role: existing role lookup
+      ],
+    });
+
+    const result = await teamService(db as any).addMember(
+      "company-1",
+      { name: "Grace", email: "grace@example.com", role: "team_member" },
       "founder-1",
     );
 

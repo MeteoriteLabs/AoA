@@ -1,2 +1,0 @@
-ALTER TABLE "discussion_entries" ADD COLUMN "client_submission_id" text;--> statement-breakpoint
-CREATE UNIQUE INDEX IF NOT EXISTS "discussion_entries_client_submission_uq" ON "discussion_entries" USING btree ("discussion_id","client_submission_id") WHERE client_submission_id IS NOT NULL;

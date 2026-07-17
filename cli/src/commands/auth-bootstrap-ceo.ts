@@ -49,17 +49,21 @@ export async function bootstrapCeoInvite(opts: {
   force?: boolean;
   expiresHours?: number;
   baseUrl?: string;
-}) {
+}): Promise<
+  | { status: "created"; inviteUrl: string; expiresAt: Date }
+  | { status: "skipped"; reason: "existing_admin" | "local_trusted" }
+  | { status: "failed"; reason: "missing_config" | "missing_database" | "error"; error?: unknown }
+> {
   const configPath = resolveConfigPath(opts.config);
   const config = readConfig(configPath);
   if (!config) {
     p.log.error(`No config found at ${configPath}. Run ${pc.cyan("aoa onboard")} first.`);
-    return;
+    return { status: "failed", reason: "missing_config" };
   }
 
   if (config.server.deploymentMode !== "authenticated") {
     p.log.info("Deployment mode is local_trusted. Bootstrap CEO invite is only required for authenticated mode.");
-    return;
+    return { status: "skipped", reason: "local_trusted" };
   }
 
   const dbUrl = resolveDbUrl(configPath);
@@ -67,7 +71,7 @@ export async function bootstrapCeoInvite(opts: {
     p.log.error(
       "Could not resolve database connection for bootstrap.",
     );
-    return;
+    return { status: "failed", reason: "missing_database" };
   }
 
   const db = createDb(dbUrl);
@@ -80,7 +84,7 @@ export async function bootstrapCeoInvite(opts: {
 
     if (existingAdminCount > 0 && !opts.force) {
       p.log.info("Instance already has an admin user. Use --force to generate a new bootstrap invite.");
-      return;
+      return { status: "skipped", reason: "existing_admin" };
     }
 
     const now = new Date();
@@ -115,8 +119,10 @@ export async function bootstrapCeoInvite(opts: {
     p.log.success("Created bootstrap CEO invite.");
     p.log.message(`Invite URL: ${pc.cyan(inviteUrl)}`);
     p.log.message(`Expires: ${pc.dim(created.expiresAt.toISOString())}`);
+    return { status: "created", inviteUrl, expiresAt: created.expiresAt };
   } catch (err) {
     p.log.error(`Could not create bootstrap invite: ${err instanceof Error ? err.message : String(err)}`);
     p.log.info("If using embedded-postgres, start the AoA server and run this command again.");
+    return { status: "failed", reason: "error", error: err };
   }
 }

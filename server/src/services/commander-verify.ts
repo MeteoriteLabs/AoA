@@ -1,9 +1,45 @@
 import type { Db } from "@armyofagents/db";
-import { internalAgentConfig } from "@armyofagents/db";
+import { internalAgentConfig, agents } from "@armyofagents/db";
 import { eq } from "drizzle-orm";
 import type { AdapterEnvironmentTestResult } from "@armyofagents/shared";
+import { secretService } from "./secrets.js";
 
 export type CommanderVerifyOutcome = "verified" | "needs_auth" | "not_installed" | "failed";
+
+/**
+ * Resolve the config Commander verify should probe with (Plan 3 / §6.1, Codex
+ * P1 #8). Loads the Commander AGENT via internal_agent_config.agent_id (the
+ * executable config lives on agents.adapterConfig, NOT internal_agent_config)
+ * and resolves its env `secret_ref` bindings for runtime — so a saved API key
+ * (§6.2) actually unblocks the re-probe. Falls back to `{}` (CLI defaults /
+ * subscription-login path) when no Commander agent is linked.
+ */
+export async function resolveCommanderProbeConfig(
+  db: Db,
+  companyId: string,
+  actorId: string | null,
+): Promise<Record<string, unknown>> {
+  const [cfg] = await db
+    .select({ agentId: internalAgentConfig.agentId })
+    .from(internalAgentConfig)
+    .where(eq(internalAgentConfig.companyId, companyId))
+    .limit(1);
+  if (!cfg?.agentId) return {};
+
+  const [agent] = await db
+    .select({ adapterConfig: agents.adapterConfig })
+    .from(agents)
+    .where(eq(agents.id, cfg.agentId))
+    .limit(1);
+  const adapterConfig = (agent?.adapterConfig as Record<string, unknown> | null) ?? {};
+
+  return secretService(db).resolveAdapterConfigForRuntime(companyId, adapterConfig, {
+    consumerType: "agent",
+    consumerId: cfg.agentId,
+    actorType: "user",
+    actorId: actorId ?? "board",
+  });
+}
 
 /** Commander cliTool → agent adapter type (mirror UI AgentStep). */
 export function cliToolToAdapterType(cliTool: string | null | undefined): string {

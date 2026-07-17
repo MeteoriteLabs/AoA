@@ -48,7 +48,7 @@ describe("ReviewStep (Stage C / order 8)", () => {
   it("finishing advances SETUP_COMPLETE and completes", async () => {
     const onComplete = vi.fn();
     render(<ReviewStep ctx={ctx} onComplete={onComplete} onBack={() => {}} />);
-    fireEvent.click(screen.getByText("Go to dashboard"));
+    fireEvent.click(screen.getByText("Finish setup"));
     await waitFor(() => expect(onComplete).toHaveBeenCalled());
     expect(advanceOnboarding).toHaveBeenCalledWith({
       companyId: "c1",
@@ -63,11 +63,11 @@ describe("ReviewStep (Stage C / order 8)", () => {
     );
     const onComplete = vi.fn();
     render(<ReviewStep ctx={ctx} onComplete={onComplete} onBack={() => {}} />);
-    fireEvent.click(screen.getByText("Go to dashboard"));
+    fireEvent.click(screen.getByText("Finish setup"));
     expect(await screen.findByText("advance blew up")).toBeTruthy();
     expect(onComplete).not.toHaveBeenCalled();
     // button re-enabled so the founder can retry (not stuck)
-    expect((screen.getByText("Go to dashboard").closest("button") as HTMLButtonElement).disabled).toBe(
+    expect((screen.getByText("Finish setup").closest("button") as HTMLButtonElement).disabled).toBe(
       false,
     );
   });

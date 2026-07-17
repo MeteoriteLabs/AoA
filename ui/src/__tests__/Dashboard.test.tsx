@@ -143,6 +143,13 @@ vi.mock("../hooks/useLiveAgentCount", () => ({
   useLiveAgentCount: () => 2,
 }));
 
+// N2: the suggestions-detect trigger is founder-gated client-side. Default to
+// founder so the pre-existing tests (which assert detect fires) keep passing.
+const teamAccessMock = vi.hoisted(() => ({ role: "founder" as string | null }));
+vi.mock("../hooks/useTeamAccess", () => ({
+  useTeamAccess: () => ({ role: teamAccessMock.role }),
+}));
+
 vi.mock("../api/dashboard", () => ({
   homeApi: { summary: vi.fn().mockResolvedValue(mockHomeSummary) },
 }));
@@ -176,6 +183,7 @@ describe("Dashboard", () => {
     vi.clearAllMocks();
     mockCompanyContext.selectedCompanyId = "comp-1";
     mockCompanyContext.companies = [makeCompany()];
+    teamAccessMock.role = "founder";
     suggestionsApiMock.pending.mockResolvedValue(suggestionFixtures);
     suggestionsApiMock.detect.mockResolvedValue({ ok: true });
     suggestionsApiMock.accept.mockResolvedValue({});
@@ -190,6 +198,26 @@ describe("Dashboard", () => {
     expect(screen.getByText("Flag launch risk")).toBeInTheDocument();
     expect(screen.getByText("+ New Task")).toBeInTheDocument();
     await waitFor(() => expect(suggestionsApiMock.detect).toHaveBeenCalledWith("comp-1"));
+  });
+
+  it("does not fire suggestions detect for non-founders (server founder-gates it)", async () => {
+    teamAccessMock.role = "team_member";
+    renderWithProviders(<Dashboard />);
+
+    // Wait for the page to settle (suggestions listed) before asserting absence.
+    expect(await screen.findByText("Turn launch prep into a task")).toBeInTheDocument();
+    expect(suggestionsApiMock.detect).not.toHaveBeenCalled();
+  });
+
+  it("hides suggestion accept/dismiss actions for non-founders (server founder-gates them)", async () => {
+    teamAccessMock.role = "team_member";
+    renderWithProviders(<Dashboard />);
+
+    // Cards still render (suggestions are visible to everyone)...
+    expect(await screen.findByText("Turn launch prep into a task")).toBeInTheDocument();
+    // ...but the founder-only actions are gone (clicking them would 403).
+    expect(screen.queryByRole("button", { name: "Accept" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Dismiss" })).toBeNull();
   });
 
   it("create_task accept opens the task dialog with suggestion defaults", async () => {

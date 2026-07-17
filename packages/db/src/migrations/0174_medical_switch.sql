@@ -1,2 +1,0 @@
-ALTER TABLE "internal_agent_messages" ADD COLUMN "reply_to_user_message_id" uuid;--> statement-breakpoint
-CREATE INDEX IF NOT EXISTS "ia_messages_reply_to_user_idx" ON "internal_agent_messages" USING btree ("reply_to_user_message_id");

@@ -4,6 +4,7 @@ import type {
   InstanceUserRole,
   InviteJoinType,
   InviteType,
+  JoinRequestApprovalSource,
   JoinRequestStatus,
   JoinRequestType,
   MembershipStatus,
@@ -66,6 +67,7 @@ export interface JoinRequest {
   claimSecretConsumedAt: Date | null;
   createdAgentId: string | null;
   approvedByUserId: string | null;
+  approvalSource: JoinRequestApprovalSource | null;
   approvedAt: Date | null;
   rejectedByUserId: string | null;
   rejectedAt: Date | null;

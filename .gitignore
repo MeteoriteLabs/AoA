@@ -64,6 +64,7 @@ ui/src/aoa-marketplace-snapshot.json
 .codex/
 .qa-logs/
 .aoa-qa/
+.runtime-research/
 .codex-logs/
 
 # Per-slice live-verify screenshot dirs + Playwright HTML report (throwaway agent run artifacts)

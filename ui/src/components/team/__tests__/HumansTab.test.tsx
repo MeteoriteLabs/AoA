@@ -11,6 +11,11 @@ import { HumansTab } from "../HumansTab";
 
 const pushToast = vi.fn();
 
+// Baseline clipboard stub for jsdom; tests spy on whatever is current.
+Object.assign(navigator, {
+  clipboard: { writeText: vi.fn().mockResolvedValue(undefined) },
+});
+
 vi.mock("../../../context/CompanyContext", () => ({
   useCompany: () => ({ selectedCompanyId: "company-1" }),
 }));
@@ -96,6 +101,7 @@ const joinRequest: JoinRequest = {
   claimSecretConsumedAt: null,
   createdAgentId: null,
   approvedByUserId: null,
+  approvalSource: null,
   approvedAt: null,
   rejectedByUserId: null,
   rejectedAt: null,
@@ -103,7 +109,29 @@ const joinRequest: JoinRequest = {
   updatedAt: new Date("2026-07-07T10:00:00.000Z"),
 };
 
-function renderHumansTab({ highlightId }: { highlightId?: string | null } = {}) {
+const SIX_DAYS_MS = 6 * 24 * 60 * 60 * 1000;
+
+const pendingInviteSummary: TeamSummary = {
+  ...teamSummary,
+  pendingInvites: [
+    {
+      id: "invite-1",
+      email: "ada@example.com",
+      role: "team_member",
+      departmentId: null,
+      departmentName: null,
+      reportsToId: null,
+      reportsToName: null,
+      expiresAt: new Date(Date.now() + SIX_DAYS_MS),
+      inviteUrl: "",
+    },
+  ],
+};
+
+function renderHumansTab({
+  highlightId,
+  summary = teamSummary,
+}: { highlightId?: string | null; summary?: TeamSummary } = {}) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false, gcTime: 0 },
@@ -121,7 +149,7 @@ function renderHumansTab({ highlightId }: { highlightId?: string | null } = {}) 
 
   return render(
     <HumansTab
-      teamSummary={teamSummary}
+      teamSummary={summary}
       highlightId={highlightId}
       permissions={teamSummary.currentUser!.permissions}
       isSystemAdmin={false}
@@ -238,5 +266,79 @@ describe("HumansTab", () => {
 
     expect(await screen.findByText("Ops Scout")).toBeInTheDocument();
     expect(teamApi.searchHumans).not.toHaveBeenCalled();
+  });
+
+  it("shows relative expiry on pending invite cards", async () => {
+    renderHumansTab({ summary: pendingInviteSummary });
+
+    expect(await screen.findByText("ada@example.com")).toBeInTheDocument();
+    expect(screen.getByText("Expires in 6 days")).toBeInTheDocument();
+  });
+
+  it("surfaces the rotated link with a copy affordance after resend", async () => {
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    vi.mocked(teamApi.resendInvite).mockResolvedValue({
+      inviteId: "invite-2",
+      token: "tok-2",
+      inviteUrl: "https://aoa.example.com/invite/tok-2",
+      expiresAt,
+    });
+    const user = userEvent.setup();
+    renderHumansTab({ summary: pendingInviteSummary });
+    const clipboardSpy = vi
+      .spyOn(navigator.clipboard, "writeText")
+      .mockResolvedValue(undefined);
+
+    await user.click(await screen.findByRole("button", { name: "Resend invite" }));
+
+    await waitFor(() => {
+      expect(teamApi.resendInvite).toHaveBeenCalledWith("company-1", "invite-1");
+    });
+    expect(await screen.findByText("New invite link for ada@example.com")).toBeInTheDocument();
+    expect(screen.getByLabelText("New invite link URL")).toHaveValue(
+      "https://aoa.example.com/invite/tok-2",
+    );
+    expect(screen.getByText(/This link expires in 7 days\./)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Copy link" }));
+    expect(clipboardSpy).toHaveBeenCalledWith("https://aoa.example.com/invite/tok-2");
+    expect(await screen.findByRole("button", { name: "Copied" })).toBeInTheDocument();
+  });
+
+  it("clears the resend banner when the invite it belongs to is revoked", async () => {
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    vi.mocked(teamApi.resendInvite).mockResolvedValue({
+      inviteId: "invite-2",
+      token: "tok-2",
+      inviteUrl: "https://aoa.example.com/invite/tok-2",
+      expiresAt,
+    });
+    vi.mocked(teamApi.revokeInvite).mockResolvedValue({ ok: true });
+    const user = userEvent.setup();
+    const { rerender } = renderHumansTab({ summary: pendingInviteSummary });
+
+    await user.click(await screen.findByRole("button", { name: "Resend invite" }));
+    expect(await screen.findByText("New invite link for ada@example.com")).toBeInTheDocument();
+
+    // The refetched summary now shows the rotated invite (invite-2).
+    const rotatedSummary: TeamSummary = {
+      ...teamSummary,
+      pendingInvites: [{ ...pendingInviteSummary.pendingInvites[0]!, id: "invite-2" }],
+    };
+    rerender(
+      <HumansTab
+        teamSummary={rotatedSummary}
+        highlightId={null}
+        permissions={teamSummary.currentUser!.permissions}
+        isSystemAdmin={false}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Revoke invite" }));
+    await waitFor(() => {
+      expect(teamApi.revokeInvite).toHaveBeenCalledWith("company-1", "invite-2");
+    });
+    // The banner offered a now-dead link — it must be gone.
+    expect(screen.queryByText("New invite link for ada@example.com")).not.toBeInTheDocument();
   });
 });

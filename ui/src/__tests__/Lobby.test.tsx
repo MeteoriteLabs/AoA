@@ -141,12 +141,15 @@ describe("Lobby", () => {
             inviteId: "invite-1",
             role: "team_member",
             createdAt: "2026-07-13T00:00:00.000Z",
+            filed: true,
           },
         ]}
       />,
     );
 
     expect(screen.getByText("Invitation to Future Labs")).toBeInTheDocument();
+    // Subtitle names the role the invite grants (HUMAN_ROLE_LABELS).
+    expect(screen.getByText(/join as team member/i)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /review invitation to future labs/i }));
     expect(mockNavigate).toHaveBeenCalledWith("/onboarding/join?company=invited-co", undefined);
   });

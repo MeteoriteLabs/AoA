@@ -19,9 +19,10 @@ function cliToolToAdapterType(cliTool: string | null | undefined): string {
 /** Human-readable runtime label so the founder can SEE what the agent will run on. */
 function runtimeLabel(adapterType: string): string {
   switch (adapterType) {
-    // gpt-5.5 mirrors the server's DEFAULT_CODEX_CHAT_MODEL injected at create time.
+    // No model name in the copy — the server injects its own default chat
+    // model at create time, and a hardcoded label here would silently drift.
     case "codex_local":
-      return "Codex · gpt-5.5";
+      return "Codex (your account's default model)";
     case "opencode_local":
       return "OpenCode";
     case "claude_local":

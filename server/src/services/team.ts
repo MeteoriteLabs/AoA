@@ -31,11 +31,12 @@ import type {
   UpdateTeamMemberRole,
   UserRole,
 } from "@armyofagents/shared";
-import { PERMISSION_KEYS } from "@armyofagents/shared";
+import { PERMISSION_KEYS, humanSocialLinkSchema } from "@armyofagents/shared";
 import { conflict, notFound } from "../errors.js";
 import { accessService } from "./access.js";
 import { humanCapabilitiesService } from "./human-capabilities.js";
 import { orgHierarchyService } from "./org-hierarchy.js";
+import { getUserProfile } from "./user-profiles.js";
 
 const TEAM_INVITE_KEY = "teamInvite";
 const OPEN_WORKLOAD_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
@@ -45,7 +46,7 @@ const TEAM_PERMISSION_KEYS = {
   team_member: [],
 } as const satisfies Record<UserRole, PermissionKey[]>;
 
-function parseInviteRoleMetadata(defaultsPayload: Record<string, unknown> | null | undefined) {
+export function parseInviteRoleMetadata(defaultsPayload: Record<string, unknown> | null | undefined) {
   if (!defaultsPayload) return null;
   const raw = defaultsPayload[TEAM_INVITE_KEY];
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
@@ -746,6 +747,16 @@ export function teamService(db: Db) {
 
     await humanCapabilities.ensureStandardDocuments(companyId, userId, addedByUserId);
 
+    // Converge with the invited path (join-approval.ts) and founder
+    // company-create (routes/companies.ts): every admit path materializes the
+    // company Human Operating Profile from the member's global profile through
+    // the shared helper. Best-effort — never fail the add.
+    try {
+      await materializeCompanyProfileFromGlobal(db, companyId, userId, addedByUserId);
+    } catch {
+      // best-effort — never fail the add
+    }
+
     return { userId };
   }
 
@@ -1137,4 +1148,54 @@ export function teamService(db: Db) {
     updateCompanyUserProfile,
     updateUserRole,
   };
+}
+
+/**
+ * Copy the member's GLOBAL Human Operating Profile (`user_profiles`) into their
+ * company-scoped profile (`company_user_profiles`). The single choke point
+ * shared by ALL THREE admit paths — founder company-create
+ * (routes/companies.ts), invited approval (`approveHumanJoinRequestTx`), and
+ * manual add (`addMember`) — so a profile a member entered during onboarding is
+ * never left blank on the company Team page (`listTeam` reads title/bio/
+ * location/timezone/socialLinks exclusively from `company_user_profiles`).
+ *
+ * Contract:
+ *  - Best-effort by convention: every caller wraps this in try/catch. It never
+ *    swallows its own errors so callers keep full control of attribution/logging.
+ *  - Transaction-aware: runs entirely on the passed `db` handle, so when a caller
+ *    passes a savepoint-scoped `txDb` (the invited approval does) the write
+ *    participates in that same transaction.
+ *  - Null-safe: when the global profile is absent (e.g. a local_trusted synthetic
+ *    operator) it writes explicit nulls + an empty socialLinks — byte-identical to
+ *    the two inline blocks it replaces, and harmless.
+ *
+ * Field set copied: displayName, title, bio, timezone, socialLinks. `location`
+ * is intentionally omitted — the global profile has no location column, matching
+ * both original inline blocks exactly (no reconciliation needed).
+ */
+export async function materializeCompanyProfileFromGlobal(
+  db: Db,
+  companyId: string,
+  userId: string,
+  attributionUserId: string | null,
+): Promise<void> {
+  const globalProfile = await getUserProfile(db, userId);
+  // The global PATCH route only Array.isArray-checks socialLinks, so parse-filter
+  // each link through the shared validator instead of trusting the stored shape.
+  const socialLinks = (globalProfile?.socialLinks ?? []).flatMap((link) => {
+    const parsed = humanSocialLinkSchema.safeParse(link);
+    return parsed.success ? [parsed.data] : [];
+  });
+  await teamService(db).updateCompanyUserProfile(
+    companyId,
+    userId,
+    {
+      displayName: globalProfile?.displayName ?? null,
+      title: globalProfile?.title ?? null,
+      bio: globalProfile?.bio ?? null,
+      socialLinks,
+      timezone: globalProfile?.timezone ?? null,
+    },
+    attributionUserId,
+  );
 }

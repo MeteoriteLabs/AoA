@@ -1,2 +1,0 @@
-ALTER TABLE "internal_agent_messages" ADD COLUMN "client_submission_id" text;--> statement-breakpoint
-CREATE UNIQUE INDEX IF NOT EXISTS "ia_messages_client_submission_uq" ON "internal_agent_messages" USING btree ("conversation_id","client_submission_id") WHERE client_submission_id IS NOT NULL;

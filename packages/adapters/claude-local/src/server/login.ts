@@ -1,0 +1,53 @@
+import path from "node:path";
+import os from "node:os";
+import { runStreamingLogin, type StreamingLoginResult } from "@armyofagents/adapter-utils/streaming-login";
+import type { SpawnTrackedChildOptions, TrackedChildHandle } from "@armyofagents/adapter-utils/server-utils";
+
+/**
+ * The Claude Code CLI config home (Plan 3 / §6.2, Codex P1 #9). There is no
+ * pre-existing repo resolver for this, so we define it here and let the login
+ * lifecycle (Task 4) reuse it. `claude login` persists its credential file
+ * under this dir — that file's presence is claude's completion evidence
+ * (do NOT reuse codex's `auth.json`).
+ */
+export function resolveClaudeConfigHome(env: NodeJS.ProcessEnv): string {
+  return env.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), ".claude");
+}
+
+/**
+ * Start an interactive `claude auth login` (Plan 3 / §6.2), streaming the
+ * verification URL out live. The subcommand is `auth login` — dogfood confirmed
+ * there is NO `claude login` (it just prints "Please run /login" and exits).
+ *
+ * NOTE: unlike `codex login` (local :1455 callback, self-completing), Claude's
+ * flow redirects to a REMOTE callback (platform.claude.com) and then BLOCKS on
+ * stdin: "Paste code here". So surfacing the URL is not enough — completing it
+ * requires piping the pasted auth code into the child's stdin (the "paste-code
+ * bridge", tracked follow-up). Until that exists, the UI offers Claude the
+ * API-key path only; this runner surfaces the URL but does not self-complete.
+ */
+export function runClaudeLoginStreaming(args: {
+  runId: string;
+  command?: string;
+  env?: NodeJS.ProcessEnv;
+  discoveryTimeoutMs?: number;
+  spawn?: (
+    runId: string,
+    command: string,
+    argv: string[],
+    opts: SpawnTrackedChildOptions,
+  ) => TrackedChildHandle;
+}): StreamingLoginResult & { authHome: string } {
+  const env = args.env ?? process.env;
+  const authHome = resolveClaudeConfigHome(env);
+  const result = runStreamingLogin({
+    runId: args.runId,
+    command: args.command ?? "claude",
+    args: ["auth", "login"],
+    cwd: authHome,
+    env: { CLAUDE_CONFIG_DIR: authHome },
+    discoveryTimeoutMs: args.discoveryTimeoutMs,
+    spawn: args.spawn,
+  });
+  return { ...result, authHome };
+}

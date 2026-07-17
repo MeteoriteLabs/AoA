@@ -73,5 +73,8 @@ export const teamApi = {
   revokeInvite: (companyId: string, inviteId: string) =>
     api.patch<{ ok: true }>(`/companies/${companyId}/invites/${inviteId}/revoke`, {}),
   resendInvite: (companyId: string, inviteId: string) =>
-    api.post<{ inviteId: string; token: string }>(`/companies/${companyId}/invites/${inviteId}/resend`, {}),
+    api.post<{ inviteId: string; token: string; inviteUrl: string; expiresAt: string }>(
+      `/companies/${companyId}/invites/${inviteId}/resend`,
+      {},
+    ),
 };

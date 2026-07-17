@@ -18,6 +18,9 @@ export const userProfiles = pgTable("user_profiles", {
   avatarUrl: text("avatar_url"),
   title: text("title"),
   bio: text("bio"),
+  /** IANA timezone (e.g. "Asia/Kolkata"). Collected during onboarding; the
+   *  approval transaction copies it into company_user_profiles. */
+  timezone: text("timezone"),
   socialLinks: jsonb("social_links").$type<UserProfileSocialLink[]>().notNull().default([]),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
