@@ -4,7 +4,6 @@ import { internalAgentConfig, agents } from "@armyofagents/db";
 import type { CommanderContextScope, CommanderOutputRef } from "@armyofagents/shared";
 import type { ToolResult } from "./types.js";
 import {
-  claimCommanderTurn,
   commanderTurnKey,
   releaseCommanderTurn,
   tryClaimCommanderTurn,
@@ -146,6 +145,39 @@ function* replayPersistedReply(reply: {
   }
 }
 
+/**
+ * A same-key request that could not acquire/keep the turn (lost the atomic claim
+ * or the DB insert race) must NOT start a second CLI run. Defer to the winner:
+ * replay its reply if one has already persisted, otherwise report in-progress
+ * (PR #291 review). Shared by the fresh-path claim-loss and insert-loss branches.
+ */
+async function* replayWinnerOrSignalInProgress(
+  convService: {
+    getMessageByClientSubmissionId: (conversationId: string, key: string) => Promise<{ id: string } | null>;
+    getAssistantReplyForUserMessage: (
+      conversationId: string,
+      userMessageId: string,
+    ) => Promise<{ content?: string | null; reasoning?: string | null; toolCalls?: unknown; outputRefs?: unknown } | null>;
+  },
+  conversationId: string,
+  clientSubmissionId: string | null,
+): AsyncGenerator<AgentStreamChunk> {
+  if (clientSubmissionId) {
+    const winner = await convService.getMessageByClientSubmissionId(conversationId, clientSubmissionId);
+    if (winner) {
+      const reply = await convService.getAssistantReplyForUserMessage(conversationId, winner.id);
+      if (reply) {
+        yield* replayPersistedReply(reply);
+        return;
+      }
+    }
+  }
+  yield {
+    type: "error",
+    message: "This message is already being processed.",
+  };
+}
+
 // ── Service ──────────────────────────────────────────────────────────────────
 
 /**
@@ -275,6 +307,22 @@ export function agentLoopService(db: Db, storage?: RuntimeAttachmentStorage) {
         // 2. Persist the user message (skipped when re-running an orphaned
         // turn whose user row already exists from the failed original send).
         if (!reuseExistingUserRow) {
+          // #1 (round-5): claim BEFORE inserting. appendMessage commits the user
+          // row and then AWAITS a separate conversation-counter update; a
+          // duplicate that finds the committed row during that gap would
+          // tryClaim + start the CLI while THIS request also runs. Claiming
+          // first closes the gap (and serializes two fresh same-key sends
+          // in-process — the loser never inserts; the DB unique index remains
+          // the cross-process backstop). A loser must NOT start a second run.
+          if (params.clientSubmissionId) {
+            const key = commanderTurnKey(conversation.id, params.clientSubmissionId);
+            if (!tryClaimCommanderTurn(key)) {
+              yield* replayWinnerOrSignalInProgress(convService, conversation.id, params.clientSubmissionId);
+              return;
+            }
+            claimKey = key;
+          }
+
           const insertedUser = await convService.appendMessage(conversation.id, {
             role: "user",
             content: params.content,
@@ -283,47 +331,23 @@ export function agentLoopService(db: Db, storage?: RuntimeAttachmentStorage) {
             clientSubmissionId: params.clientSubmissionId ?? null,
           });
           // C3 (PR #291 review): a same-key request that lost the unique-index
-          // race gets back an undefined insert. Another in-flight request owns
-          // this submission and is running the turn — we must NOT start a second
-          // CLI run (it would execute the Commander turn + its tools twice).
-          // Replay the winner's reply if it already persisted; otherwise report
-          // that the original send is still in progress.
+          // race gets back an undefined insert (a duplicate inserted first,
+          // cross-process or before our in-process claim on another instance).
+          // Release our claim and defer to the winner — replay its reply if it
+          // persisted, otherwise report in-progress. Never start a second run.
           if (!insertedUser) {
-            if (params.clientSubmissionId) {
-              const winner = await convService.getMessageByClientSubmissionId(
-                conversation.id,
-                params.clientSubmissionId,
-              );
-              if (winner) {
-                const reply = await convService.getAssistantReplyForUserMessage(
-                  conversation.id,
-                  winner.id,
-                );
-                // #2 (round-3): replay ANY linked reply, incl. a tool-only turn.
-                if (reply) {
-                  yield* replayPersistedReply(reply);
-                  return;
-                }
-              }
+            if (claimKey) {
+              releaseCommanderTurn(claimKey);
+              claimKey = null;
             }
-            yield {
-              type: "error",
-              message: "This message is already being processed.",
-            };
+            yield* replayWinnerOrSignalInProgress(
+              convService,
+              conversation.id,
+              params.clientSubmissionId ?? null,
+            );
             return;
           }
           userMessageId = insertedUser.id;
-        }
-
-        // Claim the turn for the lifetime of its CLI run (#1). The reuse path
-        // already claimed atomically via tryClaim above; the fresh path won the
-        // DB insert (the client-submission unique index dedups concurrent
-        // inserts), so it is the definitive owner and can claim directly. A
-        // concurrent same-key request will see this claim and report in-progress
-        // instead of re-running. Released in the finally below.
-        if (params.clientSubmissionId && !reuseExistingUserRow) {
-          claimKey = commanderTurnKey(conversation.id, params.clientSubmissionId);
-          claimCommanderTurn(claimKey);
         }
 
         // 2b. Runtime attachment delivery (v1 — text only). Resolve company-owned

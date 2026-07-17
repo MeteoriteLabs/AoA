@@ -1596,13 +1596,30 @@ export function issueRoutes(db: Db, storage: StorageService) {
     if (!(await assertAgentRunCheckoutOwnership(req, res, issue))) return;
 
     // Idempotent retry: if this exact submission was already recorded, replay the
-    // original comment without re-running control effects (reopen/interrupt) or
-    // wakeups. The DB partial-unique index is the concurrency backstop below.
+    // original comment. The comment commits BEFORE its control effects, so the
+    // original send can die after the comment persisted but before reopen/cancel
+    // ran; the replay must RESUME those effects, not skip them (PR #291 round-5
+    // review). reopen/interrupt are idempotent + state-gated, so a replay whose
+    // effects already completed is a no-op. Wakeups stay skipped on replay
+    // (round-3) to avoid double-waking. The DB partial-unique index is the
+    // concurrency backstop below.
     const clientSubmissionId =
       typeof req.body.clientSubmissionId === "string" ? req.body.clientSubmissionId : undefined;
     if (clientSubmissionId) {
       const replay = await svc.getCommentByClientSubmissionId(issue.companyId, id, clientSubmissionId);
       if (replay) {
+        const replayActor = getActorInfo(req);
+        const replayInterrupt = req.body.interrupt === true;
+        if (!assertInterruptAuthorized(req, res, replayInterrupt)) return;
+        const control = await applyIssueCommentControlEffects({
+          req,
+          res,
+          issue,
+          actor: replayActor,
+          reopenRequested: req.body.reopen === true,
+          interruptRequested: replayInterrupt,
+        });
+        if (!control.ok) return;
         res.status(200).json(replay);
         return;
       }
@@ -1781,6 +1798,21 @@ export function issueRoutes(db: Db, storage: StorageService) {
     if (clientSubmissionId) {
       const replay = await svc.getCommentByClientSubmissionId(issue.companyId, id, clientSubmissionId);
       if (replay) {
+        // Resume any control effects the original send may not have completed
+        // (PR #291 round-5 review): the comment commits before reopen/cancel, so
+        // a retry must finish them. Idempotent + state-gated → no-op once done.
+        const replayActor = getActorInfo(req);
+        const replayInterrupt = parseMultipartBoolean(req.body?.interrupt);
+        if (!assertInterruptAuthorized(req, res, replayInterrupt)) return;
+        const control = await applyIssueCommentControlEffects({
+          req,
+          res,
+          issue,
+          actor: replayActor,
+          reopenRequested: parseMultipartBoolean(req.body?.reopen),
+          interruptRequested: replayInterrupt,
+        });
+        if (!control.ok) return;
         await respondWithReplayedComment(replay);
         return;
       }

@@ -367,18 +367,30 @@ async function emitEntryCreatedSideEffects(
     ? parseMentions(entry.rawContent).map((m) => m.name)
     : [];
   if (mentionNames.length > 0) {
-    const crewRows = await db
-      .select({ id: agents.id })
-      .from(agents)
-      .where(
-        and(
-          eq(agents.companyId, companyId),
-          eq(agents.kind, "aoa"),
-          inArray(agents.name, mentionNames),
-        ),
-      )
-      .limit(1);
-    hasCrewMention = crewRows.length > 0;
+    // Best-effort (PR #291 round-5 review): this lookup only GATES the proactive
+    // Adjutant debounce (hasCrewMention). It runs AFTER the entry tx has
+    // committed, and it is the only `await` here that can throw — a DB blip
+    // would otherwise abort the caller (addEntry) *after* the durable entry
+    // exists, so the route never reaches processMentions (the actual @agent
+    // summon) and a same-key Retry replays past it, never summoning the agent.
+    // Swallow so the entry's critical side-effects always run; the worst case is
+    // an unnecessary Adjutant wake (double-drive), not a lost summon.
+    try {
+      const crewRows = await db
+        .select({ id: agents.id })
+        .from(agents)
+        .where(
+          and(
+            eq(agents.companyId, companyId),
+            eq(agents.kind, "aoa"),
+            inArray(agents.name, mentionNames),
+          ),
+        )
+        .limit(1);
+      hasCrewMention = crewRows.length > 0;
+    } catch (err) {
+      console.error("[threads] hasCrewMention lookup failed (best-effort):", err);
+    }
   }
 
   // Task B2: notify the thread-event listener so it can debounce and wake
@@ -1179,15 +1191,23 @@ export function discussionService(db: Db) {
       // above still wakes Adjutant after the 30s human-silence debounce so
       // the conversation moves forward; extraction waits for the right phase.
 
-      await logActivity(db, {
-        companyId,
-        actorType: "user",
-        actorId,
-        action: "discussion.entry.added",
-        entityType: "discussion_entry",
-        entityId: entry.id,
-        details: { discussionId, inputType: data.inputType },
-      });
+      // Best-effort (PR #291 round-5 review): the entry is already durable, and
+      // the route's processMentions summon still needs to run — an activity-log
+      // DB blip must not throw out of addEntry after commit (which would 500 the
+      // request and let a Retry replay past the summon). Audit-only; swallow.
+      try {
+        await logActivity(db, {
+          companyId,
+          actorType: "user",
+          actorId,
+          action: "discussion.entry.added",
+          entityType: "discussion_entry",
+          entityId: entry.id,
+          details: { discussionId, inputType: data.inputType },
+        });
+      } catch (err) {
+        console.error("[threads] discussion.entry.added activity log failed (best-effort):", err);
+      }
 
       return entry;
     },

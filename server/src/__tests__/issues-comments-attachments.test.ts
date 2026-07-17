@@ -829,6 +829,45 @@ describe("POST /issues/:id/comments — idempotent retry (clientSubmissionId)", 
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
   });
 
+  it("resumes an incomplete reopen on the replay fast-path when the task is STILL closed (round-5 #2)", async () => {
+    // The original send committed the comment but died before reopening the task
+    // (post-insert failure). The task is still closed. A same-key Retry hits the
+    // replay fast-path — which must RESUME the reopen, not skip it.
+    const stillClosed = makeIssue({ status: "done" });
+    mockIssueService.getById.mockResolvedValue(stillClosed);
+    mockIssueService.update.mockResolvedValue(makeIssue({ status: "todo" }));
+    mockIssueService.getCommentByClientSubmissionId.mockResolvedValue(existingComment); // replay
+
+    const res = await request(createApp())
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Please inspect the logs", reopen: true, clientSubmissionId: submissionId });
+
+    expect(res.status).toBe(200);
+    expect(res.body.id).toBe("comment-1");
+    // The reopen was resumed by the replay (state-gated: task was still closed).
+    expect(mockIssueService.update).toHaveBeenCalledWith(issueId, { status: "todo" });
+    // addComment is NOT called on the replay path (no duplicate comment).
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("does NOT re-reopen on the replay fast-path when the task is already open (idempotent no-op, round-5 #2)", async () => {
+    // Normal replay: the original send already reopened the task (now open). The
+    // replay re-runs the control effects but they are state-gated → no-op, so no
+    // duplicate svc.update / activity.
+    const alreadyOpen = makeIssue({ status: "todo" });
+    mockIssueService.getById.mockResolvedValue(alreadyOpen);
+    mockIssueService.getCommentByClientSubmissionId.mockResolvedValue(existingComment); // replay
+
+    const res = await request(createApp())
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Please inspect the logs", reopen: true, clientSubmissionId: submissionId });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
   it("returns the winner's comment without re-firing wakeups when addComment loses the insert race (round-3 #4)", async () => {
     // Both same-key requests pass the pre-check; the loser's insert is swallowed
     // and addComment returns the winner's row flagged `replayed`. The route must

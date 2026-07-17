@@ -327,6 +327,30 @@ describe("agentLoopService.chat — idempotent retry (clientSubmissionId)", () =
     }
   });
 
+  it("does NOT run the CLI on the FRESH path when the turn claim is already held — round-5 #1", async () => {
+    // No prior user row (fresh send), but a concurrent same-key request already
+    // holds the atomic claim (it inserted the row + is running). The fresh path
+    // must acquire the claim via tryClaim BEFORE inserting; losing it means it
+    // must NOT insert a row or start a second CLI run — it defers to the winner
+    // (in-progress here, since no reply has landed yet).
+    const key = commanderTurnKey("conv-1", "sub-fresh-contended");
+    claimCommanderTurn(key);
+    try {
+      getMessageByClientSubmissionId.mockResolvedValue(null); // fresh: no prior row at pre-check
+      getAssistantReplyForUserMessage.mockResolvedValue(null);
+
+      const svc = agentLoopService(dbWithConfig({ cliTool: "claude_cli", executionMode: "cli" }));
+      const out = await drainWithKey(svc, "sub-fresh-contended");
+
+      // Never inserted a duplicate user row and never started a run.
+      expect(appendMessage).not.toHaveBeenCalled();
+      expect(cliChat).not.toHaveBeenCalled();
+      expect(out.some((c) => c.type === "error" && /already being processed/i.test(c.message))).toBe(true);
+    } finally {
+      releaseCommanderTurn(key);
+    }
+  });
+
   it("re-runs the turn when the prior user message has no persisted reply (send died mid-turn)", async () => {
     // The key was recorded, but the original send failed before any assistant
     // message was persisted (config error / CLI crash). Retry must fall through
