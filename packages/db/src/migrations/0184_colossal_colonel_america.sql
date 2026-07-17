@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX IF NOT EXISTS "agent_wakeup_requests_comment_wakeup_idempotency_uq" ON "agent_wakeup_requests" USING btree ("company_id","idempotency_key") WHERE idempotency_key LIKE 'comment-wakeup:%';

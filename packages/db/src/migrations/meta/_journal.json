@@ -1289,6 +1289,13 @@
       "when": 1784305276475,
       "tag": "0183_wild_franklin_richards",
       "breakpoints": true
+    },
+    {
+      "idx": 184,
+      "version": "7",
+      "when": 1784308693741,
+      "tag": "0184_colossal_colonel_america",
+      "breakpoints": true
     }
   ]
 }

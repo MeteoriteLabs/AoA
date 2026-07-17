@@ -61,5 +61,17 @@ export const agentWakeupRequests = pgTable(
     dedupKeyQueuedUq: uniqueIndex("agent_wakeup_requests_dedup_key_queued_uq")
       .on(table.dedupKey)
       .where(sql`status = 'queued' AND dedup_key IS NOT NULL`),
+    // PR #291 round-17 #2: idempotent-consumer key for the comment_wakeup_outbox
+    // worker. It tags each dispatch with idempotency_key = 'comment-wakeup:<outbox
+    // row id>'; this STATUS-AGNOSTIC unique index (unlike dedupKeyQueuedUq, which
+    // only fires while queued) makes a re-dispatch of the same outbox row after
+    // the worker crashed before marking it done a no-op / hard-conflict — so the
+    // downstream agent_wakeup_requests insert (aoa OR the heartbeat wakeupRequest
+    // row) can never double-wake a target, regardless of run lifecycle. Scoped by
+    // the key PREFIX so it is fully isolated from the reason-based idempotency
+    // index above and from any other idempotency_key user.
+    commentWakeupIdempotencyUq: uniqueIndex("agent_wakeup_requests_comment_wakeup_idempotency_uq")
+      .on(table.companyId, table.idempotencyKey)
+      .where(sql`idempotency_key LIKE 'comment-wakeup:%'`),
   }),
 );

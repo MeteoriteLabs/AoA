@@ -170,4 +170,50 @@ describe.skipIf(process.platform === "win32")("comment+reassign atomicity (real 
     // Exactly 2 rows (one per target) despite the double enqueue — no double-wake.
     expect(arr).toHaveLength(2);
   });
+
+  // ---- Round-17 #1: the wakeup rows commit IN the comment-insert transaction ----
+
+  async function outboxCount(commentId: string): Promise<number> {
+    const rows = await db.execute(
+      sql`SELECT id FROM comment_wakeup_outbox WHERE comment_id = ${commentId}`,
+    );
+    const arr = Array.isArray(rows) ? rows : ((rows as { rows?: unknown[] })?.rows ?? []);
+    return arr.length;
+  }
+  async function commentExists(commentId: string): Promise<boolean> {
+    const rows = await db.execute(sql`SELECT id FROM issue_comments WHERE id = ${commentId}`);
+    const arr = Array.isArray(rows) ? rows : ((rows as { rows?: unknown[] })?.rows ?? []);
+    return arr.length > 0;
+  }
+
+  it("addComment commits the comment AND its wakeup rows ATOMICALLY (buildWakeupTargets)", async () => {
+    const comment = await issueService(db).addComment(issueId, "@Beta look", {
+      userId: "board-user",
+      clientSubmissionId: "intx-key-1",
+      buildWakeupTargets: async (c) => [
+        { agentId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa01", wakeup: { reason: "issue_commented", payload: { commentId: c.id } } },
+      ],
+    });
+    expect(await commentExists(comment.id)).toBe(true);
+    // The committed comment carries its pending wakeup row (enqueued in the tx).
+    expect(await outboxCount(comment.id)).toBe(1);
+  });
+
+  it("rolls back the comment when buildWakeupTargets throws (both or neither)", async () => {
+    const key = "intx-key-rollback";
+    await expect(
+      issueService(db).addComment(issueId, "@Beta look", {
+        userId: "board-user",
+        clientSubmissionId: key,
+        buildWakeupTargets: async () => {
+          throw new Error("simulated failure building/enqueueing wakeups");
+        },
+      }),
+    ).rejects.toThrow();
+
+    // The comment insert rolled back with the failed enqueue — no orphan comment
+    // without its wakeups (round-17 #1: atomic, both or neither).
+    const found = await issueService(db).getCommentByClientSubmissionId(companyId, issueId, key);
+    expect(found).toBeNull();
+  });
 });

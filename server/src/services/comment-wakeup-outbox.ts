@@ -18,7 +18,7 @@
 
 import { and, eq, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { commentWakeupOutbox } from "@armyofagents/db";
+import { commentWakeupOutbox, agentWakeupRequests } from "@armyofagents/db";
 import { logger } from "../middleware/logger.js";
 
 const LOG_CTX = { service: "comment-wakeup-outbox" } as const;
@@ -87,11 +87,42 @@ export async function enqueueCommentWakeupOutbox(
     });
 }
 
-/** Default dispatch: resolve the agent's kind AT DRAIN time (round-14 #1 — never
- *  default-route on a failed lookup; a thrown resolution just retries the row),
- *  then route aoa → enqueueAoaMentionWakeup, org → heartbeat.wakeup. Lazy imports
- *  keep the heavy heartbeat/issues trees off the worker's module-load path. */
+/**
+ * A stable idempotency key for a single outbox row's downstream wakeup. Tagged
+ * onto the agent_wakeup_requests row (aoa) OR the heartbeat wakeupRequest row so a
+ * re-dispatch of the SAME outbox row is deduped at the DB layer (round-17 #2,
+ * partial unique index `…comment_wakeup_idempotency_uq`). The row id is stable
+ * across the worker's crash/reclaim/re-drain, so the second dispatch is a no-op.
+ */
+function wakeupIdempotencyKey(rowId: string): string {
+  return `comment-wakeup:${rowId}`;
+}
+
+/**
+ * Default dispatch — IDEMPOTENT CONSUMER (round-17 #2). The worker is at-least-
+ * once (it can crash after dispatching but before marking the row done, then
+ * re-drain), and the downstream heartbeat/aoa wakeup is NOT itself idempotent. So:
+ *   1) tag every dispatch with a stable idempotency key derived from the outbox
+ *      row id, and
+ *   2) BEFORE dispatching, skip if an agent_wakeup_requests row already carries
+ *      that key (the previous drive already dispatched it) — a cheap short-circuit
+ *      for the common sequential re-drive; the partial unique index is the hard
+ *      backstop for the rare concurrent stale-reclaim race (the losing insert
+ *      conflicts → the row retries → this check then skips).
+ * Kind is resolved AT DRAIN time (round-14 #1: a failed lookup retries, never
+ * default-routes aoa → heartbeat). Lazy imports keep the heavy trees off the
+ * worker's module-load path.
+ */
 const defaultRunWakeup: RunWakeupFn = async (db, row) => {
+  const idempotencyKey = wakeupIdempotencyKey(row.id);
+
+  const already = await db
+    .select({ id: agentWakeupRequests.id })
+    .from(agentWakeupRequests)
+    .where(and(eq(agentWakeupRequests.companyId, row.companyId), eq(agentWakeupRequests.idempotencyKey, idempotencyKey)))
+    .limit(1);
+  if (already.length > 0) return; // already dispatched by a prior drive → no-op
+
   const { issueService } = await import("./issues.js");
   const kinds = await issueService(db).resolveAgentKinds([row.targetAgentId]);
   if (kinds.get(row.targetAgentId) === "aoa") {
@@ -100,13 +131,16 @@ const defaultRunWakeup: RunWakeupFn = async (db, row) => {
       source: w.source,
       reason: w.reason,
       payload: w.payload,
+      idempotencyKey,
     });
     return;
   }
   const { heartbeatService } = await import("./heartbeat.js");
   await heartbeatService(db).wakeup(
     row.targetAgentId,
-    (row.wakeup ?? {}) as Parameters<ReturnType<typeof heartbeatService>["wakeup"]>[1],
+    { ...((row.wakeup ?? {}) as Record<string, unknown>), idempotencyKey } as Parameters<
+      ReturnType<typeof heartbeatService>["wakeup"]
+    >[1],
   );
 };
 

@@ -86,6 +86,12 @@ beforeAll(async () => {
     await db.execute(sql`
       INSERT INTO issues (id, company_id, title, status) VALUES (${issueId}, ${companyId}, 'Task', 'todo')
     `);
+    // A crew (kind='aoa') agent so the default runWakeup routes to
+    // enqueueAoaMentionWakeup (a simple agent_wakeup_requests insert) for the
+    // round-17 #2 idempotent-consumer test.
+    await db.execute(sql`
+      INSERT INTO agents (id, company_id, name, kind) VALUES (${AGENT_A}, ${companyId}, 'Scout', 'aoa')
+    `);
   } catch (err) {
     setupError = err;
   }
@@ -249,5 +255,45 @@ describe.skipIf(process.platform === "win32")("comment wakeup outbox (real DB)",
     );
     await drainCommentWakeupOutbox(db, { runWakeup: boom, maxAttempts: 2 });
     expect(await rowStatus(commentId, AGENT_A)).toBe("failed");
+  });
+
+  // Round-17 #2: the DEFAULT dispatch is idempotent. If the worker dispatches the
+  // downstream wakeup then crashes before marking the row done, a re-drain must
+  // NOT double-wake — the dispatch is deduped by the idempotency key.
+  it("does NOT double-dispatch on a re-drain after a mark-done crash (idempotent consumer)", async () => {
+    const commentId = nextCommentId();
+    await enqueueCommentWakeupOutbox(db, {
+      companyId,
+      issueId,
+      commentId,
+      targets: [{ agentId: AGENT_A, wakeup: { reason: "issue_comment_mentioned" } }],
+    });
+
+    async function countWakeups(): Promise<number> {
+      const rows = await db.execute(
+        sql`SELECT id FROM agent_wakeup_requests WHERE idempotency_key LIKE 'comment-wakeup:%' AND agent_id = ${AGENT_A}`,
+      );
+      const arr = Array.isArray(rows) ? rows : ((rows as { rows?: unknown[] })?.rows ?? []);
+      return arr.length;
+    }
+
+    // First drain: the default dispatch resolves kind='aoa' → enqueueAoaMentionWakeup
+    // → exactly ONE agent_wakeup_requests row tagged with the outbox row's key.
+    await drainCommentWakeupOutbox(db);
+    expect(await countWakeups()).toBe(1);
+    expect(await countRows(commentId, "done")).toBe(1);
+
+    // Simulate: the worker had dispatched but crashed before marking done — the row
+    // is 'processing' past the stale window. A re-drain reclaims it and re-runs the
+    // default dispatch, which must SKIP (the agent_wakeup_requests row already
+    // exists for this key) — so still exactly ONE wakeup, no double-wake.
+    await db.execute(
+      sql`UPDATE comment_wakeup_outbox
+          SET status = 'processing', claim_token = gen_random_uuid(), updated_at = now() - interval '10 minutes'
+          WHERE comment_id = ${commentId}`,
+    );
+    await drainCommentWakeupOutbox(db);
+    expect(await countWakeups()).toBe(1);
+    expect(await countRows(commentId, "done")).toBe(1);
   });
 });

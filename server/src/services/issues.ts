@@ -2398,6 +2398,17 @@ export function issueService(db: Db) {
         presentation?: IssueCommentPresentation | null;
         metadata?: IssueCommentMetadata | null;
         clientSubmissionId?: string;
+        // Round-17 #1: build this comment's per-target wakeups and enqueue them
+        // into comment_wakeup_outbox IN THE SAME TRANSACTION as the comment insert,
+        // so a committed comment ALWAYS carries its pending wakeup rows (no crash
+        // window between the comment commit and a separate enqueue). The callback
+        // receives the freshly-inserted comment (id + authorAgentId) so it can
+        // embed the comment id in the wakeup payloads; it runs only on a FRESH
+        // insert (a replay's rows already exist).
+        buildWakeupTargets?: (comment: {
+          id: string;
+          authorAgentId: string | null;
+        }) => Promise<CommentWakeupTarget[]>;
       },
     ) => {
       const issue = await db
@@ -2466,6 +2477,20 @@ export function issueService(db: Db) {
           sourceType: "issue",
           sourceId: issueId,
         });
+        // Round-17 #1: enqueue the comment's per-target wakeups IN THIS TX, so a
+        // committed comment always carries its pending wakeup rows.
+        if (actor.buildWakeupTargets) {
+          const targets = await actor.buildWakeupTargets({
+            id: created.id,
+            authorAgentId: created.authorAgentId ?? null,
+          });
+          await enqueueCommentWakeupOutbox(tx as unknown as Db, {
+            companyId: issue.companyId,
+            issueId,
+            commentId: created.id,
+            targets,
+          });
+        }
         return created;
       });
 
@@ -2517,6 +2542,10 @@ export function issueService(db: Db) {
     },
 
     createAttachment: async (input: {
+      // Round-17 #1: optional explicit attachment id. The comments-with-attachments
+      // route pre-generates it so the in-transaction comment wakeup can carry the
+      // real attachment id before the file is stored.
+      id?: string;
       issueId: string;
       issueCommentId?: string | null;
       provider: string;
@@ -2566,6 +2595,7 @@ export function issueService(db: Db) {
         const [attachment] = await tx
           .insert(issueAttachments)
           .values({
+            ...(input.id ? { id: input.id } : {}),
             companyId: issue.companyId,
             issueId: issue.id,
             assetId: asset.id,
@@ -2883,16 +2913,28 @@ export function issueService(db: Db) {
     enqueueAoaMentionWakeup: async (
       companyId: string,
       agentId: string,
-      opts: { source?: string | null; reason?: string | null; payload?: unknown },
+      opts: { source?: string | null; reason?: string | null; payload?: unknown; idempotencyKey?: string | null },
     ): Promise<void> => {
-      await db.insert(agentWakeupRequests).values({
-        companyId,
-        agentId,
-        source: opts.source ?? "automation",
-        reason: opts.reason ?? "issue_comment_mentioned",
-        payload: (opts.payload ?? null) as Record<string, unknown> | null,
-        status: "queued",
-      });
+      // Round-17 #2: when the comment_wakeup_outbox worker supplies an
+      // idempotencyKey (`comment-wakeup:<row id>`), a re-dispatch of the same
+      // outbox row (worker crashed before marking it done → reclaimed → re-drained)
+      // is a NO-OP insert via the partial unique index, so the crew agent is never
+      // double-summoned. Without a key (other callers) it stays a plain insert.
+      await db
+        .insert(agentWakeupRequests)
+        .values({
+          companyId,
+          agentId,
+          source: opts.source ?? "automation",
+          reason: opts.reason ?? "issue_comment_mentioned",
+          payload: (opts.payload ?? null) as Record<string, unknown> | null,
+          status: "queued",
+          idempotencyKey: opts.idempotencyKey ?? null,
+        })
+        .onConflictDoNothing({
+          target: [agentWakeupRequests.companyId, agentWakeupRequests.idempotencyKey],
+          where: sql`idempotency_key LIKE 'comment-wakeup:%'`,
+        });
     },
 
     /**

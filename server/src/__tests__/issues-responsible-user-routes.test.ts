@@ -180,14 +180,41 @@ describe("issue responsible user routes", () => {
   it("persists review feedback and wakes the assignee exactly once", async () => {
     mockIssueService.getById.mockResolvedValue({ ...baseIssue, status: "in_review" });
     mockIssueService.update.mockResolvedValue({ ...baseIssue, status: "in_progress" });
-    mockIssueService.addComment.mockResolvedValue({
-      id: "review-comment",
-      issueId,
-      companyId,
-      body: "Add a measurable success criterion.",
-      authorAgentId: null,
-      authorUserId: "board-user",
-    });
+    // Round-17 #1: addComment enqueues the review-changes wakeup IN ITS TX via the
+    // buildWakeupTargets callback; the mock invokes it + routes to
+    // enqueueCommentWakeups (whose inline-drain dispatches heartbeat.wakeup).
+    mockIssueService.addComment.mockImplementation(
+      async (
+        issueIdArg: string,
+        body: string,
+        actor: {
+          agentId?: string;
+          buildWakeupTargets?: (comment: {
+            id: string;
+            authorAgentId: string | null;
+          }) => Promise<Array<{ agentId: string; wakeup: unknown }>>;
+        },
+      ) => {
+        const comment = {
+          id: "review-comment",
+          issueId: issueIdArg,
+          companyId,
+          body,
+          authorAgentId: actor?.agentId ?? null,
+          authorUserId: "board-user",
+        };
+        if (actor?.buildWakeupTargets) {
+          const targets = await actor.buildWakeupTargets({ id: comment.id, authorAgentId: comment.authorAgentId });
+          await mockIssueService.enqueueCommentWakeups({
+            companyId,
+            issueId: issueIdArg,
+            commentId: comment.id,
+            targets,
+          });
+        }
+        return comment;
+      },
+    );
     mockIssueService.findMentionedAgents.mockResolvedValue([agentId]);
 
     const res = await request(createApp())

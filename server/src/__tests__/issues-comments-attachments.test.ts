@@ -224,14 +224,48 @@ beforeEach(() => {
       }
     },
   );
-  mockIssueService.addComment.mockResolvedValue({
-    id: "comment-1",
-    issueId,
-    companyId,
-    body: "Please inspect these screenshots",
-    authorAgentId: null,
-    authorUserId: "board-user",
-  });
+  // Round-17 #1: addComment now enqueues the comment's wakeups IN ITS TX via the
+  // buildWakeupTargets callback. The mock INVOKES that callback on a fresh insert
+  // and routes the built targets to enqueueCommentWakeups (whose inline-drain mock
+  // above then dispatches), so the existing "waked agent X" assertions still hold
+  // end-to-end. Tests that override addComment with a `replayed` return skip this
+  // (a replay never re-builds/enqueues — its rows already exist).
+  mockIssueService.addComment.mockImplementation(
+    async (
+      issueIdArg: string,
+      body: string,
+      actor: {
+        agentId?: string;
+        userId?: string;
+        buildWakeupTargets?: (comment: {
+          id: string;
+          authorAgentId: string | null;
+        }) => Promise<Array<{ agentId: string; wakeup: unknown }>>;
+      },
+    ) => {
+      const comment = {
+        id: "comment-1",
+        issueId: issueIdArg,
+        companyId,
+        body,
+        authorAgentId: actor?.agentId ?? null,
+        authorUserId: actor?.userId ?? "board-user",
+      };
+      if (actor?.buildWakeupTargets) {
+        const targets = await actor.buildWakeupTargets({
+          id: comment.id,
+          authorAgentId: comment.authorAgentId,
+        });
+        await mockIssueService.enqueueCommentWakeups({
+          companyId,
+          issueId: issueIdArg,
+          commentId: comment.id,
+          targets,
+        });
+      }
+      return comment;
+    },
+  );
   mockIssueService.createAttachment.mockImplementation(async (input: Record<string, unknown>) => ({
     id: `attachment-${mockIssueService.createAttachment.mock.calls.length}`,
     companyId,
@@ -326,7 +360,10 @@ describe("POST /issues/:id/comments-with-attachments", () => {
           attachmentCount: 1,
           attachments: [
             expect.objectContaining({
-              id: "attachment-1",
+              // Round-17 #1: the wake is built + enqueued IN addComment's tx from
+              // a PRE-generated attachment id (the same id later threaded into
+              // createAttachment), so it is a fresh UUID, not the mock's row id.
+              id: expect.any(String),
               filename: "proof.png",
               contentType: "image/png",
             }),
@@ -803,18 +840,15 @@ describe("POST /issues/:id/comments-with-attachments", () => {
         details: expect.objectContaining({ completedOnRetry: true, commentId: "comment-1" }),
       }),
     );
-    // Still exactly one durable comment.
+    // Still exactly one durable comment (the fresh insert on the first send).
     expect(mockIssueService.addComment).toHaveBeenCalledTimes(1);
 
-    // Round-8 #2 / round-16: the missing attachments are completed BEFORE the
-    // wakeup targets are enqueued, so the enqueued wakeup carries the completed
-    // attachment metadata (never enqueued while the files are still absent).
-    expect(mockIssueService.enqueueCommentWakeups).toHaveBeenCalledTimes(1);
-    expect(mockIssueService.completeMissingCommentAttachments.mock.invocationCallOrder[0]).toBeLessThan(
-      mockIssueService.enqueueCommentWakeups.mock.invocationCallOrder[0],
-    );
-    // And the resumed wakeup carries the completed attachment metadata.
-    await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalled());
+    // Round-17 #1: the wake is enqueued IN addComment's transaction on the first
+    // send, carrying attachment PREVIEWS built from the multipart files (before
+    // external storage), so the woken agent receives attachment metadata even
+    // though the files are stored after the comment tx. The worker delivers it
+    // exactly once ((comment, agent) idempotency dedups the retry's re-enqueue).
+    await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
       assigneeAgentId,
       expect.objectContaining({
