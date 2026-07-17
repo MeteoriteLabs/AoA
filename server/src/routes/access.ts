@@ -61,7 +61,6 @@ import {
   grantsFromDefaults,
   inviteConfersPrivilegedAuthority,
 } from "../services/join-approval.js";
-import { parseInviteRoleMetadata } from "../services/team.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -1677,74 +1676,84 @@ export function accessRoutes(
       const companyId = req.params.companyId as string;
       await assertCompanyPermission(req, companyId, "users:invite");
 
-      // ── P1 privilege-escalation clamp (Codex round-5, root-cause seam) ──────
-      // `users:invite` is delegable to non-founders, but the invite's
-      // defaultsPayload (teamInvite.role + human/agent grants) is applied
-      // VERBATIM at approval/auto-admit. Without this clamp a non-founder holding
-      // only `users:invite` could mint a role:"founder" (or privileged-grant)
-      // invite pointed at an email they control and self-escalate to founder
-      // with no founder approval. Clamp the requested role + grants to the
-      // CREATOR's OWN authority BEFORE the invite is ever persisted.
+      // Parse the invite's defaultsPayload once — both the privileged gate (all
+      // caller types) and the non-founder BOARD grants floor below read it.
+      const rawDefaults =
+        req.body.defaultsPayload &&
+        typeof req.body.defaultsPayload === "object" &&
+        !Array.isArray(req.body.defaultsPayload)
+          ? (req.body.defaultsPayload as Record<string, unknown>)
+          : null;
+
+      // ── P1 privilege-escalation clamp (Codex round-5 + round-6, root seam) ──
+      // `users:invite` is delegable to non-founders (and to agents), but the
+      // invite's defaultsPayload (teamInvite.role + human/agent grants) is
+      // applied VERBATIM at approval / auto-admit. A "privileged" payload — a
+      // role above team_lead (founder), or a grant in {users:manage_permissions,
+      // joins:approve, users:invite} (the SHARED inviteConfersPrivilegedAuthority
+      // predicate) — may be MINTED only by an authenticated FOUNDER or the
+      // local_trusted synthetic human, on EVERY path, for EVERY caller type.
       //
-      // Authority is resolved via the same helpers the rest of RBAC uses (never
-      // hand-rolled): team.getUserRole → effective role (maps instance_admin →
-      // founder); access.canUser → held permission grants (instance_admin ⇒
-      // true). Founders / instance admins keep full capability. Agents and the
-      // local_trusted synthetic board actor are exempt — agents do not drive the
-      // human onboarding auto-admit, and local_implicit is a single trust
-      // boundary where assertCompanyPermission already short-circuits.
-      if (req.actor.type === "board" && !isLocalImplicit(req) && req.actor.userId) {
-        const rawDefaults =
-          req.body.defaultsPayload &&
-          typeof req.body.defaultsPayload === "object" &&
-          !Array.isArray(req.body.defaultsPayload)
-            ? (req.body.defaultsPayload as Record<string, unknown>)
-            : null;
-        if (rawDefaults) {
-          const creatorId = req.actor.userId;
-          const { role: creatorRole } = await team.getUserRole(companyId, creatorId);
-          const creatorIsFounder = creatorRole === "founder"; // getUserRole maps instance_admin → founder
+      // Round-6 fix (this clamp): the gate is now "actor is a founder OR
+      // local_implicit", NOT "actor is board". Agents are NOT exempt. The old
+      // "agents are exempt; the auto-admit sink is the backstop" reasoning was
+      // wrong: that sink only guards the unattended email-match finalize path —
+      // NOT this creation route, and NOT the sibling manual-approve route. An
+      // agent holding users:invite + joins:approve could otherwise mint a
+      // role:"founder" invite here and self-apply it there, escalating with no
+      // founder in the loop. An agent actor has NO founder userId → it can never
+      // be a founder → refused. Founder status resolves only for a board actor
+      // with a userId (team.getUserRole → effective role, maps instance_admin →
+      // founder).
+      if (rawDefaults && inviteConfersPrivilegedAuthority(rawDefaults) && !isLocalImplicit(req)) {
+        const actorIsFounder =
+          req.actor.type === "board" && req.actor.userId
+            ? (await team.getUserRole(companyId, req.actor.userId)).role === "founder"
+            : false; // agents (and any non-board / userId-less actor) are never founders
+        if (!actorIsFounder) {
+          throw forbidden(
+            "Only founders can create an invite that confers founder role or privileged permissions",
+          );
+        }
+      }
 
-          if (!creatorIsFounder) {
-            // (1) Role clamp: only a founder (or instance admin) may mint a
-            //     founder invite. Non-founders may still invite team_lead /
-            //     team_member (the intended delegation).
-            if (parseInviteRoleMetadata(rawDefaults)?.role === "founder") {
-              throw forbidden("Only founders can invite new founders");
+      // Non-privileged grants floor (unchanged from round-5): a non-founder BOARD
+      // creator must hold `users:manage_permissions` to embed ANY permission
+      // grant, and can NEVER embed a key they do not themselves hold. Privileged
+      // payloads are already refused above regardless of caller type, so this
+      // floor now only governs NON-privileged grants. Agents and local_implicit
+      // are unaffected here, exactly as before.
+      if (req.actor.type === "board" && !isLocalImplicit(req) && req.actor.userId && rawDefaults) {
+        const creatorId = req.actor.userId;
+        const { role: creatorRole } = await team.getUserRole(companyId, creatorId);
+        const creatorIsFounder = creatorRole === "founder"; // getUserRole maps instance_admin → founder
+
+        if (!creatorIsFounder) {
+          const embeddedGrants = [
+            ...grantsFromDefaults(rawDefaults, "human"),
+            ...grantsFromDefaults(rawDefaults, "agent"),
+          ];
+          if (embeddedGrants.length > 0) {
+            const canDelegateGrants = await access.canUser(
+              companyId,
+              creatorId,
+              "users:manage_permissions",
+            );
+            if (!canDelegateGrants) {
+              throw forbidden(
+                "You need users:manage_permissions to embed permission grants in an invite",
+              );
             }
-
-            // (2) Grants clamp: embedding permission grants is delegation, which
-            //     the member-permissions route gates on `users:manage_permissions`
-            //     — mirror that here, and additionally enforce the floor that a
-            //     creator can NEVER embed a permission key they do not themselves
-            //     hold. Covers human AND agent grants (both applied verbatim at
-            //     approval time).
-            const embeddedGrants = [
-              ...grantsFromDefaults(rawDefaults, "human"),
-              ...grantsFromDefaults(rawDefaults, "agent"),
-            ];
-            if (embeddedGrants.length > 0) {
-              const canDelegateGrants = await access.canUser(
+            for (const grant of embeddedGrants) {
+              const creatorHoldsKey = await access.canUser(
                 companyId,
                 creatorId,
-                "users:manage_permissions",
+                grant.permissionKey,
               );
-              if (!canDelegateGrants) {
+              if (!creatorHoldsKey) {
                 throw forbidden(
-                  "You need users:manage_permissions to embed permission grants in an invite",
+                  `You cannot grant a permission you do not hold: ${grant.permissionKey}`,
                 );
-              }
-              for (const grant of embeddedGrants) {
-                const creatorHoldsKey = await access.canUser(
-                  companyId,
-                  creatorId,
-                  grant.permissionKey,
-                );
-                if (!creatorHoldsKey) {
-                  throw forbidden(
-                    `You cannot grant a permission you do not hold: ${grant.permissionKey}`,
-                  );
-                }
               }
             }
           }
@@ -2485,33 +2494,37 @@ export function accessRoutes(
       // ── P1 privilege-escalation clamp — MANUAL approve seam ─────────────────
       // Symmetric with the invite-CREATION clamp (POST /invites) and the
       // AUTO-ADMIT sink (onboarding-join finalize). `joins:approve` is delegable
-      // to non-founders, and this route applies the invite's defaultsPayload
-      // (role + grants) VERBATIM via approveHumanJoinRequestTx. Without this
-      // clamp a team_lead-level approver holding joins:approve could approve a
-      // pre-existing / agent-minted (creation-clamp-dodging) role:"founder" (or
-      // privileged-grant) invite and mint a founder with NO founder in the loop.
-      // Refuse the approval unless the approver is themselves a founder /
-      // instance admin. Authority is resolved via the SAME helper the creation
-      // clamp uses (team.getUserRole → effective role, maps instance_admin →
-      // founder), and "privileged" is the SAME shared predicate the auto-admit
-      // sink uses. The local_trusted synthetic board actor and agents are exempt
-      // — identical to the creation clamp's actor handling.
+      // to non-founders (and to agents), and this route applies the invite's
+      // defaultsPayload (role + grants) VERBATIM via approveHumanJoinRequestTx.
+      // A "privileged" payload (role above team_lead, or a grant in
+      // {users:manage_permissions, joins:approve, users:invite} — the SHARED
+      // inviteConfersPrivilegedAuthority predicate) may be APPLIED only by an
+      // authenticated FOUNDER or the local_trusted synthetic human.
+      //
+      // Round-6 fix (this is the exploit sink): the gate is now "actor is a
+      // founder OR local_implicit", NOT "actor is board". Agents are NOT exempt.
+      // The auto-admit sink guards ONLY the unattended finalize path — NOT this
+      // manual route — so an agent holding joins:approve could otherwise approve
+      // an agent-minted (or pre-existing) role:"founder" / privileged-grant
+      // invite and mint a founder with NO founder in the loop. An agent actor
+      // has NO founder userId → it can never be a founder → refused. Founder
+      // status resolves only for a board actor with a userId (team.getUserRole →
+      // effective role, maps instance_admin → founder) — the SAME helper the
+      // creation clamp uses.
       if (
         existing.requestType === "human" &&
-        req.actor.type === "board" &&
-        !isLocalImplicit(req) &&
-        req.actor.userId &&
         inviteConfersPrivilegedAuthority(
           invite.defaultsPayload as Record<string, unknown> | null,
-        )
+        ) &&
+        !isLocalImplicit(req)
       ) {
-        const { role: approverRole } = await team.getUserRole(
-          companyId,
-          req.actor.userId,
-        );
-        if (approverRole !== "founder") {
+        const approverIsFounder =
+          req.actor.type === "board" && req.actor.userId
+            ? (await team.getUserRole(companyId, req.actor.userId)).role === "founder"
+            : false; // agents (and any non-board / userId-less actor) are never founders
+        if (!approverIsFounder) {
           throw forbidden(
-            "Only founders can approve a join request that confers founder-tier authority",
+            "Only founders can approve a join request that confers founder role or privileged permissions",
           );
         }
       }

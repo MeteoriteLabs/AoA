@@ -34,8 +34,9 @@ vi.mock("drizzle-orm", () => ({
   isNull: (..._args: unknown[]) => "isNull",
 }));
 
-const { canUserMock, getUserRoleMock, logActivityMock } = vi.hoisted(() => ({
+const { canUserMock, hasPermissionMock, getUserRoleMock, logActivityMock } = vi.hoisted(() => ({
   canUserMock: vi.fn(),
+  hasPermissionMock: vi.fn(),
   getUserRoleMock: vi.fn(),
   logActivityMock: vi.fn(),
 }));
@@ -43,6 +44,7 @@ const { canUserMock, getUserRoleMock, logActivityMock } = vi.hoisted(() => ({
 vi.mock("../services/index.js", () => ({
   accessService: () => ({
     canUser: canUserMock,
+    hasPermission: hasPermissionMock,
     ensureMembership: vi.fn(),
     setPrincipalGrants: vi.fn(),
   }),
@@ -135,7 +137,14 @@ function makeApproveDb(invite: Record<string, unknown>) {
   } as any;
 }
 
-type Actor = { type: string; source: string; userId?: string; isInstanceAdmin?: boolean };
+type Actor = {
+  type: string;
+  source: string;
+  userId?: string;
+  agentId?: string;
+  companyId?: string;
+  isInstanceAdmin?: boolean;
+};
 
 function makeApp(db: any, actor: Actor) {
   const app = express();
@@ -178,6 +187,10 @@ const ordinaryInvite = {
 };
 
 const boardSession = (userId: string): Actor => ({ type: "board", source: "session", userId, isInstanceAdmin: false });
+
+// Agent run actor: no userId (never a founder), company-scoped so
+// assertCompanyAccess passes and assertCompanyPermission takes the agent branch.
+const agentActor = (): Actor => ({ type: "agent", source: "agent_run", agentId: "agent-1", companyId: COMPANY_ID });
 
 /** joins:approve gate always passes; only the CLAMP is under test. */
 function asApprover(role: "founder" | "team_lead" | "team_member") {
@@ -229,5 +242,35 @@ describe("POST /join-requests/:id/approve — approver-authority clamp (P1)", ()
     expect(res.status).toBe(200);
     expect(approveTxMock).toHaveBeenCalledTimes(1);
     expect(getUserRoleMock).not.toHaveBeenCalled();
+  });
+
+  // Codex round-6 P1 — the exploit sink. The round-5 clamp only ran for
+  // `req.actor.type === "board"`, so an AGENT holding joins:approve could
+  // approve an agent-minted (or pre-existing) role:"founder" / privileged-grant
+  // invite and self-apply founder authority with NO founder in the loop — the
+  // auto-admit sink does not cover this manual route. An agent is never a
+  // founder → refused, and approveHumanJoinRequestTx must never be reached.
+  describe("agent-actor bypass (round-6)", () => {
+    it("403s when an AGENT approves a role:founder invite, and never applies it", async () => {
+      getUserRoleMock.mockResolvedValue({ role: "founder", projectId: null }); // even if resolvable, agent has no userId
+      hasPermissionMock.mockResolvedValue(true); // agent holds joins:approve
+      const res = await approve(makeApproveDb(founderInvite), agentActor());
+      expect(res.status).toBe(403);
+      expect(approveTxMock).not.toHaveBeenCalled();
+    });
+
+    it("403s when an AGENT approves a privileged-grant invite", async () => {
+      hasPermissionMock.mockResolvedValue(true);
+      const res = await approve(makeApproveDb(privilegedGrantInvite), agentActor());
+      expect(res.status).toBe(403);
+      expect(approveTxMock).not.toHaveBeenCalled();
+    });
+
+    it("still allows an AGENT to approve an ordinary team_member invite", async () => {
+      hasPermissionMock.mockResolvedValue(true);
+      const res = await approve(makeApproveDb(ordinaryInvite), agentActor());
+      expect(res.status).toBe(200);
+      expect(approveTxMock).toHaveBeenCalledTimes(1);
+    });
   });
 });

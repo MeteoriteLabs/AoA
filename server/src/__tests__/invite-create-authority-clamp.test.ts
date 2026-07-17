@@ -32,14 +32,15 @@ vi.mock("drizzle-orm", () => ({
   isNull: (..._args: unknown[]) => "isNull",
 }));
 
-const { canUserMock, getUserRoleMock, logActivityMock } = vi.hoisted(() => ({
+const { canUserMock, hasPermissionMock, getUserRoleMock, logActivityMock } = vi.hoisted(() => ({
   canUserMock: vi.fn(),
+  hasPermissionMock: vi.fn(),
   getUserRoleMock: vi.fn(),
   logActivityMock: vi.fn(),
 }));
 
 vi.mock("../services/index.js", () => ({
-  accessService: () => ({ canUser: canUserMock }),
+  accessService: () => ({ canUser: canUserMock, hasPermission: hasPermissionMock }),
   agentService: () => ({}),
   deduplicateAgentName: vi.fn((name: string) => name),
   logActivity: logActivityMock,
@@ -69,17 +70,30 @@ function makeCreateDb(createdRow: Record<string, unknown>) {
   } as any;
 }
 
-function makeApp(db: any) {
+const BOARD_CREATOR: Record<string, unknown> = {
+  type: "board",
+  source: "session",
+  userId: "creator-1",
+  companyIds: [COMPANY_ID],
+  isInstanceAdmin: false,
+};
+
+// Agent run actor: no userId (agents can never be founders), company-scoped so
+// assertCompanyAccess (authz.ts) passes and assertCompanyPermission takes the
+// agent branch (access.hasPermission).
+const AGENT_ACTOR: Record<string, unknown> = {
+  type: "agent",
+  source: "agent_run",
+  agentId: "agent-1",
+  companyId: COMPANY_ID,
+  companyIds: [COMPANY_ID],
+};
+
+function makeApp(db: any, actor: Record<string, unknown> = BOARD_CREATOR) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as any).actor = {
-      type: "board",
-      source: "session",
-      userId: "creator-1",
-      companyIds: [COMPANY_ID],
-      isInstanceAdmin: false,
-    };
+    (req as any).actor = actor;
     next();
   });
   app.use(
@@ -112,8 +126,8 @@ function asCreator(role: "founder" | "team_lead" | "team_member", heldKeys: stri
   canUserMock.mockImplementation(async (_c: string, _u: string, key: string) => keys.has(key));
 }
 
-function post(db: any, body: Record<string, unknown>) {
-  return request(makeApp(db)).post(`/companies/${COMPANY_ID}/invites`).send(body);
+function post(db: any, body: Record<string, unknown>, actor: Record<string, unknown> = BOARD_CREATOR) {
+  return request(makeApp(db, actor)).post(`/companies/${COMPANY_ID}/invites`).send(body);
 }
 
 describe("POST /invites — creator-authority clamp (P1)", () => {
@@ -204,6 +218,54 @@ describe("POST /invites — creator-authority clamp (P1)", () => {
           human: { grants: [{ permissionKey: "users:manage_permissions" }, { permissionKey: "joins:approve" }] },
         },
       });
+      expect(res.status).toBe(201);
+    });
+  });
+
+  // Codex round-6 P1: the round-5 clamp only ran for `req.actor.type === "board"`,
+  // so an AGENT actor holding users:invite skipped it entirely and could mint a
+  // founder / privileged-grant invite. Privileged conferral now requires a
+  // founder for EVERY caller type; an agent is never a founder → refused.
+  describe("agent-actor bypass (round-6)", () => {
+    it("403s when an AGENT mints a role:founder invite (was allowed — the bypass)", async () => {
+      hasPermissionMock.mockResolvedValue(true); // agent holds users:invite
+      const res = await post(
+        makeCreateDb(createdRow),
+        {
+          allowedJoinTypes: "human",
+          defaultsPayload: { teamInvite: { email: "mallory@evil.com", role: "founder" } },
+        },
+        AGENT_ACTOR,
+      );
+      expect(res.status).toBe(403);
+    });
+
+    it("403s when an AGENT embeds a privileged grant (joins:approve)", async () => {
+      hasPermissionMock.mockResolvedValue(true);
+      const res = await post(
+        makeCreateDb(createdRow),
+        {
+          allowedJoinTypes: "human",
+          defaultsPayload: {
+            teamInvite: { email: "mallory@evil.com", role: "team_member" },
+            human: { grants: [{ permissionKey: "joins:approve" }] },
+          },
+        },
+        AGENT_ACTOR,
+      );
+      expect(res.status).toBe(403);
+    });
+
+    it("still allows an AGENT to mint an ordinary team_member invite", async () => {
+      hasPermissionMock.mockResolvedValue(true);
+      const res = await post(
+        makeCreateDb(createdRow),
+        {
+          allowedJoinTypes: "human",
+          defaultsPayload: { teamInvite: { email: "ada@x.com", role: "team_member" } },
+        },
+        AGENT_ACTOR,
+      );
       expect(res.status).toBe(201);
     });
   });
