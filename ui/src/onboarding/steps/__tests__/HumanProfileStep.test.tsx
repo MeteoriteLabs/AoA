@@ -297,6 +297,48 @@ describe("HumanProfileStep (shared; wired invited)", () => {
       }),
     );
   });
+
+  it("Codex P2: a malformed social link blocks submit and is surfaced (not silently dropped)", async () => {
+    const onComplete = vi.fn();
+    render(<HumanProfileStep ctx={ctx} onComplete={onComplete} onBack={() => {}} />);
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Ada" } });
+    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Engineer" } });
+    fireEvent.change(screen.getByLabelText("Timezone"), { target: { value: "UTC" } });
+    fireEvent.click(screen.getByText("+ Add link"));
+    // "not a url" → normalized to "https://not a url" → fails z.string().url().
+    // The old code saved it, advanced, then materialization dropped it — so the
+    // user was told "saved" while the link vanished. It must be surfaced instead.
+    fireEvent.change(screen.getByLabelText("Social link 1"), { target: { value: "not a url" } });
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    expect(await screen.findByText(/valid link/i)).toBeTruthy();
+    expect(saveUserProfile).not.toHaveBeenCalled();
+    expect(advanceOnboarding).not.toHaveBeenCalled();
+    expect(onComplete).not.toHaveBeenCalled();
+    // Button re-enabled so the user can fix it.
+    expect((screen.getByRole("button", { name: "Continue" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("Codex P2: fixing the invalid link clears the error and proceeds (recoverable)", async () => {
+    const onComplete = vi.fn();
+    render(<HumanProfileStep ctx={ctx} onComplete={onComplete} onBack={() => {}} />);
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Ada" } });
+    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Engineer" } });
+    fireEvent.change(screen.getByLabelText("Timezone"), { target: { value: "UTC" } });
+    fireEvent.click(screen.getByText("+ Add link"));
+    fireEvent.change(screen.getByLabelText("Social link 1"), { target: { value: "not a url" } });
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    expect(await screen.findByText(/valid link/i)).toBeTruthy();
+    // Correct it to a schemeless-but-valid link — still normalized to https and accepted.
+    fireEvent.change(screen.getByLabelText("Social link 1"), { target: { value: "linkedin.com/in/ada" } });
+    expect(screen.queryByText(/valid link/i)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(() => expect(onComplete).toHaveBeenCalled());
+    expect(saveUserProfile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        socialLinks: [{ type: "website", label: null, url: "https://linkedin.com/in/ada" }],
+      }),
+    );
+  });
 });
 
 describe("registry rewire", () => {

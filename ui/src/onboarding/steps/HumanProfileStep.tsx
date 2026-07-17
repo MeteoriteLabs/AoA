@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { X } from "lucide-react";
+import { humanSocialLinkSchema } from "@armyofagents/shared";
 import type { StepProps } from "../registry";
 import { getUserProfile, saveUserProfile } from "../../api/userProfile";
 import { advanceOnboarding } from "../../api/onboarding";
@@ -35,6 +36,10 @@ export function HumanProfileStep({ ctx, onComplete }: StepProps) {
   const [links, setLinks] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Row-scoped validation error for a malformed social link, surfaced inline
+  // beneath the offending row so an invalid link is fixed here — not saved,
+  // advanced past, then silently dropped by materialization (Codex P2).
+  const [linkError, setLinkError] = useState<{ index: number; message: string } | null>(null);
 
   // Prefill from the existing global profile — Name arrives from Google via the
   // auth-synced profile (spec §5: "Name is prefilled"); a returning user
@@ -74,19 +79,29 @@ export function HumanProfileStep({ ctx, onComplete }: StepProps) {
     if (!canSubmit) return;
     setBusy(true);
     setError(null);
+    setLinkError(null);
     // Built once and shared by BOTH the global save and the company-profile
-    // sync below, so the two writes can never diverge.
-    const socialLinks = links
-      .map((url) => url.trim())
-      .filter(Boolean)
-      .map((url) => ({
-        type: "website" as const,
-        label: null,
-        // Approval-time seeding validates with z.string().url() — a
-        // schemeless paste (linkedin.com/in/ada) would silently vanish
-        // from the company profile. Default to https.
-        url: /^[a-z][a-z0-9+.-]*:\/\//i.test(url) ? url : `https://${url}`,
-      }));
+    // sync below, so the two writes can never diverge. Each non-empty row is
+    // normalized (schemeless → https) and then validated against the SAME
+    // shared schema the server route + materialization use, so a link the
+    // client accepts always passes the server — no split-brain — and an
+    // invalid link is surfaced here instead of saved-then-dropped (Codex P2).
+    const socialLinks: { type: "website"; label: null; url: string }[] = [];
+    for (let i = 0; i < links.length; i++) {
+      const raw = links[i].trim();
+      if (!raw) continue; // empty rows are ignored (never saved)
+      // Approval-time seeding validates with z.string().url() — a schemeless
+      // paste (linkedin.com/in/ada) would silently vanish from the company
+      // profile. Default to https, then validate the RESULT.
+      const url = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `https://${raw}`;
+      const link = { type: "website" as const, label: null, url };
+      if (!humanSocialLinkSchema.safeParse(link).success) {
+        setLinkError({ index: i, message: `That doesn't look like a valid link: ${raw}` });
+        setBusy(false);
+        return;
+      }
+      socialLinks.push(link);
+    }
     const profile = {
       displayName: name.trim(),
       title,
@@ -168,28 +183,44 @@ export function HumanProfileStep({ ctx, onComplete }: StepProps) {
       <div className="mt-3">
         <span className="mb-1 block text-xs text-muted-foreground">Social links (optional)</span>
         {links.map((url, i) => (
-          <div key={i} className="mt-1 flex items-center gap-1">
-            <input
-              aria-label={`Social link ${i + 1}`}
-              className={FIELD}
-              placeholder="https://…"
-              value={url}
-              onChange={(e) => setLinks((prev) => prev.map((v, j) => (j === i ? e.target.value : v)))}
-            />
-            <button
-              type="button"
-              aria-label={`Remove social link ${i + 1}`}
-              className="shrink-0 rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
-              onClick={() => setLinks((prev) => prev.filter((_, j) => j !== i))}
-            >
-              <X className="h-3.5 w-3.5" aria-hidden />
-            </button>
+          <div key={i}>
+            <div className="mt-1 flex items-center gap-1">
+              <input
+                aria-label={`Social link ${i + 1}`}
+                className={FIELD}
+                placeholder="https://…"
+                value={url}
+                onChange={(e) => {
+                  // Clear this row's inline error as the user edits it.
+                  setLinkError((prev) => (prev?.index === i ? null : prev));
+                  setLinks((prev) => prev.map((v, j) => (j === i ? e.target.value : v)));
+                }}
+              />
+              <button
+                type="button"
+                aria-label={`Remove social link ${i + 1}`}
+                className="shrink-0 rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+                onClick={() => {
+                  // Rows shift on removal, so drop any stale row-scoped error.
+                  setLinkError(null);
+                  setLinks((prev) => prev.filter((_, j) => j !== i));
+                }}
+              >
+                <X className="h-3.5 w-3.5" aria-hidden />
+              </button>
+            </div>
+            {linkError?.index === i && (
+              <p className="mt-1 text-xs text-destructive">{linkError.message}</p>
+            )}
           </div>
         ))}
         <button
           type="button"
           className="mt-1 text-xs text-muted-foreground underline"
-          onClick={() => setLinks((prev) => [...prev, ""])}
+          onClick={() => {
+            setLinkError(null);
+            setLinks((prev) => [...prev, ""]);
+          }}
         >
           + Add link
         </button>
