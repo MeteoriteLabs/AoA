@@ -78,12 +78,15 @@ export interface CommanderLoginServiceDeps {
   /** Provider-specific completion evidence (codex auth.json / claude credential file). */
   credentialPresent: (provider: CommanderLoginProvider, authHome: string) => Promise<boolean>;
   /**
-   * Kill a login child by pid/pgid. `cancel` (a founder cancelling an in-flight
-   * login in THIS process session) calls it WITHOUT `expected` → unconditional
-   * kill, because the child was spawned by this process and its pid can't have
-   * been reused. `reapOrphans` (BOOT, killing DURABLE rows from a PRIOR process)
-   * passes `expected.startedAt` → the impl verifies the target's OS start time
-   * first, so a reused pid is NOT killed (Codex P1, round 6).
+   * Kill a login child by pid/pgid. Only `cancel` (a founder cancelling an
+   * in-flight login in THIS process session) calls it WITHOUT `expected` →
+   * unconditional kill, because the child was spawned by this process and its
+   * pid can't have been reused. Both `reapOrphans` (BOOT, killing DURABLE rows
+   * from a PRIOR process) AND the single-flight takeover in `startChallenge`'s
+   * `onExisting` (the existing row may likewise be a DURABLE prior-process row,
+   * because the boot reap runs un-awaited) pass `expected.startedAt` → the impl
+   * verifies the target's OS start time first, so a reused pid is NOT killed
+   * (Codex P1, round 6 + follow-on).
    */
   terminate: (pid: number, pgid: number | null, expected?: { startedAt: Date }) => void;
   newId: () => string;
@@ -163,7 +166,19 @@ export function createCommanderLoginService(deps: CommanderLoginServiceDeps): Co
             `another company is already signing in with ${args.provider} at ${authHome}`,
           );
         }
-        if (existing.pid != null) deps.terminate(existing.pid, existing.pgid);
+        // Identity-verified takeover kill (Codex P1, round 6 follow-on). The
+        // single-flight slot is reclaimed whether or not the kill fires (the row
+        // is removed/replaced by the store either way), but the `existing` row
+        // may be DURABLE — persisted by a PRIOR process whose pid has since been
+        // reused, because the boot reaper (`reapOrphans`) is fired UN-awaited at
+        // startup (index.ts) and a same-(provider,authHome) start served early
+        // in boot can hit this callback before that reap clears the stale row.
+        // So route through the SAME `expected.startedAt` identity check the
+        // reaper uses — a reused pid is skipped, a genuine this-session child
+        // (start time ≤ startedAt + tolerance) is still killed so the codex
+        // :1455 callback port is freed for the fresh login.
+        if (existing.pid != null)
+          deps.terminate(existing.pid, existing.pgid, { startedAt: existing.startedAt });
       },
     });
 

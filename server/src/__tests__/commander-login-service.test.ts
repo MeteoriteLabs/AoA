@@ -196,11 +196,17 @@ describe("commander-login service (Plan 3 T4)", () => {
     f1.resolveUrl("https://chatgpt.com/device?code=A");
     const first = await p1;
 
+    // Capture the first (soon-to-be-existing) row's startedAt — the takeover now
+    // forwards it as the identity `expected` so a reused pid would be skipped.
+    const firstRow = store.rows.get(first.challengeId)!;
+
     const p2 = svc.startChallenge({ companyId: "c1", provider: "openai", startedByUserId: "u1" });
     f2.resolveUrl("https://chatgpt.com/device?code=B");
     const second = await p2;
 
-    expect(terminate).toHaveBeenCalledWith(555, 555); // the stale child was killed
+    // The stale child was killed THROUGH the identity-verified path (3rd arg),
+    // exactly like the reaper — not the old unconditional 2-arg kill.
+    expect(terminate).toHaveBeenCalledWith(555, 555, { startedAt: firstRow.startedAt });
     expect(second.challengeId).not.toBe(first.challengeId); // a fresh challenge
     expect(second.loginUrl).toBe("https://chatgpt.com/device?code=B");
     // Only the new row survives — no orphaned pending row holding the lock.
@@ -221,6 +227,99 @@ describe("commander-login service (Plan 3 T4)", () => {
     const pending = [...store.rows.values()].filter((r) => r.status === "pending");
     expect(pending).toHaveLength(1);
     expect(pending[0]!.companyId).toBe("c1");
+  });
+
+  // ── Single-flight TAKEOVER identity check (Codex P1 round-6 follow-on) ──
+  // The takeover kill in `onExisting` now routes through the SAME start-time
+  // identity check the reaper uses. Rationale: the boot reaper (`reapOrphans`)
+  // is fired UN-awaited at startup (index.ts), so a same-(provider,authHome)
+  // start served early in boot can take over a DURABLE row persisted by a PRIOR
+  // process whose pid was since reused — an unconditional kill there would hit an
+  // arbitrary victim (the exact harm the reaper fix avoids). These wire
+  // `terminate` to the real `terminateByPidIfMatches` with injected start-time +
+  // kill seams (no real processes).
+  function takeoverWiredService(opts: {
+    queryStartTime: (pid: number) => Date | null;
+    kill: (target: number, signal: NodeJS.Signals | number) => void;
+  }) {
+    const store = memStore();
+    const fresh = fakeRun(9999, 9999); // the NEW child the takeover spawns
+    const svc = createCommanderLoginService({
+      store,
+      resolveAuthHome: () => "/home/.codex",
+      runLogin: () => fresh.run,
+      credentialPresent: async () => true,
+      terminate: (pid, pgid, expected) => {
+        // The takeover always passes `expected` (like the reaper); only `cancel`
+        // omits it, and these tests never cancel.
+        if (expected) {
+          terminateByPidIfMatches(pid, pgid, expected, {
+            platform: "linux",
+            kill: opts.kill,
+            queryStartTime: opts.queryStartTime,
+          });
+        }
+      },
+      newId: () => "ch-fresh",
+      env: () => ({}) as never,
+    });
+    return { svc, store, fresh };
+  }
+
+  function seedDurableRow(store: ReturnType<typeof memStore>, startedAt: Date, pid = 4242) {
+    store.rows.set("durable", {
+      id: "durable",
+      companyId: "c1",
+      provider: "openai",
+      authHome: "/home/.codex",
+      loginUrl: null,
+      pid,
+      pgid: pid,
+      status: "pending",
+      startedByUserId: "u1",
+      startedAt,
+    });
+  }
+
+  it("(b3) takeover of a DURABLE row whose pid was REUSED does NOT kill, but still reclaims the slot", async () => {
+    const startedAt = new Date("2026-07-17T10:00:00.000Z");
+    const kill = vi.fn();
+    const { svc, store, fresh } = takeoverWiredService({
+      // Same pid, but it now maps to a process started 60s later → reused after a
+      // crash + restart. The un-awaited boot reap means the takeover path can hit
+      // this exact case, so it must skip the kill just like the reaper does.
+      queryStartTime: () => new Date(startedAt.getTime() + 60_000),
+      kill,
+    });
+    seedDurableRow(store, startedAt);
+    const startP = svc.startChallenge({ companyId: "c1", provider: "openai", startedByUserId: "u1" });
+    fresh.resolveUrl("https://chatgpt.com/device?code=NEW");
+    await startP;
+    expect(kill).not.toHaveBeenCalled(); // reused pid spared on the takeover path too
+    // The slot is still taken over regardless of the skipped kill: the durable
+    // row is removed and replaced by the fresh challenge.
+    expect(store.rows.has("durable")).toBe(false);
+    const pending = [...store.rows.values()].filter((r) => r.status === "pending");
+    expect(pending).toHaveLength(1);
+    expect(pending[0]!.id).toBe("ch-fresh");
+  });
+
+  it("(b4) takeover of a GENUINE child (start time within tolerance) STILL kills — legitimate same-company takeover frees :1455", async () => {
+    const startedAt = new Date("2026-07-17T10:00:00.000Z");
+    const kill = vi.fn();
+    const { svc, store, fresh } = takeoverWiredService({
+      // The existing child's pid maps to a process started just after the recorded
+      // startedAt (within tolerance) → genuinely ours (this-session child or a
+      // real orphan) → kill it so the codex :1455 callback port is freed.
+      queryStartTime: () => new Date(startedAt.getTime() + 200),
+      kill,
+    });
+    seedDurableRow(store, startedAt); // pid 4242, pgid 4242
+    const startP = svc.startChallenge({ companyId: "c1", provider: "openai", startedByUserId: "u1" });
+    fresh.resolveUrl("https://chatgpt.com/device?code=NEW");
+    await startP;
+    expect(kill).toHaveBeenCalledWith(-4242, "SIGKILL"); // group kill → :1455 freed
+    expect(store.rows.has("durable")).toBe(false); // slot reclaimed by the fresh login
   });
 
   it("(c) getStatus → completed on exit code 0 with the credential file present", async () => {

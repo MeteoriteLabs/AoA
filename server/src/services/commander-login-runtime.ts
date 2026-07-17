@@ -140,9 +140,11 @@ export function buildCommanderLoginService(db: Db): CommanderLoginService {
       return Boolean(stat?.isFile());
     },
     // LIVE cancel (no `expected`) kills unconditionally — the child was spawned
-    // by this process, so its pid can't have been reused. The BOOT reaper passes
-    // `expected.startedAt` → identity-verified terminate that refuses to kill a
-    // reused pid (Codex P1, round 6).
+    // by this process, so its pid can't have been reused. The BOOT reaper AND
+    // the single-flight takeover (`onExisting`) pass `expected.startedAt` →
+    // identity-verified terminate that refuses to kill a reused pid (Codex P1,
+    // round 6 + follow-on: a durable prior-process row can be taken over before
+    // the un-awaited boot reap clears it).
     terminate: (pid, pgid, expected) =>
       expected
         ? void terminateByPidIfMatches(pid, pgid, expected)
