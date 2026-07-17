@@ -85,6 +85,31 @@ describe("createDiscussionEntrySchema", () => {
     ).toThrow();
   });
 
+  it("rejects more than five attachments (round-6 composer cap)", () => {
+    const many = Array.from({ length: 6 }, (_, i) => ({
+      assetId: `1111111${i}-1111-1111-1111-111111111111`,
+    }));
+    expect(() =>
+      createDiscussionEntrySchema.parse({
+        inputType: "write",
+        rawContent: "here are lots of files",
+        attachments: many,
+      }),
+    ).toThrow();
+  });
+
+  it("accepts exactly five attachments (at the cap)", () => {
+    const five = Array.from({ length: 5 }, (_, i) => ({
+      assetId: `2222222${i}-2222-2222-2222-222222222222`,
+    }));
+    const parsed = createDiscussionEntrySchema.parse({
+      inputType: "write",
+      rawContent: "five files",
+      attachments: five,
+    });
+    expect(parsed.attachments).toHaveLength(5);
+  });
+
   it("accepts an artifact-only attachment entry", () => {
     const parsed = createDiscussionEntrySchema.parse({
       inputType: "write",

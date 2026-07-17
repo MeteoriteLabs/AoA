@@ -7,6 +7,7 @@ import {
   MEMORY_ITEM_LAYERS,
   BRIEF_DEDUP_ACTIONS,
   THREAD_VISIBILITIES,
+  COMPOSER_MAX_ATTACHMENTS,
 } from "../constants.js";
 
 export const createDiscussionEntrySchema = z.object({
@@ -39,6 +40,9 @@ export const createDiscussionEntrySchema = z.object({
           message: "Attachment must reference an assetId or artifactId",
         }),
     )
+    // Enforce the shared composer cap server-side (PR #291 round-6 review): a
+    // direct API caller must not attach more than the UI/composer limit.
+    .max(COMPOSER_MAX_ATTACHMENTS)
     .optional(),
 }).superRefine((entry, ctx) => {
   // Belt-and-braces: count only attachments carrying a real reference, so the
