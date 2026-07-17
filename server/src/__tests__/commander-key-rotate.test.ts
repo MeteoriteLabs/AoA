@@ -55,6 +55,9 @@ const secretsMock = vi.hoisted(() => {
 });
 vi.mock("../services/secrets.js", () => ({ secretService: () => secretsMock.svc }));
 
+const mockLogActivity = vi.hoisted(() => vi.fn(async () => {}));
+vi.mock("../services/activity-log.js", () => ({ logActivity: mockLogActivity }));
+
 import { errorHandler } from "../middleware/error-handler.js";
 import { commanderKeyRoutes } from "../routes/commander-key.js";
 
@@ -178,5 +181,67 @@ describe("POST commander-key rotate-on-retry (Codex P1)", () => {
     expect(secretsMock.svc.update).not.toHaveBeenCalled(); // no spurious status write
     expect(secretsMock.svc.rotate).toHaveBeenCalledTimes(1);
     expect(secretsMock.state.byName.get("Commander anthropic API key")?.status).toBe("active");
+  });
+});
+
+describe("POST commander-key audit trail (Codex P2 — AGENTS.md §5)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    secretsMock.state.byName.clear();
+    secretsMock.state.seq = 0;
+  });
+
+  function loggedInput(callIndex: number) {
+    return mockLogActivity.mock.calls[callIndex][1] as {
+      companyId: string;
+      actorType: string;
+      actorId: string;
+      action: string;
+      entityType: string;
+      entityId: string;
+      details: Record<string, unknown>;
+    };
+  }
+
+  it("logs commander.key.created (redacted) when the secret is first created", async () => {
+    const res = await request(makeApp()).post(url).send({ provider: "anthropic", value: "sk-ant-FIRST" });
+    expect(res.status).toBe(200);
+    expect(mockLogActivity).toHaveBeenCalledTimes(1);
+    const input = loggedInput(0);
+    expect(input).toMatchObject({
+      companyId: "c1",
+      actorType: "user",
+      actorId: "u1",
+      action: "commander.key.created",
+      entityType: "secret",
+      entityId: "sec-1",
+    });
+    expect(input.details).toMatchObject({ provider: "anthropic", secretId: "sec-1", operation: "created" });
+    // Redaction proof: the raw key never appears anywhere in the audit entry.
+    expect(JSON.stringify(input)).not.toContain("sk-ant-FIRST");
+  });
+
+  it("logs commander.key.rotated when an active secret is rotated on retry", async () => {
+    const app = makeApp();
+    await request(app).post(url).send({ provider: "anthropic", value: "sk-ant-BAD" });
+    await request(app).post(url).send({ provider: "anthropic", value: "sk-ant-GOOD" });
+    expect(mockLogActivity).toHaveBeenCalledTimes(2);
+    const second = loggedInput(1);
+    expect(second.action).toBe("commander.key.rotated");
+    expect(second.entityId).toBe("sec-1"); // same secret id → stable reference
+    expect(second.details).toMatchObject({ provider: "anthropic", secretId: "sec-1", operation: "rotated" });
+    expect(JSON.stringify(mockLogActivity.mock.calls)).not.toContain("sk-ant-GOOD");
+  });
+
+  it("logs commander.key.reactivated when a disabled secret is reactivated then rotated", async () => {
+    const app = makeApp();
+    await request(app).post(url).send({ provider: "anthropic", value: "sk-ant-OLD" });
+    secretsMock.state.byName.get("Commander anthropic API key")!.status = "disabled";
+    await request(app).post(url).send({ provider: "anthropic", value: "sk-ant-NEW" });
+    expect(mockLogActivity).toHaveBeenCalledTimes(2);
+    const second = loggedInput(1);
+    expect(second.action).toBe("commander.key.reactivated");
+    expect(second.details).toMatchObject({ operation: "reactivated", provider: "anthropic" });
+    expect(JSON.stringify(mockLogActivity.mock.calls)).not.toContain("sk-ant-NEW");
   });
 });

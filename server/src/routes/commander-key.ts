@@ -6,6 +6,7 @@ import { assertRole } from "../middleware/rbac.js";
 import { assertCompanyAccess } from "./authz.js";
 import { secretService } from "../services/secrets.js";
 import { persistCommanderApiKey } from "../services/commander-key.js";
+import { logActivity } from "../services/activity-log.js";
 
 /**
  * Save a pasted Commander API key (Plan 3 / §6.1). Founder-scoped: an EXPLICIT
@@ -56,6 +57,11 @@ export function commanderKeyRoutes(db: Db): Router {
     const adapterConfig = (agent?.adapterConfig as Record<string, unknown> | null) ?? {};
 
     const secrets = secretService(db);
+    // Which branch of writeSecret ran, surfaced for the audit log. The closure
+    // (not persistCommanderApiKey) is the only place that can tell create vs
+    // rotate vs reactivate apart, and the service return type is fixed to
+    // { secretId } — so capture it here rather than threading it back through.
+    let operation: "created" | "rotated" | "reactivated" = "created";
     const { secretId } = await persistCommanderApiKey(
       {
         writeSecret: async (a) => {
@@ -82,11 +88,15 @@ export function commanderKeyRoutes(db: Db): Router {
             // final state is active + newest value. (A deleted secret has deletedAt
             // set, so getByName excludes it and the create path below runs.)
             if (existing.status !== "active") {
+              operation = "reactivated";
               await secrets.update(existing.id, { status: "active" });
+            } else {
+              operation = "rotated";
             }
             await secrets.rotate(existing.id, { value: a.value }, actorRef);
             return { secretId: existing.id };
           }
+          operation = "created";
           const created = (await secrets.create(
             companyId,
             { name: a.name, key: a.key, provider: "local_encrypted", managedMode: "aoa_managed", value: a.value },
@@ -108,6 +118,21 @@ export function commanderKeyRoutes(db: Db): Router {
       },
       { companyId, agentId: cfg.agentId, provider, apiKey: value, adapterConfig },
     );
+
+    // Audit the credential mutation (AGENTS.md §5 — log all mutating actions).
+    // Only runs after persistence SUCCEEDS, so a failed key-save logs no success.
+    // The raw key is NEVER included; the durable secret reference is entityId
+    // (unredacted), matching routes/secrets.ts. Awaited inline like the secrets
+    // route so a log failure surfaces rather than silently dropping the record.
+    await logActivity(db, {
+      companyId,
+      actorType: "user",
+      actorId: actor.userId ?? "board",
+      action: `commander.key.${operation}`,
+      entityType: "secret",
+      entityId: secretId,
+      details: { provider, secretId, operation },
+    });
 
     res.json({ ok: true, secretId });
   });
