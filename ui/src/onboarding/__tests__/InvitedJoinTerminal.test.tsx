@@ -269,6 +269,89 @@ describe("InvitedJoinTerminal", () => {
     });
   });
 
+  describe("re-invite after reject (Codex round-12 P2)", () => {
+    // invite1 and invite2 share the anchored company (cA) but carry DISTINCT
+    // inviteIds — the founder rejecting invite1 and minting invite2 keeps the
+    // companyId (the round-3 anchor) but yields a fresh per-invite id. Both are
+    // tokenless (filed:false) so each needs its own explicit consent.
+    const invite1 = {
+      companyId: "cA",
+      companyName: "Acme",
+      inviteId: "i1",
+      role: "team_member",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      filed: false,
+    };
+    const invite2 = {
+      companyId: "cA",
+      companyName: "Acme",
+      inviteId: "i2",
+      role: "team_member",
+      createdAt: "2026-01-02T00:00:00.000Z",
+      filed: false,
+    };
+
+    it("a fresh tokenless invite for the anchored company re-opens the consent gate → acceptable without reload", async () => {
+      routerState.searchParams = new URLSearchParams("company=cA");
+      fetchJourney.mockResolvedValue({
+        journey: "invited",
+        targetCompanyId: "cA",
+        pendingInvitations: [invite1],
+        inviteToken: null,
+      });
+      render(<InvitedJoinTerminal />);
+      // invite1 is tokenless → consent card, no auto-finalize.
+      expect(await screen.findByText(/invited to join Acme/i)).toBeTruthy();
+      expect(finalizeInvitedJoin).not.toHaveBeenCalled();
+      // Consent to invite1: the request is filed and sits pending with the founder.
+      finalizeInvitedJoin.mockResolvedValue({ admitted: false, status: "pending" });
+      fireEvent.click(screen.getByRole("button", { name: /join acme/i }));
+      expect(await screen.findByText(/with the admin for approval/i)).toBeTruthy();
+      expect(finalizeInvitedJoin).toHaveBeenCalledTimes(1);
+      expect(finalizeInvitedJoin).toHaveBeenCalledWith("cA", { acceptOpenInvite: true });
+      // Founder REJECTS invite1 and RE-INVITES: invite1 leaves the pending set and
+      // a fresh tokenless invite2 (new inviteId, SAME company) surfaces in one
+      // poll — the component stays mounted throughout.
+      fetchJourney.mockResolvedValue({
+        journey: "invited",
+        targetCompanyId: "cA",
+        pendingInvitations: [invite2],
+        inviteToken: null,
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(8000);
+      });
+      // RED pre-fix: finalizedRef (and the latched consent) from invite1 trap
+      // invite2 out of BOTH branches — the page stays stuck on the pending screen
+      // and this consent button never reappears. Post-fix: the changed inviteId
+      // re-arms the gate and the consent card returns for invite2.
+      const joinAgain = await screen.findByRole("button", { name: /join acme/i });
+      expect(joinAgain).toBeTruthy();
+      // Accepting the re-invite finalizes invite2 (a SECOND finalize, with the
+      // tokenless consent assertion) and enters.
+      finalizeInvitedJoin.mockResolvedValue({ admitted: true, status: "approved" });
+      fireEvent.click(joinAgain);
+      await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/", { replace: true }));
+      expect(finalizeInvitedJoin).toHaveBeenCalledTimes(2);
+      expect(finalizeInvitedJoin).toHaveBeenLastCalledWith("cA", { acceptOpenInvite: true });
+    });
+
+    it("does not re-finalize the SAME invitation across ticks (no-loop guard preserved)", async () => {
+      // A filed invite that stays pending across several polls must finalize
+      // EXACTLY once — the same inviteId never re-arms, so finalizedRef still
+      // guards repeated finalize of one invitation.
+      fetchJourney.mockResolvedValue(invitedJourney); // c1 / r1 / filed:true
+      finalizeInvitedJoin.mockResolvedValue({ admitted: false, status: "pending" });
+      render(<InvitedJoinTerminal />);
+      expect(await screen.findByText(/with the admin for approval/i)).toBeTruthy();
+      expect(finalizeInvitedJoin).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(8000 * 3);
+      });
+      expect(finalizeInvitedJoin).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it("invite_invalid → distinct copy, keeps polling (founder can still approve)", async () => {
     finalizeInvitedJoin.mockResolvedValue({ admitted: false, status: "invite_invalid" });
     render(<InvitedJoinTerminal />);

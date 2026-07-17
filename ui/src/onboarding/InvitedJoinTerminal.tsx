@@ -57,6 +57,12 @@ export function InvitedJoinTerminal() {
   // to a DIFFERENT pending invite and silently switch companies. Anchoring keeps
   // the page bound to the original target; its outcome is resolved in `!inv`.
   const anchoredTargetRef = useRef<string | null>(null);
+  // The inviteId last processed for the anchored company. A reject→re-invite
+  // cycle keeps the companyId (the anchor above) but mints a FRESH inviteId; a
+  // change here means a NEW invitation surfaced for the same company and the
+  // finalize/consent latch of the DEAD invite must be re-armed (see the tick).
+  // Null until the first invitation resolves.
+  const lastInviteIdRef = useRef<string | null>(null);
 
   const enter = useCallback(async () => {
     // Evict the gate's cached pre-approval journey AND refresh the companies
@@ -150,8 +156,32 @@ export function InvitedJoinTerminal() {
           return;
         }
 
+        // Re-arm finalize + consent when a DIFFERENT invitation surfaces for the
+        // anchored company. The anchor (companyId) is stable across a
+        // reject→re-invite, but the founder minting a fresh invite yields a new
+        // inviteId; finalizedRef (and a latched `consented`) from the DEAD invite
+        // would otherwise trap the new one out of BOTH the consent branch and the
+        // finalize branch (each needs !finalizedRef), stranding the user on the
+        // pending/not-approved screen until a reload. Compare the per-invite id
+        // (inviteId, NOT companyId — same company across the re-invite); on change
+        // drop finalizedRef and re-close the tokenless consent gate so the new
+        // invitation flows through consent (filed:false) + finalize afresh. The
+        // SAME invitation leaves both untouched, so finalizedRef still guards
+        // against re-finalizing one invite in a loop. `consentedNow` applies the
+        // reset THIS tick — the setConsented state write is not visible in this
+        // closure — so a re-armed tokenless invite re-shows the consent card
+        // (an explicit re-click), never an auto-finalize.
+        const reArmed =
+          lastInviteIdRef.current !== null && lastInviteIdRef.current !== inv.inviteId;
+        if (reArmed) {
+          finalizedRef.current = false;
+          setConsented(false);
+        }
+        lastInviteIdRef.current = inv.inviteId;
+        const consentedNow = reArmed ? false : consented;
+
         setCompany({ name: inv.companyName, role: inv.role });
-        if (inv.filed === false && !consented && !finalizedRef.current) {
+        if (inv.filed === false && !consentedNow && !finalizedRef.current) {
           // Tokenlessly-detected open invite: joining requires an explicit
           // click — auto-finalize would admit the user into an org they never
           // agreed to join. Keep polling (revoke/expiry removes the invitation
