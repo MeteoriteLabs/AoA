@@ -19,7 +19,7 @@ import { discussionService, logActivity, permissionService } from "../services/i
 import { HttpError } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { assertMemoryApproval, assertRole } from "../middleware/rbac.js";
-import { threadService, resolveMentionTargets, processMentions, assertCanPostToThread } from "../services/threads.js";
+import { threadService, resolveMentionTargets, assertCanPostToThread } from "../services/threads.js";
 import type { Actor } from "../services/threads.js";
 import { threadScopeVersionService } from "../services/thread-scope-versions.js";
 import { enqueueIssueAssigneeWakeup } from "../services/issue-assignee-wakeup.js";
@@ -617,14 +617,16 @@ export function discussionRoutes(db: Db) {
 
       const actor = getActorInfo(req);
 
-      // Round-14 #2: resolve the opening message's @mentions BEFORE svc.create so
-      // the roster query commits nothing on failure. resolveMentionTargets (added
-      // round-13 #2) reads the agent roster; running it AFTER the commit meant a
-      // transient roster-query blip 500'd the request with the discussion + first
-      // entry already durable — and the create endpoint has no idempotency key, so
-      // a normal client retry would DUPLICATE the thread while the summon stayed
-      // lost. Resolving pre-commit fails cleanly (nothing created → safe retry).
-      // The content is the same one svc.create will insert (req.body.entry).
+      // Round-14 #2 + round-15: resolve the opening message's @mentions BEFORE
+      // svc.create (multi-word-aware roster read), then thread them INTO svc.create
+      // so the summon is enqueued in the discussion_mention_outbox IN THE SAME
+      // transaction as the first entry. This makes the durable outbox worker the
+      // SOLE summon path here too — exactly like addEntry — so a transient summon
+      // failure retries instead of permanently skipping the mentioned agent (the
+      // old fire-and-forget processMentions only logged on failure). Resolving
+      // pre-commit still fails cleanly on a roster-query blip (nothing created →
+      // safe retry; the create endpoint has no idempotency key). The content is the
+      // same one svc.create will insert (req.body.entry).
       const openingContent =
         typeof (req.body?.entry as { rawContent?: unknown } | undefined)?.rawContent === "string"
           ? (req.body.entry.rawContent as string)
@@ -634,26 +636,9 @@ export function discussionRoutes(db: Db) {
         : [];
 
       try {
-        const discussion = await svc.create(companyId, req.body, actor.actorId);
-
-        // Live-QA BUG-1: a thread opened WITH a first message must dispatch any
-        // @mentions in that first message — exactly like the add-entry route does.
-        // The summon (processMentions) stays post-commit fire-and-forget (the
-        // entry is already committed, so a summon error must not fail the request);
-        // only the ROSTER RESOLUTION moved pre-commit (round-14 #2). Mentions were
-        // resolved above from the same content svc.create just inserted.
-        if (discussion.entry && openingMentions.length > 0) {
-          processMentions(
-            db,
-            companyId,
-            discussion.id,
-            discussion.entry.id,
-            openingMentions,
-          ).catch((err) =>
-            console.error("[threads] processMentions error:", err),
-          );
-        }
-
+        const discussion = await svc.create(companyId, req.body, actor.actorId, openingMentions);
+        // No direct processMentions here (round-15): svc.create enqueued the
+        // opening summon transactionally; the outbox worker drains it exactly once.
         res.status(201).json(discussion);
       } catch (err) {
         if (err instanceof HttpError) {

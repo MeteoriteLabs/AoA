@@ -740,6 +740,15 @@ export function discussionService(db: Db) {
         };
       },
       actorId: string,
+      // Round-15: the opening message's @mentions, resolved MULTI-WORD-aware by
+      // the route BEFORE this call (round-14 #2, pre-commit). Threaded in so the
+      // summon is enqueued in the SAME transaction as the first entry — a
+      // committed first entry always carries a pending discussion_mention_outbox
+      // row, exactly like addEntry. The outbox worker becomes the sole summon
+      // path for this route too (the fire-and-forget processMentions is removed),
+      // so a transient summon failure retries instead of permanently skipping the
+      // mentioned agent.
+      openingMentions?: Array<{ raw: string; name: string }>,
     ) => {
       await validateScope(db, companyId, data.scopeType, data.scopeId);
 
@@ -795,6 +804,25 @@ export function discussionService(db: Db) {
               createdBy: actorId,
             })
             .returning();
+
+          // Round-15: enqueue the opening message's @mention summons IN THIS TX,
+          // exactly as addEntry does — so a committed first entry always carries a
+          // pending outbox row and the durable worker (multi-word resolution +
+          // per-row claim + backoff, rounds 9/10/13/14) becomes the sole summon
+          // path here too. Mentions were resolved pre-commit by the route
+          // (round-14 #2). The opening entry is human-authored (createdBy=actorId,
+          // authorAgentId null); mirror addEntry's hopCount derivation off
+          // inputType so an agent-opened thread (if any) still caps the cascade.
+          if (entry && openingMentions && openingMentions.length > 0) {
+            const hopCount = data.entry.inputType === "agent" ? 1 : 0;
+            await enqueueMentionOutbox(tx as unknown as Db, {
+              companyId,
+              discussionId: discussion.id,
+              entryId: entry.id,
+              mentions: openingMentions,
+              hopCount,
+            });
+          }
         }
 
         return { ...discussion, entry };

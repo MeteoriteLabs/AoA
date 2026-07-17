@@ -517,3 +517,81 @@ describe.skipIf(process.platform === "win32")("multi-word mention resolution (re
     expect(names).toContain("Memory");
   });
 });
+
+// PR #291 round-15 — the create-with-first-entry route was the LAST non-outbox
+// summon path (fire-and-forget processMentions, lost on failure). svc.create now
+// enqueues the opening summon IN THE ENTRY-INSERT TRANSACTION, so a committed
+// first entry always carries a durable, worker-retried outbox row — exactly like
+// addEntry. The route resolves the mentions pre-commit (round-14) and threads
+// them into svc.create.
+describe.skipIf(process.platform === "win32")("create-with-first-entry summon (real DB)", () => {
+  it("commits the discussion + first entry + a PENDING outbox row ATOMICALLY", async () => {
+    const content = "@Memory Keeper please open this thread";
+    const mentions = await resolveMentionTargets(db, companyId, content);
+    const created = await discussionService(db).create(
+      companyId,
+      { title: "Opener", entry: { inputType: "write", rawContent: content } },
+      "user:1",
+      mentions,
+    );
+    expect(created.entry?.id).toBeTruthy();
+    // A committed first entry carries its pending summon (the round-15 invariant,
+    // mirroring addEntry) — and it is the RESOLVED multi-word name, exactly once.
+    const names = await outboxMentionNames(created.entry!.id);
+    expect(names).toContain("Memory Keeper");
+    expect(names.filter((n) => n === "Memory Keeper")).toHaveLength(1);
+    expect(await countOutbox(created.entry!.id, "pending")).toBe(1);
+  });
+
+  it("enqueues NO outbox row when the opening message has no @mention", async () => {
+    const content = "just opening a thread, no mentions here";
+    const mentions = await resolveMentionTargets(db, companyId, content);
+    const created = await discussionService(db).create(
+      companyId,
+      { title: "Quiet opener", entry: { inputType: "write", rawContent: content } },
+      "user:1",
+      mentions,
+    );
+    expect(created.entry?.id).toBeTruthy();
+    expect(await countOutbox(created.entry!.id)).toBe(0);
+  });
+
+  it("the worker drains the opening summon EXACTLY ONCE", async () => {
+    const content = "@Scout take a first look";
+    const mentions = await resolveMentionTargets(db, companyId, content);
+    const created = await discussionService(db).create(
+      companyId,
+      { title: "Scout opener", entry: { inputType: "write", rawContent: content } },
+      "user:1",
+      mentions,
+    );
+    const runMentions = vi.fn(async () => undefined);
+    await drainMentionOutbox(db, { runMentions });
+    const callsForEntry = runMentions.mock.calls.filter((c) => c[3] === created.entry!.id);
+    expect(callsForEntry).toHaveLength(1);
+    expect(callsForEntry[0][4]).toEqual(
+      expect.arrayContaining([{ raw: "@Scout", name: "Scout" }]),
+    );
+    // Second drain must NOT re-run it (exactly-once).
+    const runAgain = vi.fn(async () => undefined);
+    await drainMentionOutbox(db, { runMentions: runAgain });
+    expect(runAgain.mock.calls.filter((c) => c[3] === created.entry!.id)).toHaveLength(0);
+  });
+
+  it("a failed opening summon leaves the row RECLAIMABLE (not lost)", async () => {
+    const content = "@Memory Keeper handle the opener";
+    const mentions = await resolveMentionTargets(db, companyId, content);
+    const created = await discussionService(db).create(
+      companyId,
+      { title: "Retry opener", entry: { inputType: "write", rawContent: content } },
+      "user:1",
+      mentions,
+    );
+    // The summon throws → the row is not lost; it returns to 'pending' for retry.
+    const failing = vi.fn(async () => {
+      throw new Error("controller participation failed");
+    });
+    await drainMentionOutbox(db, { runMentions: failing, maxAttempts: 3 });
+    expect(await countOutbox(created.entry!.id, "pending")).toBe(1);
+  });
+});

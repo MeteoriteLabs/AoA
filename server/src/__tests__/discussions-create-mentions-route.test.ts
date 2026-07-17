@@ -92,14 +92,17 @@ function createApp() {
   return app;
 }
 
-describe("POST /discussions — first-message @mention dispatch (Finding #7)", () => {
+describe("POST /discussions — first-message @mention dispatch (Finding #7 / round-15)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockProcessMentions.mockResolvedValue(undefined);
   });
 
-  it("invokes processMentions with the first entry's id when the opening message @mentions a crew agent", async () => {
-    // create() returns the discussion with its first entry (carrying an @mention).
+  it("threads the resolved opening mentions INTO svc.create (transactional outbox enqueue)", async () => {
+    // Round-15: the summon is no longer a fire-and-forget processMentions from the
+    // route. The route resolves the opening @mentions (round-14, pre-commit) and
+    // passes them as svc.create's 4th arg, so svc.create enqueues the outbox row
+    // IN the first-entry transaction (durable, retried-by-the-worker exactly once).
     mockCreate.mockResolvedValue({
       id: DISCUSSION_ID,
       companyId: COMPANY_A,
@@ -121,24 +124,19 @@ describe("POST /discussions — first-message @mention dispatch (Finding #7)", (
       });
 
     expect(res.status, JSON.stringify(res.body)).toBe(201);
-
-    const processMentionsMock = processMentions as ReturnType<typeof vi.fn>;
-    expect(processMentionsMock).toHaveBeenCalledOnce();
-
-    const [calledDb, calledCompanyId, calledDiscussionId, calledEntryId, calledMentions] =
-      processMentionsMock.mock.calls[0];
+    // The route no longer summons directly.
+    expect(processMentions as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+    // The resolved mentions are passed as svc.create's 4th arg (enqueued in-tx).
+    expect(mockCreate).toHaveBeenCalledOnce();
+    const [calledCompanyId, , calledActorId, calledMentions] = mockCreate.mock.calls[0];
     expect(calledCompanyId).toBe(COMPANY_A);
-    expect(calledDiscussionId).toBe(DISCUSSION_ID);
-    // The crux of Finding #7: dispatch is keyed to the FIRST entry's id.
-    expect(calledEntryId).toBe(FIRST_ENTRY_ID);
+    expect(calledActorId).toBeDefined();
     expect(calledMentions).toEqual(
       expect.arrayContaining([{ raw: "@Scout", name: "Scout" }]),
     );
-    // db is forwarded (the route closes over the factory db — {} here).
-    expect(calledDb).toBeDefined();
   });
 
-  it("does NOT invoke processMentions when the opening message has no @mention", async () => {
+  it("passes an EMPTY opening-mentions list to svc.create when there is no @mention", async () => {
     mockCreate.mockResolvedValue({
       id: DISCUSSION_ID,
       companyId: COMPANY_A,
@@ -161,9 +159,11 @@ describe("POST /discussions — first-message @mention dispatch (Finding #7)", (
 
     expect(res.status, JSON.stringify(res.body)).toBe(201);
     expect(processMentions as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+    const [, , , calledMentions] = mockCreate.mock.calls[0];
+    expect(calledMentions).toEqual([]);
   });
 
-  it("does NOT invoke processMentions when the thread is created without a first entry", async () => {
+  it("passes an EMPTY opening-mentions list to svc.create when created without a first entry", async () => {
     mockCreate.mockResolvedValue({
       id: DISCUSSION_ID,
       companyId: COMPANY_A,
@@ -178,6 +178,8 @@ describe("POST /discussions — first-message @mention dispatch (Finding #7)", (
 
     expect(res.status, JSON.stringify(res.body)).toBe(201);
     expect(processMentions as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+    const [, , , calledMentions] = mockCreate.mock.calls[0];
+    expect(calledMentions).toEqual([]);
   });
 
   it("resolves mentions BEFORE create — a roster-query failure commits nothing (round-14 #2)", async () => {
@@ -200,6 +202,5 @@ describe("POST /discussions — first-message @mention dispatch (Finding #7)", (
     // Fails cleanly with NOTHING committed (create never ran) → safe client retry.
     expect(res.status).toBe(500);
     expect(mockCreate).not.toHaveBeenCalled();
-    expect(processMentions as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
   });
 });
