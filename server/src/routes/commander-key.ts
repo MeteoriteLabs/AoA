@@ -39,7 +39,11 @@ export function commanderKeyRoutes(db: Db): Router {
       return;
     }
 
-    // Load the Commander agent (its adapterConfig is the executable config).
+    // Load the Commander agent id. The id lookup stays pre-tx so a missing
+    // Commander agent 404s without ever opening a transaction. The agent's
+    // adapterConfig is deliberately NOT read here — it moves inside the tx under
+    // a row lock (see below), so the merge reads the value at the serialization
+    // boundary rather than a stale pre-tx snapshot (Codex round-12 P2).
     const [cfg] = await db
       .select({ agentId: internalAgentConfig.agentId })
       .from(internalAgentConfig)
@@ -52,12 +56,6 @@ export function commanderKeyRoutes(db: Db): Router {
     // Capture the narrowed (non-null) id here — TS control-flow narrowing from
     // the guard above does not survive into the db.transaction callback closure.
     const agentId = cfg.agentId;
-    const [agent] = await db
-      .select({ adapterConfig: agents.adapterConfig })
-      .from(agents)
-      .where(eq(agents.id, agentId))
-      .limit(1);
-    const adapterConfig = (agent?.adapterConfig as Record<string, unknown> | null) ?? {};
 
     // ONE atomic transaction wraps the whole save: the vault mutation
     // (writeSecret — create OR rotate OR reactivate+rotate), the agent
@@ -74,6 +72,35 @@ export function commanderKeyRoutes(db: Db): Router {
     const secretId = await db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
       const secrets = secretService(txDb);
+
+      // Read the CURRENT adapterConfig INSIDE the tx and LOCK the agent row
+      // (SELECT … FOR UPDATE). This closes the Codex round-12 P2 lost-update
+      // race the round-11 atomicity fix exposed: previously the adapterConfig
+      // snapshot was taken OUTSIDE this serialization boundary, so two concurrent
+      // key-saves for DIFFERENT providers (anthropic + openai) both merged onto
+      // the SAME pre-save config. Whichever tx committed second REPLACED the
+      // whole adapterConfig JSON, and syncEnvBindingsForTarget then DELETED the
+      // other provider's binding as "absent from env" — silently dropping the
+      // first provider's secret_ref while both requests still returned 200.
+      //
+      // Reading + locking here serializes concurrent same-agent saves on the
+      // agents row: the second request WAITS for the first to commit, then reads
+      // the first's committed config (now carrying its env entry) and merges its
+      // own provider on top. The UNION of both secret_refs survives, and
+      // syncEnvBindingsForTarget receives the full current env so it deletes
+      // nothing legitimate.
+      //
+      // Plain FOR UPDATE (not NO WAIT): a founder key-save is rare, and the
+      // correct behaviour is for the second save to briefly BLOCK then merge, not
+      // to fail. The agents row is the right lock target — it is exactly what
+      // both requests mutate (adapterConfig) and what the env bindings derive from.
+      const [agent] = await txDb
+        .select({ adapterConfig: agents.adapterConfig })
+        .from(agents)
+        .where(eq(agents.id, agentId))
+        .for("update");
+      const adapterConfig = (agent?.adapterConfig as Record<string, unknown> | null) ?? {};
+
       // Which branch of writeSecret ran, surfaced for the audit log. The closure
       // (not persistCommanderApiKey) is the only place that can tell create vs
       // rotate vs reactivate apart, and the service return type is fixed to

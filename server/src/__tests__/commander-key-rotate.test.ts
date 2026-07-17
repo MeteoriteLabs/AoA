@@ -66,7 +66,13 @@ function db() {
     select: () => ({
       from: (tbl: { _: { name: string } }) => ({
         where: () => ({
+          // `.limit()` = pre-tx internal_agent_config id lookup; `.for()` = the
+          // in-tx `SELECT adapterConfig … FOR UPDATE` locked read (round-12 P2).
+          // These rotate tests don't exercise env merging, so an empty config is
+          // fine either way.
           limit: async () =>
+            tbl._.name === "internal_agent_config" ? [{ agentId: "cmd" }] : [{ adapterConfig: {} }],
+          for: async () =>
             tbl._.name === "internal_agent_config" ? [{ agentId: "cmd" }] : [{ adapterConfig: {} }],
         }),
       }),

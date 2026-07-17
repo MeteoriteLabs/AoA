@@ -22,7 +22,18 @@ import { commanderKeyRoutes } from "../routes/commander-key.js";
 function db(results: unknown[][]) {
   let i = 0;
   const handle: Record<string, unknown> = {
-    select: () => ({ from: () => ({ where: () => ({ limit: async () => results[i++] ?? [] }) }) }),
+    // `.limit()` serves the pre-tx internal_agent_config id lookup; `.for()`
+    // serves the in-tx `SELECT adapterConfig … FOR UPDATE` locked read the route
+    // now issues inside the transaction (Codex round-12 P2). Both draw from the
+    // same sequenced `results` array, in call order.
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          limit: async () => results[i++] ?? [],
+          for: async () => results[i++] ?? [],
+        }),
+      }),
+    }),
   };
   // The route wraps the mutation + audit in one db.transaction; pass the handle
   // through so the callback runs (persist/logActivity are mocked out here).
