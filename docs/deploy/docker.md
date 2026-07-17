@@ -186,7 +186,9 @@ AOA_PORT=3200 AOA_DATA_DIR=./data/aoa-dev \
 
 ## Manual Docker Run
 
-Build and run the image directly:
+Build and run the image directly. The image defaults to `authenticated` mode, so both
+examples pass Google OAuth credentials — the server refuses to boot without them (see the
+environment table above; for a keyless local trial use the native `aoa` CLI instead):
 
 ```sh
 docker build -t aoa-local .
@@ -195,6 +197,8 @@ docker run --name aoa \
   -e HOST=0.0.0.0 \
   -e AOA_HOME=/paperclip \
   -e AOA_PUBLIC_URL=http://localhost:3100 \
+  -e GOOGLE_CLIENT_ID=... \
+  -e GOOGLE_CLIENT_SECRET=... \
   -v aoa-data:/paperclip \
   aoa-local
 ```
@@ -207,6 +211,8 @@ docker run --name aoa \
   -e HOST=0.0.0.0 \
   -e AOA_HOME=/paperclip \
   -e DATABASE_URL=postgres://paperclip:paperclip@db:5432/paperclip \
+  -e GOOGLE_CLIENT_ID=... \
+  -e GOOGLE_CLIENT_SECRET=... \
   -v aoa-data:/paperclip \
   aoa-local
 ```
