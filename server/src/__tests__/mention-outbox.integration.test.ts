@@ -179,6 +179,39 @@ describe.skipIf(process.platform === "win32")("mention outbox (real DB)", () => 
     expect(await outboxStatus(entryId)).toBe("done");
   });
 
+  // ── Attachment provenance binding (round-6 #2 security) ──────────────────
+  async function insertAsset(id: string, composerValidated: boolean): Promise<void> {
+    await db.execute(sql`
+      INSERT INTO assets (id, company_id, provider, object_key, content_type, byte_size, sha256, composer_validated)
+      VALUES (${id}, ${companyId}, 'memory', ${"k/" + id}, 'text/plain', 10, 'sha', ${composerValidated})
+    `);
+  }
+
+  it("REJECTS binding a non-composer-validated asset (namespace=files) as a discussion attachment (round-6 #2)", async () => {
+    const assetId = "cccccccc-cccc-4ccc-8ccc-ccccccccccc1";
+    await insertAsset(assetId, false); // uploaded via namespace=files → not validated
+    await expect(
+      discussionService(db).addEntry(
+        companyId,
+        discussionId,
+        { rawContent: "see file", inputType: "write", attachments: [{ assetId }] },
+        "user:1",
+      ),
+    ).rejects.toThrow(/not a validated composer upload/i);
+  });
+
+  it("ACCEPTS binding a composer-validated asset as a discussion attachment (round-6 #2)", async () => {
+    const assetId = "cccccccc-cccc-4ccc-8ccc-ccccccccccc2";
+    await insertAsset(assetId, true); // uploaded via a composer namespace → validated
+    const entry = await discussionService(db).addEntry(
+      companyId,
+      discussionId,
+      { rawContent: "see file", inputType: "write", attachments: [{ assetId }] },
+      "user:1",
+    );
+    expect(entry.id).toBeTruthy();
+  });
+
   it("a failing summon is retried with backoff, then terminalized as 'failed'", async () => {
     const entryId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaab3";
     await enqueueMentionOutbox(db, {

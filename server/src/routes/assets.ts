@@ -202,7 +202,13 @@ export function assetRoutes(db: Db, storage: StorageService) {
 
     const namespaceSuffix = parsedMeta.data.namespace ?? "files";
     const contentType = (file.mimetype || "application/octet-stream").toLowerCase();
-    if (isComposerUploadNamespace(namespaceSuffix)) {
+    // Trusted provenance (PR #291 round-6 #2 security): only an upload that came
+    // through a composer namespace AND passed the allowlist + size + byte-sniff
+    // guard below earns composer_validated. Attachment-binding and runtime
+    // delivery require it, so uploading via namespace=files can no longer be
+    // laundered into a composer attachment.
+    const isComposer = isComposerUploadNamespace(namespaceSuffix);
+    if (isComposer) {
       if (!COMPOSER_ALLOWED_FILE_CONTENT_TYPES.has(contentType)) {
         res.status(415).json({ error: `Unsupported attachment type: ${contentType}` });
         return;
@@ -243,6 +249,9 @@ export function assetRoutes(db: Db, storage: StorageService) {
       originalFilename: stored.originalFilename,
       createdByAgentId: actor.agentId,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+      uploadNamespace: namespaceSuffix,
+      // Only a validated composer upload is bindable as a composer attachment.
+      composerValidated: isComposer,
     });
 
     await logActivity(db, {

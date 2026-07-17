@@ -184,3 +184,33 @@ describe("POST /companies/:companyId/assets/files — composer-namespaced guard"
     expect(res.status).toBe(201);
   });
 });
+
+describe("POST /companies/:companyId/assets/files — upload provenance (round-6 #2)", () => {
+  it("stamps composer_validated=true only for a passing composer upload", async () => {
+    const res = await request(createApp())
+      .post(`/api/companies/${companyId}/assets/files`)
+      .field("namespace", "discussion-entries")
+      .attach("file", Buffer.from("%PDF-1.4"), { filename: "brief.pdf", contentType: "application/pdf" });
+
+    expect(res.status).toBe(201);
+    expect(mockAssetService.create).toHaveBeenCalledWith(
+      companyId,
+      expect.objectContaining({ uploadNamespace: "discussion-entries", composerValidated: true }),
+    );
+  });
+
+  it("stamps composer_validated=false for a namespace=files upload (not bindable as a composer attachment)", async () => {
+    const res = await request(createApp())
+      .post(`/api/companies/${companyId}/assets/files`)
+      .attach("file", Buffer.from("arbitrary 50MB-eligible bytes"), {
+        filename: "notes.txt",
+        contentType: "text/plain",
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockAssetService.create).toHaveBeenCalledWith(
+      companyId,
+      expect.objectContaining({ uploadNamespace: "files", composerValidated: false }),
+    );
+  });
+});

@@ -1254,6 +1254,13 @@
       "when": 1784278403370,
       "tag": "0178_oval_moonstone",
       "breakpoints": true
+    },
+    {
+      "idx": 179,
+      "version": "7",
+      "when": 1784278941799,
+      "tag": "0179_wooden_azazel",
+      "breakpoints": true
     }
   ]
 }

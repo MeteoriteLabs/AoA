@@ -1037,6 +1037,35 @@ export function discussionService(db: Db) {
         }
       }
 
+      // Provenance boundary (PR #291 round-6 #2 security): a composer attachment
+      // that references an ASSET must reference a VALIDATED composer upload —
+      // otherwise a caller could upload via the unrestricted namespace=files path
+      // (50MB, no allowlist, no byte sniff) and launder it into a discussion
+      // attachment. Artifacts (artifactId) are versioned deliverables, not
+      // uploads, and are exempt. Checked before the tx so the counter bump never
+      // starts for a rejected request.
+      if (data.attachments && data.attachments.length > 0) {
+        const assetIds = data.attachments
+          .map((a) => a.assetId)
+          .filter((x): x is string => Boolean(x));
+        if (assetIds.length > 0) {
+          const validated = await db
+            .select({ id: assets.id })
+            .from(assets)
+            .where(
+              and(
+                eq(assets.companyId, companyId),
+                inArray(assets.id, assetIds),
+                eq(assets.composerValidated, true),
+              ),
+            );
+          const validatedIds = new Set(validated.map((r) => r.id));
+          if (assetIds.some((id) => !validatedIds.has(id))) {
+            throw badRequest("Attachment asset is not a validated composer upload");
+          }
+        }
+      }
+
       const now = new Date();
 
       // Plan 7 (D1): assign a per-thread monotonic seq for catch-up. We bump the

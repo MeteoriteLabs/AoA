@@ -33,6 +33,10 @@ type ResolvedAsset = {
   objectKey: string;
   originalFilename: string | null;
   byteSize: number;
+  /** Trusted provenance (PR #291 round-6 #2): true only for a validated composer
+   * upload. Runtime delivery refuses anything else so a spoofed namespace=files
+   * asset can't be decoded into a Commander turn. */
+  composerValidated?: boolean | null;
 };
 
 export interface RuntimeAttachmentDeps {
@@ -56,6 +60,12 @@ export async function resolveRuntimeAttachments(
     // Authorization boundary: a missing asset or one owned by another company is
     // dropped entirely — its bytes are never read.
     if (!asset || asset.companyId !== companyId) continue;
+    // Provenance boundary (PR #291 round-6 #2): only a validated composer upload
+    // may be delivered to the runtime. An asset uploaded via the unrestricted
+    // namespace=files path (no allowlist, no size cap, no byte sniff) is dropped
+    // — its bytes are never read/decoded into the turn — even if the caller owns
+    // it, closing the spoofed-text/plain-into-Commander vector.
+    if (asset.composerValidated !== true) continue;
 
     const capability = attachmentRuntimeCapability(asset.contentType);
     let text: string | null = null;

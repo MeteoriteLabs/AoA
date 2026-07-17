@@ -20,6 +20,8 @@ const txtAsset = {
   objectKey: "k/notes.txt",
   originalFilename: "notes.txt",
   byteSize: 12,
+  // Trusted provenance (round-6 #2): a validated composer upload.
+  composerValidated: true,
 };
 
 describe("resolveRuntimeAttachments", () => {
@@ -68,6 +70,19 @@ describe("resolveRuntimeAttachments", () => {
   it("skips unknown/missing asset ids", async () => {
     const out = await resolveRuntimeAttachments(deps(), "co-1", ["missing"]);
     expect(out).toEqual([]);
+  });
+
+  it("NEVER reads bytes for a non-composer-validated asset — it is dropped (round-6 #2)", async () => {
+    // A namespace=files upload (unrestricted, no sniff) has composerValidated=false.
+    // Even though the caller owns it, its bytes must never be decoded into a turn.
+    const readObjectText = vi.fn(async () => ({ text: "spoofed payload", truncated: false }));
+    const d = deps({
+      getAsset: vi.fn(async () => ({ ...txtAsset, composerValidated: false })),
+      readObjectText,
+    });
+    const out = await resolveRuntimeAttachments(d, "co-1", ["a1"]);
+    expect(out).toEqual([]);
+    expect(readObjectText).not.toHaveBeenCalled();
   });
 });
 

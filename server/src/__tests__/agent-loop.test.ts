@@ -145,6 +145,7 @@ describe("agentLoopService.chat — runtime attachment delivery (text)", () => {
       objectKey: "k/notes.txt",
       originalFilename: "notes.txt",
       byteSize: 14,
+      composerValidated: true,
     });
     scriptStream([
       { type: "text", delta: "ok" },
@@ -173,6 +174,7 @@ describe("agentLoopService.chat — runtime attachment delivery (text)", () => {
       objectKey: "k/pic.png",
       originalFilename: "pic.png",
       byteSize: 100,
+      composerValidated: true,
     });
     scriptStream([
       { type: "text", delta: "ok" },
