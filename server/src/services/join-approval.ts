@@ -3,13 +3,11 @@ import type { Db } from "@armyofagents/db";
 import { joinRequests } from "@armyofagents/db";
 import {
   PERMISSION_KEYS,
-  humanSocialLinkSchema,
   type JoinRequestApprovalSource,
 } from "@armyofagents/shared";
 import { accessService } from "./access.js";
-import { teamService } from "./team.js";
+import { teamService, materializeCompanyProfileFromGlobal } from "./team.js";
 import { humanCapabilitiesService } from "./human-capabilities.js";
-import { getUserProfile } from "./user-profiles.js";
 import { hubItemsService } from "./hub-items.js";
 import { logActivity } from "./activity-log.js";
 import { logger } from "../middleware/logger.js";
@@ -55,7 +53,7 @@ export function grantsFromDefaults(
 /** Tx-scoped service instances the approval needs (injected for testability). */
 export type HumanJoinApprovalServices = {
   access: Pick<ReturnType<typeof accessService>, "ensureMembership" | "setPrincipalGrants">;
-  team: Pick<ReturnType<typeof teamService>, "applyInviteRole" | "updateCompanyUserProfile">;
+  team: Pick<ReturnType<typeof teamService>, "applyInviteRole">;
   capabilities: Pick<ReturnType<typeof humanCapabilitiesService>, "ensureStandardDocuments">;
 };
 
@@ -164,24 +162,13 @@ export async function approveHumanJoinRequestTx(
   // purely to create the savepoint.
   try {
     await txDb.transaction(async () => {
-      const globalProfile = await getUserProfile(txDb, args.requestingUserId);
-      // The global PATCH route only Array.isArray-checks socialLinks, so
-      // parse-filter each link through the shared validator instead of
-      // trusting the stored shape.
-      const socialLinks = (globalProfile?.socialLinks ?? []).flatMap((link) => {
-        const parsed = humanSocialLinkSchema.safeParse(link);
-        return parsed.success ? [parsed.data] : [];
-      });
-      await services.team.updateCompanyUserProfile(
+      // Shared choke point (also used by addMember + founder company-create):
+      // copy the invitee's global profile into their company profile. Passing
+      // txDb keeps the write inside this savepoint.
+      await materializeCompanyProfileFromGlobal(
+        txDb,
         args.companyId,
         args.requestingUserId,
-        {
-          displayName: globalProfile?.displayName ?? null,
-          title: globalProfile?.title ?? null,
-          bio: globalProfile?.bio ?? null,
-          socialLinks,
-          timezone: globalProfile?.timezone ?? null,
-        },
         args.attributionUserId,
       );
       await services.capabilities.ensureStandardDocuments(
