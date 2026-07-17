@@ -5,7 +5,7 @@ import { validate } from "../middleware/validate.js";
 import { accessService, humanCapabilitiesService, humanContextService, humanDiscoveryService, logActivity, teamService } from "../services/index.js";
 import { forbidden } from "../errors.js";
 import { assertCompanyAccess } from "./authz.js";
-import { requestBaseUrl } from "./access-helpers.js";
+import { resolveInviteBaseUrl } from "./access-helpers.js";
 import {
   addMemberSchema,
   createHumanCapabilityDocumentSchema,
@@ -437,7 +437,10 @@ export function teamRoutes(db: Db) {
 
     // Resend rotates the token — return the fresh link (absolute, so it can
     // be copied verbatim) plus the new expiry so the UI can surface both.
-    const baseUrl = requestBaseUrl(req);
+    // Build it from the trusted origin (configured public URL → trust-proxy-
+    // gated / real Host), matching invite-create — never a spoofable
+    // X-Forwarded-Host.
+    const baseUrl = resolveInviteBaseUrl(req);
     const invitePath = `/invite/${result.token}`;
     res.json({
       inviteId: result.invite.id,
