@@ -11,10 +11,12 @@ const getUserProfile = vi.hoisted(() =>
     bio: null, timezone: null, socialLinks: [],
   })),
 );
+const updateProfile = vi.hoisted(() => vi.fn(async () => ({ profile: {} })));
 vi.mock("../../../api/userProfile", () => ({ saveUserProfile, getUserProfile }));
 vi.mock("../../../api/onboarding", () => ({
   advanceOnboarding: vi.fn(async () => ({ completedStates: ["AUTHENTICATED", "PROFILE_SET"] })),
 }));
+vi.mock("../../../api/team", () => ({ teamApi: { updateProfile } }));
 
 import { advanceOnboarding } from "../../../api/onboarding";
 
@@ -171,6 +173,106 @@ describe("HumanProfileStep (shared; wired invited)", () => {
         ],
       }),
     );
+  });
+
+  it("C3: prefills social link rows from the saved profile and resubmits them (not [])", async () => {
+    getUserProfile.mockResolvedValueOnce({
+      userId: "u1", displayName: "Ada", avatarUrl: null, title: "Engineer",
+      bio: null, timezone: "UTC",
+      socialLinks: [
+        { type: "website", label: null, url: "https://ada.dev" },
+        { type: "linkedin", label: null, url: "https://linkedin.com/in/ada" },
+      ],
+    });
+    const onComplete = vi.fn();
+    render(<HumanProfileStep ctx={ctx} onComplete={onComplete} onBack={() => {}} />);
+    // Saved URLs prefill the link rows.
+    await waitFor(() =>
+      expect((screen.getByLabelText("Social link 1") as HTMLInputElement).value).toBe("https://ada.dev"),
+    );
+    expect((screen.getByLabelText("Social link 2") as HTMLInputElement).value).toBe("https://linkedin.com/in/ada");
+    // Continue WITHOUT touching them → resubmit the same URLs, never [] (data loss).
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(() => expect(onComplete).toHaveBeenCalled());
+    expect(saveUserProfile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        socialLinks: [
+          { type: "website", label: null, url: "https://ada.dev" },
+          { type: "website", label: null, url: "https://linkedin.com/in/ada" },
+        ],
+      }),
+    );
+  });
+
+  it("C3: a social link typed during the async load survives the prefill", async () => {
+    let resolveProfile!: (p: unknown) => void;
+    getUserProfile.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveProfile = resolve;
+      }),
+    );
+    render(<HumanProfileStep ctx={ctx} onComplete={vi.fn()} onBack={() => {}} />);
+    fireEvent.click(screen.getByText("+ Add link"));
+    fireEvent.change(screen.getByLabelText("Social link 1"), { target: { value: "https://typed.dev" } });
+    resolveProfile({
+      userId: "u1", displayName: "Ada", avatarUrl: null, title: "Engineer",
+      bio: null, timezone: "UTC",
+      socialLinks: [{ type: "website", label: null, url: "https://prefill.dev" }],
+    });
+    await waitFor(() =>
+      expect((screen.getByLabelText("Timezone") as HTMLSelectElement).value).toBe("UTC"),
+    );
+    // The user's row is untouched; the prefill neither replaced nor appended.
+    expect((screen.getByLabelText("Social link 1") as HTMLInputElement).value).toBe("https://typed.dev");
+    expect(screen.queryByLabelText("Social link 2")).toBeNull();
+  });
+
+  it("C2: revisit with companyId set syncs the edited fields to the company profile", async () => {
+    const onComplete = vi.fn();
+    const revisitCtx: StepContext = { ...ctx, companyId: "co-1", journey: "founder" };
+    render(<HumanProfileStep ctx={revisitCtx} onComplete={onComplete} onBack={() => {}} />);
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Ada" } });
+    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Founder" } });
+    fireEvent.change(screen.getByLabelText("Timezone"), { target: { value: "UTC" } });
+    fireEvent.change(screen.getByLabelText("Short bio (optional)"), { target: { value: "hi" } });
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(() => expect(onComplete).toHaveBeenCalled());
+    // Same current user (ctx.userId) editing their OWN company profile.
+    expect(updateProfile).toHaveBeenCalledWith(
+      "co-1",
+      "u1",
+      expect.objectContaining({ displayName: "Ada", title: "Founder", timezone: "UTC", bio: "hi" }),
+    );
+    // saveUserProfile + updateProfile share the SAME normalized socialLinks payload.
+    const globalArg = saveUserProfile.mock.calls[0][0] as { socialLinks: unknown };
+    const companyArg = updateProfile.mock.calls[0][2] as { socialLinks: unknown };
+    expect(companyArg.socialLinks).toEqual(globalArg.socialLinks);
+  });
+
+  it("C2: first pass with companyId null does NOT touch the company profile", async () => {
+    const onComplete = vi.fn();
+    render(<HumanProfileStep ctx={ctx} onComplete={onComplete} onBack={() => {}} />);
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Ada" } });
+    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Engineer" } });
+    fireEvent.change(screen.getByLabelText("Timezone"), { target: { value: "UTC" } });
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(() => expect(onComplete).toHaveBeenCalled());
+    expect(updateProfile).not.toHaveBeenCalled();
+  });
+
+  it("C2: a company-profile sync failure is surfaced and blocks the advance", async () => {
+    updateProfile.mockRejectedValueOnce(new Error("company sync failed"));
+    const onComplete = vi.fn();
+    const revisitCtx: StepContext = { ...ctx, companyId: "co-1", journey: "founder" };
+    render(<HumanProfileStep ctx={revisitCtx} onComplete={onComplete} onBack={() => {}} />);
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Ada" } });
+    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Founder" } });
+    fireEvent.change(screen.getByLabelText("Timezone"), { target: { value: "UTC" } });
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    expect(await screen.findByText("company sync failed")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Continue" }) as HTMLButtonElement).disabled).toBe(false);
+    expect(onComplete).not.toHaveBeenCalled();
+    expect(advanceOnboarding).not.toHaveBeenCalled();
   });
 
   it("social link rows can be removed (X button drops the row and its value)", async () => {

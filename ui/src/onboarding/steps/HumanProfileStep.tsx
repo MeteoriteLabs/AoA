@@ -3,6 +3,7 @@ import { X } from "lucide-react";
 import type { StepProps } from "../registry";
 import { getUserProfile, saveUserProfile } from "../../api/userProfile";
 import { advanceOnboarding } from "../../api/onboarding";
+import { teamApi } from "../../api/team";
 import { HUMAN_TITLE_OPTIONS, getTimezoneOptions } from "@/lib/human-profile-constants";
 import { Button } from "@/components/ui/button";
 
@@ -52,6 +53,12 @@ export function HumanProfileStep({ ctx, onComplete }: StepProps) {
         setTitle((v) => v || p.title || "");
         setBio((v) => v || p.bio || "");
         setTimezone((v) => v || p.timezone || detected);
+        // Restore saved social links so a returning user who revisits this
+        // completed step and clicks Continue does NOT overwrite them with []
+        // (silent data loss). The `prev.length ? prev :` guard preserves any
+        // rows the user already typed during the async load — mirroring the
+        // `(v) => v || …` precedence the scalar fields above use.
+        setLinks((prev) => (prev.length ? prev : (p.socialLinks ?? []).map((l) => l.url)));
       })
       .catch(() => {
         if (!cancelled) setTimezone((v) => v || detected);
@@ -67,24 +74,44 @@ export function HumanProfileStep({ ctx, onComplete }: StepProps) {
     if (!canSubmit) return;
     setBusy(true);
     setError(null);
+    // Built once and shared by BOTH the global save and the company-profile
+    // sync below, so the two writes can never diverge.
+    const socialLinks = links
+      .map((url) => url.trim())
+      .filter(Boolean)
+      .map((url) => ({
+        type: "website" as const,
+        label: null,
+        // Approval-time seeding validates with z.string().url() — a
+        // schemeless paste (linkedin.com/in/ada) would silently vanish
+        // from the company profile. Default to https.
+        url: /^[a-z][a-z0-9+.-]*:\/\//i.test(url) ? url : `https://${url}`,
+      }));
+    const profile = {
+      displayName: name.trim(),
+      title,
+      timezone,
+      bio: bio.trim() || null,
+      socialLinks,
+    };
     try {
-      await saveUserProfile({
-        displayName: name.trim(),
-        title,
-        timezone,
-        bio: bio.trim() || null,
-        socialLinks: links
-          .map((url) => url.trim())
-          .filter(Boolean)
-          .map((url) => ({
-            type: "website",
-            label: null,
-            // Approval-time seeding validates with z.string().url() — a
-            // schemeless paste (linkedin.com/in/ada) would silently vanish
-            // from the company profile. Default to https.
-            url: /^[a-z][a-z0-9+.-]*:\/\//i.test(url) ? url : `https://${url}`,
-          })),
-      });
+      await saveUserProfile(profile);
+      // Revisit path only: the central Back navigation can return the founder
+      // to this step AFTER company-create with ctx.companyId set. The company-
+      // scoped profile was materialized once at company-create and is otherwise
+      // never refreshed, so title/bio/timezone/social edits made on the revisit
+      // would stay stale on the Team page. Sync them to the member's OWN company
+      // profile. The per-member PATCH permits self-edits for any role (route
+      // authz: actorUserId === userId skips the founder/admin gate), so an
+      // invited (non-founder) revisit cannot 403 here. On the first pass
+      // (companyId null) nothing runs — the create-time materialize handles it.
+      // This is an idempotent UPSERT, so it never conflicts with that seed.
+      // Surfaced (not best-effort) because the user is actively editing and a
+      // failure otherwise loses their edits silently, exactly as saveUserProfile
+      // failures are surfaced.
+      if (ctx.companyId) {
+        await teamApi.updateProfile(ctx.companyId, ctx.userId, profile);
+      }
       await advanceOnboarding({
         companyId: ctx.companyId,
         journey: ctx.journey,
