@@ -582,8 +582,14 @@ export function issueRoutes(db: Db, storage: StorageService) {
     };
     reopenRequested: boolean;
     interruptRequested: boolean;
+    // Completed attachment rows to carry into the resumed wakeup so the woken
+    // agent receives the file metadata (round-8 #2). MUST be passed AFTER the
+    // attachments are actually stored — the caller completes them first, then
+    // resumes, so the wakeup marker isn't stamped before the files exist.
+    attachments?: CommentWakeAttachment[];
   }): Promise<{ ok: boolean }> {
     const { req, res, issue, comment, reopenRequested, interruptRequested } = input;
+    const attachments = input.attachments ?? [];
     const actor = getActorInfo(req);
 
     // Wakeup context defaults (used when control effects were already completed
@@ -621,6 +627,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
         reopened,
         reopenFromStatus,
         interruptedRunId,
+        attachments,
       });
       await svc.markCommentWakeupsEnqueued(comment.id);
     }
@@ -1821,7 +1828,10 @@ export function issueRoutes(db: Db, storage: StorageService) {
     // The same completion path serves the route-level replay pre-check AND the
     // insert-race loser (addComment returns `replayed` when it lost the race),
     // so neither re-fires post-insert side-effects (PR #291 round-3 review).
-    const respondWithReplayedComment = async (replay: { id: string }) => {
+    // Returns the (now-complete) attachment rows so the caller can resume wakeups
+    // with them BEFORE responding — the wakeup must not be marked done until the
+    // files are actually stored (round-8 #2).
+    const completeReplayedCommentAttachments = async (replay: { id: string }) => {
       let replayAttachments = (await svc.listAttachments(id)).filter(
         (a) => a.issueCommentId === replay.id,
       );
@@ -1873,7 +1883,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
           });
         }
       }
-      res.status(200).json({ comment: replay, attachments: replayAttachments });
+      return replayAttachments;
     };
 
     const clientSubmissionId =
@@ -1881,8 +1891,11 @@ export function issueRoutes(db: Db, storage: StorageService) {
     if (clientSubmissionId) {
       const replay = await svc.getCommentByClientSubmissionId(issue.companyId, id, clientSubmissionId);
       if (replay) {
-        // Resume any control effects AND wakeups the original send did not
-        // complete — each gated by its own marker (round-6 #2 + round-7 #2/#3).
+        // Round-8 #2: COMPLETE the missing attachments FIRST, then resume control
+        // effects + wakeups carrying the completed attachment rows — so the
+        // wakeup marker is never stamped before the files are stored and the
+        // woken agent receives the attachment metadata.
+        const replayAttachments = await completeReplayedCommentAttachments(replay);
         const resumed = await resumeIncompleteCommentSideEffects({
           req,
           res,
@@ -1890,9 +1903,10 @@ export function issueRoutes(db: Db, storage: StorageService) {
           comment: replay,
           reopenRequested: parseMultipartBoolean(req.body?.reopen),
           interruptRequested: parseMultipartBoolean(req.body?.interrupt),
+          attachments: replayAttachments,
         });
         if (!resumed.ok) return;
-        await respondWithReplayedComment(replay);
+        res.status(200).json({ comment: replay, attachments: replayAttachments });
         return;
       }
     }
@@ -1924,6 +1938,9 @@ export function issueRoutes(db: Db, storage: StorageService) {
     // reopening or waking — complete missing attachments through the serialized
     // path, and return without re-firing completed effects (round-3/4 review).
     if ((comment as { replayed?: boolean }).replayed) {
+      // Round-8 #2: complete missing attachments FIRST, then resume side effects
+      // carrying the completed rows, then respond.
+      const replayAttachments = await completeReplayedCommentAttachments(comment);
       const resumed = await resumeIncompleteCommentSideEffects({
         req,
         res,
@@ -1931,9 +1948,10 @@ export function issueRoutes(db: Db, storage: StorageService) {
         comment: comment as typeof comment & { body: string },
         reopenRequested: parseMultipartBoolean(req.body?.reopen),
         interruptRequested,
+        attachments: replayAttachments,
       });
       if (!resumed.ok) return;
-      await respondWithReplayedComment(comment);
+      res.status(200).json({ comment, attachments: replayAttachments });
       return;
     }
 

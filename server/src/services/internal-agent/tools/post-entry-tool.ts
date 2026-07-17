@@ -1,5 +1,4 @@
 import type { AgentTool } from "../types.js";
-import { parseMentions, processMentions } from "../../threads.js";
 import { buildPostReplyIdempotencyKey } from "./thread-action-keys.js";
 
 export function createPostEntryTool(): AgentTool {
@@ -111,21 +110,13 @@ export function createPostEntryTool(): AgentTool {
         },
       );
 
-      // C4 (PR #291 review): skip mention summons when addEntry replayed an
-      // existing entry (same-key retry / race loser) — the original post already
-      // fired them, and re-running double-summons the mentioned crew.
-      const replayed = (entry as { replayed?: boolean }).replayed === true;
-      const mentions = replayed ? [] : parseMentions(content as string);
-      if (mentions.length > 0) {
-        await processMentions(
-          ctx.db,
-          ctx.companyId,
-          threadId as string,
-          entry.id,
-          mentions,
-          { hopCount: 1 },
-        );
-      }
+      // @mention summons are enqueued to the transactional outbox INSIDE
+      // addEntry's tx (with hopCount:1 for this agent-authored entry) and drained
+      // exactly-once by the mention-outbox worker (PR #291 round-8 #1). The
+      // previous direct processMentions call here summoned AGAIN on top of the
+      // outbox — a double summon (hop bump / double participation). Removed. A
+      // replayed entry (same-key retry / race loser) never gets an outbox row, so
+      // it also cannot re-summon.
 
       return {
         success: true,

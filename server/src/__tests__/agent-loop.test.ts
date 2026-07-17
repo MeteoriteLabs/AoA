@@ -216,7 +216,7 @@ describe("agentLoopService.chat — idempotent retry (clientSubmissionId)", () =
     const out = await drainWithKey(svc, "sub-42");
 
     // Streamed the original reply back to the caller…
-    expect(out).toEqual([{ type: "text", delta: "Original answer" }]);
+    expect(out).toEqual([{ type: "run_skipped" }, { type: "text", delta: "Original answer" }]);
     // …without persisting a duplicate user message or starting a CLI turn.
     expect(appendMessage).not.toHaveBeenCalled();
     expect(cliChat).not.toHaveBeenCalled();
@@ -265,7 +265,7 @@ describe("agentLoopService.chat — idempotent retry (clientSubmissionId)", () =
     const out = await drainWithKey(svc, "sub-race");
 
     expect(cliChat).not.toHaveBeenCalled();
-    expect(out).toEqual([{ type: "text", delta: "Winner answer" }]);
+    expect(out).toEqual([{ type: "run_skipped" }, { type: "text", delta: "Winner answer" }]);
   });
 
   it("claims the submission key: lost race with no winner reply yet reports in-progress, no CLI — C3", async () => {

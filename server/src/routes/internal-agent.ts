@@ -191,6 +191,9 @@ export function internalAgentRoutes(db: Db, storageService?: RuntimeAttachmentSt
             provider?: string | null;
           }
         | null = null;
+      // round-8 #3: set when chat() signals an idempotent replay / in-progress
+      // defer (no CLI run) so the pre-created run row is deleted, not finalized.
+      let runSkipped = false;
 
       try {
         const svc = agentLoopService(db, storageService);
@@ -297,10 +300,31 @@ export function internalAgentRoutes(db: Db, storageService?: RuntimeAttachmentSt
                 `event: reasoning\ndata: ${JSON.stringify({ text: chunk.delta })}\n\n`,
               );
               break;
+            case "run_skipped":
+              // Idempotent replay / in-progress defer — no CLI ran. Suppress the
+              // phantom run row (round-8 #3). Not forwarded to the client.
+              runSkipped = true;
+              break;
             case "done":
               finalSummary = chunk.summary;
               break;
           }
+        }
+
+        if (runSkipped) {
+          // Delete the pre-created run row so a network retry after a successful
+          // turn (or a concurrent duplicate) doesn't leave a zero-token completed
+          // / spurious failed run inflating the run list + aggregate metrics. The
+          // original request's run record is the source of truth (round-8 #3).
+          await db
+            .delete(internalAgentRuns)
+            .where(and(eq(internalAgentRuns.id, run.id), eq(internalAgentRuns.companyId, companyId)))
+            .catch(() => {});
+          res.write(
+            `event: done\ndata: ${JSON.stringify({ messageId: run.id, runId: run.id })}\n\n`,
+          );
+          res.end();
+          return;
         }
 
         // Mark run completed

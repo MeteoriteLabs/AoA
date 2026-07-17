@@ -27,6 +27,12 @@ export const discussionMentionOutbox = pgTable(
     entryId: uuid("entry_id").notNull(),
     // Array<{ raw: string; name: string }> — the parsed @mentions to summon.
     mentions: jsonb("mentions").notNull(),
+    // Mention-cascade hop count applied when the worker runs processMentions
+    // (PR #291 round-8 #1). 0 = human-originated (the default); 1 = an
+    // agent-authored reply, matching the { hopCount: 1 } the internal writers
+    // (post-entry-tool / thread-agent-actions) used to pass directly — the loop
+    // cap (MAX_HOP_COUNT) must count the same way now the outbox owns the summon.
+    hopCount: integer("hop_count").notNull().default(0),
     // 'pending' | 'processing' | 'done' | 'failed'
     status: text("status").notNull().default("pending"),
     attempts: integer("attempts").notNull().default(0),

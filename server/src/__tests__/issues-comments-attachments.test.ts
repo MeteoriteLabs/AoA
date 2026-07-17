@@ -755,6 +755,21 @@ describe("POST /issues/:id/comments-with-attachments", () => {
     );
     // Still exactly one durable comment.
     expect(mockIssueService.addComment).toHaveBeenCalledTimes(1);
+
+    // Round-8 #2: the missing attachments are completed BEFORE the wakeup is
+    // marked done, so a wakeup is never stamped while the files are still absent.
+    expect(mockIssueService.markCommentWakeupsEnqueued).toHaveBeenCalledTimes(1);
+    expect(mockIssueService.completeMissingCommentAttachments.mock.invocationCallOrder[0]).toBeLessThan(
+      mockIssueService.markCommentWakeupsEnqueued.mock.invocationCallOrder[0],
+    );
+    // And the resumed wakeup carries the completed attachment metadata.
+    await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalled());
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      assigneeAgentId,
+      expect.objectContaining({
+        payload: expect.objectContaining({ attachmentCount: 1 }),
+      }),
+    );
   });
 });
 

@@ -74,35 +74,25 @@ describe("post_entry tool (P2.2)", () => {
     expect(actorId).toBe("agent-99");
   });
 
-  it("calls processMentions when content has @mentions with hopCount=1", async () => {
+  it("does NOT call processMentions directly — the summon is enqueued by addEntry's outbox (round-8 #1)", async () => {
+    // The @mention summon now rides the transactional outbox inside addEntry
+    // (with hopCount:1 for this agent-authored entry) and is drained exactly-once
+    // by the worker. The tool calling processMentions directly on top of that was
+    // a double summon — removed. The atomic enqueue is covered by the outbox
+    // integration test; here we assert the tool no longer summons inline.
     const tool = createPostEntryTool();
     const ctx = makeCtx();
 
-    await tool.execute(
+    const res = await tool.execute(
       { threadId: "thread-1", content: "Hey @Planner please review this @Router" },
       ctx,
     );
 
-    const processMentionsMock = processMentions as ReturnType<typeof vi.fn>;
-    expect(processMentionsMock).toHaveBeenCalledOnce();
-
-    const [calledDb, calledCompanyId, calledThreadId, calledEntryId, calledMentions, calledOpts] =
-      processMentionsMock.mock.calls[0];
-
-    expect(calledDb).toBe(ctx.db);
-    expect(calledCompanyId).toBe("co-1");
-    expect(calledThreadId).toBe("thread-1");
-    expect(calledEntryId).toBe(mockEntry.id);
-    expect(calledMentions).toEqual(
-      expect.arrayContaining([
-        { raw: "@Planner", name: "Planner" },
-        { raw: "@Router", name: "Router" },
-      ]),
-    );
-    expect(calledOpts).toEqual({ hopCount: 1 });
+    expect((res as { success?: boolean }).success).toBe(true);
+    expect(processMentions as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
   });
 
-  it("does NOT call processMentions when content has no @mentions", async () => {
+  it("still posts (no direct processMentions) when content has no @mentions", async () => {
     const tool = createPostEntryTool();
     const ctx = makeCtx();
 

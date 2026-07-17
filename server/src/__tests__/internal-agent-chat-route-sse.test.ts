@@ -26,7 +26,7 @@
  * Codex-path coverage (real fake-codex spawn) is in cli-mode-codex-integration.test.ts.
  */
 
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { Request, Response } from "express";
 
 // ── drizzle-orm mock ─────────────────────────────────────────────────────────
@@ -178,9 +178,21 @@ async function* scriptedChatStream() {
   };
 }
 
+// A replay/in-progress turn: chat yields run_skipped (no CLI run) then the
+// replayed content, and NO "done" summary (round-8 #3).
+async function* replayChatStream() {
+  yield { type: "run_skipped" as const };
+  yield { type: "text" as const, delta: "Original answer (replayed)." };
+}
+
+// The chat stream is swappable per test (default = the scripted genuine run).
+const streamState = vi.hoisted(() => ({
+  impl: null as null | (() => AsyncGenerator<unknown>),
+}));
+
 vi.mock("../services/internal-agent/agent-loop.js", () => ({
   agentLoopService: vi.fn(() => ({
-    chat: vi.fn(() => scriptedChatStream()),
+    chat: vi.fn(() => (streamState.impl ?? scriptedChatStream)()),
   })),
 }));
 
@@ -220,13 +232,14 @@ async function callChatRoute(opts: {
     select?: () => any;
     update?: () => any;
   };
-}): Promise<{ sseEvents: SseEvent[]; persistedRun: Record<string, unknown> | null }> {
+}): Promise<{ sseEvents: SseEvent[]; persistedRun: Record<string, unknown> | null; runDeleted: boolean }> {
   const companyId = opts.companyId ?? "cmp-sse-test";
   const message = opts.message ?? "What tasks do I have?";
 
   // Capture SSE writes
   const sseWrites: string[] = [];
   let persistedRun: Record<string, unknown> | null = null;
+  let runDeleted = false;
 
   // Build a db mock that:
   // 1. insert(internalAgentRuns) → returning() = [{id:"run-123", ...}]
@@ -255,6 +268,13 @@ async function callChatRoute(opts: {
             catch: vi.fn(),
           })),
         };
+      }),
+    })),
+    // round-8 #3: a replay deletes the pre-created run row instead of finalizing.
+    delete: vi.fn(() => ({
+      where: vi.fn(() => {
+        runDeleted = true;
+        return { catch: vi.fn((_cb: any) => Promise.resolve()) };
       }),
     })),
   };
@@ -320,12 +340,31 @@ async function callChatRoute(opts: {
     }
   }
 
-  return { sseEvents, persistedRun };
+  return { sseEvents, persistedRun, runDeleted };
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 describe("internal-agent chat route SSE-contract + run persistence (Task 3)", () => {
+  beforeEach(() => {
+    streamState.impl = null; // default: the genuine scripted run
+  });
+
+  it("does NOT record a run for an idempotent replay — it deletes the pre-created row (round-8 #3)", async () => {
+    streamState.impl = replayChatStream;
+    const { sseEvents, persistedRun, runDeleted } = await callChatRoute({ db: {} });
+
+    // The replayed content still streams to the client…
+    const content = sseEvents.filter((e) => e.event === "content");
+    expect(content).toHaveLength(1);
+    expect(content[0].data.text).toBe("Original answer (replayed).");
+    // …a done event still closes the stream…
+    expect(sseEvents.filter((e) => e.event === "done")).toHaveLength(1);
+    // …but the pre-created run row is DELETED, not finalized as completed.
+    expect(runDeleted).toBe(true);
+    expect(persistedRun).toBeNull();
+  });
+
   it("emits exactly one event:reasoning SSE line", async () => {
     const { sseEvents } = await callChatRoute({ db: {} });
     const reasoning = sseEvents.filter((e) => e.event === "reasoning");

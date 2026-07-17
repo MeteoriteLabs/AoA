@@ -56,6 +56,11 @@ export type AgentStreamChunk =
   | { type: "action_confirmation"; toolName: string; params: unknown; runId: string }
   | { type: "options_prompt"; question: string; options: string[]; promptId: string }
   | { type: "error"; message: string }
+  // Emitted when the turn did NOT execute a CLI run — an idempotent replay or an
+  // in-progress defer (PR #291 round-8 #3). The route uses it to avoid recording
+  // a phantom internal_agent_runs row (zero-token completed / spurious failed).
+  // Not forwarded to the client SSE stream.
+  | { type: "run_skipped" }
   | { type: "done"; summary: RunSummary };
 
 export interface ChatInput {
@@ -157,6 +162,9 @@ async function* replayWinnerOrSignalInProgress(
   conversationId: string,
   clientSubmissionId: string | null,
 ): AsyncGenerator<AgentStreamChunk> {
+  // No CLI run happens on this path (replay or in-progress defer) — tell the
+  // route so it doesn't record a phantom run (round-8 #3).
+  yield { type: "run_skipped" };
   if (clientSubmissionId) {
     const winner = await convService.getMessageByClientSubmissionId(conversationId, clientSubmissionId);
     if (winner) {
@@ -274,6 +282,8 @@ export function agentLoopService(db: Db, storage?: RuntimeAttachmentStorage) {
             // tool-only turn legitimately has empty content. Replay it (stream
             // its tool events/content) rather than re-running the CLI.
             if (reply) {
+              // No CLI run — signal the route to skip recording a run (round-8 #3).
+              yield { type: "run_skipped" };
               yield* replayPersistedReply(reply);
               return;
             }

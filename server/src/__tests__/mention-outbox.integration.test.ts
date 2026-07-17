@@ -126,6 +126,44 @@ describe.skipIf(process.platform === "win32")("mention outbox (real DB)", () => 
     expect(await countOutbox(entry.id)).toBe(0);
   });
 
+  it("stores hop_count=0 for a human entry and hop_count=1 for an agent-authored entry (round-8 #1)", async () => {
+    const readHop = async (entryId: string): Promise<number | null> => {
+      const rows = await db.execute(
+        sql`SELECT hop_count FROM discussion_mention_outbox WHERE entry_id = ${entryId}`,
+      );
+      const arr = Array.isArray(rows) ? rows : ((rows as { rows?: unknown[] })?.rows ?? []);
+      return (arr[0] as { hop_count: number } | undefined)?.hop_count ?? null;
+    };
+
+    // Human entry → hopCount 0 (start of a cascade).
+    const humanEntry = await discussionService(db).addEntry(
+      companyId,
+      discussionId,
+      { rawContent: "@Scout please look", inputType: "write" },
+      "user:1",
+    );
+    expect(await readHop(humanEntry.id)).toBe(0);
+
+    // Agent-authored reply → hopCount 1 (preserves the internal writers' { hopCount: 1 }).
+    const agentEntry = await discussionService(db).addEntry(
+      companyId,
+      discussionId,
+      { rawContent: "@Engineer over to you", inputType: "agent", authorAgentId: null },
+      "agent:planner",
+    );
+    expect(await readHop(agentEntry.id)).toBe(1);
+
+    // The worker applies the stored hopCount to processMentions.
+    const runMentions = vi.fn(async () => undefined);
+    await drainMentionOutbox(db, { runMentions });
+    expect(runMentions).toHaveBeenCalledWith(
+      db, companyId, discussionId, humanEntry.id, expect.anything(), { hopCount: 0 },
+    );
+    expect(runMentions).toHaveBeenCalledWith(
+      db, companyId, discussionId, agentEntry.id, expect.anything(), { hopCount: 1 },
+    );
+  });
+
   it("the worker drains a pending row EXACTLY ONCE and marks it done", async () => {
     // Clear any backlog from earlier tests so this asserts on our row alone.
     await drainMentionOutbox(db, { runMentions: async () => undefined });
@@ -148,6 +186,7 @@ describe.skipIf(process.platform === "win32")("mention outbox (real DB)", () => 
       discussionId,
       entryId,
       [{ raw: "@Scout", name: "Scout" }],
+      { hopCount: 0 }, // no hopCount enqueued → default 0 (human-originated)
     );
     expect(await outboxStatus(entryId)).toBe("done");
 

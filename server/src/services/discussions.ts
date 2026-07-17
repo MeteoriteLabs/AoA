@@ -1153,14 +1153,25 @@ export function discussionService(db: Db) {
           // enqueue the summon IN THE SAME TX as the entry, so a committed entry
           // always carries a pending summon. The drain worker runs processMentions
           // exactly once — replacing the route-level fire-and-forget call that was
-          // lost on failure and skipped by a same-key replay.
+          // lost on failure and skipped by a same-key replay. This is now the SOLE
+          // summon path for addEntry callers (round-8 #1): the internal writers
+          // (post-entry-tool / thread-agent-actions) no longer call processMentions
+          // directly, so there is no double-summon.
           const outboxMentions = parseMentions(data.rawContent ?? "");
           if (outboxMentions.length > 0) {
+            // Preserve the { hopCount: 1 } the internal agent writers used to pass
+            // directly (round-8 #1): an agent-authored entry's mentions start one
+            // hop into the cascade so MAX_HOP_COUNT caps a chain the same way; a
+            // human entry starts at 0. (inputType 'agent' or an authorAgentId both
+            // mark an agent-authored reply.)
+            const hopCount =
+              data.authorAgentId != null || data.inputType === "agent" ? 1 : 0;
             await enqueueMentionOutbox(tx as unknown as Db, {
               companyId,
               discussionId,
               entryId: inserted.id,
               mentions: outboxMentions,
+              hopCount,
             });
           }
 

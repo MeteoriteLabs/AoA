@@ -28,6 +28,7 @@ export type RunMentionsFn = (
   discussionId: string,
   entryId: string,
   mentions: OutboxMention[],
+  opts?: { hopCount?: number },
 ) => Promise<void>;
 
 /** Rows still 'processing' longer than this are treated as crash-orphaned. */
@@ -43,6 +44,10 @@ export async function enqueueMentionOutbox(
     discussionId: string;
     entryId: string;
     mentions: OutboxMention[];
+    /** Mention-cascade hop count (round-8 #1). 0 = human-originated (default);
+     * 1 = an agent-authored reply. Preserves the loop-cap semantics the internal
+     * writers' direct { hopCount: 1 } calls had before the outbox owned summons. */
+    hopCount?: number;
   },
 ): Promise<void> {
   await tx.insert(discussionMentionOutbox).values({
@@ -50,14 +55,15 @@ export async function enqueueMentionOutbox(
     discussionId: row.discussionId,
     entryId: row.entryId,
     mentions: row.mentions,
+    hopCount: row.hopCount ?? 0,
   });
 }
 
 /** Default summon: lazy-import processMentions to keep its heavy crew-runner
  * transitive tree off the worker's module-load path (mirrors threads.ts). */
-const defaultRunMentions: RunMentionsFn = async (db, companyId, discussionId, entryId, mentions) => {
+const defaultRunMentions: RunMentionsFn = async (db, companyId, discussionId, entryId, mentions, opts) => {
   const { processMentions } = await import("./threads.js");
-  await processMentions(db, companyId, discussionId, entryId, mentions);
+  await processMentions(db, companyId, discussionId, entryId, mentions, opts);
 };
 
 export interface DrainOpts {
@@ -79,6 +85,7 @@ interface ClaimedRow {
   entryId: string;
   mentions: OutboxMention[];
   attempts: number;
+  hopCount: number;
 }
 
 function normalizeMentions(value: unknown): OutboxMention[] {
@@ -118,7 +125,8 @@ export async function drainMentionOutbox(db: Db, opts: DrainOpts = {}): Promise<
         discussion_id AS "discussionId",
         entry_id AS "entryId",
         mentions,
-        attempts
+        attempts,
+        hop_count AS "hopCount"
     `),
   );
   const rawRows = Array.isArray(result) ? result : ((result as { rows?: unknown[] })?.rows ?? []);
@@ -131,6 +139,7 @@ export async function drainMentionOutbox(db: Db, opts: DrainOpts = {}): Promise<
       entryId: String(row.entryId),
       mentions: normalizeMentions(row.mentions),
       attempts: Number(row.attempts ?? 0),
+      hopCount: Number(row.hopCount ?? 0),
     };
   });
 
@@ -139,7 +148,7 @@ export async function drainMentionOutbox(db: Db, opts: DrainOpts = {}): Promise<
 
   for (const row of claimed) {
     try {
-      await runMentions(db, row.companyId, row.discussionId, row.entryId, row.mentions);
+      await runMentions(db, row.companyId, row.discussionId, row.entryId, row.mentions, { hopCount: row.hopCount });
       await db
         .update(discussionMentionOutbox)
         .set({ status: "done", updatedAt: new Date() })
