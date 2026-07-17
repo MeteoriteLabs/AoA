@@ -34,24 +34,41 @@ vi.mock("drizzle-orm", () => ({
   isNull: (..._args: unknown[]) => "isNull",
 }));
 
-const { canUserMock, hasPermissionMock, getUserRoleMock, logActivityMock } = vi.hoisted(() => ({
+const {
+  canUserMock,
+  hasPermissionMock,
+  getUserRoleMock,
+  logActivityMock,
+  listAgentsMock,
+  createAgentMock,
+  ensureMembershipMock,
+  setPrincipalGrantsMock,
+  reconcileMock,
+  notifyHireApprovedMock,
+} = vi.hoisted(() => ({
   canUserMock: vi.fn(),
   hasPermissionMock: vi.fn(),
   getUserRoleMock: vi.fn(),
   logActivityMock: vi.fn(),
+  listAgentsMock: vi.fn(),
+  createAgentMock: vi.fn(),
+  ensureMembershipMock: vi.fn(),
+  setPrincipalGrantsMock: vi.fn(),
+  reconcileMock: vi.fn(),
+  notifyHireApprovedMock: vi.fn(async () => {}),
 }));
 
 vi.mock("../services/index.js", () => ({
   accessService: () => ({
     canUser: canUserMock,
     hasPermission: hasPermissionMock,
-    ensureMembership: vi.fn(),
-    setPrincipalGrants: vi.fn(),
+    ensureMembership: ensureMembershipMock,
+    setPrincipalGrants: setPrincipalGrantsMock,
   }),
-  agentService: () => ({ list: vi.fn(), create: vi.fn() }),
+  agentService: () => ({ list: listAgentsMock, create: createAgentMock }),
   deduplicateAgentName: vi.fn((name: string) => name),
   logActivity: logActivityMock,
-  notifyHireApproved: vi.fn(),
+  notifyHireApproved: notifyHireApprovedMock,
   teamService: () => ({ getUserRole: getUserRoleMock, applyInviteRole: vi.fn() }),
 }));
 
@@ -61,7 +78,7 @@ vi.mock("../services/hub-source-producers.js", () => ({
 }));
 
 vi.mock("../services/hub-items.js", () => ({
-  hubItemsService: () => ({ reconcile: vi.fn() }),
+  hubItemsService: () => ({ reconcile: reconcileMock }),
 }));
 
 // Control approveHumanJoinRequestTx so we can assert it is NEVER reached on a
@@ -93,13 +110,17 @@ vi.mock("../services/join-approval.js", () => ({
   inviteConfersPrivilegedAuthority: (p: Record<string, unknown> | null) => {
     const teamInvite = p && (p as { teamInvite?: { role?: string } }).teamInvite;
     if ((teamInvite?.role ?? null) === "founder") return true;
-    const human = p && (p as { human?: { grants?: unknown } }).human;
-    const grants =
-      human && typeof human === "object" && Array.isArray((human as { grants?: unknown }).grants)
-        ? (human as { grants: Array<Record<string, unknown>> }).grants
-        : [];
     const privileged = new Set(["users:manage_permissions", "joins:approve", "users:invite"]);
-    return grants.some((g) => typeof g?.permissionKey === "string" && privileged.has(g.permissionKey as string));
+    // Mirror the real predicate: scan the HUMAN and AGENT grant vectors (union).
+    const vectorGrants = (key: "human" | "agent") => {
+      const scoped = p && (p as Record<string, unknown>)[key];
+      return scoped && typeof scoped === "object" && Array.isArray((scoped as { grants?: unknown }).grants)
+        ? (scoped as { grants: Array<Record<string, unknown>> }).grants
+        : [];
+    };
+    return [...vectorGrants("human"), ...vectorGrants("agent")].some(
+      (g) => typeof g?.permissionKey === "string" && privileged.has(g.permissionKey as string),
+    );
   },
 }));
 
@@ -134,6 +155,56 @@ function makeApproveDb(invite: Record<string, unknown>) {
       return chain;
     },
     transaction: vi.fn(async (cb: (tx: unknown) => Promise<unknown>) => cb({})),
+  } as any;
+}
+
+// Agent-hire approval DB: requestType "agent" drives the inline agent-creation
+// branch (not approveHumanJoinRequestTx). The transaction executor supports the
+// two sequential joinRequests updates the branch performs.
+function makeAgentApproveDb(invite: Record<string, unknown>) {
+  const joinRequest = {
+    id: REQUEST_ID,
+    inviteId: INVITE_ID,
+    companyId: COMPANY_ID,
+    requestType: "agent",
+    status: "pending_approval",
+    requestingUserId: null,
+    agentName: "New Agent",
+    capabilities: null,
+    adapterType: null,
+    agentDefaultsPayload: null,
+    createdAgentId: null,
+  };
+  let selectCall = 0;
+  let updateCall = 0;
+  const tx: any = {
+    update: () => {
+      const chain: any = {};
+      chain.set = () => chain;
+      chain.where = () => chain;
+      chain.returning = () => {
+        updateCall += 1;
+        return updateCall === 1
+          ? Promise.resolve([{ id: REQUEST_ID, status: "approved", createdAgentId: null }])
+          : Promise.resolve([{ id: REQUEST_ID, status: "approved", createdAgentId: "agent-new" }]);
+      };
+      return chain;
+    },
+  };
+  return {
+    select: () => {
+      const chain: any = {};
+      chain.from = () => chain;
+      chain.where = () => chain;
+      chain.then = (resolve: (rows: unknown[]) => unknown) => {
+        selectCall += 1;
+        if (selectCall === 1) return Promise.resolve([joinRequest]).then(resolve);
+        if (selectCall === 2) return Promise.resolve([invite]).then(resolve);
+        return Promise.resolve([]).then(resolve);
+      };
+      return chain;
+    },
+    transaction: vi.fn(async (cb: (tx: unknown) => Promise<unknown>) => cb(tx)),
   } as any;
 }
 
@@ -184,6 +255,24 @@ const ordinaryInvite = {
   id: INVITE_ID,
   companyId: COMPANY_ID,
   defaultsPayload: { teamInvite: { email: "ada@x.com", role: "team_member" } },
+};
+// Agent-hire invites: the privileged grant lives in the AGENT vector — applied
+// VERBATIM by the agent-creation branch, so the clamp must gate it too.
+const privilegedAgentGrantInvite = {
+  id: INVITE_ID,
+  companyId: COMPANY_ID,
+  defaultsPayload: {
+    teamInvite: { email: "bot@x.com", role: "team_member" },
+    agent: { grants: [{ permissionKey: "joins:approve" }] },
+  },
+};
+const ordinaryAgentGrantInvite = {
+  id: INVITE_ID,
+  companyId: COMPANY_ID,
+  defaultsPayload: {
+    teamInvite: { email: "bot@x.com", role: "team_member" },
+    agent: { grants: [{ permissionKey: "tasks:assign" }] },
+  },
 };
 
 const boardSession = (userId: string): Actor => ({ type: "board", source: "session", userId, isInstanceAdmin: false });
@@ -271,6 +360,65 @@ describe("POST /join-requests/:id/approve — approver-authority clamp (P1)", ()
       const res = await approve(makeApproveDb(ordinaryInvite), agentActor());
       expect(res.status).toBe(200);
       expect(approveTxMock).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // Codex follow-on — the AGENT-hire approve branch applies `agent.grants`
+  // VERBATIM (grantsFromDefaults(payload, "agent") → setPrincipalGrants). The
+  // round-6 clamp only guarded `requestType === "human"`, so an agent-hire invite
+  // carrying a privileged AGENT grant conferred a governance key on the joining
+  // agent with NO founder in the loop. The clamp now covers BOTH request branches.
+  describe("agent-approve branch — privileged AGENT grant vector", () => {
+    it("403s when a non-founder approves an agent-hire invite carrying a privileged AGENT grant, and applies no grant", async () => {
+      asApprover("team_lead");
+      const res = await approve(makeAgentApproveDb(privilegedAgentGrantInvite), boardSession("approver-1"));
+      expect(res.status).toBe(403);
+      expect(setPrincipalGrantsMock).not.toHaveBeenCalled();
+      expect(createAgentMock).not.toHaveBeenCalled();
+    });
+
+    it("403s when an AGENT approves an agent-hire invite carrying a privileged AGENT grant", async () => {
+      hasPermissionMock.mockResolvedValue(true); // agent holds joins:approve
+      const res = await approve(makeAgentApproveDb(privilegedAgentGrantInvite), agentActor());
+      expect(res.status).toBe(403);
+      expect(setPrincipalGrantsMock).not.toHaveBeenCalled();
+      expect(createAgentMock).not.toHaveBeenCalled();
+    });
+
+    it("a FOUNDER may approve an agent-hire invite with a privileged AGENT grant (grant applied)", async () => {
+      asApprover("founder");
+      listAgentsMock.mockResolvedValue([
+        { id: "ceo-1", role: "cxo", parentId: null, reportsTo: null, name: "CEO", status: "active" },
+      ]);
+      createAgentMock.mockResolvedValue({ id: "agent-new" });
+      const res = await approve(makeAgentApproveDb(privilegedAgentGrantInvite), boardSession("founder-1"));
+      expect(res.status).toBe(200);
+      expect(createAgentMock).toHaveBeenCalledTimes(1);
+      expect(setPrincipalGrantsMock).toHaveBeenCalledWith(
+        COMPANY_ID,
+        "agent",
+        "agent-new",
+        [{ permissionKey: "joins:approve", scope: null }],
+        "founder-1",
+      );
+    });
+
+    it("REGRESSION: a non-founder still approves an ordinary agent hire (non-privileged AGENT grant)", async () => {
+      asApprover("team_lead");
+      listAgentsMock.mockResolvedValue([
+        { id: "ceo-1", role: "cxo", parentId: null, reportsTo: null, name: "CEO", status: "active" },
+      ]);
+      createAgentMock.mockResolvedValue({ id: "agent-new" });
+      const res = await approve(makeAgentApproveDb(ordinaryAgentGrantInvite), boardSession("approver-1"));
+      expect(res.status).toBe(200);
+      expect(createAgentMock).toHaveBeenCalledTimes(1);
+      expect(setPrincipalGrantsMock).toHaveBeenCalledWith(
+        COMPANY_ID,
+        "agent",
+        "agent-new",
+        [{ permissionKey: "tasks:assign", scope: null }],
+        "approver-1",
+      );
     });
   });
 });

@@ -183,6 +183,29 @@ describe("inviteConfersPrivilegedAuthority", () => {
     }
   });
 
+  // Codex follow-on: the predicate must scan the AGENT grant vector too — the
+  // agent-hire approve branch applies `agent.grants` VERBATIM, so a governance
+  // key hidden there is just as dangerous as one in `human.grants`.
+  it("true for a privileged AGENT grant (users:manage_permissions / joins:approve / users:invite)", () => {
+    for (const permissionKey of ["users:manage_permissions", "joins:approve", "users:invite"]) {
+      expect(
+        inviteConfersPrivilegedAuthority({
+          teamInvite: { email: "a@x.com", role: "team_member" },
+          agent: { grants: [{ permissionKey }] },
+        }),
+      ).toBe(true);
+    }
+  });
+
+  it("false for a team_member invite carrying only a non-privileged AGENT grant", () => {
+    expect(
+      inviteConfersPrivilegedAuthority({
+        teamInvite: { email: "a@x.com", role: "team_member" },
+        agent: { grants: [{ permissionKey: "tasks:assign" }] },
+      }),
+    ).toBe(false);
+  });
+
   it("false for an ordinary team_lead invite", () => {
     expect(
       inviteConfersPrivilegedAuthority({ teamInvite: { email: "a@x.com", role: "team_lead" } }),

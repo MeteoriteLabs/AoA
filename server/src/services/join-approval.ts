@@ -70,17 +70,24 @@ export const PRIVILEGED_AUTO_ADMIT_GRANT_KEYS = new Set<PermissionKey>([
 
 /**
  * True when an invite would confer authority ABOVE an ordinary member/lead — a
- * role above `team_lead` (i.e. founder) or any privileged permission grant.
+ * role above `team_lead` (i.e. founder), or a privileged permission grant in
+ * EITHER the `human` OR the `agent` grant vector.
  *
- * This is the SINGLE definition of "privileged" shared by all three P1
+ * Both vectors are applied VERBATIM at approval time — `human.grants` on the
+ * human-approve / auto-admit path, `agent.grants` on the agent-hire approve
+ * path — so a governance key hidden in the agent vector is exactly as dangerous
+ * as one in the human vector. The predicate unions them; the specific vector a
+ * given sink actually applies is irrelevant to whether the invite is privileged.
+ *
+ * This is the SINGLE definition of "privileged" shared by all the P1
  * privilege-escalation seams so they can never diverge:
  *  - invite CREATION clamp (routes/access.ts POST /invites) — a non-founder
- *    cannot MINT such an invite;
+ *    cannot MINT such an invite (human OR agent grants);
  *  - the unattended email-match AUTO-ADMIT sink (routes/onboarding-join.ts
  *    finalize) — such an invite is NEVER auto-admitted (falls back to manual
  *    founder approval);
- *  - the manual human-APPROVE clamp (routes/access.ts approve) — a non-founder
- *    approver cannot APPLY such an invite.
+ *  - the manual APPROVE clamp (routes/access.ts approve) — a non-founder
+ *    approver cannot APPLY such an invite, on the human OR the agent-hire branch.
  *
  * Ordinary team_member/team_lead + non-privileged-grant invites stay on the
  * fast path.
@@ -92,9 +99,10 @@ export function inviteConfersPrivilegedAuthority(
   if (requestedRole && (ROLE_RANK[requestedRole] ?? 0) > ROLE_RANK.team_lead) {
     return true;
   }
-  return grantsFromDefaults(defaultsPayload, "human").some((grant) =>
-    PRIVILEGED_AUTO_ADMIT_GRANT_KEYS.has(grant.permissionKey),
-  );
+  return [
+    ...grantsFromDefaults(defaultsPayload, "human"),
+    ...grantsFromDefaults(defaultsPayload, "agent"),
+  ].some((grant) => PRIVILEGED_AUTO_ADMIT_GRANT_KEYS.has(grant.permissionKey));
 }
 
 /** Tx-scoped service instances the approval needs (injected for testability). */

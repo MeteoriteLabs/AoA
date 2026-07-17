@@ -269,4 +269,70 @@ describe("POST /invites — creator-authority clamp (P1)", () => {
       expect(res.status).toBe(201);
     });
   });
+
+  // Codex follow-on: the round-6 predicate only inspected the HUMAN grant vector,
+  // so a privileged grant hidden in `agent.grants` slipped the creation clamp — an
+  // agent (or a board non-founder who legitimately holds the key) could mint an
+  // invite conferring a governance key on a JOINING AGENT with no founder in the
+  // loop. The predicate now unions human + agent vectors, so this route requires a
+  // founder for a privileged grant in EITHER vector.
+  describe("agent grant vector (Codex follow-on)", () => {
+    it("403s when an AGENT mints an invite carrying a privileged AGENT grant (joins:approve)", async () => {
+      hasPermissionMock.mockResolvedValue(true); // agent holds users:invite
+      const res = await post(
+        makeCreateDb(createdRow),
+        {
+          allowedJoinTypes: "both",
+          defaultsPayload: {
+            teamInvite: { email: "mallory@evil.com", role: "team_member" },
+            agent: { grants: [{ permissionKey: "joins:approve" }] },
+          },
+        },
+        AGENT_ACTOR,
+      );
+      expect(res.status).toBe(403);
+    });
+
+    it("403s when a board non-founder holding manage_permissions + joins:approve mints a privileged AGENT grant", async () => {
+      // Was 201 before the fix: the non-privileged floor passed (creator holds the
+      // key) and the privileged gate ignored the agent vector entirely.
+      asCreator("team_lead", ["users:invite", "users:manage_permissions", "joins:approve"]);
+      const res = await post(makeCreateDb(createdRow), {
+        allowedJoinTypes: "both",
+        defaultsPayload: {
+          teamInvite: { email: "mallory@evil.com", role: "team_member" },
+          agent: { grants: [{ permissionKey: "joins:approve" }] },
+        },
+      });
+      expect(res.status).toBe(403);
+    });
+
+    it("allows a FOUNDER to mint a privileged AGENT grant (governed agent hire)", async () => {
+      asCreator("founder", ["users:invite"]);
+      const res = await post(makeCreateDb(createdRow), {
+        allowedJoinTypes: "both",
+        defaultsPayload: {
+          teamInvite: { email: "cofounder@x.com", role: "team_member" },
+          agent: { grants: [{ permissionKey: "joins:approve" }] },
+        },
+      });
+      expect(res.status).toBe(201);
+    });
+
+    it("still allows an AGENT to mint an invite with a non-privileged AGENT grant", async () => {
+      hasPermissionMock.mockResolvedValue(true);
+      const res = await post(
+        makeCreateDb(createdRow),
+        {
+          allowedJoinTypes: "both",
+          defaultsPayload: {
+            teamInvite: { email: "ada@x.com", role: "team_member" },
+            agent: { grants: [{ permissionKey: "tasks:assign" }] },
+          },
+        },
+        AGENT_ACTOR,
+      );
+      expect(res.status).toBe(201);
+    });
+  });
 });

@@ -1689,22 +1689,23 @@ export function accessRoutes(
       // `users:invite` is delegable to non-founders (and to agents), but the
       // invite's defaultsPayload (teamInvite.role + human/agent grants) is
       // applied VERBATIM at approval / auto-admit. A "privileged" payload — a
-      // role above team_lead (founder), or a grant in {users:manage_permissions,
-      // joins:approve, users:invite} (the SHARED inviteConfersPrivilegedAuthority
+      // role above team_lead (founder), or a governance grant in
+      // {users:manage_permissions, joins:approve, users:invite} in EITHER the
+      // human OR the agent grant vector (the SHARED inviteConfersPrivilegedAuthority
       // predicate) — may be MINTED only by an authenticated FOUNDER or the
       // local_trusted synthetic human, on EVERY path, for EVERY caller type.
       //
-      // Round-6 fix (this clamp): the gate is now "actor is a founder OR
-      // local_implicit", NOT "actor is board". Agents are NOT exempt. The old
-      // "agents are exempt; the auto-admit sink is the backstop" reasoning was
-      // wrong: that sink only guards the unattended email-match finalize path —
-      // NOT this creation route, and NOT the sibling manual-approve route. An
-      // agent holding users:invite + joins:approve could otherwise mint a
-      // role:"founder" invite here and self-apply it there, escalating with no
-      // founder in the loop. An agent actor has NO founder userId → it can never
-      // be a founder → refused. Founder status resolves only for a board actor
-      // with a userId (team.getUserRole → effective role, maps instance_admin →
-      // founder).
+      // The gate is "actor is a founder OR local_implicit", NOT "actor is board":
+      // agents are NOT exempt. The old "agents are exempt; the auto-admit sink is
+      // the backstop" reasoning was wrong: that sink only guards the unattended
+      // email-match finalize path — NOT this creation route, and NOT the sibling
+      // manual-approve route. An agent holding users:invite + joins:approve could
+      // otherwise mint a role:"founder" invite (or one conferring a governance key
+      // on a joining agent via the agent grant vector) here and self-apply it
+      // there, escalating with no founder in the loop. An agent actor has NO
+      // founder userId → it can never be a founder → refused. Founder status
+      // resolves only for a board actor with a userId (team.getUserRole →
+      // effective role, maps instance_admin → founder).
       if (rawDefaults && inviteConfersPrivilegedAuthority(rawDefaults) && !isLocalImplicit(req)) {
         const actorIsFounder =
           req.actor.type === "board" && req.actor.userId
@@ -2495,24 +2496,27 @@ export function accessRoutes(
       // Symmetric with the invite-CREATION clamp (POST /invites) and the
       // AUTO-ADMIT sink (onboarding-join finalize). `joins:approve` is delegable
       // to non-founders (and to agents), and this route applies the invite's
-      // defaultsPayload (role + grants) VERBATIM via approveHumanJoinRequestTx.
-      // A "privileged" payload (role above team_lead, or a grant in
-      // {users:manage_permissions, joins:approve, users:invite} — the SHARED
+      // defaultsPayload (role + grants) VERBATIM — human grants via
+      // approveHumanJoinRequestTx on the human branch, AGENT grants via
+      // grantsFromDefaults(payload, "agent") → setPrincipalGrants on the
+      // agent-hire branch below. A "privileged" payload (role above team_lead, or
+      // a governance grant in {users:manage_permissions, joins:approve,
+      // users:invite} in EITHER the human OR the agent grant vector — the SHARED
       // inviteConfersPrivilegedAuthority predicate) may be APPLIED only by an
       // authenticated FOUNDER or the local_trusted synthetic human.
       //
-      // Round-6 fix (this is the exploit sink): the gate is now "actor is a
-      // founder OR local_implicit", NOT "actor is board". Agents are NOT exempt.
-      // The auto-admit sink guards ONLY the unattended finalize path — NOT this
-      // manual route — so an agent holding joins:approve could otherwise approve
-      // an agent-minted (or pre-existing) role:"founder" / privileged-grant
-      // invite and mint a founder with NO founder in the loop. An agent actor
-      // has NO founder userId → it can never be a founder → refused. Founder
-      // status resolves only for a board actor with a userId (team.getUserRole →
-      // effective role, maps instance_admin → founder) — the SAME helper the
-      // creation clamp uses.
+      // Gate: "actor is a founder OR local_implicit", NOT "actor is board" —
+      // agents are NOT exempt. It covers BOTH request branches (no requestType
+      // filter): the auto-admit sink guards ONLY the unattended human finalize
+      // path, so this manual route is the sole guard for agent-hire approvals.
+      // Without it an agent holding joins:approve could approve an agent-minted
+      // (or pre-existing) invite that confers a governance key on the joining
+      // AGENT — or a role:"founder" / privileged-human-grant invite on the human
+      // branch — with NO founder in the loop. An agent actor has NO founder
+      // userId → it can never be a founder → refused. Founder status resolves
+      // only for a board actor with a userId (team.getUserRole → effective role,
+      // maps instance_admin → founder) — the SAME helper the creation clamp uses.
       if (
-        existing.requestType === "human" &&
         inviteConfersPrivilegedAuthority(
           invite.defaultsPayload as Record<string, unknown> | null,
         ) &&
