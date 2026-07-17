@@ -845,16 +845,22 @@ export function TaskDetail({
       body,
       reopen,
       reassignment,
+      clientSubmissionId,
     }: {
       body: string;
       reopen?: boolean;
       reassignment: CommentReassignment;
+      clientSubmissionId?: string;
     }) =>
       issuesApi.update(issueId!, {
         comment: body,
         assigneeAgentId: reassignment.assigneeAgentId,
         assigneeUserId: reassignment.assigneeUserId,
         ...(reopen ? { status: "todo" } : {}),
+        // Round-10 #2: thread the submission key so a retry of the combined
+        // comment+reassign PATCH replays the comment (server dedup) instead of
+        // posting a duplicate + re-firing wakeups.
+        ...(clientSubmissionId ? { clientSubmissionId } : {}),
       }),
     onSuccess: (updated) => {
       invalidateIssue();
@@ -1889,7 +1895,7 @@ export function TaskDetail({
                       onVoteChange={() => { void refetchFeedbackVotes(); }}
                       onAdd={async (body, reopen, reassignment, interrupt, clientSubmissionId) => {
                         if (reassignment) {
-                          await addCommentAndReassign.mutateAsync({ body, reopen, reassignment });
+                          await addCommentAndReassign.mutateAsync({ body, reopen, reassignment, clientSubmissionId });
                           return;
                         }
                         await addComment.mutateAsync({ body, reopen, interrupt, clientSubmissionId });

@@ -237,6 +237,45 @@ describe.skipIf(process.platform === "win32")("mention outbox (real DB)", () => 
     const arr = Array.isArray(rows) ? rows : ((rows as { rows?: unknown[] })?.rows ?? []);
     return String((arr[0] as { id: string } | undefined)?.id ?? "");
   }
+  // Live (non-terminal) row counts by status — after nukeBacklog the only
+  // pending/processing rows are the current test's.
+  async function liveCounts(): Promise<{ processing: number; pending: number }> {
+    const rows = await db.execute(
+      sql`SELECT status, count(*)::int AS n FROM discussion_mention_outbox WHERE status IN ('pending','processing') GROUP BY status`,
+    );
+    const arr = (Array.isArray(rows) ? rows : ((rows as { rows?: unknown[] })?.rows ?? [])) as Array<{ status: string; n: number }>;
+    const by = new Map(arr.map((r) => [r.status, Number(r.n)]));
+    return { processing: by.get("processing") ?? 0, pending: by.get("pending") ?? 0 };
+  }
+
+  it("claims EACH row just-in-time — while one runs, later rows stay 'pending' (never batch-claimed) (round-10 #1)", async () => {
+    await nukeBacklog();
+    const entryIds = [
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaac401",
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaac402",
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaac403",
+    ];
+    for (const entryId of entryIds) {
+      await enqueueMentionOutbox(db, { companyId, discussionId, entryId, mentions: [{ raw: "@Seq", name: "Seq" }] });
+    }
+    // Snapshot the live counts observed DURING each row's run. With per-row
+    // claim-before-execute there is EXACTLY ONE 'processing' at a time and the
+    // rows whose turn hasn't come are still 'pending' (never pre-claimed).
+    const observed: Array<{ processing: number; pending: number }> = [];
+    const runMentions = vi.fn(async () => {
+      observed.push(await liveCounts());
+    });
+
+    const result = await drainMentionOutbox(db, { runMentions });
+    expect(result.processed).toBe(3);
+    expect(observed).toEqual([
+      { processing: 1, pending: 2 }, // row 1 runs; rows 2 & 3 NOT yet claimed
+      { processing: 1, pending: 1 }, // row 2 runs; row 3 still pending
+      { processing: 1, pending: 0 }, // row 3 runs; none left
+    ]);
+    // All three completed.
+    expect(await liveCounts()).toEqual({ processing: 0, pending: 0 });
+  });
 
   it("a 'processing' claim younger than the stale window is NOT reclaimable; a heartbeat keeps a long claim alive (round-9 #1)", async () => {
     await nukeBacklog();

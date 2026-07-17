@@ -388,6 +388,36 @@ describe("Commander composer — B-states (mock §5)", () => {
     expect(screen.queryByTestId("composer-drop-overlay")).not.toBeInTheDocument();
   });
 
+  it("drops a stale upload FAILURE after the user switches conversations mid-upload (round-10 #3)", async () => {
+    // The upload hangs, the user switches to conversation B, THEN the upload
+    // fails for A. B's tray must not be repopulated with A's failed card — the
+    // failure path must apply the same active-conversation guard as the success
+    // path (otherwise retrying it would attach A's file to B).
+    let failUpload!: () => void;
+    uploadFileMock.mockReturnValue(
+      new Promise((_resolve, reject) => {
+        failUpload = () => reject(new Error("upload failed"));
+      }),
+    );
+
+    const { rerenderPanel } = renderPanel({ conversationId: "conv-a" });
+    const frame = screen.getByTestId("commander-composer-frame");
+    const file = new File(["hi"], "stale.txt", { type: "text/plain" });
+    fireEvent.drop(frame, { dataTransfer: { types: ["Files"], files: [file] } });
+
+    // Upload is in flight against conversation A; switch to B before it settles.
+    await waitFor(() => expect(uploadFileMock).toHaveBeenCalledTimes(1));
+    rerenderPanel({ conversationId: "conv-b" });
+
+    // Now it fails — but for the stale (A) conversation.
+    failUpload();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // No failed card and no error for A's file on conversation B.
+    expect(screen.queryByText(/stale\.txt failed/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/could not upload stale\.txt/i)).not.toBeInTheDocument();
+  });
+
   it("switching conversations clears the banner and snapshot — Retry must never post into a different conversation", async () => {
     const { rerenderPanel } = renderPanel({ conversationId: "conv-a" });
     const box = typeInComposer("meant for conversation A");

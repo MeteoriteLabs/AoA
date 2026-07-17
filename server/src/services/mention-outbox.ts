@@ -134,15 +134,16 @@ export async function heartbeatClaim(db: Db, id: string, claimToken: string): Pr
     );
 }
 
-export async function drainMentionOutbox(db: Db, opts: DrainOpts = {}): Promise<DrainResult> {
-  const batchSize = Math.max(1, Math.floor(opts.batchSize ?? DEFAULT_BATCH_SIZE));
-  const maxAttempts = opts.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
-  const runMentions = opts.runMentions ?? defaultRunMentions;
-  const heartbeatMs = Math.max(1, opts.heartbeatMs ?? HEARTBEAT_MS);
-
-  // Atomic claim: pending+due OR stale-'processing' (crash reclaim). The
-  // conditional UPDATE marks rows 'processing' in the same round-trip that
-  // selects them, so two workers cannot claim the same row.
+/**
+ * Atomically claim EXACTLY ONE eligible row (pending+due OR stale-'processing'),
+ * marking it 'processing' with a fresh token in the same round-trip. Returns null
+ * when nothing is claimable. Round-10 #1: claiming one row immediately before
+ * executing it — rather than a batch up front — means no row is ever left in
+ * 'processing' un-heartbeated while an EARLIER row's CLI participation runs, so a
+ * later row can never age past the stale window and be reclaimed by another
+ * worker mid-loop.
+ */
+async function claimOneRow(db: Db): Promise<ClaimedRow | null> {
   const result = await db.execute(
     sql.raw(`
       WITH claimed AS (
@@ -150,7 +151,7 @@ export async function drainMentionOutbox(db: Db, opts: DrainOpts = {}): Promise<
         WHERE (status = 'pending' AND (next_retry_at IS NULL OR next_retry_at <= now()))
            OR (status = 'processing' AND updated_at < now() - interval '${STALE_PROCESSING_MINUTES} minutes')
         ORDER BY created_at
-        LIMIT ${batchSize}
+        LIMIT 1
         FOR UPDATE SKIP LOCKED
       )
       UPDATE discussion_mention_outbox
@@ -168,24 +169,36 @@ export async function drainMentionOutbox(db: Db, opts: DrainOpts = {}): Promise<
     `),
   );
   const rawRows = Array.isArray(result) ? result : ((result as { rows?: unknown[] })?.rows ?? []);
-  const claimed: ClaimedRow[] = rawRows.map((r) => {
-    const row = r as Record<string, unknown>;
-    return {
-      id: String(row.id),
-      companyId: String(row.companyId),
-      discussionId: String(row.discussionId),
-      entryId: String(row.entryId),
-      mentions: normalizeMentions(row.mentions),
-      attempts: Number(row.attempts ?? 0),
-      hopCount: Number(row.hopCount ?? 0),
-      claimToken: String(row.claimToken),
-    };
-  });
+  const r = rawRows[0] as Record<string, unknown> | undefined;
+  if (!r) return null;
+  return {
+    id: String(r.id),
+    companyId: String(r.companyId),
+    discussionId: String(r.discussionId),
+    entryId: String(r.entryId),
+    mentions: normalizeMentions(r.mentions),
+    attempts: Number(r.attempts ?? 0),
+    hopCount: Number(r.hopCount ?? 0),
+    claimToken: String(r.claimToken),
+  };
+}
+
+export async function drainMentionOutbox(db: Db, opts: DrainOpts = {}): Promise<DrainResult> {
+  // Max rows to process per drain call (throughput cap). Each is claimed
+  // just-in-time (claimOneRow) immediately before executing it — never a batch.
+  const maxRows = Math.max(1, Math.floor(opts.batchSize ?? DEFAULT_BATCH_SIZE));
+  const maxAttempts = opts.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
+  const runMentions = opts.runMentions ?? defaultRunMentions;
+  const heartbeatMs = Math.max(1, opts.heartbeatMs ?? HEARTBEAT_MS);
 
   let processed = 0;
   let failed = 0;
 
-  for (const row of claimed) {
+  for (let i = 0; i < maxRows; i++) {
+    // Claim ONE row immediately before running it (round-10 #1).
+    const row = await claimOneRow(db);
+    if (!row) break;
+
     // Lease heartbeat (round-9 #1): refresh updated_at while runMentions is in
     // flight — a controller participation CLI run can legitimately outlast the
     // stale window, and without this another worker would reclaim + double-run.

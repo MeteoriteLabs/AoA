@@ -464,16 +464,21 @@ export function IssueDetail() {
       body,
       reopen,
       reassignment,
+      clientSubmissionId,
     }: {
       body: string;
       reopen?: boolean;
       reassignment: CommentReassignment;
+      clientSubmissionId?: string;
     }) =>
       issuesApi.update(issueId!, {
         comment: body,
         assigneeAgentId: reassignment.assigneeAgentId,
         assigneeUserId: reassignment.assigneeUserId,
         ...(reopen ? { status: "todo" } : {}),
+        // Round-10 #2: thread the submission key so a retry replays the comment
+        // (server dedup) instead of duplicating it + re-firing wakeups.
+        ...(clientSubmissionId ? { clientSubmissionId } : {}),
       }),
     onSuccess: (updated) => {
       invalidateIssue();
@@ -970,7 +975,7 @@ export function IssueDetail() {
             mentions={mentionOptions}
             onAdd={async (body, reopen, reassignment, interrupt, clientSubmissionId) => {
               if (reassignment) {
-                await addCommentAndReassign.mutateAsync({ body, reopen, reassignment });
+                await addCommentAndReassign.mutateAsync({ body, reopen, reassignment, clientSubmissionId });
                 return;
               }
               await addComment.mutateAsync({ body, reopen, interrupt, clientSubmissionId });

@@ -1040,6 +1040,44 @@ describe("POST /issues/:id/comments — idempotent retry (clientSubmissionId)", 
   });
 });
 
+describe("PATCH /issues/:id — comment+reassign idempotency (round-10 #2)", () => {
+  it("threads clientSubmissionId into addComment on the combined comment+reassign PATCH path", async () => {
+    // The composer's comment+reassign combined mutation posts the comment via
+    // the issue PATCH path. That comment insert must carry the submission key so
+    // a retry replays it (server dedup) instead of duplicating the comment.
+    mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: leadAgentId }));
+    mockIssueService.update.mockResolvedValue(makeIssue({ assigneeAgentId: assigneeAgentId }));
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-9",
+      issueId,
+      companyId,
+      body: "please take this over",
+      authorAgentId: null,
+      authorUserId: "board-user",
+    });
+
+    const res = await request(createApp())
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        comment: "please take this over",
+        assigneeAgentId,
+        clientSubmissionId: "reassign-key-1",
+      });
+
+    expect(res.status).toBe(200);
+    // The submission key reached addComment (idempotent insert)…
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      issueId,
+      "please take this over",
+      expect.objectContaining({ clientSubmissionId: "reassign-key-1" }),
+    );
+    // …and it was NOT leaked into svc.update's issue-field payload.
+    const updateArgs = mockIssueService.update.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(updateArgs).not.toHaveProperty("clientSubmissionId");
+    expect(updateArgs).not.toHaveProperty("comment");
+  });
+});
+
 describe("POST /companies/:companyId/issues agent delegation", () => {
   function agentActor(agentId = leadAgentId) {
     return {

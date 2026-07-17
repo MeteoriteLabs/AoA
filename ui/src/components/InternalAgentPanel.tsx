@@ -1238,8 +1238,14 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
           addInputRef(assetResponseToCommanderInputRef(asset, file.name));
         }
       } catch {
-        setFailedUploads((current) => [...current, { id: uploadId, file }]);
-        setAttachmentError(`Could not upload ${file.name}. Retry or remove it below.`);
+        // Round-10 #3: guard the failure path with the SAME active-conversation
+        // check the success path uses. If the user switched chats mid-upload,
+        // drop the stale failure silently — otherwise B's tray shows a failed
+        // card for A's file, and retrying it would attach A's file to B.
+        if (activeConversationIdRef.current === uploadConversationId) {
+          setFailedUploads((current) => [...current, { id: uploadId, file }]);
+          setAttachmentError(`Could not upload ${file.name}. Retry or remove it below.`);
+        }
       } finally {
         setUploadingFiles((current) => current.filter((item) => item.id !== uploadId));
       }

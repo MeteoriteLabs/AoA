@@ -1240,7 +1240,15 @@ export function issueRoutes(db: Db, storage: StorageService) {
     }
     if (!(await assertAgentRunCheckoutOwnership(req, res, existing))) return;
 
-    const { comment: commentBody, hiddenAt: hiddenAtRaw, ...rawUpdateFields } = req.body;
+    // Strip `comment` and `clientSubmissionId` out of the fields passed to
+    // svc.update — they are NOT issue columns (clientSubmissionId is the comment
+    // idempotency key, threaded into addComment below; round-10 #2).
+    const {
+      comment: commentBody,
+      hiddenAt: hiddenAtRaw,
+      clientSubmissionId: commentClientSubmissionId,
+      ...rawUpdateFields
+    } = req.body;
     const updateFields = normalizeIssueDateFields(rawUpdateFields);
     const isRequestChangesTransition =
       existing.status === "in_review" && updateFields.status === "in_progress";
@@ -1382,13 +1390,24 @@ export function issueRoutes(db: Db, storage: StorageService) {
     }
 
     if (persistedCommentBody && !comment) {
+      // Round-10 #2: a comment posted through the PATCH path (e.g. the composer's
+      // comment+reassign combined mutation) must carry the client submission key
+      // so a retry is idempotent — the (company, issue, submission) unique index
+      // dedupes it instead of creating a duplicate comment + repeated wakeups.
       comment = await svc.addComment(id, persistedCommentBody, {
         agentId: actor.agentId ?? undefined,
         userId: actor.actorType === "user" ? actor.actorId : undefined,
+        clientSubmissionId:
+          typeof commentClientSubmissionId === "string" ? commentClientSubmissionId : undefined,
       });
     }
+    // A same-key retry replays the original comment — skip the comment's
+    // post-insert side-effects (activity + mention wakeups) below so they don't
+    // re-fire (round-10 #2). Reassignment/status effects stay idempotent via
+    // their own change checks (assigneeWillChange is false once already applied).
+    const commentReplayed = Boolean((comment as { replayed?: boolean } | null)?.replayed);
 
-    if (comment) {
+    if (comment && !commentReplayed) {
       await logActivity(db, {
         companyId: issue.companyId,
         actorType: actor.actorType,
@@ -1453,7 +1472,7 @@ export function issueRoutes(db: Db, storage: StorageService) {
         });
       }
 
-      if (persistedCommentBody && comment) {
+      if (persistedCommentBody && comment && !commentReplayed) {
         let mentionedIds: string[] = [];
         try {
           mentionedIds = await svc.findMentionedAgents(issue.companyId, persistedCommentBody);

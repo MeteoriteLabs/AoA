@@ -142,6 +142,10 @@ export type IssueMonitorPolicyInput = z.infer<typeof issueMonitorPolicySchema>;
 
 export const updateIssueSchema = createIssueSchema.partial().extend({
   comment: z.string().min(1).optional(),
+  // Idempotency key for the combined comment+reassign PATCH path (round-10 #2):
+  // the comment insert carries it so a retry replays the comment (server dedup)
+  // rather than duplicating it. Stripped from the issue-field update server-side.
+  clientSubmissionId: z.string().trim().min(1).max(200).optional(),
   hiddenAt: z.string().datetime().nullable().optional(),
   executionWorkspaceId: z.string().uuid().nullable().optional(),
   executionWorkspacePreference: z.string().nullable().optional(),
