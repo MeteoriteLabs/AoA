@@ -744,16 +744,11 @@ export function discussionRoutes(db: Db) {
           return;
         }
 
-        // Process @mentions in the entry text (fire-and-forget; errors must not
-        // fail the request since the entry is already committed).
-        const rawContent: string = (req.body as { rawContent?: string }).rawContent ?? "";
-        const mentions = parseMentions(rawContent);
-        if (mentions.length > 0) {
-          processMentions(db, companyId, discussionId, entry.id, mentions).catch(
-            (err) => console.error("[threads] processMentions error:", err),
-          );
-        }
-
+        // @mention summons are now enqueued to discussion_mention_outbox INSIDE
+        // addEntry's transaction and drained exactly-once by the mention-outbox
+        // worker (PR #291 round-6 #3). The old route-level fire-and-forget
+        // processMentions call was lost on failure and skipped by a same-key
+        // replay — the durable outbox guarantees the summon survives both.
         res.status(201).json(entryRow);
       } catch (err) {
         if (err instanceof HttpError) {

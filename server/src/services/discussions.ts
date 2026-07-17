@@ -32,6 +32,7 @@ import { threadOrchestrationService } from "./thread-orchestration.js";
 // new load-time cost or cycle (discussions → threads is one-directional;
 // threads.ts does not import discussions.ts).
 import { assertCanPostToThread, parseMentions, type Actor } from "./threads.js";
+import { enqueueMentionOutbox } from "./mention-outbox.js";
 import { deriveThreadStage, loadLatestScopeForThreadStages } from "./thread-scope-versions.js";
 // NOTE: workspace-ttl-sweeper is imported dynamically in `update()` to keep
 // the top-level import graph free of execution-workspaces → git → child_process.
@@ -1117,6 +1118,21 @@ export function discussionService(db: Db) {
             if (rows.length > 0) {
               await tx.insert(discussionEntryAttachments).values(rows);
             }
+          }
+
+          // Transactional outbox for @mention summons (PR #291 round-6 #3):
+          // enqueue the summon IN THE SAME TX as the entry, so a committed entry
+          // always carries a pending summon. The drain worker runs processMentions
+          // exactly once — replacing the route-level fire-and-forget call that was
+          // lost on failure and skipped by a same-key replay.
+          const outboxMentions = parseMentions(data.rawContent ?? "");
+          if (outboxMentions.length > 0) {
+            await enqueueMentionOutbox(tx as unknown as Db, {
+              companyId,
+              discussionId,
+              entryId: inserted.id,
+              mentions: outboxMentions,
+            });
           }
 
           return inserted;

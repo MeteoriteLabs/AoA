@@ -163,7 +163,13 @@ describe("POST /discussions/:id/entries — replay skips processMentions (C4)", 
     expect(res.body.replayed).toBeUndefined();
   });
 
-  it("runs processMentions normally for a freshly inserted entry (201)", async () => {
+  it("does NOT summon synchronously for a freshly inserted entry — the outbox worker does (round-6 #3)", async () => {
+    // The @mention summon is now enqueued to discussion_mention_outbox INSIDE
+    // addEntry's transaction and drained exactly-once by the mention-outbox
+    // worker. The route no longer calls processMentions — so a request failure
+    // after commit can't lose the summon, and a same-key replay can't skip it.
+    // (The atomic enqueue + worker drain are covered by the outbox integration
+    // test; here we assert the route no longer summons inline.)
     mockAddEntry.mockResolvedValue({
       id: ENTRY_ID,
       discussionId: DISCUSSION_ID,
@@ -177,11 +183,7 @@ describe("POST /discussions/:id/entries — replay skips processMentions (C4)", 
     });
 
     expect(res.status).toBe(201);
-    expect(mockProcessMentions).toHaveBeenCalledOnce();
-    const [, calledCompanyId, calledDiscussionId, calledEntryId] =
-      mockProcessMentions.mock.calls[0];
-    expect(calledCompanyId).toBe(COMPANY_A);
-    expect(calledDiscussionId).toBe(DISCUSSION_ID);
-    expect(calledEntryId).toBe(ENTRY_ID);
+    expect(res.body.id).toBe(ENTRY_ID);
+    expect(mockProcessMentions).not.toHaveBeenCalled();
   });
 });

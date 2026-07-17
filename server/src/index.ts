@@ -55,6 +55,7 @@ import { scheduleTtlSweeper } from "./services/workspace-ttl-sweeper.js";
 import { scheduleCleanupRetrySweeper } from "./services/workspace-cleanup-retry-sweeper.js";
 import { registerHeartbeatWatchdogSweeper } from "./services/heartbeat-watchdog.js";
 import { startEmbeddingWorker } from "./services/embeddings-worker.js";
+import { startMentionOutboxWorker } from "./services/mention-outbox-worker.js";
 import { resetStaleProcessing } from "./services/embeddings.js";
 import { backfillQueueCompanyIds, reconcileNullVectors } from "./services/embeddings-backfill.js";
 import { getProviderApiKey } from "./services/internal-agent/providers/index.js";
@@ -1005,6 +1006,15 @@ const embeddingWorker = startEmbeddingWorker(db as any, {
 // already exit the process, but this lets the in-flight tick log cleanly.
 process.once("SIGTERM", () => embeddingWorker.stop());
 process.once("SIGINT", () => embeddingWorker.stop());
+
+// Mention-outbox drain worker (PR #291 round-6 #3). Drains
+// `discussion_mention_outbox` — the transactional summon rows enqueued in
+// addEntry's tx — and runs processMentions exactly-once (FOR UPDATE SKIP LOCKED
+// claim + mark-'done'). Replaces the route-level fire-and-forget summon that was
+// lost on failure and skipped by a same-key replay.
+const mentionOutboxWorker = startMentionOutboxWorker(db as any, { intervalMs: 2000 });
+process.once("SIGTERM", () => mentionOutboxWorker.stop());
+process.once("SIGINT", () => mentionOutboxWorker.stop());
 
 // Notification delivery retry worker (Phase G2, T26).
 // Sweeps `notifications` rows where `delivery_error IS NOT NULL AND

@@ -88,6 +88,16 @@ vi.mock("@armyofagents/db", () => ({
     kind: "agents_kind",
   },
   agentWakeupRequests: { id: "awr_id" },
+  // PR #291 round-6 #3: addEntry now enqueues an @mention summon into this outbox
+  // table inside its tx, so the table object must exist on the mock.
+  discussionMentionOutbox: {
+    id: "dmo_id",
+    companyId: "dmo_company_id",
+    discussionId: "dmo_discussion_id",
+    entryId: "dmo_entry_id",
+    mentions: "dmo_mentions",
+    status: "dmo_status",
+  },
   projects: { id: "projects_id", type: "projects_type" },
   goals: { id: "goals_id" },
   threadPlanSteps: { id: "tps_id" },

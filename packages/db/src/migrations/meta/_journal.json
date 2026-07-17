@@ -1247,6 +1247,13 @@
       "when": 1784277940766,
       "tag": "0177_yellow_gravity",
       "breakpoints": true
+    },
+    {
+      "idx": 178,
+      "version": "7",
+      "when": 1784278403370,
+      "tag": "0178_oval_moonstone",
+      "breakpoints": true
     }
   ]
 }
