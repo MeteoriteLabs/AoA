@@ -6,7 +6,7 @@
 import {
   MAX_OUTPUT_REFS_PER_MESSAGE,
   MAX_OUTPUT_REF_TITLE_LENGTH,
-  type CommanderOutputRef,
+  type ShowRef,
 } from "@armyofagents/shared";
 import type { ToolResult } from "./types.js";
 import type { AgentStreamChunk } from "./agent-loop.js";
@@ -34,7 +34,7 @@ function artifactRef(partial: {
   versionNumber?: unknown;
   title?: unknown;
   action: "created" | "referenced";
-}): CommanderOutputRef | null {
+}): ShowRef | null {
   if (!partial.id) return null;
   return {
     v: 1,
@@ -49,7 +49,7 @@ function artifactRef(partial: {
   };
 }
 
-function refsFromRows(data: unknown): CommanderOutputRef[] {
+function refsFromRows(data: unknown): ShowRef[] {
   if (!Array.isArray(data)) return [];
   return data
     .map((row) => {
@@ -61,14 +61,14 @@ function refsFromRows(data: unknown): CommanderOutputRef[] {
         action: "referenced",
       });
     })
-    .filter((r): r is CommanderOutputRef => r !== null);
+    .filter((r): r is ShowRef => r !== null);
 }
 
 export function buildOutputRefs(
   toolName: string,
   params: unknown,
   result: ToolResult,
-): CommanderOutputRef[] {
+): ShowRef[] {
   try {
     if (!result || result.success !== true) return [];
     const p = asRecord(params);
@@ -129,20 +129,20 @@ export function buildOutputRefs(
 }
 
 /** Collect refs from a forwarded chunk into a turn-level sink (mutates sink). */
-export function collectChunkRefs(sink: CommanderOutputRef[], chunk: AgentStreamChunk): void {
+export function collectChunkRefs(sink: ShowRef[], chunk: AgentStreamChunk): void {
   if (chunk.type === "tool_result" && Array.isArray(chunk.refs) && chunk.refs.length > 0) {
     sink.push(...chunk.refs);
   }
 }
 
-const refKey = (r: CommanderOutputRef) =>
-  `${r.kind}|${r.id}|${r.versionId ?? ""}`;
+const refKey = (r: ShowRef) =>
+  `${r.v}|${r.kind}|${r.id}|${r.versionId ?? ""}`;
 
 export function mergeOutputRefs(
-  existing: CommanderOutputRef[],
-  incoming: CommanderOutputRef[],
-): CommanderOutputRef[] {
-  const map = new Map<string, CommanderOutputRef>();
+  existing: ShowRef[],
+  incoming: ShowRef[],
+): ShowRef[] {
+  const map = new Map<string, ShowRef>();
   for (const r of [...existing, ...incoming]) {
     const k = refKey(r);
     const prev = map.get(k);

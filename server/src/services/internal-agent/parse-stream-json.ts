@@ -15,7 +15,7 @@
  *   for (const chunk of parser.flush()) { … }  // call on process exit
  */
 
-import { commanderOutputRefsSchema, type CommanderOutputRef } from "@armyofagents/shared";
+import { showRefsSchema, type ShowRef } from "@armyofagents/shared";
 import type { AgentStreamChunk } from "./agent-loop.js";
 import { redactSecretsInString } from "../../redaction.js";
 
@@ -275,11 +275,11 @@ function handleUserEvent(event: Record<string, unknown>, toolNames: Map<string, 
     // (Bash/Read/...) stream raw text that must never be interpreted as an envelope
     // (T4 review — phantom/spoofed ref defense). Also skips JSON.parse on large
     // built-in outputs for free.
-    let refs: CommanderOutputRef[] | undefined;
+    let refs: ShowRef[] | undefined;
     if (resolvedName.startsWith("mcp__")) {
       try {
         const parsedEnvelope = JSON.parse(fullText) as { outputRefs?: unknown };
-        const validated = commanderOutputRefsSchema.safeParse(parsedEnvelope?.outputRefs);
+        const validated = showRefsSchema.safeParse(parsedEnvelope?.outputRefs);
         if (validated.success && validated.data.length > 0) refs = validated.data;
       } catch {
         /* not JSON — fine */

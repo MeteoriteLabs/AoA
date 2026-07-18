@@ -6,6 +6,7 @@ import { platform, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Db } from "@armyofagents/db";
+import { showRefSchema } from "@armyofagents/shared";
 import type { HumanQuestionRuntimeCapabilities } from "@armyofagents/adapter-utils";
 import type { AgentTool } from "./types.js";
 import type { AgentStreamChunk, ChatInput } from "./agent-loop.js";
@@ -1209,7 +1210,19 @@ async function* runCodexTurn(
   }
 
   for (const chunk of parsed.chunks ?? []) {
-    yield chunk;
+    // Re-validate the codex LiftedOutputRef[] (v:1|2, structurally looser) to
+    // ShowRef[] at this boundary — the widened AgentStreamChunk.refs is ShowRef[]
+    // and LiftedOutputRef is not assignable to it. Applies to EVERY tool_result
+    // chunk (incl. empty refs) so the raw LiftedOutputRef[] never reaches yield.
+    if (chunk.type === "tool_result") {
+      const refs = (Array.isArray(chunk.refs) ? chunk.refs : []).flatMap((r) => {
+        const parsedRef = showRefSchema.safeParse(r);
+        return parsedRef.success ? [parsedRef.data] : [];
+      });
+      yield { ...chunk, refs };
+    } else {
+      yield chunk;
+    }
   }
 
   // v1: emit the full parsed assistant reply as a single text chunk

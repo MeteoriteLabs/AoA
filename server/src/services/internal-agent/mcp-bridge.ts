@@ -1,5 +1,5 @@
 import type { AgentTool, ToolContext, ToolResult } from "./types.js";
-import type { CommanderToolPermissions, CommanderOutputRef } from "@armyofagents/shared";
+import type { CommanderToolPermissions, ShowRef } from "@armyofagents/shared";
 // Type-only import (erased at compile time → no runtime side effect, preserves
 // the side-effect-free module load for consumers of the tool-layer exports).
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
@@ -91,7 +91,7 @@ async function executeAndFormat(
 ): Promise<McpToolResult> {
   try {
     const result = await deps.executeTool(tool, args, toolContext);
-    let outputRefs: CommanderOutputRef[] = [];
+    let outputRefs: ShowRef[] = [];
     try {
       outputRefs = buildOutputRefs(tool.name, args, result);
     } catch (err) {
