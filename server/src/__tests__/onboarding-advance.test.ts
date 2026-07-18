@@ -35,6 +35,56 @@ describe("computeAdvance (Stage B / B3 + revC RC1)", () => {
     const d = computeAdvance(ORDER, "AUTHENTICATED", ["AUTHENTICATED"], "JOIN_REQUESTED");
     expect(d.kind).toBe("illegal");
   });
+
+  it("WS0c: a legacy in-flight row at DEPARTMENT_CREATED (curIdx -1, removed from the sequence) can still legally advance to SETUP_COMPLETE once the spine is complete", () => {
+    // DEPARTMENT_CREATED is no longer in FOUNDER_PHASE1_STATES, so
+    // order.indexOf(current) === -1. This must NOT be treated as "illegal" or
+    // "regress" — priorSatisfied holds because completedStates already
+    // includes everything through COMMANDER_VERIFIED, and
+    // Math.max(-1, reqIdx) correctly picks SETUP_COMPLETE (design §8).
+    const d = computeAdvance(
+      ORDER,
+      "DEPARTMENT_CREATED",
+      [
+        "AUTHENTICATED",
+        "PROFILE_SET",
+        "ORGANIZATION_CREATED",
+        "ENVIRONMENT_READY",
+        "COMMANDER_SELECTED",
+        "COMMANDER_VERIFIED",
+      ],
+      "SETUP_COMPLETE",
+    );
+    expect(d).toEqual({
+      kind: "advance",
+      newCurrent: "SETUP_COMPLETE",
+      newCompleted: [
+        "AUTHENTICATED",
+        "PROFILE_SET",
+        "ORGANIZATION_CREATED",
+        "ENVIRONMENT_READY",
+        "COMMANDER_SELECTED",
+        "COMMANDER_VERIFIED",
+        "SETUP_COMPLETE",
+      ],
+    });
+  });
+
+  it("advances legally from COMMANDER_VERIFIED straight to SETUP_COMPLETE (the new terminal-step gate)", () => {
+    const completed: typeof ORDER = [
+      "AUTHENTICATED",
+      "PROFILE_SET",
+      "ORGANIZATION_CREATED",
+      "ENVIRONMENT_READY",
+      "COMMANDER_SELECTED",
+      "COMMANDER_VERIFIED",
+    ];
+    const d = computeAdvance(ORDER, "COMMANDER_VERIFIED", completed, "SETUP_COMPLETE");
+    expect(d.kind).toBe("advance");
+    if (d.kind === "advance") {
+      expect(d.newCurrent).toBe("SETUP_COMPLETE");
+    }
+  });
 });
 
 // Stateful fake db modelling a single progress row + optimistic version.

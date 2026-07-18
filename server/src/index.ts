@@ -75,6 +75,7 @@ import { backfillGoalParents } from "./migrations/backfill-goal-parents.js";
 import { backfillMemoryFolderSeeds } from "./migrations/backfill-memory-folder-seeds.js";
 import { backfillWorkQuestionSnapshots } from "./migrations/backfill-work-question-snapshots.js";
 import { backfillFirstRunCompleted } from "./migrations/backfill-first-run-completed.js";
+import { normalizeLegacyOnboardingState } from "./migrations/normalize-legacy-onboarding-state.js";
 import { backfillCrewTemplateOrigin } from "./services/internal-agent/aoa-agents/backfill-template-origin.js";
 import { backfillCrewOriginKind } from "./services/internal-agent/aoa-agents/backfill-crew-origin-kind.js";
 import { reconcileAutonomyScale } from "./services/internal-agent/aoa-agents/reconcile-autonomy-scale.js";
@@ -838,6 +839,17 @@ void backfillCrewTemplateOrigin(db as any).catch((err: unknown) =>
 // showing Home first-run forever (Codex P1).
 void backfillFirstRunCompleted(db as any).catch((err: unknown) =>
   logger.warn({ err }, "first-run-completed backfill failed"),
+);
+
+// WS0c — idempotent startup normalization: founder onboarding_progress rows
+// still mid-wizard at the now-removed DEPARTMENT_CREATED/AGENT_ASSIGNED
+// states get normalized to currentState="COMMANDER_VERIFIED" (NOT
+// SETUP_COMPLETE — that would collide with the backfillFirstRunCompleted
+// backfill above and auto-skip these founders past the new Home first-run
+// experience; see normalize-legacy-onboarding-state.ts). Runs every boot;
+// second run updates 0 rows.
+void normalizeLegacyOnboardingState(db as any).catch((err: unknown) =>
+  logger.warn({ err }, "legacy onboarding state normalization failed"),
 );
 
 // Idempotent backfill: stamp origin_kind='crew_thread' onto thread-deliverable
