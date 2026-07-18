@@ -73,6 +73,14 @@ export function resolveDefaultAgentWorkspaceDir(agentId: string): string {
   return path.resolve(resolveAoaInstanceRoot(), "workspaces", trimmed);
 }
 
+// WS0a — server-owned base dir that authenticated/multi-tenant company
+// workspace-fs browsing is jailed under (per-company subdirectory joined in
+// by resolveCompanyWorkspaceRoot()). Distinct from the per-agent
+// resolveDefaultAgentWorkspaceDir() tree above (heartbeat execution homes).
+export function resolveDefaultCompanyWorkspaceBaseDir(): string {
+  return path.resolve(resolveAoaInstanceRoot(), "data", "company-workspaces");
+}
+
 export function resolveHomeAwarePath(value: string): string {
   return path.resolve(expandHomePrefix(value));
 }

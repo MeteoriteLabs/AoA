@@ -73,6 +73,7 @@ For horizontally scaled deployments, local-file run logs require sticky routing 
 | `AOA_STORAGE_S3_ENDPOINT` | (default AWS) | Override endpoint URL for MinIO, Cloudflare R2, Backblaze B2, etc. |
 | `AOA_STORAGE_S3_PREFIX` | (empty) | Object-key prefix for namespace isolation in shared buckets |
 | `AOA_STORAGE_S3_FORCE_PATH_STYLE` | `false` | Force path-style URLs (required for some S3-compatible services) |
+| `AOA_COMPANY_WORKSPACE_DIR` | `<AOA_HOME>/instances/<id>/data/company-workspaces` | Server-owned base dir that `authenticated`-mode company workspace-fs browse/mkdir (WS0a) is jailed under, per-company subdir. Unused in `local_trusted` mode (founder browses their real home area, unjailed). |
 | `AOA_FILE_MAX_BYTES` | `52428800` (50 MB) | Max upload size for assets/artifacts |
 | `AOA_ATTACHMENT_MAX_BYTES` | (= `AOA_FILE_MAX_BYTES`) | Max upload size for issue attachments specifically |
 | `AOA_ATTACHMENTS_PER_COMMENT_MAX` | `5` | Max number of attachments accepted on a single issue comment |
