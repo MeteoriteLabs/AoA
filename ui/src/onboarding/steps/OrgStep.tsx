@@ -146,8 +146,16 @@ export function OrgStep({ ctx, onComplete }: StepProps) {
       </Reveal>
       <Reveal delay={0.09}>
         <StepCard>
-          <label className={LABEL}>Organization name</label>
-          <input className={FIELD} value={name} onChange={(e) => setName(e.target.value)} autoFocus />
+          <label className={LABEL} htmlFor="org-name">
+            Organization name
+          </label>
+          <input
+            id="org-name"
+            className={FIELD}
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            autoFocus
+          />
           {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
         </StepCard>
       </Reveal>

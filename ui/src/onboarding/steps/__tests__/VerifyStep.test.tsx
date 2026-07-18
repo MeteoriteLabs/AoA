@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { VerifyStep } from "../VerifyStep";
 import { validateRegistry, type StepContext } from "../../registry";
 import { ONBOARDING_STEPS } from "../index";
@@ -227,6 +227,10 @@ describe("VerifyStep (Stage C / order 5, blocking)", () => {
   // path that re-runs the SAME hello-probe verify check on an interval (mirrors
   // the device-login poll above) until it reports verified, then auto-advances.
   describe("WS3: CLI auto-detect", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
     it("is offered for BOTH providers (unlike the Codex-only interactive login)", async () => {
       getConfig.mockResolvedValue({ cliTool: "claude_cli" }); // anthropic — no device login
       post.mockRejectedValueOnce(needsAuthError());
@@ -266,6 +270,40 @@ describe("VerifyStep (Stage C / order 5, blocking)", () => {
       fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
       expect(await screen.findByRole("button", { name: /sign in myself in the cli/i })).toBeTruthy();
       expect(screen.queryByText(/watching for your sign-in/i)).toBeNull();
+    });
+
+    // Code-review fix: the earlier "polls the same verify probe" test above only
+    // proves the IMMEDIATE tick fires (real timers, no interval wait). This test
+    // uses fake timers to advance clock time PAST CLI_AUTO_DETECT_POLL_MS
+    // (~3000ms) and asserts the interval itself re-fires the probe — not just
+    // the immediate tick — before transitioning to verified.
+    it("re-fires the verify probe on the ~3000ms interval (not just the immediate tick), then verifies", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      post.mockRejectedValueOnce(needsAuthError()); // initial "Verify" click
+      post.mockRejectedValueOnce(needsAuthError()); // immediate auto-detect tick — still not signed in
+      post.mockResolvedValueOnce({ outcome: "verified", result: { status: "pass" } }); // interval tick — now verified
+      const onComplete = vi.fn();
+      render(<VerifyStep ctx={ctx} onComplete={onComplete} onBack={() => {}} />);
+      fireEvent.click(screen.getByText("Verify"));
+
+      fireEvent.click(await screen.findByRole("button", { name: /sign in myself in the cli/i }));
+      await waitFor(() => expect(post).toHaveBeenCalledTimes(2)); // immediate tick, still not signed in
+
+      // Advance past a single interval tick (CLI_AUTO_DETECT_POLL_MS) — the
+      // interval must re-fire the SAME verify probe on its own, without any
+      // further user interaction.
+      act(() => {
+        vi.advanceTimersByTime(3000);
+      });
+
+      await waitFor(() => expect(post).toHaveBeenCalledTimes(3));
+      expect(post).toHaveBeenLastCalledWith("/companies/c1/internal-agent/verify", {});
+      await waitFor(() => expect(onComplete).toHaveBeenCalled());
+      expect(advanceOnboarding).toHaveBeenCalledWith({
+        companyId: "c1",
+        journey: "founder",
+        requestedState: "COMMANDER_VERIFIED",
+      });
     });
 
     it("does not crash and does not fire onComplete after unmount while a CLI auto-detect poll is active", async () => {

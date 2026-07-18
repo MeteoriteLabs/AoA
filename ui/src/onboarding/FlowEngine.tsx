@@ -55,8 +55,13 @@ function StepperPips({ total, current }: { total: number; current: number }) {
   );
 }
 
-/** Shared dark chrome shell: `.onboarding-dark` scope + drifting constellation. */
-function DarkShell({ children }: { children: React.ReactNode }) {
+/**
+ * Shared dark chrome shell: `.onboarding-dark` scope + drifting constellation.
+ * Exported so non-FlowEngine onboarding surfaces (e.g. the org-only branch in
+ * `pages/OnboardingFlow.tsx`) render the same chrome instead of hand-duplicating
+ * it.
+ */
+export function DarkShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="onboarding-dark relative min-h-screen w-full overflow-hidden bg-background text-foreground">
       <ConstellationBg />

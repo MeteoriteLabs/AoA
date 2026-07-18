@@ -6,13 +6,25 @@ import { ONBOARDING_STEPS } from "../index";
 import { ApiError } from "../../../api/client";
 
 const post = vi.hoisted(() => vi.fn(async () => ({ ok: true, environmentId: "e1" })));
-const home = vi.hoisted(() => vi.fn(async () => ({ homePath: "/home/ada", platform: "linux" })));
+// BLOCKING fix: the mount-time prefill must use the company-scoped, jail-aware
+// `companyWorkspaceFsApi(companyId).home()` — the SAME client the
+// FolderBrowserDialog uses — not the instance-admin `filesystemApi.home()`
+// (gated by `assertCanManageInstanceSettings`, 403s for a non-admin founder in
+// `authenticated` mode).
+const homeCompany = vi.hoisted(() => vi.fn(async () => ({ homePath: "/home/ada", platform: "linux" })));
+const homeInstance = vi.hoisted(() =>
+  vi.fn(async () => ({ homePath: "/home/instance-admin", platform: "linux" })),
+);
+const companyWorkspaceFsApi = vi.hoisted(() => vi.fn((_companyId: string) => ({ home: homeCompany })));
 
 vi.mock("../../../api/client", async (importActual) => {
   const actual = (await importActual()) as Record<string, unknown>;
   return { ...actual, api: { ...(actual.api as object), post } };
 });
-vi.mock("../../../api/filesystem", () => ({ filesystemApi: { home: () => home() } }));
+vi.mock("../../../api/filesystem", () => ({
+  filesystemApi: { home: () => homeInstance() },
+  companyWorkspaceFsApi,
+}));
 vi.mock("../../../api/onboarding", () => ({
   advanceOnboarding: vi.fn(async () => ({
     completedStates: ["AUTHENTICATED", "PROFILE_SET", "ORGANIZATION_CREATED", "ENVIRONMENT_READY"],
@@ -84,6 +96,16 @@ describe("EnvironmentStep (Stage C / order 3, revA R13)", () => {
         rootFolder: "/chosen/path",
       }),
     );
+  });
+
+  it("BLOCKING fix: prefill uses the company-scoped fs API (not the instance-admin one)", async () => {
+    render(<EnvironmentStep ctx={ctx} onComplete={vi.fn()} onBack={() => {}} />);
+    await waitFor(() =>
+      expect((screen.getByRole("textbox") as HTMLInputElement).value).toBe("/home/ada/AoA"),
+    );
+    expect(companyWorkspaceFsApi).toHaveBeenCalledWith("c1");
+    expect(homeCompany).toHaveBeenCalled();
+    expect(homeInstance).not.toHaveBeenCalled();
   });
 
   it("prefills the home dir, sets up the env, advances ENVIRONMENT_READY, then completes", async () => {

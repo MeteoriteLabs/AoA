@@ -47,6 +47,10 @@ vi.mock("../../onboarding/FlowEngine", () => ({
       </button>
     );
   },
+  // DRY dark-shell fix: OnboardingFlow.tsx now reuses FlowEngine's exported
+  // DarkShell instead of hand-duplicating the `.onboarding-dark` +
+  // ConstellationBg wrapper — a passthrough stand-in is enough for this suite.
+  DarkShell: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
 vi.mock("../../onboarding/steps/OrgStep", () => ({
   OrgStep: (props: { ctx: { companyId: string | null }; onComplete: () => void }) => {

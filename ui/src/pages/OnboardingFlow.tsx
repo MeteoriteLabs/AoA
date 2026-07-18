@@ -6,8 +6,7 @@ import type { OnboardingJourney, OnboardingState } from "@armyofagents/shared";
 import { authApi } from "../api/auth";
 import { queryKeys } from "../lib/queryKeys";
 import { advanceOnboarding, getOnboardingProgress, onboardingApi } from "../api/onboarding";
-import { FlowEngine } from "../onboarding/FlowEngine";
-import { ConstellationBg } from "../onboarding/motion";
+import { DarkShell, FlowEngine } from "../onboarding/FlowEngine";
 import { ONBOARDING_STEPS } from "../onboarding/steps";
 import { OrgStep } from "../onboarding/steps/OrgStep";
 import { InvitedJoinTerminal } from "../onboarding/InvitedJoinTerminal";
@@ -88,8 +87,7 @@ export function OnboardingFlowPage({ journey }: { journey: OnboardingJourney }) 
       completedStates: ["AUTHENTICATED", "PROFILE_SET"] as OnboardingState[],
     };
     return (
-      <div className="onboarding-dark relative min-h-screen w-full overflow-hidden bg-background text-foreground">
-        <ConstellationBg />
+      <DarkShell>
         <div className="relative z-10 flex min-h-screen items-center justify-center px-6 py-8">
           <OrgStep
             ctx={orgCtx}
@@ -97,7 +95,7 @@ export function OnboardingFlowPage({ journey }: { journey: OnboardingJourney }) 
             onBack={() => navigate("/", { replace: true })}
           />
         </div>
-      </div>
+      </DarkShell>
     );
   }
 

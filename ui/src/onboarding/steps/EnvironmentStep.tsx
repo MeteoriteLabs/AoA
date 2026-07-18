@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { FolderOpen } from "lucide-react";
 import type { StepProps } from "../registry";
-import { filesystemApi } from "../../api/filesystem";
+import { companyWorkspaceFsApi } from "../../api/filesystem";
 import { api, ApiError } from "../../api/client";
 import { advanceOnboarding } from "../../api/onboarding";
 import { Button } from "@/components/ui/button";
@@ -46,9 +46,16 @@ export function EnvironmentStep({ ctx, onComplete }: StepProps) {
   // workspace-fs API instead of the instance-admin filesystem API.
   const [browserOpen, setBrowserOpen] = useState(false);
 
+  // BLOCKING fix: prefill must use the SAME company-scoped
+  // `companyWorkspaceFsApi(companyId).home()` the Browse dialog uses below —
+  // not the instance-admin `filesystemApi.home()` (gated by
+  // `assertCanManageInstanceSettings`), which 403s for a non-admin founder in
+  // `authenticated` mode and leaves the field blank. Best-effort: a prefill
+  // failure doesn't block the step — direct path entry still works.
   useEffect(() => {
+    if (!ctx.companyId) return;
     let cancelled = false;
-    filesystemApi
+    companyWorkspaceFsApi(ctx.companyId)
       .home()
       .then(({ homePath }) => {
         if (cancelled) return;
@@ -59,7 +66,7 @@ export function EnvironmentStep({ ctx, onComplete }: StepProps) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [ctx.companyId]);
 
   const submit = async () => {
     if (!ctx.companyId || !rootFolder.trim()) {
@@ -100,9 +107,12 @@ export function EnvironmentStep({ ctx, onComplete }: StepProps) {
 
       <Reveal delay={0.09}>
         <StepCard>
-          <label className={LABEL}>Root folder</label>
+          <label className={LABEL} htmlFor="env-root-folder">
+            Root folder
+          </label>
           <div className="flex gap-2">
             <input
+              id="env-root-folder"
               className={cn(FIELD, "font-mono")}
               value={rootFolder}
               onChange={(e) => setRootFolder(e.target.value)}
@@ -122,6 +132,9 @@ export function EnvironmentStep({ ctx, onComplete }: StepProps) {
         </Button>
       </Reveal>
 
+      {/* Known cross-cutting item (plan Decisions): this Radix dialog portals
+          to document.body and picks up ambient app theme tokens rather than
+          the `.onboarding-dark` scope — tracked separately, not fixed here. */}
       <FolderBrowserDialog
         open={browserOpen}
         onClose={() => setBrowserOpen(false)}
