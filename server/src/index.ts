@@ -74,6 +74,7 @@ import { ensureAllCrewAgents, isCrewMarketplaceManaged } from "./services/intern
 import { backfillGoalParents } from "./migrations/backfill-goal-parents.js";
 import { backfillMemoryFolderSeeds } from "./migrations/backfill-memory-folder-seeds.js";
 import { backfillWorkQuestionSnapshots } from "./migrations/backfill-work-question-snapshots.js";
+import { backfillFirstRunCompleted } from "./migrations/backfill-first-run-completed.js";
 import { backfillCrewTemplateOrigin } from "./services/internal-agent/aoa-agents/backfill-template-origin.js";
 import { backfillCrewOriginKind } from "./services/internal-agent/aoa-agents/backfill-crew-origin-kind.js";
 import { reconcileAutonomyScale } from "./services/internal-agent/aoa-agents/reconcile-autonomy-scale.js";
@@ -828,6 +829,15 @@ void backfillMemoryFolderSeeds(db as any)
 // on marketplace (T3.5) and the crew-updater can exclude legacy rows (T3.4).
 void backfillCrewTemplateOrigin(db as any).catch((err: unknown) =>
   logger.warn({ err }, "crew templateOrigin backfill failed"),
+);
+
+// WS0b — idempotent backfill: stamp firstRunCompletedAt=now() onto every
+// onboarding_progress row that is already SETUP_COMPLETE (currentState OR
+// completedStates) but predates the flag. Runs every boot; second run
+// updates 0 rows. Required so pre-existing SETUP_COMPLETE rows aren't stuck
+// showing Home first-run forever (Codex P1).
+void backfillFirstRunCompleted(db as any).catch((err: unknown) =>
+  logger.warn({ err }, "first-run-completed backfill failed"),
 );
 
 // Idempotent backfill: stamp origin_kind='crew_thread' onto thread-deliverable
