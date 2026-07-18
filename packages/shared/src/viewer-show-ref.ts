@@ -68,12 +68,12 @@ export const showRefProvenanceSchema = z.object({
 export const showRefV2Schema = z.object({
   v: z.literal(2),
   kind: z.enum(SHOW_REF_KINDS),
-  id: z.string().min(1).max(2048),
+  id: z.string().min(1).max(2048), // wider than v1 (256): "url" kind stores the target URL in id
   versionId: z.string().min(1).max(256).nullish(),
   versionNumber: z.number().int().positive().nullish(),
   title: z.string().max(MAX_OUTPUT_REF_TITLE_LENGTH).nullish(),
   mimeType: z.string().min(1).max(256).nullish(),
-  viewerKind: z.string().min(1).max(64).nullish(),
+  viewerKind: z.string().min(1).max(64).nullish(), // open set: resolveViewer safelists the recognized values
   action: z.enum(["created", "referenced"]),
   toolCallId: z.string().min(1).max(256).nullish(),
   provenance: showRefProvenanceSchema.nullish(),
