@@ -179,3 +179,30 @@ describe("openInputRefTab", () => {
     expect(state.tabs[1]).toMatchObject({ id: "artifact:artifact-1:latest", kind: "artifact", refId: "artifact-1" });
   });
 });
+
+describe("openRefTab kind routing", () => {
+  const empty = emptyViewerState();
+  it("opens an artifact tab for a v1 artifact ref (unchanged)", () => {
+    const s = openRefTab(empty, { v: 1, kind: "artifact", id: "a1", action: "created" } as any);
+    expect(s.tabs[0]).toMatchObject({ kind: "artifact", refId: "a1" });
+  });
+  it("routes a v2 task ref to a task tab", () => {
+    const s = openRefTab(empty, { v: 2, kind: "task", id: "t1", action: "referenced" } as any);
+    expect(s.tabs[0]).toMatchObject({ kind: "task", refId: "t1", id: "task:t1" });
+  });
+  it("routes a v2 discussion ref to a discussion tab", () => {
+    const s = openRefTab(empty, { v: 2, kind: "discussion", id: "d1", action: "referenced" } as any);
+    expect(s.tabs[0]).toMatchObject({ kind: "discussion", refId: "d1", id: "discussion:d1" });
+  });
+  it("routes a v2 url ref to a scheme-gated browser tab", () => {
+    const s = openRefTab(empty, { v: 2, kind: "url", id: "https://example.com", action: "referenced" } as any);
+    expect(s.tabs[0]).toMatchObject({ kind: "browser", url: "https://example.com" });
+    const blocked = openRefTab(empty, { v: 2, kind: "url", id: "javascript:alert(1)", action: "referenced" } as any);
+    expect(blocked.tabs[0]).toMatchObject({ kind: "browser", url: "about:blank" });
+  });
+  it("no-ops for an unsupported kind (asset) rather than mis-rendering", () => {
+    const s = openRefTab(empty, { v: 2, kind: "asset", id: "as1", action: "referenced" } as any);
+    expect(s.tabs).toHaveLength(0);
+    expect(s.activeId).toBe("home");
+  });
+});

@@ -105,7 +105,7 @@ import { ComposerDropOverlay } from "./composer/ComposerDropOverlay";
 import { useComposerDragDrop } from "./composer/useComposerDragDrop";
 import { useLiveUpdates } from "../context/LiveUpdatesProvider";
 import type { CommanderContextScope } from "@armyofagents/shared";
-import type { CommanderOutputRef } from "@armyofagents/shared";
+import type { ShowRef } from "@armyofagents/shared";
 import { useInlineWorkQuestions, WorkQuestionInlineError } from "./work-questions/WorkQuestionInlineList";
 import { WorkQuestionPanel } from "./work-questions/WorkQuestionPanel";
 import {
@@ -419,7 +419,7 @@ export interface LocalMessage {
     options: string[];
     dismissed: boolean;
   };
-  outputRefs?: CommanderOutputRef[];
+  outputRefs?: ShowRef[];
   createdAt: string;
   durationMs?: number;
 }
@@ -441,7 +441,7 @@ function serverToLocal(m: AgentMessage): LocalMessage {
     role: m.role === "tool" ? "system" : m.role,
     content: m.content ?? "",
     streamingDone: true,
-    outputRefs: (m.outputRefs ?? undefined) as CommanderOutputRef[] | undefined,
+    outputRefs: (m.outputRefs ?? undefined) as ShowRef[] | undefined,
     ...(toolCalls ? { toolCalls } : {}),
     ...(m.reasoning ? { reasoning: m.reasoning } : {}),
     createdAt: m.createdAt,
@@ -1391,7 +1391,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
         // handleSSEEvent from the render it was created in) — that is safe ONLY
         // because useCommanderViewer's API reads its live state from a ref at
         // call time, and setMessages uses a functional updater.
-        const liveRefs = (event.data as { refs?: CommanderOutputRef[] }).refs;
+        const liveRefs = (event.data as { refs?: ShowRef[] }).refs;
         if (liveRefs && liveRefs.length > 0) {
           setMessages((prev) =>
             prev.map((m) =>

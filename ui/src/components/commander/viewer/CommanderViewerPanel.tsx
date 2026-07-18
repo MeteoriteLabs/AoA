@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { FileText, Globe, Home, Inbox, ListTodo, MessageSquare, ShieldCheck, StickyNote } from "lucide-react";
-import type { CommanderOutputRef } from "@armyofagents/shared";
+import type { ShowRef } from "@armyofagents/shared";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "../../../lib/utils";
@@ -427,8 +427,8 @@ interface TabBodySwitchProps {
   activeId: string;
   activeTab: ViewerTab | undefined;
   companyId: string;
-  conversationRefs: CommanderOutputRef[];
-  onOpen: (ref: CommanderOutputRef) => void;
+  conversationRefs: ShowRef[];
+  onOpen: (ref: ShowRef) => void;
   onCloseTab: (id: string) => void;
   onOpenTask?: (issueId: string, title: string) => void;
 }
@@ -544,7 +544,7 @@ export function buildViewerTabModels(state: ConversationViewerState): ViewerTabM
 export interface CommanderViewerDetailProps {
   viewer: CommanderViewerApi;
   companyId: string;
-  conversationRefs: CommanderOutputRef[];
+  conversationRefs: ShowRef[];
   activeTab: ViewerTab | undefined;
   tabModels: ViewerTabModel[];
   /** Global bridge: collapse the panel (persists) — wired by AgentPanelContent. */
@@ -637,7 +637,7 @@ function MobilePill({ viewer }: MobilePillProps) {
 export interface CommanderViewerPanelProps {
   viewer: CommanderViewerApi;
   companyId: string;
-  conversationRefs: CommanderOutputRef[];
+  conversationRefs: ShowRef[];
   /** True on mobile breakpoints — caller passes (e.g. from window width check). */
   isMobile: boolean;
   onOpenTask: (issueId: string, title: string) => void;

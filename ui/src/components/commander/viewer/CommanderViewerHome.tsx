@@ -1,13 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
 import { FileText } from "lucide-react";
-import type { CommanderOutputRef } from "@armyofagents/shared";
+import type { CommanderOutputRef, ShowRef } from "@armyofagents/shared";
 import { artifactsApi } from "../../../api/artifacts";
 import { chipLabel } from "./commanderViewerModel";
 
 interface CommanderViewerHomeProps {
   companyId: string;
-  conversationRefs: CommanderOutputRef[];
-  onOpen: (ref: CommanderOutputRef) => void;
+  conversationRefs: ShowRef[];
+  onOpen: (ref: ShowRef) => void;
 }
 
 function RefRow({
@@ -15,8 +15,8 @@ function RefRow({
   onOpen,
   note,
 }: {
-  refItem: CommanderOutputRef;
-  onOpen: (r: CommanderOutputRef) => void;
+  refItem: ShowRef;
+  onOpen: (r: ShowRef) => void;
   note?: string;
 }) {
   return (
