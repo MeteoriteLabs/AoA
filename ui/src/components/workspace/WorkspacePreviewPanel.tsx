@@ -23,7 +23,7 @@ import type { ArtifactWithVersions, ArtifactVersion, DetectedOutput, DetectedOut
 import { toSafeBrowserUrl } from "@armyofagents/shared";
 
 export type PreviewMode = "changes" | "preview" | "logs";
-export type PreviewTabKind = "home" | "browser" | "changes" | "file" | "artifact" | "output" | "logs";
+export type PreviewTabKind = "home" | "browser" | "changes" | "file" | "artifact" | "output" | "asset" | "logs";
 
 export type WorkspacePreviewTab =
   | {
@@ -65,6 +65,15 @@ export type WorkspacePreviewTab =
       kind: "output";
       title: string;
       output: DetectedOutputForUI;
+    }
+  | {
+      id: string;
+      kind: "asset";
+      title: string;
+      assetId: string;
+      contentType: string | null;
+      filename: string;
+      byteSize?: number | null;
     }
   | {
       id: string;
@@ -186,6 +195,7 @@ export function WorkspacePreviewPanel({
             <ArtifactVersionPreviewView artifact={activeTab.artifact} version={activeTab.version} />
           )}
           {activeTab.kind === "output" && <OutputPreviewView output={activeTab.output} />}
+          {activeTab.kind === "asset" && <AssetPreviewView tab={activeTab} />}
           {activeTab.kind === "logs" && (
             <ScrollArea className="h-full">
               <LogsTabView issueId={activeTab.issueId} />
@@ -326,6 +336,8 @@ function previewTabIcon(kind: PreviewTabKind) {
     case "artifact":
       return Eye;
     case "output":
+      return FileText;
+    case "asset":
       return FileText;
     case "logs":
       return Terminal;
@@ -790,6 +802,39 @@ function OutputPreviewView({ output }: { output: DetectedOutputForUI }) {
         )}
       </div>
       <WorkProductViewer viewer={viewer} filename={output.filename} />
+    </div>
+  );
+}
+
+function AssetPreviewView({ tab }: { tab: Extract<WorkspacePreviewTab, { kind: "asset" }> }) {
+  const viewer = resolveOutputViewer({
+    contentType: tab.contentType,
+    filename: tab.filename,
+    assetId: tab.assetId,
+    assetUrl: `/api/assets/${tab.assetId}/content`,
+  });
+
+  return (
+    <div className="flex h-full min-w-0 flex-col overflow-hidden" data-testid="preview-asset-tab">
+      <div className="flex min-w-0 shrink-0 items-center gap-2 border-b border-border px-3 py-2">
+        <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-sm font-medium">{tab.filename}</div>
+          <div className="truncate text-[11px] text-muted-foreground">
+            {viewer.label}
+            {tab.contentType ? ` · ${tab.contentType}` : ""}
+            {typeof tab.byteSize === "number" ? ` · ${formatBytes(tab.byteSize)}` : ""}
+          </div>
+        </div>
+        {viewer.canOpenDirectly && (
+          <Button asChild type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs">
+            <a href={viewer.assetUrl ?? undefined} target="_blank" rel="noopener noreferrer">
+              Open
+            </a>
+          </Button>
+        )}
+      </div>
+      <WorkProductViewer viewer={viewer} filename={tab.filename} />
     </div>
   );
 }
