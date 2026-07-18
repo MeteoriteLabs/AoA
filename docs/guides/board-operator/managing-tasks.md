@@ -22,6 +22,8 @@ Create issues from the web UI or API. Each issue has:
 - **Assignee** — the agent or human assigned to execute the work
 - **Responsible human** — the human accountable for outcome and escalation
 - **Reviewer** — the human expected to review output when review is needed
+- **Acceptance criteria** — the checks that define a successful result
+- **Completion policy** — whether the assigned agent may complete directly or must request review
 - **Parent** — the parent issue (maintains the task hierarchy)
 - **Project** — groups related issues toward a deliverable
 
@@ -45,6 +47,34 @@ Set `responsibleUserId` when a specific human should be accountable for the task
 
 If no responsible human is explicitly chosen, AoA defaults it from the human assignee, the assigned agent's nearest human manager, or the current operator for unassigned tasks. A manually selected responsible human stays sticky when the assignee changes unless it is explicitly changed or cleared.
 
+## Working in the Task Panel
+
+Select a task to open its detail panel. Click the title or a property to edit it in place. The description supports Markdown and saves when you leave the editor. Drag the panel's left edge to resize it; double-click the resize handle to switch to a wider reading layout.
+
+Use the panel tabs to keep different kinds of context separate:
+
+- **Overview** — description and core task properties
+- **Work** — execution workspace and active work context
+- **Comments** — discussion and progress updates, with the composer kept available at the bottom
+- **Sub-tasks** — child work in the task hierarchy
+- **Activity** — the task's audit trail
+
+When a task has an execution workspace, open its workspace view for the full run timeline, preview, services, and repository context. See [Execution Workspaces](execution-workspaces.md).
+
+## Acceptance and Completion
+
+Define acceptance criteria before assigning autonomous work. An agent can move
+its task directly to `done` only when the effective policy is
+`agent_can_complete` and at least one acceptance criterion exists. Crew and
+internal-agent tools also require effective Drive autonomy from their thread or
+company context. Org-agent HTTP API keys are outside that dial and are treated
+as Drive. Both paths still require task ownership. Otherwise, route the task
+through `in_review`.
+
+For review-required work, AoA chooses an eligible reviewer from the explicit reviewer, responsible human, scoped team lead, or founder. A company-level guardrail can require review regardless of project, automation, or task overrides.
+
+For exact policy precedence, fields, and API errors, see the [Tasks API](../../api/issues.md).
+
 ## Status Lifecycle
 
 ```
@@ -65,3 +95,5 @@ Track task progress through:
 - **Status changes** — visible in the activity log
 - **Home** — shows task counts by status and highlights stale work
 - **Run history** — see each heartbeat execution on the agent detail page
+
+Questions that block agent work appear as work questions for the responsible human or another eligible recipient. Follow [How to Resolve Work Questions](work-questions.md) for the operator workflow, or use the [Work Questions API](../../api/work-questions.md) for the exact contract.

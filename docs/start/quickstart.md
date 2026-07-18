@@ -3,7 +3,7 @@ title: Quickstart
 summary: Get AoA running in minutes
 ---
 
-Get AoA running locally in under 5 minutes.
+Get AoA running locally, then complete the guided founder setup.
 
 ## Quick Start (Recommended)
 
@@ -11,9 +11,32 @@ Get AoA running locally in under 5 minutes.
 npx @armyofagents/cli onboard --yes
 ```
 
-This walks you through setup, configures your environment, and gets AoA running.
+With no environment overrides, `onboard --yes` writes a loopback-only
+`local_trusted` configuration that uses embedded PostgreSQL, local storage, and
+local encrypted secrets, then immediately starts AoA. Keep that command running
+and open the URL it prints. Use `npx @armyofagents/cli run` later when you want
+to restart an already configured instance.
+
+The quickstart is environment-aware. Variables such as `AOA_DEPLOYMENT_MODE`,
+`HOST`, `DATABASE_URL`, `AOA_PUBLIC_URL`, and the storage settings replace the
+corresponding defaults, so review inherited environment variables before using
+`--yes`.
 
 > The CLI is published as `@armyofagents/cli`, which provides the `aoa` bin (with a legacy `paperclipai` alias). Run it via `npx @armyofagents/cli ...` — there is no npm package named `aoa`, so `npx aoa` will not resolve. If you're running from a fresh clone before publishing, use `pnpm aoa` from the repo root instead.
+
+Open [http://localhost:3100](http://localhost:3100). A new user is routed to
+`/onboarding`, where AoA resumes at the first incomplete step:
+
+1. Complete your Human Operating Profile: name, title, and timezone.
+2. Name your organization.
+3. Choose an absolute root folder and pass the write check.
+4. Choose Claude or Codex as Commander and verify the local CLI.
+5. Create your first department and its workspace folder.
+6. Create and assign your first agent.
+7. Review the setup and finish.
+
+The flow saves progress after each step. If you close the browser or a check
+fails, return to AoA and continue rather than creating the organization again.
 
 ## Local Development
 
@@ -26,7 +49,10 @@ pnpm dev
 
 This starts the API server and UI at [http://localhost:3100](http://localhost:3100).
 
-No external database required — AoA uses an embedded PostgreSQL instance by default.
+No external database or Google account is required for this loopback development
+flow. `pnpm dev` enables the local development identity when Google OAuth
+credentials are absent. Do not use that identity for an authenticated or
+network-exposed deployment.
 
 ## One-Command Bootstrap
 
@@ -36,17 +62,29 @@ pnpm aoa run
 
 This auto-onboards if config is missing, runs health checks with auto-repair, and starts the server.
 
-## What's Next
+## Authenticated Deployment
 
-Once AoA is running:
+Google is the only human sign-in provider. An authenticated deployment must set
+both `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`; the server refuses to start
+without them. The first Google user on an empty instance becomes the instance
+administrator and enters the same founder onboarding flow.
 
-1. Create your first company in the web UI
-2. Define a company goal
-3. Create a Director agent and configure its adapter
-4. Build out the org chart with more agents
-5. Set budgets and assign initial tasks
-6. Hit go — agents start their heartbeats and the company runs
+See [Authentication](/api/authentication) for the trust boundaries and
+[Onboarding API](/api/onboarding) for the route contracts.
+
+## After Setup
+
+After the review step:
+
+1. Add your company vision and objectives.
+2. Invite human teammates or add them directly.
+3. Build out the Team with more agents and departments.
+4. Set budgets and assign initial tasks.
 
 <Card title="Core Concepts" href="/start/core-concepts">
   Learn the key concepts behind AoA
+</Card>
+
+<Card title="Invite and Join" href="/guides/board-operator/inviting-and-joining">
+  Bring a human teammate into the organization
 </Card>

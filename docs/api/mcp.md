@@ -1,6 +1,6 @@
 ---
 title: MCP Server
-summary: AoA as an MCP server — 36 tools and 4 resources, RBAC-scoped
+summary: AoA's generated MCP tool registry and four resources, RBAC-scoped
 ---
 
 AoA exposes a JSON-RPC 2.0 MCP endpoint at `/companies/:companyId/mcp`. Agents, Commander, the board UI, and external MCP clients can call it to read and write company data.
@@ -47,7 +47,7 @@ Requests with neither → `401` in authenticated deployments. In `local_trusted`
 | `memory.search` | Multi-pathway retrieval (semantic + keyword + temporal). RRF + trust ranking, RBAC-scoped. Required: `query`. Optional: `layer`, `category`, `departmentId`, `projectId`, `limit` (1–50) |
 | `memory.get` | Fetch a single approved memory item. Returns `404` outside RBAC scope. Required: `id` |
 
-## Tools — Write (10)
+## Tools — Write
 
 | Tool | Description |
 |------|-------------|
@@ -60,7 +60,14 @@ Requests with neither → `401` in authenticated deployments. In `local_trusted`
 | `update-task` | Update task fields. Required: `taskId`. Optional: `title`, `description`, `projectId`, `goalId`, `status`, `priority`, `assigneeAgentId`, `assigneeUserId`, `responsibleUserId` (`string` or `null`; `null` clears), `labelIds` |
 | `add-task-comment` | Add a comment to a task. Required: `taskId`, `body` |
 | `attach-artifact-version` | Add an immutable version to an artifact. Required: `artifactId`, `sourceDetail`. Optional: `changelog`, `parentVersionId`, `content`, `fileUrl` |
-| `ask_founder` | Ask the founder a question and block (~5 min) for the answer. **Org/heartbeat task-execution agents during an active run ONLY** (`403` otherwise; crew/internal-agent are out of scope — their channel is the in-thread reply). Surfaces in the Inbox hub as a `work_question` the founder answers (free-text, or one of your `options`). On timeout the run is parked → returns `{answered:false, status:"parked"}` — stop gracefully, do not retry. Required: `question`. Optional: `options` (`[{label,value}]`, values unique), `context` |
+
+## Tools — Protocol Workflow
+
+| Tool | Description |
+|------|-------------|
+| `use_skill` | Load and apply a named Commander skill. Available only to `board` and `commander` actors. |
+| `ask_human` | Ask the responsible human, assigned reviewer, or founder fallback a durable work question during an active heartbeat task run. Supports free text or unique-value options. On timeout the run is parked and returns `{answered:false, status:"parked"}`; stop gracefully instead of retrying. |
+| `ask_founder` | Compatibility alias for the agent-only work-question flow. Prefer `ask_human` for new callers. |
 
 ## Tools — Document (5)
 
@@ -109,7 +116,8 @@ Most tools are open to all authenticated protocol actors unless listed in the se
 | `memory.retain` | All actors — but agent + `scopeToSelf: true` auto-approves; all others create pending items |
 | `memory.write` | All actors — always creates pending memory, never auto-approves |
 | `use_skill` | `board`, `commander` |
-| `ask_founder` | `agent` only; the handler also requires an active heartbeat run |
+| `ask_human` | `agent` only; the handler also requires an active heartbeat task run |
+| `ask_founder` | `agent` only; compatibility alias with the same active-run requirement |
 
 ## Key Behaviors
 
@@ -119,3 +127,7 @@ Most tools are open to all authenticated protocol actors unless listed in the se
 - **Memory write gate:** Agents cannot write memory directly to approved status except into their own personal scope via `memory.retain` + `scopeToSelf: true`. All other memory writes land in `pending` status awaiting founder review (Critical Rule #6).
 - **Artifact immutability:** `attach-artifact-version` and `upsert-task-document` always create new versions. Existing versions are never modified (Decisions #43, #45).
 - **RBAC enforcement:** All tools enforce company isolation. `team_member` actors see only their project-scoped data. Cross-company access returns `404`.
+
+The runtime registry in `server/src/mcp/tools/index.ts` is authoritative. Avoid
+copying its total into prose: the catalog changes as tools are generated and
+registered.

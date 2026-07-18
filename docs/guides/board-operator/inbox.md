@@ -28,6 +28,8 @@ Some items mirror source state. For example, open approvals and runtime decision
 
 Runtime decision cards are where agents ask for permission or input while a run is active. Answer them from the item tab. If the backing run expires or the source revision changes, the stale answer is rejected.
 
+For questions that pause agent work, including takeover, reassignment, cancellation, and continuation recovery, see [How to Resolve Work Questions](work-questions.md).
+
 ## Preferences
 
 The Inbox settings panel controls:

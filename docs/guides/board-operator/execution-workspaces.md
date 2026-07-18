@@ -6,9 +6,7 @@ summary: Per-task git-worktree isolation for engineering work
 A practical reference for the per-task git-worktree isolation system that
 powers engineering workflows in AoA. Companion to
 [`workspace-decisions.md`](../../architecture/workspace-decisions.md)
-(architectural rationale) and
-[`workspace-implementation-plan.md`](../../archive/plans/workspace-implementation-plan.md)
-(implementation history).
+(architectural rationale).
 
 ## What is a workspace?
 

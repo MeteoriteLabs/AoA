@@ -202,6 +202,12 @@ This starts the API server at `http://localhost:3100`. An embedded PostgreSQL da
 
 > **Requirements:** Node.js 20+, pnpm 9.15+
 
+Open the URL to continue through guided setup. The first-time flow creates your
+profile and organization, verifies a writable workspace and your Commander CLI,
+then creates your first department and agent. The loopback-only quickstart uses
+a local board identity, so it does not require a Google account; authenticated
+or remotely exposed deployments use Google sign-in.
+
 <br/>
 
 ## AoA Marketplace

@@ -73,8 +73,9 @@ Promotion cleanup applied during consolidation:
   `gemini-2.5-pro`.
 - Added the workspace-safety persona Playwright spec under
   `tests/e2e/personas/`.
-- Promoted the OnboardingWizard first-agent/first-task/launch regression test
-  because the research notes identified this as focused first-run coverage.
+- Promoted focused first-run regression coverage for the route-driven founder
+  onboarding flow, including first-agent setup and launch behavior identified
+  by the research notes.
 
 ## Research Evidence Carried Forward
 

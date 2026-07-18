@@ -40,11 +40,20 @@ Scope drafts turn extracted thread material into planned work. Autonomy controls
 - Assist: create planning tasks and request dispatch approval
 - Drive: create standard tasks and dispatch when preflight checks pass
 
-Crew results loop back into the originating thread, including failure cards and run summaries.
+Crew work remains linked to its originating thread. Successful execution is
+visible through the created task, its output, and the task's run-summary comment.
+When a crew run fails, AoA also posts a failure card into the originating thread
+with actions to retry or view the task. Run summaries can be disabled per agent
+with `runtimeConfig.autoRunSummary`; failure-card delivery is a separate,
+best-effort loopback.
 
 ## Attachments and Viewer Tabs
 
 Thread entries can carry assets or artifacts. The viewer supports thread content, linked files, browser-style viewers, and selected-item detail.
+
+Posts and replies use the shared composer for drafts, mentions, attachments, and
+replay-safe retries. See [Compose messages and comments](composer.md) and the
+[Discussions API](../../api/discussions.md).
 
 ## Legacy Status
 

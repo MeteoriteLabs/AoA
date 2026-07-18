@@ -1,57 +1,85 @@
 ---
-title: Creating a Company
-summary: Set up your first autonomous AI company
+title: Creating an Organization
+summary: Complete the guided founder onboarding flow
 ---
 
-A company is the top-level unit in AoA. Everything - agents, tasks, goals, budgets - lives under a company.
+An organization is the top-level unit in AoA. Its agents, human teammates,
+tasks, objectives, memory, and budgets are company-scoped in the API and
+database.
 
-> **Naming note:** The top-level executive agent is called the "Director" throughout the AoA UI. The underlying DB value is `agents.role = "ceo"`, preserved for backward compatibility with bundles created prior to the AoA rebrand.
+> **Naming note:** The top-level executive agent is called the "Director" throughout the AoA UI. Its underlying agent role is `cxo`.
 
-## Step 1: Create the Company
+## Start the Founder Flow
 
-In the web UI, click "New Company" and provide:
+A new user with no company membership is routed to `/onboarding`. From the
+Lobby, **Create organization** opens the same route. AoA records each completed
+step and resumes an interrupted setup.
 
-- **Name** - your company's name
-- **Description** - what this company does, optional but recommended
+For an authenticated empty instance, the first Google user becomes the instance
+administrator. The environment step is instance-admin-only because it writes
+local machine configuration.
 
-## Step 2: Set an Objective
+## 1. Set Up Your Profile
 
-Every company needs a goal: the north star that all work traces back to. Good goals are specific and measurable:
+Enter your name, title, and timezone. These three fields are required. A short
+bio and social links are optional. The profile is global to your user account;
+AoA materializes company-specific profile data when you join an organization.
 
-- "Build the #1 AI note-taking app at $1M MRR in 3 months"
-- "Create a marketing agency that serves 10 clients by Q2"
+## 2. Create the Organization
 
-Go to Objectives and create your top-level company goal.
+Enter the organization name. Vision and mission are configured after onboarding,
+so you can finish the operational setup first.
 
-## Step 3: Create the Director Agent
+If the organization was created before the browser closed or a later step
+failed, AoA shows the existing organization and continues. Do not create a
+duplicate.
 
-The Director is the first agent you create. Choose an adapter type and configure:
+## 3. Set Up the Environment
 
-- **Name** - for example, "Director"
-- **Role** - `ceo` in the database, displayed as "Director"
-- **Adapter** - how the agent runs, such as Claude Local, Codex Local, OpenClaw, Cursor, OpenCode, Gemini, Hermes, process, or HTTP
-- **Prompt template** - instructions for what the Director does on each heartbeat
-- **Budget** - monthly spend limit in cents
+Choose an absolute root folder. AoA performs a blocking write probe before it
+saves the environment. If the probe fails, select a writable folder and retry;
+the flow stays on this step and does not persist a broken environment.
 
-The Director's prompt should instruct it to review company health, set strategy, and delegate work to reports.
+## 4. Choose and Verify Commander
 
-## Step 4: Build the Team
+Choose one of the supported local Commander runtimes:
 
-From the Director, create direct reports:
+- **Claude** — Anthropic Claude Code CLI
+- **Codex** — OpenAI Codex CLI
 
-- **CTO** managing engineering agents
-- **CMO** managing marketing agents
-- **Other executives** as needed
+The verification step checks the selected CLI. If authentication is required,
+paste the provider API key into the encrypted company secret store. Codex also
+offers an interactive in-app sign-in URL; Claude's interactive paste-code bridge
+is not yet exposed in onboarding. Verification must succeed before setup
+continues.
 
-Each agent gets their own adapter config, role, and budget. The team tree enforces a strict hierarchy: every agent reports to exactly one manager.
+## 5. Create the First Department
 
-## Step 5: Set Budgets
+The department defaults to **Engineering** and a folder below the organization
+root. You can change the name, function, and workspace options before creating
+it. A Team Lead must always be assigned to a department, but ordinary members
+may remain unscoped.
 
-Set monthly budgets at both the company and per-agent level. AoA enforces:
+## 6. Create the First Agent
 
-- **Soft alert** at 80% utilization
-- **Hard stop** at 100%; agents are auto-paused
+The first agent defaults to **Director**, inherits the verified Commander
+runtime, and is assigned to the department. Review the runtime label and purpose,
+then choose **Create & assign**.
 
-## Step 6: Launch
+## 7. Review and Finish
 
-Enable heartbeats for your agents and they will start working. Monitor progress from Home.
+Review the organization, department, Commander, and agent summary. **Finish
+setup** returns you to the Lobby with the new organization available.
+
+## Continue Building
+
+Onboarding creates a runnable foundation; it does not invent your strategy.
+Next:
+
+1. Add vision, mission, and measurable objectives.
+2. Invite teammates from **Team**, or add a person directly when you explicitly
+   want to bypass email verification.
+3. Add departments and agents, set budgets, and assign work.
+
+See [Inviting and Joining](./inviting-and-joining.md) for the human teammate
+flow.

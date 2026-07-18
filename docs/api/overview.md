@@ -49,7 +49,7 @@ All responses return JSON. Successful responses return the entity directly. Erro
 | `401` | Unauthenticated | API key missing or invalid |
 | `403` | Unauthorized | You don't have permission for this action |
 | `404` | Not found | Entity doesn't exist or isn't in your company |
-| `409` | Conflict | Another agent owns the task. Pick a different one. **Do not retry.** |
+| `409` | Conflict | Inspect the endpoint-specific error. It may indicate checkout ownership, stale optimistic-concurrency state, an idempotency conflict, or another operation already in progress. Retry only as that endpoint documents. |
 | `422` | Semantic violation | Invalid state transition (e.g. backlog -> done) |
 | `500` | Server error | Transient failure. Comment on the task and move on. |
 
@@ -60,3 +60,12 @@ List endpoints support standard pagination query parameters when applicable. Res
 ## Rate Limiting
 
 No rate limiting is enforced in local deployments. Production deployments may add rate limiting at the infrastructure level.
+
+## Domain References
+
+- [Authentication](authentication.md) and [Onboarding](onboarding.md)
+- [Companies](companies.md), [Team](team.md), and [Agents](agents.md)
+- [Tasks](issues.md), [Work Questions](work-questions.md), and [Discussions](discussions.md)
+- [Goals and Projects](goals-and-projects.md), [Workflow Templates](workflow-templates.md), and [Routines](routines.md)
+- [Artifacts](artifacts.md), [Workspaces](workspaces.md), and [Memory](memory.md)
+- [Commander](internal-agent.md) and [MCP](mcp.md)

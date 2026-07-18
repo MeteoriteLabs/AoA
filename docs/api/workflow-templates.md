@@ -36,6 +36,7 @@ Requires `founder` or `team_lead` role.
   "name": "Feature Delivery",
   "description": "Standard spec-to-ship pipeline",
   "workspaceMode": "isolated",
+  "agentCompletionPolicyOverride": "review_required",
   "steps": [
     {
       "order": 0,
@@ -93,6 +94,8 @@ Requires `founder` or `team_lead` role.
 
 Returns `201` with the created template.
 
+`agentCompletionPolicyOverride` is optional and accepts `review_required`, `agent_can_complete`, or `null`. Only a human operator with task-assignment authority may set or change it. It overrides company and project/department defaults for tasks instantiated from the template, unless a task-level override is supplied or the company review guardrail forces review. Each generated task stores the resolved policy and provenance snapshot.
+
 ## Update Template
 
 ```
@@ -141,6 +144,6 @@ Returns the deleted template.
 
 ## Notes
 
-- Templates live in the `workflow_templates` table. Schema: `name`, `description`, `steps` (JSONB ordered array), `dependencies` (JSONB `fromStep`/`toStep` pairs), `instantiationCount`, `workspaceMode`.
+- Templates live in the `workflow_templates` table. Schema: `name`, `description`, `steps` (JSONB ordered array), `dependencies` (JSONB `fromStep`/`toStep` pairs), `instantiationCount`, `workspaceMode`, `agentCompletionPolicyOverride`.
 - Tasks created by instantiation are ordinary tasks — they can be edited, reassigned, and managed via the standard task API.
 - The `workspaceMode` field sets the execution workspace mode for all instantiated tasks: `department_default` \| `shared` \| `isolated`.

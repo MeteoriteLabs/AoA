@@ -52,6 +52,11 @@ POST /api/companies/{companyId}/issues
   "assigneeAgentId": "{agentId}",
   "responsibleUserId": "{userId}",
   "reviewerUserId": "{reviewerUserId}",
+  "acceptanceCriteria": [
+    "Cache hit rate is observable",
+    "Fallback behavior is tested"
+  ],
+  "agentCompletionPolicyOverride": "review_required",
   "parentId": "{parentIssueId}",
   "projectId": "{projectId}",
   "goalId": "{goalId}"
@@ -61,6 +66,8 @@ POST /api/companies/{companyId}/issues
 Create accepts `assigneeAgentId`, `assigneeUserId`, `responsibleUserId`, and `reviewerUserId`. `assigneeAgentId` and `assigneeUserId` identify the executor; `responsibleUserId` identifies the accountable human and does not dispatch execution. Omit `responsibleUserId` to use server defaulting, or send `null` to create the task with no responsible human.
 
 Tasks have one assignee, either an agent (`assigneeAgentId`) or a human (`assigneeUserId`). Tasks also have one responsible human (`responsibleUserId`) who owns accountability for the work. If no responsible human is explicitly chosen, AoA defaults it from the human assignee, the assigned agent's nearest human manager, or the current operator for unassigned tasks.
+
+`acceptanceCriteria` accepts up to 50 non-empty criteria, each at most 1,000 characters. Agents cannot define acceptance criteria for their own tasks. `agentCompletionPolicyOverride` is `review_required`, `agent_can_complete`, or `null` and can be set only by an authorized human operator.
 
 ## Update Issue
 
@@ -75,7 +82,39 @@ Headers: X-Aoa-Run-Id: {runId}
 
 The optional `comment` field adds a comment in the same call.
 
-Updatable fields: `title`, `description`, `status`, `priority`, `assigneeAgentId`, `assigneeUserId`, `responsibleUserId`, `reviewerUserId`, `projectId`, `goalId`, `parentId`, `billingCode`. Send `responsibleUserId: null` to clear the responsible human.
+Updatable fields include `title`, `description`, `status`, `priority`, `assigneeAgentId`, `assigneeUserId`, `responsibleUserId`, `reviewerUserId`, `projectId`, `goalId`, `parentId`, `billingCode`, `acceptanceCriteria`, and `agentCompletionPolicyOverride`. Send `responsibleUserId: null` to clear the responsible human.
+
+After execution starts, a founder may only tighten the task override to an effective `review_required` policy. Attempts to relax a running task return `422` with `completion_policy_locked`.
+
+## Agent Completion Policy
+
+Every task snapshots its effective completion policy when it is created:
+
+| Field | Meaning |
+|-------|---------|
+| `agentCompletionPolicy` | Effective `review_required` or `agent_can_complete` policy |
+| `agentCompletionPolicyOverride` | Task-level override, or `null` |
+| `agentCompletionPolicySource` | `company`, `department`, `project`, `routine`, `workflow_template`, `task`, or `legacy_backfill` |
+| `agentCompletionPolicySourceId` | ID of the setting that supplied the effective policy |
+| `agentCompletionPolicyResolvedAt` | Resolution timestamp |
+
+Resolution precedence, from broadest to narrowest, is company default, project or department default, routine or workflow-template override, then task override. A company review guardrail always forces `review_required`, even when a narrower setting allows agent completion. Changing a broader default does not retroactively rewrite existing task snapshots.
+
+For an agent to move its assigned task directly to `done`, all of these must be true:
+
+- effective policy is `agent_can_complete`
+- the task has at least one non-empty acceptance criterion
+
+Crew and internal-agent tool transitions also require effective Drive autonomy
+from the thread or company context. Org-agent HTTP API keys are dial-exempt and
+are treated as Drive for this check. Both paths still require task ownership,
+the completion policy, and acceptance criteria. Otherwise the agent must use
+review or receives `422`. Crew and internal-agent tools need effective Assist
+autonomy of at least 1 to move a task to `in_review`.
+
+When a task enters `in_review`, AoA materializes a reviewer in this order: explicit reviewer, responsible human, project-scoped team lead, founder. If no eligible reviewer exists, the transition returns `422` with `reviewer_unavailable`. `reviewerSource` records `explicit`, `responsible`, `scope_lead`, or `founder`.
+
+Company defaults and the hard review guardrail are documented in [Companies](companies.md). Project and department defaults are documented in [Goals and Projects](goals-and-projects.md).
 
 ## Delete Issue
 

@@ -7,7 +7,7 @@ summary: "Lineage, wire-compat surfaces, and what's intentionally preserved"
 
 AoA (Army of Agents) is built on [Paperclip](https://github.com/paperclipai/paperclip), an open-source AI agent orchestration project. Paperclip provides the foundation: the heartbeat push-execution system, adapter registry, atomic task checkout, ticketing pipeline, and the core server/UI scaffolding.
 
-AoA layers a **Hybrid Workforce OS** on top for solo founders. Everything V1 and beyond is additive: thread-based Discussions (replacing the Debrief/Brief pipeline), the Internal Agent ("Commander"), 4-layer Memory with approval gating, immutable Artifact versions, per-task Execution Workspaces, RBAC (founder / team_lead / team_member), bidirectional MCP with 31 tools, a feedback and trust-score system, and the V3 roadmap items (autonomy tiers, connectors, blueprints, hosted execution).
+AoA layers a **Hybrid Workforce OS** on top for solo founders. Everything V1 and beyond is additive: thread-based Discussions (replacing the Debrief/Brief pipeline), the Internal Agent ("Commander"), 4-layer Memory with approval gating, immutable Artifact versions, per-task Execution Workspaces, RBAC (founder / team_lead / team_member), bidirectional MCP with a generated tool registry, a feedback and trust-score system, and the V3 roadmap items (autonomy tiers, connectors, blueprints, hosted execution).
 
 The short version: **Paperclip is the execution primitive. AoA is what you build a company with.**
 
@@ -15,7 +15,7 @@ The short version: **Paperclip is the execution primitive. AoA is what you build
 
 Everything a user or developer sees has been renamed to AoA: the CLI banner, log prefixes (`[aoa]`), CSS classes (`aoa-*`), localStorage keys (`aoa:*`), token prefixes (`aoa_invite_`, `aoa_mcp_`), environment variables (`AOA_*`), plugin example keys (`aoa.hello-world`), and all doc and UI prose.
 
-Wire-compat surfaces are **intentionally preserved** under the legacy `paperclip` name to avoid breaking existing data, plugins, and integrations. The canonical allow-list lives at [wire-compat.md](../architecture/wire-compat.md). The ten current wire-compat surfaces are:
+Wire-compat surfaces are **intentionally preserved** under the legacy `paperclip` name to avoid breaking existing data, plugins, and integrations. The canonical and current allow-list lives at [wire-compat.md](../architecture/wire-compat.md). Representative surfaces include:
 
 1. `PAPERCLIP_*` environment variables — mirrored to `AOA_*` equivalents; both are accepted.
 2. `paperclipai` CLI binary alias — kept alongside the `aoa` bin so existing scripts don't break.
@@ -27,6 +27,10 @@ Wire-compat surfaces are **intentionally preserved** under the legacy `paperclip
 8. `paperclip_session_key` — HTTP integration field name expected by existing external clients.
 9. `X-Paperclip-Run-Id` — HTTP response header consumed by existing integrations and OpenClaw join records.
 10. `paperclip:/.*` localStorage keys — legacy reads allowed only inside `lib/storage-migrations.ts` and the `ui/index.html` FOUC bootstrap fallback; all new writes use `aoa:`.
+
+The list above explains the compatibility boundary; use the linked architecture
+document, rather than this overview, when deciding whether a particular legacy
+identifier may remain.
 
 ## Why wire-compat was preserved
 
