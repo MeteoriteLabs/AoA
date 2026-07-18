@@ -7,9 +7,8 @@ import { advanceOnboarding } from "../../api/onboarding";
 import { teamApi } from "../../api/team";
 import { HUMAN_TITLE_OPTIONS, getTimezoneOptions } from "@/lib/human-profile-constants";
 import { Button } from "@/components/ui/button";
-
-const FIELD =
-  "w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring";
+import { Reveal } from "../motion";
+import { FIELD, GradientText, LABEL, StepCard, StepHeading, StepShell } from "./shared";
 
 /**
  * Shared Human Operating Profile step (spec §6). Journey-agnostic and wired
@@ -140,96 +139,125 @@ export function HumanProfileStep({ ctx, onComplete }: StepProps) {
   };
 
   return (
-    <div className="mx-auto max-w-md py-10">
-      <h1 className="text-xl font-semibold">Set up your profile</h1>
-      <p className="mt-1 text-sm text-muted-foreground">
-        This is how your team — and its agents — will know you.
-      </p>
+    <StepShell>
+      <Reveal>
+        <StepHeading
+          title={
+            <>
+              First, <GradientText>you</GradientText>.
+            </>
+          }
+          subtitle="AoA is humans and agents as one team — this is how your team, and its agents, will know you."
+        />
+      </Reveal>
 
-      <label className="mt-6 mb-1 block text-xs text-muted-foreground" htmlFor="hp-name">
-        Name
-      </label>
-      <input id="hp-name" aria-label="Name" className={FIELD} value={name} onChange={(e) => setName(e.target.value)} autoFocus />
-
-      <label className="mt-3 mb-1 block text-xs text-muted-foreground" htmlFor="hp-title">
-        Title
-      </label>
-      <select id="hp-title" aria-label="Title" className={FIELD} value={title} onChange={(e) => setTitle(e.target.value)}>
-        <option value="">Select a title…</option>
-        {HUMAN_TITLE_OPTIONS.map((t) => (
-          <option key={t} value={t}>
-            {t}
-          </option>
-        ))}
-      </select>
-
-      <label className="mt-3 mb-1 block text-xs text-muted-foreground" htmlFor="hp-tz">
-        Timezone
-      </label>
-      <select id="hp-tz" aria-label="Timezone" className={FIELD} value={timezone} onChange={(e) => setTimezone(e.target.value)}>
-        <option value="">Select a timezone…</option>
-        {timezoneOptions.map((tz) => (
-          <option key={tz} value={tz}>
-            {tz}
-          </option>
-        ))}
-      </select>
-
-      <label className="mt-3 mb-1 block text-xs text-muted-foreground" htmlFor="hp-bio">
-        Short bio (optional)
-      </label>
-      <textarea id="hp-bio" aria-label="Short bio (optional)" className={FIELD} rows={2} value={bio} onChange={(e) => setBio(e.target.value)} />
-
-      <div className="mt-3">
-        <span className="mb-1 block text-xs text-muted-foreground">Social links (optional)</span>
-        {links.map((url, i) => (
-          <div key={i}>
-            <div className="mt-1 flex items-center gap-1">
-              <input
-                aria-label={`Social link ${i + 1}`}
-                className={FIELD}
-                placeholder="https://…"
-                value={url}
-                onChange={(e) => {
-                  // Clear this row's inline error as the user edits it.
-                  setLinkError((prev) => (prev?.index === i ? null : prev));
-                  setLinks((prev) => prev.map((v, j) => (j === i ? e.target.value : v)));
-                }}
-              />
-              <button
-                type="button"
-                aria-label={`Remove social link ${i + 1}`}
-                className="shrink-0 rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
-                onClick={() => {
-                  // Rows shift on removal, so drop any stale row-scoped error.
-                  setLinkError(null);
-                  setLinks((prev) => prev.filter((_, j) => j !== i));
-                }}
-              >
-                <X className="h-3.5 w-3.5" aria-hidden />
-              </button>
-            </div>
-            {linkError?.index === i && (
-              <p className="mt-1 text-xs text-destructive">{linkError.message}</p>
-            )}
+      <Reveal delay={0.09}>
+        <StepCard className="flex flex-col gap-3">
+          <div>
+            <label className={LABEL} htmlFor="hp-name">
+              Name
+            </label>
+            <input
+              id="hp-name"
+              aria-label="Name"
+              className={FIELD}
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              autoFocus
+            />
           </div>
-        ))}
-        <button
-          type="button"
-          className="mt-1 text-xs text-muted-foreground underline"
-          onClick={() => {
-            setLinkError(null);
-            setLinks((prev) => [...prev, ""]);
-          }}
-        >
-          + Add link
-        </button>
-      </div>
 
-      {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
-      <Button className="mt-4 w-full" onClick={() => void submit()} disabled={!canSubmit}>
-        {busy ? "Saving…" : "Continue"}
-      </Button>
-    </div>
+          <div className="flex gap-2">
+            <div className="flex-1">
+              <label className={LABEL} htmlFor="hp-title">
+                Title
+              </label>
+              <select id="hp-title" aria-label="Title" className={FIELD} value={title} onChange={(e) => setTitle(e.target.value)}>
+                <option value="">Select a title…</option>
+                {HUMAN_TITLE_OPTIONS.map((t) => (
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="flex-1">
+              <label className={LABEL} htmlFor="hp-tz">
+                Timezone
+              </label>
+              <select id="hp-tz" aria-label="Timezone" className={FIELD} value={timezone} onChange={(e) => setTimezone(e.target.value)}>
+                <option value="">Select a timezone…</option>
+                {timezoneOptions.map((tz) => (
+                  <option key={tz} value={tz}>
+                    {tz}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <label className={LABEL} htmlFor="hp-bio">
+              Short bio (optional)
+            </label>
+            <textarea id="hp-bio" aria-label="Short bio (optional)" className={FIELD} rows={2} value={bio} onChange={(e) => setBio(e.target.value)} />
+          </div>
+
+          <div>
+            <span className={LABEL}>Social links (optional)</span>
+            {links.map((url, i) => (
+              <div key={i}>
+                <div className="mt-1 flex items-center gap-1">
+                  <input
+                    aria-label={`Social link ${i + 1}`}
+                    className={FIELD}
+                    placeholder="https://…"
+                    value={url}
+                    onChange={(e) => {
+                      // Clear this row's inline error as the user edits it.
+                      setLinkError((prev) => (prev?.index === i ? null : prev));
+                      setLinks((prev) => prev.map((v, j) => (j === i ? e.target.value : v)));
+                    }}
+                  />
+                  <button
+                    type="button"
+                    aria-label={`Remove social link ${i + 1}`}
+                    className="shrink-0 rounded-md p-1.5 text-dim hover:bg-white/5 hover:text-text"
+                    onClick={() => {
+                      // Rows shift on removal, so drop any stale row-scoped error.
+                      setLinkError(null);
+                      setLinks((prev) => prev.filter((_, j) => j !== i));
+                    }}
+                  >
+                    <X className="h-3.5 w-3.5" aria-hidden />
+                  </button>
+                </div>
+                {linkError?.index === i && (
+                  <p className="mt-1 text-xs text-destructive">{linkError.message}</p>
+                )}
+              </div>
+            ))}
+            <button
+              type="button"
+              className="mt-1 text-xs text-dim underline"
+              onClick={() => {
+                setLinkError(null);
+                setLinks((prev) => [...prev, ""]);
+              }}
+            >
+              + Add link
+            </button>
+          </div>
+
+          {error && <p className="text-xs text-destructive">{error}</p>}
+        </StepCard>
+      </Reveal>
+
+      <Reveal delay={0.18}>
+        <Button className="w-full" onClick={() => void submit()} disabled={!canSubmit}>
+          {busy ? "Saving…" : "Continue"}
+        </Button>
+      </Reveal>
+    </StepShell>
   );
 }

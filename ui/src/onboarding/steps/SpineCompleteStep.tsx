@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { StepProps } from "../registry";
 import { advanceOnboarding } from "../../api/onboarding";
 import { Button } from "@/components/ui/button";
+import { AoaLogo, LoadingDots, Reveal } from "../motion";
+import { GradientText, StepShell } from "./shared";
 
 /**
  * Terminal wizard step (WS0c §4.3) — the last step of the founder spine
@@ -61,18 +63,28 @@ export function SpineCompleteStep({ ctx, onComplete }: StepProps) {
   }, []);
 
   return (
-    <div className="mx-auto max-w-md py-10 text-center">
-      <h1 className="text-xl font-semibold">Bringing you to your control room…</h1>
-      {error ? (
-        <div className="mt-6 space-y-3">
-          <p className="text-xs text-destructive">{error}</p>
-          <Button className="w-full" onClick={() => void advance()} disabled={busy}>
-            {busy ? "Retrying…" : "Retry"}
-          </Button>
+    <StepShell>
+      <Reveal>
+        <div className="flex flex-col items-center gap-4 text-center">
+          <AoaLogo size={40} />
+          <h1 className="text-2xl font-bold tracking-tight text-text sm:text-[28px]">
+            Bringing you to your <GradientText>control room</GradientText>…
+          </h1>
+          {error ? (
+            <div className="w-full space-y-3">
+              <p className="text-xs text-destructive">{error}</p>
+              <Button className="w-full" onClick={() => void advance()} disabled={busy}>
+                {busy ? "Retrying…" : "Retry"}
+              </Button>
+            </div>
+          ) : (
+            <div className="flex flex-col items-center gap-2">
+              <LoadingDots state="loading" />
+              <p className="text-sm text-dim">Just a moment.</p>
+            </div>
+          )}
         </div>
-      ) : (
-        <p className="mt-2 text-sm text-muted-foreground">Just a moment.</p>
-      )}
-    </div>
+      </Reveal>
+    </StepShell>
   );
 }
