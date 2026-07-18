@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render } from "@testing-library/react";
+import { render, act } from "@testing-library/react";
 import { ConstellationBg } from "../ConstellationBg";
 
 function mock2dContext() {
@@ -25,6 +25,10 @@ describe("ConstellationBg", () => {
 
   afterEach(() => {
     getContextSpy.mockRestore();
+    // Restores any window.ResizeObserver / window.matchMedia overwritten via
+    // vi.stubGlobal below, even if a test body throws before reaching its
+    // own cleanup line.
+    vi.unstubAllGlobals();
   });
 
   it("renders a canvas", () => {
@@ -62,14 +66,44 @@ describe("ConstellationBg", () => {
       unobserve = unobserve;
       disconnect = disconnect;
     }
-    const original = window.ResizeObserver;
-    window.ResizeObserver = RO as unknown as typeof ResizeObserver;
+    vi.stubGlobal("ResizeObserver", RO);
 
     const { unmount } = render(<ConstellationBg />);
     expect(observe).toHaveBeenCalled();
     unmount();
     expect(disconnect).toHaveBeenCalled();
+  });
 
-    window.ResizeObserver = original;
+  it("repaints after a resize under reduced motion instead of staying blank", () => {
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn().mockReturnValue({
+        matches: true,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      }),
+    );
+
+    const ctx = mock2dContext();
+    getContextSpy.mockImplementation(() => ctx);
+
+    render(<ConstellationBg />);
+
+    // Clear the draw calls recorded during the initial mount's static frame
+    // so the assertions below only see resize-triggered activity.
+    const clearRect = ctx.clearRect as ReturnType<typeof vi.fn>;
+    const arc = ctx.arc as ReturnType<typeof vi.fn>;
+    const fill = ctx.fill as ReturnType<typeof vi.fn>;
+    clearRect.mockClear();
+    arc.mockClear();
+    fill.mockClear();
+
+    act(() => {
+      window.dispatchEvent(new Event("resize"));
+    });
+
+    expect(clearRect).toHaveBeenCalled();
+    expect(arc).toHaveBeenCalled();
+    expect(fill).toHaveBeenCalled();
   });
 });

@@ -52,8 +52,7 @@ describe("Reveal", () => {
         capturedCallback = cb;
       }
     }
-    const original = window.IntersectionObserver;
-    window.IntersectionObserver = MockIO as unknown as typeof IntersectionObserver;
+    vi.stubGlobal("IntersectionObserver", MockIO);
 
     const { container } = render(<Reveal inView>hi</Reveal>);
     const el = container.firstChild as HTMLElement;
@@ -66,6 +65,6 @@ describe("Reveal", () => {
     });
 
     expect(el.style.animation).toContain("obd-fadeUp");
-    window.IntersectionObserver = original;
+    // Restored by the top-level afterEach's vi.unstubAllGlobals().
   });
 });

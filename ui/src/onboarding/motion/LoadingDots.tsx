@@ -4,7 +4,9 @@
  * motion.css. Decorative — aria-hidden (callers pair it with adjacent
  * status text, e.g. VerifyStep's "Verifying your engine…").
  */
-export function LoadingDots({ state }: { state: "idle" | "loading" | "done" }) {
+export type LoadingDotsState = "idle" | "loading" | "done";
+
+export function LoadingDots({ state }: { state: LoadingDotsState }) {
   return (
     <span className={`dots ${state}`} aria-hidden="true">
       <i />

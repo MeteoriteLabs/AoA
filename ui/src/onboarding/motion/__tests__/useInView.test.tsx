@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, act } from "@testing-library/react";
 import { useInView } from "../useInView";
 
@@ -27,9 +27,15 @@ function TestComponent({ once }: { once?: boolean }) {
 }
 
 describe("useInView", () => {
+  afterEach(() => {
+    // Restores window.IntersectionObserver even if a test body throws
+    // before reaching its own cleanup line, so a mid-test failure can't
+    // leak the mock into other tests.
+    vi.unstubAllGlobals();
+  });
+
   it("starts out of view and flips to in-view when the observer reports an intersection", () => {
-    const original = window.IntersectionObserver;
-    window.IntersectionObserver = MockIntersectionObserver as unknown as typeof IntersectionObserver;
+    vi.stubGlobal("IntersectionObserver", MockIntersectionObserver);
 
     const { getByTestId } = render(<TestComponent />);
     expect(getByTestId("target").textContent).toBe("out");
@@ -43,12 +49,10 @@ describe("useInView", () => {
 
     expect(getByTestId("target").textContent).toBe("in");
     expect(capturedOptions?.rootMargin).toBe("-100px");
-    window.IntersectionObserver = original;
   });
 
   it("`once` disconnects the observer after the first intersection", () => {
-    const original = window.IntersectionObserver;
-    window.IntersectionObserver = MockIntersectionObserver as unknown as typeof IntersectionObserver;
+    vi.stubGlobal("IntersectionObserver", MockIntersectionObserver);
 
     render(<TestComponent once />);
     act(() => {
@@ -59,6 +63,5 @@ describe("useInView", () => {
     });
 
     expect(lastInstance?.disconnect).toHaveBeenCalled();
-    window.IntersectionObserver = original;
   });
 });

@@ -1,4 +1,4 @@
-type State = "idle" | "working" | "thinking" | "done";
+export type State = "idle" | "working" | "thinking" | "done";
 
 /**
  * AgentCharacter — the little robot. Renders the DOM tree the `.agent*`

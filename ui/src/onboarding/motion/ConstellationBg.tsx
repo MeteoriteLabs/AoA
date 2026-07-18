@@ -16,7 +16,10 @@ export function ConstellationBg({ className }: { className?: string }) {
     if (!cvs || !ctx) return; // jsdom / no-canvas guard
 
     const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
-    const dpr = window.devicePixelRatio || 1;
+    // Re-read on every size() call (not captured once at mount) so moving the
+    // window to a different-DPR monitor doesn't pin the backing store to the
+    // stale value — mirrors GitGraphCanvas.tsx's resize-time dpr read.
+    let dpr = window.devicePixelRatio || 1;
     let W = 0;
     let H = 0;
     let raf = 0;
@@ -25,6 +28,7 @@ export function ConstellationBg({ className }: { className?: string }) {
     let dots: { x: number; y: number; vx: number; vy: number; r: number; o: number }[] = [];
 
     const size = () => {
+      dpr = window.devicePixelRatio || 1;
       const r = cvs.getBoundingClientRect();
       W = cvs.width = r.width * dpr;
       H = cvs.height = r.height * dpr;
@@ -43,8 +47,9 @@ export function ConstellationBg({ className }: { className?: string }) {
       redIdx = Math.floor(Math.random() * dots.length);
       redTimer = window.setTimeout(hop, 3000 + Math.random() * 4000);
     };
-    const MAXD = 90 * dpr;
     const frame = () => {
+      // Computed per-frame (not hoisted) since dpr can change after a resize.
+      const maxd = 90 * dpr;
       ctx.clearRect(0, 0, W, H);
       for (let i = 0; i < dots.length; i++) {
         const d = dots[i];
@@ -53,8 +58,8 @@ export function ConstellationBg({ className }: { className?: string }) {
         for (let j = i + 1; j < dots.length; j++) {
           const e = dots[j];
           const dist = Math.hypot(d.x - e.x, d.y - e.y);
-          if (dist < MAXD) {
-            ctx.strokeStyle = `rgba(255,255,255,${0.05 * (1 - dist / MAXD)})`;
+          if (dist < maxd) {
+            ctx.strokeStyle = `rgba(255,255,255,${0.05 * (1 - dist / maxd)})`;
             ctx.lineWidth = 0.5 * dpr;
             ctx.beginPath();
             ctx.moveTo(d.x, d.y);
@@ -81,6 +86,14 @@ export function ConstellationBg({ className }: { className?: string }) {
       ctx.shadowBlur = 0;
       raf = requestAnimationFrame(frame);
     };
+    // Reduced motion: paint exactly one static frame, no rAF loop, no
+    // red-node hop. Shared by the initial mount AND the resize handler so a
+    // resize under reduced motion repaints instead of leaving a blank
+    // canvas (size() clears the bitmap via the width/height reassignment).
+    const paintStatic = () => {
+      frame();
+      cancelAnimationFrame(raf);
+    };
 
     size();
     init();
@@ -88,14 +101,17 @@ export function ConstellationBg({ className }: { className?: string }) {
       hop();
       frame();
     } else {
-      // Reduced motion: paint one static frame, no rAF loop, no red-node hop.
-      frame();
-      cancelAnimationFrame(raf);
+      paintStatic();
     }
 
     const onResize = () => {
       size();
       init();
+      if (reduce) {
+        // The running rAF loop already repaints on its own for the
+        // non-reduced case; don't start a second loop here.
+        paintStatic();
+      }
     };
     window.addEventListener("resize", onResize);
 
