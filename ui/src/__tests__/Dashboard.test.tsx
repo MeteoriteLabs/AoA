@@ -28,6 +28,7 @@ const {
       hasAgent: true,
       hasGoal: true,
     },
+    firstRunCompleted: true,
     goalProgress: [],
   },
   suggestionFixtures: [
@@ -275,6 +276,39 @@ describe("Dashboard", () => {
 
     expect(await screen.findByText("Scout")).toBeInTheDocument();
     expect(screen.getByText("Scout proposed competitor pricing research")).toBeInTheDocument();
+  });
+
+  it("WS0b: shows first-run onboarding when firstRunCompleted is false, even with a complete checklist", async () => {
+    const { homeApi } = await import("../api/dashboard");
+    vi.mocked(homeApi.summary).mockResolvedValue({
+      ...mockHomeSummary,
+      firstRunCompleted: false,
+    });
+    renderWithProviders(<Dashboard />);
+
+    expect(await screen.findByText("Getting Started")).toBeInTheDocument();
+    expect(
+      screen.getByText("Let's get your workspace set up. Complete these steps to get started."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("+ New Task")).not.toBeInTheDocument();
+  });
+
+  it("WS0b: shows steady-state Home when firstRunCompleted is true, even with an incomplete checklist (no goal)", async () => {
+    const { homeApi } = await import("../api/dashboard");
+    vi.mocked(homeApi.summary).mockResolvedValue({
+      ...mockHomeSummary,
+      setupStatus: {
+        hasVisionMission: false,
+        hasDepartment: false,
+        hasAgent: false,
+        hasGoal: false,
+      },
+      firstRunCompleted: true,
+    });
+    renderWithProviders(<Dashboard />);
+
+    expect(await screen.findByText("+ New Task")).toBeInTheDocument();
+    expect(screen.queryByText("Getting Started")).not.toBeInTheDocument();
   });
 
   it("suggest_memory accept opens the suggested memory dialog", async () => {

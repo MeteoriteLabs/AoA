@@ -178,10 +178,6 @@ function getTotalActionCount(groups: ActionGroup[], suggestionCount: number): nu
   return groups.reduce((sum, group) => sum + group.items.length, 0) + suggestionCount;
 }
 
-function isSetupComplete(s: SetupStatus): boolean {
-  return s.hasVisionMission && s.hasDepartment && s.hasAgent && s.hasGoal;
-}
-
 function buildSetupSteps(s: SetupStatus): SetupStepDef[] {
   return [
     {
@@ -778,7 +774,11 @@ export function Dashboard() {
 
   const userName = session?.user?.name?.split(" ")[0] ?? null;
   const greeting = userName ? `${getGreeting()}, ${userName}` : getGreeting();
-  const showOnboarding = data?.setupStatus && !isSetupComplete(data.setupStatus);
+  // WS0b: gated on the persisted first-run-done flag, not the checklist below
+  // (vision+dept+agent+goal never completes for In-flight/Explorer personas).
+  // The checklist itself (buildSetupSteps) still renders as first-run content
+  // — WS9 replaces it with the Map.
+  const showOnboarding = data ? !data.firstRunCompleted : false;
   const actionGroups = data ? buildActionGroups(data) : [];
   const totalActions = getTotalActionCount(actionGroups, suggestions.length);
   const statusParts: string[] = [];
