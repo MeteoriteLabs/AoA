@@ -1,9 +1,14 @@
 import { useEffect, useState } from "react";
+import { FolderOpen } from "lucide-react";
 import type { StepProps } from "../registry";
 import { filesystemApi } from "../../api/filesystem";
 import { api, ApiError } from "../../api/client";
 import { advanceOnboarding } from "../../api/onboarding";
 import { Button } from "@/components/ui/button";
+import { FolderBrowserDialog } from "@/components/FolderBrowserDialog";
+import { cn } from "@/lib/utils";
+import { Reveal } from "../motion";
+import { FIELD, GradientText, LABEL, StepCard, StepHeading, StepShell } from "./shared";
 
 type ProbeBody = {
   probe?: { summary?: string; checks?: { message?: string; status?: string }[] };
@@ -36,6 +41,10 @@ export function EnvironmentStep({ ctx, onComplete }: StepProps) {
   const [rootFolder, setRootFolder] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // WS3: the WS0a company-scoped, jail-aware folder browser — passing
+  // companyId routes the dialog through the membership-authorized
+  // workspace-fs API instead of the instance-admin filesystem API.
+  const [browserOpen, setBrowserOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -77,22 +86,51 @@ export function EnvironmentStep({ ctx, onComplete }: StepProps) {
   };
 
   return (
-    <div className="mx-auto max-w-md py-10">
-      <h1 className="text-xl font-semibold">Set up your environment</h1>
-      <p className="mt-1 text-sm text-muted-foreground">
-        AoA registers this machine and verifies it can read and write here. This is where
-        department workspaces and agent files live.
-      </p>
-      <label className="mt-6 mb-1 block text-xs text-muted-foreground">Root folder</label>
-      <input
-        className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm font-mono outline-none focus:ring-1 focus:ring-ring"
-        value={rootFolder}
-        onChange={(e) => setRootFolder(e.target.value)}
+    <StepShell>
+      <Reveal>
+        <StepHeading
+          title={
+            <>
+              Set up your <GradientText>environment</GradientText>
+            </>
+          }
+          subtitle="AoA registers this machine and verifies it can read and write here. This is where department workspaces and agent files live."
+        />
+      </Reveal>
+
+      <Reveal delay={0.09}>
+        <StepCard>
+          <label className={LABEL}>Root folder</label>
+          <div className="flex gap-2">
+            <input
+              className={cn(FIELD, "font-mono")}
+              value={rootFolder}
+              onChange={(e) => setRootFolder(e.target.value)}
+            />
+            <Button type="button" variant="secondary" className="shrink-0 gap-1.5" onClick={() => setBrowserOpen(true)}>
+              <FolderOpen className="h-3.5 w-3.5" aria-hidden />
+              Browse
+            </Button>
+          </div>
+          {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
+        </StepCard>
+      </Reveal>
+
+      <Reveal delay={0.18}>
+        <Button className="w-full" onClick={() => void submit()} disabled={busy || !rootFolder.trim()}>
+          {busy ? "Verifying…" : "Verify & continue"}
+        </Button>
+      </Reveal>
+
+      <FolderBrowserDialog
+        open={browserOpen}
+        onClose={() => setBrowserOpen(false)}
+        onSelect={(path) => setRootFolder(path)}
+        initialPath={rootFolder || undefined}
+        companyId={ctx.companyId ?? undefined}
+        title="Choose your environment root"
+        description="AoA reads and writes here — department workspaces and agent files live inside this folder."
       />
-      {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
-      <Button className="mt-4 w-full" onClick={() => void submit()} disabled={busy || !rootFolder.trim()}>
-        {busy ? "Verifying…" : "Verify & continue"}
-      </Button>
-    </div>
+    </StepShell>
   );
 }

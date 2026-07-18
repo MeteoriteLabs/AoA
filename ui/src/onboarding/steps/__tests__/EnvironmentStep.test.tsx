@@ -19,6 +19,32 @@ vi.mock("../../../api/onboarding", () => ({
   })),
 }));
 
+// WS3/WS0a: EnvironmentStep wires in the shared FolderBrowserDialog (a Radix
+// Dialog with its own async filesystem queries). Mock the dialog component
+// itself — a lightweight stand-in that exposes onSelect via a button — so this
+// suite verifies the WIRING (companyId passed through, chosen path written
+// back) without depending on Radix portal/query internals covered by
+// FolderBrowserDialog's own tests.
+type FolderBrowserDialogProps = {
+  open: boolean;
+  onClose: () => void;
+  onSelect: (path: string) => void;
+  companyId?: string;
+  initialPath?: string;
+};
+const dialogPropsRef = vi.hoisted(() => ({ current: null as FolderBrowserDialogProps | null }));
+vi.mock("@/components/FolderBrowserDialog", () => ({
+  FolderBrowserDialog: (props: FolderBrowserDialogProps) => {
+    dialogPropsRef.current = props;
+    if (!props.open) return null;
+    return (
+      <button type="button" onClick={() => props.onSelect("/chosen/path")}>
+        choose-path
+      </button>
+    );
+  },
+}));
+
 import { advanceOnboarding } from "../../../api/onboarding";
 
 const ctx: StepContext = {
@@ -29,7 +55,36 @@ const ctx: StepContext = {
 };
 
 describe("EnvironmentStep (Stage C / order 3, revA R13)", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dialogPropsRef.current = null;
+  });
+
+  it("WS0a/WS3: opens the FolderBrowserDialog scoped to the company (jailed API), and writes the chosen path", async () => {
+    render(<EnvironmentStep ctx={ctx} onComplete={vi.fn()} onBack={() => {}} />);
+    await waitFor(() =>
+      expect((screen.getByRole("textbox") as HTMLInputElement).value).toBe("/home/ada/AoA"),
+    );
+    // Rendered closed, already scoped to the org-layer company.
+    expect(dialogPropsRef.current?.open).toBe(false);
+    expect(dialogPropsRef.current?.companyId).toBe("c1");
+
+    fireEvent.click(screen.getByRole("button", { name: /browse/i }));
+    expect(dialogPropsRef.current?.open).toBe(true);
+
+    fireEvent.click(screen.getByText("choose-path"));
+    await waitFor(() =>
+      expect((screen.getByRole("textbox") as HTMLInputElement).value).toBe("/chosen/path"),
+    );
+
+    // The typed/browsed path is what actually gets submitted.
+    fireEvent.click(screen.getByText(/verify/i));
+    await waitFor(() =>
+      expect(post).toHaveBeenCalledWith("/companies/c1/onboarding/environment", {
+        rootFolder: "/chosen/path",
+      }),
+    );
+  });
 
   it("prefills the home dir, sets up the env, advances ENVIRONMENT_READY, then completes", async () => {
     const onComplete = vi.fn();
