@@ -33,6 +33,7 @@ import {
 import { HopCapDecisionCard } from "./HopCapDecisionCard";
 import { CrewFailureCard, type CrewFailurePayload } from "./CrewFailureCard";
 import { AgentAvatar, agentRoleColor } from "./AgentAvatar";
+import { MarkdownBody } from "../MarkdownBody";
 import type { ScopeProposalPayload } from "@armyofagents/shared";
 
 /* ─── Helpers ─── */
@@ -482,7 +483,7 @@ function MeBubble({
       <div className="flex items-end justify-end gap-2">
         <div className="flex flex-col items-end gap-1.5 max-w-[78%]">
           <div
-            className="px-4 py-3 text-sm leading-relaxed break-words whitespace-pre-wrap"
+            className="px-4 py-3 text-sm leading-relaxed break-words"
             style={{
               // Bubble has a self-contained dark background in BOTH themes, so its
               // text stays light (not text-foreground, which would be dark-on-dark
@@ -493,7 +494,10 @@ function MeBubble({
               borderRadius: "16px 16px 4px 16px",
             }}
           >
-            {entry.rawContent}
+            {/* prose-invert forced: dark bubble in both themes. */}
+            <MarkdownBody className="prose-sm prose-invert">
+              {entry.rawContent}
+            </MarkdownBody>
           </div>
           {entry.attachments && entry.attachments.length > 0 && (
             <div className="w-full">
@@ -573,7 +577,7 @@ function HumanBubble({
           </span>
         </div>
         <div
-          className="px-4 py-3 text-sm leading-relaxed break-words whitespace-pre-wrap"
+          className="px-4 py-3 text-sm leading-relaxed break-words"
           style={{
             // Self-contained dark bubble background in both themes → keep light
             // text (text-foreground would be unreadable dark-on-dark in light mode).
@@ -583,7 +587,10 @@ function HumanBubble({
             borderRadius: "16px 16px 16px 4px",
           }}
         >
-          {entry.rawContent}
+          {/* prose-invert forced: dark bubble in both themes. */}
+          <MarkdownBody className="prose-sm prose-invert">
+            {entry.rawContent}
+          </MarkdownBody>
         </div>
         {entry.attachments && entry.attachments.length > 0 && (
           <InlineArtifactCard
@@ -674,10 +681,10 @@ function AgentCard({
           </span>
         </div>
 
-        {/* Body */}
-        <p className="text-sm leading-relaxed break-words whitespace-pre-wrap text-foreground">
+        {/* Body — theme-driven (no forced invert; agent card follows global theme) */}
+        <MarkdownBody className="prose-sm text-foreground">
           {entry.rawContent}
-        </p>
+        </MarkdownBody>
 
         {/* Phase E2: inline attachments */}
         {entry.attachments && entry.attachments.length > 0 && (
