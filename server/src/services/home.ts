@@ -11,11 +11,41 @@ import {
   companies,
   projects,
   agents,
+  onboardingProgress,
 } from "@armyofagents/db";
 import type { HomeSummary, GoalProgress, GoalGapNudge, RecentActivityItem, SetupStatus } from "@armyofagents/shared";
 import { notCrewAssigned } from "./issue-crew-scope.js";
 
 const TERMINAL_STATUSES = ["done", "cancelled"];
+
+/**
+ * WS0b — resolve the persisted first-run-done flag for a (userId, companyId).
+ * Gates Home first-run vs steady-state independently of the `setupStatus`
+ * checklist, which never completes for In-flight/Explorer personas.
+ *
+ * - No board-actor `userId` (e.g. an agent/MCP caller) → nothing to gate,
+ *   treat as complete.
+ * - No onboarding_progress row for this (userId, companyId) → a pre-existing
+ *   member who predates onboarding tracking. Must NOT be re-onboarded, so
+ *   this defaults true.
+ * - A row exists but `firstRunCompletedAt IS NULL` → genuinely in-flight,
+ *   gate (false).
+ */
+export async function resolveFirstRunCompleted(
+  db: Db,
+  companyId: string,
+  userId: string | undefined,
+): Promise<boolean> {
+  if (!userId) return true;
+  const rows = await db
+    .select({ firstRunCompletedAt: onboardingProgress.firstRunCompletedAt })
+    .from(onboardingProgress)
+    .where(and(eq(onboardingProgress.userId, userId), eq(onboardingProgress.companyId, companyId)))
+    .limit(1);
+  const row = rows[0];
+  if (!row) return true;
+  return row.firstRunCompletedAt != null;
+}
 
 export function homeService(db: Db) {
   return {
@@ -30,6 +60,7 @@ export function homeService(db: Db) {
         recentActivityRows,
         goalData,
         setupStatus,
+        firstRunCompleted,
       ] = await Promise.all([
         // 1. Discussions with pending items
         db
@@ -245,11 +276,15 @@ export function homeService(db: Db) {
             hasGoal: goalCount > 0,
           };
         })(),
+
+        // 9. First-run-done flag (WS0b) — see resolveFirstRunCompleted above.
+        resolveFirstRunCompleted(db, companyId, userId),
       ]);
 
       return {
         companyId,
         setupStatus,
+        firstRunCompleted,
         discussionsPendingReview: discussionsCount,
         tasksInReview: reviewCount,
         myTasksDueToday: dueTodayTasks.map((t) => ({
