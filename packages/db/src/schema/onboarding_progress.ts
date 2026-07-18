@@ -23,6 +23,19 @@ export const onboardingProgress = pgTable(
     currentState: text("current_state").notNull(),
     completedStates: jsonb("completed_states").$type<string[]>().notNull().default([]),
     version: integer("version").notNull().default(0),
+    /**
+     * WS0b — the persisted "first-run done" flag. Gates Home first-run vs
+     * steady-state (`showOnboarding = !firstRunCompleted`) independently of
+     * the vision+dept+agent+goal checklist, which never completes for
+     * In-flight/Explorer personas. Set once, on the door-band choice or when
+     * the founder reaches Home after SETUP_COMPLETE. Null = not yet done.
+     */
+    firstRunCompletedAt: timestamp("first_run_completed_at", { withTimezone: true }),
+    /**
+     * Which door the founder chose on the Map (WS9). Null until chosen.
+     * Persisted so a reload/resume routes correctly.
+     */
+    firstRunPersona: text("first_run_persona").$type<"manual" | "in_flight" | "explorer">(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
