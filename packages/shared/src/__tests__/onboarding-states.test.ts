@@ -29,6 +29,22 @@ describe("onboarding states (Stage B / B2)", () => {
     ]);
   });
 
+  it("WS0c: founder sequence no longer gates on DEPARTMENT_CREATED/AGENT_ASSIGNED, but the values stay valid for stored rows", () => {
+    expect(FOUNDER_PHASE1_STATES).not.toContain("DEPARTMENT_CREATED");
+    expect(FOUNDER_PHASE1_STATES).not.toContain("AGENT_ASSIGNED");
+    expect(FOUNDER_PHASE1_STATES).toEqual([
+      "AUTHENTICATED",
+      "PROFILE_SET",
+      "ORGANIZATION_CREATED",
+      "ENVIRONMENT_READY",
+      "COMMANDER_SELECTED",
+      "COMMANDER_VERIFIED",
+      "SETUP_COMPLETE",
+    ]);
+    expect(ONBOARDING_STATES).toContain("DEPARTMENT_CREATED");
+    expect(ONBOARDING_STATES).toContain("AGENT_ASSIGNED");
+  });
+
   it("orderedStatesFor picks the right sequence per journey", () => {
     expect(orderedStatesFor("founder")).toBe(FOUNDER_PHASE1_STATES);
     expect(orderedStatesFor("invited")).toBe(INVITED_PHASE1_STATES);

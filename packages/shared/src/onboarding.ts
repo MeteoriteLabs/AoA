@@ -37,7 +37,17 @@ export const ONBOARDING_STATES = [
 ] as const;
 export type OnboardingState = (typeof ONBOARDING_STATES)[number];
 
-/** Ordered founder-journey sequence Phase 1 actually drives. */
+/**
+ * Ordered founder-journey sequence Phase 1 actually drives.
+ *
+ * WS0c: `DEPARTMENT_CREATED`/`AGENT_ASSIGNED` were removed from this ordered
+ * sequence — the founder wizard now ends at `COMMANDER_VERIFIED` (spine only)
+ * and hands off to Home, which owns the persona-driven department/agent/first-
+ * job tail as its own domain writes (NOT gated `OnboardingState` advances).
+ * Both values stay in the `ONBOARDING_STATES` union above (still valid, e.g.
+ * on pre-WS0c rows) — they're just no longer part of the monotonic advance
+ * this array drives. See docs/aoa/plans/2026-07-18-ws0c-onboarding-state-machine-design.md.
+ */
 export const FOUNDER_PHASE1_STATES: OnboardingState[] = [
   "AUTHENTICATED",
   "PROFILE_SET",
@@ -45,8 +55,6 @@ export const FOUNDER_PHASE1_STATES: OnboardingState[] = [
   "ENVIRONMENT_READY",
   "COMMANDER_SELECTED",
   "COMMANDER_VERIFIED",
-  "DEPARTMENT_CREATED",
-  "AGENT_ASSIGNED",
   "SETUP_COMPLETE",
 ];
 
