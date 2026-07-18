@@ -35,13 +35,16 @@ export const onboardingApi = { getProgress: getOnboardingProgress, advance: adva
 
 /**
  * Fix 2 (dead-end fix, see CLAUDE.md WS0b note) — writes the WS0b
- * first-run-done flag at the founder's natural onboarding completion point
- * (`ReviewStep.finish()`), so `firstRunCompleted` becomes authoritative
- * immediately instead of depending on a server backfill. `server/src/services/home.ts`'s
- * `isLegacySetupComplete` transitional fallback covers this call failing —
- * so this is deliberately best-effort: swallow any error/non-OK response and
- * resolve either way rather than surface it to the caller, since the caller
- * must never block navigation on this write.
+ * first-run-done flag. Originally called from the wizard's `ReviewStep.finish()`;
+ * WS0c removed `ReviewStep` from the founder wizard (the wizard now ends at
+ * the spine's terminal step, which does NOT call this — see
+ * `SpineCompleteStep.tsx`) and the write moves to Home's first-run tail
+ * (WS9). This function is kept here for WS9 to call. Until WS9 lands,
+ * `server/src/services/home.ts`'s `isLegacySetupComplete` transitional
+ * fallback covers a founder who never gets this write. Deliberately
+ * best-effort: swallow any error/non-OK response and resolve either way
+ * rather than surface it to the caller, since the caller must never block
+ * navigation on this write.
  */
 export async function setFirstRunCompleted(companyId: string): Promise<void> {
   try {

@@ -101,11 +101,10 @@ describe("AgentStep (Stage C / order 7)", () => {
   });
 });
 
-describe("assembled registry includes the agent step", () => {
-  it("passes the guard and registers at order 7", () => {
+describe("assembled registry (WS0c: AgentStep is no longer a wizard step)", () => {
+  it("passes the guard, and AGENT_ASSIGNED/AgentStep are no longer registered — the founder wizard ends at the spine (SETUP_COMPLETE); Home owns the agent tail", () => {
     expect(validateRegistry(ONBOARDING_STEPS)).toEqual([]);
-    const a = ONBOARDING_STEPS.find((s) => s.state === "AGENT_ASSIGNED");
-    expect(a?.order).toBe(7);
-    expect(a?.dependsOn).toEqual(["DEPARTMENT_CREATED"]);
+    expect(ONBOARDING_STEPS.find((s) => s.state === "AGENT_ASSIGNED")).toBeUndefined();
+    expect(ONBOARDING_STEPS.find((s) => s.id === "agent")).toBeUndefined();
   });
 });

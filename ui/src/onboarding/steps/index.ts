@@ -4,14 +4,20 @@ import { OrgStep } from "./OrgStep";
 import { EnvironmentStep } from "./EnvironmentStep";
 import { CommanderStep } from "./CommanderStep";
 import { VerifyStep } from "./VerifyStep";
-import { DepartmentStep } from "./DepartmentStep";
-import { AgentStep } from "./AgentStep";
-import { ReviewStep } from "./ReviewStep";
+import { SpineCompleteStep } from "./SpineCompleteStep";
 
 /**
  * The real onboarding steps, assembled here (registry.ts stays pure logic).
- * More steps (org, environment, commander, department, agent, review) are
- * added as they land; the FlowEngine walks whatever is registered.
+ *
+ * WS0c: the founder wizard is the SPINE ONLY — Profile → Company →
+ * Environment → Commander → Verify → terminal (SETUP_COMPLETE). Department,
+ * Agent, and Review are no longer wizard steps; the persona-driven In-flight
+ * tail (department/agent/first-job) moves to Home's first-run experience
+ * (WS4–8/WS9), doing its own domain writes rather than gated OnboardingState
+ * advances. `DepartmentStep`/`AgentStep` components still exist (for later
+ * Home reuse, extracted of their onboarding-advance calls) but are no longer
+ * registered here; `ReviewStep` is fully replaced by `SpineCompleteStep`. See
+ * docs/aoa/plans/2026-07-18-ws0c-onboarding-state-machine-design.md.
  */
 export const ONBOARDING_STEPS: StepDefinition[] = [
   {
@@ -77,40 +83,16 @@ export const ONBOARDING_STEPS: StepDefinition[] = [
     title: "Verify tooling",
   },
   {
-    id: "department",
+    id: "spine-complete",
     order: 6,
-    state: "DEPARTMENT_CREATED",
+    state: "SETUP_COMPLETE",
     journeys: ["founder"],
     dependsOn: ["COMMANDER_VERIFIED"],
     canSkip: false,
     shouldInclude: () => true,
-    isComplete: (ctx) => ctx.completedStates.includes("DEPARTMENT_CREATED"),
-    Component: DepartmentStep,
-    title: "First department",
-  },
-  {
-    id: "agent",
-    order: 7,
-    state: "AGENT_ASSIGNED",
-    journeys: ["founder"],
-    dependsOn: ["DEPARTMENT_CREATED"],
-    canSkip: false,
-    shouldInclude: () => true,
-    isComplete: (ctx) => ctx.completedStates.includes("AGENT_ASSIGNED"),
-    Component: AgentStep,
-    title: "First agent",
-  },
-  {
-    id: "review",
-    order: 8,
-    state: "SETUP_COMPLETE",
-    journeys: ["founder"],
-    dependsOn: ["AGENT_ASSIGNED"],
-    canSkip: false,
-    shouldInclude: () => true,
     isComplete: (ctx) => ctx.completedStates.includes("SETUP_COMPLETE"),
-    Component: ReviewStep,
-    title: "Review",
+    Component: SpineCompleteStep,
+    title: "Bringing you to your control room",
   },
 ];
 
