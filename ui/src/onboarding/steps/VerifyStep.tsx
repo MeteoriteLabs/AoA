@@ -12,6 +12,8 @@ import {
 } from "../../api/commander-auth";
 import { cliToolToProvider, type CommanderProvider } from "@armyofagents/shared";
 import { Button } from "@/components/ui/button";
+import { AgentCharacter, LoadingDots, Reveal } from "../motion";
+import { GradientText, StepHeading, StepShell } from "./shared";
 
 type Outcome = "idle" | "verified" | "needs_auth" | "not_installed" | "failed";
 
@@ -21,6 +23,9 @@ type VerifyBody = {
 };
 
 const PROVIDER_LABEL: Record<CommanderProvider, string> = { anthropic: "Claude", openai: "Codex" };
+
+/** Interval (ms) between CLI-auto-detect poll ticks, once past the immediate first check. */
+const CLI_AUTO_DETECT_POLL_MS = 3000;
 
 /** OS-appropriate install hint (generic — the CLI name is shown in the copy). */
 function installHint(): string {
@@ -34,14 +39,18 @@ function installHint(): string {
  * "Verify your tooling" step (Stage C / order 5). Drives the shared adapter
  * probe via the verify route. BLOCKING: only a `verified` outcome advances
  * COMMANDER_VERIFIED. On `needs_auth` the founder can sign in WITHOUT a terminal
- * — either paste an API key (stored encrypted) or run the interactive device
- * login (Plan 3 §6.1/§6.2) — then we auto re-verify. The live device flow is
- * dogfood-verified; CI covers the key-paste + poll-to-completed wiring.
+ * — paste an API key (stored encrypted), run the interactive device login (Plan
+ * 3 §6.1/§6.2, Codex-only), or (WS3) do it themselves in a terminal and let this
+ * step auto-detect completion by polling the same verify probe — then we auto
+ * re-verify. The live device flow is dogfood-verified; CI covers the key-paste,
+ * device-poll, and CLI-auto-detect-poll wiring.
  */
 export function VerifyStep({ ctx, onComplete }: StepProps) {
   const [outcome, setOutcome] = useState<Outcome>("idle");
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const busyRef = useRef(busy);
+  busyRef.current = busy;
 
   const [provider, setProvider] = useState<CommanderProvider | null>(null);
   const [apiKey, setApiKey] = useState("");
@@ -51,6 +60,14 @@ export function VerifyStep({ ctx, onComplete }: StepProps) {
     null,
   );
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // WS3: "do it yourself in the CLI" — instead of a device-login handshake,
+  // just keep re-running the SAME hello-probe verify check on an interval
+  // until it comes back verified (the founder ran `claude auth login` / etc.
+  // themselves in a terminal outside AoA). Works for any provider, unlike the
+  // interactive device login below (Codex-only).
+  const [cliPolling, setCliPolling] = useState(false);
+  const cliPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Derive the recovery-credential provider from Commander's CLI (`cliTool`), NOT
   // the crew `provider` — they are independent config. The verify route probes
@@ -83,6 +100,14 @@ export function VerifyStep({ ctx, onComplete }: StepProps) {
     }
   };
 
+  const clearCliPoll = () => {
+    if (cliPollRef.current) {
+      clearInterval(cliPollRef.current);
+      cliPollRef.current = null;
+    }
+    setCliPolling(false);
+  };
+
   // Mirror the latest active login challenge (with the company that created it)
   // into a ref so the empty-dep unmount cleanup below sees the CURRENT value — a
   // plain closure would capture the initial null and never cancel anything.
@@ -96,14 +121,16 @@ export function VerifyStep({ ctx, onComplete }: StepProps) {
         : null;
   }, [login, ctx.companyId]);
 
-  // On unmount (incl. navigating Back, which unmounts this step) stop polling AND
-  // cancel a still-`pending` login. Otherwise the detached CLI child + `pending`
-  // row stay alive, and the login slot — shared by (provider, authHome) — 409s
-  // every other company until it completes/expires. A completed/failed/timeout
-  // challenge is already terminal → skip the request. Codex P2-B.
+  // On unmount (incl. navigating Back, which unmounts this step) stop BOTH poll
+  // loops AND cancel a still-`pending` login. Otherwise the detached CLI child +
+  // `pending` row stay alive, and the login slot — shared by (provider,
+  // authHome) — 409s every other company until it completes/expires. A
+  // completed/failed/timeout challenge is already terminal → skip the request.
+  // Codex P2-B.
   useEffect(() => {
     return () => {
       clearPoll();
+      clearCliPoll();
       const active = activeLoginRef.current;
       if (active && active.status === "pending") {
         void cancelCommanderLogin({ companyId: active.companyId, challengeId: active.challengeId }).catch(
@@ -124,6 +151,7 @@ export function VerifyStep({ ctx, onComplete }: StepProps) {
       setMessage(res.result?.checks?.[0]?.message ?? null);
       if ((res.outcome ?? "verified") === "verified") {
         clearPoll();
+        clearCliPoll();
         await advanceOnboarding({
           companyId: ctx.companyId,
           journey: ctx.journey,
@@ -193,105 +221,181 @@ export function VerifyStep({ ctx, onComplete }: StepProps) {
     }
   };
 
+  /**
+   * WS3 — "I'll sign in myself in the CLI." No handshake to start: just
+   * re-run `check()` on an interval until it reports `verified` (which
+   * itself advances + completes and calls `clearCliPoll()`). Skips a tick
+   * while a check is already in flight (`busyRef`) so overlapping requests
+   * can't pile up.
+   */
+  const startCliAutoDetect = () => {
+    if (cliPollRef.current) return;
+    setCliPolling(true);
+    setAuthError(null);
+    const tick = () => {
+      if (busyRef.current) return;
+      void check();
+    };
+    cliPollRef.current = setInterval(tick, CLI_AUTO_DETECT_POLL_MS);
+    tick(); // check immediately, don't wait a full interval
+  };
+
   const providerLabel = provider ? PROVIDER_LABEL[provider] : "your CLI";
 
   return (
-    <div className="mx-auto max-w-md py-10">
-      <h1 className="text-xl font-semibold">Verify your tooling</h1>
-      <p className="mt-1 text-sm text-muted-foreground">
-        We check that your Commander CLI is installed, launchable, and signed in. You never have to
-        touch a terminal unless something's missing.
-      </p>
+    <StepShell>
+      <Reveal>
+        <StepHeading
+          title={
+            <>
+              Verify your <GradientText>tooling</GradientText>
+            </>
+          }
+          subtitle="We check that your Commander CLI is installed, launchable, and signed in. You never have to touch a terminal unless something's missing."
+        />
+      </Reveal>
+
+      <Reveal delay={0.09}>
+        <div className="flex flex-col items-center gap-3">
+          <AgentCharacter
+            state={busy || cliPolling ? "working" : outcome === "verified" ? "done" : "idle"}
+            eyeColor={outcome === "verified" ? "#4a9a4a" : "#D13A26"}
+          />
+          <LoadingDots state={busy ? "loading" : outcome === "verified" ? "done" : "idle"} />
+        </div>
+      </Reveal>
 
       {outcome === "not_installed" && (
-        <div className="mt-4 rounded-md border border-amber-300/60 bg-amber-50/40 dark:border-amber-500/30 dark:bg-amber-950/40 p-3 text-xs space-y-2">
-          <p>The CLI isn't installed or isn't on your PATH.</p>
-          <p className="text-muted-foreground">{installHint()}</p>
-          {message && <p className="text-muted-foreground">{message}</p>}
-          <p>Install it, then choose “Check again”.</p>
-        </div>
+        <Reveal delay={0.18}>
+          <div className="space-y-2 rounded-xl border border-amber-500/30 bg-amber-950/20 p-3 text-left text-xs text-dim">
+            <p className="text-text">The CLI isn't installed or isn't on your PATH.</p>
+            <p>{installHint()}</p>
+            {message && <p>{message}</p>}
+            <p className="text-text">Install it, then choose "Check again".</p>
+          </div>
+        </Reveal>
       )}
       {outcome === "needs_auth" && (
-        <div className="mt-4 rounded-md border border-amber-300/60 bg-amber-50/40 dark:border-amber-500/30 dark:bg-amber-950/40 p-3 text-xs space-y-3">
-          <p>The {providerLabel} CLI is installed but needs sign-in. Choose one — no terminal required:</p>
-          {message && <p className="text-muted-foreground">{message}</p>}
+        <Reveal delay={0.18}>
+          <div className="space-y-3 rounded-xl border border-amber-500/30 bg-amber-950/20 p-3 text-left text-xs text-dim">
+            <p className="text-text">
+              The {providerLabel} CLI is installed but needs sign-in. Choose one — no terminal required:
+            </p>
+            {message && <p>{message}</p>}
 
-          <div className="space-y-2">
-            <label className="block font-medium" htmlFor="commander-api-key">
-              Paste an API key
-            </label>
-            <input
-              id="commander-api-key"
-              type="password"
-              autoComplete="off"
-              className="w-full rounded border border-border bg-background px-2 py-1"
-              placeholder={provider === "openai" ? "sk-…" : "sk-ant-…"}
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              disabled={authBusy || !provider}
-            />
-            <Button
-              type="button"
-              variant="secondary"
-              className="w-full"
-              onClick={() => void saveKeyAndReverify()}
-              disabled={authBusy || !provider || !apiKey.trim()}
-            >
-              {authBusy ? "Working…" : "Save key & verify"}
-            </Button>
-          </div>
+            <div className="space-y-2">
+              <label className="block font-medium text-text" htmlFor="commander-api-key">
+                Paste an API key
+              </label>
+              <input
+                id="commander-api-key"
+                type="password"
+                autoComplete="off"
+                className="w-full rounded-md border border-border-strong bg-field px-2 py-1.5 text-text outline-none focus:border-brand focus:ring-1 focus:ring-brand"
+                placeholder={provider === "openai" ? "sk-…" : "sk-ant-…"}
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                disabled={authBusy || !provider}
+              />
+              <Button
+                type="button"
+                variant="secondary"
+                className="w-full"
+                onClick={() => void saveKeyAndReverify()}
+                disabled={authBusy || !provider || !apiKey.trim()}
+              >
+                {authBusy ? "Working…" : "Save key & verify"}
+              </Button>
+            </div>
 
-          {/* Interactive login is Codex-only: `codex login` self-completes via a
-              local callback. Claude's `claude auth login` needs a paste-code
-              bridge (follow-up), so Claude shows the API-key path only. */}
-          {provider === "openai" && (
-            <>
-              <div className="flex items-center gap-2 text-muted-foreground">
-                <span className="h-px flex-1 bg-border" />
-                or
-                <span className="h-px flex-1 bg-border" />
-              </div>
-
-              {login ? (
-                <div className="space-y-1">
-                  <p>
-                    Open this link to finish signing in, then keep this tab open — we'll continue
-                    automatically:
-                  </p>
-                  <a
-                    href={login.loginUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="block break-all font-mono text-[11px] underline"
-                  >
-                    {login.loginUrl}
-                  </a>
-                  <p className="text-muted-foreground">Waiting for sign-in… ({login.status})</p>
+            {/* Interactive login is Codex-only: `codex login` self-completes via a
+                local callback. Claude's `claude auth login` needs a paste-code
+                bridge (follow-up), so Claude shows the API-key path only. */}
+            {provider === "openai" && (
+              <>
+                <div className="flex items-center gap-2 text-very-dim">
+                  <span className="h-px flex-1 bg-border" />
+                  or
+                  <span className="h-px flex-1 bg-border" />
                 </div>
-              ) : (
-                <Button
-                  type="button"
-                  variant="secondary"
-                  className="w-full"
-                  onClick={() => void startLogin()}
-                  disabled={authBusy || !provider}
-                >
-                  {authBusy ? "Working…" : `Sign in with ${providerLabel}`}
-                </Button>
-              )}
-            </>
-          )}
 
-          {authError && <p className="text-destructive">{authError}</p>}
-        </div>
+                {login ? (
+                  <div className="space-y-1">
+                    <p>
+                      Open this link to finish signing in, then keep this tab open — we'll continue
+                      automatically:
+                    </p>
+                    <a
+                      href={login.loginUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="block break-all font-mono text-[11px] text-brand-hover underline"
+                    >
+                      {login.loginUrl}
+                    </a>
+                    <p>Waiting for sign-in… ({login.status})</p>
+                  </div>
+                ) : (
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    className="w-full"
+                    onClick={() => void startLogin()}
+                    disabled={authBusy || !provider}
+                  >
+                    {authBusy ? "Working…" : `Sign in with ${providerLabel}`}
+                  </Button>
+                )}
+              </>
+            )}
+
+            {/* WS3 — CLI auto-detect: works for any provider (unlike the
+                Codex-only interactive login above). */}
+            <div className="flex items-center gap-2 text-very-dim">
+              <span className="h-px flex-1 bg-border" />
+              or
+              <span className="h-px flex-1 bg-border" />
+            </div>
+            {cliPolling ? (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2">
+                  <LoadingDots state="loading" />
+                  <p>
+                    Watching for your sign-in… run it yourself in a terminal and we'll continue
+                    automatically.
+                  </p>
+                </div>
+                <Button type="button" variant="ghost" className="w-full" onClick={clearCliPoll}>
+                  Cancel
+                </Button>
+              </div>
+            ) : (
+              <Button
+                type="button"
+                variant="secondary"
+                className="w-full"
+                onClick={startCliAutoDetect}
+                disabled={authBusy}
+              >
+                I'll sign in myself in the CLI
+              </Button>
+            )}
+
+            {authError && <p className="text-destructive">{authError}</p>}
+          </div>
+        </Reveal>
       )}
       {outcome === "failed" && (
-        <p className="mt-4 text-xs text-destructive">{message ?? "Verification failed."}</p>
+        <Reveal delay={0.18}>
+          <p className="text-xs text-destructive">{message ?? "Verification failed."}</p>
+        </Reveal>
       )}
 
-      <Button className="mt-4 w-full" onClick={() => void check()} disabled={busy}>
-        {busy ? "Checking…" : outcome === "idle" ? "Verify" : "Check again"}
-      </Button>
-    </div>
+      <Reveal delay={0.27}>
+        <Button className="w-full" onClick={() => void check()} disabled={busy}>
+          {busy ? "Checking…" : outcome === "idle" ? "Verify" : "Check again"}
+        </Button>
+      </Reveal>
+    </StepShell>
   );
 }

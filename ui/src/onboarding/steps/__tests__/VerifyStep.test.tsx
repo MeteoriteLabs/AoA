@@ -222,6 +222,66 @@ describe("VerifyStep (Stage C / order 5, blocking)", () => {
     unmount();
     expect(cancelCommanderLogin).not.toHaveBeenCalled();
   });
+
+  // WS3: "I'll sign in myself in the CLI" — a third, provider-agnostic recovery
+  // path that re-runs the SAME hello-probe verify check on an interval (mirrors
+  // the device-login poll above) until it reports verified, then auto-advances.
+  describe("WS3: CLI auto-detect", () => {
+    it("is offered for BOTH providers (unlike the Codex-only interactive login)", async () => {
+      getConfig.mockResolvedValue({ cliTool: "claude_cli" }); // anthropic — no device login
+      post.mockRejectedValueOnce(needsAuthError());
+      render(<VerifyStep ctx={ctx} onComplete={vi.fn()} onBack={() => {}} />);
+      fireEvent.click(screen.getByText("Verify"));
+      expect(await screen.findByRole("button", { name: /sign in myself in the cli/i })).toBeTruthy();
+    });
+
+    it("polls the same verify probe (immediate tick, no waiting a full interval) until verified, then auto-advances", async () => {
+      post.mockRejectedValueOnce(needsAuthError()); // initial "Verify" click
+      post.mockResolvedValueOnce({ outcome: "verified", result: { status: "pass" } }); // auto-detect tick
+      const onComplete = vi.fn();
+      render(<VerifyStep ctx={ctx} onComplete={onComplete} onBack={() => {}} />);
+      fireEvent.click(screen.getByText("Verify"));
+
+      fireEvent.click(await screen.findByRole("button", { name: /sign in myself in the cli/i }));
+
+      await waitFor(() => expect(onComplete).toHaveBeenCalled());
+      expect(post).toHaveBeenCalledTimes(2);
+      expect(post).toHaveBeenLastCalledWith("/companies/c1/internal-agent/verify", {});
+      expect(advanceOnboarding).toHaveBeenCalledWith({
+        companyId: "c1",
+        journey: "founder",
+        requestedState: "COMMANDER_VERIFIED",
+      });
+    });
+
+    it("shows a clear watching status while polling, and Cancel stops it (returns the start button)", async () => {
+      post.mockRejectedValueOnce(needsAuthError()); // initial "Verify" click
+      post.mockRejectedValueOnce(needsAuthError()); // immediate auto-detect tick — still not signed in
+      render(<VerifyStep ctx={ctx} onComplete={vi.fn()} onBack={() => {}} />);
+      fireEvent.click(screen.getByText("Verify"));
+
+      fireEvent.click(await screen.findByRole("button", { name: /sign in myself in the cli/i }));
+      expect(await screen.findByText(/watching for your sign-in/i)).toBeTruthy();
+
+      fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
+      expect(await screen.findByRole("button", { name: /sign in myself in the cli/i })).toBeTruthy();
+      expect(screen.queryByText(/watching for your sign-in/i)).toBeNull();
+    });
+
+    it("does not crash and does not fire onComplete after unmount while a CLI auto-detect poll is active", async () => {
+      post.mockRejectedValueOnce(needsAuthError()); // initial "Verify" click
+      post.mockRejectedValueOnce(needsAuthError()); // immediate auto-detect tick — still not signed in
+      const onComplete = vi.fn();
+      const { unmount } = render(<VerifyStep ctx={ctx} onComplete={onComplete} onBack={() => {}} />);
+      fireEvent.click(screen.getByText("Verify"));
+
+      fireEvent.click(await screen.findByRole("button", { name: /sign in myself in the cli/i }));
+      await waitFor(() => expect(post).toHaveBeenCalledTimes(2));
+
+      expect(() => unmount()).not.toThrow();
+      expect(onComplete).not.toHaveBeenCalled();
+    });
+  });
 });
 
 describe("assembled registry includes the verify step", () => {
