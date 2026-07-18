@@ -7,6 +7,7 @@ import { authApi } from "../api/auth";
 import { queryKeys } from "../lib/queryKeys";
 import { advanceOnboarding, getOnboardingProgress, onboardingApi } from "../api/onboarding";
 import { FlowEngine } from "../onboarding/FlowEngine";
+import { ConstellationBg } from "../onboarding/motion";
 import { ONBOARDING_STEPS } from "../onboarding/steps";
 import { OrgStep } from "../onboarding/steps/OrgStep";
 import { InvitedJoinTerminal } from "../onboarding/InvitedJoinTerminal";
@@ -47,7 +48,11 @@ export function OnboardingFlowPage({ journey }: { journey: OnboardingJourney }) 
   });
 
   if (isLoading || (isNewFounderOrganization && profileProgressQuery.isLoading)) {
-    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading…</div>;
+    return (
+      <div className="onboarding-dark flex min-h-screen items-center justify-center bg-background">
+        <p className="text-sm text-dim">Loading…</p>
+      </div>
+    );
   }
 
   if (!userId) {
@@ -57,10 +62,12 @@ export function OnboardingFlowPage({ journey }: { journey: OnboardingJourney }) 
 
   if (isNewFounderOrganization && profileProgressQuery.error) {
     return (
-      <div className="mx-auto max-w-xl py-10 text-sm text-destructive">
-        {profileProgressQuery.error instanceof Error
-          ? profileProgressQuery.error.message
-          : "Failed to prepare organization setup"}
+      <div className="onboarding-dark flex min-h-screen items-center justify-center bg-background px-6">
+        <p className="text-sm text-destructive">
+          {profileProgressQuery.error instanceof Error
+            ? profileProgressQuery.error.message
+            : "Failed to prepare organization setup"}
+        </p>
       </div>
     );
   }
@@ -81,11 +88,16 @@ export function OnboardingFlowPage({ journey }: { journey: OnboardingJourney }) 
       completedStates: ["AUTHENTICATED", "PROFILE_SET"] as OnboardingState[],
     };
     return (
-      <OrgStep
-        ctx={orgCtx}
-        onComplete={() => navigate("/onboarding", { replace: true })}
-        onBack={() => navigate("/", { replace: true })}
-      />
+      <div className="onboarding-dark relative min-h-screen w-full overflow-hidden bg-background text-foreground">
+        <ConstellationBg />
+        <div className="relative z-10 flex min-h-screen items-center justify-center px-6 py-8">
+          <OrgStep
+            ctx={orgCtx}
+            onComplete={() => navigate("/onboarding", { replace: true })}
+            onBack={() => navigate("/", { replace: true })}
+          />
+        </div>
+      </div>
     );
   }
 

@@ -99,6 +99,22 @@ describe("FlowEngine (Stage B / B6)", () => {
     await waitFor(() => screen.getByTestId("step-org"));
   });
 
+  // WS3: the whole engine — chrome + every step it resolves — renders inside
+  // the dark spine shell (`.onboarding-dark` scope + drifting
+  // `<ConstellationBg/>` canvas), matching the mockup's S2–S5 screens.
+  it("WS3: renders inside the .onboarding-dark shell with the constellation background", async () => {
+    const api: FlowEngineApi = {
+      getProgress: async () => ({ completedStates: ["AUTHENTICATED", "PROFILE_SET"] }),
+    };
+    const { container } = render(
+      <FlowEngine userId="u1" companyId={null} journey="founder" api={api} registry={makeRegistry(() => {})} />,
+    );
+    await waitFor(() => screen.getByTestId("step-org"));
+    const shell = container.querySelector(".onboarding-dark");
+    expect(shell).toBeTruthy();
+    expect(shell?.querySelector("canvas")).toBeTruthy();
+  });
+
   it("renders the shared chrome: 'Step N of M' position chip + a central Back control", async () => {
     const api: FlowEngineApi = {
       getProgress: async () => ({ completedStates: ["AUTHENTICATED", "PROFILE_SET"] }),
