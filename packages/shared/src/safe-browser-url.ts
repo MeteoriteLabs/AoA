@@ -36,6 +36,8 @@ export function toSafeBrowserUrl(value: string): string {
     }
     // "scheme:" with no // -- block dangerous schemes; otherwise treat as host[:port]
     if (DANGEROUS_SCHEMES.has(scheme)) return "about:blank";
+    // Bare non-dangerous schemes (mailto:, tel:, host:port, ...) pass through by
+    // design: without a "//" they are not script-exec vectors in an iframe src.
     return t;
   }
   return t; // schemeless host
