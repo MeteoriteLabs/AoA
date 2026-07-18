@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate, useSearchParams } from "@/lib/router";
 import { authApi } from "../api/auth";
@@ -59,8 +59,8 @@ export function AuthPage() {
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const reduceMotion = usePrefersReducedMotion();
-  const [showSplash, setShowSplash] = useState(false);
-  const splashDecided = useRef(false);
+  const [splashDismissed, setSplashDismissed] = useState(false);
+  const splashDecisionRef = useRef<boolean | null>(null);
 
   const nextPath = useMemo(() => safeNextPath(searchParams.get("next")), [searchParams]);
   const { data: session, isLoading: isSessionLoading } = useQuery({
@@ -75,17 +75,18 @@ export function AuthPage() {
     }
   }, [session, navigate, nextPath]);
 
-  // Decide once (per mount) whether to show the boot splash. Waits for the
-  // session check to resolve so an already-authenticated visitor — who is
-  // about to be bounced onward by the effect above — never sees it flash.
-  // Skipped under reduced motion and once `aoa.splashSeen` is set, so it
-  // only ever plays once per browser.
-  useEffect(() => {
-    if (splashDecided.current || isSessionLoading) return;
-    splashDecided.current = true;
-    if (session || reduceMotion || hasSeenSplash()) return;
-    setShowSplash(true);
-  }, [isSessionLoading, session, reduceMotion]);
+  // Decide once (per mount) whether to show the boot splash — synchronously
+  // during render, the instant the session check resolves, so the auth card
+  // never gets a chance to paint first. (An effect-driven decision would
+  // render the auth card on the settling render and only swap to the splash
+  // on the *next* render, producing a single-frame flash.) An
+  // already-authenticated visitor — who is about to be bounced onward by the
+  // effect above — never sees it flash. Skipped under reduced motion and
+  // once `aoa.splashSeen` is set, so it only ever plays once per browser.
+  if (!isSessionLoading && splashDecisionRef.current === null) {
+    splashDecisionRef.current = !session && !reduceMotion && !hasSeenSplash();
+  }
+  const showSplash = splashDecisionRef.current === true && !splashDismissed;
 
   // bfcache guard. Clicking "Continue with Google" sets `pending` then does a
   // full-page navigation to Google, so the browser caches this page frozen on
@@ -100,6 +101,14 @@ export function AuthPage() {
     };
     window.addEventListener("pageshow", onPageShow);
     return () => window.removeEventListener("pageshow", onPageShow);
+  }, []);
+
+  // Stable across re-renders so a re-render while the splash is up can't
+  // cancel/reschedule SplashScreen's completion timer (its effect depends on
+  // this callback identity).
+  const handleSplashDone = useCallback(() => {
+    markSplashSeen();
+    setSplashDismissed(true);
   }, []);
 
   const handleGoogle = async () => {
@@ -135,12 +144,7 @@ export function AuthPage() {
   if (showSplash) {
     return (
       <div className="onboarding-dark">
-        <SplashScreen
-          onDone={() => {
-            markSplashSeen();
-            setShowSplash(false);
-          }}
-        />
+        <SplashScreen onDone={handleSplashDone} />
       </div>
     );
   }
