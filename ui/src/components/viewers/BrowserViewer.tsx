@@ -73,7 +73,7 @@ export function BrowserViewer({ initialUrl }: { initialUrl: string }) {
         </Button>
         {showFrame && (
           <Button asChild type="button" variant="ghost" size="icon" className="h-7 w-7" title="Open externally">
-            <a href={url} target="_blank" rel="noopener noreferrer" aria-label="Open browser preview externally">
+            <a href={toSafeBrowserUrl(url) || "about:blank"} target="_blank" rel="noopener noreferrer" aria-label="Open browser preview externally">
               <ExternalLink className="h-3.5 w-3.5" />
             </a>
           </Button>
