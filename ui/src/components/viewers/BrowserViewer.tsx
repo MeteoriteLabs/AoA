@@ -4,6 +4,7 @@
 import { useState } from "react";
 import type { FormEvent } from "react";
 import { ExternalLink, Globe, RefreshCw } from "lucide-react";
+import { toSafeBrowserUrl } from "@armyofagents/shared";
 import { Button } from "@/components/ui/button";
 
 export function normalizeBrowserUrl(value: string): string {
@@ -28,9 +29,10 @@ function CenteredMessage({ title, body }: { title: string; body: string }) {
 }
 
 export function BrowserViewer({ initialUrl }: { initialUrl: string }) {
+  const safeInitial = toSafeBrowserUrl(initialUrl);
   const [iframeKey, setIframeKey] = useState(0);
-  const [draftUrl, setDraftUrl] = useState(initialUrl === "about:blank" ? "" : initialUrl);
-  const [url, setUrl] = useState(initialUrl);
+  const [draftUrl, setDraftUrl] = useState(safeInitial === "about:blank" ? "" : safeInitial);
+  const [url, setUrl] = useState(safeInitial || "about:blank");
   const showFrame = url !== "about:blank";
 
   function submit(event: FormEvent<HTMLFormElement>) {
@@ -81,7 +83,7 @@ export function BrowserViewer({ initialUrl }: { initialUrl: string }) {
         <iframe
           key={iframeKey}
           title={url}
-          src={url}
+          src={toSafeBrowserUrl(url) || "about:blank"}
           className="min-h-0 flex-1 border-0 bg-background"
           sandbox="allow-forms allow-popups allow-same-origin allow-scripts"
           data-testid="thread-browser-iframe"
