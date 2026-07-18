@@ -1,11 +1,31 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate, useSearchParams } from "@/lib/router";
 import { authApi } from "../api/auth";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
-import { AsciiArtAnimation } from "@/components/AsciiArtAnimation";
-import { Sparkles } from "lucide-react";
+import { AoaLogo, ConstellationBg, usePrefersReducedMotion } from "@/onboarding/motion";
+import { SplashScreen } from "@/onboarding/SplashScreen";
+
+const SPLASH_SEEN_KEY = "aoa.splashSeen";
+
+function hasSeenSplash(): boolean {
+  try {
+    return localStorage.getItem(SPLASH_SEEN_KEY) === "true";
+  } catch {
+    // Storage unavailable (privacy mode, disabled cookies, …) — fail toward
+    // skipping the splash rather than getting a visitor stuck on it forever.
+    return true;
+  }
+}
+
+function markSplashSeen(): void {
+  try {
+    localStorage.setItem(SPLASH_SEEN_KEY, "true");
+  } catch {
+    // Best-effort; nothing to recover from here.
+  }
+}
 
 function safeNextPath(candidate: string | null): string {
   if (!candidate?.startsWith("/")) return "/";
@@ -13,11 +33,34 @@ function safeNextPath(candidate: string | null): string {
   return candidate;
 }
 
+function GoogleIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path
+        fill="#4285F4"
+        d="M22.5 12.2c0-.7-.1-1.4-.2-2H12v3.9h5.9a5 5 0 0 1-2.2 3.3v2.7h3.6c2.1-2 3.2-4.9 3.2-7.9z"
+      />
+      <path
+        fill="#34A853"
+        d="M12 23c2.9 0 5.4-1 7.2-2.6l-3.6-2.7c-1 .7-2.3 1-3.6 1-2.8 0-5.1-1.9-6-4.4H2.3v2.8A11 11 0 0 0 12 23z"
+      />
+      <path fill="#FBBC05" d="M6 14.3a6.6 6.6 0 0 1 0-4.2V7.3H2.3a11 11 0 0 0 0 9.8L6 14.3z" />
+      <path
+        fill="#EA4335"
+        d="M12 5.4c1.6 0 3 .5 4.1 1.6l3.1-3.1A11 11 0 0 0 2.3 7.3L6 10.1c.9-2.6 3.2-4.5 6-4.5z"
+      />
+    </svg>
+  );
+}
+
 export function AuthPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+  const reduceMotion = usePrefersReducedMotion();
+  const [showSplash, setShowSplash] = useState(false);
+  const splashDecided = useRef(false);
 
   const nextPath = useMemo(() => safeNextPath(searchParams.get("next")), [searchParams]);
   const { data: session, isLoading: isSessionLoading } = useQuery({
@@ -31,6 +74,18 @@ export function AuthPage() {
       navigate(nextPath, { replace: true });
     }
   }, [session, navigate, nextPath]);
+
+  // Decide once (per mount) whether to show the boot splash. Waits for the
+  // session check to resolve so an already-authenticated visitor — who is
+  // about to be bounced onward by the effect above — never sees it flash.
+  // Skipped under reduced motion and once `aoa.splashSeen` is set, so it
+  // only ever plays once per browser.
+  useEffect(() => {
+    if (splashDecided.current || isSessionLoading) return;
+    splashDecided.current = true;
+    if (session || reduceMotion || hasSeenSplash()) return;
+    setShowSplash(true);
+  }, [isSessionLoading, session, reduceMotion]);
 
   // bfcache guard. Clicking "Continue with Google" sets `pending` then does a
   // full-page navigation to Google, so the browser caches this page frozen on
@@ -66,43 +121,76 @@ export function AuthPage() {
 
   if (isSessionLoading) {
     return (
-      <div className="fixed inset-0 flex items-center justify-center">
-        <p className="text-sm text-muted-foreground">Loading…</p>
+      <div
+        className="onboarding-dark fixed inset-0 flex items-center justify-center"
+        style={{ background: "var(--bg)" }}
+      >
+        <p className="text-sm" style={{ color: "var(--dim)" }}>
+          Loading…
+        </p>
+      </div>
+    );
+  }
+
+  if (showSplash) {
+    return (
+      <div className="onboarding-dark">
+        <SplashScreen
+          onDone={() => {
+            markSplashSeen();
+            setShowSplash(false);
+          }}
+        />
       </div>
     );
   }
 
   return (
-    <div className="fixed inset-0 flex bg-background">
-      {/* Left half — sign in */}
-      <div className="w-full md:w-1/2 flex flex-col overflow-y-auto">
-        <div className="w-full max-w-md mx-auto my-auto px-8 py-12">
-          <div className="flex items-center gap-2 mb-8">
-            <Sparkles className="h-4 w-4 text-muted-foreground" />
-            <span className="text-sm font-medium">AoA</span>
-          </div>
+    <div
+      className="onboarding-dark fixed inset-0 flex items-center justify-center overflow-hidden px-6"
+      style={{ background: "var(--bg)" }}
+    >
+      <ConstellationBg />
 
-          <h1 className="text-xl font-semibold">Sign in to AoA</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Run your hybrid team of agents and humans from one control room.
-          </p>
+      <div className="relative z-10 flex w-full max-w-[440px] flex-col items-center gap-4 text-center">
+        <AoaLogo size={30} />
 
-          <div className="mt-6 space-y-3">
-            <Button onClick={handleGoogle} disabled={pending} className="w-full">
-              {pending ? "Redirecting…" : "Continue with Google"}
-            </Button>
-            {error && <p className="text-xs text-destructive">{error}</p>}
-          </div>
+        <h1
+          className="text-[26px] font-bold leading-tight tracking-tight sm:text-[30px]"
+          style={{ color: "var(--text)" }}
+        >
+          Run your{" "}
+          <span
+            style={{
+              backgroundImage: "linear-gradient(135deg, #f1a193, var(--brand-hover), var(--amber))",
+              WebkitBackgroundClip: "text",
+              backgroundClip: "text",
+              color: "transparent",
+            }}
+          >
+            army of agents
+          </span>
+        </h1>
 
-          <p className="mt-5 text-xs text-muted-foreground">
-            Signing up and signing in both happen here — Google decides which.
-          </p>
+        <p className="text-sm" style={{ color: "var(--dim)" }}>
+          Your hybrid workforce — humans + AI agents — from one control room.
+        </p>
+
+        <div className="mt-2 w-full max-w-[320px] space-y-3">
+          <Button onClick={handleGoogle} disabled={pending} className="w-full">
+            {pending ? "Redirecting…" : (
+              <>
+                <GoogleIcon />
+                Continue with Google
+              </>
+            )}
+          </Button>
+          {error && <p className="text-xs text-destructive">{error}</p>}
         </div>
-      </div>
 
-      {/* Right half — ASCII art animation (hidden on mobile) */}
-      <div className="hidden md:block w-1/2 overflow-hidden">
-        <AsciiArtAnimation />
+        <p className="font-mono text-[11px]" style={{ color: "var(--very-dim)" }}>
+          Signing up and signing in both happen here — Google decides which.
+        </p>
       </div>
     </div>
   );
