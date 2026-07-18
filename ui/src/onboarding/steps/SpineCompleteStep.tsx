@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { StepProps } from "../registry";
 import { advanceOnboarding } from "../../api/onboarding";
 import { Button } from "@/components/ui/button";
@@ -20,15 +20,21 @@ import { Button } from "@/components/ui/button";
  * Does NOT write `firstRunCompleted` — that write moves to Home/WS9 (design
  * §5, §6). Interim safety until WS9 lands: `home.ts`'s `isLegacySetupComplete`
  * bridge still covers a founder who completes the legacy checklist.
+ *
+ * The mount-effect auto-fire is guarded by `startedRef` (same convention as
+ * `SplashScreen`'s `firedRef`) so React StrictMode's dev-only double-invoke
+ * of effects can't launch two concurrent advances / two `onComplete()`
+ * calls. The guard covers only the automatic mount fire — the Retry button
+ * calls `advance()` directly, so a genuine failure can still be retried.
  */
 export function SpineCompleteStep({ ctx, onComplete }: StepProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const startedRef = useRef(false);
 
   const advance = useCallback(async () => {
     if (!ctx.companyId) return;
     setBusy(true);
-    setError(null);
     try {
       await advanceOnboarding({
         companyId: ctx.companyId,
@@ -43,11 +49,14 @@ export function SpineCompleteStep({ ctx, onComplete }: StepProps) {
   }, [ctx.companyId, ctx.journey, onComplete]);
 
   useEffect(() => {
+    if (startedRef.current) return;
+    startedRef.current = true;
     void advance();
-    // Fire once on mount. `advance` is recreated when companyId/journey change,
-    // but this step doesn't remount on those changes mid-flight — the
-    // FlowEngine reloads the whole layer instead — so we deliberately don't
-    // chase `advance` here (that would re-fire the request on every render).
+    // Fire once on mount (guarded above). `advance` is recreated when
+    // companyId/journey change, but this step doesn't remount on those
+    // changes mid-flight — the FlowEngine reloads the whole layer instead —
+    // so we deliberately don't chase `advance` here (that would re-fire the
+    // request on every render).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

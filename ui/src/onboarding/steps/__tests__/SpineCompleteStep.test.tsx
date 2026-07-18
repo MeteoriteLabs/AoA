@@ -1,3 +1,4 @@
+import { StrictMode } from "react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { SpineCompleteStep } from "../SpineCompleteStep";
@@ -67,6 +68,57 @@ describe("SpineCompleteStep (WS0c terminal wizard step)", () => {
     await screen.findByText("Retry");
 
     fireEvent.click(screen.getByText("Retry"));
+    await waitFor(() => expect(onComplete).toHaveBeenCalled());
+    expect(advanceOnboarding).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not double-fire the mount advance under React StrictMode's double-invoked effects (mount → unmount → remount)", async () => {
+    const onComplete = vi.fn();
+    render(
+      <StrictMode>
+        <SpineCompleteStep ctx={ctx} onComplete={onComplete} onBack={() => {}} />
+      </StrictMode>,
+    );
+    await waitFor(() => expect(onComplete).toHaveBeenCalled());
+    // StrictMode intentionally mounts, cleans up, and remounts effects once
+    // in dev to surface missing cleanup — the startedRef guard must absorb
+    // that and still only fire (and complete) the advance a single time.
+    expect(advanceOnboarding).toHaveBeenCalledTimes(1);
+    expect(onComplete).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps Retry genuinely disabled/busy while a retry is in flight, blocking a fast double-click from launching concurrent advances", async () => {
+    (advanceOnboarding as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error("advance blew up"),
+    );
+    let resolveRetry: ((value: { completedStates: string[] }) => void) | undefined;
+    const pending = new Promise<{ completedStates: string[] }>((resolve) => {
+      resolveRetry = resolve;
+    });
+    (advanceOnboarding as unknown as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      () => pending,
+    );
+
+    const onComplete = vi.fn();
+    render(<SpineCompleteStep ctx={ctx} onComplete={onComplete} onBack={() => {}} />);
+    await screen.findByText("Retry");
+
+    fireEvent.click(screen.getByText("Retry"));
+
+    // While the retry request is outstanding, the button must actually
+    // reflect the busy state (not the pre-fix dead `disabled={busy}` that
+    // could never be true while the error branch rendered).
+    const busyButton = (await screen.findByText("Retrying…")).closest(
+      "button",
+    ) as HTMLButtonElement;
+    expect(busyButton.disabled).toBe(true);
+
+    // A fast double-click while busy must not launch a second concurrent
+    // advance — disabled buttons don't dispatch click handlers.
+    fireEvent.click(busyButton);
+    expect(advanceOnboarding).toHaveBeenCalledTimes(2); // mount call + the one in-flight retry
+
+    resolveRetry?.({ completedStates: [] });
     await waitFor(() => expect(onComplete).toHaveBeenCalled());
     expect(advanceOnboarding).toHaveBeenCalledTimes(2);
   });
