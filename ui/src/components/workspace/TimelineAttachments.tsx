@@ -30,13 +30,39 @@ export function TimelineAttachments({ attachments, testId, className, onOpen }: 
             )}
           >
             {isImage && (
-              <div data-testid="attachment-inline-preview" className="min-w-0">
-                <img
-                  src={assetUrl}
-                  alt={label}
-                  loading="lazy"
-                  className="max-h-72 w-auto rounded-md border border-border"
-                />
+              <div data-testid={`attachment-inline-preview-${attachment.id}`} className="min-w-0">
+                {onOpen ? (
+                  <button
+                    type="button"
+                    data-testid={`attachment-image-open-${attachment.id}`}
+                    onClick={() => onOpen(attachment)}
+                    aria-label={`Open ${label}`}
+                    className="block min-w-0 cursor-pointer border-0 bg-transparent p-0"
+                  >
+                    <img
+                      src={assetUrl}
+                      alt={label}
+                      loading="lazy"
+                      className="max-h-72 w-auto rounded-md border border-border"
+                    />
+                  </button>
+                ) : (
+                  <a
+                    data-testid={`attachment-image-open-${attachment.id}`}
+                    href={assetUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    aria-label={`Open ${label}`}
+                    className="block min-w-0"
+                  >
+                    <img
+                      src={assetUrl}
+                      alt={label}
+                      loading="lazy"
+                      className="max-h-72 w-auto rounded-md border border-border"
+                    />
+                  </a>
+                )}
               </div>
             )}
             <div className="flex min-w-0 items-center gap-2">
