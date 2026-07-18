@@ -10,6 +10,7 @@ interface TimelineTaskBriefProps {
   attachments: IssueAttachment[];
   contextBundles: IssueContextBundle[];
   agentName?: string | null;
+  onOpenAttachment?: (att: IssueAttachment) => void;
 }
 
 function statusLabel(status: string) {
@@ -21,6 +22,7 @@ export function TimelineTaskBrief({
   attachments,
   contextBundles,
   agentName,
+  onOpenAttachment,
 }: TimelineTaskBriefProps) {
   const contextItemCount = contextBundles.reduce((count, bundle) => count + (bundle.items?.length ?? 0), 0);
   const hasContext = contextBundles.length > 0;
@@ -47,7 +49,7 @@ export function TimelineTaskBrief({
         )}
       </div>
 
-      <TimelineAttachments attachments={attachments} testId="timeline-task-attachments" />
+      <TimelineAttachments attachments={attachments} testId="timeline-task-attachments" onOpen={onOpenAttachment} />
 
       {(agentName || hasContext) && (
         <div className="mt-3 flex flex-col gap-1 text-xs text-muted-foreground">

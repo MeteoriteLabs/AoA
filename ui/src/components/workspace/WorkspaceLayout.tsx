@@ -375,7 +375,7 @@ export function WorkspaceLayout({
                     />
                   </div>
                   <div className="flex-1 min-h-0">
-                    <WorkspaceTimeline issueId={selectedIssueId} />
+                    <WorkspaceTimeline issueId={selectedIssueId} onOpenAttachment={handleOpenAttachment} />
                   </div>
                 </>
               ) : (
@@ -498,7 +498,7 @@ export function WorkspaceLayout({
               )}
 
               {selectedIssueId ? (
-                <WorkspaceTimeline issueId={selectedIssueId} />
+                <WorkspaceTimeline issueId={selectedIssueId} onOpenAttachment={handleOpenAttachment} />
               ) : (
                 <div className="flex items-center justify-center h-full text-sm text-muted-foreground">
                   Select a task to view its timeline
