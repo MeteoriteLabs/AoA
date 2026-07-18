@@ -13,24 +13,10 @@ import { cn } from "@/lib/utils";
 import { formatBytes } from "@/lib/format";
 import { resolveViewer } from "@/components/viewers/viewer-registry";
 import { SharedContentViewer } from "@/components/viewers/SharedContentViewer";
+import { isInlinePreviewable, normalizeMime, INLINE_IMAGE_TYPES } from "@/lib/inline-preview";
 import type { DiscussionEntryAttachment } from "../../api/discussions";
 
-function normalizeMime(ct: string | null): string | null {
-  if (!ct) return null;
-  const base = ct.split(";")[0]!.trim().toLowerCase();
-  return base || null;
-}
-const INLINE_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
-const INLINE_TEXT_MAX_BYTES = 256 * 1024;
-
-export function isInlinePreviewable(contentType: string | null, byteSize: number | null): boolean {
-  const ct = normalizeMime(contentType);
-  if (!ct) return false;
-  if (INLINE_IMAGE_TYPES.has(ct)) return true;
-  const isText = (ct.startsWith("text/") && ct !== "text/html") || ct === "application/json";
-  if (isText) return byteSize != null && byteSize <= INLINE_TEXT_MAX_BYTES;
-  return false;
-}
+export { isInlinePreviewable } from "@/lib/inline-preview";
 
 interface InlineArtifactCardProps {
   attachments: DiscussionEntryAttachment[];
