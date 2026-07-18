@@ -20,6 +20,7 @@ import {
   filenameForArtifactVersion,
 } from "../viewers/artifact-version-viewer";
 import type { ArtifactWithVersions, ArtifactVersion, DetectedOutput, DetectedOutputForUI, TaskOutput } from "@armyofagents/shared";
+import { toSafeBrowserUrl } from "@armyofagents/shared";
 
 export type PreviewMode = "changes" | "preview" | "logs";
 export type PreviewTabKind = "home" | "browser" | "changes" | "file" | "artifact" | "output" | "logs";
@@ -426,7 +427,7 @@ function BrowserTabView({
       {currentUrl ? (
         <iframe
           key={iframeKey}
-          src={currentUrl}
+          src={toSafeBrowserUrl(currentUrl) || "about:blank"}
           className="min-h-0 flex-1 border-0"
           title={tab.title}
           data-testid="preview-browser-iframe"
@@ -1061,7 +1062,7 @@ function PreviewView({
           </div>
           <iframe
             key={iframeKey}
-            src={runningService.previewUrl}
+            src={toSafeBrowserUrl(runningService.previewUrl) || "about:blank"}
             className="flex-1 w-full border-0"
             title="Dev server preview"
             data-testid="preview-iframe"
