@@ -34,6 +34,34 @@ export async function advanceOnboarding(args: {
 export const onboardingApi = { getProgress: getOnboardingProgress, advance: advanceOnboarding };
 
 /**
+ * Fix 2 (dead-end fix, see CLAUDE.md WS0b note) — writes the WS0b
+ * first-run-done flag at the founder's natural onboarding completion point
+ * (`ReviewStep.finish()`), so `firstRunCompleted` becomes authoritative
+ * immediately instead of depending on a server backfill. `server/src/services/home.ts`'s
+ * `isLegacySetupComplete` transitional fallback covers this call failing —
+ * so this is deliberately best-effort: swallow any error/non-OK response and
+ * resolve either way rather than surface it to the caller, since the caller
+ * must never block navigation on this write.
+ */
+export async function setFirstRunCompleted(companyId: string): Promise<void> {
+  try {
+    const res = await fetch("/api/onboarding/first-run", {
+      method: "PATCH",
+      credentials: "include",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ companyId, completed: true }),
+    });
+    if (!res.ok) {
+      // Best-effort: the transitional home.ts fallback (isLegacySetupComplete)
+      // covers this failing. Log for observability only.
+      console.warn(`setFirstRunCompleted: non-OK response (${res.status})`);
+    }
+  } catch (e) {
+    console.warn("setFirstRunCompleted: request failed", e);
+  }
+}
+
+/**
  * Fetch the post-auth journey for the signed-in user. The invite token (if any)
  * is NOT sent here — it lives in a server-side handoff consumed at accept time
  * (revC RC3); the server reads it from the handoff cookie when resolving the

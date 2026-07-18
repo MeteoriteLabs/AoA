@@ -204,6 +204,17 @@ export async function setFirstRunProgress(
     const row = await getProgress(db, args.userId, args.companyId);
     if (!row) return { status: "not_found" };
 
+    // True no-op short-circuit: the row is already completed and the
+    // requested change asks for nothing new (completed:true again, with no
+    // persona change). Mirrors computeAdvance/advanceState's no-op handling —
+    // skip the write entirely so `version`/`updatedAt` don't churn. This
+    // matters once WS9's door-band write calls this endpoint repeatedly
+    // across tabs/reloads for a founder who already finished onboarding.
+    const personaUnchanged = args.persona === undefined || args.persona === row.firstRunPersona;
+    if (row.firstRunCompletedAt != null && args.completed && personaUnchanged) {
+      return { status: "ok", row };
+    }
+
     const patch: Record<string, unknown> = {
       version: row.version + 1,
       updatedAt: new Date(),

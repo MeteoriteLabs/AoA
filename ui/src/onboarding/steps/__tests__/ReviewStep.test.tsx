@@ -15,9 +15,10 @@ vi.mock("../../../api/projects", () => ({ projectsApi: { list: projectsList } })
 vi.mock("../../../api/agents", () => ({ agentsApi: { list: agentsList } }));
 vi.mock("../../../api/onboarding", () => ({
   advanceOnboarding: vi.fn(async () => ({ completedStates: [] })),
+  setFirstRunCompleted: vi.fn(async () => undefined),
 }));
 
-import { advanceOnboarding } from "../../../api/onboarding";
+import { advanceOnboarding, setFirstRunCompleted } from "../../../api/onboarding";
 
 const ctx: StepContext = {
   userId: "u1",
@@ -70,6 +71,26 @@ describe("ReviewStep (Stage C / order 8)", () => {
     expect((screen.getByText("Finish setup").closest("button") as HTMLButtonElement).disabled).toBe(
       false,
     );
+    // the failed-advance path never reaches the first-run write
+    expect(setFirstRunCompleted).not.toHaveBeenCalled();
+  });
+
+  it("finishing writes the WS0b first-run-completed flag for this company (Fix 2 — no dead-end)", async () => {
+    const onComplete = vi.fn();
+    render(<ReviewStep ctx={ctx} onComplete={onComplete} onBack={() => {}} />);
+    fireEvent.click(screen.getByText("Finish setup"));
+    await waitFor(() => expect(onComplete).toHaveBeenCalled());
+    expect(setFirstRunCompleted).toHaveBeenCalledWith("c1");
+  });
+
+  it("does not block completion when the first-run write fails (best-effort)", async () => {
+    (setFirstRunCompleted as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error("write blew up"),
+    );
+    const onComplete = vi.fn();
+    render(<ReviewStep ctx={ctx} onComplete={onComplete} onBack={() => {}} />);
+    fireEvent.click(screen.getByText("Finish setup"));
+    await waitFor(() => expect(onComplete).toHaveBeenCalled());
   });
 });
 

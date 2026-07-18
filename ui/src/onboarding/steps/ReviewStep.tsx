@@ -3,7 +3,7 @@ import type { StepProps } from "../registry";
 import { companiesApi } from "../../api/companies";
 import { projectsApi } from "../../api/projects";
 import { agentsApi } from "../../api/agents";
-import { advanceOnboarding } from "../../api/onboarding";
+import { advanceOnboarding, setFirstRunCompleted } from "../../api/onboarding";
 import { Button } from "@/components/ui/button";
 
 type Summary = { org?: string; dept?: string; agent?: string };
@@ -56,6 +56,14 @@ export function ReviewStep({ ctx, onComplete }: StepProps) {
         journey: ctx.journey,
         requestedState: "SETUP_COMPLETE",
       });
+      // Fix 2 (WS0b dead-end fix) — write the persisted first-run-done flag
+      // right here at the founder's natural completion point, so it's
+      // authoritative rather than depending on the WS9 door-band write (not
+      // yet built) or a server backfill. Best-effort: `setFirstRunCompleted`
+      // already swallows its own errors, but guard here too (mocks/future
+      // callers may not) so a failure never blocks reaching Home — the
+      // `isLegacySetupComplete` fallback in home.ts covers that case.
+      void setFirstRunCompleted(ctx.companyId).catch(() => {});
       onComplete();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't finish setup. Please try again.");

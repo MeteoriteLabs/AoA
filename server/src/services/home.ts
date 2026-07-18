@@ -47,6 +47,25 @@ export async function resolveFirstRunCompleted(
   return row.firstRunCompletedAt != null;
 }
 
+/**
+ * TRANSITIONAL BRIDGE — remove when WS9 lands (WS9 owns the door-band write
+ * that keeps `firstRunCompletedAt` authoritative for every completion path).
+ *
+ * Until WS9 ships, nothing on the client reliably writes
+ * `firstRunCompletedAt` for every founder, so a founder who finishes the
+ * legacy setup checklist (vision/mission + department + agent + goal) but
+ * whose `firstRunCompletedAt` is still null would otherwise be stuck on the
+ * first-run "Getting Started" screen with no way to reach steady-state Home
+ * short of a server restart running the backfill. This predicate restores
+ * the old "finish the checklist → steady Home" behavior as a floor: `summary()`
+ * ORs it with `resolveFirstRunCompleted(...)` so either signal is enough.
+ * Mirrors the 4-field check that used to live client-side as
+ * `isSetupComplete`/`buildSetupSteps` in `ui/src/pages/Dashboard.tsx`.
+ */
+export function isLegacySetupComplete(s: SetupStatus): boolean {
+  return s.hasVisionMission && s.hasDepartment && s.hasAgent && s.hasGoal;
+}
+
 export function homeService(db: Db) {
   return {
     summary: async (companyId: string, userId?: string): Promise<HomeSummary> => {
@@ -284,7 +303,10 @@ export function homeService(db: Db) {
       return {
         companyId,
         setupStatus,
-        firstRunCompleted,
+        // TRANSITIONAL BRIDGE until WS9 owns the door-band write — see
+        // isLegacySetupComplete above. Either signal is enough: the persisted
+        // WS0b flag, OR the legacy setup checklist being fully complete.
+        firstRunCompleted: firstRunCompleted || isLegacySetupComplete(setupStatus),
         discussionsPendingReview: discussionsCount,
         tasksInReview: reviewCount,
         myTasksDueToday: dueTodayTasks.map((t) => ({

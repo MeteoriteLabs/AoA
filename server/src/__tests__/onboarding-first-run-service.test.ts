@@ -115,6 +115,44 @@ describe("setFirstRunProgress (WS0b)", () => {
     expect(db._row().firstRunPersona).toBeNull();
   });
 
+  it("is a true no-op — a redundant completed:true on an already-complete row does NOT bump version", async () => {
+    const already = new Date("2020-01-01T00:00:00Z");
+    const db = fakeDb({
+      start: { firstRunCompletedAt: already, firstRunPersona: "explorer", version: 3 },
+    });
+    const r = await setFirstRunProgress(db, { userId: "u1", companyId: "c1", completed: true });
+    expect(r.status).toBe("ok");
+    expect(db._row().version).toBe(3);
+    expect(db._row().firstRunCompletedAt).toEqual(already);
+    if (r.status === "ok") expect(r.row.version).toBe(3);
+  });
+
+  it("no-op short-circuit does not touch updatedAt either", async () => {
+    const already = new Date("2020-01-01T00:00:00Z");
+    const staleUpdatedAt = new Date("2019-01-01T00:00:00Z");
+    const db = fakeDb({
+      start: { firstRunCompletedAt: already, firstRunPersona: null, version: 1, updatedAt: staleUpdatedAt },
+    });
+    await setFirstRunProgress(db, { userId: "u1", companyId: "c1", completed: true });
+    expect(db._row().updatedAt).toEqual(staleUpdatedAt);
+  });
+
+  it("still writes when completed:true also carries a genuine persona change on an already-complete row", async () => {
+    const already = new Date("2020-01-01T00:00:00Z");
+    const db = fakeDb({
+      start: { firstRunCompletedAt: already, firstRunPersona: "explorer", version: 3 },
+    });
+    const r = await setFirstRunProgress(db, {
+      userId: "u1",
+      companyId: "c1",
+      completed: true,
+      persona: "in_flight",
+    });
+    expect(r.status).toBe("ok");
+    expect(db._row().version).toBe(4);
+    expect(db._row().firstRunPersona).toBe("in_flight");
+  });
+
   it("retries after one optimistic conflict, then succeeds", async () => {
     const db = fakeDb();
     db._triggerConflictOnce();

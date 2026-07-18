@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { destinationForJourney, getOnboardingProgress, advanceOnboarding } from "../onboarding";
+import { destinationForJourney, getOnboardingProgress, advanceOnboarding, setFirstRunCompleted } from "../onboarding";
 import type { PostAuthJourneyResult } from "@armyofagents/shared";
 
 const base = (over: Partial<PostAuthJourneyResult>): PostAuthJourneyResult => ({
@@ -59,5 +59,34 @@ describe("onboarding progress client (Stage B / B7)", () => {
     expect(init.method).toBe("PATCH");
     expect(JSON.parse(init.body)).toMatchObject({ journey: "founder", requestedState: "PROFILE_SET" });
     expect(p?.completedStates).toContain("PROFILE_SET");
+  });
+});
+
+describe("setFirstRunCompleted (Fix 2 — write the flag at onboarding completion)", () => {
+  beforeEach(() => {
+    (globalThis as any).fetch = vi.fn();
+  });
+
+  it("PATCHes the first-run endpoint with companyId + completed:true", async () => {
+    (globalThis.fetch as any).mockResolvedValue({
+      ok: true,
+      json: async () => ({ progress: { firstRunCompletedAt: "2026-07-18T00:00:00Z" } }),
+    });
+    await setFirstRunCompleted("c1");
+    const [url, init] = (globalThis.fetch as any).mock.calls[0];
+    expect(url).toBe("/api/onboarding/first-run");
+    expect(init.method).toBe("PATCH");
+    expect(init.credentials).toBe("include");
+    expect(JSON.parse(init.body)).toEqual({ companyId: "c1", completed: true });
+  });
+
+  it("resolves without throwing when the server responds with a non-OK status (best-effort caller)", async () => {
+    (globalThis.fetch as any).mockResolvedValue({ ok: false, status: 409 });
+    await expect(setFirstRunCompleted("c1")).resolves.toBeUndefined();
+  });
+
+  it("resolves without throwing when fetch itself rejects (best-effort caller)", async () => {
+    (globalThis.fetch as any).mockRejectedValue(new Error("network down"));
+    await expect(setFirstRunCompleted("c1")).resolves.toBeUndefined();
   });
 });
