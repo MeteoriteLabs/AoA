@@ -63,6 +63,14 @@ export function orderedStatesFor(journey: OnboardingJourney): OnboardingState[] 
   return journey === "invited" ? INVITED_PHASE1_STATES : FOUNDER_PHASE1_STATES;
 }
 
+/**
+ * WS0b — which door the founder chose on the Map (built in WS9). Persisted on
+ * `onboarding_progress.firstRunPersona` so In-flight vs Explorer resume
+ * correctly across a reload.
+ */
+export const FIRST_RUN_PERSONAS = ["manual", "in_flight", "explorer"] as const;
+export type FirstRunPersona = (typeof FIRST_RUN_PERSONAS)[number];
+
 /** An open invitation the authenticated user is eligible to accept. */
 export type PendingInvitation = {
   companyId: string;

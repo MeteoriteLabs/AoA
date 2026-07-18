@@ -1331,8 +1331,10 @@ export {
   FOUNDER_PHASE1_STATES,
   INVITED_PHASE1_STATES,
   orderedStatesFor,
+  FIRST_RUN_PERSONAS,
   type OnboardingJourney,
   type OnboardingState,
   type PendingInvitation,
   type PostAuthJourneyResult,
+  type FirstRunPersona,
 } from "./onboarding.js";

@@ -3,8 +3,10 @@ import { onboardingProgress } from "@armyofagents/db";
 import { and, eq, isNull } from "drizzle-orm";
 import {
   orderedStatesFor,
+  FIRST_RUN_PERSONAS,
   type OnboardingJourney,
   type OnboardingState,
+  type FirstRunPersona,
 } from "@armyofagents/shared";
 
 export type ProgressRow = {
@@ -15,6 +17,11 @@ export type ProgressRow = {
   currentState: OnboardingState;
   completedStates: OnboardingState[];
   version: number;
+  // Optional so existing test fixtures (predating WS0b) that build a
+  // ProgressRow literal without these two fields keep typechecking; mapRow
+  // always populates them (null when absent) for real rows.
+  firstRunCompletedAt?: Date | null;
+  firstRunPersona?: FirstRunPersona | null;
 };
 
 export type AdvanceDecision =
@@ -62,6 +69,8 @@ function mapRow(row: any): ProgressRow {
     currentState: row.currentState,
     completedStates: Array.isArray(row.completedStates) ? row.completedStates : [],
     version: row.version ?? 0,
+    firstRunCompletedAt: row.firstRunCompletedAt ?? null,
+    firstRunPersona: row.firstRunPersona ?? null,
   };
 }
 
@@ -156,6 +165,56 @@ export async function advanceState(
         version: row.version + 1,
         updatedAt: new Date(),
       })
+      .where(and(eq(onboardingProgress.id, row.id), eq(onboardingProgress.version, row.version)))
+      .returning();
+
+    if (updated.length === 1) return { status: "ok", row: mapRow(updated[0]) };
+    // else: a concurrent writer bumped the version — re-read and retry.
+  }
+  return { status: "conflict" };
+}
+
+export type SetFirstRunResult =
+  | { status: "ok"; row: ProgressRow }
+  | { status: "not_found" }
+  | { status: "conflict" };
+
+/**
+ * WS0b write path. `userId` MUST be the board actor (never the client body —
+ * enforced by the route, not here) so this can only ever touch the caller's
+ * own `(userId, companyId)` row. Optimistic-concurrency retry, mirroring
+ * `advanceState`. `persona` and `completed` are independently optional so the
+ * door-band write (persona only) and the "reached Home" write (completion
+ * only) can share one endpoint.
+ */
+export async function setFirstRunProgress(
+  db: Db,
+  args: {
+    userId: string;
+    companyId: string | null;
+    persona?: FirstRunPersona;
+    completed?: boolean;
+  },
+): Promise<SetFirstRunResult> {
+  if (args.persona !== undefined && !FIRST_RUN_PERSONAS.includes(args.persona)) {
+    throw new Error(`invalid firstRunPersona: ${args.persona}`);
+  }
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const row = await getProgress(db, args.userId, args.companyId);
+    if (!row) return { status: "not_found" };
+
+    const patch: Record<string, unknown> = {
+      version: row.version + 1,
+      updatedAt: new Date(),
+    };
+    if (args.persona !== undefined) patch.firstRunPersona = args.persona;
+    // Idempotent: never clobber an already-set completion timestamp.
+    if (args.completed && !row.firstRunCompletedAt) patch.firstRunCompletedAt = new Date();
+
+    const updated = await db
+      .update(onboardingProgress)
+      .set(patch)
       .where(and(eq(onboardingProgress.id, row.id), eq(onboardingProgress.version, row.version)))
       .returning();
 
