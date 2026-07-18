@@ -27,7 +27,7 @@ export function isInlinePreviewable(contentType: string | null, byteSize: number
   const ct = normalizeMime(contentType);
   if (!ct) return false;
   if (INLINE_IMAGE_TYPES.has(ct)) return true;
-  const isText = ct.startsWith("text/") || ct === "application/json";
+  const isText = (ct.startsWith("text/") && ct !== "text/html") || ct === "application/json";
   if (isText) return byteSize != null && byteSize <= INLINE_TEXT_MAX_BYTES;
   return false;
 }
@@ -154,7 +154,7 @@ export function InlineArtifactCard({
             <div key={a.id} className="flex flex-col gap-1">
               {showPreview ? (
                 <div
-                  className="max-h-72 overflow-auto rounded-md border border-border mb-1"
+                  className="max-h-72 overflow-auto rounded-md border border-border"
                   data-testid="attachment-inline-preview"
                 >
                   {isImagePreview ? (

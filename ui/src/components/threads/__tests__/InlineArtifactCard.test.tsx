@@ -185,6 +185,8 @@ describe("isInlinePreviewable", () => {
     expect(isInlinePreviewable("text/plain", null)).toBe(false);
     expect(isInlinePreviewable("application/pdf", 10)).toBe(false);
     expect(isInlinePreviewable("application/zip", 10)).toBe(false);
+    expect(isInlinePreviewable("text/html", 1000)).toBe(false);
+    expect(isInlinePreviewable("text/html; charset=utf-8", 1000)).toBe(false);
   });
 });
 describe("InlineArtifactCard hybrid preview", () => {
@@ -201,6 +203,12 @@ describe("InlineArtifactCard hybrid preview", () => {
   });
   it("chip-only (no preview region) for a non-previewable attachment", () => {
     const { container } = renderWithProviders(<InlineArtifactCard attachments={[zipAtt]} onOpen={() => {}} />);
+    expect(container.querySelector('[data-testid="attachment-inline-preview"]')).toBeNull();
+    expect(container.querySelector('[data-testid="artifact-file-chip"]')).not.toBeNull();
+  });
+  it("does not inline-preview text/html (pops to panel instead)", () => {
+    const htmlAtt = { ...imgAtt, id: "att-html", assetOriginalFilename: "page.html", assetContentType: "text/html", assetByteSize: 1000 } as any;
+    const { container } = renderWithProviders(<InlineArtifactCard attachments={[htmlAtt]} onOpen={() => {}} />);
     expect(container.querySelector('[data-testid="attachment-inline-preview"]')).toBeNull();
     expect(container.querySelector('[data-testid="artifact-file-chip"]')).not.toBeNull();
   });
