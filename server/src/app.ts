@@ -91,6 +91,7 @@ import { environmentRoutes } from "./routes/environments.js";
 import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
 import { workspaceGitRoutes } from "./routes/workspace-git.js";
 import { filesystemRoutes } from "./routes/filesystem.js";
+import { companyWorkspaceFsRoutes } from "./routes/company-workspace-fs.js";
 import { createPreviewRouter } from "./routes/preview.js";
 import { runtimeHooksRoutes } from "./routes/runtime-hooks.js";
 import { adapterRoutes } from "./routes/adapters.js";
@@ -150,6 +151,7 @@ export async function createApp(
     storageService: StorageService;
     deploymentMode: DeploymentMode;
     deploymentExposure: DeploymentExposure;
+    companyWorkspaceBaseDir: string;
     allowedHostnames: string[];
     bindHost: string;
     authReady: boolean;
@@ -359,6 +361,12 @@ export async function createApp(
   api.use(executionWorkspaceRoutes(db));
   api.use(workspaceGitRoutes(db));
   api.use(filesystemRoutes());
+  api.use(
+    companyWorkspaceFsRoutes({
+      deploymentMode: opts.deploymentMode,
+      companyWorkspaceBaseDir: opts.companyWorkspaceBaseDir,
+    }),
+  );
   api.use(adapterRoutes());
   api.use(activityRoutes(db));
   api.use(dashboardRoutes(db));

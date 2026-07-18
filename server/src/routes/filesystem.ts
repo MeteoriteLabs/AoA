@@ -6,7 +6,10 @@ import { execFile, spawn } from "node:child_process";
 import { z } from "zod";
 import { assertCanManageInstanceSettings } from "./authz.js";
 
-const SKIP_DIRS = new Set([
+// Exported for reuse by the WS0a company-scoped workspace-fs routes
+// (routes/company-workspace-fs.ts) — purely additive; the handlers below are
+// unchanged.
+export const SKIP_DIRS = new Set([
   "node_modules",
   "__pycache__",
   ".venv",
@@ -16,7 +19,7 @@ const SKIP_DIRS = new Set([
   ".Trash-1000",
 ]);
 
-function isAbsolutePath(p: string): boolean {
+export function isAbsolutePath(p: string): boolean {
   return path.isAbsolute(p) || /^[A-Za-z]:[\\/]/.test(p);
 }
 
@@ -29,7 +32,7 @@ function isPathInsideDir(parent: string, candidate: string): boolean {
   return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
 }
 
-function checkGitRepo(dirPath: string): Promise<boolean> {
+export function checkGitRepo(dirPath: string): Promise<boolean> {
   return new Promise((resolve) => {
     execFile("git", ["rev-parse", "--git-dir"], { cwd: dirPath, timeout: 3000 }, (err) => {
       resolve(!err);

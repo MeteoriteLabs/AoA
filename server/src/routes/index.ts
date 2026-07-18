@@ -32,5 +32,6 @@ export { cliAuthRoutes } from "./cli-auth.js";
 export { executionWorkspaceRoutes } from "./execution-workspaces.js";
 export { workspaceGitRoutes } from "./workspace-git.js";
 export { filesystemRoutes } from "./filesystem.js";
+export { companyWorkspaceFsRoutes } from "./company-workspace-fs.js";
 export { pluginRoutes } from "./plugins.js";
 export { pluginUiStaticRoutes } from "./plugin-ui-static.js";
