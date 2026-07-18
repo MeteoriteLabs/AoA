@@ -27,4 +27,16 @@ describe("liftOutputRefs v2", () => {
     expect(liftOutputRefs(JSON.stringify({ outputRefs: [{ v: 2, kind: "task", id: "x" }] }))).toBeNull();
     expect(liftOutputRefs(JSON.stringify({ outputRefs: [{ v: 2, kind: "task", id: "x", action: "created", provenance: { surface: "commander" } }] }))).toBeNull();
   });
+  it("rejects a v:1 ref with a non-artifact kind", () => {
+    expect(liftOutputRefs(JSON.stringify({ outputRefs: [{ v: 1, kind: "task", id: "x", action: "created" }] }))).toBeNull();
+  });
+  it("applies id caps by version (v2 allows long ids, v1 does not)", () => {
+    const longId = "u".repeat(300);
+    expect(liftOutputRefs(JSON.stringify({ outputRefs: [{ v: 2, kind: "url", id: longId, action: "referenced" }] }))![0]).toMatchObject({ v: 2, id: longId });
+    expect(liftOutputRefs(JSON.stringify({ outputRefs: [{ v: 1, kind: "artifact", id: longId, action: "created" }] }))).toBeNull();
+  });
+  it("preserves viewerKind when present and rejects negative seq", () => {
+    expect(liftOutputRefs(JSON.stringify({ outputRefs: [{ v: 2, kind: "artifact", id: "a", action: "created", viewerKind: "markdown" }] }))![0]).toMatchObject({ viewerKind: "markdown" });
+    expect(liftOutputRefs(JSON.stringify({ outputRefs: [{ v: 2, kind: "task", id: "t", action: "created", provenance: { surface: "commander", entityId: "c", seq: -1, emittedAt: "2026-01-01T00:00:00.000Z" } }] }))).toBeNull();
+  });
 });

@@ -15,7 +15,8 @@ import { asString, parseObject } from "@armyofagents/adapter-utils/server-utils"
 const CONFIRM_RE = /⚡CONFIRM:(.*?)⚡/s;
 
 /**
- * Structural mirror of @armyofagents/shared CommanderOutputRef (P1: artifact kind).
+ * Structural mirror of @armyofagents/shared ShowRef — v1
+ * (CommanderOutputRef, artifact-only) plus v2 (the 8-kind set + provenance).
  * This package deliberately has no dependency on shared; the screen below
  * enforces the shape and the server zod-validates again at persist time.
  */
@@ -165,8 +166,8 @@ export function liftOutputRefs(text: string): LiftedOutputRef[] | null {
       if (kind === null) continue;
       if (v === 1 && kind !== "artifact") continue; // v1 is artifact-only
       if (typeof rec.id !== "string" || rec.id.length === 0) continue;
-      if (v === 1 && rec.id.length > 256) continue;
-      if (rec.id.length > 2048) continue;
+      const maxId = v === 1 ? 256 : 2048;
+      if (rec.id.length > maxId) continue;
 
       const versionId = typeof rec.versionId === "string" ? rec.versionId : null;
       const versionNumber =
