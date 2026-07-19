@@ -8,6 +8,7 @@ describe("motion barrel", () => {
     expect(motion.AgentCharacter).toBeTypeOf("function");
     expect(motion.LoadingDots).toBeTypeOf("function");
     expect(motion.Reveal).toBeTypeOf("function");
+    expect(motion.DrawOnMap).toBeTypeOf("function");
     expect(motion.usePrefersReducedMotion).toBeTypeOf("function");
     expect(motion.useInView).toBeTypeOf("function");
     expect(motion.useTypewriter).toBeTypeOf("function");
