@@ -15,8 +15,18 @@ import type {
 
 export const githubIntegrationApi = {
   // ── GitHub App auth ───────────────────────────────────────────────────────
-  getAppInstallUrl: (companyId: string) =>
-    api.get<{ url: string }>(`/companies/${companyId}/github/app/install-url`),
+  /**
+   * `returnTo` is an opaque, server-allowlisted key (see
+   * `ONBOARDING_RETURN_PATHS` in `server/src/services/github-app.ts`) — NOT a
+   * raw path. The server validates it against that allowlist and embeds it in
+   * the signed install state; an unrecognized key is silently dropped. This
+   * lets the onboarding Integrations step (WS5) land back on itself after the
+   * GitHub App install completes, without opening a redirect vector.
+   */
+  getAppInstallUrl: (companyId: string, returnTo?: string) =>
+    api.get<{ url: string }>(
+      `/companies/${companyId}/github/app/install-url${returnTo ? `?return=${encodeURIComponent(returnTo)}` : ""}`,
+    ),
 
   appStatus: (companyId: string) =>
     api.get<GitHubAppStatus>(`/companies/${companyId}/github/app/status`),
