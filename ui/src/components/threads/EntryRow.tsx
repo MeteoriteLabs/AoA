@@ -22,7 +22,9 @@ import {
   MessageSquare,
 } from "lucide-react";
 import { relativeTime } from "@/lib/utils";
+import type { ShowRef } from "@armyofagents/shared";
 import type { DiscussionEntry, DiscussionEntryAttachment } from "../../api/discussions";
+import { OutputRefChips } from "../commander/viewer/OutputRefChips";
 import { InlineArtifactCard } from "./InlineArtifactCard";
 import { ScopeProposalCard } from "./ScopeProposalCard";
 import { SystemEntryCard } from "./SystemEntryCard";
@@ -135,6 +137,25 @@ function ReplyCountToggle({ count }: { count: number }) {
   );
 }
 
+/* ─── Delivered navigational-ref chips (Viewer Upgrade Phase 7B) ─── */
+
+/**
+ * Renders the clickable ShowRef chips a crew run delivered onto this entry
+ * (`entry.outputRefs`). Reuses the surface-agnostic OutputRefChips; each chip's
+ * click maps ShowRef → Thread viewer tab via the thread's openRef handler.
+ * Inert (renders nothing) when there are no refs or no handler was threaded.
+ */
+function DeliveredRefChips({
+  refs,
+  onOpenRef,
+}: {
+  refs?: ShowRef[] | null;
+  onOpenRef?: (ref: ShowRef) => void;
+}) {
+  if (!onOpenRef || !refs || refs.length === 0) return null;
+  return <OutputRefChips refs={refs} onOpen={onOpenRef} />;
+}
+
 /* ─── Chip row ─── */
 
 function ChipRow({
@@ -245,6 +266,12 @@ export interface EntryRowProps {
   onSpinOffDismiss?: (entry: DiscussionEntry, suggestion: SpinOffSuggestion) => void;
   /** Phase E2: clicked when the user opens an inline artifact. */
   onOpenArtifact?: (attachment: DiscussionEntryAttachment) => void;
+  /**
+   * Viewer Upgrade Phase 7B: clicked when the user opens a delivered navigational
+   * ref chip (from `entry.outputRefs`). Optional — other EntryRow callers omit it
+   * and the chips simply don't render.
+   */
+  onOpenRef?: (ref: ShowRef) => void;
   /** Artifact Lifecycle P1: founder-gated archive/unarchive on inline artifacts. */
   canManageArtifacts?: boolean;
   onArchiveArtifact?: (artifactId: string) => void | Promise<void>;
@@ -272,6 +299,7 @@ export function EntryRow({
   onSpinOffAccept,
   onSpinOffDismiss,
   onOpenArtifact,
+  onOpenRef,
   canManageArtifacts,
   onArchiveArtifact,
   onUnarchiveArtifact,
@@ -405,6 +433,7 @@ export function EntryRow({
         pendingCount={pendingCount}
         extractionError={extractionError}
         onOpenArtifact={onOpenArtifact}
+        onOpenRef={onOpenRef}
         canManageArtifacts={canManageArtifacts}
         onArchiveArtifact={onArchiveArtifact}
         onUnarchiveArtifact={onUnarchiveArtifact}
@@ -421,6 +450,7 @@ export function EntryRow({
         pendingCount={pendingCount}
         extractionError={extractionError}
         onOpenArtifact={onOpenArtifact}
+        onOpenRef={onOpenRef}
         canManageArtifacts={canManageArtifacts}
         onArchiveArtifact={onArchiveArtifact}
         onUnarchiveArtifact={onUnarchiveArtifact}
@@ -436,6 +466,7 @@ export function EntryRow({
       pendingCount={pendingCount}
       extractionError={extractionError}
       onOpenArtifact={onOpenArtifact}
+      onOpenRef={onOpenRef}
       canManageArtifacts={canManageArtifacts}
       onArchiveArtifact={onArchiveArtifact}
       onUnarchiveArtifact={onUnarchiveArtifact}
@@ -452,6 +483,7 @@ function MeBubble({
   pendingCount,
   extractionError,
   onOpenArtifact,
+  onOpenRef,
   canManageArtifacts,
   onArchiveArtifact,
   onUnarchiveArtifact,
@@ -462,6 +494,7 @@ function MeBubble({
   pendingCount: number;
   extractionError?: string | null;
   onOpenArtifact?: (attachment: DiscussionEntryAttachment) => void;
+  onOpenRef?: (ref: ShowRef) => void;
   canManageArtifacts?: boolean;
   onArchiveArtifact?: (artifactId: string) => void | Promise<void>;
   onUnarchiveArtifact?: (artifactId: string) => void | Promise<void>;
@@ -517,6 +550,7 @@ function MeBubble({
             extractionStatus={entry.extractionStatus}
             extractionError={extractionError ?? null}
           />
+          <DeliveredRefChips refs={entry.outputRefs} onOpenRef={onOpenRef} />
           <ReplyCountToggle count={entry.replyCount ?? 0} />
         </div>
         <div
@@ -540,6 +574,7 @@ function HumanBubble({
   pendingCount,
   extractionError,
   onOpenArtifact,
+  onOpenRef,
   canManageArtifacts,
   onArchiveArtifact,
   onUnarchiveArtifact,
@@ -550,6 +585,7 @@ function HumanBubble({
   pendingCount: number;
   extractionError: string | null;
   onOpenArtifact?: (attachment: DiscussionEntryAttachment) => void;
+  onOpenRef?: (ref: ShowRef) => void;
   canManageArtifacts?: boolean;
   onArchiveArtifact?: (artifactId: string) => void | Promise<void>;
   onUnarchiveArtifact?: (artifactId: string) => void | Promise<void>;
@@ -608,6 +644,7 @@ function HumanBubble({
           extractionStatus={entry.extractionStatus}
           extractionError={extractionError}
         />
+        <DeliveredRefChips refs={entry.outputRefs} onOpenRef={onOpenRef} />
         <ReplyCountToggle count={entry.replyCount ?? 0} />
       </div>
     </div>
@@ -623,6 +660,7 @@ function AgentCard({
   pendingCount,
   extractionError,
   onOpenArtifact,
+  onOpenRef,
   canManageArtifacts,
   onArchiveArtifact,
   onUnarchiveArtifact,
@@ -633,6 +671,7 @@ function AgentCard({
   pendingCount: number;
   extractionError: string | null;
   onOpenArtifact?: (attachment: DiscussionEntryAttachment) => void;
+  onOpenRef?: (ref: ShowRef) => void;
   canManageArtifacts?: boolean;
   onArchiveArtifact?: (artifactId: string) => void | Promise<void>;
   onUnarchiveArtifact?: (artifactId: string) => void | Promise<void>;
@@ -705,6 +744,9 @@ function AgentCard({
           extractionStatus={entry.extractionStatus}
           extractionError={extractionError}
         />
+
+        {/* Phase 7B: delivered navigational-ref chips (crew run-result entries) */}
+        <DeliveredRefChips refs={entry.outputRefs} onOpenRef={onOpenRef} />
 
         {/* Reply count */}
         <ReplyCountToggle count={entry.replyCount ?? 0} />

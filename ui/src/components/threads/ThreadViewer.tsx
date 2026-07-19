@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Boxes,
+  CheckSquare,
   ClipboardList,
   Compass,
   Database,
@@ -15,7 +16,9 @@ import {
   LayoutGrid,
   Link as LinkIcon,
   Map as MapIcon,
+  MessageSquare,
   Network,
+  Package,
   PanelRightOpen,
 } from "lucide-react";
 import {
@@ -42,6 +45,8 @@ import {
   filenameForArtifactVersion,
 } from "@/components/viewers/artifact-version-viewer";
 import { resolveViewer } from "@/components/viewers/viewer-registry";
+import { DiscussionRefTabBody, OutputRefTabBody } from "@/components/viewers/refBodies";
+import { ApprovalDetailCore } from "@/components/approval/ApprovalDetailCore";
 import { cn } from "@/lib/utils";
 import { artifactsApi } from "../../api/artifacts";
 import { goalsApi } from "../../api/goals";
@@ -68,11 +73,14 @@ import {
   scopeArtifactToTab,
   taskTab,
   threadAttachmentToTab,
+  type ThreadViewerApprovalPayload,
   type ThreadViewerArtifactRefPayload,
   type ThreadViewerAttachmentPayload,
   type ThreadViewerBrowserPayload,
+  type ThreadViewerDiscussionPayload,
   type ThreadViewerMapPayload,
   type ThreadViewerMemoryPayload,
+  type ThreadViewerOutputRefPayload,
   type ThreadViewerScopeItem,
   type ThreadViewerScopePayload,
   type ThreadViewerTab,
@@ -124,6 +132,9 @@ const ICON_FOR_KIND: Record<ThreadViewerTabKind, typeof LayoutGrid> = {
   artifact: FileText,
   browser: Globe,
   map: Network,
+  discussion: MessageSquare,
+  approval: CheckSquare,
+  output_ref: Package,
 };
 
 const MEMORY_CATEGORY_LABELS: Record<MemoryItemCategory, string> = {
@@ -418,6 +429,40 @@ function ThreadViewerBody({
   if (tab.kind === "browser") {
     const payload = tab.payload as ThreadViewerBrowserPayload | undefined;
     return <BrowserViewer key={tab.key} initialUrl={payload?.url ?? "about:blank"} />;
+  }
+
+  // ── Viewer Upgrade Phase 7B — navigational bodies (REUSE shared self-fetching
+  // bodies; no rebuild of task/memory/artifact/asset). companyId prefers the live
+  // ThreadViewerBody prop, falling back to the value carried on the tab payload. ──
+  if (tab.kind === "discussion") {
+    const payload = tab.payload as ThreadViewerDiscussionPayload | undefined;
+    if (!payload) return null;
+    return (
+      <DiscussionRefTabBody
+        key={tab.key}
+        companyId={companyId ?? payload.companyId}
+        refId={payload.discussionId}
+        fallbackTitle={payload.title}
+      />
+    );
+  }
+
+  if (tab.kind === "approval") {
+    const payload = tab.payload as ThreadViewerApprovalPayload | undefined;
+    return payload ? <ApprovalDetailCore key={tab.key} approvalId={payload.approvalId} embedded /> : null;
+  }
+
+  if (tab.kind === "output_ref") {
+    const payload = tab.payload as ThreadViewerOutputRefPayload | undefined;
+    if (!payload) return null;
+    return (
+      <OutputRefTabBody
+        key={tab.key}
+        companyId={companyId ?? payload.companyId}
+        refId={payload.outputId}
+        viewerKind={payload.viewerKind ?? undefined}
+      />
+    );
   }
 
   if (tab.kind === "map") {

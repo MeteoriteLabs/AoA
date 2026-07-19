@@ -108,6 +108,70 @@ describe("EntryRow — agent authorship", () => {
   });
 });
 
+describe("EntryRow — delivered navigational-ref chips (Phase 7B)", () => {
+  const refs = [
+    { v: 2 as const, kind: "task" as const, id: "issue-9", title: "Ship viewer", action: "created" as const },
+    { v: 2 as const, kind: "artifact" as const, id: "art-3", title: "Design brief", action: "referenced" as const },
+  ];
+
+  it("renders delivered-ref chips when entry.outputRefs is non-empty and a handler is threaded", () => {
+    renderWithProviders(
+      <EntryRow
+        entry={makeEntry({
+          inputType: "agent",
+          authorAgentId: "scout",
+          authorAgentName: "Scout",
+          outputRefs: refs,
+        })}
+        onReprocess={vi.fn()}
+        onOpenRef={vi.fn()}
+      />,
+    );
+    const chips = screen.getByTestId("output-ref-chips");
+    expect(within(chips).getByText("Ship viewer")).toBeInTheDocument();
+    expect(within(chips).getByText("Design brief")).toBeInTheDocument();
+  });
+
+  it("invokes onOpenRef with the clicked ref", async () => {
+    const onOpenRef = vi.fn();
+    renderWithProviders(
+      <EntryRow
+        entry={makeEntry({
+          inputType: "agent",
+          authorAgentId: "scout",
+          authorAgentName: "Scout",
+          outputRefs: refs,
+        })}
+        onReprocess={vi.fn()}
+        onOpenRef={onOpenRef}
+      />,
+    );
+    await userEvent.click(screen.getByText("Ship viewer"));
+    expect(onOpenRef).toHaveBeenCalledWith(refs[0]);
+  });
+
+  it("renders no chips when no handler is threaded (optional prop)", () => {
+    renderWithProviders(
+      <EntryRow
+        entry={makeEntry({ outputRefs: refs })}
+        onReprocess={vi.fn()}
+      />,
+    );
+    expect(screen.queryByTestId("output-ref-chips")).not.toBeInTheDocument();
+  });
+
+  it("renders no chips when outputRefs is empty", () => {
+    renderWithProviders(
+      <EntryRow
+        entry={makeEntry({ outputRefs: [] })}
+        onReprocess={vi.fn()}
+        onOpenRef={vi.fn()}
+      />,
+    );
+    expect(screen.queryByTestId("output-ref-chips")).not.toBeInTheDocument();
+  });
+});
+
 describe("EntryRow — system notices", () => {
   function makeSystemNoticeEntry(overrides: Partial<DiscussionEntry> = {}): DiscussionEntry {
     return makeEntry({

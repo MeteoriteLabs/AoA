@@ -1,3 +1,4 @@
+import type { ShowRef } from "@armyofagents/shared";
 import type {
   DiscussionDetail,
   DiscussionEntry,
@@ -14,7 +15,13 @@ export type ThreadViewerTabKind =
   | "asset"
   | "artifact"
   | "browser"
-  | "map";
+  | "map"
+  // Viewer Upgrade Phase 7B — navigational ShowRef bodies not previously reachable
+  // from a Thread. Distinct from `task_output` (whole-task outputs) — `output_ref`
+  // opens a single task_output by id.
+  | "discussion"
+  | "approval"
+  | "output_ref";
 
 export interface ThreadViewerTab {
   key: string;
@@ -86,6 +93,27 @@ export interface ThreadViewerBrowserPayload {
   title: string;
 }
 
+// Viewer Upgrade Phase 7B — payloads for the three navigational bodies newly
+// reachable from a Thread. companyId is carried on the payload (like memoryTab)
+// so the self-fetching shared bodies can resolve the entity.
+export interface ThreadViewerDiscussionPayload {
+  companyId: string;
+  discussionId: string;
+  title: string;
+}
+
+export interface ThreadViewerApprovalPayload {
+  approvalId: string;
+  title: string;
+}
+
+export interface ThreadViewerOutputRefPayload {
+  companyId: string;
+  outputId: string;
+  title: string;
+  viewerKind?: string | null;
+}
+
 export interface ThreadViewerMapPayload {
   scope: "thread" | "global";
   threadId?: string;
@@ -155,6 +183,12 @@ export function threadViewerTabToOpenRequest(tab: ThreadViewerTab): ThreadOpenRe
       return { kind: "map", ...payload };
     }
     case "open":
+    // Phase 7B: the navigational bodies are Thread-viewer-only — there is no
+    // ThreadOpenRequest equivalent yet, so an embedded host can't re-host them.
+    // Returning null leaves them inert in embedded mode (not broken).
+    case "discussion":
+    case "approval":
+    case "output_ref":
       return null;
   }
 }
@@ -325,6 +359,99 @@ export function browserTab(url: string, title?: string): ThreadViewerTab {
     closeable: true,
     payload: { url: normalizedUrl, title: title || browserLabel(normalizedUrl) } satisfies ThreadViewerBrowserPayload,
   };
+}
+
+// ── Viewer Upgrade Phase 7B — navigational tab builders ──────────────────────
+
+export function discussionRefTab(
+  companyId: string,
+  discussionId: string,
+  title: string,
+): ThreadViewerTab {
+  return {
+    key: `discussion:${discussionId}`,
+    label: title || "Discussion",
+    kind: "discussion",
+    closeable: true,
+    payload: {
+      companyId,
+      discussionId,
+      title: title || "Discussion",
+    } satisfies ThreadViewerDiscussionPayload,
+  };
+}
+
+export function approvalRefTab(approvalId: string, title: string): ThreadViewerTab {
+  return {
+    key: `approval:${approvalId}`,
+    label: title || "Approval",
+    kind: "approval",
+    closeable: true,
+    payload: { approvalId, title: title || "Approval" } satisfies ThreadViewerApprovalPayload,
+  };
+}
+
+export function outputRefTab(
+  companyId: string,
+  outputId: string,
+  title: string,
+  viewerKind?: string | null,
+): ThreadViewerTab {
+  return {
+    key: `output-ref:${outputId}`,
+    label: title || "Output",
+    kind: "output_ref",
+    closeable: true,
+    payload: {
+      companyId,
+      outputId,
+      title: title || "Output",
+      viewerKind: viewerKind ?? null,
+    } satisfies ThreadViewerOutputRefPayload,
+  };
+}
+
+/**
+ * openRef adapter — maps a delivered ShowRef (any of the 8 kinds) to a Thread
+ * viewer tab. A thin adapter over the existing Thread tab builders: it does NOT
+ * merge the Commander/Workspace viewer models. Five kinds route to bodies the
+ * Thread already had (artifact/asset/task/memory_item/url); three route to the
+ * Phase-7B bodies (discussion/approval/output).
+ *
+ * `companyId` is required by the self-fetching memory/discussion/output bodies;
+ * pass the active company at the call site (the Thread has it in scope).
+ */
+export function showRefToThreadTab(ref: ShowRef, companyId = ""): ThreadViewerTab {
+  const title = ref.title ?? `${ref.kind} ${ref.id.slice(0, 8)}`;
+  switch (ref.kind) {
+    case "artifact":
+      return artifactRefTab(ref.id, title, ref.versionId ?? null);
+    case "asset":
+      // No full attachment record from a bare ref — synthesize the minimal
+      // asset-backed attachment the existing `asset` body reads (assetId +
+      // filename/contentType fallbacks). mimeType/viewerKind narrow to v2 here.
+      return threadAttachmentToTab({
+        id: ref.id,
+        assetId: ref.id,
+        artifactId: null,
+        artifactType: null,
+        artifactTitle: null,
+        assetContentType: ref.mimeType ?? null,
+        assetOriginalFilename: title,
+      });
+    case "task":
+      return taskTab(ref.id, title);
+    case "memory_item":
+      return memoryTab(companyId, ref.id, title);
+    case "url":
+      return browserTab(ref.id, title);
+    case "discussion":
+      return discussionRefTab(companyId, ref.id, title);
+    case "approval":
+      return approvalRefTab(ref.id, title);
+    case "output":
+      return outputRefTab(companyId, ref.id, title, ref.viewerKind ?? null);
+  }
 }
 
 export { ensureTab, closeTab } from "../../lib/viewer-tabs";

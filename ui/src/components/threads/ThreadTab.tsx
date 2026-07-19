@@ -6,6 +6,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { ShowRef } from "@armyofagents/shared";
 import { discussionsApi, type DiscussionEntry, type DiscussionEntryAttachment } from "../../api/discussions";
 import { archiveArtifact, unarchiveArtifact } from "../../api/artifacts";
 import { authApi } from "../../api/auth";
@@ -69,6 +70,11 @@ export interface ThreadTabProps {
   onRetry: () => void;
   onOpenAttachment?: (attachment: DiscussionEntryAttachment, entryId: string) => void;
   /**
+   * Viewer Upgrade Phase 7B: open a delivered navigational ref chip (from an
+   * entry's outputRefs). Forwarded to each EntryRow; optional.
+   */
+  onOpenRef?: (ref: ShowRef) => void;
+  /**
    * When true, a scope-version draft exists for this thread. Forwarded to
    * each EntryRow so ScopeProposalCard can show the "Scoped" done-state.
    */
@@ -85,6 +91,7 @@ export function ThreadTab({
   isError,
   onRetry,
   onOpenAttachment,
+  onOpenRef,
   hasScopeDraft = false,
   draftText,
   onDraftTextChange,
@@ -804,6 +811,7 @@ export function ThreadTab({
                 onCrewFailureReassign={(issueId) => navigate(`/issues/${issueId}`)}
                 onCrewFailureSkip={(issueId) => skipTaskMutation.mutate(issueId)}
                 onOpenArtifact={(attachment) => onOpenAttachment?.(attachment, entry.id)}
+                onOpenRef={onOpenRef}
                 canManageArtifacts={canManageArtifacts}
                 onArchiveArtifact={handleArchiveArtifact}
                 onUnarchiveArtifact={handleUnarchiveArtifact}
@@ -822,6 +830,7 @@ export function ThreadTab({
                     onCrewFailureReassign={(issueId) => navigate(`/issues/${issueId}`)}
                     onCrewFailureSkip={(issueId) => skipTaskMutation.mutate(issueId)}
                     onOpenArtifact={(attachment) => onOpenAttachment?.(attachment, reply.id)}
+                    onOpenRef={onOpenRef}
                     canManageArtifacts={canManageArtifacts}
                     onArchiveArtifact={handleArchiveArtifact}
                     onUnarchiveArtifact={handleUnarchiveArtifact}
