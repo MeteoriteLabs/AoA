@@ -17,6 +17,9 @@ export interface BraindumpDropZoneProps {
   label: string;
   assets: UploadedAsset[];
   onAssetsChange: (next: UploadedAsset[]) => void;
+  /** Reported to the parent so Continue can't fire mid-upload and submit the
+   *  card without the file the founder just dropped. */
+  onUploadingChange?: (uploading: boolean) => void;
   disabled?: boolean;
 }
 
@@ -40,6 +43,7 @@ export function BraindumpDropZone({
   label,
   assets,
   onAssetsChange,
+  onUploadingChange,
   disabled,
 }: BraindumpDropZoneProps) {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -53,9 +57,16 @@ export function BraindumpDropZone({
   const assetsRef = useRef(assets);
   assetsRef.current = assets;
 
+  /** Overlapping upload batches still in flight. */
+  const inFlightRef = useRef(0);
+
   async function uploadFiles(files: File[]) {
     if (files.length === 0) return;
     setError(null);
+    // Counted, not a boolean: two overlapping drops would otherwise have the
+    // first batch to finish report "done" while the second is still uploading.
+    inFlightRef.current += 1;
+    onUploadingChange?.(true);
     setUploading((n) => n + files.length);
     // Sequential: the server takes one file per request, and a founder dropping
     // a folder of notes shouldn't fire 30 parallel multipart uploads.
@@ -72,6 +83,8 @@ export function BraindumpDropZone({
         setUploading((n) => n - 1);
       }
     }
+    inFlightRef.current -= 1;
+    if (inFlightRef.current === 0) onUploadingChange?.(false);
   }
 
   // Unlinks the file from THIS braindump only. The asset stays in the memory

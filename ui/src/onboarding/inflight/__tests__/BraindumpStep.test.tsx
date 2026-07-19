@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { BraindumpStep } from "../BraindumpStep";
 
 const list = vi.hoisted(() => vi.fn());
@@ -270,6 +270,30 @@ describe("BraindumpStep (WS6 — In-flight standalone surface)", () => {
 
     await waitFor(() => expect(uploadAsset).toHaveBeenCalledTimes(1));
     expect(uploadAsset.mock.calls[0][2]).toEqual({ folderPath: "Company/Files" });
+  });
+
+  it("blocks Continue while an upload is still in flight", async () => {
+    list.mockResolvedValue([makeDept({ id: "d1", name: "Software" })]);
+    let resolveUpload: (v: unknown) => void = () => {};
+    uploadAsset.mockImplementation(() => new Promise((r) => { resolveUpload = r; }));
+    render(<BraindumpStep companyId="c1" onDone={vi.fn()} />);
+
+    const zone = await screen.findByLabelText("Attach files for Software");
+    fireEvent.drop(zone, {
+      dataTransfer: { files: [new File(["x"], "notes.md", { type: "text/markdown" })] },
+    });
+
+    // Submitting here would drop the file the founder just added — or treat
+    // the card as empty and advance, orphaning the finished upload.
+    const button = await screen.findByRole("button", { name: "Uploading…" });
+    expect((button as HTMLButtonElement).disabled).toBe(true);
+
+    await act(async () => {
+      resolveUpload({ asset: { id: "asset-1", fileName: "notes.md" }, jobId: "j1" });
+    });
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeTruthy());
+    expect(submit).not.toHaveBeenCalled();
   });
 
   it("surfaces an upload failure without attaching anything", async () => {

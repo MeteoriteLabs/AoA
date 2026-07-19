@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { MemoryItem } from "@armyofagents/shared";
 import { projectsApi } from "../../api/projects";
-import { braindumpApi, type BraindumpCapture } from "../../api/braindump";
+import { braindumpApi, getBraindumpSessionId, type BraindumpCapture } from "../../api/braindump";
 import { memoryApi } from "../../api/memory";
 import { Button } from "@/components/ui/button";
 import { AgentCharacter, Reveal } from "../motion";
@@ -78,7 +78,15 @@ export function LibrarianStep({ companyId, onDone }: LibrarianStepProps) {
    * declared itself finished while the Librarian was still running.
    */
   async function fetchCaptures(): Promise<BraindumpCapture[]> {
-    return braindumpApi.list(companyId);
+    const all = await braindumpApi.list(companyId);
+    // Scope to THIS onboarding session. The company-wide list also returns
+    // captures from earlier sessions, and mixing them in is not cosmetic: a
+    // stale "running" row would keep this step on "Organizing…" forever, and
+    // old proposals would show up here to be approved as if the founder had
+    // just written them. Every key this session mints ends with the session id
+    // (braindumpIdempotencyKey), which is what makes the match exact.
+    const suffix = `:${getBraindumpSessionId(companyId)}`;
+    return all.filter((c) => c.idempotencyKey.endsWith(suffix));
   }
 
   /**

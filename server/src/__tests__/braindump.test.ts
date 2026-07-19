@@ -347,7 +347,7 @@ describe("braindumpService.submit", () => {
         assetIds: ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"],
         idempotencyKey: "k1",
       }),
-    ).rejects.toThrow(/do not belong to this company/i);
+    ).rejects.toThrow(/do not belong to this braindump.s scope/i);
 
     expect(runAoaAgentMock).not.toHaveBeenCalled();
   });
@@ -432,6 +432,64 @@ describe("braindumpService.submit", () => {
 
     expect(result.status).toBe("failed");
     expect(result.failureReason).toBe("subprocess spawn ENOENT");
+  });
+});
+
+describe("braindumpService — post-review hardening", () => {
+  beforeEach(() => {
+    runAoaAgentMock.mockReset();
+  });
+
+  it("marks the capture failed when enrichment throws, instead of stranding it in 'running'", async () => {
+    // The claim predicate only re-accepts pending/failed, so a throw after the
+    // claim used to leave the row 'running' forever: retry refused it and the
+    // UI polled it indefinitely.
+    runAoaAgentMock.mockResolvedValue({ status: "succeeded", runId: "run-x" });
+    const db = createSequenceDb([
+      [DEPT_ROW],
+      [{ id: CAPTURE_ID, departmentId: DEPT_ID, status: "pending" }],
+      [{ id: CAPTURE_ID, status: "running", departmentId: DEPT_ID, content: "x", assetIds: [] }],
+      [{ id: LIBRARIAN_ID }],
+      [DEPT_ROW],
+      // The folder select throws (below) and consumes NO queue slot.
+      [], // update -> failed (catch branch)
+      [{ id: CAPTURE_ID, status: "failed", failureReason: "folders exploded", proposedMemoryItemIds: [], departmentId: DEPT_ID }],
+    ]);
+    const realSelect = db.select;
+    let call = 0;
+    db.select = vi.fn(() => {
+      call += 1;
+      // Select order: 1 validate dept, 2 resolve librarian, 3 dept name,
+      // 4 = the folder lookup this test blows up.
+      if (call === 4) throw new Error("folders exploded");
+      return realSelect();
+    });
+
+    const result = await braindumpService(db).submit(CO_ID, {
+      departmentId: DEPT_ID,
+      content: "x",
+      idempotencyKey: "k1",
+    });
+
+    expect(result.status).toBe("failed");
+    expect(runAoaAgentMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects an asset that belongs to a DIFFERENT scope than the capture", async () => {
+    // A department asset pulled into a company capture would push its contents
+    // into identity-layer memory. The scope-matched query returns no rows.
+    const db = createSequenceDb([
+      [], // memoryAssets scope-matched lookup -> no match
+    ]);
+    await expect(
+      braindumpService(db).submit(CO_ID, {
+        scope: "company",
+        departmentId: null,
+        content: "",
+        assetIds: ["asset-owned-by-a-department"],
+        idempotencyKey: "k1",
+      }),
+    ).rejects.toThrow(/scope/i);
   });
 });
 

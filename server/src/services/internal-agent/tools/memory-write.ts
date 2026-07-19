@@ -134,6 +134,45 @@ export const writeMemoryTool: AgentTool = {
     const resolvedCategory =
       category && VALID_CATEGORIES.has(category) ? category : "context";
 
+    // Normalize first: a whitespace-only folderPath means UNFILED, and the
+    // scope guard below must judge the effective value, not the raw string.
+    const normalizedFolderPath =
+      typeof folderPath === "string" && folderPath.trim().length > 0
+        ? normalizeMemoryFolderPath(folderPath)
+        : "";
+
+    // Layer/scope invariant. The prompt tells the Librarian which layer goes
+    // with which scope, but a prompt is not an integrity boundary — a confused
+    // or adversarial agent can send any combination, and the wrong one puts
+    // department knowledge into company-wide memory (or vice versa).
+    //
+    // identity is company-wide BY DEFINITION (vision, values, brand), so a
+    // departmentId on it is always a contradiction — rejected outright.
+    if (layer === "identity" && departmentId) {
+      return {
+        success: false,
+        data: null,
+        summary:
+          "identity-layer memory is company-wide and cannot carry a departmentId — " +
+          'use layer="domain" for department knowledge',
+        error: "INVALID_PARAMS",
+      };
+    }
+    // domain is department-scoped. Without a departmentId there is no
+    // department to file under, so the folder lookup below would fall through
+    // to the COMPANY folder set and quietly file department knowledge
+    // company-wide. Unfiled domain writes stay allowed (existing behaviour).
+    if (layer === "domain" && !departmentId && normalizedFolderPath) {
+      return {
+        success: false,
+        data: null,
+        summary:
+          "domain-layer memory needs a departmentId before it can be filed into a folder — " +
+          "pass departmentId, or omit folderPath",
+        error: "INVALID_PARAMS",
+      };
+    }
+
     // Tenant isolation (P2, Codex): a scoped/compromised agent must not be able
     // to link a memory row to another company's project/goal by passing a known
     // UUID. Verify any provided departmentId/goalId belongs to ctx.companyId
@@ -185,10 +224,6 @@ export const writeMemoryTool: AgentTool = {
     //      is exactly the layer/scope boundary the memory model exists to keep.
     //
     // Omitted/empty => "" (unfiled root), which is the column default.
-    const normalizedFolderPath =
-      typeof folderPath === "string" && folderPath.trim().length > 0
-        ? normalizeMemoryFolderPath(folderPath)
-        : "";
     if (normalizedFolderPath) {
       const [folder] = await ctx.db
         .select({ id: memoryFolders.id })

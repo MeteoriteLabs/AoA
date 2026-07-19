@@ -85,6 +85,10 @@ function makeMemoryItem(overrides: Record<string, unknown> = {}) {
 describe("LibrarianStep (WS6 — In-flight standalone surface)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // The step only shows captures from THIS onboarding session, matched by the
+    // session id embedded in each idempotency key. Pin the id so the fixtures'
+    // "dept-1:sess" keys are in-session.
+    sessionStorage.setItem("aoa:braindump-session:c1", "sess");
     list.mockResolvedValue([makeDept()]);
     listCaptures.mockResolvedValue([makeCapture()]);
     memoryList.mockResolvedValue({ items: [makeMemoryItem()], semanticAvailable: true });
@@ -290,6 +294,21 @@ describe("LibrarianStep (WS6 — In-flight standalone surface)", () => {
     expect(headings).toEqual(["Company-wide", "Software"]);
     expect(screen.getByText("We optimize for candor")).toBeTruthy();
     expect(screen.getByText("We use Postgres")).toBeTruthy();
+  });
+
+  it("ignores captures from a PREVIOUS onboarding session", async () => {
+    // A stale running capture from an old session would otherwise pin this
+    // step on "Organizing…" forever, and its proposals would be offered for
+    // approval as if the founder had just written them.
+    listCaptures.mockResolvedValue([
+      makeCapture({ id: "bd-old", idempotencyKey: "dept-1:older-session", status: "running" }),
+      makeCapture({ id: "bd-now", idempotencyKey: "dept-1:sess", status: "proposed" }),
+    ]);
+
+    render(<LibrarianStep companyId="c1" onDone={vi.fn()} />);
+
+    // Reaches "done" despite the stale running row.
+    expect(await screen.findByRole("img", { name: "agent done" })).toBeTruthy();
   });
 
   it("handles a department with no braindumps yet (empty list) without hanging on thinking", async () => {

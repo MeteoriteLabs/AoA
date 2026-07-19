@@ -130,29 +130,33 @@ async function correlateProposedMemoryItems(
  * state — this IS the idempotency guard: concurrent submit+retry calls race
  * safely, only one wins the UPDATE...WHERE...RETURNING.
  */
-/** Cap on bytes read per attached file before extraction. A 50MB PDF (the
- *  upload limit) would otherwise be fully buffered per dispatch; the prompt
- *  only ever uses the first few KB of the extracted text anyway. */
-const ASSET_READ_BYTES_CAP = 2 * 1024 * 1024;
+/**
+ * Largest file we will buffer for extraction. This is a SKIP threshold, not a
+ * truncation point: PDF and DOCX both keep their index structures at the END of
+ * the container (xref trailer / zip central directory), so handing a parser the
+ * first N bytes doesn't yield partial text — it yields a parse error, and the
+ * file degrades to name-only anyway. Skipping oversized files outright makes
+ * that outcome explicit instead of looking like a corrupt-file failure.
+ */
+const ASSET_MAX_BYTES = 12 * 1024 * 1024;
 
 const EXTRACTABLE_MIME_TYPES = new Set<string>(SUPPORTED_MIME_TYPES);
 
 /**
- * Read at most `ASSET_READ_BYTES_CAP` bytes off a storage stream, then stop
- * consuming. Truncating a PDF/docx mid-stream can make the parser fail, which
- * is why the caller treats extraction failure as "no readable text" rather
- * than an error — a file we can't read still gets NAMED in the prompt.
+ * Buffer a whole storage object, aborting if it runs past `ASSET_MAX_BYTES`.
+ * The guard is a belt to `contentLength`'s braces: a wrong/missing length
+ * header must not let an unbounded stream into memory.
  */
-async function readCapped(stream: NodeJS.ReadableStream): Promise<Buffer> {
+async function readWhole(stream: NodeJS.ReadableStream): Promise<Buffer> {
   const chunks: Buffer[] = [];
   let total = 0;
   for await (const chunk of stream) {
     const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string);
-    chunks.push(buf);
     total += buf.length;
-    if (total >= ASSET_READ_BYTES_CAP) break;
+    if (total > ASSET_MAX_BYTES) throw new Error("asset exceeds extraction size limit");
+    chunks.push(buf);
   }
-  return Buffer.concat(chunks).subarray(0, ASSET_READ_BYTES_CAP);
+  return Buffer.concat(chunks);
 }
 
 export interface BraindumpAttachedFile {
@@ -173,10 +177,16 @@ export interface BraindumpAttachedFile {
 async function loadAttachedFiles(
   db: Db,
   companyId: string,
+  departmentId: string | null,
   assetIds: string[],
 ): Promise<BraindumpAttachedFile[]> {
   if (assetIds.length === 0) return [];
 
+  // Scope-matched, not just company-matched: an asset belongs to exactly one
+  // scope, and reading a department's file into a COMPANY capture would push
+  // its contents into identity-layer memory (or one department's file into
+  // another's domain memory). `submit` enforces the same pairing; this is the
+  // second gate, because rows can also be reached via retry long after submit.
   const assets = await db
     .select({
       fileName: memoryAssets.fileName,
@@ -184,7 +194,15 @@ async function loadAttachedFiles(
       storageKey: memoryAssets.storageKey,
     })
     .from(memoryAssets)
-    .where(and(eq(memoryAssets.companyId, companyId), inArray(memoryAssets.id, assetIds)));
+    .where(
+      and(
+        eq(memoryAssets.companyId, companyId),
+        inArray(memoryAssets.id, assetIds),
+        departmentId === null
+          ? isNull(memoryAssets.departmentId)
+          : eq(memoryAssets.departmentId, departmentId),
+      ),
+    );
 
   const storage = getStorageService();
   const out: BraindumpAttachedFile[] = [];
@@ -194,8 +212,12 @@ async function loadAttachedFiles(
       continue;
     }
     try {
-      const { stream } = await storage.getObject(companyId, asset.storageKey);
-      const buffer = await readCapped(stream);
+      const { stream, contentLength } = await storage.getObject(companyId, asset.storageKey);
+      if (typeof contentLength === "number" && contentLength > ASSET_MAX_BYTES) {
+        out.push({ fileName: asset.fileName });
+        continue;
+      }
+      const buffer = await readWhole(stream);
       const { text } = await extractTextFromBuffer(buffer, asset.mimeType);
       const trimmed = text.trim();
       out.push(trimmed ? { fileName: asset.fileName, text: trimmed } : { fileName: asset.fileName });
@@ -276,13 +298,19 @@ async function claimAndDispatch(db: Db, companyId: string, id: string): Promise<
   // Scope drives the memory layer: a company-wide capture seeds identity-layer
   // memory (vision, values, brand), a department capture seeds domain-layer.
   const memoryLayer = row.departmentId ? "domain" : "identity";
-  const [allowedFolders, attachedFiles] = await Promise.all([
-    loadAllowedFolders(db, companyId, row.departmentId),
-    loadAttachedFiles(db, companyId, row.assetIds ?? []),
-  ]);
 
   const runStartedAt = new Date();
   try {
+    // Enrichment MUST stay inside this try. The row is already claimed as
+    // "running" at this point, and the claim predicate only re-accepts
+    // 'pending'/'failed' — so a throw out here (storage misconfigured, asset
+    // query fails) would strand the capture in 'running' forever: retry
+    // refuses it and LibrarianStep polls it until the founder gives up.
+    const [allowedFolders, attachedFiles] = await Promise.all([
+      loadAllowedFolders(db, companyId, row.departmentId),
+      loadAttachedFiles(db, companyId, row.departmentId, row.assetIds ?? []),
+    ]);
+
     const result = await runAoaAgent(db, librarianAgentId, {
       companyId,
       source: "braindump.ingest",
@@ -409,14 +437,28 @@ export function braindumpService(db: Db) {
       // the asset). Dedupe, then verify every id belongs to THIS company so a
       // crafted request can't pull another company's file into this company's
       // Librarian prompt. Reject (not silently drop) so the founder sees it.
+      //
+      // The check is scope-matched, not merely company-matched: an asset lives
+      // in exactly one scope, and pulling a department's file into a COMPANY
+      // capture would feed its contents into identity-layer memory (or one
+      // department's file into another department's domain memory). Company
+      // assets have a NULL departmentId, hence the isNull branch.
       const assetIds = Array.from(new Set(input.assetIds ?? []));
       if (assetIds.length > 0) {
         const owned = await db
           .select({ id: memoryAssets.id })
           .from(memoryAssets)
-          .where(and(eq(memoryAssets.companyId, companyId), inArray(memoryAssets.id, assetIds)));
+          .where(
+            and(
+              eq(memoryAssets.companyId, companyId),
+              inArray(memoryAssets.id, assetIds),
+              departmentId === null
+                ? isNull(memoryAssets.departmentId)
+                : eq(memoryAssets.departmentId, departmentId),
+            ),
+          );
         if (owned.length !== assetIds.length) {
-          throw badRequest("One or more assetIds do not belong to this company");
+          throw badRequest("One or more assetIds do not belong to this braindump's scope");
         }
       }
 

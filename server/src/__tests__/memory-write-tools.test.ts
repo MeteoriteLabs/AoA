@@ -460,6 +460,54 @@ describe("write_memory crew tool — folderPath", () => {
   });
 });
 
+// Layer/scope invariant: the wakeup prompt tells the Librarian which layer
+// pairs with which scope, but a prompt is not an integrity boundary.
+describe("write_memory crew tool — layer/scope invariant", () => {
+  beforeEach(() => {
+    mockWriteMemoryAndIndex.mockReset();
+    mockWriteMemoryAndIndex.mockResolvedValue(makeDefaultItem());
+  });
+
+  it("rejects identity-layer memory carrying a departmentId", async () => {
+    const ctx = makeCtx();
+    const r = await writeMemoryTool.execute(
+      { title: "T", content: "x", layer: "identity", departmentId: "dept-eng" },
+      ctx,
+    );
+    expect(r.success).toBe(false);
+    expect(r.error).toBe("INVALID_PARAMS");
+    expect(mockWriteMemoryAndIndex).not.toHaveBeenCalled();
+  });
+
+  it("rejects filing domain-layer memory into a folder when it has no departmentId", async () => {
+    // Otherwise the folder lookup falls through to the COMPANY folder set and
+    // files department knowledge company-wide.
+    const ctx = makeCtx();
+    const r = await writeMemoryTool.execute(
+      { title: "T", content: "x", layer: "domain", folderPath: "Company/Decisions" },
+      ctx,
+    );
+    expect(r.success).toBe(false);
+    expect(r.error).toBe("INVALID_PARAMS");
+    expect(mockWriteMemoryAndIndex).not.toHaveBeenCalled();
+  });
+
+  it("still allows an UNFILED domain write with no departmentId (existing behaviour)", async () => {
+    const ctx = makeCtx();
+    const r = await writeMemoryTool.execute({ title: "T", content: "x", layer: "domain" }, ctx);
+    expect(r.success).toBe(true);
+  });
+
+  it("allows identity memory filed into a company folder", async () => {
+    const ctx = makeCtx();
+    const r = await writeMemoryTool.execute(
+      { title: "T", content: "x", layer: "identity", folderPath: "Company/Mission & Vision" },
+      ctx,
+    );
+    expect(r.success).toBe(true);
+  });
+});
+
 describe("write_memory crew tool — error handling", () => {
   it("returns INSERT_FAILED when writeMemoryAndIndex throws", async () => {
     mockWriteMemoryAndIndex.mockRejectedValueOnce(new Error("DB offline"));

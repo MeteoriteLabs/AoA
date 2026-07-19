@@ -77,6 +77,10 @@ export function BraindumpStep({ companyId, onDone }: BraindumpStepProps) {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [globalError, setGlobalError] = useState<string | null>(null);
+  /** Scope keys with an upload in flight. Continue is blocked while non-empty:
+   *  submitting mid-upload would either drop the file the founder just added or
+   *  treat the card as empty, leaving the finished upload unlinked. */
+  const [uploadingKeys, setUploadingKeys] = useState<Set<string>>(new Set());
 
   const doneFiredRef = useRef(false);
   function fireOnDoneOnce() {
@@ -268,6 +272,14 @@ export function BraindumpStep({ companyId, onDone }: BraindumpStepProps) {
                 label={`Attach files for ${box.name}`}
                 assets={box.assets}
                 onAssetsChange={(assets) => updateBox(box.key, { assets })}
+                onUploadingChange={(isUploading) =>
+                  setUploadingKeys((prev) => {
+                    const next = new Set(prev);
+                    if (isUploading) next.add(box.key);
+                    else next.delete(box.key);
+                    return next;
+                  })
+                }
                 disabled={submitting || box.status === "submitted"}
               />
 
@@ -292,8 +304,12 @@ export function BraindumpStep({ companyId, onDone }: BraindumpStepProps) {
       {globalError && <p className="text-xs text-destructive">{globalError}</p>}
 
       <Reveal delay={0.18 + boxes.length * 0.09}>
-        <Button className="w-full" onClick={() => void submitAll()} disabled={submitting || loading}>
-          {submitting ? "Saving…" : "Continue"}
+        <Button
+          className="w-full"
+          onClick={() => void submitAll()}
+          disabled={submitting || loading || uploadingKeys.size > 0}
+        >
+          {submitting ? "Saving…" : uploadingKeys.size > 0 ? "Uploading…" : "Continue"}
         </Button>
       </Reveal>
 
