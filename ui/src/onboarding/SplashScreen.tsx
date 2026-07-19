@@ -46,7 +46,7 @@ export function SplashScreen({ onDone }: { onDone: () => void }) {
     >
       <ConstellationBg />
       <div className="relative z-10 flex flex-col items-center gap-[22px]">
-        <AoaLogo size={64} />
+        <AoaLogo size={240} />
         <div
           className="font-mono text-sm"
           style={{ color: "var(--dim)", minHeight: 20 }}

@@ -66,7 +66,7 @@ export function SpineCompleteStep({ ctx, onComplete }: StepProps) {
     <StepShell>
       <Reveal>
         <div className="flex flex-col items-center gap-4 text-center">
-          <AoaLogo size={40} />
+          <AoaLogo size={130} />
           <h1 className="text-2xl font-bold tracking-tight text-text sm:text-[28px]">
             Bringing you to your <GradientText>control room</GradientText>…
           </h1>

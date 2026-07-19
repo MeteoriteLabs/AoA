@@ -157,7 +157,7 @@ export function AuthPage() {
       <ConstellationBg />
 
       <div className="relative z-10 flex w-full max-w-[440px] flex-col items-center gap-4 text-center">
-        <AoaLogo size={30} />
+        <AoaLogo size={96} />
 
         <h1
           className="text-[26px] font-bold leading-tight tracking-tight sm:text-[30px]"
