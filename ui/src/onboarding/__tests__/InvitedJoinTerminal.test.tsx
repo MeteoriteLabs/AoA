@@ -15,11 +15,23 @@ vi.mock("@/lib/router", () => ({
 }));
 const mockRemoveQueries = vi.hoisted(() => vi.fn());
 const mockInvalidateQueries = vi.hoisted(() => vi.fn(async () => undefined));
+// getQueryData backs prepareEntry's company-name backfill (deep-link race): it
+// reads the just-refreshed companies list to name the admitted screen. Seeded
+// with the fixture companies so every admitted branch resolves the real name.
+const mockGetQueryData = vi.hoisted(() =>
+  vi.fn(() => ({
+    companies: [
+      { id: "c1", name: "Acme" },
+      { id: "c2", name: "Beta" },
+    ],
+  })),
+);
 // Stable object — the real QueryClient is render-stable; a fresh object per
 // render would churn the component's effect deps and re-run the poll loop.
 const mockQueryClient = vi.hoisted(() => ({
   removeQueries: mockRemoveQueries,
   invalidateQueries: mockInvalidateQueries,
+  getQueryData: mockGetQueryData,
 }));
 vi.mock("@tanstack/react-query", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-query")>()),
@@ -382,6 +394,27 @@ describe("InvitedJoinTerminal", () => {
       expect(finalizeInvitedJoin).not.toHaveBeenCalledWith("cB", expect.anything());
       fireEvent.click(enterBtn);
       await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/", { replace: true }));
+    });
+
+    it("deep-link race admit backfills the company name from the refreshed companies cache (no bare 'Enter')", async () => {
+      routerState.searchParams = new URLSearchParams("company=cA");
+      // cA left the pending set before the first tick (admitted), so `company`
+      // is never seeded from an invitation — without the backfill the admitted
+      // screen degrades to "Welcome to the team." / a bare "Enter".
+      fetchJourney.mockResolvedValue({
+        journey: "returning",
+        targetCompanyId: "cB",
+        pendingInvitations: [invB],
+        inviteToken: null,
+      });
+      finalizeInvitedJoin.mockResolvedValue({ admitted: true, status: "approved" });
+      // prepareEntry refreshes the companies list; the just-admitted cA is now
+      // in it, so its name fills the admitted copy.
+      mockGetQueryData.mockReturnValueOnce({ companies: [{ id: "cA", name: "Acme" }] });
+      render(<InvitedJoinTerminal />);
+      // Backfilled: "Enter Acme" + "Welcome to Acme.", not the bare fallbacks.
+      expect(await screen.findByRole("button", { name: /^enter acme$/i })).toBeTruthy();
+      expect(screen.getByText(/Welcome to Acme/i)).toBeTruthy();
     });
 
     it("no-record deep link: finalize 404s for cA → degrades to not-approved, never hangs on B", async () => {

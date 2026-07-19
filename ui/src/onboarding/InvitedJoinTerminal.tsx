@@ -102,10 +102,26 @@ export function InvitedJoinTerminal() {
   // on the founder-oriented empty Lobby). Runs as soon as admission is
   // detected, NOT on the "Enter" click — so the Home data is already warm by
   // the time the teammate clicks through the mini-map screen.
-  const prepareEntry = useCallback(async () => {
-    queryClient.removeQueries({ queryKey: ["onboarding", "journey"], exact: true });
-    await queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
-  }, [queryClient]);
+  //
+  // Also backfills the company display name for the admitted screen. On the
+  // deep-link race the target left `pendingInvitations` before the terminal's
+  // first tick, so `company` was never set from an invitation and the copy
+  // degrades to "Welcome to the team." The companies list just refreshed here
+  // now contains the just-admitted company, so read its name from that cache
+  // (no extra request, no server round-trip) and seed `company` when unset.
+  const prepareEntry = useCallback(
+    async (targetId: string | null) => {
+      queryClient.removeQueries({ queryKey: ["onboarding", "journey"], exact: true });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+      if (!targetId) return;
+      const data = queryClient.getQueryData<{ companies: Array<{ id: string; name: string }> }>(
+        queryKeys.companies.all,
+      );
+      const name = data?.companies.find((c) => c.id === targetId)?.name;
+      if (name) setCompany((prev) => prev ?? { name, role: "" });
+    },
+    [queryClient],
+  );
 
   // The explicit "Enter {company}" click on the admitted screen. `prepareEntry`
   // already ran when admission was detected, so this is a pure navigate.
@@ -192,7 +208,7 @@ export function InvitedJoinTerminal() {
               const result = await finalizeInvitedJoin(targetId);
               if (cancelled) return;
               if (result.admitted) {
-                await prepareEntry();
+                await prepareEntry(targetId);
                 if (cancelled) return;
                 setPhase("admitted");
                 return;
@@ -226,7 +242,7 @@ export function InvitedJoinTerminal() {
             // Approved (the invitation left the pending set and a membership now
             // exists) — or simply an existing member with nothing pending here:
             // enter the app.
-            await prepareEntry();
+            await prepareEntry(targetId);
             if (cancelled) return;
             setPhase("admitted");
             return;
@@ -283,7 +299,7 @@ export function InvitedJoinTerminal() {
             if (cancelled) return;
             finalizedRef.current = true;
             if (result.admitted) {
-              await prepareEntry();
+              await prepareEntry(targetId);
               if (cancelled) return;
               setPhase("admitted");
               return;
