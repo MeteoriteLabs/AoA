@@ -1247,6 +1247,13 @@
       "when": 1784716922443,
       "tag": "0177_strong_imperial_guard",
       "breakpoints": true
+    },
+    {
+      "idx": 175,
+      "version": "7",
+      "when": 1784450119513,
+      "tag": "0175_next_midnight",
+      "breakpoints": true
     }
   ]
 }
