@@ -25,8 +25,18 @@ import { agents } from "@armyofagents/db";
  *     templateOrigin the row is already named Navigator.
  *   - Maker — superseded by Engineer (rename happens inside ensure-engineer.ts,
  *     same mechanism as Router/Navigator).
+ *
+ * WS6: "Librarian" added. seedCrewAgent (seed-crew-agent.ts) stamps no
+ * templateOrigin on insert — this backfill is the ONLY place the synthetic
+ * `@legacy` origin gets attached, for every legacy-seeded crew role
+ * (ensure-librarian.ts alone would leave Librarian rows with a NULL
+ * templateOrigin, which isCrewMarketplaceManaged would treat as "not
+ * managed" — technically harmless there, but it would also never satisfy
+ * "marketplace-managed companies skip the legacy seeder" bookkeeping
+ * elsewhere that keys off a non-null origin). Covers both newly-inserted and
+ * pre-existing rows (idempotent: only rows with templateOrigin IS NULL).
  */
-const CREW_NAMES = [
+export const CREW_NAMES = [
   "Commander",
   "Adjutant",
   "Scout",
@@ -35,6 +45,7 @@ const CREW_NAMES = [
   "Planner",
   "Dispatcher",
   "Memory Keeper",
+  "Librarian",
 ] as const;
 
 export async function backfillCrewTemplateOrigin(db: Db): Promise<void> {

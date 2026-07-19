@@ -52,6 +52,7 @@ const ROLE_ACTION_DIRECTIVE: Record<string, string> = {
   memory_keeper:  "call `suggest_memory` for each candidate pattern (propose-only — the founder approves)",
   chronicler:     "call `get_thread_summary` then `thread.listEntries` for the thread in this wakeup, then call `thread.updateSummary` exactly once with an updated factual summary + routingTerms. Never post_entry.",
   commander:      "call `post_entry` exactly once with your synthesis or answer",
+  librarian:      "read the braindump content below and call `write_memory` once per distinct, durable fact worth keeping — always with layer=\"domain\" and the departmentId given below. Do not invent facts that are not in the braindump. If there is nothing worth keeping, call no tool and return.",
 };
 
 const GENERIC_DIRECTIVE =
@@ -87,6 +88,25 @@ const INBOX_ROUTING_DIRECTIVE =
   "(c) if you are unsure or nothing fits, call defer_inbox_to_human — this leaves it in the Inbox for the founder. " +
   "You MUST call exactly one of these three tools. The routing dial decides whether (a)/(b) auto-act or surface as a suggestion — act on your best judgment either way. " +
   "Do NOT call spin_off_thread for inbox items — use promote_inbox_to_thread instead.";
+
+// WS6 — dedicated directive for braindump.ingest wakeups. The Librarian
+// receives the raw braindump text + departmentId directly in the prompt (it
+// has no thread/entry to read from — this is a standalone, server-dispatched
+// wakeup, never a mention/sweep). Mirrors the inbox-routing content-injection
+// pattern above.
+const BRAINDUMP_INGEST_DIRECTIVE =
+  "A braindump has been submitted for the department named below. Its content is shown under " +
+  "'Braindump content'. Identify distinct, durable pieces of knowledge worth keeping — facts, " +
+  "conventions, glossary terms, standing preferences, domain context — and call write_memory " +
+  "once per item with layer=\"domain\" and departmentId set to the department id given below. " +
+  "Do not invent facts that are not in the braindump content. If there is nothing worth keeping, " +
+  "call no tool and return — that is a correct, non-failing outcome.";
+
+/** WS6 payload cap: braindump text injected into the trigger prompt is
+ *  truncated beyond this length so a single wakeup can't blow the context
+ *  budget. The braindump capture route enforces its own (larger) storage
+ *  cap; this is the prompt-injection cap specifically. */
+export const BRAINDUMP_CONTENT_PROMPT_CAP = 12000;
 
 export interface BuildTriggerPromptArgs {
   /** Full assembled instruction bundle (SOUL+TOOLS+AGENTS+HEARTBEAT)
@@ -159,6 +179,26 @@ export function buildTriggerPrompt(args: BuildTriggerPromptArgs): string {
         ? `${inboundContent.slice(0, 4000)}…[truncated]`
         : inboundContent;
       ctxLines.push(`Inbound content:\n${clipped}`);
+    }
+  } else if (payload.source === "braindump.ingest") {
+    // WS6 — direct server dispatch, no thread/entry/task involved.
+    directive = BRAINDUMP_INGEST_DIRECTIVE;
+
+    const departmentId = payload.departmentId;
+    if (typeof departmentId === "string" && departmentId.length > 0) {
+      ctxLines.push(`Department id: ${departmentId}`);
+    }
+    const departmentName = payload.departmentName;
+    if (typeof departmentName === "string" && departmentName.length > 0) {
+      ctxLines.push(`Department name: ${departmentName}`);
+    }
+
+    const braindumpContent = payload.braindumpContent;
+    if (typeof braindumpContent === "string" && braindumpContent.length > 0) {
+      const clipped = braindumpContent.length > BRAINDUMP_CONTENT_PROMPT_CAP
+        ? `${braindumpContent.slice(0, BRAINDUMP_CONTENT_PROMPT_CAP)}…[truncated]`
+        : braindumpContent;
+      ctxLines.push(`Braindump content:\n${clipped}`);
     }
   } else if (typeof payload.issueId === "string" && payload.issueId.length > 0) {
     // Spec B Task 5 — a task assignment wakeup. The task directive overrides the

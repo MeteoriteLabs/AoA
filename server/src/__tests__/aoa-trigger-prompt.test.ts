@@ -572,6 +572,75 @@ describe("buildTriggerPrompt (Task 4.3) — contextBundle injection", () => {
   });
 });
 
+// WS6 — braindump.ingest trigger directive (Librarian).
+describe("buildTriggerPrompt (WS6) — braindump.ingest", () => {
+  it("renders departmentId, departmentName, and the braindump content", () => {
+    const out = buildTriggerPrompt({
+      instruction: "BUNDLE",
+      agentName: "Librarian",
+      agentRoleKey: "librarian",
+      payload: {
+        companyId: "co-1",
+        source: "braindump.ingest",
+        departmentId: "dept-1",
+        departmentName: "Engineering",
+        braindumpContent: "We ship on Fridays. Staging is called 'preview'.",
+      },
+    });
+    expect(out).toContain("Department id: dept-1");
+    expect(out).toContain("Department name: Engineering");
+    expect(out).toContain("Braindump content:");
+    expect(out).toContain("We ship on Fridays. Staging is called 'preview'.");
+    expect(out).toContain("write_memory");
+    expect(out).toContain('layer="domain"');
+  });
+
+  it("truncates very long braindump content to keep the prompt bounded", () => {
+    const long = "y".repeat(20000);
+    const out = buildTriggerPrompt({
+      instruction: "BUNDLE",
+      agentName: "Librarian",
+      agentRoleKey: "librarian",
+      payload: {
+        companyId: "co-1",
+        source: "braindump.ingest",
+        departmentId: "dept-1",
+        braindumpContent: long,
+      },
+    });
+    expect(out).toContain("Braindump content:");
+    expect(out).toContain("[truncated]");
+    expect(out).not.toContain(long);
+  });
+
+  it("guard case: no braindumpContent still renders without throwing or 'undefined'", () => {
+    const out = buildTriggerPrompt({
+      instruction: "BUNDLE",
+      agentName: "Librarian",
+      agentRoleKey: "librarian",
+      payload: {
+        companyId: "co-1",
+        source: "braindump.ingest",
+        departmentId: "dept-1",
+      },
+    });
+    expect(out).toContain("Department id: dept-1");
+    expect(out).not.toContain("undefined");
+    expect(out).not.toContain("Braindump content:");
+  });
+
+  it("non-braindump librarian wakeup falls back to the role-table directive (regression guard)", () => {
+    const out = buildTriggerPrompt({
+      instruction: BASE_INSTRUCTION,
+      agentName: "Librarian",
+      agentRoleKey: "librarian",
+      payload: { companyId: "co", source: "some_other_source" },
+    });
+    expect(out).toContain("write_memory");
+    expect(out).not.toContain("A braindump has been submitted");
+  });
+});
+
 // Task 0.4 — ensure-adjutant stale-framing guard
 describe("ensure-adjutant instruction (Task 0.4)", () => {
   it("does NOT contain stale 'Dispatcher and Engineer take over' framing", () => {
