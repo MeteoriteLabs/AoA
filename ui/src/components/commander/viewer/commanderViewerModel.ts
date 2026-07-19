@@ -12,7 +12,18 @@ import type {
 export interface ViewerTab {
   /** Stable tab identity: `artifact:<id>:<versionId|latest>` | `reply:<messageId>` | `browser:<url>` | `task:<issueId>` */
   id: string;
-  kind: "artifact" | "reply" | "browser" | "task" | "discussion" | "approval" | "inbox" | "note";
+  kind:
+    | "artifact"
+    | "reply"
+    | "browser"
+    | "task"
+    | "discussion"
+    | "approval"
+    | "inbox"
+    | "note"
+    | "asset"
+    | "output"
+    | "memory_item";
   title: string;
   /** artifact id, message id for replies, url for browser tabs, or issue id for task tabs */
   refId: string;
@@ -22,6 +33,9 @@ export interface ViewerTab {
   /** browser tabs only — the url loaded in the sandboxed iframe */
   url?: string;
   inputRef?: CommanderInputRef;
+  /** v2 presentation hints carried from the ref so the body can resolve a viewer. */
+  viewerKind?: string;
+  mimeType?: string;
 }
 
 export interface ConversationViewerState {
@@ -72,8 +86,25 @@ export function openRefTab(
     }
     case "url":
       return openBrowserTab(state, ref.id); // openBrowserTab already scheme-gates via toSafeBrowserUrl
+    case "asset":
+    case "output":
+    case "memory_item": {
+      // These kinds only exist on v2 refs (v1 is artifact-only), so `ref` narrows
+      // to ShowRefV2 here and the presentation hints are safe to read.
+      const id = `${ref.kind}:${ref.id}`;
+      if (state.tabs.some((t) => t.id === id)) return { ...state, activeId: id, expanded: true };
+      const tab: ViewerTab = {
+        id,
+        kind: ref.kind,
+        title: chipLabel(ref),
+        refId: ref.id,
+        viewerKind: ref.viewerKind ?? undefined,
+        mimeType: ref.mimeType ?? undefined,
+      };
+      return { tabs: [...state.tabs, tab], activeId: id, expanded: true };
+    }
     default:
-      // asset | output | memory_item — no Commander tab body yet (Phase 3). Never mis-render as artifact.
+      // Unknown/unsupported kind — never mis-render as artifact.
       return state;
   }
 }

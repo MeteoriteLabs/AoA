@@ -275,9 +275,49 @@ describe("openRefTab kind routing", () => {
     const blocked = openRefTab(empty, { v: 2, kind: "url", id: "javascript:alert(1)", action: "referenced" } as any);
     expect(blocked.tabs[0]).toMatchObject({ kind: "browser", url: "about:blank" });
   });
-  it("no-ops for an unsupported kind (asset) rather than mis-rendering", () => {
+  it("routes a v2 asset ref to an asset tab (kind=asset, id=asset:<id>)", () => {
     const s = openRefTab(empty, { v: 2, kind: "asset", id: "as1", action: "referenced" } as any);
-    expect(s.tabs).toHaveLength(0);
-    expect(s.activeId).toBe("home");
+    expect(s.tabs).toHaveLength(1);
+    expect(s.tabs[0]).toMatchObject({ kind: "asset", refId: "as1", id: "asset:as1" });
+    expect(s.activeId).toBe("asset:as1");
+    expect(s.expanded).toBe(true);
+  });
+
+  it("routes a v2 output ref to an output tab", () => {
+    const s = openRefTab(empty, { v: 2, kind: "output", id: "out1", action: "created" } as any);
+    expect(s.tabs[0]).toMatchObject({ kind: "output", refId: "out1", id: "output:out1" });
+  });
+
+  it("routes a v2 memory_item ref to a memory_item tab", () => {
+    const s = openRefTab(empty, { v: 2, kind: "memory_item", id: "m1", action: "referenced" } as any);
+    expect(s.tabs[0]).toMatchObject({ kind: "memory_item", refId: "m1", id: "memory_item:m1" });
+  });
+
+  it("carries the v2 viewerKind + mimeType hints onto the opened tab", () => {
+    const s = openRefTab(empty, {
+      v: 2,
+      kind: "asset",
+      id: "as2",
+      action: "referenced",
+      viewerKind: "markdown",
+      mimeType: "text/markdown",
+    } as any);
+    expect(s.tabs[0]).toMatchObject({
+      kind: "asset",
+      refId: "as2",
+      viewerKind: "markdown",
+      mimeType: "text/markdown",
+    });
+  });
+
+  it("dedupes an already-open asset tab (focus, not duplicate)", () => {
+    const first = openRefTab(empty, { v: 2, kind: "asset", id: "as1", action: "referenced" } as any);
+    const again = openRefTab(
+      { ...first, activeId: "home", expanded: false },
+      { v: 2, kind: "asset", id: "as1", action: "referenced" } as any,
+    );
+    expect(again.tabs).toHaveLength(1);
+    expect(again.activeId).toBe("asset:as1");
+    expect(again.expanded).toBe(true);
   });
 });

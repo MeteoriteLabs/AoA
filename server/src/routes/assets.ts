@@ -371,6 +371,27 @@ export function assetRoutes(db: Db, storage: StorageService) {
     res.status(200).json({ ok: true });
   });
 
+  // Lightweight asset metadata (Commander viewer asset/output tab bodies).
+  // Mirrors the content route's path shape + access assertion but returns ONLY
+  // presentation-safe fields — never objectKey/sha256/storage internals.
+  router.get("/assets/:assetId/meta", async (req, res) => {
+    const assetId = req.params.assetId as string;
+    const asset = await svc.getById(assetId);
+    if (!asset) {
+      res.status(404).json({ error: "Asset not found" });
+      return;
+    }
+    assertCompanyAccess(req, asset.companyId);
+
+    res.json({
+      id: asset.id,
+      originalFilename: asset.originalFilename,
+      contentType: asset.contentType,
+      byteSize: asset.byteSize,
+      createdAt: asset.createdAt,
+    });
+  });
+
   router.get("/assets/:assetId/content", async (req, res, next) => {
     const assetId = req.params.assetId as string;
     const asset = await svc.getById(assetId);

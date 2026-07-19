@@ -1,12 +1,16 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { FileText, Globe, Home, Inbox, ListTodo, MessageSquare, ShieldCheck, StickyNote } from "lucide-react";
-import type { ShowRef } from "@armyofagents/shared";
+import { Brain, FileText, Globe, Home, Inbox, ListTodo, MessageSquare, Package, ShieldCheck, StickyNote } from "lucide-react";
+import type { ShowRef, TaskOutput } from "@armyofagents/shared";
+import { toSafeBrowserUrl } from "@armyofagents/shared";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "../../../lib/utils";
 import { COMMANDER_PANEL_CARD } from "../commanderChrome";
 import { artifactsApi } from "../../../api/artifacts";
+import { assetsApi } from "../../../api/assets";
+import { taskOutputsApi } from "../../../api/task-outputs";
+import { memoryApi } from "../../../api/memory";
 import { discussionsApi } from "../../../api/discussions";
 import { hubItemsApi } from "../../../api/hub-items";
 import { BrowserViewer } from "../../viewers/BrowserViewer";
@@ -35,7 +39,7 @@ import type { ConversationViewerState, ViewerTab } from "./commanderViewerModel"
 
 function LoadingBody() {
   return (
-    <div className="flex flex-1 flex-col gap-3 overflow-hidden p-4">
+    <div className="flex flex-1 flex-col gap-3 overflow-hidden p-4" data-testid="commander-viewer-loading">
       <Skeleton className="h-5 w-2/3" />
       <Skeleton className="h-4 w-full" />
       <Skeleton className="h-4 w-5/6" />
@@ -100,6 +104,191 @@ function ArtifactTabBody({ tab }: ArtifactTabBodyProps) {
       filename={filename}
       inlineTextContent={version.content ?? null}
     />
+  );
+}
+
+// --- Asset ------------------------------------------------------------------
+
+function AssetRefTabBody({ tab }: { tab: ViewerTab }) {
+  const {
+    data: asset,
+    isLoading,
+    isError,
+  } = useQuery({
+    queryKey: ["commander-viewer-asset", tab.refId],
+    queryFn: () => assetsApi.getMeta(tab.refId),
+    enabled: Boolean(tab.refId),
+  });
+
+  if (isLoading) return <LoadingBody />;
+
+  if (isError || !asset) {
+    return (
+      <UnavailableBody message="This file is no longer available (it may have been deleted, or you may not have access)." />
+    );
+  }
+
+  const filename = asset.originalFilename ?? "file";
+  // resolveViewer derives the content URL from assetId (/api/assets/:id/content);
+  // SharedContentViewer has no `src` prop — it reads viewer.assetUrl.
+  const viewer = resolveViewer({
+    contentType: asset.contentType,
+    filename,
+    assetId: tab.refId,
+    metadata: tab.viewerKind ? { viewerKind: tab.viewerKind } : null,
+  });
+
+  return <SharedContentViewer viewer={viewer} filename={filename} />;
+}
+
+// --- Task output (polymorphic) ---------------------------------------------
+
+function OutputLinkCard({ output }: { output: TaskOutput }) {
+  // toSafeBrowserUrl returns "about:blank" for blocked schemes — treat that as no link.
+  const gated = output.url ? toSafeBrowserUrl(output.url) : "";
+  const safeUrl = gated && gated !== "about:blank" ? gated : "";
+  return (
+    <div className="h-full overflow-auto p-4" data-testid="commander-output-ref-link">
+      <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+        <Globe className="size-4" aria-hidden />
+        <span>{[output.type.replaceAll("_", " "), output.provider].filter(Boolean).join(" · ")}</span>
+      </div>
+      <h2 className="mt-2 text-base font-semibold leading-snug text-foreground">{output.title}</h2>
+      {output.summary ? (
+        <p className="mt-3 text-sm leading-6 text-muted-foreground">{output.summary}</p>
+      ) : null}
+      {safeUrl ? (
+        <a
+          href={safeUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="mt-4 inline-flex items-center gap-1 rounded-md border border-border bg-background/60 px-3 py-1.5 text-sm font-medium text-foreground hover:bg-muted/60"
+        >
+          Open link
+        </a>
+      ) : (
+        <p className="mt-4 text-xs text-muted-foreground">
+          This link uses an unsupported scheme and cannot be opened.
+        </p>
+      )}
+      {output.url ? (
+        <p className="mt-2 break-all text-xs text-muted-foreground">{output.url}</p>
+      ) : null}
+    </div>
+  );
+}
+
+function OutputDetailCard({ output }: { output: TaskOutput }) {
+  const meta = [output.type.replaceAll("_", " "), output.provider, output.status]
+    .filter(Boolean)
+    .join(" · ");
+  return (
+    <div className="h-full overflow-auto p-4" data-testid="commander-output-ref-body">
+      <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+        <Package className="size-4" aria-hidden />
+        <span>{meta}</span>
+      </div>
+      <h2 className="mt-2 text-base font-semibold leading-snug text-foreground">{output.title}</h2>
+      {output.summary ? (
+        <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-muted-foreground">{output.summary}</p>
+      ) : (
+        <p className="mt-3 text-sm text-muted-foreground">No preview is available for this output.</p>
+      )}
+    </div>
+  );
+}
+
+function OutputRefTabBody({ tab, companyId }: { tab: ViewerTab; companyId: string }) {
+  const {
+    data: output,
+    isLoading,
+    isError,
+  } = useQuery({
+    queryKey: ["commander-viewer-output", companyId, tab.refId],
+    queryFn: () => taskOutputsApi.get(companyId, tab.refId),
+    enabled: Boolean(companyId && tab.refId),
+  });
+
+  if (isLoading) return <LoadingBody />;
+
+  if (isError || !output) {
+    return (
+      <UnavailableBody message="This output is no longer available (it may have been deleted, or you may not have access)." />
+    );
+  }
+
+  // artifact / artifact_version → render through the artifact body.
+  if (output.artifactId) {
+    return (
+      <ArtifactTabBody
+        tab={{
+          ...tab,
+          kind: "artifact",
+          refId: output.artifactId,
+          versionId: output.artifactVersionId ?? null,
+        }}
+      />
+    );
+  }
+
+  // asset-backed output → same content viewer path as a bare asset ref.
+  if (output.assetId) {
+    return <AssetRefTabBody tab={{ ...tab, kind: "asset", refId: output.assetId }} />;
+  }
+
+  // url-bearing output (preview_url / pull_request / external_link) → scheme-gated link.
+  if (output.url) {
+    return <OutputLinkCard output={output} />;
+  }
+
+  // Non-content output (branch / commit / runtime_service, …) → compact detail card.
+  return <OutputDetailCard output={output} />;
+}
+
+// --- Memory item ------------------------------------------------------------
+
+function MemoryItemRefTabBody({ tab, companyId }: { tab: ViewerTab; companyId: string }) {
+  const {
+    data: item,
+    isLoading,
+    isError,
+  } = useQuery({
+    queryKey: ["commander-viewer-memory", companyId, tab.refId],
+    queryFn: () => memoryApi.get(companyId, tab.refId),
+    enabled: Boolean(companyId && tab.refId),
+  });
+
+  if (isLoading) return <LoadingBody />;
+
+  if (isError || !item) {
+    return (
+      <UnavailableBody message="This memory item is no longer available (it may have been deleted, or you may not have access)." />
+    );
+  }
+
+  const meta = [item.layer, item.category, item.status].filter(Boolean).join(" · ");
+
+  return (
+    <div className="h-full overflow-auto p-4" data-testid="commander-memory-ref-body">
+      <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+        <Brain className="size-4" aria-hidden />
+        <span>{meta}</span>
+      </div>
+      <h2 className="mt-2 text-base font-semibold leading-snug text-foreground">{item.title}</h2>
+      <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-muted-foreground">{item.content}</p>
+      {item.tags && item.tags.length > 0 ? (
+        <div className="mt-4 flex flex-wrap gap-1.5">
+          {item.tags.map((t) => (
+            <span
+              key={t}
+              className="rounded-full border border-border/70 bg-muted/40 px-2 py-0.5 text-[11px] text-muted-foreground"
+            >
+              {t}
+            </span>
+          ))}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -501,6 +690,18 @@ export function TabBodySwitch({
     return <NoteRefTabBody tab={activeTab} />;
   }
 
+  if (activeTab.kind === "asset") {
+    return <AssetRefTabBody key={activeTab.id} tab={activeTab} />;
+  }
+
+  if (activeTab.kind === "output") {
+    return <OutputRefTabBody key={activeTab.id} tab={activeTab} companyId={companyId} />;
+  }
+
+  if (activeTab.kind === "memory_item") {
+    return <MemoryItemRefTabBody key={activeTab.id} tab={activeTab} companyId={companyId} />;
+  }
+
   return (
     <UnavailableBody message="This item is no longer available (it may have been deleted, or you may not have access)." />
   );
@@ -531,7 +732,11 @@ export function buildViewerTabModels(state: ConversationViewerState): ViewerTabM
                     ? Inbox
                     : t.kind === "note"
                       ? StickyNote
-                      : FileText,
+                      : t.kind === "memory_item"
+                        ? Brain
+                        : t.kind === "output"
+                          ? Package
+                          : FileText,
       }),
     ),
   ];
