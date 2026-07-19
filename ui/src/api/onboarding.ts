@@ -2,6 +2,7 @@ import type {
   PostAuthJourneyResult,
   OnboardingJourney,
   OnboardingState,
+  FirstRunPersona,
 } from "@armyofagents/shared";
 
 export type FlowProgress = { completedStates: OnboardingState[] };
@@ -62,6 +63,56 @@ export async function setFirstRunCompleted(companyId: string): Promise<void> {
   } catch (e) {
     console.warn("setFirstRunCompleted: request failed", e);
   }
+}
+
+/**
+ * WS9 — writes the WS0b door-band persona (`firstRunPersona`) via the same
+ * endpoint `setFirstRunCompleted` uses. Best-effort like its sibling: the
+ * caller (`FirstRunHome`) must never block navigation on this write — a
+ * failed persona write just means a resumed session falls back to showing
+ * the door band again (see `getFirstRunProgress` below), which is a safe,
+ * re-askable default, not a dead end.
+ */
+export async function setFirstRunPersona(companyId: string, persona: FirstRunPersona): Promise<void> {
+  try {
+    const res = await fetch("/api/onboarding/first-run", {
+      method: "PATCH",
+      credentials: "include",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ companyId, firstRunPersona: persona }),
+    });
+    if (!res.ok) {
+      console.warn(`setFirstRunPersona: non-OK response (${res.status})`);
+    }
+  } catch (e) {
+    console.warn("setFirstRunPersona: request failed", e);
+  }
+}
+
+export type FirstRunProgress = {
+  firstRunPersona: FirstRunPersona | null;
+  firstRunCompleted: boolean;
+};
+
+/**
+ * WS9 — reads the WS0b persona/completion fields for the door-band resume
+ * check (`FirstRunHome`: "if firstRunPersona is already in_flight, skip the
+ * door band"). Reuses the existing GET progress endpoint (server already
+ * projects `firstRunPersona`/`firstRunCompletedAt` on every row — see
+ * `services/onboarding.ts` `mapRow`) rather than adding a new route.
+ */
+export async function getFirstRunProgress(companyId: string): Promise<FirstRunProgress> {
+  const res = await fetch(`/api/onboarding/progress?companyId=${encodeURIComponent(companyId)}`, {
+    credentials: "include",
+  });
+  if (!res.ok) throw new Error(`progress fetch failed: ${res.status}`);
+  const data = (await res.json()) as {
+    progress?: { firstRunPersona?: FirstRunPersona | null; firstRunCompletedAt?: string | null } | null;
+  };
+  return {
+    firstRunPersona: data.progress?.firstRunPersona ?? null,
+    firstRunCompleted: data.progress?.firstRunCompletedAt != null,
+  };
 }
 
 /**
