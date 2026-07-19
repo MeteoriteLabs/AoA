@@ -18,8 +18,9 @@
 // No confirmation gate — crew tools execute in the agent loop which already
 // has the task context.
 
-import { and, eq } from "drizzle-orm";
-import { projects, goals } from "@armyofagents/db";
+import { and, eq, isNull } from "drizzle-orm";
+import { projects, goals, memoryFolders } from "@armyofagents/db";
+import { normalizeMemoryFolderPath } from "@armyofagents/shared";
 import type { AgentTool } from "../types.js";
 import { writeMemoryAndIndex } from "../../memory-write.js";
 
@@ -68,6 +69,15 @@ export const writeMemoryTool: AgentTool = {
         type: "string",
         description: "Optional goal id to scope the memory item",
       },
+      folderPath: {
+        type: "string",
+        description:
+          "Optional folder in the company's memory tree to file this item under, e.g. " +
+          "'Company/Decisions' or 'engineering/Architecture'. Must be an EXISTING folder " +
+          "belonging to the same scope as this item: a company-wide item (no departmentId) " +
+          "may only use a company folder, and a department item may only use a folder under " +
+          "that department. Omit to leave the item unfiled at the root.",
+      },
       sourceContext: {
         type: "string",
         description:
@@ -83,7 +93,7 @@ export const writeMemoryTool: AgentTool = {
   requiredRole: "team_member",
   requiresConfirmation: false,
   async execute(params, ctx) {
-    const { title, content, layer, category, departmentId, goalId, sourceContext } =
+    const { title, content, layer, category, departmentId, goalId, folderPath, sourceContext } =
       (params ?? {}) as {
         title?: string;
         content?: string;
@@ -91,6 +101,7 @@ export const writeMemoryTool: AgentTool = {
         category?: string;
         departmentId?: string;
         goalId?: string;
+        folderPath?: string;
         sourceContext?: string;
       };
 
@@ -159,6 +170,52 @@ export const writeMemoryTool: AgentTool = {
       }
     }
 
+    // Folder placement (Item 5 / Phase 5b). The Librarian files braindump
+    // output into the SEEDED memory tree rather than dumping everything at the
+    // root, so it needs to name a folder. Two rules, both enforced here:
+    //
+    //   1. The folder must already EXIST (memory_folders row). The tool never
+    //      creates folders — an agent inventing "Company/Secrets" would produce
+    //      an item nobody can find in the tree UI, since the tree renders from
+    //      memory_folders, not from distinct item paths.
+    //   2. The folder must belong to the SAME scope as the item. memory_folders
+    //      rows carry departmentId (null for company-level folders), so we match
+    //      it against the item's departmentId. Without this, a department write
+    //      could file itself under "Company/..." — visible company-wide, which
+    //      is exactly the layer/scope boundary the memory model exists to keep.
+    //
+    // Omitted/empty => "" (unfiled root), which is the column default.
+    const normalizedFolderPath =
+      typeof folderPath === "string" && folderPath.trim().length > 0
+        ? normalizeMemoryFolderPath(folderPath)
+        : "";
+    if (normalizedFolderPath) {
+      const [folder] = await ctx.db
+        .select({ id: memoryFolders.id })
+        .from(memoryFolders)
+        .where(
+          and(
+            eq(memoryFolders.companyId, ctx.companyId),
+            eq(memoryFolders.path, normalizedFolderPath),
+            departmentId
+              ? eq(memoryFolders.departmentId, departmentId)
+              : isNull(memoryFolders.departmentId),
+          ),
+        )
+        .limit(1);
+      if (!folder) {
+        return {
+          success: false,
+          data: null,
+          summary:
+            `folderPath "${normalizedFolderPath}" is not an existing folder for this ` +
+            `${departmentId ? "department" : "company-wide"} scope — pick one of the folders ` +
+            `listed in your task context, or omit folderPath to file at the root`,
+          error: "INVALID_PARAMS",
+        };
+      }
+    }
+
     // memoryService.create rejects agent-sourced memory without a non-empty
     // sourceContext (memory.ts). Use the caller's note when provided, else
     // derive a default from the agent context so a bare write_memory call still
@@ -186,6 +243,7 @@ export const writeMemoryTool: AgentTool = {
         createdBy: ctx.agentId ?? ctx.userId ?? "system",
         departmentId: departmentId ?? null,
         goalId: goalId ?? null,
+        folderPath: normalizedFolderPath,
       });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -209,7 +267,9 @@ export const writeMemoryTool: AgentTool = {
     return {
       success: true,
       data: { memoryItemId: row.id },
-      summary: `Memory item created (status=pending, layer=${layer}) — awaiting founder review`,
+      summary:
+        `Memory item created (status=pending, layer=${layer}` +
+        `${normalizedFolderPath ? `, folder=${normalizedFolderPath}` : ""}) — awaiting founder review`,
     };
   },
 };
