@@ -19,9 +19,15 @@ vi.mock("../../../api/braindump", async () => {
 const advanceOnboarding = vi.hoisted(() => vi.fn());
 vi.mock("../../../api/onboarding", () => ({ advanceOnboarding }));
 
+const uploadAsset = vi.hoisted(() => vi.fn());
+vi.mock("../../../api/memoryAssets", () => ({
+  memoryAssetsApi: { upload: uploadAsset },
+}));
+
 function makeDept(overrides: Record<string, unknown> = {}) {
   return {
     id: "dept-1",
+    urlKey: "software",
     name: "Software",
     type: "department",
     functionType: "software_development",
@@ -123,6 +129,7 @@ describe("BraindumpStep (WS6 — In-flight standalone surface)", () => {
       scope: "department",
       departmentId: "d1",
       content: "We use Postgres and Drizzle.",
+      assetIds: [],
       idempotencyKey: expect.stringContaining("d1:"),
     });
     await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
@@ -191,6 +198,94 @@ describe("BraindumpStep (WS6 — In-flight standalone surface)", () => {
 
     await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
     expect(submit).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------------
+  // Item 5 / Phase 5d — company-wide scope + file drop.
+  // -------------------------------------------------------------------------
+
+  it("renders a company-wide card above the departments", async () => {
+    list.mockResolvedValue([makeDept({ id: "d1", name: "Software" })]);
+    render(<BraindumpStep companyId="c1" onDone={vi.fn()} />);
+
+    expect(await screen.findByLabelText("Braindump for Company-wide")).toBeTruthy();
+    expect(screen.getByLabelText("Braindump for Software")).toBeTruthy();
+    // Sub-text tells the founder what belongs at each scope.
+    expect(screen.getByText(/Vision, mission, values/i)).toBeTruthy();
+  });
+
+  it("submits the company card with scope=company and a null departmentId", async () => {
+    list.mockResolvedValue([makeDept({ id: "d1", name: "Software" })]);
+    render(<BraindumpStep companyId="c1" onDone={vi.fn()} />);
+
+    const companyBox = await screen.findByLabelText("Braindump for Company-wide");
+    fireEvent.change(companyBox, { target: { value: "We optimize for candor." } });
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+
+    await waitFor(() => expect(submit).toHaveBeenCalledTimes(1));
+    expect(submit).toHaveBeenCalledWith("c1", {
+      scope: "company",
+      departmentId: null,
+      content: "We optimize for candor.",
+      assetIds: [],
+      idempotencyKey: expect.stringContaining("company:"),
+    });
+  });
+
+  it("uploads a dropped file to the scope's Files folder and submits its assetId", async () => {
+    list.mockResolvedValue([makeDept({ id: "d1", urlKey: "software", name: "Software" })]);
+    uploadAsset.mockResolvedValue({ asset: { id: "asset-1", fileName: "notes.md" }, jobId: "j1" });
+    render(<BraindumpStep companyId="c1" onDone={vi.fn()} />);
+
+    const zone = await screen.findByLabelText("Attach files for Software");
+    const file = new File(["hello"], "notes.md", { type: "text/markdown" });
+    fireEvent.drop(zone, { dataTransfer: { files: [file] } });
+
+    await waitFor(() => expect(uploadAsset).toHaveBeenCalledTimes(1));
+    expect(uploadAsset).toHaveBeenCalledWith("c1", file, {
+      departmentId: "d1",
+      folderPath: "software/Files",
+    });
+
+    // The file alone is enough to submit — no typed text required.
+    expect(await screen.findByText("notes.md")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+
+    await waitFor(() => expect(submit).toHaveBeenCalledTimes(1));
+    expect(submit).toHaveBeenCalledWith(
+      "c1",
+      expect.objectContaining({ scope: "department", departmentId: "d1", assetIds: ["asset-1"] }),
+    );
+  });
+
+  it("company-card uploads carry no departmentId and land in Company/Files", async () => {
+    list.mockResolvedValue([makeDept({ id: "d1", name: "Software" })]);
+    uploadAsset.mockResolvedValue({ asset: { id: "asset-2", fileName: "brand.pdf" }, jobId: "j2" });
+    render(<BraindumpStep companyId="c1" onDone={vi.fn()} />);
+
+    const zone = await screen.findByLabelText("Attach files for Company-wide");
+    fireEvent.drop(zone, {
+      dataTransfer: { files: [new File(["x"], "brand.pdf", { type: "application/pdf" })] },
+    });
+
+    await waitFor(() => expect(uploadAsset).toHaveBeenCalledTimes(1));
+    expect(uploadAsset.mock.calls[0][2]).toEqual({ folderPath: "Company/Files" });
+  });
+
+  it("surfaces an upload failure without attaching anything", async () => {
+    list.mockResolvedValue([makeDept({ id: "d1", name: "Software" })]);
+    uploadAsset.mockRejectedValue(new Error("Unsupported file type: application/x-msdownload"));
+    render(<BraindumpStep companyId="c1" onDone={vi.fn()} />);
+
+    const zone = await screen.findByLabelText("Attach files for Software");
+    fireEvent.drop(zone, {
+      dataTransfer: { files: [new File(["x"], "virus.exe", { type: "application/x-msdownload" })] },
+    });
+
+    expect(await screen.findByText(/Unsupported file type/)).toBeTruthy();
+    // Nothing to submit — an errored upload must not become an assetId.
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(() => expect(submit).not.toHaveBeenCalled());
   });
 
   it("never calls advanceOnboarding — domain-only surface", async () => {
