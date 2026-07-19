@@ -47,7 +47,7 @@ export const onboardingApi = { getProgress: getOnboardingProgress, advance: adva
  * rather than surface it to the caller, since the caller must never block
  * navigation on this write.
  */
-export async function setFirstRunCompleted(companyId: string): Promise<void> {
+export async function setFirstRunCompleted(companyId: string): Promise<boolean> {
   try {
     const res = await fetch("/api/onboarding/first-run", {
       method: "PATCH",
@@ -57,11 +57,15 @@ export async function setFirstRunCompleted(companyId: string): Promise<void> {
     });
     if (!res.ok) {
       // Best-effort: the transitional home.ts fallback (isLegacySetupComplete)
-      // covers this failing. Log for observability only.
+      // covers this failing. Log for observability only. Returns false so the
+      // caller can avoid clearing resume state on an unconfirmed write.
       console.warn(`setFirstRunCompleted: non-OK response (${res.status})`);
+      return false;
     }
+    return true;
   } catch (e) {
     console.warn("setFirstRunCompleted: request failed", e);
+    return false;
   }
 }
 

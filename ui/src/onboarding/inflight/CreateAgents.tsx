@@ -163,7 +163,11 @@ export function CreateAgents({ companyId, onDone }: CreateAgentsProps) {
     if (!state || !state.name.trim()) return;
     updateDept(dept.id, { status: "creating", error: null });
     try {
-      const existing = (await agentsApi.list(companyId).catch(() => [])) as AgentRow[];
+      // Do NOT swallow a list failure into an empty list: if the request fails
+      // transiently while a same-named agent already exists, that would create a
+      // duplicate. Let it throw → the outer catch marks this dept errored + the
+      // founder retries.
+      const existing = (await agentsApi.list(companyId)) as AgentRow[];
       let agentId = existing.find((a) => a.kind === "org" && a.name === state.name.trim())?.id ?? null;
 
       if (!agentId) {

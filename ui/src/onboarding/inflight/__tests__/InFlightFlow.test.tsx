@@ -3,7 +3,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { InFlightFlow } from "../InFlightFlow";
 
-const setFirstRunCompleted = vi.hoisted(() => vi.fn(async () => {}));
+const setFirstRunCompleted = vi.hoisted(() => vi.fn(async () => true));
 vi.mock("../../../api/onboarding", () => ({ setFirstRunCompleted }));
 
 // Stub every In-flight surface with a minimal, identifiable stand-in that
@@ -45,7 +45,7 @@ const STORAGE_KEY = "aoa:inflight-step:co-1";
 describe("InFlightFlow (WS9 — In-flight sequencer)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    setFirstRunCompleted.mockResolvedValue(undefined);
+    setFirstRunCompleted.mockResolvedValue(true);
     window.localStorage.clear();
   });
 
@@ -81,8 +81,35 @@ describe("InFlightFlow (WS9 — In-flight sequencer)", () => {
     await waitFor(() => expect(onDone).toHaveBeenCalled());
     // setFirstRunCompleted must resolve BEFORE the parent onDone fires.
     expect(setFirstRunCompleted.mock.invocationCallOrder[0]!).toBeLessThan(onDone.mock.invocationCallOrder[0]!);
-    // The marker is cleared once the sequence completes.
+    // The marker is cleared once the sequence completes (on a confirmed write).
     expect(window.localStorage.getItem(STORAGE_KEY)).toBeNull();
+  });
+
+  it("keeps the step marker when the completion write fails, so a loop-back resumes at the final step (not from scratch)", async () => {
+    // Codex P2: setFirstRunCompleted is best-effort; if the write fails, the
+    // index gate can bounce the founder back into onboarding. Preserving the
+    // marker means they resume at first-job, not the top of the tail.
+    setFirstRunCompleted.mockResolvedValue(false);
+    const user = userEvent.setup();
+    const onDone = vi.fn();
+    render(<InFlightFlow companyId="co-1" onDone={onDone} />);
+
+    for (const label of [
+      "finish-departments",
+      "finish-integrations",
+      "finish-braindump",
+      "finish-librarian",
+      "finish-agents",
+      "finish-first-job",
+    ]) {
+      await user.click(await screen.findByText(label));
+    }
+
+    await waitFor(() => expect(setFirstRunCompleted).toHaveBeenCalledWith("co-1"));
+    // Parent onDone still fires (best-effort forward progress)…
+    await waitFor(() => expect(onDone).toHaveBeenCalled());
+    // …but the marker is NOT cleared — it stays at the final surface (first-job = index 5).
+    expect(window.localStorage.getItem(STORAGE_KEY)).toBe("5");
   });
 
   it("resumes from the stored step index, not ambient department/agent data", async () => {

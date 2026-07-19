@@ -8,7 +8,7 @@ import {
   companies,
   onboardingProgress,
 } from "@armyofagents/db";
-import { and, desc, eq, gt, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import type { PostAuthJourneyResult, PendingInvitation } from "@armyofagents/shared";
 import { resolvePostAuthJourney } from "../services/post-auth-journey.js";
 
@@ -183,12 +183,16 @@ export async function getJourneyForUser(
     const [resume] = await db
       .select({ companyId: onboardingProgress.companyId })
       .from(onboardingProgress)
+      // Join companies to exclude archived ones — an archived unfinished company
+      // must NOT keep redirecting its founder back into onboarding.
+      .innerJoin(companies, eq(companies.id, onboardingProgress.companyId))
       .where(
         and(
           eq(onboardingProgress.userId, args.userId),
           isNotNull(onboardingProgress.companyId),
           isNull(onboardingProgress.firstRunCompletedAt),
           inArray(onboardingProgress.companyId, returningCompanyIds),
+          ne(companies.status, "archived"),
         ),
       )
       .limit(1);

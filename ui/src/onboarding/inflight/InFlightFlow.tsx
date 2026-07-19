@@ -101,8 +101,14 @@ export function InFlightFlow({ companyId, onDone }: InFlightFlowProps) {
       if (next >= IN_FLIGHT_SURFACES.length) {
         if (!doneFiredRef.current) {
           doneFiredRef.current = true;
-          clearStoredStep(companyId);
-          void setFirstRunCompleted(companyId).then(onDone);
+          void setFirstRunCompleted(companyId).then((ok) => {
+            // Only clear the resume marker once the completion write actually
+            // landed. On a failed (best-effort) write the marker stays at the
+            // final step, so a loop-back resumes at first-job — not from the top
+            // of the tail.
+            if (ok) clearStoredStep(companyId);
+            onDone();
+          });
         }
         return current;
       }

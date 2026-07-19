@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { getFirstRunProgress, setFirstRunCompleted, setFirstRunPersona } from "../api/onboarding";
 import { Button } from "@/components/ui/button";
 import { DarkShell } from "./FlowEngine";
@@ -42,6 +42,10 @@ type Phase = "loading" | "door" | "in_flight" | "done" | "error";
 export function FirstRunHome({ companyId, onComplete }: FirstRunHomeProps) {
   const [phase, setPhase] = useState<Phase>("loading");
   const [retryToken, setRetryToken] = useState(0);
+  // Captured in a ref so the load effect can call it without listing `onComplete`
+  // as a dependency (callers may pass a fresh closure each render).
+  const onCompleteRef = useRef(onComplete);
+  onCompleteRef.current = onComplete;
 
   useEffect(() => {
     let cancelled = false;
@@ -49,6 +53,14 @@ export function FirstRunHome({ companyId, onComplete }: FirstRunHomeProps) {
     getFirstRunProgress(companyId)
       .then((progress) => {
         if (cancelled) return;
+        // Already completed — e.g. the founder revisited /onboarding via history,
+        // a bookmark, or stale routing. Never re-show the persona doors or re-run
+        // the tail; hand straight back to the caller (which routes to the Lobby).
+        if (progress.firstRunCompleted) {
+          setPhase("done");
+          onCompleteRef.current?.();
+          return;
+        }
         setPhase(progress.firstRunPersona === "in_flight" ? "in_flight" : "door");
       })
       .catch(() => {

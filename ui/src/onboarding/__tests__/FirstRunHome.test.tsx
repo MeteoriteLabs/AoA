@@ -33,6 +33,18 @@ describe("FirstRunHome (WS9)", () => {
     expect(await screen.findByRole("button", { name: /In-flight/ })).toBeInTheDocument();
   });
 
+  it("short-circuits to onComplete when firstRunCompleted is already true (revisited /onboarding after finishing)", async () => {
+    // Codex P2: a completed founder revisiting /onboarding (history/bookmark)
+    // must NOT be shown the persona doors or re-run the tail.
+    getFirstRunProgress.mockResolvedValue({ firstRunPersona: "in_flight", firstRunCompleted: true });
+    const onComplete = vi.fn();
+    render(<FirstRunHome companyId="co-1" onComplete={onComplete} />);
+
+    await waitFor(() => expect(onComplete).toHaveBeenCalled());
+    expect(screen.queryByRole("button", { name: /In-flight/ })).not.toBeInTheDocument();
+    expect(screen.queryByText("finish-in-flight")).not.toBeInTheDocument();
+  });
+
   it("picking In-flight writes the persona, then routes into InFlightFlow", async () => {
     const user = userEvent.setup();
     render(<FirstRunHome companyId="co-1" />);
