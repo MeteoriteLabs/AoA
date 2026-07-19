@@ -73,4 +73,30 @@ describe("FirstRunHome (WS9)", () => {
     await user.click(await screen.findByText("finish-in-flight"));
     expect(onComplete).toHaveBeenCalled();
   });
+
+  it("code-review fix: a failed progress read shows a retry state, NOT the door band", async () => {
+    getFirstRunProgress.mockRejectedValue(new Error("network down"));
+    render(<FirstRunHome companyId="co-1" />);
+
+    expect(await screen.findByRole("button", { name: /retry/i })).toBeInTheDocument();
+    // Must NOT fall back to the door band — that risks an Explorer pick
+    // firing premature completion, or re-asking an in-progress founder.
+    expect(screen.queryByRole("button", { name: /In-flight/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Explorer/ })).toBeNull();
+    expect(setFirstRunCompleted).not.toHaveBeenCalled();
+    expect(setFirstRunPersona).not.toHaveBeenCalled();
+  });
+
+  it("code-review fix: Retry re-attempts the read and recovers into the door band on success", async () => {
+    const user = userEvent.setup();
+    getFirstRunProgress
+      .mockRejectedValueOnce(new Error("network down"))
+      .mockResolvedValueOnce({ firstRunPersona: null, firstRunCompleted: false });
+    render(<FirstRunHome companyId="co-1" />);
+
+    await user.click(await screen.findByRole("button", { name: /retry/i }));
+
+    expect(await screen.findByRole("button", { name: /In-flight/ })).toBeInTheDocument();
+    expect(getFirstRunProgress).toHaveBeenCalledTimes(2);
+  });
 });

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { getFirstRunProgress, setFirstRunCompleted, setFirstRunPersona } from "../api/onboarding";
+import { Button } from "@/components/ui/button";
 import { DarkShell } from "./FlowEngine";
 import { InFlightFlow } from "./inflight/InFlightFlow";
 import { Map, type MapDoorPersona } from "./Map";
@@ -13,7 +14,7 @@ export type FirstRunHomeProps = {
   onComplete?: () => void;
 };
 
-type Phase = "loading" | "door" | "in_flight" | "done";
+type Phase = "loading" | "door" | "in_flight" | "done" | "error";
 
 /**
  * WS9 — Home's first-run branch (replaces the old Getting-Started checklist
@@ -29,24 +30,34 @@ type Phase = "loading" | "door" | "in_flight" | "done";
  * `"explorer"`, which should already be completed by the time it's
  * persisted — see `handlePick`) falls back to showing the door band, which
  * is a safe, re-askable default.
+ *
+ * Read-failure handling (code-review fix): a FAILED `getFirstRunProgress`
+ * must NOT silently fall back to the door band — an in-progress founder
+ * (persona already `"in_flight"`) who hits a transient error would see the
+ * door band again and could re-pick, or an Explorer pick would fire
+ * `setFirstRunCompleted` prematurely on stale/absent progress data. Instead
+ * it shows a minimal retry state and leaves completion untouched until the
+ * read actually succeeds.
  */
 export function FirstRunHome({ companyId, onComplete }: FirstRunHomeProps) {
   const [phase, setPhase] = useState<Phase>("loading");
+  const [retryToken, setRetryToken] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
+    setPhase("loading");
     getFirstRunProgress(companyId)
       .then((progress) => {
         if (cancelled) return;
         setPhase(progress.firstRunPersona === "in_flight" ? "in_flight" : "door");
       })
       .catch(() => {
-        if (!cancelled) setPhase("door");
+        if (!cancelled) setPhase("error");
       });
     return () => {
       cancelled = true;
     };
-  }, [companyId]);
+  }, [companyId, retryToken]);
 
   async function handlePick(persona: MapDoorPersona) {
     await setFirstRunPersona(companyId, persona);
@@ -71,8 +82,15 @@ export function FirstRunHome({ companyId, onComplete }: FirstRunHomeProps) {
   if (phase === "done") return null;
 
   return (
-    <DarkShell>
-      {phase === "in_flight" ? (
+    <DarkShell fill>
+      {phase === "error" ? (
+        <div className="flex h-full min-h-[50vh] flex-col items-center justify-center gap-3 px-6 text-center">
+          <p className="text-sm text-dim">Couldn&apos;t load your progress.</p>
+          <Button type="button" variant="outline" size="sm" onClick={() => setRetryToken((n) => n + 1)}>
+            Retry
+          </Button>
+        </div>
+      ) : phase === "in_flight" ? (
         <InFlightFlow companyId={companyId} onDone={handleInFlightDone} />
       ) : phase === "door" ? (
         <Map onPick={handlePick} />
