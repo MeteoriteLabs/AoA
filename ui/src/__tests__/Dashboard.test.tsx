@@ -179,16 +179,10 @@ vi.mock("../lib/timeAgo", () => ({
   timeAgo: () => "2m ago",
 }));
 
-// WS9: FirstRunHome (the Map + door band) has its own unit tests
-// (`onboarding/__tests__/FirstRunHome.test.tsx`) — stub it here so Dashboard's
-// tests only assert the branch (which component renders), not its internals.
-const firstRunHomeProps = vi.hoisted(() => ({ companyId: null as string | null }));
-vi.mock("../onboarding/FirstRunHome", () => ({
-  FirstRunHome: ({ companyId }: { companyId: string }) => {
-    firstRunHomeProps.companyId = companyId;
-    return <div data-testid="first-run-home">first-run-home</div>;
-  },
-}));
+// Onboarding (spine + persona fork + in-flight tail) lives ENTIRELY in the
+// standalone /onboarding flow now — the dashboard never renders FirstRunHome.
+// A founder who hasn't finished their tail is routed back to /onboarding by the
+// index gate, so Home is always the steady dashboard here.
 
 describe("Dashboard", () => {
   beforeEach(() => {
@@ -289,7 +283,7 @@ describe("Dashboard", () => {
     expect(screen.getByText("Scout proposed competitor pricing research")).toBeInTheDocument();
   });
 
-  it("WS9: renders FirstRunHome (the Map + door band) when firstRunCompleted is false, even with a complete checklist", async () => {
+  it("never renders onboarding on the dashboard — steady Home even when firstRunCompleted is false (onboarding lives in /onboarding)", async () => {
     const { homeApi } = await import("../api/dashboard");
     vi.mocked(homeApi.summary).mockResolvedValue({
       ...mockHomeSummary,
@@ -297,9 +291,9 @@ describe("Dashboard", () => {
     });
     renderWithProviders(<Dashboard />);
 
-    expect(await screen.findByTestId("first-run-home")).toBeInTheDocument();
-    expect(firstRunHomeProps.companyId).toBe("comp-1");
-    expect(screen.queryByText("+ New Task")).not.toBeInTheDocument();
+    // The steady dashboard renders, NOT a first-run takeover.
+    expect(await screen.findByText("+ New Task")).toBeInTheDocument();
+    expect(screen.queryByTestId("first-run-home")).not.toBeInTheDocument();
   });
 
   it("WS0b: shows steady-state Home when firstRunCompleted is true, even with an incomplete checklist (no goal)", async () => {

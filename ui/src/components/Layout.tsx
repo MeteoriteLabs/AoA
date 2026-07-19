@@ -15,7 +15,6 @@ import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import { useCompanyPageMemory } from "../hooks/useCompanyPageMemory";
 import { healthApi } from "../api/health";
 import { queryKeys } from "../lib/queryKeys";
-import { useHomeSummary } from "../hooks/useHomeSummary";
 import { cn } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -33,11 +32,7 @@ function getRouteSection(pathname: string, companyPrefix?: string) {
   return { section: segments[firstContentIndex], detailId: segments[firstContentIndex + 1] };
 }
 
-export function shouldUseFullBleedMain(
-  pathname: string,
-  companyPrefix?: string,
-  opts?: { firstRunHomeActive?: boolean },
-) {
+export function shouldUseFullBleedMain(pathname: string, companyPrefix?: string) {
   const { section, detailId } = getRouteSection(pathname, companyPrefix);
 
   return (
@@ -52,12 +47,7 @@ export function shouldUseFullBleedMain(
     section === "threads" ||
     // Inbox hub is an edge-to-edge attention/decision surface (left rail + panels).
     section === "inbox" ||
-    section === "inbox-hub" ||
-    // WS9: Home's first-run takeover (Map + door band, `FirstRunHome`) renders
-    // full dark chrome (`DarkShell`) — full-bleed like other edge-to-edge
-    // surfaces, otherwise it gets padded/inset with the sidebar/breadcrumb
-    // showing through. Steady-state Home (firstRunCompleted) stays padded.
-    (section === "home" && Boolean(opts?.firstRunHomeActive))
+    section === "inbox-hub"
   );
 }
 
@@ -85,18 +75,6 @@ export function Layout() {
     queryFn: () => healthApi.get(),
     retry: false,
   });
-
-  // WS9: full-bleed the Home first-run takeover (Map + door band). Reads the
-  // SAME `queryKeys.home(companyId)` cache entry Dashboard populates, via the
-  // shared `useHomeSummary` hook so the key + fetcher can't drift from
-  // Dashboard's. TanStack dedupes concurrent fetches for an identical key, so
-  // this is a second observer, not a second network round-trip.
-  const { section: routeSection } = getRouteSection(location.pathname, companyPrefix);
-  const isHomeRoute = routeSection === "home";
-  const { data: homeSummaryForFirstRun } = useHomeSummary(selectedCompanyId, {
-    enabled: isHomeRoute,
-  });
-  const firstRunHomeActive = isHomeRoute && !!homeSummaryForFirstRun && !homeSummaryForFirstRun.firstRunCompleted;
 
   useEffect(() => {
     if (companiesLoading || onboardingTriggered.current) return;
@@ -300,7 +278,7 @@ export function Layout() {
           tabIndex={-1}
           className={cn(
             "flex-1 overflow-auto",
-            !shouldUseFullBleedMain(location.pathname, companyPrefix, { firstRunHomeActive }) && "p-4 md:p-6",
+            !shouldUseFullBleedMain(location.pathname, companyPrefix) && "p-4 md:p-6",
             isMobile && "pb-[calc(5rem+env(safe-area-inset-bottom))]",
           )}
           onScroll={handleMainScroll}

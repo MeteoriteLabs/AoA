@@ -25,12 +25,7 @@ describe("Layout route padding", () => {
     expect(shouldUseFullBleedMain("/AOA/team/aoa/agent-1", "AOA")).toBe(false);
   });
 
-  it("WS9: Home is full-bleed only while the first-run takeover is active", () => {
+  it("Home is never full-bleed — onboarding lives entirely in /onboarding, never takes over the dashboard", () => {
     expect(shouldUseFullBleedMain("/AOA/home", "AOA")).toBe(false);
-    expect(shouldUseFullBleedMain("/AOA/home", "AOA", { firstRunHomeActive: false })).toBe(false);
-    expect(shouldUseFullBleedMain("/AOA/home", "AOA", { firstRunHomeActive: true })).toBe(true);
-    // `firstRunHomeActive` only affects the "home" section — it doesn't
-    // spuriously full-bleed unrelated, already-non-full-bleed sections.
-    expect(shouldUseFullBleedMain("/AOA/tasks", "AOA", { firstRunHomeActive: true })).toBe(false);
   });
 });

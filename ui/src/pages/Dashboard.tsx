@@ -11,7 +11,6 @@ import {
   type RecentActivityItem,
   type Suggestion,
 } from "@armyofagents/shared";
-import { FirstRunHome } from "../onboarding/FirstRunHome";
 import { useHomeSummary } from "../hooks/useHomeSummary";
 import { authApi } from "../api/auth";
 import { suggestionsApi } from "../api/suggestions";
@@ -728,22 +727,11 @@ export function Dashboard() {
 
   const userName = session?.user?.name?.split(" ")[0] ?? null;
   const greeting = userName ? `${getGreeting()}, ${userName}` : getGreeting();
-  // WS0b: gated on the persisted first-run-done flag, not the checklist that
-  // used to render here (vision+dept+agent+goal never completes for
-  // In-flight/Explorer personas). WS9 replaces that checklist with the Map +
-  // door band (FirstRunHome) as a full takeover of Home's first-run branch.
-  const showOnboarding = data ? !data.firstRunCompleted : false;
-
-  if (showOnboarding && selectedCompanyId) {
-    return (
-      <FirstRunHome
-        companyId={selectedCompanyId}
-        onComplete={() => {
-          void queryClient.invalidateQueries({ queryKey: queryKeys.home(selectedCompanyId) });
-        }}
-      />
-    );
-  }
+  // Onboarding (spine + persona fork + in-flight tail) lives ENTIRELY in the
+  // standalone /onboarding dark flow and never takes over the dashboard. A
+  // founder who hasn't finished their first-run tail is routed back to
+  // /onboarding by the index gate (see resumeFirstRunCompanyId), so Home is
+  // always the steady dashboard here.
 
   const actionGroups = data ? buildActionGroups(data) : [];
   const totalActions = getTotalActionCount(actionGroups, suggestions.length);

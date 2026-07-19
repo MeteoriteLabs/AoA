@@ -111,4 +111,15 @@ export type PostAuthJourneyResult = {
   targetCompanyId: string | null;
   pendingInvitations: PendingInvitation[];
   inviteToken?: string | null;
+  /**
+   * A `returning` founder whose OWN first-run isn't complete for one of their
+   * member companies (spine done but the persona/in-flight tail was abandoned).
+   * The index gate routes them back into `/onboarding` to finish the tail there
+   * rather than stranding them on a dashboard that no longer hosts onboarding.
+   * Only ever set for `journey === "returning"`; null otherwise. Because
+   * `onboarding_progress` is keyed by `(userId, companyId)`, only the founder of
+   * a company has a row for it — so this never mis-fires for team members or the
+   * instance-admin company-visibility bypass.
+   */
+  resumeFirstRunCompanyId?: string | null;
 };

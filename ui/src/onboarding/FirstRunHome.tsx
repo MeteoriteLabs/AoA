@@ -82,7 +82,7 @@ export function FirstRunHome({ companyId, onComplete }: FirstRunHomeProps) {
   if (phase === "done") return null;
 
   return (
-    <DarkShell fill>
+    <DarkShell>
       {phase === "error" ? (
         <div className="flex h-full min-h-[50vh] flex-col items-center justify-center gap-3 px-6 text-center">
           <p className="text-sm text-dim">Couldn&apos;t load your progress.</p>
