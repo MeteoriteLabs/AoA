@@ -60,10 +60,23 @@ function StepperPips({ total, current }: { total: number; current: number }) {
  * Exported so non-FlowEngine onboarding surfaces (e.g. the org-only branch in
  * `pages/OnboardingFlow.tsx`) render the same chrome instead of hand-duplicating
  * it.
+ *
+ * `fill` (WS9 code review): the `/onboarding` route renders standalone (not
+ * nested inside app `Layout`), so `min-h-screen` is correct there — the shell
+ * IS the viewport. `FirstRunHome` instead renders inside Layout's padded
+ * `<main class="flex-1 overflow-auto">`, which already has a bounded height;
+ * stacking a second `min-h-screen` inside it risks a second scroll container.
+ * `fill` swaps to `min-h-full` (fills the available height, still grows with
+ * content) so `<main>` stays the single scroll container.
  */
-export function DarkShell({ children }: { children: React.ReactNode }) {
+export function DarkShell({ children, fill = false }: { children: React.ReactNode; fill?: boolean }) {
   return (
-    <div className="onboarding-dark relative min-h-screen w-full overflow-hidden bg-background text-foreground">
+    <div
+      className={cn(
+        "onboarding-dark relative w-full overflow-hidden bg-background text-foreground",
+        fill ? "min-h-full" : "min-h-screen",
+      )}
+    >
       <ConstellationBg />
       {children}
     </div>

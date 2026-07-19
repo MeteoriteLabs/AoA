@@ -14,6 +14,7 @@ import { useSidebar } from "../context/SidebarContext";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import { useCompanyPageMemory } from "../hooks/useCompanyPageMemory";
 import { healthApi } from "../api/health";
+import { homeApi } from "../api/dashboard";
 import { queryKeys } from "../lib/queryKeys";
 import { cn } from "../lib/utils";
 import { Button } from "@/components/ui/button";
@@ -25,12 +26,19 @@ const NewGoalDialog = lazy(() => import("./NewGoalDialog").then((m) => ({ defaul
 const NewIssueDialog = lazy(() => import("./NewIssueDialog").then((m) => ({ default: m.NewIssueDialog })));
 const NewProjectDialog = lazy(() => import("./NewProjectDialog").then((m) => ({ default: m.NewProjectDialog })));
 
-export function shouldUseFullBleedMain(pathname: string, companyPrefix?: string) {
+function getRouteSection(pathname: string, companyPrefix?: string) {
   const normalizedPath = pathname.split(/[?#]/, 1)[0] ?? pathname;
   const segments = normalizedPath.split("/").filter(Boolean);
   const firstContentIndex = companyPrefix && segments[0]?.toUpperCase() === companyPrefix.toUpperCase() ? 1 : 0;
-  const section = segments[firstContentIndex];
-  const detailId = segments[firstContentIndex + 1];
+  return { section: segments[firstContentIndex], detailId: segments[firstContentIndex + 1] };
+}
+
+export function shouldUseFullBleedMain(
+  pathname: string,
+  companyPrefix?: string,
+  opts?: { firstRunHomeActive?: boolean },
+) {
+  const { section, detailId } = getRouteSection(pathname, companyPrefix);
 
   return (
     (section === "workspaces" && Boolean(detailId)) ||
@@ -44,7 +52,12 @@ export function shouldUseFullBleedMain(pathname: string, companyPrefix?: string)
     section === "threads" ||
     // Inbox hub is an edge-to-edge attention/decision surface (left rail + panels).
     section === "inbox" ||
-    section === "inbox-hub"
+    section === "inbox-hub" ||
+    // WS9: Home's first-run takeover (Map + door band, `FirstRunHome`) renders
+    // full dark chrome (`DarkShell`) — full-bleed like other edge-to-edge
+    // surfaces, otherwise it gets padded/inset with the sidebar/breadcrumb
+    // showing through. Steady-state Home (firstRunCompleted) stays padded.
+    (section === "home" && Boolean(opts?.firstRunHomeActive))
   );
 }
 
@@ -72,6 +85,19 @@ export function Layout() {
     queryFn: () => healthApi.get(),
     retry: false,
   });
+
+  // WS9: full-bleed the Home first-run takeover (Map + door band). This reads
+  // the SAME `queryKeys.home(companyId)` cache entry Dashboard populates —
+  // TanStack Query dedupes concurrent fetches for an identical key, so this
+  // doesn't add a second network round-trip, just a second observer.
+  const { section: routeSection } = getRouteSection(location.pathname, companyPrefix);
+  const isHomeRoute = routeSection === "home";
+  const { data: homeSummaryForFirstRun } = useQuery({
+    queryKey: queryKeys.home(selectedCompanyId ?? ""),
+    queryFn: () => homeApi.summary(selectedCompanyId!),
+    enabled: isHomeRoute && Boolean(selectedCompanyId),
+  });
+  const firstRunHomeActive = isHomeRoute && !!homeSummaryForFirstRun && !homeSummaryForFirstRun.firstRunCompleted;
 
   useEffect(() => {
     if (companiesLoading || onboardingTriggered.current) return;
@@ -275,7 +301,7 @@ export function Layout() {
           tabIndex={-1}
           className={cn(
             "flex-1 overflow-auto",
-            !shouldUseFullBleedMain(location.pathname, companyPrefix) && "p-4 md:p-6",
+            !shouldUseFullBleedMain(location.pathname, companyPrefix, { firstRunHomeActive }) && "p-4 md:p-6",
             isMobile && "pb-[calc(5rem+env(safe-area-inset-bottom))]",
           )}
           onScroll={handleMainScroll}
