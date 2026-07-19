@@ -27,6 +27,8 @@ import {
   executeTool,
 } from "../services/internal-agent/tool-registry.js";
 import { createServiceContainer } from "../services/internal-agent/service-container.js";
+import { buildOutputRefs } from "../services/internal-agent/output-refs.js";
+import { conversationService } from "../services/internal-agent/conversation.js";
 import { loadOwnedConversation, resolveActorRole } from "./conversation-authz.js";
 import { runtimeApprovalService } from "../services/internal-agent/runtime-approvals.js";
 import type { CommanderRuntimeApprovalDecision, CommanderToolPermissions, UserRole } from "@armyofagents/shared";
@@ -503,6 +505,47 @@ export function internalAgentRoutes(db: Db, storageService?: RuntimeAttachmentSt
           entityType: null,
           entityId: null,
         });
+
+        // Emit viewer navigational refs for this approval-gated write. The
+        // non-approval (auto-run) path builds these in mcp-bridge.ts
+        // executeAndFormat; the approval path executes the tool here, so it must
+        // build + persist them itself or the approved result never becomes a
+        // message with outputRefs (no nav chip renders). Persisting a small
+        // assistant message carrying the refs lets the UI's existing
+        // OutputRefChips path render on the confirm handler's refetch.
+        // Best-effort: ref emission / persistence must NEVER fail the approved
+        // tool call or change the HTTP response (matches mcp-bridge.ts, which
+        // swallows buildOutputRefs failures).
+        try {
+          if (claimed.conversationId) {
+            let seq = 0;
+            const outputRefs = buildOutputRefs(claimed.toolName, claimed.params, result, {
+              provenanceBase: {
+                surface: "commander" as const,
+                entityId: claimed.conversationId,
+                runId: claimed.runId ?? null,
+                agentId: null,
+                messageId: null,
+                emittedAt: new Date().toISOString(),
+              },
+              nextSeq: () => seq++,
+            });
+            if (outputRefs.length > 0) {
+              await conversationService(db).appendMessage(claimed.conversationId, {
+                role: "assistant",
+                content: result.summary ?? "",
+                outputRefs,
+              });
+            }
+          }
+        } catch (err) {
+          // Ref emission / persistence is best-effort — never fail the approved
+          // tool call (matches how mcp-bridge.ts logs buildOutputRefs failures).
+          logger.debug(
+            { err, confirmId, toolName: claimed.toolName },
+            "confirm: output-ref emission failed (approved tool call unaffected)",
+          );
+        }
       } else {
         await approvals.markFailed(
           confirmId,
