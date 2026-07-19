@@ -238,6 +238,22 @@ describe("synthesizeThreadDeliveryRefs", () => {
     expect(refs).toHaveLength(2);
   });
 
+  it("dedups by artifact id even when the task_output carries a version (no double chip)", async () => {
+    // The common attach_task_artifact case: a task_output artifact with a
+    // non-null version + the same id as issues.artifactId (null version). The
+    // dedup key differs by version, so guard by artifact id → ONE chip (the
+    // richer versioned ref survives).
+    const refs = await run([
+      [issueRow({ artifactId: "shared-art" })],
+      [outputRow({ id: "to-a", type: "artifact", artifactId: "shared-art", artifactVersionId: "ver-9" })],
+    ]);
+    const artRefs = refs.filter((r) => r.kind === "artifact");
+    expect(artRefs).toHaveLength(1);
+    expect(artRefs[0].id).toBe("shared-art");
+    expect((artRefs[0] as { versionId?: string }).versionId).toBe("ver-9");
+    expect(refs).toHaveLength(2); // task + one artifact
+  });
+
   it("caps the total at MAX_OUTPUT_REFS_PER_MESSAGE (task ref survives the cap)", async () => {
     const many = Array.from({ length: MAX_OUTPUT_REFS_PER_MESSAGE + 10 }, (_, i) =>
       outputRow({ id: `to-${i}`, type: "external_link", url: `https://example.com/${i}` }),

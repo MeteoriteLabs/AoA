@@ -8,8 +8,9 @@
 // NOT "this run created these". Every synthesized ref carries action:"referenced";
 // the provenance (surface:"discussion", entityId:threadId, runId, agentId)
 // identifies WHO delivered the products, not per-product authorship. Precise
-// per-run correlation (which output was born this run) is deferred — it would
-// need an internal_agent_runs linkage on task_outputs.
+// per-run correlation (which output was born this run) is deferred: task_outputs
+// already has `createdByRunId` (→ heartbeat_runs), but crew's attach path does
+// not stamp it, so a future precise-correlation phase would filter/stamp there.
 //
 // The task_outputs → ref mapping is FIELD-AWARE over the real 9-value type enum
 // (`packages/shared/src/validators/task-output.ts`): we branch on which
@@ -131,9 +132,18 @@ export async function synthesizeThreadDeliveryRefs(
     }
   }
 
-  // ── 4. Task's primary artifact (deduped against a task_output above) ──────
+  // ── 4. Task's primary artifact ───────────────────────────────────────────
+  // Skip if a task_output above already produced an artifact ref for the SAME
+  // artifact id — even at a different version. `mergeOutputRefs` dedups on
+  // `kind|id|versionId`, so a versioned task_output artifact (`artifact|X|v123`,
+  // the common attach_task_artifact case) would NOT collide with this
+  // null-version primary (`artifact|X|`) → two chips for one artifact. Guard by
+  // artifact id, ignoring version, so the richer versioned ref wins.
   const taskArtifactId = asId(issue?.artifactId);
-  if (taskArtifactId) {
+  if (
+    taskArtifactId &&
+    !refs.some((r) => r.kind === "artifact" && r.id === taskArtifactId)
+  ) {
     refs.push(makeRef("artifact", taskArtifactId));
   }
 
