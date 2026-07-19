@@ -15,6 +15,25 @@ const POLL_MS = 7000;
 type Phase = "checking" | "consent" | "pending" | "invite_invalid" | "not_approved" | "admitted";
 
 /**
+ * WS10 continuity: the invited journey's waiting/consent/checking phases render
+ * in the SAME dark shell (`.onboarding-dark` + `<ConstellationBg/>`) as the
+ * founder spine and the `admitted` MiniMap screen, so the teammate never drops
+ * from the dark HumanProfileStep onto a bare light page mid-flow. Module-level
+ * (not defined inside the polling component) so it keeps a stable component
+ * identity across the 7s poll re-renders — an inline definition would remount
+ * the shell (and restart the constellation animation) on every tick.
+ */
+function TerminalShell({ children }: { children: React.ReactNode }) {
+  return (
+    <DarkShell>
+      <div className="relative z-10 mx-auto flex min-h-screen w-full max-w-md flex-col items-center justify-center gap-6 px-6 py-12 text-center">
+        {children}
+      </div>
+    </DarkShell>
+  );
+}
+
+/**
  * Terminal of the invited journey (spec §6). Attempts finalize on every poll
  * tick until it gets a definitive response — a verified email match admits
  * immediately (the invitation carried the approval), and a transient blip must
@@ -324,7 +343,14 @@ export function InvitedJoinTerminal() {
   }, [prepareEntry, navigate, searchParams, pathname, search, consented]);
 
   if (phase === "checking") {
-    return <div className="mx-auto max-w-md py-16 text-sm text-muted-foreground">Checking your invitation…</div>;
+    return (
+      <TerminalShell>
+        <p className="flex items-center gap-2 text-sm text-dim">
+          <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+          Checking your invitation…
+        </p>
+      </TerminalShell>
+    );
   }
   if (phase === "admitted") {
     // WS10 — the invited journey's terminal screen (spec §D7 / Journey 2): a
@@ -349,60 +375,60 @@ export function InvitedJoinTerminal() {
   }
   if (phase === "consent") {
     return (
-      <div className="mx-auto max-w-md py-16 text-center">
-        <h1 className="text-xl font-semibold">
-          You've been invited to join{company ? ` ${company.name}` : " a company"}
-          {company ? ` as ${HUMAN_ROLE_LABELS[company.role] ?? company.role}` : ""}
-        </h1>
-        <p className="mt-2 text-sm text-muted-foreground">
-          Joining shares your profile with the team and gives you access to the company workspace.
-          You'll only become a member if you choose to join.
-        </p>
-        <Button className="mt-6" disabled={consented} onClick={() => setConsented(true)}>
+      <TerminalShell>
+        <StepHeading
+          title={
+            <>
+              You've been invited to join{company ? ` ${company.name}` : " a company"}
+              {company ? ` as ${HUMAN_ROLE_LABELS[company.role] ?? company.role}` : ""}
+            </>
+          }
+          subtitle="Joining shares your profile with the team and gives you access to the company workspace. You'll only become a member if you choose to join."
+        />
+        <Button disabled={consented} onClick={() => setConsented(true)}>
           {consented ? "Joining…" : `Join${company ? ` ${company.name}` : ""}`}
         </Button>
-      </div>
+      </TerminalShell>
     );
   }
   if (phase === "not_approved") {
     return (
-      <div className="mx-auto max-w-md py-16 text-center">
-        <h1 className="text-xl font-semibold">Request not approved</h1>
-        <p className="mt-2 text-sm text-muted-foreground">
-          Your request to join{company ? ` ${company.name}` : ""} wasn't approved, or the invite is no
-          longer valid. Ask your admin for a new invitation.
-        </p>
-      </div>
+      <TerminalShell>
+        <StepHeading
+          title="Request not approved"
+          subtitle={`Your request to join${
+            company ? ` ${company.name}` : ""
+          } wasn't approved, or the invite is no longer valid. Ask your admin for a new invitation.`}
+        />
+      </TerminalShell>
     );
   }
   if (phase === "invite_invalid") {
     return (
-      <div className="mx-auto max-w-md py-16 text-center">
-        <h1 className="text-xl font-semibold">
-          You're joining{company ? ` ${company.name}` : ""}
-        </h1>
-        <p className="mt-2 text-sm text-muted-foreground">
-          Your invite link is no longer valid, but your request is with the admin for approval —
-          this page will let you in automatically the moment it's approved.
-        </p>
-      </div>
+      <TerminalShell>
+        <StepHeading
+          title={<>You're joining{company ? ` ${company.name}` : ""}</>}
+          subtitle="Your invite link is no longer valid, but your request is with the admin for approval — this page will let you in automatically the moment it's approved."
+        />
+      </TerminalShell>
     );
   }
   return (
-    <div className="mx-auto max-w-md py-16 text-center">
-      <h1 className="text-xl font-semibold">
-        You're joining{company ? ` ${company.name}` : ""}
-        {company ? ` as ${HUMAN_ROLE_LABELS[company.role] ?? company.role}` : ""}
-      </h1>
-      <p className="mt-2 text-sm text-muted-foreground">
-        Your request is with the admin for approval. This page will let you in automatically the
-        moment it's approved — you can also come back later.
-      </p>
+    <TerminalShell>
+      <StepHeading
+        title={
+          <>
+            You're joining{company ? ` ${company.name}` : ""}
+            {company ? ` as ${HUMAN_ROLE_LABELS[company.role] ?? company.role}` : ""}
+          </>
+        }
+        subtitle="Your request is with the admin for approval. This page will let you in automatically the moment it's approved — you can also come back later."
+      />
       {/* The page polls every 7s — show that it is alive, not stuck. */}
-      <p className="mt-4 flex items-center justify-center gap-1.5 text-xs text-muted-foreground">
+      <p className="flex items-center justify-center gap-1.5 text-xs text-dim">
         <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
         Checking for approval…
       </p>
-    </div>
+    </TerminalShell>
   );
 }
