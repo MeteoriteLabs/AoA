@@ -121,6 +121,42 @@ describe("LibrarianStep (WS6 — In-flight standalone surface)", () => {
     expect(screen.getByText("We use Postgres")).toBeTruthy();
   });
 
+  it("scopes the approve list to this run's proposed memory item ids, excluding unrelated pending items", async () => {
+    listByDepartment.mockResolvedValue([
+      makeCapture({ id: "bd-1", proposedMemoryItemIds: ["mem-1"] }),
+      makeCapture({ id: "bd-2", departmentId: "dept-2", proposedMemoryItemIds: ["mem-2"] }),
+    ]);
+    memoryList.mockResolvedValue({
+      items: [
+        makeMemoryItem({ id: "mem-1", title: "We use Postgres" }),
+        makeMemoryItem({ id: "mem-2", title: "We ship weekly" }),
+        makeMemoryItem({ id: "mem-unrelated", title: "Unrelated pending item" }),
+      ],
+      semanticAvailable: true,
+    });
+
+    render(<LibrarianStep companyId="c1" onDone={vi.fn()} />);
+
+    expect(await screen.findByText("We use Postgres")).toBeTruthy();
+    expect(screen.getByText("We ship weekly")).toBeTruthy();
+    expect(screen.queryByText("Unrelated pending item")).toBeNull();
+  });
+
+  it("shows an empty state (and still allows Continue) when no captures propose any memory items, even if unrelated pending items exist", async () => {
+    listByDepartment.mockResolvedValue([makeCapture({ proposedMemoryItemIds: [] })]);
+    memoryList.mockResolvedValue({
+      items: [makeMemoryItem({ id: "mem-unrelated", title: "Unrelated pending item" })],
+      semanticAvailable: true,
+    });
+
+    render(<LibrarianStep companyId="c1" onDone={vi.fn()} />);
+
+    expect(await screen.findByRole("img", { name: "agent done" })).toBeTruthy();
+    expect(screen.getByText(/No proposed memory items yet/)).toBeTruthy();
+    expect(screen.queryByText("Unrelated pending item")).toBeNull();
+    expect(screen.getByRole("button", { name: "Continue" })).toBeTruthy();
+  });
+
   it("Approve calls the real founder approval route and removes the item from the list", async () => {
     render(<LibrarianStep companyId="c1" onDone={vi.fn()} />);
 
@@ -165,6 +201,18 @@ describe("LibrarianStep (WS6 — In-flight standalone surface)", () => {
 
     await screen.findByRole("img", { name: "agent thinking" });
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    expect(onDone).toHaveBeenCalledTimes(1);
+  });
+
+  it("Continue only fires onDone once even on a rapid double-click", async () => {
+    listByDepartment.mockResolvedValue([makeCapture({ status: "running" })]);
+    const onDone = vi.fn();
+    render(<LibrarianStep companyId="c1" onDone={onDone} />);
+
+    await screen.findByRole("img", { name: "agent thinking" });
+    const continueBtn = screen.getByRole("button", { name: "Continue" });
+    fireEvent.click(continueBtn);
+    fireEvent.click(continueBtn);
     expect(onDone).toHaveBeenCalledTimes(1);
   });
 

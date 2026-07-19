@@ -48,6 +48,13 @@ export function LibrarianStep({ companyId, onDone }: LibrarianStepProps) {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const mountedRef = useRef(true);
   const departmentIdsRef = useRef<string[]>([]);
+  const doneFiredRef = useRef(false);
+
+  function fireOnDoneOnce() {
+    if (doneFiredRef.current) return;
+    doneFiredRef.current = true;
+    onDone();
+  }
 
   function clearPoll() {
     if (pollRef.current) {
@@ -69,10 +76,24 @@ export function LibrarianStep({ companyId, onDone }: LibrarianStepProps) {
     return lists.flat();
   }
 
-  async function fetchPendingItems() {
+  /**
+   * Scopes the approve list to THIS braindump run — every terminal capture's
+   * `proposedMemoryItemIds` is the authoritative set. Without this, fetching
+   * ALL pending `domain` memory would leak unrelated pending items (Memory
+   * Keeper, discussions, other departments) into this step's Approve list.
+   * `captures` is passed explicitly rather than read from state — callers
+   * (initial load, pollTick, retry) always have the freshest array in hand
+   * before the corresponding `setCaptures` re-render lands.
+   */
+  async function fetchPendingItems(captures: BraindumpCapture[]) {
+    const proposedIds = new Set(captures.flatMap((c) => c.proposedMemoryItemIds));
+    if (proposedIds.size === 0) {
+      if (mountedRef.current) setPendingItems([]);
+      return;
+    }
     try {
       const res = await memoryApi.list(companyId, { status: "pending", layer: "domain" });
-      if (mountedRef.current) setPendingItems(res.items);
+      if (mountedRef.current) setPendingItems(res.items.filter((item) => proposedIds.has(item.id)));
     } catch {
       // Best-effort — the approve list just stays empty/stale; Continue still works.
     }
@@ -88,7 +109,7 @@ export function LibrarianStep({ companyId, onDone }: LibrarianStepProps) {
       if (next.every((c) => isTerminal(c.status))) {
         clearPoll();
         setOrganizing(false);
-        await fetchPendingItems();
+        await fetchPendingItems(next);
       }
     } catch {
       // transient — keep polling
@@ -111,7 +132,7 @@ export function LibrarianStep({ companyId, onDone }: LibrarianStepProps) {
 
         if (deptIds.length === 0) {
           setOrganizing(false);
-          await fetchPendingItems();
+          await fetchPendingItems([]);
           return;
         }
 
@@ -122,7 +143,7 @@ export function LibrarianStep({ companyId, onDone }: LibrarianStepProps) {
         const inFlight = initial.some((c) => !isTerminal(c.status));
         if (!inFlight) {
           setOrganizing(false);
-          await fetchPendingItems();
+          await fetchPendingItems(initial);
         } else {
           setOrganizing(true);
           startPolling();
@@ -159,12 +180,13 @@ export function LibrarianStep({ companyId, onDone }: LibrarianStepProps) {
     try {
       const updated = await braindumpApi.retry(companyId, captureId);
       if (!mountedRef.current) return;
-      setCaptures((prev) => prev.map((c) => (c.id === captureId ? updated : c)));
+      const nextCaptures = captures.map((c) => (c.id === captureId ? updated : c));
+      setCaptures(nextCaptures);
       if (!isTerminal(updated.status)) {
         setOrganizing(true);
         startPolling();
       } else {
-        await fetchPendingItems();
+        await fetchPendingItems(nextCaptures);
       }
     } catch {
       // leave the failed state as-is; Retry stays clickable.
@@ -259,7 +281,7 @@ export function LibrarianStep({ companyId, onDone }: LibrarianStepProps) {
       )}
 
       <Reveal delay={0.36}>
-        <Button className="w-full" onClick={onDone}>
+        <Button className="w-full" onClick={fireOnDoneOnce}>
           Continue
         </Button>
       </Reveal>
