@@ -58,6 +58,20 @@ export function isPathContained(base: string, candidate: string): boolean {
 
 /**
  * Contains a BROWSE target (must already exist) inside `jailBaseDir`.
+ *
+ * Deliberate asymmetry with the mkdir path (which additionally runs
+ * `verifyCreatedDirStillContained` AFTER the syscall): there is intentionally
+ * no post-`readdir` re-check here. The residual TOCTOU — swapping the final
+ * resolved component for an out-of-jail symlink between this realpath check and
+ * the caller's `readdir` — requires WRITE access to the server-owned jail dir
+ * mid-request, i.e. an already-compromised host that can read the target
+ * directly and defeat the jail regardless. Browse is also read-only: the worst
+ * case leaks out-of-jail directory ENTRY NAMES, not contents or any write.
+ * mkdir is guarded because it WRITES (a redirected create could clobber files
+ * outside the jail — an integrity stake browse doesn't carry). A post-read
+ * re-check would only shrink, not close, that window while adding a syscall on
+ * every browse. If the browse route ever starts reading file CONTENTS (not just
+ * names), revisit this and add a symmetric post-read containment re-check.
  */
 export async function containBrowsePath(
   jailBaseDir: string,
