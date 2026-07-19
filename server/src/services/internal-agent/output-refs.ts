@@ -6,7 +6,10 @@
 import {
   MAX_OUTPUT_REFS_PER_MESSAGE,
   MAX_OUTPUT_REF_TITLE_LENGTH,
+  showRefsSchema,
   type ShowRef,
+  type ShowRefProvenance,
+  type ShowRefSurface,
 } from "@armyofagents/shared";
 import type { ToolResult } from "./types.js";
 import type { AgentStreamChunk } from "./agent-loop.js";
@@ -28,16 +31,55 @@ function asVersionNumber(v: unknown): number | null {
   return typeof v === "number" && Number.isInteger(v) && v > 0 ? v : null;
 }
 
-function artifactRef(partial: {
-  id: string | null;
-  versionId?: unknown;
-  versionNumber?: unknown;
-  title?: unknown;
-  action: "created" | "referenced";
-}): ShowRef | null {
+/**
+ * Emission context threaded from the MCP bridge. `provenanceBase` carries the
+ * per-turn who/where/when (surface/entity/run/agent/emittedAt); `nextSeq` is a
+ * PER-REF ordering allocator (a module-level counter in the bridge subprocess).
+ * `entityId` may be null (a Commander turn without a conversation) — in that
+ * case the emitted ref carries `provenance: null` (still v2, never v1).
+ */
+export interface OutputRefProvenanceBase {
+  surface: ShowRefSurface;
+  entityId: string | null;
+  runId: string | null;
+  agentId: string | null;
+  messageId: string | null;
+  emittedAt: string;
+}
+export interface OutputRefEmitCtx {
+  provenanceBase: OutputRefProvenanceBase | null;
+  /** Called ONCE per ref actually emitted — each ref gets a distinct, contiguous seq. */
+  nextSeq: () => number;
+}
+
+function buildProvenance(ctx?: OutputRefEmitCtx): ShowRefProvenance | null {
+  const base = ctx?.provenanceBase;
+  // Schema forbids an empty entityId — a null conversation → provenance: null.
+  if (!ctx || !base || !base.entityId) return null;
+  return {
+    surface: base.surface,
+    entityId: base.entityId,
+    runId: base.runId,
+    agentId: base.agentId,
+    messageId: base.messageId,
+    emittedAt: base.emittedAt,
+    seq: ctx.nextSeq(),
+  };
+}
+
+function artifactRef(
+  partial: {
+    id: string | null;
+    versionId?: unknown;
+    versionNumber?: unknown;
+    title?: unknown;
+    action: "created" | "referenced";
+  },
+  ctx?: OutputRefEmitCtx,
+): ShowRef | null {
   if (!partial.id) return null;
   return {
-    v: 1,
+    v: 2,
     kind: "artifact",
     id: partial.id,
     versionId: asId(partial.versionId) ?? null,
@@ -46,20 +88,24 @@ function artifactRef(partial: {
     action: partial.action,
     toolCallId: null,
     mimeType: null,
+    provenance: buildProvenance(ctx),
   };
 }
 
-function refsFromRows(data: unknown): ShowRef[] {
+function refsFromRows(data: unknown, ctx?: OutputRefEmitCtx): ShowRef[] {
   if (!Array.isArray(data)) return [];
   return data
     .map((row) => {
       const r = asRecord(row);
-      return artifactRef({
-        id: asId(r.artifactId),
-        versionId: r.currentVersionId,
-        title: r.title,
-        action: "referenced",
-      });
+      return artifactRef(
+        {
+          id: asId(r.artifactId),
+          versionId: r.currentVersionId,
+          title: r.title,
+          action: "referenced",
+        },
+        ctx,
+      );
     })
     .filter((r): r is ShowRef => r !== null);
 }
@@ -68,61 +114,87 @@ export function buildOutputRefs(
   toolName: string,
   params: unknown,
   result: ToolResult,
+  ctx?: OutputRefEmitCtx,
 ): ShowRef[] {
   try {
     if (!result || result.success !== true) return [];
     const p = asRecord(params);
     const d = asRecord(result.data);
 
+    let refs: ShowRef[] = [];
     switch (toolName) {
       case "create_artifact": {
-        const ref = artifactRef({
-          id: asId(d.artifactId),
-          versionId: d.versionId,
-          // create() makes the first version when content/fileRef given.
-          versionNumber: asId(d.versionId) ? 1 : null,
-          title: p.title,
-          action: "created",
-        });
-        return ref ? [ref] : [];
+        const ref = artifactRef(
+          {
+            id: asId(d.artifactId),
+            versionId: d.versionId,
+            // create() makes the first version when content/fileRef given.
+            versionNumber: asId(d.versionId) ? 1 : null,
+            title: p.title,
+            action: "created",
+          },
+          ctx,
+        );
+        refs = ref ? [ref] : [];
+        break;
       }
       case "create_artifact_version": {
-        const ref = artifactRef({
-          id: asId(p.artifactId),
-          versionId: d.versionId,
-          versionNumber: d.versionNumber,
-          title: null,
-          action: "created",
-        });
-        return ref ? [ref] : [];
+        const ref = artifactRef(
+          {
+            id: asId(p.artifactId),
+            versionId: d.versionId,
+            versionNumber: d.versionNumber,
+            title: null,
+            action: "created",
+          },
+          ctx,
+        );
+        refs = ref ? [ref] : [];
+        break;
       }
       case "attach_task_artifact": {
         // Return shape verified: data: { artifactId, versionId, taskOutputId }
         // (attach-task-artifact-tool.ts lines 170-178)
-        const ref = artifactRef({
-          id: asId(d.artifactId),
-          versionId: d.versionId ?? d.artifactVersionId,
-          title: p.title,
-          action: "created",
-        });
-        return ref ? [ref] : [];
+        const ref = artifactRef(
+          {
+            id: asId(d.artifactId),
+            versionId: d.versionId ?? d.artifactVersionId,
+            title: p.title,
+            action: "created",
+          },
+          ctx,
+        );
+        refs = ref ? [ref] : [];
+        break;
       }
       case "query_artifacts":
       case "query_company_artifacts":
         // Dedupe BEFORE capping: query_artifacts inner-joins attachments, so one
         // artifact attached to N entries yields N duplicate rows (review T2 #1).
-        return mergeOutputRefs([], refsFromRows(result.data));
+        // seq is allocated per row inside refsFromRows (before dedup).
+        refs = mergeOutputRefs([], refsFromRows(result.data, ctx));
+        break;
       case "get_task": {
-        const ref = artifactRef({
-          id: asId(d.artifactId),
-          title: d.title, // task title fallback; viewer resolves real name on open
-          action: "referenced",
-        });
-        return ref ? [ref] : [];
+        const ref = artifactRef(
+          {
+            id: asId(d.artifactId),
+            title: d.title, // task title fallback; viewer resolves real name on open
+            action: "referenced",
+          },
+          ctx,
+        );
+        refs = ref ? [ref] : [];
+        break;
       }
       default:
-        return [];
+        refs = [];
     }
+
+    // Validate before returning — a malformed ref must not reach the envelope.
+    // On failure return [] (Task 4 adds drop logging at this silent boundary).
+    const parsed = showRefsSchema.safeParse(refs);
+    if (!parsed.success) return [];
+    return refs;
   } catch {
     return [];
   }

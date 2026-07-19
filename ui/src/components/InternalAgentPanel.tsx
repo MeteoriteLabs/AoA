@@ -442,7 +442,7 @@ function serverToLocal(m: AgentMessage): LocalMessage {
     role: m.role === "tool" ? "system" : m.role,
     content: m.content ?? "",
     streamingDone: true,
-    outputRefs: (m.outputRefs ?? undefined) as ShowRef[] | undefined,
+    outputRefs: m.outputRefs ?? undefined,
     ...(toolCalls ? { toolCalls } : {}),
     ...(m.reasoning ? { reasoning: m.reasoning } : {}),
     createdAt: m.createdAt,

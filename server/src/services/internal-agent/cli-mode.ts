@@ -630,6 +630,7 @@ export function cliModeService(db: Db) {
             enabledCapabilities: params.enabledCapabilities,
             bridgeEntrypoint: bridgePath,
             actorType: "commander",
+            runId: params.runId ?? null,
             contextScope: normalizeCliContextScope(params.contextScope),
           };
 
@@ -741,6 +742,7 @@ export function cliModeService(db: Db) {
               enabledCapabilities: params.enabledCapabilities,
               bridgeEntrypoint: bridgePath,
               actorType: "commander",
+              runId: params.runId ?? null,
               contextScope: normalizeCliContextScope(params.contextScope),
             },
             safeContent,

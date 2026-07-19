@@ -230,6 +230,9 @@ export function internalAgentRoutes(db: Db, storageService?: RuntimeAttachmentSt
           userId: actor.actorId,
           userRole,
           enabledCapabilities,
+          // Thread the pre-created run id so emitted output refs carry
+          // provenance.runId (set as AOA_RUN_ID in the MCP bridge env).
+          runId: run.id,
           content: req.body.message,
           pageContext: req.body.pageContext ?? undefined,
           departmentContext: req.body.departmentContext ?? req.body.contextScope?.departmentId ?? undefined,

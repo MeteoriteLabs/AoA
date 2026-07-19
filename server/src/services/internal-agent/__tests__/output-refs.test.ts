@@ -1,13 +1,33 @@
 // server/src/services/internal-agent/__tests__/output-refs.test.ts
 import { describe, it, expect } from "vitest";
 import { buildOutputRefs, mergeOutputRefs, collectChunkRefs } from "../output-refs.js";
-import { commanderOutputRefsSchema } from "@armyofagents/shared";
+import type { OutputRefEmitCtx } from "../output-refs.js";
+import { showRefsSchema } from "@armyofagents/shared";
 import type { CommanderOutputRef } from "@armyofagents/shared";
 
 const ok = (data: unknown) => ({ success: true, data, summary: "ok" });
 
+// Emission context factory: a fresh per-ref seq allocator + a provenance base.
+const emitCtx = (
+  overrides: Partial<OutputRefEmitCtx["provenanceBase"] & object> = {},
+): OutputRefEmitCtx => {
+  let seq = 0;
+  return {
+    provenanceBase: {
+      surface: "commander",
+      entityId: "conv-1",
+      runId: "run-1",
+      agentId: null,
+      messageId: null,
+      emittedAt: "2026-07-19T10:00:00.000Z",
+      ...overrides,
+    },
+    nextSeq: () => seq++,
+  };
+};
+
 describe("buildOutputRefs", () => {
-  it("create_artifact → created ref; title from params", () => {
+  it("create_artifact → created v2 ref; title from params; provenance:null when no ctx", () => {
     const refs = buildOutputRefs(
       "create_artifact",
       { title: "GTM Plan", type: "document" },
@@ -15,10 +35,53 @@ describe("buildOutputRefs", () => {
     );
     expect(refs).toEqual([
       expect.objectContaining({
-        v: 1, kind: "artifact", id: "art-1", versionId: "ver-1",
-        title: "GTM Plan", action: "created",
+        v: 2, kind: "artifact", id: "art-1", versionId: "ver-1",
+        title: "GTM Plan", action: "created", provenance: null,
       }),
     ]);
+  });
+
+  it("with an emission ctx → v2 ref carries commander provenance (surface/entity/run)", () => {
+    const refs = buildOutputRefs(
+      "create_artifact",
+      { title: "GTM Plan", type: "document" },
+      ok({ artifactId: "art-1", versionId: "ver-1" }),
+      emitCtx(),
+    );
+    expect(refs[0]).toMatchObject({
+      v: 2,
+      provenance: {
+        surface: "commander",
+        entityId: "conv-1",
+        runId: "run-1",
+        seq: 0,
+      },
+    });
+  });
+
+  it("multi-row query_artifacts → each ref gets a distinct, contiguous seq (0,1,2…)", () => {
+    const refs = buildOutputRefs(
+      "query_artifacts",
+      { threadId: "t1" },
+      ok([
+        { artifactId: "a1", title: "One", currentVersionId: "v1" },
+        { artifactId: "a2", title: "Two", currentVersionId: "v2" },
+        { artifactId: "a3", title: "Three", currentVersionId: "v3" },
+      ]),
+      emitCtx(),
+    );
+    expect(refs).toHaveLength(3);
+    expect(refs.map((r) => (r as any).provenance.seq)).toEqual([0, 1, 2]);
+  });
+
+  it("null conversationId (entityId) in the ctx → provenance:null (still v2, never v1)", () => {
+    const refs = buildOutputRefs(
+      "create_artifact",
+      { title: "X" },
+      ok({ artifactId: "art-1", versionId: "ver-1" }),
+      emitCtx({ entityId: null }),
+    );
+    expect(refs[0]).toMatchObject({ v: 2, provenance: null });
   });
 
   it("create_artifact_version → created ref; artifactId from params, versionNumber from data", () => {
@@ -146,7 +209,7 @@ describe("review-promoted edge cases", () => {
       buildOutputRefs("query_artifacts", {}, ok([{ artifactId: "a1", title: "Q", type: "code", currentVersionId: null, status: "active" }])),
     ];
     for (const refs of cases) {
-      expect(commanderOutputRefsSchema.safeParse(refs).success).toBe(true);
+      expect(showRefsSchema.safeParse(refs).success).toBe(true);
     }
   });
 

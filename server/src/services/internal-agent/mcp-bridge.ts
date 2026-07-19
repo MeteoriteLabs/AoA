@@ -83,6 +83,12 @@ function normalizeToolArgs(args: unknown): Record<string, unknown> {
     : {};
 }
 
+// Per-ref ordering allocator. The bridge is a per-turn subprocess (it
+// respawns/exits each turn), so this counter is effectively per-turn — an
+// ordering hint, not a global key. Resetting on restart is acceptable.
+let refSeqCounter = 0;
+const nextSeq = (): number => refSeqCounter++;
+
 async function executeAndFormat(
   tool: AgentTool,
   args: unknown,
@@ -93,7 +99,18 @@ async function executeAndFormat(
     const result = await deps.executeTool(tool, args, toolContext);
     let outputRefs: ShowRef[] = [];
     try {
-      outputRefs = buildOutputRefs(tool.name, args, result);
+      // Provenance built here where toolContext is in scope. entityId is the
+      // Commander conversation; null → the builder emits provenance: null.
+      // seq is allocated PER REF inside buildOutputRefs via nextSeq().
+      const provenanceBase = {
+        surface: "commander" as const,
+        entityId: toolContext.contextScope?.conversationId ?? null,
+        runId: toolContext.runId ?? null,
+        agentId: toolContext.agentId ?? null,
+        messageId: null,
+        emittedAt: new Date().toISOString(),
+      };
+      outputRefs = buildOutputRefs(tool.name, args, result, { provenanceBase, nextSeq });
     } catch (err) {
       outputRefs = []; // ref extraction must never fail the tool call
       process.stderr.write(

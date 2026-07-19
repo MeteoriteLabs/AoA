@@ -91,6 +91,12 @@ export interface ChatInput {
   departmentContext?: string;
   conversationId?: string;
   contextScope?: CommanderContextScope | NormalizedCommanderContextScope | null;
+  /**
+   * The internal_agent_runs row id for this turn (created by the chat route).
+   * Threaded to the MCP bridge as AOA_RUN_ID so emitted output refs carry
+   * `provenance.runId`. Optional so non-route callers (proactive/event) compile.
+   */
+  runId?: string;
   /** Client idempotency key; a repeat replays the original turn (see chat()). */
   clientSubmissionId?: string;
   /** Composer attachment asset IDs; text-readable content is delivered to the turn. */

@@ -1,4 +1,4 @@
-import type { CommanderContextScope, CommanderOutputRef, CompanySkillListItem, UpdateInternalAgentConfig } from "@armyofagents/shared";
+import type { CommanderContextScope, CompanySkillListItem, ShowRef, UpdateInternalAgentConfig } from "@armyofagents/shared";
 import { api, ApiError } from "./client";
 
 /* ------------------------------------------------------------------ */
@@ -28,7 +28,7 @@ export interface AgentMessage {
   content: string | null;
   toolCalls: AgentMessageToolCall[] | null;
   reasoning: string | null;
-  outputRefs: CommanderOutputRef[] | null;
+  outputRefs: ShowRef[] | null;
   pageContext: string | null;
   createdAt: string;
 }
