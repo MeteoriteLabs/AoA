@@ -1226,6 +1226,13 @@
       "when": 1784393029900,
       "tag": "0174_smooth_nightshade",
       "breakpoints": true
+    },
+    {
+      "idx": 175,
+      "version": "7",
+      "when": 1784443629087,
+      "tag": "0175_overjoyed_champions",
+      "breakpoints": true
     }
   ]
 }
