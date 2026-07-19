@@ -191,6 +191,25 @@ describe("pickAutoOpenRef (one per batch)", () => {
     expect(pickAutoOpenRef([created("a")], "own_output", true)).toBeNull();
     expect(pickAutoOpenRef([{ ...created("a"), action: "referenced" }], "own_output", false)).toBeNull();
   });
+
+  // DEFERRED-FRESHNESS BASELINE (Phase-6, Codex P2.2): the auto-open gate is
+  // version- AND provenance-agnostic today — it reads ONLY `action`. A v2 ref
+  // carrying a STALE `provenance.emittedAt` (e.g. an old `created` ref
+  // reattached to an SSE tool_result during an idempotent replay, agent-loop.ts
+  // reattach path) is STILL auto-open-eligible. This test documents that
+  // intended baseline so a future replay/freshness gate has a tripwire: when
+  // freshness gating lands (consuming provenance.emittedAt), THIS expectation
+  // must flip to `toBeNull()`. Do not "fix" it before that gate exists.
+  it("baseline: a stale-provenance created ref is still eligible (no freshness gate yet)", () => {
+    const stale = {
+      v: 2,
+      kind: "artifact",
+      id: "old",
+      action: "created",
+      provenance: { surface: "commander", entityId: "c1", seq: 0, emittedAt: "2000-01-01T00:00:00.000Z" },
+    } as any;
+    expect(pickAutoOpenRef([stale], "own_output", false)?.id).toBe("old");
+  });
 });
 
 describe("openTaskTab", () => {

@@ -296,7 +296,13 @@ function mergeRefPair(a: ShowRef, b: ShowRef): ShowRef {
 /**
  * Merge two lists of refs, deduplicating by `kind|id|versionId`. On collision
  * the refs are merged FIELD-WISE (created action + richest v2 provenance both
- * survive), identical to the server `mergeOutputRefs` twin.
+ * survive) — the per-collision result is identical to the server
+ * `mergeOutputRefs` twin. NOTE: this twin intentionally OMITS the server's
+ * 20-ref cap: the UI aggregates refs across messages for the Home "Recent"
+ * view (`collectConversationRefs`), which is deliberately unbounded. A single
+ * message emitting >20 distinct refs flashes all chips live, then settles to
+ * the server's 20 (created-first) after persist/reload — cosmetic, not a
+ * card-content mismatch.
  */
 export function mergeRefs(
   existing: ShowRef[],
