@@ -297,6 +297,25 @@ describe("LibrarianStep (WS6 — In-flight standalone surface)", () => {
     expect(screen.getByText("We use Postgres")).toBeTruthy();
   });
 
+  it("stops spinning after the poll deadline and lets the founder continue", async () => {
+    // A capture can stay non-terminal for reasons the founder can't act on
+    // (a dead run whose failure write never landed). Spinning forever would
+    // be a dead end in the middle of onboarding.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    listCaptures.mockResolvedValue([makeCapture({ status: "running" })]);
+    memoryList.mockResolvedValue({ items: [], semanticAvailable: true });
+
+    render(<LibrarianStep companyId="c1" onDone={vi.fn()} />);
+    expect(await screen.findByRole("img", { name: "agent thinking" })).toBeTruthy();
+
+    await act(async () => {
+      vi.advanceTimersByTime(125_000);
+    });
+
+    expect(await screen.findByText(/still working on this one/i)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Continue" })).toBeTruthy();
+  });
+
   it("ignores captures from a PREVIOUS onboarding session", async () => {
     // A stale running capture from an old session would otherwise pin this
     // step on "Organizing…" forever, and its proposals would be offered for

@@ -39,6 +39,7 @@ export const writeMemoryTool: AgentTool = {
     "Create a memory item (status='pending', founder approves per Critical Rule #6) and " +
     "enqueue it for RAG indexing. Use for capturing important knowledge discovered during " +
     "task execution that should be reviewed and promoted to company memory. " +
+    "layer='domain' requires a departmentId; layer='identity' must not have one. " +
     "For temporary working notes scoped only to this agent, prefer the MCP memory.retain " +
     "tool with scopeToSelf=true and layer=working.",
   parameters: {
@@ -54,7 +55,11 @@ export const writeMemoryTool: AgentTool = {
       },
       layer: {
         type: "string",
-        description: "Memory layer: identity|domain|active_context|working",
+        description:
+          "Memory layer: identity|domain|active_context|working. The layer fixes the scope: " +
+          "'identity' is company-wide and must NOT have a departmentId; 'domain' is " +
+          "department-scoped and REQUIRES one. Both are enforced — a mismatched pair is " +
+          "rejected, not silently accepted.",
       },
       category: {
         type: "string",
@@ -63,7 +68,9 @@ export const writeMemoryTool: AgentTool = {
       },
       departmentId: {
         type: "string",
-        description: "Optional department (project) id to scope the memory item",
+        description:
+          "Department (project) id scoping the memory item. REQUIRED when layer='domain'; " +
+          "must be omitted when layer='identity'. Optional for active_context/working.",
       },
       goalId: {
         type: "string",

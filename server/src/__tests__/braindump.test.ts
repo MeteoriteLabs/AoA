@@ -475,6 +475,30 @@ describe("braindumpService — post-review hardening", () => {
     expect(runAoaAgentMock).not.toHaveBeenCalled();
   });
 
+  it("the claim predicate can reclaim a STALE running row", async () => {
+    // Backstop for the strand class: the catch's own terminal UPDATE can fail
+    // (that's exactly when the DB is unhealthy), and a killed process reaches
+    // neither branch. Without a lease those rows are permanently un-retryable.
+    const db = createSequenceDb([
+      [{ id: CAPTURE_ID, status: "running", departmentId: DEPT_ID }], // select existing
+      [{ id: CAPTURE_ID, status: "running", departmentId: DEPT_ID }], // claim SUCCEEDS
+      [],                                                             // no librarian
+      [],                                                             // update -> failed
+      [{ id: CAPTURE_ID, status: "failed", proposedMemoryItemIds: [], departmentId: DEPT_ID }],
+    ]);
+    await braindumpService(db).retry(CO_ID, CAPTURE_ID);
+
+    // The claim's WHERE must mention 'running' and a dispatch-age bound, not
+    // just pending/failed.
+    const setArgs = db.update.mock.results[0]?.value.set.mock.calls[0]?.[0];
+    expect(setArgs.status).toBe("running");
+    const predicate = JSON.stringify(
+      (db.update.mock.results[0]?.value.set.mock.results[0]?.value.where.mock.calls[0] ?? []),
+    );
+    expect(predicate).toMatch(/running/);
+    expect(predicate).toMatch(/INTERVAL/);
+  });
+
   it("rejects an asset that belongs to a DIFFERENT scope than the capture", async () => {
     // A department asset pulled into a company capture would push its contents
     // into identity-layer memory. The scope-matched query returns no rows.

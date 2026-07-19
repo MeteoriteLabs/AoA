@@ -138,6 +138,11 @@ async function correlateProposedMemoryItems(
  * file degrades to name-only anyway. Skipping oversized files outright makes
  * that outcome explicit instead of looking like a corrupt-file failure.
  */
+/** How long a 'running' capture may sit before another dispatch may reclaim
+ *  it. Generous — a real Librarian CLI run on a large braindump can take
+ *  minutes, and reclaiming a live run would double-propose its memory. */
+const RUNNING_LEASE_MINUTES = 30;
+
 const ASSET_MAX_BYTES = 25 * 1024 * 1024;
 
 /** Most attachments we will fetch+parse for a single capture. Beyond this the
@@ -280,7 +285,20 @@ async function claimAndDispatch(db: Db, companyId: string, id: string): Promise<
       and(
         eq(braindumpCaptures.id, id),
         eq(braindumpCaptures.companyId, companyId),
-        sql`${braindumpCaptures.status} IN ('pending', 'failed')`,
+        // pending|failed, OR a STALE running row. The stale clause is the
+        // backstop for the whole strand-in-'running' class: the dispatch body
+        // is wrapped in try/catch, but the catch's own terminal UPDATE can
+        // fail too (that's exactly when the DB is unhealthy), and a process
+        // killed mid-run never reaches either. Without a lease those rows are
+        // permanently un-retryable — the founder's braindump silently dies.
+        // A row whose dispatch started over RUNNING_LEASE_MS ago is treated as
+        // abandoned and reclaimable; the atomic UPDATE still guarantees only
+        // one caller wins, so a genuinely long run can't be double-dispatched
+        // by two racing retries.
+        sql`(${braindumpCaptures.status} IN ('pending', 'failed')
+             OR (${braindumpCaptures.status} = 'running'
+                 AND ${braindumpCaptures.dispatchStartedAt}
+                     < NOW() - (INTERVAL '1 minute' * ${RUNNING_LEASE_MINUTES})))`,
       ),
     )
     .returning();

@@ -16,6 +16,16 @@ import { GradientText, StepCard, StepHeading, StepShell } from "../steps/shared"
  *  organizing. Matches the cadence of VerifyStep's login poll. */
 const POLL_INTERVAL_MS = 3000;
 
+/**
+ * How long to keep polling before giving up on "Organizing…". A capture can
+ * stay non-terminal for reasons the founder can't act on (a dead run whose
+ * failure write never landed, a genuinely slow CLI), and an onboarding step
+ * that spins indefinitely is a dead end. After this we stop, say plainly that
+ * the Librarian is still working, and let them continue — the proposals show
+ * up in Memory whenever it finishes.
+ */
+const POLL_DEADLINE_MS = 120_000;
+
 function isTerminal(status: BraindumpCapture["status"]): boolean {
   return status === "proposed" || status === "failed";
 }
@@ -50,8 +60,12 @@ export function LibrarianStep({ companyId, onDone }: LibrarianStepProps) {
   const [approvingId, setApprovingId] = useState<string | null>(null);
   const [retryingId, setRetryingId] = useState<string | null>(null);
   const [departmentNames, setDepartmentNames] = useState<Map<string, string>>(new Map());
+  /** Set when polling hit POLL_DEADLINE_MS with captures still non-terminal. */
+  const [stillWorking, setStillWorking] = useState(false);
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  /** Latest captures, readable from the poll timer without re-arming it. */
+  const capturesRef = useRef<BraindumpCapture[]>([]);
   const mountedRef = useRef(true);
   const doneFiredRef = useRef(false);
 
@@ -139,6 +153,7 @@ export function LibrarianStep({ companyId, onDone }: LibrarianStepProps) {
     try {
       const next = await fetchCaptures();
       if (!mountedRef.current) return;
+      capturesRef.current = next;
       setCaptures(next);
       if (next.every((c) => isTerminal(c.status))) {
         clearPoll();
@@ -152,7 +167,18 @@ export function LibrarianStep({ companyId, onDone }: LibrarianStepProps) {
 
   function startPolling() {
     clearPoll();
-    pollRef.current = setInterval(() => void pollTick(), POLL_INTERVAL_MS);
+    const startedAt = Date.now();
+    pollRef.current = setInterval(() => {
+      if (Date.now() - startedAt >= POLL_DEADLINE_MS) {
+        clearPoll();
+        if (!mountedRef.current) return;
+        setStillWorking(true);
+        setOrganizing(false);
+        void fetchPendingItems(capturesRef.current);
+        return;
+      }
+      void pollTick();
+    }, POLL_INTERVAL_MS);
   }
 
   useEffect(() => {
@@ -170,6 +196,7 @@ export function LibrarianStep({ companyId, onDone }: LibrarianStepProps) {
 
         const initial = await fetchCaptures();
         if (cancelled) return;
+        capturesRef.current = initial;
         setCaptures(initial);
 
         if (initial.length === 0) {
@@ -295,6 +322,15 @@ export function LibrarianStep({ companyId, onDone }: LibrarianStepProps) {
       </Reveal>
 
       {loadError && <p className="text-center text-xs text-destructive">{loadError}</p>}
+
+      {stillWorking && (
+        <Reveal delay={0.12}>
+          <p className="text-center text-xs text-dim">
+            The Librarian is still working on this one. You can continue — anything it proposes
+            will be waiting for you in Memory.
+          </p>
+        </Reveal>
+      )}
 
       {failedCaptures.length > 0 && (
         <div className="flex flex-col gap-2">

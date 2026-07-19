@@ -5,13 +5,19 @@ artifacts.
 
 ## `write_memory` (write)
 
-Creates a memory item and enqueues it for RAG indexing. Always call it with:
+Creates a memory item and enqueues it for RAG indexing. Call it with:
 
-- `layer: "domain"` — Librarian proposals are always department-scoped
-  domain knowledge, never identity or active_context.
-- `departmentId` — the department id you were given for this wakeup.
+- `layer` + `departmentId` matching THIS braindump's scope:
+  - a department braindump -> `layer: "domain"` **and** the `departmentId` you
+    were given (domain memory requires one — a call without it is rejected);
+  - a company-wide braindump -> `layer: "identity"` and **no** `departmentId`
+    (identity memory is company-wide; a departmentId on it is rejected).
+  Never active_context.
+- `folderPath` — when your wakeup lists "Folders you may file into", the single
+  best-fitting folder from that list. Anything not on the list is rejected;
+  omit the field if nothing fits.
 - `sourceContext` — a short note identifying this as a braindump proposal
-  (e.g. "Braindump ingestion for <department name>").
+  (e.g. "Braindump ingestion for <scope name>").
 
 The item is created with `status: "pending"` — you cannot approve your own
 proposals. The founder reviews and approves each one before it enters the
