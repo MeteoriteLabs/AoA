@@ -80,13 +80,21 @@ describe("setFirstRunCompleted (Fix 2 — write the flag at onboarding completio
     expect(JSON.parse(init.body)).toEqual({ companyId: "c1", completed: true });
   });
 
-  it("resolves without throwing when the server responds with a non-OK status (best-effort caller)", async () => {
+  // The function returns false rather than undefined on failure (453a92b55) so
+  // callers can tell a confirmed write from an unconfirmed one and avoid
+  // clearing resume state on the latter. It still must never throw.
+  it("resolves false without throwing when the server responds with a non-OK status", async () => {
     (globalThis.fetch as any).mockResolvedValue({ ok: false, status: 409 });
-    await expect(setFirstRunCompleted("c1")).resolves.toBeUndefined();
+    await expect(setFirstRunCompleted("c1")).resolves.toBe(false);
   });
 
-  it("resolves without throwing when fetch itself rejects (best-effort caller)", async () => {
+  it("resolves false without throwing when fetch itself rejects", async () => {
     (globalThis.fetch as any).mockRejectedValue(new Error("network down"));
-    await expect(setFirstRunCompleted("c1")).resolves.toBeUndefined();
+    await expect(setFirstRunCompleted("c1")).resolves.toBe(false);
+  });
+
+  it("resolves true when the write is confirmed", async () => {
+    (globalThis.fetch as any).mockResolvedValue({ ok: true, json: async () => ({}) });
+    await expect(setFirstRunCompleted("c1")).resolves.toBe(true);
   });
 });
