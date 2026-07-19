@@ -11,10 +11,18 @@ export type BraindumpStatus = "pending" | "running" | "proposed" | "failed";
  *  the founder approval route. Otherwise it mirrors `status`. */
 export type BraindumpEffectiveStatus = BraindumpStatus | "approved";
 
+/** Which memory scope a capture seeds — "company" (→ identity-layer memory
+ *  under the "Company" folder) or "department" (→ domain-layer). */
+export type BraindumpScope = "company" | "department";
+
 export interface BraindumpCapture {
   id: string;
   companyId: string;
-  departmentId: string;
+  /** NULL for a company-wide capture. */
+  departmentId: string | null;
+  scope: BraindumpScope;
+  /** `memory_assets.id`s dropped on this scope's card. */
+  assetIds: string[];
   idempotencyKey: string;
   content: string;
   contentLength: number;
@@ -32,8 +40,13 @@ export interface BraindumpCapture {
 }
 
 export interface SubmitBraindumpInput {
-  departmentId: string;
+  scope: BraindumpScope;
+  /** null for company scope; required for department scope. */
+  departmentId: string | null;
+  /** May be empty when files are provided — the server accepts text OR files. */
   content: string;
+  /** `memory_assets.id`s returned by the /memory/assets/upload route. */
+  assetIds?: string[];
   idempotencyKey: string;
 }
 
@@ -88,14 +101,20 @@ export function getBraindumpSessionId(companyId: string): string {
 }
 
 /**
- * Idempotency key for a department's braindump within the current
- * onboarding session. Stable across resubmits of the SAME (department,
- * session) pair — a double-click on Submit, or a re-render triggered by an
- * unrelated state change, reuses the same `braindump_captures` row instead
- * of creating a duplicate capture / double-dispatching the Librarian
- * (server-side uniqueness is on (companyId, departmentId, idempotencyKey),
- * so the key only needs to be unique per session, not globally).
+ * Idempotency key for one scope's braindump within the current onboarding
+ * session. Stable across resubmits of the SAME (scope, session) pair — a
+ * double-click on Submit, or a re-render triggered by an unrelated state
+ * change, reuses the same `braindump_captures` row instead of creating a
+ * duplicate capture / double-dispatching the Librarian.
+ *
+ * `departmentId` is null for the company-wide card; we key it as "company" so
+ * the company card and a department card can never collide. Server-side
+ * uniqueness is per (company, department, key) / (company, key) via two
+ * partial indexes, so the key only needs to be unique per session.
  */
-export function braindumpIdempotencyKey(companyId: string, departmentId: string): string {
-  return `${departmentId}:${getBraindumpSessionId(companyId)}`;
+export function braindumpIdempotencyKey(
+  companyId: string,
+  departmentId: string | null,
+): string {
+  return `${departmentId ?? "company"}:${getBraindumpSessionId(companyId)}`;
 }

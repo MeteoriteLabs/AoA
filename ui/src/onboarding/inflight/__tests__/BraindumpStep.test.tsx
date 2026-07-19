@@ -120,6 +120,7 @@ describe("BraindumpStep (WS6 — In-flight standalone surface)", () => {
 
     await waitFor(() => expect(submit).toHaveBeenCalledTimes(1));
     expect(submit).toHaveBeenCalledWith("c1", {
+      scope: "department",
       departmentId: "d1",
       content: "We use Postgres and Drizzle.",
       idempotencyKey: expect.stringContaining("d1:"),

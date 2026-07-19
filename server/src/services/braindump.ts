@@ -36,9 +36,9 @@
 // UPDATE...WHERE status='pending' claim used by `retry`. A row already
 // "running"/"proposed"/"failed" is returned as-is — never double-dispatched.
 
-import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { agents, aoaAgentTriggers, braindumpCaptures, memoryItems, projects } from "@armyofagents/db";
+import { agents, aoaAgentTriggers, braindumpCaptures, memoryAssets, memoryItems, projects } from "@armyofagents/db";
 import { badRequest, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { runAoaAgent } from "./internal-agent/aoa-agents/runner.js";
@@ -78,7 +78,10 @@ async function resolveLibrarianAgentId(db: Db, companyId: string): Promise<strin
 async function correlateProposedMemoryItems(
   db: Db,
   companyId: string,
-  departmentId: string,
+  /** NULL for a company-wide capture — its proposals are identity-layer items
+   *  with NO departmentId, so the correlation must match on IS NULL rather than
+   *  equality (Postgres never matches `= NULL`). */
+  departmentId: string | null,
   librarianAgentId: string,
   runStartedAt: Date,
 ): Promise<string[]> {
@@ -94,7 +97,9 @@ async function correlateProposedMemoryItems(
       .where(
         and(
           eq(memoryItems.companyId, companyId),
-          eq(memoryItems.departmentId, departmentId),
+          departmentId === null
+            ? isNull(memoryItems.departmentId)
+            : eq(memoryItems.departmentId, departmentId),
           eq(memoryItems.source, "agent"),
           eq(memoryItems.createdBy, librarianAgentId),
           gte(memoryItems.createdAt, since),
@@ -144,11 +149,14 @@ async function claimAndDispatch(db: Db, companyId: string, id: string): Promise<
     return true;
   }
 
-  const [dept] = await db
-    .select({ id: projects.id, name: projects.name })
-    .from(projects)
-    .where(and(eq(projects.id, row.departmentId), eq(projects.companyId, companyId)))
-    .limit(1);
+  // Company-wide captures have no department — skip the lookup entirely.
+  const [dept] = row.departmentId
+    ? await db
+        .select({ id: projects.id, name: projects.name })
+        .from(projects)
+        .where(and(eq(projects.id, row.departmentId), eq(projects.companyId, companyId)))
+        .limit(1)
+    : [undefined];
 
   const runStartedAt = new Date();
   try {
@@ -241,26 +249,61 @@ export function braindumpService(db: Db) {
      */
     async submit(
       companyId: string,
-      input: { departmentId: string; content: string; idempotencyKey: string },
+      input: {
+        scope?: "company" | "department";
+        departmentId: string | null;
+        content: string;
+        assetIds?: string[];
+        idempotencyKey: string;
+      },
       createdByUserId?: string | null,
     ): Promise<BraindumpWithEffectiveStatus> {
-      const [dept] = await db
-        .select({ id: projects.id, type: projects.type })
-        .from(projects)
-        .where(and(eq(projects.id, input.departmentId), eq(projects.companyId, companyId)))
-        .limit(1);
-      if (!dept) {
-        throw badRequest("departmentId not found in this company");
+      // Derive the scope defensively so an older client that only sends
+      // departmentId still behaves (department when set, company when not).
+      const scope = input.scope ?? (input.departmentId ? "department" : "company");
+      const departmentId = scope === "department" ? input.departmentId : null;
+
+      if (scope === "department") {
+        if (!departmentId) {
+          throw badRequest("departmentId is required for a department braindump");
+        }
+        const [dept] = await db
+          .select({ id: projects.id, type: projects.type })
+          .from(projects)
+          .where(and(eq(projects.id, departmentId), eq(projects.companyId, companyId)))
+          .limit(1);
+        if (!dept) {
+          throw badRequest("departmentId not found in this company");
+        }
+      }
+
+      // Dropped files: the upload route (/memory/assets/upload) ALREADY created
+      // the memory_assets rows at the scope's folderPath — we only reference
+      // their ids here. Never insert memory_assets again (that would duplicate
+      // the asset). Dedupe, then verify every id belongs to THIS company so a
+      // crafted request can't pull another company's file into this company's
+      // Librarian prompt. Reject (not silently drop) so the founder sees it.
+      const assetIds = Array.from(new Set(input.assetIds ?? []));
+      if (assetIds.length > 0) {
+        const owned = await db
+          .select({ id: memoryAssets.id })
+          .from(memoryAssets)
+          .where(and(eq(memoryAssets.companyId, companyId), inArray(memoryAssets.id, assetIds)));
+        if (owned.length !== assetIds.length) {
+          throw badRequest("One or more assetIds do not belong to this company");
+        }
       }
 
       const inserted = await db
         .insert(braindumpCaptures)
         .values({
           companyId,
-          departmentId: input.departmentId,
+          departmentId,
+          scope,
           idempotencyKey: input.idempotencyKey,
           content: input.content,
           contentLength: input.content.length,
+          assetIds,
           status: "pending",
           createdByUserId: createdByUserId ?? null,
         })
@@ -277,7 +320,11 @@ export function braindumpService(db: Db) {
           .where(
             and(
               eq(braindumpCaptures.companyId, companyId),
-              eq(braindumpCaptures.departmentId, input.departmentId),
+              // Company captures have a NULL department — `= NULL` never
+              // matches, so the conflict row must be found with IS NULL.
+              departmentId === null
+                ? isNull(braindumpCaptures.departmentId)
+                : eq(braindumpCaptures.departmentId, departmentId),
               eq(braindumpCaptures.idempotencyKey, input.idempotencyKey),
             ),
           )

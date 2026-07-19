@@ -1233,6 +1233,13 @@
       "when": 1784443629087,
       "tag": "0175_overjoyed_champions",
       "breakpoints": true
+    },
+    {
+      "idx": 176,
+      "version": "7",
+      "when": 1784492278323,
+      "tag": "0176_giant_spitfire",
+      "breakpoints": true
     }
   ]
 }

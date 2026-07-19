@@ -27,6 +27,7 @@ vi.mock("@armyofagents/db", () => {
     agents: t("agents"),
     aoaAgentTriggers: t("aoaAgentTriggers"),
     braindumpCaptures: t("braindumpCaptures"),
+    memoryAssets: t("memoryAssets"),
     memoryItems: t("memoryItems"),
     projects: t("projects"),
   };
@@ -181,11 +182,90 @@ describe("braindumpService.submit", () => {
     expect(runAoaAgentMock).not.toHaveBeenCalled();
   });
 
+  it("company-wide capture: no department lookups, dispatches with a null departmentId", async () => {
+    runAoaAgentMock.mockResolvedValue({ status: "succeeded", runId: "run-9" });
+
+    // NOTE the shorter queue than the department path: BOTH `select projects`
+    // calls (validate + prompt dept name) are skipped for company scope.
+    const db = createSequenceDb([
+      [{ id: CAPTURE_ID, departmentId: null, scope: "company", idempotencyKey: "k1", status: "pending" }], // 1. insert
+      [{ id: CAPTURE_ID, status: "running", departmentId: null, content: "We value candor." }],            // 2. claim
+      [{ id: LIBRARIAN_ID }],                                                                              // 3. resolveLibrarianAgentId
+      [{ id: "mem-9" }],                                                                                   // 4. correlate (IS NULL dept)
+      [],                                                                                                  // 5. update -> proposed
+      [{ id: CAPTURE_ID, status: "proposed", proposedMemoryItemIds: ["mem-9"], departmentId: null }],       // 6. select latest
+      [{ status: "pending" }],                                                                             // 7. deriveEffectiveStatus
+    ]);
+
+    const svc = braindumpService(db);
+    const result = await svc.submit(CO_ID, {
+      scope: "company",
+      departmentId: null,
+      content: "We value candor.",
+      idempotencyKey: "k1",
+    });
+
+    expect(result.status).toBe("proposed");
+    expect(result.proposedMemoryItemIds).toEqual(["mem-9"]);
+    // 4 selects only (librarian, correlate, latest, derive) — no projects lookups.
+    expect(db.select).toHaveBeenCalledTimes(4);
+    const [, , payload] = runAoaAgentMock.mock.calls[0]!;
+    expect(payload).toMatchObject({ companyId: CO_ID, source: "braindump.ingest", role: "librarian" });
+    expect((payload as { departmentId: string | null }).departmentId).toBeNull();
+  });
+
+  it("rejects assetIds that do not belong to this company (no cross-company file smuggling)", async () => {
+    const db = createSequenceDb([
+      [DEPT_ROW], // 1. select projects (validate dept)
+      [],         // 2. select memoryAssets -> none owned by this company
+    ]);
+    const svc = braindumpService(db);
+
+    await expect(
+      svc.submit(CO_ID, {
+        scope: "department",
+        departmentId: DEPT_ID,
+        content: "",
+        assetIds: ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"],
+        idempotencyKey: "k1",
+      }),
+    ).rejects.toThrow(/do not belong to this company/i);
+
+    expect(runAoaAgentMock).not.toHaveBeenCalled();
+  });
+
+  it("dedupes duplicate assetIds before the ownership check", async () => {
+    const ASSET = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    // The same id twice must collapse to ONE requested id — otherwise
+    // requested(2) !== owned(1) and submit would wrongly throw.
+    const db = createSequenceDb([
+      [DEPT_ROW],        // 1. select projects
+      [{ id: ASSET }],   // 2. select memoryAssets -> exactly one owned row
+      [{ id: CAPTURE_ID, departmentId: DEPT_ID, status: "pending" }], // 3. insert
+      [{ id: CAPTURE_ID, status: "running", departmentId: DEPT_ID }], // 4. claim
+      [],                // 5. no librarian -> short-circuit to failed
+      [],                // 6. update -> failed
+      [{ id: CAPTURE_ID, status: "failed", proposedMemoryItemIds: [], departmentId: DEPT_ID }], // 7. latest
+    ]);
+    const svc = braindumpService(db);
+
+    const result = await svc.submit(CO_ID, {
+      scope: "department",
+      departmentId: DEPT_ID,
+      content: "",
+      assetIds: [ASSET, ASSET],
+      idempotencyKey: "k1",
+    });
+
+    // Got past the ownership check (didn't throw) — dedup worked.
+    expect(result.status).toBe("failed");
+  });
+
   it("Librarian not provisioned -> status=failed with actionable reason, no run attempted", async () => {
     const db = createSequenceDb([
       [DEPT_ROW],                                     // 1. select projects
       [{ id: CAPTURE_ID, departmentId: DEPT_ID, status: "pending" }], // 2. insert
-      [{ id: CAPTURE_ID, status: "running" }],         // 3. update -> running (claim)
+      [{ id: CAPTURE_ID, status: "running", departmentId: DEPT_ID }],         // 3. update -> running (claim)
       [],                                              // 4. select agents (no librarian found)
       [],                                              // 5. update -> failed
       [{ id: CAPTURE_ID, status: "failed", failureReason: "The Librarian agent is not provisioned for this company yet.", proposedMemoryItemIds: [], departmentId: DEPT_ID }], // 6. select latest
@@ -203,7 +283,7 @@ describe("braindumpService.submit", () => {
     const db = createSequenceDb([
       [DEPT_ROW],
       [{ id: CAPTURE_ID, departmentId: DEPT_ID, status: "pending" }],
-      [{ id: CAPTURE_ID, status: "running" }],
+      [{ id: CAPTURE_ID, status: "running", departmentId: DEPT_ID }],
       [{ id: LIBRARIAN_ID }],
       [DEPT_ROW],
       [], // update -> failed
@@ -221,7 +301,7 @@ describe("braindumpService.submit", () => {
     const db = createSequenceDb([
       [DEPT_ROW],
       [{ id: CAPTURE_ID, departmentId: DEPT_ID, status: "pending" }],
-      [{ id: CAPTURE_ID, status: "running" }],
+      [{ id: CAPTURE_ID, status: "running", departmentId: DEPT_ID }],
       [{ id: LIBRARIAN_ID }],
       [DEPT_ROW],
       [], // update -> failed (catch branch)
@@ -250,7 +330,7 @@ describe("braindumpService.retry", () => {
     runAoaAgentMock.mockResolvedValue({ status: "succeeded", runId: "run-3" });
     const db = createSequenceDb([
       [{ id: CAPTURE_ID, status: "failed", departmentId: DEPT_ID }], // 1. select existing (found)
-      [{ id: CAPTURE_ID, status: "running" }],                       // 2. update -> running (claim)
+      [{ id: CAPTURE_ID, status: "running", departmentId: DEPT_ID }],                       // 2. update -> running (claim)
       [{ id: LIBRARIAN_ID }],                                        // 3. select agents
       [DEPT_ROW],                                                    // 4. select projects
       [],                                                            // 5. select memoryItems (correlate) -> none

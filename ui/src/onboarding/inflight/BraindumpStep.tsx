@@ -102,6 +102,9 @@ export function BraindumpStep({ companyId, onDone }: BraindumpStepProps) {
   async function submitBox(box: DumpBox): Promise<BoxStatus> {
     try {
       await braindumpApi.submit(companyId, {
+        // Phase 5d turns this into a multi-scope surface (a company-wide card
+        // plus one per department); today every box is a department.
+        scope: "department",
         departmentId: box.departmentId,
         content: box.content.trim(),
         idempotencyKey: braindumpIdempotencyKey(companyId, box.departmentId),
