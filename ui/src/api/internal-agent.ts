@@ -53,6 +53,7 @@ export interface AgentConfig {
   runtimeAllowAlwaysEnabled: boolean;
   vendorCliBypassEnabled: boolean;
   inboundRoutingLevel: string;
+  viewerControlLevel: "manual" | "own_output" | "full";
 }
 
 export interface AgentRunToolCall {

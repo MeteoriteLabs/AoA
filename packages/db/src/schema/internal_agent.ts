@@ -122,6 +122,12 @@ export const internalAgentConfig = pgTable(
     // default philosophy).
     inboundRoutingLevel: text("inbound_routing_level").notNull().default("off"),
 
+    // Viewer Upgrade Phase 5: per-company default for how much of the viewer
+    // agents may drive. 'manual' | 'own_output' | 'full' (see
+    // packages/shared/src/viewer-control.ts). Per-user overrides live in
+    // viewer_preferences (null there = inherit this company default).
+    viewerControlLevel: text("viewer_control_level").notNull().default("own_output"),
+
     agentId: uuid("agent_id").references(() => agents.id, {
       onDelete: "set null",
     }),

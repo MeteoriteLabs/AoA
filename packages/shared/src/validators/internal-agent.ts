@@ -30,6 +30,8 @@ export const updateInternalAgentConfigSchema = z.object({
       INBOUND_ROUTING_LEVELS.map((l) => l.value) as [string, ...string[]],
     )
     .optional(),
+  // Viewer Upgrade Phase 5: per-company default viewer control level.
+  viewerControlLevel: z.enum(["manual", "own_output", "full"]).optional(),
 });
 
 export type UpdateInternalAgentConfig = z.infer<typeof updateInternalAgentConfigSchema>;

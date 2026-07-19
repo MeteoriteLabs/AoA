@@ -89,6 +89,8 @@ const updateConfigSchema = z.object({
   inboundRoutingLevel: z
     .enum(["off", "suggest", "auto_attach", "full_auto"])
     .optional(),
+  // Viewer Upgrade Phase 5: per-company default viewer control level.
+  viewerControlLevel: z.enum(["manual", "own_output", "full"]).optional(),
 });
 
 const cancelReminderSchema = z.object({

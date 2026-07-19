@@ -1299,6 +1299,7 @@ export * from "./inbound-routing.js";
 export * from "./user-notes.js";
 export * from "./commander-output-refs.js";
 export * from "./viewer-show-ref.js";
+export * from "./viewer-control.js";
 export * from "./safe-browser-url.js";
 export * from "./commander-input-refs.js";
 export * from "./hub.js";
