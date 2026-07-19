@@ -7,13 +7,15 @@ vi.mock("../../../api/projects", () => ({
   projectsApi: { list },
 }));
 
-const listByDepartment = vi.hoisted(() => vi.fn());
+// Phase 5e: the step lists ALL captures for the company in one call (both
+// scopes) instead of sweeping department by department.
+const listCaptures = vi.hoisted(() => vi.fn());
 const retry = vi.hoisted(() => vi.fn());
 vi.mock("../../../api/braindump", async () => {
   const actual = await vi.importActual<typeof import("../../../api/braindump")>("../../../api/braindump");
   return {
     ...actual,
-    braindumpApi: { submit: vi.fn(), listByDepartment, get: vi.fn(), retry },
+    braindumpApi: { submit: vi.fn(), list: listCaptures, listCaptures: vi.fn(), get: vi.fn(), retry },
   };
 });
 
@@ -84,7 +86,7 @@ describe("LibrarianStep (WS6 — In-flight standalone surface)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     list.mockResolvedValue([makeDept()]);
-    listByDepartment.mockResolvedValue([makeCapture()]);
+    listCaptures.mockResolvedValue([makeCapture()]);
     memoryList.mockResolvedValue({ items: [makeMemoryItem()], semanticAvailable: true });
     memoryApprove.mockResolvedValue({ ...makeMemoryItem(), status: "approved" });
     retry.mockResolvedValue(makeCapture());
@@ -104,8 +106,8 @@ describe("LibrarianStep (WS6 — In-flight standalone surface)", () => {
 
   it("shows the thinking AgentCharacter while a capture is still running, then flips to done via polling", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
-    listByDepartment.mockResolvedValueOnce([makeCapture({ status: "running" })]);
-    listByDepartment.mockResolvedValueOnce([makeCapture({ status: "proposed" })]);
+    listCaptures.mockResolvedValueOnce([makeCapture({ status: "running" })]);
+    listCaptures.mockResolvedValueOnce([makeCapture({ status: "proposed" })]);
 
     render(<LibrarianStep companyId="c1" onDone={vi.fn()} />);
 
@@ -116,13 +118,13 @@ describe("LibrarianStep (WS6 — In-flight standalone surface)", () => {
       vi.advanceTimersByTime(3000);
     });
 
-    await waitFor(() => expect(listByDepartment).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(listCaptures).toHaveBeenCalledTimes(2));
     expect(await screen.findByRole("img", { name: "agent done" })).toBeTruthy();
     expect(screen.getByText("We use Postgres")).toBeTruthy();
   });
 
   it("scopes the approve list to this run's proposed memory item ids, excluding unrelated pending items", async () => {
-    listByDepartment.mockResolvedValue([
+    listCaptures.mockResolvedValue([
       makeCapture({ id: "bd-1", proposedMemoryItemIds: ["mem-1"] }),
       makeCapture({ id: "bd-2", departmentId: "dept-2", proposedMemoryItemIds: ["mem-2"] }),
     ]);
@@ -143,7 +145,7 @@ describe("LibrarianStep (WS6 — In-flight standalone surface)", () => {
   });
 
   it("shows an empty state (and still allows Continue) when no captures propose any memory items, even if unrelated pending items exist", async () => {
-    listByDepartment.mockResolvedValue([makeCapture({ proposedMemoryItemIds: [] })]);
+    listCaptures.mockResolvedValue([makeCapture({ proposedMemoryItemIds: [] })]);
     memoryList.mockResolvedValue({
       items: [makeMemoryItem({ id: "mem-unrelated", title: "Unrelated pending item" })],
       semanticAvailable: true,
@@ -168,7 +170,7 @@ describe("LibrarianStep (WS6 — In-flight standalone surface)", () => {
   });
 
   it("shows a failed capture's failure reason with a Retry action", async () => {
-    listByDepartment.mockResolvedValue([
+    listCaptures.mockResolvedValue([
       makeCapture({ id: "bd-2", status: "failed", failureReason: "The Librarian agent is not provisioned." }),
     ]);
     memoryList.mockResolvedValue({ items: [], semanticAvailable: true });
@@ -180,7 +182,7 @@ describe("LibrarianStep (WS6 — In-flight standalone surface)", () => {
   });
 
   it("Retry calls the retry endpoint and clears the failure once it succeeds", async () => {
-    listByDepartment.mockResolvedValueOnce([
+    listCaptures.mockResolvedValueOnce([
       makeCapture({ id: "bd-2", status: "failed", failureReason: "boom" }),
     ]);
     memoryList.mockResolvedValueOnce({ items: [], semanticAvailable: true });
@@ -195,7 +197,7 @@ describe("LibrarianStep (WS6 — In-flight standalone surface)", () => {
   });
 
   it("Continue calls onDone even while still organizing", async () => {
-    listByDepartment.mockResolvedValue([makeCapture({ status: "running" })]);
+    listCaptures.mockResolvedValue([makeCapture({ status: "running" })]);
     const onDone = vi.fn();
     render(<LibrarianStep companyId="c1" onDone={onDone} />);
 
@@ -205,7 +207,7 @@ describe("LibrarianStep (WS6 — In-flight standalone surface)", () => {
   });
 
   it("Continue only fires onDone once even on a rapid double-click", async () => {
-    listByDepartment.mockResolvedValue([makeCapture({ status: "running" })]);
+    listCaptures.mockResolvedValue([makeCapture({ status: "running" })]);
     const onDone = vi.fn();
     render(<LibrarianStep companyId="c1" onDone={onDone} />);
 
@@ -218,22 +220,80 @@ describe("LibrarianStep (WS6 — In-flight standalone surface)", () => {
 
   it("does not crash and stops polling after unmount while organizing", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
-    listByDepartment.mockResolvedValue([makeCapture({ status: "running" })]);
+    listCaptures.mockResolvedValue([makeCapture({ status: "running" })]);
 
     const { unmount } = render(<LibrarianStep companyId="c1" onDone={vi.fn()} />);
     await screen.findByRole("img", { name: "agent thinking" });
 
     expect(() => unmount()).not.toThrow();
 
-    listByDepartment.mockClear();
+    listCaptures.mockClear();
     await act(async () => {
       vi.advanceTimersByTime(9000);
     });
-    expect(listByDepartment).not.toHaveBeenCalled();
+    expect(listCaptures).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------------
+  // Item 5 / Phase 5e — company scope discovery + grouping.
+  // -------------------------------------------------------------------------
+
+  it("lists captures for the whole company in one call, not per department", async () => {
+    render(<LibrarianStep companyId="c1" onDone={vi.fn()} />);
+    await screen.findByRole("img", { name: "agent done" });
+
+    expect(listCaptures).toHaveBeenCalledTimes(1);
+    expect(listCaptures).toHaveBeenCalledWith("c1");
+  });
+
+  it("finds a company-wide capture even when the company has NO departments", async () => {
+    // The old per-department sweep exited early here and reported nothing.
+    list.mockResolvedValue([]);
+    listCaptures.mockResolvedValue([
+      makeCapture({ id: "bd-co", departmentId: null, proposedMemoryItemIds: ["mem-1"] }),
+    ]);
+
+    render(<LibrarianStep companyId="c1" onDone={vi.fn()} />);
+
+    expect(await screen.findByRole("img", { name: "agent done" })).toBeTruthy();
+    expect(screen.getByText("We use Postgres")).toBeTruthy();
+    expect(screen.getByText("Company-wide")).toBeTruthy();
+  });
+
+  it("requests BOTH pending layers so identity proposals aren't dropped", async () => {
+    render(<LibrarianStep companyId="c1" onDone={vi.fn()} />);
+    await screen.findByRole("img", { name: "agent done" });
+
+    const layers = memoryList.mock.calls.map((c) => (c[1] as { layer: string }).layer);
+    expect(layers).toContain("domain");
+    expect(layers).toContain("identity");
+  });
+
+  it("groups proposals by scope with Company-wide first", async () => {
+    list.mockResolvedValue([makeDept({ id: "dept-1", name: "Software" })]);
+    listCaptures.mockResolvedValue([
+      makeCapture({ id: "bd-dept", departmentId: "dept-1", proposedMemoryItemIds: ["mem-dept"] }),
+      makeCapture({ id: "bd-co", departmentId: null, proposedMemoryItemIds: ["mem-co"] }),
+    ]);
+    memoryList.mockResolvedValue({
+      items: [
+        makeMemoryItem({ id: "mem-dept", title: "We use Postgres" }),
+        makeMemoryItem({ id: "mem-co", title: "We optimize for candor" }),
+      ],
+      semanticAvailable: true,
+    });
+
+    render(<LibrarianStep companyId="c1" onDone={vi.fn()} />);
+    await screen.findByRole("img", { name: "agent done" });
+
+    const headings = screen.getAllByText(/^(Company-wide|Software)$/).map((el) => el.textContent);
+    expect(headings).toEqual(["Company-wide", "Software"]);
+    expect(screen.getByText("We optimize for candor")).toBeTruthy();
+    expect(screen.getByText("We use Postgres")).toBeTruthy();
   });
 
   it("handles a department with no braindumps yet (empty list) without hanging on thinking", async () => {
-    listByDepartment.mockResolvedValue([]);
+    listCaptures.mockResolvedValue([]);
     memoryList.mockResolvedValue({ items: [], semanticAvailable: true });
 
     render(<LibrarianStep companyId="c1" onDone={vi.fn()} />);

@@ -44,10 +44,10 @@ export function LibrarianStep({ companyId, onDone }: LibrarianStepProps) {
   const [pendingItems, setPendingItems] = useState<MemoryItem[]>([]);
   const [approvingId, setApprovingId] = useState<string | null>(null);
   const [retryingId, setRetryingId] = useState<string | null>(null);
+  const [departmentNames, setDepartmentNames] = useState<Map<string, string>>(new Map());
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const mountedRef = useRef(true);
-  const departmentIdsRef = useRef<string[]>([]);
   const doneFiredRef = useRef(false);
 
   function fireOnDoneOnce() {
@@ -71,9 +71,14 @@ export function LibrarianStep({ companyId, onDone }: LibrarianStepProps) {
     };
   }, []);
 
-  async function fetchCaptures(deptIds: string[]): Promise<BraindumpCapture[]> {
-    const lists = await Promise.all(deptIds.map((id) => braindumpApi.listByDepartment(companyId, id)));
-    return lists.flat();
+  /**
+   * Phase 5e: ONE call for the whole company, both scopes. The previous
+   * per-department sweep couldn't see the company-wide capture at all, so a
+   * founder who only filled the Company card saw "no braindumps" and the step
+   * declared itself finished while the Librarian was still running.
+   */
+  async function fetchCaptures(): Promise<BraindumpCapture[]> {
+    return braindumpApi.list(companyId);
   }
 
   /**
@@ -92,18 +97,31 @@ export function LibrarianStep({ companyId, onDone }: LibrarianStepProps) {
       return;
     }
     try {
-      const res = await memoryApi.list(companyId, { status: "pending", layer: "domain" });
-      if (mountedRef.current) setPendingItems(res.items.filter((item) => proposedIds.has(item.id)));
+      // Both layers: a company-wide braindump proposes IDENTITY memory, a
+      // department one proposes DOMAIN. Fetching only domain would drop every
+      // company proposal from the approve list while still counting it as
+      // "organized". Two scoped calls rather than one unfiltered one keeps the
+      // responses bounded; proposedIds is still the authoritative filter.
+      const [domain, identity] = await Promise.all([
+        memoryApi.list(companyId, { status: "pending", layer: "domain" }),
+        memoryApi.list(companyId, { status: "pending", layer: "identity" }),
+      ]);
+      // Dedup by id: two responses are merged, and an item appearing in both
+      // (an API that ignores the layer filter) would otherwise render twice
+      // with a duplicate React key and offer two Approve buttons for one item.
+      const byId = new Map<string, MemoryItem>();
+      for (const item of [...domain.items, ...identity.items]) {
+        if (proposedIds.has(item.id)) byId.set(item.id, item);
+      }
+      if (mountedRef.current) setPendingItems([...byId.values()]);
     } catch {
       // Best-effort — the approve list just stays empty/stale; Continue still works.
     }
   }
 
   async function pollTick() {
-    const deptIds = departmentIdsRef.current;
-    if (deptIds.length === 0) return;
     try {
-      const next = await fetchCaptures(deptIds);
+      const next = await fetchCaptures();
       if (!mountedRef.current) return;
       setCaptures(next);
       if (next.every((c) => isTerminal(c.status))) {
@@ -125,20 +143,24 @@ export function LibrarianStep({ companyId, onDone }: LibrarianStepProps) {
     let cancelled = false;
     (async () => {
       try {
+        // Department names label the capture rows; the captures themselves
+        // come from one company-wide call, so a company with zero departments
+        // is no longer an early-exit — it can still have a company capture.
         const projects = await projectsApi.list(companyId);
-        const deptIds = projects.filter((p) => p.type === "department").map((p) => p.id);
         if (cancelled) return;
-        departmentIdsRef.current = deptIds;
+        setDepartmentNames(
+          new Map(projects.filter((p) => p.type === "department").map((p) => [p.id, p.name])),
+        );
 
-        if (deptIds.length === 0) {
+        const initial = await fetchCaptures();
+        if (cancelled) return;
+        setCaptures(initial);
+
+        if (initial.length === 0) {
           setOrganizing(false);
           await fetchPendingItems([]);
           return;
         }
-
-        const initial = await fetchCaptures(deptIds);
-        if (cancelled) return;
-        setCaptures(initial);
 
         const inFlight = initial.some((c) => !isTerminal(c.status));
         if (!inFlight) {
@@ -196,6 +218,36 @@ export function LibrarianStep({ companyId, onDone }: LibrarianStepProps) {
   }
 
   const failedCaptures = captures.filter((c) => c.status === "failed");
+
+  /**
+   * Groups proposals by the scope they belong to, so the founder approves
+   * "Company-wide" knowledge knowing it's company-wide. Membership comes from
+   * each CAPTURE's proposedMemoryItemIds rather than the item's own
+   * departmentId — that's the same authoritative linkage the approve list is
+   * already filtered by, and it stays correct even for an item the Librarian
+   * filed without a department.
+   */
+  const groupedItems = (() => {
+    const scopeOf = new Map<string, string>();
+    for (const capture of captures) {
+      const label = capture.departmentId
+        ? (departmentNames.get(capture.departmentId) ?? "Department")
+        : "Company-wide";
+      for (const itemId of capture.proposedMemoryItemIds) scopeOf.set(itemId, label);
+    }
+    const groups = new Map<string, MemoryItem[]>();
+    for (const item of pendingItems) {
+      const label = scopeOf.get(item.id) ?? "Other";
+      const bucket = groups.get(label);
+      if (bucket) bucket.push(item);
+      else groups.set(label, [item]);
+    }
+    // Company-wide first — it's the broadest claim and deserves the most
+    // deliberate approval.
+    return [...groups.entries()].sort(([a], [b]) =>
+      a === "Company-wide" ? -1 : b === "Company-wide" ? 1 : a.localeCompare(b),
+    );
+  })();
 
   return (
     <StepShell className="max-w-lg">
@@ -256,26 +308,31 @@ export function LibrarianStep({ companyId, onDone }: LibrarianStepProps) {
           {pendingItems.length === 0 && (
             <p className="text-center text-xs text-dim">No proposed memory items yet.</p>
           )}
-          {pendingItems.map((item, i) => (
-            <Reveal key={item.id} delay={0.09 + i * 0.06}>
-              <StepCard>
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium text-text">{item.title}</p>
-                    <p className="mt-1 text-xs text-dim">{item.content}</p>
-                  </div>
-                  <Button
-                    type="button"
-                    size="sm"
-                    className="shrink-0"
-                    disabled={approvingId === item.id}
-                    onClick={() => void approve(item.id)}
-                  >
-                    {approvingId === item.id ? "Approving…" : "Approve"}
-                  </Button>
-                </div>
-              </StepCard>
-            </Reveal>
+          {groupedItems.map(([label, items]) => (
+            <div key={label} className="flex flex-col gap-2">
+              <p className="mt-2 text-[11px] font-medium uppercase tracking-wide text-dim">{label}</p>
+              {items.map((item, i) => (
+                <Reveal key={item.id} delay={0.09 + i * 0.06}>
+                  <StepCard>
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-text">{item.title}</p>
+                        <p className="mt-1 text-xs text-dim">{item.content}</p>
+                      </div>
+                      <Button
+                        type="button"
+                        size="sm"
+                        className="shrink-0"
+                        disabled={approvingId === item.id}
+                        onClick={() => void approve(item.id)}
+                      >
+                        {approvingId === item.id ? "Approving…" : "Approve"}
+                      </Button>
+                    </div>
+                  </StepCard>
+                </Reveal>
+              ))}
+            </div>
           ))}
         </div>
       )}

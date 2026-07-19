@@ -435,6 +435,23 @@ describe("braindumpService.submit", () => {
   });
 });
 
+describe("braindumpService.listAll (Phase 5e)", () => {
+  it("returns captures for BOTH scopes filtered only by company", async () => {
+    const db = createSequenceDb([
+      [
+        { id: "bd-co", departmentId: null, status: "proposed", proposedMemoryItemIds: [] },
+        { id: "bd-dept", departmentId: DEPT_ID, status: "proposed", proposedMemoryItemIds: [] },
+      ],
+    ]);
+    const rows = await braindumpService(db).listAll(CO_ID);
+
+    expect(rows.map((r) => r.id)).toEqual(["bd-co", "bd-dept"]);
+    // One query, no departmentId predicate — the company-wide row would be
+    // invisible to a department-filtered sweep.
+    expect(db.select).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("braindumpService.retry", () => {
   beforeEach(() => {
     runAoaAgentMock.mockReset();

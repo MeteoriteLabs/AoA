@@ -522,5 +522,22 @@ export function braindumpService(db: Db) {
         .orderBy(desc(braindumpCaptures.createdAt));
       return Promise.all(rows.map((r) => withEffectiveStatus(db, r)));
     },
+
+    /**
+     * Every capture for the company, both scopes (Phase 5e).
+     *
+     * LibrarianStep needs this: it polls until all captures reach a terminal
+     * status, and doing that as one call per department would silently miss
+     * the company-wide capture entirely — the step would declare itself done
+     * while the Librarian was still working on it.
+     */
+    async listAll(companyId: string): Promise<BraindumpWithEffectiveStatus[]> {
+      const rows = await db
+        .select()
+        .from(braindumpCaptures)
+        .where(eq(braindumpCaptures.companyId, companyId))
+        .orderBy(desc(braindumpCaptures.createdAt));
+      return Promise.all(rows.map((r) => withEffectiveStatus(db, r)));
+    },
   };
 }

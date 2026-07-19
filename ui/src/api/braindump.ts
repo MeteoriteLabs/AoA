@@ -58,7 +58,10 @@ export const braindumpApi = {
   submit: (companyId: string, input: SubmitBraindumpInput) =>
     api.post<BraindumpCapture>(`/companies/${companyId}/braindumps`, input),
 
-  /** `departmentId` is required server-side (400 without it). */
+  /** Every capture for the company, BOTH scopes. LibrarianStep polls this —
+   *  a per-department sweep would never see the company-wide capture. */
+  list: (companyId: string) => api.get<BraindumpCapture[]>(`/companies/${companyId}/braindumps`),
+
   listByDepartment: (companyId: string, departmentId: string) =>
     api.get<BraindumpCapture[]>(
       `/companies/${companyId}/braindumps?departmentId=${encodeURIComponent(departmentId)}`,

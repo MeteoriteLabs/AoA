@@ -44,12 +44,14 @@ export function braindumpRoutes(db: Db) {
   router.get("/companies/:companyId/braindumps", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    // Phase 5e: `departmentId` is now OPTIONAL. Omitting it returns every
+    // capture for the company across both scopes — which is what LibrarianStep
+    // polls, since a per-department sweep would never see the company-wide
+    // capture. The filtered form is unchanged for existing callers.
     const departmentId = req.query.departmentId as string | undefined;
-    if (!departmentId) {
-      res.status(400).json({ error: "departmentId query param is required" });
-      return;
-    }
-    const rows = await svc.listByDepartment(companyId, departmentId);
+    const rows = departmentId
+      ? await svc.listByDepartment(companyId, departmentId)
+      : await svc.listAll(companyId);
     res.json(rows);
   });
 
