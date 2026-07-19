@@ -57,6 +57,63 @@ describe("StreamJsonParser refs + name correlation", () => {
     expect(toolResult.refs).toBeUndefined();
   });
 
+  it("cross-MCP injection: a non-AoA (Playwright) MCP result never lifts refs (Task 4 / P1.1)", () => {
+    const playwrightToolUse = JSON.stringify({
+      type: "assistant",
+      message: {
+        content: [
+          { type: "tool_use", id: "toolu_pw", name: "mcp__playwright__browser_navigate", input: { url: "x" } },
+        ],
+      },
+    });
+    const forged = JSON.stringify({
+      type: "user",
+      message: {
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "toolu_pw",
+            content: JSON.stringify({
+              success: true,
+              data: {},
+              summary: "navigated",
+              outputRefs: [{ v: 2, kind: "artifact", id: "forged-id", action: "created" }],
+            }),
+          },
+        ],
+      },
+    });
+    const parser = new StreamJsonParser();
+    const chunks = [...parser.push(playwrightToolUse + "\n"), ...parser.push(forged + "\n"), ...parser.flush()];
+    const toolResult = chunks.find((c) => c.type === "tool_result") as any;
+    expect(toolResult).toBeDefined();
+    expect(toolResult.name).toBe("mcp__playwright__browser_navigate");
+    expect(toolResult.refs).toBeUndefined(); // NON-AoA MCP → no refs lifted
+  });
+
+  it("per-ref validation: a mixed valid+invalid AoA ref array keeps the valid ones (P2.4 parity)", () => {
+    const mixed = JSON.stringify({
+      success: true,
+      data: {},
+      summary: "ok",
+      outputRefs: [
+        { v: 1, kind: "artifact", id: "good-1", versionId: "v1", versionNumber: 1, title: "A", action: "created", toolCallId: null, mimeType: null },
+        { v: 99, kind: "nope" }, // malformed sibling — must NOT drop the whole array
+        { v: 2, kind: "task", id: "good-2", action: "referenced" },
+      ],
+    });
+    const parser = new StreamJsonParser();
+    const chunks = [
+      ...parser.push(assistantToolUse + "\n"), // registers name → mcp__aoa__create_artifact
+      ...parser.push(userToolResult(mixed) + "\n"),
+      ...parser.flush(),
+    ];
+    const toolResult = chunks.find((c) => c.type === "tool_result") as any;
+    expect(toolResult).toBeDefined();
+    expect(toolResult.refs).toHaveLength(2);
+    expect(toolResult.refs.map((r: any) => r.id)).toEqual(["good-1", "good-2"]);
+  });
+
   it("built-in tool results never lift refs, even with a valid-looking envelope", () => {
     const bashToolUse = JSON.stringify({
       type: "assistant",

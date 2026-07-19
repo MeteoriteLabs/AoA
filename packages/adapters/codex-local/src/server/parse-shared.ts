@@ -15,6 +15,16 @@ import { asString, parseObject } from "@armyofagents/adapter-utils/server-utils"
 const CONFIRM_RE = /⚡CONFIRM:(.*?)⚡/s;
 
 /**
+ * Trust boundary (Task 4 / Codex P1.1): the AoA MCP server is registered under
+ * the config key `aoa` (see server/src/services/internal-agent/cli-mode.ts
+ * buildMcpConfig → `mcpServers: { aoa }`; Playwright is `playwright`). codex
+ * reports that config-key as the tool call's `server`. Only refs from THIS
+ * server are trusted — a non-`aoa` MCP result carrying an `outputRefs` envelope
+ * must never be lifted (cross-MCP forged-ref / auto-open injection defense).
+ */
+export const AOA_MCP_SERVER_ID = "aoa";
+
+/**
  * Structural mirror of @armyofagents/shared ShowRef — v1
  * (CommanderOutputRef, artifact-only) plus v2 (the 8-kind set + provenance).
  * This package deliberately has no dependency on shared; the screen below

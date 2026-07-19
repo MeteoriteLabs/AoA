@@ -191,11 +191,25 @@ export function buildOutputRefs(
     }
 
     // Validate before returning — a malformed ref must not reach the envelope.
-    // On failure return [] (Task 4 adds drop logging at this silent boundary).
+    // On failure return [] but LOG it (P2.4): the bridge's outer buildOutputRefs
+    // catch never sees this drop (we return [], we don't throw). stderr keeps the
+    // JSON-RPC stdout channel clean (matches mcp-bridge.ts's process.stderr.write).
     const parsed = showRefsSchema.safeParse(refs);
-    if (!parsed.success) return [];
+    if (!parsed.success) {
+      process.stderr.write(
+        `output-refs: dropped ${refs.length} ref(s) for '${toolName}' (schema): ${parsed.error.issues
+          .map((i) => `${i.path.join(".")}: ${i.message}`)
+          .join("; ")}\n`,
+      );
+      return [];
+    }
     return refs;
-  } catch {
+  } catch (err) {
+    // Builder threw (must never propagate — a ref bug can't fail a tool call).
+    // Log so the silent [] is observable; the bridge's outer catch never fires.
+    process.stderr.write(
+      `output-refs: builder threw for '${toolName}', dropped all refs: ${err instanceof Error ? err.message : String(err)}\n`,
+    );
     return [];
   }
 }

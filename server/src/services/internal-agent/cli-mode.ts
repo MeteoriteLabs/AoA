@@ -1219,7 +1219,21 @@ async function* runCodexTurn(
     if (chunk.type === "tool_result") {
       const refs = (Array.isArray(chunk.refs) ? chunk.refs : []).flatMap((r) => {
         const parsedRef = showRefSchema.safeParse(r);
-        return parsedRef.success ? [parsedRef.data] : [];
+        if (parsedRef.success) return [parsedRef.data];
+        // P2.4 drop observability: this per-ref revalidation drops silently
+        // otherwise, so the founder never sees why a chip vanished. Non-fatal.
+        const rec = (r ?? {}) as Record<string, unknown>;
+        logger.debug(
+          {
+            service: "commander-cli",
+            toolName: chunk.name,
+            droppedKind: typeof rec.kind === "string" ? rec.kind : null,
+            droppedId: typeof rec.id === "string" ? rec.id : null,
+            zodIssues: parsedRef.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "),
+          },
+          "Dropped malformed output ref from codex tool_result",
+        );
+        return [];
       });
       yield { ...chunk, refs };
     } else {

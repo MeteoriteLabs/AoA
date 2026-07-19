@@ -3,6 +3,7 @@ import {
   liftOutputRefs,
   parseActionConfirmation,
   normalizeToolResultText,
+  AOA_MCP_SERVER_ID,
   type CodexParsedChunk,
 } from "./parse-shared.js";
 
@@ -171,6 +172,10 @@ export function parseCodexJsonl(stdout: string) {
         const text = textFromMcpContent(ok.content);
         if (name) {
           const envelope = parseToolEnvelope(text);
+          // Trust gate (Task 4 / Codex P1.1): lift refs ONLY from the AoA MCP
+          // server. Commander also runs a Playwright MCP; a non-`aoa` server must
+          // never inject output refs. codex reports the config-key as the server.
+          const isAoaServer = asString(invocation.server, "") === AOA_MCP_SERVER_ID;
           chunks.push({
             type: "tool_result",
             ...(id ? { id } : {}),
@@ -179,7 +184,7 @@ export function parseCodexJsonl(stdout: string) {
               ...envelope,
               success: envelope.success && ok.isError !== true,
             },
-            refs: liftOutputRefs(text) ?? [],
+            refs: isAoaServer ? liftOutputRefs(text) ?? [] : [],
           });
         }
       }
@@ -199,12 +204,14 @@ export function parseCodexJsonl(stdout: string) {
         if (chunk) {
           chunks.push(chunk);
         } else if (asString(item.type, "") === "mcp_tool_call") {
-          // Gate: lift outputRefs ONLY from mcp_tool_call items.
-          // Plain tool_result items are built-in/shell results and must never
-          // produce ref chips — that is the phantom-defense gate (mirrors Task 4's
-          // mcp__-prefix gate on the claude parser side).
+          // Gate: lift outputRefs ONLY from mcp_tool_call items whose server is
+          // the AoA MCP server. Plain tool_result items are built-in/shell results
+          // and non-`aoa` servers (Playwright etc.) must never produce ref chips —
+          // the phantom + cross-MCP-injection defense (Task 4 / Codex P1.1; mirrors
+          // the mcp__aoa__ prefix gate on the claude parser side).
           const text = normalizeToolResultText(item);
-          const refs = liftOutputRefs(text);
+          const isAoaServer = asString(item.server, "") === AOA_MCP_SERVER_ID;
+          const refs = isAoaServer ? liftOutputRefs(text) : null;
           if (refs) {
             const name = asString(item.name, "") || asString(item.tool, "");
             // refs imply success: buildOutputRefs only emits for result.success === true (output-refs.ts).

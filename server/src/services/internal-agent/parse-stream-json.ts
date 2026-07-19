@@ -15,9 +15,20 @@
  *   for (const chunk of parser.flush()) { … }  // call on process exit
  */
 
-import { showRefsSchema, type ShowRef } from "@armyofagents/shared";
+import { showRefSchema, MAX_OUTPUT_REFS_PER_MESSAGE, type ShowRef } from "@armyofagents/shared";
 import type { AgentStreamChunk } from "./agent-loop.js";
 import { redactSecretsInString } from "../../redaction.js";
+import { logger } from "../../middleware/logger.js";
+
+/**
+ * Trust boundary (Task 4 / Codex P1.1): Commander runs MULTIPLE MCP servers —
+ * the AoA server (registered as `aoa` → tool names `mcp__aoa__*`) AND, when
+ * browser_use is enabled, a Playwright MCP (`mcp__playwright__*`). Only AoA's
+ * server is trusted to emit output-ref envelopes; a non-AoA MCP result carrying
+ * a forged `outputRefs` array must never be lifted (it could inject provenance +
+ * action:"created" into the Phase-5 auto-open path). Gate lift to this prefix.
+ */
+const AOA_MCP_TOOL_PREFIX = "mcp__aoa__";
 
 // ── Marker regex ───────────────────────────────────────────────────────────────
 
@@ -271,16 +282,40 @@ function handleUserEvent(event: Record<string, unknown>, toolNames: Map<string, 
     const isError = b.is_error === true;
 
     // Lift outputRefs from the bridge's JSON envelope (lenient — any failure ⇒ no refs).
-    // Gated to MCP tools (claude names them mcp__<server>__<tool>): built-in tools
-    // (Bash/Read/...) stream raw text that must never be interpreted as an envelope
-    // (T4 review — phantom/spoofed ref defense). Also skips JSON.parse on large
-    // built-in outputs for free.
+    // Gated to the AoA MCP server ONLY (mcp__aoa__*): built-in tools (Bash/Read/...)
+    // stream raw text that must never be interpreted as an envelope, AND a non-AoA
+    // MCP server (Playwright etc.) must never inject refs (Task 4 / Codex P1.1 —
+    // cross-MCP injection defense). Also skips JSON.parse on large built-in outputs.
     let refs: ShowRef[] | undefined;
-    if (resolvedName.startsWith("mcp__")) {
+    if (resolvedName.startsWith(AOA_MCP_TOOL_PREFIX)) {
       try {
         const parsedEnvelope = JSON.parse(fullText) as { outputRefs?: unknown };
-        const validated = showRefsSchema.safeParse(parsedEnvelope?.outputRefs);
-        if (validated.success && validated.data.length > 0) refs = validated.data;
+        const rawRefs = parsedEnvelope?.outputRefs;
+        if (Array.isArray(rawRefs) && rawRefs.length > 0) {
+          // Per-ref validation (parity with codex liftOutputRefs + the persistence
+          // path): validate each ref independently so one malformed sibling does
+          // not drop the whole array. Dropped refs are logged (P2.4 observability).
+          const kept: ShowRef[] = [];
+          for (const raw of rawRefs) {
+            const parsedRef = showRefSchema.safeParse(raw);
+            if (parsedRef.success) {
+              kept.push(parsedRef.data);
+            } else {
+              const rec = (raw ?? {}) as Record<string, unknown>;
+              logger.debug(
+                {
+                  service: "commander-cli",
+                  toolName: resolvedName,
+                  droppedKind: typeof rec.kind === "string" ? rec.kind : null,
+                  droppedId: typeof rec.id === "string" ? rec.id : null,
+                  zodIssues: parsedRef.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "),
+                },
+                "Dropped malformed output ref from claude MCP envelope",
+              );
+            }
+          }
+          if (kept.length > 0) refs = kept.slice(0, MAX_OUTPUT_REFS_PER_MESSAGE);
+        }
       } catch {
         /* not JSON — fine */
       }
