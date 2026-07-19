@@ -75,7 +75,7 @@ describe("backfillFirstRunCompleted (WS0b)", () => {
     await expect(backfillFirstRunCompleted(db as any)).resolves.toBeUndefined();
   });
 
-  it("WHERE clause is gated on firstRunCompletedAt IS NULL, ANDed with an OR of BOTH SETUP_COMPLETE representations", async () => {
+  it("WHERE clause gates on firstRunCompletedAt IS NULL AND completedStates containing BOTH AGENT_ASSIGNED and SETUP_COMPLETE (QA-BUG-4: legacy-only, not new-flow spine)", async () => {
     andMock.mockClear();
     orMock.mockClear();
     eqMock.mockClear();
@@ -90,25 +90,25 @@ describe("backfillFirstRunCompleted (WS0b)", () => {
     // isNull(firstRunCompletedAt) — the "not already stamped" gate.
     expect(isNullMock).toHaveBeenCalledTimes(1);
 
-    // eq(currentState, "SETUP_COMPLETE") — representation #1.
-    expect(eqMock).toHaveBeenCalledTimes(1);
-    expect(eqMock.mock.calls[0][1]).toBe("SETUP_COMPLETE");
-
-    // sql`completedStates @> '["SETUP_COMPLETE"]'` — representation #2.
+    // The legacy-completion signal is a single containment check on completedStates:
+    // it must include BOTH AGENT_ASSIGNED (only the old 8-step flow produced it)
+    // AND SETUP_COMPLETE. New-flow founders reach SETUP_COMPLETE WITHOUT
+    // AGENT_ASSIGNED, so they must NOT match. No eq()/or() any more.
     expect(sqlMock).toHaveBeenCalledTimes(1);
     const sqlValues = sqlMock.mock.calls[0].slice(1) as unknown[];
-    expect(sqlValues.some((v) => typeof v === "string" && v.includes("SETUP_COMPLETE"))).toBe(true);
+    const jsonArg = sqlValues.find((v) => typeof v === "string" && v.includes("AGENT_ASSIGNED")) as string | undefined;
+    expect(jsonArg).toBeDefined();
+    expect(jsonArg).toContain("AGENT_ASSIGNED");
+    expect(jsonArg).toContain("SETUP_COMPLETE");
 
-    // or(eqResult, sqlResult) combines the two representations.
-    expect(orMock).toHaveBeenCalledTimes(1);
-    const orArgs = orMock.mock.calls[0];
-    expect(orArgs).toContainEqual(eqMock.mock.results[0].value);
-    expect(orArgs).toContainEqual(sqlMock.mock.results[0].value);
+    // No OR / no eq — the old two-representation SETUP_COMPLETE-only match is gone.
+    expect(orMock).not.toHaveBeenCalled();
+    expect(eqMock).not.toHaveBeenCalled();
 
-    // and(isNullResult, orResult) is the final WHERE predicate.
+    // and(isNullResult, sqlResult) is the final WHERE predicate.
     expect(andMock).toHaveBeenCalledTimes(1);
     const andArgs = andMock.mock.calls[0];
     expect(andArgs).toContainEqual(isNullMock.mock.results[0].value);
-    expect(andArgs).toContainEqual(orMock.mock.results[0].value);
+    expect(andArgs).toContainEqual(sqlMock.mock.results[0].value);
   });
 });

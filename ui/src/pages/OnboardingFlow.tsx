@@ -21,7 +21,7 @@ export function OnboardingFlowPage({ journey }: { journey: OnboardingJourney }) 
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [searchParams] = useSearchParams();
-  const { selectedCompanyId } = useCompany();
+  const { selectedCompanyId, selectedCompany } = useCompany();
   const [invitedDone, setInvitedDone] = useState(false);
   const isNewFounderOrganization =
     journey === "founder" && searchParams.get("new") === "1";
@@ -120,7 +120,12 @@ export function OnboardingFlowPage({ journey }: { journey: OnboardingJourney }) 
         // server. Its cached pre-setup `founder` result would otherwise redirect
         // back into onboarding before the background refetch completes.
         queryClient.removeQueries({ queryKey: ["onboarding", "journey"], exact: true });
-        navigate("/", { replace: true });
+        // QA-BUG-2: after the spine, land the founder DIRECTLY on their new
+        // company's first-run Home (the Map/door-band), not the multi-org Lobby.
+        // The company was just created, so selectedCompany is the org layer.
+        // Fall back to "/" only if the prefix isn't resolved yet.
+        const prefix = selectedCompany?.issuePrefix;
+        navigate(prefix ? `/${prefix}/home` : "/", { replace: true });
       }}
     />
   );

@@ -15,6 +15,9 @@ vi.mock("drizzle-orm", () => ({
   and: vi.fn((...args: unknown[]) => ({ _tag: "and", args })),
   gte: vi.fn((a: unknown, b: unknown) => ({ _tag: "gte", a, b })),
   desc: vi.fn((a: unknown) => ({ _tag: "desc", a })),
+  // QA-BUG-3: deriveEffectiveStatus now uses inArray (was a raw `sql\`= ANY(...)\``
+  // that generated invalid `= ANY(($1,$2,...))` and 500'd on real Postgres).
+  inArray: vi.fn((a: unknown, b: unknown) => ({ _tag: "inArray", a, b })),
   sql: vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => ({ _tag: "sql", strings, values })),
 }));
 

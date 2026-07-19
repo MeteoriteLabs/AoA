@@ -36,7 +36,7 @@
 // UPDATE...WHERE status='pending' claim used by `retry`. A row already
 // "running"/"proposed"/"failed" is returned as-is — never double-dispatched.
 
-import { and, desc, eq, gte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { agents, aoaAgentTriggers, braindumpCaptures, memoryItems, projects } from "@armyofagents/db";
 import { badRequest, notFound } from "../errors.js";
@@ -217,7 +217,7 @@ async function deriveEffectiveStatus(db: Db, row: BraindumpCaptureRow): Promise<
   const items = await db
     .select({ status: memoryItems.status })
     .from(memoryItems)
-    .where(sql`${memoryItems.id} = ANY(${row.proposedMemoryItemIds})`);
+    .where(inArray(memoryItems.id, row.proposedMemoryItemIds));
   if (items.length === 0) return row.status;
   const allApproved = items.every((i) => i.status === "approved");
   return allApproved ? "approved" : row.status;
