@@ -51,6 +51,15 @@ vi.mock("@/components/FolderBrowserDialog", () => ({
 describe("DefineDepartments (WS4 — In-flight standalone surface)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // `vi.clearAllMocks()` resets call history but NOT a mock's
+    // implementation — restore the default `create` implementation here so a
+    // test that installs a custom `create.mockImplementation(...)` (e.g. to
+    // hold a create promise pending) can't leak it into the next test.
+    create.mockImplementation(async (_companyId: string, data: Record<string, unknown>) => ({
+      id: `proj-${(data.name as string).toLowerCase().replace(/\s+/g, "-")}`,
+      type: data.type,
+      name: data.name,
+    }));
     list.mockResolvedValue([]);
     listWorkspaces.mockResolvedValue([]);
     getCompany.mockResolvedValue({ id: "c1", rootFolder: "/home/ada/AoA" });
@@ -118,6 +127,15 @@ describe("DefineDepartments (WS4 — In-flight standalone surface)", () => {
     expect(continueBtn.disabled).toBe(false);
   });
 
+  it("gives the local-folder-path and repo-URL inputs an accessible name", async () => {
+    render(<DefineDepartments companyId="c1" onDone={vi.fn()} />);
+    await waitFor(() => expect(screen.getByDisplayValue("/home/ada/AoA/software")).toBeTruthy());
+    expect(screen.getByLabelText("Local folder path for Software")).toBeTruthy();
+
+    fireEvent.click(screen.getByLabelText(/GitHub repo/));
+    expect(screen.getByLabelText("Repository URL for Software")).toBeTruthy();
+  });
+
   it("opens the FolderBrowserDialog scoped to companyId", async () => {
     render(<DefineDepartments companyId="c1" onDone={vi.fn()} />);
     await waitFor(() => expect(screen.getByDisplayValue("/home/ada/AoA/software")).toBeTruthy());
@@ -164,6 +182,67 @@ describe("DefineDepartments (WS4 — In-flight standalone surface)", () => {
     expect(create).toHaveBeenCalledTimes(2);
     expect(create).toHaveBeenNthCalledWith(1, "c1", expect.objectContaining({ name: "Software" }));
     expect(create).toHaveBeenNthCalledWith(2, "c1", expect.objectContaining({ name: "Marketing" }));
+  });
+
+  it("does not clobber a live edit made mid-submit, and sends the fresh value rather than a stale snapshot", async () => {
+    let resolveSoftware: (value: unknown) => void = () => {};
+    create.mockImplementation(async (_companyId: string, data: Record<string, unknown>) => {
+      if (data.name === "Software") {
+        return new Promise((resolve) => {
+          resolveSoftware = () => resolve({ id: "proj-software", type: data.type, name: data.name });
+        });
+      }
+      return { id: `proj-${(data.name as string).toLowerCase().replace(/\s+/g, "-")}`, type: data.type, name: data.name };
+    });
+
+    const onDone = vi.fn();
+    render(<DefineDepartments companyId="c1" onDone={onDone} />);
+    await waitFor(() => expect(screen.getByDisplayValue("/home/ada/AoA/software")).toBeTruthy());
+
+    fireEvent.click(screen.getByText(/Add department/));
+    const nameInputs = screen.getAllByPlaceholderText("Department name");
+    fireEvent.change(nameInputs[1], { target: { value: "Marketing" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+
+    // Software's create() is pending (the loop is sequential) — fields
+    // must be disabled while submitAll is in flight.
+    await waitFor(() => expect((nameInputs[1] as HTMLInputElement).disabled).toBe(true));
+
+    // Edit the second department's name WHILE the first department's
+    // create() call is still in flight — i.e. before Marketing's own turn
+    // in the sequential loop has started.
+    fireEvent.change(nameInputs[1], { target: { value: "Marketing Updated" } });
+
+    resolveSoftware(undefined);
+
+    await waitFor(() => expect(onDone).toHaveBeenCalled());
+
+    // Marketing's create() call must have used the fresh (edited) value —
+    // never the value captured back when submitAll started.
+    expect(create).toHaveBeenCalledWith("c1", expect.objectContaining({ name: "Marketing Updated" }));
+    expect(create).not.toHaveBeenCalledWith("c1", expect.objectContaining({ name: "Marketing" }));
+
+    // The edit must not have been reverted once submission finished.
+    expect((nameInputs[1] as HTMLInputElement).value).toBe("Marketing Updated");
+    // Fields are re-enabled once submission completes.
+    expect((nameInputs[1] as HTMLInputElement).disabled).toBe(false);
+  });
+
+  it("does not re-fire onDone (or recreate) if Continue is clicked again after every department already succeeded", async () => {
+    const onDone = vi.fn();
+    render(<DefineDepartments companyId="c1" onDone={onDone} />);
+    await waitFor(() => expect(screen.getByDisplayValue("/home/ada/AoA/software")).toBeTruthy());
+
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
+    expect(create).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    // Give the (no-op) second submitAll run a tick to complete.
+    await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).not.toBeDisabled());
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(onDone).toHaveBeenCalledTimes(1);
   });
 
   it("is idempotent — reuses an existing same-named department (no second create)", async () => {

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { FolderOpen, Plus, X } from "lucide-react";
 import { DEPARTMENT_FUNCTION_TYPES, isGitHubRepoUrl } from "@armyofagents/shared";
 import { projectsApi } from "../../api/projects";
@@ -97,6 +97,24 @@ export function DefineDepartments({ companyId, onDone }: DefineDepartmentsProps)
   const [submitting, setSubmitting] = useState(false);
   const [browserForKey, setBrowserForKey] = useState<string | null>(null);
   const [globalError, setGlobalError] = useState<string | null>(null);
+
+  /** Always-current mirror of `departments`, read inside `submitAll`'s
+   * sequential loop so each department's turn uses LIVE field values, never
+   * a snapshot frozen at the start of the whole submit. */
+  const departmentsRef = useRef<DeptDraft[]>(departments);
+  useEffect(() => {
+    departmentsRef.current = departments;
+  }, [departments]);
+
+  /** Guards against `onDone` firing more than once in a mounted lifecycle —
+   * e.g. the founder clicking Continue again after every department already
+   * reached `status: "created"`. */
+  const doneFiredRef = useRef(false);
+  function fireOnDoneOnce() {
+    if (doneFiredRef.current) return;
+    doneFiredRef.current = true;
+    onDone();
+  }
 
   useEffect(() => {
     if (!companyId) return;
@@ -250,7 +268,7 @@ export function DefineDepartments({ companyId, onDone }: DefineDepartmentsProps)
     const result = await createDepartment(dept);
     setDepartments((prev) => {
       const updated = prev.map((d) => (d.key === key ? { ...d, ...result } : d));
-      if (updated.every((d) => d.status === "created")) onDone();
+      if (updated.every((d) => d.status === "created")) fireOnDoneOnce();
       return updated;
     });
   }
@@ -268,25 +286,35 @@ export function DefineDepartments({ companyId, onDone }: DefineDepartmentsProps)
     if (submitting || hasBlockingIssue) return;
     setGlobalError(null);
     setSubmitting(true);
-    const snapshot = departments;
-    const results: DeptDraft[] = [];
-    for (const dept of snapshot) {
-      if (dept.status === "created") {
-        results.push(dept);
+    // Fixed set of keys to process this run — stable even though the
+    // underlying department rows keep changing (input fields stay editable
+    // during submit; see disabled={submitting} below for the UX guard).
+    const keys = departments.map((d) => d.key);
+    const results: Array<Pick<DeptDraft, "status" | "error" | "createdProjectId">> = [];
+    for (const key of keys) {
+      // Read LIVE state right before this department's turn — never a copy
+      // frozen at the top of submitAll — so an edit made while an earlier
+      // department is still being created (a) is what actually gets sent to
+      // the server for THIS department, and (b) never gets silently
+      // reverted by the write-back below (which only merges status/error/
+      // createdProjectId, not the whole row).
+      const live = departmentsRef.current.find((d) => d.key === key);
+      if (!live) continue;
+      if (live.status === "created") {
+        results.push({ status: live.status, error: live.error, createdProjectId: live.createdProjectId });
         continue;
       }
-      const creating: DeptDraft = { ...dept, status: "creating", error: null };
-      setDepartments((prev) => prev.map((d) => (d.key === dept.key ? creating : d)));
+      const toCreate: DeptDraft = { ...live, status: "creating", error: null };
+      setDepartments((prev) => prev.map((d) => (d.key === key ? { ...d, status: "creating", error: null } : d)));
       // eslint-disable-next-line no-await-in-loop -- intentionally sequential: per-department idempotency lookups must not race each other.
-      const result = await createDepartment(creating);
-      const updated: DeptDraft = { ...creating, ...result };
-      results.push(updated);
-      setDepartments((prev) => prev.map((d) => (d.key === dept.key ? updated : d)));
+      const result = await createDepartment(toCreate);
+      results.push(result);
+      setDepartments((prev) => prev.map((d) => (d.key === key ? { ...d, ...result } : d)));
     }
     setSubmitting(false);
     const allCreated = results.every((d) => d.status === "created");
     if (allCreated) {
-      onDone();
+      fireOnDoneOnce();
     } else {
       setGlobalError("Some departments couldn't be created — fix and retry them below.");
     }
@@ -322,6 +350,7 @@ export function DefineDepartments({ companyId, onDone }: DefineDepartmentsProps)
                     className={cn(FIELD, "flex-1")}
                     placeholder="Department name"
                     value={dept.name}
+                    disabled={submitting}
                     onChange={(e) => updateDeptName(dept.key, e.target.value)}
                   />
                   {i === 0 && <span className="shrink-0 rounded-full border border-border-strong px-2 py-1 text-[10px] text-dim">default</span>}
@@ -330,6 +359,7 @@ export function DefineDepartments({ companyId, onDone }: DefineDepartmentsProps)
                       type="button"
                       aria-label={`Remove ${dept.name.trim() || "department"}`}
                       className="shrink-0 rounded-md p-1.5 text-dim hover:text-text"
+                      disabled={submitting}
                       onClick={() => removeDepartment(dept.key)}
                     >
                       <X className="h-4 w-4" aria-hidden />
@@ -348,6 +378,7 @@ export function DefineDepartments({ companyId, onDone }: DefineDepartmentsProps)
                           ? "border-brand bg-card-2 text-text"
                           : "border-border-strong text-dim hover:bg-card-2/60",
                       )}
+                      disabled={submitting}
                       onClick={() => updateDeptFunctionType(dept.key, t.value)}
                     >
                       <span className="mr-1">{t.icon}</span>
@@ -359,14 +390,21 @@ export function DefineDepartments({ companyId, onDone }: DefineDepartmentsProps)
                 {isSoftware && (
                   <div className="mt-3 space-y-2 rounded-md border border-border-strong p-3">
                     <label className="flex items-center gap-2 text-xs text-dim">
-                      <input type="checkbox" checked={dept.useLocal} onChange={() => toggleUseLocal(dept.key)} />
+                      <input
+                        type="checkbox"
+                        checked={dept.useLocal}
+                        disabled={submitting}
+                        onChange={() => toggleUseLocal(dept.key)}
+                      />
                       Local folder (nested under your root)
                     </label>
                     {dept.useLocal && (
                       <div className="flex gap-2">
                         <input
+                          aria-label={`Local folder path for ${dept.name.trim() || "this department"}`}
                           className={cn(FIELD, "font-mono text-xs")}
                           value={dept.localPath}
+                          disabled={submitting}
                           onChange={(e) => updateLocalPath(dept.key, e.target.value)}
                         />
                         <Button
@@ -374,6 +412,7 @@ export function DefineDepartments({ companyId, onDone }: DefineDepartmentsProps)
                           variant="secondary"
                           size="sm"
                           className="shrink-0 gap-1.5"
+                          disabled={submitting}
                           onClick={() => setBrowserForKey(dept.key)}
                         >
                           <FolderOpen className="h-3.5 w-3.5" aria-hidden />
@@ -382,13 +421,20 @@ export function DefineDepartments({ companyId, onDone }: DefineDepartmentsProps)
                       </div>
                     )}
                     <label className="flex items-center gap-2 text-xs text-dim">
-                      <input type="checkbox" checked={dept.useRepo} onChange={() => toggleUseRepo(dept.key)} />
+                      <input
+                        type="checkbox"
+                        checked={dept.useRepo}
+                        disabled={submitting}
+                        onChange={() => toggleUseRepo(dept.key)}
+                      />
                       GitHub repo
                     </label>
                     {dept.useRepo && (
                       <input
+                        aria-label={`Repository URL for ${dept.name.trim() || "this department"}`}
                         className={cn(FIELD, "text-xs")}
                         value={dept.repoUrl}
+                        disabled={submitting}
                         onChange={(e) => updateRepoUrl(dept.key, e.target.value)}
                         placeholder="https://github.com/org/repo"
                       />
@@ -421,6 +467,7 @@ export function DefineDepartments({ companyId, onDone }: DefineDepartmentsProps)
           <button
             type="button"
             className={cn(LABEL, "self-start rounded-md border border-border-strong px-3 py-1.5 text-xs text-dim hover:text-text")}
+            disabled={submitting}
             onClick={addDepartment}
           >
             <Plus className="mr-1 inline h-3 w-3" aria-hidden />
