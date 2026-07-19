@@ -30,7 +30,7 @@ describe("SplashScreen", () => {
   it("renders the AoA wordmark", () => {
     mockMatchMedia(false);
     render(<SplashScreen onDone={vi.fn()} />);
-    expect(screen.getByRole("img", { name: "AoA" })).toBeTruthy();
+    expect(screen.getByRole("img", { name: "Army of Agents" })).toBeTruthy();
   });
 
   it("types the status line at 55ms/char and calls onDone only after typing finishes plus a short delay", () => {

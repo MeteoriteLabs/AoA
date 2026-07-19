@@ -36,11 +36,34 @@
   --mono: 'Geist Mono', ui-monospace, monospace;
 }
 
-/* ---------- Logo (spinning "o" + breathing dot) ---------- */
-@keyframes obd-spin { to { transform: rotate(360deg); } }
-@keyframes obd-breathe {
-  0%, 100% { transform: scale(1); box-shadow: 0 0 0 rgba(209, 58, 38, 0); }
-  50% { transform: scale(1.35); box-shadow: 0 0 7px rgba(209, 58, 38, .7); }
+/* ---------- Logo (rotating "o" ring + breathing dot) — real brand SVG,
+   ported from MeteoriteLabs/AoA-Website animations.css ---------- */
+.aoa-o-spin {
+  transform-origin: 481px 233px; /* SVG coordinate-space center of the "o" */
+  animation: aoa-o-spin 5s linear infinite;
+}
+@keyframes aoa-o-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+.aoa-dot {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: aoa-dot-breathe 2s ease-in-out infinite;
+}
+@keyframes aoa-dot-breathe {
+  0%, 100% {
+    transform: scale(1);
+    filter: drop-shadow(0 0 0px rgba(209, 58, 38, 0));
+  }
+  50% {
+    transform: scale(1.35);
+    filter: drop-shadow(0 0 7px rgba(209, 58, 38, 0.7));
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .aoa-o-spin { animation: none !important; }
+  .aoa-dot { animation: none !important; filter: none !important; }
 }
 
 /* ---------- Reveal fade-up ---------- */
