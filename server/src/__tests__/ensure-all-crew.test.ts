@@ -9,6 +9,7 @@ vi.mock("../services/internal-agent/aoa-agents/ensure-scout.js", () => ({ ensure
 vi.mock("../services/internal-agent/aoa-agents/ensure-engineer.js", () => ({ ensureEngineer: vi.fn(async () => { calls.push("engineer"); }) }));
 vi.mock("../services/internal-agent/aoa-agents/ensure-chronicler.js", () => ({ ensureChronicler: vi.fn(async () => { calls.push("chronicler"); }) }));
 vi.mock("../services/internal-agent/aoa-agents/ensure-steward.js", () => ({ ensureSteward: vi.fn(async () => { calls.push("steward"); }) }));
+vi.mock("../services/internal-agent/aoa-agents/ensure-librarian.js", () => ({ ensureLibrarian: vi.fn(async () => { calls.push("librarian"); }) }));
 vi.mock("../middleware/logger.js", () => ({ logger: { warn: vi.fn(), debug: vi.fn() } }));
 
 import { ensureAllCrewAgents } from "../services/internal-agent/aoa-agents/ensure-all-crew.js";
@@ -16,18 +17,19 @@ import { ensureAllCrewAgents } from "../services/internal-agent/aoa-agents/ensur
 describe("ensureAllCrewAgents", () => {
   beforeEach(() => { calls.length = 0; });
 
-  it("runs all seven crew ensures", async () => {
+  it("runs all eight crew ensures (WS6: + librarian)", async () => {
     await ensureAllCrewAgents({} as any, "co-1");
-    expect(calls.sort()).toEqual(["adjutant", "chronicler", "commander", "engineer", "scout", "staff", "steward"]);
+    expect(calls.sort()).toEqual(["adjutant", "chronicler", "commander", "engineer", "librarian", "scout", "staff", "steward"]);
   });
 
   it("one failing ensure does not abort the rest", async () => {
     const mod = await import("../services/internal-agent/aoa-agents/ensure-scout.js");
     (mod.ensureScout as any).mockRejectedValueOnce(new Error("boom"));
     await ensureAllCrewAgents({} as any, "co-1");
-    // scout threw, but the other six still ran
+    // scout threw, but the other seven still ran
     expect(calls).toContain("commander");
     expect(calls).toContain("engineer");
-    expect(calls.length).toBe(6);
+    expect(calls).toContain("librarian");
+    expect(calls.length).toBe(7);
   });
 });
