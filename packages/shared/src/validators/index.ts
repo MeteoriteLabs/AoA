@@ -103,6 +103,12 @@ export {
 } from "./goal.js";
 
 export {
+  submitBraindumpSchema,
+  BRAINDUMP_CONTENT_MAX_LENGTH,
+  type SubmitBraindump,
+} from "./braindump.js";
+
+export {
   createMemoryItemSchema,
   updateMemoryItemSchema,
   suggestMemoryUpdateSchema,

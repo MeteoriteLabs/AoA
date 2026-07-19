@@ -28,6 +28,7 @@ import { agentRoutes } from "./routes/agents.js";
 import { projectRoutes } from "./routes/projects.js";
 import { issueRoutes } from "./routes/issues.js";
 import { goalRoutes } from "./routes/goals.js";
+import { braindumpRoutes } from "./routes/braindump.js";
 import { hubItemRoutes } from "./routes/hub-items.js";
 import { hubAutopilotRoutes } from "./routes/hub-autopilot.js";
 import { agentRuntimeDecisionRoutes } from "./routes/agent-runtime-decisions.js";
@@ -300,6 +301,7 @@ export async function createApp(
   api.use(issueRoutes(db, opts.storageService));
   api.use(dependencyRoutes(db));
   api.use(goalRoutes(db));
+  api.use(braindumpRoutes(db));
   api.use(hubItemRoutes(db));
   api.use(hubAutopilotRoutes(db));
   api.use(agentRuntimeDecisionRoutes(db));
