@@ -117,20 +117,24 @@ A top **phase rail** (3 phases, current highlighted) with a **sub-step indicator
 
 **Current:** `BraindumpStep` = one **textarea per department** (+ a display-only repo/folder chip). Submit → `braindump_captures` → the Librarian is woken with **only the pasted text** in its trigger prompt (`aoa-trigger-prompt.ts` `braindump.ingest`, directive: "Do not invent facts that are not in the braindump content") → `write_memory` → domain memory items (pending) → `LibrarianStep` lists them for approval. No file drop; the repo is **not** read; output is memory items only.
 
-**Target (confirmed scope):**
-- Per-department surface keeps the textarea **and** adds a **drop-any-files** zone. Dropped files are stored and **attached into the seeded memory folder tree** (via `memory_assets`, which carries `companyId` + `folderPath` + `storageKey`).
-- For a **software department** with a connected repo/workspace, the Librarian additionally **reads the repo's code directly** (it is a `claude_local` CLI agent with real file tools) and **generates docs**.
-- The Librarian organizes everything into the **existing default seeded folder structure** for the department's function type (we already seed these per `getSeedFoldersForFunctionType`). Files attach to their folder; memory items are created (pending) in the right folder.
+**Target (confirmed scope — refined 2026-07-20):** a **multi-scope "seed your knowledge" step**, not one text box. Each scope gets its own **drop-any-files** surface (+ optional text); the Librarian ingests each and proposes memory at the **right layer** for founder approval (it never writes directly; identity + domain proposals are founder-approved per Decision #6/#15).
+
+- **Company-wide surface** — one, at the top: vision / values / how-we-work. The Librarian proposes **identity-layer** memory into the company root folder.
+- **Per-department surface** — one per department created. The Librarian proposes **domain-layer** memory into that department's seeded folders.
+  - For a **software department** with a connected folder/GitHub repo (from setup), the surface **shows that repo/folder** as the ingest source, the Librarian **reads the repo's code directly** (it is a `claude_local` CLI agent with real file tools) to **generate docs**, AND the founder can **drop extra documents** too.
+- Dropped files (any type) are stored and **attached into the seeded memory folder tree** (via `memory_assets`, which carries `companyId` + `folderPath` + `storageKey`) at the surface's scope (company root vs. department folder).
+- Everything organizes into the **existing default seeded folder structure** (`getSeedFoldersForFunctionType` for departments; the company root for company-wide). Files attach to their folder; memory items are created (pending) at the right layer + folder.
+- (Project-scoped surfaces / active_context were considered and **deferred** — company + department only for v1.)
 
 **Approach — extend the braindump pipeline (chosen over a new ingestion service):**
-1. **File drop (UI):** add a drop zone to `BraindumpStep` per department; upload via the existing asset/storage path; capture returned asset IDs. Accept any type; enforce the existing 50MB asset cap; show uploaded files as chips.
-2. **Capture payload:** extend the braindump submit (`braindumpApi.submit` + server `braindump` service/route) to carry `assetIds: string[]` and a `repoIngest` flag (true when the dept is software + has a connected repo/workspace). Persist alongside the existing `content` on `braindump_captures`.
-3. **Librarian trigger (server):** extend the `braindump.ingest` directive in `aoa-trigger-prompt.ts`:
-   - Inject the pasted `content` (as today), **plus** the paths of dropped files (the CLI agent reads them via its file tools), **plus** — for `repoIngest` — the repo/workspace path with an instruction to explore the code and extract durable architecture/conventions/glossary knowledge.
-   - Provide the department's **seeded folder list** so `write_memory` files items into the correct folders.
-   - Keep the guardrail: extract only durable knowledge actually present in the sources; nothing invented; nothing worth keeping → no tool call (non-failing).
-4. **File → folder linkage:** on capture, create `memory_assets` rows linking each dropped file to the department's folder path so the file lives in the tree; the Librarian may reference them.
-5. **LibrarianStep (UI):** show attached files + repo-read progress alongside the proposed items (existing approve flow unchanged).
+1. **Multi-scope drop UI:** rework `BraindumpStep` from one textarea into a list of scope cards — one **company-wide** card + one card per **department** — each with a textarea + a **drop-any-files** zone (upload via the existing asset/storage path; any type; 50MB cap; uploaded files shown as chips). A software department's card **shows its connected folder/GitHub repo** (derived as today via `repoChipFor`) as the ingest source + a "read this repo" affordance.
+2. **Capture payload:** the braindump capture (`braindumpApi.submit` + server `braindump` service/route) carries, per scope: `scope` (`"company"` | `"department"`), the `departmentId` (null for company), `assetIds: string[]`, and a `repoIngest` flag (software dept + connected repo). One capture per non-empty scope surface. Persist alongside `content` on `braindump_captures`.
+3. **Librarian trigger (server):** extend the `braindump.ingest` directive in `aoa-trigger-prompt.ts` to carry the **target layer per scope** — `identity` for the company-wide surface, `domain` for a department — plus:
+   - the pasted `content`, **plus** the paths of dropped files (the CLI agent reads them via its file tools), **plus** — for `repoIngest` — the repo/workspace path with an instruction to explore the code and extract durable architecture/conventions/glossary knowledge.
+   - the target folder for `write_memory` (company root vs. the department's **seeded folder list**).
+   - Guardrail preserved: extract only durable knowledge actually present in the sources; nothing invented; nothing worth keeping → no tool call (non-failing). (The Librarian's instruction currently hardcodes `layer="domain"`; it must accept the passed layer.)
+4. **File → folder linkage:** on capture, create `memory_assets` rows linking each dropped file to the scope's folder path (company root vs. department folder) so files live in the tree.
+5. **LibrarianStep (UI):** show the proposed items grouped by scope (company / department) + attached files + repo-read progress; approve flow unchanged.
 
 **Bounding:** repo reading gets depth/size/time caps so a single CLI run stays within budget; the existing `BRAINDUMP_CONTENT_PROMPT_CAP` still bounds pasted text; large repos are summarized, not exhaustively ingested.
 
@@ -150,3 +154,5 @@ Every item ships with: unit tests (per above), a green `ui` typecheck + relevant
 
 - **Item 4:** exact phase labels ("Setup / Your world / Your crew") are a naming choice — adjustable.
 - **Item 5:** "software department with a connected repo" — the trigger uses the department's primary workspace `repoUrl`/`cwd` (as `BraindumpStep`'s `repoChipFor` already derives). Whether the Librarian reads a cloned path vs. the live workspace depends on workspace availability at ingest time; the plan will pin this.
+- **Item 5 (company-wide → identity):** verify the `write_memory` tool accepts an agent **identity-layer** proposal as `status: "pending"` (agents may suggest identity + domain; only the founder approves — Decision #6/#15). If `write_memory` restricts agents to domain, the plan adds an identity-proposal path (still founder-gated). Pin at plan time.
+- **Item 5 sequencing:** this refinement (company scope + repo-read + extra drops) makes Item 5 the largest item; its implementation plan will split into sub-steps (multi-scope drop UI → capture/scope plumbing → Librarian layer/repo directive → LibrarianStep grouping).
