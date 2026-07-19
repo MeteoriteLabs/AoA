@@ -36,12 +36,18 @@ import {
   CLI_TOOLS,
   CREW_PROVIDERS,
   NOTIFICATION_PREFERENCES,
+  VIEWER_CONTROL_LEVELS,
 } from "@armyofagents/shared";
 import type {
   AgentCapability,
   NotificationPreference,
   UpdateInternalAgentConfig,
+  ViewerControlLevel,
 } from "@armyofagents/shared";
+import {
+  useViewerControl,
+  type UseViewerControlResult,
+} from "@/hooks/useViewerControl";
 import {
   CommanderSubTabs,
   CommanderSubTabsMobile,
@@ -153,6 +159,12 @@ const CONTEXT_BUDGET_OPTIONS = [
   { value: 16000, label: "Large (16,000)" },
 ];
 
+const VIEWER_CONTROL_LABELS: Record<ViewerControlLevel, string> = {
+  manual: "Manual",
+  own_output: "Own output",
+  full: "Full",
+};
+
 const CREW_PROVIDER_LABELS: Record<string, string> = {
   anthropic: "Anthropic (Claude)",
   openai: "OpenAI (Codex)",
@@ -232,6 +244,11 @@ export function CommanderSection() {
     useState<boolean>(true);
   const [vendorCliBypassEnabled, setVendorCliBypassEnabled] =
     useState<boolean>(true);
+  const [viewerControlLevel, setViewerControlLevel] =
+    useState<ViewerControlLevel>("own_output");
+
+  // Per-user viewer auto-open override (patches /me, resolves effective level).
+  const viewerControl = useViewerControl(selectedCompanyId);
 
   // Connection test
   const [connectionStatus, setConnectionStatus] = useState<
@@ -383,6 +400,7 @@ export function CommanderSection() {
     setRuntimeApprovalsEnabled(config.runtimeApprovalsEnabled ?? true);
     setRuntimeAllowAlwaysEnabled(config.runtimeAllowAlwaysEnabled ?? true);
     setVendorCliBypassEnabled(config.vendorCliBypassEnabled ?? true);
+    if (config.viewerControlLevel) setViewerControlLevel(config.viewerControlLevel);
     if (config.proactiveIntervalMinutes != null) {
       setProactiveIntervalMinutes(config.proactiveIntervalMinutes);
     }
@@ -401,6 +419,12 @@ export function CommanderSection() {
       queryClient.invalidateQueries({
         queryKey: queryKeys.agentConfig(selectedCompanyId!),
       });
+      // The company viewerControlLevel is the fallback for users who inherit,
+      // so changing it shifts their resolved effective level — refresh the
+      // per-user viewer-preferences cache too. (Codex P1 #7)
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.viewerPreferences(selectedCompanyId!),
+      });
       setSaveMessage("Settings saved");
     },
     onError: (err: Error) => {
@@ -418,6 +442,7 @@ export function CommanderSection() {
       runtimeApprovalsEnabled,
       runtimeAllowAlwaysEnabled,
       vendorCliBypassEnabled,
+      viewerControlLevel,
     });
   }
 
@@ -531,6 +556,9 @@ export function CommanderSection() {
             setRuntimeAllowAlwaysEnabled={setRuntimeAllowAlwaysEnabled}
             vendorCliBypassEnabled={vendorCliBypassEnabled}
             setVendorCliBypassEnabled={setVendorCliBypassEnabled}
+            viewerControlLevel={viewerControlLevel}
+            setViewerControlLevel={setViewerControlLevel}
+            viewerControl={viewerControl}
             saveExecution={saveExecution}
             isPending={saveMutation.isPending}
             saveMessage={saveMessage}
@@ -812,6 +840,9 @@ interface ExecutionTabContentProps {
   setRuntimeAllowAlwaysEnabled: (v: boolean) => void;
   vendorCliBypassEnabled: boolean;
   setVendorCliBypassEnabled: (v: boolean) => void;
+  viewerControlLevel: ViewerControlLevel;
+  setViewerControlLevel: (v: ViewerControlLevel) => void;
+  viewerControl: UseViewerControlResult;
   saveExecution: () => void;
   isPending: boolean;
   saveMessage: string | null;
@@ -835,6 +866,9 @@ function ExecutionTabContent({
   setRuntimeAllowAlwaysEnabled,
   vendorCliBypassEnabled,
   setVendorCliBypassEnabled,
+  viewerControlLevel,
+  setViewerControlLevel,
+  viewerControl,
   saveExecution,
   isPending,
   saveMessage,
@@ -937,6 +971,94 @@ function ExecutionTabContent({
         <p className="text-xs text-muted-foreground mt-1">
           Higher levels available in V3
         </p>
+      </div>
+
+      {/* Viewer auto-open — company default (founder) + per-user override */}
+      <div className="rounded-md border border-border p-3 space-y-4 max-w-xl">
+        <p className="text-xs font-medium text-muted-foreground">
+          Viewer auto-open
+        </p>
+
+        {/* Company default (config PATCH) */}
+        <div>
+          <label
+            className="text-xs text-muted-foreground mb-1 block"
+            htmlFor="viewer-control-company"
+          >
+            Viewer auto-open (company default)
+          </label>
+          <Select
+            value={viewerControlLevel}
+            onValueChange={(v) => setViewerControlLevel(v as ViewerControlLevel)}
+          >
+            <SelectTrigger
+              id="viewer-control-company"
+              aria-label="Viewer auto-open company default"
+              className="w-full max-w-xs"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {VIEWER_CONTROL_LEVELS.map((level) => (
+                <SelectItem key={level} value={level}>
+                  {VIEWER_CONTROL_LABELS[level]}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <p className="text-[11px] text-muted-foreground mt-1">
+            How aggressively the output viewer opens for everyone by default.
+            Saved with this tab. Individuals can override below.
+          </p>
+        </div>
+
+        {/* Per-user override (PATCH /me) */}
+        <div>
+          <label
+            className="text-xs text-muted-foreground mb-1 block"
+            htmlFor="viewer-control-user"
+          >
+            Viewer auto-open (your preference)
+          </label>
+          <Select
+            value={viewerControl.userLevel ?? "inherit"}
+            onValueChange={(v) =>
+              viewerControl.setUserLevel(
+                v === "inherit" ? null : (v as ViewerControlLevel),
+              )
+            }
+          >
+            <SelectTrigger
+              id="viewer-control-user"
+              aria-label="Viewer auto-open your preference"
+              className="w-full max-w-xs"
+              disabled={viewerControl.isLoading || viewerControl.isSyncing}
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="inherit">Inherit company default</SelectItem>
+              {VIEWER_CONTROL_LEVELS.map((level) => (
+                <SelectItem key={level} value={level}>
+                  {VIEWER_CONTROL_LABELS[level]}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <p className="text-[11px] text-muted-foreground mt-1">
+            Effective:{" "}
+            {viewerControl.effectiveLevel
+              ? VIEWER_CONTROL_LABELS[viewerControl.effectiveLevel]
+              : "…"}
+            {viewerControl.effectiveLevel
+              ? ` (${
+                  viewerControl.source === "user"
+                    ? "your override"
+                    : "company default"
+                })`
+              : ""}
+          </p>
+        </div>
       </div>
 
       <div className="rounded-md border border-border p-3 space-y-3 max-w-xl">
