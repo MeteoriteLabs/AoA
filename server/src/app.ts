@@ -46,6 +46,7 @@ import { activityRoutes } from "./routes/activity.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
 import { sidebarBadgeRoutes } from "./routes/sidebar-badges.js";
 import { sidebarPreferencesRoutes } from "./routes/sidebar-preferences.js";
+import { viewerPreferencesRoutes } from "./routes/viewer-preferences.js";
 import { inboxDismissalRoutes } from "./routes/inbox-dismissals.js";
 import { userEntityPinRoutes } from "./routes/user-entity-pins.js";
 import { userNoteRoutes } from "./routes/user-notes.js";
@@ -379,6 +380,7 @@ export async function createApp(
   api.use(sidebarBadgeRoutes(db));
   api.use(cockpitRoutes(db));
   api.use(sidebarPreferencesRoutes(db));
+  api.use(viewerPreferencesRoutes(db));
   api.use(inboxDismissalRoutes(db));
   api.use(userEntityPinRoutes(db));
   api.use(userNoteRoutes(db));

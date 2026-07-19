@@ -164,6 +164,7 @@ export const queryKeys = {
       ["work-questions", companyId, questionId] as const,
   },
   sidebarPreferences: (companyId: string) => ["sidebar-preferences", companyId] as const,
+  viewerPreferences: (companyId: string) => ["viewer-preferences", companyId] as const,
   inboxDismissals: (companyId: string) => ["inbox-dismissals", companyId] as const,
   activity: (companyId: string) => ["activity", companyId] as const,
   costs: (companyId: string, from?: string, to?: string) =>
