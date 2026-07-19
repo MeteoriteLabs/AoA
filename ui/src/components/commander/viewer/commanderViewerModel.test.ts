@@ -8,6 +8,7 @@ import {
   openBrowserTab,
   closeTab,
   shouldAutoOpen,
+  pickAutoOpenRef,
   chipLabel,
   collectConversationRefs,
   mergeRefs,
@@ -115,6 +116,27 @@ describe("commanderViewerModel", () => {
       expect(result).toHaveLength(1);
       expect(result[0]!.action).toBe("created");
     });
+  });
+});
+
+describe("shouldAutoOpen level gate", () => {
+  const created = (id: string) => ({ v: 1, kind: "artifact", id, action: "created" } as any);
+  it("manual never; own_output/full open created on desktop; mobile never; referenced never", () => {
+    expect(shouldAutoOpen(created("a"), false, "manual")).toBe(false);
+    expect(shouldAutoOpen(created("a"), false, "own_output")).toBe(true);
+    expect(shouldAutoOpen(created("a"), false, "full")).toBe(true);
+    expect(shouldAutoOpen(created("a"), true, "own_output")).toBe(false);
+    expect(shouldAutoOpen({ ...created("a"), action: "referenced" }, false, "full")).toBe(false);
+  });
+});
+
+describe("pickAutoOpenRef (one per batch)", () => {
+  const created = (id: string) => ({ v: 1, kind: "artifact", id, action: "created" } as any);
+  it("returns the first eligible created ref, or null", () => {
+    expect(pickAutoOpenRef([created("a"), created("b")], "own_output", false)?.id).toBe("a");
+    expect(pickAutoOpenRef([created("a")], "manual", false)).toBeNull();
+    expect(pickAutoOpenRef([created("a")], "own_output", true)).toBeNull();
+    expect(pickAutoOpenRef([{ ...created("a"), action: "referenced" }], "own_output", false)).toBeNull();
   });
 });
 

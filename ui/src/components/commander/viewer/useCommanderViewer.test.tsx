@@ -40,19 +40,21 @@ describe("useCommanderViewer — stale-closure safety", () => {
   // closure (InternalAgentPanel), so the api object it holds can be renders
   // old. The hook must read live state at call time — successive calls on the
   // SAME captured api object must accumulate tabs, not clobber each other.
-  it("accumulates tabs across successive calls on a stale api object", () => {
+  // New contract (Task 4): onLiveRef opens the SINGLE ref it is handed and
+  // threads the effective viewerControl level through to shouldAutoOpen.
+  // One-tab-per-turn arbitration now lives in InternalAgentPanel (covered by
+  // the pure pickAutoOpenRef test), NOT here — the hook no longer decides which
+  // of a batch to open.
+  it("opens the single ref passed to it, honoring the level arg, from a stale api object", () => {
     const { result } = renderHook(() => useCommanderViewer("conv-1"));
     const staleApi = result.current; // captured once, like the memoized sendText closure
 
     act(() => {
-      staleApi.onLiveRef(ref("a1"), false);
-    });
-    act(() => {
-      staleApi.onLiveRef(ref("a2"), false); // same stale object — must see a1's tab
+      staleApi.onLiveRef(ref("a1"), false, "own_output");
     });
 
-    expect(result.current.state.tabs.map((t) => t.refId)).toEqual(["a1", "a2"]);
-    expect(result.current.state.activeId).toBe("artifact:a2:latest");
+    expect(result.current.state.tabs.map((t) => t.refId)).toEqual(["a1"]);
+    expect(result.current.state.activeId).toBe("artifact:a1:latest");
     expect(result.current.state.expanded).toBe(true);
   });
 

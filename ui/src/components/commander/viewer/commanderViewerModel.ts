@@ -1,7 +1,12 @@
 // Pure state logic for the Commander viewer panel.
 // No React imports — unit-tested directly (pattern: commanderInputModel.ts).
 import { toSafeBrowserUrl } from "@armyofagents/shared";
-import type { CommanderInputRef, CommanderOutputRef, ShowRef } from "@armyofagents/shared";
+import type {
+  CommanderInputRef,
+  CommanderOutputRef,
+  ShowRef,
+  ViewerControlLevel,
+} from "@armyofagents/shared";
 
 export interface ViewerTab {
   /** Stable tab identity: `artifact:<id>:<versionId|latest>` | `reply:<messageId>` | `browser:<url>` | `task:<issueId>` */
@@ -170,9 +175,31 @@ export function setExpanded(state: ConversationViewerState, expanded: boolean): 
   return { ...state, expanded };
 }
 
-/** Auto-open rule (design §2 #2 + #6): created refs, desktop only. */
-export function shouldAutoOpen(ref: ShowRef, isMobile: boolean): boolean {
-  return ref.action === "created" && !isMobile;
+/**
+ * Auto-open rule (design §2 #2 + #6): created refs, desktop only, gated by the
+ * effective viewerControl level. `manual` never auto-opens; `own_output`/`full`
+ * open created refs on desktop. The `level` default keeps legacy 2-arg callers
+ * (and mobile-badge paths) behaving as before the level gate landed.
+ */
+export function shouldAutoOpen(
+  ref: ShowRef,
+  isMobile: boolean,
+  level: ViewerControlLevel = "own_output",
+): boolean {
+  return level !== "manual" && ref.action === "created" && !isMobile;
+}
+
+/**
+ * One-tab-per-turn arbitration: pick the first ref in a batch that is eligible
+ * to auto-open a viewer tab under the given level, or null if none qualify.
+ * The panel uses this to cap live-ref bursts at a single opened tab per turn.
+ */
+export function pickAutoOpenRef(
+  refs: ShowRef[],
+  level: ViewerControlLevel,
+  isMobile: boolean,
+): ShowRef | null {
+  return refs.find((r) => shouldAutoOpen(r, isMobile, level)) ?? null;
 }
 
 const refKey = (r: ShowRef) => `${r.v}|${r.kind}|${r.id}|${r.versionId ?? ""}`;

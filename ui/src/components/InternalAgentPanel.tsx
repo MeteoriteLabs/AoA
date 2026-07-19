@@ -71,7 +71,7 @@ import {
   OutputRefChips,
   collectConversationRefs,
   mergeRefs,
-  shouldAutoOpen,
+  pickAutoOpenRef,
   useCommanderViewer,
 } from "./commander/viewer";
 import {
@@ -79,7 +79,7 @@ import {
   type CommanderInputHandle,
   type SlashState,
 } from "./commander/CommanderInput";
-import type { CommanderInputRef, CompanySkillListItem } from "@armyofagents/shared";
+import type { CommanderInputRef, CompanySkillListItem, ViewerControlLevel } from "@armyofagents/shared";
 import {
   COMPOSER_ATTACHMENT_CONTENT_TYPES,
   MAX_COMMANDER_INPUT_REFS,
@@ -92,6 +92,7 @@ import {
 import { assetsApi } from "../api/assets";
 import { agentsApi } from "../api/agents";
 import { useTeamAccess } from "../hooks/useTeamAccess";
+import { useViewerControl } from "../hooks/useViewerControl";
 import { useComposerDraft } from "../lib/composerDraft";
 import {
   assetResponseToCommanderInputRef,
@@ -691,6 +692,20 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
   // `enableViewerPanel` is set (full-page Commander route).
   const { useDrawerSessions, isTablet, isWide } = useBreakpoint();
   const viewer = useCommanderViewer(conversationId ?? null);
+
+  // Task 4: gate viewer auto-open on the effective viewerControl level.
+  // The SSE tool_result loop runs inside a memoized (stale) closure, so it MUST
+  // read the level from a ref at event time — reading `effectiveLevel` directly
+  // there would capture a render-old value. Fail-closed: default "manual" (no
+  // auto-open) while the preference is still loading or errored.
+  const { effectiveLevel } = useViewerControl(companyId || null);
+  const effectiveLevelRef = useRef<ViewerControlLevel>("manual");
+  useEffect(() => {
+    effectiveLevelRef.current = effectiveLevel ?? "manual";
+  }, [effectiveLevel]);
+  // One tab may auto-open per user turn (kills the live-ref "tab storm"). Reset
+  // to false when a new user turn is sent (see sendText).
+  const autoOpenedTurnRef = useRef(false);
   const [paneState, dispatchPane] = useReducer(
     commanderPaneCoordinatorReducer,
     typeof window === "undefined" ? 1600 : window.innerWidth,
@@ -1020,6 +1035,10 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
   const sendText = useCallback(
     async (text: string, attachmentAssetIds?: string[], clientSubmissionId?: string): Promise<boolean> => {
       if (!text || !companyId || streaming) return false;
+
+      // New user turn: allow exactly one auto-opened viewer tab for the refs
+      // this turn produces (Task 4 one-tab-per-turn arbitration).
+      autoOpenedTurnRef.current = false;
 
       setStreamingLocal(true);
       streamingRef.current = true;
@@ -1400,15 +1419,25 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
                 : m,
             ),
           );
-          for (const r of liveRefs) {
-            // Phase 6 [A2]: if this ref would auto-open the viewer, run the
-            // choreography first (right-panel: collapses sessions only, keeps
-            // cockpit on ultrawide — do NOT yank both panels mid-stream).
-            // openPreviewRef is a stable ref so it's safe inside this stale closure.
-            if (enableViewerPanel && shouldAutoOpen(r, useDrawerSessions)) {
+          // Task 4: cap tab creation at ONE auto-open per user turn, gated by the
+          // effective viewerControl level read from a ref (this closure is stale;
+          // reading the state var here would be render-old). Chips already show
+          // ALL refs via the mergeRefs above — only tab creation is arbitrated.
+          if (enableViewerPanel && !autoOpenedTurnRef.current) {
+            const pick = pickAutoOpenRef(
+              liveRefs,
+              effectiveLevelRef.current,
+              useDrawerSessions,
+            );
+            if (pick) {
+              // Phase 6 [A2]: run the choreography first (right-panel: collapses
+              // sessions only, keeps cockpit on ultrawide — do NOT yank both
+              // panels mid-stream). openPreviewRef is a stable ref so it's safe
+              // inside this stale closure.
               openPreviewRef.current("right-panel");
+              viewer.onLiveRef(pick, useDrawerSessions, effectiveLevelRef.current);
+              autoOpenedTurnRef.current = true;
             }
-            viewer.onLiveRef(r, useDrawerSessions);
           }
         }
         break;

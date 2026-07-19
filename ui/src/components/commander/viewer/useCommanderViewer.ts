@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from "react";
-import type { CommanderInputRef, ShowRef } from "@armyofagents/shared";
+import type { CommanderInputRef, ShowRef, ViewerControlLevel } from "@armyofagents/shared";
 import {
   closeTab,
   emptyViewerState,
@@ -24,7 +24,7 @@ export interface CommanderViewerApi {
   openTask: (issueId: string, title: string) => void;
   /** Open an identity-preserving Commander input reference as a viewer tab. */
   openInputRef: (ref: CommanderInputRef) => void;
-  onLiveRef: (ref: ShowRef, isMobile: boolean) => void;
+  onLiveRef: (ref: ShowRef, isMobile: boolean, level?: ViewerControlLevel) => void;
   activate: (tabId: string) => void;
   close: (tabId: string) => void;
   expand: () => void;
@@ -73,9 +73,9 @@ export function useCommanderViewer(conversationId: string | null): CommanderView
     openBrowser: (url) => update(openBrowserTab(readState(), url)),
     openTask: (issueId, title) => update(openTaskTab(readState(), issueId, title)),
     openInputRef: (ref) => update(openInputRefTab(readState(), ref)),
-    onLiveRef: (ref, isMobile) => {
+    onLiveRef: (ref, isMobile, level = "own_output") => {
       const current = readState();
-      if (shouldAutoOpen(ref, isMobile)) {
+      if (shouldAutoOpen(ref, isMobile, level)) {
         update(openRefTab(current, ref));
       } else if (ref.action === "created") {
         // Mobile: add the tab silently, badge the pill (§2 #6).
