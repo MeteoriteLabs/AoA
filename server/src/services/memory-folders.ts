@@ -51,7 +51,12 @@ export function memoryFoldersService(db: Db) {
 
     create: async (input: CreateInput) => {
       const path = normalizeMemoryFolderPath(input.path);
-      const [row] = await db
+      // Get-or-create (idempotent): the folder path is unique per company
+      // (memory_folders_unique_path_per_company). A folder-creation collision —
+      // e.g. two proposed memory items in one Librarian run both ensuring the
+      // same root/department folder, or a re-seed — must NOT crash the caller.
+      // Insert, no-op on conflict, then return the existing row.
+      const [inserted] = await db
         .insert(memoryFolders)
         .values({
           companyId: input.companyId,
@@ -62,13 +67,22 @@ export function memoryFoldersService(db: Db) {
           seedKey: input.seedKey ?? null,
           sortOrder: input.sortOrder ?? 0,
         })
+        .onConflictDoNothing()
         .returning();
-      publishLiveEvent({
-        type: "memory.folder.created",
-        companyId: input.companyId,
-        payload: { folder: row },
-      });
-      return row;
+      if (inserted) {
+        publishLiveEvent({
+          type: "memory.folder.created",
+          companyId: input.companyId,
+          payload: { folder: inserted },
+        });
+        return inserted;
+      }
+      // Conflict — the folder already exists; return it (no duplicate, no throw).
+      const [existing] = await db
+        .select()
+        .from(memoryFolders)
+        .where(and(eq(memoryFolders.companyId, input.companyId), eq(memoryFolders.path, path)));
+      return existing;
     },
 
     update: async (id: string, companyId: string, patch: UpdateInput) => {

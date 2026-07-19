@@ -14,21 +14,48 @@ import { memoryFoldersService } from "../services/memory-folders.js";
 
 function createMockDb() {
   const folders: Array<Record<string, unknown>> = [];
+  // When true, select().from().where() returns only folders whose
+  // (companyId, path) matches the last-inserted values — lets the get-or-create
+  // conflict test assert the existing row is returned rather than every folder.
+  const scopedSelect = { companyId: null as unknown, path: null as unknown };
   return {
     folders,
     select: () => ({
       from: () => ({
-        where: async () => folders,
+        where: async () => {
+          if (scopedSelect.path !== null) {
+            return folders.filter(
+              (f) => f.companyId === scopedSelect.companyId && f.path === scopedSelect.path,
+            );
+          }
+          return folders;
+        },
       }),
     }),
     insert: () => ({
-      values: (row: Record<string, unknown>) => ({
-        returning: async () => {
+      values: (row: Record<string, unknown>) => {
+        const insertOne = () => {
           const created = { ...row, id: `mock-${folders.length}`, createdAt: new Date(), updatedAt: new Date() };
           folders.push(created);
-          return [created];
-        },
-      }),
+          return created;
+        };
+        return {
+          // Direct insert (seedForDepartment path) — always inserts.
+          returning: async () => [insertOne()],
+          // Get-or-create path: no-op when (companyId, path) already exists.
+          onConflictDoNothing: () => ({
+            returning: async () => {
+              scopedSelect.companyId = row.companyId;
+              scopedSelect.path = row.path;
+              const dup = folders.some(
+                (f) => f.companyId === row.companyId && f.path === row.path,
+              );
+              if (dup) return [];
+              return [insertOne()];
+            },
+          }),
+        };
+      },
     }),
     update: () => ({
       set: (patch: Record<string, unknown>) => ({
@@ -63,6 +90,31 @@ describe("memoryFoldersService", () => {
     });
     expect(created.path).toBe("Engineering/Decisions");
     expect(created.companyId).toBe("co-1");
+  });
+
+  it("create is get-or-create: a duplicate (companyId, path) returns the existing row without inserting or throwing", async () => {
+    const db = createMockDb();
+    db.folders.push({
+      id: "existing-1",
+      companyId: "co-1",
+      departmentId: null,
+      path: "Company",
+      displayName: "Company",
+      seedKey: "company.root",
+    });
+    const svc = memoryFoldersService(db as never);
+
+    const result = await svc.create({
+      companyId: "co-1",
+      departmentId: null,
+      path: "Company",
+      displayName: "Company",
+      seedKey: "company.root",
+    });
+
+    // No duplicate inserted, and the pre-existing row is returned.
+    expect(db.folders.filter((f) => f.path === "Company")).toHaveLength(1);
+    expect(result.id).toBe("existing-1");
   });
 
   it("lists folders scoped to companyId", async () => {
