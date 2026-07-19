@@ -14,8 +14,8 @@ import { useSidebar } from "../context/SidebarContext";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import { useCompanyPageMemory } from "../hooks/useCompanyPageMemory";
 import { healthApi } from "../api/health";
-import { homeApi } from "../api/dashboard";
 import { queryKeys } from "../lib/queryKeys";
+import { useHomeSummary } from "../hooks/useHomeSummary";
 import { cn } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -86,16 +86,15 @@ export function Layout() {
     retry: false,
   });
 
-  // WS9: full-bleed the Home first-run takeover (Map + door band). This reads
-  // the SAME `queryKeys.home(companyId)` cache entry Dashboard populates —
-  // TanStack Query dedupes concurrent fetches for an identical key, so this
-  // doesn't add a second network round-trip, just a second observer.
+  // WS9: full-bleed the Home first-run takeover (Map + door band). Reads the
+  // SAME `queryKeys.home(companyId)` cache entry Dashboard populates, via the
+  // shared `useHomeSummary` hook so the key + fetcher can't drift from
+  // Dashboard's. TanStack dedupes concurrent fetches for an identical key, so
+  // this is a second observer, not a second network round-trip.
   const { section: routeSection } = getRouteSection(location.pathname, companyPrefix);
   const isHomeRoute = routeSection === "home";
-  const { data: homeSummaryForFirstRun } = useQuery({
-    queryKey: queryKeys.home(selectedCompanyId ?? ""),
-    queryFn: () => homeApi.summary(selectedCompanyId!),
-    enabled: isHomeRoute && Boolean(selectedCompanyId),
+  const { data: homeSummaryForFirstRun } = useHomeSummary(selectedCompanyId, {
+    enabled: isHomeRoute,
   });
   const firstRunHomeActive = isHomeRoute && !!homeSummaryForFirstRun && !homeSummaryForFirstRun.firstRunCompleted;
 

@@ -12,7 +12,7 @@ import {
   type Suggestion,
 } from "@armyofagents/shared";
 import { FirstRunHome } from "../onboarding/FirstRunHome";
-import { homeApi } from "../api/dashboard";
+import { useHomeSummary } from "../hooks/useHomeSummary";
 import { authApi } from "../api/auth";
 import { suggestionsApi } from "../api/suggestions";
 import { memoryApi } from "../api/memory";
@@ -567,11 +567,9 @@ export function Dashboard() {
     setBreadcrumbs([{ label: "Home" }]);
   }, [setBreadcrumbs]);
 
-  const { data, isLoading, error } = useQuery({
-    queryKey: queryKeys.home(selectedCompanyId!),
-    queryFn: () => homeApi.summary(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
-  });
+  // Shared with Layout's WS9 first-run full-bleed check via the same
+  // `queryKeys.home(companyId)` entry (see useHomeSummary).
+  const { data, isLoading, error } = useHomeSummary(selectedCompanyId);
 
   const { data: suggestions = [], isLoading: suggestionsLoading } = useQuery({
     queryKey: queryKeys.suggestions.pending(selectedCompanyId!),
