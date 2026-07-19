@@ -5,6 +5,7 @@ import type {
   CommanderInputRef,
   CommanderOutputRef,
   ShowRef,
+  ShowRefProvenance,
   ViewerControlLevel,
 } from "@armyofagents/shared";
 
@@ -202,23 +203,79 @@ export function pickAutoOpenRef(
   return refs.find((r) => shouldAutoOpen(r, isMobile, level)) ?? null;
 }
 
-const refKey = (r: ShowRef) => `${r.v}|${r.kind}|${r.id}|${r.versionId ?? ""}`;
+// Twin of the server `refKey` in output-refs.ts — dedup identity is the ARTIFACT
+// identity `(kind,id,versionId)`, NOT `v`, so a legacy v1 replay + a fresh v2 ref
+// for the same artifact coalesce into ONE card instead of a double-card (B5).
+const refKey = (r: ShowRef) => `${r.kind}|${r.id}|${r.versionId ?? ""}`;
+
+const firstStr = (a?: string | null, b?: string | null): string | null =>
+  a != null && a !== "" ? a : b != null && b !== "" ? b : null;
+const firstNum = (a?: number | null, b?: number | null): number | null =>
+  a != null ? a : b != null ? b : null;
+
+// Provenance precedence (order-independent): v2 provenance beats v1 (none);
+// when both are v2 the newer `emittedAt` wins and a real provenance beats null.
+function pickProvenance(a: ShowRef, b: ShowRef): ShowRefProvenance | null {
+  const pa = a.v === 2 ? a.provenance ?? null : null;
+  const pb = b.v === 2 ? b.provenance ?? null : null;
+  if (pa && pb) return pb.emittedAt >= pa.emittedAt ? pb : pa;
+  return pa ?? pb ?? null;
+}
+
+// FIELD-WISE merge — twin of server mergeRefPair. The strongest action AND the
+// richest provenance both survive; never winner-take-all on one whole object.
+function mergeRefPair(a: ShowRef, b: ShowRef): ShowRef {
+  const action: "created" | "referenced" =
+    a.action === "created" || b.action === "created" ? "created" : "referenced";
+  const versionId = firstStr(a.versionId, b.versionId);
+  const versionNumber = firstNum(a.versionNumber, b.versionNumber);
+  const title = firstStr(a.title, b.title);
+  const mimeType = firstStr(a.mimeType, b.mimeType);
+  if (a.v !== 2 && b.v !== 2) {
+    return {
+      v: 1,
+      kind: "artifact",
+      id: a.id,
+      versionId,
+      versionNumber,
+      title,
+      action,
+      toolCallId: null,
+      mimeType,
+    };
+  }
+  return {
+    v: 2,
+    kind: a.kind,
+    id: a.id,
+    versionId,
+    versionNumber,
+    title,
+    mimeType,
+    viewerKind: firstStr(
+      a.v === 2 ? a.viewerKind : null,
+      b.v === 2 ? b.viewerKind : null,
+    ),
+    action,
+    toolCallId: firstStr(a.v === 2 ? a.toolCallId : null, b.v === 2 ? b.toolCallId : null),
+    provenance: pickProvenance(a, b),
+  };
+}
 
 /**
- * Merge two lists of refs, deduplicating by `kind|id|versionId`.
- * "created" wins over "referenced" for the same key; the existing entry wins
- * on all other ties (preserving ordering stability).
+ * Merge two lists of refs, deduplicating by `kind|id|versionId`. On collision
+ * the refs are merged FIELD-WISE (created action + richest v2 provenance both
+ * survive), identical to the server `mergeOutputRefs` twin.
  */
 export function mergeRefs(
   existing: ShowRef[],
   incoming: ShowRef[],
 ): ShowRef[] {
   const map = new Map<string, ShowRef>();
-  for (const r of existing) map.set(refKey(r), r);
-  for (const r of incoming) {
+  for (const r of [...existing, ...incoming]) {
     const k = refKey(r);
     const prev = map.get(k);
-    if (!prev || (prev.action === "referenced" && r.action === "created")) map.set(k, r);
+    map.set(k, prev ? mergeRefPair(prev, r) : r);
   }
   return [...map.values()];
 }

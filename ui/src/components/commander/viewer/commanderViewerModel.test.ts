@@ -117,6 +117,59 @@ describe("commanderViewerModel", () => {
       expect(result[0]!.action).toBe("created");
     });
   });
+
+  describe("mergeRefs v1/v2 coalescing + field-wise provenance (twin of server mergeOutputRefs)", () => {
+    const prov = (emittedAt: string) => ({
+      surface: "commander" as const,
+      entityId: "conv-1",
+      runId: "run-1",
+      agentId: null,
+      messageId: null,
+      seq: 0,
+      emittedAt,
+    });
+    const v1 = (id: string, action: "created" | "referenced", title: string | null = null): any =>
+      ({ v: 1, kind: "artifact", id, versionId: null, action, title });
+    const v2 = (
+      id: string,
+      action: "created" | "referenced",
+      provenance: ReturnType<typeof prov> | null = null,
+      versionId: string | null = null,
+      title: string | null = null,
+    ): any => ({ v: 2, kind: "artifact", id, versionId, action, title, provenance });
+    const EARLY = "2026-07-19T10:00:00.000Z";
+    const LATE = "2026-07-19T11:00:00.000Z";
+
+    it("v1-created + v2-referenced coalesces to ONE created v2 with the v2's provenance (both orders)", () => {
+      const a = mergeRefs([v1("a1", "created")], [v2("a1", "referenced", prov(EARLY))]);
+      expect(a).toHaveLength(1);
+      expect(a[0]).toMatchObject({ v: 2, action: "created", provenance: { emittedAt: EARLY } });
+      const b = mergeRefs([v2("a1", "referenced", prov(EARLY))], [v1("a1", "created")]);
+      expect(b).toHaveLength(1);
+      expect(b[0]).toMatchObject({ v: 2, action: "created", provenance: { emittedAt: EARLY } });
+    });
+
+    it("two v2 created refs → newer emittedAt wins; real beats null (both orders)", () => {
+      const older = v2("a1", "created", prov(EARLY));
+      const newer = v2("a1", "created", prov(LATE));
+      expect((mergeRefs([older], [newer])[0] as any).provenance.emittedAt).toBe(LATE);
+      expect((mergeRefs([newer], [older])[0] as any).provenance.emittedAt).toBe(LATE);
+      const noProv = v2("a1", "created", null);
+      expect((mergeRefs([noProv], [older])[0] as any).provenance.emittedAt).toBe(EARLY);
+      expect((mergeRefs([older], [noProv])[0] as any).provenance.emittedAt).toBe(EARLY);
+    });
+
+    it("same-artifact v1 + v2 → exactly one card", () => {
+      expect(mergeRefs([v1("a1", "referenced")], [v2("a1", "referenced", prov(EARLY))])).toHaveLength(1);
+    });
+
+    it("backfills title first-non-empty across a v1/v2 collision (same versionId)", () => {
+      const a: any = { v: 1, kind: "artifact", id: "a1", versionId: "ver-9", action: "created", title: null };
+      const merged = mergeRefs([a], [v2("a1", "referenced", prov(EARLY), "ver-9", "From V2")]);
+      expect(merged).toHaveLength(1);
+      expect(merged[0]).toMatchObject({ v: 2, action: "created", title: "From V2", versionId: "ver-9" });
+    });
+  });
 });
 
 describe("shouldAutoOpen level gate", () => {

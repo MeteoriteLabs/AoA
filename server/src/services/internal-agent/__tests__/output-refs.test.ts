@@ -180,6 +180,86 @@ describe("mergeOutputRefs", () => {
   });
 });
 
+describe("mergeOutputRefs v1/v2 coalescing + field-wise provenance precedence", () => {
+  const prov = (emittedAt: string, seq = 0) => ({
+    surface: "commander" as const,
+    entityId: "conv-1",
+    runId: "run-1",
+    agentId: null,
+    messageId: null,
+    seq,
+    emittedAt,
+  });
+  const v1 = (
+    id: string,
+    action: "created" | "referenced",
+    versionId: string | null = null,
+    title: string | null = null,
+  ): any => ({ v: 1, kind: "artifact", id, versionId, action, title });
+  const v2 = (
+    id: string,
+    action: "created" | "referenced",
+    provenance: ReturnType<typeof prov> | null = null,
+    versionId: string | null = null,
+    title: string | null = null,
+  ): any => ({ v: 2, kind: "artifact", id, versionId, action, title, provenance });
+
+  const EARLY = "2026-07-19T10:00:00.000Z";
+  const LATE = "2026-07-19T11:00:00.000Z";
+
+  it("v1-created + v2-referenced (v1 first) → ONE entry: created + v2's provenance + v:2", () => {
+    const merged = mergeOutputRefs([v1("a1", "created")], [v2("a1", "referenced", prov(EARLY))]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toMatchObject({
+      v: 2,
+      action: "created",
+      provenance: { emittedAt: EARLY, surface: "commander" },
+    });
+  });
+
+  it("v2-referenced + v1-created (v2 first) → coalesces IDENTICALLY (order-independent — Codex P2.1)", () => {
+    const merged = mergeOutputRefs([v2("a1", "referenced", prov(EARLY))], [v1("a1", "created")]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toMatchObject({
+      v: 2,
+      action: "created",
+      provenance: { emittedAt: EARLY, surface: "commander" },
+    });
+  });
+
+  it("two v2 created refs, differing emittedAt → newer emittedAt wins (both orders)", () => {
+    const older = v2("a1", "created", prov(EARLY));
+    const newer = v2("a1", "created", prov(LATE));
+    expect((mergeOutputRefs([older], [newer])[0] as any).provenance.emittedAt).toBe(LATE);
+    expect((mergeOutputRefs([newer], [older])[0] as any).provenance.emittedAt).toBe(LATE);
+  });
+
+  it("a real provenance beats a null one (both orders)", () => {
+    const withProv = v2("a1", "created", prov(EARLY));
+    const noProv = v2("a1", "created", null);
+    expect((mergeOutputRefs([noProv], [withProv])[0] as any).provenance.emittedAt).toBe(EARLY);
+    expect((mergeOutputRefs([withProv], [noProv])[0] as any).provenance.emittedAt).toBe(EARLY);
+  });
+
+  it("same-artifact v1 + v2 → exactly one card (coalesced, not two)", () => {
+    expect(mergeOutputRefs([v1("a1", "referenced")], [v2("a1", "referenced", prov(EARLY))])).toHaveLength(1);
+  });
+
+  it("backfills title first-non-empty across a v1/v2 collision (same versionId)", () => {
+    const merged = mergeOutputRefs(
+      [v1("a1", "created", "ver-9", null)],
+      [v2("a1", "referenced", prov(EARLY), "ver-9", "From V2")],
+    );
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toMatchObject({ v: 2, action: "created", title: "From V2", versionId: "ver-9" });
+  });
+
+  it("emitted merge output still validates against the shared schema", () => {
+    const merged = mergeOutputRefs([v1("a1", "created")], [v2("a1", "referenced", prov(EARLY))]);
+    expect(showRefsSchema.safeParse(merged).success).toBe(true);
+  });
+});
+
 describe("review-promoted edge cases", () => {
   const ok = (data: unknown) => ({ success: true, data, summary: "ok" });
 

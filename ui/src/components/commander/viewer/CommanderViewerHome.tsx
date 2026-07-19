@@ -72,7 +72,7 @@ export function CommanderViewerHome({
           </h3>
           {conversationRefs.map((r) => (
             <RefRow
-              key={`${r.id}:${r.versionId ?? "latest"}`}
+              key={`${r.v}|${r.kind}|${r.id}|${r.versionId ?? "latest"}`}
               refItem={r}
               onOpen={onOpen}
               note={r.action === "created" ? "created here" : undefined}

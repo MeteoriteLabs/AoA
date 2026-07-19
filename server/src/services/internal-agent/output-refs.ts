@@ -207,8 +207,72 @@ export function collectChunkRefs(sink: ShowRef[], chunk: AgentStreamChunk): void
   }
 }
 
-const refKey = (r: ShowRef) =>
-  `${r.v}|${r.kind}|${r.id}|${r.versionId ?? ""}`;
+// Dedup identity is the ARTIFACT identity `(kind,id,versionId)` — NOT `v`.
+// A legacy-replayed v1 ref and a fresh v2 ref for the same artifact are the
+// same card; keeping `v` in the key split them into a double-card (B5).
+const refKey = (r: ShowRef) => `${r.kind}|${r.id}|${r.versionId ?? ""}`;
+
+const firstStr = (a?: string | null, b?: string | null): string | null =>
+  a != null && a !== "" ? a : b != null && b !== "" ? b : null;
+const firstNum = (a?: number | null, b?: number | null): number | null =>
+  a != null ? a : b != null ? b : null;
+
+// Provenance precedence (order-independent): the v2 provenance wins over a v1
+// (which has none); when both are v2 the newer `emittedAt` wins, and a real
+// provenance beats a null one. Symmetric so input order can't change the result.
+function pickProvenance(a: ShowRef, b: ShowRef): ShowRefProvenance | null {
+  const pa = a.v === 2 ? a.provenance ?? null : null;
+  const pb = b.v === 2 ? b.provenance ?? null : null;
+  if (pa && pb) return pb.emittedAt >= pa.emittedAt ? pb : pa;
+  return pa ?? pb ?? null;
+}
+
+// FIELD-WISE merge (Codex P2.1): so the STRONGEST action AND the RICHEST
+// provenance both survive a collision — never winner-take-all on one whole
+// object (that would drop either the created action or the v2 provenance).
+function mergeRefPair(a: ShowRef, b: ShowRef): ShowRef {
+  const action: "created" | "referenced" =
+    a.action === "created" || b.action === "created" ? "created" : "referenced";
+  const versionId = firstStr(a.versionId, b.versionId);
+  const versionNumber = firstNum(a.versionNumber, b.versionNumber);
+  const title = firstStr(a.title, b.title);
+  const mimeType = firstStr(a.mimeType, b.mimeType);
+  const toolCallId = firstStr(
+    a.v === 2 ? a.toolCallId : null,
+    b.v === 2 ? b.toolCallId : null,
+  );
+
+  // `v` = 2 if either is v2. If both v1, stay v1 (no provenance surface).
+  if (a.v !== 2 && b.v !== 2) {
+    return {
+      v: 1,
+      kind: "artifact",
+      id: a.id,
+      versionId,
+      versionNumber,
+      title,
+      action,
+      toolCallId: null,
+      mimeType,
+    };
+  }
+  return {
+    v: 2,
+    kind: a.kind,
+    id: a.id,
+    versionId,
+    versionNumber,
+    title,
+    mimeType,
+    viewerKind: firstStr(
+      a.v === 2 ? a.viewerKind : null,
+      b.v === 2 ? b.viewerKind : null,
+    ),
+    action,
+    toolCallId,
+    provenance: pickProvenance(a, b),
+  };
+}
 
 export function mergeOutputRefs(
   existing: ShowRef[],
@@ -218,13 +282,7 @@ export function mergeOutputRefs(
   for (const r of [...existing, ...incoming]) {
     const k = refKey(r);
     const prev = map.get(k);
-    if (!prev) {
-      map.set(k, r);
-    } else if (prev.action === "referenced" && r.action === "created") {
-      map.set(k, { ...r, title: r.title ?? prev.title });
-    } else if (!prev.title && r.title) {
-      map.set(k, { ...prev, title: r.title });
-    }
+    map.set(k, prev ? mergeRefPair(prev, r) : r);
   }
   const all = [...map.values()];
   if (all.length <= MAX_OUTPUT_REFS_PER_MESSAGE) return all;

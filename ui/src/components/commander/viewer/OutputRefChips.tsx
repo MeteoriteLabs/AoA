@@ -16,7 +16,7 @@ export function OutputRefChips({ refs, onOpen }: OutputRefChipsProps) {
     <div className="mt-1.5 flex flex-wrap gap-1.5" data-testid="output-ref-chips">
       {refs.map((ref) => (
         <button
-          key={`${ref.id}:${ref.versionId ?? "latest"}`}
+          key={`${ref.v}|${ref.kind}|${ref.id}|${ref.versionId ?? "latest"}`}
           type="button"
           onClick={() => onOpen(ref)}
           className={cn(
