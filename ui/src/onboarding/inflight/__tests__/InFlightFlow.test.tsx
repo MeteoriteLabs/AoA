@@ -3,16 +3,6 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { InFlightFlow } from "../InFlightFlow";
 
-const projectsList = vi.hoisted(() => vi.fn(async () => [] as unknown[]));
-vi.mock("../../../api/projects", () => ({
-  projectsApi: { list: projectsList },
-}));
-
-const agentsList = vi.hoisted(() => vi.fn(async () => [] as unknown[]));
-vi.mock("../../../api/agents", () => ({
-  agentsApi: { list: agentsList },
-}));
-
 const setFirstRunCompleted = vi.hoisted(() => vi.fn(async () => {}));
 vi.mock("../../../api/onboarding", () => ({ setFirstRunCompleted }));
 
@@ -50,15 +40,21 @@ vi.mock("../FirstJobStep", () => ({
   ),
 }));
 
+const STORAGE_KEY = "aoa:inflight-step:co-1";
+
 describe("InFlightFlow (WS9 — In-flight sequencer)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    projectsList.mockResolvedValue([]);
-    agentsList.mockResolvedValue([]);
     setFirstRunCompleted.mockResolvedValue(undefined);
+    window.localStorage.clear();
   });
 
-  it("advances through every surface in order on each onDone, then calls setFirstRunCompleted and the parent onDone", async () => {
+  it("starts at Departments with no stored marker (fresh company)", async () => {
+    render(<InFlightFlow companyId="co-1" onDone={vi.fn()} />);
+    expect(await screen.findByText("finish-departments")).toBeInTheDocument();
+  });
+
+  it("advances through every surface in order on each onDone, persisting the step marker, then calls setFirstRunCompleted and the parent onDone", async () => {
     const user = userEvent.setup();
     const onDone = vi.fn();
     render(<InFlightFlow companyId="co-1" onDone={onDone} />);
@@ -72,38 +68,55 @@ describe("InFlightFlow (WS9 — In-flight sequencer)", () => {
       "finish-first-job",
     ];
 
-    for (const label of order) {
-      const button = await screen.findByText(label);
+    for (let i = 0; i < order.length; i++) {
+      const button = await screen.findByText(order[i]!);
       await user.click(button);
+      if (i < order.length - 1) {
+        // Marker persisted as the NEXT step's index after each onDone.
+        await waitFor(() => expect(window.localStorage.getItem(STORAGE_KEY)).toBe(String(i + 1)));
+      }
     }
 
     await waitFor(() => expect(setFirstRunCompleted).toHaveBeenCalledWith("co-1"));
     await waitFor(() => expect(onDone).toHaveBeenCalled());
     // setFirstRunCompleted must resolve BEFORE the parent onDone fires.
     expect(setFirstRunCompleted.mock.invocationCallOrder[0]!).toBeLessThan(onDone.mock.invocationCallOrder[0]!);
+    // The marker is cleared once the sequence completes.
+    expect(window.localStorage.getItem(STORAGE_KEY)).toBeNull();
   });
 
-  it("resumes past Departments when the company already has a department", async () => {
-    projectsList.mockResolvedValue([{ id: "p1", type: "department", name: "Software" }]);
+  it("resumes from the stored step index, not ambient department/agent data", async () => {
+    window.localStorage.setItem(STORAGE_KEY, "2"); // braindump
     render(<InFlightFlow companyId="co-1" onDone={vi.fn()} />);
 
-    expect(await screen.findByText("finish-integrations")).toBeInTheDocument();
-    expect(screen.queryByText("finish-departments")).toBeNull();
-  });
-
-  it("resumes to First-job when the company already has a department AND an org agent", async () => {
-    projectsList.mockResolvedValue([{ id: "p1", type: "department", name: "Software" }]);
-    agentsList.mockResolvedValue([{ id: "a1", kind: "org", name: "Software Lead" }]);
-    render(<InFlightFlow companyId="co-1" onDone={vi.fn()} />);
-
-    expect(await screen.findByText("finish-first-job")).toBeInTheDocument();
+    expect(await screen.findByText("finish-braindump")).toBeInTheDocument();
     expect(screen.queryByText("finish-departments")).toBeNull();
     expect(screen.queryByText("finish-integrations")).toBeNull();
-    expect(screen.queryByText("finish-agents")).toBeNull();
   });
 
-  it("starts at Departments with no pre-existing signal (fresh company)", async () => {
+  it("clamps an out-of-range stored index to a valid step", async () => {
+    window.localStorage.setItem(STORAGE_KEY, "999");
+    render(<InFlightFlow companyId="co-1" onDone={vi.fn()} />);
+    expect(await screen.findByText("finish-first-job")).toBeInTheDocument();
+  });
+
+  it("falls back to step 0 for a negative or non-numeric stored value", async () => {
+    window.localStorage.setItem(STORAGE_KEY, "not-a-number");
     render(<InFlightFlow companyId="co-1" onDone={vi.fn()} />);
     expect(await screen.findByText("finish-departments")).toBeInTheDocument();
+  });
+
+  it("falls back to step 0 (best-effort) when localStorage read throws", async () => {
+    const getItemSpy = vi
+      .spyOn(window.localStorage.__proto__, "getItem")
+      .mockImplementation(() => {
+        throw new Error("blocked");
+      });
+    try {
+      render(<InFlightFlow companyId="co-1" onDone={vi.fn()} />);
+      expect(await screen.findByText("finish-departments")).toBeInTheDocument();
+    } finally {
+      getItemSpy.mockRestore();
+    }
   });
 });

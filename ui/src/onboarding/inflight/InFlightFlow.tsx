@@ -1,6 +1,4 @@
 import { useEffect, useRef, useState } from "react";
-import { projectsApi } from "../../api/projects";
-import { agentsApi } from "../../api/agents";
 import { setFirstRunCompleted } from "../../api/onboarding";
 import { DefineDepartments } from "./DefineDepartments";
 import { IntegrationsStep } from "./IntegrationsStep";
@@ -28,73 +26,90 @@ export type InFlightFlowProps = {
   onDone: () => void;
 };
 
+function stepStorageKey(companyId: string): string {
+  return `aoa:inflight-step:${companyId}`;
+}
+
+function clampIndex(index: number): number {
+  if (!Number.isFinite(index)) return 0;
+  return Math.min(Math.max(Math.trunc(index), 0), IN_FLIGHT_SURFACES.length - 1);
+}
+
+/** Best-effort — a founder browsing in a locked-down/private-mode tab where
+ * `localStorage` throws should still get a working (just non-resumable)
+ * sequencer, not a crash. Falls back to step 0. */
+function readStoredStep(companyId: string): number {
+  try {
+    const raw = window.localStorage.getItem(stepStorageKey(companyId));
+    if (raw == null) return 0;
+    return clampIndex(Number.parseInt(raw, 10));
+  } catch {
+    return 0;
+  }
+}
+
+function writeStoredStep(companyId: string, index: number): void {
+  try {
+    window.localStorage.setItem(stepStorageKey(companyId), String(index));
+  } catch {
+    // best-effort — resume just restarts at the top next time.
+  }
+}
+
+function clearStoredStep(companyId: string): void {
+  try {
+    window.localStorage.removeItem(stepStorageKey(companyId));
+  } catch {
+    // best-effort.
+  }
+}
+
 /**
  * WS9 — the In-flight persona-tail sequencer. Home-hosted (WS0c §5), NOT a
  * `FlowEngine` step: each surface below does its own domain writes and never
  * calls `advanceOnboarding`.
  *
- * Data-driven resume (best-effort, WS0c §5 — "don't block on perfect
- * resume"; the reserved Phase-2 `OnboardingState` gates are deliberately NOT
- * used here): on mount, checks only the two ambient signals that are
- * unambiguous —
- *  - the company already has >=1 department -> Departments is done, start
- *    at Integrations;
- *  - the company ALSO already has >=1 org agent -> everything through
- *    CreateAgents is treated as done (a founder who reached agent-creation
- *    already passed through Integrations/Braindump/Librarian in a real
- *    run), start at FirstJob.
- * Integrations/Braindump/Librarian/FirstJob have no equally clean signal of
- * their own yet (a connected GitHub install, a braindump capture, or a
- * created task could equally be pre-existing, non-onboarding data) so they
- * are never independently skipped — a founder who already did them just
- * clicks Continue/Skip quickly on resume.
+ * Deterministic resume (code-review fix, replaces the original ambient-data
+ * resume): the sequencer's current step index is persisted to `localStorage`
+ * keyed by companyId (`aoa:inflight-step:<companyId>`) and advanced as each
+ * surface's `onDone` fires. On mount, the flow resumes from the stored index
+ * (clamped to a valid range); the marker is cleared once the flow completes.
+ *
+ * The original resume checked ambient signals instead (a pre-existing
+ * department -> skip Departments; a pre-existing org agent -> skip straight
+ * to FirstJob). That was unsafe: sidebar nav stays live during first-run, so
+ * a founder who created a department/agent from elsewhere (not through this
+ * sequencer) was wrongly skipped past Integrations/Braindump/Librarian. Each
+ * surface is already idempotent, so starting at step 0 when there's no
+ * stored marker (fresh company, or a browser that can't persist) is safe.
  */
 export function InFlightFlow({ companyId, onDone }: InFlightFlowProps) {
-  const [index, setIndex] = useState<number | null>(null);
+  const [index, setIndex] = useState<number>(() => readStoredStep(companyId));
   const doneFiredRef = useRef(false);
 
+  // Defensive resync if `companyId` ever changes under a mounted instance
+  // (the common case — mount per company — is already covered by the lazy
+  // initializer above).
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      let start = 0;
-      try {
-        const [projects, agents] = await Promise.all([
-          projectsApi.list(companyId).catch(() => []),
-          agentsApi.list(companyId).catch(() => []),
-        ]);
-        const hasDepartment = (projects as { type?: string }[]).some((p) => p.type === "department");
-        const hasOrgAgent = (agents as { kind?: string }[]).some((a) => a.kind === "org");
-        if (hasDepartment && hasOrgAgent) {
-          start = IN_FLIGHT_SURFACES.indexOf("first_job");
-        } else if (hasDepartment) {
-          start = IN_FLIGHT_SURFACES.indexOf("integrations");
-        }
-      } catch {
-        // Best-effort resume — fall back to the top of the sequence.
-        start = 0;
-      }
-      if (!cancelled) setIndex(start);
-    })();
-    return () => {
-      cancelled = true;
-    };
+    doneFiredRef.current = false;
+    setIndex(readStoredStep(companyId));
   }, [companyId]);
 
   function advance() {
     setIndex((current) => {
-      const next = (current ?? 0) + 1;
+      const next = current + 1;
       if (next >= IN_FLIGHT_SURFACES.length) {
         if (!doneFiredRef.current) {
           doneFiredRef.current = true;
+          clearStoredStep(companyId);
           void setFirstRunCompleted(companyId).then(onDone);
         }
         return current;
       }
+      writeStoredStep(companyId, next);
       return next;
     });
   }
-
-  if (index === null) return null;
 
   switch (IN_FLIGHT_SURFACES[index]) {
     case "departments":
