@@ -837,6 +837,8 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
             adapterUsage,
             costCents: costCents ?? null,
             runId,
+            // Task 4: the delivering agent id — provenance for the run-result refs.
+            agentId,
           });
         } else {
           // runResult.status === "failed" WITHOUT a throw — the adapter reported
