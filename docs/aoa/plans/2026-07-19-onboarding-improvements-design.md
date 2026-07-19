@@ -124,6 +124,11 @@ A top **phase rail** (3 phases, current highlighted) with a **sub-step indicator
   - For a **software department** with a connected folder/GitHub repo (from setup), the surface **shows that repo/folder** as the ingest source, the Librarian **reads the repo's code directly** (it is a `claude_local` CLI agent with real file tools) to **generate docs**, AND the founder can **drop extra documents** too.
 - Dropped files (any type) are stored and **attached into the seeded memory folder tree** (via `memory_assets`, which carries `companyId` + `folderPath` + `storageKey`) at the surface's scope (company root vs. department folder).
 - Everything organizes into the **existing default seeded folder structure** (`getSeedFoldersForFunctionType` for departments; the company root for company-wide). Files attach to their folder; memory items are created (pending) at the right layer + folder.
+- **Folder-guided placement:** the Librarian is given the scope's seeded folder tree and uses it to decide **which document to create and where to file it** — the structure guides the output, so a department's memory lands in its natural sub-folders (Overview / Decisions / Architecture / …).
+- **Output by file type (refined 2026-07-20):**
+  - **Text / documents** (notes, docs, code the Librarian reads) → the Librarian **synthesizes `.md` memory items** filed into the right folder.
+  - **Images / binaries** (a logo, a diagram, a PDF, etc.) → **added directly to memory as an asset** in the folder (no `.md` conversion — the file itself is the memory). Some files are just attached as-is.
+- **Drop-zone sub-text:** each surface shows helper copy listing **what they can add** (e.g. "notes, docs, a repo, a logo, diagrams, PDFs — anything the team should remember").
 - (Project-scoped surfaces / active_context were considered and **deferred** — company + department only for v1.)
 
 **Approach — extend the braindump pipeline (chosen over a new ingestion service):**
