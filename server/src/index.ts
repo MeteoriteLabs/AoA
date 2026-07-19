@@ -80,6 +80,7 @@ import { backfillCrewTemplateOrigin } from "./services/internal-agent/aoa-agents
 import { backfillCrewOriginKind } from "./services/internal-agent/aoa-agents/backfill-crew-origin-kind.js";
 import { reconcileAutonomyScale } from "./services/internal-agent/aoa-agents/reconcile-autonomy-scale.js";
 import { checkCrewUpdates } from "./services/marketplace-install/crew-updater.js";
+import { reconcileTeamMembers } from "./services/marketplace-install/team-reconcile.js";
 import { agentInstructionsService } from "./services/agent-instructions.js";
 
 type BetterAuthSessionUser = {
@@ -920,6 +921,29 @@ async function runCrewUpdateCheck(): Promise<void> {
         });
       } catch (err) {
         logger.warn({ err, companyId: company.id }, "crew update check failed for company");
+      }
+
+      // WS6: member-add-on-update reconciliation. checkCrewUpdates only
+      // walks already-installed agent rows, so a team package that grew a
+      // new roster member (e.g. the Librarian, once it ships in the
+      // aoa-curated/standard-crew catalog entry — TODO(WS6-marketplace-cdn))
+      // is never discovered there. Separate try/catch: a reconcile failure
+      // must not be conflated with (or block) the version-update check above.
+      try {
+        const reconciled = await reconcileTeamMembers({
+          db: db as any,
+          companyId: company.id,
+          catalogItems: catalogData as any,
+          instructionsService: agentInstructionsService(),
+        });
+        if (reconciled.membersAdded > 0) {
+          logger.info(
+            { companyId: company.id, ...reconciled },
+            "marketplace: team roster reconciliation added missing members",
+          );
+        }
+      } catch (err) {
+        logger.warn({ err, companyId: company.id }, "team roster reconciliation failed for company");
       }
     }
   } catch (err) {
