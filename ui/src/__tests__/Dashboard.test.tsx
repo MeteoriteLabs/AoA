@@ -179,6 +179,17 @@ vi.mock("../lib/timeAgo", () => ({
   timeAgo: () => "2m ago",
 }));
 
+// WS9: FirstRunHome (the Map + door band) has its own unit tests
+// (`onboarding/__tests__/FirstRunHome.test.tsx`) — stub it here so Dashboard's
+// tests only assert the branch (which component renders), not its internals.
+const firstRunHomeProps = vi.hoisted(() => ({ companyId: null as string | null }));
+vi.mock("../onboarding/FirstRunHome", () => ({
+  FirstRunHome: ({ companyId }: { companyId: string }) => {
+    firstRunHomeProps.companyId = companyId;
+    return <div data-testid="first-run-home">first-run-home</div>;
+  },
+}));
+
 describe("Dashboard", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -278,7 +289,7 @@ describe("Dashboard", () => {
     expect(screen.getByText("Scout proposed competitor pricing research")).toBeInTheDocument();
   });
 
-  it("WS0b: shows first-run onboarding when firstRunCompleted is false, even with a complete checklist", async () => {
+  it("WS9: renders FirstRunHome (the Map + door band) when firstRunCompleted is false, even with a complete checklist", async () => {
     const { homeApi } = await import("../api/dashboard");
     vi.mocked(homeApi.summary).mockResolvedValue({
       ...mockHomeSummary,
@@ -286,10 +297,8 @@ describe("Dashboard", () => {
     });
     renderWithProviders(<Dashboard />);
 
-    expect(await screen.findByText("Getting Started")).toBeInTheDocument();
-    expect(
-      screen.getByText("Let's get your workspace set up. Complete these steps to get started."),
-    ).toBeInTheDocument();
+    expect(await screen.findByTestId("first-run-home")).toBeInTheDocument();
+    expect(firstRunHomeProps.companyId).toBe("comp-1");
     expect(screen.queryByText("+ New Task")).not.toBeInTheDocument();
   });
 
@@ -308,7 +317,7 @@ describe("Dashboard", () => {
     renderWithProviders(<Dashboard />);
 
     expect(await screen.findByText("+ New Task")).toBeInTheDocument();
-    expect(screen.queryByText("Getting Started")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("first-run-home")).not.toBeInTheDocument();
   });
 
   it("suggest_memory accept opens the suggested memory dialog", async () => {
