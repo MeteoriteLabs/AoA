@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CatalogItem } from "@armyofagents/shared";
 import { agentsApi } from "../../api/agents";
 import { projectsApi } from "../../api/projects";
@@ -76,17 +76,12 @@ export function CreateAgents({ companyId, onDone }: CreateAgentsProps) {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [catalogItems, setCatalogItems] = useState<CatalogItem[]>([]);
 
-  const departmentsRef = useRef<DeptRow[]>([]);
-  useEffect(() => {
-    departmentsRef.current = departments;
-  }, [departments]);
-
   const doneFiredRef = useRef(false);
-  function fireOnDoneOnce() {
+  const fireOnDoneOnce = useCallback(() => {
     if (doneFiredRef.current) return;
     doneFiredRef.current = true;
     onDone();
-  }
+  }, [onDone]);
 
   useEffect(() => {
     if (!companyId) return;
@@ -141,14 +136,20 @@ export function CreateAgents({ companyId, onDone }: CreateAgentsProps) {
   function markCreated(deptId: string) {
     setDeptState((prev) => {
       if (!prev[deptId] || prev[deptId].status === "created") return prev;
-      const next = { ...prev, [deptId]: { ...prev[deptId], status: "created" as const, error: null } };
-      const depts = departmentsRef.current;
-      if (depts.length > 0 && depts.every((d) => next[d.id]?.status === "created")) {
-        fireOnDoneOnce();
-      }
-      return next;
+      return { ...prev, [deptId]: { ...prev[deptId], status: "created" as const, error: null } };
     });
   }
+
+  // Fire onDone once every department is created. This MUST live in an effect,
+  // not inside the setDeptState updater — the updater runs during React's
+  // render phase, and onDone() is the parent InFlightFlow's setState, so calling
+  // it there triggers "Cannot update a component while rendering a different
+  // component." The doneFiredRef guard keeps it single-shot.
+  useEffect(() => {
+    if (departments.length > 0 && departments.every((d) => deptState[d.id]?.status === "created")) {
+      fireOnDoneOnce();
+    }
+  }, [departments, deptState, fireOnDoneOnce]);
 
   async function createAndAssign(dept: DeptRow) {
     const state = deptState[dept.id];
