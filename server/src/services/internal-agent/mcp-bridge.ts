@@ -188,7 +188,16 @@ export function createToolCallHandler(deps: ToolCallHandlerDeps) {
 
     const approval = await approvalSvc.createPending({
       companyId: deps.toolContext.companyId,
-      conversationId: deps.toolContext.conversationId ?? null,
+      // The Commander conversation id lives on contextScope (same source the
+      // non-gated emission uses for provenance at L107). The ToolContext has no
+      // top-level `conversationId`, so reading it directly stored null — which
+      // left the approved tool's result with no conversation to attach output
+      // refs to (the confirm route guards on a non-null conversationId), so
+      // approval-gated writes emitted no viewer nav chip.
+      conversationId:
+        deps.toolContext.contextScope?.conversationId ??
+        deps.toolContext.conversationId ??
+        null,
       runId: deps.toolContext.runId ?? null,
       userId: deps.toolContext.userId,
       toolName: name,
