@@ -245,3 +245,114 @@ describe("SnapshotInstallModal - agent", () => {
     expect(screen.getByRole("button", { name: /^Install$/ })).toBeDisabled();
   });
 });
+
+describe("SnapshotInstallModal — locked company/department (WS7)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(projectsApi.list).mockResolvedValue([
+      { id: "d1", name: "Engineering", type: "department" },
+      { id: "d9", name: "Sales", type: "department" },
+    ] as any);
+    vi.mocked(marketplaceApi.resolvePlan).mockResolvedValue({
+      rootItem: { id: ENGINEER_AGENT.id, name: "Engineer", type: "agent", version: "1.0.0" },
+      steps: [
+        { catalogItemId: ENGINEER_AGENT.id, itemType: "agent", name: "Engineer", version: "1.0.0", action: "install-new" },
+      ],
+      conflicts: [],
+      agentInstall: {
+        suggestedRole: "lead",
+        supportedRoles: ["cxo", "lead", "general"],
+        suggestedAdapterType: "codex",
+        supportedAdapterTypes: ["codex"],
+        availableAdapterTypes: ["codex"],
+        setupRequired: false,
+        setupRequirements: [],
+        warnings: [],
+      },
+    });
+    vi.mocked(marketplaceApi.install).mockResolvedValue({
+      operationId: "op-locked-1",
+      status: "pending",
+    });
+    vi.mocked(marketplaceApi.getOperation).mockResolvedValue({
+      id: "op-locked-1",
+      companyId: "c2",
+      catalogItemId: ENGINEER_AGENT.id,
+      itemType: "agent",
+      targetDepartmentId: "d9",
+      status: "running",
+      resultEntityId: null,
+      errorMessage: null,
+      cascadeResults: null,
+      startedAt: "2026-05-14T00:00:00.000Z",
+      completedAt: null,
+      createdAt: "2026-05-14T00:00:00.000Z",
+    });
+  });
+
+  it("hides both the company and department pickers when lockedCompanyId + lockedDeptId are both provided, and installs straight to them", async () => {
+    const user = userEvent.setup();
+    wrap(
+      <SnapshotInstallModal
+        item={ENGINEER_AGENT}
+        open
+        onOpenChange={() => {}}
+        lockedCompanyId="c2"
+        lockedDeptId="d9"
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText("Agent settings")).toBeInTheDocument());
+    expect(screen.queryByLabelText(/install to company/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/install to department/i)).not.toBeInTheDocument();
+
+    await waitFor(() => expect(screen.getByRole("button", { name: /^Install$/ })).not.toBeDisabled());
+    await user.click(screen.getByRole("button", { name: /^Install$/ }));
+
+    expect(marketplaceApi.install).toHaveBeenCalledWith("c2", {
+      catalogItemId: ENGINEER_AGENT.id,
+      targetDepartmentId: "d9",
+      role: "lead",
+      adapterType: "codex",
+    });
+  });
+
+  it("keeps using the locked company+department even though CompanyContext's selectedCompanyId differs, and fires onInstalled on a confirmed install", async () => {
+    // The top-of-file useCompany mock always reports selectedCompanyId "c1" —
+    // the modal must use the LOCKED "c2"/"d9" throughout, never falling back
+    // to (or being reset toward) the context's company.
+    const user = userEvent.setup();
+    const onInstalled = vi.fn();
+    wrap(
+      <SnapshotInstallModal
+        item={ENGINEER_AGENT}
+        open
+        onOpenChange={() => {}}
+        lockedCompanyId="c2"
+        lockedDeptId="d9"
+        onInstalled={onInstalled}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByRole("button", { name: /^Install$/ })).not.toBeDisabled());
+    await user.click(screen.getByRole("button", { name: /^Install$/ }));
+
+    await waitFor(() => expect(onInstalled).toHaveBeenCalledTimes(1));
+    expect(marketplaceApi.install).toHaveBeenCalledWith(
+      "c2",
+      expect.objectContaining({ targetDepartmentId: "d9" }),
+    );
+  });
+
+  it("passing only one of lockedCompanyId/lockedDeptId is treated as unlocked (pickers still render)", async () => {
+    wrap(
+      <SnapshotInstallModal
+        item={ENGINEER_AGENT}
+        open
+        onOpenChange={() => {}}
+        lockedDeptId="d9"
+      />,
+    );
+    await waitFor(() => expect(screen.getByLabelText(/install to department/i)).toBeInTheDocument());
+  });
+});
