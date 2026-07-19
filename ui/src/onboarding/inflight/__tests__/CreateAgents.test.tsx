@@ -144,6 +144,38 @@ describe("CreateAgents (WS7 — In-flight standalone surface)", () => {
     expect(within(modal).getByTestId("modal-locked-dept")).toHaveTextContent("dept-1");
   });
 
+  it("marketplace picker hides the AoA crew (aoa-* agents + the standard-crew team) but keeps regular agents", async () => {
+    const crewAgent = {
+      ...ENGINEER_AGENT,
+      id: "agent:aoa-curated/aoa-scout",
+      name: "Scout",
+      source: { ...ENGINEER_AGENT.source, adapter: "aoa-curated", locator: "content/agents/aoa-scout" },
+    } as CatalogItem;
+    const crewTeam = {
+      ...ENGINEER_AGENT,
+      id: "team:aoa-curated/default-crew",
+      type: "team",
+      name: "Standard Crew",
+      source: { ...ENGINEER_AGENT.source, adapter: "aoa-curated", locator: "content/teams/default-crew" },
+    } as CatalogItem;
+    getCatalog.mockResolvedValue({
+      schemaVersion: "1",
+      generatedAt: "now",
+      itemCount: 3,
+      items: [crewAgent, crewTeam, ENGINEER_AGENT],
+    });
+    render(<CreateAgents companyId="c1" onDone={vi.fn()} />);
+    await screen.findByDisplayValue("Software Lead");
+
+    fireEvent.click(screen.getByRole("button", { name: "Pick from marketplace" }));
+
+    // Regular agent is offered…
+    expect(await screen.findByText("Engineer")).toBeInTheDocument();
+    // …the crew agent + crew team are filtered out.
+    expect(screen.queryByText("Scout")).not.toBeInTheDocument();
+    expect(screen.queryByText("Standard Crew")).not.toBeInTheDocument();
+  });
+
   it("confirming the marketplace install marks the department created and fires onDone (no direct agent-create call)", async () => {
     getCatalog.mockResolvedValue({ schemaVersion: "1", generatedAt: "now", itemCount: 1, items: [ENGINEER_AGENT] });
     const onDone = vi.fn();

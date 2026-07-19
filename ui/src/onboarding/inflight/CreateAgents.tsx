@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CatalogItem } from "@armyofagents/shared";
 import { agentsApi } from "../../api/agents";
 import { projectsApi } from "../../api/projects";
-import { marketplaceApi, filterByType } from "../../api/marketplace";
+import { marketplaceApi, filterByType, isAoaCrewItem } from "../../api/marketplace";
 import { listAdapterOptions } from "@/adapters";
 import { Button } from "@/components/ui/button";
 import { SnapshotInstallModal } from "@/components/marketplace/install/SnapshotInstallModal";
@@ -118,7 +118,14 @@ export function CreateAgents({ companyId, onDone }: CreateAgentsProps) {
       .getCatalog()
       .then((catalog) => {
         if (cancelled) return;
-        setCatalogItems([...filterByType(catalog.items, "agent"), ...filterByType(catalog.items, "team")]);
+        // Show marketplace agents + teams, but hide AoA's own auto-seeded crew
+        // (the aoa-* crew agents + the standard-crew team) — re-offering the
+        // already-seeded crew in the picker is just noise.
+        const agentsAndTeams = [
+          ...filterByType(catalog.items, "agent"),
+          ...filterByType(catalog.items, "team"),
+        ].filter((item) => !isAoaCrewItem(item));
+        setCatalogItems(agentsAndTeams);
       })
       .catch(() => {
         // Best-effort — the marketplace path just shows an empty picker; the
