@@ -165,7 +165,10 @@ export function BraindumpStep({ companyId, onDone }: BraindumpStepProps) {
   }
 
   async function submitAll() {
-    if (submitting) return;
+    // Imperative guard as well as the disabled button: a click that lands in
+    // the same tick as an upload starting would otherwise submit the card
+    // without the file and leave the finished upload unlinked.
+    if (submitting || uploadingKeys.size > 0) return;
     setGlobalError(null);
     const toSubmit = boxes.filter((b) => hasInput(b) && b.status !== "submitted");
     if (toSubmit.length === 0) {
@@ -204,6 +207,10 @@ export function BraindumpStep({ companyId, onDone }: BraindumpStepProps) {
   }
 
   async function retryBox(key: string) {
+    // Same race as submitAll, on the per-card path: retrying a failed card
+    // while its replacement file is still uploading would submit the stale
+    // asset list.
+    if (uploadingKeys.has(key)) return;
     const box = boxes.find((b) => b.key === key);
     if (!box) return;
     updateBox(key, { status: "submitting", error: null });
@@ -286,7 +293,13 @@ export function BraindumpStep({ companyId, onDone }: BraindumpStepProps) {
               {box.status === "error" && (
                 <div className="mt-3 flex items-center justify-between gap-2 rounded-md border border-destructive/50 bg-destructive/10 p-2">
                   <p className="text-xs text-destructive">{box.error}</p>
-                  <Button type="button" size="sm" variant="outline" onClick={() => void retryBox(box.key)}>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={uploadingKeys.has(box.key)}
+                    onClick={() => void retryBox(box.key)}
+                  >
                     Retry
                   </Button>
                 </div>

@@ -1,7 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import type { MemoryItem } from "@armyofagents/shared";
 import { projectsApi } from "../../api/projects";
-import { braindumpApi, getBraindumpSessionId, type BraindumpCapture } from "../../api/braindump";
+import {
+  braindumpApi,
+  clearBraindumpSessionId,
+  getBraindumpSessionId,
+  type BraindumpCapture,
+} from "../../api/braindump";
 import { memoryApi } from "../../api/memory";
 import { Button } from "@/components/ui/button";
 import { AgentCharacter, Reveal } from "../motion";
@@ -53,6 +58,9 @@ export function LibrarianStep({ companyId, onDone }: LibrarianStepProps) {
   function fireOnDoneOnce() {
     if (doneFiredRef.current) return;
     doneFiredRef.current = true;
+    // The run is reviewed — end it, so a later braindump mints a fresh id
+    // instead of reusing these captures' idempotency keys.
+    clearBraindumpSessionId(companyId);
     onDone();
   }
 

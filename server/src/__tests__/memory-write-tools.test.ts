@@ -225,7 +225,7 @@ describe("write_memory crew tool — happy path", () => {
   it("calls writeMemoryAndIndex with companyId + all required fields", async () => {
     const ctx = makeCtx();
     const r = await writeMemoryTool.execute(
-      { title: "Test memory", content: "Detailed content", layer: "domain" },
+      { title: "Test memory", content: "Detailed content", layer: "domain", departmentId: "dept-eng" },
       ctx,
     );
     expect(r.success).toBe(true);
@@ -310,7 +310,7 @@ describe("write_memory crew tool — happy path", () => {
   it("defaults category to 'context' when omitted", async () => {
     const ctx = makeCtx();
     await writeMemoryTool.execute(
-      { title: "T", content: "x", layer: "domain" },
+      { title: "T", content: "x", layer: "domain", departmentId: "dept-eng" },
       ctx,
     );
     const callArgs = mockWriteMemoryAndIndex.mock.calls[0][2] as Record<string, unknown>;
@@ -320,7 +320,7 @@ describe("write_memory crew tool — happy path", () => {
   it("uses provided valid category", async () => {
     const ctx = makeCtx();
     await writeMemoryTool.execute(
-      { title: "T", content: "x", layer: "domain", category: "decision" },
+      { title: "T", content: "x", layer: "domain", category: "decision", departmentId: "dept-eng" },
       ctx,
     );
     const callArgs = mockWriteMemoryAndIndex.mock.calls[0][2] as Record<string, unknown>;
@@ -330,7 +330,7 @@ describe("write_memory crew tool — happy path", () => {
   it("falls back to 'context' for an invalid category value", async () => {
     const ctx = makeCtx();
     await writeMemoryTool.execute(
-      { title: "T", content: "x", layer: "domain", category: "nonexistent_type" },
+      { title: "T", content: "x", layer: "domain", category: "nonexistent_type", departmentId: "dept-eng" },
       ctx,
     );
     const callArgs = mockWriteMemoryAndIndex.mock.calls[0][2] as Record<string, unknown>;
@@ -370,7 +370,10 @@ describe("write_memory crew tool — folderPath", () => {
 
   it("defaults folderPath to '' (unfiled root) when omitted", async () => {
     const ctx = makeCtx();
-    await writeMemoryTool.execute({ title: "T", content: "x", layer: "domain" }, ctx);
+    await writeMemoryTool.execute(
+      { title: "T", content: "x", layer: "domain", departmentId: "dept-eng" },
+      ctx,
+    );
     const callArgs = mockWriteMemoryAndIndex.mock.calls[0][2] as Record<string, unknown>;
     expect(callArgs.folderPath).toBe("");
   });
@@ -400,7 +403,7 @@ describe("write_memory crew tool — folderPath", () => {
   it("treats a whitespace-only folderPath as unfiled rather than looking it up", async () => {
     const ctx = makeCtx({ db: makeDb({ folderFound: false }) });
     const r = await writeMemoryTool.execute(
-      { title: "T", content: "x", layer: "domain", folderPath: "   " },
+      { title: "T", content: "x", layer: "domain", departmentId: "dept-eng", folderPath: "   " },
       ctx,
     );
     // folderFound:false would reject if we'd attempted a lookup.
@@ -479,9 +482,7 @@ describe("write_memory crew tool — layer/scope invariant", () => {
     expect(mockWriteMemoryAndIndex).not.toHaveBeenCalled();
   });
 
-  it("rejects filing domain-layer memory into a folder when it has no departmentId", async () => {
-    // Otherwise the folder lookup falls through to the COMPANY folder set and
-    // files department knowledge company-wide.
+  it("rejects a domain write that would file into a company folder", async () => {
     const ctx = makeCtx();
     const r = await writeMemoryTool.execute(
       { title: "T", content: "x", layer: "domain", folderPath: "Company/Decisions" },
@@ -492,10 +493,14 @@ describe("write_memory crew tool — layer/scope invariant", () => {
     expect(mockWriteMemoryAndIndex).not.toHaveBeenCalled();
   });
 
-  it("still allows an UNFILED domain write with no departmentId (existing behaviour)", async () => {
+  it("rejects domain-layer memory with no departmentId at all", async () => {
+    // Decision #40: domain is department-scoped. An unscoped domain item can't
+    // be retrieved by any department context and files into company folders.
     const ctx = makeCtx();
     const r = await writeMemoryTool.execute({ title: "T", content: "x", layer: "domain" }, ctx);
-    expect(r.success).toBe(true);
+    expect(r.success).toBe(false);
+    expect(r.error).toBe("INVALID_PARAMS");
+    expect(mockWriteMemoryAndIndex).not.toHaveBeenCalled();
   });
 
   it("allows identity memory filed into a company folder", async () => {
@@ -513,7 +518,7 @@ describe("write_memory crew tool — error handling", () => {
     mockWriteMemoryAndIndex.mockRejectedValueOnce(new Error("DB offline"));
     const ctx = makeCtx();
     const r = await writeMemoryTool.execute(
-      { title: "T", content: "x", layer: "domain" },
+      { title: "T", content: "x", layer: "domain", departmentId: "dept-eng" },
       ctx,
     );
     expect(r.success).toBe(false);
@@ -525,7 +530,7 @@ describe("write_memory crew tool — error handling", () => {
     mockWriteMemoryAndIndex.mockResolvedValueOnce(null);
     const ctx = makeCtx();
     const r = await writeMemoryTool.execute(
-      { title: "T", content: "x", layer: "domain" },
+      { title: "T", content: "x", layer: "domain", departmentId: "dept-eng" },
       ctx,
     );
     expect(r.success).toBe(false);

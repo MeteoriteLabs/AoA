@@ -77,21 +77,33 @@ export const braindumpApi = {
 
 const fallbackSessionIds = new Map<string, string>();
 
+const SESSION_STORAGE_KEY = (companyId: string) => `aoa:braindump-session:${companyId}`;
+
 /**
- * Stable per (companyId, browser-tab-session) id, persisted in
- * `sessionStorage` so it survives a component remount (e.g. navigating away
- * from and back to the In-flight Braindump surface within the same
- * onboarding session) without minting a new id on every render. Falls back
- * to an in-memory id (still stable for the lifetime of the page) when
- * `sessionStorage` is unavailable (privacy mode, non-browser test runner).
+ * Stable id for the current braindump RUN — the founder's pass through the
+ * Braindump step and the Librarian review that follows it.
+ *
+ * Two things depend on it: the idempotency key (so a double-click reuses one
+ * capture) and LibrarianStep's filter (so the review shows this run's captures
+ * and not every historical one).
+ *
+ * It lives in `localStorage`, not `sessionStorage`, because onboarding is
+ * resumable across a browser restart: the in-flight step marker is durable, so
+ * a tab-scoped id would resume straight into the Librarian step with a fresh
+ * id, filter out the captures just submitted, and show the founder nothing.
+ * `clearBraindumpSessionId` ends the run once the review is done, so a later
+ * braindump mints a new id instead of colliding with these captures.
+ *
+ * Falls back to an in-memory id (stable for the lifetime of the page) when
+ * storage is unavailable (privacy mode, non-browser test runner).
  */
 export function getBraindumpSessionId(companyId: string): string {
-  const storageKey = `aoa:braindump-session:${companyId}`;
+  const storageKey = SESSION_STORAGE_KEY(companyId);
   try {
-    const existing = sessionStorage.getItem(storageKey);
+    const existing = localStorage.getItem(storageKey);
     if (existing) return existing;
     const next = crypto.randomUUID();
-    sessionStorage.setItem(storageKey, next);
+    localStorage.setItem(storageKey, next);
     return next;
   } catch {
     let id = fallbackSessionIds.get(companyId);
@@ -101,6 +113,21 @@ export function getBraindumpSessionId(companyId: string): string {
     }
     return id;
   }
+}
+
+/**
+ * Ends the current braindump run. Called once the founder finishes the
+ * Librarian review — the next braindump then starts a fresh run rather than
+ * reusing these captures' idempotency keys (which would return the OLD capture
+ * instead of creating a new one).
+ */
+export function clearBraindumpSessionId(companyId: string): void {
+  try {
+    localStorage.removeItem(SESSION_STORAGE_KEY(companyId));
+  } catch {
+    // Storage unavailable — the in-memory fallback id dies with the page.
+  }
+  fallbackSessionIds.delete(companyId);
 }
 
 /**

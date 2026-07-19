@@ -85,10 +85,11 @@ function makeMemoryItem(overrides: Record<string, unknown> = {}) {
 describe("LibrarianStep (WS6 — In-flight standalone surface)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    // The step only shows captures from THIS onboarding session, matched by the
-    // session id embedded in each idempotency key. Pin the id so the fixtures'
-    // "dept-1:sess" keys are in-session.
-    sessionStorage.setItem("aoa:braindump-session:c1", "sess");
+    // The step only shows captures from THIS braindump run, matched by the run
+    // id embedded in each idempotency key. Pin the id so the fixtures'
+    // "dept-1:sess" keys are in-run. It lives in localStorage so onboarding can
+    // resume after a browser restart.
+    localStorage.setItem("aoa:braindump-session:c1", "sess");
     list.mockResolvedValue([makeDept()]);
     listCaptures.mockResolvedValue([makeCapture()]);
     memoryList.mockResolvedValue({ items: [makeMemoryItem()], semanticAvailable: true });

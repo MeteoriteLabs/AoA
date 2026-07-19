@@ -138,7 +138,18 @@ async function correlateProposedMemoryItems(
  * file degrades to name-only anyway. Skipping oversized files outright makes
  * that outcome explicit instead of looking like a corrupt-file failure.
  */
-const ASSET_MAX_BYTES = 12 * 1024 * 1024;
+const ASSET_MAX_BYTES = 25 * 1024 * 1024;
+
+/** Most attachments we will fetch+parse for a single capture. Beyond this the
+ *  remaining files are still NAMED in the prompt, just not read — the prompt's
+ *  text budget is long spent by then anyway. */
+const ASSET_EXTRACT_LIMIT = 20;
+
+/** Per-file cap on RETAINED extracted text. The prompt only ever inlines
+ *  BRAINDUMP_FILE_TEXT_PROMPT_CAP characters in total, so holding a parsed
+ *  25MB PDF's full text (times N attachments) in memory buys nothing and is
+ *  how a normal multi-file submission turns into hundreds of MB of garbage. */
+const ASSET_TEXT_RETAIN_CAP = 12_000;
 
 const EXTRACTABLE_MIME_TYPES = new Set<string>(SUPPORTED_MIME_TYPES);
 
@@ -206,11 +217,13 @@ async function loadAttachedFiles(
 
   const storage = getStorageService();
   const out: BraindumpAttachedFile[] = [];
+  let extracted = 0;
   for (const asset of assets) {
-    if (!EXTRACTABLE_MIME_TYPES.has(asset.mimeType)) {
+    if (!EXTRACTABLE_MIME_TYPES.has(asset.mimeType) || extracted >= ASSET_EXTRACT_LIMIT) {
       out.push({ fileName: asset.fileName });
       continue;
     }
+    extracted += 1;
     try {
       const { stream, contentLength } = await storage.getObject(companyId, asset.storageKey);
       if (typeof contentLength === "number" && contentLength > ASSET_MAX_BYTES) {
@@ -219,7 +232,9 @@ async function loadAttachedFiles(
       }
       const buffer = await readWhole(stream);
       const { text } = await extractTextFromBuffer(buffer, asset.mimeType);
-      const trimmed = text.trim();
+      // Trim on the way IN, not at render time: the parsed string is retained
+      // for the whole dispatch, and only a few KB of it can ever be used.
+      const trimmed = text.trim().slice(0, ASSET_TEXT_RETAIN_CAP);
       out.push(trimmed ? { fileName: asset.fileName, text: trimmed } : { fileName: asset.fileName });
     } catch (err) {
       log.warn(
@@ -272,40 +287,42 @@ async function claimAndDispatch(db: Db, companyId: string, id: string): Promise<
   const row = claimed[0];
   if (!row) return false;
 
-  const librarianAgentId = await resolveLibrarianAgentId(db, companyId);
-  if (!librarianAgentId) {
-    await db
-      .update(braindumpCaptures)
-      .set({
-        status: "failed",
-        failureReason: "The Librarian agent is not provisioned for this company yet.",
-        dispatchCompletedAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .where(eq(braindumpCaptures.id, id));
-    return true;
-  }
-
-  // Company-wide captures have no department — skip the lookup entirely.
-  const [dept] = row.departmentId
-    ? await db
-        .select({ id: projects.id, name: projects.name })
-        .from(projects)
-        .where(and(eq(projects.id, row.departmentId), eq(projects.companyId, companyId)))
-        .limit(1)
-    : [undefined];
-
-  // Scope drives the memory layer: a company-wide capture seeds identity-layer
-  // memory (vision, values, brand), a department capture seeds domain-layer.
-  const memoryLayer = row.departmentId ? "domain" : "identity";
-
+  // EVERYTHING below runs inside the try. The row is already claimed as
+  // "running", and the claim predicate only re-accepts 'pending'/'failed' — so
+  // any throw that escapes here strands the capture in 'running' forever:
+  // retry refuses it and LibrarianStep polls it until the founder gives up.
+  // That applies to the agent lookup and department lookup just as much as to
+  // the run itself; a transient DB error on either is enough.
+  let librarianAgentId: string | null = null;
   const runStartedAt = new Date();
   try {
-    // Enrichment MUST stay inside this try. The row is already claimed as
-    // "running" at this point, and the claim predicate only re-accepts
-    // 'pending'/'failed' — so a throw out here (storage misconfigured, asset
-    // query fails) would strand the capture in 'running' forever: retry
-    // refuses it and LibrarianStep polls it until the founder gives up.
+    librarianAgentId = await resolveLibrarianAgentId(db, companyId);
+    if (!librarianAgentId) {
+      await db
+        .update(braindumpCaptures)
+        .set({
+          status: "failed",
+          failureReason: "The Librarian agent is not provisioned for this company yet.",
+          dispatchCompletedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(braindumpCaptures.id, id));
+      return true;
+    }
+
+    // Company-wide captures have no department — skip the lookup entirely.
+    const [dept] = row.departmentId
+      ? await db
+          .select({ id: projects.id, name: projects.name })
+          .from(projects)
+          .where(and(eq(projects.id, row.departmentId), eq(projects.companyId, companyId)))
+          .limit(1)
+      : [undefined];
+
+    // Scope drives the memory layer: a company-wide capture seeds identity-layer
+    // memory (vision, values, brand), a department capture seeds domain-layer.
+    const memoryLayer = row.departmentId ? "domain" : "identity";
+
     const [allowedFolders, attachedFiles] = await Promise.all([
       loadAllowedFolders(db, companyId, row.departmentId),
       loadAttachedFiles(db, companyId, row.departmentId, row.assetIds ?? []),
@@ -357,7 +374,7 @@ async function claimAndDispatch(db: Db, companyId: string, id: string): Promise<
     }
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
-    log.error({ err, companyId, braindumpId: id }, "claimAndDispatch: runAoaAgent threw");
+    log.error({ err, companyId, braindumpId: id }, "claimAndDispatch: dispatch threw");
     await db
       .update(braindumpCaptures)
       .set({

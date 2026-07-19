@@ -158,17 +158,18 @@ export const writeMemoryTool: AgentTool = {
         error: "INVALID_PARAMS",
       };
     }
-    // domain is department-scoped. Without a departmentId there is no
-    // department to file under, so the folder lookup below would fall through
-    // to the COMPANY folder set and quietly file department knowledge
-    // company-wide. Unfiled domain writes stay allowed (existing behaviour).
-    if (layer === "domain" && !departmentId && normalizedFolderPath) {
+    // domain is department-scoped by definition (Decision #40). An unscoped
+    // domain item isn't merely untidy: it can't be retrieved by any department
+    // context, and its folder lookup falls through to the COMPANY folder set,
+    // quietly filing department knowledge company-wide. Reject it loudly —
+    // an actionable error beats a memory item that silently belongs nowhere.
+    if (layer === "domain" && !departmentId) {
       return {
         success: false,
         data: null,
         summary:
-          "domain-layer memory needs a departmentId before it can be filed into a folder — " +
-          "pass departmentId, or omit folderPath",
+          "domain-layer memory is department-scoped and requires a departmentId — " +
+          'use layer="identity" for company-wide knowledge',
         error: "INVALID_PARAMS",
       };
     }

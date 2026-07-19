@@ -10,7 +10,12 @@ vi.mock("../client", () => ({
 }));
 
 import { api } from "../client";
-import { braindumpApi, braindumpIdempotencyKey, getBraindumpSessionId } from "../braindump";
+import {
+  braindumpApi,
+  braindumpIdempotencyKey,
+  clearBraindumpSessionId,
+  getBraindumpSessionId,
+} from "../braindump";
 
 describe("braindumpApi", () => {
   beforeEach(() => {
@@ -54,6 +59,7 @@ describe("braindumpApi", () => {
 describe("getBraindumpSessionId / braindumpIdempotencyKey", () => {
   beforeEach(() => {
     sessionStorage.clear();
+    localStorage.clear();
   });
 
   it("returns a stable id across repeated calls for the same company", () => {
@@ -68,13 +74,21 @@ describe("getBraindumpSessionId / braindumpIdempotencyKey", () => {
     expect(a).not.toBe(b);
   });
 
-  it("persists the session id in sessionStorage so a remount reuses it", () => {
+  it("persists the run id in localStorage so onboarding survives a browser restart", () => {
+    // localStorage, not sessionStorage: the in-flight step marker is durable,
+    // so a tab-scoped id would resume into the Librarian step with a fresh id
+    // and filter out the captures the founder just submitted.
     const first = getBraindumpSessionId("c1");
-    // Simulate a remount: nothing in-memory changes, but re-reading from
-    // sessionStorage must still return the same value.
     const second = getBraindumpSessionId("c1");
-    expect(sessionStorage.getItem("aoa:braindump-session:c1")).toBe(first);
+    expect(localStorage.getItem("aoa:braindump-session:c1")).toBe(first);
     expect(second).toBe(first);
+  });
+
+  it("clearBraindumpSessionId ends the run so the next braindump gets a new id", () => {
+    const first = getBraindumpSessionId("c1");
+    clearBraindumpSessionId("c1");
+    expect(localStorage.getItem("aoa:braindump-session:c1")).toBeNull();
+    expect(getBraindumpSessionId("c1")).not.toBe(first);
   });
 
   it("derives a stable idempotency key from departmentId + session id", () => {
