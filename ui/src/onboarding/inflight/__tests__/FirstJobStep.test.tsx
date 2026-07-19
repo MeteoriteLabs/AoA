@@ -100,7 +100,10 @@ describe("FirstJobStep (WS8 — In-flight standalone surface)", () => {
     await waitFor(() => expect(discussionsCreate).toHaveBeenCalledTimes(1));
     expect(discussionsCreate).toHaveBeenCalledWith(
       "c1",
-      expect.objectContaining({ title: "How should we price v1?" }),
+      expect.objectContaining({
+        title: "How should we price v1?",
+        entry: { inputType: "write", rawContent: "How should we price v1?" },
+      }),
     );
     expect(onDone).toHaveBeenCalledTimes(1);
     expect(issuesCreate).not.toHaveBeenCalled();

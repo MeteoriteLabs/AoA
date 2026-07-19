@@ -23,9 +23,11 @@ export type FirstJobStepProps = {
  * Two independent paths, side by side — either one counts as "a first job":
  *  - **Create a task**, optionally assigned to one of the company's org
  *    agents (`issuesApi.create`). The assignee picker is populated from
- *    `agentsApi.list`, filtered to `kind !== "aoa"` (org agents — the ones
- *    the founder just hired in WS7 — not the hidden internal crew); if there
- *    are none yet, the picker still works with only "Unassigned".
+ *    `agentsApi.list`, which already scopes to `kind: "org"` (non-terminated)
+ *    server-side — the ones the founder just hired in WS7, never the hidden
+ *    internal crew. The client-side filter below is a defensive belt-and-
+ *    braces guard, not the primary exclusion mechanism; if there are no
+ *    agents yet, the picker still works with only "Unassigned".
  *  - **Start a discussion** (`discussionsApi.create`), just a topic.
  *
  * Both are optional — this is a reward, not a wall: "Skip to Home" always
@@ -99,7 +101,11 @@ export function FirstJobStep({ companyId, onDone }: FirstJobStepProps) {
     setDiscussionStatus("creating");
     setDiscussionError(null);
     try {
-      await discussionsApi.create(companyId, { title: discussionTitle.trim() });
+      const topic = discussionTitle.trim();
+      await discussionsApi.create(companyId, {
+        title: topic,
+        entry: { inputType: "write", rawContent: topic },
+      });
       setDiscussionStatus("created");
       fireOnDoneOnce();
     } catch (e) {
