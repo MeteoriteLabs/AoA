@@ -18,6 +18,7 @@ vi.mock("drizzle-orm", () => ({
   // QA-BUG-3: deriveEffectiveStatus now uses inArray (was a raw `sql\`= ANY(...)\``
   // that generated invalid `= ANY(($1,$2,...))` and 500'd on real Postgres).
   inArray: vi.fn((a: unknown, b: unknown) => ({ _tag: "inArray", a, b })),
+  isNull: vi.fn((a: unknown) => ({ _tag: "isNull", a })),
   sql: vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => ({ _tag: "sql", strings, values })),
 }));
 
@@ -28,10 +29,25 @@ vi.mock("@armyofagents/db", () => {
     aoaAgentTriggers: t("aoaAgentTriggers"),
     braindumpCaptures: t("braindumpCaptures"),
     memoryAssets: t("memoryAssets"),
+    memoryFolders: t("memoryFolders"),
     memoryItems: t("memoryItems"),
     projects: t("projects"),
   };
 });
+
+// Phase 5c: dispatch now reads attached files out of storage and extracts
+// their text. Both are stubbed — the default `extractTextFromBuffer` mock is
+// per-test, and `getStorageService` never touches a real backend here.
+const getObjectMock = vi.fn();
+vi.mock("../storage/index.js", () => ({
+  getStorageService: () => ({ getObject: (...args: unknown[]) => getObjectMock(...args) }),
+}));
+
+const extractTextFromBufferMock = vi.fn();
+vi.mock("../services/file-import.js", () => ({
+  SUPPORTED_MIME_TYPES: ["application/pdf", "text/plain", "text/markdown"],
+  extractTextFromBuffer: (...args: unknown[]) => extractTextFromBufferMock(...args),
+}));
 
 const runAoaAgentMock = vi.fn();
 vi.mock("../services/internal-agent/aoa-agents/runner.js", () => ({
@@ -116,6 +132,7 @@ describe("braindumpService.submit", () => {
       [{ id: CAPTURE_ID, status: "running", departmentId: DEPT_ID, content: "We ship on Fridays." }], // 3. update -> running (claim)
       [{ id: LIBRARIAN_ID }],                                 // 4. select agents join triggers (resolveLibrarianAgentId)
       [DEPT_ROW],                                             // 5. select projects (dept name for prompt)
+      [{ path: "engineering/Decisions" }],                    // 6. select memoryFolders (allowed folders)
       [{ id: "mem-1" }, { id: "mem-2" }],                      // 6. select memoryItems (correlate)
       [],                                                     // 7. update -> proposed
       [{ id: CAPTURE_ID, status: "proposed", proposedMemoryItemIds: ["mem-1", "mem-2"], departmentId: DEPT_ID }], // 8. select latest
@@ -191,6 +208,7 @@ describe("braindumpService.submit", () => {
       [{ id: CAPTURE_ID, departmentId: null, scope: "company", idempotencyKey: "k1", status: "pending" }], // 1. insert
       [{ id: CAPTURE_ID, status: "running", departmentId: null, content: "We value candor." }],            // 2. claim
       [{ id: LIBRARIAN_ID }],                                                                              // 3. resolveLibrarianAgentId
+      [{ path: "Company/Decisions" }],                                                                     // 4. select memoryFolders (company scope)
       [{ id: "mem-9" }],                                                                                   // 4. correlate (IS NULL dept)
       [],                                                                                                  // 5. update -> proposed
       [{ id: CAPTURE_ID, status: "proposed", proposedMemoryItemIds: ["mem-9"], departmentId: null }],       // 6. select latest
@@ -207,11 +225,111 @@ describe("braindumpService.submit", () => {
 
     expect(result.status).toBe("proposed");
     expect(result.proposedMemoryItemIds).toEqual(["mem-9"]);
-    // 4 selects only (librarian, correlate, latest, derive) — no projects lookups.
-    expect(db.select).toHaveBeenCalledTimes(4);
+    // 5 selects (librarian, folders, correlate, latest, derive) — no projects lookups.
+    expect(db.select).toHaveBeenCalledTimes(5);
     const [, , payload] = runAoaAgentMock.mock.calls[0]!;
     expect(payload).toMatchObject({ companyId: CO_ID, source: "braindump.ingest", role: "librarian" });
     expect((payload as { departmentId: string | null }).departmentId).toBeNull();
+    // Company scope seeds IDENTITY-layer memory; department scope seeds domain.
+    expect((payload as { memoryLayer: string }).memoryLayer).toBe("identity");
+    expect((payload as { allowedFolders: string[] }).allowedFolders).toEqual(["Company/Decisions"]);
+  });
+
+  // ---------------------------------------------------------------------
+  // Phase 5c — what the Librarian actually receives.
+  // ---------------------------------------------------------------------
+
+  it("sends layer=domain plus the department's folder list for a department capture", async () => {
+    runAoaAgentMock.mockResolvedValue({ status: "succeeded", runId: "run-5c" });
+    const db = createSequenceDb([
+      [DEPT_ROW],                                                    // 1. validate dept
+      [{ id: CAPTURE_ID, departmentId: DEPT_ID, status: "pending" }], // 2. insert
+      [{ id: CAPTURE_ID, status: "running", departmentId: DEPT_ID, content: "x", assetIds: [] }], // 3. claim
+      [{ id: LIBRARIAN_ID }],                                        // 4. librarian
+      [DEPT_ROW],                                                    // 5. dept name
+      [{ path: "engineering/Architecture" }, { path: "engineering/Decisions" }], // 6. folders
+      [],                                                            // 7. correlate
+      [],                                                            // 8. update -> proposed
+      [{ id: CAPTURE_ID, status: "proposed", proposedMemoryItemIds: [], departmentId: DEPT_ID }], // 9. latest
+    ]);
+    await braindumpService(db).submit(CO_ID, {
+      departmentId: DEPT_ID,
+      content: "x",
+      idempotencyKey: "k1",
+    });
+
+    const [, , payload] = runAoaAgentMock.mock.calls[0]! as [unknown, unknown, Record<string, unknown>];
+    expect(payload.memoryLayer).toBe("domain");
+    expect(payload.allowedFolders).toEqual(["engineering/Architecture", "engineering/Decisions"]);
+    expect(payload.attachedFiles).toEqual([]);
+  });
+
+  it("extracts text from a readable attached file and names an unreadable one", async () => {
+    runAoaAgentMock.mockResolvedValue({ status: "succeeded", runId: "run-file" });
+    getObjectMock.mockResolvedValue({ stream: [Buffer.from("notes")], contentLength: 5 });
+    extractTextFromBufferMock.mockResolvedValue({ text: "  Runway is 14 months.  ", warnings: [] });
+
+    const db = createSequenceDb([
+      [DEPT_ROW],
+      [{ id: "a-1" }, { id: "a-2" }],                                // asset ownership check (submit)
+      [{ id: CAPTURE_ID, departmentId: DEPT_ID, status: "pending" }],
+      [{ id: CAPTURE_ID, status: "running", departmentId: DEPT_ID, content: "", assetIds: ["a-1", "a-2"] }],
+      [{ id: LIBRARIAN_ID }],
+      [DEPT_ROW],
+      [{ path: "engineering/Files" }],                                // folders
+      [                                                              // memoryAssets
+        { fileName: "notes.md", mimeType: "text/markdown", storageKey: "k/1" },
+        { fileName: "logo.png", mimeType: "image/png", storageKey: "k/2" },
+      ],
+      [],
+      [],
+      [{ id: CAPTURE_ID, status: "proposed", proposedMemoryItemIds: [], departmentId: DEPT_ID }],
+    ]);
+    await braindumpService(db).submit(CO_ID, {
+      departmentId: DEPT_ID,
+      content: "",
+      assetIds: ["a-1", "a-2"],
+      idempotencyKey: "k1",
+    });
+
+    const [, , payload] = runAoaAgentMock.mock.calls[0]! as [unknown, unknown, Record<string, unknown>];
+    expect(payload.attachedFiles).toEqual([
+      { fileName: "notes.md", text: "Runway is 14 months." }, // trimmed
+      { fileName: "logo.png" },                               // image: named only, never read
+    ]);
+    // The image must not have been fetched from storage at all.
+    expect(getObjectMock).toHaveBeenCalledTimes(1);
+    expect(getObjectMock).toHaveBeenCalledWith(CO_ID, "k/1");
+  });
+
+  it("a file that fails to extract degrades to name-only instead of failing the capture", async () => {
+    runAoaAgentMock.mockResolvedValue({ status: "succeeded", runId: "run-badfile" });
+    getObjectMock.mockRejectedValue(new Error("storage offline"));
+
+    const db = createSequenceDb([
+      [DEPT_ROW],
+      [{ id: "a-1" }],                                               // asset ownership check (submit)
+      [{ id: CAPTURE_ID, departmentId: DEPT_ID, status: "pending" }],
+      [{ id: CAPTURE_ID, status: "running", departmentId: DEPT_ID, content: "x", assetIds: ["a-1"] }],
+      [{ id: LIBRARIAN_ID }],
+      [DEPT_ROW],
+      [{ path: "engineering/Files" }],
+      [{ fileName: "spec.pdf", mimeType: "application/pdf", storageKey: "k/9" }],
+      [],
+      [],
+      [{ id: CAPTURE_ID, status: "proposed", proposedMemoryItemIds: [], departmentId: DEPT_ID }],
+    ]);
+    const result = await braindumpService(db).submit(CO_ID, {
+      departmentId: DEPT_ID,
+      content: "x",
+      assetIds: ["a-1"],
+      idempotencyKey: "k1",
+    });
+
+    // Storage was down, but the braindump still reached the Librarian.
+    expect(result.status).toBe("proposed");
+    const [, , payload] = runAoaAgentMock.mock.calls[0]! as [unknown, unknown, Record<string, unknown>];
+    expect(payload.attachedFiles).toEqual([{ fileName: "spec.pdf" }]);
   });
 
   it("rejects assetIds that do not belong to this company (no cross-company file smuggling)", async () => {
@@ -286,6 +404,7 @@ describe("braindumpService.submit", () => {
       [{ id: CAPTURE_ID, status: "running", departmentId: DEPT_ID }],
       [{ id: LIBRARIAN_ID }],
       [DEPT_ROW],
+      [{ path: "engineering/Decisions" }],
       [], // update -> failed
       [{ id: CAPTURE_ID, status: "failed", failureReason: "adapter exited 1", proposedMemoryItemIds: [], departmentId: DEPT_ID }],
     ]);
@@ -304,6 +423,7 @@ describe("braindumpService.submit", () => {
       [{ id: CAPTURE_ID, status: "running", departmentId: DEPT_ID }],
       [{ id: LIBRARIAN_ID }],
       [DEPT_ROW],
+      [{ path: "engineering/Decisions" }],
       [], // update -> failed (catch branch)
       [{ id: CAPTURE_ID, status: "failed", failureReason: "subprocess spawn ENOENT", proposedMemoryItemIds: [], departmentId: DEPT_ID }],
     ]);
@@ -333,7 +453,8 @@ describe("braindumpService.retry", () => {
       [{ id: CAPTURE_ID, status: "running", departmentId: DEPT_ID }],                       // 2. update -> running (claim)
       [{ id: LIBRARIAN_ID }],                                        // 3. select agents
       [DEPT_ROW],                                                    // 4. select projects
-      [],                                                            // 5. select memoryItems (correlate) -> none
+      [{ path: "engineering/Decisions" }],                           // 5. select memoryFolders
+      [],                                                            // 6. select memoryItems (correlate) -> none
       [],                                                            // 6. update -> proposed
       [{ id: CAPTURE_ID, status: "proposed", proposedMemoryItemIds: [], departmentId: DEPT_ID }], // 7. select latest
     ]);

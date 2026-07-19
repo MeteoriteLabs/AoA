@@ -30,7 +30,23 @@ export const SUPPORTED_MIME_TYPES = [
   "application/pdf",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   "text/plain",
+  // Item 5: founders drop notes/exports on the onboarding memory step, and
+  // these are all UTF-8 text — extracting them is the same code path as
+  // text/plain. This list also feeds the memory-asset upload allowlist
+  // (memory-assets-upload.ts spreads it), so a dropped .md stopped being a
+  // 400 the moment it became extractable.
+  "text/markdown",
+  "text/csv",
+  "application/json",
 ] as const;
+
+/** MIME types handled by the plain-UTF-8 branch of extractTextFromBuffer. */
+const PLAIN_TEXT_MIME_TYPES = new Set<string>([
+  "text/plain",
+  "text/markdown",
+  "text/csv",
+  "application/json",
+]);
 
 export type SupportedMimeType = (typeof SUPPORTED_MIME_TYPES)[number];
 
@@ -68,10 +84,11 @@ export async function extractTextFromBuffer(
   buffer: Buffer,
   mimeType: string,
 ): Promise<TextExtractionResult> {
-  switch (mimeType) {
-    case "text/plain":
-      return { text: buffer.toString("utf-8"), warnings: [] };
+  if (PLAIN_TEXT_MIME_TYPES.has(mimeType)) {
+    return { text: buffer.toString("utf-8"), warnings: [] };
+  }
 
+  switch (mimeType) {
     case "application/pdf": {
       const parser = new PDFParse({ data: buffer });
       const result = await parser.getText();

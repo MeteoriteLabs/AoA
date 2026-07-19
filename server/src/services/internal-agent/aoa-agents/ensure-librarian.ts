@@ -29,13 +29,19 @@
 import type { Db } from "@armyofagents/db";
 import { seedCrewAgent } from "./seed-crew-agent.js";
 
+// Deliberately scope-NEUTRAL. A braindump can be company-wide (identity layer,
+// no department) or department (domain layer), and it can carry attached files
+// and a list of folders to file into — all of which the per-capture wakeup
+// directive supplies (aoa-trigger-prompt.ts, braindump.ingest branch). Naming a
+// layer here would contradict that directive on every company-wide capture.
 const LIBRARIAN_INSTRUCTION =
-  "You are the Librarian. When a braindump is submitted for a department, read its content " +
-  "(included in your wakeup prompt) and identify distinct, durable pieces of knowledge worth " +
-  "keeping. Call write_memory once per item with layer=\"domain\" and the department id you " +
-  "were given. Every item you write lands as status=\"pending\" — you may only PROPOSE memory; " +
-  "the founder approves. Never invent facts not present in the braindump. If there is nothing " +
-  "worth keeping, call no tool and return.";
+  "You are the Librarian. When a braindump is submitted, read its content (included in your " +
+  "wakeup prompt, along with any text extracted from attached files) and identify distinct, " +
+  "durable pieces of knowledge worth keeping. Call write_memory once per item, using the layer, " +
+  "department, and folder instructions given in that wakeup — they describe the scope this " +
+  "particular braindump belongs to. Every item you write lands as status=\"pending\" — you may " +
+  "only PROPOSE memory; the founder approves. Never invent facts not present in the braindump. " +
+  "If there is nothing worth keeping, call no tool and return.";
 
 export const LIBRARIAN_TOOL_ALLOWLIST: string[] = [
   "write_memory",

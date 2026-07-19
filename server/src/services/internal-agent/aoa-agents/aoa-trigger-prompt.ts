@@ -94,13 +94,62 @@ const INBOX_ROUTING_DIRECTIVE =
 // has no thread/entry to read from — this is a standalone, server-dispatched
 // wakeup, never a mention/sweep). Mirrors the inbox-routing content-injection
 // pattern above.
-const BRAINDUMP_INGEST_DIRECTIVE =
-  "A braindump has been submitted for the department named below. Its content is shown under " +
-  "'Braindump content'. Identify distinct, durable pieces of knowledge worth keeping — facts, " +
-  "conventions, glossary terms, standing preferences, domain context — and call write_memory " +
-  "once per item with layer=\"domain\" and departmentId set to the department id given below. " +
-  "Do not invent facts that are not in the braindump content. If there is nothing worth keeping, " +
-  "call no tool and return — that is a correct, non-failing outcome.";
+/**
+ * Item 5 / Phase 5c: the braindump directive is now built per-capture, because
+ * a capture can be COMPANY-wide (identity layer, no department) or DEPARTMENT
+ * (domain layer) — the two need different layer/departmentId instructions, and
+ * a single static string was silently teaching the Librarian to always write
+ * layer="domain" with a departmentId, which is wrong for a company capture.
+ *
+ * It also names the folders the Librarian may file into. write_memory validates
+ * folderPath server-side (Phase 5b), so an unlisted folder is a hard rejection
+ * — listing them here is what lets the agent get it right on the first try
+ * instead of guessing and burning a tool call on an error.
+ */
+function braindumpIngestDirective(opts: {
+  layer: "identity" | "domain";
+  hasDepartment: boolean;
+  allowedFolders: string[];
+  hasFiles: boolean;
+}): string {
+  const scopeSentence = opts.hasDepartment
+    ? `Call write_memory once per item with layer="${opts.layer}" and departmentId set to the ` +
+      "department id given below."
+    : `This is COMPANY-WIDE knowledge, not department knowledge. Call write_memory once per item ` +
+      `with layer="${opts.layer}" and NO departmentId.`;
+
+  const folderSentence =
+    opts.allowedFolders.length > 0
+      ? "Set folderPath on every write to the single best-fitting folder from 'Folders you may " +
+        "file into' below. Those are the only accepted values — anything else is rejected. If " +
+        "nothing fits, omit folderPath rather than inventing a folder."
+      : "";
+
+  const fileSentence = opts.hasFiles
+    ? "Files were attached to this braindump; any readable text from them appears under " +
+      "'Attached files'. Treat that text as part of the braindump. Files that are not text " +
+      "(images, binaries) are already stored in the memory tree — do not try to describe their " +
+      "contents, and do not write a memory item that merely restates a file name."
+    : "";
+
+  return [
+    "A braindump has been submitted. Its content is shown under 'Braindump content'. Identify " +
+      "distinct, durable pieces of knowledge worth keeping — facts, conventions, glossary terms, " +
+      "standing preferences, domain context.",
+    scopeSentence,
+    folderSentence,
+    fileSentence,
+    "Do not invent facts that are not in the braindump content. If there is nothing worth " +
+      "keeping, call no tool and return — that is a correct, non-failing outcome.",
+  ]
+    .filter((s) => s.length > 0)
+    .join(" ");
+}
+
+/** Cap on how much extracted file text is injected per braindump wakeup, so a
+ *  dropped 200-page PDF can't blow the context budget. Separate from
+ *  BRAINDUMP_CONTENT_PROMPT_CAP, which bounds the typed text. */
+export const BRAINDUMP_FILE_TEXT_PROMPT_CAP = 8000;
 
 /** WS6 payload cap: braindump text injected into the trigger prompt is
  *  truncated beyond this length so a single wakeup can't blow the context
@@ -182,15 +231,45 @@ export function buildTriggerPrompt(args: BuildTriggerPromptArgs): string {
     }
   } else if (payload.source === "braindump.ingest") {
     // WS6 — direct server dispatch, no thread/entry/task involved.
-    directive = BRAINDUMP_INGEST_DIRECTIVE;
-
     const departmentId = payload.departmentId;
-    if (typeof departmentId === "string" && departmentId.length > 0) {
+    const hasDepartment = typeof departmentId === "string" && departmentId.length > 0;
+
+    // Scope determines the layer: company braindumps seed identity-layer memory
+    // (vision/mission/values/brand), department braindumps seed domain-layer.
+    // Defensive default matches the pre-Phase-5c behaviour for old payloads.
+    const layer = payload.memoryLayer === "identity" ? "identity" : "domain";
+
+    const allowedFolders = Array.isArray(payload.allowedFolders)
+      ? (payload.allowedFolders as unknown[]).filter(
+          (f): f is string => typeof f === "string" && f.length > 0,
+        )
+      : [];
+
+    const attachedFiles = Array.isArray(payload.attachedFiles)
+      ? (payload.attachedFiles as unknown[]).filter(
+          (f): f is { fileName: string; text?: string } =>
+            !!f && typeof f === "object" && typeof (f as { fileName?: unknown }).fileName === "string",
+        )
+      : [];
+
+    directive = braindumpIngestDirective({
+      layer,
+      hasDepartment,
+      allowedFolders,
+      hasFiles: attachedFiles.length > 0,
+    });
+
+    if (hasDepartment) {
       ctxLines.push(`Department id: ${departmentId}`);
+    } else {
+      ctxLines.push("Scope: company-wide (no department)");
     }
     const departmentName = payload.departmentName;
     if (typeof departmentName === "string" && departmentName.length > 0) {
       ctxLines.push(`Department name: ${departmentName}`);
+    }
+    if (allowedFolders.length > 0) {
+      ctxLines.push(`Folders you may file into:\n${allowedFolders.map((f) => `- ${f}`).join("\n")}`);
     }
 
     const braindumpContent = payload.braindumpContent;
@@ -199,6 +278,23 @@ export function buildTriggerPrompt(args: BuildTriggerPromptArgs): string {
         ? `${braindumpContent.slice(0, BRAINDUMP_CONTENT_PROMPT_CAP)}…[truncated]`
         : braindumpContent;
       ctxLines.push(`Braindump content:\n${clipped}`);
+    }
+
+    // Attached files. Every file is NAMED (so the agent knows what the founder
+    // dropped, even for an image it can't read), and readable text is inlined
+    // under a shared budget — first-come, so one huge PDF can't starve the
+    // files after it out of the prompt entirely.
+    if (attachedFiles.length > 0) {
+      let textBudget = BRAINDUMP_FILE_TEXT_PROMPT_CAP;
+      const rendered = attachedFiles.map((file) => {
+        const text = typeof file.text === "string" ? file.text.trim() : "";
+        if (!text) return `- ${file.fileName} (stored in the memory tree; no readable text)`;
+        if (textBudget <= 0) return `- ${file.fileName} (text omitted — prompt budget reached)`;
+        const slice = text.length > textBudget ? `${text.slice(0, textBudget)}…[truncated]` : text;
+        textBudget -= slice.length;
+        return `- ${file.fileName}:\n${slice}`;
+      });
+      ctxLines.push(`Attached files:\n${rendered.join("\n")}`);
     }
   } else if (typeof payload.issueId === "string" && payload.issueId.length > 0) {
     // Spec B Task 5 — a task assignment wakeup. The task directive overrides the

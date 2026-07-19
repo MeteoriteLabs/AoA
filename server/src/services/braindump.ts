@@ -38,10 +38,20 @@
 
 import { and, desc, eq, gte, inArray, isNull, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { agents, aoaAgentTriggers, braindumpCaptures, memoryAssets, memoryItems, projects } from "@armyofagents/db";
+import {
+  agents,
+  aoaAgentTriggers,
+  braindumpCaptures,
+  memoryAssets,
+  memoryFolders,
+  memoryItems,
+  projects,
+} from "@armyofagents/db";
 import { badRequest, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { runAoaAgent } from "./internal-agent/aoa-agents/runner.js";
+import { extractTextFromBuffer, SUPPORTED_MIME_TYPES } from "./file-import.js";
+import { getStorageService } from "../storage/index.js";
 
 const log = logger.child({ svc: "braindump" });
 
@@ -120,6 +130,111 @@ async function correlateProposedMemoryItems(
  * state — this IS the idempotency guard: concurrent submit+retry calls race
  * safely, only one wins the UPDATE...WHERE...RETURNING.
  */
+/** Cap on bytes read per attached file before extraction. A 50MB PDF (the
+ *  upload limit) would otherwise be fully buffered per dispatch; the prompt
+ *  only ever uses the first few KB of the extracted text anyway. */
+const ASSET_READ_BYTES_CAP = 2 * 1024 * 1024;
+
+const EXTRACTABLE_MIME_TYPES = new Set<string>(SUPPORTED_MIME_TYPES);
+
+/**
+ * Read at most `ASSET_READ_BYTES_CAP` bytes off a storage stream, then stop
+ * consuming. Truncating a PDF/docx mid-stream can make the parser fail, which
+ * is why the caller treats extraction failure as "no readable text" rather
+ * than an error — a file we can't read still gets NAMED in the prompt.
+ */
+async function readCapped(stream: NodeJS.ReadableStream): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const chunk of stream) {
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string);
+    chunks.push(buf);
+    total += buf.length;
+    if (total >= ASSET_READ_BYTES_CAP) break;
+  }
+  return Buffer.concat(chunks).subarray(0, ASSET_READ_BYTES_CAP);
+}
+
+export interface BraindumpAttachedFile {
+  fileName: string;
+  /** Extracted text, when the file is a readable type AND extraction worked.
+   *  Absent for images/video/binaries — those are already stored in the
+   *  memory tree; the Librarian just needs to know they exist. */
+  text?: string;
+}
+
+/**
+ * Load the files dropped on this capture and extract text where possible.
+ *
+ * Entirely best-effort: storage or parser failure on one file degrades that
+ * file to name-only and NEVER fails the capture. A founder's braindump must
+ * still reach the Librarian when the storage backend is having a bad day.
+ */
+async function loadAttachedFiles(
+  db: Db,
+  companyId: string,
+  assetIds: string[],
+): Promise<BraindumpAttachedFile[]> {
+  if (assetIds.length === 0) return [];
+
+  const assets = await db
+    .select({
+      fileName: memoryAssets.fileName,
+      mimeType: memoryAssets.mimeType,
+      storageKey: memoryAssets.storageKey,
+    })
+    .from(memoryAssets)
+    .where(and(eq(memoryAssets.companyId, companyId), inArray(memoryAssets.id, assetIds)));
+
+  const storage = getStorageService();
+  const out: BraindumpAttachedFile[] = [];
+  for (const asset of assets) {
+    if (!EXTRACTABLE_MIME_TYPES.has(asset.mimeType)) {
+      out.push({ fileName: asset.fileName });
+      continue;
+    }
+    try {
+      const { stream } = await storage.getObject(companyId, asset.storageKey);
+      const buffer = await readCapped(stream);
+      const { text } = await extractTextFromBuffer(buffer, asset.mimeType);
+      const trimmed = text.trim();
+      out.push(trimmed ? { fileName: asset.fileName, text: trimmed } : { fileName: asset.fileName });
+    } catch (err) {
+      log.warn(
+        { err, companyId, fileName: asset.fileName },
+        "loadAttachedFiles: extraction failed — passing file name only",
+      );
+      out.push({ fileName: asset.fileName });
+    }
+  }
+  return out;
+}
+
+/**
+ * The folder paths this capture's scope may file into. Matches the exact set
+ * `write_memory` validates against (Phase 5b) — company folders have a NULL
+ * departmentId, department folders carry the department's id — so anything
+ * listed in the prompt is guaranteed to be accepted by the tool.
+ */
+async function loadAllowedFolders(
+  db: Db,
+  companyId: string,
+  departmentId: string | null,
+): Promise<string[]> {
+  const rows = await db
+    .select({ path: memoryFolders.path })
+    .from(memoryFolders)
+    .where(
+      and(
+        eq(memoryFolders.companyId, companyId),
+        departmentId === null
+          ? isNull(memoryFolders.departmentId)
+          : eq(memoryFolders.departmentId, departmentId),
+      ),
+    );
+  return rows.map((r) => r.path).filter((p): p is string => typeof p === "string" && p.length > 0);
+}
+
 async function claimAndDispatch(db: Db, companyId: string, id: string): Promise<boolean> {
   const claimed = await db
     .update(braindumpCaptures)
@@ -158,6 +273,14 @@ async function claimAndDispatch(db: Db, companyId: string, id: string): Promise<
         .limit(1)
     : [undefined];
 
+  // Scope drives the memory layer: a company-wide capture seeds identity-layer
+  // memory (vision, values, brand), a department capture seeds domain-layer.
+  const memoryLayer = row.departmentId ? "domain" : "identity";
+  const [allowedFolders, attachedFiles] = await Promise.all([
+    loadAllowedFolders(db, companyId, row.departmentId),
+    loadAttachedFiles(db, companyId, row.assetIds ?? []),
+  ]);
+
   const runStartedAt = new Date();
   try {
     const result = await runAoaAgent(db, librarianAgentId, {
@@ -167,6 +290,9 @@ async function claimAndDispatch(db: Db, companyId: string, id: string): Promise<
       departmentId: row.departmentId,
       departmentName: dept?.name,
       braindumpContent: row.content,
+      memoryLayer,
+      allowedFolders,
+      attachedFiles,
     });
 
     if (result.status === "succeeded") {
