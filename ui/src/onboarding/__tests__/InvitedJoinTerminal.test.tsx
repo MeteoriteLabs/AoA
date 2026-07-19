@@ -48,33 +48,44 @@ describe("InvitedJoinTerminal", () => {
   });
   afterEach(() => vi.useRealTimers());
 
-  it("auto-admits: finalize returns admitted → evicts the journey cache, refreshes companies, enters", async () => {
+  it("auto-admits: finalize returns admitted → evicts the journey cache, refreshes companies, shows the admitted (mini-map) screen — does NOT navigate yet", async () => {
     finalizeInvitedJoin.mockResolvedValue({ admitted: true, status: "approved" });
     render(<InvitedJoinTerminal />);
-    await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/", { replace: true }));
+    await screen.findByRole("button", { name: /^enter acme$/i });
     // Filed path (consent captured at token-accept time) — bare call, no
     // acceptOpenInvite flag. The single-arg exact match also proves no second
     // argument was passed.
     expect(finalizeInvitedJoin).toHaveBeenCalledWith("c1");
     expect(mockRemoveQueries).toHaveBeenCalledWith({ queryKey: ["onboarding", "journey"], exact: true });
-    // Companies list must be refreshed (the pre-membership cache is stale) and
-    // BEFORE navigation — otherwise the Lobby renders from the empty cache.
+    // Companies list must be refreshed (the pre-membership cache is stale)
+    // BEFORE the admitted screen renders — Home's data is warm by the time the
+    // teammate clicks "Enter".
     expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: queryKeys.companies.all });
-    expect(mockRemoveQueries.mock.invocationCallOrder[0]).toBeLessThan(
-      mockNavigate.mock.invocationCallOrder[0]!,
-    );
-    expect(mockInvalidateQueries.mock.invocationCallOrder[0]).toBeLessThan(
-      mockNavigate.mock.invocationCallOrder[0]!,
-    );
+    expect(mockNavigate).not.toHaveBeenCalled();
   });
 
-  it("auto-admit enters and STOPS the poll loop (no over-correction into polling after navigation)", async () => {
-    // enter() is a terminal STOP: the round-13 fix keeps polling ONLY under
-    // not-approved, never after we navigate away. Prove the loop is dead by
-    // advancing time and seeing no further fetchJourney/finalize calls.
+  it("admitted screen: clicking 'Enter {company}' navigates to Home; no engine step appears", async () => {
     finalizeInvitedJoin.mockResolvedValue({ admitted: true, status: "approved" });
     render(<InvitedJoinTerminal />);
+    const enterBtn = await screen.findByRole("button", { name: /^enter acme$/i });
+    // The read-only mini-map ("the machine you're joining") renders on this
+    // terminal screen, and no engine/CLI step is shown for invited teammates
+    // (v1 decision — the company Commander is company-scoped, not per-human).
+    expect(screen.getByText("The machine you're joining")).toBeInTheDocument();
+    expect(screen.queryByText(/engine/i)).toBeNull();
+    expect(screen.queryByText(/verify/i)).toBeNull();
+    fireEvent.click(enterBtn);
     await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/", { replace: true }));
+  });
+
+  it("auto-admit reaches the admitted screen and STOPS the poll loop (no over-correction into polling)", async () => {
+    // The round-13 fix keeps polling ONLY under not-approved, never once
+    // admission is detected. Prove the loop is dead by advancing time and
+    // seeing no further fetchJourney/finalize calls — even before the teammate
+    // clicks through "Enter".
+    finalizeInvitedJoin.mockResolvedValue({ admitted: true, status: "approved" });
+    render(<InvitedJoinTerminal />);
+    await screen.findByRole("button", { name: /^enter acme$/i });
     const journeyCalls = fetchJourney.mock.calls.length;
     const finalizeCalls = finalizeInvitedJoin.mock.calls.length;
     await act(async () => {
@@ -82,6 +93,7 @@ describe("InvitedJoinTerminal", () => {
     });
     expect(fetchJourney.mock.calls.length).toBe(journeyCalls);
     expect(finalizeInvitedJoin.mock.calls.length).toBe(finalizeCalls);
+    expect(mockNavigate).not.toHaveBeenCalled();
   });
 
   it("not admitted → shows the pending screen with company + role", async () => {
@@ -92,7 +104,7 @@ describe("InvitedJoinTerminal", () => {
     expect(mockNavigate).not.toHaveBeenCalled();
   });
 
-  it("polls: enters when the journey flips to returning (founder approved)", async () => {
+  it("polls: reaches the admitted screen when the journey flips to returning (founder approved); Enter navigates", async () => {
     render(<InvitedJoinTerminal />);
     await screen.findByText(/joining/i);
     // Approval flips the journey AND removes the invitation from the pending
@@ -106,6 +118,9 @@ describe("InvitedJoinTerminal", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(8000);
     });
+    const enterBtn = await screen.findByRole("button", { name: /^enter acme$/i });
+    expect(mockNavigate).not.toHaveBeenCalled();
+    fireEvent.click(enterBtn);
     await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/", { replace: true }));
   });
 
@@ -150,19 +165,22 @@ describe("InvitedJoinTerminal", () => {
     expect(finalizeInvitedJoin).toHaveBeenCalledWith("c2");
   });
 
-  it("already-a-member: finalize still runs and admits (returning + pending invitation)", async () => {
+  it("already-a-member: finalize still runs and admits (returning + pending invitation) → admitted screen, Enter navigates", async () => {
     // A member of another company invited into c1 — the resolver says
     // "returning", but the pending invitation must drive a finalize attempt,
     // not a bounce to "/" without joining.
     fetchJourney.mockResolvedValue({ ...invitedJourney, journey: "returning" });
     finalizeInvitedJoin.mockResolvedValue({ admitted: true, status: "approved" });
     render(<InvitedJoinTerminal />);
-    await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/", { replace: true }));
+    const enterBtn = await screen.findByRole("button", { name: /^enter acme$/i });
     // Filed path — bare call, no acceptOpenInvite flag.
     expect(finalizeInvitedJoin).toHaveBeenCalledWith("c1");
+    expect(mockNavigate).not.toHaveBeenCalled();
+    fireEvent.click(enterBtn);
+    await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/", { replace: true }));
   });
 
-  it("already-a-member: pending until the invitation clears, then enters", async () => {
+  it("already-a-member: pending until the invitation clears, then reaches the admitted screen", async () => {
     fetchJourney.mockResolvedValue({ ...invitedJourney, journey: "returning" });
     finalizeInvitedJoin.mockResolvedValue({ admitted: false, status: "pending" });
     render(<InvitedJoinTerminal />);
@@ -178,6 +196,9 @@ describe("InvitedJoinTerminal", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(8000);
     });
+    const enterBtn = await screen.findByRole("button", { name: /^enter acme$/i });
+    expect(mockNavigate).not.toHaveBeenCalled();
+    fireEvent.click(enterBtn);
     await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/", { replace: true }));
   });
 
@@ -227,12 +248,14 @@ describe("InvitedJoinTerminal", () => {
       await act(async () => {
         await vi.advanceTimersByTimeAsync(8000);
       });
-      await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/", { replace: true }));
+      const enterBtn = await screen.findByRole("button", { name: /^enter acme$/i });
       // Resolved the anchored company A, never B (no finalize, no consent card).
       expect(finalizeInvitedJoin).toHaveBeenCalledWith("cA");
       expect(finalizeInvitedJoin).not.toHaveBeenCalledWith("cB");
       expect(finalizeInvitedJoin).not.toHaveBeenCalledWith("cB", expect.anything());
       expect(screen.queryByText(/Beta/)).toBeNull();
+      fireEvent.click(enterBtn);
+      await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/", { replace: true }));
     });
 
     it("REJECT: deep-linked A rejected, B still pending → not-approved for A, never switches to B", async () => {
@@ -353,10 +376,12 @@ describe("InvitedJoinTerminal", () => {
       // Idempotent finalize returns admitted even though cA left the pending set.
       finalizeInvitedJoin.mockResolvedValue({ admitted: true, status: "approved" });
       render(<InvitedJoinTerminal />);
-      await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/", { replace: true }));
+      const enterBtn = await screen.findByRole("button", { name: /^enter$/i });
       expect(finalizeInvitedJoin).toHaveBeenCalledWith("cA");
       expect(finalizeInvitedJoin).not.toHaveBeenCalledWith("cB");
       expect(finalizeInvitedJoin).not.toHaveBeenCalledWith("cB", expect.anything());
+      fireEvent.click(enterBtn);
+      await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/", { replace: true }));
     });
 
     it("no-record deep link: finalize 404s for cA → degrades to not-approved, never hangs on B", async () => {
@@ -440,12 +465,15 @@ describe("InvitedJoinTerminal", () => {
       const joinAgain = await screen.findByRole("button", { name: /join acme/i });
       expect(joinAgain).toBeTruthy();
       // Accepting the re-invite finalizes invite2 (a SECOND finalize, with the
-      // tokenless consent assertion) and enters.
+      // tokenless consent assertion) and reaches the admitted screen.
       finalizeInvitedJoin.mockResolvedValue({ admitted: true, status: "approved" });
       fireEvent.click(joinAgain);
-      await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/", { replace: true }));
+      const enterBtn = await screen.findByRole("button", { name: /^enter acme$/i });
       expect(finalizeInvitedJoin).toHaveBeenCalledTimes(2);
       expect(finalizeInvitedJoin).toHaveBeenLastCalledWith("cA", { acceptOpenInvite: true });
+      expect(mockNavigate).not.toHaveBeenCalled();
+      fireEvent.click(enterBtn);
+      await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/", { replace: true }));
     });
 
     it("does not re-finalize the SAME invitation across ticks (no-loop guard preserved)", async () => {
@@ -535,11 +563,14 @@ describe("InvitedJoinTerminal", () => {
       expect(joinAgain).toBeTruthy();
 
       // Accepting the re-invite finalizes invite2 (the tokenless consent
-      // assertion again) and enters.
+      // assertion again) and reaches the admitted screen.
       finalizeInvitedJoin.mockResolvedValue({ admitted: true, status: "approved" });
       fireEvent.click(joinAgain);
-      await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/", { replace: true }));
+      const enterBtn = await screen.findByRole("button", { name: /^enter acme$/i });
       expect(finalizeInvitedJoin).toHaveBeenLastCalledWith("cA", { acceptOpenInvite: true });
+      expect(mockNavigate).not.toHaveBeenCalled();
+      fireEvent.click(enterBtn);
+      await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/", { replace: true }));
     });
   });
 
@@ -561,8 +592,11 @@ describe("InvitedJoinTerminal", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(8000);
     });
-    await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/", { replace: true }));
+    const enterBtn = await screen.findByRole("button", { name: /^enter acme$/i });
     expect(finalizeInvitedJoin).toHaveBeenCalledTimes(2);
+    expect(mockNavigate).not.toHaveBeenCalled();
+    fireEvent.click(enterBtn);
+    await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/", { replace: true }));
   });
 
   it("401 from finalize bails to sign-in", async () => {
@@ -592,7 +626,7 @@ describe("InvitedJoinTerminal", () => {
       ],
     };
 
-    it("renders the consent card and does NOT finalize until Join is clicked; click → finalize → enter", async () => {
+    it("renders the consent card and does NOT finalize until Join is clicked; click → finalize → admitted screen → Enter navigates", async () => {
       fetchJourney.mockResolvedValue(tokenlessJourney);
       finalizeInvitedJoin.mockResolvedValue({ admitted: true, status: "approved" });
       render(<InvitedJoinTerminal />);
@@ -604,10 +638,13 @@ describe("InvitedJoinTerminal", () => {
       expect(finalizeInvitedJoin).not.toHaveBeenCalled();
       expect(mockNavigate).not.toHaveBeenCalled();
       fireEvent.click(screen.getByRole("button", { name: /join acme/i }));
-      await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/", { replace: true }));
+      const enterBtn = await screen.findByRole("button", { name: /^enter acme$/i });
       // The consent-click finalize is the tokenless CLAIM branch — it must
       // carry the server-side consent assertion.
       expect(finalizeInvitedJoin).toHaveBeenCalledWith("c1", { acceptOpenInvite: true });
+      expect(mockNavigate).not.toHaveBeenCalled();
+      fireEvent.click(enterBtn);
+      await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith("/", { replace: true }));
     });
 
     it("click → finalize pending → pending screen (request now filed)", async () => {
