@@ -9,6 +9,14 @@ const mockGetInstallation = vi.hoisted(() => vi.fn());
 const mockListInstallationRepositories = vi.hoisted(() => vi.fn());
 const mockSignInstallState = vi.hoisted(() => vi.fn((c: string) => `signed:${c}`));
 const mockVerifyInstallState = vi.hoisted(() => vi.fn());
+// Mirrors the real ONBOARDING_RETURN_PATHS allowlist in services/github-app.ts
+// so route-level tests can assert against the same fixed key→path mapping.
+const ONBOARDING_RETURN_PATHS = vi.hoisted(() => ({
+  integrations: "/home?onboarding=integrations&github=connected",
+}));
+const mockIsOnboardingReturnTarget = vi.hoisted(() =>
+  vi.fn((v: unknown) => typeof v === "string" && Object.prototype.hasOwnProperty.call(ONBOARDING_RETURN_PATHS, v)),
+);
 
 vi.mock("../services/github-app.js", () => ({
   getInstallUrl: mockGetInstallUrl,
@@ -18,6 +26,8 @@ vi.mock("../services/github-app.js", () => ({
   listInstallationRepositories: mockListInstallationRepositories,
   signInstallState: mockSignInstallState,
   verifyInstallState: mockVerifyInstallState,
+  isOnboardingReturnTarget: mockIsOnboardingReturnTarget,
+  ONBOARDING_RETURN_PATHS,
 }));
 
 const mockOctokit = vi.hoisted(() => ({
@@ -830,11 +840,31 @@ describe("POST /execution-workspaces/:id/github-pr/request-review", () => {
 });
 
 describe("GET /companies/:companyId/github/app/install-url", () => {
+  beforeEach(() => {
+    mockSignInstallState.mockClear();
+  });
+
   it("returns the GitHub App install URL", async () => {
     const app = createApp(boardActor);
     const res = await request(app).get("/api/companies/company-1/github/app/install-url");
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ url: expect.stringContaining("github.com") });
+  });
+
+  it("passes the onboarding returnTo through to signInstallState when ?return= is an allowlisted key", async () => {
+    const app = createApp(boardActor);
+    await request(app)
+      .get("/api/companies/company-1/github/app/install-url")
+      .query({ return: "integrations" });
+    expect(mockSignInstallState).toHaveBeenCalledWith("company-1", { returnTo: "integrations" });
+  });
+
+  it("silently drops an unrecognized ?return= value instead of forwarding it", async () => {
+    const app = createApp(boardActor);
+    await request(app)
+      .get("/api/companies/company-1/github/app/install-url")
+      .query({ return: "javascript:alert(1)" });
+    expect(mockSignInstallState).toHaveBeenCalledWith("company-1", { returnTo: undefined });
   });
 });
 
@@ -850,11 +880,12 @@ describe("GET /api/github/callback", () => {
     // calls leaked from earlier tests in this file (no global clearAllMocks here).
     mockSaveInstallation.mockClear();
     mockSaveInstallation.mockResolvedValue({ ...installationData, id: "inst-1", companyId: "company-1" });
-    // Default: a valid signed state resolves to company-1. Forged-state test overrides to null.
-    mockVerifyInstallState.mockReturnValue("company-1");
+    // Default: a valid signed state resolves to company-1 with no returnTo.
+    // Forged-state test overrides to null; returnTo test overrides per-case.
+    mockVerifyInstallState.mockReturnValue({ companyId: "company-1", returnTo: null });
   });
 
-  it("saves installation and redirects to settings", async () => {
+  it("saves installation and redirects to settings when the signed state carries no returnTo", async () => {
     const app = createApp(boardActor);
     const res = await request(app)
       .get("/api/github/callback")
@@ -871,6 +902,39 @@ describe("GET /api/github/callback", () => {
       expect.anything(),
       expect.objectContaining({ companyId: "company-1", installationId: "12345" }),
     );
+  });
+
+  it("redirects to the onboarding return target when the SIGNED state carries an allowlisted returnTo", async () => {
+    mockVerifyInstallState.mockReturnValue({ companyId: "company-1", returnTo: "integrations" });
+    const app = createApp(boardActor);
+    const res = await request(app)
+      .get("/api/github/callback")
+      .query({ installation_id: "12345", setup_action: "install", state: "signed-with-return" });
+    expect(res.status).toBe(302);
+    expect(res.headers.location).toBe(
+      "http://localhost:5173/company-1/home?onboarding=integrations&github=connected",
+    );
+    expect(res.headers.location).not.toContain("/settings");
+  });
+
+  it("does NOT honor a free-form/unsigned `return` query param on the callback itself — only the signed state's returnTo is trusted", async () => {
+    // The signed state (mocked) carries no returnTo, but the request also
+    // includes a raw `return` query param trying to redirect to the
+    // onboarding path directly. This must be ignored — proving there is no
+    // open-redirect vector via an unsigned parameter.
+    mockVerifyInstallState.mockReturnValue({ companyId: "company-1", returnTo: null });
+    const app = createApp(boardActor);
+    const res = await request(app)
+      .get("/api/github/callback")
+      .query({
+        installation_id: "12345",
+        setup_action: "install",
+        state: "signed-no-return",
+        return: "integrations",
+      });
+    expect(res.status).toBe(302);
+    expect(res.headers.location).toContain("/settings");
+    expect(res.headers.location).not.toContain("/home");
   });
 
   it("returns 400 when installation_id is missing", async () => {

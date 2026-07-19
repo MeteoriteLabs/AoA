@@ -34,6 +34,8 @@ import {
   listInstallationRepositories,
   signInstallState,
   verifyInstallState,
+  isOnboardingReturnTarget,
+  ONBOARDING_RETURN_PATHS,
 } from "../services/github-app.js";
 import { emitPullRequestTaskOutput } from "../services/task-output-emitters.js";
 import { resolveGitRoot, runGit, push } from "../services/git.js";
@@ -738,7 +740,15 @@ export function githubRoutes(db: Db) {
     assertBoard(req);
     assertCompanyAccess(req, req.params.companyId);
     try {
-      const url = getInstallUrl(signInstallState(req.params.companyId));
+      // `return` is a caller-supplied hint, but it is only ever used to pick a
+      // key out of the fixed ONBOARDING_RETURN_PATHS allowlist — an
+      // unrecognized value is silently dropped (falls back to no returnTo,
+      // i.e. the existing Settings redirect). The actual redirect path is
+      // never taken from the request; it's baked into the signed state below
+      // and re-validated against the same allowlist when the callback fires.
+      const rawReturn = req.query.return;
+      const returnTo = isOnboardingReturnTarget(rawReturn) ? rawReturn : undefined;
+      const url = getInstallUrl(signInstallState(req.params.companyId, { returnTo }));
       res.json({ url });
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Failed to build install URL";
@@ -761,11 +771,12 @@ export function githubRoutes(db: Db) {
       return;
     }
 
-    const companyId = verifyInstallState(rawState);
-    if (!companyId) {
+    const verified = verifyInstallState(rawState);
+    if (!verified) {
       res.redirect(`${uiBase}/settings?tab=github&github=invalid_state`);
       return;
     }
+    const { companyId, returnTo } = verified;
 
     const appId = process.env.GITHUB_APP_ID;
     const privateKey = process.env.GITHUB_APP_PRIVATE_KEY_PEM;
@@ -787,9 +798,13 @@ export function githubRoutes(db: Db) {
 
     await saveInstallation(db, { companyId, installationId: installation_id, accountLogin, accountType });
 
-    // Redirect to the company's settings page with the GitHub tab active.
+    // Prefer the onboarding return target ONLY when it came from the signed,
+    // integrity-protected state (never a raw/unsigned query param — that
+    // would be an open redirect and could detach the callback from the
+    // company the install was actually initiated for). Default to Settings.
     // companyId is used as the URL prefix (e.g. /acme/settings?tab=github).
-    res.redirect(`${uiBase}/${companyId}/settings?tab=github`);
+    const redirectPath = returnTo ? ONBOARDING_RETURN_PATHS[returnTo] : "/settings?tab=github";
+    res.redirect(`${uiBase}/${companyId}${redirectPath}`);
   });
 
   router.delete("/companies/:companyId/github/app", async (req, res) => {
