@@ -479,6 +479,8 @@ export {
   type UpdateEnvironmentInput,
 } from "./environment.js";
 
+export { isGitHubRepoUrl } from "./github.js";
+
 export {
   createUserEntityPinSchema,
   type CreateUserEntityPin,

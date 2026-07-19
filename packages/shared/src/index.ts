@@ -1056,6 +1056,7 @@ export {
   createInboxDismissalSchema,
   type InboxDismissal,
   type CreateInboxDismissal,
+  isGitHubRepoUrl,
   createUserEntityPinSchema,
   type CreateUserEntityPin,
   createUserNoteSchema,
