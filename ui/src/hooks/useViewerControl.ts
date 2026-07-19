@@ -5,12 +5,17 @@ import {
   type ViewerControlSource,
   type ViewerPreference,
 } from "../api/viewer-preferences";
-import { DEFAULT_VIEWER_CONTROL_LEVEL } from "@armyofagents/shared";
 import { queryKeys } from "../lib/queryKeys";
 
 export interface UseViewerControlResult {
-  /** The resolved level in effect (user override, else company default). */
-  effectiveLevel: ViewerControlLevel;
+  /**
+   * The resolved level in effect (user override, else company default).
+   * `undefined` while the query is unresolved (loading OR error — react-query
+   * leaves `query.data` undefined in both cases). Consumers MUST fail closed
+   * (treat undefined as "manual") — do NOT coalesce to a company default here,
+   * or auto-open would fail OPEN during loading/error.
+   */
+  effectiveLevel: ViewerControlLevel | undefined;
   /** The raw per-user override (null = inheriting the company default). */
   userLevel: ViewerControlLevel | null;
   /** Whether the effective level came from the user override or the company. */
@@ -48,7 +53,7 @@ export function useViewerControl(
   const prefs = query.data;
 
   return {
-    effectiveLevel: prefs?.effectiveLevel ?? DEFAULT_VIEWER_CONTROL_LEVEL,
+    effectiveLevel: prefs?.effectiveLevel,
     userLevel: prefs?.viewerControlLevel ?? null,
     source: prefs?.source ?? "company",
     setUserLevel: (level) => {

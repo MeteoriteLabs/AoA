@@ -1423,7 +1423,7 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
           // effective viewerControl level read from a ref (this closure is stale;
           // reading the state var here would be render-old). Chips already show
           // ALL refs via the mergeRefs above — only tab creation is arbitrated.
-          if (enableViewerPanel && !autoOpenedTurnRef.current) {
+          if (enableViewerPanel && !useDrawerSessions && !autoOpenedTurnRef.current) {
             const pick = pickAutoOpenRef(
               liveRefs,
               effectiveLevelRef.current,
@@ -1437,6 +1437,20 @@ export function AgentPanelContent({ conversationId, onSelectConversation, onOpen
               openPreviewRef.current("right-panel");
               viewer.onLiveRef(pick, useDrawerSessions, effectiveLevelRef.current);
               autoOpenedTurnRef.current = true;
+            }
+          } else if (
+            enableViewerPanel &&
+            useDrawerSessions &&
+            effectiveLevelRef.current !== "manual"
+          ) {
+            // Mobile: no visible tab opens (the drawer stays closed), but pre-load
+            // the created refs and surface the "N new" pill badge — governed by
+            // viewerControl (manual = no nudge). pickAutoOpenRef excludes mobile,
+            // so this per-ref path (not the one-tab arbitration) restores the badge
+            // + pre-load. No per-turn cap here: mobile opens no focused tab, so we
+            // pre-load ALL refs for an accurate badge count (prior parity).
+            for (const r of liveRefs) {
+              viewer.onLiveRef(r, useDrawerSessions, effectiveLevelRef.current);
             }
           }
         }
