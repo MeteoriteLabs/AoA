@@ -157,6 +157,127 @@ describe("buildOutputRefs", () => {
   });
 });
 
+describe("buildOutputRefs — navigational refs (Tier-3)", () => {
+  // Result-shape fixtures verified against the actual Commander tool handlers:
+  //   create_task  (action-tools.ts:65)   → data: issue row  → id at `data.id`
+  //   update_task  (action-tools.ts:97)   → data: issue row | null → id at `data.id`
+  //   suggest_memory (memory-tools.ts:292) → data: memory row → id at `data.id`
+  //   write_memory (memory-write.ts:209)   → data: { memoryItemId }
+  //   propose_memory_from_thread (memory-propose.ts:308) → data: { memoryItemId }
+  //     (gated controller path returns { actionId, queued } → NO memory id → no ref)
+  //   approval_decision (approval-tools.ts:163) → data: approval row → id at `data.id`
+
+  it("create_task → v2 task ref, action created; provenance:null when no ctx", () => {
+    const refs = buildOutputRefs(
+      "create_task",
+      { title: "Fix auth" },
+      ok({ id: "task-1", title: "Fix auth", status: "todo" }),
+    );
+    expect(refs).toEqual([
+      expect.objectContaining({
+        v: 2, kind: "task", id: "task-1", action: "created", provenance: null,
+      }),
+    ]);
+  });
+
+  it("create_task with a provenance ctx → provenance stamped", () => {
+    const refs = buildOutputRefs(
+      "create_task",
+      { title: "Fix auth" },
+      ok({ id: "task-1", title: "Fix auth" }),
+      emitCtx(),
+    );
+    expect(refs[0]).toMatchObject({
+      v: 2, kind: "task", id: "task-1", action: "created",
+      provenance: { surface: "commander", entityId: "conv-1", runId: "run-1", seq: 0 },
+    });
+  });
+
+  it("update_task → v2 task ref, action referenced", () => {
+    const refs = buildOutputRefs(
+      "update_task",
+      { taskId: "task-2" },
+      ok({ id: "task-2", title: "Renamed", status: "in_progress" }),
+    );
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toMatchObject({ v: 2, kind: "task", id: "task-2", action: "referenced" });
+  });
+
+  it("update_task with a null result (task not found) → no ref", () => {
+    expect(buildOutputRefs("update_task", { taskId: "task-x" }, ok(null))).toHaveLength(0);
+  });
+
+  it("suggest_memory → v2 memory_item ref, action created (id from data.id)", () => {
+    const refs = buildOutputRefs(
+      "suggest_memory",
+      { title: "Prefer Drizzle", content: "…", layer: "domain" },
+      ok({ id: "mem-1", title: "Prefer Drizzle", layer: "domain", status: "pending" }),
+    );
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toMatchObject({ v: 2, kind: "memory_item", id: "mem-1", action: "created" });
+  });
+
+  it("write_memory → v2 memory_item ref, action created (id from data.memoryItemId)", () => {
+    const refs = buildOutputRefs(
+      "write_memory",
+      { title: "X", content: "…", layer: "working" },
+      ok({ memoryItemId: "mem-2" }),
+      emitCtx(),
+    );
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toMatchObject({
+      v: 2, kind: "memory_item", id: "mem-2", action: "created",
+      provenance: { surface: "commander", entityId: "conv-1", seq: 0 },
+    });
+  });
+
+  it("propose_memory_from_thread (non-gated) → memory_item ref from data.memoryItemId", () => {
+    const refs = buildOutputRefs(
+      "propose_memory_from_thread",
+      { content: "…", layer: "working", sourceThreadId: "th-1" },
+      ok({ memoryItemId: "mem-3" }),
+    );
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toMatchObject({ v: 2, kind: "memory_item", id: "mem-3", action: "created" });
+  });
+
+  it("propose_memory_from_thread (gated: queued action, no memory id) → no ref", () => {
+    const refs = buildOutputRefs(
+      "propose_memory_from_thread",
+      { content: "…", layer: "working", sourceThreadId: "th-1" },
+      ok({ actionId: "act-1", queued: true }),
+    );
+    expect(refs).toHaveLength(0);
+  });
+
+  it("approval_decision → v2 approval ref, action referenced (id from data.id)", () => {
+    const refs = buildOutputRefs(
+      "approval_decision",
+      { approvalId: "appr-1", action: "approve" },
+      ok({ id: "appr-1", status: "approved" }),
+    );
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toMatchObject({ v: 2, kind: "approval", id: "appr-1", action: "referenced" });
+  });
+
+  it("approval_decision with a null result → no ref", () => {
+    expect(buildOutputRefs("approval_decision", { approvalId: "a" }, ok(null))).toHaveLength(0);
+  });
+
+  it("navigational refs all validate against the shared schema", () => {
+    const cases = [
+      buildOutputRefs("create_task", { title: "T" }, ok({ id: "t1" }), emitCtx()),
+      buildOutputRefs("update_task", { taskId: "t2" }, ok({ id: "t2" }), emitCtx()),
+      buildOutputRefs("suggest_memory", { title: "M", content: "c", layer: "domain" }, ok({ id: "m1" }), emitCtx()),
+      buildOutputRefs("write_memory", { title: "M", content: "c", layer: "working" }, ok({ memoryItemId: "m2" }), emitCtx()),
+      buildOutputRefs("approval_decision", { approvalId: "a1", action: "approve" }, ok({ id: "a1", status: "approved" }), emitCtx()),
+    ];
+    for (const refs of cases) {
+      expect(showRefsSchema.safeParse(refs).success).toBe(true);
+    }
+  });
+});
+
 describe("mergeOutputRefs", () => {
   const ref = (id: string, action: "created" | "referenced", versionId: string | null = null): CommanderOutputRef =>
     ({ v: 1, kind: "artifact", id, versionId, action });

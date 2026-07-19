@@ -92,6 +92,36 @@ function artifactRef(
   };
 }
 
+/**
+ * Build a NAVIGATIONAL (pointer) ref — task / memory_item / approval. Unlike
+ * `artifactRef` these carry no versionId/versionNumber: they point at a live
+ * entity the viewer resolves by id on open. Returns null when `id` is absent
+ * (a failed/empty tool result must emit no ref — the schema would reject an
+ * empty id anyway; we fail gracefully instead).
+ */
+function navRef(
+  partial: {
+    kind: "task" | "memory_item" | "approval";
+    id: string | null;
+    action: "created" | "referenced";
+  },
+  ctx?: OutputRefEmitCtx,
+): ShowRef | null {
+  if (!partial.id) return null;
+  return {
+    v: 2,
+    kind: partial.kind,
+    id: partial.id,
+    versionId: null,
+    versionNumber: null,
+    title: null,
+    action: partial.action,
+    toolCallId: null,
+    mimeType: null,
+    provenance: buildProvenance(ctx),
+  };
+}
+
 function refsFromRows(data: unknown, ctx?: OutputRefEmitCtx): ShowRef[] {
   if (!Array.isArray(data)) return [];
   return data
@@ -183,6 +213,48 @@ export function buildOutputRefs(
           },
           ctx,
         );
+        refs = ref ? [ref] : [];
+        break;
+      }
+      // ── Navigational (Tier-3) — Commander's internal-agent tools ──
+      // Result shapes verified against the handlers (file:line noted per case).
+      case "create_task": {
+        // action-tools.ts:65 → data: issue row (id at data.id).
+        const ref = navRef({ kind: "task", id: asId(d.id), action: "created" }, ctx);
+        refs = ref ? [ref] : [];
+        break;
+      }
+      case "update_task": {
+        // action-tools.ts:97 → data: issue row | null (id at data.id).
+        const ref = navRef({ kind: "task", id: asId(d.id), action: "referenced" }, ctx);
+        refs = ref ? [ref] : [];
+        break;
+      }
+      case "suggest_memory": {
+        // memory-tools.ts:292 → data: memory item row (id at data.id).
+        const ref = navRef({ kind: "memory_item", id: asId(d.id), action: "created" }, ctx);
+        refs = ref ? [ref] : [];
+        break;
+      }
+      case "write_memory":
+      case "propose_memory_from_thread": {
+        // memory-write.ts:209 / memory-propose.ts:308 → data: { memoryItemId }.
+        // (propose's gated controller path returns { actionId, queued } with no
+        // memoryItemId → asId returns null → no ref, which is correct.)
+        const ref = navRef(
+          { kind: "memory_item", id: asId(d.memoryItemId), action: "created" },
+          ctx,
+        );
+        refs = ref ? [ref] : [];
+        break;
+      }
+      case "approval_decision": {
+        // approval-tools.ts:163 → data: approval row (id at data.id). A
+        // successful decision always returns the updated row; a failed one
+        // returns success:false (already short-circuited above) — so guard on
+        // the RESULT id, not the params. Commander only DECIDES existing
+        // approvals → action is always "referenced".
+        const ref = navRef({ kind: "approval", id: asId(d.id), action: "referenced" }, ctx);
         refs = ref ? [ref] : [];
         break;
       }
