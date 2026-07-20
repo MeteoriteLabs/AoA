@@ -45,6 +45,16 @@ function isFailedCheck(c: VerifyCheck): boolean {
 }
 
 /**
+ * A check that did NOT pass. Auth checks are emitted at `level: "warn"` (they
+ * are recoverable, not fatal), so keying only on "error" rendered a green tick
+ * beside "your session has expired or been revoked" — the same "it says fine
+ * when it isn't" confusion this step exists to eliminate. Only `info` is a pass.
+ */
+function isPassedCheck(c: VerifyCheck): boolean {
+  return !c.level || c.level === "info" || c.level === "pass";
+}
+
+/**
  * The raw `detail` of a failed probe is a stream-json dump. When the CLI is
  * simply signed out, the useful sentence is buried inside it — pull it out so
  * the founder reads "your session expired" instead of a wall of JSON.
@@ -198,7 +208,7 @@ export function VerifyStep({ ctx, onComplete }: StepProps) {
       setChecks(list);
       // Headline the FAILING check, not checks[0] — otherwise a passing first
       // check masks the failure that actually blocked the step.
-      setMessage((list.find(isFailedCheck) ?? list[0])?.message ?? null);
+      setMessage((list.find((c) => !isPassedCheck(c)) ?? list[0])?.message ?? null);
       if ((res.outcome ?? "verified") === "verified") {
         clearPoll();
         clearCliPoll();
@@ -324,15 +334,24 @@ export function VerifyStep({ ctx, onComplete }: StepProps) {
         <Reveal delay={0.14}>
           <ul className="space-y-1 rounded-xl border border-border-strong bg-surface/40 p-3 text-left text-[11px]">
             {checks.map((c, i) => {
+              const passed = isPassedCheck(c);
               const failed = isFailedCheck(c);
+              // Three states, not two: info passes, error fails, and warn is a
+              // real problem the founder must act on (that is how a recoverable
+              // auth failure arrives) — so it must never render as a tick.
+              const icon = passed ? "✓" : failed ? "✕" : "!";
               return (
                 <li key={c.code ?? i} className="flex items-start gap-2">
-                  <span aria-hidden className={failed ? "text-destructive" : ""} style={failed ? undefined : { color: "var(--done)" }}>
-                    {failed ? "✕" : "✓"}
+                  <span
+                    aria-hidden
+                    className={passed ? "" : "text-destructive"}
+                    style={passed ? { color: "var(--done)" } : undefined}
+                  >
+                    {icon}
                   </span>
-                  <span className={failed ? "text-destructive" : "text-dim"}>
+                  <span className={passed ? "text-dim" : "text-destructive"}>
                     {c.message ?? c.code}
-                    {failed && c.hint && <span className="mt-0.5 block text-dim">{c.hint}</span>}
+                    {!passed && c.hint && <span className="mt-0.5 block text-dim">{c.hint}</span>}
                   </span>
                 </li>
               );

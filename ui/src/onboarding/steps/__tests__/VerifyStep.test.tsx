@@ -510,3 +510,52 @@ describe("VerifyStep — per-check breakdown", () => {
     expect(screen.queryByText(/Working directory is valid/)).toBeNull();
   });
 });
+
+// Caught by live verification against a genuinely revoked token, not by any
+// unit test: auth checks arrive at level "warn" (recoverable, not fatal), and
+// keying the tick on level==="error" rendered a GREEN CHECK beside "your
+// session has expired or been revoked".
+describe("VerifyStep — a warn-level check must not render as a pass", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const WARN_EXPIRED = {
+    outcome: "needs_auth",
+    result: {
+      status: "warn",
+      checks: [
+        { code: "claude_cwd_valid", level: "info", message: "Working directory is valid: /home/ada" },
+        {
+          code: "claude_hello_probe_auth_expired",
+          level: "warn",
+          message: "Signed in as ada@example.com, but that session has expired or been revoked.",
+          hint: "Sign in again — paste an API key below.",
+        },
+      ],
+    },
+  };
+
+  it("marks the warn-level auth check as a problem, not a pass", async () => {
+    post.mockRejectedValueOnce(new ApiError("Request failed: 422", 422, WARN_EXPIRED));
+    const { container } = render(<VerifyStep ctx={ctx} onComplete={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Verify" }));
+
+    await screen.findAllByText(/expired or been revoked/i);
+    const problems = [...container.querySelectorAll(".text-destructive")].map((e) => e.textContent ?? "");
+    expect(problems.join(" ")).toMatch(/expired or been revoked/i);
+    // The passing check must NOT be styled as a problem.
+    expect(problems.join(" ")).not.toMatch(/Working directory is valid/);
+  });
+
+  it("still renders genuinely passing checks as passes", async () => {
+    post.mockRejectedValueOnce(new ApiError("Request failed: 422", 422, WARN_EXPIRED));
+    const { container } = render(<VerifyStep ctx={ctx} onComplete={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Verify" }));
+
+    await screen.findAllByText(/expired or been revoked/i);
+    const items = [...container.querySelectorAll("li")];
+    const cwdItem = items.find((li) => /Working directory is valid/.test(li.textContent ?? ""));
+    expect(cwdItem?.textContent).toContain("✓");
+    const authItem = items.find((li) => /expired or been revoked/.test(li.textContent ?? ""));
+    expect(authItem?.textContent).not.toContain("✓");
+  });
+});
