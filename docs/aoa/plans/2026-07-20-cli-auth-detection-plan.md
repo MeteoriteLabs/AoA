@@ -254,6 +254,53 @@ git commit -m "feat(adapters): shared auth-failure detector separating expired f
 
 ---
 
+## Task 1 outcome — corrections applied (read before Task 2)
+
+Task 1 shipped, but code review found a **critical defect in the code this plan
+originally specified**. The detector in the tree now differs from the Task 1
+listing above. Treat the committed code as the source of truth, not the listing.
+
+What changed, and why it matters to later tasks:
+
+1. **The `NOT_AUTH_RE` escape branch was wrong.** It re-tested the stripped
+   residual against `EXPIRED_RE` only, so any input carrying a noise token AND a
+   sign-in signal returned `none` — e.g. ``Login timed out. Please run `claude
+   login`.`` classified as `none` rather than `signed_out`. That is the exact
+   under-detection this feature exists to eliminate, and "login timed out" is
+   standard device-flow phrasing. Replaced with: strip noise once via a `/g`
+   `NOT_AUTH_STRIP`, then classify the residual invalid_key → signed_out →
+   expired. `NOT_AUTH_STRIP` must never be passed to `.test()` (`/g` makes
+   `.test()` stateful via `lastIndex`).
+
+2. **`URL_RE` was deleted.** It duplicated and regressed
+   `login-url-detector.ts`, which already skips loopback callbacks — `codex
+   login` prints `http://localhost:1455` BEFORE the real auth URL, so the naive
+   matcher produced a dead localhost link. The detector now calls a new exported
+   `extractVerificationUrl(text)` from that module. It is NOT re-exported from
+   the package index; if Task 4 or 5 wants it directly, import from
+   `@armyofagents/adapter-utils/login-url-detector` or add the barrel export.
+
+3. **`5\d{2}` was anchored** to `(?:error|status|HTTP)\D{0,10}5\d{2}`,
+   because the bare form matched any three-digit number (`Used 512 tokens.`).
+
+4. **The classifier regexes are now built from named pattern arrays** joined with
+   `|`, so each alternative is individually greppable. Tasks 2-5 that add
+   CLI-specific wording should add entries to those arrays, not edit a 200-char
+   literal.
+
+5. **Signature widened** to `detectAuthFailure(text: string | null | undefined)`.
+
+6. **Input contract, now documented in the module header and binding on Tasks
+   2-5:** feed this ONLY process failure output (stdout/stderr/parsed CLI error
+   fields), never transcript or agent-authored content. Prose that merely
+   discusses auth (`Return 401 Unauthorized when the Authorization header is
+   missing`) will classify as an auth failure.
+
+Detector suite is 25 tests; `packages/adapter-utils` is 166 passed / 1 skipped
+(the skip is pre-existing and unrelated).
+
+---
+
 ## Task 2: Claude parse.ts delegates to the shared detector
 
 **Files:**
