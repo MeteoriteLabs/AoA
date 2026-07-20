@@ -4,7 +4,7 @@
 
 **Goal:** Stop making the founder wait for the Librarian, and make pending memory findable (Inbox signpost) and its destination folder visible before approval.
 
-**Architecture:** `submit` fires the Librarian in the background instead of awaiting it (crash-covered by the existing stale-`running` lease). Onboarding stops blocking. A new `memory_review` hub type in the `waiting_on_you` lane — mirroring `discussion_pending` — signposts pending memory in the Inbox, produced at the shared `writeMemoryAndIndex` chokepoint. The Memory UI shows each pending item's destination folder and ghosts it in the tree.
+**Architecture:** `submit` fires the Librarian in the background instead of awaiting it (crash-covered by the existing stale-`running` lease). Onboarding stops blocking. A new `memory_review` hub type in the `waiting_on_you` lane — mirroring `discussion_pending` — signposts pending memory in the Inbox, produced at the shared `writeMemoryAndIndex` chokepoint. The Memory UI shows each pending item's destination folder, marks pending items in-folder, and badges folders that have pending memory.
 
 **Tech Stack:** TypeScript, vitest, pnpm workspaces. Packages: `server`, `packages/shared`, `ui`.
 
@@ -27,7 +27,7 @@
 | `server/src/services/hub-items.ts` (modify) | M3b: `reconcileMemoryReview` + registry |
 | `server/src/services/memory-write.ts` (modify) | M3b: emit at the chokepoint |
 | `server/src/routes/memory.ts` (modify) | M3b: reconcile on approve |
-| `ui/src/components/memory/*` (modify) | M4: destination label + ghost-in-tree |
+| `ui/src/components/memory/MemoryFileList.tsx`, `MemoryTree.tsx` (modify) | M4: destination label + pending marker + per-folder pending badge |
 
 Order: T1 (async) → T2 (onboarding) → T3 (hub type) → T4 (hub producer) → T5 (folder visibility) → T6 (live).
 
@@ -74,7 +74,9 @@ it("returns without awaiting the Librarian run (async dispatch)", async () => {
   ]);
 
   expect(result).not.toBe("TIMEOUT"); // did not hang on the never-resolving run
-  expect((result as { status: string }).status).toBe("running");
+  // Non-terminal: the run has NOT finished. Don't couple to a specific interim
+  // value (pending vs running depends on commit timing of the detached claim).
+  expect(["pending", "running"]).toContain((result as { status: string }).status);
 });
 
 it("a background dispatch rejection does not throw out of submit", async () => {
@@ -97,14 +99,33 @@ it("a background dispatch rejection does not throw out of submit", async () => {
 });
 ```
 
-The existing happy-path test that asserts `status === "proposed"` MUST be updated:
-after this change `submit` returns `"running"` and the proposal lands
-asynchronously. Change that test to assert the returned status is `"running"` and
-that `runAoaAgentMock` was called (dispatch was scheduled), OR move its
-end-to-end assertion into an explicit `await` of the scheduled work. Do NOT delete
-the coverage — the full dispatch sequence is still exercised by
-`claimAndDispatch`'s own path (the failure/proposed cases already have dedicated
-tests that call it directly via retry).
+**Test fallout is larger than one test — a review flagged this.** `braindump.test.ts`
+uses an ORDERED `createSequenceDb`, and ~13 assertions read a TERMINAL status
+(`proposed`/`failed`) off `submit`/`retry`. Making dispatch fire-and-forget makes
+the DB-call interleaving nondeterministic against that shared sequence — the
+detached claim's awaits race the re-read — so those tests break structurally, not
+just in their expected string. And `claimAndDispatch` is MODULE-PRIVATE and
+`retry` uses the SAME async path, so there is no existing deterministic seam to
+assert terminal status through.
+
+**Fix — export the dispatch worker as a test seam.** Rename/export
+`claimAndDispatch` so tests can await it deterministically:
+
+```ts
+// braindump.ts — was: async function claimAndDispatch(...)
+export async function claimAndDispatch(db: Db, companyId: string, id: string): Promise<boolean> { … }
+```
+
+Then re-home the terminal-status assertions: the proposed/failed CASES call
+`claimAndDispatch(db, CO_ID, CAPTURE_ID)` DIRECTLY and await it (deterministic, no
+race), and `submit`/`retry`'s own tests assert only that they schedule dispatch
+(runAoaAgentMock called) and return promptly with a NON-TERMINAL status. Budget
+this as real test rework across those ~13 assertions, not a one-line edit. Do NOT
+delete coverage — move it onto the now-exported `claimAndDispatch`.
+
+Note: at re-read time the detached claim likely hasn't committed, so `submit`
+returns `pending` (the pre-claim status), not `running`. Assert `!== "proposed"`
+(non-terminal) rather than a specific interim value, to avoid coupling to timing.
 
 - [ ] **Step 2: Run to verify it fails**
 
@@ -277,6 +298,10 @@ Expected: FAIL — `"memory_review"` is not in the union; TS may also error sinc
 
 - [ ] **Step 3: Implement**
 
+Adding a member to `HUB_SEMANTIC_TYPES` breaks THREE exhaustive
+`Record<HubSemanticType, …>` maps — a review caught that a naive edit fails
+`tsc`. All three must be updated:
+
 In `packages/shared/src/hub.ts`, add `"memory_review"` to `HUB_SEMANTIC_TYPES`
 under the `waiting_on_you` group (next to `discussion_pending`):
 
@@ -288,23 +313,48 @@ under the `waiting_on_you` group (next to `discussion_pending`):
   "join_request",
 ```
 
-And add the lane mapping in `HUB_SEMANTIC_TO_LANE`:
+Add the lane mapping in `HUB_SEMANTIC_TO_LANE` (`hub.ts:94`):
 
 ```ts
   discussion_pending: "waiting_on_you",
   memory_review: "waiting_on_you",
 ```
 
-- [ ] **Step 4: Run to verify it passes**
+Add the authority mapping in `HUB_AUTHORITY_BY_TYPE` (`hub.ts:124`) — the founder
+is the sole approver of memory, so `"founder"`, matching `approval_request`/
+`join_request`. Read the existing entries and match the exact `HubAuthority`
+value they use for founder-decided items:
+
+```ts
+  discussion_pending: "founder",   // (or whatever value the existing founder-decided rows use)
+  memory_review: "founder",
+```
+
+- [ ] **Step 4: Add the UI registry entry (required to render + deep-link)**
+
+`ui/src/components/hub/hubRegistry.tsx:85` has a THIRD exhaustive map,
+`HUB_REGISTRY: Record<HubSemanticType, HubRegistryEntry>`. Without an entry the
+UI won't compile AND a `memory_review` row degrades to the notifications tab with
+NO deep-link — the design's "click → Memory → Pending Review" would be dead.
+
+Read a `waiting_on_you` sibling entry (e.g. `discussion_pending`) and add a
+`memory_review` entry that mirrors it, with a `fullLink` to the Memory Pending
+Review route. Find the Memory route + the `__pending` virtual-folder deep-link
+shape by reading how the Memory page reads its folder from the URL (grep the
+Memory page/route for `__pending`), and point `fullLink` there. Match the
+sibling's `viewerKind`/`tabKind`/icon fields.
+
+- [ ] **Step 5: Run to verify it passes**
 
 Run: `cd packages/shared && npx vitest run && npx tsc --noEmit`
-Expected: PASS, and the exhaustive `HUB_SEMANTIC_TO_LANE` record typechecks.
+Then: `cd ui && npx tsc --noEmit -p tsconfig.json`
+Expected: PASS — all three exhaustive maps typecheck.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add packages/shared/src/hub.ts packages/shared/src/hub.test.ts
-git commit -m "feat(hub): memory_review semantic type in the waiting_on_you lane"
+git add packages/shared/src/hub.ts packages/shared/src/hub.test.ts ui/src/components/hub/hubRegistry.tsx
+git commit -m "feat(hub): memory_review semantic type + lane, authority, and UI registry entry"
 ```
 
 ---
@@ -417,7 +467,9 @@ non-gated cases the producer also excludes (`source !== 'founder'`,
           eq(memoryItems.companyId, companyId),
           eq(memoryItems.status, "pending"),
           ne(memoryItems.source, "founder"),
-          ne(memoryItems.layer, "working"),
+          // layer is NULLABLE — ne(layer,'working') alone drops NULL rows, which
+          // would under-count. Include NULL-layer pending memory. (Review P2.)
+          or(isNull(memoryItems.layer), ne(memoryItems.layer, "working")),
         ),
       );
     const count = rows.length;
@@ -439,8 +491,9 @@ Register it in `SOURCE_RECONCILERS`:
     memory: reconcileMemoryReview,
 ```
 
-Ensure `memoryItems`, `ne`, and `orgHierarchyService` are imported in
-`hub-items.ts` (grep; add if missing — `ne` comes from `drizzle-orm`).
+Ensure `memoryItems`, `ne`, `or`, `isNull`, and `orgHierarchyService` are
+imported in `hub-items.ts` (grep; add if missing — `ne`/`or`/`isNull` from
+`drizzle-orm`).
 
 - [ ] **Step 5: Emit at the chokepoint**
 
@@ -485,7 +538,8 @@ async function countPendingMemory(db: Db, companyId: string): Promise<number> {
         eq(memoryItems.companyId, companyId),
         eq(memoryItems.status, "pending"),
         ne(memoryItems.source, "founder"),
-        ne(memoryItems.layer, "working"),
+        // NULLABLE layer — see the reconciler note.
+        or(isNull(memoryItems.layer), ne(memoryItems.layer, "working")),
       ),
     );
   return rows.length;
@@ -493,17 +547,28 @@ async function countPendingMemory(db: Db, companyId: string): Promise<number> {
 ```
 
 Import `emitHubItem`, `buildMemoryReviewHubEmit` (from `hub-source-producers.js`),
-`orgHierarchyService`, `memoryItems`, `and`, `eq`, `ne`. Confirm `log` exists in
+`orgHierarchyService`, `memoryItems`, `and`, `eq`, `ne`, `or`, `isNull`. Pass
+`tx ?? db` to both `emitHubItem` and `countPendingMemory` (forward-safety: no
+caller threads a tx today, but a future transactional caller would otherwise
+undercount / risk a nested-tx issue — Review P3). Confirm `log` exists in
 this module (add a `logger.child({ service: "memory-write" })` if not).
 
 - [ ] **Step 6: Reconcile on approve/reject**
 
-In `server/src/routes/memory.ts`, after a successful approve/reject (the status
-leaves `pending`), trigger the memory reconcile so the hub row closes when the
-scope empties. Best-effort:
+**A review caught that memory leaves `pending` through ~6 routes, not just
+approve/reject** — `PATCH /:id` (to approved/rejected), `POST /:id/publish`,
+`/:id/restore`, `/versions/:versionId/approve|reject`. Hooking only approve/reject
+would leave the hub row stuck open when the founder uses any other path.
+
+**Fix — reconcile at the SERVICE chokepoint, not per-route.** Every status
+transition routes through `memoryService` (`server/src/services/memory.ts`). Add
+the reconcile after the status-changing operations there (`approve`, `reject`, and
+the status-changing `update`/`publish`/`restore`), so ALL paths are covered by one
+hook. Best-effort, non-fatal:
 
 ```ts
-  // Close the memory_review signpost when this scope has no pending memory left.
+  // Close the memory_review signpost once the company has no pending memory left.
+  // reconcile("memory") sweeps the open row and closes it via reconcileMemoryReview.
   try {
     await hubItemsService(db).reconcile("memory");
   } catch (err) {
@@ -511,9 +576,12 @@ scope empties. Best-effort:
   }
 ```
 
-Place it where the approve/reject handler already has `companyId` and the item's
-`departmentId` in scope. `reconcile("memory")` sweeps open memory rows and closes
-terminal ones via `reconcileMemoryReview`.
+Read `memoryService` first to find the narrowest set of methods every
+status-out-of-pending transition passes through, and add the hook there. If a
+single method (e.g. a shared `setStatus`) exists, hook that one. Add a test that
+approving THEN a reconcile closes the row when the last pending item clears, and
+that a non-approve status change (publish/restore of the last pending item) also
+closes it.
 
 - [ ] **Step 7: Tests for reconciler + emit**
 
@@ -557,24 +625,36 @@ git commit -m "feat(memory): signpost pending memory in the Inbox (memory_review
 
 ## Task 5 (M4): Folder visibility in the Memory UI
 
+**A review corrected the premise here — the original plan targeted behavior that
+does not exist.** Verified in code:
+
+- `MemoryFileList.tsx:244` already renders pending items in their real folder view
+  (`it.layer === layer && it.status !== "archived"` includes pending). So pending
+  items are NOT exclusive to `__pending`; they already appear in-folder — just not
+  visibly MARKED as pending, and without their destination shown.
+- `MemoryTree.tsx` renders **folders + counts only** — it never renders individual
+  memory items. So "ghost an item into the tree" is impossible as written; there's
+  no per-item render in the tree to add to.
+
+**Rescoped M4 (what's actually real):**
+1. **Destination-folder label** on each pending item row (in the pending list AND
+   in-folder views), so the founder sees where it will live.
+2. **A "Pending" marker** on the pending items `MemoryFileList` already shows
+   in-folder, so they're visually distinct from approved items rather than blending
+   in.
+3. **A per-folder pending badge** in the tree — `MemoryTree` already computes
+   per-folder counts; add a "N pending" signal to a folder that has pending items,
+   so the structure visibly shows where unreviewed knowledge is accumulating. This
+   is the tree-level "fills in" cue, done at the folder level (which the tree
+   actually renders) rather than per-item (which it does not).
+
 **Files:**
-- Modify: the pending-item view + the folder-tree item render under `ui/src/components/memory/`
-- Test: the corresponding `__tests__`
+- Modify: `ui/src/components/memory/MemoryFileList.tsx` (destination label + pending marker on the item row)
+- Modify: `ui/src/components/memory/MemoryTree.tsx` (per-folder pending badge)
+- Test: `ui/src/components/memory/__tests__/` (or the co-located tests)
 
-Read the memory components first. Concretely: `MemoryFileList.tsx` renders items
-for a folder, `FolderTreeNode.tsx` / `MemoryTree.tsx` render the tree, and
-`MemoryApprovalActions.tsx` is the pending-item approval row. `MemoryFileList`
-already knows the virtual folders — `__pending` is the flat "Pending Review"
-bucket where pending items surface TODAY (decoupled from their real folder), and
-`__pinned`/`__recent`/`__archived` are the others. `memory_items.folderPath`
-already carries the real destination; both changes are read-only over existing
-data.
-
-The "ghost in tree" change specifically means: a pending item currently appears
-ONLY under the `__pending` virtual folder; make it ALSO render inside its real
-`folderPath` folder in the tree, styled as pending — that is what lets the founder
-see where knowledge is going. Do not remove it from `__pending` (the review inbox
-still needs it); add it to its real folder too.
+Read all three components first. `memory_items.folderPath` already carries the
+destination; all three changes are read-only over existing data.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -592,47 +672,56 @@ it("shows 'unfiled' for a pending item with no folderPath", () => {
   expect(screen.getByText(/unfiled/i)).toBeTruthy();
 });
 
-it("renders a pending item ghosted inside its target folder in the tree", () => {
-  // Render the folder tree for "engineering/Decisions" with one pending item.
-  // The item appears in that folder, marked pending (e.g. a data-pending attr
-  // or a 'Pending' badge), not hidden until approved.
+it("marks a pending item in its in-folder view", () => {
+  // MemoryFileList already renders pending items in their real folder (status
+  // !== archived). Render that folder view with a pending item and confirm it
+  // carries a pending marker distinguishing it from approved items.
   const el = screen.getByText(/We ship on Fridays/); // the pending item title
   expect(el.closest("[data-pending='true'], .pending, [aria-label*='pending' i]")).toBeTruthy();
+});
+
+it("badges a folder that has pending memory in the tree", () => {
+  // MemoryTree renders per-folder counts. A folder with pending items shows a
+  // "N pending" signal.
+  expect(screen.getByText(/pending/i)).toBeTruthy();
 });
 ```
 
 - [ ] **Step 2: Run to verify they fail**
 
 Run: `cd ui && npx vitest run src/components/memory`
-Expected: FAIL — no destination label, no ghost-in-tree.
+Expected: FAIL — no destination label, no pending marker/badge.
 
 - [ ] **Step 3: Implement**
 
-- **Destination label:** in the pending-item row component, render the item's
-  `folderPath`:
+- **Destination label** — in the item row (`MemoryFileList` / its `MemoryItemRow`),
+  render the item's `folderPath` for pending items:
 
   ```tsx
-  <span className="text-[10px] text-very-dim">
-    → {item.folderPath ? item.folderPath : "unfiled"}
-  </span>
+  {item.status === "pending" && (
+    <span className="text-[10px] text-very-dim">
+      → {item.folderPath ? item.folderPath : "unfiled"}
+    </span>
+  )}
   ```
 
-- **Ghost in the tree:** in the folder-tree item render, include pending items in
-  their `folderPath` folder (not only approved ones), styled distinctly and marked
-  so tests and founders can tell:
+- **Pending marker** — the in-folder view already shows pending items
+  (`MemoryFileList.tsx:244`), but undistinguished. Add a marker to the row:
 
   ```tsx
-  <li data-pending={item.status === "pending"}
-      className={item.status === "pending" ? "opacity-60" : undefined}>
-    {item.title}
-    {item.status === "pending" && (
-      <span className="ml-1 rounded bg-field px-1 text-[9px] text-dim">Pending</span>
-    )}
-  </li>
+  {item.status === "pending" && (
+    <span data-pending="true" className="ml-1 rounded bg-field px-1 text-[9px] text-dim">
+      Pending
+    </span>
+  )}
   ```
 
-  If the tree currently filters to `status === "approved"`, widen it to include
-  `pending` and rely on the styling/marker to distinguish them.
+- **Per-folder pending badge** — in `MemoryTree.tsx`, which already computes
+  per-folder counts, add a pending count to the count map and render a "N pending"
+  badge on folders that have any. Read how the existing per-folder `counts` are
+  built (~`MemoryTree.tsx:160`) and extend that structure with a `pending` tally
+  from the same items, rather than adding a new per-item render (the tree renders
+  folders, not items).
 
 - [ ] **Step 4: Run to verify they pass**
 
@@ -644,7 +733,7 @@ Expected: PASS, no pre-existing regressions.
 ```bash
 cd ui && npx tsc --noEmit -p tsconfig.json
 git add ui/src/components/memory/ ui/src/onboarding/inflight/LibrarianStep.tsx
-git commit -m "feat(memory): show a pending item's destination folder + ghost it in the tree"
+git commit -m "feat(memory): show a pending item's destination folder + mark pending in the tree"
 ```
 
 ---
@@ -705,13 +794,14 @@ was empty before). Click it and confirm it deep-links to Memory → Pending Revi
 
 In Memory → Pending Review, confirm each pending item shows its destination folder
 (e.g. *"→ Company/Operating Principles"* or *"→ unfiled"*). In the folder tree,
-confirm the pending items appear ghosted inside their real target folders — the
-structure visibly filling in.
+confirm each pending item is marked as pending in its folder view, and that
+folders with pending memory show a pending badge in the tree — the structure
+visibly showing where unreviewed knowledge is accumulating.
 
 - [ ] **Step 6: Approve through the UI (the whole loop)**
 
-Approve a pending item using the UI approval control. Confirm: the item
-solidifies in its folder (no longer ghosted), the Pending Review count drops, and
+Approve a pending item using the UI approval control. Confirm: the item's
+pending marker clears (now an approved item), the Pending Review count drops, and
 when the LAST pending item is approved, the Inbox "Review N memory items"
 signpost **clears** (the reconciler closes it). Screenshot the before/after if the
 screenshot tool cooperates; otherwise capture the page text and the hub list.
