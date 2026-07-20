@@ -55,8 +55,22 @@ vi.mock("@armyofagents/db", () => {
 
 vi.mock("drizzle-orm", () => {
   const op = (name: string) => (..._a: unknown[]) => name;
-  const sql: ((...a: unknown[]) => string) & { raw?: unknown; join?: unknown } =
-    (..._a: unknown[]) => "sql";
+  // Reconstruct tagged-template content so emit-level tests can assert on the
+  // setWhere sql string (e.g. the `<> 'open'` reopen branch). A tagged template
+  // call passes (stringsArray, ...substitutions); a plain call falls back to
+  // "sql". Column stubs stringify to `Symbol(<col>)` — fine for substring checks.
+  const sql: ((...a: unknown[]) => string) & { raw?: unknown; join?: unknown } = (
+    strings: unknown,
+    ...values: unknown[]
+  ) => {
+    if (Array.isArray(strings)) {
+      return (strings as unknown[]).reduce<string>(
+        (acc, part, i) => acc + String(part) + (i < values.length ? String(values[i]) : ""),
+        "",
+      );
+    }
+    return "sql";
+  };
   sql.raw = (s: unknown) => s;
   sql.join = (..._a: unknown[]) => "sqljoin";
   return {
@@ -124,7 +138,7 @@ vi.mock("../services/hub-items.js", async (importActual) => {
 });
 
 // ── Imports (after mocks) ────────────────────────────────────────────────────
-import { buildMemoryReviewHubEmit } from "../services/hub-source-producers.js";
+import { buildApprovalHubEmit, buildMemoryReviewHubEmit } from "../services/hub-source-producers.js";
 import { hubItemsService } from "../services/hub-items.js";
 import { writeMemoryAndIndex } from "../services/memory-write.js";
 
@@ -213,9 +227,49 @@ describe("buildMemoryReviewHubEmit", () => {
       companyId: "co-1",
       count: 1,
       ownerUserId: "founder-1",
-      updatedAt: new Date("2026-07-20T00:00:00Z"),
     });
     expect(emit.title).toMatch(/1 memory item\b/i);
+  });
+
+  // Fix 2: the aggregate signpost has no single source row, so it must carry a
+  // NULL sourcePermissionRevision — matching reconcileMemoryReview
+  // (permissionRevision: null). A fresh `new Date()` here would make the storm
+  // guard's `sourcePermissionRevision IS DISTINCT FROM` check always-true and
+  // disagree with the reconciler.
+  it("emits a null sourcePermissionRevision (aggregate has no single source revision)", () => {
+    const emit = buildMemoryReviewHubEmit({
+      companyId: "co-1",
+      count: 2,
+      ownerUserId: "founder-1",
+    });
+    expect(emit.sourcePermissionRevision).toBeNull();
+  });
+
+  // Fix 1: only the memory_review aggregate opts into reopen-on-re-emit.
+  it("opts into reopenWhenArchived (aggregate signpost must re-signpost after a clear cycle)", () => {
+    const emit = buildMemoryReviewHubEmit({
+      companyId: "co-1",
+      count: 2,
+      ownerUserId: "founder-1",
+    });
+    expect(emit.reopenWhenArchived).toBe(true);
+  });
+});
+
+// The approval producer (a mirror-model source) must NEVER opt into reopen — a
+// decided/archived approval must stay closed.
+describe("buildApprovalHubEmit — no reopen opt-in", () => {
+  it("does not set reopenWhenArchived", () => {
+    const emit = buildApprovalHubEmit({
+      id: "appr-1",
+      companyId: "co-1",
+      type: "agent_hire",
+      requestedByAgentId: "agent-1",
+      requestedByUserId: null,
+      payload: {},
+      updatedAt: new Date("2026-07-20T00:00:00Z"),
+    });
+    expect(emit.reopenWhenArchived).toBeUndefined();
   });
 });
 
@@ -240,6 +294,100 @@ describe("reconcileMemoryReview", () => {
     const result = await hubItemsService(db).reconcile("co-1", { sourceType: "memory" });
     expect(result).toEqual({ healed: 1, closed: 0, refreshed: 1 });
     expect(set).toHaveBeenCalledWith(expect.objectContaining({ title: "Review 3 memory items" }));
+  });
+});
+
+// ============================================================================
+// 2b. emit() upsert shape — reopen opt-in (Fix 1)
+// ============================================================================
+//
+// These tests run the REAL emit() and capture the onConflictDoUpdate argument so
+// they assert on the ACTUAL upsert `set`/`setWhere` shape (not a proxy). The
+// reconstructed `sql` mock (above) makes the setWhere string observable, and the
+// `set` object is a plain JS object whose keys are directly inspectable.
+//
+// `.returning()` resolves to [] so `changed` is false → no counter/digest/publish
+// side effects fire; emit re-selects the existing row and returns it. That keeps
+// these tests focused purely on the upsert query the caller built.
+describe("emit — reopen opt-in for aggregate signposts (Fix 1)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  function makeUpsertCaptureDb(existingRow: Record<string, unknown>) {
+    const captured: { arg?: { set: Record<string, unknown>; setWhere: unknown; target: unknown } } = {};
+    const returning = vi.fn(async () => [] as unknown[]); // empty → changed=false
+    const onConflictDoUpdate = vi.fn((arg: typeof captured.arg) => {
+      captured.arg = arg;
+      return { returning };
+    });
+    const values = vi.fn(() => ({ onConflictDoUpdate }));
+    const insert = vi.fn(() => ({ values }));
+    // Re-select after empty RETURNING: select().from().where().limit().then(cb)
+    const select = vi.fn(() => ({
+      from: () => ({
+        where: () => ({
+          limit: () => ({ then: (cb: (r: unknown[]) => unknown) => Promise.resolve(cb([existingRow])) }),
+        }),
+      }),
+    }));
+    const db = { insert, select } as never;
+    return { db, captured };
+  }
+
+  const anyRow = (over: Record<string, unknown> = {}) => ({
+    id: "hub-x",
+    companyId: "co-1",
+    semanticType: "memory_review",
+    status: "archived",
+    version: 1,
+    ...over,
+  });
+
+  it("reopen branch: memory_review upsert set includes status/version/archivedAt/resolvedAt and setWhere allows a non-open row", async () => {
+    const { db, captured } = makeUpsertCaptureDb(anyRow());
+    await hubItemsService(db).emit(
+      buildMemoryReviewHubEmit({ companyId: "co-1", count: 3, ownerUserId: "founder-1" }),
+    );
+    const arg = captured.arg!;
+    // (a) set reopens the row.
+    expect("status" in arg.set).toBe(true);
+    expect("version" in arg.set).toBe(true);
+    expect("archivedAt" in arg.set).toBe(true);
+    expect("resolvedAt" in arg.set).toBe(true);
+    // Existing denormalized set keys survive.
+    expect("title" in arg.set).toBe(true);
+    expect("ownerUserId" in arg.set).toBe(true);
+    expect("deliveredAt" in arg.set).toBe(true);
+    // (b) setWhere permits a non-open row (reopen branch present).
+    expect(String(arg.setWhere)).toContain("<> 'open'");
+  });
+
+  it("non-reopen branch (regression): approval upsert set has NO status/version key and setWhere is the original open-only gate", async () => {
+    const { db, captured } = makeUpsertCaptureDb(anyRow({ semanticType: "approval_request" }));
+    await hubItemsService(db).emit(
+      buildApprovalHubEmit({
+        id: "appr-1",
+        companyId: "co-1",
+        type: "agent_hire",
+        requestedByAgentId: "agent-1",
+        requestedByUserId: null,
+        payload: {},
+        updatedAt: new Date("2026-07-20T00:00:00Z"),
+      }),
+    );
+    const arg = captured.arg!;
+    // A mirror-model item must NEVER be resurrected: no status/version/archivedAt/
+    // resolvedAt keys in the set.
+    expect("status" in arg.set).toBe(false);
+    expect("version" in arg.set).toBe(false);
+    expect("archivedAt" in arg.set).toBe(false);
+    expect("resolvedAt" in arg.set).toBe(false);
+    // Existing set keys still present (path otherwise unchanged).
+    expect("title" in arg.set).toBe(true);
+    expect("ownerUserId" in arg.set).toBe(true);
+    // setWhere is the original status='open' AND (...) gate — no reopen branch.
+    const where = String(arg.setWhere);
+    expect(where).toContain("= 'open'");
+    expect(where).not.toContain("<> 'open'");
   });
 });
 

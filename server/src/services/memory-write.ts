@@ -219,7 +219,7 @@ export async function writeMemoryAndIndex(
       const count = await countPendingMemory(conn, companyId);
       await emitHubItem(
         conn,
-        buildMemoryReviewHubEmit({ companyId, count, ownerUserId: founder, updatedAt: new Date() }),
+        buildMemoryReviewHubEmit({ companyId, count, ownerUserId: founder }),
       );
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);

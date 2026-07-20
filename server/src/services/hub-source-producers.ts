@@ -40,7 +40,6 @@ type MemoryReviewLike = {
   companyId: string;
   count: number;
   ownerUserId: string | null;
-  updatedAt: SourceUpdatedAt;
 };
 
 type SuggestionLike = {
@@ -213,7 +212,18 @@ export function buildMemoryReviewHubEmit(m: MemoryReviewLike): EmitArgs {
     title: `Review ${count} memory ${count === 1 ? "item" : "items"}`,
     summary: `${count} memory ${count === 1 ? "item is" : "items are"} ready for your approval.`,
     ownerUserId: m.ownerUserId,
-    sourcePermissionRevision: sourceRevision(m.updatedAt),
+    // Fix 2 (storm-guard correctness): the aggregate signpost has NO single
+    // source row, so it carries a null revision — matching reconcileMemoryReview
+    // (permissionRevision: null). A fresh `new Date()` would make the storm
+    // guard's `sourcePermissionRevision IS DISTINCT FROM` check always-true
+    // (every re-emit rewrites the row) AND disagree with the reconciler.
+    sourcePermissionRevision: null,
+    // Fix 1: the memory_review row is ONE row per company that the founder clears
+    // to `archived` when they approve the last pending item. The next agent write
+    // must be able to REOPEN that archived row so the signpost reappears — the
+    // clear→refill cycle is normal for memory. This opt-in flag is set ONLY here;
+    // all mirror/source types keep the non-reopen (never-resurrect) behavior.
+    reopenWhenArchived: true,
   };
 }
 

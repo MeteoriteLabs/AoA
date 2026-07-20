@@ -138,6 +138,14 @@ export interface EmitArgs {
   ownerPool?: HubOwnerPool | null; // ADDITIONAL pool visibility; never replaces the human owner
   slaAt?: Date | null;
   sourcePermissionRevision?: string | null;
+  // OPT-IN reopen for AGGREGATE signposts (default false). A memory_review /
+  // budget-style row is ONE row per company that the founder clears to
+  // `archived` when the backing count hits zero; the next qualifying emit must be
+  // able to REOPEN that non-open row so the signpost reappears (the clear→refill
+  // cycle is normal for such aggregates). Set true ONLY by aggregate producers.
+  // Mirror/source items (approval, join_request, runtime decision, …) MUST leave
+  // this undefined/false so a decided/archived row is NEVER resurrected.
+  reopenWhenArchived?: boolean;
   // Emit in the SAME transaction as the source mutation (no silent drops). A
   // PgTransaction is NOT assignable to Db — callers pass `tx as unknown as Db`.
   executor?: Db;
@@ -485,12 +493,13 @@ export function hubItemsService(db: Db) {
     // self-sustaining ~125Hz client<->server feedback storm (millions of no-op
     // row rewrites). deliveredAt is deliberately EXCLUDED from the check: it is
     // `?? new Date()` and would defeat it.
-    const inserted = await conn
-      .insert(hubItems)
-      .values(values)
-      .onConflictDoUpdate({
-        target: hubItems.sourceUniqueKey,
-        setWhere: sql`${hubItems.status} = 'open' AND (
+    // OPT-IN reopen (Fix 1): only aggregate producers (memory_review) set this.
+    // When false/absent, the setWhere + set below are byte-for-byte the historical
+    // open-only, no-status-write path — mirror/source items never resurrect.
+    const reopen = a.reopenWhenArchived === true;
+    // The existing storm-guard gate: still-open AND some meaningful field differs.
+    // Reused verbatim so the non-reopen setWhere is unchanged.
+    const openAndChanged = sql`${hubItems.status} = 'open' AND (
           ${hubItems.title} IS DISTINCT FROM ${values.title}
           OR ${hubItems.message} IS DISTINCT FROM ${values.message}
           OR ${hubItems.summary} IS DISTINCT FROM ${values.summary}
@@ -504,26 +513,53 @@ export function hubItemsService(db: Db) {
           OR ${hubItems.ownerPool} IS DISTINCT FROM ${values.ownerPool}
           OR ${hubItems.slaAt} IS DISTINCT FROM ${values.slaAt?.toISOString() ?? null}
           OR ${hubItems.sourcePermissionRevision} IS DISTINCT FROM ${values.sourcePermissionRevision}
-        )`,
-        set: {
-          title: values.title,
-          message: values.message,
-          relatedEntityType: values.relatedEntityType,
-          relatedEntityId: values.relatedEntityId,
-          deliveryAttempts: values.deliveryAttempts,
-          deliveredAt: values.deliveredAt,
-          deliveryError: values.deliveryError,
-          summary: values.summary,
-          priority: values.priority,
-          // Keep the legacy `userId` and the hub `ownerUserId` in lockstep: a
-          // re-emit that resolves a different owner must update BOTH, or the two
-          // owner columns diverge (P2-3).
-          userId: values.userId,
-          ownerUserId: values.ownerUserId,
-          ownerPool: values.ownerPool,
-          slaAt: values.slaAt,
-          sourcePermissionRevision: values.sourcePermissionRevision,
-        },
+        )`;
+    // Reopen path: also fire the UPDATE when the row is NON-open (needs
+    // reopening). Non-reopen path: the gate is unchanged (open-only + storm guard).
+    const setWhere = reopen
+      ? sql`(${hubItems.status} <> 'open') OR (${openAndChanged})`
+      : openAndChanged;
+    // Denormalized fields refreshed on every qualifying re-emit (unchanged).
+    const baseSet = {
+      title: values.title,
+      message: values.message,
+      relatedEntityType: values.relatedEntityType,
+      relatedEntityId: values.relatedEntityId,
+      deliveryAttempts: values.deliveryAttempts,
+      deliveredAt: values.deliveredAt,
+      deliveryError: values.deliveryError,
+      summary: values.summary,
+      priority: values.priority,
+      // Keep the legacy `userId` and the hub `ownerUserId` in lockstep: a
+      // re-emit that resolves a different owner must update BOTH, or the two
+      // owner columns diverge (P2-3).
+      userId: values.userId,
+      ownerUserId: values.ownerUserId,
+      ownerPool: values.ownerPool,
+      slaAt: values.slaAt,
+      sourcePermissionRevision: values.sourcePermissionRevision,
+    };
+    // Reopen path ALSO rewrites the lifecycle columns so the reopened row is a
+    // fresh open item: status→open, clear archivedAt/resolvedAt, bump version so
+    // downstream optimistic-concurrency readers see a new revision. Non-reopen
+    // path leaves `set` free of any status/version/*At keys (byte-for-byte the
+    // historical set) so a decided/archived mirror row is never resurrected.
+    const set = reopen
+      ? {
+          ...baseSet,
+          status: sql`'open'`,
+          archivedAt: sql`null`,
+          resolvedAt: sql`null`,
+          version: sql`${hubItems.version} + 1`,
+        }
+      : baseSet;
+    const inserted = await conn
+      .insert(hubItems)
+      .values(values)
+      .onConflictDoUpdate({
+        target: hubItems.sourceUniqueKey,
+        setWhere,
+        set,
       })
       .returning();
     // A conflict where setWhere is false — the row is NON-open, or nothing
