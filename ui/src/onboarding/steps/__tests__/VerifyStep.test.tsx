@@ -810,3 +810,95 @@ describe("VerifyStep — concurrent probe guard (Fix 5)", () => {
     expect(post).toHaveBeenCalledTimes(2);
   });
 });
+
+// Stale-verdict fix: `submitCode` never calls `clearPoll()`, so the
+// `pollLogin` interval from the interactive sign-in flow is still live while
+// `submitCode` awaits its own post-credential `check()`. If a poll tick lands
+// during that window, the guard must make it await the SAME real probe — not
+// read the `outcome` state left over from the PRIOR (pre-credential) probe.
+describe("VerifyStep — a guarded caller awaits the real verdict, not a stale one", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getConfig.mockResolvedValue({ cliTool: "claude_cli", provider: "openai" });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("a guarded caller awaits the real verdict, not a stale one", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+
+    // Probe A (the initial "Verify" click): needs_auth.
+    post.mockRejectedValueOnce(
+      new ApiError("Request failed: 422", 422, {
+        outcome: "needs_auth",
+        result: { status: "fail", checks: [{ code: "claude_hello_probe_auth_required", message: "sign in" }] },
+      }),
+    );
+    startCommanderLogin.mockResolvedValueOnce({ challengeId: "ch1", loginUrl: "https://claude.com/x" });
+    // pollLogin's immediate tick (fired by startLogin) sees "pending" — no
+    // check() call yet.
+    getCommanderLoginStatus.mockResolvedValueOnce({ status: "pending", loginUrl: "https://claude.com/x" });
+    // The 2500ms interval tick sees "completed" — THIS is the overlapping
+    // caller that must not get a stale verdict.
+    getCommanderLoginStatus.mockResolvedValueOnce({ status: "completed", loginUrl: "https://claude.com/x" });
+    submitCommanderLoginCode.mockResolvedValue({ ok: true });
+
+    // Probe B (submitCode's post-credential check()) — held open so the
+    // overlapping pollLogin tick's check() call can land WHILE it is still
+    // in flight.
+    let resolveProbeB: (v: unknown) => void = () => {};
+    post.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveProbeB = resolve;
+        }),
+    );
+
+    const onComplete = vi.fn();
+    render(<VerifyStep ctx={ctx} onComplete={onComplete} onBack={() => {}} />);
+    fireEvent.click(screen.getByText("Verify"));
+
+    fireEvent.click(await screen.findByRole("button", { name: /sign in with claude/i }));
+    fireEvent.change(await screen.findByLabelText(/paste the code/i), { target: { value: "ABC-123" } });
+    fireEvent.click(screen.getByRole("button", { name: /submit code/i }));
+
+    // submitCode() is now awaiting check() (Probe B) — post has been called
+    // a second time and is being held open.
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(2));
+
+    // Fire the poll interval tick WHILE Probe B is still in flight. Its
+    // status resolves "completed", so pollLogin calls check() too — the
+    // GUARDED, overlapping call.
+    act(() => {
+      vi.advanceTimersByTime(2500);
+    });
+    await waitFor(() => expect(getCommanderLoginStatus).toHaveBeenCalledTimes(2));
+    // The guarded call must NOT start a third probe — it awaits Probe B.
+    expect(post).toHaveBeenCalledTimes(2);
+
+    // Checkpoint BEFORE Probe B resolves — `outcome` is still "needs_auth"
+    // for both the buggy and fixed code at this instant, so the panel that
+    // renders `authError` is still mounted either way. With the stale-verdict
+    // bug, the guarded call resolves synchronously to that stale "needs_auth"
+    // and pollLogin sets this exact error immediately, well before Probe B
+    // ever settles. The fix must show no such error here — the guarded call
+    // is still genuinely awaiting the live probe.
+    expect(screen.queryByText(/didn't complete/i)).toBeNull();
+
+    // Now let Probe B resolve verified. Both submitCode's caller and the
+    // guarded pollLogin caller must see this REAL verdict.
+    await act(async () => {
+      resolveProbeB({ outcome: "verified", result: { status: "pass" } });
+    });
+
+    await waitFor(() => expect(onComplete).toHaveBeenCalledTimes(1));
+    // onComplete must fire exactly once even though TWO callers awaited the
+    // same in-flight probe.
+    expect(onComplete).toHaveBeenCalledTimes(1);
+    // And the stale error must never have been shown, even transiently
+    // (outcome === "needs_auth" still gates its render at this point too,
+    // since `check()` set outcome to "verified" only after this).
+    expect(screen.queryByText(/didn't complete/i)).toBeNull();
+  });
+});

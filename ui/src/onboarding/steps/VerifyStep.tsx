@@ -116,6 +116,10 @@ export function VerifyStep({ ctx, onComplete }: StepProps) {
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(busy);
   busyRef.current = busy;
+  // Fix (stale-verdict guard): holds the IN-FLIGHT probe promise so a guarded
+  // caller can AWAIT the real verdict instead of reading the stale `outcome`
+  // closure state. See `check()` below.
+  const inflightCheckRef = useRef<Promise<Outcome> | null>(null);
 
   const [provider, setProvider] = useState<CommanderProvider | null>(null);
   const [apiKey, setApiKey] = useState("");
@@ -221,52 +225,70 @@ export function VerifyStep({ ctx, onComplete }: StepProps) {
    * Fix 5: guard against overlapping invocations — `submitCode` and a
    * `pollLogin` tick can both call `check()` around the same time, and
    * without a guard two probes can race to `advanceOnboarding` +
-   * `onComplete()`. Reuses `busyRef` (already used by `startCliAutoDetect`'s
-   * tick to skip while a check is in flight), but sets it SYNCHRONOUSLY here
-   * — the `busyRef.current = busy` mirror at the top of the component only
-   * updates on render, which is too late for two calls landing in the same
-   * tick.
+   * `onComplete()`.
+   *
+   * Stale-verdict fix: the guard must return the SAME in-flight probe, not a
+   * snapshot of `outcome` state. `submitCode` never calls `clearPoll()`, so a
+   * `pollLogin` interval tick can land while `submitCode`'s `check()` is still
+   * awaiting the post-credential probe. If the guarded call returned stale
+   * `outcome`, it would report whatever the PREVIOUS (pre-credential) probe
+   * found — e.g. "needs_auth" — even though the in-flight probe was about to
+   * come back "verified". `inflightCheckRef` holds the live promise so a
+   * guarded caller awaits the REAL verdict. `busyRef` is set synchronously
+   * inside the same run so `startCliAutoDetect`'s tick (which only reads
+   * `busyRef`, not the promise) still skips while a check is in flight.
    */
   const check = async (): Promise<Outcome> => {
-    if (!ctx.companyId) return "idle";
-    if (busyRef.current) return outcome;
-    busyRef.current = true;
-    setBusy(true);
-    setAuthError(null);
-    try {
-      const res = await api.post<VerifyBody>(`/companies/${ctx.companyId}/internal-agent/verify`, {});
-      const list = res.result?.checks ?? [];
-      const nextOutcome = res.outcome ?? "verified";
-      setOutcome(nextOutcome);
-      setChecks(list);
-      // Headline the FAILING check, not checks[0] — otherwise a passing first
-      // check masks the failure that actually blocked the step.
-      setMessage((list.find((c) => !isPassedCheck(c)) ?? list[0])?.message ?? null);
-      if (nextOutcome === "verified") {
-        clearPoll();
-        clearCliPoll();
-        await advanceOnboarding({
-          companyId: ctx.companyId,
-          journey: ctx.journey,
-          requestedState: "COMMANDER_VERIFIED",
-        });
-        onComplete();
+    const companyId = ctx.companyId;
+    if (!companyId) return "idle";
+    if (inflightCheckRef.current) return inflightCheckRef.current;
+
+    const run = (async (): Promise<Outcome> => {
+      busyRef.current = true;
+      setBusy(true);
+      setAuthError(null);
+      try {
+        const res = await api.post<VerifyBody>(`/companies/${companyId}/internal-agent/verify`, {});
+        const list = res.result?.checks ?? [];
+        const nextOutcome = res.outcome ?? "verified";
+        setOutcome(nextOutcome);
+        setChecks(list);
+        // Headline the FAILING check, not checks[0] — otherwise a passing first
+        // check masks the failure that actually blocked the step.
+        setMessage((list.find((c) => !isPassedCheck(c)) ?? list[0])?.message ?? null);
+        if (nextOutcome === "verified") {
+          clearPoll();
+          clearCliPoll();
+          await advanceOnboarding({
+            companyId,
+            journey: ctx.journey,
+            requestedState: "COMMANDER_VERIFIED",
+          });
+          onComplete();
+        }
+        return nextOutcome;
+      } catch (e) {
+        const body = e instanceof ApiError ? (e.body as VerifyBody | null) : null;
+        const list = body?.result?.checks ?? [];
+        const nextOutcome = body?.outcome ?? "failed";
+        setOutcome(nextOutcome);
+        setChecks(list);
+        setMessage(
+          (list.find(isFailedCheck) ?? list[0])?.message ??
+            (e instanceof Error ? e.message : "Verification failed."),
+        );
+        return nextOutcome;
+      } finally {
+        busyRef.current = false;
+        setBusy(false);
       }
-      return nextOutcome;
-    } catch (e) {
-      const body = e instanceof ApiError ? (e.body as VerifyBody | null) : null;
-      const list = body?.result?.checks ?? [];
-      const nextOutcome = body?.outcome ?? "failed";
-      setOutcome(nextOutcome);
-      setChecks(list);
-      setMessage(
-        (list.find(isFailedCheck) ?? list[0])?.message ??
-          (e instanceof Error ? e.message : "Verification failed."),
-      );
-      return nextOutcome;
+    })();
+
+    inflightCheckRef.current = run;
+    try {
+      return await run;
     } finally {
-      busyRef.current = false;
-      setBusy(false);
+      inflightCheckRef.current = null;
     }
   };
 
