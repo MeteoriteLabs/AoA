@@ -319,10 +319,11 @@ git commit -m "feat(hub): memory_review semantic type in the waiting_on_you lane
 - Test: `server/src/__tests__/` (new file `memory-review-hub.test.ts`)
 
 Read `buildDiscussionPendingHubEmit` and `reconcileDiscussion` first — this task
-mirrors them for memory. Scope key: one hub row per (company, scope) where scope is
-`"company"` for company-wide (`departmentId` null) or the `departmentId`. Use
-`sourceType: "memory"` and `sourceId: \`${companyId}:${scope}\`` so the
-`hub_items_source_unique_idx` dedupes to one row per scope.
+mirrors them for memory. **One hub row per COMPANY** (decided with the user):
+`sourceType: "memory"`, `sourceId: companyId`, count = total founder-gated pending
+memory across all scopes. So the Inbox shows ONE "Review N memory items" signpost,
+not one per department. The per-scope breakdown lives in Memory → Pending Review
+(M4 groups it there). `hub_items_source_unique_idx` dedupes to one row.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -335,33 +336,25 @@ import { describe, it, expect } from "vitest";
 import { buildMemoryReviewHubEmit } from "../services/hub-source-producers.js";
 
 describe("buildMemoryReviewHubEmit", () => {
-  it("builds a memory_review emit for a department scope", () => {
+  it("builds one company-level memory_review emit", () => {
     const emit = buildMemoryReviewHubEmit({
       companyId: "co-1",
-      departmentId: "dept-eng",
-      departmentName: "Engineering",
       count: 4,
       ownerUserId: "founder-1",
       updatedAt: new Date("2026-07-20T00:00:00Z"),
     });
     expect(emit.semanticType).toBe("memory_review");
     expect(emit.sourceType).toBe("memory");
-    expect(emit.sourceId).toBe("co-1:dept-eng");
+    expect(emit.sourceId).toBe("co-1");         // one row per company
     expect(emit.companyId).toBe("co-1");
     expect(emit.ownerUserId).toBe("founder-1");
     expect(emit.title).toMatch(/4 memory items/i);
   });
 
-  it("builds a company-wide emit with a stable company scope key", () => {
+  it("uses the singular noun for a single item", () => {
     const emit = buildMemoryReviewHubEmit({
-      companyId: "co-1",
-      departmentId: null,
-      departmentName: null,
-      count: 1,
-      ownerUserId: "founder-1",
-      updatedAt: new Date("2026-07-20T00:00:00Z"),
+      companyId: "co-1", count: 1, ownerUserId: "founder-1", updatedAt: new Date("2026-07-20T00:00:00Z"),
     });
-    expect(emit.sourceId).toBe("co-1:company");
     expect(emit.title).toMatch(/1 memory item\b/i);
   });
 });
@@ -380,29 +373,25 @@ In `server/src/services/hub-source-producers.ts`, add (mirroring
 ```ts
 export interface MemoryReviewLike {
   companyId: string;
-  departmentId: string | null;
-  departmentName: string | null;
-  count: number;
+  count: number;               // total founder-gated pending memory in the company
   ownerUserId: string | null;
   updatedAt: Date;
 }
 
-/** One hub row per (company, scope). scope = "company" for company-wide memory
- *  (null departmentId), else the departmentId — so N pending items in a scope
- *  collapse to ONE waiting_on_you signpost instead of spamming the Inbox. */
+/** ONE hub row per company. N pending items across all scopes collapse to a
+ *  single waiting_on_you signpost — the per-scope breakdown lives in Memory →
+ *  Pending Review. sourceType "memory" + sourceId = companyId dedupes via
+ *  hub_items_source_unique_idx. */
 export function buildMemoryReviewHubEmit(m: MemoryReviewLike): EmitArgs {
-  const scope = m.departmentId ?? "company";
-  const where = m.departmentId ? (m.departmentName ?? "a department") : "company-wide memory";
   const noun = m.count === 1 ? "item" : "items";
   return {
     companyId: m.companyId,
     semanticType: "memory_review",
     sourceType: "memory",
-    sourceId: `${m.companyId}:${scope}`,
-    title: `Review ${m.count} memory ${noun} in ${where}`,
+    sourceId: m.companyId,
+    title: `Review ${m.count} memory ${noun}`,
     summary: `${m.count} memory ${noun} ${m.count === 1 ? "is" : "are"} ready for your approval.`,
     ownerUserId: m.ownerUserId,
-    scopeKey: scope,
     sourcePermissionRevision: sourceRevision(m.updatedAt),
   };
 }
@@ -411,16 +400,15 @@ export function buildMemoryReviewHubEmit(m: MemoryReviewLike): EmitArgs {
 - [ ] **Step 4: Add the reconciler + register it**
 
 In `server/src/services/hub-items.ts`, add (mirroring `reconcileDiscussion`) a
-`reconcileMemoryReview` that counts pending memory in the scope and reports
-terminal when zero. The `sourceId` is `${companyId}:${scope}`; parse the scope
-back out. Query `memoryItems` for `companyId` + `status = 'pending'` + the scope
-(`departmentId IS NULL` for `"company"`, else `departmentId = scope`).
+`reconcileMemoryReview` that counts ALL founder-gated pending memory in the
+company and reports terminal when zero. `sourceId` IS the companyId — no parsing.
+Count `memoryItems` for `companyId` + `status = 'pending'`, excluding the
+non-gated cases the producer also excludes (`source !== 'founder'`,
+`layer !== 'working'`) so the count matches what actually needs review.
 
 ```ts
   const reconcileMemoryReview: SourceReconciler = async (companyId, sourceId) => {
-    // sourceId = `${companyId}:${scope}`; scope is "company" or a departmentId.
-    const scope = sourceId.slice(companyId.length + 1);
-    const isCompany = scope === "company";
+    // sourceId IS the companyId (one hub row per company).
     const rows = await db
       .select({ id: memoryItems.id })
       .from(memoryItems)
@@ -428,7 +416,8 @@ back out. Query `memoryItems` for `companyId` + `status = 'pending'` + the scope
         and(
           eq(memoryItems.companyId, companyId),
           eq(memoryItems.status, "pending"),
-          isCompany ? isNull(memoryItems.departmentId) : eq(memoryItems.departmentId, scope),
+          ne(memoryItems.source, "founder"),
+          ne(memoryItems.layer, "working"),
         ),
       );
     const count = rows.length;
@@ -438,7 +427,6 @@ back out. Query `memoryItems` for `companyId` + `status = 'pending'` + the scope
       title: `Review ${count} memory ${count === 1 ? "item" : "items"}`,
       summary: `${count} memory ${count === 1 ? "item is" : "items are"} ready for your approval.`,
       ownerUserId: founder,
-      scopeKey: scope,
       permissionRevision: new Date().toISOString(),
     };
   };
@@ -451,8 +439,8 @@ Register it in `SOURCE_RECONCILERS`:
     memory: reconcileMemoryReview,
 ```
 
-Ensure `memoryItems`, `isNull`, and `orgHierarchyService` are imported in
-`hub-items.ts` (grep; add if missing).
+Ensure `memoryItems`, `ne`, and `orgHierarchyService` are imported in
+`hub-items.ts` (grep; add if missing — `ne` comes from `drizzle-orm`).
 
 - [ ] **Step 5: Emit at the chokepoint**
 
@@ -469,20 +457,9 @@ existing embedding enqueue:
   if (row && row.status === "pending" && row.source !== "founder" && row.layer !== "working") {
     try {
       const founderUserId = await orgHierarchyService(db).getFounderUserId(companyId);
-      let departmentName: string | null = null;
-      if (row.departmentId) {
-        const [proj] = await db
-          .select({ name: projects.name })
-          .from(projects)
-          .where(and(eq(projects.id, row.departmentId), eq(projects.companyId, companyId)))
-          .limit(1);
-        departmentName = proj?.name ?? null;
-      }
-      const count = await countPendingMemory(db, companyId, row.departmentId);
+      const count = await countPendingMemory(db, companyId);
       await emitHubItem(db, buildMemoryReviewHubEmit({
         companyId,
-        departmentId: row.departmentId ?? null,
-        departmentName,
         count,
         ownerUserId: founderUserId,
         updatedAt: new Date(),
@@ -493,11 +470,31 @@ existing embedding enqueue:
   }
 ```
 
-Add a small `countPendingMemory(db, companyId, departmentId)` helper in this file
-(company scope = `departmentId IS NULL`; else `= departmentId`), and import
-`emitHubItem`, `buildMemoryReviewHubEmit`, `orgHierarchyService`, `projects`,
-`and`, `eq`, `isNull`. Confirm `log` exists in this module (add a `logger.child`
-if not).
+Add a `countPendingMemory(db, companyId)` helper in this file that counts the
+company's founder-gated pending memory — the SAME predicate the reconciler uses
+(`status = 'pending'`, `source != 'founder'`, `layer != 'working'`), so the emit
+count and the reconcile count never disagree:
+
+```ts
+async function countPendingMemory(db: Db, companyId: string): Promise<number> {
+  const rows = await db
+    .select({ id: memoryItems.id })
+    .from(memoryItems)
+    .where(
+      and(
+        eq(memoryItems.companyId, companyId),
+        eq(memoryItems.status, "pending"),
+        ne(memoryItems.source, "founder"),
+        ne(memoryItems.layer, "working"),
+      ),
+    );
+  return rows.length;
+}
+```
+
+Import `emitHubItem`, `buildMemoryReviewHubEmit` (from `hub-source-producers.js`),
+`orgHierarchyService`, `memoryItems`, `and`, `eq`, `ne`. Confirm `log` exists in
+this module (add a `logger.child({ service: "memory-write" })` if not).
 
 - [ ] **Step 6: Reconcile on approve/reject**
 
@@ -523,11 +520,11 @@ terminal ones via `reconcileMemoryReview`.
 Add to `memory-review-hub.test.ts`:
 
 ```ts
-// reconciler: terminal when the scope has no pending memory
-it("reconcileMemoryReview reports terminal when a scope has zero pending", async () => {
+// reconciler: terminal when the company has no pending memory
+it("reconcileMemoryReview reports terminal when the company has zero pending", async () => {
   // Build hubItemsService with a db mock whose memoryItems query returns [].
-  // Assert the reconciler for sourceType "memory", sourceId "co-1:dept-eng"
-  // returns { terminal: true }.
+  // Assert the reconciler for sourceType "memory", sourceId "co-1" returns
+  // { terminal: true }, and non-terminal (count in the title) when it returns rows.
 });
 
 // emit guard: a founder-created or working-layer write does NOT signpost
@@ -652,12 +649,16 @@ git commit -m "feat(memory): show a pending item's destination folder + ghost it
 
 ---
 
-## Task 6: Live verification (memstep :3120, working Librarian)
+## Task 6: Live verification — the WHOLE experience through the UI
+
+The founder asked to see this driven end-to-end through the actual UI, not just
+curl: type a braindump, submit, come back, find the Inbox signpost, open Memory,
+see the destination folders, and APPROVE an item through the UI — confirming it
+lands in its folder and the signpost clears.
 
 The isolated `CLAUDE_CONFIG_DIR` from the login work is signed OUT, so the
-Librarian would fail. For THIS test the Librarian must WORK — restart the instance
-WITHOUT the isolated config dir (so it uses the real, signed-in `~/.claude`), or
-sign the isolated dir in first. Use the real config for this run.
+Librarian would fail. For THIS test the Librarian must WORK — restart WITHOUT the
+isolated config dir so it uses the real, signed-in `~/.claude`.
 
 - [ ] **Step 1: Rebuild + restart with a working Librarian**
 
@@ -667,61 +668,68 @@ git checkout --detach <this-branch-HEAD>
 pnpm install --prefer-offline
 pnpm --filter @armyofagents/shared build
 pnpm --filter @armyofagents/db build
-# Restart WITHOUT CLAUDE_CONFIG_DIR so the Librarian uses the real signed-in creds:
+# Kill whatever is on 3120 first. Restart WITHOUT CLAUDE_CONFIG_DIR (real creds):
 AOA_INSTANCE_ID=memstep AOA_HOME=/c/Users/TK/.aoa/wt/memstep/.aoa PORT=3120 \
 AOA_EMBEDDED_POSTGRES_PORT=54430 AOA_DEV_LOCAL_IDENTITY=1 \
 node scripts/dev-runner.mjs watch > /tmp/memstep-mem.log 2>&1 &
 ```
 
-- [ ] **Step 2: Submit returns immediately (M1)**
+Wait for `/api/health` = ok. Confirm `claude auth status` (no env override) shows
+logged in, so the Librarian will actually run.
+
+- [ ] **Step 2: Drive the braindump through the UI (M1 + M2)**
+
+In the browser, on a FRESH company: walk onboarding to the Braindump step, TYPE a
+real braindump into the company card (e.g. *"We optimize for candor over comfort.
+We ship weekly. The founder approves all memory. Our standup is async in
+Discussions."*), and click Continue.
+
+Confirm (M1/M2): Continue advances **immediately** — no multi-second hang, no
+blocking "Organizing…" wait. The onboarding proceeds. Capture the network timing
+of `POST /braindumps` (read_network_requests) and confirm it returned promptly
+with a non-terminal status.
+
+- [ ] **Step 3: The Librarian runs in the background**
+
+Watch `/tmp/memstep-mem.log` for the background dispatch + `write_memory` calls.
+Confirm the founder was NOT waiting on this — it happened after the request
+returned. When it finishes, the capture is terminal and pending memory exists.
+
+- [ ] **Step 4: Find it from the Inbox (M3)**
+
+Open the **Inbox** in the browser. Confirm a single "Review N memory items"
+signpost appears in the "Waiting for you" lane (this is the bug being fixed — it
+was empty before). Click it and confirm it deep-links to Memory → Pending Review.
+
+- [ ] **Step 5: See where it's going (M4)**
+
+In Memory → Pending Review, confirm each pending item shows its destination folder
+(e.g. *"→ Company/Operating Principles"* or *"→ unfiled"*). In the folder tree,
+confirm the pending items appear ghosted inside their real target folders — the
+structure visibly filling in.
+
+- [ ] **Step 6: Approve through the UI (the whole loop)**
+
+Approve a pending item using the UI approval control. Confirm: the item
+solidifies in its folder (no longer ghosted), the Pending Review count drops, and
+when the LAST pending item is approved, the Inbox "Review N memory items"
+signpost **clears** (the reconciler closes it). Screenshot the before/after if the
+screenshot tool cooperates; otherwise capture the page text and the hub list.
+
+- [ ] **Step 7: Cross-check server-side**
 
 ```bash
-CID=<company-id>
-time curl -s -X POST "http://127.0.0.1:3120/api/companies/$CID/braindumps" \
-  -H "content-type: application/json" \
-  -d '{"scope":"company","departmentId":null,"content":"We optimize for candor. We ship weekly. The founder approves all memory.","assetIds":[],"idempotencyKey":"mem-live-1"}'
-```
-
-Expected: returns in well under a second with a non-terminal status
-(`running`/`pending`) — NOT after a full Librarian run.
-
-- [ ] **Step 3: Librarian runs in the background, items land pending in real folders**
-
-Poll the capture until terminal, then list pending memory and confirm each has a
-real `folderPath`:
-
-```bash
-curl -s "http://127.0.0.1:3120/api/companies/$CID/braindumps" | python -m json.tool
+CID=<the company id>
 curl -s "http://127.0.0.1:3120/api/companies/$CID/memory/items?status=pending" | python -c "
 import json,sys
 for it in json.load(sys.stdin).get('items', []):
-    print(it.get('layer'), '|', it.get('folderPath') or '(unfiled)', '|', it.get('title'))
+    print(it.get('layer'),'|',it.get('folderPath') or '(unfiled)','|',it.get('title'))
 "
 ```
+Grep `server/src/routes` for the hub list path and confirm the `memory_review`
+row's presence before approval and absence after the scope clears.
 
-Expected: items with `status=pending` and a folderPath like `Company/…`.
-
-- [ ] **Step 4: Inbox signpost (M3)**
-
-```bash
-curl -s "http://127.0.0.1:3120/api/companies/$CID/hub/items?lane=waiting_on_you" | python -c "
-import json,sys
-for r in json.load(sys.stdin).get('items', json.load(sys.stdin) if False else []):
-    print(r.get('semanticType'), '|', r.get('title'))
-"
-```
-
-(Use the real hub list route — grep `routes` for the hub list path.) Expected: a
-`memory_review` item titled like "Review N memory items in company-wide memory".
-
-- [ ] **Step 5: Browser — the full loop**
-
-Open the Memory page: confirm each pending item shows its destination folder and
-appears ghosted in its target folder in the tree. Open the Inbox: confirm the
-"memory to review" signpost with a deep link. Approve an item: confirm it
-solidifies in its folder and, once the scope is empty, the hub signpost clears.
-
-- [ ] **Step 6: Full suites + commit**
+- [ ] **Step 8: Full suites + commit**
 
 ```bash
 cd packages/shared && npx vitest run

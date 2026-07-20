@@ -139,15 +139,16 @@ producer."* We have one — a memory item landing as `pending`.
   `source === "agent"` (or the MCP/braindump equivalents) so a founder's own
   auto-approved write never signposts itself.
 - Follow the `buildApprovalHubEmit` pattern in `hub-source-producers.ts` —
-  `sourceType: "memory"`, and a stable `group_key` (per company + scope) so N
-  pending items collapse to ONE hub row rather than spamming, with a summary like
+  `sourceType: "memory"`, and a stable sourceId (the companyId) so ALL
+  pending items collapse to ONE hub row per company rather than spamming, with a summary like
   *"4 memory items ready to review"*. Best-effort and non-fatal: a hub failure
   must never fail the memory write (same try/catch discipline as the embedding
   enqueue that already lives at this chokepoint).
 - **Resolution:** the hub item resolves when the scope has no pending memory
   left (all approved or archived). Deep-links to Memory → Pending Review.
-- **Grouping:** one open row per (company, scope), count-updated — never one per
-  item.
+- **Grouping (decided with the user):** ONE open row per COMPANY, count-
+  updated — "Review N memory items" total, never one per item and never one per
+  department. The per-scope breakdown lives in Memory → Pending Review (M4).
 
 This is the heaviest piece and the one most worth reviewing carefully, because
 it touches locked hub decisions.
