@@ -57,6 +57,8 @@ interface TreeNode {
   count?: number;
   /** Count badge tone. "brand" wraps the count in a brand-red pill (used for Pending Review). */
   countTone?: "default" | "brand";
+  /** Rolled-up count of pending (unapproved) items destined for this folder, incl. descendants. */
+  pending?: number;
   depth: number;
   hasChildren: boolean;
   /** When set, click navigates here. When null, clicking only toggles expand. */
@@ -204,6 +206,28 @@ export function MemoryTree({
     return { byLayer, byDeptDomain, byGoalActive, pinned, pending, recent, archived };
   }, [items]);
 
+  // Per-folder pending tally (rolled up across descendants), so a folder
+  // accumulating agent-proposed knowledge shows a "N pending" badge even
+  // before the founder drills into it. Same `items` the counts above iterate.
+  const folderPendingCounts = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const it of (items ?? []) as Array<MemoryItem & { folderPath?: string; status?: string }>) {
+      if (it.status !== "pending") continue;
+      const p = it.folderPath ?? "";
+      if (!p) continue;
+      map.set(p, (map.get(p) ?? 0) + 1);
+    }
+    return (path: string) => {
+      let total = 0;
+      for (const [itemPath, count] of map.entries()) {
+        if (itemPath === path || itemPath.startsWith(path + "/")) {
+          total += count;
+        }
+      }
+      return total;
+    };
+  }, [items]);
+
   const activeGoals = useMemo<Goal[]>(
     () => (goals ?? []).filter((g) => g.status === "active"),
     [goals],
@@ -216,6 +240,7 @@ export function MemoryTree({
         departments,
         activeGoals,
         counts,
+        folderPendingCounts,
         local: localBrowse
           ? {
               currentPath: localBrowse.currentPath,
@@ -239,6 +264,7 @@ export function MemoryTree({
       departments,
       activeGoals,
       counts,
+      folderPendingCounts,
       localBrowse,
       localHome,
       selectedLocalPath,
@@ -428,6 +454,7 @@ export function MemoryTree({
           iconTone={node.iconTone}
           count={node.count}
           countTone={node.countTone}
+          pendingCount={node.pending}
           depth={node.depth}
           expanded={isExpanded}
           selected={isSelected(node.target)}
@@ -550,6 +577,8 @@ interface BuildTreeArgs {
     recent: number;
     archived: number;
   };
+  /** Rolled-up pending-item tally for an arbitrary folder path (incl. descendants). */
+  folderPendingCounts: (path: string) => number;
 }
 
 function buildTree({
@@ -558,6 +587,7 @@ function buildTree({
   activeGoals,
   local,
   counts,
+  folderPendingCounts,
 }: BuildTreeArgs): TreeNode[] {
   const top: TreeNode[] = [];
 
@@ -619,6 +649,7 @@ function buildTree({
       allFolders: companyFolders,
       depth: 2,
       departmentId: null,
+      folderPendingCounts,
     });
     identityChildren.push({
       key: "__company",
@@ -661,6 +692,7 @@ function buildTree({
       allFolders: deptFolders,
       depth: 2,
       departmentId: dept.id,
+      folderPendingCounts,
     });
 
     domainChildren.push({
@@ -799,11 +831,13 @@ function buildFolderChildren({
   allFolders,
   depth,
   departmentId,
+  folderPendingCounts,
 }: {
   parentPath: string;
   allFolders: MemoryFolderRecord[];
   depth: number;
   departmentId: string | null;
+  folderPendingCounts: (path: string) => number;
 }): TreeNode[] {
   // Direct children: folders whose path is exactly `<parentPath>/<one-segment>`.
   const directChildren = allFolders.filter((f) => {
@@ -821,24 +855,29 @@ function buildFolderChildren({
       if (aSeed) return a.sortOrder - b.sortOrder;
       return a.displayName.localeCompare(b.displayName);
     })
-    .map<TreeNode>((f) => ({
-      key: `folder-${f.id}`,
-      label: f.displayName,
-      icon: f.icon ?? "📂",
-      depth,
-      hasChildren: false, // Filled in recursively below.
-      target: { folder: f.path, dept: departmentId },
-      tooltip:
-        depth > 6 && f.seedKey === null
-          ? "Deep nesting can make items hard to find — consider tags or splitting into a sibling folder"
-          : undefined,
-      children: buildFolderChildren({
-        parentPath: f.path,
-        allFolders,
-        depth: depth + 1,
-        departmentId,
-      }),
-    }))
+    .map<TreeNode>((f) => {
+      const pendingCount = folderPendingCounts(f.path);
+      return {
+        key: `folder-${f.id}`,
+        label: f.displayName,
+        icon: f.icon ?? "📂",
+        pending: pendingCount > 0 ? pendingCount : undefined,
+        depth,
+        hasChildren: false, // Filled in recursively below.
+        target: { folder: f.path, dept: departmentId },
+        tooltip:
+          depth > 6 && f.seedKey === null
+            ? "Deep nesting can make items hard to find — consider tags or splitting into a sibling folder"
+            : undefined,
+        children: buildFolderChildren({
+          parentPath: f.path,
+          allFolders,
+          depth: depth + 1,
+          departmentId,
+          folderPendingCounts,
+        }),
+      };
+    })
     .map((node) => ({
       ...node,
       hasChildren: (node.children?.length ?? 0) > 0,
