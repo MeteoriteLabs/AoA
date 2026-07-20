@@ -14,11 +14,13 @@
  * it calls `memoryService(db).create(...)` then enqueues, returning the row.
  */
 
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { embeddingQueue, memoryItems } from "@armyofagents/db";
 import { getDbCapabilities } from "./db-capabilities.js";
 import { memoryService } from "./memory.js";
+import { orgHierarchyService } from "./org-hierarchy.js";
+import { buildMemoryReviewHubEmit, emitHubItem } from "./hub-source-producers.js";
 import { logger } from "../middleware/logger.js";
 
 const log = logger.child({ service: "memory-write" });
@@ -129,6 +131,33 @@ export async function enqueueMemoryEmbedding(
 }
 
 /**
+ * Count the founder-gated pending memory items for a company.
+ *
+ * Predicate (IDENTICAL to reconcileMemoryReview in hub-items.ts so the emit
+ * count and the reconcile count can never disagree):
+ *   status = 'pending' AND source <> 'founder' AND (layer IS NULL OR layer <> 'working').
+ *
+ * The `layer` column is NULLABLE — `ne(layer,'working')` alone silently drops
+ * NULL-layer rows and undercounts, so the `or(isNull(layer), ne(...))` form is
+ * REQUIRED. Founder-authored memory is auto-approved (never pending) and working
+ * memory is ephemeral/auto-created, so both are excluded from the review signpost.
+ */
+async function countPendingMemory(db: Db, companyId: string): Promise<number> {
+  const [row] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(memoryItems)
+    .where(
+      and(
+        eq(memoryItems.companyId, companyId),
+        eq(memoryItems.status, "pending"),
+        ne(memoryItems.source, "founder"),
+        or(isNull(memoryItems.layer), ne(memoryItems.layer, "working")),
+      ),
+    );
+  return Number(row?.count ?? 0);
+}
+
+/**
  * Create a memory item and immediately enqueue it for embedding.
  *
  * This is the public entry point that Task 9 crew/MCP wrappers should call
@@ -157,5 +186,33 @@ export async function writeMemoryAndIndex(
   if (row) {
     await enqueueMemoryEmbedding(db, companyId, row, tx);
   }
+
+  // Signpost founder-gated pending memory in the Inbox (memory_review, Mem T4).
+  // ONE hub row per company; the count is the total founder-gated pending memory
+  // across ALL scopes. Guard on this specific write leaving a founder-gated item
+  // in `pending`:
+  //   - status === "pending"   (auto-approved founder writes never signpost)
+  //   - source !== "founder"    (the founder's own writes are already approved)
+  //   - layer !== "working"     (ephemeral, auto-created — never founder-gated)
+  // NOTE: the guard uses plain `!==`, so a NULL layer is `!== "working"` → true
+  // and DOES signpost — intentional, matching the count predicate's or(isNull…)
+  // form. Best-effort: a hub failure must NEVER fail the memory write. We pass
+  // `tx ?? db` to both the count and the emit so an in-transaction caller stays
+  // on the same snapshot (forward-safety; no caller threads a tx today).
+  if (row && row.status === "pending" && row.source !== "founder" && row.layer !== "working") {
+    const conn = tx ?? db;
+    try {
+      const founder = await orgHierarchyService(conn).getFounderUserId(companyId);
+      const count = await countPendingMemory(conn, companyId);
+      await emitHubItem(
+        conn,
+        buildMemoryReviewHubEmit({ companyId, count, ownerUserId: founder, updatedAt: new Date() }),
+      );
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log.warn({ itemId: row.id, companyId, err: msg }, "memory_review emit failed (non-fatal)");
+    }
+  }
+
   return row;
 }

@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, lte, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, lte, ne, or, sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import type { Db } from "@armyofagents/db";
 import {
@@ -18,6 +18,7 @@ import {
   companies,
   costEvents,
   workQuestions,
+  memoryItems,
 } from "@armyofagents/db";
 import type {
   HubCountsChangedLivePayload,
@@ -1652,8 +1653,43 @@ export function hubItemsService(db: Db) {
     };
   };
 
+  // memory (memory_review, Mem T4): ONE hub row per company — the sourceId IS
+  // the companyId (no parsing). Recompute the total founder-gated pending memory
+  // across ALL scopes with the SAME predicate the emit uses (memory-write.ts
+  // countPendingMemory) so emit-count and reconcile-count never disagree:
+  //   status = 'pending' AND source <> 'founder' AND (layer IS NULL OR layer <> 'working').
+  // The layer column is NULLABLE — `ne(layer,'working')` alone silently drops
+  // NULL-layer rows and undercounts, so the or(isNull(...)) form is REQUIRED.
+  // Terminal (close) once zero remain; otherwise the title heals in place as the
+  // count changes. permissionRevision is null (the aggregate has no single source
+  // row): the title heal is revision-independent, and a null revision means the
+  // revision-drift heal is a no-op — so there is no per-sweep write churn.
+  const reconcileMemoryReview: SourceReconciler = async (companyId, sourceId) => {
+    const [row] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(memoryItems)
+      .where(
+        and(
+          eq(memoryItems.companyId, sourceId),
+          eq(memoryItems.status, "pending"),
+          ne(memoryItems.source, "founder"),
+          or(isNull(memoryItems.layer), ne(memoryItems.layer, "working")),
+        ),
+      );
+    const count = Number(row?.count ?? 0);
+    const founder = await orgHierarchyService(db).getFounderUserId(companyId);
+    return {
+      terminal: count <= 0,
+      title: `Review ${count} memory ${count === 1 ? "item" : "items"}`,
+      summary: `${count} memory ${count === 1 ? "item is" : "items are"} ready for your approval.`,
+      ownerUserId: founder,
+      permissionRevision: null,
+    };
+  };
+
   const SOURCE_RECONCILERS: Record<string, SourceReconciler> = {
     approval: reconcileApproval,
+    memory: reconcileMemoryReview,
     heartbeat_run: reconcileHeartbeatRun,
     runtime_decision: reconcileRuntimeDecision,
     work_question: reconcileWorkQuestion,
@@ -1699,7 +1735,11 @@ export function hubItemsService(db: Db) {
               // (Task 10, D3); scope so the sweep only closes that row.
               : opts.sourceType === "discussion_entry"
                 ? "extraction_failed"
-                : null;
+                // memory carries exactly one semanticType (memory_review, Mem
+                // T4); scope for symmetry with the other multi-meaning sources.
+                : opts.sourceType === "memory"
+                  ? "memory_review"
+                  : null;
 
     const conditions = [
       eq(hubItems.companyId, companyId),
