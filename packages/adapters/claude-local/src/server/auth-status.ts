@@ -16,10 +16,6 @@ export interface ClaudeAuthStatus {
 
 const SIGNED_OUT: ClaudeAuthStatus = { loggedIn: false, account: null };
 
-/**
- * Never throws: an older CLI without `auth status` prints usage text, and the
- * probe must degrade to signed-out copy rather than crash mid-verification.
- */
 function toStatus(parsed: unknown): ClaudeAuthStatus | null {
   if (!parsed || typeof parsed !== "object") return null;
   const obj = parsed as Record<string, unknown>;
@@ -56,6 +52,10 @@ function parseLastBalancedObject(text: string): unknown {
   return undefined;
 }
 
+/**
+ * Never throws: an older CLI without `auth status` prints usage text, and the
+ * probe must degrade to signed-out copy rather than crash mid-verification.
+ */
 export function parseClaudeAuthStatus(stdout: string): ClaudeAuthStatus {
   const text = (stdout ?? "").trim();
   if (!text) return { ...SIGNED_OUT };

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { createLoginUrlDetector } from "./login-url-detector.js";
+import { createLoginUrlDetector, isLoopbackUrl } from "./login-url-detector.js";
 
 describe("createLoginUrlDetector (Plan 3 T3)", () => {
   it("extracts a verification URL printed on a single line", () => {
@@ -63,5 +63,30 @@ describe("createLoginUrlDetector (Plan 3 T3)", () => {
   it("trims trailing sentence punctuation from the matched URL", () => {
     const d = createLoginUrlDetector();
     expect(d.push("Go to https://claude.ai/oauth?a=b.\n")).toBe("https://claude.ai/oauth?a=b");
+  });
+});
+
+describe("isLoopbackUrl", () => {
+  it.each([
+    ["http://localhost:1455/cb", "localhost"],
+    ["http://sub.localhost:3000/x", ".localhost TLD"],
+    ["http://127.0.0.1:8080/cb", "127.0.0.1"],
+    ["http://127.9.9.9:1/x", "whole 127/8 block"],
+    ["http://[::1]:9/x", "IPv6 [::1]"],
+    ["http://0.0.0.0:80/x", "0.0.0.0"],
+    ["http://[::ffff:127.0.0.1]:1/x", "IPv4-mapped IPv6 loopback"],
+  ])("treats %s as loopback (%s)", (url) => {
+    expect(isLoopbackUrl(url)).toBe(true);
+  });
+
+  it.each([
+    ["https://claude.ai/oauth/authorize?code=abc123", "real claude.ai URL"],
+    ["https://auth.openai.com/oauth/authorize?client_id=abc", "real auth.openai.com URL"],
+  ])("does not treat %s as loopback (%s)", (url) => {
+    expect(isLoopbackUrl(url)).toBe(false);
+  });
+
+  it("returns false (not filtered) for an unparseable URL instead of throwing", () => {
+    expect(isLoopbackUrl("not a url")).toBe(false);
   });
 });

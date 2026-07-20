@@ -34,16 +34,50 @@ const TRAILING_PUNCT = /[.,);:!?'"\]]+$/;
  * its local callback (`http://localhost:1455.`) BEFORE the real
  * `https://auth.openai.com/…` page, so "first URL wins" would grab the wrong
  * one — skip loopback hosts and take the first remote URL instead.
+ *
+ * Covers: `localhost` and any `*.localhost` name, the whole `127.0.0.0/8`
+ * block, `0.0.0.0`, IPv6 `::1`/`[::1]`, and the IPv4-mapped IPv6 loopback
+ * form (`::ffff:127.0.0.1`, which Node's URL parser canonicalizes to hex
+ * hextets like `[::ffff:7f00:1]` — decoded below rather than pattern-matched).
  */
 function isLoopbackHost(host: string): boolean {
   const h = host.toLowerCase();
-  return (
-    h === "localhost" ||
-    h === "0.0.0.0" ||
-    h === "[::1]" ||
-    h === "::1" ||
-    h.startsWith("127.")
-  );
+  if (h === "localhost" || h.endsWith(".localhost")) return true;
+  if (h === "0.0.0.0") return true;
+  if (h === "[::1]" || h === "::1") return true;
+  if (h.startsWith("127.")) return true;
+  return isIpv4MappedLoopback(h);
+}
+
+/**
+ * Decodes an IPv6 "IPv4-mapped" hostname (`[::ffff:<hex>:<hex>]`, the form
+ * Node's URL parser produces for e.g. `::ffff:127.0.0.1`) back to its first
+ * octet and checks the 127.0.0.0/8 loopback range.
+ */
+function isIpv4MappedLoopback(host: string): boolean {
+  const match = /^\[::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})\]$/i.exec(host);
+  if (!match) return false;
+  const high = Number.parseInt(match[1] ?? "", 16);
+  if (Number.isNaN(high)) return false;
+  const firstOctet = (high >> 8) & 0xff;
+  return firstOctet === 127;
+}
+
+/**
+ * One-shot loopback check for a full URL string (as opposed to
+ * `isLoopbackHost`, which takes an already-extracted hostname). Shared by
+ * this module's own URL extraction and by adapter-specific auth-failure
+ * parsing (e.g. claude-local's `detectClaudeLoginRequired`) that needs to
+ * reject a bogus local-callback link surfaced by a looser fallback matcher.
+ * Returns `false` (not loopback) for an unparseable URL rather than
+ * throwing — callers treat that as "not filtered".
+ */
+export function isLoopbackUrl(url: string): boolean {
+  try {
+    return isLoopbackHost(new URL(url).hostname);
+  } catch {
+    return false;
+  }
 }
 
 function findFirstVerificationUrl(text: string, urlRegex: RegExp): string | null {

@@ -1,4 +1,4 @@
-import { detectAuthFailure, type AuthFailureKind, type UsageSummary } from "@armyofagents/adapter-utils";
+import { detectAuthFailure, isLoopbackUrl, type AuthFailureKind, type UsageSummary } from "@armyofagents/adapter-utils";
 import { asString, asNumber, parseObject, parseJson } from "@armyofagents/adapter-utils/server-utils";
 
 const URL_RE = /(https?:\/\/[^\s'"`<>()[\]{};,!?]+[^\s'"`<>()[\]{};,!.?:]+)/gi;
@@ -121,22 +121,6 @@ export function extractClaudeLoginUrl(text: string): string | null {
 }
 
 /**
- * `extractClaudeLoginUrl` has no loopback awareness (unlike the shared
- * detector's `extractVerificationUrl`), so its "first URL of any kind"
- * fallback can surface a local callback server address
- * (`http://localhost:1455`, printed by some CLIs before the real auth page)
- * as if it were the sign-in link. Reject that before it reaches the founder.
- */
-function isLoopbackLoginUrl(url: string): boolean {
-  try {
-    const host = new URL(url).hostname.toLowerCase();
-    return host === "localhost" || host === "0.0.0.0" || host === "[::1]" || host === "::1" || host.startsWith("127.");
-  } catch {
-    return false;
-  }
-}
-
-/**
  * `claude --output-format stream-json`'s terminal `result` event carries a
  * structured `api_error_status` (the HTTP status of the failed API call)
  * alongside `is_error`. Field evidence: a revoked-token run returns
@@ -196,15 +180,22 @@ export function detectClaudeLoginRequired(input: {
   // could drift. A structured 401/403 means credentials were presented and
   // rejected — that is the "expired" shape, not "signed_out" (no
   // credentials) or "invalid_key" (a key was supplied and is malformed).
-  const kind: AuthFailureKind = apiErrorStatusIndicatesAuthFailure(input.parsed) ? "expired" : textKind;
+  //
+  // Gated on `!processKnownSuccessful`, same as the haystack above: an exit-0
+  // run can carry a stale/leftover `api_error_status` from an earlier turn,
+  // and trusting it unconditionally would reopen the exact false-positive
+  // class the exitCode gate above exists to close (misclassifying a
+  // successful run AND spawning the status probe on the happy path).
+  const kind: AuthFailureKind =
+    !processKnownSuccessful && apiErrorStatusIndicatesAuthFailure(input.parsed) ? "expired" : textKind;
 
   // Fallback only: extractClaudeLoginUrl's "first URL of any kind" behavior
   // can surface a bogus link when the shared detector found none. Still
-  // reject a loopback callback host even from the fallback — see
-  // isLoopbackLoginUrl.
+  // reject a loopback callback host even from the fallback — see the shared
+  // `isLoopbackUrl` (adapter-utils/login-url-detector.ts).
   const fallbackLoginUrl = extractClaudeLoginUrl([input.stdout, input.stderr].join("\n"));
   const loginUrl =
-    detectedLoginUrl ?? (fallbackLoginUrl && !isLoopbackLoginUrl(fallbackLoginUrl) ? fallbackLoginUrl : null);
+    detectedLoginUrl ?? (fallbackLoginUrl && !isLoopbackUrl(fallbackLoginUrl) ? fallbackLoginUrl : null);
 
   return {
     requiresLogin: kind !== "none",

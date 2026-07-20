@@ -190,5 +190,32 @@ describe("detectClaudeLoginRequired", () => {
       });
       expect(r.requiresLogin).toBe(false);
     });
+
+    // Regression: a successful (exit 0) run must never be reclassified as an
+    // auth failure just because it carries a stale/leftover api_error_status
+    // field. The structured-field override is only trustworthy on a run that
+    // actually failed — on exit 0 it must be ignored exactly like the text
+    // detector already is.
+    it("does not classify a successful run as expired even with a stale api_error_status:401", () => {
+      const r = detectClaudeLoginRequired({
+        parsed: { api_error_status: 401, result: "hello" },
+        stdout: "",
+        stderr: "",
+        exitCode: 0,
+      });
+      expect(r.requiresLogin).toBe(false);
+      expect(r.kind).toBe("none");
+    });
+
+    it("still reports expired from api_error_status:401 on a FAILED run", () => {
+      const r = detectClaudeLoginRequired({
+        parsed: { api_error_status: 401, result: "Failed to authenticate." },
+        stdout: "",
+        stderr: "",
+        exitCode: 1,
+      });
+      expect(r.requiresLogin).toBe(true);
+      expect(r.kind).toBe("expired");
+    });
   });
 });
