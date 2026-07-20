@@ -141,3 +141,5 @@ export {
   RUNTIME_HOOK_BLOCK_TIMEOUT_SEC,
   RUNTIME_HOOK_PATH,
 } from "./runtime-hooks.js";
+export { detectAuthFailure, isAuthFailure } from "./auth-failure-detector.js";
+export type { AuthFailureKind, AuthFailureDetection } from "./auth-failure-detector.js";
