@@ -163,6 +163,33 @@ describe("codex_local testEnvironment — auth_required vs auth_expired", () => 
     expect(result.checks.some((c) => c.code === "codex_hello_probe_failed")).toBe(false);
   });
 
+  it("spawns the status probe against the SAME CODEX_HOME as the hello probe, not the bare env", async () => {
+    const { runner } = await runProbeWith({
+      hello: REVOKED_HELLO,
+      authStatus: { exitCode: 0, stdout: "Logged in using ChatGPT" },
+    });
+
+    const helloCall = runner.execute.mock.calls.find((call) =>
+      (call[0] as AdapterProviderSandboxRunInput).args.includes("exec"),
+    );
+    const statusCall = runner.execute.mock.calls.find((call) => {
+      const input = call[0] as AdapterProviderSandboxRunInput;
+      return input.args.includes("login") && input.args.includes("status");
+    });
+
+    expect(helloCall).toBeDefined();
+    expect(statusCall).toBeDefined();
+    const helloEnv = (helloCall![0] as AdapterProviderSandboxRunInput).env;
+    const statusEnv = (statusCall![0] as AdapterProviderSandboxRunInput).env;
+
+    // The hello probe reads auth from the managed per-company CODEX_HOME
+    // (prepareManagedCodexHome), NOT the founder's personal ~/.codex. The
+    // status probe that follows a failed hello probe must read the SAME
+    // store — otherwise it reports on the wrong credentials entirely.
+    expect(statusEnv.CODEX_HOME).toBeTruthy();
+    expect(statusEnv.CODEX_HOME).toBe(helloEnv.CODEX_HOME);
+  });
+
   it("emits codex_hello_probe_failed for a non-auth failure and never spawns the status probe", async () => {
     const { result, runner } = await runProbeWith({
       hello: {
@@ -174,6 +201,48 @@ describe("codex_local testEnvironment — auth_required vs auth_expired", () => 
 
     expect(result.checks).toContainEqual(expect.objectContaining({ code: "codex_hello_probe_failed" }));
     expect(calledAuthStatus(runner)).toBe(false);
+  });
+
+  it("does not classify a non-auth failure as auth just because the agent transcript mentions 401", async () => {
+    // Reproduces the reviewer's finding: a sandbox-denied failure whose
+    // agent_message transcript happens to discuss "401 Unauthorized" (e.g.
+    // describing code it wrote) must not be misread as an auth failure. Only
+    // the structured `error` event (-> parsed.errorMessage) and stderr are
+    // legitimate process-failure evidence; the transcript is agent-authored
+    // content and is explicitly excluded by the shared detector's input
+    // contract (auth-failure-detector.ts).
+    const { result, runner } = await runProbeWith({
+      hello: {
+        exitCode: 1,
+        stdout: [
+          JSON.stringify({
+            type: "item.completed",
+            item: { type: "agent_message", text: "I added a handler returning 401 Unauthorized for missing sessions." },
+          }),
+          JSON.stringify({ type: "error", message: "sandbox denied write access to /etc/hosts" }),
+        ].join("\n"),
+      },
+      authStatus: { exitCode: 0, stdout: "Logged in using ChatGPT" },
+    });
+
+    expect(result.checks).toContainEqual(expect.objectContaining({ code: "codex_hello_probe_failed" }));
+    expect(result.checks.some((c) => c.code === "codex_hello_probe_auth_expired")).toBe(false);
+    expect(result.checks.some((c) => c.code === "codex_hello_probe_auth_required")).toBe(false);
+    expect(calledAuthStatus(runner)).toBe(false);
+  });
+
+  it("still classifies the genuine revoked-codex case as auth once stdout is excluded from evidence", async () => {
+    // Guards the fix in the test above: the real signal for a revoked/expired
+    // token lives in the structured `error` event (-> parsed.errorMessage),
+    // not the transcript, so dropping probe.stdout from the evidence must not
+    // regress true-positive detection.
+    const { result, runner } = await runProbeWith({
+      hello: REVOKED_HELLO,
+      authStatus: { exitCode: 0, stdout: "Logged in using ChatGPT" },
+    });
+
+    expect(result.checks).toContainEqual(expect.objectContaining({ code: "codex_hello_probe_auth_expired" }));
+    expect(calledAuthStatus(runner)).toBe(true);
   });
 
   it("passes as before on a successful hello probe, without spawning the status probe", async () => {

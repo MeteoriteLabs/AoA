@@ -266,7 +266,18 @@ export async function testEnvironment(
       );
       const parsed = parseCodexJsonl(probe.stdout);
       const detail = summarizeProbeDetail(probe.stdout, probe.stderr, parsed.errorMessage);
-      const authEvidence = `${parsed.errorMessage ?? ""}\n${probe.stdout}\n${probe.stderr}`.trim();
+      // probe.stdout is deliberately EXCLUDED from auth evidence: it is the
+      // full JSONL transcript, including agent_message text the model wrote
+      // itself. Feeding that to the shared detector violates its documented
+      // input contract (auth-failure-detector.ts: "never transcript or
+      // agent-authored content") — prose that merely *discusses* an auth
+      // error (e.g. "I added a handler returning 401 Unauthorized") would
+      // then misclassify an unrelated failure as an auth failure. The real
+      // signal for a revoked/expired token is the structured `error` /
+      // `turn.failed` JSONL event, which parseCodexJsonl already isolates
+      // into `parsed.errorMessage` — that plus stderr is genuine process
+      // failure output.
+      const authEvidence = `${parsed.errorMessage ?? ""}\n${probe.stderr}`.trim();
 
       if (probe.timedOut) {
         checks.push({
@@ -305,6 +316,27 @@ export async function testEnvironment(
         checks.push(
           await runAuthStatusAndBranch({
             runStatus: async () => {
+              // Must read the SAME credential store the hello probe just
+              // failed against — probeEnv (CODEX_HOME pointed at the
+              // managed per-company home), not the bare `env`. A bare `env`
+              // spawn resolves against the founder's personal ~/.codex,
+              // which is a different store entirely once a per-agent
+              // OPENAI_API_KEY is configured, and reports on the WRONG
+              // credentials. Mirror the hello probe's unsetEnvKeys too, so
+              // an ambient server-process OPENAI_API_KEY can't leak in here
+              // either.
+              //
+              // runtimeCommandSpec is deliberately NOT mirrored for remote
+              // targets: the hello probe's install command is
+              // `npm install -g @openai/codex` (SANDBOX_INSTALL_COMMAND),
+              // which routinely takes far longer than this status probe's
+              // 10s timeout/2s grace. Re-running it here would make the
+              // status probe time out on every remote check (degrading to
+              // auth_required, the wrong branch) instead of actually
+              // reading status. The managed CODEX_HOME directory and any
+              // API-key login the hello probe just performed already
+              // persist on the same target/lease, so the directory exists
+              // by the time this runs — no bootstrap needed.
               const statusProbe = await runAdapterExecutionTargetProcess(
                 target ?? { type: "local" },
                 {
@@ -312,7 +344,8 @@ export async function testEnvironment(
                   command,
                   args: [...CODEX_AUTH_STATUS_ARGS],
                   cwd,
-                  env,
+                  env: probeEnv,
+                  unsetEnvKeys: ["OPENAI_API_KEY"],
                   runtimeCommandSpec: null,
                   timeoutSec: 10,
                   graceSec: 2,

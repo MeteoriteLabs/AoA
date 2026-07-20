@@ -78,6 +78,24 @@ describe("parseCodexAuthStatus", () => {
     });
   });
 
+  it("skips a leading warning banner to find the real status line", () => {
+    // A banner before the actual status (e.g. a deprecation warning) must not
+    // shadow the real status — a revoked user must not see "not signed in
+    // yet" just because line 1 wasn't the status line.
+    expect(parseCodexAuthStatus("warning: config deprecated\nLogged in using ChatGPT")).toEqual({
+      loggedIn: true,
+      account: "ChatGPT",
+    });
+  });
+
+  it("finds the status line after multiple lines of noise", () => {
+    expect(
+      parseCodexAuthStatus(
+        "warning: config deprecated\nnote: using default profile\nsome extra CLI banner line\nNot logged in",
+      ),
+    ).toEqual({ loggedIn: false, account: null });
+  });
+
   it("returns a fresh object on every call, not a shared reference", () => {
     const a = parseCodexAuthStatus("Not logged in");
     const b = parseCodexAuthStatus("Not logged in");

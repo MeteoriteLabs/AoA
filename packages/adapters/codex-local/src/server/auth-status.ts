@@ -30,34 +30,36 @@ const NOT_LOGGED_IN_RE = /not\s+logged\s+in/i;
 const LOGGED_IN_USING_RE = /logged\s+in\s+using\s+(.+)/i;
 const LOGGED_IN_RE = /\blogged\s+in\b/i;
 
-function firstNonEmptyLine(text: string): string {
-  return (
-    text
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .find(Boolean) ?? ""
-  );
-}
-
 /**
  * Never throws: an older/broken CLI (`error: unknown command 'login'`) or
  * unrecognised output must degrade to signed-out copy rather than crash mid
  * verification. Always returns a freshly constructed object — never a shared
  * reference callers could accidentally mutate into each other.
+ *
+ * Scans ALL non-empty lines for the first status-shaped one, rather than
+ * only examining the first line: a banner ahead of the real status line
+ * (e.g. a deprecation warning) must not shadow it and report signed-out for
+ * a user whose session is actually expired. Per-line, "not logged in" is
+ * still checked before "logged in" — that ordering trap (the former
+ * contains the latter as a substring) applies within each line too.
  */
 export function parseCodexAuthStatus(stdout: string | null | undefined): CodexAuthStatus {
-  const line = firstNonEmptyLine((stdout ?? "").trim());
-  if (!line) return { loggedIn: false, account: null };
+  const lines = (stdout ?? "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
 
-  if (NOT_LOGGED_IN_RE.test(line)) return { loggedIn: false, account: null };
+  for (const line of lines) {
+    if (NOT_LOGGED_IN_RE.test(line)) return { loggedIn: false, account: null };
 
-  const usingMatch = LOGGED_IN_USING_RE.exec(line);
-  if (usingMatch) {
-    const method = usingMatch[1].trim().replace(/[.\s]+$/, "");
-    return { loggedIn: true, account: method || null };
+    const usingMatch = LOGGED_IN_USING_RE.exec(line);
+    if (usingMatch) {
+      const method = usingMatch[1].trim().replace(/[.\s]+$/, "");
+      return { loggedIn: true, account: method || null };
+    }
+
+    if (LOGGED_IN_RE.test(line)) return { loggedIn: true, account: null };
   }
-
-  if (LOGGED_IN_RE.test(line)) return { loggedIn: true, account: null };
 
   return { loggedIn: false, account: null };
 }
