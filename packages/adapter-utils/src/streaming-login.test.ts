@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 import { describe, it, expect, vi } from "vitest";
 import { runStreamingLogin, type RunStreamingLoginOptions } from "./streaming-login.js";
 import type { TrackedChildHandle } from "./server-utils.js";
@@ -166,5 +167,51 @@ describe("runStreamingLogin — submitCode", () => {
       stdin: "pipe", spawn: () => handle,
     });
     expect(r.submitCode("ABC-123")).toBe(false);
+  });
+});
+
+describe("runStreamingLogin — submitCode never crashes the process", () => {
+  it("survives an async EPIPE on the child's stdin", async () => {
+    const stdin = new PassThrough();
+    const handle = makeFakeHandle({ stdin });
+    const r = runStreamingLogin({
+      runId: "r1", command: "claude", args: ["auth", "login"], cwd: "/tmp", env: {},
+      stdin: "pipe", spawn: () => handle,
+    });
+    expect(r.submitCode("ABC-123")).toBe(true);
+
+    // An unhandled 'error' on a writable throws as an uncaught exception.
+    // The runner must have attached a listener, so this is absorbed.
+    expect(() => stdin.emit("error", Object.assign(new Error("write EPIPE"), { code: "EPIPE" }))).not.toThrow();
+  });
+
+  it("returns false instead of propagating a synchronous write failure", () => {
+    const handle = makeFakeHandle({
+      stdin: {
+        writable: true,
+        on: () => {},
+        write: () => { throw new Error("write EPIPE"); },
+      },
+    });
+    const r = runStreamingLogin({
+      runId: "r1", command: "claude", args: ["auth", "login"], cwd: "/tmp", env: {},
+      stdin: "pipe", spawn: () => handle,
+    });
+    expect(r.submitCode("ABC-123")).toBe(false);
+  });
+
+  it("attaches the stdin error listener only once, not per submitCode call", () => {
+    const added: string[] = [];
+    const handle = makeFakeHandle({
+      stdin: { writable: true, on: (ev: string) => { added.push(ev); }, write: () => true },
+    });
+    const r = runStreamingLogin({
+      runId: "r1", command: "claude", args: ["auth", "login"], cwd: "/tmp", env: {},
+      stdin: "pipe", spawn: () => handle,
+    });
+    r.submitCode("A");
+    r.submitCode("B");
+    r.submitCode("C");
+    expect(added.filter((e) => e === "error")).toHaveLength(1);
   });
 });

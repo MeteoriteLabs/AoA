@@ -80,6 +80,14 @@ export function runStreamingLogin(opts: RunStreamingLoginOptions): StreamingLogi
   const child = handle.child;
   const detector = createLoginUrlDetector();
 
+  // A-H11 precedent (server-utils.ts spawnTrackedChild): an unhandled 'error'
+  // on a writable throws as an UNCAUGHT exception, and this server has no
+  // uncaughtException handler — a single EPIPE (e.g. the CLI exits/times out
+  // while the founder is still typing a pasted code) would take the whole
+  // process down. Attach the no-op listener once, up front, not per
+  // submitCode call — repeated attaches would leak listeners.
+  child.stdin?.on?.("error", () => {});
+
   let settled = false;
   let resolveUrl!: (url: string) => void;
   let rejectUrl!: (err: Error) => void;
@@ -139,7 +147,14 @@ export function runStreamingLogin(opts: RunStreamingLoginOptions): StreamingLogi
   const submitCode = (code: string): boolean => {
     const stdin = child.stdin;
     if (!stdin || stdin.writable === false) return false;
-    stdin.write(`${code}\n`);
+    try {
+      stdin.write(`${code}\n`);
+    } catch {
+      // Synchronous write failure (e.g. write-after-end / destroyed) — benign,
+      // mirrors the try/catch around the stdin write in spawnTrackedChild's
+      // caller (server-utils.ts, A-H11).
+      return false;
+    }
     return true;
   };
 
