@@ -34,6 +34,27 @@ const base = (spawn: RunStreamingLoginOptions["spawn"]): RunStreamingLoginOption
   spawn,
 });
 
+/** A fake TrackedChildHandle whose stdin can be supplied for submitCode tests. */
+function makeFakeHandle(opts?: { stdin?: unknown }): TrackedChildHandle {
+  const stdout = new EventEmitter();
+  const stderr = new EventEmitter();
+  const child = new EventEmitter() as EventEmitter & {
+    stdout: EventEmitter;
+    stderr: EventEmitter;
+    stdin?: unknown;
+  };
+  child.stdout = stdout;
+  child.stderr = stderr;
+  child.stdin = opts?.stdin;
+  return {
+    child: child as never,
+    pid: 1,
+    pgid: 1,
+    startedAt: new Date(),
+    terminate: () => {},
+  };
+}
+
 describe("runStreamingLogin (Plan 3 T3)", () => {
   it("resolves urlPromise from a stdout chunk", async () => {
     const f = fakeSpawn();
@@ -94,5 +115,56 @@ describe("runStreamingLogin (Plan 3 T3)", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("runStreamingLogin — stdin opt-in", () => {
+  it("ignores stdin by default so codex's spawn is unchanged", () => {
+    let captured: unknown;
+    runStreamingLogin({
+      runId: "r1", command: "codex", args: ["login"], cwd: "/tmp", env: {},
+      spawn: (_r, _c, _a, opts) => { captured = opts.stdio; return makeFakeHandle(); },
+    });
+    expect(captured).toEqual(["ignore", "pipe", "pipe"]);
+  });
+
+  it("pipes stdin when explicitly requested", () => {
+    let captured: unknown;
+    runStreamingLogin({
+      runId: "r1", command: "claude", args: ["auth", "login"], cwd: "/tmp", env: {},
+      stdin: "pipe",
+      spawn: (_r, _c, _a, opts) => { captured = opts.stdio; return makeFakeHandle(); },
+    });
+    expect(captured).toEqual(["pipe", "pipe", "pipe"]);
+  });
+});
+
+describe("runStreamingLogin — submitCode", () => {
+  it("writes the code with a trailing newline to the child's stdin", () => {
+    const written: string[] = [];
+    const handle = makeFakeHandle({ stdin: { write: (s: string) => { written.push(s); return true; }, writable: true } });
+    const r = runStreamingLogin({
+      runId: "r1", command: "claude", args: ["auth", "login"], cwd: "/tmp", env: {},
+      stdin: "pipe", spawn: () => handle,
+    });
+    expect(r.submitCode("ABC-123")).toBe(true);
+    expect(written).toEqual(["ABC-123\n"]);
+  });
+
+  it("returns false when stdin was not piped", () => {
+    const handle = makeFakeHandle({ stdin: null });
+    const r = runStreamingLogin({
+      runId: "r1", command: "codex", args: ["login"], cwd: "/tmp", env: {}, spawn: () => handle,
+    });
+    expect(r.submitCode("ABC-123")).toBe(false);
+  });
+
+  it("returns false once the child's stdin is no longer writable", () => {
+    const handle = makeFakeHandle({ stdin: { write: () => true, writable: false } });
+    const r = runStreamingLogin({
+      runId: "r1", command: "claude", args: ["auth", "login"], cwd: "/tmp", env: {},
+      stdin: "pipe", spawn: () => handle,
+    });
+    expect(r.submitCode("ABC-123")).toBe(false);
   });
 });

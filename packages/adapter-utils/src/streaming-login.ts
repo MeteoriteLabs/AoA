@@ -25,6 +25,16 @@ export interface StreamingLoginResult {
   handle: TrackedChildHandle;
   urlPromise: Promise<string>;
   exitPromise: Promise<number | null>;
+  /**
+   * Write a pasted auth code to the child's stdin.
+   *
+   * Claude's flow REQUIRES this: `claude auth login` prints its URL and then
+   * blocks on "Paste code here". Codex self-completes via a local callback and
+   * never needs it. Returns false when stdin was not piped or the child has
+   * already gone, so the caller can report an honest error instead of hanging —
+   * a silent no-op here is the exact failure this feature removes.
+   */
+  submitCode(code: string): boolean;
 }
 
 export interface RunStreamingLoginOptions {
@@ -37,6 +47,12 @@ export interface RunStreamingLoginOptions {
   discoveryTimeoutMs?: number;
   /** Extra parent-env keys to strip (forwarded to spawnTrackedChild). */
   unsetEnvKeys?: string[];
+  /**
+   * stdin disposition. Defaults to "ignore" — codex's device flow needs no
+   * input, and leaving its spawn byte-identical keeps a working flow risk-free.
+   * Claude passes "pipe" because its login blocks reading a pasted code.
+   */
+  stdin?: "ignore" | "pipe";
   /** DI seam — defaults to the real spawnTrackedChild. */
   spawn?: (
     runId: string,
@@ -55,8 +71,10 @@ export function runStreamingLogin(opts: RunStreamingLoginOptions): StreamingLogi
     env: opts.env,
     graceSec: 5,
     unsetEnvKeys: opts.unsetEnvKeys,
-    // stdin ignored: the device flow needs no input; stdout+stderr piped for URL detection.
-    stdio: ["ignore", "pipe", "pipe"],
+    // stdin defaults to ignored (codex's device flow needs none); callers that
+    // must answer a "paste code here" prompt (claude) opt in via opts.stdin.
+    // stdout+stderr are always piped for URL detection.
+    stdio: [opts.stdin ?? "ignore", "pipe", "pipe"],
   });
 
   const child = handle.child;
@@ -118,5 +136,12 @@ export function runStreamingLogin(opts: RunStreamingLoginOptions): StreamingLogi
     });
   });
 
-  return { handle, urlPromise, exitPromise };
+  const submitCode = (code: string): boolean => {
+    const stdin = child.stdin;
+    if (!stdin || stdin.writable === false) return false;
+    stdin.write(`${code}\n`);
+    return true;
+  };
+
+  return { handle, urlPromise, exitPromise, submitCode };
 }
