@@ -87,13 +87,21 @@ export interface LoginRunLike {
 
 /**
  * Outcome of delivering a pasted auth code.
- *  - "delivered"   — written to the live child's stdin
- *  - "unsupported" — this provider does not accept a pasted code (codex
- *                    self-completes via its local callback)
- *  - "not-live"    — no live child in THIS process: the server restarted, the
- *                    challenge belongs to another process, or the CLI exited
+ *  - "delivered"    — written to the live child's stdin
+ *  - "unsupported"  — this provider does not accept a pasted code (codex
+ *                     self-completes via its local callback)
+ *  - "not-live"     — no LIVE, SAME-COMPANY child to deliver to: the registry
+ *                     has no entry for this challengeId (server restarted,
+ *                     challenge belongs to another process, or already
+ *                     finalized/cancelled), OR the entry belongs to a
+ *                     DIFFERENT company (cross-tenant call) — both report as
+ *                     absent, indistinguishable from "unknown challenge",
+ *                     mirroring `getStatus`/`cancel`.
+ *  - "write-failed" — a live, same-company child WAS found and the write was
+ *                     attempted, but the child refused it (e.g. already past
+ *                     the prompt, or the process is exiting).
  */
-export type SubmitCodeResult = "delivered" | "unsupported" | "not-live";
+export type SubmitCodeResult = "delivered" | "unsupported" | "not-live" | "write-failed";
 
 export interface CommanderLoginServiceDeps {
   store: ChallengeStore;
@@ -169,13 +177,19 @@ export interface CommanderLoginService {
   /**
    * Deliver a pasted auth code to the challenge's LIVE child in THIS process.
    *
-   * NOT company-scoped, unlike `getStatus`/`cancel` — the live-run registry
-   * this reads is process-local by construction (see `liveRuns` in
-   * `createCommanderLoginService`), so there is nothing here to leak across
-   * tenants beyond what a valid challengeId already implies. Task 4's route
-   * is expected to apply its own company-ownership check before calling this.
+   * Company-scoped, exactly like `getStatus`/`cancel` — and here it matters
+   * MORE than in either sibling: this is the one method in the service that
+   * performs a WRITE into a live child process (its stdin), not merely a
+   * read or a self-owned terminate. Without the check, a founder of company
+   * A who obtains company B's challengeId could deliver an attacker-chosen
+   * OAuth code into B's live `claude auth login` stdin, leaving B's shared
+   * credential home authenticated as the attacker — a confused-deputy WRITE
+   * into another tenant's child, not an information leak. A company mismatch
+   * is therefore treated exactly like an unknown challengeId (`"not-live"`),
+   * the same non-leaking "report as absent" convention `getStatus`/`cancel`
+   * already use.
    */
-  submitCode(challengeId: string, code: string): SubmitCodeResult;
+  submitCode(companyId: string, challengeId: string, code: string): SubmitCodeResult;
 }
 
 /**
@@ -234,7 +248,11 @@ export function createCommanderLoginService(deps: CommanderLoginServiceDeps): Co
    */
   const liveRuns = new Map<
     string,
-    { provider: CommanderLoginProvider; submitCode: (code: string) => boolean }
+    {
+      companyId: string;
+      provider: CommanderLoginProvider;
+      submitCode: (code: string) => boolean;
+    }
   >();
 
   /**
@@ -362,7 +380,11 @@ export function createCommanderLoginService(deps: CommanderLoginServiceDeps): Co
     // path below that can end this challenge (backfill failure, superseded,
     // URL-discovery failure, loginUrl-write failure, normal finalize, cancel)
     // removes this entry so a dead/foreign challenge never looks live.
-    liveRuns.set(id, { provider: args.provider, submitCode: run.submitCode });
+    liveRuns.set(id, {
+      companyId: args.companyId,
+      provider: args.provider,
+      submitCode: run.submitCode,
+    });
     // Capture the child's ACTUAL spawn instant (Codex round-8 P2 :202). `startedAt`
     // was set at CLAIM time — before the advisory-lock wait + spawn. If that wait
     // exceeds `terminateByPidIfMatches`'s 2s tolerance, the child's real OS start
@@ -625,12 +647,18 @@ export function createCommanderLoginService(deps: CommanderLoginServiceDeps): Co
     }
   }
 
-  function submitCode(challengeId: string, code: string): SubmitCodeResult {
+  function submitCode(companyId: string, challengeId: string, code: string): SubmitCodeResult {
     const live = liveRuns.get(challengeId);
-    if (!live) return "not-live";
+    // Registry miss OR cross-tenant: report as absent, mirroring
+    // getStatus/cancel — never distinguish "unknown" from "belongs to
+    // another company" (that distinction is itself information a foreign
+    // caller should not learn), and never write into another tenant's child.
+    if (!live || live.companyId !== companyId) return "not-live";
     // Codex never accepts a pasted code: its stdin is not piped by design.
     if (live.provider === "openai") return "unsupported";
-    return live.submitCode(code) ? "delivered" : "not-live";
+    // The write was attempted against a live, same-company child; the child
+    // itself refused it (already past the prompt, or exiting).
+    return live.submitCode(code) ? "delivered" : "write-failed";
   }
 
   return { startChallenge, getStatus, cancel, reapOrphans, submitCode };

@@ -56,6 +56,42 @@ export function commanderLoginRoutes(db: Db): Router {
     },
   );
 
+  router.post(
+    "/companies/:companyId/internal-agent/commander-login/:id/code",
+    async (req: Request, res: Response) => {
+      const companyId = req.params.companyId as string;
+      if (!(await gate(req, res, companyId))) return;
+
+      const code = typeof req.body?.code === "string" ? req.body.code.trim() : "";
+      if (!code) {
+        res.status(400).json({ error: "code is required" });
+        return;
+      }
+
+      // NB: never log `code` — it exchanges for a live credential.
+      const result = service.submitCode(companyId, req.params.id as string, code);
+      if (result === "not-live") {
+        res.status(404).json({
+          error: "This sign-in session is no longer active. Start sign-in again.",
+        });
+        return;
+      }
+      if (result === "write-failed") {
+        res.status(410).json({
+          error: "The sign-in process has exited. Start sign-in again.",
+        });
+        return;
+      }
+      if (result === "unsupported") {
+        res.status(409).json({
+          error: "This provider completes sign-in in the browser and does not take a pasted code.",
+        });
+        return;
+      }
+      res.status(202).json({ ok: true });
+    },
+  );
+
   router.get(
     "/companies/:companyId/internal-agent/commander-login/:id",
     async (req: Request, res: Response) => {

@@ -1264,13 +1264,13 @@ describe("commander-login service (Plan 3 T4)", () => {
     });
     f.resolveUrl("https://platform.claude.com/oauth?code=A");
     const { challengeId } = await startP;
-    expect(svc.submitCode(challengeId, "SECRET-CODE")).toBe("delivered");
+    expect(svc.submitCode("c1", challengeId, "SECRET-CODE")).toBe("delivered");
     expect(f.submitCode).toHaveBeenCalledWith("SECRET-CODE");
   });
 
   it("(submitCode-2) an unknown challengeId is not-live", () => {
     const { svc } = makeService();
-    expect(svc.submitCode("no-such-challenge", "CODE")).toBe("not-live");
+    expect(svc.submitCode("c1", "no-such-challenge", "CODE")).toBe("not-live");
   });
 
   it("(submitCode-3) an openai/codex challenge is unsupported and never reaches the child's submitCode", async () => {
@@ -1283,11 +1283,11 @@ describe("commander-login service (Plan 3 T4)", () => {
     });
     f.resolveUrl("https://chatgpt.com/device?code=B");
     const { challengeId } = await startP;
-    expect(svc.submitCode(challengeId, "CODE")).toBe("unsupported");
+    expect(svc.submitCode("c1", challengeId, "CODE")).toBe("unsupported");
     expect(f.submitCode).not.toHaveBeenCalled();
   });
 
-  it("(submitCode-4) an anthropic child that refuses the stdin write reports not-live (not a false 'delivered')", async () => {
+  it("(submitCode-4) an anthropic child that refuses the stdin write reports write-failed (not a false 'delivered', and not conflated with not-live)", async () => {
     const f = fakeRun(333, 333, vi.fn(() => false));
     const { svc } = makeService({ runLogin: () => f.run });
     const startP = svc.startChallenge({
@@ -1297,7 +1297,7 @@ describe("commander-login service (Plan 3 T4)", () => {
     });
     f.resolveUrl("https://platform.claude.com/oauth?code=A");
     const { challengeId } = await startP;
-    expect(svc.submitCode(challengeId, "CODE")).toBe("not-live");
+    expect(svc.submitCode("c1", challengeId, "CODE")).toBe("write-failed");
     expect(f.submitCode).toHaveBeenCalledWith("CODE"); // the write WAS attempted, it just failed
   });
 
@@ -1311,9 +1311,9 @@ describe("commander-login service (Plan 3 T4)", () => {
     });
     f.resolveUrl("https://platform.claude.com/oauth?code=A");
     const { challengeId } = await startP;
-    expect(svc.submitCode(challengeId, "BEFORE")).toBe("delivered"); // sanity: live pre-cancel
+    expect(svc.submitCode("c1", challengeId, "BEFORE")).toBe("delivered"); // sanity: live pre-cancel
     await svc.cancel("c1", challengeId);
-    expect(svc.submitCode(challengeId, "AFTER")).toBe("not-live");
+    expect(svc.submitCode("c1", challengeId, "AFTER")).toBe("not-live");
     expect(f.submitCode).toHaveBeenCalledTimes(1); // "AFTER" never reached the (now-dead) child
   });
 
@@ -1329,6 +1329,39 @@ describe("commander-login service (Plan 3 T4)", () => {
     const { challengeId, completion } = await startP;
     f.resolveExit(0);
     await completion;
-    expect(svc.submitCode(challengeId, "AFTER")).toBe("not-live");
+    expect(svc.submitCode("c1", challengeId, "AFTER")).toBe("not-live");
+  });
+
+  // ── Cross-tenant submitCode (security fix, Task 4) ──
+  // Unlike getStatus/cancel, submitCode performs a WRITE into a live child's
+  // stdin — a cross-tenant call here is a confused-deputy write, not merely
+  // an info leak. A company mismatch must be indistinguishable from an
+  // unknown challengeId ("not-live"), and must NEVER reach the child.
+
+  it("(submitCode-7) refuses a code for a challenge belonging to another company", async () => {
+    const f = fakeRun(666, 666, vi.fn(() => true));
+    const { svc } = makeService({ runLogin: () => f.run });
+    const startP = svc.startChallenge({
+      companyId: "company-A",
+      provider: "anthropic",
+      startedByUserId: "u1",
+    });
+    f.resolveUrl("https://platform.claude.com/oauth?code=A");
+    const { challengeId } = await startP;
+    expect(svc.submitCode("company-B", challengeId, "ABC-123")).toBe("not-live");
+  });
+
+  it("(submitCode-8) does not call the child's submitCode on a company mismatch", async () => {
+    const f = fakeRun(777, 777, vi.fn(() => true));
+    const { svc } = makeService({ runLogin: () => f.run });
+    const startP = svc.startChallenge({
+      companyId: "company-A",
+      provider: "anthropic",
+      startedByUserId: "u1",
+    });
+    f.resolveUrl("https://platform.claude.com/oauth?code=A");
+    const { challengeId } = await startP;
+    svc.submitCode("company-B", challengeId, "ABC-123");
+    expect(f.submitCode).not.toHaveBeenCalled();
   });
 });
