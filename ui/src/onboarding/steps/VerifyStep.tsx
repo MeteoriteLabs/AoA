@@ -57,6 +57,16 @@ function authHintFrom(checks: VerifyCheck[]): string | null {
   return null;
 }
 
+/**
+ * The server's `*_auth_expired` checks (Tasks 1-6) carry a precise, founder-ready
+ * sentence — including WHICH account is signed in — that the client can't derive
+ * on its own (e.g. "Signed in as ada@example.com, but that session has expired or
+ * been revoked."). Prefer that over the generic client-side `authHintFrom` guess.
+ */
+function expiredAuthMessage(checks: VerifyCheck[]): string | null {
+  return checks.find((c) => c.code?.includes("auth_expired"))?.message ?? null;
+}
+
 const PROVIDER_LABEL: Record<CommanderProvider, string> = { anthropic: "Claude", openai: "Codex" };
 
 /** Interval (ms) between CLI-auto-detect poll ticks, once past the immediate first check. */
@@ -344,7 +354,8 @@ export function VerifyStep({ ctx, onComplete }: StepProps) {
         <Reveal delay={0.18}>
           <div className="space-y-3 rounded-xl border border-amber-500/30 bg-amber-950/20 p-3 text-left text-xs text-dim">
             <p className="text-text">
-              {authHintFrom(checks) ??
+              {expiredAuthMessage(checks) ??
+                authHintFrom(checks) ??
                 `The ${providerLabel} CLI is installed but needs sign-in.`}{" "}
               Choose one — no terminal required:
             </p>

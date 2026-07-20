@@ -320,6 +320,100 @@ describe("VerifyStep (Stage C / order 5, blocking)", () => {
       expect(onComplete).not.toHaveBeenCalled();
     });
   });
+
+  // Task 7: the server's `*_auth_expired` checks (Tasks 1-6) carry a precise,
+  // founder-ready sentence naming the account and distinguishing "expired" from
+  // "never signed in" — prefer that over the generic client-side guess, and
+  // never let raw stream-json (`detail`) reach the founder.
+  describe("Task 7: expired-session copy + no raw JSON leakage", () => {
+    const expiredError = (overrides: { detail?: string } = {}) =>
+      new ApiError("Request failed: 422", 422, {
+        outcome: "needs_auth",
+        result: {
+          status: "fail",
+          checks: [
+            {
+              code: "claude_hello_probe_auth_expired",
+              level: "error",
+              message: "Signed in as ada@example.com, but that session has expired or been revoked.",
+              hint: "Sign in again — paste an API key below, or run `claude login` in a terminal and we'll detect it.",
+              ...overrides,
+            },
+          ],
+        },
+      });
+
+    it("names the account and offers recovery when the session has expired", async () => {
+      post.mockRejectedValueOnce(expiredError());
+      render(<VerifyStep ctx={ctx} onComplete={vi.fn()} onBack={() => {}} />);
+      fireEvent.click(screen.getByText("Verify"));
+
+      expect((await screen.findAllByText(/ada@example\.com/)).length).toBeGreaterThan(0);
+      expect(screen.getAllByText(/expired or been revoked/i).length).toBeGreaterThan(0);
+      expect(screen.getAllByText(/paste an api key/i).length).toBeGreaterThan(0);
+    });
+
+    it("uses different copy for a founder who was never signed in", async () => {
+      post.mockRejectedValueOnce(
+        new ApiError("Request failed: 422", 422, {
+          outcome: "needs_auth",
+          result: {
+            status: "fail",
+            checks: [
+              {
+                code: "claude_hello_probe_auth_required",
+                level: "error",
+                message: "Claude CLI is installed, but you're not signed in yet.",
+              },
+            ],
+          },
+        }),
+      );
+      render(<VerifyStep ctx={ctx} onComplete={vi.fn()} onBack={() => {}} />);
+      fireEvent.click(screen.getByText("Verify"));
+
+      expect(await screen.findByText(/not signed in yet/i)).toBeTruthy();
+      expect(screen.queryByText(/expired or been revoked/i)).toBeNull();
+    });
+
+    it("never renders raw stream-json from a check's `detail`", async () => {
+      post.mockRejectedValueOnce(
+        expiredError({
+          detail: '{"type":"system","subtype":"init","session_id":"s","model":"claude-opus-4-8"}',
+        }),
+      );
+      const { container } = render(<VerifyStep ctx={ctx} onComplete={vi.fn()} onBack={() => {}} />);
+      fireEvent.click(screen.getByText("Verify"));
+
+      await screen.findAllByText(/ada@example\.com/);
+      expect(container.textContent).not.toContain("session_id");
+      expect(container.textContent).not.toContain('{"type":"system"');
+    });
+
+    it("Codex expired copy names ChatGPT", async () => {
+      getConfig.mockResolvedValue({ cliTool: "codex", provider: "anthropic" });
+      post.mockRejectedValueOnce(
+        new ApiError("Request failed: 422", 422, {
+          outcome: "needs_auth",
+          result: {
+            status: "fail",
+            checks: [
+              {
+                code: "codex_hello_probe_auth_expired",
+                level: "error",
+                message: "Codex is signed in using ChatGPT, but that session has expired or been rejected.",
+                hint: "Sign in again below, or run `codex login` in a terminal and we'll detect it.",
+              },
+            ],
+          },
+        }),
+      );
+      render(<VerifyStep ctx={ctx} onComplete={vi.fn()} onBack={() => {}} />);
+      fireEvent.click(screen.getByText("Verify"));
+
+      expect((await screen.findAllByText(/ChatGPT/)).length).toBeGreaterThan(0);
+    });
+  });
 });
 
 describe("assembled registry includes the verify step", () => {
