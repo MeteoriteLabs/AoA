@@ -303,6 +303,7 @@ export async function runClaudeLogin(input: {
     parsed: null,
     stdout: proc.stdout,
     stderr: proc.stderr,
+    exitCode: proc.exitCode,
   });
 
   return buildLoginResult({
@@ -628,6 +629,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       parsed,
       stdout: proc.stdout,
       stderr: proc.stderr,
+      exitCode: proc.exitCode,
     });
     const errorMeta =
       loginMeta.loginUrl != null

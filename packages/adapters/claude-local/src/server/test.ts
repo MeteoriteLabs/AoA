@@ -222,6 +222,7 @@ export async function testEnvironment(
         parsed,
         stdout: probe.stdout,
         stderr: probe.stderr,
+        exitCode: probe.exitCode,
       });
       const detail = summarizeProbeDetail(probe.stdout, probe.stderr);
 

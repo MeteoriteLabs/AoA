@@ -124,13 +124,32 @@ export function detectClaudeLoginRequired(input: {
   parsed: Record<string, unknown> | null;
   stdout: string;
   stderr: string;
+  /**
+   * Exit code of the process that produced stdout/stderr, when the caller
+   * has it. `stdout` is transcript-bearing for stream-json (it carries the
+   * agent's whole turn, not just error output), so it is only safe to feed
+   * into the auth classifier when the process actually failed — otherwise
+   * agent prose that merely *discusses* auth ("Added a handler returning 401
+   * for missing sessions") would misclassify a successful run as needing
+   * login.
+   *
+   * - `exitCode` is a number and `!== 0` (real failure): stdout included.
+   * - `exitCode === 0` (real success): stdout excluded.
+   * - `exitCode` is `undefined`/`null` (caller doesn't know): stdout is
+   *   still included, to preserve pre-existing detection for call sites that
+   *   haven't been updated to pass it. Only known-successful runs are
+   *   exempted.
+   */
+  exitCode?: number | null;
 }): { requiresLogin: boolean; loginUrl: string | null; kind: AuthFailureKind } {
-  const resultText = asString(input.parsed?.result, "").trim();
+  const processKnownSuccessful = typeof input.exitCode === "number" && input.exitCode === 0;
+  // `parsed.result` (resultText) is deliberately EXCLUDED: it is the agent's
+  // final authored answer, never process failure output, and must never
+  // feed the auth classifier (see auth-failure-detector.ts's input contract).
   const haystack = [
-    resultText,
     ...extractClaudeErrorMessages(input.parsed ?? {}),
-    input.stdout,
     input.stderr,
+    ...(processKnownSuccessful ? [] : [input.stdout]),
   ].join("\n");
 
   // Shared detector: the old local regex matched only never-signed-in phrasing
