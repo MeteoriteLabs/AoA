@@ -101,6 +101,22 @@ describe("detectAuthFailure — load-bearing precedence and noise-stripping", ()
     expect(detectAuthFailure("Request timed out. Invalid API key provided.").kind).toBe(
       "invalid_key",
     ));
+
+  it("still detects sign-out when the message also carries a 5xx", () =>
+    expect(detectAuthFailure("API Error: 500. Also: not logged in.").kind).toBe("signed_out"));
+});
+
+// The loginUrl comes from the shared verification-URL extractor, which skips
+// loopback callbacks. `codex login` prints its LOCAL callback before the real
+// auth page, so a naive "first URL" match hands the founder a dead localhost
+// link. Pinned here because the detector is what feeds the sign-in affordance.
+describe("detectAuthFailure — loginUrl skips loopback callbacks", () => {
+  it("returns the real auth URL, not the local callback codex prints first", () => {
+    const out =
+      "Starting local server at http://localhost:1455. " +
+      "Open https://auth.openai.com/oauth?x=1 to continue. Not logged in.";
+    expect(detectAuthFailure(out).loginUrl).toBe("https://auth.openai.com/oauth?x=1");
+  });
 });
 
 describe("isAuthFailure", () => {
