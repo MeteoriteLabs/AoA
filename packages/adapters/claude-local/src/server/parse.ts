@@ -1,7 +1,6 @@
-import type { UsageSummary } from "@armyofagents/adapter-utils";
+import { detectAuthFailure, type AuthFailureKind, type UsageSummary } from "@armyofagents/adapter-utils";
 import { asString, asNumber, parseObject, parseJson } from "@armyofagents/adapter-utils/server-utils";
 
-const CLAUDE_AUTH_REQUIRED_RE = /(?:not\s+logged\s+in|please\s+log\s+in|please\s+run\s+`?claude\s+login`?|login\s+required|requires\s+login|unauthorized|authentication\s+required)/i;
 const URL_RE = /(https?:\/\/[^\s'"`<>()[\]{};,!?]+[^\s'"`<>()[\]{};,!.?:]+)/gi;
 
 export function parseClaudeStreamJson(stdout: string) {
@@ -125,18 +124,23 @@ export function detectClaudeLoginRequired(input: {
   parsed: Record<string, unknown> | null;
   stdout: string;
   stderr: string;
-}): { requiresLogin: boolean; loginUrl: string | null } {
+}): { requiresLogin: boolean; loginUrl: string | null; kind: AuthFailureKind } {
   const resultText = asString(input.parsed?.result, "").trim();
-  const messages = [resultText, ...extractClaudeErrorMessages(input.parsed ?? {}), input.stdout, input.stderr]
-    .join("\n")
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
+  const haystack = [
+    resultText,
+    ...extractClaudeErrorMessages(input.parsed ?? {}),
+    input.stdout,
+    input.stderr,
+  ].join("\n");
 
-  const requiresLogin = messages.some((line) => CLAUDE_AUTH_REQUIRED_RE.test(line));
+  // Shared detector: the old local regex matched only never-signed-in phrasing
+  // and missed every revoked/expired/401 failure.
+  const { kind } = detectAuthFailure(haystack);
+
   return {
-    requiresLogin,
+    requiresLogin: kind !== "none",
     loginUrl: extractClaudeLoginUrl([input.stdout, input.stderr].join("\n")),
+    kind,
   };
 }
 
