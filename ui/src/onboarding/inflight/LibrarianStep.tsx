@@ -323,6 +323,13 @@ export function LibrarianStep({ companyId, onDone }: LibrarianStepProps) {
 
       {loadError && <p className="text-center text-xs text-destructive">{loadError}</p>}
 
+      <Reveal delay={0.12}>
+        <p className="text-center text-xs text-dim">
+          We're sorting this into your company's memory in the background — you can review and
+          approve it in Memory whenever you're ready.
+        </p>
+      </Reveal>
+
       {stillWorking && (
         <Reveal delay={0.12}>
           <p className="text-center text-xs text-dim">

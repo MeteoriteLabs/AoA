@@ -340,4 +340,20 @@ describe("LibrarianStep (WS6 — In-flight standalone surface)", () => {
     expect(await screen.findByRole("img", { name: "agent done" })).toBeTruthy();
     expect(screen.getByText(/No proposed memory items yet/)).toBeTruthy();
   });
+
+  it("does not block on organizing — shows a background note and lets the founder continue", async () => {
+    // A capture still running (Librarian working in the background).
+    listCaptures.mockResolvedValue([makeCapture({ status: "running" })]);
+    memoryList.mockResolvedValue({ items: [], semanticAvailable: true });
+
+    const onDone = vi.fn();
+    render(<LibrarianStep companyId="c1" onDone={onDone} />);
+
+    // A clear background note, not an indefinite blocking spinner.
+    expect(await screen.findByText(/sorting|background|review (it )?in Memory/i)).toBeTruthy();
+    // Continue is available immediately, even while the run is in flight.
+    const cont = screen.getByRole("button", { name: /continue/i });
+    fireEvent.click(cont);
+    expect(onDone).toHaveBeenCalledTimes(1);
+  });
 });
