@@ -17,10 +17,45 @@ import { GradientText, StepHeading, StepShell } from "./shared";
 
 type Outcome = "idle" | "verified" | "needs_auth" | "not_installed" | "failed";
 
+/** One probe result from the verify route. `level` is "error" for a check that
+ *  failed; `hint` is the server's actionable next step, when it has one. */
+type VerifyCheck = {
+  code?: string;
+  level?: string;
+  message?: string;
+  detail?: string;
+  hint?: string;
+};
+
 type VerifyBody = {
   outcome?: Outcome;
-  result?: { status?: string; checks?: { code?: string; message?: string }[] };
+  result?: { status?: string; checks?: VerifyCheck[] };
 };
+
+/**
+ * The verify probe returns several checks — working directory, command
+ * resolvable, auth mode, then a live "hello" probe. Showing only `checks[0]`
+ * meant a run where the first three passed and the last FAILED still rendered
+ * a single reassuring line ("Working directory is valid: …"), with no way to
+ * tell success from failure. Every check is now shown with its own state, and
+ * the failing one's hint is surfaced.
+ */
+function isFailedCheck(c: VerifyCheck): boolean {
+  return c.level === "error" || c.level === "fail";
+}
+
+/**
+ * The raw `detail` of a failed probe is a stream-json dump. When the CLI is
+ * simply signed out, the useful sentence is buried inside it — pull it out so
+ * the founder reads "your session expired" instead of a wall of JSON.
+ */
+function authHintFrom(checks: VerifyCheck[]): string | null {
+  const blob = checks.map((c) => `${c.message ?? ""} ${c.detail ?? ""}`).join(" ");
+  if (/revoked|401|unauthor|authentication_error|not logged in|please log in/i.test(blob)) {
+    return "Your CLI sign-in has expired or been revoked. Sign in again below, or run the CLI once in a terminal and sign in there.";
+  }
+  return null;
+}
 
 const PROVIDER_LABEL: Record<CommanderProvider, string> = { anthropic: "Claude", openai: "Codex" };
 
@@ -48,6 +83,7 @@ function installHint(): string {
 export function VerifyStep({ ctx, onComplete }: StepProps) {
   const [outcome, setOutcome] = useState<Outcome>("idle");
   const [message, setMessage] = useState<string | null>(null);
+  const [checks, setChecks] = useState<VerifyCheck[]>([]);
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(busy);
   busyRef.current = busy;
@@ -147,8 +183,12 @@ export function VerifyStep({ ctx, onComplete }: StepProps) {
     setAuthError(null);
     try {
       const res = await api.post<VerifyBody>(`/companies/${ctx.companyId}/internal-agent/verify`, {});
+      const list = res.result?.checks ?? [];
       setOutcome(res.outcome ?? "verified");
-      setMessage(res.result?.checks?.[0]?.message ?? null);
+      setChecks(list);
+      // Headline the FAILING check, not checks[0] — otherwise a passing first
+      // check masks the failure that actually blocked the step.
+      setMessage((list.find(isFailedCheck) ?? list[0])?.message ?? null);
       if ((res.outcome ?? "verified") === "verified") {
         clearPoll();
         clearCliPoll();
@@ -161,9 +201,12 @@ export function VerifyStep({ ctx, onComplete }: StepProps) {
       }
     } catch (e) {
       const body = e instanceof ApiError ? (e.body as VerifyBody | null) : null;
+      const list = body?.result?.checks ?? [];
       setOutcome(body?.outcome ?? "failed");
+      setChecks(list);
       setMessage(
-        body?.result?.checks?.[0]?.message ?? (e instanceof Error ? e.message : "Verification failed."),
+        (list.find(isFailedCheck) ?? list[0])?.message ??
+          (e instanceof Error ? e.message : "Verification failed."),
       );
     } finally {
       setBusy(false);
@@ -265,12 +308,34 @@ export function VerifyStep({ ctx, onComplete }: StepProps) {
         </div>
       </Reveal>
 
+      {/* Per-check breakdown. The founder can see WHICH part failed instead of
+          reading one line and guessing whether the step passed. */}
+      {checks.length > 0 && outcome !== "verified" && (
+        <Reveal delay={0.14}>
+          <ul className="space-y-1 rounded-xl border border-border-strong bg-surface/40 p-3 text-left text-[11px]">
+            {checks.map((c, i) => {
+              const failed = isFailedCheck(c);
+              return (
+                <li key={c.code ?? i} className="flex items-start gap-2">
+                  <span aria-hidden className={failed ? "text-destructive" : ""} style={failed ? undefined : { color: "var(--done)" }}>
+                    {failed ? "✕" : "✓"}
+                  </span>
+                  <span className={failed ? "text-destructive" : "text-dim"}>
+                    {c.message ?? c.code}
+                    {failed && c.hint && <span className="mt-0.5 block text-dim">{c.hint}</span>}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        </Reveal>
+      )}
+
       {outcome === "not_installed" && (
         <Reveal delay={0.18}>
           <div className="space-y-2 rounded-xl border border-amber-500/30 bg-amber-950/20 p-3 text-left text-xs text-dim">
             <p className="text-text">The CLI isn't installed or isn't on your PATH.</p>
             <p>{installHint()}</p>
-            {message && <p>{message}</p>}
             <p className="text-text">Install it, then choose "Check again".</p>
           </div>
         </Reveal>
@@ -279,9 +344,10 @@ export function VerifyStep({ ctx, onComplete }: StepProps) {
         <Reveal delay={0.18}>
           <div className="space-y-3 rounded-xl border border-amber-500/30 bg-amber-950/20 p-3 text-left text-xs text-dim">
             <p className="text-text">
-              The {providerLabel} CLI is installed but needs sign-in. Choose one — no terminal required:
+              {authHintFrom(checks) ??
+                `The ${providerLabel} CLI is installed but needs sign-in.`}{" "}
+              Choose one — no terminal required:
             </p>
-            {message && <p>{message}</p>}
 
             <div className="space-y-2">
               <label className="block font-medium text-text" htmlFor="commander-api-key">
@@ -387,7 +453,12 @@ export function VerifyStep({ ctx, onComplete }: StepProps) {
       )}
       {outcome === "failed" && (
         <Reveal delay={0.18}>
-          <p className="text-xs text-destructive">{message ?? "Verification failed."}</p>
+          <div className="space-y-1 text-left text-xs">
+            {checks.length === 0 && (
+              <p className="text-destructive">{message ?? "Verification failed."}</p>
+            )}
+            {authHintFrom(checks) && <p className="text-dim">{authHintFrom(checks)}</p>}
+          </div>
         </Reveal>
       )}
 

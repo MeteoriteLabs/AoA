@@ -331,3 +331,88 @@ describe("assembled registry includes the verify step", () => {
     expect(v?.canSkip).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Check breakdown — the "it said valid but it wasn't" bug.
+//
+// The verify probe returns several checks. A real revoked-token run passes the
+// first three (cwd, command resolvable, auth mode) and fails the last (hello
+// probe). Rendering only checks[0] showed a single reassuring line and no way
+// to tell success from failure.
+// ---------------------------------------------------------------------------
+describe("VerifyStep — per-check breakdown", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const REVOKED_RUN = {
+    outcome: "failed",
+    result: {
+      status: "fail",
+      checks: [
+        { code: "claude_cwd_valid", level: "info", message: "Working directory is valid: /home/ada/AoA" },
+        { code: "claude_command_resolvable", level: "info", message: "Command is executable: claude" },
+        { code: "claude_subscription_mode_possible", level: "info", message: "ANTHROPIC_API_KEY is not set" },
+        {
+          code: "claude_hello_probe_failed",
+          level: "error",
+          message: "Claude hello probe failed.",
+          detail: '{"error":{"message":"OAuth access token has been revoked."}}',
+          hint: "Run `claude --print` manually in this directory to debug.",
+        },
+      ],
+    },
+  };
+
+  it("shows EVERY check, not just the first one", async () => {
+    post.mockResolvedValue(REVOKED_RUN);
+    render(<VerifyStep ctx={ctx} onComplete={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Verify" }));
+
+    expect(await screen.findByText(/Claude hello probe failed/)).toBeTruthy();
+    expect(screen.getByText(/Working directory is valid/)).toBeTruthy();
+    expect(screen.getByText(/Command is executable/)).toBeTruthy();
+  });
+
+  it("marks the FAILING check as failed and the passing ones as passed", async () => {
+    post.mockResolvedValue(REVOKED_RUN);
+    const { container } = render(<VerifyStep ctx={ctx} onComplete={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Verify" }));
+
+    // Only the failure is styled as a failure — "Working directory is valid"
+    // must never be what reads as the error, which is what confused the founder.
+    await waitFor(() => {
+      const failures = [...container.querySelectorAll(".text-destructive")].map((e) => e.textContent ?? "");
+      expect(failures.join(" ")).toMatch(/hello probe failed/i);
+      expect(failures.join(" ")).not.toMatch(/Working directory is valid/i);
+    });
+  });
+
+  it("decodes a revoked token into plain language instead of a JSON dump", async () => {
+    post.mockResolvedValue(REVOKED_RUN);
+    render(<VerifyStep ctx={ctx} onComplete={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Verify" }));
+
+    expect(await screen.findByText(/sign-in has expired or been revoked/i)).toBeTruthy();
+    // The raw stream-json must never reach the founder.
+    expect(screen.queryByText(/OAuth access token has been revoked\."\}\}/)).toBeNull();
+  });
+
+  it("surfaces the server's hint for the failing check", async () => {
+    post.mockResolvedValue(REVOKED_RUN);
+    render(<VerifyStep ctx={ctx} onComplete={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Verify" }));
+
+    expect(await screen.findByText(/Run `claude --print` manually/)).toBeTruthy();
+  });
+
+  it("hides the breakdown once everything passes", async () => {
+    post.mockResolvedValue({
+      outcome: "verified",
+      result: { status: "pass", checks: [{ code: "ok", level: "info", message: "Working directory is valid: /home/ada/AoA" }] },
+    });
+    render(<VerifyStep ctx={ctx} onComplete={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Verify" }));
+
+    await waitFor(() => expect(advanceOnboarding).toHaveBeenCalled());
+    expect(screen.queryByText(/Working directory is valid/)).toBeNull();
+  });
+});
