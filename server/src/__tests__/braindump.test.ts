@@ -312,6 +312,60 @@ describe("braindumpService.submit — background dispatch scheduling (M1)", () =
     ).resolves.toBeTruthy();
   });
 
+  it("a throw from the atomic claim itself does not crash submit (the mandatory .catch)", async () => {
+    // The test above (mockRejectedValue on runAoaAgent) does NOT protect the
+    // `.catch` on `submit`'s fire-and-forget call: runAoaAgent's rejection is
+    // caught INSIDE claimAndDispatch's own try/catch (which writes status
+    // 'failed'), so claimAndDispatch itself RESOLVES — the detached `.catch`
+    // never fires for that path.
+    //
+    // The ONLY path that rejects OUT of claimAndDispatch is a throw from the
+    // atomic claim itself — the `db.update(...).set(...).where(...).returning()`
+    // that runs BEFORE claimAndDispatch's internal try/catch (see braindump.ts,
+    // top of claimAndDispatch). This test forces exactly that throw. Without
+    // the `.catch` on `void claimAndDispatch(...).catch(...)` in submit, this
+    // would be an unhandled promise rejection — and this server has no
+    // uncaughtException handler, so it crashes the process (A-H11 class).
+    const db = createSequenceDb([
+      [DEPT_ROW],                                                     // 1. select projects (validate dept)
+      [{ id: CAPTURE_ID, departmentId: DEPT_ID, status: "pending" }], // 2. insert
+      [{ id: CAPTURE_ID, status: "pending", departmentId: DEPT_ID }], // 3. submit's own "latest" re-read
+      // NOTE: no queue slot for the claim update — it's intercepted below and
+      // never reaches createSequenceDb's own updateChain()/next().
+    ]);
+
+    // Override db.update so the FIRST call (the atomic claim) rejects at
+    // `.returning()`, exactly like a real claim-statement DB error would.
+    // Later update calls (none occur on this path, since the claim throws
+    // before claimAndDispatch's try block is ever entered) fall through to
+    // the real sequence-backed implementation.
+    const realUpdate = db.update;
+    let updateCalls = 0;
+    db.update = vi.fn(() => {
+      updateCalls += 1;
+      if (updateCalls === 1) {
+        return {
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockRejectedValue(new Error("claim update exploded")),
+            }),
+          }),
+        };
+      }
+      return realUpdate();
+    });
+
+    await expect(
+      braindumpService(db).submit(CO_ID, { departmentId: DEPT_ID, content: "x", idempotencyKey: "k1" }),
+    ).resolves.toBeTruthy();
+
+    // Give the detached rejection a microtask to surface; the .catch must
+    // absorb it (asserted by this test not failing/timing out with an
+    // unhandled-rejection error from vitest).
+    await new Promise((r) => setTimeout(r, 10));
+    expect(updateCalls).toBe(1);
+  });
+
   it("company-wide capture: submit skips department validation and schedules dispatch without waiting", async () => {
     runAoaAgentMock.mockReturnValue(new Promise(() => {})); // never resolves
     const db = createSequenceDb([

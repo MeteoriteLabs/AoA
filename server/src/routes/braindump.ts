@@ -11,10 +11,14 @@ export function braindumpRoutes(db: Db) {
   const router = Router();
   const svc = braindumpService(db);
 
-  // Submit (or idempotently resubmit) a braindump for a department. The
-  // Librarian dispatch is attempted synchronously within this request
-  // (best-effort — a dispatch failure still returns 201 with status="failed"
-  // and an actionable failureReason; the client is never left guessing).
+  // Submit (or idempotently resubmit) a braindump for a department. This
+  // request returns promptly with a non-terminal status ("pending"/"running")
+  // — the Librarian dispatch runs in the BACKGROUND (M1: fire-and-forget,
+  // see braindumpService.submit/claimAndDispatch in braindump.ts), so the
+  // response body never carries the dispatch outcome. Callers poll GET
+  // .../braindumps/:id (or the Inbox hub signpost) to observe the eventual
+  // terminal status ("proposed"/"failed") and, on failure, an actionable
+  // failureReason.
   router.post(
     "/companies/:companyId/braindumps",
     validate(submitBraindumpSchema),
