@@ -165,6 +165,28 @@ describe("VerifyStep (Stage C / order 5, blocking)", () => {
     });
   });
 
+  // Fix 3: the challenge finalizing "completed" is not proof of a successful
+  // login — the server computes it as exit 0 && a credential file present,
+  // and the real CLI can print "Login successful" and exit 0 even after
+  // REJECTING an invalid code when a stale credential file already exists.
+  // The probe is the only authority; when it disagrees with "completed" the
+  // founder must see an explicit message, not a silently-reverted panel.
+  it("Fix 3: 'completed' that the re-verify probe rejects shows a clear message instead of silently tearing down the panel", async () => {
+    getConfig.mockResolvedValue({ cliTool: "codex", provider: "anthropic" });
+    post.mockRejectedValueOnce(needsAuthError()); // initial "Verify" click
+    startCommanderLogin.mockResolvedValueOnce({ challengeId: "ch-1", loginUrl: "https://auth.openai.com/go?c=1" });
+    getCommanderLoginStatus.mockResolvedValue({ status: "completed", loginUrl: "https://auth.openai.com/go?c=1" });
+    post.mockRejectedValueOnce(needsAuthError()); // re-verify after "completed" — still not actually signed in
+    const onComplete = vi.fn();
+    render(<VerifyStep ctx={ctx} onComplete={onComplete} onBack={() => {}} />);
+    fireEvent.click(screen.getByText("Verify"));
+
+    fireEvent.click(await screen.findByRole("button", { name: /sign in with codex/i }));
+
+    expect(await screen.findByText(/didn't complete/i)).toBeTruthy();
+    expect(onComplete).not.toHaveBeenCalled();
+  });
+
   // P2-A: the recovery-credential provider follows Commander's `cliTool` (the CLI
   // the server verify route actually probes), NOT the independent crew `provider`.
   it("P2-A: derives the auth provider from Commander cliTool (claude_cli), ignoring a divergent crew provider", async () => {
@@ -688,5 +710,103 @@ describe("VerifyStep — honest recovery copy", () => {
 
     expect(await screen.findByText("claude auth login")).toBeTruthy();
     expect(screen.getByText(/detect it automatically/i)).toBeTruthy();
+  });
+});
+
+// Fix 4: the in-app sign-in panel said "we'll continue automatically" right
+// above a paste-code input — true for Codex (local callback self-completes),
+// false for Claude (the paste IS required). Copy must be provider-conditional.
+describe("VerifyStep — provider-conditional sign-in link copy (Fix 4)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("Claude (anthropic): tells the founder to paste the code, not 'continue automatically'", async () => {
+    getConfig.mockResolvedValue({ cliTool: "claude_cli", provider: "openai" });
+    getCommanderLoginStatus.mockResolvedValue({ status: "pending", loginUrl: null });
+    post.mockRejectedValueOnce(
+      new ApiError("Request failed: 422", 422, {
+        outcome: "needs_auth",
+        result: { status: "warn", checks: [
+          { code: "claude_hello_probe_auth_required", level: "warn",
+            message: "Claude CLI is installed, but you're not signed in yet." },
+        ] },
+      }),
+    );
+    startCommanderLogin.mockResolvedValue({ challengeId: "ch1", loginUrl: "https://claude.com/x" });
+    render(<VerifyStep ctx={ctx} onComplete={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Verify" }));
+    fireEvent.click(await screen.findByRole("button", { name: /sign in with claude/i }));
+
+    expect(await screen.findByText(/paste the code it gives you below/i)).toBeTruthy();
+    expect(screen.queryByText(/continue automatically/i)).toBeNull();
+  });
+
+  it("Codex (openai): keeps the automatic-continue copy", async () => {
+    getConfig.mockResolvedValue({ cliTool: "codex", provider: "anthropic" });
+    getCommanderLoginStatus.mockResolvedValue({ status: "pending", loginUrl: "https://auth.openai.com/go?c=1" });
+    post.mockRejectedValueOnce(
+      new ApiError("Request failed: 422", 422, {
+        outcome: "needs_auth",
+        result: { status: "fail", checks: [{ code: "codex_hello_probe_auth_required", message: "sign in" }] },
+      }),
+    );
+    startCommanderLogin.mockResolvedValueOnce({ challengeId: "ch-1", loginUrl: "https://auth.openai.com/go?c=1" });
+    render(<VerifyStep ctx={ctx} onComplete={vi.fn()} onBack={() => {}} />);
+    fireEvent.click(screen.getByText("Verify"));
+    fireEvent.click(await screen.findByRole("button", { name: /sign in with codex/i }));
+
+    expect(await screen.findByText(/continue automatically/i)).toBeTruthy();
+    expect(screen.queryByText(/paste the code it gives you below/i)).toBeNull();
+  });
+});
+
+// Fix 5: check() had no in-flight guard of its own — submitCode and a
+// pollLogin tick could both invoke it, so on a successful login two probes
+// could race to advanceOnboarding + onComplete.
+describe("VerifyStep — concurrent probe guard (Fix 5)", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("two overlapping check() triggers result in one probe POST and onComplete firing at most once", async () => {
+    let resolvePost: (v: unknown) => void = () => {};
+    post.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolvePost = resolve;
+        }),
+    );
+    const onComplete = vi.fn();
+    render(<VerifyStep ctx={ctx} onComplete={onComplete} onBack={() => {}} />);
+    const verifyButton = screen.getByText("Verify");
+
+    // Two clicks land before React has re-rendered the disabled/"Checking…"
+    // state — the same race a pollLogin tick landing during submitCode's
+    // check() would create.
+    fireEvent.click(verifyButton);
+    fireEvent.click(verifyButton);
+
+    await act(async () => {
+      resolvePost({ outcome: "verified", result: { status: "pass" } });
+    });
+
+    await waitFor(() => expect(onComplete).toHaveBeenCalledTimes(1));
+    expect(post).toHaveBeenCalledTimes(1);
+  });
+
+  it("a later, non-overlapping 'Check again' still works after a previous check finished", async () => {
+    post.mockRejectedValueOnce(
+      new ApiError("Request failed: 422", 422, {
+        outcome: "needs_auth",
+        result: { status: "fail", checks: [{ code: "claude_hello_probe_auth_required", message: "sign in" }] },
+      }),
+    );
+    post.mockResolvedValueOnce({ outcome: "verified", result: { status: "pass" } });
+    const onComplete = vi.fn();
+    render(<VerifyStep ctx={ctx} onComplete={onComplete} onBack={() => {}} />);
+    fireEvent.click(screen.getByText("Verify"));
+    await screen.findByText("Check again");
+
+    fireEvent.click(screen.getByText("Check again"));
+
+    await waitFor(() => expect(onComplete).toHaveBeenCalledTimes(1));
+    expect(post).toHaveBeenCalledTimes(2);
   });
 });

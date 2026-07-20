@@ -213,19 +213,36 @@ export function VerifyStep({ ctx, onComplete }: StepProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- run once on unmount; latest state is read via activeLoginRef.
   }, []);
 
-  const check = async () => {
-    if (!ctx.companyId) return;
+  /**
+   * Returns the resolved Outcome so callers (pollLogin's Fix 3, submitCode)
+   * can act on the real verdict instead of racing the `outcome` state, which
+   * only updates on the next render.
+   *
+   * Fix 5: guard against overlapping invocations — `submitCode` and a
+   * `pollLogin` tick can both call `check()` around the same time, and
+   * without a guard two probes can race to `advanceOnboarding` +
+   * `onComplete()`. Reuses `busyRef` (already used by `startCliAutoDetect`'s
+   * tick to skip while a check is in flight), but sets it SYNCHRONOUSLY here
+   * — the `busyRef.current = busy` mirror at the top of the component only
+   * updates on render, which is too late for two calls landing in the same
+   * tick.
+   */
+  const check = async (): Promise<Outcome> => {
+    if (!ctx.companyId) return "idle";
+    if (busyRef.current) return outcome;
+    busyRef.current = true;
     setBusy(true);
     setAuthError(null);
     try {
       const res = await api.post<VerifyBody>(`/companies/${ctx.companyId}/internal-agent/verify`, {});
       const list = res.result?.checks ?? [];
-      setOutcome(res.outcome ?? "verified");
+      const nextOutcome = res.outcome ?? "verified";
+      setOutcome(nextOutcome);
       setChecks(list);
       // Headline the FAILING check, not checks[0] — otherwise a passing first
       // check masks the failure that actually blocked the step.
       setMessage((list.find((c) => !isPassedCheck(c)) ?? list[0])?.message ?? null);
-      if ((res.outcome ?? "verified") === "verified") {
+      if (nextOutcome === "verified") {
         clearPoll();
         clearCliPoll();
         await advanceOnboarding({
@@ -235,16 +252,20 @@ export function VerifyStep({ ctx, onComplete }: StepProps) {
         });
         onComplete();
       }
+      return nextOutcome;
     } catch (e) {
       const body = e instanceof ApiError ? (e.body as VerifyBody | null) : null;
       const list = body?.result?.checks ?? [];
-      setOutcome(body?.outcome ?? "failed");
+      const nextOutcome = body?.outcome ?? "failed";
+      setOutcome(nextOutcome);
       setChecks(list);
       setMessage(
         (list.find(isFailedCheck) ?? list[0])?.message ??
           (e instanceof Error ? e.message : "Verification failed."),
       );
+      return nextOutcome;
     } finally {
+      busyRef.current = false;
       setBusy(false);
     }
   };
@@ -288,8 +309,18 @@ export function VerifyStep({ ctx, onComplete }: StepProps) {
       setLogin((prev) => (prev ? { ...prev, status } : prev));
       if (status === "completed") {
         clearPoll();
+        // Fix 3: the CHALLENGE finalizing `completed` is not proof the
+        // sign-in worked — the server computes it as exit 0 && a credential
+        // file present, and the real CLI prints "Login successful" and exits
+        // 0 even after REJECTING an invalid code when a stale credential
+        // file already exists. Keep the panel up (don't clear `login` yet)
+        // until the probe's actual verdict is known, so the founder's
+        // paste-code input doesn't vanish before we know whether it worked.
+        const result = await check();
         setLogin(null);
-        await check();
+        if (result !== "verified") {
+          setAuthError("That sign-in didn't complete. Start sign-in again.");
+        }
       } else if (status === "failed" || status === "timeout") {
         clearPoll();
         setAuthError(`Sign-in ${status}. Try again.`);
@@ -465,8 +496,9 @@ export function VerifyStep({ ctx, onComplete }: StepProps) {
                 {login ? (
                   <div className="space-y-2">
                     <p>
-                      Open this link to finish signing in, then keep this tab open — we'll continue
-                      automatically:
+                      {provider === "anthropic"
+                        ? "Open this link to sign in, then paste the code it gives you below."
+                        : "Open this link to finish signing in, then keep this tab open — we'll continue automatically:"}
                     </p>
                     <a
                       href={login.loginUrl}

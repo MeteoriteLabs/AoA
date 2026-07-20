@@ -21,34 +21,17 @@ import { extractionService, type ExtractedItem } from "./extraction.js";
 import { logger } from "../middleware/logger.js";
 import { buildMemoryInsert } from "./memory-projection.js";
 import { getDbCapabilities } from "./db-capabilities.js";
+import {
+  SUPPORTED_MIME_TYPES,
+  PLAIN_TEXT_MIME_TYPES,
+  type SupportedMimeType,
+} from "./file-import-mime-types.js";
 
 const log = logger.child({ service: "file-import" });
 
 // ── Constants ─────────────────────────────────────────────────────────────
 
-export const SUPPORTED_MIME_TYPES = [
-  "application/pdf",
-  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  "text/plain",
-  // Item 5: founders drop notes/exports on the onboarding memory step, and
-  // these are all UTF-8 text — extracting them is the same code path as
-  // text/plain. This list also feeds the memory-asset upload allowlist
-  // (memory-assets-upload.ts spreads it), so a dropped .md stopped being a
-  // 400 the moment it became extractable.
-  "text/markdown",
-  "text/csv",
-  "application/json",
-] as const;
-
-/** MIME types handled by the plain-UTF-8 branch of extractTextFromBuffer. */
-const PLAIN_TEXT_MIME_TYPES = new Set<string>([
-  "text/plain",
-  "text/markdown",
-  "text/csv",
-  "application/json",
-]);
-
-export type SupportedMimeType = (typeof SUPPORTED_MIME_TYPES)[number];
+export { SUPPORTED_MIME_TYPES, type SupportedMimeType };
 
 export const WORKER_BATCH_SIZE = 3;
 export const WORKER_INTERVAL_MS = 15_000;

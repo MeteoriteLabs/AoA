@@ -319,4 +319,14 @@ describe("BraindumpStep (WS6 — In-flight standalone surface)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Skip for now" }));
     expect(advanceOnboarding).not.toHaveBeenCalled();
   });
+
+  it("does not imply the Librarian reads the connected repo", async () => {
+    list.mockResolvedValue([
+      makeDept({ id: "d1", urlKey: "software", name: "Software",
+        primaryWorkspace: { id: "ws1", repoUrl: "https://github.com/acme/product", cwd: null } }),
+    ]);
+    const { container } = render(<BraindumpStep companyId="c1" onDone={vi.fn()} />);
+    await screen.findByText("https://github.com/acme/product");
+    expect(container.textContent).toMatch(/not read yet/i);
+  });
 });

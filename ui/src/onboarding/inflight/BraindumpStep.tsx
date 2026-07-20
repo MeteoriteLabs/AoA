@@ -257,6 +257,9 @@ export function BraindumpStep({ companyId, onDone }: BraindumpStepProps) {
                   </span>
                 )}
               </div>
+              {box.repoChip && (
+                <p className="mt-1 text-[10px] text-very-dim">Connected for reference — not read yet.</p>
+              )}
 
               <p className="mt-1 text-[11px] text-dim">{box.hint}</p>
 
