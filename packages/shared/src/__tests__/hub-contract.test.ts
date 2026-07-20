@@ -169,6 +169,19 @@ describe("hub contract", () => {
     expect(HUB_SOURCE_MIRRORED_TYPES).toContain("work_question");
     expect(isSourceMirroredType("work_question")).toBe(true);
   });
+  it("memory_review is a known semantic type", () => {
+    expect(HUB_SEMANTIC_TYPES).toContain("memory_review");
+  });
+  it("memory_review lives in the waiting_on_you lane, beside discussion_pending", () => {
+    expect(laneForSemanticType("memory_review")).toBe("waiting_on_you");
+    expect(laneForSemanticType("discussion_pending")).toBe("waiting_on_you");
+  });
+  it("memory_review shares discussion_pending's owner authority (not founder-gated)", () => {
+    expect(authorityForSemanticType("memory_review")).toBe(
+      authorityForSemanticType("discussion_pending"),
+    );
+    expect(authorityForSemanticType("memory_review")).toBe("owner");
+  });
   it("list query limit defaults to 50 and caps at 50", () => {
     expect(listHubItemsQuery.parse({}).limit).toBe(50);
     expect(listHubItemsQuery.parse({ limit: "25" }).limit).toBe(25);

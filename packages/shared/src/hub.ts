@@ -65,6 +65,7 @@ export const HUB_SEMANTIC_TYPES = [
   // waiting_on_you
   "approval_request",
   "discussion_pending",
+  "memory_review", // pending memory items awaiting founder approval
   "join_request",
   // NOTE: human_input_needed + scope_proposal were PRUNED (Task 10, 2026-07-04).
   // Both were registry-only types with zero live producers: the crew-asks-a-
@@ -94,6 +95,7 @@ export type HubSemanticType = (typeof HUB_SEMANTIC_TYPES)[number];
 export const HUB_SEMANTIC_TO_LANE: Record<HubSemanticType, HubLane> = {
   approval_request: "waiting_on_you",
   discussion_pending: "waiting_on_you",
+  memory_review: "waiting_on_you",
   join_request: "waiting_on_you",
   agent_runtime_decision: "waiting_on_you",
   work_question: "waiting_on_you",
@@ -127,6 +129,7 @@ export const HUB_AUTHORITY_BY_TYPE: Record<HubSemanticType, HubAuthority> = {
   agent_runtime_decision: "founder", // reserved; per-prompt tightening in W5
   work_question: "owner",
   discussion_pending: "owner",
+  memory_review: "owner",
   run_failed: "owner", budget_alert: "owner", agent_error: "owner", mention: "owner",
   marketplace_op: "owner", run_complete: "owner", reminder: "owner",
   extraction_failed: "owner", routine_outcome: "owner", legacy_other: "owner",

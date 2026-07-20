@@ -49,6 +49,15 @@ describe("HUB_REGISTRY", () => {
     );
   });
 
+  it("routes memory_review to the Memory Explorer pending-review folder", () => {
+    const entry = HUB_REGISTRY.memory_review;
+
+    expect(entry.lane).toBe("waiting_on_you");
+    expect(entry.fullLink({ sourceId: "memory-1" } as never)).toBe(
+      "/memory/explore?folder=__pending",
+    );
+  });
+
   it("keeps runtime-decision agent errors out of discussion routes", () => {
     const item = {
       id: "hub-1",
