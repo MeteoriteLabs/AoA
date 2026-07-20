@@ -1,7 +1,9 @@
-import type {
-  AdapterEnvironmentCheck,
-  AdapterEnvironmentTestContext,
-  AdapterEnvironmentTestResult,
+import {
+  runAuthStatusAndBranch,
+  detectAuthFailure,
+  type AdapterEnvironmentCheck,
+  type AdapterEnvironmentTestContext,
+  type AdapterEnvironmentTestResult,
 } from "@armyofagents/adapter-utils";
 import {
   asString,
@@ -22,6 +24,7 @@ import {
 import fs from "node:fs/promises";
 import path from "node:path";
 import { parseCodexJsonl } from "./parse.js";
+import { parseCodexAuthStatus, CODEX_AUTH_STATUS_ARGS } from "./auth-status.js";
 import { prepareManagedCodexHome, resolveSharedCodexHomeDir } from "./codex-home.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
@@ -56,9 +59,6 @@ function summarizeProbeDetail(stdout: string, stderr: string, parsedError: strin
   const max = 240;
   return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean;
 }
-
-const CODEX_AUTH_REQUIRED_RE =
-  /(?:not\s+logged\s+in|login\s+required|authentication\s+required|unauthorized|invalid(?:\s+or\s+missing)?\s+api(?:[_\s-]?key)?|openai[_\s-]?api[_\s-]?key|api[_\s-]?key.*required|please\s+run\s+`?codex\s+login`?)/i;
 
 function shellDoubleQuote(value: string): string {
   return `"${value.replace(/["\\$`]/g, "\\$&")}"`;
@@ -291,14 +291,50 @@ export async function testEnvironment(
                 hint: "Try the probe manually (`codex exec --json -` then prompt: Respond with hello) to inspect full output.",
               }),
         });
-      } else if (CODEX_AUTH_REQUIRED_RE.test(authEvidence)) {
-        checks.push({
-          code: "codex_hello_probe_auth_required",
-          level: "warn",
-          message: "Codex CLI is installed, but authentication is not ready.",
-          ...(detail ? { detail } : {}),
-          hint: "Configure OPENAI_API_KEY in adapter env/shell or run `codex login`, then retry the probe.",
-        });
+      } else if (detectAuthFailure(authEvidence).kind !== "none") {
+        // The hello probe failed with an auth signal, but that alone can't
+        // distinguish "never signed in" from "signed in, token revoked" —
+        // both fail the same way from the probe's point of view. Ask `codex
+        // login status`, which reports whether credentials EXIST locally
+        // (not whether they still work), to pick the right recovery copy.
+        // Best-effort: an older CLI without `login status`, a spawn error,
+        // or a timeout must all degrade to the auth_required branch rather
+        // than throw out of the probe or block on this extra step —
+        // `runAuthStatusAndBranch` (adapter-utils) owns that degrade/branch
+        // shape, shared with claude-local's probe.
+        checks.push(
+          await runAuthStatusAndBranch({
+            runStatus: async () => {
+              const statusProbe = await runAdapterExecutionTargetProcess(
+                target ?? { type: "local" },
+                {
+                  runId,
+                  command,
+                  args: [...CODEX_AUTH_STATUS_ARGS],
+                  cwd,
+                  env,
+                  runtimeCommandSpec: null,
+                  timeoutSec: 10,
+                  graceSec: 2,
+                  onLog: async () => {},
+                },
+              );
+              return parseCodexAuthStatus(statusProbe.stdout);
+            },
+            codes: { expired: "codex_hello_probe_auth_expired", required: "codex_hello_probe_auth_required" },
+            copy: {
+              expiredWithAccount: (account) =>
+                `Codex is signed in using ${account}, but that session has expired or been rejected.`,
+              expiredNoAccount: "Your Codex sign-in has expired or been rejected.",
+              required: "Codex CLI is installed, but you're not signed in yet.",
+            },
+            hints: {
+              expired: "Sign in again — paste an API key below, or run `codex login` in a terminal and we'll detect it.",
+              required: "Configure OPENAI_API_KEY in adapter env/shell or run `codex login`, then retry the probe.",
+            },
+            detail,
+          }),
+        );
       } else {
         checks.push({
           code: "codex_hello_probe_failed",
