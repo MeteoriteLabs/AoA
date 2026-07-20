@@ -104,21 +104,13 @@ export function MemoryItemRow({ row, active, onSelect, onReindex }: Props) {
             />
           )}
 
+          {/* Pending is signalled by the amber status chip below + the root
+              div's data-pending hook — no separate pill (avoids a double badge). */}
           {row.status && (
             <MemoryChip
               label={row.status}
               tone={STATUS_TONE[row.status as MemoryItemStatus] ?? "slate"}
             />
-          )}
-
-          {isPending && (
-            <span
-              data-pending="true"
-              className="inline-flex items-center gap-1 rounded border border-border bg-white/[0.04] px-1.5 py-0.5 text-[9px] font-medium whitespace-nowrap"
-              style={{ color: "var(--data-amber)" }}
-            >
-              Pending
-            </span>
           )}
 
           {row.kind === "asset" && row.mimeType && (
