@@ -5,24 +5,30 @@ summary: Get AoA running in minutes
 
 Get AoA running locally, then complete the guided founder setup.
 
-## Quick Start (Recommended)
+## Quick Start
 
 ```sh
-npx @armyofagents/cli onboard --yes
+git clone https://github.com/MeteoriteLabs/AoA.git
+cd AoA
+pnpm install
+pnpm aoa onboard --yes
 ```
 
 With no environment overrides, `onboard --yes` writes a loopback-only
 `local_trusted` configuration that uses embedded PostgreSQL, local storage, and
 local encrypted secrets, then immediately starts AoA. Keep that command running
-and open the URL it prints. Use `npx @armyofagents/cli run` later when you want
-to restart an already configured instance.
+and open the URL it prints. Use `pnpm aoa run` from the checkout later when you
+want to restart an already configured instance.
 
 The quickstart is environment-aware. Variables such as `AOA_DEPLOYMENT_MODE`,
 `HOST`, `DATABASE_URL`, `AOA_PUBLIC_URL`, and the storage settings replace the
 corresponding defaults, so review inherited environment variables before using
 `--yes`.
 
-> The CLI is published as `@armyofagents/cli`, which provides the `aoa` bin (with a legacy `paperclipai` alias). Run it via `npx @armyofagents/cli ...` — there is no npm package named `aoa`, so `npx aoa` will not resolve. If you're running from a fresh clone before publishing, use `pnpm aoa` from the repo root instead.
+> The MeteoriteLabs AoA CLI is not currently published to npm. The package
+> names `aoa` and `paperclipai` resolve to other projects, so do not use
+> `npx aoa` or `npx paperclipai` for AoA. Until a scoped release is published
+> and smoke-tested, use `pnpm aoa` from this repository.
 
 Open [http://localhost:3100](http://localhost:3100). A new user is routed to
 `/onboarding`, where AoA resumes at the first incomplete step:

@@ -28,6 +28,9 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CLI_DIR="$REPO_ROOT/cli"
 
+# shellcheck source=./release-lib.sh
+source "$REPO_ROOT/scripts/release-lib.sh"
+
 # ── Helper: create GitHub Release ────────────────────────────────────────────
 create_github_release() {
   local version="$1"
@@ -109,32 +112,18 @@ if [ "$promote" = true ]; then
   echo ""
   echo "==> Promote mode: promoting v$NEW_VERSION from canary to latest..."
 
-  # Get all publishable package names
-  PACKAGES=$(node -e "
-const { readFileSync } = require('fs');
-const { resolve } = require('path');
-const root = '$REPO_ROOT';
-const dirs = ['packages/shared', 'packages/adapter-utils', 'packages/db',
-  'packages/adapters/claude-local', 'packages/adapters/codex-local', 'packages/adapters/openclaw',
-  'server', 'cli'];
-const names = [];
-for (const d of dirs) {
-  try {
-    const pkg = JSON.parse(readFileSync(resolve(root, d, 'package.json'), 'utf8'));
-    if (!pkg.private) names.push(pkg.name);
-  } catch {}
-}
-console.log(names.join('\n'));
-")
+  # Discover every public workspace and preserve its own version. Packages do
+  # not necessarily share one version (for example plugin-sdk and the CLI).
+  PACKAGES="$(list_owned_public_packages specs)"
 
   echo ""
   echo "  Promoting packages to @latest:"
-  while IFS= read -r pkg; do
+  while IFS= read -r package_spec; do
     if [ "$dry_run" = true ]; then
-      echo "  [dry-run] npm dist-tag add ${pkg}@${NEW_VERSION} latest"
+      echo "  [dry-run] npm dist-tag add ${package_spec} latest"
     else
-      npm dist-tag add "${pkg}@${NEW_VERSION}" latest
-      echo "  ✓ ${pkg}@${NEW_VERSION} → latest"
+      npm dist-tag add "${package_spec}" latest
+      echo "  ✓ ${package_spec} → latest"
     fi
   done <<< "$PACKAGES"
 
@@ -214,24 +203,8 @@ echo "  ✓ Working tree is clean"
 echo ""
 echo "==> Step 2/7: Creating changeset ($bump_type bump for all packages)..."
 
-# Get all publishable (non-private) package names
-PACKAGES=$(node -e "
-const { readdirSync, readFileSync } = require('fs');
-const { resolve } = require('path');
-const root = '$REPO_ROOT';
-const wsYaml = readFileSync(resolve(root, 'pnpm-workspace.yaml'), 'utf8');
-const dirs = ['packages/shared', 'packages/adapter-utils', 'packages/db',
-  'packages/adapters/claude-local', 'packages/adapters/codex-local', 'packages/adapters/opencode-local', 'packages/adapters/openclaw',
-  'server', 'cli'];
-const names = [];
-for (const d of dirs) {
-  try {
-    const pkg = JSON.parse(readFileSync(resolve(root, d, 'package.json'), 'utf8'));
-    if (!pkg.private) names.push(pkg.name);
-  } catch {}
-}
-console.log(names.join('\n'));
-")
+# Get all publishable (non-private) package names from the workspace itself.
+PACKAGES="$(list_owned_public_packages)"
 
 # Write a changeset file
 CHANGESET_FILE="$REPO_ROOT/.changeset/release-bump.md"

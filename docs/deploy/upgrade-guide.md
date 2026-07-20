@@ -44,7 +44,11 @@ database.
 
 **Shell profile env vars.** `PAPERCLIP_HOME=/foo` continues to work at runtime via env-compat mirroring, but plan to rename it to `AOA_HOME` at your next convenience — the mirror will be removed in a future major.
 
-**npm bin name.** `npx paperclipai onboard` still works (the alias is preserved). Once `@armyofagents/cli` is published, the canonical command becomes `npx aoa onboard`. No urgency — both work today.
+**CLI command.** In a source checkout, `pnpm aoa` is canonical and
+`pnpm paperclipai` remains a repository-local compatibility alias. The npm
+packages named `aoa` and `paperclipai` belong to other projects; do not use
+either through `npx` for MeteoriteLabs AoA. A future scoped CLI release will
+publish its exact, smoke-tested install command separately.
 
 ## What stays the same forever
 

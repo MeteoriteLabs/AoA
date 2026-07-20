@@ -287,7 +287,11 @@ Browser recording → Whisper API transcription → Discussion pipeline. Third i
 
 ### Distribution
 
-Docker + NPM release pipeline. SemVer (0.1.0+). Multi-arch (amd64+arm64) to GHCR; `@armyofagents/*` packages to npmjs.org. Smoke-tested on each stable release. See `docs/deploy/distribution.md` for the full runbook (Changesets flow, rollback, local Docker testing).
+Docker + npm release pipeline is configured for SemVer (0.1.0+), multi-arch
+GHCR images, and scoped `@armyofagents/*` packages. No MeteoriteLabs AoA npm
+package is currently published; source checkout is the supported install path.
+See `docs/deploy/distribution.md` for current release status and the Changesets,
+rollback, and smoke-test runbook.
 
 ### CI Platform Status
 

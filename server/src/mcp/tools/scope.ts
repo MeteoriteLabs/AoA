@@ -7,13 +7,10 @@ import type { McpUserScope } from "./types.js";
 /**
  * Resolve the MCP visibility scope for a caller.
  *
- * B-H1: founder escalation is BOARD-GATED. Only a `board` actor (a real
- * browser session, or the synthetic `local-board` actor in local_trusted mode)
- * may ever resolve to `{ kind: "founder" }`. The previous signature took only
- * `userId` and queried `user_roles`; for an `agent` actor `userId` is an
- * `agentId` (FK to `agents`, never `authUsers`), so `user_roles` returned zero
- * rows and the "no rows → founder" fallback handed every agent/mcp caller
- * founder-level cross-department visibility. We now branch on `actor.source`:
+ * B-H1: founder escalation is board-gated. Only a board actor may resolve to
+ * founder scope. Agent IDs are never looked up as users, and MCP/Commander
+ * callers remain empty-scoped unless a specific tool performs a narrower
+ * owner-authority check.
  *
  *   - "board"  → query user_roles; zero rows OR a founder row → founder;
  *                else scoped to the caller's role projects.
@@ -59,6 +56,31 @@ export async function resolveUserScope(
 
   // mcp / commander / unknown — least privilege.
   return { kind: "scoped", userId, projectIds: new Set<string>() };
+}
+
+/**
+ * Resolve only the artifact-version scope of an authenticated MCP key owner.
+ * Unlike the generic MCP scope, this helper may honor a real founder role for
+ * this one explicitly allowlisted operation. Missing roles fail closed.
+ */
+export async function resolveMcpOwnerArtifactScope(
+  db: Db,
+  companyId: string,
+  userId: string,
+): Promise<McpUserScope> {
+  const roles = await db
+    .select()
+    .from(userRoles)
+    .where(and(eq(userRoles.companyId, companyId), eq(userRoles.userId, userId)));
+
+  if (roles.some((role) => role.role === "founder")) {
+    return { kind: "founder", userId };
+  }
+
+  const projectIds = new Set(
+    roles.map((role) => role.projectId).filter((id): id is string => Boolean(id)),
+  );
+  return { kind: "scoped", userId, projectIds };
 }
 
 export async function resolveUserRole(

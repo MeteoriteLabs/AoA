@@ -31,7 +31,7 @@ Requests with neither → `401` in authenticated deployments. In `local_trusted`
 }
 ```
 
-## Tools — Read (11)
+## Read Tools
 
 | Tool | Description |
 |------|-------------|
@@ -47,7 +47,7 @@ Requests with neither → `401` in authenticated deployments. In `local_trusted`
 | `memory.search` | Multi-pathway retrieval (semantic + keyword + temporal). RRF + trust ranking, RBAC-scoped. Required: `query`. Optional: `layer`, `category`, `departmentId`, `projectId`, `limit` (1–50) |
 | `memory.get` | Fetch a single approved memory item. Returns `404` outside RBAC scope. Required: `id` |
 
-## Tools — Write
+## Write Tools
 
 | Tool | Description |
 |------|-------------|
@@ -59,9 +59,9 @@ Requests with neither → `401` in authenticated deployments. In `local_trusted`
 | `create-task` | Create a task directly (RBAC-scoped). Does not route through Discussion. Required: `title`. Optional: `description`, `projectId`, `goalId`, `parentId`, `status`, `priority`, `assigneeAgentId`, `assigneeUserId`, `responsibleUserId` (`string` or `null`), `labelIds` |
 | `update-task` | Update task fields. Required: `taskId`. Optional: `title`, `description`, `projectId`, `goalId`, `status`, `priority`, `assigneeAgentId`, `assigneeUserId`, `responsibleUserId` (`string` or `null`; `null` clears), `labelIds` |
 | `add-task-comment` | Add a comment to a task. Required: `taskId`, `body` |
-| `attach-artifact-version` | Add an immutable version to an artifact. Required: `artifactId`, `sourceDetail`. Optional: `changelog`, `parentVersionId`, `content`, `fileUrl` |
+| `attach-artifact-version` | Add an immutable version to an artifact. Available to board and MCP actors with same-company, project-scope, and artifact-update permission. Required: `artifactId`, `sourceDetail`. Optional: `changelog`, `parentVersionId`, `content`, `fileUrl` |
 
-## Tools — Protocol Workflow
+## Protocol Workflow Tools
 
 | Tool | Description |
 |------|-------------|
@@ -69,7 +69,7 @@ Requests with neither → `401` in authenticated deployments. In `local_trusted`
 | `ask_human` | Ask the responsible human, assigned reviewer, or founder fallback a durable work question during an active heartbeat task run. Supports free text or unique-value options. On timeout the run is parked and returns `{answered:false, status:"parked"}`; stop gracefully instead of retrying. |
 | `ask_founder` | Compatibility alias for the agent-only work-question flow. Prefer `ask_human` for new callers. |
 
-## Tools — Document (5)
+## Document Tools
 
 | Tool | Description |
 |------|-------------|
@@ -79,7 +79,7 @@ Requests with neither → `401` in authenticated deployments. In `local_trusted`
 | `list-task-document-revisions` | List all immutable revisions of the task document, ordered by version ascending. Required: `taskId` |
 | `restore-task-document-revision` | Create a new version copying content from an older revision. Does not mutate the original (Decisions #43, #45). Required: `taskId`, `revisionId` |
 
-## Tools — Approval (10)
+## Approval Tools
 
 | Tool | Description |
 |------|-------------|
@@ -94,7 +94,7 @@ Requests with neither → `401` in authenticated deployments. In `local_trusted`
 | `link-task-approval` | Link an approval to a task. Founders + team leads only. Required: `taskId`, `approvalId` |
 | `unlink-task-approval` | Unlink an approval from a task. Founders + team leads only. Required: `taskId`, `approvalId` |
 
-## Resources (4)
+## Resources
 
 MCP resources are read via `resources/list` and `resources/read`. They are separate from tools and are not counted in the tool total.
 
@@ -115,6 +115,7 @@ Most tools are open to all authenticated protocol actors unless listed in the se
 | `memory.get` | All actors |
 | `memory.retain` | All actors — but agent + `scopeToSelf: true` auto-approves; all others create pending items |
 | `memory.write` | All actors — always creates pending memory, never auto-approves |
+| `attach-artifact-version` | `board`, `mcp`; handler still enforces company, project-scope, and artifact-update permission |
 | `use_skill` | `board`, `commander` |
 | `ask_human` | `agent` only; the handler also requires an active heartbeat task run |
 | `ask_founder` | `agent` only; compatibility alias with the same active-run requirement |

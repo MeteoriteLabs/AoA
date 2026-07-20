@@ -1,6 +1,7 @@
 {
   "name": "@paperclipai/create-paperclip-plugin",
   "version": "0.1.0",
+  "private": true,
   "license": "MIT",
   "homepage": "https://github.com/paperclipai/paperclip",
   "bugs": {
@@ -17,20 +18,6 @@
   },
   "exports": {
     ".": "./src/index.ts"
-  },
-  "publishConfig": {
-    "access": "public",
-    "bin": {
-      "create-paperclip-plugin": "./dist/index.js"
-    },
-    "exports": {
-      ".": {
-        "types": "./dist/index.d.ts",
-        "import": "./dist/index.js"
-      }
-    },
-    "main": "./dist/index.js",
-    "types": "./dist/index.d.ts"
   },
   "files": [
     "dist"

@@ -237,6 +237,28 @@ canary_tag_name() {
 }
 
 # ---------- npm helpers ----------
+list_owned_public_packages() {
+  local output="${1:-names}"
+
+  (
+    cd "$REPO_ROOT"
+    pnpm -r list --depth -1 --json | node -e "
+const { readFileSync } = require('fs');
+const output = process.argv[1];
+const packages = JSON.parse(readFileSync(0, 'utf8'))
+  .filter((pkg) => pkg.private === false && pkg.name.startsWith('@armyofagents/'));
+
+if (output === 'specs') {
+  console.log(packages.map((pkg) => pkg.name + '@' + pkg.version).join('\n'));
+} else if (output === 'names') {
+  console.log(packages.map((pkg) => pkg.name).join('\n'));
+} else {
+  throw new Error('unknown package-list output: ' + output);
+}
+" "$output"
+  )
+}
+
 npm_package_version_exists() {
   local package_name="$1"
   local version="$2"

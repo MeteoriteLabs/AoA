@@ -76,7 +76,10 @@ POST /api/artifacts/{artifactId}/versions
 }
 ```
 
-Publishing requires founder authority and returns `201`. The server assigns the next version number and moves `currentVersionId`; older versions remain unchanged. `source` is one of `agent`, `founder`, `mcp`, `teammate`, or `external`.
+This REST route requires a board actor with founder authority and returns
+`201`. Agents and MCP keys cannot use it. The server assigns the next version
+number and moves `currentVersionId`; older versions remain unchanged. `source`
+is one of `agent`, `founder`, `mcp`, `teammate`, or `external`.
 
 Use `storageKind: "inline"` with `content`, or `storageKind: "asset"` with an `assetId` from the same company. Asset-backed versions can also include `fileUrl`, `filename`, `contentType`, `extension`, `byteSize`, and `sha256`.
 
@@ -112,7 +115,14 @@ POST /api/mcp/artifacts/{artifactId}/versions
 }
 ```
 
-This founder-authorized route forces `source` to `mcp`; `sourceDetail` is required. See the [MCP API](mcp.md) for MCP authentication and related operations.
+This legacy direct-ingress route accepts a board founder or an MCP API key
+owned by a founder. It rejects agents, forces `source` to `mcp`, and requires
+`sourceDetail`.
+
+JSON-RPC MCP clients should normally call `attach-artifact-version` on
+`POST /api/companies/{companyId}/mcp`. That tool accepts board and MCP actors,
+then enforces company isolation, project scope, and artifact-update permission;
+it is not a founder-only tool. See the [MCP API](mcp.md).
 
 ## Common Errors
 

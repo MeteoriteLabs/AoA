@@ -16,7 +16,7 @@ set -euo pipefail
 #     bumps past the deprecated version.
 #
 # Default actions (in order):
-#   1. `npm deprecate <pkg>@<current_version>` for each publishable package
+#   1. `npm deprecate <pkg>@<package_version>` for each owned public package
 #      so the registry surfaces a deprecation warning on install.
 #   2. Delete the local git tag (v<current_version>).
 #   3. Delete the remote git tag (v<current_version>).
@@ -48,23 +48,6 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # shellcheck source=./release-lib.sh
 source "$REPO_ROOT/scripts/release-lib.sh"
-
-# ---------- Publishable package list ----------
-# Must mirror release.sh's hardcoded list (search release.sh for the
-# `const dirs = [...]` block). Update both if the workspace layout changes.
-list_publishable_packages() {
-  cat <<'EOF'
-@armyofagents/shared
-@armyofagents/adapter-utils
-@armyofagents/db
-@armyofagents/adapter-claude-local
-@armyofagents/adapter-codex-local
-@armyofagents/adapter-opencode-local
-@armyofagents/adapter-openclaw
-@armyofagents/server
-@armyofagents/cli
-EOF
-}
 
 # ---------- Helpers (unit-testable via --self-test) ----------
 
@@ -126,13 +109,25 @@ JSON
     "reads canary version from fixture"
 
   echo ""
-  echo "list_publishable_packages:"
-  local pkg_count; pkg_count="$(list_publishable_packages | wc -l | tr -d ' \t')"
-  assert_eq "$pkg_count" "9" "lists exactly 9 publishable packages"
-  assert_eq "$(list_publishable_packages | grep -c '^@armyofagents/')" "9" \
-    "9 packages are @armyofagents/ scoped"
-  assert_eq "$(list_publishable_packages | grep -c '^@armyofagents/cli$')" "1" \
+  echo "list_owned_public_packages:"
+  local packages pkg_count
+  packages="$(list_owned_public_packages)"
+  pkg_count="$(printf '%s\n' "$packages" | wc -l | tr -d ' \t')"
+  assert_eq "$pkg_count" "17" "discovers all 17 owned public packages"
+  assert_eq "$(printf '%s\n' "$packages" | grep -c '^@armyofagents/')" "17" \
+    "all packages are @armyofagents/ scoped"
+  assert_eq "$(printf '%s\n' "$packages" | grep -c '^@armyofagents/cli$')" "1" \
     "1 CLI package (@armyofagents/cli)"
+  assert_eq "$(printf '%s\n' "$packages" | grep -c '^@paperclipai/')" "0" \
+    "no upstream-owned packages"
+  local package_specs plugin_sdk_version cli_version
+  package_specs="$(list_owned_public_packages specs)"
+  plugin_sdk_version="$(cd "$REPO_ROOT" && node -p "require('./packages/plugins/sdk/package.json').version")"
+  cli_version="$(get_current_version)"
+  assert_eq "$(printf '%s\n' "$package_specs" | grep -Fxc "@armyofagents/plugin-sdk@$plugin_sdk_version")" "1" \
+    "preserves plugin SDK version"
+  assert_eq "$(printf '%s\n' "$package_specs" | grep -Fxc "@armyofagents/cli@$cli_version")" "1" \
+    "preserves CLI version"
 
   echo ""
   echo "build_deprecate_cmd:"
@@ -216,18 +211,20 @@ fi
 # ---------- Step 1: Deprecate published packages ----------
 release_info ""
 release_info "==> Step 1/3: Deprecate published packages on npm"
-while IFS= read -r pkg; do
-  [ -z "$pkg" ] && continue
-  display_cmd="$(build_deprecate_cmd "$pkg" "$current_version" "$message")"
+while IFS= read -r package_spec; do
+  [ -z "$package_spec" ] && continue
+  pkg="${package_spec%@*}"
+  package_version="${package_spec##*@}"
+  display_cmd="$(build_deprecate_cmd "$pkg" "$package_version" "$message")"
   if [ "$dry_run" = true ]; then
     release_info "  [dry-run] $display_cmd"
   else
     release_info "  $display_cmd"
-    if ! npm deprecate "${pkg}@${current_version}" "$message"; then
-      release_warn "npm deprecate failed for ${pkg}@${current_version} (may not be published)"
+    if ! npm deprecate "$package_spec" "$message"; then
+      release_warn "npm deprecate failed for $package_spec (may not be published)"
     fi
   fi
-done <<< "$(list_publishable_packages)"
+done <<< "$(list_owned_public_packages specs)"
 
 # ---------- Step 2: Delete git tags ----------
 release_info ""

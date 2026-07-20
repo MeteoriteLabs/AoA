@@ -18,7 +18,9 @@ Everything a user or developer sees has been renamed to AoA: the CLI banner, log
 Wire-compat surfaces are **intentionally preserved** under the legacy `paperclip` name to avoid breaking existing data, plugins, and integrations. The canonical and current allow-list lives at [wire-compat.md](../architecture/wire-compat.md). Representative surfaces include:
 
 1. `PAPERCLIP_*` environment variables — mirrored to `AOA_*` equivalents; both are accepted.
-2. `paperclipai` CLI binary alias — kept alongside the `aoa` bin so existing scripts don't break.
+2. `paperclipai` CLI binary alias — kept alongside the `aoa` bin in the
+   repository and intended scoped CLI artifact. This does not make the
+   upstream `paperclipai` npm package an AoA distribution.
 3. `paperclipPlugin` manifest key — the plugin wire protocol identifier read by the host runtime.
 4. `__paperclipPluginBridge__` — the in-page bridge injected by the plugin loader.
 5. `paperclip-feedback-envelope-v2` / `paperclip-feedback-bundle-v2` — feedback payload schema versions (immutable once published).

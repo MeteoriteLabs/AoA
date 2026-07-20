@@ -283,7 +283,7 @@ Output the changelog to `releases/v{version}.md` using this template:
 
 If something goes wrong:
 1. Restore your database backup
-2. `npm install @armyofagents/server@{previous-version}`
+2. `git checkout v{previous-version} && pnpm install`
 ```
 
 ### Template Rules

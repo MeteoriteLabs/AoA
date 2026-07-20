@@ -201,7 +201,8 @@ export function companyRoutes(db: Db, opts: { deploymentMode: DeploymentMode }) 
     assertCompanyAccess(req, companyId);
     if (
       "agentCompletionPolicyDefault" in req.body ||
-      "agentCompletionReviewGuardrail" in req.body
+      "agentCompletionReviewGuardrail" in req.body ||
+      "humanQuestionSlaHours" in req.body
     ) {
       await assertCanAssignTasks(req, companyId);
     }

@@ -55,6 +55,7 @@ export const toolAllowedActors: Record<string, McpActorType[]> = {
   // Unlike memory.retain there is NO auto-approve path — every write is pending.
   // (Critical Rule #6: founders approve identity/domain; this tool never bypasses that.)
   "memory.write": ALL_ACTORS,
+  "attach-artifact-version": ["board", "mcp"],
   "use_skill": ["board", "commander"],  // HTTP MCP endpoint gate only: founder (board) + commander; worker agents + mcp excluded (skill markdown may contain company IP). Commander's CLI bridge dispatches via tool-registry and does NOT consult this map.
   // Ask Human is for org/heartbeat task-execution agents only. The handler
   // additionally requires an active runId; crew/internal-agent (whose question
