@@ -22,9 +22,11 @@ export function resolveClaudeConfigHome(env: NodeJS.ProcessEnv): string {
  * NOTE: unlike `codex login` (local :1455 callback, self-completing), Claude's
  * flow redirects to a REMOTE callback (platform.claude.com) and then BLOCKS on
  * stdin: "Paste code here". So surfacing the URL is not enough — completing it
- * requires piping the pasted auth code into the child's stdin (the "paste-code
- * bridge", tracked follow-up). Until that exists, the UI offers Claude the
- * API-key path only; this runner surfaces the URL but does not self-complete.
+ * requires piping the pasted auth code into the child's stdin. This runner
+ * opts into that (`stdin: "pipe"`) and returns `submitCode` for the caller to
+ * deliver the pasted code; the rest of the paste-code bridge (a live-challenge
+ * registry, the route that accepts the code, and the UI prompt) is wired by
+ * later tasks — until they land, the UI still offers Claude the API-key path.
  */
 export function runClaudeLoginStreaming(args: {
   runId: string;
@@ -46,6 +48,9 @@ export function runClaudeLoginStreaming(args: {
     args: ["auth", "login"],
     cwd: authHome,
     env: { CLAUDE_CONFIG_DIR: authHome },
+    // Claude blocks on "Paste code here" (see the module header). Codex does
+    // not, and deliberately keeps the default "ignore".
+    stdin: "pipe",
     discoveryTimeoutMs: args.discoveryTimeoutMs,
     spawn: args.spawn,
   });
