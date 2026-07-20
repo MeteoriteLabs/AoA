@@ -536,6 +536,43 @@ git commit -m "feat(claude-local): parse claude auth status (credential presence
 
 ---
 
+## Field evidence from the REAL claude CLI (read before Task 4)
+
+A reviewer ran `claude` 2.1.126 with a deliberately invalid key rather than
+reasoning from mocks. The actual failure payload:
+
+```json
+{"type":"result","subtype":"success","is_error":true,"api_error_status":401,
+ "result":"Failed to authenticate. API Error: 401 {...authentication_error...}"}
+```
+
+Exit code is 1. Four consequences for Task 4:
+
+1. **`subtype` is `"success"` on an auth FAILURE.** `is_error: true` is the real
+   signal. Any probe logic that trusts `subtype` will mis-read this. (This is the
+   same class as the known Commander bug where `handleResultEvent` ignored
+   `is_error` and produced silent empty turns.)
+2. **`api_error_status: 401` is a STRUCTURED field.** Prefer it over regex-
+   matching prose where available — a number beats a pattern. Treat the shared
+   text detector as the fallback for CLIs that don't provide one.
+3. **The 401 text lives in `parsed.result`**, which Task 2b deliberately excluded
+   from the haystack (it is also where agent prose lives). Detection therefore
+   depends on `stdout` being included, which is gated on `exitCode !== 0`. That
+   gate is load-bearing — do not "simplify" it away.
+4. **`parsed.errors` is never populated by this CLI.** The existing
+   `extractClaudeErrorMessages` path is real but unexercised in practice; do not
+   assume auth errors arrive there.
+
+Also fold into Task 4 (identified in the Task 2b review, inert today but live the
+moment Task 7 renders it): `detectClaudeLoginRequired` throws away a correctly-
+gated `loginUrl`. `detectAuthFailure` returns `loginUrl: null` whenever
+`kind === "none"`, but parse.ts destructures only `{ kind }` and falls back to
+`extractClaudeLoginUrl`, which returns the FIRST URL of any kind when no
+auth-shaped URL matches. Destructure `loginUrl` from the shared detector and
+prefer it.
+
+---
+
 ## Task 4: Claude probe emits auth_required vs auth_expired
 
 **Files:**
