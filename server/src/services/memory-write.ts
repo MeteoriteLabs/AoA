@@ -187,6 +187,19 @@ export async function writeMemoryAndIndex(
     await enqueueMemoryEmbedding(db, companyId, row, tx);
   }
 
+  // SCOPING LIMIT (M3b): this signpost fires ONLY for writes that go through
+  // writeMemoryAndIndex — the crew `write_memory` (Librarian) and MCP
+  // `memory.write` tools (the primary paths for this feature, which work
+  // correctly). Pending memory created via memoryService.create + a direct
+  // enqueueMemoryEmbedding — MCP suggest_memory / memory.retain, the Commander
+  // memory tool, and agent-proposal creates in thread-scope-versions.ts /
+  // suggestions.ts — BYPASSES this chokepoint and does NOT emit here; such a row
+  // surfaces only when a later writeMemoryAndIndex write re-emits the company
+  // aggregate. Consistent with the spec's chokepoint choice, but a real coverage
+  // limit: broadening the emit to the shared create path is a tracked follow-up
+  // (needs a guard on the create row's status/source/layer). Do NOT silently
+  // assume every pending write signposts.
+  //
   // Signpost founder-gated pending memory in the Inbox (memory_review, Mem T4).
   // ONE hub row per company; the count is the total founder-gated pending memory
   // across ALL scopes. Guard on this specific write leaving a founder-gated item

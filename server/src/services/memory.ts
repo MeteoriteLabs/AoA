@@ -1800,6 +1800,17 @@ export function memoryService(db: Db) {
         payload: { item: updated, fromLayer, toLayer },
       });
 
+      // A layer change on a PENDING item can move it across the working ↔
+      // non-working boundary, and the founder-gated pending count predicate
+      // excludes layer='working' → the count (and thus the memory_review
+      // signpost) shifts. changeLayer never mutates `status`, so the pre-image
+      // `target.status` equals the post-image status. Recompute/close the Inbox
+      // signpost only when the item was pending (best-effort; try/catch lives in
+      // signpostMemoryReview). Mirrors the approve/update/reject/remove hooks.
+      if (target.status === "pending") {
+        await signpostMemoryReview(db, companyId);
+      }
+
       return updated ?? null;
     },
   };

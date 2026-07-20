@@ -20,6 +20,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // ── Hoisted spies ────────────────────────────────────────────────────────────
 const { mockEmitHubItem } = vi.hoisted(() => ({ mockEmitHubItem: vi.fn() }));
 const { mockCreate } = vi.hoisted(() => ({ mockCreate: vi.fn() }));
+const { mockReconcile } = vi.hoisted(() => ({ mockReconcile: vi.fn() }));
 
 // ── Module mocks ─────────────────────────────────────────────────────────────
 vi.mock("@armyofagents/db", () => {
@@ -42,6 +43,10 @@ vi.mock("@armyofagents/db", () => {
     "discussionEntries", "suggestions", "issues", "companies", "costEvents",
     "workQuestions", "memoryItems", "memoryItemVersions", "memoryRetrievals",
     "memoryFolders", "embeddingQueue", "agents", "projects", "goals", "userRoles",
+    // Additional tables bound by the real memory.js import graph (embeddings.js,
+    // internal-agent/providers) — needed once changeLayer is imported via
+    // importActual for the Fix-1 reconcile-hook tests below.
+    "discussionExtractedItems",
   ];
   const mod: Record<string, unknown> = {};
   for (const name of TABLE_NAMES) mod[name] = makeTable();
@@ -94,6 +99,28 @@ vi.mock("../services/memory.js", () => ({
 vi.mock("../services/hub-source-producers.js", async (importActual) => {
   const actual = await importActual<typeof import("../services/hub-source-producers.js")>();
   return { ...actual, emitHubItem: mockEmitHubItem };
+});
+
+// Keep the REAL hubItemsService (the reconcile describe-block below exercises it
+// directly) but wrap `reconcile` with a spy so memory.ts's private
+// signpostMemoryReview → hubItemsService(db).reconcile call is observable. The
+// wrapper records the call THEN delegates to the real reconcile, so the direct
+// reconcile tests keep their real behavior.
+vi.mock("../services/hub-items.js", async (importActual) => {
+  const actual = await importActual<typeof import("../services/hub-items.js")>();
+  return {
+    ...actual,
+    hubItemsService: (db: never) => {
+      const real = actual.hubItemsService(db);
+      return {
+        ...real,
+        reconcile: (...args: unknown[]) => {
+          mockReconcile(...args);
+          return (real.reconcile as (...a: unknown[]) => unknown)(...args);
+        },
+      };
+    },
+  };
 });
 
 // ── Imports (after mocks) ────────────────────────────────────────────────────
@@ -291,5 +318,92 @@ describe("writeMemoryAndIndex — memory_review emit guard", () => {
       layer: "working",
     } as never);
     expect(mockEmitHubItem).not.toHaveBeenCalled();
+  });
+});
+
+// ============================================================================
+// 4. changeLayer — reconcile hook (Fix 1)
+// ============================================================================
+//
+// changeLayer is a DISTINCT memoryService method that does NOT funnel through
+// update/approve/reject/remove, so it must fire signpostMemoryReview itself.
+// Moving a PENDING, non-founder item across the working↔non-working boundary
+// changes the founder-gated pending count (the predicate excludes layer=working),
+// so the memory_review row must be reconciled. changeLayer never mutates status,
+// so the PRE-IMAGE status (the loaded `target`) drives the guard.
+//
+// We import the REAL memoryService via importActual (memory.js is otherwise
+// mocked for the write-path tests above) and observe the private
+// signpostMemoryReview → hubItemsService(db).reconcile call via mockReconcile.
+describe("changeLayer — memory_review reconcile hook", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  // changeLayer db double: select #1 = the pre-image target fetch; the
+  // transaction runs the layer mutation + version-row insert. Any later select
+  // (from the real reconcile pass that signpostMemoryReview delegates to)
+  // resolves to [] so the reconciler exits cleanly without touching state.
+  function makeChangeLayerDb(target: Record<string, unknown>) {
+    let selectCount = 0;
+    const txHandle = {
+      execute: vi.fn(async () => []),
+      update: vi.fn(() => ({
+        set: () => ({
+          where: () => ({ returning: async () => [{ ...target, layer: "working" }] }),
+        }),
+      })),
+      select: vi.fn(() => ({
+        from: () => ({
+          where: () => ({ orderBy: () => ({ limit: async () => [{ versionNumber: 1 }] }) }),
+        }),
+      })),
+      insert: vi.fn(() => ({ values: async () => [] })),
+    };
+    const db = {
+      select: vi.fn(() => {
+        selectCount += 1;
+        const rows = selectCount === 1 ? [target] : [];
+        return { from: () => ({ where: () => thenableRows(rows) }) };
+      }),
+      transaction: vi.fn(async (cb: (tx: unknown) => unknown) => cb(txHandle)),
+      update: vi.fn(() => ({
+        set: () => ({ where: () => ({ returning: async () => [] }) }),
+      })),
+      insert: vi.fn(() => ({ values: async () => [] })),
+    } as never;
+    return db;
+  }
+
+  it("reconciles the signpost when the pre-image item is pending", async () => {
+    const memoryMod =
+      await vi.importActual<typeof import("../services/memory.js")>("../services/memory.js");
+    const target = {
+      id: "mem-cl-1",
+      companyId: "co-1",
+      status: "pending",
+      source: "agent",
+      layer: "domain",
+    };
+    await memoryMod.memoryService(makeChangeLayerDb(target)).changeLayer("mem-cl-1", "co-1", {
+      newLayer: "working",
+      taskId: "task-1",
+    });
+    expect(mockReconcile).toHaveBeenCalledWith("co-1", { sourceType: "memory" });
+  });
+
+  it("does NOT reconcile when the pre-image item is not pending (approved)", async () => {
+    const memoryMod =
+      await vi.importActual<typeof import("../services/memory.js")>("../services/memory.js");
+    const target = {
+      id: "mem-cl-2",
+      companyId: "co-1",
+      status: "approved",
+      source: "agent",
+      layer: "domain",
+    };
+    await memoryMod.memoryService(makeChangeLayerDb(target)).changeLayer("mem-cl-2", "co-1", {
+      newLayer: "working",
+      taskId: "task-1",
+    });
+    expect(mockReconcile).not.toHaveBeenCalled();
   });
 });
