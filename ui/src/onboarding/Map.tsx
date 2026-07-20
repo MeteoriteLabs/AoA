@@ -113,7 +113,7 @@ export function Map({ onPick }: MapProps) {
           <Door
             emoji="🚚"
             title="In-flight"
-            subtitle="Bring your work in →"
+            subtitle="Bring your work in"
             accent="brand"
             onClick={() => onPick("in_flight")}
           />
