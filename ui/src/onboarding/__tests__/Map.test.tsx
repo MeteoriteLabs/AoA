@@ -53,4 +53,16 @@ describe("Map (WS9 — the flow diagram + door band)", () => {
     await user.click(screen.getByRole("button", { name: /Greenfield/ }));
     expect(onPick).not.toHaveBeenCalled();
   });
+
+  it("shows an explicit 'Coming soon' marker on the disabled Greenfield door only", () => {
+    render(<Map onPick={vi.fn()} />);
+
+    const greenfield = screen.getByRole("button", { name: /Greenfield/ });
+    expect(greenfield).toHaveAccessibleName(/coming soon/i);
+
+    const inFlight = screen.getByRole("button", { name: /In-flight/ });
+    const explorer = screen.getByRole("button", { name: /Explorer/ });
+    expect(inFlight).not.toHaveAccessibleName(/coming soon/i);
+    expect(explorer).not.toHaveAccessibleName(/coming soon/i);
+  });
 });
