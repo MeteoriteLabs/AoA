@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { detectAuthFailure } from "./auth-failure-detector.js";
+import { detectAuthFailure, isAuthFailure } from "./auth-failure-detector.js";
 
 // The exact 401 observed on a live instance with a revoked Claude token.
 const REVOKED_401 =
@@ -66,13 +66,49 @@ describe("detectAuthFailure — must NOT over-match", () => {
   });
 
   it("ignores prose that merely discusses authorization", () => {
-    expect(
-      detectAuthFailure("The task is to add an authorization header to the request handler."),
-    ).toMatchObject({ kind: "none" });
+    expect(detectAuthFailure("Add an authorization header to the request handler.").kind).toBe(
+      "none",
+    );
   });
 
   it("returns none for empty input", () => {
     expect(detectAuthFailure("").kind).toBe("none");
+  });
+
+  it("does not treat a token count as a 5xx status", () => {
+    expect(detectAuthFailure("Used 512 tokens.").kind).toBe("none");
+  });
+});
+
+describe("detectAuthFailure — load-bearing precedence and noise-stripping", () => {
+  it("prefers invalid_key over signed_out when both match", () =>
+    expect(detectAuthFailure("Not logged in: invalid API key.").kind).toBe("invalid_key"));
+
+  it("prefers signed_out over expired when both match", () =>
+    expect(detectAuthFailure("Not logged in (401 unauthorized).").kind).toBe("signed_out"));
+
+  it("keeps a real auth signal that co-occurs with a rate limit", () =>
+    expect(detectAuthFailure("429 rate limited; then API Error: 401 authentication_error").kind).toBe(
+      "expired",
+    ));
+
+  it("still detects sign-in need when the message also says timed out", () =>
+    expect(detectAuthFailure("Login timed out. Please run `claude login`.").kind).toBe(
+      "signed_out",
+    ));
+
+  it("still detects an invalid key when the message also says timed out", () =>
+    expect(detectAuthFailure("Request timed out. Invalid API key provided.").kind).toBe(
+      "invalid_key",
+    ));
+});
+
+describe("isAuthFailure", () => {
+  it("is false only for none", () => {
+    expect(isAuthFailure("none")).toBe(false);
+    expect(isAuthFailure("signed_out")).toBe(true);
+    expect(isAuthFailure("expired")).toBe(true);
+    expect(isAuthFailure("invalid_key")).toBe(true);
   });
 });
 

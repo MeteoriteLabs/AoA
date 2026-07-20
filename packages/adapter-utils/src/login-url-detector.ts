@@ -20,6 +20,11 @@
 // Global so we can skip decoy URLs (see below) and take the first *real* one.
 const URL_WITH_TERMINATOR = /(https?:\/\/[^\s"'<>`]+)(?=[\s"'<>`])/g;
 
+// One-shot variant for `extractVerificationUrl`: a URL at the very end of a
+// complete (non-streaming) string is not "still growing" — there is no more
+// input coming — so end-of-string is accepted as a terminator too.
+const URL_WITH_TERMINATOR_OR_EOS = /(https?:\/\/[^\s"'<>`]+)(?=[\s"'<>`]|$)/g;
+
 // Trailing sentence punctuation that a CLI may print right after the URL
 // ("…authenticate: https://…/x." ) but that isn't part of the URL.
 const TRAILING_PUNCT = /[.,);:!?'"\]]+$/;
@@ -41,8 +46,8 @@ function isLoopbackHost(host: string): boolean {
   );
 }
 
-function firstVerificationUrl(text: string): string | null {
-  for (const match of text.matchAll(URL_WITH_TERMINATOR)) {
+function findFirstVerificationUrl(text: string, urlRegex: RegExp): string | null {
+  for (const match of text.matchAll(urlRegex)) {
     const url = match[1].replace(TRAILING_PUNCT, "");
     let host: string;
     try {
@@ -53,6 +58,21 @@ function firstVerificationUrl(text: string): string | null {
     if (!isLoopbackHost(host)) return url;
   }
   return null;
+}
+
+function firstVerificationUrl(text: string): string | null {
+  return findFirstVerificationUrl(text, URL_WITH_TERMINATOR);
+}
+
+/**
+ * One-shot extraction of a verification URL from a complete string (e.g. the
+ * full stdout/stderr of a failed CLI invocation). Unlike the streaming
+ * detector above, there is no "more chunks coming" concern, so a URL at the
+ * very end of the string counts as terminated. Shares the same
+ * loopback-skipping and trailing-punctuation-trimming behaviour.
+ */
+export function extractVerificationUrl(text: string): string | null {
+  return findFirstVerificationUrl(text, URL_WITH_TERMINATOR_OR_EOS);
 }
 
 // Guard against unbounded growth when the process emits lots of URL-free output.
