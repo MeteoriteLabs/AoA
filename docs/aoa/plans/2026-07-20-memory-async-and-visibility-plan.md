@@ -1,0 +1,740 @@
+# Memory Async Dispatch + Visibility Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Stop making the founder wait for the Librarian, and make pending memory findable (Inbox signpost) and its destination folder visible before approval.
+
+**Architecture:** `submit` fires the Librarian in the background instead of awaiting it (crash-covered by the existing stale-`running` lease). Onboarding stops blocking. A new `memory_review` hub type in the `waiting_on_you` lane — mirroring `discussion_pending` — signposts pending memory in the Inbox, produced at the shared `writeMemoryAndIndex` chokepoint. The Memory UI shows each pending item's destination folder and ghosts it in the tree.
+
+**Tech Stack:** TypeScript, vitest, pnpm workspaces. Packages: `server`, `packages/shared`, `ui`.
+
+**Spec:** `docs/aoa/plans/2026-07-20-memory-async-and-visibility-design.md`
+
+**DO NOT change the Librarian's placement logic.** It already receives the seeded folder list and `write_memory` validates `folderPath` against it. This plan changes WHEN dispatch runs and HOW the result is surfaced.
+
+---
+
+## File Structure
+
+| File | Responsibility |
+|---|---|
+| `server/src/services/braindump.ts` (modify) | M1: `submit` schedules dispatch, doesn't await |
+| `server/src/__tests__/braindump.test.ts` (modify) | M1: assert scheduled-not-awaited |
+| `ui/src/onboarding/inflight/BraindumpStep.tsx` (modify) | M2: `onDone` on acceptance |
+| `ui/src/onboarding/inflight/LibrarianStep.tsx` (modify) | M2: non-blocking background note |
+| `packages/shared/src/hub.ts` (modify) | M3a: `memory_review` type + lane |
+| `server/src/services/hub-source-producers.ts` (modify) | M3b: `buildMemoryReviewHubEmit` |
+| `server/src/services/hub-items.ts` (modify) | M3b: `reconcileMemoryReview` + registry |
+| `server/src/services/memory-write.ts` (modify) | M3b: emit at the chokepoint |
+| `server/src/routes/memory.ts` (modify) | M3b: reconcile on approve |
+| `ui/src/components/memory/*` (modify) | M4: destination label + ghost-in-tree |
+
+Order: T1 (async) → T2 (onboarding) → T3 (hub type) → T4 (hub producer) → T5 (folder visibility) → T6 (live).
+
+---
+
+## Task 1 (M1): Async dispatch
+
+**Files:**
+- Modify: `server/src/services/braindump.ts` (the `submit` method, ~line 543)
+- Test: `server/src/__tests__/braindump.test.ts`
+
+Currently `submit` does `await claimAndDispatch(...)` then re-reads and returns the
+terminal row. We make dispatch fire-and-forget.
+
+- [ ] **Step 1: Write the failing test**
+
+Read `braindump.test.ts` first — it uses an ordered `createSequenceDb` mock and a
+mocked `runAoaAgentMock`. The existing happy-path test asserts `result.status`
+is `"proposed"` (the terminal status AFTER the run). With async dispatch, `submit`
+returns BEFORE the run finishes, so the returned status is the claimed
+`"running"`/`"pending"`, and the run resolves later.
+
+Add a focused test that proves submit does not block on the run:
+
+```ts
+it("returns without awaiting the Librarian run (async dispatch)", async () => {
+  // A run that never resolves — if submit awaited it, this test would hang.
+  runAoaAgentMock.mockReturnValue(new Promise(() => {}));
+  const db = createSequenceDb([
+    [DEPT_ROW],                                                     // validate dept
+    [{ id: CAPTURE_ID, departmentId: DEPT_ID, status: "pending" }], // insert
+    [{ id: CAPTURE_ID, status: "running", departmentId: DEPT_ID, content: "x", assetIds: [] }], // claim
+    [{ id: LIBRARIAN_ID }],                                         // resolveLibrarian
+    [DEPT_ROW],                                                     // dept name
+    [{ path: "engineering/Decisions" }],                           // folders
+    // no correlate/latest rows: the run never completes, so submit must have
+    // returned before reaching them.
+    [{ id: CAPTURE_ID, status: "running", departmentId: DEPT_ID }], // re-read latest
+  ]);
+
+  const result = await Promise.race([
+    braindumpService(db).submit(CO_ID, { departmentId: DEPT_ID, content: "x", idempotencyKey: "k1" }),
+    new Promise((resolve) => setTimeout(() => resolve("TIMEOUT"), 200)),
+  ]);
+
+  expect(result).not.toBe("TIMEOUT"); // did not hang on the never-resolving run
+  expect((result as { status: string }).status).toBe("running");
+});
+
+it("a background dispatch rejection does not throw out of submit", async () => {
+  runAoaAgentMock.mockRejectedValue(new Error("dispatch blew up"));
+  const db = createSequenceDb([
+    [DEPT_ROW],
+    [{ id: CAPTURE_ID, departmentId: DEPT_ID, status: "pending" }],
+    [{ id: CAPTURE_ID, status: "running", departmentId: DEPT_ID, content: "x", assetIds: [] }],
+    [{ id: LIBRARIAN_ID }],
+    [DEPT_ROW],
+    [{ path: "engineering/Decisions" }],
+    [],                                                             // correlate
+    [],                                                             // update -> failed (background)
+    [{ id: CAPTURE_ID, status: "running", departmentId: DEPT_ID }], // re-read latest (still running at return time)
+  ]);
+  // Must resolve, not reject — the rejection happens on the detached promise.
+  await expect(
+    braindumpService(db).submit(CO_ID, { departmentId: DEPT_ID, content: "x", idempotencyKey: "k1" }),
+  ).resolves.toBeTruthy();
+});
+```
+
+The existing happy-path test that asserts `status === "proposed"` MUST be updated:
+after this change `submit` returns `"running"` and the proposal lands
+asynchronously. Change that test to assert the returned status is `"running"` and
+that `runAoaAgentMock` was called (dispatch was scheduled), OR move its
+end-to-end assertion into an explicit `await` of the scheduled work. Do NOT delete
+the coverage — the full dispatch sequence is still exercised by
+`claimAndDispatch`'s own path (the failure/proposed cases already have dedicated
+tests that call it directly via retry).
+
+- [ ] **Step 2: Run to verify it fails**
+
+Run: `cd server && npx vitest run src/__tests__/braindump.test.ts`
+Expected: the new "does not hang" test fails (submit currently awaits, so
+`Promise.race` returns "TIMEOUT"); the happy-path test still expects "proposed".
+
+- [ ] **Step 3: Implement**
+
+In `server/src/services/braindump.ts`, replace the `submit` dispatch block:
+
+```ts
+      // Fire-and-forget: dispatch the Librarian in the BACKGROUND so the founder
+      // is not made to wait for a full agent run inside this request. Crash
+      // recovery is the existing stale-`running` lease (RUNNING_LEASE_MINUTES) —
+      // a process that dies mid-run leaves a row `retry` can reclaim.
+      //
+      // The .catch is mandatory: a detached promise that rejects with no handler
+      // is an unhandled rejection, and this server has no uncaughtException
+      // handler (A-H11 class). claimAndDispatch already writes terminal status on
+      // every internal path; this guards a throw from the scheduling seam itself.
+      void claimAndDispatch(db, companyId, row.id).catch((err) => {
+        log.error({ err, companyId, braindumpId: row.id }, "background dispatch failed");
+      });
+
+      const [latest] = await db
+        .select()
+        .from(braindumpCaptures)
+        .where(eq(braindumpCaptures.id, row.id))
+        .limit(1);
+      return withEffectiveStatus(db, latest ?? row);
+```
+
+Do the SAME for `retry` (its `await claimAndDispatch` → `void … .catch(…)`), so a
+retry also returns promptly.
+
+- [ ] **Step 4: Run to verify it passes**
+
+Run: `cd server && npx vitest run src/__tests__/braindump.test.ts`
+Expected: PASS. If a pre-existing test still asserts `"proposed"` from `submit`,
+update it per Step 1 (assert `"running"` + `runAoaAgentMock` called) — do not
+weaken it, re-home the terminal-status assertion onto the dispatch path.
+
+- [ ] **Step 5: Commit**
+
+```bash
+cd server && npx tsc --noEmit -p tsconfig.json
+git add server/src/services/braindump.ts server/src/__tests__/braindump.test.ts
+git commit -m "feat(braindump): dispatch the Librarian in the background, don't block submit"
+```
+
+---
+
+## Task 2 (M2): Onboarding moves on
+
+**Files:**
+- Modify: `ui/src/onboarding/inflight/BraindumpStep.tsx`
+- Modify: `ui/src/onboarding/inflight/LibrarianStep.tsx`
+- Test: both `__tests__` files
+
+`submit` already returns promptly after T1. `BraindumpStep.submitAll` already
+fires `onDone` once all submits resolve — and they now resolve on ACCEPTANCE, so
+no code change may be needed there beyond confirming it doesn't inspect terminal
+status. Verify and adjust. The real change is `LibrarianStep`: it must stop
+blocking on "Organizing…".
+
+- [ ] **Step 1: Write the failing test**
+
+Append to `ui/src/onboarding/inflight/__tests__/LibrarianStep.test.tsx`:
+
+```ts
+it("does not block on organizing — shows a background note and lets the founder continue", async () => {
+  // A capture still running (Librarian working in the background).
+  listCaptures.mockResolvedValue([makeCapture({ status: "running" })]);
+  memoryList.mockResolvedValue({ items: [], semanticAvailable: true });
+
+  const onDone = vi.fn();
+  render(<LibrarianStep companyId="c1" onDone={onDone} />);
+
+  // A clear background note, not an indefinite blocking spinner.
+  expect(await screen.findByText(/sorting|background|review (it )?in Memory/i)).toBeTruthy();
+  // Continue is available immediately, even while the run is in flight.
+  const cont = screen.getByRole("button", { name: /continue/i });
+  fireEvent.click(cont);
+  expect(onDone).toHaveBeenCalledTimes(1);
+});
+```
+
+- [ ] **Step 2: Run to verify it fails**
+
+Run: `cd ui && npx vitest run src/onboarding/inflight/__tests__/LibrarianStep.test.tsx`
+Expected: FAIL — the background-note text does not exist and/or Continue is gated
+while organizing.
+
+- [ ] **Step 3: Implement**
+
+In `ui/src/onboarding/inflight/LibrarianStep.tsx`:
+
+- Keep the capture poll (it still drives the proposal list when the founder
+  lingers), but the "Organizing…" state must no longer BLOCK. Render a light note
+  regardless of whether captures are still running:
+
+  ```tsx
+  <p className="text-center text-xs text-dim">
+    We're sorting this into your company's memory in the background — you can
+    review and approve it in Memory whenever you're ready.
+  </p>
+  ```
+
+- The Continue button must be enabled and fire `onDone` immediately, in every
+  state (organizing or done). If the current code disables/hides Continue while
+  `organizing`, remove that gate.
+- Keep the inline approval list for the case where proposals ARE ready when the
+  founder lingers — it's a bonus, not a requirement.
+
+Confirm `BraindumpStep.submitAll` fires `onDone` on acceptance (it awaits the
+submit promises, which now resolve on acceptance). If it inspects the returned
+terminal status anywhere to decide `onDone`, remove that dependency.
+
+- [ ] **Step 4: Run to verify it passes**
+
+Run: `cd ui && npx vitest run src/onboarding/inflight` then `cd ui && npx vitest run src/onboarding`
+Expected: PASS, including pre-existing LibrarianStep/BraindumpStep tests. Any
+pre-existing test that asserted a BLOCKING "Organizing…" gate should be updated to
+the new non-blocking behaviour (that assertion encoded the bug) — do not weaken
+unrelated assertions.
+
+- [ ] **Step 5: Commit**
+
+```bash
+cd ui && npx tsc --noEmit -p tsconfig.json
+git add ui/src/onboarding/inflight/LibrarianStep.tsx ui/src/onboarding/inflight/BraindumpStep.tsx ui/src/onboarding/inflight/__tests__/
+git commit -m "feat(onboarding): don't block on the Librarian — review in Memory later"
+```
+
+---
+
+## Task 3 (M3a): The `memory_review` hub semantic type
+
+**Files:**
+- Modify: `packages/shared/src/hub.ts`
+- Test: `packages/shared/src/hub.test.ts` (or the existing hub test file — grep for it)
+
+- [ ] **Step 1: Write the failing test**
+
+Find the hub test file (`grep -rln "HUB_SEMANTIC_TYPES\|laneForSemanticType" packages/shared/src`) and add:
+
+```ts
+import { HUB_SEMANTIC_TYPES, laneForSemanticType } from "./hub.js";
+
+describe("memory_review hub type", () => {
+  it("is a known semantic type", () => {
+    expect(HUB_SEMANTIC_TYPES).toContain("memory_review");
+  });
+  it("lives in the waiting_on_you lane, beside discussion_pending", () => {
+    expect(laneForSemanticType("memory_review")).toBe("waiting_on_you");
+    expect(laneForSemanticType("discussion_pending")).toBe("waiting_on_you");
+  });
+});
+```
+
+If no hub test file exists, create `packages/shared/src/hub.test.ts` with the
+above plus the imports.
+
+- [ ] **Step 2: Run to verify it fails**
+
+Run: `cd packages/shared && npx vitest run` (or the specific file)
+Expected: FAIL — `"memory_review"` is not in the union; TS may also error since the
+`HUB_SEMANTIC_TO_LANE` record is exhaustive.
+
+- [ ] **Step 3: Implement**
+
+In `packages/shared/src/hub.ts`, add `"memory_review"` to `HUB_SEMANTIC_TYPES`
+under the `waiting_on_you` group (next to `discussion_pending`):
+
+```ts
+  // waiting_on_you
+  "approval_request",
+  "discussion_pending",
+  "memory_review",        // pending memory items awaiting founder approval
+  "join_request",
+```
+
+And add the lane mapping in `HUB_SEMANTIC_TO_LANE`:
+
+```ts
+  discussion_pending: "waiting_on_you",
+  memory_review: "waiting_on_you",
+```
+
+- [ ] **Step 4: Run to verify it passes**
+
+Run: `cd packages/shared && npx vitest run && npx tsc --noEmit`
+Expected: PASS, and the exhaustive `HUB_SEMANTIC_TO_LANE` record typechecks.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add packages/shared/src/hub.ts packages/shared/src/hub.test.ts
+git commit -m "feat(hub): memory_review semantic type in the waiting_on_you lane"
+```
+
+---
+
+## Task 4 (M3b): Hub producer, reconciler, and emit at the chokepoint
+
+**Files:**
+- Modify: `server/src/services/hub-source-producers.ts` (add `buildMemoryReviewHubEmit`)
+- Modify: `server/src/services/hub-items.ts` (add `reconcileMemoryReview` + register)
+- Modify: `server/src/services/memory-write.ts` (emit on pending write)
+- Modify: `server/src/routes/memory.ts` (reconcile on approve/reject)
+- Test: `server/src/__tests__/` (new file `memory-review-hub.test.ts`)
+
+Read `buildDiscussionPendingHubEmit` and `reconcileDiscussion` first — this task
+mirrors them for memory. Scope key: one hub row per (company, scope) where scope is
+`"company"` for company-wide (`departmentId` null) or the `departmentId`. Use
+`sourceType: "memory"` and `sourceId: \`${companyId}:${scope}\`` so the
+`hub_items_source_unique_idx` dedupes to one row per scope.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `server/src/__tests__/memory-review-hub.test.ts`. Follow the mocking style
+of the neighbouring hub tests (mock `@armyofagents/db` + `drizzle-orm`; the
+builder is a pure function, the reconciler needs a small chainable db mock).
+
+```ts
+import { describe, it, expect } from "vitest";
+import { buildMemoryReviewHubEmit } from "../services/hub-source-producers.js";
+
+describe("buildMemoryReviewHubEmit", () => {
+  it("builds a memory_review emit for a department scope", () => {
+    const emit = buildMemoryReviewHubEmit({
+      companyId: "co-1",
+      departmentId: "dept-eng",
+      departmentName: "Engineering",
+      count: 4,
+      ownerUserId: "founder-1",
+      updatedAt: new Date("2026-07-20T00:00:00Z"),
+    });
+    expect(emit.semanticType).toBe("memory_review");
+    expect(emit.sourceType).toBe("memory");
+    expect(emit.sourceId).toBe("co-1:dept-eng");
+    expect(emit.companyId).toBe("co-1");
+    expect(emit.ownerUserId).toBe("founder-1");
+    expect(emit.title).toMatch(/4 memory items/i);
+  });
+
+  it("builds a company-wide emit with a stable company scope key", () => {
+    const emit = buildMemoryReviewHubEmit({
+      companyId: "co-1",
+      departmentId: null,
+      departmentName: null,
+      count: 1,
+      ownerUserId: "founder-1",
+      updatedAt: new Date("2026-07-20T00:00:00Z"),
+    });
+    expect(emit.sourceId).toBe("co-1:company");
+    expect(emit.title).toMatch(/1 memory item\b/i);
+  });
+});
+```
+
+- [ ] **Step 2: Run to verify it fails**
+
+Run: `cd server && npx vitest run src/__tests__/memory-review-hub.test.ts`
+Expected: FAIL — `buildMemoryReviewHubEmit` does not exist.
+
+- [ ] **Step 3: Implement the producer**
+
+In `server/src/services/hub-source-producers.ts`, add (mirroring
+`buildDiscussionPendingHubEmit`):
+
+```ts
+export interface MemoryReviewLike {
+  companyId: string;
+  departmentId: string | null;
+  departmentName: string | null;
+  count: number;
+  ownerUserId: string | null;
+  updatedAt: Date;
+}
+
+/** One hub row per (company, scope). scope = "company" for company-wide memory
+ *  (null departmentId), else the departmentId — so N pending items in a scope
+ *  collapse to ONE waiting_on_you signpost instead of spamming the Inbox. */
+export function buildMemoryReviewHubEmit(m: MemoryReviewLike): EmitArgs {
+  const scope = m.departmentId ?? "company";
+  const where = m.departmentId ? (m.departmentName ?? "a department") : "company-wide memory";
+  const noun = m.count === 1 ? "item" : "items";
+  return {
+    companyId: m.companyId,
+    semanticType: "memory_review",
+    sourceType: "memory",
+    sourceId: `${m.companyId}:${scope}`,
+    title: `Review ${m.count} memory ${noun} in ${where}`,
+    summary: `${m.count} memory ${noun} ${m.count === 1 ? "is" : "are"} ready for your approval.`,
+    ownerUserId: m.ownerUserId,
+    scopeKey: scope,
+    sourcePermissionRevision: sourceRevision(m.updatedAt),
+  };
+}
+```
+
+- [ ] **Step 4: Add the reconciler + register it**
+
+In `server/src/services/hub-items.ts`, add (mirroring `reconcileDiscussion`) a
+`reconcileMemoryReview` that counts pending memory in the scope and reports
+terminal when zero. The `sourceId` is `${companyId}:${scope}`; parse the scope
+back out. Query `memoryItems` for `companyId` + `status = 'pending'` + the scope
+(`departmentId IS NULL` for `"company"`, else `departmentId = scope`).
+
+```ts
+  const reconcileMemoryReview: SourceReconciler = async (companyId, sourceId) => {
+    // sourceId = `${companyId}:${scope}`; scope is "company" or a departmentId.
+    const scope = sourceId.slice(companyId.length + 1);
+    const isCompany = scope === "company";
+    const rows = await db
+      .select({ id: memoryItems.id })
+      .from(memoryItems)
+      .where(
+        and(
+          eq(memoryItems.companyId, companyId),
+          eq(memoryItems.status, "pending"),
+          isCompany ? isNull(memoryItems.departmentId) : eq(memoryItems.departmentId, scope),
+        ),
+      );
+    const count = rows.length;
+    const founder = await orgHierarchyService(db).getFounderUserId(companyId);
+    return {
+      terminal: count <= 0,
+      title: `Review ${count} memory ${count === 1 ? "item" : "items"}`,
+      summary: `${count} memory ${count === 1 ? "item is" : "items are"} ready for your approval.`,
+      ownerUserId: founder,
+      scopeKey: scope,
+      permissionRevision: new Date().toISOString(),
+    };
+  };
+```
+
+Register it in `SOURCE_RECONCILERS`:
+
+```ts
+    discussion: reconcileDiscussion,
+    memory: reconcileMemoryReview,
+```
+
+Ensure `memoryItems`, `isNull`, and `orgHierarchyService` are imported in
+`hub-items.ts` (grep; add if missing).
+
+- [ ] **Step 5: Emit at the chokepoint**
+
+In `server/src/services/memory-write.ts`, in `writeMemoryAndIndex` after the row
+is created, emit a memory_review hub item when the write is a founder-gated
+pending proposal. Best-effort, non-fatal — same try/catch discipline as the
+existing embedding enqueue:
+
+```ts
+  // Signpost pending founder-gated memory in the Inbox (waiting_on_you), so the
+  // founder finds it without opening Memory first. Best-effort: a hub failure
+  // must never fail the memory write. Skip founder-created / already-approved
+  // writes (they need no review) and working-layer notes (auto-managed).
+  if (row && row.status === "pending" && row.source !== "founder" && row.layer !== "working") {
+    try {
+      const founderUserId = await orgHierarchyService(db).getFounderUserId(companyId);
+      let departmentName: string | null = null;
+      if (row.departmentId) {
+        const [proj] = await db
+          .select({ name: projects.name })
+          .from(projects)
+          .where(and(eq(projects.id, row.departmentId), eq(projects.companyId, companyId)))
+          .limit(1);
+        departmentName = proj?.name ?? null;
+      }
+      const count = await countPendingMemory(db, companyId, row.departmentId);
+      await emitHubItem(db, buildMemoryReviewHubEmit({
+        companyId,
+        departmentId: row.departmentId ?? null,
+        departmentName,
+        count,
+        ownerUserId: founderUserId,
+        updatedAt: new Date(),
+      }));
+    } catch (err) {
+      log.warn({ err, companyId }, "memory_review hub emit failed (non-fatal)");
+    }
+  }
+```
+
+Add a small `countPendingMemory(db, companyId, departmentId)` helper in this file
+(company scope = `departmentId IS NULL`; else `= departmentId`), and import
+`emitHubItem`, `buildMemoryReviewHubEmit`, `orgHierarchyService`, `projects`,
+`and`, `eq`, `isNull`. Confirm `log` exists in this module (add a `logger.child`
+if not).
+
+- [ ] **Step 6: Reconcile on approve/reject**
+
+In `server/src/routes/memory.ts`, after a successful approve/reject (the status
+leaves `pending`), trigger the memory reconcile so the hub row closes when the
+scope empties. Best-effort:
+
+```ts
+  // Close the memory_review signpost when this scope has no pending memory left.
+  try {
+    await hubItemsService(db).reconcile("memory");
+  } catch (err) {
+    log.warn({ err, companyId }, "memory_review reconcile failed (non-fatal)");
+  }
+```
+
+Place it where the approve/reject handler already has `companyId` and the item's
+`departmentId` in scope. `reconcile("memory")` sweeps open memory rows and closes
+terminal ones via `reconcileMemoryReview`.
+
+- [ ] **Step 7: Tests for reconciler + emit**
+
+Add to `memory-review-hub.test.ts`:
+
+```ts
+// reconciler: terminal when the scope has no pending memory
+it("reconcileMemoryReview reports terminal when a scope has zero pending", async () => {
+  // Build hubItemsService with a db mock whose memoryItems query returns [].
+  // Assert the reconciler for sourceType "memory", sourceId "co-1:dept-eng"
+  // returns { terminal: true }.
+});
+
+// emit guard: a founder-created or working-layer write does NOT signpost
+it("does not signpost a founder-created write", async () => {
+  // writeMemoryAndIndex with source:"founder" -> emitHubItem NOT called.
+});
+it("does not signpost a working-layer write", async () => {
+  // layer:"working" -> emitHubItem NOT called.
+});
+it("signposts an agent-sourced pending domain write", async () => {
+  // source:"agent", status:"pending", layer:"domain" -> emitHubItem called once
+  // with sourceType "memory".
+});
+```
+
+Write these concretely against mocks matching `memory-write.ts`'s db usage — mock
+`emitHubItem` and assert call/no-call. Follow the existing `memory-write-tools`
+test's mock style.
+
+- [ ] **Step 8: Run + typecheck + commit**
+
+```bash
+cd server && npx vitest run src/__tests__/memory-review-hub.test.ts src/__tests__/memory-write-tools.test.ts
+cd server && npx tsc --noEmit -p tsconfig.json
+git add server/src/services/hub-source-producers.ts server/src/services/hub-items.ts server/src/services/memory-write.ts server/src/routes/memory.ts server/src/__tests__/memory-review-hub.test.ts
+git commit -m "feat(memory): signpost pending memory in the Inbox (memory_review hub item)"
+```
+
+---
+
+## Task 5 (M4): Folder visibility in the Memory UI
+
+**Files:**
+- Modify: the pending-item view + the folder-tree item render under `ui/src/components/memory/`
+- Test: the corresponding `__tests__`
+
+Read the memory components first. Concretely: `MemoryFileList.tsx` renders items
+for a folder, `FolderTreeNode.tsx` / `MemoryTree.tsx` render the tree, and
+`MemoryApprovalActions.tsx` is the pending-item approval row. `MemoryFileList`
+already knows the virtual folders — `__pending` is the flat "Pending Review"
+bucket where pending items surface TODAY (decoupled from their real folder), and
+`__pinned`/`__recent`/`__archived` are the others. `memory_items.folderPath`
+already carries the real destination; both changes are read-only over existing
+data.
+
+The "ghost in tree" change specifically means: a pending item currently appears
+ONLY under the `__pending` virtual folder; make it ALSO render inside its real
+`folderPath` folder in the tree, styled as pending — that is what lets the founder
+see where knowledge is going. Do not remove it from `__pending` (the review inbox
+still needs it); add it to its real folder too.
+
+- [ ] **Step 1: Write the failing tests**
+
+Add component tests (adapt selectors to the real components):
+
+```ts
+it("shows a pending item's destination folder", () => {
+  // Render the pending-review list with an item whose folderPath is
+  // "engineering/Decisions". Expect the destination label to appear.
+  expect(screen.getByText(/engineering\/Decisions/)).toBeTruthy();
+});
+
+it("shows 'unfiled' for a pending item with no folderPath", () => {
+  // item.folderPath === "" -> label reads "unfiled" (or "→ unfiled").
+  expect(screen.getByText(/unfiled/i)).toBeTruthy();
+});
+
+it("renders a pending item ghosted inside its target folder in the tree", () => {
+  // Render the folder tree for "engineering/Decisions" with one pending item.
+  // The item appears in that folder, marked pending (e.g. a data-pending attr
+  // or a 'Pending' badge), not hidden until approved.
+  const el = screen.getByText(/We ship on Fridays/); // the pending item title
+  expect(el.closest("[data-pending='true'], .pending, [aria-label*='pending' i]")).toBeTruthy();
+});
+```
+
+- [ ] **Step 2: Run to verify they fail**
+
+Run: `cd ui && npx vitest run src/components/memory`
+Expected: FAIL — no destination label, no ghost-in-tree.
+
+- [ ] **Step 3: Implement**
+
+- **Destination label:** in the pending-item row component, render the item's
+  `folderPath`:
+
+  ```tsx
+  <span className="text-[10px] text-very-dim">
+    → {item.folderPath ? item.folderPath : "unfiled"}
+  </span>
+  ```
+
+- **Ghost in the tree:** in the folder-tree item render, include pending items in
+  their `folderPath` folder (not only approved ones), styled distinctly and marked
+  so tests and founders can tell:
+
+  ```tsx
+  <li data-pending={item.status === "pending"}
+      className={item.status === "pending" ? "opacity-60" : undefined}>
+    {item.title}
+    {item.status === "pending" && (
+      <span className="ml-1 rounded bg-field px-1 text-[9px] text-dim">Pending</span>
+    )}
+  </li>
+  ```
+
+  If the tree currently filters to `status === "approved"`, widen it to include
+  `pending` and rely on the styling/marker to distinguish them.
+
+- [ ] **Step 4: Run to verify they pass**
+
+Run: `cd ui && npx vitest run src/components/memory` then `cd ui && npx vitest run src/onboarding`
+Expected: PASS, no pre-existing regressions.
+
+- [ ] **Step 5: Typecheck + commit**
+
+```bash
+cd ui && npx tsc --noEmit -p tsconfig.json
+git add ui/src/components/memory/ ui/src/onboarding/inflight/LibrarianStep.tsx
+git commit -m "feat(memory): show a pending item's destination folder + ghost it in the tree"
+```
+
+---
+
+## Task 6: Live verification (memstep :3120, working Librarian)
+
+The isolated `CLAUDE_CONFIG_DIR` from the login work is signed OUT, so the
+Librarian would fail. For THIS test the Librarian must WORK — restart the instance
+WITHOUT the isolated config dir (so it uses the real, signed-in `~/.claude`), or
+sign the isolated dir in first. Use the real config for this run.
+
+- [ ] **Step 1: Rebuild + restart with a working Librarian**
+
+```bash
+cd /c/Users/TK/.aoa/wt/memstep
+git checkout --detach <this-branch-HEAD>
+pnpm install --prefer-offline
+pnpm --filter @armyofagents/shared build
+pnpm --filter @armyofagents/db build
+# Restart WITHOUT CLAUDE_CONFIG_DIR so the Librarian uses the real signed-in creds:
+AOA_INSTANCE_ID=memstep AOA_HOME=/c/Users/TK/.aoa/wt/memstep/.aoa PORT=3120 \
+AOA_EMBEDDED_POSTGRES_PORT=54430 AOA_DEV_LOCAL_IDENTITY=1 \
+node scripts/dev-runner.mjs watch > /tmp/memstep-mem.log 2>&1 &
+```
+
+- [ ] **Step 2: Submit returns immediately (M1)**
+
+```bash
+CID=<company-id>
+time curl -s -X POST "http://127.0.0.1:3120/api/companies/$CID/braindumps" \
+  -H "content-type: application/json" \
+  -d '{"scope":"company","departmentId":null,"content":"We optimize for candor. We ship weekly. The founder approves all memory.","assetIds":[],"idempotencyKey":"mem-live-1"}'
+```
+
+Expected: returns in well under a second with a non-terminal status
+(`running`/`pending`) — NOT after a full Librarian run.
+
+- [ ] **Step 3: Librarian runs in the background, items land pending in real folders**
+
+Poll the capture until terminal, then list pending memory and confirm each has a
+real `folderPath`:
+
+```bash
+curl -s "http://127.0.0.1:3120/api/companies/$CID/braindumps" | python -m json.tool
+curl -s "http://127.0.0.1:3120/api/companies/$CID/memory/items?status=pending" | python -c "
+import json,sys
+for it in json.load(sys.stdin).get('items', []):
+    print(it.get('layer'), '|', it.get('folderPath') or '(unfiled)', '|', it.get('title'))
+"
+```
+
+Expected: items with `status=pending` and a folderPath like `Company/…`.
+
+- [ ] **Step 4: Inbox signpost (M3)**
+
+```bash
+curl -s "http://127.0.0.1:3120/api/companies/$CID/hub/items?lane=waiting_on_you" | python -c "
+import json,sys
+for r in json.load(sys.stdin).get('items', json.load(sys.stdin) if False else []):
+    print(r.get('semanticType'), '|', r.get('title'))
+"
+```
+
+(Use the real hub list route — grep `routes` for the hub list path.) Expected: a
+`memory_review` item titled like "Review N memory items in company-wide memory".
+
+- [ ] **Step 5: Browser — the full loop**
+
+Open the Memory page: confirm each pending item shows its destination folder and
+appears ghosted in its target folder in the tree. Open the Inbox: confirm the
+"memory to review" signpost with a deep link. Approve an item: confirm it
+solidifies in its folder and, once the scope is empty, the hub signpost clears.
+
+- [ ] **Step 6: Full suites + commit**
+
+```bash
+cd packages/shared && npx vitest run
+cd ../../server && npx vitest run src/__tests__/braindump.test.ts src/__tests__/memory-review-hub.test.ts src/__tests__/memory-write-tools.test.ts
+cd ../ui && npx vitest run
+git commit --allow-empty -m "test: live-verify async memory dispatch + Inbox signpost + folder visibility"
+```
+
+---
+
+## Out of scope
+
+- The Librarian's placement logic (unchanged — it already files into real folders).
+- Repo reading and the Librarian-as-general-capability work (own spec).
+- The Map / Agent / Task / Braindump screen mockups (the next track).
+- A durable job queue (the stale-`running` lease already covers crash recovery).
