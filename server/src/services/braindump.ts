@@ -277,7 +277,13 @@ async function loadAllowedFolders(
   return rows.map((r) => r.path).filter((p): p is string => typeof p === "string" && p.length > 0);
 }
 
-async function claimAndDispatch(db: Db, companyId: string, id: string): Promise<boolean> {
+/**
+ * Exported (not module-private) so tests can drive the terminal-status paths
+ * deterministically by awaiting this directly, instead of racing the
+ * fire-and-forget call inside `submit`/`retry` (see the module-level comment
+ * on those two callers).
+ */
+export async function claimAndDispatch(db: Db, companyId: string, id: string): Promise<boolean> {
   const claimed = await db
     .update(braindumpCaptures)
     .set({ status: "running", dispatchStartedAt: new Date(), failureReason: null, updatedAt: new Date() })
@@ -538,9 +544,18 @@ export function braindumpService(db: Db) {
         row = existing;
       }
 
-      // Best-effort synchronous dispatch attempt. No-ops if another caller
-      // already claimed it (or it's already running/proposed/failed).
-      await claimAndDispatch(db, companyId, row.id);
+      // Fire-and-forget: dispatch the Librarian in the BACKGROUND so the founder
+      // is not made to wait for a full agent run inside this request. Crash
+      // recovery is the existing stale-`running` lease (RUNNING_LEASE_MINUTES) —
+      // a process that dies mid-run leaves a row `retry` can reclaim.
+      //
+      // The .catch is mandatory: a detached promise that rejects with no handler
+      // is an unhandled rejection, and this server has no uncaughtException
+      // handler (A-H11 class). claimAndDispatch already writes terminal status on
+      // every internal path; this guards a throw from the scheduling seam itself.
+      void claimAndDispatch(db, companyId, row.id).catch((err) => {
+        log.error({ err, companyId, braindumpId: row.id }, "background dispatch failed");
+      });
 
       const [latest] = await db
         .select()
@@ -563,7 +578,13 @@ export function braindumpService(db: Db) {
         throw notFound("Braindump capture not found");
       }
 
-      await claimAndDispatch(db, companyId, id);
+      // Fire-and-forget: same rationale as `submit` above — the founder-facing
+      // retry request must not block on a full Librarian run. The mandatory
+      // .catch guards a throw from the scheduling seam itself (A-H11 class);
+      // claimAndDispatch already writes terminal status on every internal path.
+      void claimAndDispatch(db, companyId, id).catch((err) => {
+        log.error({ err, companyId, braindumpId: id }, "background dispatch failed");
+      });
 
       const [latest] = await db
         .select()
