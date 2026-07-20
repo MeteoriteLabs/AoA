@@ -120,5 +120,75 @@ describe("detectClaudeLoginRequired", () => {
       });
       expect(r.requiresLogin).toBe(true);
     });
+
+    // codex prints its local loopback callback (http://localhost:1455) before
+    // the real auth URL; the shared detector's loginUrl skips loopback hosts.
+    // Confirm a loopback-only failure never yields a bogus localhost link.
+    it("does not surface a loopback-only URL as the login URL", () => {
+      const r = detectClaudeLoginRequired({
+        parsed: null,
+        stdout: "Failed to authenticate. API Error: 401 unauthorized. See http://localhost:1455 for details.",
+        stderr: "",
+        exitCode: 1,
+      });
+      expect(r.requiresLogin).toBe(true);
+      expect(r.loginUrl).toBeNull();
+    });
+  });
+
+  describe("structured api_error_status field", () => {
+    // Field evidence: `subtype` is misleadingly "success" even on an auth
+    // failure; `is_error`+`api_error_status` are the real signal.
+    it("classifies as expired from api_error_status:401 even though subtype says success", () => {
+      const r = detectClaudeLoginRequired({
+        parsed: { type: "result", subtype: "success", is_error: true, api_error_status: 401, result: "Failed to authenticate." },
+        stdout: "",
+        stderr: "",
+        exitCode: 1,
+      });
+      expect(r.requiresLogin).toBe(true);
+      expect(r.kind).toBe("expired");
+    });
+
+    it("classifies as expired from api_error_status:403", () => {
+      const r = detectClaudeLoginRequired({
+        parsed: { api_error_status: 403 },
+        stdout: "",
+        stderr: "",
+        exitCode: 1,
+      });
+      expect(r.kind).toBe("expired");
+    });
+
+    it("overrides a text-detected signed_out kind when the structured field says 401", () => {
+      const r = detectClaudeLoginRequired({
+        parsed: { api_error_status: 401 },
+        stdout: "You are not logged in. Please run `claude login`.",
+        stderr: "",
+        exitCode: 1,
+      });
+      expect(r.kind).toBe("expired");
+    });
+
+    it("ignores a non-auth api_error_status like 500", () => {
+      const r = detectClaudeLoginRequired({
+        parsed: { api_error_status: 500 },
+        stdout: "internal server error",
+        stderr: "",
+        exitCode: 1,
+      });
+      expect(r.requiresLogin).toBe(false);
+      expect(r.kind).toBe("none");
+    });
+
+    it("ignores a null api_error_status (the success shape) without throwing", () => {
+      const r = detectClaudeLoginRequired({
+        parsed: { api_error_status: null },
+        stdout: "",
+        stderr: "",
+        exitCode: 0,
+      });
+      expect(r.requiresLogin).toBe(false);
+    });
   });
 });

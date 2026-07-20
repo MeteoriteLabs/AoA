@@ -21,6 +21,7 @@ import {
 } from "@armyofagents/adapter-utils/execution-target";
 import path from "node:path";
 import { detectClaudeLoginRequired, parseClaudeStreamJson } from "./parse.js";
+import { parseClaudeAuthStatus, CLAUDE_AUTH_STATUS_ARGS, type ClaudeAuthStatus } from "./auth-status.js";
 import { isBedrockAuth } from "./execute.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
@@ -234,15 +235,56 @@ export async function testEnvironment(
           hint: "Retry the probe. If this persists, verify Claude can run `Respond with hello` from this directory manually.",
         });
       } else if (loginMeta.requiresLogin) {
-        checks.push({
-          code: "claude_hello_probe_auth_required",
-          level: "warn",
-          message: "Claude CLI is installed, but login is required.",
-          ...(detail ? { detail } : {}),
-          hint: loginMeta.loginUrl
-            ? `Run \`claude login\` and complete sign-in at ${loginMeta.loginUrl}, then retry.`
-            : "Run `claude login` in this environment, then retry the probe.",
-        });
+        // The hello probe failed with an auth signal, but that alone can't
+        // distinguish "never signed in" from "signed in, token revoked" —
+        // both fail the same way from the probe's point of view. Ask
+        // `claude auth status`, which reports whether credentials EXIST
+        // locally (not whether they still work), to pick the right recovery
+        // copy. Best-effort: an older CLI without `auth status`, a spawn
+        // error, or a timeout must all degrade to the auth_required branch
+        // rather than throw out of the probe or block on this extra step.
+        let authStatus: ClaudeAuthStatus = { loggedIn: false, account: null };
+        try {
+          const statusProbe = await runAdapterExecutionTargetProcess(
+            target ?? { type: "local" },
+            {
+              runId,
+              command,
+              args: [...CLAUDE_AUTH_STATUS_ARGS],
+              cwd,
+              env,
+              runtimeCommandSpec: null,
+              timeoutSec: 10,
+              graceSec: 2,
+              onLog: async () => {},
+            },
+          );
+          authStatus = parseClaudeAuthStatus(statusProbe.stdout);
+        } catch {
+          authStatus = { loggedIn: false, account: null };
+        }
+
+        if (authStatus.loggedIn) {
+          checks.push({
+            code: "claude_hello_probe_auth_expired",
+            level: "warn",
+            message: authStatus.account
+              ? `Signed in as ${authStatus.account}, but that session has expired or been revoked.`
+              : "Your Claude sign-in has expired or been revoked.",
+            ...(detail ? { detail } : {}),
+            hint: "Sign in again — paste an API key below, or run `claude login` in a terminal and we'll detect it.",
+          });
+        } else {
+          checks.push({
+            code: "claude_hello_probe_auth_required",
+            level: "warn",
+            message: "Claude CLI is installed, but you're not signed in yet.",
+            ...(detail ? { detail } : {}),
+            hint: loginMeta.loginUrl
+              ? `Run \`claude login\` and complete sign-in at ${loginMeta.loginUrl}, then retry.`
+              : "Run `claude login` in this environment, then retry the probe.",
+          });
+        }
       } else if ((probe.exitCode ?? 1) === 0) {
         const summary = parsedStream.summary.trim();
         const hasHello = /\bhello\b/i.test(summary);

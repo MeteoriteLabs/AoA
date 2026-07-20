@@ -20,6 +20,42 @@ const SIGNED_OUT: ClaudeAuthStatus = { loggedIn: false, account: null };
  * Never throws: an older CLI without `auth status` prints usage text, and the
  * probe must degrade to signed-out copy rather than crash mid-verification.
  */
+function toStatus(parsed: unknown): ClaudeAuthStatus | null {
+  if (!parsed || typeof parsed !== "object") return null;
+  const obj = parsed as Record<string, unknown>;
+  const loggedIn = obj.loggedIn === true;
+  const email = typeof obj.email === "string" && obj.email.trim() ? obj.email.trim() : null;
+  return { loggedIn, account: loggedIn ? email : null };
+}
+
+/**
+ * Scans right-to-left for the last balanced `{...}` object in `text`, so
+ * trailing noise AFTER the JSON payload (e.g. a warning line that itself
+ * contains braces, "warn: check {config}") doesn't get swept into the slice
+ * and break parsing. Tries each candidate end brace from the rightmost
+ * inward until one parses as valid JSON.
+ */
+function parseLastBalancedObject(text: string): unknown {
+  for (let end = text.lastIndexOf("}"); end !== -1; end = text.lastIndexOf("}", end - 1)) {
+    let depth = 0;
+    for (let i = end; i >= 0; i--) {
+      const ch = text[i];
+      if (ch === "}") depth++;
+      else if (ch === "{") {
+        depth--;
+        if (depth === 0) {
+          try {
+            return JSON.parse(text.slice(i, end + 1));
+          } catch {
+            break; // not valid JSON for this bracket pair; keep scanning left
+          }
+        }
+      }
+    }
+  }
+  return undefined;
+}
+
 export function parseClaudeAuthStatus(stdout: string): ClaudeAuthStatus {
   const text = (stdout ?? "").trim();
   if (!text) return { ...SIGNED_OUT };
@@ -33,14 +69,13 @@ export function parseClaudeAuthStatus(stdout: string): ClaudeAuthStatus {
   try {
     parsed = JSON.parse(text.slice(start, end + 1));
   } catch {
-    return { ...SIGNED_OUT };
+    // The outermost slice can overshoot when trailing noise after the real
+    // JSON payload also contains braces. Fall back to scanning for the last
+    // balanced object instead of giving up.
+    parsed = parseLastBalancedObject(text);
   }
-  if (!parsed || typeof parsed !== "object") return { ...SIGNED_OUT };
 
-  const obj = parsed as Record<string, unknown>;
-  const loggedIn = obj.loggedIn === true;
-  const email = typeof obj.email === "string" && obj.email.trim() ? obj.email.trim() : null;
-  return { loggedIn, account: loggedIn ? email : null };
+  return toStatus(parsed) ?? { ...SIGNED_OUT };
 }
 
 /** Argv for the status probe. Kept here so the probe and tests agree. */

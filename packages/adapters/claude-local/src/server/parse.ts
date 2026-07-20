@@ -120,6 +120,38 @@ export function extractClaudeLoginUrl(text: string): string | null {
   return match[0]?.replace(/[\])}.!,?;:'\"]+$/g, "") ?? null;
 }
 
+/**
+ * `extractClaudeLoginUrl` has no loopback awareness (unlike the shared
+ * detector's `extractVerificationUrl`), so its "first URL of any kind"
+ * fallback can surface a local callback server address
+ * (`http://localhost:1455`, printed by some CLIs before the real auth page)
+ * as if it were the sign-in link. Reject that before it reaches the founder.
+ */
+function isLoopbackLoginUrl(url: string): boolean {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return host === "localhost" || host === "0.0.0.0" || host === "[::1]" || host === "::1" || host.startsWith("127.");
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * `claude --output-format stream-json`'s terminal `result` event carries a
+ * structured `api_error_status` (the HTTP status of the failed API call)
+ * alongside `is_error`. Field evidence: a revoked-token run returns
+ * `{"subtype":"success","is_error":true,"api_error_status":401,...}` — note
+ * `subtype` is misleadingly "success" even on failure, so `api_error_status`
+ * (a number) is a more reliable auth signal than pattern-matching `result`
+ * text, which can drift across CLI versions. `parsed` is untyped JSON, so
+ * every field access here is guarded.
+ */
+function apiErrorStatusIndicatesAuthFailure(parsed: Record<string, unknown> | null): boolean {
+  if (!parsed) return false;
+  const status = parsed.api_error_status;
+  return typeof status === "number" && (status === 401 || status === 403);
+}
+
 export function detectClaudeLoginRequired(input: {
   parsed: Record<string, unknown> | null;
   stdout: string;
@@ -153,12 +185,30 @@ export function detectClaudeLoginRequired(input: {
   ].join("\n");
 
   // Shared detector: the old local regex matched only never-signed-in phrasing
-  // and missed every revoked/expired/401 failure.
-  const { kind } = detectAuthFailure(haystack);
+  // and missed every revoked/expired/401 failure. Its loginUrl is also more
+  // reliable than extractClaudeLoginUrl's fallback below: it's gated to
+  // auth-shaped URLs (never "first URL of any kind") and skips loopback
+  // callback hosts.
+  const { kind: textKind, loginUrl: detectedLoginUrl } = detectAuthFailure(haystack);
+
+  // Structured signal wins over the text detector: `api_error_status` is a
+  // number the CLI reports directly, not a pattern match against prose that
+  // could drift. A structured 401/403 means credentials were presented and
+  // rejected — that is the "expired" shape, not "signed_out" (no
+  // credentials) or "invalid_key" (a key was supplied and is malformed).
+  const kind: AuthFailureKind = apiErrorStatusIndicatesAuthFailure(input.parsed) ? "expired" : textKind;
+
+  // Fallback only: extractClaudeLoginUrl's "first URL of any kind" behavior
+  // can surface a bogus link when the shared detector found none. Still
+  // reject a loopback callback host even from the fallback — see
+  // isLoopbackLoginUrl.
+  const fallbackLoginUrl = extractClaudeLoginUrl([input.stdout, input.stderr].join("\n"));
+  const loginUrl =
+    detectedLoginUrl ?? (fallbackLoginUrl && !isLoopbackLoginUrl(fallbackLoginUrl) ? fallbackLoginUrl : null);
 
   return {
     requiresLogin: kind !== "none",
-    loginUrl: extractClaudeLoginUrl([input.stdout, input.stderr].join("\n")),
+    loginUrl,
     kind,
   };
 }

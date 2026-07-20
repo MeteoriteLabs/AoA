@@ -48,4 +48,22 @@ describe("parseClaudeAuthStatus", () => {
     expect(parseClaudeAuthStatus(null as unknown as string)).toEqual({ loggedIn: false, account: null });
     expect(parseClaudeAuthStatus(undefined as unknown as string)).toEqual({ loggedIn: false, account: null });
   });
+
+  it("parses when a brace-bearing warning follows the JSON", () => {
+    const out = '{"loggedIn":true,"email":"ada@example.com"}\nwarn: check {config}';
+    expect(parseClaudeAuthStatus(out)).toEqual({ loggedIn: true, account: "ada@example.com" });
+  });
+
+  it("parses the real multi-line pretty-printed CLI payload", () => {
+    const out = [
+      "{",
+      '  "loggedIn": true,',
+      '  "authMethod": "claude.ai",',
+      '  "apiProvider": "firstParty",',
+      '  "email": "ada@example.com",',
+      '  "subscriptionType": "max"',
+      "}",
+    ].join("\n");
+    expect(parseClaudeAuthStatus(out)).toEqual({ loggedIn: true, account: "ada@example.com" });
+  });
 });
