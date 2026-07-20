@@ -23,11 +23,13 @@ const saveCommanderKey = vi.hoisted(() => vi.fn(async () => ({ ok: true, secretI
 const startCommanderLogin = vi.hoisted(() => vi.fn());
 const getCommanderLoginStatus = vi.hoisted(() => vi.fn());
 const cancelCommanderLogin = vi.hoisted(() => vi.fn(async () => ({ ok: true })));
+const submitCommanderLoginCode = vi.hoisted(() => vi.fn());
 vi.mock("../../../api/commander-auth", () => ({
   saveCommanderKey,
   startCommanderLogin,
   getCommanderLoginStatus,
   cancelCommanderLogin,
+  submitCommanderLoginCode,
 }));
 
 import { advanceOnboarding } from "../../../api/onboarding";
@@ -118,13 +120,15 @@ describe("VerifyStep (Stage C / order 5, blocking)", () => {
     });
   });
 
-  it("Claude (anthropic) needs_auth shows API-key only — no interactive 'Sign in' button (gated)", async () => {
+  // Superseded 2026-07-20: the paste-code bridge (Tasks 1-4) landed, so Claude
+  // is no longer API-key-only — it now offers the same in-app interactive
+  // sign-in as Codex. See "VerifyStep — Claude in-app sign-in" below.
+  it("Claude (anthropic) needs_auth shows both the API-key path and interactive sign-in", async () => {
     post.mockRejectedValueOnce(needsAuthError());
     render(<VerifyStep ctx={ctx} onComplete={vi.fn()} onBack={() => {}} />);
     fireEvent.click(screen.getByText("Verify"));
-    // Key field is present; the interactive sign-in button is not (Claude needs the paste-code bridge).
     expect(await screen.findByPlaceholderText(/sk-ant/i)).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /sign in with/i })).toBeNull();
+    expect(await screen.findByRole("button", { name: /sign in with claude/i })).toBeTruthy();
   });
 
   it("needs_auth → Codex interactive login → surfaces the verification URL while pending", async () => {
@@ -168,10 +172,12 @@ describe("VerifyStep (Stage C / order 5, blocking)", () => {
     post.mockRejectedValueOnce(needsAuthError());
     render(<VerifyStep ctx={ctx} onComplete={vi.fn()} onBack={() => {}} />);
     fireEvent.click(screen.getByText("Verify"));
-    // Resolves to anthropic (matches the CLI the server probes) → Claude key path.
+    // Resolves to anthropic (matches the CLI the server probes) → Claude key path
+    // AND the Claude interactive sign-in (both providers now offer it).
     expect(await screen.findByPlaceholderText(/sk-ant/i)).toBeTruthy();
-    // NOT the OpenAI crew provider → the Codex-only interactive login is absent.
-    expect(screen.queryByRole("button", { name: /sign in with/i })).toBeNull();
+    expect(await screen.findByRole("button", { name: /sign in with claude/i })).toBeTruthy();
+    // NOT the divergent OpenAI crew provider's button.
+    expect(screen.queryByRole("button", { name: /sign in with codex/i })).toBeNull();
   });
 
   it("P2-A (mirror): cliTool codex with a divergent crew provider → OpenAI/Codex auth path", async () => {
@@ -258,6 +264,11 @@ describe("VerifyStep (Stage C / order 5, blocking)", () => {
       });
     });
 
+    // Copy updated 2026-07-20 (Task 6): the bare "watching for your sign-in…"
+    // spinner text is replaced by the literal terminal command per provider —
+    // see "VerifyStep — honest recovery copy" below for the dedicated coverage.
+    // This test keeps its original intent: a clear watching status while
+    // polling, and Cancel stops it and returns the start button.
     it("shows a clear watching status while polling, and Cancel stops it (returns the start button)", async () => {
       post.mockRejectedValueOnce(needsAuthError()); // initial "Verify" click
       post.mockRejectedValueOnce(needsAuthError()); // immediate auto-detect tick — still not signed in
@@ -265,11 +276,11 @@ describe("VerifyStep (Stage C / order 5, blocking)", () => {
       fireEvent.click(screen.getByText("Verify"));
 
       fireEvent.click(await screen.findByRole("button", { name: /sign in myself in the cli/i }));
-      expect(await screen.findByText(/watching for your sign-in/i)).toBeTruthy();
+      expect(await screen.findByText("claude auth login")).toBeTruthy();
 
       fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
       expect(await screen.findByRole("button", { name: /sign in myself in the cli/i })).toBeTruthy();
-      expect(screen.queryByText(/watching for your sign-in/i)).toBeNull();
+      expect(screen.queryByText("claude auth login")).toBeNull();
     });
 
     // Code-review fix: the earlier "polls the same verify probe" test above only
@@ -557,5 +568,125 @@ describe("VerifyStep — a warn-level check must not render as a pass", () => {
     expect(cwdItem?.textContent).toContain("✓");
     const authItem = items.find((li) => /expired or been revoked/.test(li.textContent ?? ""));
     expect(authItem?.textContent).not.toContain("✓");
+  });
+});
+
+describe("VerifyStep — Claude in-app sign-in", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // getConfig's implementation persists across tests (clearAllMocks clears
+    // call history, not the implementation set by an earlier test's
+    // mockResolvedValue) — pin it explicitly so the derived provider is
+    // deterministically "anthropic" regardless of test execution order.
+    getConfig.mockResolvedValue({ cliTool: "claude_cli", provider: "openai" });
+    // Same leak risk: an earlier Codex test leaves getCommanderLoginStatus
+    // defaulting to "completed", which would make the immediate device-poll
+    // tick short-circuit straight to a fake "verified" before the paste-code
+    // UI ever renders. Pin it to "pending" — these tests exercise the
+    // paste-code path, not the device-poll auto-complete path.
+    getCommanderLoginStatus.mockResolvedValue({ status: "pending", loginUrl: null });
+  });
+
+  const NEEDS_AUTH = {
+    outcome: "needs_auth",
+    result: { status: "warn", checks: [
+      { code: "claude_hello_probe_auth_expired", level: "warn",
+        message: "Signed in as ada@example.com, but that session has expired or been revoked." },
+    ] },
+  };
+
+  it("offers interactive sign-in for Claude, not just Codex", async () => {
+    post.mockRejectedValueOnce(new ApiError("Request failed: 422", 422, NEEDS_AUTH));
+    startCommanderLogin.mockResolvedValue({ challengeId: "ch1", loginUrl: "https://claude.com/x" });
+    render(<VerifyStep ctx={ctx} onComplete={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Verify" }));
+
+    fireEvent.click(await screen.findByRole("button", { name: /sign in with claude/i }));
+
+    expect(await screen.findByText(/https:\/\/claude\.com\/x/)).toBeTruthy();
+    expect(screen.getByLabelText(/paste the code/i)).toBeTruthy();
+  });
+
+  it("submits the pasted code and re-runs the probe rather than trusting the CLI", async () => {
+    post.mockRejectedValueOnce(new ApiError("Request failed: 422", 422, NEEDS_AUTH));
+    startCommanderLogin.mockResolvedValue({ challengeId: "ch1", loginUrl: "https://claude.com/x" });
+    submitCommanderLoginCode.mockResolvedValue({ ok: true });
+    render(<VerifyStep ctx={ctx} onComplete={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Verify" }));
+    fireEvent.click(await screen.findByRole("button", { name: /sign in with claude/i }));
+
+    const postCallsBefore = post.mock.calls.length;
+    fireEvent.change(await screen.findByLabelText(/paste the code/i), { target: { value: "ABC-123" } });
+    fireEvent.click(screen.getByRole("button", { name: /submit code/i }));
+
+    await waitFor(() =>
+      expect(submitCommanderLoginCode).toHaveBeenCalledWith({
+        companyId: "c1", challengeId: "ch1", code: "ABC-123",
+      }),
+    );
+    // The probe is the ONLY authoritative completion signal.
+    await waitFor(() => expect(post.mock.calls.length).toBeGreaterThan(postCallsBefore));
+  });
+
+  it("tells the founder to start again when the session is gone", async () => {
+    post.mockRejectedValueOnce(new ApiError("Request failed: 422", 422, NEEDS_AUTH));
+    startCommanderLogin.mockResolvedValue({ challengeId: "ch1", loginUrl: "https://claude.com/x" });
+    submitCommanderLoginCode.mockRejectedValue(
+      new ApiError("Request failed: 404", 404, { error: "This sign-in session is no longer active. Start sign-in again." }),
+    );
+    render(<VerifyStep ctx={ctx} onComplete={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Verify" }));
+    fireEvent.click(await screen.findByRole("button", { name: /sign in with claude/i }));
+    fireEvent.change(await screen.findByLabelText(/paste the code/i), { target: { value: "ABC-123" } });
+    fireEvent.click(screen.getByRole("button", { name: /submit code/i }));
+
+    expect(await screen.findByText(/start sign-in again/i)).toBeTruthy();
+  });
+
+  it("does not submit an empty code", async () => {
+    post.mockRejectedValueOnce(new ApiError("Request failed: 422", 422, NEEDS_AUTH));
+    startCommanderLogin.mockResolvedValue({ challengeId: "ch1", loginUrl: "https://claude.com/x" });
+    render(<VerifyStep ctx={ctx} onComplete={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Verify" }));
+    fireEvent.click(await screen.findByRole("button", { name: /sign in with claude/i }));
+
+    const btn = await screen.findByRole("button", { name: /submit code/i });
+    expect((btn as HTMLButtonElement).disabled).toBe(true);
+    expect(submitCommanderLoginCode).not.toHaveBeenCalled();
+  });
+});
+
+describe("VerifyStep — honest recovery copy", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // See rationale in "VerifyStep — Claude in-app sign-in" above.
+    getConfig.mockResolvedValue({ cliTool: "claude_cli", provider: "openai" });
+  });
+
+  const NEEDS_AUTH = {
+    outcome: "needs_auth",
+    result: { status: "warn", checks: [
+      { code: "claude_hello_probe_auth_required", level: "warn",
+        message: "Claude CLI is installed, but you're not signed in yet." },
+    ] },
+  };
+
+  it("does not claim 'no terminal required'", async () => {
+    post.mockRejectedValueOnce(new ApiError("Request failed: 422", 422, NEEDS_AUTH));
+    const { container } = render(<VerifyStep ctx={ctx} onComplete={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Verify" }));
+    await screen.findByText(/not signed in yet/i);
+    expect(container.textContent).not.toMatch(/no terminal required/i);
+  });
+
+  it("shows the literal command while watching for a terminal sign-in", async () => {
+    post.mockRejectedValueOnce(new ApiError("Request failed: 422", 422, NEEDS_AUTH)); // initial "Verify" click
+    post.mockRejectedValueOnce(new ApiError("Request failed: 422", 422, NEEDS_AUTH)); // immediate auto-detect tick
+    render(<VerifyStep ctx={ctx} onComplete={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Verify" }));
+    fireEvent.click(await screen.findByRole("button", { name: /sign in myself/i }));
+
+    expect(await screen.findByText("claude auth login")).toBeTruthy();
+    expect(screen.getByText(/detect it automatically/i)).toBeTruthy();
   });
 });

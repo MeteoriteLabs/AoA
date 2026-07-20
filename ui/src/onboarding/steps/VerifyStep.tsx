@@ -8,6 +8,7 @@ import {
   startCommanderLogin,
   getCommanderLoginStatus,
   cancelCommanderLogin,
+  submitCommanderLoginCode,
   type CommanderLoginStatus,
 } from "../../api/commander-auth";
 import { cliToolToProvider, type CommanderProvider } from "@armyofagents/shared";
@@ -79,6 +80,14 @@ function expiredAuthMessage(checks: VerifyCheck[]): string | null {
 
 const PROVIDER_LABEL: Record<CommanderProvider, string> = { anthropic: "Claude", openai: "Codex" };
 
+/** The literal terminal command for each provider's own sign-in, shown verbatim
+ *  while we watch for it (WS3 CLI auto-detect) so the founder knows exactly
+ *  what to type instead of staring at a bare spinner. */
+const PROVIDER_CLI_LOGIN_COMMAND: Record<CommanderProvider, string> = {
+  anthropic: "claude auth login",
+  openai: "codex login",
+};
+
 /** Interval (ms) between CLI-auto-detect poll ticks, once past the immediate first check. */
 const CLI_AUTO_DETECT_POLL_MS = 3000;
 
@@ -116,6 +125,13 @@ export function VerifyStep({ ctx, onComplete }: StepProps) {
     null,
   );
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Paste-code bridge (Tasks 1-4): Claude's `claude auth login` has no in-app
+  // callback like Codex's device flow, so the founder pastes the code shown on
+  // the browser sign-in page and we relay it to the live CLI child on stdin.
+  const [loginCode, setLoginCode] = useState("");
+  const [codeBusy, setCodeBusy] = useState(false);
+  const [codeError, setCodeError] = useState<string | null>(null);
 
   // WS3: "do it yourself in the CLI" — instead of a device-login handshake,
   // just keep re-running the SAME hello-probe verify check on an interval
@@ -285,6 +301,36 @@ export function VerifyStep({ ctx, onComplete }: StepProps) {
   };
 
   /**
+   * Paste-code bridge: deliver the code the founder copied from the browser
+   * sign-in page to the live CLI child (server-side stdin write), then
+   * re-run the verify probe. Completion is decided by the PROBE — never by
+   * the 202 itself, the login challenge's `completed` flag, or the CLI's own
+   * "Login successful" line — a reviewer confirmed a stale credential file
+   * from an earlier revoked login can make both of those lie after a
+   * REJECTED code. A 404/410 means the sign-in session is gone server-side
+   * (restart, or the CLI child exited) and the founder must start again.
+   */
+  const submitCode = async () => {
+    if (!ctx.companyId || !login || !loginCode.trim()) return;
+    setCodeBusy(true);
+    setCodeError(null);
+    try {
+      await submitCommanderLoginCode({
+        companyId: ctx.companyId,
+        challengeId: login.challengeId,
+        code: loginCode.trim(),
+      });
+      setLoginCode("");
+      await check();
+    } catch (e) {
+      const body = e instanceof ApiError ? (e.body as { error?: string } | null) : null;
+      setCodeError(body?.error ?? (e instanceof Error ? e.message : "Could not submit the code."));
+    } finally {
+      setCodeBusy(false);
+    }
+  };
+
+  /**
    * WS3 — "I'll sign in myself in the CLI." No handshake to start: just
    * re-run `check()` on an interval until it reports `verified` (which
    * itself advances + completes and calls `clearCliPoll()`). Skips a tick
@@ -376,7 +422,7 @@ export function VerifyStep({ ctx, onComplete }: StepProps) {
               {expiredAuthMessage(checks) ??
                 authHintFrom(checks) ??
                 `The ${providerLabel} CLI is installed but needs sign-in.`}{" "}
-              Choose one — no terminal required:
+              Choose one:
             </p>
 
             <div className="space-y-2">
@@ -404,10 +450,11 @@ export function VerifyStep({ ctx, onComplete }: StepProps) {
               </Button>
             </div>
 
-            {/* Interactive login is Codex-only: `codex login` self-completes via a
-                local callback. Claude's `claude auth login` needs a paste-code
-                bridge (follow-up), so Claude shows the API-key path only. */}
-            {provider === "openai" && (
+            {/* Interactive in-app sign-in. Codex's `codex login` self-completes
+                via a local callback. Claude's `claude auth login` has no
+                callback, so once the challenge exists we additionally show a
+                paste-code input below the link (Tasks 1-4's stdin bridge). */}
+            {(provider === "openai" || provider === "anthropic") && (
               <>
                 <div className="flex items-center gap-2 text-very-dim">
                   <span className="h-px flex-1 bg-border" />
@@ -416,7 +463,7 @@ export function VerifyStep({ ctx, onComplete }: StepProps) {
                 </div>
 
                 {login ? (
-                  <div className="space-y-1">
+                  <div className="space-y-2">
                     <p>
                       Open this link to finish signing in, then keep this tab open — we'll continue
                       automatically:
@@ -430,6 +477,34 @@ export function VerifyStep({ ctx, onComplete }: StepProps) {
                       {login.loginUrl}
                     </a>
                     <p>Waiting for sign-in… ({login.status})</p>
+
+                    {provider === "anthropic" && (
+                      <div className="space-y-2 pt-1">
+                        <label className="block font-medium text-text" htmlFor="commander-login-code">
+                          Paste the code from that page
+                        </label>
+                        <input
+                          id="commander-login-code"
+                          type="text"
+                          autoComplete="off"
+                          className="w-full rounded-md border border-border-strong bg-field px-2 py-1.5 text-text outline-none focus:border-brand focus:ring-1 focus:ring-brand"
+                          placeholder="Paste code here"
+                          value={loginCode}
+                          onChange={(e) => setLoginCode(e.target.value)}
+                          disabled={codeBusy}
+                        />
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          className="w-full"
+                          onClick={() => void submitCode()}
+                          disabled={codeBusy || !loginCode.trim()}
+                        >
+                          {codeBusy ? "Submitting…" : "Submit code"}
+                        </Button>
+                        {codeError && <p className="text-destructive">{codeError}</p>}
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <Button
@@ -445,8 +520,9 @@ export function VerifyStep({ ctx, onComplete }: StepProps) {
               </>
             )}
 
-            {/* WS3 — CLI auto-detect: works for any provider (unlike the
-                Codex-only interactive login above). */}
+            {/* WS3 — CLI auto-detect: the fallback for BOTH providers when the
+                in-app bridge above can't run (server restarted, spawn failed,
+                or the founder just prefers a terminal). */}
             <div className="flex items-center gap-2 text-very-dim">
               <span className="h-px flex-1 bg-border" />
               or
@@ -457,8 +533,11 @@ export function VerifyStep({ ctx, onComplete }: StepProps) {
                 <div className="flex items-center gap-2">
                   <LoadingDots state="loading" />
                   <p>
-                    Watching for your sign-in… run it yourself in a terminal and we'll continue
-                    automatically.
+                    Run{" "}
+                    <code className="rounded bg-field px-1 py-0.5">
+                      {provider ? PROVIDER_CLI_LOGIN_COMMAND[provider] : "the CLI's sign-in command"}
+                    </code>{" "}
+                    in a terminal — we'll detect it automatically and continue.
                   </p>
                 </div>
                 <Button type="button" variant="ghost" className="w-full" onClick={clearCliPoll}>
