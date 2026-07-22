@@ -37,15 +37,6 @@ function makeDept(overrides: Record<string, unknown> = {}) {
   };
 }
 
-/** Clicks the inline "+ <name>" chip for a department — the on-demand
- *  replacement for the old pre-rendered-per-department cards (and, before
- *  that, a floating menu that was clipped/invisible in the centered
- *  onboarding layout). */
-async function addDepartment(name: string) {
-  const chipName = new RegExp(`^\\+\\s*${name}$`, "i");
-  fireEvent.click(await screen.findByRole("button", { name: chipName }));
-}
-
 describe("BraindumpStep (WS6 — In-flight standalone surface)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -54,7 +45,21 @@ describe("BraindumpStep (WS6 — In-flight standalone surface)", () => {
     submit.mockResolvedValue({ id: "bd-1", status: "proposed", effectiveStatus: "proposed" });
   });
 
-  it("opens with only the company card; departments are added on demand", async () => {
+  it("renders a card per department the founder created (not just company)", async () => {
+    list.mockResolvedValue([
+      makeDept({ id: "d1", name: "Software" }),
+      makeDept({ id: "d2", name: "Marketing", functionType: "marketing" }),
+    ]);
+    render(<BraindumpStep companyId="c1" onDone={vi.fn()} />);
+
+    expect(await screen.findByLabelText(/Braindump for Company-wide/i)).toBeInTheDocument();
+    expect(await screen.findByText(/^Software$/)).toBeInTheDocument();
+    expect(await screen.findByText(/^Marketing$/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^\+\s*software$/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^\+\s*marketing$/i })).toBeNull();
+  });
+
+  it("opens with a company card and a card for every department already created", async () => {
     list.mockResolvedValue([
       makeDept({ id: "d1", name: "Engineering" }),
       makeDept({ id: "d2", name: "Marketing", functionType: "marketing" }),
@@ -63,30 +68,21 @@ describe("BraindumpStep (WS6 — In-flight standalone surface)", () => {
     render(<BraindumpStep companyId="c1" onDone={vi.fn()} />);
 
     expect(await screen.findByLabelText("Braindump for Company-wide")).toBeTruthy();
-    // No department card pre-rendered — a wall of empty boxes is exactly what
-    // this rework removes.
-    expect(screen.queryByText("Engineering")).toBeNull();
-    expect(screen.queryByLabelText("Braindump for Engineering")).toBeNull();
-    expect(screen.getByRole("button", { name: /\+\s*engineering/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /\+\s*marketing/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /\+\s*sales/i })).toBeInTheDocument();
+    expect(await screen.findByLabelText("Braindump for Engineering")).toBeTruthy();
+    expect(screen.getByLabelText("Braindump for Marketing")).toBeTruthy();
+    expect(screen.getByLabelText("Braindump for Sales")).toBeTruthy();
+    // No "+ <department>" chips — every created department already has a card.
+    expect(screen.queryByRole("button", { name: /\+\s*engineering/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /\+\s*marketing/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /\+\s*sales/i })).toBeNull();
   });
 
-  it("shows remaining departments as inline + chips (no floating menu)", async () => {
+  it("has no floating add-department menu", async () => {
     list.mockResolvedValue([makeDept({ id: "d1", name: "Software" })]);
     render(<BraindumpStep companyId="c1" onDone={vi.fn()} />);
-    await screen.findByLabelText("Braindump for Company-wide");
+    await screen.findByLabelText("Braindump for Software");
 
-    // No floating/hidden menu — the old absolute-positioned role="menu" is gone.
     expect(document.querySelector('[role="menu"]')).toBeNull();
-
-    const chip = screen.getByRole("button", { name: /\+\s*software/i });
-    expect(chip).toBeInTheDocument();
-    fireEvent.click(chip);
-
-    // Its card appears and the chip is gone from the remaining list.
-    await waitFor(() => expect(screen.queryByRole("button", { name: /\+\s*software/i })).toBeNull());
-    expect(screen.getByLabelText("Braindump for Software")).toBeTruthy();
   });
 
   it("example-prompt chips insert text into the company textarea", async () => {
@@ -100,6 +96,7 @@ describe("BraindumpStep (WS6 — In-flight standalone surface)", () => {
   });
 
   it("shows a live character count for the company card", async () => {
+    list.mockResolvedValue([]); // no department cards, so the count text is unambiguous
     render(<BraindumpStep companyId="c1" onDone={vi.fn()} />);
     const textarea = await screen.findByLabelText("Braindump for Company-wide");
 
@@ -108,43 +105,29 @@ describe("BraindumpStep (WS6 — In-flight standalone surface)", () => {
     expect(screen.getByText("5 / 20,000")).toBeTruthy();
   });
 
-  it("Add-department chips only list departments not yet added, and disappear once all are added", async () => {
-    list.mockResolvedValue([makeDept({ id: "d1", name: "Software" })]);
-    render(<BraindumpStep companyId="c1" onDone={vi.fn()} />);
-
-    await addDepartment("Software");
-
-    expect(screen.getByLabelText("Braindump for Software")).toBeTruthy();
-    // Every department has a card now — the chip row disappears rather than
-    // showing an empty state.
-    expect(screen.queryByRole("button", { name: /\+\s*software/i })).toBeNull();
-  });
-
-  it("renders one dump box per department, added on demand", async () => {
+  it("renders one dump box per department loaded, with no add step", async () => {
     list.mockResolvedValue([
       makeDept({ id: "d1", name: "Software" }),
       makeDept({ id: "d2", name: "Marketing", functionType: "marketing", primaryWorkspace: null }),
     ]);
     render(<BraindumpStep companyId="c1" onDone={vi.fn()} />);
 
-    await addDepartment("Software");
-    await addDepartment("Marketing");
-
-    expect(screen.getByText("Software")).toBeTruthy();
+    expect(await screen.findByText("Software")).toBeTruthy();
     expect(screen.getByText("Marketing")).toBeTruthy();
     expect(screen.getByLabelText("Braindump for Software")).toBeTruthy();
     expect(screen.getByLabelText("Braindump for Marketing")).toBeTruthy();
   });
 
-  it("filters out non-department projects from the Add-department chips", async () => {
+  it("filters out non-department projects — no card rendered for them", async () => {
     list.mockResolvedValue([
       makeDept({ id: "d1", name: "Software" }),
       { id: "p1", name: "Launch Project", type: "project", functionType: null, workspaces: [], primaryWorkspace: null },
     ]);
     render(<BraindumpStep companyId="c1" onDone={vi.fn()} />);
 
-    expect(await screen.findByRole("button", { name: /\+\s*software/i })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /\+\s*launch project/i })).toBeNull();
+    expect(await screen.findByLabelText("Braindump for Software")).toBeTruthy();
+    expect(screen.queryByLabelText("Braindump for Launch Project")).toBeNull();
+    expect(screen.queryByText("Launch Project")).toBeNull();
   });
 
   it("pre-shows a connected repo chip for a software department", async () => {
@@ -156,7 +139,6 @@ describe("BraindumpStep (WS6 — In-flight standalone surface)", () => {
       }),
     ]);
     render(<BraindumpStep companyId="c1" onDone={vi.fn()} />);
-    await addDepartment("Software");
 
     expect(await screen.findByText("https://github.com/acme/product")).toBeTruthy();
   });
@@ -170,7 +152,6 @@ describe("BraindumpStep (WS6 — In-flight standalone surface)", () => {
       }),
     ]);
     render(<BraindumpStep companyId="c1" onDone={vi.fn()} />);
-    await addDepartment("Software");
 
     expect(await screen.findByText("/home/ada/AoA/software")).toBeTruthy();
   });
@@ -185,9 +166,8 @@ describe("BraindumpStep (WS6 — In-flight standalone surface)", () => {
       }),
     ]);
     render(<BraindumpStep companyId="c1" onDone={vi.fn()} />);
-    await addDepartment("Marketing");
 
-    expect(screen.getByText("Marketing")).toBeTruthy();
+    expect(await screen.findByText("Marketing")).toBeTruthy();
     expect(screen.queryByText("https://github.com/acme/product")).toBeNull();
   });
 
@@ -199,10 +179,7 @@ describe("BraindumpStep (WS6 — In-flight standalone surface)", () => {
     const onDone = vi.fn();
     render(<BraindumpStep companyId="c1" onDone={onDone} />);
 
-    await addDepartment("Software");
-    await addDepartment("Marketing");
-
-    const softwareBox = screen.getByLabelText("Braindump for Software");
+    const softwareBox = await screen.findByLabelText("Braindump for Software");
     fireEvent.change(softwareBox, { target: { value: "We use Postgres and Drizzle." } });
     // Marketing box left empty — should NOT be submitted.
 
@@ -223,9 +200,8 @@ describe("BraindumpStep (WS6 — In-flight standalone surface)", () => {
     list.mockResolvedValue([makeDept({ id: "d1", name: "Software" })]);
     submit.mockRejectedValueOnce(new Error("network down"));
     render(<BraindumpStep companyId="c1" onDone={vi.fn()} />);
-    await addDepartment("Software");
 
-    const box = screen.getByLabelText("Braindump for Software");
+    const box = await screen.findByLabelText("Braindump for Software");
     fireEvent.change(box, { target: { value: "notes" } });
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
 
@@ -251,10 +227,8 @@ describe("BraindumpStep (WS6 — In-flight standalone surface)", () => {
     });
     const onDone = vi.fn();
     render(<BraindumpStep companyId="c1" onDone={onDone} />);
-    await addDepartment("Software");
-    await addDepartment("Marketing");
 
-    fireEvent.change(screen.getByLabelText("Braindump for Software"), { target: { value: "notes" } });
+    fireEvent.change(await screen.findByLabelText("Braindump for Software"), { target: { value: "notes" } });
     fireEvent.change(screen.getByLabelText("Braindump for Marketing"), { target: { value: "more notes" } });
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
 
@@ -291,17 +265,14 @@ describe("BraindumpStep (WS6 — In-flight standalone surface)", () => {
   // Item 5 / Phase 5d — company-wide scope + file drop.
   // -------------------------------------------------------------------------
 
-  it("renders a company-wide card by default; a department card is addable on demand", async () => {
+  it("renders a company-wide card by default, alongside department cards", async () => {
     list.mockResolvedValue([makeDept({ id: "d1", name: "Software" })]);
     render(<BraindumpStep companyId="c1" onDone={vi.fn()} />);
 
     expect(await screen.findByLabelText("Braindump for Company-wide")).toBeTruthy();
     // Sub-text tells the founder what belongs at each scope.
     expect(screen.getByText(/Vision, mission, values/i)).toBeTruthy();
-    expect(screen.queryByLabelText("Braindump for Software")).toBeNull();
-
-    await addDepartment("Software");
-    expect(screen.getByLabelText("Braindump for Software")).toBeTruthy();
+    expect(await screen.findByLabelText("Braindump for Software")).toBeTruthy();
   });
 
   it("submits the company card with scope=company and a null departmentId", async () => {
@@ -326,9 +297,8 @@ describe("BraindumpStep (WS6 — In-flight standalone surface)", () => {
     list.mockResolvedValue([makeDept({ id: "d1", urlKey: "software", name: "Software" })]);
     uploadAsset.mockResolvedValue({ asset: { id: "asset-1", fileName: "notes.md" }, jobId: "j1" });
     render(<BraindumpStep companyId="c1" onDone={vi.fn()} />);
-    await addDepartment("Software");
 
-    const zone = screen.getByLabelText("Attach files for Software");
+    const zone = await screen.findByLabelText("Attach files for Software");
     const file = new File(["hello"], "notes.md", { type: "text/markdown" });
     fireEvent.drop(zone, { dataTransfer: { files: [file] } });
 
@@ -368,9 +338,8 @@ describe("BraindumpStep (WS6 — In-flight standalone surface)", () => {
     let resolveUpload: (v: unknown) => void = () => {};
     uploadAsset.mockImplementation(() => new Promise((r) => { resolveUpload = r; }));
     render(<BraindumpStep companyId="c1" onDone={vi.fn()} />);
-    await addDepartment("Software");
 
-    const zone = screen.getByLabelText("Attach files for Software");
+    const zone = await screen.findByLabelText("Attach files for Software");
     fireEvent.drop(zone, {
       dataTransfer: { files: [new File(["x"], "notes.md", { type: "text/markdown" })] },
     });
@@ -392,9 +361,8 @@ describe("BraindumpStep (WS6 — In-flight standalone surface)", () => {
     list.mockResolvedValue([makeDept({ id: "d1", name: "Software" })]);
     uploadAsset.mockRejectedValue(new Error("Unsupported file type: application/x-msdownload"));
     render(<BraindumpStep companyId="c1" onDone={vi.fn()} />);
-    await addDepartment("Software");
 
-    const zone = screen.getByLabelText("Attach files for Software");
+    const zone = await screen.findByLabelText("Attach files for Software");
     fireEvent.drop(zone, {
       dataTransfer: { files: [new File(["x"], "virus.exe", { type: "application/x-msdownload" })] },
     });
@@ -419,7 +387,6 @@ describe("BraindumpStep (WS6 — In-flight standalone surface)", () => {
         primaryWorkspace: { id: "ws1", repoUrl: "https://github.com/acme/product", cwd: null } }),
     ]);
     const { container } = render(<BraindumpStep companyId="c1" onDone={vi.fn()} />);
-    await addDepartment("Software");
     await screen.findByText("https://github.com/acme/product");
     expect(container.textContent).toMatch(/not read yet/i);
   });

@@ -70,6 +70,29 @@ function repoChipFor(project: Project): string | null {
   return ws.repoUrl || ws.cwd || null;
 }
 
+/** Builds the DumpBox for a department project. Shared by the initial load
+ *  (one box per department the founder already created) and by
+ *  `addDepartmentBox` (for a department created after this step mounted, or
+ *  any other future on-demand path) so both agree on the shape. */
+function makeDeptBox(department: Project): DumpBox {
+  return {
+    key: department.id,
+    scope: "department",
+    departmentId: department.id,
+    name: department.name,
+    hint: DEPARTMENT_HINT,
+    // Department folders are seeded under the project's urlKey
+    // (memory-folders.ts seedForDepartment), so "Files" for a department is
+    // "<urlKey>/Files".
+    folderPath: `${department.urlKey}/Files`,
+    repoChip: repoChipFor(department),
+    content: "",
+    assets: [],
+    status: "idle",
+    error: null,
+  };
+}
+
 export type BraindumpStepProps = {
   companyId: string;
   onDone: () => void;
@@ -98,9 +121,11 @@ export type BraindumpStepProps = {
  */
 export function BraindumpStep({ companyId, onDone }: BraindumpStepProps) {
   const [boxes, setBoxes] = useState<DumpBox[]>([]);
-  /** Every department project for the company, loaded once. The founder adds
-   *  cards from this list on demand rather than seeing one per department —
-   *  see `remainingDepartments` below. */
+  /** Every department project for the company, loaded once. Each one gets a
+   *  card up front (see the load effect) — the founder created these
+   *  departments explicitly, so they shouldn't hide behind an "Add" step.
+   *  `remainingDepartments` below stays as a safety net for a department that
+   *  somehow isn't in `boxes` yet; today it's always empty. */
   const [departments, setDepartments] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -137,12 +162,12 @@ export function BraindumpStep({ companyId, onDone }: BraindumpStepProps) {
           status: "idle",
           error: null,
         };
-        // Only the company card renders up front — a card per department was
-        // a wall of empty boxes. Departments are loaded here so "Add a
-        // department" has something to offer, but no DumpBox is created
-        // until the founder actually picks one.
-        setDepartments(projects.filter((p) => p.type === "department"));
-        setBoxes([companyBox]);
+        // The company card plus one card per department the founder already
+        // created — those departments were an explicit choice, so they
+        // render up front rather than behind an "Add a department" chip.
+        const depts = projects.filter((p) => p.type === "department");
+        setDepartments(depts);
+        setBoxes([companyBox, ...depts.map(makeDeptBox)]);
       })
       .catch((err) => {
         if (cancelled) return;
@@ -164,29 +189,14 @@ export function BraindumpStep({ companyId, onDone }: BraindumpStepProps) {
     return box.content.trim().length > 0 || box.assets.length > 0;
   }
 
-  // Departments not yet turned into a card — what "Add a department" offers.
+  // Departments not yet turned into a card. Always empty today since every
+  // loaded department gets a box up front — kept as a safety net (e.g. a
+  // department that loads after the initial fetch) rather than ripping out
+  // the fallback path.
   const remainingDepartments = departments.filter((d) => !boxes.some((b) => b.key === d.id));
 
   function addDepartmentBox(department: Project) {
-    setBoxes((prev) => [
-      ...prev,
-      {
-        key: department.id,
-        scope: "department",
-        departmentId: department.id,
-        name: department.name,
-        hint: DEPARTMENT_HINT,
-        // Department folders are seeded under the project's urlKey
-        // (memory-folders.ts seedForDepartment), so "Files" for a
-        // department is "<urlKey>/Files".
-        folderPath: `${department.urlKey}/Files`,
-        repoChip: repoChipFor(department),
-        content: "",
-        assets: [],
-        status: "idle",
-        error: null,
-      },
-    ]);
+    setBoxes((prev) => [...prev, makeDeptBox(department)]);
   }
 
   /** Appends a starter phrase to a card's textarea — a nudge, not a
