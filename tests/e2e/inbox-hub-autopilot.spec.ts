@@ -72,10 +72,9 @@ test.describe("Inbox Hub W3 Autopilot", () => {
   }) => {
     const company = await seedCompany(request, `E2E-HUB-W3-${Date.now()}`);
 
-    await page.goto(`/${company.issuePrefix}/inbox`);
-    await expect(page.getByText("Autopilot")).toBeVisible();
-
-    await page.getByRole("button", { name: /hub settings/i }).click();
+    // Hub settings now live in Settings → Inbox (the in-hub gear was removed —
+    // single home for these controls). The controls keep their aria-labels.
+    await page.goto(`/${company.issuePrefix}/settings?tab=inbox`);
     const modeSelect = page.getByRole("combobox", { name: /autopilot mode/i });
     const enabledCheckbox = page.getByRole("checkbox", {
       name: /agent error autopilot enabled/i,
