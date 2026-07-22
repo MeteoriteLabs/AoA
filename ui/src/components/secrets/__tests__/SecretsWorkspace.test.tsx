@@ -117,7 +117,7 @@ describe("SecretsWorkspace", () => {
 
     expect(screen.getByRole("tab", { name: "Inventory" })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Bindings" })).toBeTruthy();
-    expect(screen.getByRole("tab", { name: "Provider Keys" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Sandbox Providers" })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Vault providers" })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Audit" })).toBeTruthy();
   });

@@ -1,16 +1,16 @@
 import { useEffect, useState, type ReactNode } from "react";
 import type { LucideIcon } from "lucide-react";
 import { useSidebar } from "@/context/SidebarContext";
-import { Building, Shield, KeyRound, DollarSign, Plug, Puzzle, Store, Archive, Github, Activity, Layers, HeartPulse, PanelLeft, PanelLeftClose, Brain } from "lucide-react";
+import { Building, Shield, KeyRound, DollarSign, Plug, Puzzle, Store, Archive, Github, Activity, Layers, HeartPulse, PanelLeft, PanelLeftClose, Brain, Terminal, Inbox } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 const SECONDARY_COLLAPSED_KEY = "aoa.settings-secondary-collapsed";
 
 export type SettingsSectionId =
-  | "general" | "health" | "commander" | "memory" | "budget" | "mcp" | "github"
+  | "general" | "health" | "commander" | "memory" | "providers" | "budget" | "mcp" | "github"
   | "plugins" | "marketplace" | "archive"
-  | "activity" | "environments" | "secrets";
+  | "activity" | "environments" | "secrets" | "inbox";
 
 /**
  * Accepted ?tab= input alias. The old "llm" tab value is still accepted on
@@ -22,7 +22,7 @@ interface SettingsItem {
   id: SettingsSectionId;
   label: string;
   icon: LucideIcon;
-  tone?: "danger" | "transitional";
+  tone?: "danger";
 }
 
 interface SettingsGroup {
@@ -36,14 +36,16 @@ export const SETTINGS_SECTIONS: readonly SettingsGroup[] = [
     { id: "activity",    label: "Activity",           icon: Activity },
   ]},
   { group: "Operations", items: [
+    { id: "inbox",        label: "Inbox",              icon: Inbox },
     { id: "health",       label: "Health",             icon: HeartPulse },
     { id: "commander",    label: "Commander",          icon: Shield },
     { id: "memory",       label: "Memory",             icon: Brain },
+    { id: "providers",    label: "Providers",          icon: Terminal },
     { id: "budget",       label: "Budget & caps",      icon: DollarSign },
     { id: "mcp",          label: "MCP API keys",       icon: Plug },
     { id: "environments", label: "Environments",       icon: Layers },
     { id: "secrets",      label: "Secrets",            icon: KeyRound },
-    { id: "github",       label: "GitHub",             icon: Github, tone: "transitional" },
+    { id: "github",       label: "GitHub",             icon: Github },
   ]},
   { group: "Extensions", items: [
     { id: "plugins",     label: "Plugins",            icon: Puzzle },
@@ -134,7 +136,6 @@ export function SettingsLayout({ activeSection, onSectionChange, children }: Set
                 const Icon = item.icon;
                 const active = activeSection === item.id;
                 const isDanger = item.tone === "danger";
-                const isTransitional = item.tone === "transitional";
                 const button = (
                   <button
                     type="button"
@@ -151,14 +152,7 @@ export function SettingsLayout({ activeSection, onSectionChange, children }: Set
                   >
                     <Icon className={cn("size-4 shrink-0", isDanger && "text-red-400/80")} />
                     {!secondaryCollapsed && (
-                      <>
-                        <span className="flex-1 text-left truncate">{item.label}</span>
-                        {isTransitional && (
-                          <span className="ml-auto px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider rounded-sm bg-amber-500/15 text-amber-400/80 border border-amber-500/30">
-                            →plugins
-                          </span>
-                        )}
-                      </>
+                      <span className="flex-1 text-left truncate">{item.label}</span>
                     )}
                     {active && (
                       <span aria-hidden className={cn(
@@ -174,7 +168,6 @@ export function SettingsLayout({ activeSection, onSectionChange, children }: Set
                     <TooltipTrigger asChild>{button}</TooltipTrigger>
                     <TooltipContent side="right" sideOffset={8}>
                       {item.label}
-                      {isTransitional && " — migrating to plugins"}
                     </TooltipContent>
                   </Tooltip>
                 );
@@ -190,7 +183,6 @@ export function SettingsLayout({ activeSection, onSectionChange, children }: Set
           const Icon = item.icon;
           const active = activeSection === item.id;
           const isDanger = item.tone === "danger";
-          const isTransitional = item.tone === "transitional";
           return (
             <button
               key={item.id}
@@ -202,19 +194,10 @@ export function SettingsLayout({ activeSection, onSectionChange, children }: Set
                   ? "bg-brand/[0.12] border-brand/40 text-sidebar-active-text"
                   : "bg-card border-border text-muted-foreground",
                 isDanger && !active && "text-red-400/80",
-                isTransitional && !active && "border-amber-500/30 text-amber-400/80",
               )}
             >
               <Icon className="size-3.5" />
               {item.label}
-              {isTransitional && (
-                <span
-                  aria-hidden
-                  className="ml-0.5 text-[8px] font-bold uppercase tracking-wider opacity-80"
-                >
-                  →
-                </span>
-              )}
             </button>
           );
         })}

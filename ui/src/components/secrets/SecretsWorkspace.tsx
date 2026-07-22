@@ -29,7 +29,7 @@ import { ProviderKeysTab } from "./ProviderKeysTab";
 const TABS = [
   { id: "inventory", label: "Inventory" },
   { id: "bindings", label: "Bindings" },
-  { id: "providerKeys", label: "Provider Keys" },
+  { id: "providerKeys", label: "Sandbox Providers" },
   { id: "vaults", label: "Vault providers" },
   { id: "audit", label: "Audit" },
 ] as const;
@@ -171,10 +171,10 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
     mutationFn: (input: CreateRuntimeProviderKey) => secretsApi.runtimeProviderKeys.create(companyId, input),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.secrets.runtimeProviderKeys(companyId) });
-      pushToast({ title: "Provider key saved", tone: "success" });
+      pushToast({ title: "Sandbox provider key saved", tone: "success" });
     },
     onError: (err) => {
-      pushToast({ title: "Provider key save failed", body: err instanceof Error ? err.message : undefined, tone: "error" });
+      pushToast({ title: "Sandbox provider key save failed", body: err instanceof Error ? err.message : undefined, tone: "error" });
     },
   });
 
@@ -183,10 +183,10 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
       secretsApi.runtimeProviderKeys.update(id, input),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.secrets.runtimeProviderKeys(companyId) });
-      pushToast({ title: "Provider key updated", tone: "success" });
+      pushToast({ title: "Sandbox provider key updated", tone: "success" });
     },
     onError: (err) => {
-      pushToast({ title: "Provider key update failed", body: err instanceof Error ? err.message : undefined, tone: "error" });
+      pushToast({ title: "Sandbox provider key update failed", body: err instanceof Error ? err.message : undefined, tone: "error" });
     },
   });
 
@@ -194,10 +194,10 @@ export function SecretsWorkspace({ companyId }: SecretsWorkspaceProps) {
     mutationFn: (id: string) => secretsApi.runtimeProviderKeys.remove(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.secrets.runtimeProviderKeys(companyId) });
-      pushToast({ title: "Provider key deleted", tone: "success" });
+      pushToast({ title: "Sandbox provider key deleted", tone: "success" });
     },
     onError: (err) => {
-      pushToast({ title: "Provider key delete failed", body: err instanceof Error ? err.message : undefined, tone: "error" });
+      pushToast({ title: "Sandbox provider key delete failed", body: err instanceof Error ? err.message : undefined, tone: "error" });
     },
   });
 
