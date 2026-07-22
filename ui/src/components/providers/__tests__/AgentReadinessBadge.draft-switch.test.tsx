@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi, beforeEach } from "vitest";
@@ -16,10 +16,10 @@ vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({ selectedCompanyId: "company-1", selectedCompany: null }),
 }));
 
-const { listMock } = vi.hoisted(() => ({ listMock: vi.fn() }));
+const { listMock, testMock } = vi.hoisted(() => ({ listMock: vi.fn(), testMock: vi.fn() }));
 vi.mock("@/api/providers", async () => {
   const actual = await vi.importActual<typeof import("@/api/providers")>("@/api/providers");
-  return { ...actual, providersApi: { list: listMock, test: vi.fn() } };
+  return { ...actual, providersApi: { list: listMock, test: testMock } };
 });
 
 /** A providers-list row for Codex with no probed agent scope. */
@@ -54,6 +54,7 @@ function renderBadge(props: { adapterType: string; savedAdapterType?: string }) 
 describe("AgentReadinessBadge — draft adapter switch", () => {
   beforeEach(() => {
     listMock.mockReset();
+    testMock.mockReset();
     listMock.mockResolvedValue({ providers: [codexRow()] } as never);
   });
 
@@ -69,5 +70,17 @@ describe("AgentReadinessBadge — draft adapter switch", () => {
     await screen.findByTestId("agent-readiness-badge");
     expect(screen.queryByTestId("agent-readiness-draft-switch")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /test/i })).toBeEnabled();
+  });
+
+  it("refetches the providers list even after a FAILED Test", async () => {
+    // A probe that fails during config resolution still records a fresh `failed`
+    // row server-side, so the badge must refetch to drop any stale `Ready` — the
+    // invalidation must run on the error path, not only on success.
+    testMock.mockRejectedValue(new Error("Secret is not bound to this consumer path"));
+    renderBadge({ adapterType: "codex_local", savedAdapterType: "codex_local" });
+    await screen.findByTestId("agent-readiness-badge");
+    expect(listMock).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: /test/i }));
+    await waitFor(() => expect(listMock).toHaveBeenCalledTimes(2));
   });
 });

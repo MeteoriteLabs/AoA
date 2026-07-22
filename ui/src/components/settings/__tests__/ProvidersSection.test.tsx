@@ -457,6 +457,26 @@ describe("ProvidersSection login lifecycle", () => {
     await waitFor(() => expect(listMock.mock.calls.length).toBeGreaterThan(1));
   });
 
+  it("stops polling and surfaces an error when the challenge 404s (reaped/lost)", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    await renderAndSettle([needsAuthRow("openai")]);
+    startLoginMock.mockResolvedValue({ challengeId: "c-gone", loginUrl: "https://example.test/l" });
+    // The challenge is gone — every status poll 404s. Without terminal handling
+    // the card would spin "Waiting for sign-in…" forever.
+    loginStatusMock.mockRejectedValue(new ApiError("Not found", 404, null));
+
+    fireEvent.click(screen.getByTestId("provider-signin"));
+
+    await waitFor(() => expect(loginStatusMock).toHaveBeenCalledTimes(1));
+    // Terminal: no further polls fire after the 404.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(LOGIN_POLL_INTERVAL_MS * 4);
+    });
+    expect(loginStatusMock).toHaveBeenCalledTimes(1);
+    // And the card says the session is gone, rather than staying stuck waiting.
+    await screen.findByText(/expired|start again/i);
+  });
+
   it("re-probes itself only when the server's best-effort re-probe failed", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     await renderAndSettle([needsAuthRow("openai")]);

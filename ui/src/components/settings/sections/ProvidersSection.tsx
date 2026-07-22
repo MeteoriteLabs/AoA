@@ -36,6 +36,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { isReadinessStale, type ProviderId } from "@armyofagents/shared";
 import { useCompany } from "@/context/CompanyContext";
 import { providersApi, type ProviderStatusRow } from "@/api/providers";
+import { ApiError } from "@/api/client";
 import {
   ProviderReadinessCard,
   type ProviderCardBusy,
@@ -263,9 +264,22 @@ function ProvidersPanel({ companyId }: { companyId: string }) {
           setLogin(null);
           setErrorFor(providerId, new Error(`Sign-in ${res.status}. Try again.`));
         }
-      } catch {
-        // Transient (a dropped request mid-login) — keep polling. The server
-        // times the challenge out on its own, so this cannot spin forever.
+      } catch (err) {
+        // A 404 means the challenge is GONE — reaped, cancelled from another
+        // tab, or lost across a backend restart. The server will never send a
+        // terminal status for a challenge it no longer has, so polling would
+        // spin "Waiting for sign-in…" forever. Treat it as terminal.
+        if (err instanceof ApiError && err.status === 404) {
+          if (activeLoginRef.current?.challengeId === challengeId) {
+            clearPoll();
+            activeLoginRef.current = null;
+            setLogin(null);
+            setErrorFor(providerId, new Error("Sign-in session expired. Start again."));
+          }
+          return;
+        }
+        // Otherwise transient (a dropped request mid-login) — keep polling. The
+        // server times the live challenge out on its own.
       }
     },
     [companyId, refreshList, setErrorFor],

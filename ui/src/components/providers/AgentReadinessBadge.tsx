@@ -108,11 +108,15 @@ export function AgentReadinessBadge({
     setTestError(null);
     try {
       await providersApi.test(companyId, descriptor.id, { scopeType: "agent", agentId });
-      await queryClient.invalidateQueries({ queryKey });
     } catch (e) {
       setTestError(e);
     } finally {
       setTesting(false);
+      // Refetch even on failure: a probe that fails during runtime config
+      // resolution (e.g. a revoked secret_ref) still records a fresh `failed`
+      // row server-side, so the badge must refetch to replace any stale `Ready`
+      // — not only on the success path.
+      await queryClient.invalidateQueries({ queryKey });
     }
   };
 
