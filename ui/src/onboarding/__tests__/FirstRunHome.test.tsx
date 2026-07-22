@@ -30,7 +30,7 @@ describe("FirstRunHome (WS9)", () => {
 
   it("shows the door band by default (no persisted persona)", async () => {
     render(<FirstRunHome companyId="co-1" />);
-    expect(await screen.findByRole("button", { name: /In-flight/ })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /bring a project in motion/i })).toBeInTheDocument();
   });
 
   it("short-circuits to onComplete when firstRunCompleted is already true (revisited /onboarding after finishing)", async () => {
@@ -41,7 +41,7 @@ describe("FirstRunHome (WS9)", () => {
     render(<FirstRunHome companyId="co-1" onComplete={onComplete} />);
 
     await waitFor(() => expect(onComplete).toHaveBeenCalled());
-    expect(screen.queryByRole("button", { name: /In-flight/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /bring a project in motion/i })).not.toBeInTheDocument();
     expect(screen.queryByText("finish-in-flight")).not.toBeInTheDocument();
   });
 
@@ -49,7 +49,7 @@ describe("FirstRunHome (WS9)", () => {
     const user = userEvent.setup();
     render(<FirstRunHome companyId="co-1" />);
 
-    await user.click(await screen.findByRole("button", { name: /In-flight/ }));
+    await user.click(await screen.findByRole("button", { name: /bring a project in motion/i }));
 
     await waitFor(() => expect(setFirstRunPersona).toHaveBeenCalledWith("co-1", "in_flight"));
     expect(await screen.findByText("finish-in-flight")).toBeInTheDocument();
@@ -61,7 +61,7 @@ describe("FirstRunHome (WS9)", () => {
     const onComplete = vi.fn();
     render(<FirstRunHome companyId="co-1" onComplete={onComplete} />);
 
-    await user.click(await screen.findByRole("button", { name: /Explorer/ }));
+    await user.click(await screen.findByRole("button", { name: /explore on your own/i }));
 
     await waitFor(() => expect(setFirstRunPersona).toHaveBeenCalledWith("co-1", "explorer"));
     await waitFor(() => expect(setFirstRunCompleted).toHaveBeenCalledWith("co-1"));
@@ -73,7 +73,7 @@ describe("FirstRunHome (WS9)", () => {
     render(<FirstRunHome companyId="co-1" />);
 
     expect(await screen.findByText("finish-in-flight")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /In-flight/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /bring a project in motion/i })).toBeNull();
   });
 
   it("InFlightFlow's completion calls onComplete", async () => {
@@ -93,8 +93,8 @@ describe("FirstRunHome (WS9)", () => {
     expect(await screen.findByRole("button", { name: /retry/i })).toBeInTheDocument();
     // Must NOT fall back to the door band — that risks an Explorer pick
     // firing premature completion, or re-asking an in-progress founder.
-    expect(screen.queryByRole("button", { name: /In-flight/ })).toBeNull();
-    expect(screen.queryByRole("button", { name: /Explorer/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /bring a project in motion/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /explore on your own/i })).toBeNull();
     expect(setFirstRunCompleted).not.toHaveBeenCalled();
     expect(setFirstRunPersona).not.toHaveBeenCalled();
   });
@@ -108,7 +108,7 @@ describe("FirstRunHome (WS9)", () => {
 
     await user.click(await screen.findByRole("button", { name: /retry/i }));
 
-    expect(await screen.findByRole("button", { name: /In-flight/ })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /bring a project in motion/i })).toBeInTheDocument();
     expect(getFirstRunProgress).toHaveBeenCalledTimes(2);
   });
 });
