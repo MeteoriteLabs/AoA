@@ -113,38 +113,66 @@ export function CompanyOrientation({ companyId, companyName }: CompanyOrientatio
   const agentCount = agents.data?.length ?? 0;
   const teammateCount = team.data?.members.length ?? 0;
 
+  // While the joined company's data is still in flight, hold the same three-card
+  // footprint but render a muted placeholder line rather than the fallback copy
+  // — otherwise "No departments yet." / "You're one of the first here." would
+  // flash before the real values arrive. Only when we actually fetch (enabled).
+  const loading =
+    enabled && (company.isLoading || projects.isLoading || agents.isLoading || team.isLoading);
+
   return (
     <Reveal delay={0.09}>
       <div className="grid w-full grid-cols-1 gap-3.5 sm:grid-cols-3 sm:gap-4">
-        <OrientationCard emoji="🎯" title="What we're building" accent="brand">
-          {missionText ?? `${companyName}'s team is shaping this as they go.`}
-        </OrientationCard>
+        {loading ? (
+          <>
+            <OrientationCard emoji="🎯" title="What we're building" accent="brand">
+              <SkeletonLine />
+            </OrientationCard>
+            <OrientationCard emoji="🏢" title="Departments" accent="teal">
+              <SkeletonLine />
+            </OrientationCard>
+            <OrientationCard emoji="👥" title="Who's here" accent="amber">
+              <SkeletonLine />
+            </OrientationCard>
+          </>
+        ) : (
+          <>
+            <OrientationCard emoji="🎯" title="What we're building" accent="brand">
+              {missionText ?? `${companyName}'s team is shaping this as they go.`}
+            </OrientationCard>
 
-        <OrientationCard emoji="🏢" title="Departments" accent="teal">
-          {departments.length === 0 ? (
-            "No departments yet."
-          ) : (
-            <span className="flex flex-wrap gap-1.5">
-              {departments.map((d) => (
-                <span
-                  key={d.id}
-                  className="rounded-md border border-border-strong bg-hd px-2 py-0.5 text-[11px] text-text"
-                >
-                  {d.name}
+            <OrientationCard emoji="🏢" title="Departments" accent="teal">
+              {departments.length === 0 ? (
+                "No departments yet."
+              ) : (
+                <span className="flex flex-wrap gap-1.5">
+                  {departments.map((d) => (
+                    <span
+                      key={d.id}
+                      className="rounded-md border border-border-strong bg-card-2 px-2 py-0.5 text-[11px] text-text"
+                    >
+                      {d.name}
+                    </span>
+                  ))}
                 </span>
-              ))}
-            </span>
-          )}
-        </OrientationCard>
+              )}
+            </OrientationCard>
 
-        <OrientationCard emoji="👥" title="Who's here" accent="amber">
-          {teammateCount === 0 && agentCount === 0
-            ? "You're one of the first here."
-            : `${teammateCount} teammate${teammateCount === 1 ? "" : "s"} · ${agentCount} agent${
-                agentCount === 1 ? "" : "s"
-              } already working`}
-        </OrientationCard>
+            <OrientationCard emoji="👥" title="Who's here" accent="amber">
+              {teammateCount === 0 && agentCount === 0
+                ? "You're one of the first here."
+                : `${teammateCount} teammate${teammateCount === 1 ? "" : "s"} · ${agentCount} agent${
+                    agentCount === 1 ? "" : "s"
+                  } already working`}
+            </OrientationCard>
+          </>
+        )}
       </div>
     </Reveal>
   );
+}
+
+/** A short muted placeholder bar shown in a card while its data is loading. */
+function SkeletonLine() {
+  return <span aria-hidden className="block h-3 w-2/3 animate-pulse rounded bg-white/10" />;
 }

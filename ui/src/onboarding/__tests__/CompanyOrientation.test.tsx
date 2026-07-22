@@ -58,6 +58,24 @@ describe("CompanyOrientation", () => {
     expect(screen.getByText(/one of the first here/i)).toBeInTheDocument();
   });
 
+  it("shows a loading skeleton, not misleading fallbacks, while fetches are pending", () => {
+    // Never-resolving promises hold every query in its loading state.
+    getCompany.mockReturnValue(new Promise(() => {}));
+    listProjects.mockReturnValue(new Promise(() => {}));
+    listAgents.mockReturnValue(new Promise(() => {}));
+    getTeam.mockReturnValue(new Promise(() => {}));
+
+    renderWith(<CompanyOrientation companyId="c1" companyName="Acme" />);
+
+    // Same footprint (titles render) but none of the fallback copy flashes
+    // before the real data arrives.
+    expect(screen.getByText("Departments")).toBeInTheDocument();
+    expect(screen.getByText("Who's here")).toBeInTheDocument();
+    expect(screen.queryByText(/no departments yet/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/one of the first here/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/shaping this as they go/i)).not.toBeInTheDocument();
+  });
+
   it("renders all fallbacks and fetches nothing when companyId is null", () => {
     renderWith(<CompanyOrientation companyId={null} companyName="Acme" />);
     expect(getCompany).not.toHaveBeenCalled();
