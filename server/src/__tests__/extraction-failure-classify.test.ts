@@ -386,7 +386,7 @@ describe("extractFromDiscussionEntry — CLI failure classification + retry", ()
     // The engine router throws (no supported CLI; hosted keys are NOT a fallback).
     mockResolveExtractionEngine.mockRejectedValueOnce(
       new Error(
-        "No extraction engine available. Install a CLI (e.g. the Claude Code CLI) and run its login flow (`claude login`).",
+        "No extraction engine available. Install a CLI (e.g. the Claude Code CLI) and run its login flow (`claude auth login`).",
       ),
     );
 

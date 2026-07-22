@@ -138,6 +138,6 @@ export async function resolveExtractionEngine(
   // No CLI — there is no extraction engine. Hosted keys are NOT a fallback.
   throw new Error(
     "No extraction engine available. Install a CLI (e.g. the Claude Code CLI) " +
-      "and run its login flow (`claude login`).",
+      "and run its login flow (`claude auth login`).",
   );
 }

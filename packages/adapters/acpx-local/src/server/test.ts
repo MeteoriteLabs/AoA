@@ -144,7 +144,7 @@ async function buildCredentialHintChecks(
       code: "acpx_claude_credentials_missing",
       level: "info",
       message: "Claude credential hint: no Claude API, Bedrock, or local subscription credentials were detected.",
-      hint: "Set ANTHROPIC_API_KEY, configure Bedrock, or run `claude login` before starting an ACPX Claude agent.",
+      hint: "Set ANTHROPIC_API_KEY, configure Bedrock, or run `claude auth login` before starting an ACPX Claude agent.",
     }];
   }
 
