@@ -28,7 +28,12 @@ describe("resolveClaudeConfigHome (Plan 3 T3)", () => {
 describe("runClaudeLoginStreaming (Plan 3 T3)", () => {
   it("spawns `claude login`, sets CLAUDE_CONFIG_DIR to the config home, streams the URL", async () => {
     const f = fakeSpawn();
-    const res = runClaudeLoginStreaming({ runId: "l1", env: { CLAUDE_CONFIG_DIR: "/x/.claude" }, spawn: f.spawn });
+    const res = runClaudeLoginStreaming({
+      runId: "l1",
+      env: { CLAUDE_CONFIG_DIR: "/x/.claude" },
+      spawn: f.spawn,
+      ensureDir: vi.fn(),
+    });
     expect(f.calls[0].command).toBe("claude");
     expect(f.calls[0].argv).toEqual(["auth", "login"]);
     expect(f.calls[0].opts.env.CLAUDE_CONFIG_DIR).toBe("/x/.claude");
@@ -39,7 +44,22 @@ describe("runClaudeLoginStreaming (Plan 3 T3)", () => {
 
   it("respects a config-provided command override", () => {
     const f = fakeSpawn();
-    runClaudeLoginStreaming({ runId: "l2", command: "claude-code", env: {} as never, spawn: f.spawn });
+    runClaudeLoginStreaming({ runId: "l2", command: "claude-code", env: {} as never, spawn: f.spawn, ensureDir: vi.fn() });
     expect(f.calls[0].command).toBe("claude-code");
+  });
+
+  it("ensures the config home exists BEFORE spawning (a fresh ~/.claude would ENOENT the cwd)", () => {
+    const f = fakeSpawn();
+    const order: string[] = [];
+    const ensureDir = vi.fn((_dir: string) => {
+      order.push("ensure");
+    });
+    const spawn = (r: string, c: string, a: string[], o: SpawnTrackedChildOptions) => {
+      order.push("spawn");
+      return f.spawn(r, c, a, o);
+    };
+    runClaudeLoginStreaming({ runId: "l3", env: { CLAUDE_CONFIG_DIR: "/x/.claude" } as never, spawn, ensureDir });
+    expect(ensureDir).toHaveBeenCalledWith("/x/.claude");
+    expect(order).toEqual(["ensure", "spawn"]);
   });
 });

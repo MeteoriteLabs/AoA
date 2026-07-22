@@ -16,6 +16,7 @@ describe("runClaudeLoginStreaming", () => {
     runClaudeLoginStreaming({
       runId: "r1",
       env: { CLAUDE_CONFIG_DIR: "/tmp/claude-home" } as NodeJS.ProcessEnv,
+      ensureDir: () => {},
       spawn: (_r, _c, _a, opts) => {
         captured = opts.stdio;
         return makeFakeHandle() as never;
@@ -29,6 +30,7 @@ describe("runClaudeLoginStreaming", () => {
     runClaudeLoginStreaming({
       runId: "r1",
       env: { CLAUDE_CONFIG_DIR: "/tmp/claude-home" } as NodeJS.ProcessEnv,
+      ensureDir: () => {},
       spawn: (_r, _c, a, _o) => { argv = a; return makeFakeHandle() as never; },
     });
     expect(argv).toEqual(["auth", "login"]);
@@ -43,6 +45,7 @@ describe("runClaudeLoginStreaming", () => {
     const r = runClaudeLoginStreaming({
       runId: "r1",
       env: { CLAUDE_CONFIG_DIR: "/tmp/claude-home" } as NodeJS.ProcessEnv,
+      ensureDir: () => {},
       spawn: () => handle as never,
     });
     expect(r.submitCode("ABC-123")).toBe(true);

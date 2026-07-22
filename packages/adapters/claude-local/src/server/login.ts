@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { runStreamingLogin, type StreamingLoginResult } from "@armyofagents/adapter-utils/streaming-login";
@@ -39,9 +40,19 @@ export function runClaudeLoginStreaming(args: {
     argv: string[],
     opts: SpawnTrackedChildOptions,
   ) => TrackedChildHandle;
+  /**
+   * DI seam — defaults to a recursive `fs.mkdirSync`. `claude auth login` runs
+   * with `cwd: authHome` and persists its credential file there, but on a fresh
+   * machine that dir (`~/.claude` / `CLAUDE_CONFIG_DIR`) may not exist yet, and
+   * spawning with a non-existent cwd fails with ENOENT before the CLI can run
+   * (Codex P2). Ensure it exists first — mkdir(recursive) is idempotent.
+   */
+  ensureDir?: (dir: string) => void;
 }): StreamingLoginResult & { authHome: string } {
   const env = args.env ?? process.env;
   const authHome = resolveClaudeConfigHome(env);
+  const ensureDir = args.ensureDir ?? ((dir: string) => void fs.mkdirSync(dir, { recursive: true }));
+  ensureDir(authHome);
   const result = runStreamingLogin({
     runId: args.runId,
     command: args.command ?? "claude",
