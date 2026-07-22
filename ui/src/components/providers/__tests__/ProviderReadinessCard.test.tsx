@@ -160,6 +160,29 @@ describe("ProviderReadinessCard — status badge", () => {
   });
 });
 
+/* ── 409 error copy (login slot vs key-save conflict) ──────────────────── */
+
+describe("providerActionErrorCopy — 409 disambiguation", () => {
+  it("shows the server's login-slot message verbatim for a login 409", () => {
+    const err = new ApiError("Another sign-in for Claude is already in progress on this machine.", 409, null);
+    expect(providerActionErrorCopy(err)).toBe(
+      "Another sign-in for Claude is already in progress on this machine.",
+    );
+  });
+
+  it("preserves the key-save message for a NON-login 409 (never the login remedy)", () => {
+    const err = new ApiError("This provider key was just saved by another request.", 409, null);
+    expect(providerActionErrorCopy(err)).toBe("This provider key was just saved by another request.");
+    expect(providerActionErrorCopy(err)).not.toMatch(/signing in|sign-in/i);
+  });
+
+  it("falls back to a friendly line when the 409 body is a bare 'Conflict'", () => {
+    const err = new ApiError("Conflict", 409, null);
+    expect(providerActionErrorCopy(err)).toMatch(/busy with another request/i);
+    expect(providerActionErrorCopy(err)).not.toMatch(/\bconflict\b|\b409\b/i);
+  });
+});
+
 /* ── the false-green gate ──────────────────────────────────────────────── */
 
 describe("ProviderReadinessCard — canClaimReady gate", () => {
@@ -508,11 +531,22 @@ describe("ProviderReadinessCard — actions and errors", () => {
     expect(screen.getByTestId("provider-error").textContent).toContain(ADAPTER_PROBE_BUSY_ERROR);
   });
 
-  it("renders a 409 host-slot conflict as readable copy, never a raw error", () => {
+  it("renders a bare 409 as readable copy, never a raw error", () => {
     renderCard(row("openai"), { error: new ApiError("Conflict", 409, {}) });
     const text = screen.getByTestId("provider-error").textContent ?? "";
-    expect(text).toMatch(/another company on this machine is signing in/i);
+    // A bare "Conflict" body has no actionable message, so we show a friendly
+    // generic line — never the raw status/word.
+    expect(text).toMatch(/busy with another request/i);
     expect(text).not.toMatch(/\b409\b|Conflict/);
+  });
+
+  it("renders a descriptive 409 (key-save conflict) verbatim, not the login remedy", () => {
+    renderCard(row("openai"), {
+      error: new ApiError("This provider key was just saved by another request.", 409, {}),
+    });
+    const text = screen.getByTestId("provider-error").textContent ?? "";
+    expect(text).toContain("This provider key was just saved by another request.");
+    expect(text).not.toMatch(/signing in|sign-in/i);
   });
 
   /*

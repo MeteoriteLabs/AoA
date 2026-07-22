@@ -262,12 +262,20 @@ export function providerActionError(err: unknown): ProviderActionError | null {
         transient: true,
       };
     }
-    // The host login slot is keyed by (provider, authHome) and shared across
-    // every company on this machine — a raw "409 Conflict" tells the founder
-    // nothing about who holds it or what to do.
+    // A 409 means different things on different routes: the host login slot
+    // (shared across every company on this machine) OR a concurrent provider-key
+    // save. Each ships its own actionable server message, so show it verbatim
+    // rather than rewriting one as the other's remedy (a key-save conflict must
+    // not read as "another company is signing in"). Both are transient, so the
+    // styling stays non-destructive. Fall back to a friendly generic line only
+    // when the server gave nothing useful (a bare "Conflict").
     if (err.status === 409) {
+      const raw = err.message?.trim();
+      const useful = Boolean(raw) && !/^conflict$/i.test(raw);
       return {
-        text: "Another company on this machine is signing in to this provider. Try again shortly.",
+        text: useful
+          ? raw
+          : "This provider is busy with another request on this machine. Try again shortly.",
         transient: true,
       };
     }

@@ -55,6 +55,7 @@ const mockReadReadiness = vi.hoisted(() => vi.fn());
 const mockReadReadinessForScope = vi.hoisted(() => vi.fn());
 const mockRecordReadiness = vi.hoisted(() => vi.fn());
 const mockDeleteReadinessForScope = vi.hoisted(() => vi.fn());
+const mockDeleteAgentReadinessForProvider = vi.hoisted(() => vi.fn());
 vi.mock("../services/providers/readiness.js", async (importOriginal) => {
   // `redactChecks` stays REAL — the response-redaction assertions below are
   // meaningless against a stub.
@@ -65,6 +66,7 @@ vi.mock("../services/providers/readiness.js", async (importOriginal) => {
     readReadinessForScope: mockReadReadinessForScope,
     recordReadiness: mockRecordReadiness,
     deleteReadinessForScope: mockDeleteReadinessForScope,
+    deleteAgentReadinessForProvider: mockDeleteAgentReadinessForProvider,
   };
 });
 
@@ -535,6 +537,14 @@ describe("POST /api/companies/:companyId/providers/:providerId/key", () => {
     expect(mockSaveProviderKey).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ companyId: COMPANY_ID, providerId: "cursor", value: "key_SUPERSECRETVALUE123456" }),
+    );
+    // The key changed, so agent scopes that resolve through the company fallback
+    // are cleared (→ unknown) — a rotated/bad key must not leave a stale
+    // `verified` agent badge.
+    expect(mockDeleteAgentReadinessForProvider).toHaveBeenCalledWith(
+      expect.anything(),
+      COMPANY_ID,
+      "cursor",
     );
   });
 

@@ -275,6 +275,32 @@ export async function deleteReadinessForScope(
     );
 }
 
+/**
+ * Drop ALL agent-scoped cached verdicts for one provider.
+ *
+ * Called when the company-level provider key changes: an agent that sets no env
+ * binding of its own resolves through the company fallback, so its cached verdict
+ * was answering a question about the OLD key. Clearing (→ unknown/not-checked) is
+ * conservative — it never claims Ready for a key that no longer exists. Agents
+ * with their own binding are cleared too and simply re-probe from their config
+ * page; that is the safe direction (unknown, never false-green).
+ */
+export async function deleteAgentReadinessForProvider(
+  db: Db,
+  companyId: string,
+  providerId: ProviderId,
+) {
+  return db
+    .delete(providerReadinessStatus)
+    .where(
+      and(
+        eq(providerReadinessStatus.companyId, companyId),
+        eq(providerReadinessStatus.providerId, providerId),
+        eq(providerReadinessStatus.scopeType, "agent"),
+      ),
+    );
+}
+
 /** All cached readiness rows for a company, across every scope. For the list view. */
 export async function readReadiness(db: Db, companyId: string) {
   return db

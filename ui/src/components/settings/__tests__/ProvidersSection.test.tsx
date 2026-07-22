@@ -221,6 +221,17 @@ describe("ProvidersSection cached rendering", () => {
     expect((screen.getByTestId("provider-key-input") as HTMLInputElement).value).toBe("");
   });
 
+  it("refetches the list even when a Test FAILS (stale Ready must not persist)", async () => {
+    // A probe that fails during config resolution still records a fresh `failed`
+    // row server-side, so the card must refetch on the failure path too.
+    await renderAndSettle([row("anthropic")]);
+    await select("anthropic");
+    const before = listMock.mock.calls.length;
+    testMock.mockRejectedValueOnce(new Error("resolution failed"));
+    fireEvent.click(screen.getByTestId("provider-test"));
+    await waitFor(() => expect(listMock.mock.calls.length).toBeGreaterThan(before));
+  });
+
   it("does NOT probe on load — every probe spawns a real CLI", async () => {
     await renderAndSettle([
       row("anthropic", { companyDefault: scope({ testedAt: STALE }) }),
@@ -506,13 +517,24 @@ describe("ProvidersSection login lifecycle", () => {
     expect(cancelLoginMock).not.toHaveBeenCalled();
   });
 
-  it("renders readable copy for a 409 host-slot conflict", async () => {
+  it("renders readable copy for a bare 409 conflict, never a raw status", async () => {
     await renderAndSettle([needsAuthRow("openai")]);
     startLoginMock.mockRejectedValueOnce(new ApiError("Conflict", 409, null));
     fireEvent.click(screen.getByTestId("provider-signin"));
     const err = await screen.findByTestId("provider-error");
-    expect(err.textContent).toMatch(/another company on this machine/i);
-    expect(err.textContent).not.toMatch(/409/);
+    // A bare "Conflict" has no actionable message → friendly generic line.
+    expect(err.textContent).toMatch(/busy with another request/i);
+    expect(err.textContent).not.toMatch(/409|Conflict/);
+  });
+
+  it("shows the server's descriptive 409 message verbatim (login slot in progress)", async () => {
+    await renderAndSettle([needsAuthRow("openai")]);
+    startLoginMock.mockRejectedValueOnce(
+      new ApiError("Another sign-in for Codex is already in progress on this machine.", 409, null),
+    );
+    fireEvent.click(screen.getByTestId("provider-signin"));
+    const err = await screen.findByTestId("provider-error");
+    expect(err.textContent).toContain("Another sign-in for Codex is already in progress");
   });
 });
 

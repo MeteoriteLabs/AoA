@@ -166,6 +166,7 @@ import { secretService } from "../services/secrets.js";
 import { classifyProbeOutcome } from "../services/providers/classify-probe.js";
 import {
   deleteReadinessForScope,
+  deleteAgentReadinessForProvider,
   readReadiness,
   readReadinessForScope,
   recordReadiness,
@@ -821,6 +822,19 @@ export function providerRoutes(db: Db): Router {
     };
 
     for (const member of group) {
+      // The company key just changed, so every agent scope that resolves through
+      // the company fallback (agents with no env binding of their own) now holds a
+      // verdict about the OLD key. Clear all agent scopes for this provider (→
+      // unknown) so a rotated/bad key can't leave a stale `verified` agent badge.
+      // Best-effort: never fail the (already-committed) key save on this.
+      try {
+        await deleteAgentReadinessForProvider(db, companyId, member.id);
+      } catch (err) {
+        log.warn(
+          { err, companyId, providerId: member.id },
+          "provider readiness agent-scope invalidation failed",
+        );
+      }
       try {
         const result = await probeAndRecord({
           req,

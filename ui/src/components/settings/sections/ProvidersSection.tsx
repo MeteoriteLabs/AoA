@@ -133,12 +133,15 @@ function ProvidersPanel({ companyId }: { companyId: string }) {
       setErrorFor(providerId, null);
       try {
         await providersApi.test(companyId, providerId);
-        await refreshList();
       } catch (e) {
         // Raw — the card owns the wording (429 back-off copy, etc).
         setErrorFor(providerId, e);
       } finally {
         setBusyFor(providerId, { test: false });
+        // Refetch even on failure: a probe that fails during config resolution
+        // still records a fresh `failed` row server-side, so the card must
+        // refetch to drop any stale `Ready` — not only on the success path.
+        await refreshList();
       }
     },
     [companyId, refreshList, setBusyFor, setErrorFor],
