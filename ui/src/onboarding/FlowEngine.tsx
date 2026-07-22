@@ -53,7 +53,7 @@ export function DarkShell({ children, fill = false }: { children: React.ReactNod
   return (
     <div
       className={cn(
-        "onboarding-dark relative w-full overflow-hidden bg-background text-foreground",
+        "onboarding-dark relative w-full overflow-x-hidden bg-background text-foreground",
         fill ? "min-h-full" : "min-h-screen",
       )}
     >
@@ -208,10 +208,12 @@ export function FlowEngine({
           </div>
           {showStepChrome && <StepPosition current={stepNumber} total={base} />}
         </div>
-        <div className="flex flex-1 flex-col justify-center">
-          <Suspense fallback={<p className="text-center text-sm text-dim">Loading step…</p>}>
-            <Step ctx={ctx} onComplete={() => void handleComplete()} onBack={handleBack} />
-          </Suspense>
+        <div className="flex flex-1 flex-col">
+          <div className="my-auto w-full">
+            <Suspense fallback={<p className="text-center text-sm text-dim">Loading step…</p>}>
+              <Step ctx={ctx} onComplete={() => void handleComplete()} onBack={handleBack} />
+            </Suspense>
+          </div>
         </div>
       </div>
     </DarkShell>

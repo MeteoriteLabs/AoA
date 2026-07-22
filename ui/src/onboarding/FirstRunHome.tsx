@@ -119,8 +119,10 @@ export function FirstRunHome({ companyId, onComplete }: FirstRunHomeProps) {
           <div className="flex items-center justify-end">
             {mapPos && <StepPosition current={mapPos.current} total={mapPos.total} />}
           </div>
-          <div className="flex flex-1 flex-col justify-center">
-            <Map onPick={handlePick} />
+          <div className="flex flex-1 flex-col">
+            <div className="my-auto w-full">
+              <Map onPick={handlePick} />
+            </div>
           </div>
         </div>
       ) : null}

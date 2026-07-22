@@ -184,7 +184,9 @@ export function InFlightFlow({ companyId, onDone }: InFlightFlowProps) {
         </div>
         {pos && <StepPosition current={pos.current} total={pos.total} />}
       </div>
-      <div className="flex flex-1 flex-col justify-center">{surface}</div>
+      <div className="flex flex-1 flex-col">
+        <div className="my-auto w-full">{surface}</div>
+      </div>
     </div>
   );
 }
