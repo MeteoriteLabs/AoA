@@ -5,6 +5,7 @@ import {
   CheckCircle2,
   ExternalLink,
   Github,
+  KeyRound,
   Loader2,
 } from "lucide-react";
 import { useCompany } from "../context/CompanyContext";
@@ -12,6 +13,8 @@ import { useToast } from "../context/ToastContext";
 import { githubIntegrationApi } from "../api/github-integration";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
+import { SettingsCard } from "@/components/settings/SettingsCard";
 
 const PAT_DOCS_URL = "https://github.com/settings/tokens?type=beta";
 
@@ -143,42 +146,35 @@ export function GitHubIntegrationCard() {
 
   if (isLoading) {
     return (
-      <div className="rounded-md border border-border px-4 py-4">
-        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-          <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-          Loading…
-        </div>
+      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+        <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+        Loading…
       </div>
     );
   }
 
   return (
-    <div className="rounded-md border border-border px-4 py-4 space-y-5">
-      {/* Header */}
-      <div className="flex items-start gap-3">
-        <div className="rounded-md border border-border bg-muted/30 p-2">
-          <Github className="h-5 w-5" aria-hidden="true" />
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="text-sm font-medium">GitHub</div>
-          <div className="text-xs text-muted-foreground">
-            Connect GitHub to enable PR creation, review sync, and agent GitHub access.
-          </div>
-        </div>
-      </div>
+    <div className="space-y-4">
+      {/* ── Connection status strip ────────────────────────────────────── */}
+      <GitHubStatusStrip
+        appInstalled={appInstalled}
+        patConnected={patConnected}
+        appLogin={appStatusQuery.data?.accountLogin ?? null}
+        patUser={statusQuery.data?.githubUser ?? null}
+      />
 
-      {/* ── GitHub App section ─────────────────────────────────────────── */}
-      <div className="space-y-2">
-        <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-          GitHub App{" "}
-          <span className="text-brand font-normal normal-case tracking-normal">
-            (recommended)
+      {/* ── GitHub App card ────────────────────────────────────────────── */}
+      <SettingsCard
+        icon={Github}
+        title="GitHub App"
+        description="Org-wide access. Tokens auto-rotate. No manual PAT needed."
+        headerAside={
+          <span className="rounded-full bg-brand/10 px-2 py-0.5 text-[11px] font-medium text-brand">
+            Recommended
           </span>
-        </div>
-        <div className="text-xs text-muted-foreground">
-          Org-wide access. Tokens auto-rotate. No manual PAT needed.
-        </div>
-
+        }
+        bodyClassName="space-y-2"
+      >
         {appInstalled ? (
           <div className="space-y-2">
             <div className="flex items-center gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-sm">
@@ -262,7 +258,7 @@ export function GitHubIntegrationCard() {
             Connect with GitHub
           </Button>
         )}
-      </div>
+      </SettingsCard>
 
       {/* Divider */}
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -271,17 +267,20 @@ export function GitHubIntegrationCard() {
         <div className="flex-1 h-px bg-border" />
       </div>
 
-      {/* ── PAT section ────────────────────────────────────────────────── */}
-      <div className="space-y-2">
-        <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-          Personal Access Token
-          {appInstalled && (
-            <span className="ml-1.5 font-normal normal-case tracking-normal text-muted-foreground/60">
-              (fallback — App is active)
+      {/* ── Personal access token card ─────────────────────────────────── */}
+      <SettingsCard
+        icon={KeyRound}
+        title="Personal access token"
+        description="Fine-grained PAT fallback for repo + pull-request access."
+        headerAside={
+          appInstalled ? (
+            <span className="text-[11px] text-muted-foreground/60">
+              fallback — App is active
             </span>
-          )}
-        </div>
-
+          ) : null
+        }
+        bodyClassName="space-y-2"
+      >
         {patConnected ? (
           <div className="space-y-2">
             <div className="flex items-start gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-sm">
@@ -367,7 +366,45 @@ export function GitHubIntegrationCard() {
             </a>
           </div>
         )}
-      </div>
+      </SettingsCard>
+    </div>
+  );
+}
+
+/** One-line connection summary above the App / PAT cards. Derived, not fetched. */
+function GitHubStatusStrip({
+  appInstalled,
+  patConnected,
+  appLogin,
+  patUser,
+}: {
+  appInstalled: boolean;
+  patConnected: boolean;
+  appLogin: string | null;
+  patUser: string | null;
+}) {
+  const connected = appInstalled || patConnected;
+  const summary = appInstalled
+    ? `Connected via GitHub App${appLogin ? ` — @${appLogin}` : ""}`
+    : patConnected
+      ? `Connected via personal access token${patUser ? ` — @${patUser}` : ""}`
+      : "Not connected";
+  return (
+    <div
+      data-testid="github-status-strip"
+      className="flex items-center gap-2.5 rounded-lg border border-border bg-muted/40 px-3 py-2 text-sm"
+    >
+      <span
+        data-testid="github-status-dot"
+        className={cn(
+          "size-2 shrink-0 rounded-full",
+          connected ? "bg-emerald-500" : "bg-muted-foreground/50",
+        )}
+        aria-hidden="true"
+      />
+      <span className={connected ? "font-medium" : "text-muted-foreground"}>
+        {summary}
+      </span>
     </div>
   );
 }
