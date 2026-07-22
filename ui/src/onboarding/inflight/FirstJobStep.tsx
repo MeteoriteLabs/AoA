@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import { issuesApi } from "../../api/issues";
-import { discussionsApi } from "../../api/discussions";
 import { agentsApi } from "../../api/agents";
 import { Button } from "@/components/ui/button";
 import { Reveal } from "../motion";
@@ -20,21 +19,19 @@ export type FirstJobStepProps = {
  * `DefineDepartments` (WS4) and `CreateAgents` (WS7): domain-only, no
  * `advanceOnboarding` call — WS9 wires this onto Home later.
  *
- * Two independent paths, side by side — either one counts as "a first job":
- *  - **Create a task**, optionally assigned to one of the company's org
- *    agents (`issuesApi.create`). The assignee picker is populated from
- *    `agentsApi.list`, which already scopes to `kind: "org"` (non-terminated)
- *    server-side — the ones the founder just hired in WS7, never the hidden
- *    internal crew. The client-side filter below is a defensive belt-and-
- *    braces guard, not the primary exclusion mechanism; if there are no
- *    agents yet, the picker still works with only "Unassigned".
- *  - **Start a discussion** (`discussionsApi.create`), just a topic.
+ * Task-only: **Create a task**, optionally assigned to one of the company's
+ * org agents (`issuesApi.create`). The assignee picker is populated from
+ * `agentsApi.list`, which already scopes to `kind: "org"` (non-terminated)
+ * server-side — the ones the founder just hired in WS7, never the hidden
+ * internal crew. The client-side filter below is a defensive belt-and-
+ * braces guard, not the primary exclusion mechanism; if there are no
+ * agents yet, the picker still works with only "Unassigned".
  *
- * Both are optional — this is a reward, not a wall: "Skip to Home" always
- * works, with nothing required and nothing created. `onDone` fires the
- * first time EITHER path succeeds, or when Skip is pressed — guarded via
- * `fireOnDoneOnce` so a rapid double-submit (same card twice, or both cards
- * in quick succession) only ever calls it once.
+ * Creating a task is optional — this is a reward, not a wall: "Skip to
+ * Home" always works, with nothing required and nothing created. `onDone`
+ * fires the first time task creation succeeds, or when Skip is pressed —
+ * guarded via `fireOnDoneOnce` so a rapid double-submit only ever calls it
+ * once.
  */
 export function FirstJobStep({ companyId, onDone }: FirstJobStepProps) {
   const [agents, setAgents] = useState<AgentRow[]>([]);
@@ -44,10 +41,6 @@ export function FirstJobStep({ companyId, onDone }: FirstJobStepProps) {
   const [taskAssigneeId, setTaskAssigneeId] = useState("");
   const [taskStatus, setTaskStatus] = useState<CardStatus>("idle");
   const [taskError, setTaskError] = useState<string | null>(null);
-
-  const [discussionTitle, setDiscussionTitle] = useState("");
-  const [discussionStatus, setDiscussionStatus] = useState<CardStatus>("idle");
-  const [discussionError, setDiscussionError] = useState<string | null>(null);
 
   const doneFiredRef = useRef(false);
   function fireOnDoneOnce() {
@@ -96,26 +89,8 @@ export function FirstJobStep({ companyId, onDone }: FirstJobStepProps) {
     }
   }
 
-  async function handleStartDiscussion() {
-    if (!discussionTitle.trim() || discussionStatus === "creating") return;
-    setDiscussionStatus("creating");
-    setDiscussionError(null);
-    try {
-      const topic = discussionTitle.trim();
-      await discussionsApi.create(companyId, {
-        title: topic,
-        entry: { inputType: "write", rawContent: topic },
-      });
-      setDiscussionStatus("created");
-      fireOnDoneOnce();
-    } catch (e) {
-      setDiscussionStatus("error");
-      setDiscussionError(e instanceof Error ? e.message : "Failed to start this discussion.");
-    }
-  }
-
   return (
-    <StepShell className="max-w-2xl">
+    <StepShell>
       <Reveal>
         <StepHeading
           title={
@@ -123,107 +98,66 @@ export function FirstJobStep({ companyId, onDone }: FirstJobStepProps) {
               Give it a <GradientText>first job</GradientText>
             </>
           }
-          subtitle="Create a task or start a discussion — or skip straight to Home."
+          subtitle="Give your agent its first task — or skip straight to Home."
         />
       </Reveal>
 
       {agentsError && <p className="text-center text-xs text-destructive">{agentsError}</p>}
 
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <Reveal delay={0.09}>
-          <StepCard>
-            <h3 className="text-sm font-medium text-text">Create a task</h3>
-            <div className="mt-3 space-y-2">
-              <label className="sr-only" htmlFor="first-job-task-title">
-                Task title
+      <Reveal delay={0.09}>
+        <StepCard>
+          <h3 className="text-sm font-medium text-text">Create a task</h3>
+          <div className="mt-3 space-y-2">
+            <label className="sr-only" htmlFor="first-job-task-title">
+              Task title
+            </label>
+            <input
+              id="first-job-task-title"
+              className={FIELD}
+              placeholder="What needs doing?"
+              value={taskTitle}
+              disabled={taskStatus === "creating" || taskStatus === "created"}
+              onChange={(e) => setTaskTitle(e.target.value)}
+            />
+            <div>
+              <label className={LABEL} htmlFor="first-job-task-assignee">
+                Assignee
               </label>
-              <input
-                id="first-job-task-title"
+              <select
+                id="first-job-task-assignee"
                 className={FIELD}
-                placeholder="What needs doing?"
-                value={taskTitle}
+                value={taskAssigneeId}
                 disabled={taskStatus === "creating" || taskStatus === "created"}
-                onChange={(e) => setTaskTitle(e.target.value)}
-              />
-              <div>
-                <label className={LABEL} htmlFor="first-job-task-assignee">
-                  Assignee
-                </label>
-                <select
-                  id="first-job-task-assignee"
-                  className={FIELD}
-                  value={taskAssigneeId}
-                  disabled={taskStatus === "creating" || taskStatus === "created"}
-                  onChange={(e) => setTaskAssigneeId(e.target.value)}
-                >
-                  <option value="">Unassigned</option>
-                  {agents.map((agent) => (
-                    <option key={agent.id} value={agent.id}>
-                      {agent.name ?? agent.id}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              {taskStatus === "error" && <p className="text-xs text-destructive">{taskError}</p>}
-              <Button
-                type="button"
-                className="w-full"
-                disabled={!taskTitle.trim() || taskStatus === "creating" || taskStatus === "created"}
-                onClick={() => void handleCreateTask()}
+                onChange={(e) => setTaskAssigneeId(e.target.value)}
               >
-                {taskStatus === "creating"
-                  ? "Creating…"
-                  : taskStatus === "created"
-                    ? "Created"
-                    : taskStatus === "error"
-                      ? "Retry"
-                      : "Create task"}
-              </Button>
+                <option value="">Unassigned</option>
+                {agents.map((agent) => (
+                  <option key={agent.id} value={agent.id}>
+                    {agent.name ?? agent.id}
+                  </option>
+                ))}
+              </select>
             </div>
-          </StepCard>
-        </Reveal>
+            {taskStatus === "error" && <p className="text-xs text-destructive">{taskError}</p>}
+            <Button
+              type="button"
+              className="w-full"
+              disabled={!taskTitle.trim() || taskStatus === "creating" || taskStatus === "created"}
+              onClick={() => void handleCreateTask()}
+            >
+              {taskStatus === "creating"
+                ? "Creating…"
+                : taskStatus === "created"
+                  ? "Created"
+                  : taskStatus === "error"
+                    ? "Retry"
+                    : "Create task"}
+            </Button>
+          </div>
+        </StepCard>
+      </Reveal>
 
-        <Reveal delay={0.18}>
-          <StepCard>
-            <h3 className="text-sm font-medium text-text">Start a discussion</h3>
-            <div className="mt-3 space-y-2">
-              <label className="sr-only" htmlFor="first-job-discussion-title">
-                Discussion topic
-              </label>
-              <input
-                id="first-job-discussion-title"
-                className={FIELD}
-                placeholder="What's on your mind?"
-                value={discussionTitle}
-                disabled={discussionStatus === "creating" || discussionStatus === "created"}
-                onChange={(e) => setDiscussionTitle(e.target.value)}
-              />
-              {discussionStatus === "error" && (
-                <p className="text-xs text-destructive">{discussionError}</p>
-              )}
-              <Button
-                type="button"
-                variant="secondary"
-                className="w-full"
-                disabled={
-                  !discussionTitle.trim() || discussionStatus === "creating" || discussionStatus === "created"
-                }
-                onClick={() => void handleStartDiscussion()}
-              >
-                {discussionStatus === "creating"
-                  ? "Starting…"
-                  : discussionStatus === "created"
-                    ? "Started"
-                    : discussionStatus === "error"
-                      ? "Retry"
-                      : "Start discussion"}
-              </Button>
-            </div>
-          </StepCard>
-        </Reveal>
-      </div>
-
-      <Reveal delay={0.27}>
+      <Reveal delay={0.18}>
         <Button type="button" variant="ghost" className="w-full" onClick={fireOnDoneOnce}>
           Skip to Home
         </Button>

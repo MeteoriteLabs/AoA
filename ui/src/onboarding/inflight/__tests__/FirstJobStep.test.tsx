@@ -32,20 +32,21 @@ vi.mock("../../../api/agents", () => ({
 const advanceOnboarding = vi.hoisted(() => vi.fn());
 vi.mock("../../../api/onboarding", () => ({ advanceOnboarding }));
 
-describe("FirstJobStep (WS8 — In-flight standalone surface)", () => {
+describe("FirstJobStep (WS8 — In-flight standalone surface, task-only)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     agentsList.mockResolvedValue([]);
   });
 
-  it("renders both cards (create task / start discussion) plus Skip", async () => {
+  it("is task-only — no discussion path", async () => {
     render(<FirstJobStep companyId="c1" onDone={vi.fn()} />);
-    expect(screen.getByText("Create a task")).toBeTruthy();
-    expect(screen.getByText("Start a discussion")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Skip to Home" })).toBeTruthy();
+    expect(screen.queryByText(/start a discussion/i)).toBeNull();
+    expect(screen.queryByPlaceholderText(/what's on your mind/i)).toBeNull();
+    // task card present + skip present
+    expect(screen.getByPlaceholderText(/what needs doing/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /skip to home/i })).toBeInTheDocument();
     expect(advanceOnboarding).not.toHaveBeenCalled();
-    // Flush the agentsApi.list effect (wrapped in act via waitFor) so the
-    // pending-state update doesn't leak into a later test.
+    // Flush the agentsApi.list effect so the pending-state update doesn't leak.
     await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(1));
   });
 
@@ -62,7 +63,7 @@ describe("FirstJobStep (WS8 — In-flight standalone surface)", () => {
     expect(screen.getByRole("option", { name: "Unassigned" })).toBeTruthy();
   });
 
-  it("create-task path: creates a task with the chosen title + assignee, then calls onDone once", async () => {
+  it("creates a task and fires onDone; never starts a discussion", async () => {
     agentsList.mockResolvedValue([{ id: "agent-1", kind: "org", name: "Scout" }]);
     const onDone = vi.fn();
     render(<FirstJobStep companyId="c1" onDone={onDone} />);
@@ -70,43 +71,21 @@ describe("FirstJobStep (WS8 — In-flight standalone surface)", () => {
     const select = (await screen.findByLabelText("Assignee")) as HTMLSelectElement;
     await waitFor(() => expect(screen.getByRole("option", { name: "Scout" })).toBeTruthy());
 
-    fireEvent.change(screen.getByLabelText("Task title"), { target: { value: "Write the launch memo" } });
-    fireEvent.change(select, { target: { value: "agent-1" } });
-    fireEvent.click(screen.getByRole("button", { name: "Create task" }));
-
-    await waitFor(() => expect(issuesCreate).toHaveBeenCalledTimes(1));
-    expect(issuesCreate).toHaveBeenCalledWith(
-      "c1",
-      expect.objectContaining({
-        title: "Write the launch memo",
-        status: "todo",
-        assigneeAgentId: "agent-1",
-      }),
-    );
-    expect(onDone).toHaveBeenCalledTimes(1);
-    expect(discussionsCreate).not.toHaveBeenCalled();
-    expect(advanceOnboarding).not.toHaveBeenCalled();
-  });
-
-  it("start-discussion path: creates a discussion via the API, then calls onDone once", async () => {
-    const onDone = vi.fn();
-    render(<FirstJobStep companyId="c1" onDone={onDone} />);
-
-    fireEvent.change(screen.getByLabelText("Discussion topic"), {
-      target: { value: "How should we price v1?" },
+    fireEvent.change(screen.getByPlaceholderText(/what needs doing/i), {
+      target: { value: "First task" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Start discussion" }));
+    fireEvent.change(select, { target: { value: "agent-1" } });
+    fireEvent.click(screen.getByRole("button", { name: /create task/i }));
 
-    await waitFor(() => expect(discussionsCreate).toHaveBeenCalledTimes(1));
-    expect(discussionsCreate).toHaveBeenCalledWith(
-      "c1",
-      expect.objectContaining({
-        title: "How should we price v1?",
-        entry: { inputType: "write", rawContent: "How should we price v1?" },
-      }),
+    await waitFor(() =>
+      expect(issuesCreate).toHaveBeenCalledWith(
+        "c1",
+        expect.objectContaining({ title: "First task", status: "todo", assigneeAgentId: "agent-1" }),
+      ),
     );
-    expect(onDone).toHaveBeenCalledTimes(1);
-    expect(issuesCreate).not.toHaveBeenCalled();
+    expect(discussionsCreate).not.toHaveBeenCalled();
+    await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
+    expect(advanceOnboarding).not.toHaveBeenCalled();
   });
 
   it("Skip to Home calls onDone once and creates nothing", async () => {
@@ -121,7 +100,7 @@ describe("FirstJobStep (WS8 — In-flight standalone surface)", () => {
     expect(discussionsCreate).not.toHaveBeenCalled();
   });
 
-  it("onDone fires exactly once even on a rapid double-submit across both cards", async () => {
+  it("onDone fires exactly once even if Create task and Skip are both triggered", async () => {
     let resolveIssue: (v: unknown) => void = () => {};
     issuesCreate.mockImplementation(
       () =>
@@ -129,25 +108,17 @@ describe("FirstJobStep (WS8 — In-flight standalone surface)", () => {
           resolveIssue = resolve;
         }),
     );
-    let resolveDiscussion: (v: unknown) => void = () => {};
-    discussionsCreate.mockImplementation(
-      () =>
-        new Promise((resolve) => {
-          resolveDiscussion = resolve;
-        }),
-    );
 
     const onDone = vi.fn();
     render(<FirstJobStep companyId="c1" onDone={onDone} />);
 
-    fireEvent.change(screen.getByLabelText("Task title"), { target: { value: "Task A" } });
-    fireEvent.change(screen.getByLabelText("Discussion topic"), { target: { value: "Topic A" } });
-
-    fireEvent.click(screen.getByRole("button", { name: "Create task" }));
-    fireEvent.click(screen.getByRole("button", { name: "Start discussion" }));
+    fireEvent.change(screen.getByPlaceholderText(/what needs doing/i), {
+      target: { value: "Task A" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /create task/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Skip to Home" }));
 
     resolveIssue({ id: "issue-1", title: "Task A" });
-    resolveDiscussion({ id: "disc-1", title: "Topic A" });
 
     await waitFor(() => expect(onDone).toHaveBeenCalled());
     // Give any trailing microtasks a chance to run before asserting the count stays 1.
@@ -155,17 +126,19 @@ describe("FirstJobStep (WS8 — In-flight standalone surface)", () => {
     expect(onDone).toHaveBeenCalledTimes(1);
   });
 
-  it("shows a per-card error and does not call onDone when the task create fails", async () => {
+  it("shows an error and does not call onDone when the task create fails", async () => {
     issuesCreate.mockRejectedValueOnce(new Error("boom"));
     const onDone = vi.fn();
     render(<FirstJobStep companyId="c1" onDone={onDone} />);
 
-    fireEvent.change(screen.getByLabelText("Task title"), { target: { value: "Task A" } });
-    fireEvent.click(screen.getByRole("button", { name: "Create task" }));
+    fireEvent.change(screen.getByPlaceholderText(/what needs doing/i), {
+      target: { value: "Task A" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /create task/i }));
 
     expect(await screen.findByText("boom")).toBeTruthy();
     expect(onDone).not.toHaveBeenCalled();
-    // The other card is unaffected and still submittable.
-    expect(screen.getByRole("button", { name: "Start discussion" })).toBeTruthy();
+    // Still submittable (retry state).
+    expect(screen.getByRole("button", { name: /retry/i })).toBeTruthy();
   });
 });
