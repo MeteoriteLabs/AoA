@@ -1,9 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NewIssueDialog } from "../components/NewIssueDialog";
-import { issuesApi } from "../api/issues";
 
 const project = vi.hoisted(() => ({
   id: "proj-1",
@@ -29,7 +27,7 @@ vi.mock("../context/CompanyContext", () => ({
 vi.mock("../context/DialogContext", () => ({
   useDialog: () => ({
     newIssueOpen: true,
-    newIssueDefaults: { projectId: "proj-1", title: "Use existing workspace" },
+    newIssueDefaults: { projectId: "proj-1" },
     closeNewIssue: vi.fn(),
   }),
 }));
@@ -77,16 +75,7 @@ vi.mock("../api/environments", () => ({
 }));
 
 vi.mock("../api/execution-workspaces", () => ({
-  executionWorkspacesApi: {
-    listSummaries: vi.fn().mockResolvedValue([
-      {
-        id: "ws-1",
-        name: "Feature workspace",
-        branchName: "feature/work",
-        lastUsedAt: "2026-05-20T00:00:00Z",
-      },
-    ]),
-  },
+  executionWorkspacesApi: { listSummaries: vi.fn().mockResolvedValue([]) },
 }));
 
 vi.mock("../components/MarkdownEditor", () => ({
@@ -110,43 +99,32 @@ function renderDialog() {
   );
 }
 
-describe("NewIssueDialog workspace policy", () => {
+describe("NewIssueDialog — Advanced disclosure", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
   });
 
-  it("shows the department default workspace choice for a policy-enabled department once Advanced is expanded", async () => {
+  it("hides advanced controls behind an Advanced disclosure and drops dead placeholders", async () => {
     renderDialog();
 
-    // Not visible until Advanced is expanded (Task workspace mode lives behind the disclosure).
-    expect(screen.queryByText("Department default")).toBeNull();
+    // Essentials visible:
+    expect(screen.getByPlaceholderText("Task title")).toBeInTheDocument();
+    expect(screen.getByText("Standard")).toBeInTheDocument();
 
+    // Dead placeholders GONE entirely:
+    expect(screen.queryByText(/^labels$/i)).toBeNull();
+    expect(screen.queryByText(/start date/i)).toBeNull();
+    expect(screen.queryByText(/due date/i)).toBeNull();
+
+    // Environment / Task workspace are NOT visible until Advanced is expanded:
+    expect(screen.queryByText(/environment/i)).toBeNull();
+    expect(screen.queryByText(/department default/i)).toBeNull();
+
+    // Expand Advanced:
     fireEvent.click(screen.getByRole("button", { name: /advanced/i }));
 
-    expect(await screen.findByText("Department default")).toBeInTheDocument();
-  });
-
-  it("sends reuse_existing workspace fields when a reusable workspace is selected", async () => {
-    const user = userEvent.setup();
-    renderDialog();
-
-    await user.click(screen.getByRole("button", { name: /advanced/i }));
-    await user.click(await screen.findByText("Department default"));
-    await user.click(await screen.findByText("Feature workspace"));
-    fireEvent.click(screen.getByRole("button", { name: "Create Task" }));
-
-    await waitFor(() =>
-      expect(issuesApi.create).toHaveBeenCalledWith(
-        "comp-1",
-        expect.objectContaining({
-          executionWorkspacePreference: "reuse_existing",
-          executionWorkspaceSettings: {
-            mode: "reuse_existing",
-            reuseWorkspaceId: "ws-1",
-          },
-        }),
-      ),
-    );
+    expect(await screen.findByText(/environment/i)).toBeInTheDocument();
+    expect(await screen.findByText(/department default/i)).toBeInTheDocument();
   });
 });
