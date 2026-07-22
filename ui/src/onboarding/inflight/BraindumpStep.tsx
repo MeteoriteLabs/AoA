@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { Building2, FolderOpen, Github } from "lucide-react";
-import type { Project } from "@armyofagents/shared";
+import { Building2, FolderOpen, Github, Plus } from "lucide-react";
+import { BRAINDUMP_CONTENT_MAX_LENGTH, type Project } from "@armyofagents/shared";
 import { projectsApi } from "../../api/projects";
 import { braindumpApi, braindumpIdempotencyKey, type BraindumpScope } from "../../api/braindump";
 import { Button } from "@/components/ui/button";
@@ -38,6 +38,25 @@ const COMPANY_HINT =
 const DEPARTMENT_HINT =
   "How this team works: conventions, tools, standing preferences, domain context, key facts.";
 
+/** Click-to-insert starter phrases. Short on purpose — they're a nudge, not a
+ *  template; the founder finishes the sentence. `insert` is what lands in the
+ *  textarea, `label` is the (slightly friendlier) chip text. */
+type PromptChip = { label: string; insert: string };
+
+const COMPANY_PROMPTS: PromptChip[] = [
+  { label: "We value…", insert: "We value " },
+  { label: "We ship by…", insert: "We ship by " },
+  { label: "Our customers…", insert: "Our customers " },
+  { label: "Never…", insert: "Never " },
+];
+
+const DEPARTMENT_PROMPTS: PromptChip[] = [
+  { label: "We use…", insert: "We use " },
+  { label: "Our convention is…", insert: "Our convention is " },
+  { label: "Always…", insert: "Always " },
+  { label: "Watch out for…", insert: "Watch out for " },
+];
+
 function repoChipFor(project: Project): string | null {
   if (project.functionType !== "software_development") return null;
   const ws = project.primaryWorkspace ?? project.workspaces[0] ?? null;
@@ -73,6 +92,11 @@ export type BraindumpStepProps = {
  */
 export function BraindumpStep({ companyId, onDone }: BraindumpStepProps) {
   const [boxes, setBoxes] = useState<DumpBox[]>([]);
+  /** Every department project for the company, loaded once. The founder adds
+   *  cards from this list on demand rather than seeing one per department —
+   *  see `remainingDepartments` below. */
+  const [departments, setDepartments] = useState<Project[]>([]);
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -95,7 +119,6 @@ export function BraindumpStep({ companyId, onDone }: BraindumpStepProps) {
       .list(companyId)
       .then((projects) => {
         if (cancelled) return;
-        const departments = projects.filter((p) => p.type === "department");
         const companyBox: DumpBox = {
           key: "company",
           scope: "company",
@@ -109,25 +132,12 @@ export function BraindumpStep({ companyId, onDone }: BraindumpStepProps) {
           status: "idle",
           error: null,
         };
-        setBoxes([
-          companyBox,
-          ...departments.map<DumpBox>((d) => ({
-            key: d.id,
-            scope: "department",
-            departmentId: d.id,
-            name: d.name,
-            hint: DEPARTMENT_HINT,
-            // Department folders are seeded under the project's urlKey
-            // (memory-folders.ts seedForDepartment), so "Files" for a
-            // department is "<urlKey>/Files".
-            folderPath: `${d.urlKey}/Files`,
-            repoChip: repoChipFor(d),
-            content: "",
-            assets: [],
-            status: "idle",
-            error: null,
-          })),
-        ]);
+        // Only the company card renders up front — a card per department was
+        // a wall of empty boxes. Departments are loaded here so "Add a
+        // department" has something to offer, but no DumpBox is created
+        // until the founder actually picks one.
+        setDepartments(projects.filter((p) => p.type === "department"));
+        setBoxes([companyBox]);
       })
       .catch((err) => {
         if (cancelled) return;
@@ -147,6 +157,45 @@ export function BraindumpStep({ companyId, onDone }: BraindumpStepProps) {
 
   function hasInput(box: DumpBox): boolean {
     return box.content.trim().length > 0 || box.assets.length > 0;
+  }
+
+  // Departments not yet turned into a card — what "Add a department" offers.
+  const remainingDepartments = departments.filter((d) => !boxes.some((b) => b.key === d.id));
+
+  function addDepartmentBox(department: Project) {
+    setBoxes((prev) => [
+      ...prev,
+      {
+        key: department.id,
+        scope: "department",
+        departmentId: department.id,
+        name: department.name,
+        hint: DEPARTMENT_HINT,
+        // Department folders are seeded under the project's urlKey
+        // (memory-folders.ts seedForDepartment), so "Files" for a
+        // department is "<urlKey>/Files".
+        folderPath: `${department.urlKey}/Files`,
+        repoChip: repoChipFor(department),
+        content: "",
+        assets: [],
+        status: "idle",
+        error: null,
+      },
+    ]);
+    setAddMenuOpen(false);
+  }
+
+  /** Appends a starter phrase to a card's textarea — a nudge, not a
+   *  replacement. Separated from existing text by a newline so a click never
+   *  mashes two thoughts into one run-on sentence. */
+  function insertPrompt(key: string, insert: string) {
+    setBoxes((prev) =>
+      prev.map((b) => {
+        if (b.key !== key) return b;
+        const existing = b.content.replace(/\s+$/, "");
+        return { ...b, content: existing.length > 0 ? `${existing}\n${insert}` : insert };
+      }),
+    );
   }
 
   async function submitBox(box: DumpBox): Promise<BoxStatus> {
@@ -263,6 +312,20 @@ export function BraindumpStep({ companyId, onDone }: BraindumpStepProps) {
 
               <p className="mt-1 text-[11px] text-dim">{box.hint}</p>
 
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {(box.scope === "company" ? COMPANY_PROMPTS : DEPARTMENT_PROMPTS).map((prompt) => (
+                  <button
+                    key={prompt.label}
+                    type="button"
+                    disabled={submitting || box.status === "submitted"}
+                    onClick={() => insertPrompt(box.key, prompt.insert)}
+                    className="rounded-full border border-border-strong px-2 py-1 text-[10px] text-dim transition-colors hover:border-brand hover:text-text disabled:pointer-events-none disabled:opacity-50"
+                  >
+                    {prompt.label}
+                  </button>
+                ))}
+              </div>
+
               <label className="sr-only" htmlFor={`braindump-${box.key}`}>
                 Braindump for {box.name}
               </label>
@@ -271,9 +334,13 @@ export function BraindumpStep({ companyId, onDone }: BraindumpStepProps) {
                 className="mt-3 min-h-[110px]"
                 placeholder="Paste notes, context, decisions, anything the team should remember…"
                 value={box.content}
+                maxLength={BRAINDUMP_CONTENT_MAX_LENGTH}
                 disabled={submitting || box.status === "submitted"}
                 onChange={(e) => updateBox(box.key, { content: e.target.value })}
               />
+              <p className="mt-1 text-right text-[10px] text-very-dim">
+                {box.content.length.toLocaleString()} / {BRAINDUMP_CONTENT_MAX_LENGTH.toLocaleString()}
+              </p>
 
               <BraindumpDropZone
                 companyId={companyId}
@@ -317,22 +384,59 @@ export function BraindumpStep({ companyId, onDone }: BraindumpStepProps) {
         ))}
       </div>
 
+      {remainingDepartments.length > 0 && (
+        <Reveal delay={0.14 + boxes.length * 0.09}>
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setAddMenuOpen((open) => !open)}
+              disabled={submitting}
+              className="flex items-center gap-1.5 rounded-full border border-dashed border-border-strong px-3 py-1.5 text-xs text-dim transition-colors hover:border-brand hover:text-text disabled:pointer-events-none disabled:opacity-50"
+            >
+              <Plus className="h-3 w-3" aria-hidden />
+              Add a department
+            </button>
+            {addMenuOpen && (
+              <div
+                role="menu"
+                className="absolute z-10 mt-1 w-56 rounded-md border border-border bg-card p-1 shadow-[0_4px_12px_rgba(0,0,0,0.4)]"
+              >
+                {remainingDepartments.map((department) => (
+                  <button
+                    key={department.id}
+                    type="button"
+                    role="menuitem"
+                    onClick={() => addDepartmentBox(department)}
+                    className="block w-full rounded px-2 py-1.5 text-left text-xs text-text hover:bg-field"
+                  >
+                    {department.name}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </Reveal>
+      )}
+
       {globalError && <p className="text-xs text-destructive">{globalError}</p>}
 
       <Reveal delay={0.18 + boxes.length * 0.09}>
-        <Button
-          className="w-full"
-          onClick={() => void submitAll()}
-          disabled={submitting || loading || uploadingKeys.size > 0}
-        >
-          {submitting ? "Saving…" : uploadingKeys.size > 0 ? "Uploading…" : "Continue"}
-        </Button>
-      </Reveal>
-
-      <Reveal delay={0.27 + boxes.length * 0.09}>
-        <Button type="button" variant="ghost" className="w-full" onClick={fireOnDoneOnce}>
-          Skip for now
-        </Button>
+        <div className="flex items-center gap-3">
+          <Button
+            className="flex-1"
+            onClick={() => void submitAll()}
+            disabled={submitting || loading || uploadingKeys.size > 0}
+          >
+            {submitting ? "Saving…" : uploadingKeys.size > 0 ? "Uploading…" : "Continue"}
+          </Button>
+          <button
+            type="button"
+            onClick={fireOnDoneOnce}
+            className="shrink-0 text-xs text-dim underline-offset-2 hover:text-text hover:underline"
+          >
+            Skip for now
+          </button>
+        </div>
       </Reveal>
     </StepShell>
   );
