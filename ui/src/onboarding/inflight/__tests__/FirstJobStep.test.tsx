@@ -27,6 +27,11 @@ vi.mock("../../../api/agents", () => ({
   agentsApi: { list: agentsList },
 }));
 
+const projectsList = vi.hoisted(() => vi.fn(async () => [] as unknown[]));
+vi.mock("../../../api/projects", () => ({
+  projectsApi: { list: projectsList },
+}));
+
 // This surface is domain-only — like DefineDepartments/CreateAgents — and
 // must never call advanceOnboarding. Mocked as a regression guard.
 const advanceOnboarding = vi.hoisted(() => vi.fn());
@@ -36,6 +41,7 @@ describe("FirstJobStep (WS8 — In-flight standalone surface, task-only)", () =>
   beforeEach(() => {
     vi.clearAllMocks();
     agentsList.mockResolvedValue([]);
+    projectsList.mockResolvedValue([]);
   });
 
   it("is task-only — no discussion path", async () => {
@@ -47,7 +53,12 @@ describe("FirstJobStep (WS8 — In-flight standalone surface, task-only)", () =>
     expect(screen.getByRole("button", { name: /skip to home/i })).toBeInTheDocument();
     expect(advanceOnboarding).not.toHaveBeenCalled();
     // Flush the agentsApi.list effect so the pending-state update doesn't leak.
-    await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(1));
+    // Scoped to the assignee select — the priority select always has 4 fixed
+    // options, so a bare `getAllByRole("option")` count would break as soon
+    // as priority/department were added.
+    await waitFor(() =>
+      expect(within(screen.getByLabelText("Assignee")).getAllByRole("option")).toHaveLength(1),
+    );
   });
 
   it("assignee picker is populated from agentsApi.list, preferring org agents over hidden aoa crew", async () => {
@@ -91,7 +102,9 @@ describe("FirstJobStep (WS8 — In-flight standalone surface, task-only)", () =>
   it("Skip to Home calls onDone once and creates nothing", async () => {
     const onDone = vi.fn();
     render(<FirstJobStep companyId="c1" onDone={onDone} />);
-    await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(1));
+    await waitFor(() =>
+      expect(within(screen.getByLabelText("Assignee")).getAllByRole("option")).toHaveLength(1),
+    );
 
     fireEvent.click(screen.getByRole("button", { name: "Skip to Home" }));
 
@@ -140,5 +153,52 @@ describe("FirstJobStep (WS8 — In-flight standalone surface, task-only)", () =>
     expect(onDone).not.toHaveBeenCalled();
     // Still submittable (retry state).
     expect(screen.getByRole("button", { name: /retry/i })).toBeTruthy();
+  });
+
+  it("has description + priority, and defaults assignee to the created agent", async () => {
+    agentsList.mockResolvedValue([{ id: "ag-1", name: "Ada", kind: "org", status: "idle" }]);
+    projectsList.mockResolvedValue([{ id: "dept-1", name: "Software", type: "department" }]);
+    render(<FirstJobStep companyId="c1" onDone={vi.fn()} />);
+
+    expect(await screen.findByPlaceholderText(/describe|details|what.*involve/i)).toBeInTheDocument();
+    expect(screen.getByText(/priority/i)).toBeInTheDocument();
+
+    await waitFor(() => {
+      const sel = screen.getByLabelText(/assignee/i) as HTMLSelectElement;
+      expect(sel.value).toBe("ag-1");
+    });
+  });
+
+  it("creates a task with description, priority, assignee, and department", async () => {
+    agentsList.mockResolvedValue([{ id: "ag-1", name: "Ada", kind: "org", status: "idle" }]);
+    projectsList.mockResolvedValue([{ id: "dept-1", name: "Software", type: "department" }]);
+    render(<FirstJobStep companyId="c1" onDone={vi.fn()} />);
+
+    await screen.findByPlaceholderText(/what needs doing/i);
+    await waitFor(() => {
+      const sel = screen.getByLabelText(/assignee/i) as HTMLSelectElement;
+      expect(sel.value).toBe("ag-1");
+    });
+
+    fireEvent.change(screen.getByPlaceholderText(/what needs doing/i), {
+      target: { value: "First task" },
+    });
+    fireEvent.change(screen.getByPlaceholderText(/describe|details/i), {
+      target: { value: "do the thing" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /create task/i }));
+
+    await waitFor(() =>
+      expect(issuesCreate).toHaveBeenCalledWith(
+        "c1",
+        expect.objectContaining({
+          title: "First task",
+          status: "todo",
+          description: "do the thing",
+          assigneeAgentId: "ag-1",
+          projectId: "dept-1",
+        }),
+      ),
+    );
   });
 });
