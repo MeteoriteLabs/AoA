@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { ChevronLeft } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { setFirstRunCompleted } from "../../api/onboarding";
 import { DefineDepartments } from "./DefineDepartments";
 import { IntegrationsStep } from "./IntegrationsStep";
@@ -120,6 +122,14 @@ export function InFlightFlow({ companyId, onDone }: InFlightFlowProps) {
     });
   }
 
+  function goBack() {
+    setIndex((i) => {
+      const prev = Math.max(0, i - 1);
+      writeStoredStep(companyId, prev);
+      return prev;
+    });
+  }
+
   let surface: ReactNode = null;
   switch (IN_FLIGHT_SURFACES[index]) {
     case "departments":
@@ -157,7 +167,21 @@ export function InFlightFlow({ companyId, onDone }: InFlightFlowProps) {
 
   return (
     <div className="relative z-10 mx-auto flex min-h-screen w-full max-w-xl flex-col px-6 pt-8">
-      <div className="flex items-center justify-end">
+      <div className="flex items-center justify-between gap-4">
+        <div className="min-w-[64px]">
+          {index > 0 && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="-ml-2 gap-1 text-dim hover:bg-white/5 hover:text-text"
+              onClick={goBack}
+            >
+              <ChevronLeft className="h-3.5 w-3.5" aria-hidden />
+              Back
+            </Button>
+          )}
+        </div>
         {pos && <StepPosition current={pos.current} total={pos.total} />}
       </div>
       <div className="flex flex-1 flex-col justify-center">{surface}</div>

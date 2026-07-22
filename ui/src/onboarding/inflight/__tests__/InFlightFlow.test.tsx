@@ -146,4 +146,29 @@ describe("InFlightFlow (WS9 — In-flight sequencer)", () => {
       getItemSpy.mockRestore();
     }
   });
+
+  it("shows Back only after the first surface; Back steps to the previous surface", async () => {
+    const user = userEvent.setup();
+
+    // index 0 = departments -> NO back (that's the Map fork boundary).
+    window.localStorage.setItem(STORAGE_KEY, "0");
+    const { unmount } = render(<InFlightFlow companyId="co-1" onDone={vi.fn()} />);
+    await screen.findByText("finish-departments");
+    expect(screen.queryByRole("button", { name: /^back$/i })).toBeNull();
+    unmount();
+
+    // index 2 = braindump -> Back present, clicking steps back to integrations
+    // (index 1) and persists the decremented marker.
+    window.localStorage.setItem(STORAGE_KEY, "2");
+    render(<InFlightFlow companyId="co-1" onDone={vi.fn()} />);
+    await screen.findByText("finish-braindump");
+    expect(screen.getByTestId("onboarding-step-position").textContent).toBe("Step 10 of 13");
+
+    const back = screen.getByRole("button", { name: /^back$/i });
+    await user.click(back);
+
+    await screen.findByText("finish-integrations");
+    expect(screen.getByTestId("onboarding-step-position").textContent).toBe("Step 9 of 13");
+    expect(window.localStorage.getItem(STORAGE_KEY)).toBe("1");
+  });
 });
