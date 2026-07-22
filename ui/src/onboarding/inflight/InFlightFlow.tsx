@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { setFirstRunCompleted } from "../../api/onboarding";
 import { DefineDepartments } from "./DefineDepartments";
 import { IntegrationsStep } from "./IntegrationsStep";
@@ -6,6 +6,9 @@ import { BraindumpStep } from "./BraindumpStep";
 import { LibrarianStep } from "./LibrarianStep";
 import { CreateAgents } from "./CreateAgents";
 import { FirstJobStep } from "./FirstJobStep";
+import { StepPosition } from "../StepPosition";
+import { ONBOARDING_STEPS } from "../steps";
+import { computeFounderMapBase, computeOnboardingPosition } from "../onboardingProgress";
 
 /** Fixed order (WS9 spec): Departments -> Integrations -> Braindump ->
  * Librarian -> CreateAgents -> FirstJob. */
@@ -117,20 +120,47 @@ export function InFlightFlow({ companyId, onDone }: InFlightFlowProps) {
     });
   }
 
+  let surface: ReactNode = null;
   switch (IN_FLIGHT_SURFACES[index]) {
     case "departments":
-      return <DefineDepartments companyId={companyId} onDone={advance} />;
+      surface = <DefineDepartments companyId={companyId} onDone={advance} />;
+      break;
     case "integrations":
-      return <IntegrationsStep companyId={companyId} onDone={advance} />;
+      surface = <IntegrationsStep companyId={companyId} onDone={advance} />;
+      break;
     case "braindump":
-      return <BraindumpStep companyId={companyId} onDone={advance} />;
+      surface = <BraindumpStep companyId={companyId} onDone={advance} />;
+      break;
     case "librarian":
-      return <LibrarianStep companyId={companyId} onDone={advance} />;
+      surface = <LibrarianStep companyId={companyId} onDone={advance} />;
+      break;
     case "agents":
-      return <CreateAgents companyId={companyId} onDone={advance} />;
+      surface = <CreateAgents companyId={companyId} onDone={advance} />;
+      break;
     case "first_job":
-      return <FirstJobStep companyId={companyId} onDone={advance} />;
+      surface = <FirstJobStep companyId={companyId} onDone={advance} />;
+      break;
     default:
-      return null;
+      surface = null;
   }
+
+  // Continuous step counter (WS9): the In-flight tail extends the count past the
+  // Map (BASE) by its surfaces — "Step BASE+1 of BASE+N" … BASE+N of BASE+N — so
+  // the counter runs through the tail instead of vanishing after the spine.
+  const pos = computeOnboardingPosition({
+    phase: "inflight",
+    base: computeFounderMapBase(ONBOARDING_STEPS, companyId),
+    persona: "in_flight",
+    inflightIndex: index,
+    inflightApplicable: IN_FLIGHT_SURFACES.length,
+  });
+
+  return (
+    <div className="relative z-10 mx-auto flex min-h-screen w-full max-w-xl flex-col px-6 pt-8">
+      <div className="flex items-center justify-end">
+        {pos && <StepPosition current={pos.current} total={pos.total} />}
+      </div>
+      <div className="flex flex-1 flex-col justify-center">{surface}</div>
+    </div>
+  );
 }

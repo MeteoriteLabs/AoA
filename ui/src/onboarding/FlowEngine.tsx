@@ -10,6 +10,8 @@ import {
   type StepDefinition,
   type StepContext,
 } from "./registry";
+import { StepPosition } from "./StepPosition";
+import { journeyHasFirstRunMap } from "./onboardingProgress";
 
 export type FlowProgress = { completedStates: OnboardingState[] };
 
@@ -32,28 +34,6 @@ export type FlowEngineProps = {
   onFinished?: () => void;
   onBack?: () => void;
 };
-
-/** The mockup's stepper (screens S2–S5): a row of pips, done/current/upcoming. */
-function StepperPips({ total, current }: { total: number; current: number }) {
-  if (total <= 1) return null;
-  return (
-    <div className="flex items-center gap-1.5" aria-hidden="true">
-      {Array.from({ length: total }, (_, i) => {
-        const n = i + 1;
-        return (
-          <span
-            key={n}
-            className={cn(
-              "h-1 w-[22px] rounded-full bg-border-strong transition-colors",
-              n < current && "bg-brand",
-              n === current && "bg-brand-hover shadow-[0_0_8px_rgba(209,58,38,0.6)]",
-            )}
-          />
-        );
-      })}
-    </div>
-  );
-}
 
 /**
  * Shared dark chrome shell: `.onboarding-dark` scope + drifting constellation.
@@ -196,9 +176,14 @@ export function FlowEngine({
   const hasCompletedPredecessor =
     stepNumber > 0 &&
     applicableSteps.slice(0, stepNumber - 1).some((candidate) => candidate.isComplete(ctx));
+  // BASE = visible spine steps + the Map (founder only). The spine now counts
+  // toward this continuous total, so the last spine step reads "N of BASE" and
+  // the post-spine Map/In-flight surfaces continue the same count (see
+  // onboardingProgress.ts).
+  const base = applicableSteps.length + (journeyHasFirstRunMap(journey) ? 1 : 0);
   // The chip hides on single-step journeys where it carries no information
   // (e.g. invited's lone human-profile step).
-  const showStepChrome = stepNumber > 0 && applicableSteps.length > 1;
+  const showStepChrome = stepNumber > 0 && base > 1;
 
   return (
     <DarkShell>
@@ -221,17 +206,7 @@ export function FlowEngine({
               </Button>
             )}
           </div>
-          {showStepChrome && (
-            <div className="flex items-center gap-3">
-              <StepperPips total={applicableSteps.length} current={stepNumber} />
-              <span
-                data-testid="onboarding-step-position"
-                className="font-mono text-[10.5px] tracking-[0.14em] text-very-dim"
-              >
-                Step {stepNumber} of {applicableSteps.length}
-              </span>
-            </div>
-          )}
+          {showStepChrome && <StepPosition current={stepNumber} total={base} />}
         </div>
         <div className="flex flex-1 flex-col justify-center">
           <Suspense fallback={<p className="text-center text-sm text-dim">Loading step…</p>}>

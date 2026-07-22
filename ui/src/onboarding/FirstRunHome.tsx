@@ -4,6 +4,9 @@ import { Button } from "@/components/ui/button";
 import { DarkShell } from "./FlowEngine";
 import { InFlightFlow } from "./inflight/InFlightFlow";
 import { Map, type MapDoorPersona } from "./Map";
+import { StepPosition } from "./StepPosition";
+import { ONBOARDING_STEPS } from "./steps";
+import { computeFounderMapBase, computeOnboardingPosition } from "./onboardingProgress";
 
 export type FirstRunHomeProps = {
   companyId: string;
@@ -93,6 +96,13 @@ export function FirstRunHome({ companyId, onComplete }: FirstRunHomeProps) {
   // rather than a second dark-chrome flash while that refetch is in flight.
   if (phase === "done") return null;
 
+  // Continuous step counter (WS9): the Map is the BASE-th step, right after the
+  // spine — so the counter carries through instead of vanishing here.
+  const mapPos = computeOnboardingPosition({
+    phase: "map",
+    base: computeFounderMapBase(ONBOARDING_STEPS, companyId),
+  });
+
   return (
     <DarkShell>
       {phase === "error" ? (
@@ -105,7 +115,14 @@ export function FirstRunHome({ companyId, onComplete }: FirstRunHomeProps) {
       ) : phase === "in_flight" ? (
         <InFlightFlow companyId={companyId} onDone={handleInFlightDone} />
       ) : phase === "door" ? (
-        <Map onPick={handlePick} />
+        <div className="relative z-10 mx-auto flex min-h-screen w-full max-w-3xl flex-col px-6 pt-8">
+          <div className="flex items-center justify-end">
+            {mapPos && <StepPosition current={mapPos.current} total={mapPos.total} />}
+          </div>
+          <div className="flex flex-1 flex-col justify-center">
+            <Map onPick={handlePick} />
+          </div>
+        </div>
       ) : null}
     </DarkShell>
   );
