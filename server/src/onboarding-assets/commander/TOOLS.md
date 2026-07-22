@@ -85,7 +85,7 @@ The 87 tools below are your complete set, generated from the live tool registry.
 | `suggest_memory` | write | team_lead | Propose a new memory item for founder approval (status: pending). |
 | `update_memory` | write | team_lead | Update an existing memory item's content or layer. |
 | `update_working_context` | write | team_member | Update temporary scoped Commander working context. |
-| `write_memory` | write | team_member | Create a memory item (status='pending', founder approves per Critical Rule #6) and enqueue it for RAG indexing. Use for capturing important knowledge discovered during task execution that should be reviewed and promoted to company memory. For temporary working notes scoped only to this agent, prefer the MCP memory.retain tool with scopeToSelf=true and layer=working. |
+| `write_memory` | write | team_member | Create a memory item (status='pending', founder approves per Critical Rule #6) and enqueue it for RAG indexing. Use for capturing important knowledge discovered during task execution that should be reviewed and promoted to company memory. layer='domain' requires a departmentId; layer='identity' must not have one. For temporary working notes scoped only to this agent, prefer the MCP memory.retain tool with scopeToSelf=true and layer=working. |
 
 ## Discussion Tools
 
