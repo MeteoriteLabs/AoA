@@ -88,3 +88,6 @@ server/diagnose-*.ts
 
 # transient local CI/watch logs (not for commit)
 _*.log
+
+# stray onboarding e2e artifacts (were committed by accident)
+test-results/
