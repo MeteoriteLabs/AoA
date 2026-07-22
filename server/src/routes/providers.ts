@@ -149,7 +149,7 @@
 import { Router, type Request, type Response } from "express";
 import type { Db } from "@armyofagents/db";
 import { agents, companySecrets } from "@armyofagents/db";
-import { and, eq, inArray, isNull, ne } from "drizzle-orm";
+import { and, eq, inArray, isNull, ne, notInArray } from "drizzle-orm";
 import {
   KNOWN_EXTERNAL_SECRET_BINDINGS,
   PROVIDER_CATALOG,
@@ -421,6 +421,19 @@ export function providerRoutes(db: Db): Router {
     }
     if (req.actor.type === "agent" && req.actor.agentId) {
       if (await access.hasPermission(companyId, "agent", req.actor.agentId, "agents:create")) return;
+      // Honour the legacy `permissions.canCreateAgents` flag too, exactly as
+      // routes/agents.ts's configuration-read gate does (`allowedByGrant ||
+      // canCreateAgents`). Without this, an agent key that CAN read agent
+      // configuration there is 403'd here — the two surfaces would disagree about
+      // who sees a readiness badge, which this shared bar exists to prevent.
+      const [actorAgent] = await db
+        .select({ permissions: agents.permissions })
+        .from(agents)
+        .where(and(eq(agents.id, req.actor.agentId), eq(agents.companyId, companyId)))
+        .limit(1);
+      if (Boolean((actorAgent?.permissions as Record<string, unknown> | undefined)?.canCreateAgents)) {
+        return;
+      }
       throw forbidden("Missing permission: agents:create");
     }
     throw forbidden("Board access required");
@@ -532,12 +545,17 @@ export function providerRoutes(db: Db): Router {
     const companyId = req.params.companyId as string;
     await assertCanReadConfigurations(req, companyId);
 
-    // In use = any non-archived agent. Fetched BEFORE secrets and never in
+    // In use = any LIVE agent. Both `archived` and `terminated` are dead states:
+    // a terminated agent cannot run, so counting it would make the tab probe a
+    // dead adapter, auto-refresh it, and let its "not checked"/failing scope
+    // qualify an otherwise-verified provider. Fetched BEFORE secrets and never in
     // parallel, so the query order is deterministic.
     const agentRows = (await db
       .select({ id: agents.id, name: agents.name, adapterType: agents.adapterType })
       .from(agents)
-      .where(and(eq(agents.companyId, companyId), ne(agents.status, "archived")))) as {
+      .where(
+        and(eq(agents.companyId, companyId), notInArray(agents.status, ["archived", "terminated"])),
+      )) as {
       id: string;
       name: string;
       adapterType: string;

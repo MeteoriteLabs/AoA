@@ -51,12 +51,22 @@ export interface AgentReadinessBadgeProps {
    * will run on once saved.
    */
   adapterType: string;
+  /**
+   * The PERSISTED agent's adapter type. When it differs from `adapterType` the
+   * founder has switched the adapter in the form but not saved: the agent-scope
+   * probe keys off the persisted row, and the providers route rejects a mismatch
+   * as "Agent does not use provider ...". So Test cannot check the draft provider
+   * until the change is saved — the button is disabled and a hint explains why,
+   * rather than letting Test fail with a confusing error mid-edit.
+   */
+  savedAdapterType?: string;
 }
 
 export function AgentReadinessBadge({
   companyId,
   agentId,
   adapterType,
+  savedAdapterType,
 }: AgentReadinessBadgeProps) {
   const queryClient = useQueryClient();
   const [testing, setTesting] = useState(false);
@@ -86,6 +96,12 @@ export function AgentReadinessBadge({
   const scoped = readinessForScope(row, { scopeType: "agent", agentId });
   const outcome = scoped?.outcome ?? "unknown";
   const tone = outcomeTone(outcome);
+
+  // Draft adapter switch: the form shows a different provider than the one the
+  // agent is saved with. The agent-scope probe can only test the persisted row,
+  // so Test would 400 ("Agent does not use provider ...") until the change is
+  // saved. Disable Test and explain instead of surfacing that error.
+  const isDraftAdapterSwitch = Boolean(savedAdapterType) && savedAdapterType !== adapterType;
 
   const runTest = async () => {
     setTesting(true);
@@ -127,18 +143,23 @@ export function AgentReadinessBadge({
           size="sm"
           className="h-6 px-2 text-[11px]"
           onClick={() => void runTest()}
-          disabled={testing}
+          disabled={testing || isDraftAdapterSwitch}
         >
           {testing ? "Checking..." : "Test"}
         </Button>
       </div>
+      {isDraftAdapterSwitch && (
+        <span className="text-[11px] text-muted-foreground" data-testid="agent-readiness-draft-switch">
+          Save the adapter change to check {descriptor.label}.
+        </span>
+      )}
       {/*
         The badge label alone cannot distinguish "nobody has looked at this
         agent" from "we looked and learned nothing" — both are `unknown`, and
         `outcomeLabel` is deliberately one canonical word per outcome. This line
         carries the distinction instead of forking the vocabulary.
       */}
-      {!scoped && (
+      {!scoped && !isDraftAdapterSwitch && (
         <span className="text-[11px] text-muted-foreground" data-testid="agent-readiness-never-checked">
           This agent hasn't been checked yet.
         </span>

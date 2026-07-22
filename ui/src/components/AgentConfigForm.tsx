@@ -692,6 +692,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 companyId={selectedCompanyId}
                 agentId={props.agent.id}
                 adapterType={adapterType}
+                savedAdapterType={props.agent.adapterType}
               />
             ) : (
               <span />

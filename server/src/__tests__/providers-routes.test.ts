@@ -20,7 +20,10 @@ import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { drizzleOperatorStubs, makeTableProxy } from "./helpers/drizzle-mock.js";
 
-vi.mock("drizzle-orm", () => drizzleOperatorStubs());
+// notInArray is recorded so we can assert the in-use query filters dead agent
+// statuses — the mock db ignores WHERE, so the operator call is the only seam.
+const mockNotInArray = vi.hoisted(() => vi.fn((..._args: unknown[]) => "notInArray"));
+vi.mock("drizzle-orm", () => ({ ...drizzleOperatorStubs(), notInArray: mockNotInArray }));
 
 vi.mock("@armyofagents/db", () => ({
   agents: makeTableProxy("agents"),
@@ -235,6 +238,15 @@ describe("GET /api/companies/:companyId/providers", () => {
     });
   });
 
+  it("excludes archived AND terminated agents from the in-use rows", async () => {
+    // `terminated` is a distinct dead status from `archived`; a terminated agent
+    // cannot run, so it must not be probed or qualify a provider. The mock db
+    // ignores WHERE, so assert the query filters BOTH dead states at the operator.
+    seedGet({ agents: [] });
+    await request(makeApp()).get(`/api/companies/${COMPANY_ID}/providers`);
+    expect(mockNotInArray).toHaveBeenCalledWith(expect.anything(), ["archived", "terminated"]);
+  });
+
   it("NEVER falls back to the company default for an unprobed agent scope", async () => {
     // Company default is verified; the agent scope has NEVER been probed, so
     // there is no agent-scoped row in the cache at all.
@@ -340,6 +352,28 @@ describe("GET /api/companies/:companyId/providers", () => {
     seedGet();
     mockCanUser.mockResolvedValue(false);
     const res = await request(makeApp()).get(`/api/companies/${COMPANY_ID}/providers`);
+    expect(res.status).toBe(403);
+  });
+
+  it("allows an agent actor with the legacy canCreateAgents flag but no grant", async () => {
+    // The established config-read gate (routes/agents.ts) accepts a grant OR the
+    // legacy permissions.canCreateAgents flag; this route must not disagree.
+    mockHasPermission.mockResolvedValue(false); // no principal_permission_grants row
+    // 1) actor agent's permissions (legacy flag), then GET's in-use agents + secrets.
+    selectResults = [[{ permissions: { canCreateAgents: true } }], [], []];
+    mockReadReadiness.mockResolvedValue([]);
+    const res = await request(
+      makeApp({ type: "agent", agentId: AGENT_ID, companyId: COMPANY_ID }),
+    ).get(`/api/companies/${COMPANY_ID}/providers`);
+    expect(res.status).toBe(200);
+  });
+
+  it("403s an agent actor lacking both the grant and the legacy flag", async () => {
+    mockHasPermission.mockResolvedValue(false);
+    selectResults = [[{ permissions: {} }]];
+    const res = await request(
+      makeApp({ type: "agent", agentId: AGENT_ID, companyId: COMPANY_ID }),
+    ).get(`/api/companies/${COMPANY_ID}/providers`);
     expect(res.status).toBe(403);
   });
 });
