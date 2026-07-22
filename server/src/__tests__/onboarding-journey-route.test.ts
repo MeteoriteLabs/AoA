@@ -112,7 +112,7 @@ describe("getJourneyForUser (A5 + RB7/RB9 wiring)", () => {
   });
 
   it("returning founder with an UNFINISHED first-run tail → resumeFirstRunCompanyId set (resume into /onboarding)", async () => {
-    const { db, whereCalls } = seqDb([
+    const db = seqDb([
       [{ email: "u@x.com", emailVerified: true }], // user
       [{ companyId: "c1" }], // memberships → returning
       [], // pending requests
@@ -125,6 +125,7 @@ describe("getJourneyForUser (A5 + RB7/RB9 wiring)", () => {
     // Codex P3: the resume query must exclude archived companies (join companies,
     // status != "archived"), so an archived unfinished company can't keep
     // redirecting its founder into onboarding.
+    const whereCalls = db._whereCalls as unknown[];
     const resumeWhere = JSON.stringify(whereCalls[whereCalls.length - 1]);
     expect(resumeWhere).toContain('"status"');
     expect(resumeWhere).toContain("archived");
