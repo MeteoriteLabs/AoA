@@ -102,6 +102,7 @@ import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
 import { createMarketplaceRouter } from "./routes/marketplace.js";
 import { createMarketplaceInstallRouter } from "./routes/marketplace-installs.js";
 import { createMarketplaceCompanyRouter } from "./routes/marketplace-company.js";
+import { providerRoutes } from "./routes/providers.js";
 import { MarketplaceCatalogService } from "./services/aoa-marketplace.js";
 import { pluginLoader } from "./services/plugin-loader.js";
 import { pluginRollbackService } from "./services/plugin-rollback.js";
@@ -295,6 +296,9 @@ export async function createApp(
     }),
   );
   api.use("/companies", companyRoutes(db, { deploymentMode: opts.deploymentMode }));
+  // Settings -> Providers. Path-mounted (mergeParams) so the provider endpoints
+  // share one /companies/:companyId/providers prefix.
+  api.use("/companies/:companyId/providers", providerRoutes(db));
   api.use(agentRoutes(db));
   api.use(assetRoutes(db, opts.storageService));
   api.use(projectRoutes(db));

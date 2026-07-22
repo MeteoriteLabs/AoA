@@ -11,6 +11,14 @@ describe("adapter registry after Sprint 2A", () => {
     expect(AGENT_ADAPTER_TYPES).not.toContain("gemini_api");
   });
 
+  // The shared list and the server set must stay identical, not merely overlap.
+  // packages/shared's provider-catalog test derives its completeness check from
+  // AGENT_ADAPTER_TYPES; if an adapter lands in only one of these two lists that
+  // check goes blind. Membership assertions below cannot catch that — this can.
+  it("AGENT_ADAPTER_TYPES and BUILTIN_ADAPTER_TYPES describe the same adapter set", () => {
+    expect([...AGENT_ADAPTER_TYPES].sort()).toEqual([...BUILTIN_ADAPTER_TYPES].sort());
+  });
+
   it("BUILTIN_ADAPTER_TYPES set does not include API adapters", () => {
     expect(BUILTIN_ADAPTER_TYPES.has("claude_api")).toBe(false);
     expect(BUILTIN_ADAPTER_TYPES.has("openai_api")).toBe(false);
