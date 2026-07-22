@@ -505,12 +505,40 @@ export function providerRoutes(db: Db): Router {
     if (!releaseProbeSlot) return null;
 
     try {
-      const resolved = await secrets.resolveAdapterConfigForRuntime(
-        companyId,
-        descriptor.adapterType,
-        adapterConfig,
-        probeContext(req, scope, descriptor),
-      );
+      let resolved: Record<string, unknown>;
+      try {
+        resolved = await secrets.resolveAdapterConfigForRuntime(
+          companyId,
+          descriptor.adapterType,
+          adapterConfig,
+          probeContext(req, scope, descriptor),
+        );
+      } catch (err) {
+        // Config resolution failed BEFORE the CLI could run — e.g. an agent's
+        // own `secret_ref` was revoked/unbound, so resolveAdapterConfigForRuntime
+        // throws for the `agent` consumer (exactly what the agent scope exists to
+        // surface). If we let this propagate untouched, a previously recorded
+        // `verified` row would survive and keep rendering the agent as Ready even
+        // though its runtime config now fails before spawn. Overwrite THIS scope's
+        // cached readiness with `failed` (recordReadiness redacts at the insert
+        // boundary), then re-throw so the caller still gets the error.
+        await recordReadiness(db, {
+          companyId,
+          providerId: descriptor.id,
+          scope,
+          outcome: "failed",
+          checks: [
+            {
+              code: `${descriptor.adapterType}_runtime_config_unresolved`,
+              level: "error",
+              message:
+                err instanceof Error ? err.message : "Runtime configuration could not be resolved.",
+            },
+          ],
+          testedByUserId: req.actor.type === "board" ? (req.actor.userId ?? null) : null,
+        });
+        throw err;
+      }
       const result = await adapter.testEnvironment({
         companyId,
         adapterType: descriptor.adapterType,

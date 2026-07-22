@@ -437,6 +437,32 @@ describe("POST /api/companies/:companyId/providers/:providerId/test", () => {
     );
   });
 
+  it("overwrites a stale readiness row with failed when config resolution throws", async () => {
+    // A revoked/unbound agent secret_ref makes resolveAdapterConfigForRuntime
+    // throw BEFORE the CLI runs. Without overwriting, a previously-`verified` row
+    // would survive and keep rendering the agent as Ready. The route must record
+    // `failed` for THIS scope, then still surface the error.
+    const agentConfig = { env: { ANTHROPIC_API_KEY: { type: "secret_ref" } } };
+    selectResults = [
+      [{ id: AGENT_ID, companyId: COMPANY_ID, adapterType: "claude_local", adapterConfig: agentConfig }],
+    ];
+    mockFindServerAdapter.mockReturnValue({ type: "claude_local", testEnvironment: vi.fn() });
+    mockResolveAdapterConfigForRuntime.mockRejectedValueOnce(
+      new Error("Secret is not bound to this consumer path"),
+    );
+    const res = await request(makeApp())
+      .post(`/api/companies/${COMPANY_ID}/providers/anthropic/test?scope=agent&agentId=${AGENT_ID}`)
+      .send({});
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect(mockRecordReadiness).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        scope: { type: "agent", agentId: AGENT_ID },
+        outcome: "failed",
+      }),
+    );
+  });
+
   it("redacts probe checks in the HTTP response", async () => {
     mockFindServerAdapter.mockReturnValue({
       type: "claude_local",
