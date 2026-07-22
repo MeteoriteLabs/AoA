@@ -573,3 +573,159 @@ describe("handleStreamEvent surfaces thinking_delta as reasoning", () => {
     expect(parser.push(line + "\n")).toEqual([]);
   });
 });
+
+describe("result events that carry an API error", () => {
+  it("emits an error chunk when is_error is true", () => {
+    const line = JSON.stringify({
+      type: "result",
+      subtype: "success",
+      is_error: true,
+      api_error_status: 401,
+      duration_ms: 912,
+      result: 'Failed to authenticate. API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"OAuth access token has been revoked."}}',
+      usage: { input_tokens: 0, output_tokens: 0 },
+      total_cost_usd: 0,
+    });
+    const chunks = parseAll([line]);
+    const err = chunks.find((c) => c.type === "error");
+    expect(err).toBeDefined();
+    expect((err as { type: "error"; message: string }).message).toContain("authenticate");
+  });
+
+  it("still emits done so the run is finalized exactly once", () => {
+    const line = JSON.stringify({
+      type: "result",
+      subtype: "success",
+      is_error: true,
+      api_error_status: 401,
+      duration_ms: 912,
+      result: "Failed to authenticate. API Error: 401",
+      usage: { input_tokens: 0, output_tokens: 0 },
+      total_cost_usd: 0,
+    });
+    const chunks = parseAll([line]);
+    expect(chunks.filter((c) => c.type === "done")).toHaveLength(1);
+  });
+
+  it("does not emit an error chunk for a clean result", () => {
+    const line = JSON.stringify({
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      duration_ms: 500,
+      result: "all good",
+      usage: { input_tokens: 10, output_tokens: 5 },
+      total_cost_usd: 0,
+    });
+    const chunks = parseAll([line]);
+    expect(chunks.some((c) => c.type === "error")).toBe(false);
+    expect(chunks.filter((c) => c.type === "done")).toHaveLength(1);
+  });
+
+  // Each half of the `isError` condition, exercised independently.
+
+  it("emits an error chunk from is_error alone (no api_error_status)", () => {
+    const line = JSON.stringify({
+      type: "result",
+      subtype: "success",
+      is_error: true,
+      duration_ms: 120,
+      result: "Something went wrong mid-turn.",
+      usage: { input_tokens: 3, output_tokens: 1 },
+      total_cost_usd: 0,
+    });
+    const chunks = parseAll([line]);
+    expect(chunks.some((c) => c.type === "error")).toBe(true);
+  });
+
+  it("emits an error chunk from api_error_status alone (is_error absent)", () => {
+    const line = JSON.stringify({
+      type: "result",
+      subtype: "success",
+      api_error_status: 401,
+      duration_ms: 120,
+      result: "Failed to authenticate.",
+      usage: { input_tokens: 0, output_tokens: 0 },
+      total_cost_usd: 0,
+    });
+    const chunks = parseAll([line]);
+    expect(chunks.some((c) => c.type === "error")).toBe(true);
+  });
+
+  it("does NOT emit an error chunk when is_error is false despite api_error_status", () => {
+    // Regression guard: a turn the CLI retried past and then SUCCEEDED must not
+    // have its real answer text rendered to the user as an error.
+    const line = JSON.stringify({
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      api_error_status: 500,
+      duration_ms: 2400,
+      result: "Here is the answer you asked for.",
+      usage: { input_tokens: 12, output_tokens: 40 },
+      total_cost_usd: 0,
+    });
+    const chunks = parseAll([line]);
+    expect(chunks.some((c) => c.type === "error")).toBe(false);
+    expect(chunks.filter((c) => c.type === "done")).toHaveLength(1);
+  });
+
+  // Redaction + message-shape contract.
+
+  it("redacts secret-shaped tokens out of the error message", () => {
+    const secret = "sk-ant-oat01-ABCDEFGHIJKLMNOP1234";
+    const line = JSON.stringify({
+      type: "result",
+      subtype: "success",
+      is_error: true,
+      api_error_status: 401,
+      duration_ms: 90,
+      result: `Failed to authenticate with key ${secret} — token revoked.`,
+      usage: { input_tokens: 0, output_tokens: 0 },
+      total_cost_usd: 0,
+    });
+    const chunks = parseAll([line]);
+    const err = chunks.find((c) => c.type === "error") as { type: "error"; message: string };
+    expect(err).toBeDefined();
+    expect(err.message).not.toContain(secret);
+    // The surrounding human-readable reason must survive the scrub.
+    expect(err.message).toContain("Failed to authenticate");
+  });
+
+  it("falls back to a generic message when result is missing, non-string, or blank", () => {
+    const fallback = "The CLI reported an error but gave no detail.";
+    const base = {
+      type: "result",
+      subtype: "success",
+      is_error: true,
+      duration_ms: 10,
+      usage: { input_tokens: 0, output_tokens: 0 },
+      total_cost_usd: 0,
+    };
+    for (const result of [undefined, 42, "   "]) {
+      const chunks = parseAll([JSON.stringify({ ...base, result })]);
+      const err = chunks.find((c) => c.type === "error") as { type: "error"; message: string };
+      expect(err).toBeDefined();
+      expect(err.message).toBe(fallback);
+    }
+  });
+
+  it("emits the error chunk BEFORE the done chunk", () => {
+    const line = JSON.stringify({
+      type: "result",
+      subtype: "success",
+      is_error: true,
+      api_error_status: 401,
+      duration_ms: 912,
+      result: "Failed to authenticate. API Error: 401",
+      usage: { input_tokens: 0, output_tokens: 0 },
+      total_cost_usd: 0,
+    });
+    const chunks = parseAll([line]);
+    const errorIndex = chunks.findIndex((c) => c.type === "error");
+    const doneIndex = chunks.findIndex((c) => c.type === "done");
+    expect(errorIndex).toBeGreaterThanOrEqual(0);
+    expect(doneIndex).toBeGreaterThanOrEqual(0);
+    expect(errorIndex).toBeLessThan(doneIndex);
+  });
+});

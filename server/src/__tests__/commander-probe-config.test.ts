@@ -31,9 +31,10 @@ describe("resolveCommanderProbeConfig (Plan 3 T1)", () => {
       [{ agentId: "cmd-agent" }], // internal_agent_config
       [{ adapterConfig: { env: { ANTHROPIC_API_KEY: { type: "secret_ref", id: "s1" } } } }], // agents
     ]);
-    const cfg = await resolveCommanderProbeConfig(d, "c1", "u1");
+    const cfg = await resolveCommanderProbeConfig(d, "c1", "claude_local", "u1");
     expect(resolveAdapterConfigForRuntime).toHaveBeenCalledWith(
       "c1",
+      "claude_local",
       expect.objectContaining({ env: expect.anything() }),
       expect.objectContaining({ consumerId: "cmd-agent" }),
     );
@@ -42,7 +43,7 @@ describe("resolveCommanderProbeConfig (Plan 3 T1)", () => {
 
   it("returns {} when there is no linked Commander agent (CLI-defaults probe)", async () => {
     const d = db([[]]); // no internal_agent_config agent link
-    const cfg = await resolveCommanderProbeConfig(d, "c1", "u1");
+    const cfg = await resolveCommanderProbeConfig(d, "c1", "claude_local", "u1");
     expect(cfg).toEqual({});
     expect(resolveAdapterConfigForRuntime).not.toHaveBeenCalled();
   });
