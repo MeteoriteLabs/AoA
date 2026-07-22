@@ -37,11 +37,13 @@ function makeDept(overrides: Record<string, unknown> = {}) {
   };
 }
 
-/** Opens the "Add a department" menu and picks the named department — the
- *  on-demand replacement for the old pre-rendered-per-department cards. */
+/** Clicks the inline "+ <name>" chip for a department — the on-demand
+ *  replacement for the old pre-rendered-per-department cards (and, before
+ *  that, a floating menu that was clipped/invisible in the centered
+ *  onboarding layout). */
 async function addDepartment(name: string) {
-  fireEvent.click(await screen.findByRole("button", { name: /add a department/i }));
-  fireEvent.click(await screen.findByRole("menuitem", { name }));
+  const chipName = new RegExp(`^\\+\\s*${name}$`, "i");
+  fireEvent.click(await screen.findByRole("button", { name: chipName }));
 }
 
 describe("BraindumpStep (WS6 — In-flight standalone surface)", () => {
@@ -65,7 +67,26 @@ describe("BraindumpStep (WS6 — In-flight standalone surface)", () => {
     // this rework removes.
     expect(screen.queryByText("Engineering")).toBeNull();
     expect(screen.queryByLabelText("Braindump for Engineering")).toBeNull();
-    expect(screen.getByRole("button", { name: /add a department/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /\+\s*engineering/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /\+\s*marketing/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /\+\s*sales/i })).toBeInTheDocument();
+  });
+
+  it("shows remaining departments as inline + chips (no floating menu)", async () => {
+    list.mockResolvedValue([makeDept({ id: "d1", name: "Software" })]);
+    render(<BraindumpStep companyId="c1" onDone={vi.fn()} />);
+    await screen.findByLabelText("Braindump for Company-wide");
+
+    // No floating/hidden menu — the old absolute-positioned role="menu" is gone.
+    expect(document.querySelector('[role="menu"]')).toBeNull();
+
+    const chip = screen.getByRole("button", { name: /\+\s*software/i });
+    expect(chip).toBeInTheDocument();
+    fireEvent.click(chip);
+
+    // Its card appears and the chip is gone from the remaining list.
+    await waitFor(() => expect(screen.queryByRole("button", { name: /\+\s*software/i })).toBeNull());
+    expect(screen.getByLabelText("Braindump for Software")).toBeTruthy();
   });
 
   it("example-prompt chips insert text into the company textarea", async () => {
@@ -87,16 +108,16 @@ describe("BraindumpStep (WS6 — In-flight standalone surface)", () => {
     expect(screen.getByText("5 / 20,000")).toBeTruthy();
   });
 
-  it("Add-department menu only lists departments not yet added, and hides once all are added", async () => {
+  it("Add-department chips only list departments not yet added, and disappear once all are added", async () => {
     list.mockResolvedValue([makeDept({ id: "d1", name: "Software" })]);
     render(<BraindumpStep companyId="c1" onDone={vi.fn()} />);
 
     await addDepartment("Software");
 
     expect(screen.getByLabelText("Braindump for Software")).toBeTruthy();
-    // Every department has a card now — the control disappears rather than
-    // opening onto an empty menu.
-    expect(screen.queryByRole("button", { name: /add a department/i })).toBeNull();
+    // Every department has a card now — the chip row disappears rather than
+    // showing an empty state.
+    expect(screen.queryByRole("button", { name: /\+\s*software/i })).toBeNull();
   });
 
   it("renders one dump box per department, added on demand", async () => {
@@ -115,16 +136,15 @@ describe("BraindumpStep (WS6 — In-flight standalone surface)", () => {
     expect(screen.getByLabelText("Braindump for Marketing")).toBeTruthy();
   });
 
-  it("filters out non-department projects from the Add-department menu", async () => {
+  it("filters out non-department projects from the Add-department chips", async () => {
     list.mockResolvedValue([
       makeDept({ id: "d1", name: "Software" }),
       { id: "p1", name: "Launch Project", type: "project", functionType: null, workspaces: [], primaryWorkspace: null },
     ]);
     render(<BraindumpStep companyId="c1" onDone={vi.fn()} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: /add a department/i }));
-    expect(await screen.findByRole("menuitem", { name: "Software" })).toBeTruthy();
-    expect(screen.queryByRole("menuitem", { name: "Launch Project" })).toBeNull();
+    expect(await screen.findByRole("button", { name: /\+\s*software/i })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /\+\s*launch project/i })).toBeNull();
   });
 
   it("pre-shows a connected repo chip for a software department", async () => {

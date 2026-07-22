@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Building2, FolderOpen, Github, Plus } from "lucide-react";
+import { Building2, FolderOpen, Github } from "lucide-react";
 import { BRAINDUMP_CONTENT_MAX_LENGTH, type Project } from "@armyofagents/shared";
 import { projectsApi } from "../../api/projects";
 import { braindumpApi, braindumpIdempotencyKey, type BraindumpScope } from "../../api/braindump";
@@ -57,6 +57,12 @@ const DEPARTMENT_PROMPTS: PromptChip[] = [
   { label: "Watch out for…", insert: "Watch out for " },
 ];
 
+/** Shared pill styling for every click-to-act chip in this step — the
+ *  example-prompt inserts and the "Add a department" chips both use it, so
+ *  the two families of controls read as one visual language. */
+const CHIP_CLASS =
+  "rounded-full border border-border-strong px-2 py-1 text-[10px] text-dim transition-colors hover:border-brand hover:text-text disabled:pointer-events-none disabled:opacity-50";
+
 function repoChipFor(project: Project): string | null {
   if (project.functionType !== "software_development") return null;
   const ws = project.primaryWorkspace ?? project.workspaces[0] ?? null;
@@ -96,7 +102,6 @@ export function BraindumpStep({ companyId, onDone }: BraindumpStepProps) {
    *  cards from this list on demand rather than seeing one per department —
    *  see `remainingDepartments` below. */
   const [departments, setDepartments] = useState<Project[]>([]);
-  const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -182,7 +187,6 @@ export function BraindumpStep({ companyId, onDone }: BraindumpStepProps) {
         error: null,
       },
     ]);
-    setAddMenuOpen(false);
   }
 
   /** Appends a starter phrase to a card's textarea — a nudge, not a
@@ -319,7 +323,7 @@ export function BraindumpStep({ companyId, onDone }: BraindumpStepProps) {
                     type="button"
                     disabled={submitting || box.status === "submitted"}
                     onClick={() => insertPrompt(box.key, prompt.insert)}
-                    className="rounded-full border border-border-strong px-2 py-1 text-[10px] text-dim transition-colors hover:border-brand hover:text-text disabled:pointer-events-none disabled:opacity-50"
+                    className={CHIP_CLASS}
                   >
                     {prompt.label}
                   </button>
@@ -386,34 +390,21 @@ export function BraindumpStep({ companyId, onDone }: BraindumpStepProps) {
 
       {remainingDepartments.length > 0 && (
         <Reveal delay={0.14 + boxes.length * 0.09}>
-          <div className="relative">
-            <button
-              type="button"
-              onClick={() => setAddMenuOpen((open) => !open)}
-              disabled={submitting}
-              className="flex items-center gap-1.5 rounded-full border border-dashed border-border-strong px-3 py-1.5 text-xs text-dim transition-colors hover:border-brand hover:text-text disabled:pointer-events-none disabled:opacity-50"
-            >
-              <Plus className="h-3 w-3" aria-hidden />
-              Add a department
-            </button>
-            {addMenuOpen && (
-              <div
-                role="menu"
-                className="absolute z-10 mt-1 w-56 rounded-md border border-border bg-card p-1 shadow-[0_4px_12px_rgba(0,0,0,0.4)]"
-              >
-                {remainingDepartments.map((department) => (
-                  <button
-                    key={department.id}
-                    type="button"
-                    role="menuitem"
-                    onClick={() => addDepartmentBox(department)}
-                    className="block w-full rounded px-2 py-1.5 text-left text-xs text-text hover:bg-field"
-                  >
-                    {department.name}
-                  </button>
-                ))}
-              </div>
-            )}
+          <div>
+            <p className="mb-1.5 text-[11px] text-dim">Add department knowledge</p>
+            <div className="flex flex-wrap gap-1.5">
+              {remainingDepartments.map((department) => (
+                <button
+                  key={department.id}
+                  type="button"
+                  disabled={submitting}
+                  onClick={() => addDepartmentBox(department)}
+                  className={CHIP_CLASS}
+                >
+                  + {department.name}
+                </button>
+              ))}
+            </div>
           </div>
         </Reveal>
       )}
