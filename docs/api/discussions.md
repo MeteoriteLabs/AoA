@@ -90,18 +90,36 @@ Requires `founder` or `team_lead` role.
   "departmentId": null,
   "projectId": "{projectId}",
   "goalId": null,
-  "sourceInfo": null
+  "sourceInfo": null,
+  "clientSubmissionId": "{stableClientId}",
+  "attachments": [
+    { "assetId": "{assetId}" }
+  ]
 }
 ```
 
 Fields:
 - `inputType` — `paste` \| `write` \| `voice` \| `mcp` (required)
-- `rawContent` — the raw text content (required)
+- `rawContent` — raw text content; it may be empty when an attachment is present
 - `title` — optional entry title
 - `departmentId` / `projectId` / `goalId` — entry-level scope override. Entry scope takes priority over thread scope (Decision #61)
 - `sourceInfo` — arbitrary metadata (used by MCP push to carry caller context)
 
-Returns `201` with the entry. Extraction runs asynchronously — poll the discussion to see `extractionStatus` updates on the entry.
+The entry may contain text, attachments, or both. `attachments` accepts up to
+five references, each containing exactly one usable `assetId` or `artifactId`.
+`clientSubmissionId` is an optional stable retry identity up to 200 characters.
+
+Returns `201` for a new entry and `200` when replaying a previously accepted
+`clientSubmissionId`. Authorization is checked before replay lookup. A replay
+returns the existing entry and does not duplicate it.
+
+Agent mentions in accepted text are resolved and written to a durable mention
+outbox in the same transaction as the entry. Delivery is retried and replay-safe;
+it is durable processing, not a guarantee that an agent executes exactly once.
+
+Extraction runs asynchronously — poll the discussion to see `extractionStatus`
+updates on the entry. Reconnecting clients can catch up with
+`GET .../entries?sinceSeq={n}`.
 
 ## Reprocess Entry
 

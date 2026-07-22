@@ -56,13 +56,13 @@ Decisions made during product design and development. Do not relitigate unless e
 | 25 | Sidebar is flat, not deeply nested | Depth lives in detail pages. Sidebar stays scannable. |
 | 26 | Goals not in sidebar — inside department/project detail pages | Goals belong to their parent context, not global nav. |
 | 27 | Home screen is action-first, not information-first | Founder opens AoA to DO things, not LOOK at things. |
-| 28 | Home screen IS the onboarding | No separate wizard. Empty state guides setup. |
+| 28 | ~~Home screen IS the onboarding~~ **(SUPERSEDED 2026-07-18)** | The shipped model uses a resumable, route-driven onboarding flow at `/onboarding`; Home/Lobby entry points route into it. See the onboarding supersession note below. |
 | 29 | Debrief has paste/write first, voice later | Voice recording adds complexity. Start with text input. **[Updated: Voice shipped via Whisper API]** |
 | 30 | Brief pipeline: artifact-first | All content stored as raw artifact before extraction. Original never lost. |
 | 31 | Department goals show activity metrics, not progress bars | Ongoing departments don't "progress" — they operate. |
 | 32 | Project goals show progress bars | Projects have endpoints and measurable completion. |
 | 33 | Suggestion engine starts with goal-gap nudges only | Full suggestion engine deferred. Keep the first release simple. |
-| 34 | Initial release is solo founder only (single user, no RBAC enforcement) | Multi-user and team permissions come later. |
+| 34 | ~~Initial release is solo founder only (single user, no RBAC enforcement)~~ **(SUPERSEDED 2026-07-18)** | Multi-user Google identity, company membership, founder/lead/member RBAC, invitations, and approval-gated joining have shipped. See the onboarding supersession note below. |
 | 35 | Tasks and memory items CAN exist without a department/project | Not everything fits a department (e.g., legal, personal, strategic). Unscoped items live in global views. Founder assigns a department later if one gets created. |
 | 36 | LLM extraction prompt includes available departments for auto-suggestion | The extraction prompt is dynamically built with the company's department/project list. LLM suggests placement per item but sets null if no clear fit. Founder confirms during Brief review. |
 
@@ -72,11 +72,56 @@ Decisions made during product design and development. Do not relitigate unless e
 
 | # | Decision | Rationale |
 |---|----------|-----------|
-| 37 | Initial release excludes: voice debrief, suggestion engine, templates, multi-user, autonomy tiers, automated workflows, analytics page, mobile | Focus on core loop: give work → execute → review → learn. |
+| 37 | Initial release excludes: voice debrief, suggestion engine, templates, ~~multi-user~~, autonomy tiers, automated workflows, analytics page, mobile | Multi-user onboarding and Team RBAC shipped in July 2026 and supersede that portion of the scope lock. The other exclusions remain historical scope context unless separately superseded. |
 | 38 | Department templates are deferred | Need real usage data to make good templates. |
 | 39 | LLM preferences per task type are deferred | Founder starts with one preferred LLM globally. |
 | 57 | Deferred intelligence/team/artifact scope excludes: autonomy tiers, automated workflows, department blueprints, service connectors, hosted deployment, external publishing, meeting integration, mobile, multi-company, experiment system, cross-agent memory propagation | Focuses on intelligence + team + artifacts. Autonomy, integration, and scale are later. |
 | 58 | Later scale scope: 5 pillars — Autonomy (tiers, confidence, cross-agent learning), Workflows (pipeline templates, conversation-to-delivery), Connectors (GitHub/Figma/Linear/Slack bidirectional sync), Blueprints (department/project templates + ClipHub), Hosted (API adapters, cloud workspaces, BYOK/bundled). Plus: meeting integration, mobile, multi-company, analytics, experiment system | Full autonomy and scale. Founder shifts from operator to strategist. |
+
+---
+
+## Onboarding And Multi-User Supersession (2026-07-18)
+
+**Status:** Shipped. This note supersedes Decisions #28 and #34 and only the
+`multi-user` exclusion in Decision #37.
+
+1. **Onboarding is a resumable route, not a Home empty state or modal.** New
+   founders enter `/onboarding`. Progress is durable, forward-only, and split
+   between the user layer and the organization layer, so interrupted setup
+   resumes without duplicating the organization. The shipped founder sequence
+   covers Human Operating Profile, organization, writable environment,
+   Commander selection and verification, first department, first assigned
+   agent, and review.
+
+2. **Human identity is Google-only outside the loopback trust boundary.**
+   Better Auth provides session cookies; email/password auth is removed.
+   Authenticated deployments fail startup without Google credentials. The
+   first Google user on an empty instance becomes the instance administrator.
+   A loopback-only `local_trusted` quickstart may instead use the explicit local
+   development identity.
+
+3. **Multi-user Team governance is current behavior.** Humans have active
+   company memberships and `founder`, `team_lead`, or `team_member` roles.
+   Email-targeted invitations carry role/scope defaults. A verified-email match
+   may auto-admit an ordinary member or lead, while mismatches and privileged
+   authority remain pending for founder approval. Tokenless verified-email
+   discovery requires explicit consent before the invite is claimed.
+
+4. **The current invited journey ends at membership.** It collects the Human
+   Operating Profile, files or claims the join request, and reaches
+   `SETUP_COMPLETE` after admission. Reserved walkthrough/discussion/scope
+   states are not shipped onboarding behavior.
+
+**Key references:** `packages/shared/src/onboarding.ts`,
+`server/src/routes/onboarding.ts`,
+`server/src/routes/onboarding-journey.ts`,
+`server/src/routes/onboarding-environment.ts`,
+`server/src/routes/onboarding-join.ts`,
+`server/src/routes/user-profiles.ts`,
+`server/src/auth/better-auth.ts`, `ui/src/onboarding/`,
+`tests/e2e/onboarding-founder-happy-path.spec.ts`,
+`tests/e2e/onboarding-invited.spec.ts`, and
+`tests/e2e/onboarding-resume.spec.ts`.
 
 ---
 
@@ -499,11 +544,11 @@ AoA keeps `issues.artifactId` as the primary artifact pointer for artifact-as-in
 
 **Context:** Paperclip released `packages/mcp-server` — a stdio-based MCP server that wraps the Paperclip REST API for external MCP clients (e.g., Claude Desktop, Cursor) to call Paperclip from outside a running instance. It's a separate npm package (~1,148 LOC) that ships with its own bin entry and serves as a bridge: external MCP client → stdio → REST → Paperclip backend.
 
-**Decision:** Do NOT port. AoA's existing in-server MCP at `server/src/mcp/server.ts` already exposes 31 RBAC-scoped, rate-limited tools directly to clients connected to the running AoA backend (read tools, write tools, document tools, approval tools — all per-user-keyed via `mcp_api_keys`). The standalone wrapper would only matter when the MCP client cannot reach AoA's HTTP endpoint — a use case AoA's local-first deployment model does not currently have.
+**Decision:** Do NOT port. At the time this decision was locked, AoA's existing in-server MCP at `server/src/mcp/server.ts` exposed 31 RBAC-scoped, rate-limited tools directly to clients connected to the running AoA backend (read tools, write tools, document tools, approval tools — all per-user-keyed via `mcp_api_keys`). The current generated registry may contain more tools; the standalone-wrapper decision does not depend on that historical count. The wrapper would only matter when the MCP client cannot reach AoA's HTTP endpoint — a use case AoA's local-first deployment model does not currently have.
 
 **Reasoning:**
 - AoA's deployment model assumes the client and server run on the same host or LAN. The in-server MCP serves that case directly without a stdio bridge.
-- Maintaining the standalone package would mean tracking Paperclip's tool surface separately from AoA's (which has diverged — AoA has 31 tools vs. Paperclip's tool count, with different RBAC scoping and AoA-specific tools like `debrief-push` mapped to discussions).
+- Maintaining the standalone package would mean tracking Paperclip's tool surface separately from AoA's. The surfaces had already diverged when this decision was locked, with different RBAC scoping and AoA-specific tools such as `debrief-push` mapped to discussions.
 - The performance + simplicity argument for stdio-MCP doesn't hold when AoA's MCP is already a single in-process call away.
 
 **Revisit when:** AoA grows a multi-tenant cloud deployment where external Claude Desktop / Cursor / etc. clients on a different machine need to talk to a hosted instance. At that point, port the standalone package and rebrand: `@paperclipai/mcp-server` → `@armyofagents/mcp-server`, bin `paperclip-mcp-server` → `aoa-mcp-server`, env vars stay as wire-protocol contracts (`PAPERCLIP_API_KEY` etc.) per Decision #92's rationale.

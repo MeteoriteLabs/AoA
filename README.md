@@ -183,24 +183,30 @@ AoA handles the hard orchestration details correctly.
 
 ## Quickstart
 
-Install locally. No account required for local use.
-
-```bash
-npx @armyofagents/cli onboard --yes
-```
-
-Or manually:
+Install from a source checkout. No account is required for local use.
 
 ```bash
 git clone https://github.com/MeteoriteLabs/aoa.git
 cd aoa
 pnpm install
-pnpm dev
+pnpm aoa onboard --yes
 ```
 
-This starts the API server at `http://localhost:3100`. An embedded PostgreSQL database is created automatically — no setup required.
+Keep the command running and open the URL it prints. Use `pnpm aoa run` from
+the checkout for later starts. This starts the API server at
+`http://localhost:3100`; an embedded PostgreSQL database is created
+automatically.
+
+The MeteoriteLabs AoA CLI is not currently published to npm. Do not use
+`npx aoa` or `npx paperclipai`: those package names resolve to other projects.
 
 > **Requirements:** Node.js 20+, pnpm 9.15+
+
+Open the URL to continue through guided setup. The first-time flow creates your
+profile and organization, verifies a writable workspace and your Commander CLI,
+then creates your first department and agent. The loopback-only quickstart uses
+a local board identity, so it does not require a Google account; authenticated
+or remotely exposed deployments use Google sign-in.
 
 <br/>
 

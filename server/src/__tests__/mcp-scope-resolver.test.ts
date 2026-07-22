@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// B-H1: resolveUserScope must board-gate founder escalation. Only a "board"
-// actor may ever resolve to founder scope (via user_roles). An "agent" actor
+// B-H1: resolveUserScope must board-gate founder escalation. An agent actor
 // resolves to its agent_projects scope (never founder); any other source
 // (mcp/commander/unknown) resolves to an empty scoped set (least privilege).
 
@@ -30,7 +29,10 @@ vi.mock("drizzle-orm", () => ({
   inArray: (left: unknown, values: unknown) => ({ op: "inArray", left, values }),
 }));
 
-import { resolveUserScope } from "../mcp/tools/scope.js";
+import {
+  resolveMcpOwnerArtifactScope,
+  resolveUserScope,
+} from "../mcp/tools/scope.js";
 
 /**
  * Sequence-based mock db: each `.select().from().where()` chain resolves to the
@@ -88,7 +90,7 @@ describe("resolveUserScope board-gate (B-H1)", () => {
     expect([...scope.projectIds]).toEqual([]);
   });
 
-  it("(b) mcp actor with zero roles → scoped with empty projectIds (least privilege), no DB query", async () => {
+  it("(b) generic mcp scope stays empty and never resolves owner roles", async () => {
     const { db, queryCount } = makeDb([[{ role: "founder", projectId: null }]]);
     const scope = await resolveUserScope(db, "company-1", {
       source: "mcp",
@@ -98,7 +100,6 @@ describe("resolveUserScope board-gate (B-H1)", () => {
     if (scope.kind !== "scoped") throw new Error("expected scoped");
     expect([...scope.projectIds]).toEqual([]);
     expect(scope.userId).toBe("mcp-user");
-    // mcp/commander/unknown sources must NOT consult user_roles (no escalation surface).
     expect(queryCount()).toBe(0);
   });
 
@@ -145,5 +146,32 @@ describe("resolveUserScope board-gate (B-H1)", () => {
     if (scope.kind !== "scoped") throw new Error("expected scoped");
     expect([...scope.projectIds]).toEqual(["dept-eng"]);
     expect(scope.userId).toBe("member-1");
+  });
+});
+
+describe("resolveMcpOwnerArtifactScope", () => {
+  it("grants founder scope only for the artifact-version operation", async () => {
+    const { db } = makeDb([[{ role: "founder", projectId: null }]]);
+    const scope = await resolveMcpOwnerArtifactScope(db, "company-1", "founder-1");
+    expect(scope).toEqual({ kind: "founder", userId: "founder-1" });
+  });
+
+  it("scopes a key owner to role projects and fails closed with zero roles", async () => {
+    const { db } = makeDb([
+      [
+        { role: "team_lead", projectId: "dept-eng" },
+        { role: "team_member", projectId: "dept-design" },
+      ],
+      [],
+    ]);
+    const leadScope = await resolveMcpOwnerArtifactScope(db, "company-1", "lead-1");
+    expect(leadScope.kind).toBe("scoped");
+    if (leadScope.kind !== "scoped") throw new Error("expected scoped");
+    expect([...leadScope.projectIds].sort()).toEqual(["dept-design", "dept-eng"]);
+
+    const rolelessScope = await resolveMcpOwnerArtifactScope(db, "company-1", "roleless-1");
+    expect(rolelessScope.kind).toBe("scoped");
+    if (rolelessScope.kind !== "scoped") throw new Error("expected scoped");
+    expect([...rolelessScope.projectIds]).toEqual([]);
   });
 });

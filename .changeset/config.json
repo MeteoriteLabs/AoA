@@ -5,7 +5,10 @@
   "fixed": [["@armyofagents/*"]],
   "linked": [],
   "access": "public",
-  "baseBranch": "master",
+  "baseBranch": "main",
   "updateInternalDependencies": "patch",
-  "ignore": ["@armyofagents/ui"]
+  "ignore": [
+    "@armyofagents/ui",
+    "@paperclipai/create-paperclip-plugin"
+  ]
 }

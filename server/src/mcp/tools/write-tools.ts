@@ -25,6 +25,7 @@ import {
   assertScopedProjectAccess,
   canAccessProjectScopedEntity,
   filterArtifactsForScope,
+  resolveMcpOwnerArtifactScope,
 } from "./scope.js";
 
 function hasOwn(value: object, key: string) {
@@ -409,10 +410,14 @@ export async function handleAttachArtifactVersion(
   // pass-through in filterArtifactsForScope — an artifact owned by another
   // company must never be writable through this tool. The companyId check is
   // the real guard.
-  const filtered =
-    artifact && artifact.companyId === ctx.companyId
-      ? await filterArtifactsForScope(ctx.db, ctx.scope, [artifact])
-      : [];
+  let filtered: Array<Record<string, unknown>> = [];
+  if (artifact && artifact.companyId === ctx.companyId) {
+    const artifactScope =
+      ctx.actor.source === "mcp"
+        ? await resolveMcpOwnerArtifactScope(ctx.db, ctx.companyId, ctx.actor.userId)
+        : ctx.scope;
+    filtered = await filterArtifactsForScope(ctx.db, artifactScope, [artifact]);
+  }
   if (filtered.length === 0) {
     return notFoundResult("Artifact not found");
   }

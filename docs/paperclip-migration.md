@@ -48,9 +48,8 @@ See `server/src/adapters/registry.ts` — the `hermesLocalAdapter.execute` wrapp
 
 AoA's company export format (`schemaVersion: 2`) is backward-compatible with Paperclip v1 bundles on import. Unknown bundle sections warn-and-continue rather than failing, so a Paperclip v1 export can be imported into AoA.
 
-The export format is defined in:
-- `server/src/services/company-export.ts`
-- `server/src/services/company-import.ts`
+The export and import format is implemented in:
+- `server/src/services/company-portability.ts`
 
 ---
 
@@ -122,4 +121,6 @@ All agent execution is now CLI-only. The Provider SDK utilities in `server/src/s
 
 ## Historical Specs (Archived)
 
-Original Paperclip and early AoA planning documents are in `docs/archive/plans/`. They describe the system as it was designed, not necessarily as it is built. Always prefer the current codebase over these archived specs.
+Historical session records live under `docs/archive/`. Active execution plans
+live under `docs/aoa/plans/`. Neither is the current runtime contract: prefer the
+current codebase and authoritative reference documentation.

@@ -1,5 +1,9 @@
 # @paperclipai/create-paperclip-plugin
 
+This workspace is a private compatibility copy of the upstream package. AoA
+builds and tests it locally, but AoA release automation must not publish the
+upstream-owned `@paperclipai` name.
+
 Scaffolding tool for creating new Paperclip plugins.
 
 ```bash

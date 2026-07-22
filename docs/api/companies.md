@@ -48,9 +48,18 @@ PATCH /api/companies/{companyId}
 {
   "name": "Updated Name",
   "description": "Updated description",
-  "budgetMonthlyCents": 100000
+  "budgetMonthlyCents": 100000,
+  "agentCompletionPolicyDefault": "review_required",
+  "agentCompletionReviewGuardrail": true,
+  "humanQuestionSlaHours": 24
 }
 ```
+
+`agentCompletionPolicyDefault` is `review_required` or `agent_can_complete` and defaults to `review_required`. `agentCompletionReviewGuardrail`, when true, forces every newly resolved task policy to require review even if a narrower project, routine, template, or task setting allows agent completion.
+
+`humanQuestionSlaHours` controls the company fallback SLA for work questions. It defaults to 24 and must be between 1 and 720 hours. A project-specific value can override it.
+
+Changing these policy fields requires company access and task-assignment authority. Completion policies are snapshotted on tasks at creation; changing a default does not rewrite existing task snapshots. See [Tasks](issues.md).
 
 ## Enable Teams Feature
 
@@ -163,5 +172,8 @@ Returns the created/updated company, agents list, and any warnings. Unknown bund
 | `budgetMonthlyCents` | number | Monthly budget limit |
 | `enableTeams` | boolean | Teams feature flag |
 | `requireBoardApprovalForNewAgents` | boolean | Whether agent hires go through approval queue |
+| `agentCompletionPolicyDefault` | string | Company default: `review_required` or `agent_can_complete` |
+| `agentCompletionReviewGuardrail` | boolean | Hard company-wide review requirement when enabled |
+| `humanQuestionSlaHours` | number | Fallback work-question SLA, 1–720 hours; default 24 |
 | `createdAt` | string | ISO timestamp |
 | `updatedAt` | string | ISO timestamp |

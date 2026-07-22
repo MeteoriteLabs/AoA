@@ -1,6 +1,6 @@
 # @armyofagents/cli
 
-> Historical entries below reference this CLI's prior package name `paperclipai` and the legacy `@paperclipai/*` workspace scope. The CLI is now published as `@armyofagents/cli`; the `paperclipai` bin alias is preserved for backward compatibility (see root `package.json`). Entries authored under the legacy names are kept verbatim as a release record.
+> Historical entries below reference this CLI's prior package name `paperclipai` and the legacy `@paperclipai/*` workspace scope. The repository is configured for a future `@armyofagents/cli` release, but that package is not currently published; the `paperclipai` bin alias is preserved for source-checkout compatibility (see root `package.json`). Entries authored under the legacy names are kept verbatim as a release record.
 
 ## 0.2.7
 

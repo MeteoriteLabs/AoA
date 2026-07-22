@@ -48,6 +48,17 @@ Roles remain:
 
 Team leads are department-scoped. Founders and instance admins have broader control.
 
+Use invitations for normal onboarding so the recipient verifies their identity and accepts the company role. Founders can resend an outstanding invite (which rotates its token and expiry) or revoke it. Direct Add Member is available to authorized operators but bypasses the invite-verification flow.
+
+Open a human's profile to maintain their display name, title, bio, location, timezone, avatar, and professional links. Members can edit their own profile; founders and system administrators can edit another member's profile.
+
+Capability documents provide structured context for agent collaboration. The standard documents cover resume, skills, responsibilities, preferences, availability, and background; members may add custom Markdown capability documents. Keep these current when responsibilities or availability change.
+
+Before removing a member who has human or agent reports, reassign those reports
+in the removal flow. The current system administrator can transfer that
+instance-level flag to another existing founder with the explicit `TRANSFER`
+confirmation. This does not grant or transfer the founder role.
+
 ## Teams
 
 The Teams tab lists grouped agent teams. New teams can be built from scratch or imported from a team package.
@@ -57,3 +68,9 @@ The Teams tab lists grouped agent teams. New teams can be built from scratch or 
 The AoA Team section covers the built-in crew. It has sub-tabs for roster, tasks, kanban, and governance.
 
 The sidebar **Crew Board** shortcut opens the AoA Team task board. It is a flat board of active crew-agent tasks. Create work from Discussions, Tasks, or approved crew flows; use Crew Board to monitor and move existing crew work.
+
+## API Reference
+
+- [Team API](../../api/team.md)
+- [Onboarding API](../../api/onboarding.md)
+- [Agents API](../../api/agents.md)

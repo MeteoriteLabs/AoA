@@ -15,7 +15,10 @@ summary: "Identifiers that intentionally still say paperclip and why"
 - `cli/package.json:8` — `"paperclipai": "dist/index.js"` in the `bin` map
 - Root `package.json:27` — workspace-level alias forwarding
 
-**Why kept.** The primary public discovery path for the project before the AoA rebrand was `npx paperclipai onboard`. Users who bookmarked that command, have it in shell profiles, or find it via older blog posts and docs will still get a working CLI. Silently removing it would create a confusing failure with no error message.
+**Why kept.** The alias preserves repository-local scripts and remains part of
+the intended future scoped CLI artifact. It does not make `npx paperclipai`
+safe: that npm package belongs to the upstream Paperclip project, while the
+MeteoriteLabs AoA scoped CLI is not currently published.
 
 **Retire when.** Usage telemetry shows zero `paperclipai` invocations for two consecutive minor version windows. Retirement is a one-line deletion in both `package.json` files; no migration is needed.
 

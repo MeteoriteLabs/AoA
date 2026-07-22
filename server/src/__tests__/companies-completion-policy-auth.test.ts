@@ -37,7 +37,7 @@ vi.mock("../services/index.js", () => ({
   logActivity: vi.fn(),
 }));
 
-function createApp() {
+function createApp(actorOverrides: Record<string, unknown> = {}) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -47,6 +47,7 @@ function createApp() {
       companyIds: [companyId],
       source: "session",
       isInstanceAdmin: false,
+      ...actorOverrides,
     };
     next();
   });
@@ -192,6 +193,48 @@ describe("company completion-policy authorization", () => {
 
     expect(res.status).toBe(200);
     expect(mockAccessService.canUser).toHaveBeenCalledWith(companyId, userId, "tasks:assign");
+    expect(mockCompanyService.update).toHaveBeenCalledOnce();
+  });
+
+  it("rejects company question SLA changes without tasks:assign", async () => {
+    mockAccessService.canUser.mockResolvedValue(false);
+
+    const res = await request(createApp())
+      .patch(`/api/companies/${companyId}`)
+      .send({ humanQuestionSlaHours: 12 });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("tasks:assign");
+    expect(mockCompanyService.update).not.toHaveBeenCalled();
+  });
+
+  it("allows company question SLA changes with tasks:assign", async () => {
+    mockAccessService.canUser.mockResolvedValue(true);
+
+    const res = await request(createApp())
+      .patch(`/api/companies/${companyId}`)
+      .send({ humanQuestionSlaHours: 12 });
+
+    expect(res.status).toBe(200);
+    expect(mockAccessService.canUser).toHaveBeenCalledWith(companyId, userId, "tasks:assign");
+    expect(mockCompanyService.update).toHaveBeenCalledWith(
+      companyId,
+      expect.objectContaining({ humanQuestionSlaHours: 12 }),
+    );
+  });
+
+  it.each([
+    { source: "local_implicit", companyIds: [] },
+    { isInstanceAdmin: true },
+  ])("preserves the privileged bypass for company question SLA changes", async (overrides) => {
+    mockAccessService.canUser.mockResolvedValue(false);
+
+    const res = await request(createApp(overrides))
+      .patch(`/api/companies/${companyId}`)
+      .send({ humanQuestionSlaHours: 6 });
+
+    expect(res.status).toBe(200);
+    expect(mockAccessService.canUser).not.toHaveBeenCalled();
     expect(mockCompanyService.update).toHaveBeenCalledOnce();
   });
 

@@ -7,15 +7,38 @@ import {
   mcpArtifactVersionSchema,
 } from "@armyofagents/shared";
 import { validate } from "../middleware/validate.js";
-import { artifactService, logActivity } from "../services/index.js";
+import { artifactService, companyService, logActivity, permissionService } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { assertRole } from "../middleware/rbac.js";
 import { registerIssueParamNormalizer } from "./issue-param-normalizer.js";
+import { forbidden } from "../errors.js";
 
 export function artifactRoutes(db: Db) {
   const router = Router();
   const svc = artifactService(db);
   registerIssueParamNormalizer(router, db, ["issueId"]);
+
+  async function assertFounderMcpPublisher(req: Parameters<typeof assertBoard>[0], companyId: string) {
+    if (req.actor.type === "mcp") {
+      if (!req.actor.userId) {
+        throw forbidden("Founder authority required");
+      }
+      const company = await companyService(db).getById(companyId);
+      if (!company) {
+        throw forbidden("Company not found");
+      }
+      if (!company.mcpEnabled) {
+        throw forbidden("MCP server is disabled for this company");
+      }
+      const role = await permissionService(db).getEffectiveRole(companyId, req.actor.userId);
+      if (role !== "founder") {
+        throw forbidden("Founder authority required");
+      }
+      return;
+    }
+    assertBoard(req);
+    await assertRole(db, req, companyId, "founder");
+  }
 
   // List artifacts for a company
   router.get("/companies/:companyId/artifacts", async (req, res) => {
@@ -113,6 +136,7 @@ export function artifactRoutes(db: Db) {
         return;
       }
       assertCompanyAccess(req, existing.companyId);
+      assertBoard(req);
       await assertRole(db, req, existing.companyId, "founder");
 
       const version = await svc.addVersion(id, req.body);
@@ -196,7 +220,7 @@ export function artifactRoutes(db: Db) {
         return;
       }
       assertCompanyAccess(req, existing.companyId);
-      await assertRole(db, req, existing.companyId, "founder");
+      await assertFounderMcpPublisher(req, existing.companyId);
 
       const {
         sourceDetail,

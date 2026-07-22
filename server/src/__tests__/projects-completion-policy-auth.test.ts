@@ -125,7 +125,7 @@ describe("project completion-policy authorization", () => {
       .send({ name: "Research", agentCompletionPolicyDefault: "agent_can_complete" });
 
     expect(res.status).toBe(403);
-    expect(res.body.error).toBe("Only human operators may set project completion policy");
+    expect(res.body.error).toBe("Only human operators may set project scope policy");
     expect(mocks.canUser).not.toHaveBeenCalled();
     expect(mocks.create).not.toHaveBeenCalled();
   });
@@ -154,6 +154,78 @@ describe("project completion-policy authorization", () => {
     );
   });
 
+  it("rejects a project question SLA on create without tasks:assign", async () => {
+    const res = await request(makeApp(boardActor()))
+      .post(`/api/companies/${companyId}/projects`)
+      .send({ name: "Research", humanQuestionSlaHours: 12 });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Missing permission: tasks:assign");
+    expect(mocks.create).not.toHaveBeenCalled();
+  });
+
+  it("allows a project question SLA on create with tasks:assign", async () => {
+    mocks.canUser.mockResolvedValue(true);
+
+    const res = await request(makeApp(boardActor()))
+      .post(`/api/companies/${companyId}/projects`)
+      .send({ name: "Research", humanQuestionSlaHours: 12 });
+
+    expect(res.status).toBe(201);
+    expect(mocks.create).toHaveBeenCalledWith(
+      companyId,
+      expect.objectContaining({ humanQuestionSlaHours: 12 }),
+    );
+  });
+
+  it.each([
+    {
+      type: "agent",
+      source: "agent_key",
+      agentId: "agent-1",
+      companyId,
+    },
+    {
+      type: "mcp",
+      source: "mcp_key",
+      userId: "user-1",
+      companyId,
+      keyId: "key-1",
+    },
+  ])("rejects non-board project question SLA updates", async (actor) => {
+    const res = await request(makeApp(actor))
+      .patch(`/api/projects/${projectId}`)
+      .send({ humanQuestionSlaHours: 8 });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Only human operators may set project scope policy");
+    expect(mocks.update).not.toHaveBeenCalled();
+  });
+
+  it("gates clearing a project question SLA", async () => {
+    const res = await request(makeApp(boardActor()))
+      .patch(`/api/projects/${projectId}`)
+      .send({ humanQuestionSlaHours: null });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Missing permission: tasks:assign");
+    expect(mocks.update).not.toHaveBeenCalled();
+  });
+
+  it("allows changing a project question SLA with tasks:assign", async () => {
+    mocks.canUser.mockResolvedValue(true);
+
+    const res = await request(makeApp(boardActor()))
+      .patch(`/api/projects/${projectId}`)
+      .send({ humanQuestionSlaHours: 8 });
+
+    expect(res.status).toBe(200);
+    expect(mocks.update).toHaveBeenCalledWith(
+      projectId,
+      expect.objectContaining({ humanQuestionSlaHours: 8 }),
+    );
+  });
+
   it("allows ordinary project updates without tasks:assign", async () => {
     const res = await request(makeApp(boardActor()))
       .patch(`/api/projects/${projectId}`)
@@ -164,13 +236,26 @@ describe("project completion-policy authorization", () => {
     expect(mocks.update).toHaveBeenCalledOnce();
   });
 
-  it("preserves the local implicit operator bypass", async () => {
-    const res = await request(makeApp(boardActor({
-      source: "local_implicit",
-      companyIds: [],
-    })))
+  it.each([
+    {
+      label: "local implicit SLA",
+      overrides: { source: "local_implicit", companyIds: [] },
+      update: { humanQuestionSlaHours: 6 },
+    },
+    {
+      label: "instance-admin SLA",
+      overrides: { isInstanceAdmin: true },
+      update: { humanQuestionSlaHours: 6 },
+    },
+    {
+      label: "local implicit completion policy",
+      overrides: { source: "local_implicit", companyIds: [] },
+      update: { agentCompletionPolicyDefault: "review_required" },
+    },
+  ])("preserves the privileged bypass for $label", async ({ overrides, update }) => {
+    const res = await request(makeApp(boardActor(overrides)))
       .patch(`/api/projects/${projectId}`)
-      .send({ agentCompletionPolicyDefault: "review_required" });
+      .send(update);
 
     expect(res.status).toBe(200);
     expect(mocks.canUser).not.toHaveBeenCalled();

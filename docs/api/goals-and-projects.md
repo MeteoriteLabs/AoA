@@ -106,6 +106,8 @@ POST /api/companies/{companyId}/projects
   "description": "End-to-end authentication",
   "type": "project",
   "status": "planned",
+  "agentCompletionPolicyDefault": "review_required",
+  "humanQuestionSlaHours": 12,
   "workspace": {
     "name": "auth-repo",
     "cwd": "/path/to/workspace",
@@ -117,6 +119,10 @@ POST /api/companies/{companyId}/projects
 ```
 
 `workspace` is optional. If present, the project is seeded with that workspace. A workspace requires at least one of `cwd` or `repoUrl`.
+
+Projects and departments can set `agentCompletionPolicyDefault` to `review_required`, `agent_can_complete`, or `null`. `null` inherits the company default. They can also set `humanQuestionSlaHours` from 1 to 720, or `null` to inherit the company's work-question SLA. Agents cannot change these scope policies; board operators need task-assignment authority.
+
+The completion policy is resolved and snapshotted when a task is created. Project or department defaults override the company default, but the company review guardrail can still force review. See [Tasks](issues.md).
 
 ### Update Project
 

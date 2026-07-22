@@ -45,9 +45,9 @@ export function projectRoutes(db: Db) {
   const svc = projectService(db);
   const secretsSvc = secretService(db);
 
-  async function assertCanSetCompletionPolicyDefault(req: Request, companyId: string) {
+  async function assertCanSetScopePolicy(req: Request, companyId: string) {
     if (req.actor.type !== "board") {
-      throw forbidden("Only human operators may set project completion policy");
+      throw forbidden("Only human operators may set project scope policy");
     }
     if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
     const allowed = await accessService(db).canUser(companyId, req.actor.userId, "tasks:assign");
@@ -118,8 +118,11 @@ export function projectRoutes(db: Db) {
   router.post("/companies/:companyId/projects", validate(createProjectSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    if ("agentCompletionPolicyDefault" in req.body) {
-      await assertCanSetCompletionPolicyDefault(req, companyId);
+    if (
+      "agentCompletionPolicyDefault" in req.body ||
+      "humanQuestionSlaHours" in req.body
+    ) {
+      await assertCanSetScopePolicy(req, companyId);
     }
 
     // Security finding C1: see PATCH handler comment. Same gate on creation
@@ -199,8 +202,11 @@ export function projectRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
-    if ("agentCompletionPolicyDefault" in req.body) {
-      await assertCanSetCompletionPolicyDefault(req, existing.companyId);
+    if (
+      "agentCompletionPolicyDefault" in req.body ||
+      "humanQuestionSlaHours" in req.body
+    ) {
+      await assertCanSetScopePolicy(req, existing.companyId);
     }
 
     // Security finding C1: shell-command fields on executionWorkspacePolicy are

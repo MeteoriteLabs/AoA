@@ -1,5 +1,9 @@
 # Commander attachment runtime boundary
 
+For operator workflows, see [Work with Commander](../guides/board-operator/commander.md)
+and [Compose messages and comments](../guides/board-operator/composer.md). For the
+request contract, see the [Commander API](../api/internal-agent.md).
+
 Commander file selection uploads through the authenticated, company-scoped asset
 endpoint. The composer represents each completed upload as a typed `asset`
 Commander input reference containing the asset ID, filename, content type, byte
