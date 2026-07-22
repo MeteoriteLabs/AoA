@@ -51,6 +51,17 @@ Today the in-flight chrome (added in the counter work) shows only `StepPosition`
 
 ---
 
+## Task 4 — First-job task card: richer + smart defaults (added after live test)
+
+**Files:** `ui/src/onboarding/inflight/FirstJobStep.tsx`; test `__tests__/FirstJobStep.test.tsx`.
+
+Live E2E test showed the flow works (dept→agent→task all created + wired), but the first-job task card is too sparse (title + assignee only) and defaults the assignee to "Unassigned" even though the founder just created a department worker. Founder wants: add Description + Priority; default the assignee to the just-created agent; default/associate the department they chose. (Department creation is already guaranteed — no change needed there.)
+
+- [ ] **Failing test:** with `agentsApi.list` → one agent (e.g. Ada) and `projectsApi.list` → one department (Software), render `FirstJobStep`; assert (a) a Description field + a Priority control render; (b) the assignee defaults to Ada (not "Unassigned"); (c) creating a task calls `issuesApi.create` with `{title, description?, status:"todo", priority, assigneeAgentId: <Ada>, projectId: <Software>}` (verify the payload keys the issues API actually accepts by reading `ui/src/api/issues.ts` + the standalone `NewIssueDialog` submit).
+- [ ] **Run → fail.**
+- [ ] **Implement:** load departments (`projectsApi.list`, filter `type==="department"`) alongside the existing `agentsApi.list`. Add to the task card: a Description textarea (optional) and a Priority selector (Low/Medium/High, default Medium — match the values `NewIssueDialog`/the issues API use). Default `taskAssigneeId` to the first org agent once loaded; default a new `projectId` to the first department. Optionally show the department as a small select/chip defaulting to the chosen dept. Thread `description`, `priority`, `projectId` into the `issuesApi.create` payload (only when set). Keep `fireOnDoneOnce`, "Skip to Home", the single-centered-card layout, and the task-only structure. If there are 0 agents (agent step skipped), keep "Unassigned" as the default; if 0 departments (can't happen per DefineDepartments, but be defensive) omit `projectId`.
+- [ ] **Run → pass** + tsc. **Commit** `feat(onboarding): first-job task card — description, priority, default assignee + department`.
+
 ## Final verification
 - [ ] `cd ui && npx tsc --noEmit -p tsconfig.json` clean; `cd ui && npx vitest run src/onboarding` green.
 - [ ] Live on memstep (:3120): walk onboarding (or resume) — first-job shows only a task card (no discussion); braindump shows inline "+ <Dept>" chips that add a card on click; Back appears on braindump/first-job (steps back a surface) but NOT on departments, and the Map has no Back. Counter still continuous.
