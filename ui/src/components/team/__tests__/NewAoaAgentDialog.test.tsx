@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ToastProvider } from "../../../context/ToastContext";
+import { TooltipProvider } from "../../ui/tooltip";
 import { ToastViewport } from "../../ToastViewport";
 import { NewAoaAgentDialog } from "../NewAoaAgentDialog";
 import { agentsApi } from "../../../api/agents";
@@ -16,7 +17,10 @@ vi.mock("@/lib/router", async () => {
 });
 
 vi.mock("../../../api/agents", () => ({
-  agentsApi: { create: vi.fn() },
+  agentsApi: {
+    create: vi.fn(),
+    adapterModels: vi.fn().mockResolvedValue([]),
+  },
 }));
 
 function setup() {
@@ -28,7 +32,9 @@ function setup() {
     <MemoryRouter>
       <QueryClientProvider client={qc}>
         <ToastProvider>
-          <NewAoaAgentDialog open onOpenChange={() => {}} companyId="company-1" onSuccess={onSuccess} />
+          <TooltipProvider>
+            <NewAoaAgentDialog open onOpenChange={() => {}} companyId="company-1" onSuccess={onSuccess} />
+          </TooltipProvider>
           <ToastViewport />
         </ToastProvider>
       </QueryClientProvider>
@@ -56,6 +62,30 @@ describe("NewAoaAgentDialog model-correction warnings (create flow)", () => {
     expect(
       screen.getByText("codex model gpt-9 is unavailable; using gpt-5.5"),
     ).toBeInTheDocument();
+  });
+
+  it("shows a model picker once the adapter exposes models and includes the chosen model in the payload", async () => {
+    vi.mocked(agentsApi.adapterModels).mockResolvedValue([
+      { id: "openai/gpt-5", label: "gpt-5" },
+    ] as never);
+    vi.mocked(agentsApi.create).mockResolvedValue({ id: "AGENT-3", name: "Brainy" } as never);
+    setup();
+    const user = userEvent.setup();
+
+    // The picker appears after the adapter's models resolve.
+    const modelTrigger = await screen.findByRole("button", { name: /default/i });
+    await user.click(modelTrigger);
+    await user.click(await screen.findByRole("button", { name: /^gpt-5$/i }));
+
+    await user.type(screen.getByPlaceholderText("Agent name"), "Brainy");
+    await user.click(screen.getByRole("button", { name: /Create agent/ }));
+
+    expect(vi.mocked(agentsApi.create)).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        adapterConfig: { model: "openai/gpt-5" },
+      }),
+    );
   });
 
   it("shows the success toast but no model-correction toast when there are no warnings", async () => {

@@ -1,8 +1,13 @@
 import { useState } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { agentsApi } from "../../api/agents";
+import { queryKeys } from "../../lib/queryKeys";
 import { useToast } from "../../context/ToastContext";
 import { AGENT_ADAPTER_TYPES } from "@armyofagents/shared";
+import {
+  DEFAULT_CODEX_LOCAL_MODEL,
+} from "@armyofagents/adapter-codex-local";
+import { ModelDropdown } from "../AgentConfigForm";
 import {
   Dialog,
   DialogContent,
@@ -36,11 +41,21 @@ export function NewAoaAgentDialog({
   const { pushToast } = useToast();
   const [name, setName] = useState("");
   const [adapterType, setAdapterType] = useState<string>("process");
+  const [model, setModel] = useState("");
+  const [modelOpen, setModelOpen] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+
+  const { data: adapterModels } = useQuery({
+    queryKey: queryKeys.agents.adapterModels(companyId, adapterType),
+    queryFn: () => agentsApi.adapterModels(companyId, adapterType),
+    enabled: open && Boolean(companyId),
+  });
+  const models = adapterModels ?? [];
 
   function reset() {
     setName("");
     setAdapterType("process");
+    setModel("");
     setFormError(null);
   }
 
@@ -70,10 +85,12 @@ export function NewAoaAgentDialog({
   function handleSubmit() {
     if (!name.trim()) return;
     setFormError(null);
+    const trimmedModel = model.trim();
     createAgent.mutate({
       name: name.trim(),
       adapterType,
       kind: "aoa",
+      ...(trimmedModel ? { adapterConfig: { model: trimmedModel } } : {}),
       runtimeConfig: { aoa: { role: "member" } },
     });
   }
@@ -118,7 +135,11 @@ export function NewAoaAgentDialog({
             </label>
             <Select
               defaultValue={adapterType}
-              onValueChange={(v) => setAdapterType(v)}
+              onValueChange={(v) => {
+                setAdapterType(v);
+                // The old adapter's model id is meaningless for the new adapter.
+                setModel("");
+              }}
             >
               <SelectTrigger id="aoa-agent-adapter">
                 <SelectValue placeholder="Select adapter" />
@@ -132,6 +153,22 @@ export function NewAoaAgentDialog({
               </SelectContent>
             </Select>
           </div>
+
+          {/* Model — only when the selected adapter exposes models */}
+          {models.length > 0 && (
+            <ModelDropdown
+              models={models}
+              value={model}
+              onChange={setModel}
+              open={modelOpen}
+              onOpenChange={setModelOpen}
+              allowDefault={adapterType !== "opencode_local"}
+              required={adapterType === "opencode_local"}
+              groupByProvider={adapterType === "opencode_local"}
+              defaultLabel={adapterType === "codex_local" ? `Default → ${DEFAULT_CODEX_LOCAL_MODEL}` : undefined}
+              defaultValue={adapterType === "codex_local" ? DEFAULT_CODEX_LOCAL_MODEL : ""}
+            />
+          )}
 
           {formError && (
             <p className="text-xs text-destructive">{formError}</p>
