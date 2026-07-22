@@ -7,7 +7,7 @@ import {
   mcpArtifactVersionSchema,
 } from "@armyofagents/shared";
 import { validate } from "../middleware/validate.js";
-import { artifactService, logActivity, permissionService } from "../services/index.js";
+import { artifactService, companyService, logActivity, permissionService } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { assertRole } from "../middleware/rbac.js";
 import { registerIssueParamNormalizer } from "./issue-param-normalizer.js";
@@ -22,6 +22,13 @@ export function artifactRoutes(db: Db) {
     if (req.actor.type === "mcp") {
       if (!req.actor.userId) {
         throw forbidden("Founder authority required");
+      }
+      const company = await companyService(db).getById(companyId);
+      if (!company) {
+        throw forbidden("Company not found");
+      }
+      if (!company.mcpEnabled) {
+        throw forbidden("MCP server is disabled for this company");
       }
       const role = await permissionService(db).getEffectiveRole(companyId, req.actor.userId);
       if (role !== "founder") {

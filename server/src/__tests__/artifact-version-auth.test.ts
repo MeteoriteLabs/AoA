@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   getById: vi.fn(),
   addVersion: vi.fn(),
+  getCompanyById: vi.fn(),
   getEffectiveRole: vi.fn(),
   logActivity: vi.fn(),
 }));
@@ -25,6 +26,7 @@ vi.mock("../services/index.js", () => ({
     getIssueCompanyId: vi.fn(),
     getByIssueId: vi.fn(),
   }),
+  companyService: () => ({ getById: mocks.getCompanyById }),
   permissionService: () => ({ getEffectiveRole: mocks.getEffectiveRole }),
   logActivity: mocks.logActivity,
 }));
@@ -61,6 +63,7 @@ describe("artifact version route authorization", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.getEffectiveRole.mockResolvedValue("founder");
+    mocks.getCompanyById.mockResolvedValue({ id: companyId, mcpEnabled: true });
     mocks.getById.mockResolvedValue({ id: artifactId, companyId, title: "Launch report" });
     mocks.addVersion.mockImplementation(async (_id, data) => ({
       id: "33333333-3333-4333-8333-333333333333",
@@ -140,6 +143,60 @@ describe("artifact version route authorization", () => {
     expect(res.status).toBe(403);
     expect(res.body.error).toBe("Founder authority required");
     expect(mocks.addVersion).not.toHaveBeenCalled();
+  });
+
+  it("rejects a founder-owned MCP key when external MCP is disabled", async () => {
+    mocks.getCompanyById.mockResolvedValue({ id: companyId, mcpEnabled: false });
+
+    const res = await request(makeApp({
+      type: "mcp",
+      source: "mcp_key",
+      userId: "founder-1",
+      companyId,
+      keyId: "key-1",
+    }))
+      .post(`/api/mcp/artifacts/${artifactId}/versions`)
+      .send({ sourceDetail: "docs-publisher", content: "v2" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("MCP server is disabled for this company");
+    expect(mocks.getEffectiveRole).not.toHaveBeenCalled();
+    expect(mocks.addVersion).not.toHaveBeenCalled();
+  });
+
+  it("rejects an MCP key when its company no longer exists", async () => {
+    mocks.getCompanyById.mockResolvedValue(null);
+
+    const res = await request(makeApp({
+      type: "mcp",
+      source: "mcp_key",
+      userId: "founder-1",
+      companyId,
+      keyId: "key-1",
+    }))
+      .post(`/api/mcp/artifacts/${artifactId}/versions`)
+      .send({ sourceDetail: "docs-publisher", content: "v2" });
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Company not found");
+    expect(mocks.getEffectiveRole).not.toHaveBeenCalled();
+    expect(mocks.addVersion).not.toHaveBeenCalled();
+  });
+
+  it("allows a board founder on the MCP-labelled route when external MCP is disabled", async () => {
+    mocks.getCompanyById.mockResolvedValue({ id: companyId, mcpEnabled: false });
+
+    const res = await request(makeApp(boardActor()))
+      .post(`/api/mcp/artifacts/${artifactId}/versions`)
+      .send({ sourceDetail: "board-publisher", content: "v2" });
+
+    expect(res.status).toBe(201);
+    expect(mocks.getCompanyById).not.toHaveBeenCalled();
+    expect(mocks.getEffectiveRole).toHaveBeenCalledWith(companyId, "founder-1");
+    expect(mocks.addVersion).toHaveBeenCalledWith(
+      artifactId,
+      expect.objectContaining({ source: "mcp", sourceDetail: "board-publisher" }),
+    );
   });
 
   it("rejects an agent on the MCP-labelled REST route", async () => {
