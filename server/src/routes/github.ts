@@ -801,10 +801,19 @@ export function githubRoutes(db: Db) {
     // Prefer the onboarding return target ONLY when it came from the signed,
     // integrity-protected state (never a raw/unsigned query param — that
     // would be an open redirect and could detach the callback from the
-    // company the install was actually initiated for). Default to Settings.
-    // companyId is used as the URL prefix (e.g. /acme/settings?tab=github).
-    const redirectPath = returnTo ? ONBOARDING_RETURN_PATHS[returnTo] : "/settings?tab=github";
-    res.redirect(`${uiBase}/${companyId}${redirectPath}`);
+    // company the install was actually initiated for).
+    //
+    // Onboarding returns are ROOT-relative and land on the index gate ("/"),
+    // which resolves the founder's unfinished first-run company server-side
+    // and resumes the /onboarding in-flight tail — the steady /home dashboard
+    // has no resume consumer, so it would strand the founder mid-onboarding.
+    // The default (non-onboarding) Settings path keeps the company-id URL
+    // prefix (e.g. /acme/settings?tab=github) for the deep link.
+    if (returnTo) {
+      res.redirect(`${uiBase}${ONBOARDING_RETURN_PATHS[returnTo]}`);
+      return;
+    }
+    res.redirect(`${uiBase}/${companyId}/settings?tab=github`);
   });
 
   router.delete("/companies/:companyId/github/app", async (req, res) => {

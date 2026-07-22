@@ -25,9 +25,17 @@ function installStateSecret(): string {
  * `return` value (e.g. a raw query param on the callback itself) is never
  * consulted — only the key baked into the integrity-protected state is
  * trusted — so this cannot become an open redirect.
+ *
+ * These paths are ROOT-relative (no company-id prefix) and land on the index
+ * gate ("/"). The index gate (`LobbyOrOnboardingRedirect`) resolves the
+ * founder's unfinished first-run company server-side and routes to
+ * `/onboarding`, which resumes the in-flight tail at the persisted step (e.g.
+ * Integrations, where GitHub was connected). The steady `/home` dashboard no
+ * longer hosts onboarding, so returning a mid-onboarding founder there would
+ * strand them with the tail abandoned and `firstRunCompleted` never set.
  */
 export const ONBOARDING_RETURN_PATHS = {
-  integrations: "/home?onboarding=integrations&github=connected",
+  integrations: "/?github=connected",
 } as const;
 
 export type OnboardingReturnTarget = keyof typeof ONBOARDING_RETURN_PATHS;

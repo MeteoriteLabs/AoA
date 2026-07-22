@@ -12,7 +12,7 @@ const mockVerifyInstallState = vi.hoisted(() => vi.fn());
 // Mirrors the real ONBOARDING_RETURN_PATHS allowlist in services/github-app.ts
 // so route-level tests can assert against the same fixed key→path mapping.
 const ONBOARDING_RETURN_PATHS = vi.hoisted(() => ({
-  integrations: "/home?onboarding=integrations&github=connected",
+  integrations: "/?github=connected",
 }));
 const mockIsOnboardingReturnTarget = vi.hoisted(() =>
   vi.fn((v: unknown) => typeof v === "string" && Object.prototype.hasOwnProperty.call(ONBOARDING_RETURN_PATHS, v)),
@@ -904,17 +904,23 @@ describe("GET /api/github/callback", () => {
     );
   });
 
-  it("redirects to the onboarding return target when the SIGNED state carries an allowlisted returnTo", async () => {
+  it("redirects an onboarding returnTo to the index gate (which resumes the in-flight tail), NOT the steady /home dashboard", async () => {
     mockVerifyInstallState.mockReturnValue({ companyId: "company-1", returnTo: "integrations" });
     const app = createApp(boardActor);
     const res = await request(app)
       .get("/api/github/callback")
       .query({ installation_id: "12345", setup_action: "install", state: "signed-with-return" });
     expect(res.status).toBe(302);
-    expect(res.headers.location).toBe(
-      "http://localhost:5173/company-1/home?onboarding=integrations&github=connected",
-    );
+    // The index gate ("/") resolves the founder's unfinished first-run company
+    // and routes to /onboarding, resuming the tail at the persisted step. The
+    // steady /home dashboard has no onboarding-resume consumer, so returning
+    // there would strand the founder (tail abandoned, firstRunCompleted unset).
+    expect(res.headers.location).toBe("http://localhost:5173/?github=connected");
     expect(res.headers.location).not.toContain("/settings");
+    expect(res.headers.location).not.toContain("/home");
+    // Must NOT carry the company-id URL prefix — that hit the company-prefix
+    // route, which bounces an unmatched prefix and drops the query.
+    expect(res.headers.location).not.toContain("company-1");
   });
 
   it("does NOT honor a free-form/unsigned `return` query param on the callback itself — only the signed state's returnTo is trusted", async () => {
