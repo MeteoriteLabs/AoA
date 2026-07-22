@@ -244,6 +244,7 @@ list_owned_public_packages() {
     cd "$REPO_ROOT"
     pnpm -r list --depth -1 --json | node -e "
 const { readFileSync } = require('fs');
+const { join, relative, sep } = require('path');
 const output = process.argv[1];
 const packages = JSON.parse(readFileSync(0, 'utf8'))
   .filter((pkg) => pkg.private === false && pkg.name.startsWith('@armyofagents/'));
@@ -252,6 +253,14 @@ if (output === 'specs') {
   console.log(packages.map((pkg) => pkg.name + '@' + pkg.version).join('\n'));
 } else if (output === 'names') {
   console.log(packages.map((pkg) => pkg.name).join('\n'));
+} else if (output === 'skill-paths') {
+  console.log(packages
+    .filter((pkg) => {
+      const manifest = JSON.parse(readFileSync(join(pkg.path, 'package.json'), 'utf8'));
+      return Array.isArray(manifest.files) && manifest.files.includes('skills');
+    })
+    .map((pkg) => relative(process.cwd(), pkg.path).split(sep).join('/'))
+    .join('\n'));
 } else {
   throw new Error('unknown package-list output: ' + output);
 }

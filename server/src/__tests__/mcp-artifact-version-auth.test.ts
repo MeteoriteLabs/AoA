@@ -17,10 +17,7 @@ vi.mock("../mcp/tools/scope.js", async (importOriginal) => {
   };
 });
 
-vi.mock("../services/index.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../services/index.js")>();
-  return { ...actual, logActivity: mocks.logActivity };
-});
+vi.mock("../services/index.js", () => ({ logActivity: mocks.logActivity }));
 
 import { handleAttachArtifactVersion } from "../mcp/tools/write-tools.js";
 import { toolAllowedActors } from "../mcp/tools/index.js";

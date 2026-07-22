@@ -31,6 +31,17 @@ CLI_DIR="$REPO_ROOT/cli"
 # shellcheck source=./release-lib.sh
 source "$REPO_ROOT/scripts/release-lib.sh"
 
+cleanup_bundled_release_artifacts() {
+  local skill_package_paths
+  skill_package_paths="$(list_owned_public_packages skill-paths)"
+
+  rm -rf "$REPO_ROOT/server/ui-dist"
+  while IFS= read -r package_dir; do
+    [ -z "$package_dir" ] && continue
+    rm -rf "$REPO_ROOT/$package_dir/skills"
+  done <<< "$skill_package_paths"
+}
+
 # ── Helper: create GitHub Release ────────────────────────────────────────────
 create_github_release() {
   local version="$1"
@@ -139,10 +150,7 @@ if [ "$promote" = true ]; then
   fi
 
   # Remove temporary build artifacts
-  rm -rf "$REPO_ROOT/server/ui-dist"
-  for pkg_dir in server packages/adapters/claude-local packages/adapters/codex-local; do
-    rm -rf "$REPO_ROOT/$pkg_dir/skills"
-  done
+  cleanup_bundled_release_artifacts
 
   # Stage release files, commit, and tag
   echo ""
@@ -245,26 +253,29 @@ echo ""
 echo "==> Step 4/7: Building all packages..."
 cd "$REPO_ROOT"
 
-# Build packages in dependency order (excluding CLI)
-pnpm --filter @armyofagents/shared build
-pnpm --filter @armyofagents/adapter-utils build
-pnpm --filter @armyofagents/db build
-pnpm --filter @armyofagents/adapter-claude-local build
-pnpm --filter @armyofagents/adapter-codex-local build
-pnpm --filter @armyofagents/adapter-opencode-local build
-pnpm --filter @armyofagents/adapter-openclaw build
-pnpm --filter @armyofagents/server build
+# Build the discovered publish set in one recursive invocation so pnpm keeps
+# workspace dependency order. Step 5 creates the CLI's publish-specific bundle.
+build_filters=()
+while IFS= read -r pkg; do
+  [ -z "$pkg" ] && continue
+  [ "$pkg" = "@armyofagents/cli" ] && continue
+  build_filters+=(--filter "$pkg")
+done <<< "$PACKAGES"
+pnpm -r "${build_filters[@]}" build
 
 # Build UI and bundle into server package for static serving
 pnpm --filter @armyofagents/ui build
 rm -rf "$REPO_ROOT/server/ui-dist"
 cp -r "$REPO_ROOT/ui/dist" "$REPO_ROOT/server/ui-dist"
 
-# Bundle skills into packages that need them (adapters + server)
-for pkg_dir in server packages/adapters/claude-local packages/adapters/codex-local; do
-  rm -rf "$REPO_ROOT/$pkg_dir/skills"
-  cp -r "$REPO_ROOT/skills" "$REPO_ROOT/$pkg_dir/skills"
-done
+# Bundle skills into every owned public package that declares them as publish
+# contents, using the same workspace manifests as package discovery.
+SKILL_PACKAGE_PATHS="$(list_owned_public_packages skill-paths)"
+while IFS= read -r package_dir; do
+  [ -z "$package_dir" ] && continue
+  rm -rf "$REPO_ROOT/$package_dir/skills"
+  cp -r "$REPO_ROOT/skills" "$REPO_ROOT/$package_dir/skills"
+done <<< "$SKILL_PACKAGE_PATHS"
 echo "  ✓ All packages built (including UI + skills)"
 
 # ── Step 5: Build CLI bundle ─────────────────────────────────────────────────
@@ -286,13 +297,11 @@ if [ "$dry_run" = true ]; then
   fi
   echo ""
   echo "  Preview what would be published:"
-  for dir in packages/shared packages/adapter-utils packages/db \
-             packages/adapters/claude-local packages/adapters/codex-local packages/adapters/opencode-local packages/adapters/openclaw \
-             server cli; do
-    echo "  --- $dir ---"
-    cd "$REPO_ROOT/$dir"
-    npm pack --dry-run 2>&1 | tail -3
-  done
+  while IFS= read -r pkg; do
+    [ -z "$pkg" ] && continue
+    echo "  --- $pkg ---"
+    pnpm --filter "$pkg" exec npm pack --dry-run 2>&1 | tail -3
+  done <<< "$PACKAGES"
   cd "$REPO_ROOT"
   if [ "$canary" = true ]; then
     echo ""
@@ -335,10 +344,7 @@ if [ -f "$CLI_DIR/README.md" ]; then
 fi
 
 # Remove temporary build artifacts before committing (these are only needed during publish)
-rm -rf "$REPO_ROOT/server/ui-dist"
-for pkg_dir in server packages/adapters/claude-local packages/adapters/codex-local; do
-  rm -rf "$REPO_ROOT/$pkg_dir/skills"
-done
+cleanup_bundled_release_artifacts
 
 if [ "$canary" = false ]; then
   # Stage only release-related files (avoid sweeping unrelated changes with -A)
