@@ -103,10 +103,12 @@ describe("companySkillService.usage dispatcher", () => {
     findActiveServerAdapterMock.mockReset();
     agentServiceListMock.mockReset();
     resolveAdapterConfigMock.mockReset();
-    resolveAdapterConfigMock.mockImplementation(async (_companyId: string, cfg: Record<string, unknown>) => ({
-      ...cfg,
-      __resolved: true,
-    }));
+    resolveAdapterConfigMock.mockImplementation(
+      async (_companyId: string, _adapterType: string, cfg: Record<string, unknown>) => ({
+        ...cfg,
+        __resolved: true,
+      }),
+    );
   });
 
   it("calls adapter.listSkills with resolved runtime config and maps snapshot state", async () => {
@@ -127,8 +129,11 @@ describe("companySkillService.usage dispatcher", () => {
       desired: true,
       actualState: "configured",
     });
+    // Task 8: the agent's real adapter type is threaded through so the
+    // company-level provider key for THAT adapter can be applied as a fallback.
     expect(resolveAdapterConfigMock).toHaveBeenCalledWith(
       "co-1",
+      "claude_local",
       {},
       expect.objectContaining({
         actorId: "company-skills",

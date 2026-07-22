@@ -24,10 +24,15 @@ const { execMock, createEventMock, buildMcpMock, buildBridgeSpecMock, bundleMock
   commitMock: vi.fn().mockResolvedValue({ committed: 0, suppressed: 0, blocked: 0, failed: 0, lostRace: 0 }),
 }));
 
-vi.mock("drizzle-orm", () => ({ and: (...a: unknown[]) => ({ and: a }), eq: (a: unknown, b: unknown) => ({ eq: [a, b] }) }));
+// Task 8: the runtime resolver now also looks up the company-level
+// `provider:<id>` secret, so these harnesses must model `isNull` + the
+// company_secrets tables. The stubbed row that comes back has no
+// `status: "active"`, so it is skipped and no key is injected — these tests
+// keep asserting exactly what they asserted before.
+vi.mock("drizzle-orm", () => ({ and: (...a: unknown[]) => ({ and: a }), eq: (a: unknown, b: unknown) => ({ eq: [a, b] }), isNull: (a: unknown) => ({ isNull: a }) }));
 vi.mock("@armyofagents/db", () => {
   const t = (n: string) => new Proxy({}, { get: (_x, p) => (typeof p === "string" ? Symbol(`${n}.${p}`) : undefined) });
-  return { agents: t("a"), internalAgentRuns: t("iar"), discussionEntries: t("de"), issues: t("i"), threadOrchestrationState: t("tos"), memoryItems: t("mi"), discussions: t("disc"), discussionExtractedItems: t("dei"), embeddingQueue: t("eq"), memoryItemVersions: t("miv"), memoryRetrievals: t("mr"), suggestions: t("sug") };
+  return { agents: t("a"), internalAgentRuns: t("iar"), discussionEntries: t("de"), issues: t("i"), threadOrchestrationState: t("tos"), memoryItems: t("mi"), discussions: t("disc"), discussionExtractedItems: t("dei"), embeddingQueue: t("eq"), memoryItemVersions: t("miv"), memoryRetrievals: t("mr"), suggestions: t("sug"), companySecrets: t("cs"), companySecretVersions: t("csv"), companySecretBindings: t("csb"), companySecretProviderConfigs: t("cspc"), runtimeProviderKeys: t("rpk"), secretAccessEvents: t("sae") };
 });
 vi.mock("../adapters/registry.js", () => ({ getServerAdapter: () => ({ execute: execMock, getRuntimeCommandSpec: () => ({}) }) }));
 vi.mock("../services/costs.js", () => ({ costService: () => ({ createEvent: createEventMock }) }));

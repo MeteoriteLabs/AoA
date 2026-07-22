@@ -451,6 +451,7 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
     // (Codex P2.)
     const runtimeBaseConfig = await secretService(db).resolveAdapterConfigForRuntime(
       agent.companyId,
+      agent.adapterType,
       baseConfig,
       { consumerType: "agent", consumerId: agent.id, actorType: "agent", actorId: agent.id },
     );

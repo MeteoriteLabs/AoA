@@ -3161,10 +3161,28 @@ export function heartbeatService(db: Db) {
         ...secretActorContext,
       })),
     };
-    const resolvedConfig = {
-      ...mergedConfigWithEnvironmentTarget,
-      env: resolvedEnv,
-    } as Record<string, unknown>;
+    // Resolution chain step 2 (design D4): the company-level provider key, applied
+    // ONLY where nothing above already supplied that env var.
+    //
+    // The org-agent heartbeat does not go through
+    // `secretsSvc.resolveAdapterConfigForRuntime` — it assembles `resolvedEnv`
+    // itself from three scope-specific `resolveEnvBindings` calls (project ->
+    // environment -> agent, later winning) so it can track which scope won each
+    // key. So the fallback has to be applied here explicitly; the shared helper
+    // is the same one that method uses, so the precedence rule is identical.
+    //
+    // Everything in `resolvedEnv` — project and environment scopes included, not
+    // just the agent's own binding — outranks the company default, which is what
+    // "the company key is the LAST stop before the host CLI's own login" means.
+    const resolvedConfig = (await secretsSvc.applyCompanyKeyFallbackForRuntime(
+      agent.companyId,
+      agent.adapterType,
+      {
+        ...mergedConfigWithEnvironmentTarget,
+        env: resolvedEnv,
+      } as Record<string, unknown>,
+      { consumerType: "agent", consumerId: agent.id, ...secretActorContext },
+    )) as Record<string, unknown>;
 
     // ── Issue ref for execution workspace ───────────────────────────
     const issueRef = issueContext

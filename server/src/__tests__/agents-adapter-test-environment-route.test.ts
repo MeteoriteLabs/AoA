@@ -18,7 +18,7 @@ const mockNormalizeAdapterConfigForPersistence = vi.hoisted(() =>
   vi.fn(async (_companyId: string, config: Record<string, unknown>) => config),
 );
 const mockResolveAdapterConfigForRuntime = vi.hoisted(() =>
-  vi.fn(async (_companyId: string, config: Record<string, unknown>) => config),
+  vi.fn(async (_companyId: string, _adapterType: string, config: Record<string, unknown>) => config),
 );
 const mockAcquireForRun = vi.hoisted(() => vi.fn());
 const mockReleaseRunLease = vi.hoisted(() => vi.fn());
@@ -223,6 +223,49 @@ describe("POST /companies/:companyId/adapters/:type/test-environment", () => {
       lease: expect.objectContaining({ id: "lease-1" }),
       status: "released",
     }));
+  });
+
+  it("threads the :type param into secret resolution so the company provider key applies", async () => {
+    // Task 8: the probe must resolve the credential for the adapter it is about
+    // to probe. Passing the wrong type would either inject another provider's
+    // company key or skip the fallback entirely, making the probe lie.
+    mockFindServerAdapter.mockReturnValue({
+      type: "claude_local",
+      testEnvironment: mockAdapterTestEnvironment,
+    });
+    mockAdapterTestEnvironment.mockResolvedValue({
+      adapterType: "claude_local",
+      status: "pass",
+      checks: [],
+      testedAt: "2026-06-01T00:00:00.000Z",
+    });
+    // Once-only: vi.clearAllMocks() in beforeEach clears calls but KEEPS
+    // implementations, so a persistent override would leak into later tests.
+    mockResolveAdapterConfigForRuntime.mockImplementationOnce(
+      async (_companyId: string, _adapterType: string, config: Record<string, unknown>) => ({
+        ...config,
+        env: { ANTHROPIC_API_KEY: "company-key" },
+      }),
+    );
+
+    const res = await request(makeApp())
+      .post(`/api/companies/${COMPANY_ID}/adapters/claude_local/test-environment`)
+      .send({ adapterConfig: {} });
+
+    expect(res.status).toBe(200);
+    expect(mockResolveAdapterConfigForRuntime).toHaveBeenCalledWith(
+      COMPANY_ID,
+      "claude_local",
+      expect.anything(),
+      expect.objectContaining({ consumerId: "adapter-test:claude_local" }),
+    );
+    // …and the resolved env (company key included) is what the probe runs with.
+    expect(mockAdapterTestEnvironment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        adapterType: "claude_local",
+        config: expect.objectContaining({ env: { ANTHROPIC_API_KEY: "company-key" } }),
+      }),
+    );
   });
 
   it("resolves the model via getProviderStatus for codex_local before probing", async () => {
