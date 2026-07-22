@@ -185,6 +185,36 @@ describe("classifyProbeOutcome", () => {
     expect(classifyProbeOutcome(result("pass", ["cursor_cloud_auth_ok"])).outcome).toBe("verified");
   });
 
+  // Codex P2 (classify-probe.ts:98): `_auth_ok` proves the KEY is valid, not that
+  // the agent can RUN. cursor-cloud emits `cursor_cloud_auth_ok` (info) ALONGSIDE
+  // `cursor_cloud_repo_missing`/`_repo_invalid` (error, status "fail") when the
+  // agent has no usable repo (cursor-cloud/src/server/test.ts:85-98). A valid key
+  // on an unrunnable agent must NOT read Ready — the hard failure wins.
+  it("does not verify cursor-cloud when a hard config check failed despite auth_ok", () => {
+    expect(
+      classifyProbeOutcome(result("fail", ["cursor_cloud_auth_ok", "cursor_cloud_repo_missing"])).outcome,
+    ).toBe("failed");
+    expect(
+      classifyProbeOutcome(result("fail", ["cursor_cloud_auth_ok", "cursor_cloud_repo_invalid"])).outcome,
+    ).toBe("failed");
+  });
+
+  // The counterpart: `_auth_ok` still reads verified when nothing hard-failed
+  // (a cosmetic warn must not demote a valid, runnable cursor-cloud agent).
+  it("still verifies cursor-cloud auth_ok when the probe did not hard-fail", () => {
+    expect(
+      classifyProbeOutcome(result("warn", ["cursor_cloud_auth_ok", "cursor_cloud_repo_present"])).outcome,
+    ).toBe("verified");
+  });
+
+  // A live run outranks a hard failure (unlike `_auth_ok`): a passed hello probe
+  // IS the run succeeding, so an unrelated failing check must not demote it.
+  it("keeps a passed hello probe verified even if the overall status is fail", () => {
+    expect(
+      classifyProbeOutcome(result("fail", ["claude_hello_probe_passed", "claude_some_cosmetic_error"])).outcome,
+    ).toBe("verified");
+  });
+
   // ── Expired sessions (revoked login) ─────────────────────────────────────
   // `_auth_required` = never signed in. `_auth_expired` = signed in, but the
   // session was revoked. Both are recoverable in-app, so both are needs_auth —

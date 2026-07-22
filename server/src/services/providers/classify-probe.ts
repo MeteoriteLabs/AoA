@@ -27,15 +27,24 @@ export type { ProbeOutcome };
  */
 
 /**
- * ONLY a live end-to-end execution proves authentication. `_models_probe_passed`
- * is deliberately NOT here: grok emits it whenever `grok models` exits zero,
- * even when `parsedModels.authenticated` is false
- * (`packages/adapters/grok-local/src/server/test.ts:185-214`).
- *
- * `_auth_ok` covers cursor-cloud, whose authoritative success is an API auth
- * check rather than a hello probe (`cursor-cloud/src/server/test.ts:121`).
+ * A live end-to-end run. `_hello_probe_passed` means the CLI actually executed a
+ * turn, so it is authoritative and outranks everything except a real auth
+ * failure. `_models_probe_passed` is deliberately NOT here: grok emits it
+ * whenever `grok models` exits zero, even when `parsedModels.authenticated` is
+ * false (`packages/adapters/grok-local/src/server/test.ts:185-214`).
  */
-const AUTHORITATIVE_SUCCESS_SUFFIXES = ["_hello_probe_passed", "_auth_ok"];
+const LIVE_RUN_SUCCESS_SUFFIXES = ["_hello_probe_passed"];
+/**
+ * Credential-validity-only success. `_auth_ok` covers cursor-cloud, whose only
+ * success signal is an API auth check rather than a live run
+ * (`cursor-cloud/src/server/test.ts:121`). This is WEAKER than a live run: a
+ * valid key does NOT prove the agent can run. The same probe can emit `_auth_ok`
+ * (info) alongside hard config errors — e.g. `cursor_cloud_repo_missing` /
+ * `cursor_cloud_repo_invalid` (error), overall `status: "fail"`
+ * (`cursor-cloud/src/server/test.ts:85-98`). So `_auth_ok` is only honoured
+ * AFTER the hard-failure guard — a failing configuration must not read Ready.
+ */
+const AUTH_ONLY_SUCCESS_SUFFIXES = ["_auth_ok"];
 /**
  * Two distinct runtime auth failures, both recoverable in-app:
  *   `_auth_required` — never signed in; there is no session at all.
@@ -93,9 +102,10 @@ export function classifyProbeOutcome(
   // 1. A real runtime auth failure is authoritative and always wins.
   if (endsWithAny(AUTH_FAILURE_SUFFIXES)) return { outcome: "needs_auth", result };
 
-  // 2. Only a live end-to-end success proves the provider actually runs. This
-  //    outranks credential-presence hints (OAuth / subscription / CLI login).
-  if (endsWithAny(AUTHORITATIVE_SUCCESS_SUFFIXES)) return { outcome: "verified", result };
+  // 2. A live end-to-end run proves the provider actually runs. This outranks
+  //    credential-presence hints (OAuth / subscription / CLI login) and, unlike
+  //    `_auth_ok` below, a hard failure — because the run itself succeeded.
+  if (endsWithAny(LIVE_RUN_SUCCESS_SUFFIXES)) return { outcome: "verified", result };
 
   // 3. No binary at all.
   if (endsWithAny(MISSING_BINARY_SUFFIXES)) return { outcome: "not_installed", result };
@@ -112,10 +122,17 @@ export function classifyProbeOutcome(
   //    missing-credential checks are info level).
   if (endsWithAny(CREDENTIAL_HINT_SUFFIXES)) return { outcome: "needs_auth", result };
 
-  // 6. Hard failure.
+  // 6. Hard failure. This MUST come before `_auth_ok`: cursor-cloud emits
+  //    `cursor_cloud_auth_ok` (valid key) alongside `cursor_cloud_repo_missing`
+  //    (error, status "fail") when the agent has no usable repo. A valid key is
+  //    not a runnable agent, so the failing config wins.
   if (result.status === "fail") return { outcome: "failed", result };
 
-  // 7. DEFAULT IS NOT "verified". A timeout, a models-only success, or any bare
+  // 7. Credential-validity-only success (cursor-cloud). Reached only when no hard
+  //    failure blocked it, so a verified key with a usable config reads Ready.
+  if (endsWithAny(AUTH_ONLY_SUCCESS_SUFFIXES)) return { outcome: "verified", result };
+
+  // 8. DEFAULT IS NOT "verified". A timeout, a models-only success, or any bare
   //    pass/warn means we never observed a working run. Claiming "Ready" here is
   //    exactly the false-green this feature exists to prevent.
   //    (`INCONCLUSIVE_SUFFIXES` documents the codes that land here.)
