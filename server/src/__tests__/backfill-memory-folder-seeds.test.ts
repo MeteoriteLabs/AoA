@@ -78,8 +78,8 @@ function createDb() {
       },
     }),
     insert: (selectedTable: { __table: string }) => ({
-      values: (row: Record<string, unknown> | Record<string, unknown>[]) => ({
-        returning: async () => {
+      values: (row: Record<string, unknown> | Record<string, unknown>[]) => {
+        const doReturn = async () => {
           if (selectedTable.__table !== "memoryFolders") return [];
           const rows = Array.isArray(row) ? row : [row];
           const created = rows.map((value) => ({
@@ -90,8 +90,11 @@ function createDb() {
           }));
           state.memoryFolders.push(...created);
           return created;
-        },
-      }),
+        };
+        // seedCompanyRootFolder chains .onConflictDoNothing() before
+        // .returning(); support both call shapes off the same insert logic.
+        return { returning: doReturn, onConflictDoNothing: () => ({ returning: doReturn }) };
+      },
     }),
   };
 }

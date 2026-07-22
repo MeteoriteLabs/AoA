@@ -38,13 +38,16 @@ function tinyDb() {
       };
     },
     insert: () => ({
-      values: (row: Record<string, unknown>) => ({
-        returning: async () => {
+      values: (row: Record<string, unknown>) => {
+        const doReturn = async () => {
           const created = { ...row, id: `r-${rows.length}`, createdAt: new Date(), updatedAt: new Date() };
           rows.push(created);
           return [created];
-        },
-      }),
+        };
+        // memory-folders.create now chains .onConflictDoNothing() before
+        // .returning(); support both call shapes off the same insert logic.
+        return { returning: doReturn, onConflictDoNothing: () => ({ returning: doReturn }) };
+      },
     }),
     update: () => ({
       set: (patch: Record<string, unknown>) => ({
