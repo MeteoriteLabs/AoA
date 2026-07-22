@@ -4,7 +4,7 @@ Guidance for human and AI contributors working in this repository.
 
 ## 1. Purpose
 
-AoA (Army of Agents) is a Hybrid Workforce Operating System for solo founders — built on Paperclip (open-source AI agent orchestration). The current product line is version 1.
+AoA (Army of Agents) is a Hybrid Workforce Operating System for startups — founding teams of any size, from solo founders to multi-person teams, running AI agents alongside humans from a single control room. The current product line is version 1.
 
 ## 2. Read This First
 
