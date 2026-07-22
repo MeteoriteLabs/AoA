@@ -205,6 +205,22 @@ describe("ProvidersSection cached rendering", () => {
     expect(rail.textContent).toMatch(/Codex/);
   });
 
+  it("clears the key draft when switching providers (no cross-provider credential leak)", async () => {
+    // Paste a key for one provider, switch to another BEFORE saving. The card is
+    // keyed by provider id, so it remounts and the draft is gone — Save can never
+    // send the first provider's key to the second one.
+    await renderAndSettle([row("anthropic"), row("openai")]);
+    await select("anthropic");
+    fireEvent.change(screen.getByTestId("provider-key-input"), {
+      target: { value: "sk-ant-should-not-leak" },
+    });
+    expect((screen.getByTestId("provider-key-input") as HTMLInputElement).value).toBe(
+      "sk-ant-should-not-leak",
+    );
+    await select("openai");
+    expect((screen.getByTestId("provider-key-input") as HTMLInputElement).value).toBe("");
+  });
+
   it("does NOT probe on load — every probe spawns a real CLI", async () => {
     await renderAndSettle([
       row("anthropic", { companyDefault: scope({ testedAt: STALE }) }),

@@ -88,22 +88,26 @@ describe("heartbeat wiring — edge #5 source-order guard", () => {
     expect(iContext).toBeGreaterThan(iResolve);
   });
 
-  // Codex P2: runScopedConfig.env is the project→environment→agent MERGE, so a
-  // project/environment OPENAI_API_KEY (supplied for the app/test suite) would be
-  // misread as the agent opting into codex api-key billing. AUTH DETECTION must
-  // see the agent's OWN env (agentEnvRecord). The merged runtime env is left
-  // intact — that key still reaches the workspace, and the codex adapter strips
-  // only the ambient server key from the spawn — so the seam must NOT pass the
-  // merged env to model resolution for stripping.
-  it("provider-status detection uses the agent's OWN env (agentEnvRecord), not the merged env", async () => {
+  // Auth detection must reflect what the run actually authenticates with: the
+  // agent's OWN keys AND the company provider-key fallback (the last stop before
+  // host login), but NOT project/environment keys (app/test creds, not codex
+  // auth). Using agentEnvRecord alone (the pre-fallback agent env) misread a
+  // codex agent on ONLY the company Providers key as ChatGPT-mode and downgraded
+  // its api-key-only model (Codex P2). The detection env is therefore built from
+  // the resolved runtime env minus the project/environment-sourced keys.
+  it("provider-status detection uses agent + company keys, excluding project/environment", async () => {
     const src = await readFile(new URL("../services/heartbeat.ts", import.meta.url), "utf8");
-    // getProviderStatus receives the agent-only env, not the merged runScopedConfig.env.
+    // getProviderStatus receives the purpose-built authDetectionEnv, NOT the raw
+    // agent-only env (which omitted the company fallback) and NOT the full merged
+    // runScopedConfig.env (which would leak project/environment keys).
     expect(
       src,
-      "getProviderStatus must be passed the agent-only env (agentEnvRecord), not the merged runScopedConfig",
-    ).toContain("adapterConfig: { ...runScopedConfig, env: agentEnvRecord }");
+      "getProviderStatus must be passed authDetectionEnv (agent + company fallback, minus project/environment)",
+    ).toContain("adapterConfig: { ...runScopedConfig, env: authDetectionEnv }");
+    // The detection env excludes project/environment-sourced keys.
+    expect(src).toContain('.filter(([, source]) => source === "project" || source === "environment")');
     // The merged runtime env must be preserved for the workspace: the seam must
-    // NOT strip it by threading agentOwnEnv into resolveRunScopedModel (Codex P2).
+    // NOT strip it by threading agentOwnEnv into resolveRunScopedModel.
     expect(
       src,
       "resolveRunScopedModel must NOT receive agentOwnEnv — the merged project/environment key stays in the runtime env",

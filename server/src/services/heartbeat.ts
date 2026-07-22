@@ -4189,20 +4189,34 @@ export function heartbeatService(db: Db) {
       // Runs AFTER the cheap-model swaps above (edge #5) so we resolve the model that
       // will run. Best-effort detection; a failure falls back to authMode "unknown".
       //
-      // Auth DETECTION must see ONLY the agent's OWN adapter env (agentEnvRecord =
-      // the pre-merge mergedConfig.env). runScopedConfig.env is the
-      // project→environment→agent MERGE, so a project/environment OPENAI_API_KEY
-      // (supplied for the app/test suite, not for codex auth) must NOT be misread as
-      // the agent opting into codex api-key billing — only adapterConfig.env
-      // .OPENAI_API_KEY does that (Codex P2). The merged runtime env is left intact:
-      // that project/environment key still reaches the workspace, and the codex
+      // The merged runtime env (runScopedConfig.env) is left intact for the run:
+      // a project/environment key still reaches the workspace, and the codex
       // adapter strips only the AMBIENT server key from the spawn (execute.ts
-      // unsetEnvKeys) — so we do NOT strip the merged key here (Codex P2).
+      // unsetEnvKeys) — we do NOT strip the merged key here.
+      //
+      // Detection env = what the run will actually authenticate with: the agent's
+      // OWN env plus the company provider-key fallback (the last stop before host
+      // login), but NOT project/environment keys (app/test creds, not codex auth).
+      // agentEnvRecord alone omitted the company key, so a codex agent on ONLY the
+      // company Providers key was misread as ChatGPT-mode and had its api-key-only
+      // model (gpt-*-codex) rewritten to the ChatGPT default even though the run
+      // has OPENAI_API_KEY. Build it from the resolved runtime env (which includes
+      // the company fallback, already resolved) minus the project/environment keys.
+      const projectOrEnvironmentEnvKeys = new Set(
+        [...winningEnvSource.entries()]
+          .filter(([, source]) => source === "project" || source === "environment")
+          .map(([key]) => key),
+      );
+      const authDetectionEnv = Object.fromEntries(
+        Object.entries(parseObject(resolvedConfig.env)).filter(
+          ([key]) => !projectOrEnvironmentEnvKeys.has(key),
+        ),
+      );
       let providerStatus: ProviderStatus;
       try {
         providerStatus = await getProviderStatus(
           agent.adapterType,
-          { companyId: agent.companyId, adapterConfig: { ...runScopedConfig, env: agentEnvRecord } },
+          { companyId: agent.companyId, adapterConfig: { ...runScopedConfig, env: authDetectionEnv } },
           realProviderStatusDeps,
         );
       } catch (statusErr) {

@@ -388,6 +388,11 @@ function ProvidersPanel({ companyId }: { companyId: string }) {
         >
           {selectedRow ? (
             <ProviderReadinessCard
+              // Key by provider so switching rows REMOUNTS the card. Without this,
+              // React reuses the instance and its uncommitted key draft survives
+              // the switch — a founder who pastes a key, clicks another provider,
+              // then Saves would store that key under the wrong provider.
+              key={selectedRow.descriptor.id}
               row={selectedRow}
               onTest={() => void runTest(selectedRow.descriptor.id)}
               onSaveKey={(value) => saveKey(selectedRow.descriptor.id, value)}
