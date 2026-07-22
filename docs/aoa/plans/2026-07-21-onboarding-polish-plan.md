@@ -62,6 +62,41 @@ Live E2E test showed the flow works (dept→agent→task all created + wired), b
 - [ ] **Implement:** load departments (`projectsApi.list`, filter `type==="department"`) alongside the existing `agentsApi.list`. Add to the task card: a Description textarea (optional) and a Priority selector (Low/Medium/High, default Medium — match the values `NewIssueDialog`/the issues API use). Default `taskAssigneeId` to the first org agent once loaded; default a new `projectId` to the first department. Optionally show the department as a small select/chip defaulting to the chosen dept. Thread `description`, `priority`, `projectId` into the `issuesApi.create` payload (only when set). Keep `fireOnDoneOnce`, "Skip to Home", the single-centered-card layout, and the task-only structure. If there are 0 agents (agent step skipped), keep "Unassigned" as the default; if 0 departments (can't happen per DefineDepartments, but be defensive) omit `projectId`.
 - [ ] **Run → pass** + tsc. **Commit** `feat(onboarding): first-job task card — description, priority, default assignee + department`.
 
+## Task 5 — Map: rebuild to the approved mock (big journey cards, drop diagram)
+
+**Files:** `ui/src/onboarding/Map.tsx`; test `__tests__/Map.test.tsx`.
+
+The live Map is a light polish of the OLD design (flow diagram + 3 small doors). Founder wants the approved mock: three LARGE journey cards, friendlier labels, descriptions, buttons, "Most teams start here" flag, NO flow diagram.
+
+- [ ] **Failing test:** three cards render with the mock labels — "Bring a project in motion", "Explore on your own", "Start from an idea"; the idea card is disabled + shows "Coming soon" and never calls `onPick`; "Bring a project in motion" → `onPick("in_flight")`, "Explore on your own" → `onPick("explorer")`; the `MapDiagram` is NOT rendered (mock has no diagram). Mock `../mapDiagram` if needed to assert absence.
+- [ ] **Run → fail.**
+- [ ] **Implement:** rewrite `Map` to render a heading ("Where are you starting from?" + sub "Three ways in — you can switch paths later.") and three large cards (translate the approved mock, artifact `aoa-screen-redesigns` v3 Map tab / `onboarding-decisions` — accent tile, title, hairline rule, a full description paragraph, a real button, per-accent glow + top hairline). Card copy:
+  - **Bring a project in motion** (accent brand, `onPick("in_flight")`, button "Continue setup →", "Most teams start here" flag): "Already building. Point your crew at the repo, the docs, the context you have — and they pick up exactly where you left off."
+  - **Explore on your own** (accent teal, `onPick("explorer")`, button "Open the workspace →"): "Skip the rails. Wander the workspace, wire up agents, memory, and tasks yourself — at whatever pace suits you."
+  - **Start from an idea** (accent amber, DISABLED, "Coming soon" chip): "Just a spark, no company yet? We'll help you shape it into a plan, a first team, and the opening moves — from a single sentence."
+  Optional reassurance footer. Remove the `MapDiagram` import + render + the "THE MAP" header row. Keep `MapProps.onPick` and the `MapDoorPersona` union. Use `.onboarding-dark` tokens only (`--brand`/`--teal`/`--amber`, `color-mix` for glows/tints — verify they resolve, as in the prior Door). Do NOT delete `MapDiagram.tsx` (still used by `MiniMap` for the invited journey).
+- [ ] **Run → pass** + tsc. Update the existing Map test to the new labels/structure. **Commit** `feat(onboarding): rebuild Map to the approved journey-card mock (drop diagram)`.
+
+## Task 6 — Braindump: show the departments the founder created
+
+**Files:** `ui/src/onboarding/inflight/BraindumpStep.tsx`; test `__tests__/BraindumpStep.test.tsx`.
+
+Currently only the company card renders on load; created departments hide behind "+" chips. Founder created them explicitly, so they should show as cards.
+
+- [ ] **Failing test:** on load with 2 mocked departments (Software, Marketing), assert BOTH a Software card AND a Marketing card render up front (their textareas present), alongside the company card — with no "+ Software" chip needed.
+- [ ] **Run → fail.**
+- [ ] **Implement:** in the load effect, build a DumpBox for the company AND one per department (`projects.filter(type==="department")`) — `setBoxes([companyBox, ...deptBoxes])`. Reuse the existing `addDepartmentBox` shape for the dept boxes (scope "department", departmentId, folderPath, hint, repoChip). Since all created departments now render, the "+ Add a department" chips become empty (remainingDepartments = []) and naturally disappear — leave that code (harmless) or remove it. Keep example-prompt chips, dashed drop, char count, submit/onDone-on-acceptance/idempotency unchanged.
+- [ ] **Run → pass** + tsc. **Commit** `feat(onboarding): braindump shows a card per department the founder created`.
+
+## Task 7 — Onboarding scroll: tall steps must scroll (top reachable)
+
+**Files:** `ui/src/onboarding/FlowEngine.tsx` (`DarkShell` + spine content wrapper), `ui/src/onboarding/FirstRunHome.tsx`, `ui/src/onboarding/inflight/InFlightFlow.tsx`. Test: a layout/RTL check if practical, else manual live-verify.
+
+`DarkShell` is `overflow-hidden` and the content wrapper is `min-h-screen … flex-1 justify-center` — with tall content (many braindump/department cards) the `justify-center` pushes the TOP of the content above the viewport and it's unreachable / clipped.
+
+- [ ] **Implement:** make tall onboarding steps scrollable with the top reachable. Keep the `ConstellationBg` clipped (horizontal) but allow vertical scroll of content. Recommended: on the content wrappers (FlowEngine's `min-h-screen … justify-center` div, and the InFlightFlow/FirstRunHome equivalents), stop hard-centering tall content — e.g. use `min-h-screen` with the inner content block `my-auto` (centers when it fits, but flows and lets the page scroll when it doesn't), and change `DarkShell`'s `overflow-hidden` to `overflow-x-hidden` (keep x clip for the constellation, allow y). Verify: a step taller than the viewport can scroll to reveal BOTH its top and bottom (test by walking the braindump with several department cards). Keep short steps visually centered as today.
+- [ ] **Verify:** `cd ui && npx vitest run src/onboarding` green; `npx tsc --noEmit`. Live-verify the braindump with 3+ departments scrolls fully (top + bottom reachable). **Commit** `fix(onboarding): tall steps scroll (top reachable) instead of clipping`.
+
 ## Final verification
 - [ ] `cd ui && npx tsc --noEmit -p tsconfig.json` clean; `cd ui && npx vitest run src/onboarding` green.
 - [ ] Live on memstep (:3120): walk onboarding (or resume) — first-job shows only a task card (no discussion); braindump shows inline "+ <Dept>" chips that add a card on click; Back appears on braindump/first-job (steps back a surface) but NOT on departments, and the Map has no Back. Counter still continuous.
