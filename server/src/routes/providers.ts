@@ -426,12 +426,38 @@ export function providerRoutes(db: Db): Router {
     throw forbidden("Board access required");
   }
 
-  function probeContext(companyId: string, req: Request, consumerId: string) {
+  /**
+   * Consumer context for a probe's secret resolution.
+   *
+   * Agent-scoped probes MUST resolve the agent's persisted secret_refs through
+   * the SAME authorization path a real run uses (`consumerType: "agent"`, the
+   * agent's id) so `shouldEnforceSecretBinding` applies. Resolving as a `system`
+   * consumer skips the binding check (secrets.ts) and would cache `verified` for
+   * a secret the heartbeat/AoA runner rejects as unbound — the exact false-green
+   * the agent scope exists to catch ("an agent whose own env binding is revoked
+   * must go red", see scope=agent handler). With this, a missing binding throws
+   * `unprocessable`, just as the real run does, so the probe never records Ready.
+   *
+   * company_default probes carry an EMPTY config (no agent secret_refs to bind);
+   * their only secret is the company-level provider key, which
+   * `resolveCompanyProviderKeys` narrows to `system` by design. So `system` is
+   * correct there.
+   */
+  function probeContext(req: Request, scope: ReadinessScope, descriptor: ProviderDescriptor) {
+    const actorId = req.actor.type === "board" ? (req.actor.userId ?? "board") : "system";
+    if (scope.type === "agent") {
+      return {
+        consumerType: "agent" as const,
+        consumerId: scope.agentId,
+        actorType: "user" as const,
+        actorId,
+      };
+    }
     return {
       consumerType: "system" as const,
-      consumerId,
+      consumerId: `provider-readiness:${descriptor.id}`,
       actorType: "user" as const,
-      actorId: req.actor.type === "board" ? (req.actor.userId ?? "board") : "system",
+      actorId,
     };
   }
 
@@ -470,7 +496,7 @@ export function providerRoutes(db: Db): Router {
         companyId,
         descriptor.adapterType,
         adapterConfig,
-        probeContext(companyId, req, `provider-readiness:${descriptor.id}`),
+        probeContext(req, scope, descriptor),
       );
       const result = await adapter.testEnvironment({
         companyId,

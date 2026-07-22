@@ -357,12 +357,14 @@ describe("POST /api/companies/:companyId/providers/:providerId/test", () => {
     expect(res.body).toMatchObject({ outcome: "verified" });
     expect(res.body.testedAt).toBeTruthy();
     expect(res.body.checks[0].code).toBe("claude_local_hello_probe_passed");
-    // Company default = company key / host login only, no agent config.
+    // Company default = company key / host login only, no agent config. The
+    // consumer is `system`: the empty config binds no agent secret, and the
+    // company key resolves under a system context by design (resolveCompanyProviderKeys).
     expect(mockResolveAdapterConfigForRuntime).toHaveBeenCalledWith(
       COMPANY_ID,
       "claude_local",
       {},
-      expect.anything(),
+      expect.objectContaining({ consumerType: "system" }),
     );
     expect(mockRecordReadiness).toHaveBeenCalledWith(
       expect.anything(),
@@ -384,12 +386,16 @@ describe("POST /api/companies/:companyId/providers/:providerId/test", () => {
       .post(`/api/companies/${COMPANY_ID}/providers/anthropic/test?scope=agent&agentId=${AGENT_ID}`)
       .send({});
     expect(res.status).toBe(200);
-    // adapterType is the SECOND parameter.
+    // adapterType is the SECOND parameter. The 4th (consumer context) MUST be an
+    // `agent` consumer bound to this agent's id — so binding enforcement
+    // (shouldEnforceSecretBinding) hits the SAME path a real run uses. A `system`
+    // consumer here would skip the binding check and cache `verified` for a
+    // secret the runner would reject as unbound (Codex P2, false-green).
     expect(mockResolveAdapterConfigForRuntime).toHaveBeenCalledWith(
       COMPANY_ID,
       "claude_local",
       agentConfig,
-      expect.anything(),
+      expect.objectContaining({ consumerType: "agent", consumerId: AGENT_ID }),
     );
     expect(mockRecordReadiness).toHaveBeenCalledWith(
       expect.anything(),
