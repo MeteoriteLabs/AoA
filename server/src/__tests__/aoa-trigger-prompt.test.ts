@@ -572,6 +572,217 @@ describe("buildTriggerPrompt (Task 4.3) — contextBundle injection", () => {
   });
 });
 
+// WS6 — braindump.ingest trigger directive (Librarian).
+describe("buildTriggerPrompt (WS6) — braindump.ingest", () => {
+  it("renders departmentId, departmentName, and the braindump content", () => {
+    const out = buildTriggerPrompt({
+      instruction: "BUNDLE",
+      agentName: "Librarian",
+      agentRoleKey: "librarian",
+      payload: {
+        companyId: "co-1",
+        source: "braindump.ingest",
+        departmentId: "dept-1",
+        departmentName: "Engineering",
+        braindumpContent: "We ship on Fridays. Staging is called 'preview'.",
+      },
+    });
+    expect(out).toContain("Department id: dept-1");
+    expect(out).toContain("Department name: Engineering");
+    expect(out).toContain("Braindump content:");
+    expect(out).toContain("We ship on Fridays. Staging is called 'preview'.");
+    expect(out).toContain("write_memory");
+    expect(out).toContain('layer="domain"');
+  });
+
+  it("truncates very long braindump content to keep the prompt bounded", () => {
+    const long = "y".repeat(20000);
+    const out = buildTriggerPrompt({
+      instruction: "BUNDLE",
+      agentName: "Librarian",
+      agentRoleKey: "librarian",
+      payload: {
+        companyId: "co-1",
+        source: "braindump.ingest",
+        departmentId: "dept-1",
+        braindumpContent: long,
+      },
+    });
+    expect(out).toContain("Braindump content:");
+    expect(out).toContain("[truncated]");
+    expect(out).not.toContain(long);
+  });
+
+  it("guard case: no braindumpContent still renders without throwing or 'undefined'", () => {
+    const out = buildTriggerPrompt({
+      instruction: "BUNDLE",
+      agentName: "Librarian",
+      agentRoleKey: "librarian",
+      payload: {
+        companyId: "co-1",
+        source: "braindump.ingest",
+        departmentId: "dept-1",
+      },
+    });
+    expect(out).toContain("Department id: dept-1");
+    expect(out).not.toContain("undefined");
+    expect(out).not.toContain("Braindump content:");
+  });
+
+  // -------------------------------------------------------------------------
+  // Item 5 / Phase 5c — scope, folders, and attached files.
+  // -------------------------------------------------------------------------
+
+  it("company-wide capture: identity layer, no departmentId, explicit company framing", () => {
+    const out = buildTriggerPrompt({
+      instruction: "BUNDLE",
+      agentName: "Librarian",
+      agentRoleKey: "librarian",
+      payload: {
+        companyId: "co-1",
+        source: "braindump.ingest",
+        memoryLayer: "identity",
+        braindumpContent: "We optimize for candor.",
+      },
+    });
+    expect(out).toContain("Scope: company-wide (no department)");
+    expect(out).toContain('layer="identity"');
+    expect(out).toContain("NO departmentId");
+    expect(out).not.toContain("Department id:");
+  });
+
+  it("lists the allowed folders and tells the agent they are the only accepted values", () => {
+    const out = buildTriggerPrompt({
+      instruction: "BUNDLE",
+      agentName: "Librarian",
+      agentRoleKey: "librarian",
+      payload: {
+        companyId: "co-1",
+        source: "braindump.ingest",
+        departmentId: "dept-1",
+        memoryLayer: "domain",
+        allowedFolders: ["engineering/Architecture", "engineering/Decisions"],
+        braindumpContent: "We use Drizzle.",
+      },
+    });
+    expect(out).toContain("Folders you may file into:");
+    expect(out).toContain("- engineering/Architecture");
+    expect(out).toContain("- engineering/Decisions");
+    expect(out).toContain("folderPath");
+    expect(out).toMatch(/only accepted values/i);
+  });
+
+  it("omits all folder instructions when the scope has no folders", () => {
+    const out = buildTriggerPrompt({
+      instruction: "BUNDLE",
+      agentName: "Librarian",
+      agentRoleKey: "librarian",
+      payload: {
+        companyId: "co-1",
+        source: "braindump.ingest",
+        departmentId: "dept-1",
+        allowedFolders: [],
+        braindumpContent: "x",
+      },
+    });
+    expect(out).not.toContain("Folders you may file into:");
+    expect(out).not.toContain("folderPath");
+  });
+
+  it("inlines attached-file text and names files that have none", () => {
+    const out = buildTriggerPrompt({
+      instruction: "BUNDLE",
+      agentName: "Librarian",
+      agentRoleKey: "librarian",
+      payload: {
+        companyId: "co-1",
+        source: "braindump.ingest",
+        departmentId: "dept-1",
+        braindumpContent: "See attached.",
+        attachedFiles: [
+          { fileName: "runway.md", text: "14 months of runway." },
+          { fileName: "logo.png" },
+        ],
+      },
+    });
+    expect(out).toContain("Attached files:");
+    expect(out).toContain("- runway.md:");
+    expect(out).toContain("14 months of runway.");
+    expect(out).toContain("- logo.png (stored in the memory tree; no readable text)");
+    // The directive must warn against restating a file name as knowledge.
+    expect(out).toMatch(/do not write a memory item that merely restates a file name/i);
+  });
+
+  it("caps total attached-file text so one huge file can't blow the prompt", () => {
+    const huge = "z".repeat(50_000);
+    const out = buildTriggerPrompt({
+      instruction: "BUNDLE",
+      agentName: "Librarian",
+      agentRoleKey: "librarian",
+      payload: {
+        companyId: "co-1",
+        source: "braindump.ingest",
+        departmentId: "dept-1",
+        attachedFiles: [
+          { fileName: "big.pdf", text: huge },
+          { fileName: "second.md", text: "later file" },
+        ],
+      },
+    });
+    expect(out).toContain("[truncated]");
+    expect(out).not.toContain(huge);
+    // The second file still appears by name even though the budget is spent.
+    expect(out).toContain("second.md");
+    expect(out).toContain("prompt budget reached");
+  });
+
+  it("ignores malformed allowedFolders/attachedFiles entries rather than throwing", () => {
+    const out = buildTriggerPrompt({
+      instruction: "BUNDLE",
+      agentName: "Librarian",
+      agentRoleKey: "librarian",
+      payload: {
+        companyId: "co-1",
+        source: "braindump.ingest",
+        departmentId: "dept-1",
+        allowedFolders: ["ok/Path", 42, null, ""],
+        attachedFiles: [{ fileName: "good.md" }, { nope: true }, null, "string"],
+        braindumpContent: "x",
+      },
+    });
+    expect(out).toContain("- ok/Path");
+    expect(out).toContain("good.md");
+    expect(out).not.toContain("undefined");
+    expect(out).not.toContain("42");
+  });
+
+  it("defaults to layer=domain for a legacy payload with no memoryLayer", () => {
+    const out = buildTriggerPrompt({
+      instruction: "BUNDLE",
+      agentName: "Librarian",
+      agentRoleKey: "librarian",
+      payload: {
+        companyId: "co-1",
+        source: "braindump.ingest",
+        departmentId: "dept-1",
+        braindumpContent: "x",
+      },
+    });
+    expect(out).toContain('layer="domain"');
+  });
+
+  it("non-braindump librarian wakeup falls back to the role-table directive (regression guard)", () => {
+    const out = buildTriggerPrompt({
+      instruction: BASE_INSTRUCTION,
+      agentName: "Librarian",
+      agentRoleKey: "librarian",
+      payload: { companyId: "co", source: "some_other_source" },
+    });
+    expect(out).toContain("write_memory");
+    expect(out).not.toContain("A braindump has been submitted");
+  });
+});
+
 // Task 0.4 — ensure-adjutant stale-framing guard
 describe("ensure-adjutant instruction (Task 0.4)", () => {
   it("does NOT contain stale 'Dispatcher and Engineer take over' framing", () => {

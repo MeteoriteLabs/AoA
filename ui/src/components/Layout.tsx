@@ -25,12 +25,15 @@ const NewGoalDialog = lazy(() => import("./NewGoalDialog").then((m) => ({ defaul
 const NewIssueDialog = lazy(() => import("./NewIssueDialog").then((m) => ({ default: m.NewIssueDialog })));
 const NewProjectDialog = lazy(() => import("./NewProjectDialog").then((m) => ({ default: m.NewProjectDialog })));
 
-export function shouldUseFullBleedMain(pathname: string, companyPrefix?: string) {
+function getRouteSection(pathname: string, companyPrefix?: string) {
   const normalizedPath = pathname.split(/[?#]/, 1)[0] ?? pathname;
   const segments = normalizedPath.split("/").filter(Boolean);
   const firstContentIndex = companyPrefix && segments[0]?.toUpperCase() === companyPrefix.toUpperCase() ? 1 : 0;
-  const section = segments[firstContentIndex];
-  const detailId = segments[firstContentIndex + 1];
+  return { section: segments[firstContentIndex], detailId: segments[firstContentIndex + 1] };
+}
+
+export function shouldUseFullBleedMain(pathname: string, companyPrefix?: string) {
+  const { section, detailId } = getRouteSection(pathname, companyPrefix);
 
   return (
     (section === "workspaces" && Boolean(detailId)) ||

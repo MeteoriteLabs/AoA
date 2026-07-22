@@ -202,6 +202,27 @@ export function filterByType(
   return items.filter((i) => i.type === type);
 }
 
+/** The curated "standard crew" team slug(s) — the AoA crew packaged as a team. */
+const AOA_CREW_TEAM_SLUGS = new Set(["default-crew", "standard-crew"]);
+
+/**
+ * True for AoA's own auto-seeded crew items — the 8 `aoa-*` crew agents
+ * (`agent:aoa-curated/aoa-adjutant`, …) and the standard-crew team
+ * (`team:aoa-curated/default-crew`). NOT the regular curated agents
+ * (`senior-engineer`, `github-issue-triager`), which every founder should still
+ * be able to pick. The onboarding agent picker hides these — the crew is seeded
+ * automatically, so re-offering it in the picker is noise. Pure function.
+ *
+ * Note: ALL catalog agents share `source.adapter === "aoa-curated"`, so the
+ * distinction is the slug, not the adapter.
+ */
+export function isAoaCrewItem(item: CatalogItem): boolean {
+  if (item.source.adapter !== "aoa-curated") return false;
+  const slug = item.id.split("/").pop() ?? "";
+  if (item.type === "team") return AOA_CREW_TEAM_SLUGS.has(slug);
+  return slug.startsWith("aoa-");
+}
+
 /** Filter catalog items by category. Pure function. */
 export function filterByCategory(
   items: CatalogItem[],

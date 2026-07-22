@@ -2,6 +2,7 @@ import {
   AlertCircle,
   Bell,
   Bot,
+  Brain,
   CircleHelp,
   CheckSquare,
   Lightbulb,
@@ -103,6 +104,26 @@ export const HUB_REGISTRY: Record<HubSemanticType, HubRegistryEntry> = {
     fullLink: sourceLink("/discussions"),
     tabKind: "thread",
     // hub-source-producers.ts:148-150 — sourceId IS discussion.id.
+    resolveTabId: preferRelated(rawSource),
+  },
+  memory_review: {
+    semanticType: "memory_review",
+    lane: HUB_SEMANTIC_TO_LANE.memory_review,
+    label: "Memory review",
+    icon: Brain,
+    // No dedicated viewer/producer yet (Task M3a is types + registry only —
+    // the hub producer/emit path lands in the follow-up task). Mirrors
+    // discussion_pending's "owner" authority but degrades to the generic
+    // notification card until a memory-specific tab is wired.
+    viewerKind: "notification",
+    // Deep-links to the Memory Explorer's Pending Review virtual folder
+    // (MemoryTree.tsx / memoryRail.ts `__pending` key; same route
+    // PendingReviewPill.tsx already navigates to: `/memory/explore?folder=__pending`,
+    // company-prefixed by the router's <Link>/<useNavigate> wrapper).
+    fullLink: () => "/memory/explore?folder=__pending",
+    tabKind: "notification",
+    // Reserved (no live producer yet). rawSource keeps this consistent with
+    // the other not-yet-produced sibling types (e.g. run_complete).
     resolveTabId: preferRelated(rawSource),
   },
   join_request: {

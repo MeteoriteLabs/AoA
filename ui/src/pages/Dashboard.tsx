@@ -9,10 +9,9 @@ import {
   type MemoryItemCategory,
   type MemoryItemLayer,
   type RecentActivityItem,
-  type SetupStatus,
   type Suggestion,
 } from "@armyofagents/shared";
-import { homeApi } from "../api/dashboard";
+import { useHomeSummary } from "../hooks/useHomeSummary";
 import { authApi } from "../api/auth";
 import { suggestionsApi } from "../api/suggestions";
 import { memoryApi } from "../api/memory";
@@ -40,13 +39,10 @@ import {
   Activity,
   AlertCircle,
   ArrowRightLeft,
-  Bot,
   Brain,
   CalendarClock,
-  Check,
   CheckCircle2,
   ChevronDown,
-  ChevronRight,
   CircleDollarSign,
   Clock,
   Eye,
@@ -81,14 +77,6 @@ interface ActionGroup {
   title: string;
   icon: ElementType;
   items: ActionGroupItem[];
-}
-
-interface SetupStepDef {
-  key: string;
-  label: string;
-  description: string;
-  icon: ElementType;
-  done: boolean;
 }
 
 interface SuggestedMemoryDraft {
@@ -176,43 +164,6 @@ function buildActionGroups(data: HomeSummary): ActionGroup[] {
 
 function getTotalActionCount(groups: ActionGroup[], suggestionCount: number): number {
   return groups.reduce((sum, group) => sum + group.items.length, 0) + suggestionCount;
-}
-
-function isSetupComplete(s: SetupStatus): boolean {
-  return s.hasVisionMission && s.hasDepartment && s.hasAgent && s.hasGoal;
-}
-
-function buildSetupSteps(s: SetupStatus): SetupStepDef[] {
-  return [
-    {
-      key: "vision",
-      label: "Set your Vision & Mission",
-      description: "Define what your company stands for and where it's headed.",
-      icon: Eye,
-      done: s.hasVisionMission,
-    },
-    {
-      key: "department",
-      label: "Create your first department",
-      description: "Departments organize your agents and their work.",
-      icon: Activity,
-      done: s.hasDepartment,
-    },
-    {
-      key: "agent",
-      label: "Add your first agent",
-      description: "Agents execute tasks autonomously on your behalf.",
-      icon: Bot,
-      done: s.hasAgent,
-    },
-    {
-      key: "goal",
-      label: "Create your first goal",
-      description: "Goals give your agents direction and purpose.",
-      icon: Target,
-      done: s.hasGoal,
-    },
-  ];
 }
 
 function formatAction(item: RecentActivityItem): string {
@@ -594,7 +545,7 @@ function SuggestedMemoryDialog({
 
 export function Dashboard() {
   const { selectedCompanyId, companies } = useCompany();
-  const { openNewIssue, openDiscussionCapture, openNewProject, openNewAgent, openNewGoal } = useDialog();
+  const { openNewIssue, openDiscussionCapture, openNewGoal } = useDialog();
   const { pushToast } = useToast();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -615,11 +566,9 @@ export function Dashboard() {
     setBreadcrumbs([{ label: "Home" }]);
   }, [setBreadcrumbs]);
 
-  const { data, isLoading, error } = useQuery({
-    queryKey: queryKeys.home(selectedCompanyId!),
-    queryFn: () => homeApi.summary(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
-  });
+  // Shared with Layout's WS9 first-run full-bleed check via the same
+  // `queryKeys.home(companyId)` entry (see useHomeSummary).
+  const { data, isLoading, error } = useHomeSummary(selectedCompanyId);
 
   const { data: suggestions = [], isLoading: suggestionsLoading } = useQuery({
     queryKey: queryKeys.suggestions.pending(selectedCompanyId!),
@@ -778,7 +727,12 @@ export function Dashboard() {
 
   const userName = session?.user?.name?.split(" ")[0] ?? null;
   const greeting = userName ? `${getGreeting()}, ${userName}` : getGreeting();
-  const showOnboarding = data?.setupStatus && !isSetupComplete(data.setupStatus);
+  // Onboarding (spine + persona fork + in-flight tail) lives ENTIRELY in the
+  // standalone /onboarding dark flow and never takes over the dashboard. A
+  // founder who hasn't finished their first-run tail is routed back to
+  // /onboarding by the index gate (see resumeFirstRunCompanyId), so Home is
+  // always the steady dashboard here.
+
   const actionGroups = data ? buildActionGroups(data) : [];
   const totalActions = getTotalActionCount(actionGroups, suggestions.length);
   const statusParts: string[] = [];
@@ -794,153 +748,71 @@ export function Dashboard() {
     ? statusParts.join(" \u00B7 ")
     : "All clear \u2014 nothing needs your attention right now.";
 
-  const handleStepClick = (key: string) => {
-    switch (key) {
-      case "vision":
-        navigate("/vision");
-        break;
-      case "department":
-        openNewProject({ type: "department" });
-        break;
-      case "agent":
-        openNewAgent();
-        break;
-      case "goal":
-        openNewGoal();
-        break;
-    }
-  };
-
   return (
     <div className="space-y-6 max-w-3xl">
       {error && <p className="text-sm text-destructive">{error.message}</p>}
 
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">{greeting}</h1>
-        {data && !showOnboarding && <p className="text-sm text-muted-foreground mt-1">{statusLine}</p>}
-        {showOnboarding && (
-          <p className="text-sm text-muted-foreground mt-1">
-            Let's get your workspace set up. Complete these steps to get started.
-          </p>
-        )}
+        {data && <p className="text-sm text-muted-foreground mt-1">{statusLine}</p>}
       </div>
 
-      {!showOnboarding && (
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <QuickActionCard icon={Plus} label="+ New Task" onClick={() => openNewIssue()} />
-          <QuickActionCard icon={MessageSquare} label="+ Discussion" onClick={() => openDiscussionCapture()} />
-          <QuickActionCard icon={Target} label="+ New Goal" onClick={() => openNewGoal()} />
-        </div>
-      )}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <QuickActionCard icon={Plus} label="+ New Task" onClick={() => openNewIssue()} />
+        <QuickActionCard icon={MessageSquare} label="+ Discussion" onClick={() => openDiscussionCapture()} />
+        <QuickActionCard icon={Target} label="+ New Goal" onClick={() => openNewGoal()} />
+      </div>
 
-      {showOnboarding && data?.setupStatus && (
-        <div>
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="text-sm font-semibold text-muted-foreground">Getting Started</h2>
-            <span className="text-xs text-muted-foreground">
-              {buildSetupSteps(data.setupStatus).filter((step) => step.done).length} of 4 complete
-            </span>
-          </div>
-          <div className="h-1.5 bg-muted rounded-full mb-4 overflow-hidden">
-            <div
-              className="h-full bg-primary rounded-full transition-all duration-500"
-              style={{
-                width: `${(buildSetupSteps(data.setupStatus).filter((step) => step.done).length / 4) * 100}%`,
-              }}
-            />
-          </div>
-          <div className="border border-border divide-y divide-border rounded-md overflow-hidden">
-            {buildSetupSteps(data.setupStatus).map((step) => {
-              const Icon = step.icon;
-              const currentStepKey = buildSetupSteps(data.setupStatus).find((item) => !item.done)?.key;
-              const isCurrent = step.key === currentStepKey;
-
-              return (
-                <button
-                  key={step.key}
-                  onClick={() => !step.done && handleStepClick(step.key)}
-                  disabled={step.done}
-                  className={`flex items-center gap-3 px-4 py-3 text-sm w-full text-left transition-colors ${
-                    step.done ? "bg-muted/30 text-muted-foreground" : isCurrent ? "bg-accent/50" : "hover:bg-accent/30"
-                  }`}
-                >
-                  {step.done ? (
-                    <div className="h-6 w-6 rounded-full bg-primary/15 flex items-center justify-center shrink-0">
-                      <Check className="h-3.5 w-3.5 text-primary" />
-                    </div>
-                  ) : (
-                    <div
-                      className={`h-6 w-6 rounded-full flex items-center justify-center shrink-0 ${
-                        isCurrent ? "bg-primary/15" : "bg-muted"
-                      }`}
-                    >
-                      <Icon className={`h-3.5 w-3.5 ${isCurrent ? "text-primary" : "text-muted-foreground"}`} />
-                    </div>
-                  )}
-                  <div className="flex-1 min-w-0">
-                    <span className={step.done ? "line-through" : "font-medium"}>{step.label}</span>
-                    {isCurrent && <p className="text-xs text-muted-foreground mt-0.5">{step.description}</p>}
-                  </div>
-                  {!step.done && <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      {!showOnboarding && actionGroups.length > 0 && (
+      {actionGroups.length > 0 && (
         <div className="space-y-3">
           <h2 className="text-sm font-semibold text-muted-foreground">Action Queue</h2>
           {actionGroups.map((group) => <ActionQueueGroup key={group.id} group={group} />)}
         </div>
       )}
 
-      {!showOnboarding && (
-        <div className="space-y-3">
-          <div className="flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2">
-              <Lightbulb className="h-4 w-4 text-muted-foreground" />
-              <h2 className="text-sm font-semibold text-muted-foreground">Suggestions</h2>
-            </div>
-            {suggestions.length > 10 && (
-              <Button variant="link" size="sm" onClick={() => setShowAllSuggestions((current) => !current)}>
-                {showAllSuggestions ? "Show less" : "View all"}
-              </Button>
-            )}
+      <div className="space-y-3">
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <Lightbulb className="h-4 w-4 text-muted-foreground" />
+            <h2 className="text-sm font-semibold text-muted-foreground">Suggestions</h2>
           </div>
-
-          {suggestionsLoading ? (
-            <div className="rounded-md border border-border p-4 text-sm text-muted-foreground">
-              Refreshing suggestions...
-            </div>
-          ) : suggestions.length === 0 ? (
-            <div className="rounded-md border border-dashed border-border p-6 text-center">
-              <div className="mx-auto mb-2 flex h-10 w-10 items-center justify-center rounded-full bg-muted">
-                <CheckCircle2 className="h-5 w-5 text-muted-foreground" />
-              </div>
-              <p className="text-sm font-medium">All caught up</p>
-              <p className="mt-1 text-sm text-muted-foreground">No pending suggestions right now.</p>
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {visibleSuggestions.map((suggestion) => (
-                <SuggestionCard
-                  key={suggestion.id}
-                  suggestion={suggestion}
-                  exiting={exitingSuggestionIds.includes(suggestion.id)}
-                  busy={busySuggestionIds.includes(suggestion.id)}
-                  canAct={isFounder}
-                  onAccept={handleAccept}
-                  onDismiss={handleDismiss}
-                />
-              ))}
-            </div>
+          {suggestions.length > 10 && (
+            <Button variant="link" size="sm" onClick={() => setShowAllSuggestions((current) => !current)}>
+              {showAllSuggestions ? "Show less" : "View all"}
+            </Button>
           )}
         </div>
-      )}
 
-      {!showOnboarding && data && data.goalProgress?.length > 0 && (
+        {suggestionsLoading ? (
+          <div className="rounded-md border border-border p-4 text-sm text-muted-foreground">
+            Refreshing suggestions...
+          </div>
+        ) : suggestions.length === 0 ? (
+          <div className="rounded-md border border-dashed border-border p-6 text-center">
+            <div className="mx-auto mb-2 flex h-10 w-10 items-center justify-center rounded-full bg-muted">
+              <CheckCircle2 className="h-5 w-5 text-muted-foreground" />
+            </div>
+            <p className="text-sm font-medium">All caught up</p>
+            <p className="mt-1 text-sm text-muted-foreground">No pending suggestions right now.</p>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {visibleSuggestions.map((suggestion) => (
+              <SuggestionCard
+                key={suggestion.id}
+                suggestion={suggestion}
+                exiting={exitingSuggestionIds.includes(suggestion.id)}
+                busy={busySuggestionIds.includes(suggestion.id)}
+                canAct={isFounder}
+                onAccept={handleAccept}
+                onDismiss={handleDismiss}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+
+      {data && data.goalProgress?.length > 0 && (
         <div>
           <h2 className="text-sm font-semibold text-muted-foreground mb-3">Active Goals</h2>
           <div className="border border-border divide-y divide-border rounded-md overflow-hidden">
@@ -995,7 +867,7 @@ export function Dashboard() {
         </div>
       )}
 
-      {!showOnboarding && data && actionGroups.length === 0 && suggestions.length === 0 && data.recentActivity.length === 0 && (
+      {data && actionGroups.length === 0 && suggestions.length === 0 && data.recentActivity.length === 0 && (
         <div className="border border-border rounded-md p-8 text-center">
           <p className="text-sm text-muted-foreground">Nothing needs your attention right now.</p>
         </div>

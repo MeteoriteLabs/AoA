@@ -2,23 +2,13 @@ import path from "node:path";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import type { Db } from "@armyofagents/db";
-import { SUPPORTED_MIME_TYPES } from "../services/file-import.js";
 import { memoryAssetsService } from "../services/memory-assets.js";
 import type { StorageService } from "../storage/types.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import { assertRole } from "../middleware/rbac.js";
+import { SUPPORTED_UPLOAD_MIME_TYPES_SET } from "./memory-asset-upload-types.js";
 
-const SUPPORTED_UPLOAD_MIME_TYPES_SET = new Set<string>([
-  ...SUPPORTED_MIME_TYPES,
-  "image/png",
-  "image/jpeg",
-  "image/gif",
-  "image/webp",
-  "video/mp4",
-  "video/webm",
-  "video/quicktime",
-  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-]);
+export { SUPPORTED_UPLOAD_MIME_TYPES_SET };
 
 const MAX_FILE_SIZE_BYTES =
   Number(process.env.AOA_FILE_MAX_BYTES) || 50 * 1024 * 1024;

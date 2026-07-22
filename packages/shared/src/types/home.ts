@@ -37,6 +37,14 @@ export interface GoalGapNudge {
 export interface HomeSummary {
   companyId: string;
   setupStatus: SetupStatus;
+  /**
+   * WS0b — the persisted first-run-done flag. Gates first-run vs
+   * steady-state Home (`showOnboarding = !firstRunCompleted`), independent
+   * of `setupStatus` (which never completes for In-flight/Explorer
+   * personas). True for pre-existing members with no onboarding-progress
+   * row, or for callers with no board-actor userId to check.
+   */
+  firstRunCompleted: boolean;
   discussionsPendingReview: number;
   tasksInReview: number;
   myTasksDueToday: {

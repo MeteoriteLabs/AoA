@@ -28,6 +28,7 @@ import { agentRoutes } from "./routes/agents.js";
 import { projectRoutes } from "./routes/projects.js";
 import { issueRoutes } from "./routes/issues.js";
 import { goalRoutes } from "./routes/goals.js";
+import { braindumpRoutes } from "./routes/braindump.js";
 import { hubItemRoutes } from "./routes/hub-items.js";
 import { hubAutopilotRoutes } from "./routes/hub-autopilot.js";
 import { agentRuntimeDecisionRoutes } from "./routes/agent-runtime-decisions.js";
@@ -91,6 +92,7 @@ import { environmentRoutes } from "./routes/environments.js";
 import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
 import { workspaceGitRoutes } from "./routes/workspace-git.js";
 import { filesystemRoutes } from "./routes/filesystem.js";
+import { companyWorkspaceFsRoutes } from "./routes/company-workspace-fs.js";
 import { createPreviewRouter } from "./routes/preview.js";
 import { runtimeHooksRoutes } from "./routes/runtime-hooks.js";
 import { adapterRoutes } from "./routes/adapters.js";
@@ -150,6 +152,7 @@ export async function createApp(
     storageService: StorageService;
     deploymentMode: DeploymentMode;
     deploymentExposure: DeploymentExposure;
+    companyWorkspaceBaseDir: string;
     allowedHostnames: string[];
     bindHost: string;
     authReady: boolean;
@@ -298,6 +301,7 @@ export async function createApp(
   api.use(issueRoutes(db, opts.storageService));
   api.use(dependencyRoutes(db));
   api.use(goalRoutes(db));
+  api.use(braindumpRoutes(db));
   api.use(hubItemRoutes(db));
   api.use(hubAutopilotRoutes(db));
   api.use(agentRuntimeDecisionRoutes(db));
@@ -359,6 +363,12 @@ export async function createApp(
   api.use(executionWorkspaceRoutes(db));
   api.use(workspaceGitRoutes(db));
   api.use(filesystemRoutes());
+  api.use(
+    companyWorkspaceFsRoutes({
+      deploymentMode: opts.deploymentMode,
+      companyWorkspaceBaseDir: opts.companyWorkspaceBaseDir,
+    }),
+  );
   api.use(adapterRoutes());
   api.use(activityRoutes(db));
   api.use(dashboardRoutes(db));

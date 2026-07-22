@@ -11,11 +11,60 @@ import {
   companies,
   projects,
   agents,
+  onboardingProgress,
 } from "@armyofagents/db";
 import type { HomeSummary, GoalProgress, GoalGapNudge, RecentActivityItem, SetupStatus } from "@armyofagents/shared";
 import { notCrewAssigned } from "./issue-crew-scope.js";
 
 const TERMINAL_STATUSES = ["done", "cancelled"];
+
+/**
+ * WS0b — resolve the persisted first-run-done flag for a (userId, companyId).
+ * Gates Home first-run vs steady-state independently of the `setupStatus`
+ * checklist, which never completes for In-flight/Explorer personas.
+ *
+ * - No board-actor `userId` (e.g. an agent/MCP caller) → nothing to gate,
+ *   treat as complete.
+ * - No onboarding_progress row for this (userId, companyId) → a pre-existing
+ *   member who predates onboarding tracking. Must NOT be re-onboarded, so
+ *   this defaults true.
+ * - A row exists but `firstRunCompletedAt IS NULL` → genuinely in-flight,
+ *   gate (false).
+ */
+export async function resolveFirstRunCompleted(
+  db: Db,
+  companyId: string,
+  userId: string | undefined,
+): Promise<boolean> {
+  if (!userId) return true;
+  const rows = await db
+    .select({ firstRunCompletedAt: onboardingProgress.firstRunCompletedAt })
+    .from(onboardingProgress)
+    .where(and(eq(onboardingProgress.userId, userId), eq(onboardingProgress.companyId, companyId)))
+    .limit(1);
+  const row = rows[0];
+  if (!row) return true;
+  return row.firstRunCompletedAt != null;
+}
+
+/**
+ * TRANSITIONAL BRIDGE — remove when WS9 lands (WS9 owns the door-band write
+ * that keeps `firstRunCompletedAt` authoritative for every completion path).
+ *
+ * Until WS9 ships, nothing on the client reliably writes
+ * `firstRunCompletedAt` for every founder, so a founder who finishes the
+ * legacy setup checklist (vision/mission + department + agent + goal) but
+ * whose `firstRunCompletedAt` is still null would otherwise be stuck on the
+ * first-run "Getting Started" screen with no way to reach steady-state Home
+ * short of a server restart running the backfill. This predicate restores
+ * the old "finish the checklist → steady Home" behavior as a floor: `summary()`
+ * ORs it with `resolveFirstRunCompleted(...)` so either signal is enough.
+ * Mirrors the 4-field check that used to live client-side as
+ * `isSetupComplete`/`buildSetupSteps` in `ui/src/pages/Dashboard.tsx`.
+ */
+export function isLegacySetupComplete(s: SetupStatus): boolean {
+  return s.hasVisionMission && s.hasDepartment && s.hasAgent && s.hasGoal;
+}
 
 export function homeService(db: Db) {
   return {
@@ -30,6 +79,7 @@ export function homeService(db: Db) {
         recentActivityRows,
         goalData,
         setupStatus,
+        firstRunCompleted,
       ] = await Promise.all([
         // 1. Discussions with pending items
         db
@@ -245,11 +295,18 @@ export function homeService(db: Db) {
             hasGoal: goalCount > 0,
           };
         })(),
+
+        // 9. First-run-done flag (WS0b) — see resolveFirstRunCompleted above.
+        resolveFirstRunCompleted(db, companyId, userId),
       ]);
 
       return {
         companyId,
         setupStatus,
+        // TRANSITIONAL BRIDGE until WS9 owns the door-band write — see
+        // isLegacySetupComplete above. Either signal is enough: the persisted
+        // WS0b flag, OR the legacy setup checklist being fully complete.
+        firstRunCompleted: firstRunCompleted || isLegacySetupComplete(setupStatus),
         discussionsPendingReview: discussionsCount,
         tasksInReview: reviewCount,
         myTasksDueToday: dueTodayTasks.map((t) => ({

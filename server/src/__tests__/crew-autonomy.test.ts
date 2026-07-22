@@ -17,4 +17,12 @@ describe("autonomy gate (L0/L1/L2 = crew activation)", () => {
       expect(isRoleActiveAtAutonomy(role, 2)).toBe(true);
     }
   });
+  // WS6: Librarian only ever runs on an explicit founder-triggered braindump
+  // dispatch (never a self-initiated sweep/mention), so it's floored at 0
+  // like the other founder/system-triggered core roles.
+  it("librarian is active at all levels including L0 (founder-triggered, not autonomous)", () => {
+    expect(isRoleActiveAtAutonomy("librarian", 0)).toBe(true);
+    expect(isRoleActiveAtAutonomy("librarian", 1)).toBe(true);
+    expect(isRoleActiveAtAutonomy("librarian", 2)).toBe(true);
+  });
 });

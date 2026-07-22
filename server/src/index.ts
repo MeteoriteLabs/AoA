@@ -74,10 +74,13 @@ import { ensureAllCrewAgents, isCrewMarketplaceManaged } from "./services/intern
 import { backfillGoalParents } from "./migrations/backfill-goal-parents.js";
 import { backfillMemoryFolderSeeds } from "./migrations/backfill-memory-folder-seeds.js";
 import { backfillWorkQuestionSnapshots } from "./migrations/backfill-work-question-snapshots.js";
+import { backfillFirstRunCompleted } from "./migrations/backfill-first-run-completed.js";
+import { normalizeLegacyOnboardingState } from "./migrations/normalize-legacy-onboarding-state.js";
 import { backfillCrewTemplateOrigin } from "./services/internal-agent/aoa-agents/backfill-template-origin.js";
 import { backfillCrewOriginKind } from "./services/internal-agent/aoa-agents/backfill-crew-origin-kind.js";
 import { reconcileAutonomyScale } from "./services/internal-agent/aoa-agents/reconcile-autonomy-scale.js";
 import { checkCrewUpdates } from "./services/marketplace-install/crew-updater.js";
+import { reconcileTeamMembers } from "./services/marketplace-install/team-reconcile.js";
 import { agentInstructionsService } from "./services/agent-instructions.js";
 
 type BetterAuthSessionUser = {
@@ -576,6 +579,7 @@ const app = await createApp(db as any, {
   storageService,
   deploymentMode: config.deploymentMode,
   deploymentExposure: config.deploymentExposure,
+  companyWorkspaceBaseDir: config.companyWorkspaceBaseDir,
   allowedHostnames: config.allowedHostnames,
   bindHost: config.host,
   authReady,
@@ -830,6 +834,26 @@ void backfillCrewTemplateOrigin(db as any).catch((err: unknown) =>
   logger.warn({ err }, "crew templateOrigin backfill failed"),
 );
 
+// WS0b — idempotent backfill: stamp firstRunCompletedAt=now() onto every
+// onboarding_progress row that is already SETUP_COMPLETE (currentState OR
+// completedStates) but predates the flag. Runs every boot; second run
+// updates 0 rows. Required so pre-existing SETUP_COMPLETE rows aren't stuck
+// showing Home first-run forever (Codex P1).
+void backfillFirstRunCompleted(db as any).catch((err: unknown) =>
+  logger.warn({ err }, "first-run-completed backfill failed"),
+);
+
+// WS0c — idempotent startup normalization: founder onboarding_progress rows
+// still mid-wizard at the now-removed DEPARTMENT_CREATED/AGENT_ASSIGNED
+// states get normalized to currentState="COMMANDER_VERIFIED" (NOT
+// SETUP_COMPLETE — that would collide with the backfillFirstRunCompleted
+// backfill above and auto-skip these founders past the new Home first-run
+// experience; see normalize-legacy-onboarding-state.ts). Runs every boot;
+// second run updates 0 rows.
+void normalizeLegacyOnboardingState(db as any).catch((err: unknown) =>
+  logger.warn({ err }, "legacy onboarding state normalization failed"),
+);
+
 // Idempotent backfill: stamp origin_kind='crew_thread' onto thread-deliverable
 // tasks that were created before this field was introduced (source_discussion_id
 // IS NOT NULL AND origin_kind IS NULL). Required so the crew board can filter
@@ -897,6 +921,29 @@ async function runCrewUpdateCheck(): Promise<void> {
         });
       } catch (err) {
         logger.warn({ err, companyId: company.id }, "crew update check failed for company");
+      }
+
+      // WS6: member-add-on-update reconciliation. checkCrewUpdates only
+      // walks already-installed agent rows, so a team package that grew a
+      // new roster member (e.g. the Librarian, once it ships in the
+      // aoa-curated/standard-crew catalog entry — TODO(WS6-marketplace-cdn))
+      // is never discovered there. Separate try/catch: a reconcile failure
+      // must not be conflated with (or block) the version-update check above.
+      try {
+        const reconciled = await reconcileTeamMembers({
+          db: db as any,
+          companyId: company.id,
+          catalogItems: catalogData as any,
+          instructionsService: agentInstructionsService(),
+        });
+        if (reconciled.membersAdded > 0) {
+          logger.info(
+            { companyId: company.id, ...reconciled },
+            "marketplace: team roster reconciliation added missing members",
+          );
+        }
+      } catch (err) {
+        logger.warn({ err, companyId: company.id }, "team roster reconciliation failed for company");
       }
     }
   } catch (err) {

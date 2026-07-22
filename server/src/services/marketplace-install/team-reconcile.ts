@@ -1,0 +1,159 @@
+// server/src/services/marketplace-install/team-reconcile.ts
+//
+// WS6 — member-add-on-update reconciliation for installed team packages.
+//
+// checkCrewUpdates (crew-updater.ts) only walks agent rows that are already
+// installed (`agents` where kind='aoa'), so it can update an existing
+// Adjutant/Scout/etc. row to a new catalog version, but it has NO way to
+// discover that team.json grew a NEW roster member since the company
+// installed the team — there is no installed row for that member to find.
+//
+// TODO(WS6-marketplace-cdn): this is the AoA-side half of a two-part change.
+// The other half is a PR against https://github.com/MeteoriteLabs/aoa-marketplace-cdn
+// adding the Librarian to the `aoa-curated/standard-crew` team package's
+// team.json `agents` array (templateOrigin `aoa-curated/standard-crew/librarian`,
+// NOT `@legacy`). Until that catalog PR lands + `pnpm fetch-catalog` refreshes
+// the local snapshot, this function has nothing to reconcile (every installed
+// team's `agents` list will already match what's installed) — it is inert,
+// not broken, in the interim.
+//
+// This function walks each company's installed `teams` rows, re-fetches the
+// team's current team.json from the catalog, diffs its `agents` list against
+// what's already linked via `team_members`, and installs whatever is
+// missing — reusing the exact `createMarketplaceAgent` path team-installer.ts
+// uses for a fresh install. Each missing member is installed independently
+// (its own transaction inside createMarketplaceAgent) so one member's
+// failure never blocks the others or corrupts the team's existing roster.
+
+import { eq } from "drizzle-orm";
+import type { Db } from "@armyofagents/db";
+import { teams, teamMembers, agents } from "@armyofagents/db";
+import type { CatalogItem } from "@armyofagents/shared";
+import { fetchCatalogResource } from "./fetch-resource.js";
+import { parseMarketplaceAgentTemplate, normalizeMarketplaceAgentTemplate } from "./agent-runtime.js";
+import { createMarketplaceAgent } from "./agent-create.js";
+import type { AgentInstructionsServiceLike } from "./agent-create.js";
+import { resolveAgentNameConflict } from "./conflict-resolver.js";
+import { logger } from "../../middleware/logger.js";
+
+interface TeamTemplateBody {
+  slug: string;
+  description?: string;
+  manifest?: Record<string, unknown>;
+  agents: Array<{ templateOrigin: string; name: string; overrides?: Record<string, unknown> }>;
+}
+
+export interface ReconcileTeamMembersOpts {
+  db: Db;
+  companyId: string;
+  catalogItems: CatalogItem[];
+  instructionsService: AgentInstructionsServiceLike;
+}
+
+export interface ReconcileTeamMembersResult {
+  /** Number of installed teams that had at least one member added. */
+  teamsReconciled: number;
+  /** Total roster members installed across all teams for this company. */
+  membersAdded: number;
+}
+
+/**
+ * Reconcile every installed team for a company against the current catalog
+ * roster. Best-effort throughout: a failure fetching/parsing one team's
+ * template, or installing one missing member, is logged and skipped — it
+ * never aborts reconciliation for the company's other teams or members.
+ */
+export async function reconcileTeamMembers(
+  opts: ReconcileTeamMembersOpts,
+): Promise<ReconcileTeamMembersResult> {
+  const { db, companyId, catalogItems, instructionsService } = opts;
+  const catalogById = new Map(catalogItems.map((item) => [item.id, item]));
+  const result: ReconcileTeamMembersResult = { teamsReconciled: 0, membersAdded: 0 };
+
+  const teamRows = await db
+    .select({ id: teams.id, templateOrigin: teams.templateOrigin })
+    .from(teams)
+    .where(eq(teams.companyId, companyId));
+
+  for (const teamRow of teamRows as Array<{ id: string; templateOrigin: string | null }>) {
+    if (!teamRow.templateOrigin) continue; // not a catalog-installed team
+    const catalogTeamItem = catalogById.get(teamRow.templateOrigin);
+    if (!catalogTeamItem || catalogTeamItem.type !== "team") continue; // team retired/renamed in catalog
+
+    let teamBody: TeamTemplateBody;
+    try {
+      const text = await fetchCatalogResource(catalogTeamItem, "team template (reconcile)");
+      teamBody = JSON.parse(text) as TeamTemplateBody;
+    } catch (err) {
+      logger.error(
+        { err, companyId, teamId: teamRow.id },
+        "team-reconcile: failed to fetch/parse team template — skipping this team",
+      );
+      continue;
+    }
+    if (!Array.isArray(teamBody.agents) || teamBody.agents.length === 0) continue;
+
+    const existingMembers = await db
+      .select({ templateOrigin: agents.templateOrigin })
+      .from(teamMembers)
+      .innerJoin(agents, eq(agents.id, teamMembers.agentId))
+      .where(eq(teamMembers.teamId, teamRow.id));
+    const installedOrigins = new Set(
+      (existingMembers as Array<{ templateOrigin: string | null }>)
+        .map((m) => m.templateOrigin)
+        .filter((v): v is string => Boolean(v)),
+    );
+
+    const missing = teamBody.agents.filter((a) => !installedOrigins.has(a.templateOrigin));
+    if (missing.length === 0) continue;
+
+    let addedForThisTeam = 0;
+    for (const memberSpec of missing) {
+      const agentItem = catalogById.get(memberSpec.templateOrigin);
+      if (!agentItem || agentItem.type !== "agent") {
+        logger.warn(
+          { companyId, teamId: teamRow.id, templateOrigin: memberSpec.templateOrigin },
+          "team-reconcile: roster member not found in catalog (or wrong type) — skipping",
+        );
+        continue;
+      }
+      try {
+        const text = await fetchCatalogResource(agentItem, "agent template (reconcile)");
+        const parsed = parseMarketplaceAgentTemplate(text, agentItem);
+        const normalized = normalizeMarketplaceAgentTemplate({
+          parsed,
+          catalogItem: agentItem,
+          availableAdapterTypes: [],
+        });
+        const resolvedName = await resolveAgentNameConflict({
+          db,
+          companyId,
+          desiredName: memberSpec.name,
+        });
+        const { agentId } = await createMarketplaceAgent({
+          catalogItem: agentItem,
+          companyId,
+          db,
+          desiredName: resolvedName,
+          template: normalized,
+          instructionsService,
+        });
+        await db.insert(teamMembers).values({ teamId: teamRow.id, agentId, role: "member" });
+        addedForThisTeam += 1;
+        result.membersAdded += 1;
+        logger.info(
+          { companyId, teamId: teamRow.id, agentId, templateOrigin: memberSpec.templateOrigin },
+          "team-reconcile: added missing roster member to existing team install",
+        );
+      } catch (err) {
+        logger.error(
+          { err, companyId, teamId: teamRow.id, templateOrigin: memberSpec.templateOrigin },
+          "team-reconcile: failed to install missing roster member",
+        );
+      }
+    }
+    if (addedForThisTeam > 0) result.teamsReconciled += 1;
+  }
+
+  return result;
+}

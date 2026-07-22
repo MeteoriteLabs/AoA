@@ -36,30 +36,63 @@ export interface SnapshotInstallModalProps {
   item: CatalogItem;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /**
+   * WS7 (In-flight "Create agent" surface): when BOTH are provided, the
+   * company and department are locked — `CompanyPicker`/`DepartmentPicker`
+   * don't render, and the department is never reset by a company change
+   * (below, `companyId`/`deptId` become pure derivations of these props
+   * rather than independently-clearable state). Locking only one is
+   * unsupported and is treated as unlocked (Codex P1: a changeable company
+   * with a fixed department is a cross-company-targeting risk — callers must
+   * pass both or neither).
+   */
+  lockedCompanyId?: string;
+  lockedDeptId?: string;
+  /** Fired once the install POST successfully queues an operation (i.e. an
+   *  actual "Install" click, not Cancel/dismiss). Used by callers (WS7
+   *  `CreateAgents`) that need to know the install was confirmed — this modal
+   *  itself only shows a toast and doesn't block on operation completion. */
+  onInstalled?: () => void;
 }
 
 /**
  * Modal for snapshot installs (skill/agent/team). The global install toast
  * provider owns operation polling so the toast can resolve after route changes.
  */
-export function SnapshotInstallModal({ item, open, onOpenChange }: SnapshotInstallModalProps) {
+export function SnapshotInstallModal({
+  item,
+  open,
+  onOpenChange,
+  lockedCompanyId,
+  lockedDeptId,
+  onInstalled,
+}: SnapshotInstallModalProps) {
+  const isLocked = Boolean(lockedCompanyId && lockedDeptId);
   const { selectedCompanyId, companies } = useCompany();
-  const [companyId, setCompanyId] = useState<string | null>(selectedCompanyId);
-  const [deptId, setDeptId] = useState<string | null>(null);
+  const [internalCompanyId, setInternalCompanyId] = useState<string | null>(selectedCompanyId);
+  const [internalDeptId, setInternalDeptId] = useState<string | null>(null);
   const [agentRole, setAgentRole] = useState<AgentRole | null>(null);
   const [agentAdapterType, setAgentAdapterType] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!companyId) {
-      const active = companies.filter((c) => c.status !== "archived");
-      const fallback = selectedCompanyId ?? active[0]?.id ?? null;
-      if (fallback) setCompanyId(fallback);
-    }
-  }, [companyId, selectedCompanyId, companies]);
+  // Locked mode derives companyId/deptId directly from props every render —
+  // NOT from state — so there is no clearing effect that could ever run
+  // against them, regardless of what CompanyContext's selectedCompanyId does.
+  const companyId = isLocked ? lockedCompanyId! : internalCompanyId;
+  const deptId = isLocked ? lockedDeptId! : internalDeptId;
 
   useEffect(() => {
-    setDeptId(null);
-  }, [companyId]);
+    if (isLocked) return;
+    if (!internalCompanyId) {
+      const active = companies.filter((c) => c.status !== "archived");
+      const fallback = selectedCompanyId ?? active[0]?.id ?? null;
+      if (fallback) setInternalCompanyId(fallback);
+    }
+  }, [isLocked, internalCompanyId, selectedCompanyId, companies]);
+
+  useEffect(() => {
+    if (isLocked) return;
+    setInternalDeptId(null);
+  }, [isLocked, internalCompanyId]);
 
   const installMutation = useInstallOperation({ companyId: companyId ?? "" });
   const { show, update, trackOperation } = useInstallToast();
@@ -105,6 +138,7 @@ export function SnapshotInstallModal({ item, open, onOpenChange }: SnapshotInsta
         requestedMessage: `Request submitted - a founder will review ${item.name}`,
         invalidate: item.type === "skill" ? "companySkills" : undefined,
       });
+      onInstalled?.();
     } catch (err) {
       update(toastId, {
         status: "failure",
@@ -143,8 +177,10 @@ export function SnapshotInstallModal({ item, open, onOpenChange }: SnapshotInsta
             </div>
           )}
 
-          <CompanyPicker value={companyId} onChange={setCompanyId} />
-          {needsDept && <DepartmentPicker companyId={companyId} value={deptId} onChange={setDeptId} />}
+          {!isLocked && <CompanyPicker value={companyId} onChange={setInternalCompanyId} />}
+          {!isLocked && needsDept && (
+            <DepartmentPicker companyId={companyId} value={deptId} onChange={setInternalDeptId} />
+          )}
 
           {isAgent && plan?.agentInstall && (
             <AgentInstallSettings

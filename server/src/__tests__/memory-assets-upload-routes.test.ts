@@ -18,7 +18,13 @@ const { mockAssetsCreate } = vi.hoisted(() => ({
   mockAssetsCreate: vi.fn().mockImplementation(async (input: unknown) => ({ id: "a-1", ...(input as object) })),
 }));
 
-vi.mock("../services/file-import.js", () => ({
+// The route reads the upload allowlist from memory-asset-upload-types.ts,
+// which sources SUPPORTED_MIME_TYPES from the dependency-free
+// file-import-mime-types.ts — NOT from file-import.js (which the route no
+// longer imports at all). Mocking file-import.js here was dead: the suite
+// silently exercised the REAL allowlist and only passed because the real
+// list is a superset of this one.
+vi.mock("../services/file-import-mime-types.js", () => ({
   SUPPORTED_MIME_TYPES: [
     "application/pdf",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",

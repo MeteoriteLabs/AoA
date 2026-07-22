@@ -21,18 +21,17 @@ import { extractionService, type ExtractedItem } from "./extraction.js";
 import { logger } from "../middleware/logger.js";
 import { buildMemoryInsert } from "./memory-projection.js";
 import { getDbCapabilities } from "./db-capabilities.js";
+import {
+  SUPPORTED_MIME_TYPES,
+  PLAIN_TEXT_MIME_TYPES,
+  type SupportedMimeType,
+} from "./file-import-mime-types.js";
 
 const log = logger.child({ service: "file-import" });
 
 // ── Constants ─────────────────────────────────────────────────────────────
 
-export const SUPPORTED_MIME_TYPES = [
-  "application/pdf",
-  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  "text/plain",
-] as const;
-
-export type SupportedMimeType = (typeof SUPPORTED_MIME_TYPES)[number];
+export { SUPPORTED_MIME_TYPES, type SupportedMimeType };
 
 export const WORKER_BATCH_SIZE = 3;
 export const WORKER_INTERVAL_MS = 15_000;
@@ -68,10 +67,11 @@ export async function extractTextFromBuffer(
   buffer: Buffer,
   mimeType: string,
 ): Promise<TextExtractionResult> {
-  switch (mimeType) {
-    case "text/plain":
-      return { text: buffer.toString("utf-8"), warnings: [] };
+  if (PLAIN_TEXT_MIME_TYPES.has(mimeType)) {
+    return { text: buffer.toString("utf-8"), warnings: [] };
+  }
 
+  switch (mimeType) {
     case "application/pdf": {
       const parser = new PDFParse({ data: buffer });
       const result = await parser.getText();

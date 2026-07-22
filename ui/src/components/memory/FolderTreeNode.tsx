@@ -10,6 +10,8 @@ interface FolderTreeNodeProps {
   count?: number;
   /** Count badge tone. "brand" wraps the count in a brand-red pill (used for Pending Review). */
   countTone?: "default" | "brand";
+  /** Rolled-up pending-item tally for this folder (incl. descendants). Renders an "N pending" badge. */
+  pendingCount?: number;
   depth: number;
   expanded: boolean;
   selected: boolean;
@@ -29,6 +31,7 @@ export function FolderTreeNode({
   iconTone,
   count,
   countTone = "default",
+  pendingCount,
   depth,
   expanded,
   selected,
@@ -95,6 +98,14 @@ export function FolderTreeNode({
           )}
         >
           {count}
+        </span>
+      )}
+      {typeof pendingCount === "number" && pendingCount > 0 && (
+        <span
+          className="rounded border border-border bg-white/[0.04] px-1.5 py-0.5 text-[9px] font-medium whitespace-nowrap"
+          style={{ color: "var(--data-amber)" }}
+        >
+          {pendingCount} pending
         </span>
       )}
       {actions}

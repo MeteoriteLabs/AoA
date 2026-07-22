@@ -23,14 +23,14 @@ async function walkToVerify(page: Page, commander: "Claude" | "Codex"): Promise<
   await fillFounderProfileStep(page, "Track C Founder");
   await page.getByRole("button", { name: /continue/i }).click();
 
-  await expect(page.getByRole("heading", { name: /create your organization/i })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /your company/i })).toBeVisible();
   await page.getByRole("textbox").first().fill(`E2E-TrackC-${Date.now()}`);
   await page.getByRole("button", { name: /continue/i }).click();
 
   await expect(page.getByRole("heading", { name: /set up your environment/i })).toBeVisible();
   await page.getByRole("button", { name: /verify & continue/i }).click();
 
-  await expect(page.getByRole("heading", { name: /choose your commander/i })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /bring your engine online/i })).toBeVisible();
   await page.getByText(commander, { exact: true }).click();
   await page.getByRole("button", { name: /continue/i }).click();
 
@@ -69,15 +69,19 @@ test("needs_auth → API-key paste re-verifies to completion", async ({ page }) 
   await walkToVerify(page, "Claude");
   await page.getByRole("button", { name: /^verify$/i }).click();
 
-  await expect(page.getByText("sign in")).toBeVisible();
+  // exact: the probe message span — substring matching also hits the
+  // "Sign in with Claude" / "I'll sign in myself in the CLI" buttons (strict
+  // mode violation), same as the interactive-login test below.
+  await expect(page.getByText("sign in", { exact: true })).toBeVisible();
   await shot("01-needs-auth");
   const keyField = page.getByPlaceholder(/sk-ant/i);
   await expect(keyField).toBeEnabled();
   await keyField.fill("sk-ant-e2e-secret");
   await page.getByRole("button", { name: /save key & verify/i }).click();
 
-  // Re-verify succeeded → we advance past the verify step.
-  await expect(page.getByRole("heading", { name: /create your first department/i })).toBeVisible({ timeout: 20_000 });
+  // Re-verify succeeded → the spine completes and hands off to Home's first-run
+  // Map fork (department/agent moved into the in-flight tail behind it).
+  await expect(page.getByRole("heading", { name: /where are you starting from/i })).toBeVisible({ timeout: 20_000 });
 });
 
 test("needs_auth → interactive login surfaces the URL and completes on poll", async ({ page }) => {
@@ -131,6 +135,7 @@ test("needs_auth → interactive login surfaces the URL and completes on poll", 
   await expect(page.getByText("https://claude.ai/oauth?code=E2E")).toBeVisible();
   await shot("02-login-url");
 
-  // Immediate poll → completed → auto re-verify → advance past the verify step.
-  await expect(page.getByRole("heading", { name: /create your first department/i })).toBeVisible({ timeout: 20_000 });
+  // Immediate poll → completed → auto re-verify → spine completes and hands off
+  // to Home's first-run Map fork (the post-verify landing after the redesign).
+  await expect(page.getByRole("heading", { name: /where are you starting from/i })).toBeVisible({ timeout: 20_000 });
 });

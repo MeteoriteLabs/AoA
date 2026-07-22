@@ -58,7 +58,7 @@ async function listJoinRequests(
 
 /** Drive the shared Human Operating Profile step (Name + Title + Timezone). */
 async function completeProfileStep(page: Page, name = "E2E Invitee") {
-  await expect(page.getByRole("heading", { name: /set up your profile/i })).toBeVisible({
+  await expect(page.getByRole("heading", { name: /first,\s*you/i })).toBeVisible({
     timeout: 20_000,
   });
   await page.getByLabel("Name", { exact: true }).fill(name);
@@ -69,6 +69,14 @@ async function completeProfileStep(page: Page, name = "E2E Invitee") {
 
 /** The admitted teammate lands on "/" INSIDE the company (not the empty lobby). */
 async function expectInsideCompany(page: Page, companyName: string, timeout = 30_000) {
+  // Post-admission the invited journey shows a "Welcome to {company}" terminal
+  // (a MiniMap of the company you're joining) gated behind an explicit
+  // "Enter {company}" button — click through it to reach the returning-user
+  // Lobby. companyName is `E2E-…-${Date.now()}` (letters/digits/hyphens only),
+  // so it needs no regex escaping.
+  await page
+    .getByRole("button", { name: new RegExp(`enter ${companyName}`, "i") })
+    .click({ timeout });
   await expect(page.getByRole("heading", { name: /welcome back/i })).toBeVisible({ timeout });
   // .first(): the company name may legitimately render more than once on the
   // landed page (card title, subtitles, …) — any visible occurrence proves the

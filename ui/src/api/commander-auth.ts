@@ -55,3 +55,21 @@ export function cancelCommanderLogin(args: {
     {},
   );
 }
+
+/**
+ * Deliver the code the founder pasted from the browser sign-in page.
+ *
+ * Claude's `claude auth login` blocks reading this on stdin; the server writes
+ * it to the live child. A 404/410 means the sign-in session is gone (server
+ * restarted, or the CLI exited) and the founder must start again.
+ */
+export function submitCommanderLoginCode(args: {
+  companyId: string;
+  challengeId: string;
+  code: string;
+}): Promise<{ ok: true }> {
+  return api.post(
+    `/companies/${args.companyId}/internal-agent/commander-login/${encodeURIComponent(args.challengeId)}/code`,
+    { code: args.code },
+  );
+}

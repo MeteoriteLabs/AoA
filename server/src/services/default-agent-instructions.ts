@@ -25,6 +25,8 @@ const DEFAULT_AGENT_BUNDLE_FILES = {
   chronicler: ["AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"],
   // Inbox Hub W4 — Steward writes bounded hub curation explanations.
   steward: ["AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"],
+  // WS6 — Librarian turns onboarding braindumps into domain memory proposals.
+  librarian: ["AGENTS.md", "HEARTBEAT.md", "SOUL.md", "TOOLS.md"],
 } as const;
 
 type DefaultAgentBundleRole = keyof typeof DEFAULT_AGENT_BUNDLE_FILES;
@@ -50,6 +52,7 @@ const DEFAULT_AGENT_BUNDLE_DIRS: Record<DefaultAgentBundleRole, string> = {
   scout: "scout",
   chronicler: "chronicler",
   steward: "steward",
+  librarian: "librarian",
 };
 
 function resolveDefaultAgentBundleUrl(role: DefaultAgentBundleRole, fileName: string) {

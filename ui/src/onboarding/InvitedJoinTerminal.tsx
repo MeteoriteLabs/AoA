@@ -6,10 +6,32 @@ import { Button } from "@/components/ui/button";
 import { fetchJourney, finalizeInvitedJoin } from "../api/onboarding";
 import { HUMAN_ROLE_LABELS } from "@/lib/human-profile-constants";
 import { queryKeys } from "@/lib/queryKeys";
+import { DarkShell } from "./FlowEngine";
+import { CompanyOrientation } from "./CompanyOrientation";
+import { StepHeading } from "./steps/shared";
 
 const POLL_MS = 7000;
 
-type Phase = "checking" | "consent" | "pending" | "invite_invalid" | "not_approved";
+type Phase = "checking" | "consent" | "pending" | "invite_invalid" | "not_approved" | "admitted";
+
+/**
+ * WS10 continuity: the invited journey's waiting/consent/checking phases render
+ * in the SAME dark shell (`.onboarding-dark` + `<ConstellationBg/>`) as the
+ * founder spine and the `admitted` MiniMap screen, so the teammate never drops
+ * from the dark HumanProfileStep onto a bare light page mid-flow. Module-level
+ * (not defined inside the polling component) so it keeps a stable component
+ * identity across the 7s poll re-renders — an inline definition would remount
+ * the shell (and restart the constellation animation) on every tick.
+ */
+function TerminalShell({ children }: { children: React.ReactNode }) {
+  return (
+    <DarkShell>
+      <div className="relative z-10 mx-auto flex min-h-screen w-full max-w-md flex-col items-center justify-center gap-6 px-6 py-12 text-center">
+        {children}
+      </div>
+    </DarkShell>
+  );
+}
 
 /**
  * Terminal of the invited journey (spec §6). Attempts finalize on every poll
@@ -33,6 +55,16 @@ type Phase = "checking" | "consent" | "pending" | "invite_invalid" | "not_approv
  * the click also sets `acceptOpenInvite: true` on the finalize call, which the
  * server independently requires for the claim branch (it does not trust the
  * client not to skip this component).
+ *
+ * WS10: admission is no longer an immediate silent redirect. Every branch that
+ * used to `await enter()` now prepares entry (evicts the cached pre-approval
+ * journey + refreshes the companies list) and stops polling, but shows the
+ * "admitted" terminal screen — a read-only `MiniMap` ("the machine you're
+ * joining") — instead of navigating right away. The teammate only passes
+ * through this join flow once, so this doubles as the flow's terminal screen;
+ * navigation to Home happens on the explicit "Enter {company}" click
+ * (`finishEnter`). No engine step is shown here (v1 decision — the company
+ * Commander is company-scoped, not per-human).
  */
 export function InvitedJoinTerminal() {
   const navigate = useNavigate();
@@ -64,15 +96,38 @@ export function InvitedJoinTerminal() {
   // Null until the first invitation resolves.
   const lastInviteIdRef = useRef<string | null>(null);
 
-  const enter = useCallback(async () => {
-    // Evict the gate's cached pre-approval journey AND refresh the companies
-    // list (the root CompanyContext subscription cached an empty list from
-    // before membership existed — without this, a just-admitted teammate lands
-    // on the founder-oriented empty Lobby).
-    queryClient.removeQueries({ queryKey: ["onboarding", "journey"], exact: true });
-    await queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+  // Evict the gate's cached pre-approval journey AND refresh the companies
+  // list (the root CompanyContext subscription cached an empty list from
+  // before membership existed — without this, a just-admitted teammate lands
+  // on the founder-oriented empty Lobby). Runs as soon as admission is
+  // detected, NOT on the "Enter" click — so the Home data is already warm by
+  // the time the teammate clicks through the mini-map screen.
+  //
+  // Also backfills the company display name for the admitted screen. On the
+  // deep-link race the target left `pendingInvitations` before the terminal's
+  // first tick, so `company` was never set from an invitation and the copy
+  // degrades to "Welcome to the team." The companies list just refreshed here
+  // now contains the just-admitted company, so read its name from that cache
+  // (no extra request, no server round-trip) and seed `company` when unset.
+  const prepareEntry = useCallback(
+    async (targetId: string | null) => {
+      queryClient.removeQueries({ queryKey: ["onboarding", "journey"], exact: true });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+      if (!targetId) return;
+      const data = queryClient.getQueryData<{ companies: Array<{ id: string; name: string }> }>(
+        queryKeys.companies.all,
+      );
+      const name = data?.companies.find((c) => c.id === targetId)?.name;
+      if (name) setCompany((prev) => prev ?? { name, role: "" });
+    },
+    [queryClient],
+  );
+
+  // The explicit "Enter {company}" click on the admitted screen. `prepareEntry`
+  // already ran when admission was detected, so this is a pure navigate.
+  const finishEnter = useCallback(() => {
     navigate("/", { replace: true });
-  }, [navigate, queryClient]);
+  }, [navigate]);
 
   useEffect(() => {
     let cancelled = false;
@@ -153,7 +208,9 @@ export function InvitedJoinTerminal() {
               const result = await finalizeInvitedJoin(targetId);
               if (cancelled) return;
               if (result.admitted) {
-                await enter();
+                await prepareEntry(targetId);
+                if (cancelled) return;
+                setPhase("admitted");
                 return;
               }
               if (result.status === "rejected") {
@@ -185,7 +242,9 @@ export function InvitedJoinTerminal() {
             // Approved (the invitation left the pending set and a membership now
             // exists) — or simply an existing member with nothing pending here:
             // enter the app.
-            await enter();
+            await prepareEntry(targetId);
+            if (cancelled) return;
+            setPhase("admitted");
             return;
           }
           // founder/no-invitation: the request was rejected or the invite died.
@@ -240,7 +299,9 @@ export function InvitedJoinTerminal() {
             if (cancelled) return;
             finalizedRef.current = true;
             if (result.admitted) {
-              await enter();
+              await prepareEntry(targetId);
+              if (cancelled) return;
+              setPhase("admitted");
               return;
             }
             if (result.status === "rejected") {
@@ -295,67 +356,96 @@ export function InvitedJoinTerminal() {
       cancelled = true;
       if (timerRef.current !== null) window.clearTimeout(timerRef.current);
     };
-  }, [enter, navigate, searchParams, pathname, search, consented]);
+  }, [prepareEntry, navigate, searchParams, pathname, search, consented]);
 
   if (phase === "checking") {
-    return <div className="mx-auto max-w-md py-16 text-sm text-muted-foreground">Checking your invitation…</div>;
+    return (
+      <TerminalShell>
+        <p className="flex items-center gap-2 text-sm text-dim">
+          <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+          Checking your invitation…
+        </p>
+      </TerminalShell>
+    );
+  }
+  if (phase === "admitted") {
+    // WS10 — the invited journey's terminal screen (spec §D7 / Journey 2): a
+    // read-only company orientation panel (mission, departments, team/agent
+    // counts) before landing on Home. No engine step here — the company
+    // Commander is company-scoped,
+    // not per-human. Rendered in the same dark shell as the founder spine
+    // (`DarkShell` + `ConstellationBg`) for visual continuity.
+    return (
+      <DarkShell>
+        <div className="relative z-10 mx-auto flex min-h-screen w-full max-w-3xl flex-col items-center justify-center gap-8 px-6 py-12 text-center">
+          <StepHeading
+            title={`Welcome to ${company?.name ?? "the team"}.`}
+            subtitle={`Here's how ${company?.name ?? "the company"} already works — you'll plug right in.`}
+          />
+          <CompanyOrientation companyId={anchoredTargetRef.current} companyName={company?.name ?? "the team"} />
+          <Button size="lg" onClick={finishEnter}>
+            {`Enter${company?.name ? ` ${company.name}` : ""}`}
+          </Button>
+        </div>
+      </DarkShell>
+    );
   }
   if (phase === "consent") {
     return (
-      <div className="mx-auto max-w-md py-16 text-center">
-        <h1 className="text-xl font-semibold">
-          You've been invited to join{company ? ` ${company.name}` : " a company"}
-          {company ? ` as ${HUMAN_ROLE_LABELS[company.role] ?? company.role}` : ""}
-        </h1>
-        <p className="mt-2 text-sm text-muted-foreground">
-          Joining shares your profile with the team and gives you access to the company workspace.
-          You'll only become a member if you choose to join.
-        </p>
-        <Button className="mt-6" disabled={consented} onClick={() => setConsented(true)}>
+      <TerminalShell>
+        <StepHeading
+          title={
+            <>
+              You've been invited to join{company ? ` ${company.name}` : " a company"}
+              {company ? ` as ${HUMAN_ROLE_LABELS[company.role] ?? company.role}` : ""}
+            </>
+          }
+          subtitle="Joining shares your profile with the team and gives you access to the company workspace. You'll only become a member if you choose to join."
+        />
+        <Button disabled={consented} onClick={() => setConsented(true)}>
           {consented ? "Joining…" : `Join${company ? ` ${company.name}` : ""}`}
         </Button>
-      </div>
+      </TerminalShell>
     );
   }
   if (phase === "not_approved") {
     return (
-      <div className="mx-auto max-w-md py-16 text-center">
-        <h1 className="text-xl font-semibold">Request not approved</h1>
-        <p className="mt-2 text-sm text-muted-foreground">
-          Your request to join{company ? ` ${company.name}` : ""} wasn't approved, or the invite is no
-          longer valid. Ask your admin for a new invitation.
-        </p>
-      </div>
+      <TerminalShell>
+        <StepHeading
+          title="Request not approved"
+          subtitle={`Your request to join${
+            company ? ` ${company.name}` : ""
+          } wasn't approved, or the invite is no longer valid. Ask your admin for a new invitation.`}
+        />
+      </TerminalShell>
     );
   }
   if (phase === "invite_invalid") {
     return (
-      <div className="mx-auto max-w-md py-16 text-center">
-        <h1 className="text-xl font-semibold">
-          You're joining{company ? ` ${company.name}` : ""}
-        </h1>
-        <p className="mt-2 text-sm text-muted-foreground">
-          Your invite link is no longer valid, but your request is with the admin for approval —
-          this page will let you in automatically the moment it's approved.
-        </p>
-      </div>
+      <TerminalShell>
+        <StepHeading
+          title={<>You're joining{company ? ` ${company.name}` : ""}</>}
+          subtitle="Your invite link is no longer valid, but your request is with the admin for approval — this page will let you in automatically the moment it's approved."
+        />
+      </TerminalShell>
     );
   }
   return (
-    <div className="mx-auto max-w-md py-16 text-center">
-      <h1 className="text-xl font-semibold">
-        You're joining{company ? ` ${company.name}` : ""}
-        {company ? ` as ${HUMAN_ROLE_LABELS[company.role] ?? company.role}` : ""}
-      </h1>
-      <p className="mt-2 text-sm text-muted-foreground">
-        Your request is with the admin for approval. This page will let you in automatically the
-        moment it's approved — you can also come back later.
-      </p>
+    <TerminalShell>
+      <StepHeading
+        title={
+          <>
+            You're joining{company ? ` ${company.name}` : ""}
+            {company ? ` as ${HUMAN_ROLE_LABELS[company.role] ?? company.role}` : ""}
+          </>
+        }
+        subtitle="Your request is with the admin for approval. This page will let you in automatically the moment it's approved — you can also come back later."
+      />
       {/* The page polls every 7s — show that it is alive, not stuck. */}
-      <p className="mt-4 flex items-center justify-center gap-1.5 text-xs text-muted-foreground">
+      <p className="flex items-center justify-center gap-1.5 text-xs text-dim">
         <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
         Checking for approval…
       </p>
-    </div>
+    </TerminalShell>
   );
 }

@@ -88,6 +88,7 @@ function toRowData(row: ListRow): MemoryItemRowData & MemoryItemTableRowData & M
     chunkCount?: number | null;
     content?: string | null;
     extractedText?: string | null;
+    folderPath?: string | null;
   };
   return {
     kind: row.kind,
@@ -98,6 +99,7 @@ function toRowData(row: ListRow): MemoryItemRowData & MemoryItemTableRowData & M
     indexStatus: row.indexStatus ?? null,
     mimeType: row.mimeType ?? null,
     modifiedAt: row.modifiedAt,
+    folderPath: raw.folderPath ?? null,
     layer: raw.layer ?? null,
     content: raw.content ?? null,
     extractedText: raw.extractedText ?? null,

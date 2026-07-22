@@ -1,7 +1,6 @@
-import type { UsageSummary } from "@armyofagents/adapter-utils";
+import { detectAuthFailure, isLoopbackUrl, type AuthFailureKind, type UsageSummary } from "@armyofagents/adapter-utils";
 import { asString, asNumber, parseObject, parseJson } from "@armyofagents/adapter-utils/server-utils";
 
-const CLAUDE_AUTH_REQUIRED_RE = /(?:not\s+logged\s+in|please\s+log\s+in|please\s+run\s+`?claude\s+login`?|login\s+required|requires\s+login|unauthorized|authentication\s+required)/i;
 const URL_RE = /(https?:\/\/[^\s'"`<>()[\]{};,!?]+[^\s'"`<>()[\]{};,!.?:]+)/gi;
 
 export function parseClaudeStreamJson(stdout: string) {
@@ -121,22 +120,87 @@ export function extractClaudeLoginUrl(text: string): string | null {
   return match[0]?.replace(/[\])}.!,?;:'\"]+$/g, "") ?? null;
 }
 
+/**
+ * `claude --output-format stream-json`'s terminal `result` event carries a
+ * structured `api_error_status` (the HTTP status of the failed API call)
+ * alongside `is_error`. Field evidence: a revoked-token run returns
+ * `{"subtype":"success","is_error":true,"api_error_status":401,...}` — note
+ * `subtype` is misleadingly "success" even on failure, so `api_error_status`
+ * (a number) is a more reliable auth signal than pattern-matching `result`
+ * text, which can drift across CLI versions. `parsed` is untyped JSON, so
+ * every field access here is guarded.
+ */
+function apiErrorStatusIndicatesAuthFailure(parsed: Record<string, unknown> | null): boolean {
+  if (!parsed) return false;
+  const status = parsed.api_error_status;
+  return typeof status === "number" && (status === 401 || status === 403);
+}
+
 export function detectClaudeLoginRequired(input: {
   parsed: Record<string, unknown> | null;
   stdout: string;
   stderr: string;
-}): { requiresLogin: boolean; loginUrl: string | null } {
-  const resultText = asString(input.parsed?.result, "").trim();
-  const messages = [resultText, ...extractClaudeErrorMessages(input.parsed ?? {}), input.stdout, input.stderr]
-    .join("\n")
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
+  /**
+   * Exit code of the process that produced stdout/stderr, when the caller
+   * has it. `stdout` is transcript-bearing for stream-json (it carries the
+   * agent's whole turn, not just error output), so it is only safe to feed
+   * into the auth classifier when the process actually failed — otherwise
+   * agent prose that merely *discusses* auth ("Added a handler returning 401
+   * for missing sessions") would misclassify a successful run as needing
+   * login.
+   *
+   * - `exitCode` is a number and `!== 0` (real failure): stdout included.
+   * - `exitCode === 0` (real success): stdout excluded.
+   * - `exitCode` is `undefined`/`null` (caller doesn't know): stdout is
+   *   still included, to preserve pre-existing detection for call sites that
+   *   haven't been updated to pass it. Only known-successful runs are
+   *   exempted.
+   */
+  exitCode?: number | null;
+}): { requiresLogin: boolean; loginUrl: string | null; kind: AuthFailureKind } {
+  const processKnownSuccessful = typeof input.exitCode === "number" && input.exitCode === 0;
+  // `parsed.result` (resultText) is deliberately EXCLUDED: it is the agent's
+  // final authored answer, never process failure output, and must never
+  // feed the auth classifier (see auth-failure-detector.ts's input contract).
+  const haystack = [
+    ...extractClaudeErrorMessages(input.parsed ?? {}),
+    input.stderr,
+    ...(processKnownSuccessful ? [] : [input.stdout]),
+  ].join("\n");
 
-  const requiresLogin = messages.some((line) => CLAUDE_AUTH_REQUIRED_RE.test(line));
+  // Shared detector: the old local regex matched only never-signed-in phrasing
+  // and missed every revoked/expired/401 failure. Its loginUrl is also more
+  // reliable than extractClaudeLoginUrl's fallback below: it's gated to
+  // auth-shaped URLs (never "first URL of any kind") and skips loopback
+  // callback hosts.
+  const { kind: textKind, loginUrl: detectedLoginUrl } = detectAuthFailure(haystack);
+
+  // Structured signal wins over the text detector: `api_error_status` is a
+  // number the CLI reports directly, not a pattern match against prose that
+  // could drift. A structured 401/403 means credentials were presented and
+  // rejected — that is the "expired" shape, not "signed_out" (no
+  // credentials) or "invalid_key" (a key was supplied and is malformed).
+  //
+  // Gated on `!processKnownSuccessful`, same as the haystack above: an exit-0
+  // run can carry a stale/leftover `api_error_status` from an earlier turn,
+  // and trusting it unconditionally would reopen the exact false-positive
+  // class the exitCode gate above exists to close (misclassifying a
+  // successful run AND spawning the status probe on the happy path).
+  const kind: AuthFailureKind =
+    !processKnownSuccessful && apiErrorStatusIndicatesAuthFailure(input.parsed) ? "expired" : textKind;
+
+  // Fallback only: extractClaudeLoginUrl's "first URL of any kind" behavior
+  // can surface a bogus link when the shared detector found none. Still
+  // reject a loopback callback host even from the fallback — see the shared
+  // `isLoopbackUrl` (adapter-utils/login-url-detector.ts).
+  const fallbackLoginUrl = extractClaudeLoginUrl([input.stdout, input.stderr].join("\n"));
+  const loginUrl =
+    detectedLoginUrl ?? (fallbackLoginUrl && !isLoopbackUrl(fallbackLoginUrl) ? fallbackLoginUrl : null);
+
   return {
-    requiresLogin,
-    loginUrl: extractClaudeLoginUrl([input.stdout, input.stderr].join("\n")),
+    requiresLogin: kind !== "none",
+    loginUrl,
+    kind,
   };
 }
 

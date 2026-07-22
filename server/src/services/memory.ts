@@ -4,6 +4,7 @@ import { agents, embeddingQueue, memoryItems, memoryItemVersions, memoryRetrieva
 import { MEMORY_ITEM_LAYERS, normalizeMemoryFolderPath } from "@armyofagents/shared";
 import { generateEmbedding } from "./embeddings.js";
 import { enqueueMemoryEmbedding } from "./memory-write.js";
+import { hubItemsService } from "./hub-items.js";
 // Query-side key resolution MUST match the write-side worker + resolveSemanticAvailable:
 // getProviderApiKey resolves the per-company llm:openai secret AND falls back to env
 // OPENAI_API_KEY. The old resolveApiKey had no env fallback, so env-only installs
@@ -187,6 +188,24 @@ function rowHasVector(row: Record<string, unknown>): boolean {
 }
 
 
+// Best-effort: recompute/close the company's memory_review Inbox signpost after a
+// memory item leaves 'pending' — approve, reject, a status-changing update, or a
+// delete of a pending row. This is the SERVICE-level chokepoint every such route
+// funnels through (PATCH /:id → update, the approve/reject routes → approve/reject,
+// DELETE → remove), so we hook here rather than per-route and never miss a path.
+// Publish/restore/version-approve deliberately do NOT call this: they mutate
+// memory_item_versions or move an ARCHIVED item to approved — neither changes a
+// parent item's `pending` status, so the founder-gated pending count is unaffected.
+// A hub failure must NEVER fail the memory mutation that triggered it.
+async function signpostMemoryReview(db: Db, companyId: string): Promise<void> {
+  try {
+    await hubItemsService(db).reconcile(companyId, { sourceType: "memory" });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log.warn({ companyId, err: msg }, "memory_review reconcile failed (non-fatal)");
+  }
+}
+
 export function memoryService(db: Db) {
   return {
     list: async (companyId: string, filters: MemoryFilters = {}) => {
@@ -337,6 +356,11 @@ export function memoryService(db: Db) {
       // regenerates it. Only touch the column when pgvector is present.
       const caps = getDbCapabilities();
       const hasContentChange = data.content !== undefined || data.title !== undefined;
+      // A status/layer/source edit can move an item into or out of the
+      // founder-gated pending set → recompute the Inbox signpost. Plain content
+      // edits keep the count unchanged, so we skip the reconcile to avoid churn.
+      const affectsPendingCount =
+        data.status !== undefined || data.layer !== undefined || data.source !== undefined;
       const setData: Record<string, unknown> = { ...data, updatedAt: new Date() };
       if (hasContentChange && caps.hasVectorSupport) {
         setData.embedding = null;
@@ -353,6 +377,9 @@ export function memoryService(db: Db) {
           if (row && hasContentChange) {
             await enqueueMemoryEmbedding(db, companyId, row);
           }
+          if (row && affectsPendingCount) {
+            await signpostMemoryReview(db, companyId);
+          }
           return row;
         });
     },
@@ -362,7 +389,15 @@ export function memoryService(db: Db) {
         .delete(memoryItems)
         .where(and(eq(memoryItems.id, id), eq(memoryItems.companyId, companyId)))
         .returning(memoryItemsSelection())
-        .then((rows) => rows[0] ?? null),
+        .then(async (rows) => {
+          const row = rows[0] ?? null;
+          // Deleting a pending item shrinks the founder-gated count → recompute
+          // the Inbox signpost (only when the removed row was actually pending).
+          if (row && row.status === "pending") {
+            await signpostMemoryReview(db, companyId);
+          }
+          return row;
+        }),
 
     approve: (companyId: string, id: string) =>
       db
@@ -378,6 +413,8 @@ export function memoryService(db: Db) {
           if (row) {
             await enqueueMemoryEmbedding(db, companyId, row);
           }
+          // The item just left 'pending' → recompute/close the Inbox signpost.
+          await signpostMemoryReview(db, companyId);
           return row;
         }),
 
@@ -387,7 +424,12 @@ export function memoryService(db: Db) {
         .set({ status: "rejected", updatedAt: new Date() })
         .where(and(eq(memoryItems.id, id), eq(memoryItems.companyId, companyId)))
         .returning(memoryItemsSelection())
-        .then((rows) => rows[0] ?? null),
+        .then(async (rows) => {
+          const row = rows[0] ?? null;
+          // The item just left 'pending' → recompute/close the Inbox signpost.
+          await signpostMemoryReview(db, companyId);
+          return row;
+        }),
 
     /**
      * Semantic search: embed the query text and find memory items by cosine similarity.
@@ -1757,6 +1799,17 @@ export function memoryService(db: Db) {
         companyId,
         payload: { item: updated, fromLayer, toLayer },
       });
+
+      // A layer change on a PENDING item can move it across the working ↔
+      // non-working boundary, and the founder-gated pending count predicate
+      // excludes layer='working' → the count (and thus the memory_review
+      // signpost) shifts. changeLayer never mutates `status`, so the pre-image
+      // `target.status` equals the post-image status. Recompute/close the Inbox
+      // signpost only when the item was pending (best-effort; try/catch lives in
+      // signpostMemoryReview). Mirrors the approve/update/reject/remove hooks.
+      if (target.status === "pending") {
+        await signpostMemoryReview(db, companyId);
+      }
 
       return updated ?? null;
     },

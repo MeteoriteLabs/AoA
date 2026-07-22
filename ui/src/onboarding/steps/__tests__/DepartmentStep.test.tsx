@@ -146,12 +146,11 @@ describe("DepartmentStep (Stage C / order 6)", () => {
   });
 });
 
-describe("assembled registry includes the department step", () => {
-  it("passes the guard and registers at order 6", () => {
+describe("assembled registry (WS0c: DepartmentStep is no longer a wizard step)", () => {
+  it("passes the guard, and DEPARTMENT_CREATED/DepartmentStep are no longer registered — the founder wizard ends at the spine (SETUP_COMPLETE); Home owns the department tail", () => {
     expect(validateRegistry(ONBOARDING_STEPS)).toEqual([]);
-    const d = ONBOARDING_STEPS.find((s) => s.state === "DEPARTMENT_CREATED");
-    expect(d?.order).toBe(6);
-    expect(d?.dependsOn).toEqual(["COMMANDER_VERIFIED"]);
+    expect(ONBOARDING_STEPS.find((s) => s.state === "DEPARTMENT_CREATED")).toBeUndefined();
+    expect(ONBOARDING_STEPS.find((s) => s.id === "department")).toBeUndefined();
   });
   it("uses the shared taxonomy (sales present)", () => {
     expect(DEPARTMENT_FUNCTION_TYPES.some((t) => t.value === "sales")).toBe(true);

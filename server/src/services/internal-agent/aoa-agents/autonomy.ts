@@ -25,7 +25,8 @@ export type CrewRole =
   | "scout"
   | "reviewer"
   | "chronicler"
-  | "steward";
+  | "steward"
+  | "librarian";
 
 /** Minimum autonomy level at which each role auto-runs. Core roles are always on (0). */
 export const ROLE_MIN_AUTONOMY: Record<CrewRole, number> = {
@@ -43,6 +44,13 @@ export const ROLE_MIN_AUTONOMY: Record<CrewRole, number> = {
   reviewer: 1,      // mention-driven critique; advise-only, posts a review like scout
   chronicler: 0,    // core infrastructure: card maintenance always runs (like scribe/memory_keeper)
   steward: 0,       // core infrastructure: hub curation summaries always run
+  // WS6: Librarian never self-initiates — it only ever runs when the founder
+  // explicitly submits a braindump (a direct dispatch, not an autonomous
+  // sweep/mention wakeup). Like memory_keeper, its output is pending-only
+  // (founder approves downstream), so the autonomy dial adds no additional
+  // safety by gating dispatch — min autonomy = 0 (always eligible to run when
+  // explicitly invoked), matching the other founder-triggered core roles.
+  librarian: 0,
 };
 
 /**

@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, lte, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, lte, ne, or, sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import type { Db } from "@armyofagents/db";
 import {
@@ -18,6 +18,7 @@ import {
   companies,
   costEvents,
   workQuestions,
+  memoryItems,
 } from "@armyofagents/db";
 import type {
   HubCountsChangedLivePayload,
@@ -137,6 +138,14 @@ export interface EmitArgs {
   ownerPool?: HubOwnerPool | null; // ADDITIONAL pool visibility; never replaces the human owner
   slaAt?: Date | null;
   sourcePermissionRevision?: string | null;
+  // OPT-IN reopen for AGGREGATE signposts (default false). A memory_review /
+  // budget-style row is ONE row per company that the founder clears to
+  // `archived` when the backing count hits zero; the next qualifying emit must be
+  // able to REOPEN that non-open row so the signpost reappears (the clear→refill
+  // cycle is normal for such aggregates). Set true ONLY by aggregate producers.
+  // Mirror/source items (approval, join_request, runtime decision, …) MUST leave
+  // this undefined/false so a decided/archived row is NEVER resurrected.
+  reopenWhenArchived?: boolean;
   // Emit in the SAME transaction as the source mutation (no silent drops). A
   // PgTransaction is NOT assignable to Db — callers pass `tx as unknown as Db`.
   executor?: Db;
@@ -484,12 +493,13 @@ export function hubItemsService(db: Db) {
     // self-sustaining ~125Hz client<->server feedback storm (millions of no-op
     // row rewrites). deliveredAt is deliberately EXCLUDED from the check: it is
     // `?? new Date()` and would defeat it.
-    const inserted = await conn
-      .insert(hubItems)
-      .values(values)
-      .onConflictDoUpdate({
-        target: hubItems.sourceUniqueKey,
-        setWhere: sql`${hubItems.status} = 'open' AND (
+    // OPT-IN reopen (Fix 1): only aggregate producers (memory_review) set this.
+    // When false/absent, the setWhere + set below are byte-for-byte the historical
+    // open-only, no-status-write path — mirror/source items never resurrect.
+    const reopen = a.reopenWhenArchived === true;
+    // The existing storm-guard gate: still-open AND some meaningful field differs.
+    // Reused verbatim so the non-reopen setWhere is unchanged.
+    const openAndChanged = sql`${hubItems.status} = 'open' AND (
           ${hubItems.title} IS DISTINCT FROM ${values.title}
           OR ${hubItems.message} IS DISTINCT FROM ${values.message}
           OR ${hubItems.summary} IS DISTINCT FROM ${values.summary}
@@ -503,26 +513,53 @@ export function hubItemsService(db: Db) {
           OR ${hubItems.ownerPool} IS DISTINCT FROM ${values.ownerPool}
           OR ${hubItems.slaAt} IS DISTINCT FROM ${values.slaAt?.toISOString() ?? null}
           OR ${hubItems.sourcePermissionRevision} IS DISTINCT FROM ${values.sourcePermissionRevision}
-        )`,
-        set: {
-          title: values.title,
-          message: values.message,
-          relatedEntityType: values.relatedEntityType,
-          relatedEntityId: values.relatedEntityId,
-          deliveryAttempts: values.deliveryAttempts,
-          deliveredAt: values.deliveredAt,
-          deliveryError: values.deliveryError,
-          summary: values.summary,
-          priority: values.priority,
-          // Keep the legacy `userId` and the hub `ownerUserId` in lockstep: a
-          // re-emit that resolves a different owner must update BOTH, or the two
-          // owner columns diverge (P2-3).
-          userId: values.userId,
-          ownerUserId: values.ownerUserId,
-          ownerPool: values.ownerPool,
-          slaAt: values.slaAt,
-          sourcePermissionRevision: values.sourcePermissionRevision,
-        },
+        )`;
+    // Reopen path: also fire the UPDATE when the row is NON-open (needs
+    // reopening). Non-reopen path: the gate is unchanged (open-only + storm guard).
+    const setWhere = reopen
+      ? sql`(${hubItems.status} <> 'open') OR (${openAndChanged})`
+      : openAndChanged;
+    // Denormalized fields refreshed on every qualifying re-emit (unchanged).
+    const baseSet = {
+      title: values.title,
+      message: values.message,
+      relatedEntityType: values.relatedEntityType,
+      relatedEntityId: values.relatedEntityId,
+      deliveryAttempts: values.deliveryAttempts,
+      deliveredAt: values.deliveredAt,
+      deliveryError: values.deliveryError,
+      summary: values.summary,
+      priority: values.priority,
+      // Keep the legacy `userId` and the hub `ownerUserId` in lockstep: a
+      // re-emit that resolves a different owner must update BOTH, or the two
+      // owner columns diverge (P2-3).
+      userId: values.userId,
+      ownerUserId: values.ownerUserId,
+      ownerPool: values.ownerPool,
+      slaAt: values.slaAt,
+      sourcePermissionRevision: values.sourcePermissionRevision,
+    };
+    // Reopen path ALSO rewrites the lifecycle columns so the reopened row is a
+    // fresh open item: status→open, clear archivedAt/resolvedAt, bump version so
+    // downstream optimistic-concurrency readers see a new revision. Non-reopen
+    // path leaves `set` free of any status/version/*At keys (byte-for-byte the
+    // historical set) so a decided/archived mirror row is never resurrected.
+    const set = reopen
+      ? {
+          ...baseSet,
+          status: sql`'open'`,
+          archivedAt: sql`null`,
+          resolvedAt: sql`null`,
+          version: sql`${hubItems.version} + 1`,
+        }
+      : baseSet;
+    const inserted = await conn
+      .insert(hubItems)
+      .values(values)
+      .onConflictDoUpdate({
+        target: hubItems.sourceUniqueKey,
+        setWhere,
+        set,
       })
       .returning();
     // A conflict where setWhere is false — the row is NON-open, or nothing
@@ -1652,8 +1689,43 @@ export function hubItemsService(db: Db) {
     };
   };
 
+  // memory (memory_review, Mem T4): ONE hub row per company — the sourceId IS
+  // the companyId (no parsing). Recompute the total founder-gated pending memory
+  // across ALL scopes with the SAME predicate the emit uses (memory-write.ts
+  // countPendingMemory) so emit-count and reconcile-count never disagree:
+  //   status = 'pending' AND source <> 'founder' AND (layer IS NULL OR layer <> 'working').
+  // The layer column is NULLABLE — `ne(layer,'working')` alone silently drops
+  // NULL-layer rows and undercounts, so the or(isNull(...)) form is REQUIRED.
+  // Terminal (close) once zero remain; otherwise the title heals in place as the
+  // count changes. permissionRevision is null (the aggregate has no single source
+  // row): the title heal is revision-independent, and a null revision means the
+  // revision-drift heal is a no-op — so there is no per-sweep write churn.
+  const reconcileMemoryReview: SourceReconciler = async (companyId, sourceId) => {
+    const [row] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(memoryItems)
+      .where(
+        and(
+          eq(memoryItems.companyId, sourceId),
+          eq(memoryItems.status, "pending"),
+          ne(memoryItems.source, "founder"),
+          or(isNull(memoryItems.layer), ne(memoryItems.layer, "working")),
+        ),
+      );
+    const count = Number(row?.count ?? 0);
+    const founder = await orgHierarchyService(db).getFounderUserId(companyId);
+    return {
+      terminal: count <= 0,
+      title: `Review ${count} memory ${count === 1 ? "item" : "items"}`,
+      summary: `${count} memory ${count === 1 ? "item is" : "items are"} ready for your approval.`,
+      ownerUserId: founder,
+      permissionRevision: null,
+    };
+  };
+
   const SOURCE_RECONCILERS: Record<string, SourceReconciler> = {
     approval: reconcileApproval,
+    memory: reconcileMemoryReview,
     heartbeat_run: reconcileHeartbeatRun,
     runtime_decision: reconcileRuntimeDecision,
     work_question: reconcileWorkQuestion,
@@ -1699,7 +1771,11 @@ export function hubItemsService(db: Db) {
               // (Task 10, D3); scope so the sweep only closes that row.
               : opts.sourceType === "discussion_entry"
                 ? "extraction_failed"
-                : null;
+                // memory carries exactly one semanticType (memory_review, Mem
+                // T4); scope for symmetry with the other multi-meaning sources.
+                : opts.sourceType === "memory"
+                  ? "memory_review"
+                  : null;
 
     const conditions = [
       eq(hubItems.companyId, companyId),

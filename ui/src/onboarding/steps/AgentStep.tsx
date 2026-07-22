@@ -33,12 +33,19 @@ function runtimeLabel(adapterType: string): string {
 }
 
 /**
- * "Create your first agent" step (Stage C / order 7). The agent inherits the
- * Commander runtime (no adapter picker in the happy path), is preselected into
- * the department created in the previous step, and — fixing today's gap — is
- * assigned to that department AT creation via projectsApi.assignAgent (the old
- * wizard never assigned it). Idempotent: reuses an existing same-named org
- * agent. Advances AGENT_ASSIGNED on success.
+ * "Create your first agent" step. The agent inherits the Commander runtime (no
+ * adapter picker in the happy path), is preselected into the department
+ * created in the previous step, and — fixing a past gap — is assigned to that
+ * department AT creation via projectsApi.assignAgent (the old wizard never
+ * assigned it). Idempotent: reuses an existing same-named org agent.
+ *
+ * WS0c: NO LONGER a registered FlowEngine wizard step (`AGENT_ASSIGNED` was
+ * removed from `FOUNDER_PHASE1_STATES` — see packages/shared/src/onboarding.ts).
+ * The `advanceOnboarding({ requestedState: "AGENT_ASSIGNED" })` call below
+ * would now be rejected as illegal if this component were rendered as-is; it
+ * is kept only as source for a future Home-hosted extraction (design §4.1) —
+ * WS4/WS7 must lift the domain-only create/assign logic into a component that
+ * does NOT call advanceOnboarding.
  */
 export function AgentStep({ ctx, onComplete }: StepProps) {
   const [name, setName] = useState("Director");

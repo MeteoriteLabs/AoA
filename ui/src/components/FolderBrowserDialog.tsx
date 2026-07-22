@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { filesystemApi, type FsBrowseEntry } from "../api/filesystem";
+import { filesystemApi, companyWorkspaceFsApi, type FilesystemApi } from "../api/filesystem";
 import {
   Dialog,
   DialogBody,
@@ -34,6 +34,16 @@ interface FolderBrowserDialogProps {
   description?: string;
   gitAware?: boolean;
   initialPath?: string;
+  /**
+   * WS0a — when provided, the dialog uses the company-scoped workspace-fs
+   * API (membership-authorized) instead of the instance-admin filesystem
+   * API. In `authenticated` deployment mode the server confines browse/
+   * mkdir to a per-company jail and returns `jailed: true`; the dialog then
+   * hides the drive picker (there's nothing meaningful to enumerate).
+   * Instance-settings and other pre-existing callers omit this prop and
+   * keep the unchanged admin-gated behavior.
+   */
+  companyId?: string;
 }
 
 export function FolderBrowserDialog({
@@ -44,6 +54,7 @@ export function FolderBrowserDialog({
   description = "Choose a folder from your file system",
   gitAware = false,
   initialPath,
+  companyId,
 }: FolderBrowserDialogProps) {
   const [currentPath, setCurrentPath] = useState<string | undefined>(initialPath);
   const [manualPath, setManualPath] = useState("");
@@ -52,6 +63,12 @@ export function FolderBrowserDialog({
   const [newFolderName, setNewFolderName] = useState("");
   const [showDrives, setShowDrives] = useState(false);
   const queryClient = useQueryClient();
+
+  const fsApi: FilesystemApi = useMemo(
+    () => (companyId ? companyWorkspaceFsApi(companyId) : filesystemApi),
+    [companyId],
+  );
+  const scopeKey = companyId ?? "instance";
 
   // Reset state when dialog opens
   useEffect(() => {
@@ -67,23 +84,28 @@ export function FolderBrowserDialog({
 
   // Fetch home path once for the Home button
   const { data: homeData } = useQuery({
-    queryKey: ["filesystem", "home"],
-    queryFn: () => filesystemApi.home(),
+    queryKey: ["filesystem", scopeKey, "home"],
+    queryFn: () => fsApi.home(),
     enabled: open,
     staleTime: Infinity,
   });
 
+  // Jailed company workspaces (WS0a authenticated mode) have nothing
+  // meaningful to enumerate — hide the drive picker entirely rather than
+  // showing an empty "This PC" list.
+  const jailed = homeData?.jailed === true;
+
   // Fetch drives list (for Windows "go up from drive root" behavior)
   const { data: drivesData, isLoading: drivesLoading } = useQuery({
-    queryKey: ["filesystem", "drives"],
-    queryFn: () => filesystemApi.drives(),
-    enabled: open && showDrives,
+    queryKey: ["filesystem", scopeKey, "drives"],
+    queryFn: () => fsApi.drives(),
+    enabled: open && showDrives && !jailed,
     staleTime: Infinity,
   });
 
   const { data, isLoading, error } = useQuery({
-    queryKey: ["filesystem", "browse", currentPath, gitAware],
-    queryFn: () => filesystemApi.browse(currentPath, { gitAware }),
+    queryKey: ["filesystem", scopeKey, "browse", currentPath, gitAware],
+    queryFn: () => fsApi.browse(currentPath, { gitAware }),
     enabled: open,
     retry: false,
   });
@@ -127,13 +149,15 @@ export function FolderBrowserDialog({
     if (data?.parentPath) {
       setCurrentPath(data.parentPath);
       setFilter("");
-    } else if (atDriveRoot && isWindows) {
-      // At drive root on Windows — show drives list
+    } else if (atDriveRoot && isWindows && !jailed) {
+      // At drive root on Windows — show drives list. Jailed workspaces have
+      // no drives to show; parentPath === null there just means "at the
+      // jail root," which is a dead end, not a cue to show "This PC."
       setShowDrives(true);
       setFilter("");
       setManualPath("");
     }
-  }, [data?.parentPath, atDriveRoot, isWindows, showDrives]);
+  }, [data?.parentPath, atDriveRoot, isWindows, jailed, showDrives]);
 
   const homePath = data?.homePath ?? homeData?.homePath;
 
@@ -153,12 +177,12 @@ export function FolderBrowserDialog({
   }, [data?.currentPath, onSelect, onClose]);
 
   const mkdirMutation = useMutation({
-    mutationFn: (dirPath: string) => filesystemApi.mkdir(dirPath),
+    mutationFn: (dirPath: string) => fsApi.mkdir(dirPath),
     onSuccess: () => {
       setNewFolderMode(false);
       setNewFolderName("");
       // Refresh the current directory listing
-      queryClient.invalidateQueries({ queryKey: ["filesystem", "browse", currentPath] });
+      queryClient.invalidateQueries({ queryKey: ["filesystem", scopeKey, "browse", currentPath] });
     },
   });
 
@@ -232,7 +256,12 @@ export function FolderBrowserDialog({
               variant="outline"
               className="h-7 w-7 shrink-0"
               onClick={handleGoUp}
-              disabled={showDrives || (!data?.parentPath && !isWindows) || (!data?.parentPath && !atDriveRoot)}
+              disabled={
+                showDrives
+                || (!data?.parentPath && !isWindows)
+                || (!data?.parentPath && !atDriveRoot)
+                || (!data?.parentPath && jailed)
+              }
               title="Go up"
             >
               <ChevronUp className="h-3.5 w-3.5" />

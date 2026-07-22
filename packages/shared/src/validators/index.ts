@@ -103,6 +103,12 @@ export {
 } from "./goal.js";
 
 export {
+  submitBraindumpSchema,
+  BRAINDUMP_CONTENT_MAX_LENGTH,
+  type SubmitBraindump,
+} from "./braindump.js";
+
+export {
   createMemoryItemSchema,
   updateMemoryItemSchema,
   suggestMemoryUpdateSchema,
@@ -478,6 +484,8 @@ export {
   type ProbeEnvironmentInput,
   type UpdateEnvironmentInput,
 } from "./environment.js";
+
+export { isGitHubRepoUrl } from "./github.js";
 
 export {
   createUserEntityPinSchema,

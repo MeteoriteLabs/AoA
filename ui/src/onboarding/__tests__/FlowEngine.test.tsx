@@ -99,6 +99,22 @@ describe("FlowEngine (Stage B / B6)", () => {
     await waitFor(() => screen.getByTestId("step-org"));
   });
 
+  // WS3: the whole engine — chrome + every step it resolves — renders inside
+  // the dark spine shell (`.onboarding-dark` scope + drifting
+  // `<ConstellationBg/>` canvas), matching the mockup's S2–S5 screens.
+  it("WS3: renders inside the .onboarding-dark shell with the constellation background", async () => {
+    const api: FlowEngineApi = {
+      getProgress: async () => ({ completedStates: ["AUTHENTICATED", "PROFILE_SET"] }),
+    };
+    const { container } = render(
+      <FlowEngine userId="u1" companyId={null} journey="founder" api={api} registry={makeRegistry(() => {})} />,
+    );
+    await waitFor(() => screen.getByTestId("step-org"));
+    const shell = container.querySelector(".onboarding-dark");
+    expect(shell).toBeTruthy();
+    expect(shell?.querySelector("canvas")).toBeTruthy();
+  });
+
   it("renders the shared chrome: 'Step N of M' position chip + a central Back control", async () => {
     const api: FlowEngineApi = {
       getProgress: async () => ({ completedStates: ["AUTHENTICATED", "PROFILE_SET"] }),
@@ -108,14 +124,17 @@ describe("FlowEngine (Stage B / B6)", () => {
     );
 
     await waitFor(() => screen.getByTestId("step-org"));
-    expect(screen.getByTestId("onboarding-step-position").textContent).toBe("Step 2 of 2");
+    // Continuous counter (WS9): the founder total is spine steps + the post-spine
+    // Map, so 2 spine steps read "of 3" — the count carries into the Map/In-flight
+    // instead of stopping at the spine (see onboardingProgress.ts).
+    expect(screen.getByTestId("onboarding-step-position").textContent).toBe("Step 2 of 3");
 
     // Central Back (rendered by the engine, not the step) walks to the
     // previous completed step; the chip follows. Back then disappears — the
     // profile step has no completed predecessor left to walk back to.
     fireEvent.click(screen.getByRole("button", { name: /^back$/i }));
     await waitFor(() => screen.getByTestId("step-profile"));
-    expect(screen.getByTestId("onboarding-step-position").textContent).toBe("Step 1 of 2");
+    expect(screen.getByTestId("onboarding-step-position").textContent).toBe("Step 1 of 3");
     expect(screen.queryByRole("button", { name: /^back$/i })).toBeNull();
   });
 

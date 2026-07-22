@@ -57,7 +57,12 @@ vi.mock("../errors.js", () => ({
   conflict: (msg: string) => new Error(msg),
   notFound: (msg: string) => new Error(msg),
 }));
-vi.mock("@armyofagents/shared", () => ({
+// Partial mock: spread the real (pure constants) module so transitive
+// importers of hub constants (HUB_SEMANTIC_TYPES et al., pulled in by the
+// memory_review hub producer at the writeMemoryAndIndex chokepoint) resolve,
+// while overriding just the two helpers these tests pin.
+vi.mock("@armyofagents/shared", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@armyofagents/shared")>()),
   MEMORY_ITEM_LAYERS: ["identity", "domain", "active_context", "working"],
   normalizeMemoryFolderPath: (p: string) => p,
 }));

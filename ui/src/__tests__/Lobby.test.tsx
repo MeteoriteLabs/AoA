@@ -150,6 +150,11 @@ describe("Lobby", () => {
     expect(screen.getByText("Invitation to Future Labs")).toBeInTheDocument();
     // Subtitle names the role the invite grants (HUMAN_ROLE_LABELS).
     expect(screen.getByText(/join as team member/i)).toBeInTheDocument();
+    // WS10: the returning journey lands straight on Home/Lobby with pending-
+    // invite cards — it must NOT show the invited journey's admitted-screen
+    // mini-map ("the machine you're joining" only renders from inside
+    // InvitedJoinTerminal, which the returning journey never mounts).
+    expect(screen.queryByText(/the machine you're joining/i)).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /review invitation to future labs/i }));
     expect(mockNavigate).toHaveBeenCalledWith("/onboarding/join?company=invited-co", undefined);
   });

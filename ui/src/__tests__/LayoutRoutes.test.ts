@@ -24,4 +24,8 @@ describe("Layout route padding", () => {
     expect(shouldUseFullBleedMain("/AOA/team/teams/founding", "AOA")).toBe(false);
     expect(shouldUseFullBleedMain("/AOA/team/aoa/agent-1", "AOA")).toBe(false);
   });
+
+  it("Home is never full-bleed — onboarding lives entirely in /onboarding, never takes over the dashboard", () => {
+    expect(shouldUseFullBleedMain("/AOA/home", "AOA")).toBe(false);
+  });
 });

@@ -111,6 +111,45 @@ describe("getJourneyForUser (A5 + RB7/RB9 wiring)", () => {
     ]);
   });
 
+  it("returning founder with an UNFINISHED first-run tail → resumeFirstRunCompanyId set (resume into /onboarding)", async () => {
+    const db = seqDb([
+      [{ email: "u@x.com", emailVerified: true }], // user
+      [{ companyId: "c1" }], // memberships → returning
+      [], // pending requests
+      [], // open invites
+      [{ companyId: "c1" }], // resume query: c1's own first-run isn't complete
+    ]);
+    const r = await getJourneyForUser(db, { userId: "u1" });
+    expect(r.journey).toBe("returning");
+    expect(r.resumeFirstRunCompanyId).toBe("c1");
+    // Codex P3: the resume query must exclude archived companies (join companies,
+    // status != "archived"), so an archived unfinished company can't keep
+    // redirecting its founder into onboarding. Drizzle SQL conditions are
+    // circular objects (JSON.stringify throws), so assert structurally via the
+    // file's conditionColumns helper (same pattern as the open-invite tests
+    // below). The resume query is the ONLY one binding
+    // onboarding_progress.first_run_completed_at, and it binds companies.status
+    // in the same clause — status is referenced solely for the archived guard.
+    const resumeWhere = (db._whereCalls as unknown[]).find((c) =>
+      conditionColumns(c).includes("first_run_completed_at"),
+    );
+    expect(resumeWhere).toBeDefined();
+    expect(conditionColumns(resumeWhere)).toContain("status");
+  });
+
+  it("returning founder whose first-run is COMPLETE → resumeFirstRunCompanyId null (stays on the Lobby)", async () => {
+    const db = seqDb([
+      [{ email: "u@x.com", emailVerified: true }], // user
+      [{ companyId: "c1" }], // memberships → returning
+      [], // pending requests
+      [], // open invites
+      [], // resume query: no incomplete first-run row
+    ]);
+    const r = await getJourneyForUser(db, { userId: "u1" });
+    expect(r.journey).toBe("returning");
+    expect(r.resumeFirstRunCompanyId ?? null).toBeNull();
+  });
+
   it("invited when a pending human request exists and no membership", async () => {
     const db = seqDb([
       [{ email: "u@x.com", emailVerified: true }],

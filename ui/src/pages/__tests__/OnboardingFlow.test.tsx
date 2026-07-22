@@ -9,6 +9,7 @@ const state = vi.hoisted(() => ({
   session: { user: { id: "u1" } } as unknown,
   flowProps: null as unknown as { companyId: string | null; onFinished?: () => void },
   orgProps: null as unknown as { ctx: { companyId: string | null }; onComplete: () => void },
+  firstRunProps: null as unknown as { companyId: string; onComplete: () => void },
 }));
 const mockNavigate = vi.hoisted(() => vi.fn());
 const mockRemoveQueries = vi.hoisted(() => vi.fn());
@@ -47,6 +48,10 @@ vi.mock("../../onboarding/FlowEngine", () => ({
       </button>
     );
   },
+  // DRY dark-shell fix: OnboardingFlow.tsx now reuses FlowEngine's exported
+  // DarkShell instead of hand-duplicating the `.onboarding-dark` +
+  // ConstellationBg wrapper — a passthrough stand-in is enough for this suite.
+  DarkShell: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
 vi.mock("../../onboarding/steps/OrgStep", () => ({
   OrgStep: (props: { ctx: { companyId: string | null }; onComplete: () => void }) => {
@@ -56,6 +61,20 @@ vi.mock("../../onboarding/steps/OrgStep", () => ({
 }));
 vi.mock("../../onboarding/InvitedJoinTerminal", () => ({
   InvitedJoinTerminal: () => <div>invited-join-terminal</div>,
+}));
+// The founder's post-spine tail (persona fork + in-flight) now renders INLINE in
+// OnboardingFlow via FirstRunHome. Stub it to a button that fires onComplete so
+// this suite can assert the orchestration (spine → tail → Lobby) without pulling
+// in the whole in-flight sequencer + its API calls.
+vi.mock("../../onboarding/FirstRunHome", () => ({
+  FirstRunHome: (props: { companyId: string; onComplete: () => void }) => {
+    state.firstRunProps = props;
+    return (
+      <button type="button" onClick={() => props.onComplete()}>
+        finish-tail
+      </button>
+    );
+  },
 }));
 
 describe("OnboardingFlowPage", () => {
@@ -82,12 +101,20 @@ describe("OnboardingFlowPage", () => {
     expect(state.orgProps).toBeNull();
   });
 
-  it("founder: evicts the cached journey before returning to the Lobby", async () => {
+  it("founder: after the spine, runs the inline tail, then evicts the journey cache and hands off to the Lobby", async () => {
     state.selectedCompanyId = "completed-co";
     renderWithProviders(<OnboardingFlowPage journey="founder" />);
 
+    // Finishing the spine hands off to the INLINE tail (not the dashboard),
+    // scoped to the selected company.
     fireEvent.click(await screen.findByText("finish-flow"));
+    const finishTail = await screen.findByText("finish-tail");
+    expect(state.firstRunProps.companyId).toBe("completed-co");
+    // No premature navigation — the spine finishing must NOT go anywhere yet.
+    expect(mockNavigate).not.toHaveBeenCalled();
 
+    // Completing the tail evicts the cached journey BEFORE navigating to the Lobby.
+    fireEvent.click(finishTail);
     expect(mockRemoveQueries).toHaveBeenCalledWith({
       queryKey: ["onboarding", "journey"],
       exact: true,

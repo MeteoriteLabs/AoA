@@ -24,6 +24,12 @@ export interface MemoryItemRowData {
   extractedText?: string | null;
   /** Embedding index status. Only relevant for memory_item kind. */
   indexStatus?: MemoryIndexStatus | null;
+  /**
+   * Destination folder for the item (memory_items.folderPath). Only meaningful
+   * for pending items — shown as a "→ {folderPath}" destination label so a
+   * founder can see where an agent-proposed item will land once approved.
+   */
+  folderPath?: string | null;
 }
 
 interface Props {
@@ -46,11 +52,13 @@ export function MemoryItemRow({ row, active, onSelect, onReindex }: Props) {
   const kind = pickIconKind(row);
   const snippet = pickSnippet(row);
   const Icon = ICON_FOR_KIND[kind];
+  const isPending = row.status === "pending";
 
   return (
     <div
       role="button"
       tabIndex={0}
+      data-pending={isPending ? "true" : undefined}
       onClick={() => onSelect(row.id, row.kind)}
       onKeyDown={(e) => {
         // Only act on keydowns that originated on the row itself — ignore those
@@ -96,6 +104,8 @@ export function MemoryItemRow({ row, active, onSelect, onReindex }: Props) {
             />
           )}
 
+          {/* Pending is signalled by the amber status chip below + the root
+              div's data-pending hook — no separate pill (avoids a double badge). */}
           {row.status && (
             <MemoryChip
               label={row.status}
@@ -127,6 +137,12 @@ export function MemoryItemRow({ row, active, onSelect, onReindex }: Props) {
             )}
           >
             {snippet}
+          </div>
+        )}
+
+        {isPending && (
+          <div className="mt-1 text-[10px] text-very-dim">
+            → {row.folderPath ? row.folderPath : "unfiled"}
           </div>
         )}
       </div>

@@ -141,3 +141,9 @@ export {
   RUNTIME_HOOK_BLOCK_TIMEOUT_SEC,
   RUNTIME_HOOK_PATH,
 } from "./runtime-hooks.js";
+export { detectAuthFailure, isAuthFailure } from "./auth-failure-detector.js";
+export type { AuthFailureKind, AuthFailureDetection } from "./auth-failure-detector.js";
+export { extractVerificationUrl, createLoginUrlDetector, isLoopbackUrl } from "./login-url-detector.js";
+export type { LoginUrlDetector } from "./login-url-detector.js";
+export { runAuthStatusAndBranch } from "./auth-probe-branch.js";
+export type { AuthProbeStatus, AuthProbeBranchOptions } from "./auth-probe-branch.js";

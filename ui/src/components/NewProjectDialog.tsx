@@ -29,7 +29,7 @@ import {
   Github,
   GitBranch,
 } from "lucide-react";
-import { PROJECT_COLORS, DEPARTMENT_FUNCTION_TYPES } from "@armyofagents/shared";
+import { PROJECT_COLORS, DEPARTMENT_FUNCTION_TYPES, isGitHubRepoUrl } from "@armyofagents/shared";
 import { cn } from "../lib/utils";
 import { MarkdownEditor, type MarkdownEditorRef } from "./MarkdownEditor";
 import { StatusBadge } from "./StatusBadge";
@@ -170,18 +170,6 @@ export function NewProjectDialog() {
   }
 
   const isAbsolutePath = (value: string) => value.startsWith("/") || /^[A-Za-z]:[\\/]/.test(value);
-
-  const isGitHubRepoUrl = (value: string) => {
-    try {
-      const parsed = new URL(value);
-      const host = parsed.hostname.toLowerCase();
-      if (host !== "github.com" && host !== "www.github.com") return false;
-      const segments = parsed.pathname.split("/").filter(Boolean);
-      return segments.length >= 2;
-    } catch {
-      return false;
-    }
-  };
 
   const deriveWorkspaceNameFromPath = (value: string) => {
     const normalized = value.trim().replace(/[\\/]+$/, "");

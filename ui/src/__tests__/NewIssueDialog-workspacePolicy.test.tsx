@@ -116,8 +116,13 @@ describe("NewIssueDialog workspace policy", () => {
     localStorage.clear();
   });
 
-  it("shows the department default workspace choice for a policy-enabled department", async () => {
+  it("shows the department default workspace choice for a policy-enabled department once Advanced is expanded", async () => {
     renderDialog();
+
+    // Not visible until Advanced is expanded (Task workspace mode lives behind the disclosure).
+    expect(screen.queryByText("Department default")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /advanced/i }));
 
     expect(await screen.findByText("Department default")).toBeInTheDocument();
   });
@@ -126,6 +131,7 @@ describe("NewIssueDialog workspace policy", () => {
     const user = userEvent.setup();
     renderDialog();
 
+    await user.click(screen.getByRole("button", { name: /advanced/i }));
     await user.click(await screen.findByText("Department default"));
     await user.click(await screen.findByText("Feature workspace"));
     fireEvent.click(screen.getByRole("button", { name: "Create Task" }));

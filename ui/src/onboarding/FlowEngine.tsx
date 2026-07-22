@@ -2,12 +2,16 @@ import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { ChevronLeft } from "lucide-react";
 import type { OnboardingJourney, OnboardingState } from "@armyofagents/shared";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
+import { ConstellationBg } from "./motion";
 import {
   resolveNextStep,
   ONBOARDING_REGISTRY,
   type StepDefinition,
   type StepContext,
 } from "./registry";
+import { StepPosition } from "./StepPosition";
+import { journeyHasFirstRunMap } from "./onboardingProgress";
 
 export type FlowProgress = { completedStates: OnboardingState[] };
 
@@ -32,11 +36,45 @@ export type FlowEngineProps = {
 };
 
 /**
+ * Shared dark chrome shell: `.onboarding-dark` scope + drifting constellation.
+ * Exported so non-FlowEngine onboarding surfaces (e.g. the org-only branch in
+ * `pages/OnboardingFlow.tsx`) render the same chrome instead of hand-duplicating
+ * it.
+ *
+ * `fill` (WS9 code review): the `/onboarding` route renders standalone (not
+ * nested inside app `Layout`), so `min-h-screen` is correct there — the shell
+ * IS the viewport. `FirstRunHome` instead renders inside Layout's padded
+ * `<main class="flex-1 overflow-auto">`, which already has a bounded height;
+ * stacking a second `min-h-screen` inside it risks a second scroll container.
+ * `fill` swaps to `min-h-full` (fills the available height, still grows with
+ * content) so `<main>` stays the single scroll container.
+ */
+export function DarkShell({ children, fill = false }: { children: React.ReactNode; fill?: boolean }) {
+  return (
+    <div
+      className={cn(
+        "onboarding-dark relative w-full overflow-x-hidden bg-background text-foreground",
+        fill ? "min-h-full" : "min-h-screen",
+      )}
+    >
+      <ConstellationBg />
+      {children}
+    </div>
+  );
+}
+
+/**
  * Walks the step registry for the given journey (Stage B / B6). On each step's
  * onComplete it PATCH-advances progress and RE-READS the authoritative context
  * from the server (revC/RB1) before resolving the next step. Reloads whenever
  * the layer (companyId) changes — that is how the org-create step's new company
  * switches the engine from the user layer to the org layer.
+ *
+ * WS3: the whole engine renders inside the dark `.onboarding-dark` /
+ * `<ConstellationBg/>` shell (spec screens S2–S5) — the shared Back +
+ * "Step N of M" chrome is restyled to a stepper-pip row on top of it, and
+ * every step component below assumes this ancestor dark scope for its own
+ * card/field/gradient styling (see steps/shared.tsx).
  */
 export function FlowEngine({
   userId,
@@ -109,16 +147,23 @@ export function FlowEngine({
   }, [applicableSteps, ctx, onBack, step]);
 
   if (!ctx) {
-    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading…</div>;
+    return (
+      <DarkShell>
+        <div className="relative z-10 flex min-h-screen items-center justify-center px-6">
+          <p className="text-sm text-dim">Loading…</p>
+        </div>
+      </DarkShell>
+    );
   }
   if (!step) {
     return (
-      <div
-        data-testid="onboarding-complete"
-        className="mx-auto max-w-xl py-10 text-sm text-muted-foreground"
-      >
-        Onboarding complete.
-      </div>
+      <DarkShell>
+        <div className="relative z-10 flex min-h-screen items-center justify-center px-6">
+          <div data-testid="onboarding-complete" className="text-sm text-dim">
+            Onboarding complete.
+          </div>
+        </div>
+      </DarkShell>
     );
   }
 
@@ -131,35 +176,46 @@ export function FlowEngine({
   const hasCompletedPredecessor =
     stepNumber > 0 &&
     applicableSteps.slice(0, stepNumber - 1).some((candidate) => candidate.isComplete(ctx));
+  // BASE = visible spine steps + the Map (founder only). The spine now counts
+  // toward this continuous total, so the last spine step reads "N of BASE" and
+  // the post-spine Map/In-flight surfaces continue the same count (see
+  // onboardingProgress.ts).
+  const base = applicableSteps.length + (journeyHasFirstRunMap(journey) ? 1 : 0);
+  // The chip hides on single-step journeys where it carries no information
+  // (e.g. invited's lone human-profile step).
+  const showStepChrome = stepNumber > 0 && base > 1;
+
   return (
-    <div>
-      {/* Shared step chrome: one Back affordance + a "Step N of M" position
-          chip for every step (steps no longer render their own Back). The
-          chip hides on single-step journeys where it carries no information. */}
-      <div className="mx-auto -mb-6 flex max-w-md items-center pt-6 text-xs text-muted-foreground">
-        {hasCompletedPredecessor && (
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="-ml-2 gap-1 text-muted-foreground"
-            onClick={handleBack}
-          >
-            <ChevronLeft className="h-3.5 w-3.5" aria-hidden />
-            Back
-          </Button>
-        )}
-        {stepNumber > 0 && applicableSteps.length > 1 && (
-          <span className="ml-auto" data-testid="onboarding-step-position">
-            Step {stepNumber} of {applicableSteps.length}
-          </span>
-        )}
+    <DarkShell>
+      <div className="relative z-10 mx-auto flex min-h-screen w-full max-w-xl flex-col px-6 py-8">
+        {/* Shared step chrome: one Back affordance + a stepper-pip / "Step N of
+            M" position readout for every step (steps no longer render their
+            own Back). */}
+        <div className="flex items-center justify-between gap-4">
+          <div className="min-w-[64px]">
+            {hasCompletedPredecessor && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="-ml-2 gap-1 text-dim hover:bg-white/5 hover:text-text"
+                onClick={handleBack}
+              >
+                <ChevronLeft className="h-3.5 w-3.5" aria-hidden />
+                Back
+              </Button>
+            )}
+          </div>
+          {showStepChrome && <StepPosition current={stepNumber} total={base} />}
+        </div>
+        <div className="flex flex-1 flex-col">
+          <div className="my-auto w-full">
+            <Suspense fallback={<p className="text-center text-sm text-dim">Loading step…</p>}>
+              <Step ctx={ctx} onComplete={() => void handleComplete()} onBack={handleBack} />
+            </Suspense>
+          </div>
+        </div>
       </div>
-      <Suspense
-        fallback={<div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading step…</div>}
-      >
-        <Step ctx={ctx} onComplete={() => void handleComplete()} onBack={handleBack} />
-      </Suspense>
-    </div>
+    </DarkShell>
   );
 }

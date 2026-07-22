@@ -74,7 +74,34 @@ export interface LoginRunLike {
   urlPromise: Promise<string>;
   exitPromise: Promise<number | null>;
   authHome: string;
+  /**
+   * Deliver a pasted auth code to the LIVE child's stdin.
+   *
+   * Claude's `claude auth login` blocks reading this; codex self-completes via
+   * a local callback and its stdin is deliberately not piped, so codex's
+   * implementation always returns false. Callers must not read that as a
+   * failure — see `SubmitCodeResult`.
+   */
+  submitCode: (code: string) => boolean;
 }
+
+/**
+ * Outcome of delivering a pasted auth code.
+ *  - "delivered"    — written to the live child's stdin
+ *  - "unsupported"  — this provider does not accept a pasted code (codex
+ *                     self-completes via its local callback)
+ *  - "not-live"     — no LIVE, SAME-COMPANY child to deliver to: the registry
+ *                     has no entry for this challengeId (server restarted,
+ *                     challenge belongs to another process, or already
+ *                     finalized/cancelled), OR the entry belongs to a
+ *                     DIFFERENT company (cross-tenant call) — both report as
+ *                     absent, indistinguishable from "unknown challenge",
+ *                     mirroring `getStatus`/`cancel`.
+ *  - "write-failed" — a live, same-company child WAS found and the write was
+ *                     attempted, but the child refused it (e.g. already past
+ *                     the prompt, or the process is exiting).
+ */
+export type SubmitCodeResult = "delivered" | "unsupported" | "not-live" | "write-failed";
 
 export interface CommanderLoginServiceDeps {
   store: ChallengeStore;
@@ -147,6 +174,22 @@ export interface CommanderLoginService {
   /** Company-scoped: a cross-tenant cancel is a silent no-op (as if absent). */
   cancel(companyId: string, id: string): Promise<void>;
   reapOrphans(): Promise<void>;
+  /**
+   * Deliver a pasted auth code to the challenge's LIVE child in THIS process.
+   *
+   * Company-scoped, exactly like `getStatus`/`cancel` — and here it matters
+   * MORE than in either sibling: this is the one method in the service that
+   * performs a WRITE into a live child process (its stdin), not merely a
+   * read or a self-owned terminate. Without the check, a founder of company
+   * A who obtains company B's challengeId could deliver an attacker-chosen
+   * OAuth code into B's live `claude auth login` stdin, leaving B's shared
+   * credential home authenticated as the attacker — a confused-deputy WRITE
+   * into another tenant's child, not an information leak. A company mismatch
+   * is therefore treated exactly like an unknown challengeId (`"not-live"`),
+   * the same non-leaking "report as absent" convention `getStatus`/`cancel`
+   * already use.
+   */
+  submitCode(companyId: string, challengeId: string, code: string): SubmitCodeResult;
 }
 
 /**
@@ -188,6 +231,29 @@ function defaultDeadlineTimer(fn: () => void, ms: number): () => void {
 export function createCommanderLoginService(deps: CommanderLoginServiceDeps): CommanderLoginService {
   const now = deps.now ?? (() => new Date());
   const setDeadlineTimer = deps.setDeadlineTimer ?? defaultDeadlineTimer;
+
+  /**
+   * Challenges started by THIS process, keyed by challengeId.
+   *
+   * Deliberately in-memory and NOT persisted: delivering a pasted code requires
+   * the live child's stdin, which exists only in the process that spawned it. A
+   * challenge from a prior process therefore cannot receive a code, and the
+   * honest answer is "start again" — mirroring the LIVE-handle vs DURABLE-row
+   * distinction this service already draws for kills (see `terminate` above).
+   *
+   * Entries are added once the child has spawned (so `run.submitCode` exists)
+   * and removed on every terminal path: pid-backfill failure, superseded
+   * (0-row backfill), URL-discovery failure, loginUrl-write failure, normal
+   * finalize (completed/failed/timeout, inside `finalize`), and `cancel`.
+   */
+  const liveRuns = new Map<
+    string,
+    {
+      companyId: string;
+      provider: CommanderLoginProvider;
+      submitCode: (code: string) => boolean;
+    }
+  >();
 
   /**
    * Resilient terminal-status write (Codex round-8 P2 :348 + its siblings). Write
@@ -293,6 +359,12 @@ export function createCommanderLoginService(deps: CommanderLoginServiceDeps): Co
         // (start time ≤ startedAt + tolerance) is still killed so the codex
         // :1455 callback port is freed for the fresh login.
         deps.terminate(existing.pid, existing.pgid, { startedAt: existing.startedAt });
+        // The existing row is removed as part of this takeover (see `claim`
+        // above) — if it happens to be one of THIS process's own live runs
+        // (e.g. a hung same-process retry), a pasted code must no longer
+        // reach it once its row is gone. Harmless no-op otherwise (the
+        // common case: `existing` is a DURABLE row from another process).
+        liveRuns.delete(existing.id);
       },
     });
 
@@ -304,6 +376,15 @@ export function createCommanderLoginService(deps: CommanderLoginServiceDeps): Co
       await settleTerminal(id, "failed");
       throw err;
     }
+    // Register the live child NOW — `submitCode` needs a real child, and every
+    // path below that can end this challenge (backfill failure, superseded,
+    // URL-discovery failure, loginUrl-write failure, normal finalize, cancel)
+    // removes this entry so a dead/foreign challenge never looks live.
+    liveRuns.set(id, {
+      companyId: args.companyId,
+      provider: args.provider,
+      submitCode: run.submitCode,
+    });
     // Capture the child's ACTUAL spawn instant (Codex round-8 P2 :202). `startedAt`
     // was set at CLAIM time — before the advisory-lock wait + spawn. If that wait
     // exceeds `terminateByPidIfMatches`'s 2s tolerance, the child's real OS start
@@ -338,6 +419,8 @@ export function createCommanderLoginService(deps: CommanderLoginServiceDeps): Co
       // We throw before wiring the exit finalizer below — keep a rejecting
       // exitPromise from becoming an unhandled rejection.
       run.exitPromise.catch(() => {});
+      // The child is dead/dying — a pasted code can no longer reach it.
+      liveRuns.delete(id);
       // Mark failed (resilient: retries, then removes to release the slot) so the
       // single-flight slot isn't falsely held; the port is already freed above.
       // Rethrow the ORIGINAL error (settleTerminal never throws, so it can't mask it).
@@ -366,6 +449,7 @@ export function createCommanderLoginService(deps: CommanderLoginServiceDeps): Co
         /* best-effort */
       }
       run.exitPromise.catch(() => {});
+      liveRuns.delete(id); // our own row is already gone; nothing to deliver a code to
       throw new LoginChallengeConflictError(
         `a concurrent ${args.provider} sign-in superseded this attempt`,
       );
@@ -395,6 +479,7 @@ export function createCommanderLoginService(deps: CommanderLoginServiceDeps): Co
       // and the ORIGINAL url error still propagates (settleTerminal never throws).
       const status: ChallengeStatus =
         err instanceof Error && err.message === "login-url-timeout" ? "timeout" : "failed";
+      liveRuns.delete(id); // child killed above — no longer reachable for a pasted code
       await settleTerminal(id, status);
       throw err;
     }
@@ -414,6 +499,7 @@ export function createCommanderLoginService(deps: CommanderLoginServiceDeps): Co
         /* best-effort */
       }
       run.exitPromise.catch(() => {});
+      liveRuns.delete(id); // child killed above — no longer reachable for a pasted code
       await settleTerminal(id, "failed");
       throw err;
     }
@@ -447,6 +533,9 @@ export function createCommanderLoginService(deps: CommanderLoginServiceDeps): Co
         settled = true;
         cancelDeadline?.();
         cancelDeadline = null;
+        // Terminal for THIS run (completed/failed/timeout) — the live-child
+        // registry entry is no longer valid for a pasted code either way.
+        liveRuns.delete(id);
         await settleTerminal(id, status);
       };
 
@@ -537,6 +626,8 @@ export function createCommanderLoginService(deps: CommanderLoginServiceDeps): Co
     // Release the slot (remove the row) regardless of whether the kill fired.
     if (row.status === "pending" && row.pid != null)
       deps.terminate(row.pid, row.pgid, { startedAt: row.startedAt });
+    // The row is gone either way — no code can be delivered to it anymore.
+    liveRuns.delete(id);
     await deps.store.remove(id);
   }
 
@@ -549,9 +640,26 @@ export function createCommanderLoginService(deps: CommanderLoginServiceDeps): Co
       // start time matches — a reused pid is left untouched. The row is removed
       // either way (releases the single-flight slot), exactly as before.
       if (row.pid != null) deps.terminate(row.pid, row.pgid, { startedAt: row.startedAt });
+      // Mostly a no-op (these rows are normally DURABLE, from a prior process),
+      // but harmless + correct if a same-process row is ever swept here too.
+      liveRuns.delete(row.id);
       await deps.store.remove(row.id);
     }
   }
 
-  return { startChallenge, getStatus, cancel, reapOrphans };
+  function submitCode(companyId: string, challengeId: string, code: string): SubmitCodeResult {
+    const live = liveRuns.get(challengeId);
+    // Registry miss OR cross-tenant: report as absent, mirroring
+    // getStatus/cancel — never distinguish "unknown" from "belongs to
+    // another company" (that distinction is itself information a foreign
+    // caller should not learn), and never write into another tenant's child.
+    if (!live || live.companyId !== companyId) return "not-live";
+    // Codex never accepts a pasted code: its stdin is not piped by design.
+    if (live.provider === "openai") return "unsupported";
+    // The write was attempted against a live, same-company child; the child
+    // itself refused it (already past the prompt, or exiting).
+    return live.submitCode(code) ? "delivered" : "write-failed";
+  }
+
+  return { startChallenge, getStatus, cancel, reapOrphans, submitCode };
 }

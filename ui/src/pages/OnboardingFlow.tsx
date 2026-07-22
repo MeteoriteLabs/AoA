@@ -6,10 +6,11 @@ import type { OnboardingJourney, OnboardingState } from "@armyofagents/shared";
 import { authApi } from "../api/auth";
 import { queryKeys } from "../lib/queryKeys";
 import { advanceOnboarding, getOnboardingProgress, onboardingApi } from "../api/onboarding";
-import { FlowEngine } from "../onboarding/FlowEngine";
+import { DarkShell, FlowEngine } from "../onboarding/FlowEngine";
 import { ONBOARDING_STEPS } from "../onboarding/steps";
 import { OrgStep } from "../onboarding/steps/OrgStep";
 import { InvitedJoinTerminal } from "../onboarding/InvitedJoinTerminal";
+import { FirstRunHome } from "../onboarding/FirstRunHome";
 
 /**
  * The onboarding route (Stage B / B7). Wires the FlowEngine with the real
@@ -23,6 +24,12 @@ export function OnboardingFlowPage({ journey }: { journey: OnboardingJourney }) 
   const [searchParams] = useSearchParams();
   const { selectedCompanyId } = useCompany();
   const [invitedDone, setInvitedDone] = useState(false);
+  // Founder: after the spine finishes, the persona fork + in-flight tail run
+  // INLINE here (same dark flow) rather than on the dashboard — onboarding never
+  // bleeds into the company pages. `spineDone` also covers resume: a returning
+  // founder whose spine is already complete makes FlowEngine resolve no step and
+  // fire onFinished immediately, dropping straight into the tail.
+  const [spineDone, setSpineDone] = useState(false);
   const isNewFounderOrganization =
     journey === "founder" && searchParams.get("new") === "1";
   const { data: session, isLoading } = useQuery({
@@ -47,7 +54,11 @@ export function OnboardingFlowPage({ journey }: { journey: OnboardingJourney }) 
   });
 
   if (isLoading || (isNewFounderOrganization && profileProgressQuery.isLoading)) {
-    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading…</div>;
+    return (
+      <div className="onboarding-dark flex min-h-screen items-center justify-center bg-background">
+        <p className="text-sm text-dim">Loading…</p>
+      </div>
+    );
   }
 
   if (!userId) {
@@ -57,10 +68,12 @@ export function OnboardingFlowPage({ journey }: { journey: OnboardingJourney }) 
 
   if (isNewFounderOrganization && profileProgressQuery.error) {
     return (
-      <div className="mx-auto max-w-xl py-10 text-sm text-destructive">
-        {profileProgressQuery.error instanceof Error
-          ? profileProgressQuery.error.message
-          : "Failed to prepare organization setup"}
+      <div className="onboarding-dark flex min-h-screen items-center justify-center bg-background px-6">
+        <p className="text-sm text-destructive">
+          {profileProgressQuery.error instanceof Error
+            ? profileProgressQuery.error.message
+            : "Failed to prepare organization setup"}
+        </p>
       </div>
     );
   }
@@ -81,16 +94,49 @@ export function OnboardingFlowPage({ journey }: { journey: OnboardingJourney }) 
       completedStates: ["AUTHENTICATED", "PROFILE_SET"] as OnboardingState[],
     };
     return (
-      <OrgStep
-        ctx={orgCtx}
-        onComplete={() => navigate("/onboarding", { replace: true })}
-        onBack={() => navigate("/", { replace: true })}
-      />
+      <DarkShell>
+        <div className="relative z-10 flex min-h-screen items-center justify-center px-6 py-8">
+          <OrgStep
+            ctx={orgCtx}
+            onComplete={() => navigate("/onboarding", { replace: true })}
+            onBack={() => navigate("/", { replace: true })}
+          />
+        </div>
+      </DarkShell>
     );
   }
 
   if (journey === "invited" && invitedDone) {
     return <InvitedJoinTerminal />;
+  }
+
+  // Founder tail: the spine is done — run the persona fork + in-flight tail
+  // (departments → integrations → braindump → Librarian → agents → first job)
+  // in the SAME dark flow. FirstRunHome writes firstRunCompleted at the end; on
+  // completion we hand off to the Lobby (the returning-user home base). Guard on
+  // selectedCompanyId — the org-create step selects it, and on resume the index
+  // gate selects it before routing here; a brief null is just a loading frame.
+  if (journey === "founder" && spineDone) {
+    if (!selectedCompanyId) {
+      return (
+        <DarkShell>
+          <div className="relative z-10 flex min-h-screen items-center justify-center px-6">
+            <p className="text-sm text-dim">Loading…</p>
+          </div>
+        </DarkShell>
+      );
+    }
+    return (
+      <FirstRunHome
+        companyId={selectedCompanyId}
+        onComplete={() => {
+          // Re-resolve the journey (now firstRunCompleted) so the index gate
+          // doesn't bounce us back into onboarding, then hand off to the Lobby.
+          queryClient.removeQueries({ queryKey: ["onboarding", "journey"], exact: true });
+          navigate("/", { replace: true });
+        }}
+      />
+    );
   }
 
   return (
@@ -106,11 +152,10 @@ export function OnboardingFlowPage({ journey }: { journey: OnboardingJourney }) 
           setInvitedDone(true);
           return;
         }
-        // The index gate must resolve the post-setup membership state from the
-        // server. Its cached pre-setup `founder` result would otherwise redirect
-        // back into onboarding before the background refetch completes.
-        queryClient.removeQueries({ queryKey: ["onboarding", "journey"], exact: true });
-        navigate("/", { replace: true });
+        // Founder spine complete → hand off to the INLINE tail above (persona +
+        // in-flight), NOT the dashboard. The tail owns the firstRunCompleted
+        // write and the final navigation to the Lobby.
+        setSpineDone(true);
       }}
     />
   );

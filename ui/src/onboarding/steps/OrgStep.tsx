@@ -10,6 +10,8 @@ import {
   type PendingOrganization,
 } from "../pendingOrganization";
 import { Button } from "@/components/ui/button";
+import { Reveal } from "../motion";
+import { FIELD, GradientText, LABEL, StepCard, StepHeading, StepShell } from "./shared";
 
 /**
  * "Create your organization" step (Stage C / order 2). Creates the company via
@@ -101,43 +103,67 @@ export function OrgStep({ ctx, onComplete }: StepProps) {
 
   if (revisitedCompanyId) {
     return (
-      <div className="mx-auto max-w-md py-10">
-        <h1 className="text-xl font-semibold">Your organization</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Your organization is already created — continue to pick up where you left off.
-        </p>
-        <span className="mt-6 mb-1 block text-xs text-muted-foreground">Organization name</span>
-        <div
-          data-testid="org-revisited-name"
-          className="rounded-md border border-border bg-muted/30 px-3 py-2 text-sm"
-        >
-          {revisitedName ?? "…"}
-        </div>
-        {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
-        <Button className="mt-4 w-full" onClick={() => void continueRevisited()} disabled={busy}>
-          {busy ? "Continuing…" : "Continue"}
-        </Button>
-      </div>
+      <StepShell>
+        <Reveal>
+          <StepHeading
+            title={
+              <>
+                Your <GradientText>company</GradientText>
+              </>
+            }
+            subtitle="Your organization is already created — continue to pick up where you left off."
+          />
+        </Reveal>
+        <Reveal delay={0.09}>
+          <StepCard>
+            <span className={LABEL}>Organization name</span>
+            <div data-testid="org-revisited-name" className="rounded-md border border-border-strong bg-field px-3 py-2 text-sm text-text">
+              {revisitedName ?? "…"}
+            </div>
+            {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
+          </StepCard>
+        </Reveal>
+        <Reveal delay={0.18}>
+          <Button className="w-full" onClick={() => void continueRevisited()} disabled={busy}>
+            {busy ? "Continuing…" : "Continue"}
+          </Button>
+        </Reveal>
+      </StepShell>
     );
   }
 
   return (
-    <div className="mx-auto max-w-md py-10">
-      <h1 className="text-xl font-semibold">Create your organization</h1>
-      <p className="mt-1 text-sm text-muted-foreground">
-        This is your company's control room. You can change the name later.
-      </p>
-      <label className="mt-6 mb-1 block text-xs text-muted-foreground">Organization name</label>
-      <input
-        className="w-full rounded-md border border-border bg-transparent px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring"
-        value={name}
-        onChange={(e) => setName(e.target.value)}
-        autoFocus
-      />
-      {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
-      <Button className="mt-4 w-full" onClick={() => void submit()} disabled={busy}>
-        {busy ? "Creating…" : "Continue"}
-      </Button>
-    </div>
+    <StepShell>
+      <Reveal>
+        <StepHeading
+          title={
+            <>
+              Your <GradientText>company</GradientText>
+            </>
+          }
+          subtitle="This is what your workforce serves — everything your agents do traces back here. You can change the name later."
+        />
+      </Reveal>
+      <Reveal delay={0.09}>
+        <StepCard>
+          <label className={LABEL} htmlFor="org-name">
+            Organization name
+          </label>
+          <input
+            id="org-name"
+            className={FIELD}
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            autoFocus
+          />
+          {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
+        </StepCard>
+      </Reveal>
+      <Reveal delay={0.18}>
+        <Button className="w-full" onClick={() => void submit()} disabled={busy}>
+          {busy ? "Creating…" : "Continue"}
+        </Button>
+      </Reveal>
+    </StepShell>
   );
 }

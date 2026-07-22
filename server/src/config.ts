@@ -17,6 +17,7 @@ import {
 } from "@armyofagents/shared";
 import {
   resolveDefaultBackupDir,
+  resolveDefaultCompanyWorkspaceBaseDir,
   resolveDefaultEmbeddedPostgresDir,
   resolveDefaultSecretsKeyFilePath,
   resolveDefaultStorageDir,
@@ -57,6 +58,13 @@ export interface Config {
   secretsMasterKeyFilePath: string;
   storageProvider: StorageProvider;
   storageLocalDiskBaseDir: string;
+  /**
+   * WS0a — server-owned base dir that `authenticated`-mode company
+   * workspace-fs browse/mkdir is jailed under (per-company subdir joined
+   * in by resolveCompanyWorkspaceRoot()). Unused in local_trusted mode
+   * (the founder browses their real home area, unjailed).
+   */
+  companyWorkspaceBaseDir: string;
   storageS3Bucket: string;
   storageS3Region: string;
   storageS3Endpoint: string | undefined;
@@ -142,6 +150,9 @@ export function loadConfig(): Config {
     process.env.AOA_STORAGE_LOCAL_DIR ??
       fileStorage?.localDisk?.baseDir ??
       resolveDefaultStorageDir(),
+  );
+  const companyWorkspaceBaseDir = resolveHomeAwarePath(
+    process.env.AOA_COMPANY_WORKSPACE_DIR ?? resolveDefaultCompanyWorkspaceBaseDir(),
   );
   const storageS3Bucket = process.env.AOA_STORAGE_S3_BUCKET ?? fileStorage?.s3?.bucket ?? "paperclip";
   const storageS3Region = process.env.AOA_STORAGE_S3_REGION ?? fileStorage?.s3?.region ?? "us-east-1";
@@ -286,6 +297,7 @@ export function loadConfig(): Config {
       ),
     storageProvider,
     storageLocalDiskBaseDir,
+    companyWorkspaceBaseDir,
     storageS3Bucket,
     storageS3Region,
     storageS3Endpoint,

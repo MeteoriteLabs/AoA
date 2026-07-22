@@ -76,4 +76,50 @@ describe("MemoryItemRow", () => {
     );
     expect(container.querySelector(".line-clamp-2")).toBeNull();
   });
+
+  it("shows a pending item's destination folder", () => {
+    const pendingItem: MemoryItemRowData = {
+      ...baseItem,
+      status: "pending",
+      folderPath: "engineering/Decisions",
+    };
+    const { getByText } = render(
+      <MemoryItemRow row={pendingItem} active={false} onSelect={() => {}} />,
+    );
+    expect(getByText(/engineering\/Decisions/)).toBeInTheDocument();
+  });
+
+  it("shows 'unfiled' for a pending item with no folderPath", () => {
+    const pendingItem: MemoryItemRowData = {
+      ...baseItem,
+      status: "pending",
+      folderPath: null,
+    };
+    const { getByText } = render(
+      <MemoryItemRow row={pendingItem} active={false} onSelect={() => {}} />,
+    );
+    expect(getByText(/unfiled/i)).toBeInTheDocument();
+  });
+
+  it("marks a pending item with a stable data-pending hook", () => {
+    const pendingItem: MemoryItemRowData = {
+      ...baseItem,
+      title: "We ship on Fridays",
+      status: "pending",
+      folderPath: "engineering/Decisions",
+    };
+    const { getByText } = render(
+      <MemoryItemRow row={pendingItem} active={false} onSelect={() => {}} />,
+    );
+    const el = getByText(/We ship on Fridays/);
+    expect(el.closest("[data-pending='true']")).toBeTruthy();
+  });
+
+  it("does not show the destination label or pending hook for an approved item", () => {
+    const { queryByText, getByRole } = render(
+      <MemoryItemRow row={baseItem} active={false} onSelect={() => {}} />,
+    );
+    expect(queryByText(/unfiled/i)).toBeNull();
+    expect(getByRole("button").getAttribute("data-pending")).toBeNull();
+  });
 });

@@ -288,6 +288,7 @@ function NewThreadDialogMount() {
 // sees the Lobby (with their pending invitations surfaced there).
 function LobbyOrOnboardingRedirect() {
   const navigate = useNavigate();
+  const { setSelectedCompanyId } = useCompany();
   const { data, isLoading } = useQuery({
     queryKey: ["onboarding", "journey"],
     queryFn: () => fetchJourney(),
@@ -299,10 +300,19 @@ function LobbyOrOnboardingRedirect() {
       navigate("/onboarding", { replace: true });
     } else if (data.journey === "invited") {
       navigate(`/onboarding/join?company=${data.targetCompanyId ?? ""}`, { replace: true });
+    } else if (data.resumeFirstRunCompanyId) {
+      // Returning founder who abandoned their first-run tail: select that company
+      // and drop them back into /onboarding to finish it. The spine is already
+      // complete, so OnboardingFlow's FlowEngine resolves no step and jumps
+      // straight to the inline tail — onboarding never appears on the dashboard.
+      setSelectedCompanyId(data.resumeFirstRunCompanyId);
+      navigate("/onboarding", { replace: true });
     }
-  }, [data, navigate]);
+  }, [data, navigate, setSelectedCompanyId]);
   if (isLoading) return <RouteFallback />;
-  if (data && data.journey !== "returning") return null; // redirecting
+  // Redirecting (founder / invited) OR resuming an unfinished founder tail —
+  // render nothing so the Lobby doesn't flash underneath before the redirect.
+  if (data && (data.journey !== "returning" || data.resumeFirstRunCompanyId)) return null;
   return <Lobby pendingInvitations={data?.pendingInvitations ?? []} />;
 }
 

@@ -36,6 +36,12 @@ type DiscussionLike = {
   updatedAt: SourceUpdatedAt;
 };
 
+type MemoryReviewLike = {
+  companyId: string;
+  count: number;
+  ownerUserId: string | null;
+};
+
 type SuggestionLike = {
   id: string;
   companyId: string;
@@ -185,6 +191,39 @@ export function buildDiscussionPendingHubEmit(discussion: DiscussionLike): EmitA
     scopeKey: scopeKeyFor(discussion),
     ...actor,
     sourcePermissionRevision: sourceRevision(discussion.updatedAt),
+  };
+}
+
+// memory_review (Mem T4): ONE hub row per COMPANY — sourceType "memory",
+// sourceId = the companyId, count = total founder-gated pending memory across
+// ALL scopes. The Inbox shows a single "Review N memory items" signpost; the
+// per-scope breakdown lives in Memory → Pending Review. `hub_items_source_unique_idx`
+// (companyId+sourceType+sourceId+semanticType+scopeKey) dedupes to one row, so
+// every write path re-emits the SAME key and only refreshes the count. The count
+// MUST be computed with the same founder-gated-pending predicate the reconciler
+// uses (see reconcileMemoryReview in hub-items.ts) so emit and reconcile agree.
+export function buildMemoryReviewHubEmit(m: MemoryReviewLike): EmitArgs {
+  const count = m.count;
+  return {
+    companyId: m.companyId,
+    semanticType: "memory_review",
+    sourceType: "memory",
+    sourceId: m.companyId,
+    title: `Review ${count} memory ${count === 1 ? "item" : "items"}`,
+    summary: `${count} memory ${count === 1 ? "item is" : "items are"} ready for your approval.`,
+    ownerUserId: m.ownerUserId,
+    // Fix 2 (storm-guard correctness): the aggregate signpost has NO single
+    // source row, so it carries a null revision — matching reconcileMemoryReview
+    // (permissionRevision: null). A fresh `new Date()` would make the storm
+    // guard's `sourcePermissionRevision IS DISTINCT FROM` check always-true
+    // (every re-emit rewrites the row) AND disagree with the reconciler.
+    sourcePermissionRevision: null,
+    // Fix 1: the memory_review row is ONE row per company that the founder clears
+    // to `archived` when they approve the last pending item. The next agent write
+    // must be able to REOPEN that archived row so the signpost reappears — the
+    // clear→refill cycle is normal for memory. This opt-in flag is set ONLY here;
+    // all mirror/source types keep the non-reopen (never-resurrect) behavior.
+    reopenWhenArchived: true,
   };
 }
 

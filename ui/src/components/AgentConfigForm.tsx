@@ -425,6 +425,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const [permissionsConfigOpen, setPermissionsConfigOpen] = useState(true);
   const [runPolicyOpen, setRunPolicyOpen] = useState(true);
   const [contextOpen, setContextOpen] = useState(true);
+  // Create-mode "Advanced" disclosure — plumbing (command/env/permissions/run
+  // policy) collapses here so the Brain block stays the prominent choice.
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   // Popover states
   const [modelOpen, setModelOpen] = useState(false);
   const [thinkingEffortOpen, setThinkingEffortOpen] = useState(false);
@@ -748,8 +751,76 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             <AdapterEnvironmentResult result={testEnvironment.data} />
           )}
 
+          {/* ---- Brain (create mode): runtime · model · thinking ---- */}
+          {isCreate && models.length > 0 && (
+            <div className="rounded-lg border border-border bg-accent/20 p-3 space-y-3">
+              <div className="flex items-center gap-2">
+                <Brain className="h-3.5 w-3.5 text-muted-foreground" />
+                <span className="text-sm font-medium">Brain</span>
+                <span className="ml-auto inline-flex items-center rounded-md border border-border bg-background px-2 py-0.5 text-[11px] text-muted-foreground">
+                  {getAdapterLabel(adapterType)}
+                </span>
+              </div>
+              <ModelDropdown
+                models={models}
+                value={currentModelId}
+                onChange={(v) =>
+                  isCreate
+                    ? set!({ model: v })
+                    : mark("adapterConfig", "model", v || undefined)
+                }
+                open={modelOpen}
+                onOpenChange={setModelOpen}
+                allowDefault={adapterType !== "opencode_local"}
+                required={adapterType === "opencode_local"}
+                groupByProvider={adapterType === "opencode_local"}
+                defaultLabel={adapterType === "codex_local" ? `Default → ${DEFAULT_CODEX_LOCAL_MODEL}` : undefined}
+                defaultValue={adapterType === "codex_local" ? DEFAULT_CODEX_LOCAL_MODEL : ""}
+              />
+              {fetchedModelsError && (
+                <p className="text-xs text-destructive">
+                  {fetchedModelsError instanceof Error
+                    ? fetchedModelsError.message
+                    : "Failed to load adapter models."}
+                </p>
+              )}
+              <ThinkingEffortDropdown
+                value={currentThinkingEffort}
+                options={thinkingEffortOptions}
+                onChange={(v) =>
+                  isCreate
+                    ? set!({ thinkingEffort: v })
+                    : mark("adapterConfig", thinkingEffortKey, v || undefined)
+                }
+                open={thinkingEffortOpen}
+                onOpenChange={setThinkingEffortOpen}
+              />
+              {adapterType === "codex_local" &&
+                codexSearchEnabled &&
+                currentThinkingEffort === "minimal" && (
+                  <p className="text-xs text-amber-400">
+                    Codex may reject `minimal` thinking when search is enabled.
+                  </p>
+                )}
+            </div>
+          )}
+
+          {/* ---- Advanced disclosure (create mode) ---- */}
+          {isCreate && (
+            <button
+              type="button"
+              className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+              onClick={() => setAdvancedOpen((o) => !o)}
+              aria-expanded={advancedOpen}
+            >
+              <SlidersHorizontal className="h-3 w-3" />
+              Advanced
+              {advancedOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+            </button>
+          )}
+
           {/* Working directory */}
-          {isLocal && (
+          {isLocal && (!isCreate || advancedOpen) && (
             <Field label="Working directory" hint={help.cwd}>
               <div className="flex items-center gap-2 rounded-md border border-border px-2.5 py-1.5">
                 <FolderOpen className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
@@ -795,7 +866,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           )}
 
           {/* Prompt template (create mode only — edit mode shows this in Identity) */}
-          {isLocal && isCreate && (
+          {isLocal && isCreate && advancedOpen && (
             <Field label="Prompt Template" hint={help.promptTemplate}>
               <MarkdownEditor
                 value={val!.promptTemplate}
@@ -812,13 +883,15 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           )}
 
           {/* Adapter-specific fields */}
-          <uiAdapter.ConfigFields {...adapterFieldProps} />
+          {(!isCreate || advancedOpen) && (
+            <uiAdapter.ConfigFields {...adapterFieldProps} />
+          )}
         </div>
 
       </div>
 
       {/* ---- Permissions & Configuration ---- */}
-      {isLocal && (
+      {isLocal && (!isCreate || advancedOpen) && (
         <div className={cn(!cards && "border-b border-border", cards && !isCreate && "border border-border rounded-lg overflow-hidden", activeSection && activeSection !== "permissions" && "hidden")}>
           {cards && !isCreate
             ? <button type="button" className="flex items-center gap-2 w-full px-4 py-3 text-sm font-medium hover:bg-accent/30 transition-colors" onClick={() => setPermissionsConfigOpen(!permissionsConfigOpen)}><SlidersHorizontal className="h-3 w-3" /> Permissions &amp; Configuration<span className="ml-auto">{permissionsConfigOpen ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />}</span></button>
@@ -853,48 +926,53 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 />
               </Field>
 
-              <ModelDropdown
-                models={models}
-                value={currentModelId}
-                onChange={(v) =>
-                  isCreate
-                    ? set!({ model: v })
-                    : mark("adapterConfig", "model", v || undefined)
-                }
-                open={modelOpen}
-                onOpenChange={setModelOpen}
-                allowDefault={adapterType !== "opencode_local"}
-                required={adapterType === "opencode_local"}
-                groupByProvider={adapterType === "opencode_local"}
-                defaultLabel={adapterType === "codex_local" ? `Default → ${DEFAULT_CODEX_LOCAL_MODEL}` : undefined}
-                defaultValue={adapterType === "codex_local" ? DEFAULT_CODEX_LOCAL_MODEL : ""}
-              />
-              {fetchedModelsError && (
-                <p className="text-xs text-destructive">
-                  {fetchedModelsError instanceof Error
-                    ? fetchedModelsError.message
-                    : "Failed to load adapter models."}
-                </p>
-              )}
+              {/* Model + thinking effort live in the Brain block in create mode. */}
+              {!isCreate && (
+                <>
+                  <ModelDropdown
+                    models={models}
+                    value={currentModelId}
+                    onChange={(v) =>
+                      isCreate
+                        ? set!({ model: v })
+                        : mark("adapterConfig", "model", v || undefined)
+                    }
+                    open={modelOpen}
+                    onOpenChange={setModelOpen}
+                    allowDefault={adapterType !== "opencode_local"}
+                    required={adapterType === "opencode_local"}
+                    groupByProvider={adapterType === "opencode_local"}
+                    defaultLabel={adapterType === "codex_local" ? `Default → ${DEFAULT_CODEX_LOCAL_MODEL}` : undefined}
+                    defaultValue={adapterType === "codex_local" ? DEFAULT_CODEX_LOCAL_MODEL : ""}
+                  />
+                  {fetchedModelsError && (
+                    <p className="text-xs text-destructive">
+                      {fetchedModelsError instanceof Error
+                        ? fetchedModelsError.message
+                        : "Failed to load adapter models."}
+                    </p>
+                  )}
 
-              <ThinkingEffortDropdown
-                value={currentThinkingEffort}
-                options={thinkingEffortOptions}
-                onChange={(v) =>
-                  isCreate
-                    ? set!({ thinkingEffort: v })
-                    : mark("adapterConfig", thinkingEffortKey, v || undefined)
-                }
-                open={thinkingEffortOpen}
-                onOpenChange={setThinkingEffortOpen}
-              />
-              {adapterType === "codex_local" &&
-                codexSearchEnabled &&
-                currentThinkingEffort === "minimal" && (
-                  <p className="text-xs text-amber-400">
-                    Codex may reject `minimal` thinking when search is enabled.
-                  </p>
-                )}
+                  <ThinkingEffortDropdown
+                    value={currentThinkingEffort}
+                    options={thinkingEffortOptions}
+                    onChange={(v) =>
+                      isCreate
+                        ? set!({ thinkingEffort: v })
+                        : mark("adapterConfig", thinkingEffortKey, v || undefined)
+                    }
+                    open={thinkingEffortOpen}
+                    onOpenChange={setThinkingEffortOpen}
+                  />
+                  {adapterType === "codex_local" &&
+                    codexSearchEnabled &&
+                    currentThinkingEffort === "minimal" && (
+                      <p className="text-xs text-amber-400">
+                        Codex may reject `minimal` thinking when search is enabled.
+                      </p>
+                    )}
+                </>
+              )}
               <Field label="Bootstrap prompt (first run)" hint={help.bootstrapPrompt}>
                 <MarkdownEditor
                   value={
@@ -1024,6 +1102,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
       {/* ---- Run Policy ---- */}
       {isCreate ? (
+        advancedOpen && (
         <div className={cn(!cards && "border-b border-border")}>
           {cards
             ? <h3 className="text-sm font-medium flex items-center gap-2 mb-3"><Heart className="h-3 w-3" /> Run Policy</h3>
@@ -1044,6 +1123,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             />
           </div>
         </div>
+        )
       ) : (
         <div className={cn(!cards && "border-b border-border", cards && "border border-border rounded-lg overflow-hidden", activeSection && activeSection !== "runPolicy" && "hidden")}>
           {cards
@@ -1503,7 +1583,7 @@ function EnvVarEditor({
   );
 }
 
-function ModelDropdown({
+export function ModelDropdown({
   models,
   value,
   onChange,

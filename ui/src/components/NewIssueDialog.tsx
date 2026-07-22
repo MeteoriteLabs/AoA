@@ -35,7 +35,6 @@ import {
 import {
   Maximize2,
   Minimize2,
-  MoreHorizontal,
   ChevronRight,
   ChevronDown,
   CircleDot,
@@ -43,8 +42,6 @@ import {
   ArrowUp,
   ArrowDown,
   AlertTriangle,
-  Tag,
-  Calendar,
   Paperclip,
   Hammer,
   ClipboardList,
@@ -52,6 +49,7 @@ import {
   FolderGit2,
   GitBranch,
   User,
+  SlidersHorizontal,
 } from "lucide-react";
 import { cn } from "../lib/utils";
 import { pruneStaleId } from "../lib/issueDraft";
@@ -242,7 +240,7 @@ export function NewIssueDialog() {
   const [taskWorkspaceMode, setTaskWorkspaceMode] = useState<TaskWorkspaceMode>("inherit");
   const [reuseWorkspaceId, setReuseWorkspaceId] = useState("");
   const [workspacePickerOpen, setWorkspacePickerOpen] = useState(false);
-  const [moreOpen, setMoreOpen] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [companyOpen, setCompanyOpen] = useState(false);
   const descriptionEditorRef = useRef<MarkdownEditorRef>(null);
   const attachInputRef = useRef<HTMLInputElement | null>(null);
@@ -556,6 +554,7 @@ export function NewIssueDialog() {
     setTaskWorkspaceMode("inherit");
     setReuseWorkspaceId("");
     setWorkspacePickerOpen(false);
+    setAdvancedOpen(false);
   }
 
   function handleCompanyChange(companyId: string) {
@@ -1056,7 +1055,7 @@ export function NewIssueDialog() {
           )}
         </div>
 
-        {supportsAssigneeOverrides && (
+        {advancedOpen && supportsAssigneeOverrides && (
           <div className="px-4 pb-2 shrink-0">
             <button
               className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
@@ -1261,143 +1260,6 @@ export function NewIssueDialog() {
             </PopoverContent>
           </Popover>
 
-          {/* Environment chip */}
-          <Popover open={envPickerOpen} onOpenChange={setEnvPickerOpen}>
-            <PopoverTrigger asChild>
-              <button
-                type="button"
-                className={cn(
-                  "inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors",
-                  executionEnvironmentId ? "text-foreground" : "text-muted-foreground"
-                )}
-              >
-                <Layers className="h-3 w-3" />
-                {executionEnvironmentId
-                  ? ((environments ?? []).find((e) => e.id === executionEnvironmentId)?.name ?? "Environment")
-                  : "Environment"}
-              </button>
-            </PopoverTrigger>
-            <PopoverContent className="w-48 p-1" align="start">
-              <button
-                type="button"
-                className={cn(
-                  "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
-                  executionEnvironmentId === null && "bg-accent"
-                )}
-                onClick={() => { setExecutionEnvironmentId(null); setEnvPickerOpen(false); }}
-              >
-                <Layers className="h-3 w-3 text-muted-foreground" />
-                None
-              </button>
-              {(environments ?? []).map((env) => (
-                <button
-                  key={env.id}
-                  type="button"
-                  className={cn(
-                    "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
-                    executionEnvironmentId === env.id && "bg-accent"
-                  )}
-                  onClick={() => { setExecutionEnvironmentId(env.id); setEnvPickerOpen(false); }}
-                >
-                  <Layers className="h-3 w-3 text-muted-foreground" />
-                  <span className="truncate">{env.name}</span>
-                </button>
-              ))}
-              {(environments ?? []).length === 0 && (
-                <div className="px-2 py-1.5 text-xs text-muted-foreground">
-                  No environments configured.
-                </div>
-              )}
-            </PopoverContent>
-          </Popover>
-
-          {selectedProjectHasWorkspacePolicy && (
-            <Popover open={workspacePickerOpen} onOpenChange={setWorkspacePickerOpen}>
-              <PopoverTrigger asChild>
-                <button
-                  type="button"
-                  className={cn(
-                    "inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors",
-                    canChooseTaskWorkspace ? "text-foreground" : "text-muted-foreground"
-                  )}
-                  disabled={!canChooseTaskWorkspace}
-                  title={
-                    canChooseTaskWorkspace
-                      ? undefined
-                      : !allowTaskWorkspaceOverride
-                        ? "Task-level workspace overrides are disabled in department Settings."
-                        : "Your role cannot change task workspace settings."
-                  }
-                >
-                  <FolderGit2 className="h-3 w-3" />
-                  {workspaceModeLabel}
-                </button>
-              </PopoverTrigger>
-              <PopoverContent className="w-64 p-1" align="start">
-                <div className="px-2 py-1.5 text-[11px] text-muted-foreground">
-                  Department default: {defaultWorkspaceLabel}
-                </div>
-                {[
-                  ["inherit", "Use department default"],
-                  ["shared_workspace", "Shared workspace"],
-                  ["isolated_workspace", "Isolated workspace"],
-                ].map(([mode, label]) => (
-                  <button
-                    key={mode}
-                    type="button"
-                    className={cn(
-                      "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
-                      taskWorkspaceMode === mode && "bg-accent"
-                    )}
-                    onClick={() => {
-                      setTaskWorkspaceMode(mode as TaskWorkspaceMode);
-                      setReuseWorkspaceId("");
-                      setWorkspacePickerOpen(false);
-                    }}
-                  >
-                    <FolderGit2 className="h-3 w-3 text-muted-foreground" />
-                    {label}
-                  </button>
-                ))}
-                {reuseWorkspaceCandidates.length > 0 && (
-                  <div className="mt-1 border-t border-border pt-1">
-                    {reuseWorkspaceCandidates.slice(0, 6).map((workspace) => (
-                      <button
-                        key={workspace.id}
-                        type="button"
-                        className={cn(
-                          "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
-                          taskWorkspaceMode === "reuse_existing"
-                            && reuseWorkspaceId === workspace.id
-                            && "bg-accent"
-                        )}
-                        onClick={() => {
-                          setTaskWorkspaceMode("reuse_existing");
-                          setReuseWorkspaceId(workspace.id);
-                          setWorkspacePickerOpen(false);
-                        }}
-                      >
-                        <GitBranch className="h-3 w-3 text-muted-foreground" />
-                        <span className="truncate">{workspace.name}</span>
-                        {workspace.branchName && (
-                          <span className="ml-auto max-w-24 truncate text-muted-foreground">
-                            {workspace.branchName}
-                          </span>
-                        )}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </PopoverContent>
-            </Popover>
-          )}
-
-          {/* Labels chip (placeholder) */}
-          <button className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors text-muted-foreground">
-            <Tag className="h-3 w-3" />
-            Labels
-          </button>
-
           {/* Attach image chip */}
           <input
             ref={attachInputRef}
@@ -1415,25 +1277,154 @@ export function NewIssueDialog() {
             {uploadDescriptionImage.isPending ? "Uploading..." : "Image"}
           </button>
 
-          {/* More (dates) */}
-          <Popover open={moreOpen} onOpenChange={setMoreOpen}>
-            <PopoverTrigger asChild>
-              <button className="inline-flex items-center justify-center rounded-md border border-border p-1 text-xs hover:bg-accent/50 transition-colors text-muted-foreground">
-                <MoreHorizontal className="h-3 w-3" />
-              </button>
-            </PopoverTrigger>
-            <PopoverContent className="w-44 p-1" align="start">
-              <button className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-muted-foreground">
-                <Calendar className="h-3 w-3" />
-                Start date
-              </button>
-              <button className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-muted-foreground">
-                <Calendar className="h-3 w-3" />
-                Due date
-              </button>
-            </PopoverContent>
-          </Popover>
+          {/* Advanced disclosure — reveals Environment, Task workspace mode, and (when the
+              assignee supports it) the model/thinking-effort/Chrome overrides card. */}
+          <button
+            type="button"
+            className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors text-muted-foreground"
+            onClick={() => setAdvancedOpen((open) => !open)}
+            aria-expanded={advancedOpen}
+          >
+            {advancedOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+            <SlidersHorizontal className="h-3 w-3" />
+            Advanced
+          </button>
         </div>
+
+        {advancedOpen && (
+          <div className="flex items-center gap-1.5 px-4 pb-2 border-t border-border/60 pt-2 flex-wrap shrink-0">
+            {/* Environment chip */}
+            <Popover open={envPickerOpen} onOpenChange={setEnvPickerOpen}>
+              <PopoverTrigger asChild>
+                <button
+                  type="button"
+                  className={cn(
+                    "inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors",
+                    executionEnvironmentId ? "text-foreground" : "text-muted-foreground"
+                  )}
+                >
+                  <Layers className="h-3 w-3" />
+                  {executionEnvironmentId
+                    ? ((environments ?? []).find((e) => e.id === executionEnvironmentId)?.name ?? "Environment")
+                    : "Environment"}
+                </button>
+              </PopoverTrigger>
+              <PopoverContent className="w-48 p-1" align="start">
+                <button
+                  type="button"
+                  className={cn(
+                    "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+                    executionEnvironmentId === null && "bg-accent"
+                  )}
+                  onClick={() => { setExecutionEnvironmentId(null); setEnvPickerOpen(false); }}
+                >
+                  <Layers className="h-3 w-3 text-muted-foreground" />
+                  None
+                </button>
+                {(environments ?? []).map((env) => (
+                  <button
+                    key={env.id}
+                    type="button"
+                    className={cn(
+                      "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+                      executionEnvironmentId === env.id && "bg-accent"
+                    )}
+                    onClick={() => { setExecutionEnvironmentId(env.id); setEnvPickerOpen(false); }}
+                  >
+                    <Layers className="h-3 w-3 text-muted-foreground" />
+                    <span className="truncate">{env.name}</span>
+                  </button>
+                ))}
+                {(environments ?? []).length === 0 && (
+                  <div className="px-2 py-1.5 text-xs text-muted-foreground">
+                    No environments configured.
+                  </div>
+                )}
+              </PopoverContent>
+            </Popover>
+
+            {selectedProjectHasWorkspacePolicy && (
+              <Popover open={workspacePickerOpen} onOpenChange={setWorkspacePickerOpen}>
+                <PopoverTrigger asChild>
+                  <button
+                    type="button"
+                    className={cn(
+                      "inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent/50 transition-colors",
+                      canChooseTaskWorkspace ? "text-foreground" : "text-muted-foreground"
+                    )}
+                    disabled={!canChooseTaskWorkspace}
+                    title={
+                      canChooseTaskWorkspace
+                        ? undefined
+                        : !allowTaskWorkspaceOverride
+                          ? "Task-level workspace overrides are disabled in department Settings."
+                          : "Your role cannot change task workspace settings."
+                    }
+                  >
+                    <FolderGit2 className="h-3 w-3" />
+                    {workspaceModeLabel}
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent className="w-64 p-1" align="start">
+                  <div className="px-2 py-1.5 text-[11px] text-muted-foreground">
+                    Department default: {defaultWorkspaceLabel}
+                  </div>
+                  {[
+                    ["inherit", "Use department default"],
+                    ["shared_workspace", "Shared workspace"],
+                    ["isolated_workspace", "Isolated workspace"],
+                  ].map(([mode, label]) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      className={cn(
+                        "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+                        taskWorkspaceMode === mode && "bg-accent"
+                      )}
+                      onClick={() => {
+                        setTaskWorkspaceMode(mode as TaskWorkspaceMode);
+                        setReuseWorkspaceId("");
+                        setWorkspacePickerOpen(false);
+                      }}
+                    >
+                      <FolderGit2 className="h-3 w-3 text-muted-foreground" />
+                      {label}
+                    </button>
+                  ))}
+                  {reuseWorkspaceCandidates.length > 0 && (
+                    <div className="mt-1 border-t border-border pt-1">
+                      {reuseWorkspaceCandidates.slice(0, 6).map((workspace) => (
+                        <button
+                          key={workspace.id}
+                          type="button"
+                          className={cn(
+                            "flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50",
+                            taskWorkspaceMode === "reuse_existing"
+                              && reuseWorkspaceId === workspace.id
+                              && "bg-accent"
+                          )}
+                          onClick={() => {
+                            setTaskWorkspaceMode("reuse_existing");
+                            setReuseWorkspaceId(workspace.id);
+                            setWorkspacePickerOpen(false);
+                          }}
+                        >
+                          <GitBranch className="h-3 w-3 text-muted-foreground" />
+                          <span className="truncate">{workspace.name}</span>
+                          {workspace.branchName && (
+                            <span className="ml-auto max-w-24 truncate text-muted-foreground">
+                              {workspace.branchName}
+                            </span>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </PopoverContent>
+              </Popover>
+            )}
+          </div>
+        )}
 
         {/* Footer */}
         <div className="flex items-center justify-between px-4 py-2.5 border-t border-border shrink-0">

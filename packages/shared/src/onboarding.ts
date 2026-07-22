@@ -37,7 +37,17 @@ export const ONBOARDING_STATES = [
 ] as const;
 export type OnboardingState = (typeof ONBOARDING_STATES)[number];
 
-/** Ordered founder-journey sequence Phase 1 actually drives. */
+/**
+ * Ordered founder-journey sequence Phase 1 actually drives.
+ *
+ * WS0c: `DEPARTMENT_CREATED`/`AGENT_ASSIGNED` were removed from this ordered
+ * sequence — the founder wizard now ends at `COMMANDER_VERIFIED` (spine only)
+ * and hands off to Home, which owns the persona-driven department/agent/first-
+ * job tail as its own domain writes (NOT gated `OnboardingState` advances).
+ * Both values stay in the `ONBOARDING_STATES` union above (still valid, e.g.
+ * on pre-WS0c rows) — they're just no longer part of the monotonic advance
+ * this array drives. See docs/aoa/plans/2026-07-18-ws0c-onboarding-state-machine-design.md.
+ */
 export const FOUNDER_PHASE1_STATES: OnboardingState[] = [
   "AUTHENTICATED",
   "PROFILE_SET",
@@ -45,8 +55,6 @@ export const FOUNDER_PHASE1_STATES: OnboardingState[] = [
   "ENVIRONMENT_READY",
   "COMMANDER_SELECTED",
   "COMMANDER_VERIFIED",
-  "DEPARTMENT_CREATED",
-  "AGENT_ASSIGNED",
   "SETUP_COMPLETE",
 ];
 
@@ -62,6 +70,14 @@ export const INVITED_PHASE1_STATES: OnboardingState[] = [
 export function orderedStatesFor(journey: OnboardingJourney): OnboardingState[] {
   return journey === "invited" ? INVITED_PHASE1_STATES : FOUNDER_PHASE1_STATES;
 }
+
+/**
+ * WS0b — which door the founder chose on the Map (built in WS9). Persisted on
+ * `onboarding_progress.firstRunPersona` so In-flight vs Explorer resume
+ * correctly across a reload.
+ */
+export const FIRST_RUN_PERSONAS = ["manual", "in_flight", "explorer"] as const;
+export type FirstRunPersona = (typeof FIRST_RUN_PERSONAS)[number];
 
 /** An open invitation the authenticated user is eligible to accept. */
 export type PendingInvitation = {
@@ -95,4 +111,15 @@ export type PostAuthJourneyResult = {
   targetCompanyId: string | null;
   pendingInvitations: PendingInvitation[];
   inviteToken?: string | null;
+  /**
+   * A `returning` founder whose OWN first-run isn't complete for one of their
+   * member companies (spine done but the persona/in-flight tail was abandoned).
+   * The index gate routes them back into `/onboarding` to finish the tail there
+   * rather than stranding them on a dashboard that no longer hosts onboarding.
+   * Only ever set for `journey === "returning"`; null otherwise. Because
+   * `onboarding_progress` is keyed by `(userId, companyId)`, only the founder of
+   * a company has a row for it — so this never mis-fires for team members or the
+   * instance-admin company-visibility bypass.
+   */
+  resumeFirstRunCompanyId?: string | null;
 };

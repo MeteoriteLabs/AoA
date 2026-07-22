@@ -49,6 +49,7 @@ vi.mock("@armyofagents/db", () => {
     agentProjects: makeTable(),
     goals: makeTable(),
     memoryRetrievals: makeTable(),
+    memoryFolders: makeTable(),
     discussions: makeTable(),
   };
 });
@@ -56,6 +57,7 @@ vi.mock("@armyofagents/db", () => {
 vi.mock("drizzle-orm", () => ({
   and: (..._a: unknown[]) => "and",
   eq: (..._a: unknown[]) => "eq",
+  isNull: (..._a: unknown[]) => "isNull",
   inArray: (..._a: unknown[]) => "inArray",
 }));
 
@@ -93,6 +95,7 @@ vi.mock("../services/company-brain-graph.js", () => ({
 // ---------------------------------------------------------------------------
 // Imports (after mocks are hoisted)
 // ---------------------------------------------------------------------------
+import { memoryFolders } from "@armyofagents/db";
 import { writeMemoryTool } from "../services/internal-agent/tools/memory-write.js";
 import type { ToolContext } from "../services/internal-agent/types.js";
 
@@ -100,16 +103,30 @@ import type { ToolContext } from "../services/internal-agent/types.js";
 // Helpers
 // ============================================================================
 
-// Minimal chainable db mock for the crew tool's scope-ownership validation
-// (`select().from().where().limit()`). `scopeFound: false` makes the lookup
-// return no rows so the tool rejects an out-of-company departmentId/goalId.
-function makeDb(opts: { scopeFound?: boolean } = {}) {
-  const rows = opts.scopeFound === false ? [] : [{ id: "scope-ok" }];
-  const chain: any = {};
-  chain.from = () => chain;
-  chain.where = () => chain;
-  chain.limit = () => Promise.resolve(rows);
-  return { select: () => chain } as any;
+// Minimal chainable db mock for the crew tool's ownership validation
+// (`select().from().where().limit()`).
+//   - `scopeFound: false` makes the project/goal lookup return no rows, so the
+//     tool rejects an out-of-company departmentId/goalId.
+//   - `folderFound: false` does the same for the memory_folders lookup ONLY.
+// The two are keyed off the table passed to `.from()` so a test can make the
+// folder miss while the department still resolves — the exact combination the
+// "folder belongs to another scope" case needs.
+function makeDb(opts: { scopeFound?: boolean; folderFound?: boolean } = {}) {
+  const scopeRows = opts.scopeFound === false ? [] : [{ id: "scope-ok" }];
+  const folderRows = opts.folderFound === false ? [] : [{ id: "folder-ok" }];
+  return {
+    select: () => {
+      let rows: unknown[] = scopeRows;
+      const chain: any = {};
+      chain.from = (table: unknown) => {
+        if (table === memoryFolders) rows = folderRows;
+        return chain;
+      };
+      chain.where = () => chain;
+      chain.limit = () => Promise.resolve(rows);
+      return chain;
+    },
+  } as any;
 }
 
 function makeCtx(overrides: Partial<ToolContext> = {}): ToolContext {
@@ -208,7 +225,7 @@ describe("write_memory crew tool — happy path", () => {
   it("calls writeMemoryAndIndex with companyId + all required fields", async () => {
     const ctx = makeCtx();
     const r = await writeMemoryTool.execute(
-      { title: "Test memory", content: "Detailed content", layer: "domain" },
+      { title: "Test memory", content: "Detailed content", layer: "domain", departmentId: "dept-eng" },
       ctx,
     );
     expect(r.success).toBe(true);
@@ -293,7 +310,7 @@ describe("write_memory crew tool — happy path", () => {
   it("defaults category to 'context' when omitted", async () => {
     const ctx = makeCtx();
     await writeMemoryTool.execute(
-      { title: "T", content: "x", layer: "domain" },
+      { title: "T", content: "x", layer: "domain", departmentId: "dept-eng" },
       ctx,
     );
     const callArgs = mockWriteMemoryAndIndex.mock.calls[0][2] as Record<string, unknown>;
@@ -303,7 +320,7 @@ describe("write_memory crew tool — happy path", () => {
   it("uses provided valid category", async () => {
     const ctx = makeCtx();
     await writeMemoryTool.execute(
-      { title: "T", content: "x", layer: "domain", category: "decision" },
+      { title: "T", content: "x", layer: "domain", category: "decision", departmentId: "dept-eng" },
       ctx,
     );
     const callArgs = mockWriteMemoryAndIndex.mock.calls[0][2] as Record<string, unknown>;
@@ -313,7 +330,7 @@ describe("write_memory crew tool — happy path", () => {
   it("falls back to 'context' for an invalid category value", async () => {
     const ctx = makeCtx();
     await writeMemoryTool.execute(
-      { title: "T", content: "x", layer: "domain", category: "nonexistent_type" },
+      { title: "T", content: "x", layer: "domain", category: "nonexistent_type", departmentId: "dept-eng" },
       ctx,
     );
     const callArgs = mockWriteMemoryAndIndex.mock.calls[0][2] as Record<string, unknown>;
@@ -341,12 +358,167 @@ describe("write_memory crew tool — happy path", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Item 5 / Phase 5b — folderPath: the Librarian files braindump output into the
+// seeded memory tree instead of dumping it at the root.
+// ---------------------------------------------------------------------------
+describe("write_memory crew tool — folderPath", () => {
+  beforeEach(() => {
+    mockWriteMemoryAndIndex.mockReset();
+    mockWriteMemoryAndIndex.mockResolvedValue(makeDefaultItem());
+  });
+
+  it("defaults folderPath to '' (unfiled root) when omitted", async () => {
+    const ctx = makeCtx();
+    await writeMemoryTool.execute(
+      { title: "T", content: "x", layer: "domain", departmentId: "dept-eng" },
+      ctx,
+    );
+    const callArgs = mockWriteMemoryAndIndex.mock.calls[0][2] as Record<string, unknown>;
+    expect(callArgs.folderPath).toBe("");
+  });
+
+  it("passes a validated folderPath through to the write", async () => {
+    const ctx = makeCtx();
+    const r = await writeMemoryTool.execute(
+      { title: "T", content: "x", layer: "identity", folderPath: "Company/Decisions" },
+      ctx,
+    );
+    expect(r.success).toBe(true);
+    const callArgs = mockWriteMemoryAndIndex.mock.calls[0][2] as Record<string, unknown>;
+    expect(callArgs.folderPath).toBe("Company/Decisions");
+    expect(r.summary).toMatch(/folder=Company\/Decisions/);
+  });
+
+  it("normalizes the path before validating and storing it", async () => {
+    const ctx = makeCtx();
+    await writeMemoryTool.execute(
+      { title: "T", content: "x", layer: "identity", folderPath: "/Company/Decisions/" },
+      ctx,
+    );
+    const callArgs = mockWriteMemoryAndIndex.mock.calls[0][2] as Record<string, unknown>;
+    expect(callArgs.folderPath).toBe("Company/Decisions");
+  });
+
+  it("treats a whitespace-only folderPath as unfiled rather than looking it up", async () => {
+    const ctx = makeCtx({ db: makeDb({ folderFound: false }) });
+    const r = await writeMemoryTool.execute(
+      { title: "T", content: "x", layer: "domain", departmentId: "dept-eng", folderPath: "   " },
+      ctx,
+    );
+    // folderFound:false would reject if we'd attempted a lookup.
+    expect(r.success).toBe(true);
+    const callArgs = mockWriteMemoryAndIndex.mock.calls[0][2] as Record<string, unknown>;
+    expect(callArgs.folderPath).toBe("");
+  });
+
+  it("rejects a folderPath that does not exist in this company", async () => {
+    const ctx = makeCtx({ db: makeDb({ folderFound: false }) });
+    const r = await writeMemoryTool.execute(
+      { title: "T", content: "x", layer: "identity", folderPath: "Company/Invented" },
+      ctx,
+    );
+    expect(r.success).toBe(false);
+    expect(r.error).toBe("INVALID_PARAMS");
+    expect(mockWriteMemoryAndIndex).not.toHaveBeenCalled();
+  });
+
+  it("rejects a company folder for a DEPARTMENT-scoped item (scope containment)", async () => {
+    // Department resolves (scopeFound), but the folder lookup — which filters on
+    // memoryFolders.departmentId — finds nothing, because "Company/Decisions" is
+    // a company-level folder (departmentId IS NULL).
+    const ctx = makeCtx({ db: makeDb({ scopeFound: true, folderFound: false }) });
+    const r = await writeMemoryTool.execute(
+      {
+        title: "T",
+        content: "x",
+        layer: "domain",
+        departmentId: "dept-eng",
+        folderPath: "Company/Decisions",
+      },
+      ctx,
+    );
+    expect(r.success).toBe(false);
+    expect(r.error).toBe("INVALID_PARAMS");
+    expect(r.summary).toMatch(/department/);
+    expect(mockWriteMemoryAndIndex).not.toHaveBeenCalled();
+  });
+
+  it("accepts a folder under the item's own department", async () => {
+    const ctx = makeCtx();
+    const r = await writeMemoryTool.execute(
+      {
+        title: "T",
+        content: "x",
+        layer: "domain",
+        departmentId: "dept-eng",
+        folderPath: "engineering/Architecture",
+      },
+      ctx,
+    );
+    expect(r.success).toBe(true);
+    const callArgs = mockWriteMemoryAndIndex.mock.calls[0][2] as Record<string, unknown>;
+    expect(callArgs.folderPath).toBe("engineering/Architecture");
+    expect(callArgs.departmentId).toBe("dept-eng");
+  });
+});
+
+// Layer/scope invariant: the wakeup prompt tells the Librarian which layer
+// pairs with which scope, but a prompt is not an integrity boundary.
+describe("write_memory crew tool — layer/scope invariant", () => {
+  beforeEach(() => {
+    mockWriteMemoryAndIndex.mockReset();
+    mockWriteMemoryAndIndex.mockResolvedValue(makeDefaultItem());
+  });
+
+  it("rejects identity-layer memory carrying a departmentId", async () => {
+    const ctx = makeCtx();
+    const r = await writeMemoryTool.execute(
+      { title: "T", content: "x", layer: "identity", departmentId: "dept-eng" },
+      ctx,
+    );
+    expect(r.success).toBe(false);
+    expect(r.error).toBe("INVALID_PARAMS");
+    expect(mockWriteMemoryAndIndex).not.toHaveBeenCalled();
+  });
+
+  it("rejects a domain write that would file into a company folder", async () => {
+    const ctx = makeCtx();
+    const r = await writeMemoryTool.execute(
+      { title: "T", content: "x", layer: "domain", folderPath: "Company/Decisions" },
+      ctx,
+    );
+    expect(r.success).toBe(false);
+    expect(r.error).toBe("INVALID_PARAMS");
+    expect(mockWriteMemoryAndIndex).not.toHaveBeenCalled();
+  });
+
+  it("rejects domain-layer memory with no departmentId at all", async () => {
+    // Decision #40: domain is department-scoped. An unscoped domain item can't
+    // be retrieved by any department context and files into company folders.
+    const ctx = makeCtx();
+    const r = await writeMemoryTool.execute({ title: "T", content: "x", layer: "domain" }, ctx);
+    expect(r.success).toBe(false);
+    expect(r.error).toBe("INVALID_PARAMS");
+    expect(mockWriteMemoryAndIndex).not.toHaveBeenCalled();
+  });
+
+  it("allows identity memory filed into a company folder", async () => {
+    const ctx = makeCtx();
+    const r = await writeMemoryTool.execute(
+      { title: "T", content: "x", layer: "identity", folderPath: "Company/Mission & Vision" },
+      ctx,
+    );
+    expect(r.success).toBe(true);
+  });
+});
+
 describe("write_memory crew tool — error handling", () => {
   it("returns INSERT_FAILED when writeMemoryAndIndex throws", async () => {
     mockWriteMemoryAndIndex.mockRejectedValueOnce(new Error("DB offline"));
     const ctx = makeCtx();
     const r = await writeMemoryTool.execute(
-      { title: "T", content: "x", layer: "domain" },
+      { title: "T", content: "x", layer: "domain", departmentId: "dept-eng" },
       ctx,
     );
     expect(r.success).toBe(false);
@@ -358,7 +530,7 @@ describe("write_memory crew tool — error handling", () => {
     mockWriteMemoryAndIndex.mockResolvedValueOnce(null);
     const ctx = makeCtx();
     const r = await writeMemoryTool.execute(
-      { title: "T", content: "x", layer: "domain" },
+      { title: "T", content: "x", layer: "domain", departmentId: "dept-eng" },
       ctx,
     );
     expect(r.success).toBe(false);

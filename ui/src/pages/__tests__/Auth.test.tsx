@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { renderWithProviders } from "../../__tests__/test-utils";
 import { AuthPage } from "../Auth";
 
@@ -21,8 +21,18 @@ vi.mock("../../api/auth", () => ({
   },
 }));
 
-// The ASCII animation drives a canvas/RAF loop that jsdom can't run.
-vi.mock("@/components/AsciiArtAnimation", () => ({ AsciiArtAnimation: () => null }));
+// The splash's constellation/typewriter sequence runs on real timers this
+// suite doesn't drive — stub it out so gating tests can assert on whether it
+// mounted at all, without waiting out its animation.
+const splashOnDone = vi.hoisted(() => vi.fn());
+vi.mock("@/onboarding/SplashScreen", () => ({
+  SplashScreen: ({ onDone }: { onDone: () => void }) => {
+    splashOnDone.mockImplementation(onDone);
+    return <div data-testid="splash-screen" />;
+  },
+}));
+
+const SPLASH_SEEN_KEY = "aoa.splashSeen";
 
 describe("AuthPage", () => {
   const reloadSpy = vi.fn();
@@ -32,6 +42,11 @@ describe("AuthPage", () => {
     vi.clearAllMocks();
     routerState.searchParams = new URLSearchParams("next=/onboarding");
     getSession.mockResolvedValue(null);
+    localStorage.clear();
+    // Default to "already seen" so the pre-existing auth-flow assertions
+    // below exercise the auth card directly; the splash-gating tests further
+    // down clear/override this explicitly.
+    localStorage.setItem(SPLASH_SEEN_KEY, "true");
     Object.defineProperty(window, "location", {
       configurable: true,
       writable: true,
@@ -45,6 +60,7 @@ describe("AuthPage", () => {
       writable: true,
       value: originalLocation,
     });
+    localStorage.clear();
   });
 
   function firePageShow(persisted: boolean) {
@@ -97,5 +113,78 @@ describe("AuthPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Continue with Google" }));
 
     await waitFor(() => expect(signInSocial).toHaveBeenCalledWith("google", "/"));
+  });
+
+  it("renders a single centered 'Continue with Google' button — no split layout", async () => {
+    renderWithProviders(<AuthPage />);
+    await screen.findByText("Continue with Google");
+    expect(screen.getAllByRole("button", { name: "Continue with Google" })).toHaveLength(1);
+  });
+
+  it("clicking Continue with Google still starts the OAuth flow with a safe next path", async () => {
+    renderWithProviders(<AuthPage />);
+    await screen.findByText("Continue with Google");
+    fireEvent.click(screen.getByRole("button", { name: "Continue with Google" }));
+
+    await waitFor(() => expect(signInSocial).toHaveBeenCalledWith("google", "/onboarding"));
+  });
+
+  describe("boot splash gating", () => {
+    it("shows the splash on a first visit (no aoa.splashSeen) and reveals the auth card once it completes", async () => {
+      localStorage.clear();
+      renderWithProviders(<AuthPage />);
+
+      await screen.findByTestId("splash-screen");
+      expect(screen.queryByText("Continue with Google")).toBeNull();
+      expect(localStorage.getItem(SPLASH_SEEN_KEY)).toBeNull();
+
+      act(() => {
+        splashOnDone();
+      });
+
+      await screen.findByText("Continue with Google");
+      expect(screen.queryByTestId("splash-screen")).toBeNull();
+      expect(localStorage.getItem(SPLASH_SEEN_KEY)).toBe("true");
+    });
+
+    it("does not show the splash when aoa.splashSeen is already set", async () => {
+      localStorage.setItem(SPLASH_SEEN_KEY, "true");
+      renderWithProviders(<AuthPage />);
+
+      await screen.findByText("Continue with Google");
+      expect(screen.queryByTestId("splash-screen")).toBeNull();
+    });
+
+    it("skips the splash under prefers-reduced-motion, even on a first visit", async () => {
+      localStorage.clear();
+      const originalMatchMedia = window.matchMedia;
+      window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+        matches: true,
+        media: query,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })) as unknown as typeof window.matchMedia;
+
+      try {
+        renderWithProviders(<AuthPage />);
+        await screen.findByText("Continue with Google");
+        expect(screen.queryByTestId("splash-screen")).toBeNull();
+      } finally {
+        window.matchMedia = originalMatchMedia;
+      }
+    });
+
+    it("does not show the splash when an already-signed-in session is redirecting away", async () => {
+      localStorage.clear();
+      getSession.mockResolvedValue({ user: { id: "u1" } });
+
+      renderWithProviders(<AuthPage />);
+
+      await waitFor(() =>
+        expect(mockNavigate).toHaveBeenCalledWith("/onboarding", { replace: true }),
+      );
+      expect(screen.queryByTestId("splash-screen")).toBeNull();
+    });
   });
 });

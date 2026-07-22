@@ -1,7 +1,14 @@
 import { Router, type Request, type Response } from "express";
 import type { Db } from "@armyofagents/db";
-import { authUsers, companyMemberships, joinRequests, invites, companies } from "@armyofagents/db";
-import { and, desc, eq, gt, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
+import {
+  authUsers,
+  companyMemberships,
+  joinRequests,
+  invites,
+  companies,
+  onboardingProgress,
+} from "@armyofagents/db";
+import { and, desc, eq, gt, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import type { PostAuthJourneyResult, PendingInvitation } from "@armyofagents/shared";
 import { resolvePostAuthJourney } from "../services/post-auth-journey.js";
 
@@ -159,11 +166,40 @@ export async function getJourneyForUser(
     returningCompanyIds = adminVisibleCompanies.map((company) => company.companyId);
   }
 
-  return resolvePostAuthJourney({
+  const result = resolvePostAuthJourney({
     memberships: returningCompanyIds,
     pendingInvitations,
     deepLinkCompanyId: args.deepLinkCompanyId ?? null,
   });
+
+  // Resume signal: a returning founder whose OWN first-run tail is unfinished
+  // (spine complete but persona/in-flight abandoned) should be routed back into
+  // /onboarding to finish it, not stranded on a dashboard that no longer hosts
+  // onboarding. onboarding_progress is (userId, companyId)-keyed, so this matches
+  // ONLY a company the caller personally onboarded — never a team member's
+  // company or the instance-admin visibility bypass (which sets returningCompanyIds
+  // to a company the admin has no progress row for).
+  if (result.journey === "returning" && returningCompanyIds.length > 0) {
+    const [resume] = await db
+      .select({ companyId: onboardingProgress.companyId })
+      .from(onboardingProgress)
+      // Join companies to exclude archived ones — an archived unfinished company
+      // must NOT keep redirecting its founder back into onboarding.
+      .innerJoin(companies, eq(companies.id, onboardingProgress.companyId))
+      .where(
+        and(
+          eq(onboardingProgress.userId, args.userId),
+          isNotNull(onboardingProgress.companyId),
+          isNull(onboardingProgress.firstRunCompletedAt),
+          inArray(onboardingProgress.companyId, returningCompanyIds),
+          ne(companies.status, "archived"),
+        ),
+      )
+      .limit(1);
+    result.resumeFirstRunCompanyId = resume?.companyId ?? null;
+  }
+
+  return result;
 }
 
 /** GET /api/onboarding/journey — board-scoped, self-only. */

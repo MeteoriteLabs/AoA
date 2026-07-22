@@ -54,4 +54,14 @@ describe("backfillCrewTemplateOrigin", () => {
 
     await expect(backfillCrewTemplateOrigin(db as any)).resolves.toBeUndefined();
   });
+
+  // WS6 — Librarian must be covered by the @legacy origin backfill (both new
+  // and pre-existing rows), since ensure-librarian.ts / seedCrewAgent stamp
+  // no templateOrigin themselves.
+  it("CREW_NAMES includes 'Librarian'", async () => {
+    const { CREW_NAMES } = await import(
+      "../services/internal-agent/aoa-agents/backfill-template-origin.js"
+    );
+    expect(CREW_NAMES).toContain("Librarian");
+  });
 });

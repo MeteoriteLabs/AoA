@@ -20,6 +20,15 @@ vi.mock("../services/file-import.js", () => ({
   fileImportService: vi.fn(() => ({
     createJob: createJobMock,
   })),
+}));
+
+// The route reads the upload allowlist from memory-asset-upload-types.ts,
+// which sources SUPPORTED_MIME_TYPES from the dependency-free
+// file-import-mime-types.ts — NOT from file-import.js. The SUPPORTED_MIME_TYPES
+// export above was dead: the route never imports it, so this suite silently
+// exercised the REAL allowlist and only passed because the real list is a
+// superset of this one.
+vi.mock("../services/file-import-mime-types.js", () => ({
   SUPPORTED_MIME_TYPES: ["text/plain", "application/pdf"],
 }));
 

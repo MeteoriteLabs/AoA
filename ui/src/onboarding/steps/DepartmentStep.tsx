@@ -17,11 +17,19 @@ function slugify(v: string): string {
 const isAbsolute = (v: string) => v.startsWith("/") || /^[A-Za-z]:[\\/]/.test(v);
 
 /**
- * "Create your first department" step (Stage C / order 6). Consumes the shared
+ * "Create your first department" step. Consumes the shared
  * DEPARTMENT_FUNCTION_TYPES (C9). Software departments default a local workspace
  * folder nested under companies.rootFolder (editable), and can additionally
  * connect a GitHub repo. Idempotent: guards on an existing same-named
- * department before creating. Advances DEPARTMENT_CREATED on success.
+ * department before creating.
+ *
+ * WS0c: NO LONGER a registered FlowEngine wizard step (`DEPARTMENT_CREATED`
+ * was removed from `FOUNDER_PHASE1_STATES` — see
+ * packages/shared/src/onboarding.ts). The `advanceOnboarding({ requestedState:
+ * "DEPARTMENT_CREATED" })` call below would now be rejected as illegal if this
+ * component were rendered as-is; it is kept only as source for a future
+ * Home-hosted extraction (design §4.1) — WS4/WS7 must lift the domain-only
+ * create logic into a component that does NOT call advanceOnboarding.
  */
 export function DepartmentStep({ ctx, onComplete }: StepProps) {
   // Default to a real value (not just a placeholder) so the button isn't

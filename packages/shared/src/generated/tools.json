@@ -782,7 +782,7 @@
       "category": "memory",
       "readWrite": "write",
       "requiredRole": "team_member",
-      "description": "Create a memory item (status='pending', founder approves per Critical Rule #6) and enqueue it for RAG indexing. Use for capturing important knowledge discovered during task execution that should be reviewed and promoted to company memory. For temporary working notes scoped only to this agent, prefer the MCP memory.retain tool with scopeToSelf=true and layer=working.",
+      "description": "Create a memory item (status='pending', founder approves per Critical Rule #6) and enqueue it for RAG indexing. Use for capturing important knowledge discovered during task execution that should be reviewed and promoted to company memory. layer='domain' requires a departmentId; layer='identity' must not have one. For temporary working notes scoped only to this agent, prefer the MCP memory.retain tool with scopeToSelf=true and layer=working.",
       "mcpAlias": null
     },
     {
