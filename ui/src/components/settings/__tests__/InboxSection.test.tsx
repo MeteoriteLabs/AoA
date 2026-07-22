@@ -20,6 +20,7 @@ vi.mock("@/api/hub-items", () => ({
 const COMPANY_ID = "company-1";
 const useCompanyMock = vi.fn(() => ({ selectedCompanyId: COMPANY_ID as string | null }));
 vi.mock("@/context/CompanyContext", () => ({ useCompany: () => useCompanyMock() }));
+vi.mock("@/context/ToastContext", () => ({ useToast: () => ({ pushToast: vi.fn() }) }));
 
 function prefs() {
   return {

@@ -465,6 +465,58 @@ describe("POST /api/companies/:companyId/providers/:providerId/test", () => {
     );
   });
 
+  it("overwrites a stale readiness row with failed when the adapter probe THROWS", async () => {
+    // Config resolves, but testEnvironment itself throws (e.g. an unexpected spawn
+    // error) instead of returning status:"fail". Symmetric with the resolution
+    // throw: a prior `verified` row must not survive the crash.
+    selectResults = [
+      [
+        {
+          id: AGENT_ID,
+          companyId: COMPANY_ID,
+          adapterType: "claude_local",
+          adapterConfig: {},
+          status: "idle",
+        },
+      ],
+    ];
+    mockFindServerAdapter.mockReturnValue({
+      type: "claude_local",
+      testEnvironment: vi.fn().mockRejectedValue(new Error("spawn EPERM")),
+    });
+    const res = await request(makeApp())
+      .post(`/api/companies/${COMPANY_ID}/providers/anthropic/test?scope=agent&agentId=${AGENT_ID}`)
+      .send({});
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect(mockRecordReadiness).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ scope: { type: "agent", agentId: AGENT_ID }, outcome: "failed" }),
+    );
+  });
+
+  it("404s a probe for a terminated agent (never mints an orphan scope row)", async () => {
+    selectResults = [
+      [
+        {
+          id: AGENT_ID,
+          companyId: COMPANY_ID,
+          adapterType: "claude_local",
+          adapterConfig: {},
+          status: "terminated",
+        },
+      ],
+    ];
+    mockFindServerAdapter.mockReturnValue({
+      type: "claude_local",
+      testEnvironment: vi.fn(async () => passingProbe()),
+    });
+    const res = await request(makeApp())
+      .post(`/api/companies/${COMPANY_ID}/providers/anthropic/test?scope=agent&agentId=${AGENT_ID}`)
+      .send({});
+    expect(res.status).toBe(404);
+    expect(mockRecordReadiness).not.toHaveBeenCalled();
+  });
+
   it("redacts probe checks in the HTTP response", async () => {
     mockFindServerAdapter.mockReturnValue({
       type: "claude_local",

@@ -24,6 +24,7 @@ import { SettingsCard } from "@/components/settings/SettingsCard";
 
 export interface InboxSettingsPanelProps {
   preferences: HubPreferences;
+  preferencesPending?: boolean;
   onPreferencesChange: (patch: UpdateHubPreferencesInput) => void;
   autopilotPolicy: HubAutopilotPolicy;
   autopilotPending?: boolean;
@@ -39,6 +40,7 @@ export interface InboxSettingsPanelProps {
 
 export function InboxSettingsPanel({
   preferences,
+  preferencesPending = false,
   onPreferencesChange,
   autopilotPolicy,
   autopilotPending = false,
@@ -104,6 +106,7 @@ export function InboxSettingsPanel({
           <select
             aria-label="Default landing"
             value={preferences.defaultLanding}
+            disabled={preferencesPending}
             onChange={(event) =>
               onPreferencesChange({ defaultLanding: event.target.value as "home" | HubLane })
             }
@@ -126,6 +129,7 @@ export function InboxSettingsPanel({
                 <input
                   type="checkbox"
                   checked={preferences.visibleLanes.includes(lane)}
+                  disabled={preferencesPending}
                   onChange={(event) => {
                     const next = event.target.checked
                       ? [...preferences.visibleLanes, lane]
@@ -146,6 +150,7 @@ export function InboxSettingsPanel({
           <select
             aria-label="Grouping"
             value={preferences.groupMode}
+            disabled={preferencesPending}
             onChange={(event) =>
               onPreferencesChange({ groupMode: event.target.value as HubGroupMode })
             }
@@ -166,6 +171,7 @@ export function InboxSettingsPanel({
           <select
             aria-label="Density"
             value={preferences.density}
+            disabled={preferencesPending}
             onChange={(event) =>
               onPreferencesChange({ density: event.target.value as HubDensity })
             }

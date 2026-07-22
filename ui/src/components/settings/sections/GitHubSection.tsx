@@ -1,4 +1,5 @@
 import { GitHubIntegrationCard } from "@/components/GitHubIntegrationCard";
+import { useCompany } from "@/context/CompanyContext";
 
 /**
  * Settings → Operations → GitHub.
@@ -8,6 +9,11 @@ import { GitHubIntegrationCard } from "@/components/GitHubIntegrationCard";
  * controls directly beneath it (no nested card chrome, no duplicate header).
  */
 export function GitHubSection() {
+  // Key the card by company so switching companies while sitting on this section
+  // remounts it — otherwise a half-typed PAT (and inline error) typed for company
+  // A would survive the switch and could be saved to company B. Sibling sections
+  // (Providers, Inbox) already key by selectedCompanyId.
+  const { selectedCompanyId } = useCompany();
   return (
     <div>
       <div className="px-8 pt-6 pb-3 border-b border-border">
@@ -22,7 +28,7 @@ export function GitHubSection() {
         </p>
       </div>
       <div className="p-8 max-w-[680px]">
-        <GitHubIntegrationCard />
+        <GitHubIntegrationCard key={selectedCompanyId ?? "none"} />
       </div>
     </div>
   );

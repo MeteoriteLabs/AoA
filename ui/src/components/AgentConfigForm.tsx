@@ -689,6 +689,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             */}
             {!isCreate && selectedCompanyId ? (
               <AgentReadinessBadge
+                // Key by adapter: switching the picker is a different provider,
+                // so remount to drop any Test error/spinner from the old one
+                // (otherwise a failed Codex probe's error renders under a Claude
+                // badge after the switch).
+                key={adapterType}
                 companyId={selectedCompanyId}
                 agentId={props.agent.id}
                 adapterType={adapterType}

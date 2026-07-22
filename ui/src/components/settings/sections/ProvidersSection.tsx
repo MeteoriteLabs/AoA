@@ -175,7 +175,10 @@ function ProvidersPanel({ companyId }: { companyId: string }) {
   */
   const autoRefreshedRef = useRef<Set<string>>(new Set());
   useEffect(() => {
-    if (!data) return;
+    // Don't race `Test all`: it probes sequentially through the SAME per-company
+    // slot, so an auto-refresh firing on its mid-run refetch would double-probe a
+    // provider and 429 the second one on a healthy machine.
+    if (!data || testingAll) return;
     const targets = data.providers.filter(
       (row) =>
         row.agents.length > 0 &&
@@ -188,7 +191,7 @@ function ProvidersPanel({ companyId }: { companyId: string }) {
       // Same single-slot constraint as `Test all`.
       for (const t of targets) await runTest(t.descriptor.id);
     })();
-  }, [data, runTest]);
+  }, [data, runTest, testingAll]);
 
   /* ── key save ────────────────────────────────────────────────────────── */
 

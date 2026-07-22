@@ -79,6 +79,15 @@ describe("InboxSettingsPanel", () => {
     expect(screen.getByRole("checkbox", { name: /autopilot entry/i })).toBeChecked();
   });
 
+  it("disables the layout controls while a preferences save is pending", () => {
+    // Prevents the rapid-toggle lost-update on the server-controlled selects and
+    // signals the save is in flight (mirrors the Autopilot/Notification guards).
+    renderPanel({ preferencesPending: true });
+    expect(screen.getByRole("combobox", { name: /default landing/i })).toBeDisabled();
+    expect(screen.getByRole("combobox", { name: /grouping/i })).toBeDisabled();
+    expect(screen.getByRole("combobox", { name: /density/i })).toBeDisabled();
+  });
+
   it("emits a preferences patch when density changes", async () => {
     const user = userEvent.setup();
     const onPreferencesChange = vi.fn();

@@ -149,7 +149,7 @@
 import { Router, type Request, type Response } from "express";
 import type { Db } from "@armyofagents/db";
 import { agents, companySecrets } from "@armyofagents/db";
-import { and, eq, inArray, isNull, ne, notInArray } from "drizzle-orm";
+import { and, eq, inArray, isNull, notInArray } from "drizzle-orm";
 import {
   KNOWN_EXTERNAL_SECRET_BINDINGS,
   PROVIDER_CATALOG,
@@ -157,6 +157,7 @@ import {
   getProviderById,
   type AdapterEnvironmentCheck,
   type AdapterEnvironmentCheckLevel,
+  type AdapterEnvironmentTestResult,
   type ProbeOutcome,
   type ProviderDescriptor,
   type ProviderId,
@@ -168,7 +169,6 @@ import {
   deleteReadinessForScope,
   deleteAgentReadinessForProvider,
   readReadiness,
-  readReadinessForScope,
   recordReadiness,
   redactChecks,
   type ReadinessScope,
@@ -540,11 +540,34 @@ export function providerRoutes(db: Db): Router {
         });
         throw err;
       }
-      const result = await adapter.testEnvironment({
-        companyId,
-        adapterType: descriptor.adapterType,
-        config: resolved,
-      });
+      let result: AdapterEnvironmentTestResult;
+      try {
+        result = await adapter.testEnvironment({
+          companyId,
+          adapterType: descriptor.adapterType,
+          config: resolved,
+        });
+      } catch (err) {
+        // The probe STARTED and threw (e.g. an unexpected spawn error) instead of
+        // returning status:"fail". Symmetric with the resolution throw above: a
+        // crash must not leave a prior `verified` row intact. Overwrite THIS scope
+        // with `failed`, then re-throw so /test still surfaces the error.
+        await recordReadiness(db, {
+          companyId,
+          providerId: descriptor.id,
+          scope,
+          outcome: "failed",
+          checks: [
+            {
+              code: `${descriptor.adapterType}_probe_threw`,
+              level: "error",
+              message: err instanceof Error ? err.message : "The environment probe failed to run.",
+            },
+          ],
+          testedByUserId: req.actor.type === "board" ? (req.actor.userId ?? null) : null,
+        });
+        throw err;
+      }
       const classified = classifyProbeOutcome(result);
       // recordReadiness redacts at the insert boundary (branded RedactedCheck).
       const recorded = await recordReadiness(db, {
@@ -696,6 +719,7 @@ export function providerRoutes(db: Db): Router {
           companyId: agents.companyId,
           adapterType: agents.adapterType,
           adapterConfig: agents.adapterConfig,
+          status: agents.status,
         })
         .from(agents)
         .where(eq(agents.id, agentId))
@@ -704,8 +728,16 @@ export function providerRoutes(db: Db): Router {
         companyId: string;
         adapterType: string;
         adapterConfig: Record<string, unknown> | null;
+        status: string;
       }[];
       if (!agent || agent.companyId !== companyId) {
+        res.status(404).json({ error: "Agent not found" });
+        return;
+      }
+      // GET / lists only live agents; probing a dead one would spawn a CLI and
+      // mint an agent-scope row that GET can never surface (orphaned). Reject for
+      // symmetry with the list view.
+      if (agent.status === "archived" || agent.status === "terminated") {
         res.status(404).json({ error: "Agent not found" });
         return;
       }
@@ -954,6 +986,16 @@ export function providerRoutes(db: Db): Router {
     // verdict. Best-effort — see the contract note in the file header.
     let readiness: ScopedReadinessDto | null = null;
     if (status.status === "completed" && !reprobedChallenges.has(challengeId)) {
+      // A completed host-CLI login changes what agents WITHOUT their own env
+      // binding authenticate as (they resolve through the host login), so their
+      // cached agent-scope verdicts now answer a stale question. Clear them (→
+      // unknown) — the conservative direction (a just-succeeded login can only
+      // make a stale verdict falsely RED, never green). Twin of the /key clear.
+      try {
+        await deleteAgentReadinessForProvider(db, companyId, descriptor.id);
+      } catch (err) {
+        log.warn({ err, companyId, providerId }, "post-login agent-scope invalidation failed");
+      }
       try {
         const probed = await probeAndRecord({
           req,
