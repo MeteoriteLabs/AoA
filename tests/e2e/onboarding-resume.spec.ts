@@ -11,15 +11,15 @@ test("leaving after the profile step and returning resumes at the org step (not 
   // Complete PROFILE_SET (rich Human Operating Profile step).
   await fillFounderProfileStep(page, "Resumer");
   await page.getByRole("button", { name: /continue/i }).click();
-  await expect(page.getByRole("heading", { name: /create your organization/i })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /your company/i })).toBeVisible();
 
   // Abandon, then return.
   await page.goto("/");
   await page.goto("/onboarding");
 
   // Resumes at the org step — profile is NOT shown again.
-  await expect(page.getByRole("heading", { name: /create your organization/i })).toBeVisible({
+  await expect(page.getByRole("heading", { name: /your company/i })).toBeVisible({
     timeout: 15_000,
   });
-  await expect(page.getByRole("heading", { name: /set up your profile/i })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: /first,\s*you/i })).toHaveCount(0);
 });

@@ -38,7 +38,7 @@ export async function advanceStep(page: Page, buttonName: RegExp, nextHeading: R
  * or assert first.
  */
 export async function fillFounderProfileStep(page: Page, name = "E2E Founder"): Promise<void> {
-  await expect(page.getByRole("heading", { name: /set up your profile/i })).toBeVisible({
+  await expect(page.getByRole("heading", { name: /first,\s*you/i })).toBeVisible({
     timeout: 15_000,
   });
   await page.getByLabel("Name", { exact: true }).fill(name);
