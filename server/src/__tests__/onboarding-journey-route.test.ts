@@ -124,11 +124,17 @@ describe("getJourneyForUser (A5 + RB7/RB9 wiring)", () => {
     expect(r.resumeFirstRunCompanyId).toBe("c1");
     // Codex P3: the resume query must exclude archived companies (join companies,
     // status != "archived"), so an archived unfinished company can't keep
-    // redirecting its founder into onboarding.
-    const whereCalls = db._whereCalls as unknown[];
-    const resumeWhere = JSON.stringify(whereCalls[whereCalls.length - 1]);
-    expect(resumeWhere).toContain('"status"');
-    expect(resumeWhere).toContain("archived");
+    // redirecting its founder into onboarding. Drizzle SQL conditions are
+    // circular objects (JSON.stringify throws), so assert structurally via the
+    // file's conditionColumns helper (same pattern as the open-invite tests
+    // below). The resume query is the ONLY one binding
+    // onboarding_progress.first_run_completed_at, and it binds companies.status
+    // in the same clause — status is referenced solely for the archived guard.
+    const resumeWhere = (db._whereCalls as unknown[]).find((c) =>
+      conditionColumns(c).includes("first_run_completed_at"),
+    );
+    expect(resumeWhere).toBeDefined();
+    expect(conditionColumns(resumeWhere)).toContain("status");
   });
 
   it("returning founder whose first-run is COMPLETE → resumeFirstRunCompanyId null (stays on the Lobby)", async () => {
