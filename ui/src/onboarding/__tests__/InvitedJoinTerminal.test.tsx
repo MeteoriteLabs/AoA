@@ -40,6 +40,16 @@ vi.mock("@tanstack/react-query", async (importOriginal) => ({
 const fetchJourney = vi.hoisted(() => vi.fn());
 const finalizeInvitedJoin = vi.hoisted(() => vi.fn());
 vi.mock("../../api/onboarding", () => ({ fetchJourney, finalizeInvitedJoin }));
+// The admitted screen's orientation panel is its own tested unit
+// (CompanyOrientation.test.tsx). Stub it to a sentinel so these tests stay
+// about the terminal's state machine, not the panel's data fetching.
+vi.mock("../CompanyOrientation", () => ({
+  CompanyOrientation: ({ companyId, companyName }: { companyId: string | null; companyName: string }) => (
+    <div data-testid="company-orientation" data-company-id={companyId ?? ""}>
+      orientation:{companyName}
+    </div>
+  ),
+}));
 
 const invitedJourney = {
   journey: "invited",
@@ -60,7 +70,7 @@ describe("InvitedJoinTerminal", () => {
   });
   afterEach(() => vi.useRealTimers());
 
-  it("auto-admits: finalize returns admitted → evicts the journey cache, refreshes companies, shows the admitted (mini-map) screen — does NOT navigate yet", async () => {
+  it("auto-admits: finalize returns admitted → evicts the journey cache, refreshes companies, shows the admitted screen — does NOT navigate yet", async () => {
     finalizeInvitedJoin.mockResolvedValue({ admitted: true, status: "approved" });
     render(<InvitedJoinTerminal />);
     await screen.findByRole("button", { name: /^enter acme$/i });
@@ -80,10 +90,11 @@ describe("InvitedJoinTerminal", () => {
     finalizeInvitedJoin.mockResolvedValue({ admitted: true, status: "approved" });
     render(<InvitedJoinTerminal />);
     const enterBtn = await screen.findByRole("button", { name: /^enter acme$/i });
-    // The read-only mini-map ("the machine you're joining") renders on this
-    // terminal screen, and no engine/CLI step is shown for invited teammates
-    // (v1 decision — the company Commander is company-scoped, not per-human).
-    expect(screen.getByText("The machine you're joining")).toBeInTheDocument();
+    // The company orientation panel renders on this terminal screen, and no
+    // engine/CLI step is shown for invited teammates (v1 decision — the company
+    // Commander is company-scoped, not per-human).
+    expect(await screen.findByTestId("company-orientation")).toBeInTheDocument();
+    expect(enterBtn).toBeInTheDocument();
     expect(screen.queryByText(/engine/i)).toBeNull();
     expect(screen.queryByText(/verify/i)).toBeNull();
     fireEvent.click(enterBtn);

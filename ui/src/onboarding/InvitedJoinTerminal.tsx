@@ -7,7 +7,7 @@ import { fetchJourney, finalizeInvitedJoin } from "../api/onboarding";
 import { HUMAN_ROLE_LABELS } from "@/lib/human-profile-constants";
 import { queryKeys } from "@/lib/queryKeys";
 import { DarkShell } from "./FlowEngine";
-import { MiniMap } from "./MiniMap";
+import { CompanyOrientation } from "./CompanyOrientation";
 import { StepHeading } from "./steps/shared";
 
 const POLL_MS = 7000;
@@ -370,8 +370,9 @@ export function InvitedJoinTerminal() {
   }
   if (phase === "admitted") {
     // WS10 — the invited journey's terminal screen (spec §D7 / Journey 2): a
-    // read-only mini-Map ("the machine you're joining") before landing on
-    // Home. No engine step here — the company Commander is company-scoped,
+    // read-only company orientation panel (mission, departments, team/agent
+    // counts) before landing on Home. No engine step here — the company
+    // Commander is company-scoped,
     // not per-human. Rendered in the same dark shell as the founder spine
     // (`DarkShell` + `ConstellationBg`) for visual continuity.
     return (
@@ -381,7 +382,7 @@ export function InvitedJoinTerminal() {
             title={`Welcome to ${company?.name ?? "the team"}.`}
             subtitle={`Here's how ${company?.name ?? "the company"} already works — you'll plug right in.`}
           />
-          <MiniMap className="w-full text-left" />
+          <CompanyOrientation companyId={anchoredTargetRef.current} companyName={company?.name ?? "the team"} />
           <Button size="lg" onClick={finishEnter}>
             {`Enter${company?.name ? ` ${company.name}` : ""}`}
           </Button>
