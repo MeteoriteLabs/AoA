@@ -95,12 +95,15 @@ test.describe("Inbox Hub W1d grouping, settings, and mobile", () => {
     await page.keyboard.press("k");
     await expectActiveTabTitle(page, firstTitle);
 
-    // Hide the Notifications lane.
+    // Hide the Notifications lane. Use a single click (not `uncheck()`): the
+    // lane checkbox is server-controlled and only flips once its PATCH resolves,
+    // so `uncheck()`'s re-click-until-unchecked loop races the round-trip in CI.
+    // We assert the starting state, click once, await the PATCH, and let the
+    // downstream hub assertion confirm the effect.
     await gotoInboxSettings();
-    await Promise.all([
-      waitPrefsPatch(),
-      page.getByRole("checkbox", { name: "Notifications" }).uncheck(),
-    ]);
+    const notificationsLaneToggle = page.getByRole("checkbox", { name: "Notifications" });
+    await expect(notificationsLaneToggle).toBeChecked();
+    await Promise.all([waitPrefsPatch(), notificationsLaneToggle.click()]);
     await page.goto(`/${company.issuePrefix}/inbox/waiting`);
     await expect(
       page.getByRole("navigation", { name: /hub lanes/i }).getByRole("button", {
