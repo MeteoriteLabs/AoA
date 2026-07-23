@@ -235,8 +235,13 @@ git commit -m "feat(agents): isolate ambient Claude config for crew runs via uns
 
 **Files:** `packages/adapters/claude-local/src/server/` (a `provisionClaudeConfigHome` helper) + wherever the per-run root is created; test alongside.
 
-- [ ] **Step 1: Determine the auth mode.** Read `login.ts` (`resolveClaudeConfigHome`) and inspect a real config home to confirm credentials live in a **file** (`.credentials.json`) vs an OS keychain. **Record the finding** — if credentials are keychain-backed on any target platform, isolation must not assume file copy.
-  *(Live-verified on Windows during investigation: a config dir containing only `.credentials.json` authenticated successfully and loaded no operator hooks/skills.)*
+> **Step 1 investigation COMPLETE (2026-07-23).** Findings below; verify anything you depend on, but do not re-derive them.
+>
+> **Auth is file-based on Windows, and the filename is already abstracted in-repo.** `resolveClaudeConfigHome(env)` = `env.CLAUDE_CONFIG_DIR ?? ~/.claude` (`claude-local/src/server/login.ts:14-16`). The credential file is **`.credentials.json`** — described in-repo as "dogfood-verified filename" and already modelled as `credentialFileName` on the provider-login runner registry (`server/src/services/commander-login-runtime.ts:41-42,72`), where codex uses `auth.json` and claude uses `.credentials.json`. **Reuse that abstraction; do not hardcode a second copy of the filename.**
+>
+> **A real operator config home contains 20 entries** — verified by listing names on this machine. `.credentials.json` is 471 bytes. The other 19 are exactly the contamination sources: `CLAUDE.md`, `settings.json`, `plugins/`, `skills/`, `projects/`, `sessions/`, `ide/`, `shell-snapshots/`, `mcp-needs-auth-cache.json`, `history.jsonl`, `telemetry/`, `cache/`, `tasks/`, `plans/`, `backups/`, `chrome/`, `debug/`, `session-env/`, `.last-cleanup`. Provisioning copies **one** of those 20.
+
+- [ ] **Step 1: Confirm the source resolution.** Resolve the *operator's* config home with `resolveClaudeConfigHome(process.env)` **before** T2's strip applies — the strip pins `CLAUDE_CONFIG_DIR` to the per-run dir, so resolving after it would read the empty target and copy nothing. If credentials are keychain-backed on any other target platform, isolation must not assume file copy — record that if you find it.
 - [ ] **Step 2: Failing test** — provisioning creates `<root>/.claude` containing the credentials and **no** `settings.json`, **no** `plugins/`, **no** user `skills/`.
 - [ ] **Step 3: Implement** `provisionClaudeConfigHome(rootDir)`: mkdir, copy only the credentials file from the resolved source config home, and assert nothing else is copied. Fail loudly with an actionable error if credentials are absent (an unauthenticated agent must not silently run).
 - [ ] **Step 4: Run → PASS.**
@@ -250,7 +255,9 @@ git commit -m "feat(agents): provision a minimal per-run Claude config home (cre
 
 ## Task 4: Claude-instruction isolation (the `CLAUDE.md` policy)
 
-**Decision required before coding — record it in `docs/architecture/decisions.md`:** a project workspace that is a real repo will still load its `CLAUDE.md`. Choose:
+> **T4 may already be mostly satisfied by T2 — verify before implementing.** The operator's global instructions live at `~/.claude/CLAUDE.md`, inside the config home. T2 pins `CLAUDE_CONFIG_DIR` to a fresh empty per-run dir, and T3 copies only `.credentials.json` into it — so the global `CLAUDE.md`, `settings.json`, `plugins/` and `skills/` should **already** be unreachable, which is D16's "block global" half for free. **Do not assume this: prove it** with an assertion on a real run, and confirm the *other* half (a project repo's own `CLAUDE.md` still loads, per D16) rather than silently blocking both. If both halves already hold, T4 is a verification + decision-record task, not an implementation task — say so plainly rather than inventing work.
+
+**Decision required before coding — record it in `docs/architecture/decisions.md`:** a project workspace that is a real repo will still load its `CLAUDE.md`. D16 is already locked (block global, allow project); this step records the rationale and the mechanism. For completeness the alternatives considered were:
 - **(A) Enforce D9 globally** — set `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1` and `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` for agent runs, so ONLY AoA's `--append-system-prompt-file` instructions apply. *(Recommended: matches D9 "agents see only AoA-provisioned instructions".)*
 - **(B) Allow project `CLAUDE.md`** as legitimate context for a trusted workspace, and accept that repo instructions influence agents.
 
