@@ -1719,3 +1719,11 @@ Result: the connector received `Authorization: Bearer live-connector-token-999` 
 **The chain:** create stdio (C1) → PATCH to active (C2) → loader serves it → command executes on the multi-tenant host. C1 + C2 + I1 must be fixed together.
 
 Also fix in the same round: M2 (no team_lead/member 403 test for PATCH — the sensitive endpoint), M3 (the `.strict()` unknown-field test is vacuous — assert `create` not called), M1 (add an explicit `envTemplate` non-string-value 400 test).
+
+## Task 12 LIVE PROBE — AoA config survives sanitization on a real CLI (2026-07-24, Claude Code 2.1.126)
+
+The anti-regression property (the trap: stripping must not delete AoA's OWN config) verified live. Method: two local HTTP MCP listeners tagged AOA (:8991) and EVIL (:8992). Ran the exact argv Task 12 produces after `stripUserMcpArgs` removes a user-injected `--mcp-config` — i.e. only AoA's config present — under `--strict-mcp-config`.
+
+Result: the AOA connector was contacted (`{"probe":"AOA"}`); the EVIL connector was NOT contacted. So AoA's own connector delivery survives the sanitizer intact, and nothing reaches the stripped server. Property 1 (the user `--mcp-config` is removed from the constructed argv) is proven by the pure `stripUserMcpArgs` unit tests + the heartbeat/crew argv tests asserting `evil.json` is absent; the probe additionally rules out an ambient-discovery back-channel to the stripped server.
+
+Task 12 sites: `heartbeat-mcp.ts` (`...stripUserMcpArgs(existingArgs)`) and `runner.ts` (`...stripUserMcpArgs(prevArgs)`). Commander `cli-mode.ts` sites have no user-args tail (no "Extra args" box) and are correctly untouched.
