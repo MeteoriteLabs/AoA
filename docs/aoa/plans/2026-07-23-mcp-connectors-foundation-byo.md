@@ -1684,3 +1684,14 @@ If anyone later changes this to `consumerType: "agent"` (or anything else) as a 
 Access remains audited either way — `auditAccess` runs on both success and failure paths, and `configPath: mcp.connector.<serverName>` distinguishes connectors in the trail.
 
 **A28 — TASK 14 MUST verify the claude.ai ACCOUNT connectors are suppressed, not just file config.** `--strict-mcp-config` is documented to ignore file-based MCP config (`~/.claude.json`, project `.mcp.json`). But the ambient `claude.ai Gmail` / `claude.ai Google Calendar` servers on this machine come from the logged-in claude.ai ACCOUNT, a separate channel. It is plausible the flag scopes only file config and account connectors ride a different path — in which case D2's "AoA is the sole source of truth" guarantee has a hole for account-linked connectors specifically. Task 14 (or the empirical check below) must confirm the claude.ai-account servers disappear from a strict session, not merely the file-based `plugin:github`/`vibe_kanban` entries. If they do NOT disappear, that is a D2 finding to escalate to the founder, not a bug to silently work around.
+
+## A28 RESOLVED — `--strict-mcp-config` DOES suppress claude.ai account connectors (verified 2026-07-23, Claude Code 2.1.126)
+
+Empirically settled, so Task 14 need not re-open it (though a light re-confirm there is fine). Method: two identical one-shot sessions with an empty `--mcp-config` (so no AoA server), asking the model to list its available MCP tools.
+
+| Session | Model-reported MCP tools |
+|---|---|
+| `--mcp-config empty.json` (non-strict) | `mcp__claude_ai_Gmail__authenticate`, `…__complete_authentication`, `mcp__claude_ai_Google_Calendar__authenticate`, `…__complete_authentication` |
+| `--mcp-config empty.json --strict-mcp-config` | **NONE** |
+
+So the flag scopes BOTH file config AND claude.ai account connectors — the account-channel concern in A28 does not materialize. D2's guarantee (AoA is the sole source of truth for what an agent can reach) holds completely for crew and Commander once Task 9's flag is in place. No D2 hole to escalate.
