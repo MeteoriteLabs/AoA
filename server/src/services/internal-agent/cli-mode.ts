@@ -25,6 +25,7 @@ import {
 } from "./codex-model.js";
 import { logger } from "../../middleware/logger.js";
 import { redactSecretsInString } from "../../redaction.js";
+import { resolveAgentConnectors } from "../mcp-connectors-loader.js";
 
 const require = createRequire(import.meta.url);
 
@@ -743,6 +744,43 @@ export function cliModeService(db: Db) {
                 }
               : undefined;
 
+          // MCP connectors (Plan 2 — Commander, claude_cli ONLY). Commander is
+          // per-USER, not per-agent, so it receives EVERY active company
+          // connector — the D3 all-active case → agentId: null. The specs (each
+          // carrying only a `${AOA_MCP_*_TOKEN}` placeholder) are threaded into
+          // resolveCliInvocation's params, which already folds them into the
+          // --mcp-config FILE via buildMcpConfig. The real secrets ride ONLY in
+          // connectorEnv, merged into the spawn env below — never on disk.
+          //
+          // Gated on claude_cli: codex is handled by the one-shot branch above,
+          // and opencode returns a null invocation (never spawns), so resolving
+          // for either would be wasted DB I/O + a needless per-turn failure
+          // surface (mirrors the heartbeat/crew adapterType gate).
+          //
+          // Best-effort: Commander is the always-on assistant, so a connector
+          // resolution failure must degrade to "no connectors" (non-silent via
+          // the warn log — A8/A19), never break the user's turn. The loader
+          // already isolates per-connector secret failures; this guard also
+          // absorbs a systemic DB error so the chat still answers.
+          let connectorSpecs: Record<string, McpServerSpec> = {};
+          let connectorEnv: Record<string, string> = {};
+          if (config.cliTool === "claude_cli") {
+            try {
+              const resolved = await resolveAgentConnectors(db, {
+                companyId: params.companyId,
+                agentId: null, // Commander = all active company connectors (D3)
+                logger,
+              });
+              connectorSpecs = resolved.extraMcpServers;
+              connectorEnv = resolved.connectorEnv;
+            } catch (err) {
+              logger.warn(
+                { err, companyId: params.companyId },
+                "Commander MCP connector resolution failed; proceeding without connectors",
+              );
+            }
+          }
+
           const invocation = await resolveCliInvocation(
             config.cliTool,
             {
@@ -753,6 +791,7 @@ export function cliModeService(db: Db) {
               bridgeEntrypoint: bridgePath,
               actorType: "commander",
               contextScope: normalizeCliContextScope(params.contextScope),
+              extraMcpServers: connectorSpecs,
             },
             safeContent,
             undefined,        // resumeCodexSessionId (N/A for the persistent-claude path)
@@ -769,6 +808,15 @@ export function cliModeService(db: Db) {
                 "opencode is not yet supported for the Commander chat (MCP wiring pending — MX-followup). Use claude or codex.",
             };
             return;
+          }
+
+          // Merge the real connector secrets into the spawn env (NOT the config
+          // file). Placed after the null guard so it runs only when we actually
+          // spawn; the claude spawn below inherits it via
+          // { ...process.env, ...invocation.spawnEnv }. Connector tokens layer
+          // on TOP of the existing spawnEnv (e.g. MAX_THINKING_TOKENS) — no scrub.
+          if (Object.keys(connectorEnv).length > 0) {
+            invocation.spawnEnv = { ...(invocation.spawnEnv ?? {}), ...connectorEnv };
           }
 
           // cwd = tmpdir() prevents the CLI from walking up and reading the
