@@ -1,423 +1,317 @@
-# Crew Execution Hardening — Phase 1: Foundation — Implementation Plan
+# Crew Execution Hardening — Phase 1: Foundation — Implementation Plan (v2, Codex-revised)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make crew agent runs observable, hermetic, and correctly skilled — so a crew agent can actually complete a task, and Discussions/Workspace work end-to-end.
+**Goal:** Make crew agent runs observable, hermetic, correctly-skilled and correctly-scoped — so a crew agent can complete a task and Discussions/Workspace work end-to-end.
 
-**Architecture:** Crew agents (`kind='aoa'`) execute via `runAoaAgent` → `adapter.execute` (claude_local). Today that path (a) discards all logs, (b) inherits the operator's entire `~/.claude` + the repo `CLAUDE.md`, (c) never passes `context.skills`, and (d) never enforces `skillKeys`. The org/heartbeat path already does (a) and (c) correctly — **we mirror the org path rather than invent new mechanisms**, then add hermeticity (which fixes org too) and skill enforcement.
+**Architecture:** Crew agents (`kind='aoa'`) run via `runAoaAgent` → `adapter.execute` (claude_local). The org/heartbeat path already does transcripts + skill injection correctly; we **mirror it rather than invent mechanisms**, then add isolation, workspace resolution, and skill scoping. **Isolation ships crew-only first** and expands to org only after auth/workspace/toolchain tests pass.
 
-**Tech Stack:** TypeScript (NodeNext, `.js` import specifiers), Express, Drizzle, Vitest. Server: `server/src/`. Adapter: `packages/adapters/claude-local/`.
+**Tech Stack:** TypeScript (NodeNext, `.js` specifiers), Express, Drizzle, Vitest.
 
-**Non-goals (Phase 2/3):** marketplace crew provisioning, catalog authoring, agent-update flow, viewer/Office work.
+**Non-goals:** marketplace crew provisioning + catalog authoring (Phase 2), viewer/Office (Phase 3).
 
 ---
 
-## File map
+## v2 revision log (what Codex caught in v1)
 
-| File | Responsibility | Change |
+| # | v1 defect | v2 fix |
 |---|---|---|
-| `server/src/services/internal-agent/aoa-agents/runner.ts` | Crew run orchestration | Wire transcript logging (T1), skills (T3); it is the ONLY producer that must change |
-| `server/src/services/internal-agent/aoa-agents/crew-run-log.ts` | **NEW** — crew transcript sink | Encapsulates run-log writing so `runner.ts` stays thin (T1) |
-| `packages/adapters/claude-local/src/server/execute.ts` | claude CLI spawn | Hermetic config home + cwd (T2) |
-| `packages/adapter-utils/src/execution-target.ts` | Execution-target helpers | Local targets get a managed home (T2) |
-| `server/src/services/internal-agent/tools/skill-tools.ts` | `use_skill` tool | Enforce `skillKeys` for crew, not just Commander (T4) |
-| `server/src/services/internal-agent/mcp-bridge.ts` | Bridge tool context | Carry a real `actorType` for crew (T4) |
+| 1 | `actorType:"aoa"` invented — real vocabulary is `actorType:"agent"` + `agentKind:"aoa"`; `ask_human` requires it (`ask-human-tool.ts:33`), so v1 would have **forbidden `ask_human` for Scout/Engineer** | T8 uses `"agent"`+`agentKind` |
+| 2 | `use_skill` rewrite gated on `ctx.agentId`, which **silently disables Commander** (production Commander bridges have no `agentId`; it resolves via `internalAgentConfig.agentId`, `skill-tools.ts:86`). v1's own test masked it | T9 keeps Commander's resolution, adds a separate agent-backed branch |
+| 3 | "T3 before T4 prevents lockout" was **false** — `skillKeys` defaults `[]` (`agents.ts:43`) and crew seeding never sets it | New T7 (assignment/backfill) precedes enforcement |
+| 4 | Pinned `HOME`/`USERPROFILE` → breaks git/SSH/npm for tools the agent launches | T2 isolates **`CLAUDE_CONFIG_DIR` only**; home relocation is an explicit, separately-tested decision |
+| 5 | Neutral cwd assumed to give crew a workspace — crew tasks aren't workspace-backed; scratch cwd means they **can't touch the repo** and breaks session resume (`execute.ts:450`) | New T5 (explicit workspace resolution) |
+| 6 | Neutral cwd claimed to satisfy "no repo CLAUDE.md" — false for real workspace runs | New T4 uses documented `CLAUDE_CODE_DISABLE_CLAUDE_MDS` / `CLAUDE_CODE_DISABLE_AUTO_MEMORY` + an explicit policy |
+| 7 | Blind whole-run retry → duplicate comments/artifacts (`post-task-comment-tool.ts:82`, `attach-task-artifact-tool.ts:121` are non-idempotent) | T10 diagnoses only; retry deferred behind idempotency |
+| 8 | Missed that `createToolCallHandler` applies **Commander policy to every actor** (`mcp-bridge.ts:143`) while listing gates it correctly (`tool-registry.ts:199`) | T8 fixes the coupling + adds bridge-level tests |
+| 9 | Wrong harness (`aoa-runner-loopback.test.ts` never calls `runAoaAgent`) | Use `aoa-runner-task-execution.test.ts:149` |
+| 10 | T4 pseudocode wouldn't compile (`agents` is a Drizzle table, not a service) | Use `ctx.services.agents.getById` + company check |
+| 11 | Raw `onMeta` persists **full prompts/context** (`execute.ts:583`) | T1 redacts + defines retention/access |
+| 12 | `aoa-${agentId}` log-id fallback risks collisions | Use the run UUID (`runner.ts:168`); missing = invariant failure |
+| 13 | Changing shared `execution-target.ts` claims all local adapters use a managed home | Claude-specific opt-in |
 
 ---
 
-## Task 1: Persist crew run transcripts (P1)
+## Task 1: Crew run transcripts (P1) — with redaction + real run id
 
-**Why first:** P5 (runs finish without `set_task_status`) is undiagnosable while crew runs log nothing. Every later task is verified through these transcripts.
+**Files:** read `server/src/services/run-log-store.ts` + heartbeat's usage; create `server/src/services/internal-agent/aoa-agents/crew-run-log.ts`; modify `runner.ts` (~L569 no-op callbacks); test `.../aoa-agents/__tests__/crew-run-log.test.ts`.
 
-**Files:**
-- Read first: `server/src/services/run-log-store.ts`, and the heartbeat's usage of it (`git grep -n "run-log-store\|runLogStore\|appendRunLog" server/src`)
-- Create: `server/src/services/internal-agent/aoa-agents/crew-run-log.ts`
-- Modify: `server/src/services/internal-agent/aoa-agents/runner.ts` (the `adapter.execute` call, currently `onLog: async () => {}, onMeta: async () => {}` at ~L569)
-- Test: `server/src/services/internal-agent/aoa-agents/__tests__/crew-run-log.test.ts`
+- [ ] **Step 1: Read the real API.** Find the run-log store's exported functions + how heartbeat calls them (begin/append/finalize semantics — note `begin()` truncates an existing path). Record signatures in your report. **Mirror it; do not invent a second mechanism.**
 
-- [ ] **Step 1: Read the existing run-log mechanism.** Open `server/src/services/run-log-store.ts` and find how the heartbeat writes a run transcript (the NDJSON path is built around `path.join(relDir, `${runId}.ndjson`)`). Note the exact exported function name(s), their parameters (companyId / agentId / runId / event shape), and how the heartbeat calls them. **Mirror this API exactly — do not invent a second logging mechanism.** Record the signature you found in your status report.
+- [ ] **Step 2: Decide + record the ID + lifecycle invariant.** Use the run row's UUID assigned at `runner.ts:168`. **Do NOT use an `aoa-${agentId}` fallback** — it collides across runs. If the run id is missing, throw (invariant failure), don't silently degrade.
 
-- [ ] **Step 2: Write the failing test** — `crew-run-log.test.ts`. It must assert the sink writes both stream chunks and the meta record, and that a sink failure never throws:
+- [ ] **Step 3: Write the failing test** covering forwarding, redaction, and never-throwing:
 
 ```ts
 import { describe, it, expect, vi } from "vitest";
-import { createCrewRunLogSink } from "../crew-run-log.js";
+import { createCrewRunLogSink, redactMeta } from "../crew-run-log.js";
 
-describe("createCrewRunLogSink", () => {
-  it("forwards stdout/stderr chunks and the meta record to the run-log store", async () => {
+describe("crew run log", () => {
+  it("forwards stdout/stderr chunks and a REDACTED meta record", async () => {
     const append = vi.fn().mockResolvedValue(undefined);
-    const sink = createCrewRunLogSink(
-      { companyId: "c1", agentId: "a1", runId: "r1" },
-      { append },
-    );
+    const sink = createCrewRunLogSink({ companyId: "c1", agentId: "a1", runId: "11111111-1111-1111-1111-111111111111" }, { append });
     await sink.onLog("stdout", "hello\n");
-    await sink.onMeta({ adapterType: "claude_local", command: "claude", commandArgs: ["--print"] });
-    expect(append).toHaveBeenCalledTimes(2);
+    await sink.onMeta({ adapterType: "claude_local", command: "claude", commandArgs: ["--print"], prompt: "SECRET PROMPT", context: { payload: "SECRET" } });
     const kinds = append.mock.calls.map((c) => (c[0] as { kind: string }).kind);
-    expect(kinds).toContain("log");
-    expect(kinds).toContain("meta");
+    expect(kinds).toEqual(["log", "meta"]);
+    const meta = append.mock.calls[1][0] as { meta: Record<string, unknown> };
+    expect(meta.meta.command).toBe("claude");
+    expect(meta.meta.prompt).toBeUndefined();   // prompt must never be persisted raw
+    expect(meta.meta.context).toBeUndefined();
+    expect(meta.meta.promptChars).toBe(13);     // length only, for debugging
   });
 
-  it("never throws when the underlying store fails (logging must not fail a run)", async () => {
+  it("never throws when the store fails", async () => {
     const append = vi.fn().mockRejectedValue(new Error("disk full"));
-    const sink = createCrewRunLogSink({ companyId: "c1", agentId: "a1", runId: "r1" }, { append });
+    const sink = createCrewRunLogSink({ companyId: "c1", agentId: "a1", runId: "r-uuid" }, { append });
     await expect(sink.onLog("stderr", "boom")).resolves.toBeUndefined();
     await expect(sink.onMeta({ adapterType: "claude_local" })).resolves.toBeUndefined();
   });
 });
 ```
 
-- [ ] **Step 3: Run it and confirm it fails.** `pnpm test:run server/src/services/internal-agent/aoa-agents/__tests__/crew-run-log.test.ts` → FAIL (module not found).
+- [ ] **Step 4: Run → FAIL.** `pnpm test:run server/src/services/internal-agent/aoa-agents/__tests__/crew-run-log.test.ts`
 
-- [ ] **Step 4: Implement `crew-run-log.ts`.** Adapt the store call to the real signature found in Step 1 (the `append` dependency below is the seam that lets the test inject a fake — keep it, and default it to the real store):
+- [ ] **Step 5: Implement `crew-run-log.ts`.** Include `redactMeta`, which keeps operational fields (`adapterType`, `command`, `commandArgs`, `cwd`, `exitCode`) and **drops `prompt`/`context`**, substituting `promptChars`/`contextKeys` for debuggability. `env` is already redacted upstream but re-assert it. Keep the injected-`append` seam. All appends best-effort (never throw).
 
-```ts
-// server/src/services/internal-agent/aoa-agents/crew-run-log.ts
-//
-// Crew runs previously discarded ALL output (onLog/onMeta were no-ops), which
-// made every crew failure undiagnosable. This sink mirrors what the org/
-// heartbeat path already does: persist an NDJSON transcript per run.
-// Logging is strictly best-effort — it must NEVER fail a run.
+- [ ] **Step 6: Wire into `runner.ts`** — replace `onLog: async () => {}, onMeta: async () => {}` with the sink, using the run UUID. Change nothing else in that call.
 
-export interface CrewRunLogTarget {
-  companyId: string;
-  agentId: string;
-  runId: string;
-}
+- [ ] **Step 7: Discoverability decision (record it).** `internal_agent_runs` has **no** log columns, unlike `heartbeat_runs` (`heartbeat_runs.ts:26`), and crew live-run projections omit logs (`agents-live-runs.ts:46`). For Phase 1, transcripts are **filesystem-only at a deterministic path**; surfacing them in the run API/UI is explicitly deferred to a follow-up (note it in the plan's Phase-2 backlog). Do not silently pretend the UI will show them.
 
-export interface CrewRunLogWriter {
-  append: (record: Record<string, unknown>) => Promise<void>;
-}
-
-export function createCrewRunLogSink(target: CrewRunLogTarget, writer: CrewRunLogWriter) {
-  const safeAppend = async (record: Record<string, unknown>): Promise<void> => {
-    try {
-      await writer.append({ ...target, ts: new Date().toISOString(), ...record });
-    } catch {
-      // Best-effort: a transcript failure must never fail the agent run.
-    }
-  };
-
-  return {
-    onLog: async (stream: "stdout" | "stderr", chunk: string): Promise<void> => {
-      await safeAppend({ kind: "log", stream, chunk });
-    },
-    onMeta: async (meta: Record<string, unknown>): Promise<void> => {
-      await safeAppend({ kind: "meta", meta });
-    },
-  };
-}
-```
-
-- [ ] **Step 5: Run the test → PASS.** Same command as Step 3.
-
-- [ ] **Step 6: Wire it into the crew runner.** In `runner.ts`, replace the no-op callbacks in the `adapter.execute({...})` call. Build the sink from the real run-log store (using the signature from Step 1) and the run's `companyId`/`agentId`/`runId`:
-
-```ts
-const crewLog = createCrewRunLogSink(
-  { companyId, agentId, runId: runId ?? `aoa-${agentId}` },
-  runLogWriterFor(/* real store — per Step 1 */),
-);
-// ...inside adapter.execute({...}):
-onLog: crewLog.onLog,
-onMeta: crewLog.onMeta,
-```
-
-Do NOT change any other argument of the `adapter.execute` call in this task.
-
-- [ ] **Step 7: Verify + commit.** `pnpm --filter @armyofagents/server typecheck` and the crew suites (`pnpm test:run server/src/services/internal-agent/aoa-agents/__tests__ server/src/__tests__/aoa-runner-loopback.test.ts`) → PASS.
-
+- [ ] **Step 8: Verify + commit.** Server typecheck + crew suites PASS.
 ```bash
-git add server/src/services/internal-agent/aoa-agents/crew-run-log.ts server/src/services/internal-agent/aoa-agents/__tests__/crew-run-log.test.ts server/src/services/internal-agent/aoa-agents/runner.ts
-git commit -m "feat(crew): persist crew run transcripts (crew runs were a black box)"
+git commit -m "feat(crew): persist redacted crew run transcripts (crew runs were a black box)"
 ```
 
-- [ ] **Step 8: Capture a real transcript.** Dispatch one crew task on the live instance and confirm an NDJSON file appears under the run-logs directory for that agent. **Paste the first 30 lines into your status report** — this is the evidence Task 5 depends on.
+- [ ] **Step 9: Capture evidence.** Dispatch one crew task; confirm the NDJSON appears. **Report a redaction-safe summary (event kinds, counts, exit code) — do NOT paste raw transcript lines.**
 
 ---
 
-## Task 2: Hermetic agent execution (P2)
+## Task 2: Ambient Claude-config isolation (crew-only opt-in)
 
-**Why:** the operator's global `~/.claude` (superpowers `SessionStart` hook, gstack skills, plugins) and the repo `CLAUDE.md` currently load into every crew run and hijack the agent. Fixes org agents too.
+**Scope discipline:** isolate **Claude's config** — do NOT relocate `HOME`/`USERPROFILE` (that breaks git/SSH/npm for tools the agent launches).
 
-**Files:**
-- Modify: `packages/adapter-utils/src/execution-target.ts` (~L816-820 `adapterExecutionTargetUsesManagedHome`, and the local branch of `prepareAdapterExecutionTargetRuntime` ~L297-303 which returns `runtimeRootDir: null`)
-- Modify: `packages/adapters/claude-local/src/server/execute.ts` (~L177 cwd; ~L402-404 managed home)
-- Test: `packages/adapters/claude-local/src/__tests__/execute-hermetic.test.ts`
+**Files:** create `packages/adapters/claude-local/src/server/hermetic-env.ts`; modify `execute.ts` env assembly (~L251/L402-404); test `packages/adapters/claude-local/src/__tests__/hermetic-env.test.ts`.
 
-- [ ] **Step 1: Write the failing test.** Assert that for a LOCAL target the spawn env pins a per-run config home and does not inherit the operator's:
+- [ ] **Step 1: Failing test:**
 
 ```ts
 import { describe, it, expect } from "vitest";
-import { buildHermeticEnv } from "../server/hermetic-env.js";
+import { buildIsolatedClaudeEnv } from "../server/hermetic-env.js";
 
-describe("buildHermeticEnv", () => {
-  it("pins CLAUDE_CONFIG_DIR, HOME and USERPROFILE to the per-run home", () => {
-    const env = buildHermeticEnv({ runtimeRootDir: "C:\\rt\\run1" }, { HOME: "C:\\Users\\op", USERPROFILE: "C:\\Users\\op" });
-    expect(env.CLAUDE_CONFIG_DIR).toBe("C:\\rt\\run1\\.claude");
-    expect(env.HOME).toBe("C:\\rt\\run1");
-    expect(env.USERPROFILE).toBe("C:\\rt\\run1");
-  });
-
-  it("drops ambient CLAUDE_*/ANTHROPIC_* vars that would leak operator config", () => {
-    const env = buildHermeticEnv({ runtimeRootDir: "/rt/run1" }, { CLAUDE_CONFIG_DIR: "/home/op/.claude", ANTHROPIC_API_KEY: "sk-leak" });
+describe("buildIsolatedClaudeEnv", () => {
+  it("pins CLAUDE_CONFIG_DIR to the per-run home and drops ambient CLAUDE_*/ANTHROPIC_*", () => {
+    const env = buildIsolatedClaudeEnv({ configDir: "/rt/run1/.claude" }, {
+      CLAUDE_CONFIG_DIR: "/home/op/.claude", ANTHROPIC_API_KEY: "sk-leak", PATH: "/usr/bin",
+    });
     expect(env.CLAUDE_CONFIG_DIR).toBe("/rt/run1/.claude");
     expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(env.PATH).toBe("/usr/bin");            // toolchain preserved
+  });
+
+  it("does NOT relocate HOME or USERPROFILE (git/ssh/npm must keep working)", () => {
+    const env = buildIsolatedClaudeEnv({ configDir: "/rt/run1/.claude" }, { HOME: "/home/op", USERPROFILE: "C:\\Users\\op" });
+    expect(env.HOME).toBe("/home/op");
+    expect(env.USERPROFILE).toBe("C:\\Users\\op");
   });
 });
 ```
 
-- [ ] **Step 2: Run it → FAIL** (module not found). `pnpm test:run packages/adapters/claude-local/src/__tests__/execute-hermetic.test.ts`
-
-- [ ] **Step 3: Implement `packages/adapters/claude-local/src/server/hermetic-env.ts`:**
-
-```ts
-// Agent runs must not inherit the operator's Claude environment. On Windows the
-// claude CLI resolves its config via CLAUDE_CONFIG_DIR else USERPROFILE (NOT
-// HOME), so all three are pinned. Ambient CLAUDE_*/ANTHROPIC_* are dropped so a
-// developer shell can't leak credentials or config into an agent run.
-import path from "node:path";
-
-const LEAKY_PREFIXES = ["CLAUDE_", "ANTHROPIC_"];
-
-export function buildHermeticEnv(
-  opts: { runtimeRootDir: string },
-  parentEnv: NodeJS.ProcessEnv,
-): NodeJS.ProcessEnv {
-  const out: NodeJS.ProcessEnv = {};
-  for (const [k, v] of Object.entries(parentEnv)) {
-    if (LEAKY_PREFIXES.some((p) => k.startsWith(p))) continue;
-    out[k] = v;
-  }
-  out.HOME = opts.runtimeRootDir;
-  out.USERPROFILE = opts.runtimeRootDir;
-  out.CLAUDE_CONFIG_DIR = path.join(opts.runtimeRootDir, ".claude");
-  return out;
-}
-```
-
-- [ ] **Step 4: Run test → PASS.**
-
-- [ ] **Step 5: Give LOCAL targets a managed home.** In `packages/adapter-utils/src/execution-target.ts`: make `adapterExecutionTargetUsesManagedHome` return true for `local` as well, AND make the local branch of `prepareAdapterExecutionTargetRuntime` return a real per-run `runtimeRootDir` (a directory under the instance data dir, created if missing) instead of `null`. Seed `<runtimeRootDir>/.claude/` with ONLY what AoA provides — copy the credentials file from the operator's config home so the CLI stays authenticated, and write NO settings.json, NO plugins, NO user skills.
-  **Verification note:** a clean config home was proven to work in live testing — claude ran authenticated with the superpowers hook absent.
-
-- [ ] **Step 6: Apply the hermetic env + neutral cwd in `execute.ts`.** Replace the `if (runtimeRootDir && adapterExecutionTargetUsesManagedHome(...)) { env.HOME = runtimeRootDir; }` block with a call to `buildHermeticEnv`, and change the cwd fallback (`const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();`) so a workspace-less agent run uses a **neutral scratch dir** (e.g. `<runtimeRootDir>/cwd`) rather than `process.cwd()` — which is the AoA repo and drags in its `CLAUDE.md`.
-
-- [ ] **Step 7: Verify + commit.** `pnpm --filter @armyofagents/adapter-claude-local typecheck`, `pnpm --filter @armyofagents/adapter-utils typecheck`, plus the claude-local test suite → PASS.
-
+- [ ] **Step 2: Run → FAIL.**
+- [ ] **Step 3: Implement** `buildIsolatedClaudeEnv(opts,{parentEnv})`: copy parent env, delete keys matching `CLAUDE_*`/`ANTHROPIC_*`, then set `CLAUDE_CONFIG_DIR = opts.configDir`. Document why HOME is untouched.
+- [ ] **Step 4: Run → PASS.**
+- [ ] **Step 5: Apply in `execute.ts` behind a Claude-specific opt-in.** Do **not** broaden `adapterExecutionTargetUsesManagedHome` (shared by pi/cursor/codex). Gate on an explicit adapter-level flag so **crew runs opt in first**; org/heartbeat keeps current behavior until T11's expansion gate.
+- [ ] **Step 6: Verify + commit.** claude-local + adapter-utils typechecks and suites PASS; **org/heartbeat suites must stay green** (they are unaffected by design).
 ```bash
-git commit -m "fix(agents): hermetic agent execution — per-run config home, env allowlist, neutral cwd (no operator ~/.claude leak)"
+git commit -m "feat(agents): isolate Claude config dir per run (crew opt-in); drop ambient CLAUDE_*/ANTHROPIC_*"
 ```
-
-- [ ] **Step 8: Live-verify.** Dispatch one crew task; in the Task-1 transcript confirm the run shows **no** superpowers `SessionStart` hook and **no** operator/gstack skills. Paste the evidence.
 
 ---
 
-## Task 3: Deliver company skills to crew agents (P3)
+## Task 3: Per-run Claude config home provisioning (auth)
 
-**Files:**
-- Modify: `server/src/services/internal-agent/aoa-agents/runner.ts` (the `context` object in `adapter.execute`)
-- Pattern to mirror: `server/src/services/heartbeat.ts:4003-4013`
-- Resolver (do not change): `server/src/services/company-skills.ts:2203-2219` `listRuntimeSkillEntries`
-- Test: `server/src/services/internal-agent/aoa-agents/__tests__/crew-skills-context.test.ts`
+**Files:** `packages/adapters/claude-local/src/server/` (a `provisionClaudeConfigHome` helper) + wherever the per-run root is created; test alongside.
 
-- [ ] **Step 1: Write the failing test** — the crew runner must put the agent's resolved skills on `context.skills`:
-
-```ts
-it("passes the agent's company skills to the adapter as context.skills", async () => {
-  const execute = vi.fn().mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" });
-  const listRuntimeSkillEntries = vi.fn().mockResolvedValue([
-    { key: "code-review", name: "Code Review", markdown: "# Code Review", trustLevel: "verified" },
-  ]);
-  await runCrewOnce({ execute, listRuntimeSkillEntries /* per the harness */ });
-  const ctx = execute.mock.calls[0][0].context;
-  expect(ctx.skills).toHaveLength(1);
-  expect(ctx.skills[0].key).toBe("code-review");
-});
-
-it("omits context.skills entirely when the agent has no skillKeys", async () => {
-  const execute = vi.fn().mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" });
-  const listRuntimeSkillEntries = vi.fn().mockResolvedValue([]);
-  await runCrewOnce({ execute, listRuntimeSkillEntries });
-  expect(execute.mock.calls[0][0].context.skills).toBeUndefined();
-});
+- [ ] **Step 1: Determine the auth mode.** Read `login.ts` (`resolveClaudeConfigHome`) and inspect a real config home to confirm credentials live in a **file** (`.credentials.json`) vs an OS keychain. **Record the finding** — if credentials are keychain-backed on any target platform, isolation must not assume file copy.
+  *(Live-verified on Windows during investigation: a config dir containing only `.credentials.json` authenticated successfully and loaded no operator hooks/skills.)*
+- [ ] **Step 2: Failing test** — provisioning creates `<root>/.claude` containing the credentials and **no** `settings.json`, **no** `plugins/`, **no** user `skills/`.
+- [ ] **Step 3: Implement** `provisionClaudeConfigHome(rootDir)`: mkdir, copy only the credentials file from the resolved source config home, and assert nothing else is copied. Fail loudly with an actionable error if credentials are absent (an unauthenticated agent must not silently run).
+- [ ] **Step 4: Run → PASS.**
+- [ ] **Step 5: Lifecycle.** Decide and implement cleanup (per-run temp dir removed after the run, mirroring `buildSkillsDir`'s cleanup at `execute.ts:745`). Record the retention choice.
+- [ ] **Step 6: Verify + commit.**
+```bash
+git commit -m "feat(agents): provision a minimal per-run Claude config home (credentials only)"
 ```
 
-Mirror the existing crew-runner test harness (see `server/src/__tests__/aoa-runner-loopback.test.ts` for how `runAoaAgent` is driven with mocks).
+---
 
-- [ ] **Step 2: Run → FAIL** (`context.skills` undefined in the first test).
+## Task 4: Claude-instruction isolation (the `CLAUDE.md` policy)
 
-- [ ] **Step 3: Implement.** In `runner.ts`, before the `adapter.execute` call, resolve skills exactly as heartbeat does, and set the key **only when non-empty** (matching heartbeat's `if (agentSkills.length > 0)` semantics so the adapter's `dbSkills.length > 0` branch behaves identically):
+**Decision required before coding — record it in `docs/architecture/decisions.md`:** a project workspace that is a real repo will still load its `CLAUDE.md`. Choose:
+- **(A) Enforce D9 globally** — set `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1` and `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` for agent runs, so ONLY AoA's `--append-system-prompt-file` instructions apply. *(Recommended: matches D9 "agents see only AoA-provisioned instructions".)*
+- **(B) Allow project `CLAUDE.md`** as legitimate context for a trusted workspace, and accept that repo instructions influence agents.
+
+- [ ] **Step 1: Record the decision** (A or B) with rationale.
+- [ ] **Step 2: Failing test** asserting the chosen env vars are (or are not) set for a crew run.
+- [ ] **Step 3: Implement** in the env builder from T2.
+- [ ] **Step 4: Run → PASS.**
+- [ ] **Step 5: Verify + commit.**
+```bash
+git commit -m "feat(agents): explicit Claude-instruction isolation policy for agent runs"
+```
+
+---
+
+## Task 5: Crew workspace resolution (crew tasks must be workspace-backed)
+
+**Why:** crew tasks are **not** workspace-backed today — the crew runner never sets `context.paperclipWorkspace` (heartbeat resolves it at `heartbeat.ts:1549` → `:3628`). Without this, a crew agent has no repo to work in, and a scratch cwd also breaks Claude session resume (`execute.ts:450` requires identical cwd).
+
+**Files:** `runner.ts` (context assembly); mirror `heartbeat.ts:1549-3628`; test `server/src/__tests__/crew-workspace-resolution.test.ts`.
+
+- [ ] **Step 1: Read heartbeat's workspace resolution** and record exactly which inputs it uses (project, `executionWorkspacePolicy`, `functionType`, existing workspace reuse).
+- [ ] **Step 2: Failing test** — a crew task on a `software_development` project resolves a workspace and passes `context.paperclipWorkspace`; a task with no project/policy resolves none and does **not** fabricate one.
+- [ ] **Step 3: Implement** resolution in the crew runner, mirroring heartbeat. Preserve precedence: workspace cwd > configured cwd > fallback.
+- [ ] **Step 4: Run → PASS.**
+- [ ] **Step 5: Verify + commit.**
+```bash
+git commit -m "feat(crew): resolve execution workspaces for crew tasks (mirrors heartbeat resolution)"
+```
+
+---
+
+## Task 6: Deliver company skills to crew (P3) — warning-grade
+
+**Files:** `runner.ts`; mirror `heartbeat.ts:4003-4013`; **harness pattern: `server/src/__tests__/aoa-runner-task-execution.test.ts:149`** (NOT `aoa-runner-loopback.test.ts`, which never calls `runAoaAgent`); test `server/src/__tests__/crew-skills-context.test.ts`.
+
+- [ ] **Step 1: Failing tests** — (a) resolved skills land on `context.skills`; (b) empty list ⇒ key omitted entirely (so the adapter's `dbSkills.length > 0` branch is unchanged); (c) a resolver failure logs a **warning** and does not fail the run.
+- [ ] **Step 2: Run → FAIL.**
+- [ ] **Step 3: Implement** — resolve via `companySkillService(db).listRuntimeSkillEntries(companyId, agentId)`; set `context.skills` only when non-empty. **Do not swallow errors silently** — mirror heartbeat's warn-then-continue so broken skill storage is visible:
 
 ```ts
-// Crew agents previously received NO company skills: listRuntimeSkillEntries had
-// exactly one caller (the heartbeat/org path), and crew agents are barred from
-// the heartbeat. Mirror the org path so a crew agent's `skillKeys` are honored.
-const skillSvc = companySkillService(db);
-const agentSkills = await skillSvc
-  .listRuntimeSkillEntries(companyId, agentId)
-  .catch(() => []);            // skill resolution must never fail a run
-
+let agentSkills: RuntimeSkillEntry[] = [];
+try {
+  agentSkills = await companySkillService(db).listRuntimeSkillEntries(companyId, agentId);
+} catch (err) {
+  log.warn({ err, companyId, agentId }, "crew skill resolution failed; continuing without skills");
+}
 const context: Record<string, unknown> = { aoaInstruction: instruction, payload };
 if (agentSkills.length > 0) context.skills = agentSkills;
 ```
 
-then pass that `context` into `adapter.execute`.
-
-- [ ] **Step 4: Run → PASS.**
-
-- [ ] **Step 5: Verify + commit.** `pnpm --filter @armyofagents/server typecheck` + crew suites → PASS.
-
+- [ ] **Step 4: Run → PASS.** **Step 5: Verify + commit.**
 ```bash
-git commit -m "feat(crew): deliver company/marketplace skills to crew agents at runtime (context.skills)"
+git commit -m "feat(crew): deliver company/marketplace skills to crew agents at runtime"
 ```
-
-- [ ] **Step 6: Live-verify.** Attach a skill to a crew agent in the UI (Team → Commander Team → Roster → agent → Skills), dispatch a task, and confirm from the Task-1 transcript that the skill file was materialized. **This is what makes the Skills tab (P7) honest.**
 
 ---
 
-## Task 4: Enforce `skillKeys` scoping for crew agents (P4 — the security boundary)
+## Task 7: Crew skill assignment / backfill (prerequisite for enforcement)
 
-**Why:** the company skill library is intentionally OPEN (any GitHub/URL). Curating which skills a crew agent gets is only meaningful if it is ENFORCED. Today `use_skill` checks `skillKeys` only when `actorType === "commander"`, and the crew bridge runs as `"board"` — so a crew agent can invoke ANY installed skill, including one a teammate pulled from an arbitrary repo.
+**Why:** `agents.skillKeys` defaults `[]` (`agents.ts:43`) and crew seeding never sets it (`seed-crew-agent.ts:95`). **Enforcing (T9) without this denies every skill to every crew agent.**
 
-**Files:**
-- Modify: `server/src/services/internal-agent/tools/skill-tools.ts` (~L90-112, the commander-only gate)
-- Modify: `server/src/services/internal-agent/aoa-agents/runner.ts` (~L337-354 bridge params — set a crew `actorType`)
-- Modify: `server/src/services/internal-agent/mcp-bridge.ts` (~L291 `actorType` fallback)
-- Test: `server/src/services/internal-agent/tools/__tests__/skill-tools-crew-scope.test.ts`
+**Files:** `server/src/services/internal-agent/aoa-agents/seed-crew-agent.ts` (+ the `ensure-*.ts` role seeders); a backfill for existing rows; test.
 
-- [ ] **Step 1: Write the failing tests:**
-
-```ts
-it("denies a crew agent a skill that is not in its skillKeys", async () => {
-  const ctx = makeToolContext({ actorType: "aoa", agentId: "a1" });
-  withAgent({ id: "a1", skillKeys: ["allowed-skill"] });
-  const res = await useSkillTool.execute({ key: "other-skill" }, ctx);
-  expect(res.success).toBe(false);
-  expect(res.error).toContain("NOT_ENABLED");
-});
-
-it("allows a crew agent a skill that IS in its skillKeys", async () => {
-  const ctx = makeToolContext({ actorType: "aoa", agentId: "a1" });
-  withAgent({ id: "a1", skillKeys: ["allowed-skill"] });
-  const res = await useSkillTool.execute({ key: "allowed-skill" }, ctx);
-  expect(res.success).toBe(true);
-});
-
-it("still enforces the existing commander gate (no regression)", async () => {
-  const ctx = makeToolContext({ actorType: "commander", agentId: "cmd" });
-  withAgent({ id: "cmd", skillKeys: [] });
-  const res = await useSkillTool.execute({ key: "any" }, ctx);
-  expect(res.success).toBe(false);
-});
+- [ ] **Step 1: Decide the Phase-1 default set per role** (Phase 2 replaces this with marketplace templates, D6). Keep it minimal and explicit — record the mapping in the plan.
+- [ ] **Step 2: Failing test** — a newly seeded crew agent has non-empty `skillKeys`; an existing agent with empty `skillKeys` is backfilled once (idempotent, and never clobbers a founder's curated selection).
+- [ ] **Step 3: Implement** seeding + a guarded one-time backfill (mirror `ensure-commander.ts:231-255`'s `commanderSkillsInitialized` flag pattern so a founder who clears the list isn't re-filled).
+- [ ] **Step 4: Run → PASS.** **Step 5: Verify + commit.**
+```bash
+git commit -m "feat(crew): assign default skillKeys to crew agents (+ guarded one-time backfill)"
 ```
 
-- [ ] **Step 2: Run → the crew-denial test FAILS** (crew is currently ungated).
+---
 
-- [ ] **Step 3: Implement.** (a) In `runner.ts`, include `actorType: "aoa"` in the MCP bridge params so the bridge no longer falls back to `"board"`. (b) In `mcp-bridge.ts`, pass that through into the reconstructed `toolContext`. (c) In `skill-tools.ts`, broaden the gate from commander-only to **any agent-backed actor** — i.e. enforce whenever the context has an `agentId` (commander and crew alike), leaving genuine board/human callers unrestricted:
+## Task 8: Correct crew actor identity + bridge policy coupling
+
+**Files:** `runner.ts` (~L337-354 bridge params), `mcp-bridge.ts` (~L143 `createToolCallHandler`, ~L291/327 context reconstruction), `authorize-tool.ts` (reference: crew is distinguished by `agentKind`, `:52`); tests at the **bridge** level.
+
+- [ ] **Step 1: Failing tests** — (a) a crew bridge call presents `actorType:"agent"` + `agentKind:"aoa"`; (b) **`ask_human` is permitted for crew** (it requires exactly that combination, `ask-human-tool.ts:33`); (c) a crew tool call is **not** subjected to Commander-only policy.
+- [ ] **Step 2: Run → FAIL.**
+- [ ] **Step 3: Implement.** Set `actorType: "agent"` (+ ensure `agentKind: "aoa"` and `agentId` flow) in the crew bridge params — **never `"aoa"` as an actorType**. Then make `createToolCallHandler` apply `resolveCommanderToolPolicy` **only for `actorType === "commander"`**, matching how tool *listing* already gates it (`tool-registry.ts:199`), so crew tools can't be advertised then rejected.
+- [ ] **Step 4: Run → PASS.** **Step 5:** Update the stale `ToolContext`/`McpConfigParams` comments that describe only Commander/board actors.
+- [ ] **Step 6: Verify + commit.**
+```bash
+git commit -m "fix(crew): correct crew actor identity (agent+aoa) and stop applying Commander policy to crew tool calls"
+```
+
+---
+
+## Task 9: Enforce `skillKeys` scoping (P4 — the security boundary)
+
+**Depends on T7** (agents must have skills) **and T8** (correct identity).
+
+**Files:** `server/src/services/internal-agent/tools/skill-tools.ts` (~L86-112); tests at both tool and bridge level.
+
+- [ ] **Step 1: Failing tests** — (a) crew agent denied a skill not in its `skillKeys` (`NOT_ENABLED`); (b) crew agent allowed one that is; (c) **Commander's existing gate still works with NO `ctx.agentId`** (resolved via `internalAgentConfig.agentId`) — this is the regression v1 would have shipped; (d) an agent from another company cannot be resolved.
+- [ ] **Step 2: Run → the crew tests FAIL, Commander test PASSES** (proving no regression baseline).
+- [ ] **Step 3: Implement — keep Commander's path, add an agent branch.** Do **not** collapse them into one `ctx.agentId` check:
 
 ```ts
-// The skillKeys allowlist is the security boundary for an OPEN skill library:
-// anyone may install skills from any source, so an agent must only be able to
-// invoke the skills deliberately attached to it. Enforce for every agent-backed
-// actor (commander AND crew), not just commander.
-const enforcesSkillScope = ctx.actorType === "commander" || ctx.actorType === "aoa";
-if (enforcesSkillScope && ctx.agentId) {
-  const agent = await agents.getById(ctx.agentId);
-  const allowed: string[] = Array.isArray(agent?.skillKeys) ? agent.skillKeys : [];
+// The skillKeys allowlist is the security boundary for an intentionally OPEN
+// skill library (D7): anyone may install skills from any source, so an agent
+// must only invoke skills deliberately attached to it (D8).
+// Commander resolves its agent id from internalAgentConfig (its bridge has no
+// ctx.agentId) — that path must be preserved exactly.
+let scopedAgentId: string | null = null;
+if (ctx.actorType === "commander") {
+  scopedAgentId = await resolveCommanderAgentId(ctx);        // existing behavior
+} else if (ctx.actorType === "agent" && ctx.agentKind === "aoa" && ctx.agentId) {
+  scopedAgentId = ctx.agentId;                                // crew
+}
+if (scopedAgentId) {
+  const agent = await ctx.services.agents.getById(scopedAgentId);
+  if (!agent || agent.companyId !== ctx.companyId) {          // getById is NOT company-scoped
+    return { success: false, error: "NOT_ENABLED: agent not found in this company", summary: "" };
+  }
+  const allowed: string[] = Array.isArray(agent.skillKeys) ? agent.skillKeys : [];
   if (!allowed.includes(skill.key)) {
     return { success: false, error: `NOT_ENABLED: skill '${skill.key}' is not attached to this agent`, summary: "" };
   }
 }
 ```
 
-- [ ] **Step 4: Run → all three PASS.**
-
-- [ ] **Step 5: Verify + commit.** Server typecheck + the skill-tool and crew suites → PASS.
-
+- [ ] **Step 4: Run → all PASS.** **Step 5:** Add a **bridge-level** test (not just direct `execute`) so policy/authorization coupling is covered.
+- [ ] **Step 6: Verify + commit.**
 ```bash
-git commit -m "fix(crew): enforce per-agent skillKeys scoping for crew use_skill (open library requires enforced curation)"
+git commit -m "fix(crew): enforce per-agent skillKeys for crew use_skill (Commander path preserved, company-scoped)"
 ```
-
-> **Ordering note:** Task 3 must land before Task 4 in the live environment. Enforcing scope while crew agents still have empty `skillKeys` would deny every skill. Phase 2 assigns skills from marketplace templates; until then, attach skills via the UI to test.
 
 ---
 
-## Task 5: Diagnose and fix crew completion (P5)
+## Task 10: Diagnose crew completion (P5) — **no blind retry**
 
-**Blocked on Task 1** — do not start until a real transcript exists.
+**Blocked on T1.** Guard hit: `runner.ts:644` ("completed without moving the task").
 
-**Files:** determined by the diagnosis. Guard being hit: `runner.ts:644` (`"crew task run completed without moving the task (no set_task_status call)"`).
-
-- [ ] **Step 1: Reproduce with a transcript.** Dispatch a crew task on the live instance (post-Tasks 1–3). Read the NDJSON transcript and answer: did the claude CLI start? Did it list the AoA MCP tools (is `set_task_status` present)? Did it call any tool? Did it error? **Record the answer before changing any code.**
-
-- [ ] **Step 2: Classify the root cause** into exactly one of:
-  - (a) **MCP bridge not connected** → the agent never saw `set_task_status`. Fix the crew `--mcp-config` / bridge handshake.
-  - (b) **Agent saw the tool but didn't call it** → prompt/instruction problem. Fix the crew trigger prompt to state the completion contract explicitly.
-  - (c) **CLI failed early** (auth/model/args) → fix the invocation.
-
-- [ ] **Step 3: Write a regression test** that fails for the identified cause, then fix it, then confirm the test passes.
-
-- [ ] **Step 4: Live-verify** a crew task runs to completion and the task moves to `in_review`/`done`.
-
-- [ ] **Step 5: Add retry.** A run that finishes without moving the task should be retried once with backoff before being marked failed; the failure card only posts after the retry is exhausted. Test both paths (first-attempt success after retry; terminal failure posts one card).
-
+- [ ] **Step 1: Reproduce with a transcript** (post T1–T9). Answer from the log: did the CLI start? were the AoA MCP tools listed (is `set_task_status` present)? was any tool called? any error? **Record before changing code.**
+- [ ] **Step 2: Classify** as exactly one of: (a) MCP bridge not connected → agent never saw `set_task_status`; (b) tool visible but not called → prompt/instruction problem (fix the crew trigger prompt to state the completion contract); (c) CLI failed early (auth/model/args).
+- [ ] **Step 3: Write a regression test** for the identified cause; fix; confirm PASS.
+- [ ] **Step 4: Live-verify** a crew task completes and moves to `in_review`/`done`.
+- [ ] **Step 5: Retry is OUT OF SCOPE here.** `post_task_comment` (`post-task-comment-tool.ts:82`) and `attach_task_artifact` (`attach-task-artifact-tool.ts:121`) are **non-idempotent**, so a whole-run retry duplicates comments/artifacts. File a follow-up: "idempotency keys / checkpoint-aware retry for crew runs" — a prerequisite for any automatic retry.
 - [ ] **Step 6: Commit.**
-
 ```bash
-git commit -m "fix(crew): <root cause> — crew runs now complete and move the task; add single retry"
+git commit -m "fix(crew): <root cause> — crew runs complete and move the task"
 ```
 
 ---
 
-## Task 6: Crew dispatch / re-run ergonomics (P6)
+## Task 11: Completion gate + docs reconciliation
 
-**Files:**
-- Modify: `server/src/services/internal-agent/aoa-agents/dispatcher.ts` (wakeup drain, ~L277) and/or `server/src/routes/issues.ts` (wakeup enqueue)
-- Test: `server/src/__tests__/crew-redispatch.test.ts`
-
-- [ ] **Step 1: Write the failing test** — a crew task that previously failed and was released to `todo` can be re-dispatched by a single explicit action, without unassign→reassign gymnastics:
-
-```ts
-it("re-enqueues a crew wakeup for a previously-failed task on explicit re-run", async () => {
-  const task = await seedCrewTask({ status: "todo", workMode: "standard", assigneeAgentId: "eng-1" });
-  await requestCrewRerun(task.id);
-  const wakeups = await listPendingWakeups("eng-1");
-  expect(wakeups.map((w) => w.issueId)).toContain(task.id);
-});
-```
-
-- [ ] **Step 2: Run → FAIL.**
-
-- [ ] **Step 3: Implement** an explicit re-run path that enqueues a crew wakeup for `(agent, issue)` regardless of which field last changed. Reuse the existing enqueue helper (`enqueueIssueAssigneeWakeup`) rather than writing a second mechanism.
-
-- [ ] **Step 4: Run → PASS.**
-
-- [ ] **Step 5: Verify + commit.**
-
-```bash
-git commit -m "feat(crew): explicit crew task re-run (re-enqueues wakeup without reassignment)"
-```
-
----
-
-## Task 7: Phase-1 completion gate
-
-- [ ] `pnpm -r typecheck` → PASS
-- [ ] `pnpm test:run` across the touched suites (crew runner, crew-run-log, crew-skills-context, skill-tools, claude-local, dispatcher) → PASS
-- [ ] `pnpm build` → PASS
-- [ ] **Live end-to-end:** on the isolated instance — create a Discussion, scope it, dispatch a crew task, and confirm: (1) a transcript is persisted, (2) the transcript shows **no** operator hooks/skills, (3) only the agent's attached skills are present, (4) the task **completes**, (5) the **"Run finished"** entry appears in the thread with clickable ref chips, and (6) each chip opens the right Thread viewer body.
-- [ ] **Verify a denied skill:** a crew agent invoking a skill not in its `skillKeys` gets `NOT_ENABLED`.
-- [ ] Update `docs/architecture/decisions.md` with the hermetic-execution decision (agent runs never inherit the operator's Claude environment).
+- [ ] `pnpm -r typecheck`, the touched suites, and `pnpm build` → PASS. **Org/heartbeat suites explicitly included** (T2 is crew-opt-in, so they must be unchanged).
+- [ ] **Live end-to-end** on the isolated instance: Discussion → scope → dispatch → (1) transcript persisted, (2) no operator hooks/skills present, (3) only the agent's attached skills, (4) task **completes**, (5) **"Run finished"** entry with clickable chips, (6) each chip opens the right Thread body.
+- [ ] **Denied-skill check:** a crew agent invoking an unattached skill gets `NOT_ENABLED`. **`ask_human` still works for crew** (T8 regression guard).
+- [ ] **Org-expansion gate (explicit):** only after auth + workspace + toolchain tests pass, decide whether to extend T2/T3/T4 isolation to org/heartbeat runs. Record the decision; do **not** flip it silently.
+- [ ] **Docs:** update `docs/architecture/decisions.md` (hermetic execution + the T4 CLAUDE.md policy) **and reconcile `CLAUDE.md:212`**, which currently states `use_skill` is board/Commander-only and `ask_human` is heartbeat-only — both now inaccurate for crew.
 
 ---
 
 ## Self-review
 
-**Spec coverage:** P1→T1, P2→T2, P3→T3, P4→T4, P5→T5, P6→T6, P7 (honest Skills tab) is satisfied by T3+T4. Phase-2/3 problems (P8–P19) are explicitly out of scope here and carried in the master scope.
+**Coverage:** P1→T1, P2→T2+T3+T4, P3→T6, P4→T9 (+T7 prerequisite, +T8 identity), P5→T10, P6 deferred (re-run ergonomics moved to a follow-up — it is not on the critical path to a completing crew run), P7 satisfied by T6+T9.
 
-**Ordering risk:** T4 (enforcement) after T3 (delivery) is mandatory — enforcing an empty allowlist would deny everything. T5 is hard-blocked on T1.
+**Ordering (Codex-recommended):** T1 → T2 → T3 → T4 → T5 → T6 → T7 → T8 → T9 → T10 → T11. T9 **must** follow T7 (else total lockout) and T8 (else wrong identity). T10 **must** follow T1.
 
-**Blast radius:** T2 changes execution for **org agents too**. That is intended (it fixes their identical leak) but means the org/heartbeat suites must stay green — include them in T2's verification.
+**Blast radius:** T2/T3/T4 ship **crew-only**; org/heartbeat is untouched until the T11 expansion gate. T8's bridge-policy change affects all non-Commander actors — bridge-level tests are mandatory, not optional.
 
-**Known unknown:** T5's fix is genuinely unknown until a transcript exists; the task is written as a diagnose-then-fix with a forced classification step rather than a pretend-solution.
+**Known unknowns, stated honestly:** T10's root cause is unknown until a transcript exists (diagnose-then-classify, no pretend fix). T3's auth-mode assumption is file-based credentials — verified on Windows, must be re-checked per platform.
+
+**Deferred (tracked, not dropped):** crew log discoverability in the run API/UI; crew re-run ergonomics; idempotent/checkpoint-aware retry.
