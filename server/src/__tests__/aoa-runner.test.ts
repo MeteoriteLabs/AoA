@@ -37,9 +37,30 @@ vi.mock("../services/costs.js", () => ({ costService: () => ({ createEvent: crea
 vi.mock("../services/internal-agent/cli-mode.js", () => ({ buildMcpConfig: buildMcpMock, buildMcpBridgeSpec: buildBridgeSpecMock }));
 vi.mock("../services/heartbeat.js", () => ({ resolveAdapterExecutionContext: () => ({ executionTarget:{}, runtimeCommandSpec:{} }) }));
 vi.mock("../services/internal-agent/aoa-agents/bridge-path.js", () => ({ resolveBridgeEntrypoint: () => "/x/mcp-bridge.js" }));
-vi.mock("node:fs/promises", () => ({ writeFile: vi.fn().mockResolvedValue(undefined) }));
+// T5: the runner now resolves an execution workspace before adapter.execute,
+// which mkdir's the per-agent home and stat's candidate cwds through this same
+// mocked module. `workspace-resolution.ts` imports the DEFAULT export, the
+// runner the named writeFile/unlink — provide both shapes.
+vi.mock("node:fs/promises", () => {
+  const api = {
+    writeFile: vi.fn().mockResolvedValue(undefined),
+    mkdir: vi.fn().mockResolvedValue(undefined),
+    stat: vi.fn().mockResolvedValue({ isDirectory: () => true }),
+  };
+  return { ...api, default: api };
+});
 vi.mock("../services/run-log-store.js", () => ({ getRunLogStore: () => runLogStoreMock }));
 vi.mock("../middleware/logger.js", () => ({ logger:{ child:()=>({info:vi.fn(),warn:vi.fn(),error:vi.fn()}) } }));
+// T5: crew workspace resolution reads the instance experimental flags. Without
+// this stub the access THROWS and the resolver's tolerant catch absorbs it —
+// the suite would then only ever exercise the failure branch, and the fs/table
+// stubs above would be dead.
+vi.mock("../services/instance-settings.js", () => ({
+  instanceSettingsService: vi.fn(() => ({
+    getExperimental: vi.fn().mockResolvedValue({ enableIsolatedWorkspaces: true }),
+  })),
+}));
+
 import { discussionEntries } from "@armyofagents/db";
 import { runAoaAgent } from "../services/internal-agent/aoa-agents/runner.js";
 function ch(ret:unknown[]){const c:any={};c.values=()=>c;c.set=()=>c;c.where=()=>c;c.from=()=>c;c.returning=()=>Promise.resolve(ret);c.then=(r:(v:unknown[])=>unknown)=>Promise.resolve(ret).then(r);return c;}

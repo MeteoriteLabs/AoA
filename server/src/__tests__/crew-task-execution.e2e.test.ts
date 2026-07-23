@@ -80,13 +80,23 @@ const {
   getByIdMock: vi.fn().mockResolvedValue(null),
 }));
 
-vi.mock("node:fs/promises", () => ({
-  writeFile: writeFileMock,
-  unlink: unlinkMock,
-}));
+// T5: the runner now resolves an execution workspace before adapter.execute,
+// which mkdir's the per-agent home and stat's candidate cwds through this same
+// mocked module. `workspace-resolution.ts` imports the DEFAULT export, the
+// runner the named writeFile/unlink — provide both shapes.
+vi.mock("node:fs/promises", () => {
+  const api = {
+    writeFile: writeFileMock,
+    unlink: unlinkMock,
+    mkdir: vi.fn().mockResolvedValue(undefined),
+    stat: vi.fn().mockResolvedValue({ isDirectory: () => true }),
+  };
+  return { ...api, default: api };
+});
 
 vi.mock("drizzle-orm", () => ({
   and: vi.fn((...a: unknown[]) => ({ and: a })),
+  asc: vi.fn((a: unknown) => ({ asc: a })),
   eq: vi.fn((a: unknown, b: unknown) => ({ eq: [a, b] })),
   sql: Object.assign(
     (strings: TemplateStringsArray, ...vals: unknown[]) => ({
@@ -112,6 +122,9 @@ vi.mock("@armyofagents/db", () => {
     internalAgentRuns: makeTable("internal_agent_runs"),
     discussionEntries: makeTable("discussion_entries"),
     issues: makeTable("issues"),
+    // T5: reached by the runner's execution-workspace resolution.
+    projects: makeTable("projects"),
+    projectWorkspaces: makeTable("project_workspaces"),
     memoryItems: makeTable("memory_items"),
     discussions: makeTable("discussions"),
     discussionExtractedItems: makeTable("discussion_extracted_items"),
@@ -151,6 +164,16 @@ vi.mock("../services/internal-agent/aoa-agents/bridge-path.js", () => ({
 // filesystem I/O, writing .ndjson files keyed on fixture ids that repeat across
 // test files. vitest runs files in parallel workers and begin() TRUNCATES, so
 // that is a latent cross-file flake, not just litter.
+// T5: crew workspace resolution reads the instance experimental flags. Without
+// this stub the access THROWS and the resolver's tolerant catch absorbs it —
+// the suite would then only ever exercise the failure branch, and the fs/table
+// stubs above would be dead.
+vi.mock("../services/instance-settings.js", () => ({
+  instanceSettingsService: vi.fn(() => ({
+    getExperimental: vi.fn().mockResolvedValue({ enableIsolatedWorkspaces: true }),
+  })),
+}));
+
 vi.mock("../services/run-log-store.js", () => ({
   getRunLogStore: () => ({
     begin: async () => ({ store: "local_file", logRef: "test-run.ndjson" }),

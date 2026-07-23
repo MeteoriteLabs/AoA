@@ -53,8 +53,30 @@ vi.mock("../services/run-log-store.js", () => ({
     read: async () => ({ content: "" }),
   }),
 }));
-vi.mock("node:fs/promises", () => ({ writeFile: vi.fn().mockResolvedValue(undefined), unlink: vi.fn().mockResolvedValue(undefined) }));
+// T5: the runner now resolves an execution workspace before adapter.execute,
+// which mkdir's the per-agent home and stat's candidate cwds through this same
+// mocked module. `workspace-resolution.ts` imports the DEFAULT export, the
+// runner the named writeFile/unlink — provide both shapes.
+vi.mock("node:fs/promises", () => {
+  const api = {
+    writeFile: vi.fn().mockResolvedValue(undefined),
+    unlink: vi.fn().mockResolvedValue(undefined),
+    mkdir: vi.fn().mockResolvedValue(undefined),
+    stat: vi.fn().mockResolvedValue({ isDirectory: () => true }),
+  };
+  return { ...api, default: api };
+});
 vi.mock("../middleware/logger.js", () => ({ logger: { child: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }) } }));
+// T5: crew workspace resolution reads the instance experimental flags. Without
+// this stub the access THROWS and the resolver's tolerant catch absorbs it —
+// the suite would then only ever exercise the failure branch, and the fs/table
+// stubs above would be dead.
+vi.mock("../services/instance-settings.js", () => ({
+  instanceSettingsService: vi.fn(() => ({
+    getExperimental: vi.fn().mockResolvedValue({ enableIsolatedWorkspaces: true }),
+  })),
+}));
+
 vi.mock("../services/thread-agent-actions.js", () => ({
   threadAgentActionService: () => ({
     commitThreadAgentActions: commitMock,

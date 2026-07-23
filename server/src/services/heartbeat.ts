@@ -13,7 +13,6 @@ import {
   costEvents,
   environments,
   issues,
-  projectWorkspaces,
   memoryItems,
   companies,
   taskDependencies,
@@ -105,6 +104,7 @@ import {
   shouldResetTaskSessionForWake,
   type ResolvedWorkspaceForRun,
 } from "./heartbeat-session.js";
+import { resolveWorkspaceForRun as resolveWorkspaceForRunShared } from "./workspace-resolution.js";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import { outputDetectionService } from "./output-detection.js";
 import { postRunSummaryComment } from "./run-summary-comment.js";
@@ -249,8 +249,6 @@ const HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS = 500;
 // converge over time.
 const DEFERRED_WAKE_CONTEXT_KEY = "_aoaWakeContext";
 const LEGACY_DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
-const REPO_ONLY_CWD_SENTINEL = "/__aoa_repo_only__";
-const LEGACY_REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 // Context key set during executeRun when the harness pre-claims the issue via
 // issueService.checkout. Downstream (renderAoaWakePrompt) reads this from the
 // wake payload to suppress the redundant /issues/{id}/checkout agent call.
@@ -270,13 +268,10 @@ export function classifyCompletedRunLiveness(input: { outcome: string; waitingQu
   return { livenessState: "stalled", livenessReason: "adapter_did_not_succeed" };
 }
 
-/**
- * True if `cwd` is the "repo-only / no-local-cwd" sentinel,
- * regardless of whether the row holds the legacy or new value.
- */
-export function isRepoOnlySentinel(cwd: string | null | undefined): boolean {
-  return cwd === REPO_ONLY_CWD_SENTINEL || cwd === LEGACY_REPO_ONLY_CWD_SENTINEL;
-}
+// T5: both moved to ./workspace-resolution.js so the crew runner can reuse the
+// same resolution. Re-exported here because existing callers (projects.ts,
+// aoa-sentinel-compat.test.ts) import isRepoOnlySentinel from this module.
+export { isRepoOnlySentinel } from "./workspace-resolution.js";
 
 const startLocksByAgent = new Map<string, Promise<void>>();
 
@@ -1546,147 +1541,18 @@ export function heartbeatService(db: Db) {
     });
   }
 
+  // T5: the resolution body now lives in ./workspace-resolution.js so the CREW
+  // runner can reuse it verbatim (Decision #110 clause 7 — crew runs had no
+  // workspace at all and fell through to process.cwd(), the AoA repo). This
+  // closure stays as the db-bound call shape so every org call site is
+  // byte-identical to before the extraction.
   async function resolveWorkspaceForRun(
     agent: typeof agents.$inferSelect,
     context: Record<string, unknown>,
     previousSessionParams: Record<string, unknown> | null,
     opts?: { useProjectWorkspace?: boolean | null },
   ): Promise<ResolvedWorkspaceForRun> {
-    const issueId = readNonEmptyString(context.issueId);
-    const contextProjectId = readNonEmptyString(context.projectId);
-    const issueProjectId = issueId
-      ? await db
-          .select({ projectId: issues.projectId })
-          .from(issues)
-          .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
-          .then((rows) => rows[0]?.projectId ?? null)
-      : null;
-    const resolvedProjectId = issueProjectId ?? contextProjectId;
-    const useProjectWorkspace = opts?.useProjectWorkspace !== false;
-    const workspaceProjectId = useProjectWorkspace ? resolvedProjectId : null;
-
-    const projectWorkspaceRows = workspaceProjectId
-      ? await db
-          .select()
-          .from(projectWorkspaces)
-          .where(
-            and(
-              eq(projectWorkspaces.companyId, agent.companyId),
-              eq(projectWorkspaces.projectId, workspaceProjectId),
-            ),
-          )
-          .orderBy(asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id))
-      : [];
-
-    const workspaceHints = projectWorkspaceRows.map((workspace) => ({
-      workspaceId: workspace.id,
-      cwd: readNonEmptyString(workspace.cwd),
-      repoUrl: readNonEmptyString(workspace.repoUrl),
-      repoRef: readNonEmptyString(workspace.repoRef),
-    }));
-
-    if (projectWorkspaceRows.length > 0) {
-      const missingProjectCwds: string[] = [];
-      let hasConfiguredProjectCwd = false;
-      for (const workspace of projectWorkspaceRows) {
-        const projectCwd = readNonEmptyString(workspace.cwd);
-        if (!projectCwd || isRepoOnlySentinel(projectCwd)) {
-          continue;
-        }
-        hasConfiguredProjectCwd = true;
-        const projectCwdExists = await fs
-          .stat(projectCwd)
-          .then((stats) => stats.isDirectory())
-          .catch(() => false);
-        if (projectCwdExists) {
-          return {
-            cwd: projectCwd,
-            source: "project_primary" as const,
-            projectId: resolvedProjectId,
-            workspaceId: workspace.id,
-            repoUrl: workspace.repoUrl,
-            repoRef: workspace.repoRef,
-            workspaceHints,
-            warnings: [],
-          };
-        }
-        missingProjectCwds.push(projectCwd);
-      }
-
-      const fallbackCwd = resolveDefaultAgentWorkspaceDir(agent.id);
-      await fs.mkdir(fallbackCwd, { recursive: true });
-      const warnings: string[] = [];
-      if (missingProjectCwds.length > 0) {
-        const firstMissing = missingProjectCwds[0];
-        const extraMissingCount = Math.max(0, missingProjectCwds.length - 1);
-        warnings.push(
-          extraMissingCount > 0
-            ? `Project workspace path "${firstMissing}" and ${extraMissingCount} other configured path(s) are not available yet. Using fallback workspace "${fallbackCwd}" for this run.`
-            : `Project workspace path "${firstMissing}" is not available yet. Using fallback workspace "${fallbackCwd}" for this run.`,
-        );
-      } else if (!hasConfiguredProjectCwd) {
-        warnings.push(
-          `Project workspace has no local cwd configured. Using fallback workspace "${fallbackCwd}" for this run.`,
-        );
-      }
-      return {
-        cwd: fallbackCwd,
-        source: "project_primary" as const,
-        projectId: resolvedProjectId,
-        workspaceId: projectWorkspaceRows[0]?.id ?? null,
-        repoUrl: projectWorkspaceRows[0]?.repoUrl ?? null,
-        repoRef: projectWorkspaceRows[0]?.repoRef ?? null,
-        workspaceHints,
-        warnings,
-      };
-    }
-
-    const sessionCwd = readNonEmptyString(previousSessionParams?.cwd);
-    if (sessionCwd) {
-      const sessionCwdExists = await fs
-        .stat(sessionCwd)
-        .then((stats) => stats.isDirectory())
-        .catch(() => false);
-      if (sessionCwdExists) {
-        return {
-          cwd: sessionCwd,
-          source: "task_session" as const,
-          projectId: resolvedProjectId,
-          workspaceId: readNonEmptyString(previousSessionParams?.workspaceId),
-          repoUrl: readNonEmptyString(previousSessionParams?.repoUrl),
-          repoRef: readNonEmptyString(previousSessionParams?.repoRef),
-          workspaceHints,
-          warnings: [],
-        };
-      }
-    }
-
-    const cwd = resolveDefaultAgentWorkspaceDir(agent.id);
-    await fs.mkdir(cwd, { recursive: true });
-    const warnings: string[] = [];
-    if (sessionCwd) {
-      warnings.push(
-        `Saved session workspace "${sessionCwd}" is not available. Using fallback workspace "${cwd}" for this run.`,
-      );
-    } else if (resolvedProjectId) {
-      warnings.push(
-        `No project workspace directory is currently available for this issue. Using fallback workspace "${cwd}" for this run.`,
-      );
-    } else {
-      warnings.push(
-        `No project or prior session workspace was available. Using fallback workspace "${cwd}" for this run.`,
-      );
-    }
-    return {
-      cwd,
-      source: "agent_home" as const,
-      projectId: resolvedProjectId,
-      workspaceId: null,
-      repoUrl: null,
-      repoRef: null,
-      workspaceHints,
-      warnings,
-    };
+    return resolveWorkspaceForRunShared(db, agent, context, previousSessionParams, opts);
   }
 
   async function upsertTaskSession(input: {

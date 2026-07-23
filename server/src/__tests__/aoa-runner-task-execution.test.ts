@@ -32,11 +32,19 @@ const {
   buildBridgeSpecMock,
   publishLiveEventMock,
   publishIssueStatusChangedMock,
+  mkdirMock,
+  statMock,
   checkoutMock,
   getByIdMock,
 } = vi.hoisted(() => ({
   writeFileMock: vi.fn().mockResolvedValue(undefined),
   unlinkMock: vi.fn().mockResolvedValue(undefined),
+  // T5: the runner now resolves an execution workspace before adapter.execute,
+  // which mkdir's the per-agent home and stat's candidate cwds. Both go through
+  // this same mocked module, so they have to exist here or every task run
+  // throws.
+  mkdirMock: vi.fn().mockResolvedValue(undefined),
+  statMock: vi.fn().mockResolvedValue({ isDirectory: () => true }),
   adapterExecute: vi.fn().mockResolvedValue({ exitCode: 0 }),
   createEventMock: vi.fn().mockResolvedValue(undefined),
   buildMcpMock: vi.fn(() => ({})),
@@ -51,13 +59,16 @@ const {
   getByIdMock: vi.fn().mockResolvedValue(null),
 }));
 
-vi.mock("node:fs/promises", () => ({
-  writeFile: writeFileMock,
-  unlink: unlinkMock,
-}));
+// `workspace-resolution.ts` imports the DEFAULT export; the runner uses the
+// named writeFile/unlink. Provide both shapes.
+vi.mock("node:fs/promises", () => {
+  const api = { writeFile: writeFileMock, unlink: unlinkMock, mkdir: mkdirMock, stat: statMock };
+  return { ...api, default: api };
+});
 
 vi.mock("drizzle-orm", () => ({
   and: vi.fn((...a: unknown[]) => ({ and: a })),
+  asc: vi.fn((a: unknown) => ({ asc: a })),
   eq: vi.fn((a: unknown, b: unknown) => ({ eq: [a, b] })),
   sql: Object.assign(
     (strings: TemplateStringsArray, ...vals: unknown[]) => ({
@@ -83,6 +94,8 @@ vi.mock("@armyofagents/db", () => {
     internalAgentRuns: makeTable("internal_agent_runs"),
     discussionEntries: makeTable("discussion_entries"),
     issues: makeTable("issues"),
+    projects: makeTable("projects"),
+    projectWorkspaces: makeTable("project_workspaces"),
     workQuestions: makeTable("work_questions"),
     memoryItems: makeTable("memory_items"),
     discussions: makeTable("discussions"),
@@ -112,6 +125,14 @@ vi.mock("../services/heartbeat.js", () => ({
 
 vi.mock("../services/internal-agent/aoa-agents/bridge-path.js", () => ({
   resolveBridgeEntrypoint: vi.fn(() => "/bridge"),
+}));
+
+// T5: crew workspace resolution reads the instance experimental flags. Stub the
+// service so this suite keeps modelling only the task-execution branch.
+vi.mock("../services/instance-settings.js", () => ({
+  instanceSettingsService: vi.fn(() => ({
+    getExperimental: vi.fn().mockResolvedValue({ enableIsolatedWorkspaces: true }),
+  })),
 }));
 
 // T1: the runner opens a run transcript before adapter.execute. run-log-store
@@ -237,6 +258,8 @@ describe("Spec B Task 5: runner issueId branch", () => {
   beforeEach(() => {
     writeFileMock.mockClear().mockResolvedValue(undefined);
     unlinkMock.mockClear().mockResolvedValue(undefined);
+    mkdirMock.mockClear().mockResolvedValue(undefined);
+    statMock.mockClear().mockResolvedValue({ isDirectory: () => true });
     adapterExecute.mockClear().mockResolvedValue({ exitCode: 0 });
     createEventMock.mockClear().mockResolvedValue(undefined);
     buildMcpMock.mockClear().mockReturnValue({});

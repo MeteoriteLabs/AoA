@@ -1,5 +1,6 @@
 import { test, expect, type APIRequestContext } from "@playwright/test";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { seedCompany, cleanupTestCompanies } from "./helpers/seed-company";
 import {
   AMBIENT_CLAUDE_CONFIG_CONTAMINATION,
@@ -53,6 +54,20 @@ type CrewAgent = { id: string; name: string; adapterConfig?: Record<string, unkn
 
 const CREW_AGENT_NAME = "Scout";
 const ORG_AGENT_NAME = "Ambient Control Agent";
+
+/**
+ * T5 (D16 clause 7). This spec file lives at `<repo>/tests/e2e/`, so two levels
+ * up is the AoA source repository — which is also the SERVER process's own
+ * `process.cwd()` under the e2e webServer. Until T5, a crew spawn's cwd fell
+ * through to exactly this directory and the agent loaded AoA's own CLAUDE.md.
+ */
+const AOA_REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+/** True when `candidate` is the repo root itself or anywhere inside it. */
+function isInsideAoaRepo(candidate: string): boolean {
+  const rel = path.relative(AOA_REPO_ROOT, path.resolve(candidate));
+  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+}
 
 /**
  * Per-wait budget. Two sequential waits must BOTH fit inside the 240s test
@@ -202,6 +217,22 @@ test.describe("crew ambient Claude-config isolation", () => {
     );
 
     const env = invocation.env!;
+
+    // 0. 🚨 T5 (D16 clause 7) — the SPAWN's own cwd is not the AoA repository.
+    //
+    //    The crew runner used to set no workspace at all, so
+    //    `effectiveWorkspaceCwd || configuredCwd || process.cwd()`
+    //    (claude-local/src/server/execute.ts:188) resolved to the SERVER's
+    //    process.cwd() — this checkout — and every crew agent silently loaded
+    //    AoA's own CLAUDE.md as project context. The runner now always resolves
+    //    a workspace (per-agent home as the floor), so the spawn must land
+    //    outside this tree. Recorded by the fake CLI itself, so this is the
+    //    spawn's real cwd, not a reconstruction.
+    expect(invocation.cwd, "crew spawn must record a cwd").toBeTruthy();
+    expect(
+      isInsideAoaRepo(invocation.cwd),
+      `crew run must NOT execute inside the AoA repository (got ${invocation.cwd})`,
+    ).toBe(false);
 
     // 1. CLAUDE_CONFIG_DIR is the per-run directory, NOT the operator's.
     expect(env.CLAUDE_CONFIG_DIR, "crew run must pin CLAUDE_CONFIG_DIR").toBeTruthy();

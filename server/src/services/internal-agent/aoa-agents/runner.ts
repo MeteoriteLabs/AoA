@@ -29,6 +29,7 @@ import { getProviderStatus } from "../../../adapters/provider-status.js";
 import type { ProviderStatus } from "../../../adapters/provider-status.js";
 import { realProviderStatusDeps } from "../../../adapters/provider-status-deps.js";
 import { applyModelResolutionToConfig } from "./runner-model-resolution.js";
+import { resolveCrewExecutionWorkspace } from "./crew-workspace.js";
 import { secretService } from "../../secrets.js";
 import {
   bindInternalAgentWorkQuestionContinuation,
@@ -618,7 +619,9 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
         // checker, not a real second condition.
         if (runLogHandle && runLogStore) {
           // Record the pointer so the transcript is FINDABLE from the run row
-          // (mirrors heartbeat.ts:3843-3856). A failure here is NOT fatal to
+          // (mirrors heartbeat.ts:3709-3722 — `runLogStore.begin` + the
+          // logStore/logRef update; moved by T5's -135-line extraction). A
+          // failure here is NOT fatal to
           // logging: logRef is fully deterministic
           // (<companyId>/<agentId>/<runId>.ndjson — run-log-store.ts:97-100), so
           // an operator holding the run id can still find the file. The realistic
@@ -649,12 +652,55 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
         }
       }
 
+      // T5 (Decision #110 clause 7): give this run an execution workspace.
+      // WITHOUT this, the adapter's cwd chain (`effectiveWorkspaceCwd ||
+      // configuredCwd || process.cwd()` — claude-local execute.ts:188) fell all
+      // the way through to process.cwd(): the AoA SERVER'S OWN REPOSITORY. Every
+      // crew run then executed inside this codebase and loaded AoA's CLAUDE.md
+      // as agent context. The helper mirrors heartbeat's resolution and NEVER
+      // returns nothing — the per-agent home is the floor — so process.cwd() is
+      // no longer reachable from the crew path.
+      //
+      // Placed INSIDE the `!adapterResult` branch, next to its only consumer: a
+      // fake-crew turn short-circuits `adapter.execute` entirely, so resolving
+      // for one would spend three DB reads and an mkdir on a cwd nothing ever
+      // uses. Everything above this point can also still bail benignly (the
+      // entry-claim race, the task-checkout conflict), and those bails must not
+      // provision a workspace either.
+      const crewWorkspace = await resolveCrewExecutionWorkspace(db, {
+        agent: { id: agent.id, companyId: agent.companyId },
+        issueId: typeof payload.issueId === "string" ? payload.issueId : null,
+        threadId: bridgeThreadId ?? null,
+        log,
+      });
+      if (crewWorkspace.warnings.length > 0) {
+        log.info({ warnings: crewWorkspace.warnings }, "aoa-runner: execution workspace warnings");
+        // Replay into the run transcript so the FOUNDER sees them, not just the
+        // server log. Mirrors heartbeat.ts:3753-3755, which streams the same
+        // warning class through the run's stderr. Without this a founder who
+        // configured `isolated_workspace` and silently got the shared checkout
+        // (see WHY THAT BRANCH in crew-workspace.ts) had no surface telling
+        // them so. Best-effort: the sink swallows store failures internally,
+        // and a run with no transcript simply skips it.
+        if (crewLogSink) {
+          for (const warning of crewWorkspace.warnings) {
+            await crewLogSink.onLog("stderr", `[aoa] ${warning}\n`);
+          }
+        }
+      }
+      const executionContext: Record<string, unknown> = {
+        aoaInstruction: instruction,
+        payload,
+        paperclipWorkspace: crewWorkspace.workspace,
+        paperclipWorkspaces: crewWorkspace.workspaceHints,
+      };
+
       adapterResult = await adapter.execute({
         runId: runId ?? `aoa-${agentId}`,
         agent,
         runtime: agent.runtimeConfig ?? {},
         config,
-        context: { aoaInstruction: instruction, payload },
+        context: executionContext,
         executionTarget, runtimeCommandSpec,
         mcpBridge: bridgeSpec,
         humanQuestionCapabilities: adapter.humanQuestionCapabilities,
