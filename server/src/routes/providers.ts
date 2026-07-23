@@ -148,7 +148,7 @@
  */
 import { Router, type Request, type Response } from "express";
 import type { Db } from "@armyofagents/db";
-import { agents, companySecrets } from "@armyofagents/db";
+import { agents, commanderLoginChallenges, companySecrets } from "@armyofagents/db";
 import { and, eq, inArray, isNull, notInArray } from "drizzle-orm";
 import {
   KNOWN_EXTERNAL_SECRET_BINDINGS,
@@ -895,6 +895,35 @@ export function providerRoutes(db: Db): Router {
     res.json({ ok: true, secretId: saved.secretId, reprobed, invalidated });
   });
 
+  /**
+   * Does this challenge belong to THIS provider?
+   *
+   * The login service is COMPANY-scoped by design (it is shared with Commander,
+   * whose contract documents cross-TENANT isolation only). The provider dimension
+   * is this router's — the id is in the URL — so without this check a challengeId
+   * for another provider in the SAME company would be accepted: polling or
+   * cancelling `/providers/openai/login/<claude-challenge>` would act on the
+   * Claude sign-in. A mismatch is reported as ABSENT (404), matching the
+   * service's own non-leaking "report as absent" convention.
+   */
+  async function challengeBelongsToProvider(
+    companyId: string,
+    challengeId: string,
+    providerId: string,
+  ): Promise<boolean> {
+    const [row] = (await db
+      .select({ provider: commanderLoginChallenges.provider })
+      .from(commanderLoginChallenges)
+      .where(
+        and(
+          eq(commanderLoginChallenges.id, challengeId),
+          eq(commanderLoginChallenges.companyId, companyId),
+        ),
+      )
+      .limit(1)) as { provider: string }[];
+    return Boolean(row) && row.provider === providerId;
+  }
+
   /* ── Interactive login (Task 9b) ─────────────────────────────────────── */
 
   /**
@@ -973,9 +1002,13 @@ export function providerRoutes(db: Db): Router {
 
     // Scoped by company AND provider: a challenge started under another provider
     // must read as absent here, never surface its status/loginUrl on this card.
+    // The service enforces only the company dimension, so the provider check is
+    // ours (see `challengeBelongsToProvider`).
     const challengeId = req.params.challengeId as string;
-    // Company-scoped in #295's commander-login service (no provider dimension).
-    // Cross-provider challenge isolation is a documented follow-up.
+    if (!(await challengeBelongsToProvider(companyId, challengeId, providerId))) {
+      res.status(404).json({ error: "challenge not found" });
+      return;
+    }
     const status = await loginService.getStatus(companyId, challengeId);
     if (!status) {
       res.status(404).json({ error: "challenge not found" });
@@ -1034,12 +1067,16 @@ export function providerRoutes(db: Db): Router {
       res.status(404).json({ error: `Unknown provider: ${providerId}` });
       return;
     }
-    // Company- AND provider-scoped: a mismatch is a silent no-op in the
-    // lifecycle, so this can never terminate another provider's login child.
-    await loginService.cancel(
-      companyId,
-      req.params.challengeId as string,
-    );
+    // Company- AND provider-scoped. The service enforces only the company
+    // dimension, so without the provider check below a challengeId belonging to
+    // ANOTHER provider in this company would terminate that provider's login
+    // child. A mismatch reads as absent, exactly like an unknown challengeId.
+    const challengeId = req.params.challengeId as string;
+    if (!(await challengeBelongsToProvider(companyId, challengeId, providerId))) {
+      res.status(404).json({ error: "challenge not found" });
+      return;
+    }
+    await loginService.cancel(companyId, challengeId);
     res.json({ ok: true });
   });
 

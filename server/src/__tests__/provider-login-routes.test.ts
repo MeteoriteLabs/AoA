@@ -31,6 +31,7 @@ vi.mock("drizzle-orm", () => drizzleOperatorStubs());
 
 vi.mock("@armyofagents/db", () => ({
   agents: makeTableProxy("agents"),
+  commanderLoginChallenges: makeTableProxy("commander_login_challenges"),
   companySecrets: makeTableProxy("company_secrets"),
   providerReadinessStatus: makeTableProxy("provider_readiness_status"),
 }));
@@ -129,12 +130,21 @@ import {
 
 const COMPANY_ID = "11111111-1111-4111-8111-111111111111";
 
+/**
+ * The stored login-challenge row the route's `challengeBelongsToProvider` guard
+ * reads. Defaults to the provider these specs drive ("openai"); a spec sets it to
+ * a DIFFERENT provider to exercise cross-provider isolation, or `null` to make the
+ * challenge absent.
+ */
+let challengeRow: { provider: string } | null = { provider: "openai" };
+
 function makeDb() {
   return {
     select: () => {
       const builder: Record<string, unknown> = {};
       for (const m of ["from", "where", "limit", "orderBy", "for"]) builder[m] = () => builder;
-      builder.then = (resolve: (v: unknown) => unknown) => Promise.resolve([]).then(resolve);
+      builder.then = (resolve: (v: unknown) => unknown) =>
+        Promise.resolve(challengeRow ? [challengeRow] : []).then(resolve);
       return builder;
     },
   } as never;
@@ -252,11 +262,15 @@ describe("login lifecycle is provider-scoped", () => {
     });
   });
 
-  // DEFERRED: cross-provider isolation. After integrating onto #295, the login
-  // lifecycle reuses #295's company-scoped commander-login service, whose
-  // getStatus/cancel take (companyId, id) with no provider dimension and return
-  // no provider on the status. Restoring per-provider isolation needs a change
-  // to that shared service — tracked as a follow-up. Login within a company works.
+  // These two assert provider-scoping INSIDE the shared commander-login service,
+  // which is company-scoped BY DESIGN (it is shared with Commander and documents
+  // cross-tenant isolation only; getStatus/cancel take (companyId, id)). They stay
+  // skipped because that contract is intentional, not a gap.
+  //
+  // Cross-provider isolation IS enforced — at the route seam, where the provider
+  // id lives: `challengeBelongsToProvider` in routes/providers.ts rejects a
+  // challenge owned by another provider as absent (404) BEFORE the service is
+  // called. See "404s a status read / refuses to cancel … ANOTHER provider" below.
   it.skip("reports NOT FOUND when read through a DIFFERENT provider's path", async () => {
     const s = svc(memStore([row]));
     expect(await s.getStatus(COMPANY_ID, "ch-1", "anthropic")).toBeNull();
@@ -297,6 +311,7 @@ describe("provider login routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     capabilityOverrides.clear();
+    challengeRow = { provider: "openai" };
     mockAssertRole.mockResolvedValue(undefined);
     mockReadReadiness.mockResolvedValue([]);
     mockRecordReadiness.mockResolvedValue({ testedAt: new Date("2026-07-20T00:00:00.000Z") });
@@ -465,23 +480,46 @@ describe("provider login routes", () => {
 
   /* invariant 2 at the route seam — the provider id is carried through */
 
-  it.skip("scopes status by provider AND company (deferred: #295 login is company-scoped)", async () => {
+  it("scopes status by provider AND company", async () => {
     const res = await request(makeApp()).get(statusUrl("openai", "ch-1"));
     expect(res.status).toBe(200);
-    expect(mockLoginService.getStatus).toHaveBeenCalledWith(COMPANY_ID, "ch-1", "openai");
+    expect(mockLoginService.getStatus).toHaveBeenCalledWith(COMPANY_ID, "ch-1");
+  });
+
+  it("404s a status read for a challenge belonging to ANOTHER provider", async () => {
+    // The shared login service is company-scoped only, so the route owns the
+    // provider dimension: polling openai's path with a Claude challenge must read
+    // as absent and must never reach the lifecycle.
+    challengeRow = { provider: "anthropic" };
+    const res = await request(makeApp()).get(statusUrl("openai", "ch-1"));
+    expect(res.status).toBe(404);
+    expect(mockLoginService.getStatus).not.toHaveBeenCalled();
   });
 
   it("404s a status read the lifecycle reports absent", async () => {
+    // Must use the SAME provider the stored challenge carries, otherwise the
+    // route's provider guard 404s first and this never exercises the lifecycle's
+    // own absent path (and would leave the queued `once` unconsumed).
     mockLoginService.getStatus.mockResolvedValueOnce(null);
-    const res = await request(makeApp()).get(statusUrl("anthropic", "ch-1"));
+    const res = await request(makeApp()).get(statusUrl("openai", "ch-1"));
     expect(res.status).toBe(404);
+    expect(mockLoginService.getStatus).toHaveBeenCalled();
   });
 
-  it.skip("scopes cancel by provider AND company (deferred: #295 login is company-scoped)", async () => {
+  it("scopes cancel by provider AND company", async () => {
     const res = await request(makeApp()).post(cancelUrl("openai", "ch-1"));
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ ok: true });
-    expect(mockLoginService.cancel).toHaveBeenCalledWith(COMPANY_ID, "ch-1", "openai");
+    expect(mockLoginService.cancel).toHaveBeenCalledWith(COMPANY_ID, "ch-1");
+  });
+
+  it("refuses to cancel a challenge belonging to ANOTHER provider", async () => {
+    // Without the route guard this would terminate the OTHER provider's login
+    // child, because the shared service cancels by (companyId, challengeId).
+    challengeRow = { provider: "anthropic" };
+    const res = await request(makeApp()).post(cancelUrl("openai", "ch-1"));
+    expect(res.status).toBe(404);
+    expect(mockLoginService.cancel).not.toHaveBeenCalled();
   });
 
   /* invariant 4 — re-probe on completion */
