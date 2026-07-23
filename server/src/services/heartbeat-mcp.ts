@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { McpServerSpec } from "@armyofagents/adapter-utils";
 import { buildMcpBridgeSpec, buildMcpConfig, type McpBridgeSpec, type McpConfigParams } from "./internal-agent/cli-mode.js";
+import { stripUserMcpArgs } from "./mcp-arg-sanitize.js";
 
 export interface HeartbeatMcpDelivery {
   config: Record<string, unknown>;
@@ -85,7 +86,11 @@ export async function prepareHeartbeatMcpDelivery(input: {
 
   const deliveredConfig: Record<string, unknown> = {
     ...input.config,
-    [argKey]: ["--mcp-config", configPath, "--strict-mcp-config", ...existingArgs],
+    // Strip any user-typed --mcp-config/--strict-mcp-config from the user tail
+    // ONLY (Task 12). AoA's own flags below are prepended AFTER the strip and
+    // must never pass through stripUserMcpArgs — doing so would delete AoA's own
+    // config and break every claude_local MCP run.
+    [argKey]: ["--mcp-config", configPath, "--strict-mcp-config", ...stripUserMcpArgs(existingArgs)],
   };
 
   // REGRESSION GUARD: only touch `config.env` when connectors actually exist.

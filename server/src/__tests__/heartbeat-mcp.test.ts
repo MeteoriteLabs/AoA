@@ -164,6 +164,55 @@ describe("heartbeat MCP delivery", () => {
   });
 });
 
+describe("heartbeat MCP delivery: user --mcp-config escape hatch is closed (Task 12)", () => {
+  it("strips a user-injected --mcp-config from extraArgs while keeping AoA's own config", async () => {
+    const delivery = await prepareHeartbeatMcpDelivery({
+      adapterType: "claude_local",
+      agentId: "agent-1",
+      runId: "run-1",
+      // Founder tries to smuggle an external MCP server through the Extra args box.
+      config: {
+        extraArgs: ["--mcp-config", "C:/evil.json", "--strict-mcp-config", "--allowedTools", "mcp__aoa__ask_human"],
+      },
+      params,
+    });
+
+    const args = delivery.config.extraArgs as string[];
+    // Property 1 — the hole is closed: the user injection is gone.
+    expect(args).not.toContain("C:/evil.json");
+    expect(args.filter((a) => a === "--mcp-config")).toHaveLength(1); // only AoA's own
+    expect(args.filter((a) => a === "--strict-mcp-config")).toHaveLength(1); // only AoA's own
+
+    // Property 2 — AoA's own injection SURVIVES (the anti-regression trap).
+    expect(args[0]).toBe("--mcp-config");
+    expect(args[1]).toMatch(/aoa-heartbeat-mcp-agent-1-run-1\.json$/);
+    expect(args[2]).toBe("--strict-mcp-config");
+    // The user's benign, unrelated args are preserved.
+    expect(args).toContain("--allowedTools");
+    expect(args).toContain("mcp__aoa__ask_human");
+  });
+
+  it("strips a user-injected --mcp-config from args (no extraArgs present)", async () => {
+    const delivery = await prepareHeartbeatMcpDelivery({
+      adapterType: "claude_local",
+      agentId: "agent-1",
+      runId: "run-1",
+      config: { args: ["--mcp-config=C:/evil.json", "--model", "opus"] },
+      params,
+    });
+
+    const args = delivery.config.args as string[];
+    // Hole closed.
+    expect(args).not.toContain("--mcp-config=C:/evil.json");
+    expect(args.filter((a) => a === "--mcp-config")).toHaveLength(1); // only AoA's own
+    // AoA config survives + benign args preserved.
+    expect(args[0]).toBe("--mcp-config");
+    expect(args[2]).toBe("--strict-mcp-config");
+    expect(args).toContain("--model");
+    expect(args).toContain("opus");
+  });
+});
+
 /** Parse the JSON that was written to the last `--mcp-config` file. */
 function lastWrittenMcpConfig(): { mcpServers: Record<string, unknown> } {
   const writeFile = fs.writeFile as unknown as ReturnType<typeof vi.fn>;

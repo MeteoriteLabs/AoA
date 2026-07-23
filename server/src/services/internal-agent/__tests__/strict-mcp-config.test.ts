@@ -36,6 +36,10 @@ describe("crew runner argv pairs --mcp-config with --strict-mcp-config (D2)", ()
     const here = dirname(fileURLToPath(import.meta.url));
     const runnerPath = resolve(here, "../aoa-agents/runner.ts");
     const src = readFileSync(runnerPath, "utf8");
-    expect(src).toContain('args: ["--mcp-config", cfgPath, "--strict-mcp-config", ...prevArgs]');
+    // Task 12: the user tail is now sanitized (stripUserMcpArgs) to close the
+    // extraArgs --mcp-config escape hatch, but AoA's own prefix — --mcp-config
+    // cfgPath followed IMMEDIATELY by --strict-mcp-config — is unchanged and
+    // still prepended before any (now-sanitized) user args.
+    expect(src).toContain('args: ["--mcp-config", cfgPath, "--strict-mcp-config", ...stripUserMcpArgs(prevArgs)]');
   });
 });

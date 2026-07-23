@@ -7,6 +7,7 @@ import { agents, internalAgentRuns, discussionEntries, issues, threadOrchestrati
 import { getServerAdapter } from "../../../adapters/registry.js";
 import { costService } from "../../costs.js";
 import { buildMcpConfig, buildMcpBridgeSpec } from "../cli-mode.js";
+import { stripUserMcpArgs } from "../../mcp-arg-sanitize.js";
 import { resolveAdapterExecutionContext } from "../../heartbeat.js";
 import { resolveBridgeEntrypoint } from "./bridge-path.js";
 import { publishLiveEvent, publishIssueStatusChanged, threadWorkingAgents, broadcastThreadPresence } from "../../live-events.js";
@@ -493,7 +494,7 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
     // returns it verbatim.
     const isClaudeFamily = agent.adapterType === "claude_local";
     const config = isClaudeFamily
-      ? { ...resolvedBaseConfig, promptTemplate: triggerPrompt, args: ["--mcp-config", cfgPath, "--strict-mcp-config", ...prevArgs] }
+      ? { ...resolvedBaseConfig, promptTemplate: triggerPrompt, args: ["--mcp-config", cfgPath, "--strict-mcp-config", ...stripUserMcpArgs(prevArgs)] }
       : { ...resolvedBaseConfig, promptTemplate: triggerPrompt };
     const { executionTarget, runtimeCommandSpec } = resolveAdapterExecutionContext(config, adapter);
 

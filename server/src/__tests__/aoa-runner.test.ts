@@ -75,6 +75,28 @@ it("claude-family: --mcp-config tmp file kept (byte-identical) AND mcpBridge als
   expect(execArg.mcpBridge).toMatchObject({ command:"node" });
   expect(execArg.mcpBridge.env).toMatchObject({ AOA_SESSION_COMPANY_ID:"co-1" });
 });
+it("claude-family: user-injected --mcp-config in adapterConfig.args is stripped, AoA's own survives (Task 12)", async () => {
+  execMock.mockClear();
+  const db:any = {
+    // Founder smuggles an external MCP server + a benign flag through the Extra args box.
+    select:()=>ch([{ id:"cl-2", companyId:"co-1", name:"Scribe", adapterType:"claude_local", adapterConfig:{ args:["--mcp-config","C:/evil.json","--strict-mcp-config","--model","opus"] }, runtimeConfig:{ aoa:{ instruction:"do extraction", role:"scribe" } } }]),
+    insert:()=>({ values:()=>({ returning:()=>Promise.resolve([{id:"run-c2"}]) }) }),
+    update:()=>ch([{ id:"e1" }]),
+  };
+  await runAoaAgent(db, "cl-2", { companyId:"co-1", source:"discussion_entry_pending", entryId:"e1" });
+  const args = execMock.mock.calls[0][0].config.args as string[];
+  // Property 1 — hole closed: the smuggled external config is gone.
+  expect(args).not.toContain("C:/evil.json");
+  expect(args.filter((a)=>a==="--mcp-config")).toHaveLength(1);       // only AoA's own
+  expect(args.filter((a)=>a==="--strict-mcp-config")).toHaveLength(1); // only AoA's own
+  // Property 2 — AoA's own injection SURVIVES (the anti-regression trap).
+  expect(args[0]).toBe("--mcp-config");
+  expect(String(args[1])).toMatch(/aoa-mcp-cl-2-run-c2\.json$/);
+  expect(args[2]).toBe("--strict-mcp-config");
+  // The user's benign, unrelated args are preserved.
+  expect(args).toContain("--model");
+  expect(args).toContain("opus");
+});
 it("failure isolated: adapter throws → never rethrows", async () => {
   execMock.mockRejectedValueOnce(new Error("boom"));
   const db:any = { select:()=>ch([{ id:"ext-1", companyId:"co-1", name:"Scribe", adapterType:"process", adapterConfig:{}, runtimeConfig:{} }]), insert:()=>ch([{id:"run-2"}]), update:()=>ch([{id:"e2"}]) };
