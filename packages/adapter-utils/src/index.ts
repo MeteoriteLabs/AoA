@@ -17,6 +17,9 @@ export type {
   AdapterModelProfileDefinition,
   AdapterExecutionContext,
   McpBridgeSpec,
+  McpServerSpec,
+  McpStdioServerSpec,
+  McpHttpServerSpec,
   RuntimeHookBridgeSpec,
   AdapterRuntimeDecisionBroker,
   AdapterRuntimeDecisionPromptBase,
@@ -147,3 +150,4 @@ export { extractVerificationUrl, createLoginUrlDetector, isLoopbackUrl } from ".
 export type { LoginUrlDetector } from "./login-url-detector.js";
 export { runAuthStatusAndBranch } from "./auth-probe-branch.js";
 export type { AuthProbeStatus, AuthProbeBranchOptions } from "./auth-probe-branch.js";
+export { isStdioServerSpec, isHttpServerSpec } from "./mcp-server-spec.js";

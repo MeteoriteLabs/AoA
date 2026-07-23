@@ -196,6 +196,13 @@ export interface McpBridgeSpec {
   env: Record<string, string>;
 }
 
+export type {
+  McpServerSpec,
+  McpStdioServerSpec,
+  McpHttpServerSpec,
+} from "./mcp-server-spec.js";
+export { isStdioServerSpec, isHttpServerSpec } from "./mcp-server-spec.js";
+
 export type AdapterRuntimePermissionDecision = "allow_once" | "allow_always" | "deny";
 export type AdapterRuntimeDecisionTimeoutPolicy =
   | "deny"
