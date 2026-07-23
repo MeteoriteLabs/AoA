@@ -18,7 +18,7 @@
 |---|---|---|
 | 1 | `actorType:"aoa"` invented — real vocabulary is `actorType:"agent"` + `agentKind:"aoa"`; `ask_human` requires it (`ask-human-tool.ts:33`), so v1 would have **forbidden `ask_human` for Scout/Engineer** | T8 uses `"agent"`+`agentKind` |
 | 2 | `use_skill` rewrite gated on `ctx.agentId`, which **silently disables Commander** (production Commander bridges have no `agentId`; it resolves via `internalAgentConfig.agentId`, `skill-tools.ts:86`). v1's own test masked it | T9 keeps Commander's resolution, adds a separate agent-backed branch |
-| 3 | "T3 before T4 prevents lockout" was **false** — `skillKeys` defaults `[]` (`agents.ts:43`) and crew seeding never sets it | New T7 (assignment/backfill) precedes enforcement |
+| 3 | "T3 before T4 prevents lockout" was **false** — `skillKeys` defaults `[]` (`agents.ts:43`) and crew seeding never sets it, so delivery *and* enforcement are both dead on arrival | Surfaced explicitly; **D17** then settled it — Phase 1 ships no defaults and T7 proves the founder-assigned path instead |
 | 4 | Pinned `HOME`/`USERPROFILE` → breaks git/SSH/npm for tools the agent launches | T2 isolates **`CLAUDE_CONFIG_DIR` only**; home relocation is an explicit, separately-tested decision |
 | 5 | Neutral cwd assumed to give crew a workspace — crew tasks aren't workspace-backed; scratch cwd means they **can't touch the repo** and breaks session resume (`execute.ts:450`) | New T5 (explicit workspace resolution) |
 | 6 | Neutral cwd claimed to satisfy "no repo CLAUDE.md" — false for real workspace runs | New T4 uses documented `CLAUDE_CODE_DISABLE_CLAUDE_MDS` / `CLAUDE_CODE_DISABLE_AUTO_MEMORY` + an explicit policy |
@@ -205,18 +205,27 @@ git commit -m "feat(crew): deliver company/marketplace skills to crew agents at 
 
 ---
 
-## Task 7: Crew skill assignment / backfill (prerequisite for enforcement)
+## Task 7: Prove the founder-assigned skill path end-to-end (no defaults — D17)
 
-**Why:** `agents.skillKeys` defaults `[]` (`agents.ts:43`) and crew seeding never sets it (`seed-crew-agent.ts:95`). **Enforcing (T9) without this denies every skill to every crew agent.**
+**Why the shape changed.** v2 originally proposed seeding default `skillKeys` per role. **D17 rejects that:** Commander's skills are Commander's job, and each crew agent's real set is declared in its marketplace agent template (D6) — which Phase 2 delivers. Inventing a Phase-1 map is guesswork Phase 2 deletes.
 
-**Files:** `server/src/services/internal-agent/aoa-agents/seed-crew-agent.ts` (+ the `ensure-*.ts` role seeders); a backfill for existing rows; test.
+**So Phase 1 assigns NO defaults.** That is not a regression (crew agents get zero skills today) and it *does* close P4's hole. What Phase 1 must prove is that a skill a founder attaches in the Skills tab is **actually delivered (T6) and actually enforced (T9)** — making the tab honest (P7) and leaving Phase 2 to populate it from templates.
 
-- [ ] **Step 1: Decide the Phase-1 default set per role** (Phase 2 replaces this with marketplace templates, D6). Keep it minimal and explicit — record the mapping in the plan.
-- [ ] **Step 2: Failing test** — a newly seeded crew agent has non-empty `skillKeys`; an existing agent with empty `skillKeys` is backfilled once (idempotent, and never clobbers a founder's curated selection).
-- [ ] **Step 3: Implement** seeding + a guarded one-time backfill (mirror `ensure-commander.ts:231-255`'s `commanderSkillsInitialized` flag pattern so a founder who clears the list isn't re-filled).
-- [ ] **Step 4: Run → PASS.** **Step 5: Verify + commit.**
+**Files:** integration test only — `server/src/__tests__/crew-skill-assignment-e2e.test.ts`. No seeder change.
+
+- [ ] **Step 1: Confirm the assignment route works** — `PATCH …/agents/:id` validates `skillKeys` against the company's installed skills and 422s on unknown/ambiguous keys (`agents.ts:1514-1516`). Record the exact request shape; do not modify it.
+- [ ] **Step 2: Write the failing integration test** spanning assignment → delivery → enforcement:
+  - assign one installed skill to a crew agent via the route;
+  - `listRuntimeSkillEntries(companyId, agentId)` returns exactly that skill;
+  - the crew runner puts it on `context.skills` (T6);
+  - `use_skill` with that key succeeds, and with a *different* installed key returns `NOT_ENABLED` (T9);
+  - clearing `skillKeys` returns the agent to delivering nothing.
+- [ ] **Step 3: Run → FAIL** until T6 and T9 are both in.
+- [ ] **Step 4: Run after T9 → PASS.** No implementation of its own; this task is the seam that proves the other two.
+- [ ] **Step 5: Fix the UI copy (P7).** `AgentSkillsTab.tsx:273-275` claims *"Skills injected into this agent's context on every run"* — true only once T6 ships, and only for attached skills. Reword to state that only attached skills are injected.
+- [ ] **Step 6: Commit.**
 ```bash
-git commit -m "feat(crew): assign default skillKeys to crew agents (+ guarded one-time backfill)"
+git commit -m "test(crew): prove founder-assigned skills are delivered and enforced end-to-end"
 ```
 
 ---
@@ -238,7 +247,9 @@ git commit -m "fix(crew): correct crew actor identity (agent+aoa) and stop apply
 
 ## Task 9: Enforce `skillKeys` scoping (P4 — the security boundary)
 
-**Depends on T7** (agents must have skills) **and T8** (correct identity).
+**Depends on T8** (correct identity). T7 is the harness that proves T6+T9 together — write it before, run it after.
+
+**On the "lockout" concern:** enforcing while `skillKeys` is empty denies every skill to every crew agent. Under D17 that is the *intended* Phase-1 state — crew agents receive no skills today, so nothing regresses, and the open-library hole (D7/P4) closes immediately. Founder-assigned skills are the escape hatch, proven by T7.
 
 **Files:** `server/src/services/internal-agent/tools/skill-tools.ts` (~L86-112); tests at both tool and bridge level.
 
@@ -306,9 +317,11 @@ git commit -m "fix(crew): <root cause> — crew runs complete and move the task"
 
 ## Self-review
 
-**Coverage:** P1→T1, P2→T2+T3+T4, P3→T6, P4→T9 (+T7 prerequisite, +T8 identity), P5→T10, P6 deferred (re-run ergonomics moved to a follow-up — it is not on the critical path to a completing crew run), P7 satisfied by T6+T9.
+**Coverage:** P1→T1, P2→T2+T3+T4, P7b→T5, P3→T6, P7c→T7 (proof harness), P4b→T8, P4→T9, P5→T10, P7→T7 Step 5, P6 deferred (re-run ergonomics are not on the critical path to a completing crew run).
 
-**Ordering (Codex-recommended):** T1 → T2 → T3 → T4 → T5 → T6 → T7 → T8 → T9 → T10 → T11. T9 **must** follow T7 (else total lockout) and T8 (else wrong identity). T10 **must** follow T1.
+**Ordering:** T1 → T2 → T3 → T4 → T5 → T6 → T7 (write) → T8 → T9 → T7 (run) → T10 → T11. T9 **must** follow T8 (else wrong actor identity). T10 **must** follow T1 (else undiagnosable).
+
+**Deliberate Phase-1 end state:** crew agents hold no default skills (D17). Real per-agent sets arrive in Phase 2 from marketplace agent templates (D6). Phase 1's job is that the *machinery* is correct and the founder-assigned path works.
 
 **Blast radius:** T2/T3/T4 ship **crew-only**; org/heartbeat is untouched until the T11 expansion gate. T8's bridge-policy change affects all non-Commander actors — bridge-level tests are mandatory, not optional.
 
