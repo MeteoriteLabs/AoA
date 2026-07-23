@@ -75,10 +75,11 @@ it("claude-family: --mcp-config tmp file kept (byte-identical) AND mcpBridge als
   expect(execArg.mcpBridge).toMatchObject({ command:"node" });
   expect(execArg.mcpBridge.env).toMatchObject({ AOA_SESSION_COMPANY_ID:"co-1" });
 });
-it("claude-family: user-injected --mcp-config in adapterConfig.args is stripped, AoA's own survives (Task 12)", async () => {
+it("claude-family: user-injected --mcp-config in adapterConfig.args is stripped, AoA's own survives (Task 12, args key)", async () => {
   execMock.mockClear();
   const db:any = {
-    // Founder smuggles an external MCP server + a benign flag through the Extra args box.
+    // adapterConfig.ARGS carries the injection (no extraArgs set) → AoA's prefix
+    // lands in `args` (the adapter-preferred key when extraArgs is absent).
     select:()=>ch([{ id:"cl-2", companyId:"co-1", name:"Scribe", adapterType:"claude_local", adapterConfig:{ args:["--mcp-config","C:/evil.json","--strict-mcp-config","--model","opus"] }, runtimeConfig:{ aoa:{ instruction:"do extraction", role:"scribe" } } }]),
     insert:()=>({ values:()=>({ returning:()=>Promise.resolve([{id:"run-c2"}]) }) }),
     update:()=>ch([{ id:"e1" }]),
@@ -96,6 +97,54 @@ it("claude-family: user-injected --mcp-config in adapterConfig.args is stripped,
   // The user's benign, unrelated args are preserved.
   expect(args).toContain("--model");
   expect(args).toContain("opus");
+});
+it("claude-family: user-injected --mcp-config in adapterConfig.EXTRAARGS is stripped, AoA lands in the adapter-preferred key (Task 12, extraArgs escape hatch)", async () => {
+  // THE MISSING REGRESSION. The UI "Extra args" box writes adapterConfig.extraArgs
+  // (build-config.ts), and the claude-local adapter PREFERS extraArgs over args
+  // (execute.ts). A founder sets Extra args to `--mcp-config,C:\evil.json`. AoA
+  // MUST inject into extraArgs (the key the adapter reads) with the user tail
+  // sanitized — else the evil config is delivered AND AoA's own config (if it
+  // went to `args`) is shadowed. Mutation check: revert runner to hardcoded
+  // `args:` and this test fails (extraArgs still holds evil.json, no AoA prefix).
+  execMock.mockClear();
+  const db:any = {
+    select:()=>ch([{ id:"cl-3", companyId:"co-1", name:"Scribe", adapterType:"claude_local", adapterConfig:{ extraArgs:["--mcp-config","C:/evil.json"] }, runtimeConfig:{ aoa:{ instruction:"do extraction", role:"scribe" } } }]),
+    insert:()=>({ values:()=>({ returning:()=>Promise.resolve([{id:"run-c3"}]) }) }),
+    update:()=>ch([{ id:"e1" }]),
+  };
+  await runAoaAgent(db, "cl-3", { companyId:"co-1", source:"discussion_entry_pending", entryId:"e1" });
+  const delivered = execMock.mock.calls[0][0].config;
+  // AoA's prefix must land in the ADAPTER-PREFERRED key (extraArgs), NOT args.
+  const extraArgs = delivered.extraArgs as string[];
+  // Property 1 — hole closed: the smuggled external config is gone from extraArgs.
+  expect(extraArgs).not.toContain("C:/evil.json");
+  expect(extraArgs.filter((a)=>a==="--mcp-config")).toHaveLength(1);       // only AoA's own
+  expect(extraArgs.filter((a)=>a==="--strict-mcp-config")).toHaveLength(1); // only AoA's own
+  // Property 2 — AoA's own injection SURVIVES in the key the adapter reads.
+  expect(extraArgs[0]).toBe("--mcp-config");
+  expect(String(extraArgs[1])).toMatch(/aoa-mcp-cl-3-run-c3\.json$/);
+  expect(extraArgs[2]).toBe("--strict-mcp-config");
+});
+it("claude-family: benign non-empty extraArgs → AoA prefix lands in extraArgs, benign args preserved (Task 12, shadow guard)", async () => {
+  // Even a BENIGN extraArgs (e.g. --model opus) would be preferred by the adapter
+  // and shadow AoA's config if AoA injected into `args`. AoA must land in
+  // extraArgs so its --mcp-config is the one the adapter actually reads.
+  execMock.mockClear();
+  const db:any = {
+    select:()=>ch([{ id:"cl-4", companyId:"co-1", name:"Scribe", adapterType:"claude_local", adapterConfig:{ extraArgs:["--model","opus"] }, runtimeConfig:{ aoa:{ instruction:"do extraction", role:"scribe" } } }]),
+    insert:()=>({ values:()=>({ returning:()=>Promise.resolve([{id:"run-c4"}]) }) }),
+    update:()=>ch([{ id:"e1" }]),
+  };
+  await runAoaAgent(db, "cl-4", { companyId:"co-1", source:"discussion_entry_pending", entryId:"e1" });
+  const extraArgs = execMock.mock.calls[0][0].config.extraArgs as string[];
+  // AoA's --mcp-config cfgPath --strict-mcp-config lands in extraArgs (adapter-read key).
+  expect(extraArgs[0]).toBe("--mcp-config");
+  expect(String(extraArgs[1])).toMatch(/aoa-mcp-cl-4-run-c4\.json$/);
+  expect(extraArgs[2]).toBe("--strict-mcp-config");
+  // The benign user flag is preserved, and `opus` is NOT mistaken for a config value.
+  expect(extraArgs).toContain("--model");
+  expect(extraArgs).toContain("opus");
+  expect(extraArgs.filter((a)=>a==="--mcp-config")).toHaveLength(1);
 });
 it("failure isolated: adapter throws → never rethrows", async () => {
   execMock.mockRejectedValueOnce(new Error("boom"));

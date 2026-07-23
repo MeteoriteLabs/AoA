@@ -484,8 +484,19 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
     // MX2: only claude-family CLIs understand `--mcp-config <file>`. Injecting
     // it for codex/opencode/etc. leaked an invalid flag into their argv (the
     // reason codex AoA agents got zero MCP tools). claude_local is the ONLY
-    // claude CLI adapter (registry.ts) — do not broaden. claude-family path is
-    // kept BYTE-IDENTICAL to pre-MX2: ["--mcp-config", cfgPath, ...prevArgs].
+    // claude CLI adapter (registry.ts) — do not broaden.
+    //
+    // Task 12: AoA's `--mcp-config cfgPath --strict-mcp-config` prefix MUST land
+    // in the adapter-PREFERRED arg key, mirroring the heartbeat site. The
+    // claude-local adapter (execute.ts) prefers `extraArgs` over `args` when
+    // `extraArgs` is non-empty. The UI "Extra args" box writes `adapterConfig.
+    // extraArgs`. If we hardcoded `args` here, a founder's `extraArgs` (evil or
+    // even benign like `--model opus`) would be preferred by the adapter and
+    // SHADOW AoA's `args`-injected config — a governance bypass AND broken
+    // connector delivery. So target the same key the adapter will read, and
+    // sanitize ONLY the user tail from that key (never AoA's own prepended
+    // flags — passing the whole array through stripUserMcpArgs would delete
+    // AoA's own config and break every MCP run).
     //
     // T1.2: every adapter (claude/codex/opencode/gemini) honors
     // `config.promptTemplate` via their `renderTemplate(promptTemplate, ...)`
@@ -493,8 +504,13 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
     // through uniformly. The prompt has no {{...}} tokens — renderTemplate
     // returns it verbatim.
     const isClaudeFamily = agent.adapterType === "claude_local";
+    const resolvedConfigRecord = resolvedBaseConfig as Record<string, unknown>;
+    const argKey = Array.isArray(resolvedConfigRecord.extraArgs) ? "extraArgs" : "args";
+    const userTail = Array.isArray(resolvedConfigRecord[argKey])
+      ? (resolvedConfigRecord[argKey] as unknown[]).filter((v): v is string => typeof v === "string")
+      : prevArgs;
     const config = isClaudeFamily
-      ? { ...resolvedBaseConfig, promptTemplate: triggerPrompt, args: ["--mcp-config", cfgPath, "--strict-mcp-config", ...stripUserMcpArgs(prevArgs)] }
+      ? { ...resolvedBaseConfig, promptTemplate: triggerPrompt, [argKey]: ["--mcp-config", cfgPath, "--strict-mcp-config", ...stripUserMcpArgs(userTail)] }
       : { ...resolvedBaseConfig, promptTemplate: triggerPrompt };
     const { executionTarget, runtimeCommandSpec } = resolveAdapterExecutionContext(config, adapter);
 
