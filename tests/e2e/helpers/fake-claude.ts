@@ -49,6 +49,19 @@ export interface FakeClaudeInvocation {
    * field existed are still readable.
    */
   env?: Record<string, string>;
+  /**
+   * The shim's listing of its OWN `CLAUDE_CONFIG_DIR`, taken at spawn time.
+   *
+   * Filenames only — never contents. Needed because the per-run config home is
+   * removed in the adapter's `finally`, so a spec that stat'd the path after the
+   * run would race the cleanup and would not be looking at the child's view
+   * anyway. This is the only race-free proof that provisioning put the
+   * credential where the CLI would read it — and, equally, that it put nothing
+   * else there.
+   *
+   * Optional for the same back-compat reason as `env`.
+   */
+  configDirEntries?: string[];
 }
 
 /**
@@ -69,6 +82,58 @@ export const AMBIENT_CLAUDE_CONFIG_POISON = {
   CLAUDE_CONFIG_DIR: path.join(os.tmpdir(), "aoa-e2e-ambient-claude-config"),
   CLAUDE_CODE_E2E_OPERATOR_KNOB: "operator-hooks-and-plugins",
 } as const;
+
+/**
+ * Claude's credential filename — the ONE file a crew run is allowed to inherit.
+ *
+ * Re-declared rather than imported from
+ * `@armyofagents/adapter-claude-local/server` (where
+ * `CLAUDE_CREDENTIAL_FILE_NAME` is the production source of truth), on the same
+ * principle as `FakeOutputRef` below: the e2e tree does not depend on workspace
+ * package resolution. A rename that misses this fixture fails
+ * crew-config-isolation.spec.ts loudly rather than silently passing.
+ */
+export const AMBIENT_CLAUDE_CREDENTIAL_FILE = ".credentials.json";
+
+/**
+ * The contamination entries seeded alongside it. A real operator config home has
+ * 20; these are the ones that carry hooks, plugins, third-party skills, global
+ * instructions and session history — i.e. the things D9 exists to keep away from
+ * a crew agent. Half files, half directories, because provisioning must decline
+ * both shapes.
+ */
+export const AMBIENT_CLAUDE_CONFIG_CONTAMINATION = {
+  files: ["CLAUDE.md", "settings.json", "mcp-needs-auth-cache.json", "history.jsonl"],
+  dirs: ["plugins", "skills", "projects", "sessions"],
+} as const;
+
+/**
+ * Materialize the poisoned ambient path as a REAL, logged-in-looking operator
+ * config home.
+ *
+ * Naming it is not enough once provisioning exists: a crew run copies the
+ * credential OUT of this directory, so an empty one would make every crew run
+ * fail credentials-missing — and the contamination entries are what give the
+ * "nothing else was copied" assertion something to be false about.
+ *
+ * Idempotent; safe to call from the config at load and from a spec's beforeEach.
+ */
+export function seedAmbientClaudeConfigHome(): void {
+  const home = AMBIENT_CLAUDE_CONFIG_POISON.CLAUDE_CONFIG_DIR;
+  fs.mkdirSync(home, { recursive: true });
+  fs.writeFileSync(
+    path.join(home, AMBIENT_CLAUDE_CREDENTIAL_FILE),
+    JSON.stringify({ claudeAiOauth: { accessToken: "e2e-fixture-not-a-real-token" } }),
+    "utf8",
+  );
+  for (const name of AMBIENT_CLAUDE_CONFIG_CONTAMINATION.files) {
+    fs.writeFileSync(path.join(home, name), `operator ${name}`, "utf8");
+  }
+  for (const name of AMBIENT_CLAUDE_CONFIG_CONTAMINATION.dirs) {
+    fs.mkdirSync(path.join(home, name), { recursive: true });
+    fs.writeFileSync(path.join(home, name, "payload.txt"), "operator payload", "utf8");
+  }
+}
 
 /** Read all recorded invocations (oldest first). Empty if none yet. */
 export function readFakeClaudeInvocations(): FakeClaudeInvocation[] {

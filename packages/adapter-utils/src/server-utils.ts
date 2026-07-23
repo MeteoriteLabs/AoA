@@ -358,6 +358,24 @@ export async function ensureCommandResolvable(command: string, cwd: string, env:
 }
 
 /**
+ * Case-folding for environment-variable NAMES.
+ *
+ * Windows env names are case-insensitive — `Claude_Config_Dir` IS
+ * `CLAUDE_CONFIG_DIR`, one variable — while POSIX names are case-sensitive and
+ * must never be folded together.
+ *
+ * Exported because `mergeChildEnv`'s strip is not the only place that has to
+ * compare env keys: claude-local reads the overlay for a configured
+ * `CLAUDE_CONFIG_DIR` and for configured auth, and both comparisons must agree
+ * with the strip's. A private second copy of this rule drifts silently, and the
+ * drift only shows up as a Windows-only bug — so the rule is one function and
+ * the strip below uses it too.
+ */
+export function foldEnvKey(key: string): string {
+  return process.platform === "win32" ? key.toLowerCase() : key;
+}
+
+/**
  * Build a child-process environment from the parent env + an overlay, with an
  * opt-in strip of inherited keys. A key in `unsetEnvKeys` is removed from the
  * result ONLY if the overlay did not set it — so an agent's own value (even an
@@ -383,10 +401,10 @@ export function mergeChildEnv(
   // `OpenAI_API_KEY`) in place, so the codex child still inherits the server key
   // and the api-key auth/billing leak this strip prevents returns (Codex P2).
   // Match case-insensitively on Windows, exact elsewhere (POSIX env IS
-  // case-sensitive — don't drop a legitimately distinct var there).
-  const caseInsensitive = process.platform === "win32";
-  const sameKey = (a: string, b: string) =>
-    caseInsensitive ? a.toLowerCase() === b.toLowerCase() : a === b;
+  // case-sensitive — don't drop a legitimately distinct var there). Delegates to
+  // the exported `foldEnvKey` so the adapters that must agree with this strip
+  // share the rule rather than reimplementing it.
+  const sameKey = (a: string, b: string) => foldEnvKey(a) === foldEnvKey(b);
   for (const key of unsetEnvKeys ?? []) {
     // The exact key(s) the overlay set itself survive (an agent's own key — even
     // an explicit empty string — wins). Any OTHER matching-cased key is an

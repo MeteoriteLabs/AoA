@@ -8,6 +8,7 @@ import {
   AMBIENT_CLAUDE_CONFIG_POISON,
   FAKE_CLAUDE_CONTROL_PATH,
   FAKE_CLAUDE_INVOCATIONS_PATH,
+  seedAmbientClaudeConfigHome,
 } from "./helpers/fake-claude";
 import { FAKE_CODEX_CONTROL_PATH, FAKE_CODEX_INVOCATIONS_PATH } from "./helpers/fake-codex";
 import { FAKE_CREW_CONTROL_PATH } from "./helpers/fake-crew-control";
@@ -96,11 +97,15 @@ try {
 // D9 (crew-config-isolation.spec.ts): give the server process a REAL ambient
 // Claude config to leak, so the crew-run env strip is proven against something
 // rather than asserted against an absence that was always absent. The directory
-// is created (not just named) so it looks like a genuine operator config home.
-// Harmless to every other spec: the fake CLIs ignore these, extraction/Commander
-// run through the same fakes, and no spec asserts on Anthropic key presence.
+// is POPULATED (credential + the contamination entries), not just created: crew
+// provisioning copies the credential out of it, so an empty directory would make
+// every crew run fail credentials-missing, and the contamination is what the
+// "nothing else was copied" assertion needs in order to be falsifiable.
+// Harmless to every other spec: the fake CLIs ignore all of it, extraction/
+// Commander run through the same fakes, and no spec asserts on Anthropic key
+// presence.
 if (!WINDOWS_WITH_EMBEDDED_POSTGRES) {
-  fs.mkdirSync(AMBIENT_CLAUDE_CONFIG_POISON.CLAUDE_CONFIG_DIR, { recursive: true });
+  seedAmbientClaudeConfigHome();
 }
 
 // Commander viewer e2e (commander-viewer.spec.ts): resolve `claude` to the

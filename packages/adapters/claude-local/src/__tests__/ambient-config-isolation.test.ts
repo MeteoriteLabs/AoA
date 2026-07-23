@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { execute } from "../server/execute.js";
+import { resolveIsolatedClaudeConfigRoot } from "../server/ambient-config.js";
 import type {
   AdapterExecutionContext,
   AdapterProviderSandboxRunInput,
@@ -22,14 +23,30 @@ import type {
  *     opt-in is crew-only; a later task decides whether to expand it.
  */
 
-const AMBIENT_CONFIG_DIR = path.join(os.tmpdir(), "operator-dot-claude");
 const AMBIENT_API_KEY = "sk-ant-ambient-server-key";
 /** Not enumerated anywhere in the strip list — proves the PREFIX class works. */
 const AMBIENT_FUTURE_KNOB = "operator-hooks-and-plugins";
 const AMBIENT_HOME = path.join(os.tmpdir(), "operator-home");
 
+const CREDENTIAL_BODY = JSON.stringify({ claudeAiOauth: { accessToken: "ambient-fixture-token" } });
+/**
+ * The contamination half of a real operator config home (T3). The full home has
+ * 20 entries; these are the ones D9 exists to keep away from a crew agent, and
+ * the per-run directory must contain none of them.
+ */
+const OPERATOR_CONTAMINATION = ["CLAUDE.md", "settings.json", "plugins", "skills", "sessions"];
+
 interface EnvCapture {
   env: Record<string, string | undefined>;
+  /**
+   * The shim's listing of its OWN `CLAUDE_CONFIG_DIR`, taken at spawn time.
+   *
+   * Read from the filesystem AFTER `execute` returns would race the `finally`
+   * that removes the per-run directory — and would be checking a directory the
+   * child may never have seen. This is the only race-free proof of what the
+   * spawn was actually handed.
+   */
+  configDirEntries: string[];
 }
 
 /**
@@ -43,7 +60,12 @@ const fs = require("node:fs");
 try { fs.readFileSync(0, "utf8"); } catch { /* stdin may be closed */ }
 const capturePath = process.env.AOA_TEST_CAPTURE_PATH;
 if (capturePath) {
-  fs.writeFileSync(capturePath, JSON.stringify({ env: process.env }), "utf8");
+  // configDirEntries: listed HERE, in the child, because the per-run directory
+  // is removed in execute()'s finally — reading it after execute returns would
+  // race the cleanup and would not be the child's own view anyway.
+  let configDirEntries = [];
+  try { configDirEntries = fs.readdirSync(process.env.CLAUDE_CONFIG_DIR).sort(); } catch { /* absent */ }
+  fs.writeFileSync(capturePath, JSON.stringify({ env: process.env, configDirEntries }), "utf8");
 }
 console.log(JSON.stringify({
   type: "result",
@@ -71,8 +93,15 @@ async function runClaude(opts: {
   isolateAmbientConfig?: boolean;
   /** Extra agent-configured env, folded into the overlay by buildClaudeRuntimeConfig. */
   configEnv?: Record<string, string>;
+  /**
+   * Opt out of the clean-exit assertions so a test can inspect a THROWN
+   * execute() — T3 refuses to spawn an unauthenticated agent, and that refusal
+   * is a throw before the child ever exists (so `capture` is null).
+   */
+  expectError?: boolean;
 }): Promise<{
-  capture: EnvCapture;
+  capture: EnvCapture | null;
+  error: unknown;
   commandNotes: string[];
   cleanup: () => Promise<void>;
 }> {
@@ -112,43 +141,85 @@ async function runClaude(opts: {
   };
 
   let commandNotes: string[] = [];
-  const result = await execute(ctx);
-  expect(result.exitCode, "claude stand-in should exit cleanly").toBe(0);
-  const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as EnvCapture;
-  return { capture, commandNotes, cleanup: () => fs.rm(root, { recursive: true, force: true }) };
+  let error: unknown = null;
+  let result: Awaited<ReturnType<typeof execute>> | null = null;
+  try {
+    result = await execute(ctx);
+  } catch (err) {
+    error = err;
+  }
+  if (!opts.expectError) {
+    expect(error, "execute should not throw").toBeNull();
+    expect(result!.exitCode, "claude stand-in should exit cleanly").toBe(0);
+  }
+  const capture = await fs
+    .readFile(capturePath, "utf8")
+    .then((raw) => JSON.parse(raw) as EnvCapture)
+    .catch(() => null);
+  return { capture, error, commandNotes, cleanup: () => fs.rm(root, { recursive: true, force: true }) };
+}
+
+/** Narrowing helper — every non-error path asserts the child actually ran. */
+function requireCapture(capture: EnvCapture | null): EnvCapture {
+  expect(capture, "the claude stand-in should have written a capture file").toBeTruthy();
+  return capture!;
 }
 
 describe("claude ambient-config isolation at the spawn", () => {
   const saved: Record<string, string | undefined> = {};
-  const poisoned = {
-    CLAUDE_CONFIG_DIR: AMBIENT_CONFIG_DIR,
-    CLAUDE_CODE_OPERATOR_KNOB: AMBIENT_FUTURE_KNOB,
-    ANTHROPIC_API_KEY: AMBIENT_API_KEY,
-    HOME: AMBIENT_HOME,
-    USERPROFILE: AMBIENT_HOME,
-  };
+  /**
+   * A REAL operator config home, not just a path: T3 copies the credential out
+   * of it, so a bare name would make every crew run here fail
+   * credentials-missing. Seeded fresh per test with the credential plus the
+   * contamination entries that must never be copied.
+   */
+  let ambientRoot = "";
+  let ambientConfigDir = "";
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    ambientRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-ambient-operator-"));
+    ambientConfigDir = path.join(ambientRoot, "operator-dot-claude");
+    await fs.mkdir(ambientConfigDir, { recursive: true });
+    await fs.writeFile(
+      path.join(ambientConfigDir, ".credentials.json"),
+      CREDENTIAL_BODY,
+      "utf8",
+    );
+    for (const name of OPERATOR_CONTAMINATION) {
+      // Half files, half directories — the copy must decline both shapes.
+      if (name.includes(".")) await fs.writeFile(path.join(ambientConfigDir, name), "operator", "utf8");
+      else await fs.mkdir(path.join(ambientConfigDir, name), { recursive: true });
+    }
+
+    const poisoned = {
+      CLAUDE_CONFIG_DIR: ambientConfigDir,
+      CLAUDE_CODE_OPERATOR_KNOB: AMBIENT_FUTURE_KNOB,
+      ANTHROPIC_API_KEY: AMBIENT_API_KEY,
+      HOME: AMBIENT_HOME,
+      USERPROFILE: AMBIENT_HOME,
+    };
     for (const [key, value] of Object.entries(poisoned)) {
       saved[key] = process.env[key];
       process.env[key] = value;
     }
   });
 
-  afterEach(() => {
-    for (const key of Object.keys(poisoned)) {
+  afterEach(async () => {
+    for (const key of Object.keys(saved)) {
       if (saved[key] === undefined) delete process.env[key];
       else process.env[key] = saved[key];
     }
+    await fs.rm(ambientRoot, { recursive: true, force: true });
   });
 
   it("crew run: strips the host Claude config and pins CLAUDE_CONFIG_DIR per run", async () => {
-    const { capture, cleanup } = await runClaude({ isolateAmbientConfig: true });
+    const { capture: rawCapture, cleanup } = await runClaude({ isolateAmbientConfig: true });
+    const capture = requireCapture(rawCapture);
     try {
       expect(capture.env.ANTHROPIC_API_KEY).toBeUndefined();
       expect(capture.env.CLAUDE_CODE_OPERATOR_KNOB).toBeUndefined();
       expect(capture.env.CLAUDE_CONFIG_DIR).toBeTruthy();
-      expect(capture.env.CLAUDE_CONFIG_DIR).not.toBe(AMBIENT_CONFIG_DIR);
+      expect(capture.env.CLAUDE_CONFIG_DIR).not.toBe(ambientConfigDir);
       expect(path.basename(capture.env.CLAUDE_CONFIG_DIR!)).toMatch(/^aoa-claude-config-/);
     } finally {
       await cleanup();
@@ -160,7 +231,8 @@ describe("claude ambient-config isolation at the spawn", () => {
   // verified. The note rides onMeta next to the redacted env so the founder can
   // see WHICH config directory the run actually used.
   it("crew run: commandNotes name the isolation and the pinned directory", async () => {
-    const { capture, commandNotes, cleanup } = await runClaude({ isolateAmbientConfig: true });
+    const { capture: rawCapture, commandNotes, cleanup } = await runClaude({ isolateAmbientConfig: true });
+    const capture = requireCapture(rawCapture);
     try {
       const note = commandNotes.find((n) => n.includes("Ambient Claude config isolated"));
       expect(note, "isolation should be visible in onMeta").toBeTruthy();
@@ -180,7 +252,8 @@ describe("claude ambient-config isolation at the spawn", () => {
   });
 
   it("crew run: PATH, HOME and USERPROFILE survive the strip", async () => {
-    const { capture, cleanup } = await runClaude({ isolateAmbientConfig: true });
+    const { capture: rawCapture, cleanup } = await runClaude({ isolateAmbientConfig: true });
+    const capture = requireCapture(rawCapture);
     try {
       expect(capture.env.PATH ?? capture.env.Path).toBeTruthy();
       expect(capture.env.HOME).toBe(AMBIENT_HOME);
@@ -190,13 +263,189 @@ describe("claude ambient-config isolation at the spawn", () => {
     }
   });
 
+  /**
+   * ─────────── T3: per-run config-home provisioning (credentials only) ───────────
+   *
+   * 🚨 THE ORDERING PROOF. The child sees the credential in its pinned directory
+   * ONLY IF the source config home was resolved from the AMBIENT environment
+   * BEFORE `CLAUDE_CONFIG_DIR` was pinned to that same (empty) directory. Resolve
+   * it after the pin — or from the overlay — and the copy source IS the copy
+   * target: nothing is provisioned, the listing below is empty, and this test
+   * goes red. That is the inversion this assertion exists to catch, and it is why
+   * a unit test of `provisionClaudeConfigHome` alone would not be enough.
+   */
+  it("crew run: the pinned dir contains the operator's credential and NOTHING else", async () => {
+    const { capture: rawCapture, cleanup } = await runClaude({ isolateAmbientConfig: true });
+    const capture = requireCapture(rawCapture);
+    try {
+      // Exactly one entry, taken by the CHILD from its own CLAUDE_CONFIG_DIR.
+      expect(capture.configDirEntries).toEqual([".credentials.json"]);
+      // …and D9's whole point: none of the contamination came with it.
+      for (const name of OPERATOR_CONTAMINATION) {
+        expect(capture.configDirEntries, `${name} must not reach a crew run`).not.toContain(name);
+      }
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("crew run: commandNotes name the config home the credential came from", async () => {
+    const { commandNotes, cleanup } = await runClaude({ isolateAmbientConfig: true });
+    try {
+      const note = commandNotes.find((n) => n.includes("Claude credentials provisioned"));
+      expect(note, "provisioning should be visible in onMeta").toBeTruthy();
+      expect(note).toContain(ambientConfigDir);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  /**
+   * An unauthenticated agent must not run. The refusal happens BEFORE the spawn,
+   * and its message is what lands in `internal_agent_runs.errorMessage` and on
+   * the crew failure card — so it has to name the path and the remedy.
+   */
+  it("crew run: refuses to spawn when the operator has no credential file", async () => {
+    await fs.rm(path.join(ambientConfigDir, ".credentials.json"), { force: true });
+
+    const { capture, error, cleanup } = await runClaude({
+      isolateAmbientConfig: true,
+      expectError: true,
+    });
+    try {
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain(ambientConfigDir);
+      expect((error as Error).message).toContain("claude auth login");
+      // Nothing spawned: the shim never wrote a capture file.
+      expect(capture, "no child should have been spawned").toBeNull();
+    } finally {
+      await cleanup();
+    }
+  });
+
+  /**
+   * The reclaim is `execute`'s `finally`, which now opens immediately after
+   * `skillsDir` — so EVERY throw reclaims, not just a provisioning failure.
+   *
+   * Asserts ADDITIONS only. The per-run root is shared with concurrent tests and
+   * with `execute`'s own fire-and-forget cleanup, so an equality assertion on the
+   * listing would also fail on unrelated REMOVALS — a flake that says "you leaked
+   * a credential" when nothing leaked.
+   */
+  it("crew run: a failed provisioning leaves no per-run directory behind", async () => {
+    await fs.rm(path.join(ambientConfigDir, ".credentials.json"), { force: true });
+    const perRunRoot = resolveIsolatedClaudeConfigRoot();
+    const listPerRunDirs = async (): Promise<string[]> =>
+      (await fs.readdir(perRunRoot).catch(() => [] as string[])).filter((n) =>
+        n.startsWith("aoa-claude-config-"),
+      );
+    const before = new Set(await listPerRunDirs());
+
+    const { cleanup } = await runClaude({ isolateAmbientConfig: true, expectError: true });
+    try {
+      const added = (await listPerRunDirs()).filter((n) => !before.has(n));
+      expect(added, "the minted config home must not survive a failed run").toEqual([]);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  /**
+   * T2's documented escape hatch, re-verified now that a SECOND auth source
+   * exists. An operator on Bedrock (or a gateway, or an explicit key) has no
+   * `.credentials.json` and never needed one — provisioning must not convert
+   * their working configuration into a hard failure.
+   */
+  it("crew run: env-based auth on adapterConfig.env survives a missing credential file", async () => {
+    await fs.rm(path.join(ambientConfigDir, ".credentials.json"), { force: true });
+
+    const { capture: rawCapture, commandNotes, cleanup } = await runClaude({
+      isolateAmbientConfig: true,
+      configEnv: { CLAUDE_CODE_USE_BEDROCK: "1", ANTHROPIC_BEDROCK_BASE_URL: "https://bedrock.example" },
+    });
+    const capture = requireCapture(rawCapture);
+    try {
+      // It RAN, with the operator's env auth intact and the ambient strip still on.
+      expect(capture.env.CLAUDE_CODE_USE_BEDROCK).toBe("1");
+      expect(capture.env.ANTHROPIC_API_KEY).toBeUndefined();
+      expect(capture.configDirEntries).toEqual([]);
+      // …and the founder is told why the directory is empty, so an auth failure
+      // downstream is not a mystery.
+      expect(
+        commandNotes.some((n) => n.includes("no Claude credential file")),
+        "the empty config home should be explained in onMeta",
+      ).toBe(true);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  /**
+   * …but an explicitly DISABLED switch is not auth. `CLAUDE_CODE_USE_BEDROCK=0`
+   * is an operator turning Bedrock off; treating it as configured would suppress
+   * the refusal above and hand them the opaque in-CLI failure instead.
+   */
+  it("crew run: a disabled Bedrock switch does not suppress the refusal", async () => {
+    await fs.rm(path.join(ambientConfigDir, ".credentials.json"), { force: true });
+
+    const { error, cleanup } = await runClaude({
+      isolateAmbientConfig: true,
+      configEnv: { CLAUDE_CODE_USE_BEDROCK: "0" },
+      expectError: true,
+    });
+    try {
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain("claude auth login");
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("crew run: an agent-configured CLAUDE_CONFIG_DIR is never written into", async () => {
+    // Already a real, logged-in config home the operator curates. Copying into it
+    // would overwrite their credential with ours; provisioning must skip it.
+    const operatorDir = path.join(ambientRoot, "dedicated-claude-home");
+    await fs.mkdir(operatorDir, { recursive: true });
+    await fs.writeFile(path.join(operatorDir, ".credentials.json"), "DEDICATED", "utf8");
+    await fs.writeFile(path.join(operatorDir, "settings.json"), "{}", "utf8");
+
+    const { cleanup } = await runClaude({
+      isolateAmbientConfig: true,
+      configEnv: { CLAUDE_CONFIG_DIR: operatorDir },
+    });
+    try {
+      expect(await fs.readFile(path.join(operatorDir, ".credentials.json"), "utf8")).toBe(
+        "DEDICATED",
+      );
+      // Untouched entirely — not merely un-clobbered.
+      expect((await fs.readdir(operatorDir)).sort()).toEqual([".credentials.json", "settings.json"]);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("org/heartbeat run: no credential is provisioned and no per-run dir is minted", async () => {
+    const { capture: rawCapture, commandNotes, cleanup } = await runClaude({});
+    const capture = requireCapture(rawCapture);
+    try {
+      // The org run reads the operator's real config home directly — provisioning
+      // is crew-only, so the listing is the operator's own 6 entries, not ours.
+      expect(capture.env.CLAUDE_CONFIG_DIR).toBe(ambientConfigDir);
+      expect(capture.configDirEntries).toContain("settings.json");
+      expect(commandNotes.some((n) => n.includes("Claude credentials provisioned"))).toBe(false);
+    } finally {
+      await cleanup();
+    }
+  });
+
   // The no-regression proof (D15): org/heartbeat runs never set the flag, and
   // their env must be byte-for-byte what it was before this change.
   it("org/heartbeat run: inherits ambient Claude config unchanged", async () => {
-    const { capture, cleanup } = await runClaude({});
+    const { capture: rawCapture, cleanup } = await runClaude({});
+    const capture = requireCapture(rawCapture);
     try {
       expect(capture.env.ANTHROPIC_API_KEY).toBe(AMBIENT_API_KEY);
-      expect(capture.env.CLAUDE_CONFIG_DIR).toBe(AMBIENT_CONFIG_DIR);
+      expect(capture.env.CLAUDE_CONFIG_DIR).toBe(ambientConfigDir);
       expect(capture.env.CLAUDE_CODE_OPERATOR_KNOB).toBe(AMBIENT_FUTURE_KNOB);
       expect(capture.env.HOME).toBe(AMBIENT_HOME);
     } finally {
@@ -210,10 +459,11 @@ describe("claude ambient-config isolation at the spawn", () => {
   // escape hatch, and every other provider-auth variable set this way survives.
   it("crew run: an agent-configured CLAUDE_CONFIG_DIR wins over the per-run pin", async () => {
     const operatorDir = path.join(os.tmpdir(), "aoa-crew-dedicated-claude-home");
-    const { capture, cleanup } = await runClaude({
+    const { capture: rawCapture, cleanup } = await runClaude({
       isolateAmbientConfig: true,
       configEnv: { CLAUDE_CONFIG_DIR: operatorDir },
     });
+    const capture = requireCapture(rawCapture);
     try {
       expect(capture.env.CLAUDE_CONFIG_DIR).toBe(operatorDir);
       // Still isolated: the configured dir is an OVERLAY key, so the ambient
@@ -251,10 +501,11 @@ describe("claude ambient-config isolation at the spawn", () => {
    */
   it("crew run: a differently-cased agent-configured dir is honored on Windows", async () => {
     const operatorDir = path.join(os.tmpdir(), "aoa-crew-oddcase-claude-home");
-    const { capture, cleanup } = await runClaude({
+    const { capture: rawCapture, cleanup } = await runClaude({
       isolateAmbientConfig: true,
       configEnv: { Claude_Config_Dir: operatorDir },
     });
+    const capture = requireCapture(rawCapture);
     try {
       const seen = Object.entries(capture.env)
         .filter(([key]) => key.toLowerCase() === "claude_config_dir")
@@ -274,10 +525,11 @@ describe("claude ambient-config isolation at the spawn", () => {
   });
 
   it("org/heartbeat run: an explicit false is also inert", async () => {
-    const { capture, cleanup } = await runClaude({ isolateAmbientConfig: false });
+    const { capture: rawCapture, cleanup } = await runClaude({ isolateAmbientConfig: false });
+    const capture = requireCapture(rawCapture);
     try {
       expect(capture.env.ANTHROPIC_API_KEY).toBe(AMBIENT_API_KEY);
-      expect(capture.env.CLAUDE_CONFIG_DIR).toBe(AMBIENT_CONFIG_DIR);
+      expect(capture.env.CLAUDE_CONFIG_DIR).toBe(ambientConfigDir);
     } finally {
       await cleanup();
     }

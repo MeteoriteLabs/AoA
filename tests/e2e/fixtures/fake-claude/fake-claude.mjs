@@ -157,6 +157,19 @@ function recordableEnv() {
   return out;
 }
 
+// FILENAMES ONLY, never contents — the credential file's whole point is that
+// its bytes stay out of a fixed, never-swept tmpdir log. The per-run config home
+// is removed in the adapter's `finally`, so this listing (taken here, in the
+// child) is the only race-free view of what provisioning actually placed where
+// the CLI would read it.
+function recordableConfigDirEntries() {
+  try {
+    return fs.readdirSync(process.env.CLAUDE_CONFIG_DIR).sort();
+  } catch {
+    return [];
+  }
+}
+
 // Best-effort, never fatal. Called right before exit so any stdin the parent
 // piped in (the prompt, post-stdin-delivery) has been received during the turn.
 function recordInvocation() {
@@ -167,7 +180,13 @@ function recordInvocation() {
       // environment. The only place the effect of a spawn-time env strip is
       // observable — asserted by crew-config-isolation.spec.ts. Existing specs
       // read argv/stdin/cwd and are unaffected.
-      JSON.stringify({ argv, stdin: stdinContent, cwd: process.cwd(), env: recordableEnv() }) + "\n",
+      JSON.stringify({
+        argv,
+        stdin: stdinContent,
+        cwd: process.cwd(),
+        env: recordableEnv(),
+        configDirEntries: recordableConfigDirEntries(),
+      }) + "\n",
       "utf8",
     );
   } catch {

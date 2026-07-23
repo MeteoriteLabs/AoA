@@ -29,6 +29,7 @@ import {
   ensureAbsoluteDirectory,
   ensureCommandResolvable,
   ensurePathInEnv,
+  foldEnvKey,
   renderTemplate,
   runChildProcess,
   applyAoaWorkspaceEnv,
@@ -46,8 +47,14 @@ import {
 } from "./runtime-hook-settings.js";
 import {
   CLAUDE_AMBIENT_CONFIG_UNSET_PREFIXES,
+  ClaudeCredentialsMissingError,
+  claudeCredentialChangedSinceProvisioning,
   createIsolatedClaudeConfigDir,
+  hasOverlayConfiguredClaudeAuth,
+  provisionClaudeConfigHome,
+  releaseIsolatedClaudeConfigDir,
 } from "./ambient-config.js";
+import { resolveClaudeConfigHome } from "./login.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const AOA_SKILLS_CANDIDATES = [
@@ -367,428 +374,501 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const dbSkills = (context.skills as Array<{ key: string; name: string; markdown: string; files?: Array<{ path: string; content: string }> }> | undefined) ?? [];
   const skillsDir = await buildSkillsDir(dbSkills.length > 0 ? dbSkills : undefined);
 
-  // --- Ambient Claude-config isolation (D9, crew-only) ---
-  // Opt-in per run via ctx.isolateAmbientConfig — set by the crew runner, never
-  // by heartbeat, so org runs keep inheriting the operator's environment exactly
-  // as before. When on: pin CLAUDE_CONFIG_DIR to a per-run directory (an
-  // overlay-set key survives the strip by mergeChildEnv's "overlay wins" rule)
-  // and strip the ambient CLAUDE_*/ANTHROPIC_* classes at the spawn.
+  // ── Reclaim scope ──────────────────────────────────────────────────────────
+  // Everything from here to the `finally` runs INSIDE the try, so any throw —
+  // not just a provisioning failure — reclaims whatever was already created.
+  // These three are declared outside it purely so the `finally` can see them.
   //
-  // LOCAL TARGETS ONLY. A remote child (docker / provider-sandbox) never sees
-  // the host env, so it is isolated by construction and the strip is moot —
-  // while a pinned HOST tmpdir path forwarded into the container is actively
-  // wrong (a `C:\…` path inside Linux) AND would override the managed
-  // `env.HOME = runtimeRootDir` below, which is how the CLI finds a correct
-  // in-container ~/.claude. Same short-circuit as opencode-local's
-  // runtime-config.ts on `targetIsRemote`.
-  const isolateAmbientConfig = ctx.isolateAmbientConfig === true && !isRemoteExecutionTarget;
-  // Find an agent-configured CLAUDE_CONFIG_DIR using the SAME case-folding the
-  // strip uses (server-utils.ts sameKey): on Windows `Claude_Config_Dir` IS
-  // `CLAUDE_CONFIG_DIR`. A direct property read would miss that spelling and
-  // mint a per-run dir as well — the overlay would then carry two spellings of
-  // ONE Windows variable with different values, both surviving the strip (both
-  // are overlay keys), and which one the child ends up with is not decided here.
-  // An empty/whitespace value counts as unconfigured (pinning "" helps nobody).
-  const configuredConfigDirKey = Object.keys(env).find(
-    (key) =>
-      (process.platform === "win32"
-        ? key.toLowerCase() === "claude_config_dir"
-        : key === "CLAUDE_CONFIG_DIR") && env[key].trim().length > 0,
-  );
+  // 🚨 This is why the try opens HERE and not at the run. It used to open just
+  // before `runAttempt`, which left a window where provisioning had SUCCEEDED
+  // (a live credential on disk) and an ordinary later failure — an ENOENT on a
+  // mistyped instructionsFilePath, a bridged-mode mkdtemp — escaped past it. The
+  // credential then sat on disk until the next sweep. One reclaim site, no
+  // window, and no invariant of the form "nothing between these two lines can
+  // throw" for a future edit to quietly break.
   let isolatedConfigDir: string | null = null;
-  if (isolateAmbientConfig && !configuredConfigDirKey) {
-    // Only mint a per-run dir when the agent did NOT configure one. An operator
-    // pointing crew at a dedicated, already-logged-in config home via
-    // adapterConfig.env is the supported (and, pre-T3, the only) way to give a
-    // crew run working credentials — clobbering it would silently break the one
-    // escape hatch, and every other provider-auth variable set that way survives.
-    isolatedConfigDir = await createIsolatedClaudeConfigDir();
-    env.CLAUDE_CONFIG_DIR = isolatedConfigDir;
-  }
-  if (isolateAmbientConfig) {
-    // Surfaced through onMeta next to the redacted env. Pre-T3 a MINTED dir is
-    // empty, so a crew run can fail login-required while Settings → Providers
-    // (which probes the HOST config) reports the provider verified. Naming the
-    // directory here makes that failure self-explaining instead of a dead end.
-    // The "(agent-configured)" marker matters: without it the note reads as
-    // though AoA overrode the operator's own setting, which is the opposite of
-    // what happened.
-    const effectiveConfigDir = isolatedConfigDir ?? env[configuredConfigDirKey!];
-    commandNotes.push(
-      `Ambient Claude config isolated (crew run); CLAUDE_CONFIG_DIR pinned to ${effectiveConfigDir}${
-        isolatedConfigDir === null ? " (agent-configured)" : ""
-      }`,
-    );
-  }
-  const unsetEnvPrefixes = isolateAmbientConfig
-    ? [...CLAUDE_AMBIENT_CONFIG_UNSET_PREFIXES]
-    : undefined;
-  // ------------------------------------------------------
-
-  // --- Runtime hook bridge (Task 6) ---
-  // bridged = true when caller explicitly sets runtimeHookBridge.enabled
-  const bridged = runtimeHookBridge?.enabled === true;
-  // forwarderPath: hook-forward.mjs lives alongside execute.ts/execute.js in src/server or dist/server
-  const forwarderPath = path.resolve(__moduleDir, "hook-forward.mjs");
   let hookSettingsTmpDir: string | null = null;
-  let hookSettingsFilePath: string | null = null;
-  if (bridged) {
-    const endpointUrl = runtimeHookBridge!.selfBaseUrl + runtimeHookBridge!.path;
-    const hookSettings = buildPreToolUseSettings({
-      endpointUrl,
-      timeoutSec: runtimeHookBridge!.timeoutSec,
-      forwarderPath,
-    });
-    hookSettingsTmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-runtime-hooks-"));
-    hookSettingsFilePath = await writeRuntimeHookSettingsFile(hookSettingsTmpDir, hookSettings);
-    // Inject hook env vars into the child process env.
-    // AOA_RUNTIME_HOOK_TOKEN is redacted in onMeta by its key name ("TOKEN" matches SENSITIVE_ENV_KEY).
-    // AOA_RUNTIME_HOOK_URL is a plain non-secret URL; redacted by value if it looks like a secret (it doesn't).
-    env.AOA_RUNTIME_HOOK_URL = endpointUrl;
-    if (runtimeHookToken) {
-      env.AOA_RUNTIME_HOOK_TOKEN = runtimeHookToken;
+  let provisionedCredential: { path: string; fingerprint: string } | null = null;
+
+  try {
+    // --- Ambient Claude-config isolation (D9, crew-only) ---
+    // Opt-in per run via ctx.isolateAmbientConfig — set by the crew runner, never
+    // by heartbeat, so org runs keep inheriting the operator's environment exactly
+    // as before. When on: pin CLAUDE_CONFIG_DIR to a per-run directory (an
+    // overlay-set key survives the strip by mergeChildEnv's "overlay wins" rule)
+    // and strip the ambient CLAUDE_*/ANTHROPIC_* classes at the spawn.
+    //
+    // LOCAL TARGETS ONLY. A remote child (docker / provider-sandbox) never sees
+    // the host env, so it is isolated by construction and the strip is moot —
+    // while a pinned HOST path forwarded into the container is actively
+    // wrong (a `C:\…` path inside Linux) AND would override the managed
+    // `env.HOME = runtimeRootDir` below, which is how the CLI finds a correct
+    // in-container ~/.claude. Same short-circuit as opencode-local's
+    // runtime-config.ts on `targetIsRemote`.
+    const isolateAmbientConfig = ctx.isolateAmbientConfig === true && !isRemoteExecutionTarget;
+    // Find an agent-configured CLAUDE_CONFIG_DIR using the SAME case-folding the
+    // strip uses — literally `foldEnvKey`, the function mergeChildEnv's strip
+    // calls, rather than a third private copy of the rule. On Windows
+    // `Claude_Config_Dir` IS `CLAUDE_CONFIG_DIR`; a direct property read would
+    // miss that spelling and mint a per-run dir as well, leaving the overlay
+    // carrying two spellings of ONE Windows variable with different values, both
+    // surviving the strip (both are overlay keys), and which one the child ends
+    // up with is not decided here. An empty/whitespace value counts as
+    // unconfigured (pinning "" helps nobody).
+    const configuredConfigDirKey = Object.keys(env).find(
+      (key) => foldEnvKey(key) === foldEnvKey("CLAUDE_CONFIG_DIR") && env[key].trim().length > 0,
+    );
+    // 🚨 T3 ORDERING. Resolve the OPERATOR's config home from `process.env` — the
+    // ambient environment, exactly as it is BEFORE the pin below rewrites the
+    // overlay's CLAUDE_CONFIG_DIR to the (empty) per-run directory. Read the
+    // OVERLAY instead, or read it after the pin, and `resolveClaudeConfigHome`
+    // hands back the copy TARGET: provisioning then "succeeds" having copied
+    // nothing, and the agent dies deep inside the CLI with an opaque auth error.
+    // `provisionClaudeConfigHome` re-asserts source !== target so an inversion is
+    // a loud throw rather than a silent no-op, and the crew integration test
+    // asserts the child actually SEES the credential.
+    const operatorConfigHome = isolateAmbientConfig ? resolveClaudeConfigHome(process.env) : null;
+    if (isolateAmbientConfig && !configuredConfigDirKey) {
+      // Only mint a per-run dir when the agent did NOT configure one. An operator
+      // pointing crew at a dedicated, already-logged-in config home via
+      // adapterConfig.env is a supported way to give a crew run working
+      // credentials — clobbering it would silently break that escape hatch, and
+      // every other provider-auth variable set that way survives.
+      isolatedConfigDir = await createIsolatedClaudeConfigDir();
+      env.CLAUDE_CONFIG_DIR = isolatedConfigDir;
+
+      // T3: the minted directory is empty, which makes the run unauthenticated.
+      // Copy in the credential file — and ONLY the credential file. The other 19
+      // entries of a real `~/.claude` (CLAUDE.md, settings.json, plugins/, skills/,
+      // sessions/, …) are precisely the contamination D9 exists to stop.
+      //
+      // NOTE this branch deliberately does NOT run for an agent-configured
+      // CLAUDE_CONFIG_DIR: that directory is the operator's own logged-in home, so
+      // writing into it would overwrite their credential with ours.
+      try {
+        const provisioned = await provisionClaudeConfigHome({
+          sourceConfigHome: operatorConfigHome!,
+          targetDir: isolatedConfigDir,
+        });
+        // Kept so teardown can tell whether the CLI rewrote its private copy —
+        // see the rotation note on provisionClaudeConfigHome.
+        provisionedCredential = { path: provisioned.credentialPath, fingerprint: provisioned.fingerprint };
+        // 🚨 RAW path here, deliberately — the opposite of what
+        // ClaudeCredentialsMissingError does. The two strings have different
+        // audiences: that error is persisted to `internal_agent_runs.errorMessage`
+        // and RENDERS ON THE CREW CARD, where the operator's account name would be
+        // broadcast to every teammate with thread access, so it is home-relativised.
+        // These commandNotes are run diagnostics, shown beside the redacted env to
+        // whoever is debugging this run, and a `~`-collapsed path there costs
+        // debuggability for no privacy gain. Do not "finish" the M11 fix by
+        // relativising these, and do not assume they are already sanitised.
+        commandNotes.push(`Claude credentials provisioned into the per-run config home from ${operatorConfigHome}`);
+      } catch (err) {
+        // The escape hatch T2 documented: an operator whose Claude access is
+        // env-based (Bedrock / Vertex / a gateway / an explicit key on
+        // adapterConfig.env) has no credential file and never needed one. Turning
+        // their working configuration into a hard failure would be a regression,
+        // so a missing credential is only fatal when nothing else can authenticate.
+        if (err instanceof ClaudeCredentialsMissingError && hasOverlayConfiguredClaudeAuth(env)) {
+          await onLog("stderr", `[aoa] ${err.message}\n`);
+          commandNotes.push(
+            `Isolated config home left empty: no Claude credential file at ${operatorConfigHome} — ` +
+              `this run authenticates from the env-based auth configured on the agent instead`,
+          );
+        } else {
+          // Fail BEFORE the spawn. The alternative is an unauthenticated `--print`
+          // run that dies somewhere inside the CLI with a message the founder
+          // cannot act on; this message lands verbatim on the run row and the crew
+          // failure card. No manual reclaim here — this throw is inside the try,
+          // so the `finally` removes the minted directory and skillsDir like any
+          // other failure.
+          throw err;
+        }
+      }
     }
-  }
-  // ------------------------------------
+    if (isolateAmbientConfig) {
+      // Surfaced through onMeta next to the redacted env. A crew run reads its
+      // config from somewhere other than the host `~/.claude` that Settings →
+      // Providers probes, so naming the directory here is what makes an auth
+      // failure self-explaining instead of a dead end. (Threading the isolation
+      // into the readiness probe itself is a separate task.) The
+      // "(agent-configured)" marker matters: without it the note reads as though
+      // AoA overrode the operator's own setting, which is the opposite of what
+      // happened.
+      const effectiveConfigDir = isolatedConfigDir ?? env[configuredConfigDirKey!];
+      commandNotes.push(
+        `Ambient Claude config isolated (crew run); CLAUDE_CONFIG_DIR pinned to ${effectiveConfigDir}${
+          isolatedConfigDir === null ? " (agent-configured)" : ""
+        }`,
+      );
+    }
+    const unsetEnvPrefixes = isolateAmbientConfig
+      ? [...CLAUDE_AMBIENT_CONFIG_UNSET_PREFIXES]
+      : undefined;
+    // ------------------------------------------------------
 
-  const executionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
-  const preparedRuntime = await prepareAdapterExecutionTargetRuntime({
-    target: executionTarget,
-    workspaceLocalDir: cwd,
-    adapterKey: "claude",
-    runId,
-    timeoutSec,
-    installCommand: ctx.runtimeCommandSpec?.installCommand ?? null,
-    detectCommand: ctx.runtimeCommandSpec?.detectCommand ?? command,
-  });
-  const runtimeRootDir = preparedRuntime.runtimeRootDir;
-  if (runtimeRootDir && adapterExecutionTargetUsesManagedHome(executionTarget)) {
-    env.HOME = runtimeRootDir;
-  }
+    // --- Runtime hook bridge (Task 6) ---
+    // bridged = true when caller explicitly sets runtimeHookBridge.enabled
+    const bridged = runtimeHookBridge?.enabled === true;
+    // forwarderPath: hook-forward.mjs lives alongside execute.ts/execute.js in src/server or dist/server
+    const forwarderPath = path.resolve(__moduleDir, "hook-forward.mjs");
+    let hookSettingsFilePath: string | null = null;
+    if (bridged) {
+      const endpointUrl = runtimeHookBridge!.selfBaseUrl + runtimeHookBridge!.path;
+      const hookSettings = buildPreToolUseSettings({
+        endpointUrl,
+        timeoutSec: runtimeHookBridge!.timeoutSec,
+        forwarderPath,
+      });
+      hookSettingsTmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-runtime-hooks-"));
+      hookSettingsFilePath = await writeRuntimeHookSettingsFile(hookSettingsTmpDir, hookSettings);
+      // Inject hook env vars into the child process env.
+      // AOA_RUNTIME_HOOK_TOKEN is redacted in onMeta by its key name ("TOKEN" matches SENSITIVE_ENV_KEY).
+      // AOA_RUNTIME_HOOK_URL is a plain non-secret URL; redacted by value if it looks like a secret (it doesn't).
+      env.AOA_RUNTIME_HOOK_URL = endpointUrl;
+      if (runtimeHookToken) {
+        env.AOA_RUNTIME_HOOK_TOKEN = runtimeHookToken;
+      }
+    }
+    // ------------------------------------
 
-  // When instructionsFilePath is configured, create a combined temp file that
-  // includes both the file content and the path directive, so we only need
-  // --append-system-prompt-file (Claude CLI forbids using both flags together).
-  let effectiveInstructionsFilePath = instructionsFilePath;
-  if (instructionsFilePath) {
-    const instructionsContent = await fs.readFile(instructionsFilePath, "utf-8");
-    const pathDirective = `\nThe above agent instructions were loaded from ${instructionsFilePath}. Resolve any relative file references from ${instructionsFileDir}.`;
-    const combinedPath = path.join(skillsDir, "agent-instructions.md");
-    await fs.writeFile(combinedPath, instructionsContent + pathDirective, "utf-8");
-    effectiveInstructionsFilePath = combinedPath;
-  }
-  let effectiveRemoteInstructionsFilePath: string | null = null;
-  let effectiveRemoteSkillsDir: string | null = null;
-  if (isRemoteExecutionTarget && runtimeRootDir) {
-    effectiveRemoteSkillsDir = `${runtimeRootDir}/.claude/skills`;
-    await syncAdapterExecutionTargetDirectory({
-      runId: `${runId}-claude-skills`,
+    const executionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
+    const preparedRuntime = await prepareAdapterExecutionTargetRuntime({
       target: executionTarget,
-      localDir: path.join(skillsDir, ".claude", "skills"),
-      remoteDir: effectiveRemoteSkillsDir,
-      cwd: executionCwd,
-      env,
+      workspaceLocalDir: cwd,
+      adapterKey: "claude",
+      runId,
       timeoutSec,
-      graceSec,
-      followSymlinks: true,
-      onLog,
+      installCommand: ctx.runtimeCommandSpec?.installCommand ?? null,
+      detectCommand: ctx.runtimeCommandSpec?.detectCommand ?? command,
     });
-    if (effectiveInstructionsFilePath) {
-      effectiveRemoteInstructionsFilePath = `${runtimeRootDir}/agent-instructions.md`;
-      await syncAdapterExecutionTargetFile({
-        runId: `${runId}-claude-instructions`,
+    const runtimeRootDir = preparedRuntime.runtimeRootDir;
+    if (runtimeRootDir && adapterExecutionTargetUsesManagedHome(executionTarget)) {
+      env.HOME = runtimeRootDir;
+    }
+
+    // When instructionsFilePath is configured, create a combined temp file that
+    // includes both the file content and the path directive, so we only need
+    // --append-system-prompt-file (Claude CLI forbids using both flags together).
+    let effectiveInstructionsFilePath = instructionsFilePath;
+    if (instructionsFilePath) {
+      const instructionsContent = await fs.readFile(instructionsFilePath, "utf-8");
+      const pathDirective = `\nThe above agent instructions were loaded from ${instructionsFilePath}. Resolve any relative file references from ${instructionsFileDir}.`;
+      const combinedPath = path.join(skillsDir, "agent-instructions.md");
+      await fs.writeFile(combinedPath, instructionsContent + pathDirective, "utf-8");
+      effectiveInstructionsFilePath = combinedPath;
+    }
+    let effectiveRemoteInstructionsFilePath: string | null = null;
+    let effectiveRemoteSkillsDir: string | null = null;
+    if (isRemoteExecutionTarget && runtimeRootDir) {
+      effectiveRemoteSkillsDir = `${runtimeRootDir}/.claude/skills`;
+      await syncAdapterExecutionTargetDirectory({
+        runId: `${runId}-claude-skills`,
         target: executionTarget,
-        localPath: effectiveInstructionsFilePath,
-        remotePath: effectiveRemoteInstructionsFilePath,
+        localDir: path.join(skillsDir, ".claude", "skills"),
+        remoteDir: effectiveRemoteSkillsDir,
         cwd: executionCwd,
         env,
         timeoutSec,
         graceSec,
+        followSymlinks: true,
         onLog,
       });
+      if (effectiveInstructionsFilePath) {
+        effectiveRemoteInstructionsFilePath = `${runtimeRootDir}/agent-instructions.md`;
+        await syncAdapterExecutionTargetFile({
+          runId: `${runId}-claude-instructions`,
+          target: executionTarget,
+          localPath: effectiveInstructionsFilePath,
+          remotePath: effectiveRemoteInstructionsFilePath,
+          cwd: executionCwd,
+          env,
+          timeoutSec,
+          graceSec,
+          onLog,
+        });
+      }
     }
-  }
 
-  const runtimeSessionParams = parseObject(runtime.sessionParams);
-  const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
-  const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
-  const runtimeRemoteExecution = parseObject(runtimeSessionParams.remoteExecution);
-  const sessionCwdMatches = runtimeSessionCwd.length === 0 || (
-    isRemoteExecutionTarget
-      ? runtimeSessionCwd === executionCwd
-      : path.resolve(runtimeSessionCwd) === path.resolve(executionCwd)
-  );
-  const canResumeSession =
-    runtimeSessionId.length > 0 &&
-    sessionCwdMatches &&
-    adapterExecutionTargetSessionMatches(runtimeRemoteExecution, executionTarget);
-  const sessionId = canResumeSession ? runtimeSessionId : null;
-  if (runtimeSessionId && !canResumeSession) {
-    await onLog(
-      "stderr",
-      `[aoa] Claude session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${executionCwd}".\n`,
+    const runtimeSessionParams = parseObject(runtime.sessionParams);
+    const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
+    const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
+    const runtimeRemoteExecution = parseObject(runtimeSessionParams.remoteExecution);
+    const sessionCwdMatches = runtimeSessionCwd.length === 0 || (
+      isRemoteExecutionTarget
+        ? runtimeSessionCwd === executionCwd
+        : path.resolve(runtimeSessionCwd) === path.resolve(executionCwd)
     );
-  }
-  const renderedPrompt = renderTemplate(promptTemplate, {
-    agentId: agent.id,
-    companyId: agent.companyId,
-    runId,
-    company: { id: agent.companyId },
-    agent,
-    run: { id: runId, source: "on_demand" },
-    context,
-  });
-  const currentTaskMarkdown = typeof context.currentTaskMarkdown === "string"
-    ? context.currentTaskMarkdown.trim()
-    : "";
-  const prompt = currentTaskMarkdown && !/{{\s*context\.currentTaskMarkdown\s*}}/.test(promptTemplate)
-    ? `${renderedPrompt.trimEnd()}\n\n${currentTaskMarkdown}`
-    : renderedPrompt;
+    const canResumeSession =
+      runtimeSessionId.length > 0 &&
+      sessionCwdMatches &&
+      adapterExecutionTargetSessionMatches(runtimeRemoteExecution, executionTarget);
+    const sessionId = canResumeSession ? runtimeSessionId : null;
+    if (runtimeSessionId && !canResumeSession) {
+      await onLog(
+        "stderr",
+        `[aoa] Claude session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${executionCwd}".\n`,
+      );
+    }
+    const renderedPrompt = renderTemplate(promptTemplate, {
+      agentId: agent.id,
+      companyId: agent.companyId,
+      runId,
+      company: { id: agent.companyId },
+      agent,
+      run: { id: runId, source: "on_demand" },
+      context,
+    });
+    const currentTaskMarkdown = typeof context.currentTaskMarkdown === "string"
+      ? context.currentTaskMarkdown.trim()
+      : "";
+    const prompt = currentTaskMarkdown && !/{{\s*context\.currentTaskMarkdown\s*}}/.test(promptTemplate)
+      ? `${renderedPrompt.trimEnd()}\n\n${currentTaskMarkdown}`
+      : renderedPrompt;
 
-  const buildClaudeArgs = async (resumeSessionId: string | null) => {
-    const args = ["--print", "-", "--output-format", "stream-json", "--verbose"];
-    if (resumeSessionId) args.push("--resume", resumeSessionId);
-    if (hookSettingsFilePath) {
-      // Bridged mode: wire the PreToolUse hook via --settings.
-      // --dangerously-skip-permissions and --settings must never coexist: skip-permissions bypasses
-      // all tool approval, defeating the permission bridge entirely.
-      args.push("--settings", hookSettingsFilePath);
-    } else if (dangerouslySkipPermissions) {
-      // Unbridged: honor config.dangerouslySkipPermissions as before.
-      args.push("--dangerously-skip-permissions");
-    }
-    if (chrome) args.push("--chrome");
-    if (model && !isBedrockAuth(env)) args.push("--model", model);
-    if (effort) args.push("--effort", effort);
-    if (maxTurns > 0) args.push("--max-turns", String(maxTurns));
-    const instructionsArg = isRemoteExecutionTarget
-      ? effectiveRemoteInstructionsFilePath
-      : effectiveInstructionsFilePath;
-    const skillsArg = isRemoteExecutionTarget ? effectiveRemoteSkillsDir : skillsDir;
-    if (instructionsArg) {
-      args.push("--append-system-prompt-file", instructionsArg);
-    }
-    if (skillsArg) {
-      args.push("--add-dir", skillsArg);
-    }
-    if (extraArgs.length > 0) {
+    const buildClaudeArgs = async (resumeSessionId: string | null) => {
+      const args = ["--print", "-", "--output-format", "stream-json", "--verbose"];
+      if (resumeSessionId) args.push("--resume", resumeSessionId);
       if (hookSettingsFilePath) {
-        // Bridged mode: strip bypass flags that defeat the PreToolUse hook.
-        // These flags would re-enable Claude's permission bypass, making the
-        // hook's deny decisions ineffective.
-        const BYPASS_FLAGS = new Set([
-          "--dangerously-skip-permissions",
-          "--allow-dangerously-skip-permissions",
-        ]);
-        const BYPASS_PERMISSION_MODE_VALUES = new Set(["bypassPermissions", "dontAsk"]);
-        const stripped: string[] = [];
-        const filteredArgs: string[] = [];
-        let i = 0;
-        while (i < extraArgs.length) {
-          const arg = extraArgs[i];
-          if (BYPASS_FLAGS.has(arg)) {
-            stripped.push(arg);
-            i++;
-          } else if (arg === "--permission-mode" && i + 1 < extraArgs.length) {
-            const value = extraArgs[i + 1];
-            if (BYPASS_PERMISSION_MODE_VALUES.has(value)) {
-              stripped.push(`${arg} ${value}`);
-              i += 2;
-            } else {
-              filteredArgs.push(arg, value);
-              i += 2;
-            }
-          } else if (arg.startsWith("--permission-mode=")) {
-            const value = arg.slice("--permission-mode=".length);
-            if (BYPASS_PERMISSION_MODE_VALUES.has(value)) {
+        // Bridged mode: wire the PreToolUse hook via --settings.
+        // --dangerously-skip-permissions and --settings must never coexist: skip-permissions bypasses
+        // all tool approval, defeating the permission bridge entirely.
+        args.push("--settings", hookSettingsFilePath);
+      } else if (dangerouslySkipPermissions) {
+        // Unbridged: honor config.dangerouslySkipPermissions as before.
+        args.push("--dangerously-skip-permissions");
+      }
+      if (chrome) args.push("--chrome");
+      if (model && !isBedrockAuth(env)) args.push("--model", model);
+      if (effort) args.push("--effort", effort);
+      if (maxTurns > 0) args.push("--max-turns", String(maxTurns));
+      const instructionsArg = isRemoteExecutionTarget
+        ? effectiveRemoteInstructionsFilePath
+        : effectiveInstructionsFilePath;
+      const skillsArg = isRemoteExecutionTarget ? effectiveRemoteSkillsDir : skillsDir;
+      if (instructionsArg) {
+        args.push("--append-system-prompt-file", instructionsArg);
+      }
+      if (skillsArg) {
+        args.push("--add-dir", skillsArg);
+      }
+      if (extraArgs.length > 0) {
+        if (hookSettingsFilePath) {
+          // Bridged mode: strip bypass flags that defeat the PreToolUse hook.
+          // These flags would re-enable Claude's permission bypass, making the
+          // hook's deny decisions ineffective.
+          const BYPASS_FLAGS = new Set([
+            "--dangerously-skip-permissions",
+            "--allow-dangerously-skip-permissions",
+          ]);
+          const BYPASS_PERMISSION_MODE_VALUES = new Set(["bypassPermissions", "dontAsk"]);
+          const stripped: string[] = [];
+          const filteredArgs: string[] = [];
+          let i = 0;
+          while (i < extraArgs.length) {
+            const arg = extraArgs[i];
+            if (BYPASS_FLAGS.has(arg)) {
               stripped.push(arg);
               i++;
+            } else if (arg === "--permission-mode" && i + 1 < extraArgs.length) {
+              const value = extraArgs[i + 1];
+              if (BYPASS_PERMISSION_MODE_VALUES.has(value)) {
+                stripped.push(`${arg} ${value}`);
+                i += 2;
+              } else {
+                filteredArgs.push(arg, value);
+                i += 2;
+              }
+            } else if (arg.startsWith("--permission-mode=")) {
+              const value = arg.slice("--permission-mode=".length);
+              if (BYPASS_PERMISSION_MODE_VALUES.has(value)) {
+                stripped.push(arg);
+                i++;
+              } else {
+                filteredArgs.push(arg);
+                i++;
+              }
             } else {
               filteredArgs.push(arg);
               i++;
             }
-          } else {
-            filteredArgs.push(arg);
-            i++;
           }
+          if (stripped.length > 0) {
+            await onLog(
+              "stderr",
+              `[aoa] WARNING: bridged mode — stripped bypass flag(s) from extraArgs that would defeat the PreToolUse permission hook: ${stripped.join(", ")}\n`,
+            );
+          }
+          if (filteredArgs.length > 0) args.push(...filteredArgs);
+        } else {
+          args.push(...extraArgs);
         }
-        if (stripped.length > 0) {
-          await onLog(
-            "stderr",
-            `[aoa] WARNING: bridged mode — stripped bypass flag(s) from extraArgs that would defeat the PreToolUse permission hook: ${stripped.join(", ")}\n`,
-          );
-        }
-        if (filteredArgs.length > 0) args.push(...filteredArgs);
-      } else {
-        args.push(...extraArgs);
       }
-    }
-    return args;
-  };
+      return args;
+    };
 
-  const parseFallbackErrorMessage = (proc: RunProcessResult) => {
-    const stderrLine =
-      proc.stderr
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .find(Boolean) ?? "";
+    const parseFallbackErrorMessage = (proc: RunProcessResult) => {
+      const stderrLine =
+        proc.stderr
+          .split(/\r?\n/)
+          .map((line) => line.trim())
+          .find(Boolean) ?? "";
 
-    if ((proc.exitCode ?? 0) === 0) {
-      return "Failed to parse claude JSON output";
-    }
+      if ((proc.exitCode ?? 0) === 0) {
+        return "Failed to parse claude JSON output";
+      }
 
-    return stderrLine
-      ? `Claude exited with code ${proc.exitCode ?? -1}: ${stderrLine}`
-      : `Claude exited with code ${proc.exitCode ?? -1}`;
-  };
+      return stderrLine
+        ? `Claude exited with code ${proc.exitCode ?? -1}: ${stderrLine}`
+        : `Claude exited with code ${proc.exitCode ?? -1}`;
+    };
 
-  const runAttempt = async (resumeSessionId: string | null) => {
-    const args = await buildClaudeArgs(resumeSessionId);
-    if (onMeta) {
-      await onMeta({
-        adapterType: "claude_local",
+    const runAttempt = async (resumeSessionId: string | null) => {
+      const args = await buildClaudeArgs(resumeSessionId);
+      if (onMeta) {
+        await onMeta({
+          adapterType: "claude_local",
+          command,
+          cwd: executionCwd,
+          commandArgs: args,
+          commandNotes,
+          env: redactEnvForLogs(env),
+          prompt,
+          context,
+        });
+      }
+
+      const proc = await runAdapterExecutionTargetProcess(executionTarget, {
+        runId,
         command,
+        args,
         cwd: executionCwd,
-        commandArgs: args,
-        commandNotes,
-        env: redactEnvForLogs(env),
-        prompt,
-        context,
+        env,
+        stdin: prompt,
+        authToken: env.AOA_API_KEY ?? authToken ?? null,
+        apiBaseUrl: env.AOA_API_URL ?? null,
+        runtimeCommandSpec: ctx.runtimeCommandSpec ?? null,
+        timeoutSec,
+        graceSec,
+        onLog,
+        onSpawn,
+        ...(unsetEnvPrefixes ? { unsetEnvPrefixes } : {}),
       });
-    }
 
-    const proc = await runAdapterExecutionTargetProcess(executionTarget, {
-      runId,
-      command,
-      args,
-      cwd: executionCwd,
-      env,
-      stdin: prompt,
-      authToken: env.AOA_API_KEY ?? authToken ?? null,
-      apiBaseUrl: env.AOA_API_URL ?? null,
-      runtimeCommandSpec: ctx.runtimeCommandSpec ?? null,
-      timeoutSec,
-      graceSec,
-      onLog,
-      onSpawn,
-      ...(unsetEnvPrefixes ? { unsetEnvPrefixes } : {}),
-    });
+      const parsedStream = parseClaudeStreamJson(proc.stdout);
+      const parsed = parsedStream.resultJson ?? parseJson(proc.stdout);
+      return { proc, parsedStream, parsed };
+    };
 
-    const parsedStream = parseClaudeStreamJson(proc.stdout);
-    const parsed = parsedStream.resultJson ?? parseJson(proc.stdout);
-    return { proc, parsedStream, parsed };
-  };
-
-  const toAdapterResult = (
-    attempt: {
-      proc: RunProcessResult;
-      parsedStream: ReturnType<typeof parseClaudeStreamJson>;
-      parsed: Record<string, unknown> | null;
-    },
-    opts: { fallbackSessionId: string | null; clearSessionOnMissingSession?: boolean },
-  ): AdapterExecutionResult => {
-    const { proc, parsedStream, parsed } = attempt;
-    const loginMeta = detectClaudeLoginRequired({
-      parsed,
-      stdout: proc.stdout,
-      stderr: proc.stderr,
-      exitCode: proc.exitCode,
-    });
-    const errorMeta =
-      loginMeta.loginUrl != null
-        ? {
-            loginUrl: loginMeta.loginUrl,
-          }
-        : undefined;
-
-    if (proc.timedOut) {
-      return {
+    const toAdapterResult = (
+      attempt: {
+        proc: RunProcessResult;
+        parsedStream: ReturnType<typeof parseClaudeStreamJson>;
+        parsed: Record<string, unknown> | null;
+      },
+      opts: { fallbackSessionId: string | null; clearSessionOnMissingSession?: boolean },
+    ): AdapterExecutionResult => {
+      const { proc, parsedStream, parsed } = attempt;
+      const loginMeta = detectClaudeLoginRequired({
+        parsed,
+        stdout: proc.stdout,
+        stderr: proc.stderr,
         exitCode: proc.exitCode,
-        signal: proc.signal,
-        timedOut: true,
-        errorMessage: `Timed out after ${timeoutSec}s`,
-        errorCode: "timeout",
-        errorMeta,
-        clearSession: Boolean(opts.clearSessionOnMissingSession),
-        executionCwd,
-      };
-    }
+      });
+      const errorMeta =
+        loginMeta.loginUrl != null
+          ? {
+              loginUrl: loginMeta.loginUrl,
+            }
+          : undefined;
 
-    if (!parsed) {
+      if (proc.timedOut) {
+        return {
+          exitCode: proc.exitCode,
+          signal: proc.signal,
+          timedOut: true,
+          errorMessage: `Timed out after ${timeoutSec}s`,
+          errorCode: "timeout",
+          errorMeta,
+          clearSession: Boolean(opts.clearSessionOnMissingSession),
+          executionCwd,
+        };
+      }
+
+      if (!parsed) {
+        return {
+          exitCode: proc.exitCode,
+          signal: proc.signal,
+          timedOut: false,
+          errorMessage: parseFallbackErrorMessage(proc),
+          errorCode: loginMeta.requiresLogin ? "claude_auth_required" : null,
+          errorMeta,
+          resultJson: {
+            stdout: proc.stdout,
+            stderr: proc.stderr,
+          },
+          clearSession: Boolean(opts.clearSessionOnMissingSession),
+          executionCwd,
+        };
+      }
+
+      const usage =
+        parsedStream.usage ??
+        (() => {
+          const usageObj = parseObject(parsed.usage);
+          return {
+            inputTokens: asNumber(usageObj.input_tokens, 0),
+            cachedInputTokens: asNumber(usageObj.cache_read_input_tokens, 0),
+            outputTokens: asNumber(usageObj.output_tokens, 0),
+          };
+        })();
+
+      const resolvedSessionId =
+        parsedStream.sessionId ??
+        (asString(parsed.session_id, opts.fallbackSessionId ?? "") || opts.fallbackSessionId);
+      const resolvedSessionParams = resolvedSessionId
+        ? ({
+          sessionId: resolvedSessionId,
+          cwd: executionCwd,
+          ...(workspaceId ? { workspaceId } : {}),
+          ...(workspaceRepoUrl ? { repoUrl: workspaceRepoUrl } : {}),
+          ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
+          ...(isRemoteExecutionTarget
+            ? { remoteExecution: adapterExecutionTargetSessionIdentity(executionTarget) }
+            : {}),
+        } as Record<string, unknown>)
+        : null;
+      const clearSessionForMaxTurns = isClaudeMaxTurnsResult(parsed);
+
       return {
         exitCode: proc.exitCode,
         signal: proc.signal,
         timedOut: false,
-        errorMessage: parseFallbackErrorMessage(proc),
-        errorCode: loginMeta.requiresLogin ? "claude_auth_required" : null,
+        errorMessage:
+          (proc.exitCode ?? 0) === 0
+            ? null
+            : describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`,
+        errorCode: clearSessionForMaxTurns
+          ? "max_turns_exhausted"
+          : loginMeta.requiresLogin
+            ? "claude_auth_required"
+            : null,
         errorMeta,
-        resultJson: {
-          stdout: proc.stdout,
-          stderr: proc.stderr,
-        },
-        clearSession: Boolean(opts.clearSessionOnMissingSession),
-        executionCwd,
-      };
-    }
-
-    const usage =
-      parsedStream.usage ??
-      (() => {
-        const usageObj = parseObject(parsed.usage);
-        return {
-          inputTokens: asNumber(usageObj.input_tokens, 0),
-          cachedInputTokens: asNumber(usageObj.cache_read_input_tokens, 0),
-          outputTokens: asNumber(usageObj.output_tokens, 0),
-        };
-      })();
-
-    const resolvedSessionId =
-      parsedStream.sessionId ??
-      (asString(parsed.session_id, opts.fallbackSessionId ?? "") || opts.fallbackSessionId);
-    const resolvedSessionParams = resolvedSessionId
-      ? ({
+        usage,
         sessionId: resolvedSessionId,
-        cwd: executionCwd,
-        ...(workspaceId ? { workspaceId } : {}),
-        ...(workspaceRepoUrl ? { repoUrl: workspaceRepoUrl } : {}),
-        ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
-        ...(isRemoteExecutionTarget
-          ? { remoteExecution: adapterExecutionTargetSessionIdentity(executionTarget) }
-          : {}),
-      } as Record<string, unknown>)
-      : null;
-    const clearSessionForMaxTurns = isClaudeMaxTurnsResult(parsed);
-
-    return {
-      exitCode: proc.exitCode,
-      signal: proc.signal,
-      timedOut: false,
-      errorMessage:
-        (proc.exitCode ?? 0) === 0
-          ? null
-          : describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`,
-      errorCode: clearSessionForMaxTurns
-        ? "max_turns_exhausted"
-        : loginMeta.requiresLogin
-          ? "claude_auth_required"
-          : null,
-      errorMeta,
-      usage,
-      sessionId: resolvedSessionId,
-      sessionParams: resolvedSessionParams,
-      sessionDisplayId: resolvedSessionId,
-      provider: isBedrockAuth(env) ? "aws_bedrock" : "anthropic",
-      model: parsedStream.model || asString(parsed.model, model),
-      billingType,
-      costUsd: parsedStream.costUsd ?? asNumber(parsed.total_cost_usd, 0),
-      executionCwd,
-      resultJson: parsed,
-      summary: parsedStream.summary || asString(parsed.result, ""),
-      clearSession: clearSessionForMaxTurns || Boolean(opts.clearSessionOnMissingSession && !resolvedSessionId),
+        sessionParams: resolvedSessionParams,
+        sessionDisplayId: resolvedSessionId,
+        provider: isBedrockAuth(env) ? "aws_bedrock" : "anthropic",
+        model: parsedStream.model || asString(parsed.model, model),
+        billingType,
+        costUsd: parsedStream.costUsd ?? asNumber(parsed.total_cost_usd, 0),
+        executionCwd,
+        resultJson: parsed,
+        summary: parsedStream.summary || asString(parsed.result, ""),
+        clearSession: clearSessionForMaxTurns || Boolean(opts.clearSessionOnMissingSession && !resolvedSessionId),
+      };
     };
-  };
 
-  try {
     const initial = await runAttempt(sessionId ?? null);
     if (
       sessionId &&
@@ -812,7 +892,49 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       fs.rm(hookSettingsTmpDir, { recursive: true, force: true }).catch(() => {});
     }
     if (isolatedConfigDir) {
-      fs.rm(isolatedConfigDir, { recursive: true, force: true }).catch(() => {});
+      // Did the CLI rewrite its private copy of the credential? If it did, it
+      // refreshed the OAuth token into a file we are about to delete — and if
+      // Anthropic rotates refresh tokens on use, the operator's host
+      // `~/.claude` may have just been invalidated by a crew run. That is an
+      // OPEN question (see provisionClaudeConfigHome's rotation note); this
+      // warning exists so the first real occurrence is observed instead of
+      // disappearing with the directory. Awaited — it must read the file before
+      // the removal below — but fully best-effort.
+      //
+      // Wrapped whole: a throw here would replace the run's real result (or its
+      // real error) with a teardown diagnostic, which is the opposite of what a
+      // diagnostic is for. `.catch` alone would not cover an `onLog` that throws
+      // synchronously.
+      if (provisionedCredential) {
+        try {
+          const rotated = await claudeCredentialChangedSinceProvisioning(
+            provisionedCredential.path,
+            provisionedCredential.fingerprint,
+          );
+          if (rotated) {
+            await onLog(
+              "stderr",
+              "[aoa] WARNING: the Claude CLI rewrote the per-run credential copy during this run " +
+                "(likely an OAuth refresh). That refreshed token is being discarded with the per-run " +
+                "config home. If Anthropic rotates refresh tokens on use, the host login at " +
+                "~/.claude may now be stale — re-run `claude auth login` if the CLI starts asking " +
+                "for auth. Please report this: it decides whether AoA must copy the credential back.\n",
+            );
+          }
+        } catch {
+          /* teardown diagnostics are never worth failing a run over */
+        }
+      }
+      // Release BEFORE removing: if the rm fails (a Windows handle held a moment
+      // longer), the directory must still be sweepable rather than pinned live
+      // for the lifetime of the process.
+      releaseIsolatedClaudeConfigDir(isolatedConfigDir);
+      // AWAITED, unlike the two fire-and-forget removals above. This directory
+      // holds a credential, so "gone by the time execute returns" is a stronger
+      // and more testable guarantee than "gone eventually" — and it is one rm of
+      // a two-entry directory. Still fully best-effort: a failure leaves it for
+      // the sweep, which the release above has already made possible.
+      await fs.rm(isolatedConfigDir, { recursive: true, force: true }).catch(() => {});
     }
   }
 }

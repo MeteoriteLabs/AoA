@@ -16,6 +16,27 @@ export function resolveClaudeConfigHome(env: NodeJS.ProcessEnv): string {
 }
 
 /**
+ * Claude's credential file, relative to the config home resolved above.
+ * Dogfood-verified (do NOT reuse codex's `auth.json`).
+ *
+ * 🚨 THE ONLY SPELLING OF THIS FILENAME IN PRODUCTION CODE. It lives here,
+ * beside the resolver, because the two together are the whole answer to "where
+ * does Claude keep its auth". The provider-login runner registry
+ * (`server/src/services/commander-login-runtime.ts`) sets claude's
+ * `credentialFileName` from this const, and T3's per-run provisioning
+ * (`ambient-config.ts`) copies exactly this file — so a future rename is one
+ * edit, not a hunt. Direction is forced: `server/` depends on the adapter
+ * packages, never the reverse.
+ *
+ * The e2e tree deliberately re-declares it (`tests/e2e/helpers/fake-claude.ts`)
+ * rather than importing it, for the same reason it re-declares other shared
+ * shapes: the e2e helpers do not depend on workspace package resolution. That
+ * copy is a fixture, not a second source of truth — and a rename that misses it
+ * fails the isolation spec loudly.
+ */
+export const CLAUDE_CREDENTIAL_FILE_NAME = ".credentials.json";
+
+/**
  * Start an interactive `claude auth login` (Plan 3 / §6.2), streaming the
  * verification URL out live. The subcommand is `auth login` — dogfood confirmed
  * there is NO `claude login` (it just prints "Please run /login" and exits).

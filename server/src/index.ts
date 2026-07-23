@@ -53,6 +53,7 @@ import {
 import { handlePreviewProxyUpgrade } from "./services/preview-proxy.js";
 import { scheduleTtlSweeper } from "./services/workspace-ttl-sweeper.js";
 import { scheduleCleanupRetrySweeper } from "./services/workspace-cleanup-retry-sweeper.js";
+import { scheduleClaudeConfigDirSweeper } from "./services/claude-config-dir-sweeper.js";
 import { registerHeartbeatWatchdogSweeper } from "./services/heartbeat-watchdog.js";
 import { startEmbeddingWorker } from "./services/embeddings-worker.js";
 import { startMentionOutboxWorker } from "./services/mention-outbox-worker.js";
@@ -1116,6 +1117,21 @@ const threadEventListener = initThreadEventListener(
 );
 process.once("SIGTERM", () => threadEventListener.shutdown());
 process.once("SIGINT", () => threadEventListener.shutdown());
+
+// Reclaim orphaned per-run Claude config homes (`os.tmpdir()/aoa-claude-config-*`).
+//
+// 🚨 REGISTERED HERE, WITH CREW DISPATCH — deliberately NOT inside the
+// `config.heartbeatSchedulerEnabled` block above. What mints these directories
+// is a CREW run, and crew dispatch is the unconditional sweep below
+// (`runExtractionSweep` → `runAoaDispatch`), not the heartbeat scheduler. Under
+// HEARTBEAT_SCHEDULER_ENABLED=false a heartbeat-gated registration would leave
+// crew runs still writing the operator's Claude credential into tmpdir with
+// nothing ever reclaiming it — exactly the credentials-at-rest state this sweep
+// exists to prevent. Keep its lifetime tied to whatever schedules crew dispatch.
+//
+// Sweeps once at boot (clearing whatever a crash or SIGKILL left behind while
+// the server was down), then hourly. Best-effort — it cannot block or fail boot.
+scheduleClaudeConfigDirSweeper();
 
 // Sub-agent #1: durable discussion-extraction sweeper (primary trigger).
 // Polls discussion_entries.extractionStatus='pending' (+ reclaims orphaned

@@ -2,9 +2,12 @@ import { test, expect, type APIRequestContext } from "@playwright/test";
 import path from "node:path";
 import { seedCompany, cleanupTestCompanies } from "./helpers/seed-company";
 import {
+  AMBIENT_CLAUDE_CONFIG_CONTAMINATION,
   AMBIENT_CLAUDE_CONFIG_POISON,
+  AMBIENT_CLAUDE_CREDENTIAL_FILE,
   clearFakeClaudeInvocations,
   readFakeClaudeInvocations,
+  seedAmbientClaudeConfigHome,
   writeFakeClaudeControl,
   type FakeClaudeInvocation,
 } from "./helpers/fake-claude";
@@ -99,6 +102,12 @@ test.describe("crew ambient Claude-config isolation", () => {
 
   test.beforeEach(async ({ request }) => {
     await cleanupTestCompanies(request, /^E2E-CrewIsolation-/);
+    // Re-assert the ambient operator config home. The config seeds it at load,
+    // but a prior local run (or another spec) could have disturbed it, and a
+    // MISSING credential here does not fail loudly in this spec — it makes the
+    // crew run refuse to spawn, which reads as a timeout waiting for an
+    // invocation rather than "your fixture is gone".
+    seedAmbientClaudeConfigHome();
   });
 
   test("a crew run spawns with a per-run CLAUDE_CONFIG_DIR and no ambient Anthropic key", async ({
@@ -162,13 +171,12 @@ test.describe("crew ambient Claude-config isolation", () => {
       readFakeClaudeInvocations().find((inv) => inv.env?.AOA_AGENT_ID === agentId) ?? null;
 
     // ── Positive control FIRST: the poison genuinely reaches an unisolated spawn.
-    const controlEnv = (
-      await waitFor<FakeClaudeInvocation>(
-        invocationFor(org.agent.id),
-        "a recorded claude invocation for the org control agent",
-        WAIT_TIMEOUT_MS,
-      )
-    ).env!;
+    const controlSpawn = await waitFor<FakeClaudeInvocation>(
+      invocationFor(org.agent.id),
+      "a recorded claude invocation for the org control agent",
+      WAIT_TIMEOUT_MS,
+    );
+    const controlEnv = controlSpawn.env!;
     expect(
       controlEnv.CLAUDE_CODE_E2E_OPERATOR_KNOB,
       "ambient poison must reach an UNISOLATED claude spawn — otherwise the crew absence assertions below prove nothing",
@@ -178,6 +186,13 @@ test.describe("crew ambient Claude-config isolation", () => {
     // comes from the two full-value assertions either side of this one.
     expect(controlEnv.ANTHROPIC_API_KEY).toBeDefined();
     expect(controlEnv.CLAUDE_CONFIG_DIR).toBe(AMBIENT_CLAUDE_CONFIG_POISON.CLAUDE_CONFIG_DIR);
+    // …and the operator's config home really does hold the contamination the
+    // crew assertions below claim to have excluded. Without this, "no plugins/"
+    // could just mean "there were never any plugins/".
+    expect(
+      controlSpawn.configDirEntries,
+      "the ambient operator config home must actually contain contamination",
+    ).toEqual(expect.arrayContaining([...AMBIENT_CLAUDE_CONFIG_CONTAMINATION.dirs]));
 
     // Recorded by the fake CLI itself — the spawn's own inherited environment.
     const invocation = await waitFor<FakeClaudeInvocation>(
@@ -203,5 +218,27 @@ test.describe("crew ambient Claude-config isolation", () => {
     expect(env.PATH ?? env.Path, "PATH must survive the strip").toBeTruthy();
     const homeish = env.HOME ?? env.USERPROFILE;
     expect(homeish, "HOME/USERPROFILE must survive the strip").toBeTruthy();
+
+    // 4. T3 — the pinned directory is AUTHENTICATED and otherwise EMPTY.
+    //
+    //    Listed by the fake CLI itself at spawn time: the per-run directory is
+    //    removed in the adapter's `finally`, so reading the path from here would
+    //    race the cleanup. Exactly one entry is the strongest available form of
+    //    "the other nineteen did not come with it" — and, read together with the
+    //    control above (which proves the source home is full of contamination),
+    //    it is a real exclusion rather than an empty one.
+    expect(
+      invocation.configDirEntries,
+      "the per-run config home must contain the credential and nothing else",
+    ).toEqual([AMBIENT_CLAUDE_CREDENTIAL_FILE]);
+    for (const name of [
+      ...AMBIENT_CLAUDE_CONFIG_CONTAMINATION.files,
+      ...AMBIENT_CLAUDE_CONFIG_CONTAMINATION.dirs,
+    ]) {
+      expect(
+        invocation.configDirEntries,
+        `${name} must never reach a crew run`,
+      ).not.toContain(name);
+    }
   });
 });
