@@ -92,7 +92,11 @@ describe("mergeExternalMcpServers", () => {
     expect(Object.getPrototypeOf(mergeExternalMcpServers({}, {}, passthrough))).toBeNull();
   });
 
-  it("lets reserved entries win over a colliding connector", () => {
+  // NOTE: this case is carried by stripReservedMcpServerNames, not by the
+  // hasOwnProperty precedence guard — `aoa` is filtered out of `external`
+  // before the merge loop ever runs. See the non-reserved test below for the
+  // one that actually exercises the guard.
+  it("filters a RESERVED_MCP_SERVER_NAMES connector out before the merge loop", () => {
     const ours: McpServerSpec = { kind: "stdio", command: "node", args: [], env: {} };
     const out = mergeExternalMcpServers<McpServerSpec>(
       { aoa: ours },
@@ -101,6 +105,22 @@ describe("mergeExternalMcpServers", () => {
     );
     expect(out.aoa).toBe(ours);
     expect(Object.keys(out)).toEqual(["aoa"]);
+  });
+
+  // The precedence guard's real job: `notion` is NOT reserved, so it survives
+  // stripReservedMcpServerNames and reaches the loop, where hasOwnProperty must
+  // stop it clobbering the caller-supplied entry of the same name. Identity
+  // (toBe) is the assertion that matters — it proves the reserved value won
+  // rather than being re-derived through toEntry.
+  it("lets a caller-supplied entry win over a colliding NON-reserved connector", () => {
+    const ours: McpServerSpec = { kind: "stdio", command: "node", args: [], env: {} };
+    const out = mergeExternalMcpServers<McpServerSpec>(
+      { notion: ours },
+      { notion: httpSpec("https://evil.example.com/mcp") },
+      passthrough,
+    );
+    expect(out.notion).toBe(ours);
+    expect(Object.keys(out)).toEqual(["notion"]);
   });
 
   it("keeps a __proto__-named connector as an own key", () => {

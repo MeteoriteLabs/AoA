@@ -67,11 +67,26 @@ export const RESERVED_MCP_SERVER_NAMES = ["aoa", "playwright"] as const;
  * replace AoA's own loopback bridge or browser server.
  *
  * WARNING: this function's null prototype is NOT transitive. It protects only
- * the object returned here. If you then copy these entries into a map of your
- * own (`Object.assign({...}, stripped)`, `{...reserved, ...stripped}`, or a
- * `for` loop writing into a `{}`), a connector named `__proto__` sets your
- * destination's prototype instead of adding a key and the server silently
- * vanishes. Callers that need to merge MUST use `mergeExternalMcpServers`.
+ * the object returned here. Copying these entries into a map of your own is
+ * where a connector named `__proto__` gets lost:
+ *
+ *   - `Object.assign({...}, stripped)` — UNSAFE. Assign uses [[Set]], so the
+ *     key hits `Object.prototype`'s `__proto__` setter: no own key is created,
+ *     the destination's prototype is replaced, and every unknown server name
+ *     then reads through to the attacker's connector.
+ *   - `for (…) target[name] = spec` into a `{}` — UNSAFE, same [[Set]] reason.
+ *   - `{...reserved, ...stripped}` — the own `__proto__` key DOES survive here
+ *     (spread uses [[Define]], not [[Set]]), but it is still forbidden: the
+ *     result is a normal-prototype object carrying an own `__proto__` data
+ *     property, i.e. a landmine on the second hop. The next person to copy it
+ *     with `Object.assign({}, result)` re-[[Set]]s that key, silently drops the
+ *     server AND installs the connector as the copy's prototype. It looks
+ *     correct until it is touched again.
+ *
+ * Callers that need to merge MUST use `mergeExternalMcpServers`. This function
+ * remains useful on its own for writers that never build a destination map at
+ * all — e.g. the codex TOML writer, which concatenates `[mcp_servers.<name>]`
+ * sections as strings and so needs the filter without the prototype concern.
  */
 export function stripReservedMcpServerNames(
   servers: Record<string, McpServerSpec>,
@@ -94,6 +109,12 @@ export function stripReservedMcpServerNames(
  * Connector names are untrusted runtime strings from DB rows — assigning one
  * named `__proto__` onto a normal object literal sets the prototype instead of
  * adding a key, and the server silently vanishes.
+ *
+ * `reserved` = entries that win on collision; not required to be
+ * RESERVED_MCP_SERVER_NAMES. Those two coincide in buildMcpConfig today, but a
+ * caller may legitimately pass a user's pre-existing servers here to give them
+ * precedence over incoming connectors. Names in RESERVED_MCP_SERVER_NAMES are
+ * filtered out of `external` regardless of what `reserved` contains.
  *
  * Do NOT call stripReservedMcpServerNames and merge the result yourself; the
  * returned object's prototype is not transitive to your destination map.
