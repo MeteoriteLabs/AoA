@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Cable, PlugZap } from "lucide-react";
 import { useCompany } from "@/context/CompanyContext";
@@ -77,6 +77,8 @@ export function MCPConnectorsSection() {
   const [headersText, setHeadersText] = useState("");
   const [formError, setFormError] = useState<string | null>(null);
   const [approvalNotice, setApprovalNotice] = useState<string | null>(null);
+  // Inline surface for disable/remove failures (previously swallowed silently).
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const serverNameValid = serverName === "" || SERVER_NAME_RE.test(serverName);
   // stdio is host-executing → only offered on a local_trusted host (D7).
@@ -115,12 +117,22 @@ export function MCPConnectorsSection() {
 
   const disableMutation = useMutation({
     mutationFn: (id: string) => mcpConnectorsApi.update(companyId!, id, { status: "disabled" }),
-    onSuccess: () => invalidate(),
+    onSuccess: () => {
+      setActionError(null);
+      invalidate();
+    },
+    onError: (err) =>
+      setActionError(err instanceof ApiError ? err.message : "Failed to disable connector"),
   });
 
   const removeMutation = useMutation({
     mutationFn: (id: string) => mcpConnectorsApi.remove(companyId!, id),
-    onSuccess: () => invalidate(),
+    onSuccess: () => {
+      setActionError(null);
+      invalidate();
+    },
+    onError: (err) =>
+      setActionError(err instanceof ApiError ? err.message : "Failed to remove connector"),
   });
 
   const handleSubmit = () => {
@@ -130,6 +142,12 @@ export function MCPConnectorsSection() {
     if (!serverName.trim()) return setFormError("Server name is required.");
     if (!SERVER_NAME_RE.test(serverName))
       return setFormError("Server name must match /^[a-z0-9-]+$/ (lowercase letters, digits, hyphen).");
+    // Early guard: a stdio connector in a non-local deployment is a guaranteed
+    // 403 at the server (D7). Surface it inline instead of round-tripping.
+    if (transport === "stdio" && !stdioAllowed)
+      return setFormError(
+        "Local (stdio) connectors run a command on the host and are only available in local deployments.",
+      );
     if (transport === "http" && !url.trim())
       return setFormError("HTTP transport requires a URL.");
     if (transport === "stdio" && !command.trim())
@@ -192,6 +210,7 @@ export function MCPConnectorsSection() {
                 Registered connectors
               </div>
               <div className="rounded-md border border-border px-4 py-4 space-y-3">
+                {actionError && <div className="text-sm text-destructive">{actionError}</div>}
                 {(connectors ?? []).length === 0 ? (
                   <EmptyState
                     icon={PlugZap}
@@ -376,7 +395,7 @@ export function MCPConnectorsSection() {
 
 interface ConnectorRowProps {
   connector: McpConnector;
-  agents: { id: string; name: string }[];
+  agents: { id: string; name: string; status?: string }[];
   isFounder: boolean;
   onDisable: () => void;
   onRemove: () => void;
@@ -395,10 +414,29 @@ function ConnectorRow({
   removeBusy,
   companyId,
 }: ConnectorRowProps) {
+  const queryClient = useQueryClient();
   const [showAgents, setShowAgents] = useState(false);
-  const [selected, setSelected] = useState<Set<string>>(new Set());
+  // Seeded from the connector's CURRENT enabled-agent set (A34). PUT …/agents
+  // REPLACES the whole set, so starting empty would silently wipe agents the
+  // founder didn't touch. Re-seeding on open (and after a save-driven refetch)
+  // keeps the checkboxes an accurate mirror of server state.
+  const [selected, setSelected] = useState<Set<string>>(
+    () => new Set(connector.enabledAgentIds),
+  );
   const [agentError, setAgentError] = useState<string | null>(null);
   const [agentSaved, setAgentSaved] = useState(false);
+
+  // Seed on the closed→open transition only (deps: [showAgents]). The effect
+  // captures the current enabledAgentIds from render, so an open always reflects
+  // fresh server state; it deliberately does NOT re-run on a mid-open refetch,
+  // so a just-saved confirmation isn't flash-cleared.
+  useEffect(() => {
+    if (!showAgents) return;
+    setSelected(new Set(connector.enabledAgentIds));
+    setAgentSaved(false);
+    setAgentError(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showAgents]);
 
   const setAgentsMutation = useMutation({
     mutationFn: (agentIds: string[]) =>
@@ -406,6 +444,9 @@ function ConnectorRow({
     onSuccess: () => {
       setAgentError(null);
       setAgentSaved(true);
+      // Refetch so connector.enabledAgentIds reflects the just-saved set — the
+      // seed-on-open effect then mirrors server state on the next open (A34).
+      queryClient.invalidateQueries({ queryKey: queryKeys.mcpConnectors.list(companyId) });
     },
     onError: (err) => {
       setAgentSaved(false);
@@ -423,8 +464,15 @@ function ConnectorRow({
     });
   };
 
+  // Exclude terminated agents from the assignable set — a dead agent can never
+  // use a connector, so offering it is noise (and re-granting via the
+  // full-set-replace PUT would resurrect a stale link). Agents whose status the
+  // list doesn't expose are kept (fail-open on unknown).
   const sortedAgents = useMemo(
-    () => [...agents].sort((a, b) => a.name.localeCompare(b.name)),
+    () =>
+      [...agents]
+        .filter((a) => a.status !== "terminated")
+        .sort((a, b) => a.name.localeCompare(b.name)),
     [agents],
   );
 
@@ -475,8 +523,8 @@ function ConnectorRow({
       {isFounder && showAgents && (
         <div className="rounded-md border border-border-soft bg-muted/20 px-3 py-3 space-y-2">
           <div className="text-xs text-muted-foreground">
-            Choose which agents may use this connector. Saving replaces the full enabled-agent
-            set for this connector.
+            Choose which agents may use this connector. Checkboxes reflect the current
+            set; Save replaces this connector's enabled-agent set with your selection.
           </div>
           {sortedAgents.length === 0 ? (
             <div className="text-sm text-muted-foreground">No agents in this company yet.</div>

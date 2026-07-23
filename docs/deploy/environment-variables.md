@@ -145,6 +145,7 @@ The server sets these automatically when invoking adapters. They appear in the s
 | `AOA_WORKSPACE_BRANCH` | Git branch name when workspace is git-backed |
 | `AOA_WORKSPACE_WORKTREE_PATH` | Filesystem path to the git worktree when applicable |
 | `AGENT_HOME` | Agent's home directory (memory + life files live here) |
+| `AOA_MCP_<CONNECTOR>_TOKEN` | Dynamic family (one per external MCP connector, name derived from the connector's `serverName`). Holds the resolved company secret for that connector and is injected into the spawned agent process env; the generated `--mcp-config` file references it only as a `${AOA_MCP_<CONNECTOR>_TOKEN}` placeholder, so the plaintext secret never lands on disk. Not operator-set. |
 
 ## Session impersonation (CLI / mcp)
 
@@ -204,4 +205,5 @@ These are read by tests and dev scripts; you should not need to set them in prod
 | `AOA_E2E_RUNTIME_DECISION_BRIDGE_CODEX` | Opt-in flag for the guarded codex_local runtime-decision-bridge e2e (`runtime-decision-bridge-codex.spec.ts`); unset ⇒ skipped. W5c |
 | `AOA_TEST_COMPANY_ID` / `AOA_TEST_THREAD_ID` | Seed IDs for the bridge stdout-purity test |
 | `AOA_TEST_DATABASE_URL` | Postgres URL for tests that need a real DB connection |
+| `AOA_TEST_SECRET_PROBE` | Test-only probe var set by `mcp-connectors-env.test.ts` to assert `buildConnectorProcessEnv` scrubs AoA/infra secrets out of the env handed to external MCP connectors. Never read in production. |
 | `AOA_API_BASE` | API base URL used by the Commander review seed script; defaults to `http://127.0.0.1:3100/api` |

@@ -37,12 +37,42 @@ export type ConnectorPatch = {
 
 export function mcpConnectorService(db: Db) {
   return {
-    list: (companyId: string) =>
-      db
+    /**
+     * List a company's connectors, each augmented with `enabledAgentIds` — the
+     * per-agent opt-in set (D4). Done as one grouped follow-up query (not N+1):
+     * fetch every junction row for the company's connectors in a single
+     * `inArray`, then bucket in JS. Returning the current set lets the Settings
+     * Agents panel pre-populate its selection so editing is non-destructive
+     * (A34): `PUT …/agents` REPLACES the whole set, so a panel that started empty
+     * would silently wipe already-enabled agents on save.
+     */
+    list: async (companyId: string) => {
+      const rows = await db
         .select()
         .from(companyMcpConnectors)
         .where(eq(companyMcpConnectors.companyId, companyId))
-        .orderBy(desc(companyMcpConnectors.createdAt)),
+        .orderBy(desc(companyMcpConnectors.createdAt));
+      if (rows.length === 0) return [];
+      const links = await db
+        .select({
+          connectorId: companyMcpConnectorAgents.connectorId,
+          agentId: companyMcpConnectorAgents.agentId,
+        })
+        .from(companyMcpConnectorAgents)
+        .where(
+          inArray(
+            companyMcpConnectorAgents.connectorId,
+            rows.map((r) => r.id),
+          ),
+        );
+      const byConnector = new Map<string, string[]>();
+      for (const link of links) {
+        const list = byConnector.get(link.connectorId);
+        if (list) list.push(link.agentId);
+        else byConnector.set(link.connectorId, [link.agentId]);
+      }
+      return rows.map((r) => ({ ...r, enabledAgentIds: byConnector.get(r.id) ?? [] }));
+    },
 
     getById: (id: string) =>
       db

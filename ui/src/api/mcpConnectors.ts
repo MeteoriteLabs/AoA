@@ -24,6 +24,13 @@ export interface McpConnector {
   createdByUserId: string | null;
   createdAt: string;
   updatedAt: string;
+  /**
+   * Agents currently opted-in to this connector (the D4 per-agent set). The
+   * Settings Agents panel seeds its checkboxes from this so a save (which
+   * REPLACES the whole set via PUT …/agents) does not silently wipe agents the
+   * founder didn't intend to touch (A34).
+   */
+  enabledAgentIds: string[];
 }
 
 export interface CreateConnectorInput {
