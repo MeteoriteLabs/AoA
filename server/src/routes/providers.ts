@@ -163,6 +163,7 @@ import {
   type ProviderId,
 } from "@armyofagents/shared";
 import { accessService } from "../services/access.js";
+import { logActivity } from "../services/activity-log.js";
 import { secretService } from "../services/secrets.js";
 import { classifyProbeOutcome } from "../services/providers/classify-probe.js";
 import {
@@ -820,6 +821,12 @@ export function providerRoutes(db: Db): Router {
       throw err;
     }
 
+    // The key is committed — record WHO changed this company's credential before
+    // the (best-effort) re-probe work below.
+    await auditProvider(companyId, founderUserId, "provider.key.saved", providerId, {
+      secretId: saved.secretId,
+    });
+
     // Credential-group invalidation (invariant 3). The saved secret is shared,
     // so every provider that resolves to it is re-probed — otherwise the
     // sibling card keeps a status derived from the old key.
@@ -924,6 +931,38 @@ export function providerRoutes(db: Db): Router {
     return Boolean(row) && row.provider === providerId;
   }
 
+  /**
+   * Audit a credential-grade provider mutation.
+   *
+   * Saving a company key and starting a host-shared OAuth sign-in both change
+   * credentials for the whole company (and, for login, the machine), so the
+   * Activity feed must record WHO did it — the same bar `commander-key` and
+   * `secrets` already meet. Best-effort: the key is already committed and the
+   * sign-in is already live by the time we log, so a logging failure must never
+   * fail the request.
+   */
+  async function auditProvider(
+    companyId: string,
+    actorUserId: string,
+    action: string,
+    providerId: string,
+    details: Record<string, unknown>,
+  ) {
+    try {
+      await logActivity(db, {
+        companyId,
+        actorType: "user",
+        actorId: actorUserId,
+        action,
+        entityType: "provider",
+        entityId: providerId,
+        details: { providerId, ...details },
+      });
+    } catch (err) {
+      log.warn({ err, companyId, action, providerId }, "provider activity log failed");
+    }
+  }
+
   /* ── Interactive login (Task 9b) ─────────────────────────────────────── */
 
   /**
@@ -973,6 +1012,9 @@ export function providerRoutes(db: Db): Router {
         provider: providerId,
         startedByUserId: founderUserId,
       });
+      await auditProvider(companyId, founderUserId, "provider.login.started", providerId, {
+        challengeId,
+      });
       res.json({ challengeId, loginUrl });
     } catch (err) {
       if (err instanceof LoginChallengeConflictError) {
@@ -991,7 +1033,8 @@ export function providerRoutes(db: Db): Router {
 
   router.get("/:providerId/login/:challengeId", async (req: Request, res: Response) => {
     const companyId = req.params.companyId as string;
-    if (!(await assertFounderActor(req, res, companyId))) return;
+    const founderUserId = await assertFounderActor(req, res, companyId);
+    if (!founderUserId) return;
 
     const providerId = req.params.providerId as string;
     const descriptor = getProviderById(providerId);
@@ -1019,6 +1062,11 @@ export function providerRoutes(db: Db): Router {
     // verdict. Best-effort — see the contract note in the file header.
     let readiness: ScopedReadinessDto | null = null;
     if (status.status === "completed" && !reprobedChallenges.has(challengeId)) {
+      // The sign-in changed what this machine authenticates as — record it once,
+      // on the same first-observe edge the re-probe uses.
+      await auditProvider(companyId, founderUserId, "provider.login.completed", providerId, {
+        challengeId,
+      });
       // A completed host-CLI login changes what agents WITHOUT their own env
       // binding authenticate as (they resolve through the host login), so their
       // cached agent-scope verdicts now answer a stale question. Clear them (→
@@ -1060,7 +1108,8 @@ export function providerRoutes(db: Db): Router {
 
   router.post("/:providerId/login/:challengeId/cancel", async (req: Request, res: Response) => {
     const companyId = req.params.companyId as string;
-    if (!(await assertFounderActor(req, res, companyId))) return;
+    const founderUserId = await assertFounderActor(req, res, companyId);
+    if (!founderUserId) return;
 
     const providerId = req.params.providerId as string;
     if (!getProviderById(providerId)) {
@@ -1077,6 +1126,9 @@ export function providerRoutes(db: Db): Router {
       return;
     }
     await loginService.cancel(companyId, challengeId);
+    await auditProvider(companyId, founderUserId, "provider.login.cancelled", providerId, {
+      challengeId,
+    });
     res.json({ ok: true });
   });
 

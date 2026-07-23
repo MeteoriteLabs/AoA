@@ -70,6 +70,9 @@ vi.mock("../services/providers/readiness.js", async (importOriginal) => {
   };
 });
 
+const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
+vi.mock("../services/activity-log.js", () => ({ logActivity: mockLogActivity }));
+
 const mockSaveProviderKey = vi.hoisted(() => vi.fn());
 vi.mock("../services/providers/provider-key.js", async (importOriginal) => {
   // `resolveProviderKeyTarget` stays REAL — it is the credential-owner hop the
@@ -598,6 +601,18 @@ describe("POST /api/companies/:companyId/providers/:providerId/key", () => {
       COMPANY_ID,
       "cursor",
     );
+    // Credential-grade mutation → the Activity feed records WHO did it (the same
+    // bar commander-key/secrets meet). The raw value is never in the details.
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        companyId: COMPANY_ID,
+        action: "provider.key.saved",
+        entityType: "provider",
+        entityId: "cursor",
+      }),
+    );
+    expect(JSON.stringify(mockLogActivity.mock.calls)).not.toContain("key_SUPERSECRETVALUE123456");
   });
 
   it("is founder-gated via an explicit board-actor check", async () => {
