@@ -1655,3 +1655,16 @@ Method: a stdio MCP server that wrote its own `process.argv[2]` / `process.env` 
 **A20 — TASK 11 MUST IMPLEMENT VALIDATION; the schema delegates every invariant to it and its plan text currently has none.** A review grep of Task 11's section found `zod` × 0, `validate` × 0, `url` × 0 — there is no request schema, and A8's required `serverName` charset check is missing from its body. The DB deliberately does NOT enforce these (a CHECK on `transport ⇒ url NOT NULL` would be an enum in disguise and would reintroduce exactly the migration cost A2 removed). Task 11 must therefore validate: `transport` is one of the supported values; `http` requires `url` and forbids `command`; `stdio` requires `command` and forbids `url`; `serverName` matches `/^[a-zA-Z0-9_-]+$/` (hygiene and env-var-slug collision-avoidance — NOT the prototype-pollution fix, see A8-CORRECTION); and the referenced secret exists (A19).
 
 **Recommended:** define that discriminated union ONCE as a zod schema in `packages/shared` and consume it from both Task 11's route and Task 6's producer, so the invariant has a single definition rather than two that drift apart.
+
+**A21 — `serverName` charset MUST be `/^[a-z0-9-]+$/` (lowercase, digits, hyphen ONLY). This supersedes the charset given in A20.** A20 proposed `/^[a-zA-Z0-9_-]+$/`. That is unsafe, because `envVarNameFor` maps every non-alphanumeric character to `_` and uppercases the result — so with underscores or uppercase permitted the mapping is **not injective**:
+
+- `a-b` and `a_b` both → `AOA_MCP_A_B_TOKEN`
+- `a-b` and `A-B` both → `AOA_MCP_A_B_TOKEN`
+
+Two connectors sharing one env var name means one secret silently overwrites the other and **the wrong credential is sent to the wrong server** — a silent cross-tenant-ish leak between two of the company's own connectors, with no error anywhere.
+
+Restricting to lowercase + digits + hyphen makes `-` the only character that maps to `_`, and removes case as a second collision source, so `envVarNameFor` becomes injective over the permitted set. This also matches the `company_mcp_connectors.serverName` column comment ("Lowercase, no spaces") and MCP-idiomatic names (`notion`, `linear`, `my-server`). Task 11 must enforce it at registration.
+
+**A22 — `envVarNameFor` maps per-character; do NOT "optimise" the regex with `+`.** The replace is `/[^a-zA-Z0-9]/g`, one underscore per character, deliberately. Adding the `+` quantifier to collapse runs reintroduces a collision (`a-b` vs `a--b` → same name) that A21's charset restriction does NOT cover, since `--` is legal under `[a-z0-9-]+`. A plan-text/test contradiction on exactly this point was caught during Task 6; the test is authoritative.
+
+**A23 — Task 10 must document the dynamic `AOA_MCP_*_TOKEN` env family.** The repo's brand-check guard requires every `process.env.AOA_*` read in `server/src` to be documented. Task 6 only *constructs* these names as strings and never reads them, so the guard does not fire yet. Once Task 10 spawns processes carrying them, add a line covering the `AOA_MCP_<CONNECTOR>_TOKEN` family to `docs/deploy/environment-variables.md` or the guard will fail CI.
