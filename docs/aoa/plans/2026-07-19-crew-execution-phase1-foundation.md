@@ -297,6 +297,12 @@ git commit -m "feat(agents): explicit Claude-instruction isolation policy for ag
 
 ## Task 5: Crew workspace resolution (crew tasks must be workspace-backed)
 
+> 🚨 **T4 raised this task's severity — it is no longer only a capability gap, it is an active contamination.** Verified 2026-07-23: the crew runner never sets a workspace, so `cwd` falls through to `process.cwd()` (`claude-local/src/server/execute.ts:188`) — **the AoA server's own repository**. Every crew run therefore loads *AoA's* `CLAUDE.md`, i.e. this codebase's development instructions, into an agent meant to be doing the customer's work.
+>
+> This is the most likely mechanism behind the live hijack that motivated the whole isolation workstream, and it is **not** what D16's "allow the workspace repo's `CLAUDE.md`" tier intends — a crew agent has no workspace, so what it actually inherits is the server's directory by accident.
+>
+> **Consequence for this task:** resolving a workspace is not only about giving the agent a repo to work in; it is what makes tier two of D16 mean the right thing. Until it lands, "project instructions are allowed" is actively harmful rather than merely absent. Where no workspace resolves, decide explicitly what `cwd` should be — inheriting the server's repo must stop being the fallback.
+
 **Why:** crew tasks are **not** workspace-backed today — the crew runner never sets `context.paperclipWorkspace` (heartbeat resolves it at `heartbeat.ts:1549` → `:3628`). Without this, a crew agent has no repo to work in, and a scratch cwd also breaks Claude session resume (`execute.ts:450` requires identical cwd).
 
 **Files:** `runner.ts` (context assembly); mirror `heartbeat.ts:1549-3628`; test `server/src/__tests__/crew-workspace-resolution.test.ts`.

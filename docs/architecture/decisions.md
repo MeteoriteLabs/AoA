@@ -1184,3 +1184,23 @@ The two items deferred by Decision #107 shipped together on `feat/inbox-hub-tabb
 7. **Process success is not task completion.** Technical run completion remains in run ledgers and observability. User-facing task completion and source-Discussion milestones are emitted only from actual task-domain transitions.
 
 **Plan:** `docs/aoa/plans/2026-07-11-commander-ask-human-completion-policy-plan.md`.
+
+## Decision #110 - Two-tier Claude instruction isolation for agent runs (2026-07-23)
+
+**Status:** Locked 2026-07-23 (plan decision D16). Implemented by the crew config-isolation work; one sub-claim remains unverified and is stated as such below.
+
+1. **Two tiers, not one switch.** The operator's **global** Claude config — `~/.claude`'s hooks, `settings.json`, `plugins/`, user `skills/`, and `CLAUDE.md` — is **blocked** for agent runs. The **workspace repository's own `CLAUDE.md` is allowed**: build commands, test conventions and architecture rules are legitimate engineering context, and an agent that ignores them does the wrong thing confidently.
+
+2. **AoA's instructions outrank the repo's by construction, not by convention.** Agent instructions are delivered via `--append-system-prompt-file` (`claude-local/src/server/execute.ts:650`). A repo `CLAUDE.md` arrives as user-level context, so no precedence rule needs enforcing — the layering is structural.
+
+3. **The mechanism is config-home redirection, not a disable flag.** Blocking is achieved by pinning `CLAUDE_CONFIG_DIR` to a fresh per-run directory and provisioning **only** `.credentials.json` into it. The operator's global instructions live *inside* the config home, so redirecting the home is what makes them unreachable.
+
+4. **`--bare` was evaluated and rejected.** It is the CLI's only all-or-nothing context switch (skips hooks, plugin sync, auto-memory and `CLAUDE.md` auto-discovery). It is **unusable here** for two independent reasons: it forces `ANTHROPIC_API_KEY`/`apiKeyHelper` auth and never reads OAuth or the keychain, which breaks the subscription-based credential provisioning this design depends on; and it suppresses **all** `CLAUDE.md` discovery including the project's, contradicting tier two.
+
+5. **A previously-assumed mechanism was disproven.** Earlier planning drafts referenced `CLAUDE_CODE_DISABLE_CLAUDE_MDS` and `CLAUDE_CODE_DISABLE_AUTO_MEMORY`. **Neither exists in the installed CLI** (`claude --help`, 2026-07-23). Do not reintroduce them.
+
+6. **Open sub-claim — do not treat as settled.** Whether `CLAUDE_CONFIG_DIR` also redirects the *user-level* `~/.claude/CLAUDE.md`, or whether that file is reached by a second route, is **not established**. Tier one is proven for `settings.json`/`plugins/`/`skills/` (the per-run directory demonstrably contains only the credential); the user-level `CLAUDE.md` specifically is inferred, not observed. **What would settle it:** during live crew verification, run with a distinctive marker string in the operator's `~/.claude/CLAUDE.md` and assert it is absent from the run transcript. Note that testing this by invoking `claude` from inside an agent session is unreliable — that has produced false findings in this project before.
+
+7. **Tier two is currently satisfied by accident, and wrongly.** Crew runs are not workspace-backed: the crew runner never sets a workspace, so `cwd` falls through to `process.cwd()` (`claude-local/src/server/execute.ts:188`) — the **AoA server's own repository**. Every crew run therefore loads *AoA's* `CLAUDE.md` rather than the customer workspace's. This is the most likely mechanism behind the observed live hijack, it is not what tier two intends, and it is fixed by crew workspace resolution.
+
+**Key files:** `packages/adapters/claude-local/src/server/ambient-config.ts`, `execute.ts`; `packages/adapter-utils/src/server-utils.ts` (`mergeChildEnv`, `foldEnvKey`); `server/src/services/internal-agent/aoa-agents/runner.ts`. Plan: `docs/aoa/plans/2026-07-19-crew-execution-phase1-foundation.md`.
