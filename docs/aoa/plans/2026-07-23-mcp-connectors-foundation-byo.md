@@ -1568,3 +1568,17 @@ git commit -m "test(mcp): verify connector delivery end-to-end"
 - **Plan 4** — flagship plugins + Better Auth `genericOAuth` broker, including company-scoping of the `account` table (a user in two companies would otherwise collide) and explicit token lifetimes so refresh actually fires.
 - **Audit logging** — record connector tool invocations in `activity_log`. Deferred until Plan 2 lands so the event shape covers all adapters.
 - **Tool budget** — a connector exposing many tools consumes context. Measure before capping.
+
+---
+
+## Amendments during execution
+
+Recorded as they are decided, so later tasks are not built against a stale spec.
+
+**A1 — Type guards take `unknown` (decided Task 1).** `isStdioServerSpec` / `isHttpServerSpec` accept `unknown` and perform a structural check (discriminant + required-field type), not a `McpServerSpec` narrowing. Rationale: TypeScript narrows `spec.kind === "http"` natively, so typed guards were dead indirection with tautological tests. The real need is validating untrusted input — Tasks 6 and 11 build specs from DB rows typed `transport: string`, `url: string | null`. **Tasks 6 and 11 should use these guards at the DB boundary** rather than trusting the row shape.
+
+**A2 — SSE transport deliberately deferred (decided Task 1).** The union is `stdio | http` only. A code review argued for adding SSE now to avoid a later migration, but `company_mcp_connectors.transport` is a `text` column, not a pg enum, so adding `"sse"` later costs no migration and no backfill. Plan 1 is `claude_local`-only and Claude Code deprecates SSE in favour of HTTP. Revisit in Plan 2 if a target connector is SSE-only.
+
+**A3 — Codex header handling (carry to Plan 2).** A review raised that codex might force reverse-parsing `"Bearer ${VAR}"` back into an env var name for `bearer_token_env_var`. Codex also supports a literal `[mcp_servers.<name>.http_headers]` table, so the regex round-trip is avoidable — prefer literal headers. **Verify against the installed codex version before implementing the codex writer.** If a var-name field turns out to be required, add an optional `authTokenEnvVar?: string` to the http member rather than parsing it out of a string.
+
+**A4 — Plan bug found in execution.** Task 1 Step 7's `git add` line omits `packages/adapter-utils/src/index.ts`, which Step 5b modifies. The implementer caught and corrected it. Later tasks: treat the `git add` lists as indicative, and stage everything the task actually touched.
