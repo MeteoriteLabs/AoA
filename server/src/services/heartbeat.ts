@@ -72,6 +72,7 @@ import type {
   AdapterRuntimeDecisionPromptBase,
   AdapterRuntimePermissionDecision,
   AdapterRuntimeServiceReport,
+  McpServerSpec,
 } from "@armyofagents/adapter-utils";
 import type { PluginToolDispatcher } from "./plugin-tool-dispatcher.js";
 import { buildRunInputBundle } from "./run-input-bundles.js";
@@ -92,6 +93,8 @@ import {
   prepareHeartbeatMcpDelivery,
   resolveHeartbeatEffectiveAutonomy,
 } from "./heartbeat-mcp.js";
+import { buildConnectorSpecs } from "./mcp-connectors.js";
+import { loadEnabledConnectorRows } from "./mcp-connectors-loader.js";
 
 export {
   cancelCrewRunsForAgent,
@@ -4269,12 +4272,50 @@ export function heartbeatService(db: Db) {
         humanQuestionCapabilities: adapter.humanQuestionCapabilities,
         effectiveAutonomy,
       } as const;
+
+      // MCP connectors (Plan 1, claude_local ONLY): resolve the company's
+      // enabled connectors for THIS agent, build adapter specs + the env map
+      // carrying the real secrets, and thread both into the delivery. Secrets
+      // never enter the config FILE — only `${AOA_MCP_*_TOKEN}` placeholders —
+      // and land in the spawn env via the delivered config.env.
+      //
+      // Scoped to claude_local: prepareHeartbeatMcpDelivery's non-claude early
+      // return discards these fields, so loading them for other adapters would
+      // be wasted DB I/O (and a needless failure surface) on every codex/
+      // opencode/gemini/hermes run. Plan 2 wires the other adapters separately.
+      let extraMcpServers: Record<string, McpServerSpec> | undefined;
+      let connectorEnv: Record<string, string> | undefined;
+      if (agent.adapterType === "claude_local") {
+        const connectorRows = await loadEnabledConnectorRows(db, {
+          companyId: agent.companyId,
+          agentId: agent.id,
+        });
+        const built = buildConnectorSpecs(connectorRows);
+        extraMcpServers = built.specs;
+        connectorEnv = built.env;
+        if (built.skipped.length > 0) {
+          // Observability (amendments A8/A19/FIX3): a connector that silently
+          // vanishes is the worst failure mode. Log which and why.
+          logger.warn(
+            {
+              companyId: agent.companyId,
+              agentId: agent.id,
+              runId: run.id,
+              skipped: built.skipped,
+            },
+            "[heartbeat] mcp connectors skipped for agent run",
+          );
+        }
+      }
+
       const heartbeatMcpDelivery = await prepareHeartbeatMcpDelivery({
         adapterType: agent.adapterType,
         agentId: agent.id,
         runId: run.id,
         config: runScopedConfig,
         params: heartbeatMcpParams,
+        extraMcpServers,
+        connectorEnv,
       });
       runScopedConfig = heartbeatMcpDelivery.config;
 

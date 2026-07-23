@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import type { McpServerSpec } from "@armyofagents/adapter-utils";
 import { buildMcpBridgeSpec, buildMcpConfig, type McpBridgeSpec, type McpConfigParams } from "./internal-agent/cli-mode.js";
 
 export interface HeartbeatMcpDelivery {
@@ -34,9 +35,29 @@ export async function prepareHeartbeatMcpDelivery(input: {
   runId: string;
   config: Record<string, unknown>;
   params: McpConfigParams;
+  /**
+   * External MCP connector specs (server name -> spec), spliced into the
+   * generated `--mcp-config` file alongside `aoa`. Built by `buildConnectorSpecs`
+   * at the heartbeat call site. Reserved-name + null-prototype safe: the actual
+   * merge is `mergeExternalMcpServers` inside `buildMcpConfig`.
+   */
+  extraMcpServers?: Record<string, McpServerSpec>;
+  /**
+   * `AOA_MCP_<NAME>_TOKEN -> real secret` map from `buildConnectorSpecs`. Merged
+   * into the DELIVERED `config.env` (never into the config FILE) so the spawned
+   * `claude` process env carries the tokens the config file references as
+   * `${AOA_MCP_*_TOKEN}` placeholders.
+   */
+  connectorEnv?: Record<string, string>;
 }): Promise<HeartbeatMcpDelivery> {
   const mcpBridge = buildMcpBridgeSpec(input.params);
   if (input.adapterType !== "claude_local") {
+    // NOTE: connectorEnv is intentionally NOT merged here. This early return is
+    // the non-`claude_local` path, which delivers `input.config` untouched.
+    // Plan 1 is claude-only; non-claude adapters receiving no connector env is
+    // acceptable for now. Plan 2 wires connectors into non-claude adapters via
+    // `ctx.mcpServers`, not through this delivery function. Do not merge
+    // connectorEnv into this return without also delivering the specs.
     return {
       config: input.config,
       mcpBridge,
@@ -48,17 +69,42 @@ export async function prepareHeartbeatMcpDelivery(input: {
     tmpdir(),
     `aoa-heartbeat-mcp-${input.agentId}-${input.runId}.json`,
   );
-  await fs.writeFile(configPath, JSON.stringify(buildMcpConfig(input.params), null, 2), "utf8");
+  await fs.writeFile(
+    configPath,
+    JSON.stringify(
+      buildMcpConfig({ ...input.params, extraMcpServers: input.extraMcpServers }),
+      null,
+      2,
+    ),
+    "utf8",
+  );
   const argKey = Array.isArray(input.config.extraArgs) ? "extraArgs" : "args";
   const existingArgs = Array.isArray(input.config[argKey])
     ? input.config[argKey].filter((value): value is string => typeof value === "string")
     : [];
 
+  const deliveredConfig: Record<string, unknown> = {
+    ...input.config,
+    [argKey]: ["--mcp-config", configPath, "--strict-mcp-config", ...existingArgs],
+  };
+
+  // REGRESSION GUARD: only touch `config.env` when connectors actually exist.
+  // The no-connectors path must deliver a config byte-identical to before this
+  // task — spreading an absent/undefined `config.env` would coerce it to `{}`
+  // and change the shape. Connector secrets ride in the spawn env (execute.ts
+  // merges config.env into the child process env), NOT in the config FILE,
+  // which only holds `${AOA_MCP_*_TOKEN}` placeholders. Merge AFTER config.env
+  // so a connector token can never be shadowed by an existing key of the same
+  // name.
+  if (input.connectorEnv && Object.keys(input.connectorEnv).length > 0) {
+    deliveredConfig.env = {
+      ...(input.config.env as Record<string, string> | undefined),
+      ...input.connectorEnv,
+    };
+  }
+
   return {
-    config: {
-      ...input.config,
-      [argKey]: ["--mcp-config", configPath, "--strict-mcp-config", ...existingArgs],
-    },
+    config: deliveredConfig,
     mcpBridge,
     cleanup: async () => {
       await fs.unlink(configPath).catch(() => undefined);
