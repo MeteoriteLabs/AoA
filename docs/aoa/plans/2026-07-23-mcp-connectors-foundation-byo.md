@@ -1603,3 +1603,9 @@ export function stripReservedMcpServerNames(
 Task 3 and all of Plan 2 then call one function. (Note: the reviewer referred to this as "Task 4" — the reserved-name guard is in **Task 3**; Task 4 is the `${VAR}` expansion gate.)
 
 **A10 — `Record<string, McpServerSpec>` carrier shape is CORRECT; do not change it.** Questioned during review and affirmed: the Record makes duplicate server names structurally unrepresentable, which is exactly the per-run uniqueness invariant. An array of `{name, spec}` would permit duplicates and force every consumer to decide first-wins vs last-wins independently. Compile-time exclusion of reserved names is NOT achievable on the real path — the producer builds the map in a loop from DB rows with runtime-string keys, so a runtime guard at the serialization boundary is the only enforcement that works.
+
+**A8-CORRECTION — charset validation does NOT prevent prototype pollution. Supersedes the "OR" in A8.** A8 offered `Object.create(null)` **or** a `/^[a-zA-Z0-9_-]+$/` charset check as equivalent fixes. They are not equivalent: `__proto__` is composed entirely of letters and underscores and therefore **passes that regex**. A charset check alone leaves the hole wide open.
+
+Binding rule for Task 3: the `mcpServers` map MUST be built with `Object.create(null)` (or a `Map` converted at serialization). With a null-prototype object there is no inherited `__proto__` setter, so the assignment becomes an ordinary own property and `JSON.stringify` emits it correctly.
+
+The charset check is still worth having in Task 11 at registration time, for name hygiene and to keep `envVarNameFor` collision-free — but it is defence in depth, NOT the prototype-pollution fix. Do not treat it as the fix.
