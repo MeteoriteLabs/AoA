@@ -6,7 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { HubShell } from "../HubShell";
 import { HOME_TAB } from "../hubViewerModel";
 import type { HubItemListRow } from "@/api/hub-items";
-import type { HubAutopilotActionsResponse, HubAutopilotPolicy, NotificationPreferences } from "@armyofagents/shared";
+import type { HubAutopilotActionsResponse, HubAutopilotPolicy } from "@armyofagents/shared";
 
 vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({
@@ -209,21 +209,6 @@ function renderChip(overrides: Partial<React.ComponentProps<typeof HubShell>> = 
   );
 }
 
-function notificationPreferences(
-  overrides: Partial<NotificationPreferences> = {},
-): NotificationPreferences {
-  return {
-    rules: [
-      { semanticType: "approval_request", deliveryMode: "realtime", toastEnabled: true },
-      { semanticType: "reminder", deliveryMode: "realtime", toastEnabled: true },
-    ],
-    quietHours: { enabled: false, start: "18:00", end: "09:00", timezone: "UTC" },
-    digest: { enabled: true, cadence: "daily" },
-    updatedAt: null,
-    ...overrides,
-  };
-}
-
 function autopilotPolicy(overrides: Partial<HubAutopilotPolicy> = {}): HubAutopilotPolicy {
   return {
     mode: "off",
@@ -326,7 +311,7 @@ describe("HubShell", () => {
     expect(within(screen.getByTestId("hub-tab-body")).getByText(/needs you most/i)).toBeInTheDocument();
   });
 
-  it("keeps Home list controls reachable on mobile", async () => {
+  it("keeps the Home lane drawer reachable on mobile", async () => {
     const user = userEvent.setup();
     renderShell({
       activeLane: null,
@@ -335,8 +320,6 @@ describe("HubShell", () => {
       activeTabKey: "home",
     });
 
-    await user.click(screen.getByRole("button", { name: /hub settings/i }));
-    expect(screen.getByRole("combobox", { name: /default landing/i })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /open hub lanes/i }));
     expect(screen.getByRole("dialog", { name: /hub lanes/i })).toBeInTheDocument();
   });
@@ -608,20 +591,9 @@ describe("HubShell", () => {
     expect(screen.getByText("SLA is due in 20 minutes.")).toBeInTheDocument();
   });
 
-  it("renders preference controls", async () => {
-    const user = userEvent.setup();
+  it("no longer renders a hub settings gear (settings live in Settings -> Inbox)", () => {
     renderShell();
-
-    await user.click(screen.getByRole("button", { name: /hub settings/i }));
-
-    expect(screen.getByRole("combobox", { name: /default landing/i })).toHaveValue(
-      "waiting_on_you",
-    );
-    expect(screen.getByRole("combobox", { name: /density/i })).toHaveValue("comfortable");
-    expect(screen.getByRole("checkbox", { name: /autopilot entry/i })).toBeChecked();
-    expect(
-      screen.getByRole("button", { name: /notification preferences/i }),
-    ).toBeEnabled();
+    expect(screen.queryByRole("button", { name: /hub settings/i })).toBeNull();
   });
 
   it("renders live Autopilot status on Hub Home with recent undoable actions", async () => {
@@ -657,94 +629,6 @@ describe("HubShell", () => {
 
     await user.click(screen.getByRole("button", { name: /undo autopilot action finished run/i }));
     expect(onUndoAutopilotAction).toHaveBeenCalledWith(expect.objectContaining({ auditId: "audit-1" }));
-  });
-
-  it("updates and resets Autopilot mode from hub settings", async () => {
-    const user = userEvent.setup();
-    const onUpdateAutopilotPolicy = vi.fn();
-    const onResetAutopilotPolicy = vi.fn();
-    renderShell({
-      autopilotPolicy: autopilotPolicy({ mode: "off" }),
-      onUpdateAutopilotPolicy,
-      onResetAutopilotPolicy,
-    });
-
-    await user.click(screen.getByRole("button", { name: /hub settings/i }));
-    await user.selectOptions(screen.getByRole("combobox", { name: /autopilot mode/i }), "drive");
-    expect(onUpdateAutopilotPolicy).toHaveBeenCalledWith({ mode: "drive" });
-
-    await user.click(screen.getByRole("button", { name: /reset autopilot/i }));
-    expect(onResetAutopilotPolicy).toHaveBeenCalled();
-  });
-
-  it("prevents founder-gated categories from being configured for auto-handle", async () => {
-    const user = userEvent.setup();
-    renderShell({
-      autopilotPolicy: autopilotPolicy(),
-    });
-
-    await user.click(screen.getByRole("button", { name: /hub settings/i }));
-
-    expect(screen.getByText("Approval Request")).toBeInTheDocument();
-    expect(screen.getByText(/founder-gated/i)).toBeInTheDocument();
-    expect(screen.queryByRole("combobox", { name: /approval request autopilot action/i })).not.toBeInTheDocument();
-  });
-
-  it("opens notification preferences from hub settings and shows digest summary", async () => {
-    const user = userEvent.setup();
-    const onAckDigest = vi.fn();
-    const onResetNotificationPreferences = vi.fn();
-    renderShell({
-      notificationPreferences: notificationPreferences(),
-      digestItems: [
-        { ...items[0], id: "digest-1", semanticType: "reminder", lane: "notifications", title: "Digest reminder" },
-      ],
-      onAckDigest,
-      onResetNotificationPreferences,
-    } as Partial<React.ComponentProps<typeof HubShell>>);
-
-    await user.click(screen.getByRole("button", { name: /hub settings/i }));
-    await user.click(screen.getByRole("button", { name: /notification preferences/i }));
-
-    expect(screen.getByRole("heading", { name: /notification preferences/i })).toBeInTheDocument();
-    expect(screen.getByText("Digest reminder")).toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: /acknowledge digest/i }));
-    expect(onAckDigest).toHaveBeenCalled();
-
-    await user.click(screen.getByRole("button", { name: /reset notification preferences/i }));
-    expect(onResetNotificationPreferences).toHaveBeenCalled();
-  });
-
-  it("changes notification delivery, toast, and quiet-hours preferences", async () => {
-    const user = userEvent.setup();
-    const onUpdateNotificationPreferences = vi.fn();
-    renderShell({
-      notificationPreferences: notificationPreferences(),
-      onUpdateNotificationPreferences,
-    } as Partial<React.ComponentProps<typeof HubShell>>);
-
-    await user.click(screen.getByRole("button", { name: /hub settings/i }));
-    await user.click(screen.getByRole("button", { name: /notification preferences/i }));
-
-    await user.selectOptions(screen.getByLabelText(/reminder delivery/i), "digest");
-    expect(onUpdateNotificationPreferences).toHaveBeenCalledWith({
-      rules: expect.arrayContaining([
-        expect.objectContaining({ semanticType: "reminder", deliveryMode: "digest" }),
-      ]),
-    });
-
-    await user.click(screen.getByRole("checkbox", { name: /reminder toast/i }));
-    expect(onUpdateNotificationPreferences).toHaveBeenCalledWith({
-      rules: expect.arrayContaining([
-        expect.objectContaining({ semanticType: "reminder", toastEnabled: false }),
-      ]),
-    });
-
-    await user.click(screen.getByRole("checkbox", { name: /quiet hours/i }));
-    expect(onUpdateNotificationPreferences).toHaveBeenCalledWith({
-      quietHours: { enabled: true, start: "18:00", end: "09:00", timezone: "UTC" },
-    });
   });
 
   it("shows the 'N hidden' chip on the waiting lane only when there are hidden rows", () => {

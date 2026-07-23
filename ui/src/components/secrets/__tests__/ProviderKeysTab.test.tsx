@@ -87,7 +87,7 @@ describe("ProviderKeysTab", () => {
       isDefault: true,
     });
     await waitFor(() => {
-      expect(screen.queryByRole("dialog", { name: "New Provider Key" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("dialog", { name: "New Sandbox Provider Key" })).not.toBeInTheDocument();
     });
   });
 });

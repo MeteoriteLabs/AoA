@@ -42,7 +42,7 @@ export function commanderVerifyRoutes(db: Db): Router {
     // §6.1 (Codex P1 #8): probe the RESOLVED Commander config (its adapter env
     // secret_refs resolved) so a saved API key unblocks re-probe; falls back to
     // {} = CLI defaults / subscription-login path when no key/agent is set.
-    const probeConfig = await resolveCommanderProbeConfig(db, companyId, actor.userId);
+    const probeConfig = await resolveCommanderProbeConfig(db, companyId, adapterType, actor.userId);
     const releaseProbeSlot = tryAcquireAdapterProbeSlot(companyId);
     if (!releaseProbeSlot) {
       res

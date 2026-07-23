@@ -23,6 +23,7 @@ import {
   SAFE_MODEL_RE,
 } from "./codex-model.js";
 import { logger } from "../../middleware/logger.js";
+import { redactSecretsInString } from "../../redaction.js";
 
 const require = createRequire(import.meta.url);
 
@@ -902,16 +903,53 @@ export function cliModeService(db: Db) {
 
 // ── Stream Helper ───────────────────────────────────────────────────────────
 
+/**
+ * How long to keep reading stdout after `exit` when `close` never arrives.
+ *
+ * `close` is the correct terminal signal (it fires only once stdio has
+ * drained), but a grandchild that inherited the stdout pipe — an MCP server or
+ * a bash tool the CLI spawned — can hold it open indefinitely. This bounds
+ * that wait. 2s is far longer than a pipe flush of an already-exited process
+ * needs (sub-millisecond in practice) while staying well inside any user's
+ * patience for a turn that has, by definition, already failed.
+ */
+const STDIO_DRAIN_GRACE_MS = 2000;
+
 async function* streamProcessOutput(
   proc: import("node:child_process").ChildProcess,
   useStreamJson = false,
 ): AsyncGenerator<AgentStreamChunk> {
-  if (!proc.stdout) return;
-
   const pending: AgentStreamChunk[] = [];
   let done = false;
   let resolve: (() => void) | null = null;
   let leftover = "";
+  // Failure surfacing (see `finish` below): a CLI that dies without emitting a
+  // parseable result must not render as an empty reply.
+  //   sawContent — a real assistant text chunk (non-empty delta) reached the
+  //                client, so the turn produced something meaningful.
+  //   sawError   — an explicit error chunk was already emitted (e.g. a `result`
+  //                event carrying is_error), so don't double-report.
+  // Deliberately NOT "any chunk": a system/init/progress chunk followed by
+  // exit 1 must still surface an error.
+  let sawContent = false;
+  let sawError = false;
+  let finished = false;
+  let graceTimer: NodeJS.Timeout | null = null;
+
+  if (!proc.stdout) {
+    // No stdout pipe at all — nothing can ever be parsed, whatever the exit
+    // code. Report that specifically: the process was NOT terminated, and
+    // guessing at a signal from a null `exitCode` (which is simply what a
+    // still-running process reports) would misattribute the cause.
+    yield { type: "error", message: "The CLI produced no output stream." };
+    return;
+  }
+
+  function record(chunk: AgentStreamChunk) {
+    if (chunk.type === "text" && chunk.delta.length > 0) sawContent = true;
+    else if (chunk.type === "error") sawError = true;
+    pending.push(chunk);
+  }
 
   // Branch parser: claude_cli uses the structured stream-json parser;
   // codex / opencode stay on the existing text-format marker-in-prose path.
@@ -920,14 +958,14 @@ async function* streamProcessOutput(
     if (streamParser) {
       // StreamJsonParser handles its own internal buffering — just push text.
       for (const chunk of streamParser.push(text)) {
-        pending.push(chunk);
+        record(chunk);
       }
     } else {
       const lines = (leftover + text).split("\n");
       leftover = lines.pop() ?? "";          // last segment is incomplete
       for (const line of lines) {
         for (const chunk of parseCliOutput(line)) {
-          pending.push(chunk);
+          record(chunk);
         }
       }
     }
@@ -936,11 +974,11 @@ async function* streamProcessOutput(
   function flushLeftover() {
     if (streamParser) {
       for (const chunk of streamParser.flush()) {
-        pending.push(chunk);
+        record(chunk);
       }
     } else if (leftover.length > 0) {
       for (const chunk of parseCliOutput(leftover)) {
-        pending.push(chunk);
+        record(chunk);
       }
       leftover = "";
     }
@@ -948,6 +986,37 @@ async function* streamProcessOutput(
 
   function notify() {
     if (resolve) { resolve(); resolve = null; }
+  }
+
+  /**
+   * Terminal transition. A child can emit BOTH `error` (spawn failure) and
+   * `close`, so this is idempotent — a second call would double-flush the parser
+   * and could push a second error chunk.
+   *
+   * This never emits a `done` chunk: the caller owns the single-done invariant
+   * (`sawRealDone` + fallback). A failure error chunk here leaves that logic
+   * untouched, so the caller still emits exactly one done.
+   */
+  function finish(code: number | null, signalled: boolean) {
+    if (finished) return;
+    finished = true;
+
+    if (graceTimer) { clearTimeout(graceTimer); graceTimer = null; }
+
+    flushLeftover();
+
+    const failed = signalled || (code ?? 0) !== 0;
+    if (failed && !sawError && !sawContent) {
+      pending.push({
+        type: "error",
+        message: signalled
+          ? "The CLI was terminated before it produced a response."
+          : `The CLI exited with code ${code ?? -1} without producing output.`,
+      });
+    }
+
+    done = true;
+    notify();
   }
 
   proc.stdout.on("data", (data: Buffer) => {
@@ -958,20 +1027,31 @@ async function* streamProcessOutput(
   proc.stderr?.on("data", (data: Buffer) => {
     const text = data.toString();
     if (text.trim().length > 0) {
-      logger.warn({ service: "commander-cli", stderr: text.slice(0, 2000) }, "CLI subprocess stderr");
+      // stderr is raw CLI output and can echo tokens/keys from the environment.
+      logger.warn(
+        { service: "commander-cli", stderr: redactSecretsInString(text).slice(0, 2000) },
+        "CLI subprocess stderr",
+      );
     }
   });
 
-  proc.on("exit", () => {
-    flushLeftover();
-    done = true;
-    notify();
+  // `exit` fires while stdout may still hold buffered data — Node calls
+  // flushStdio() AFTER emitting `exit`. Terminating on `exit` alone destroys
+  // output the CLI already wrote, which is the common case for a fast-failing
+  // `claude --print --output-format stream-json`: it writes its whole result
+  // (including the is_error/auth reason) in one small buffer microseconds
+  // before exiting nonzero. `close` fires only once every stdio stream has
+  // drained, so it is the correct terminal signal.
+  //
+  // `close` alone would hang forever if a grandchild (MCP server, bash tool)
+  // inherited the stdout pipe and outlives the CLI, so `exit` arms a bounded
+  // grace window as a backstop.
+  proc.on("exit", (code: number | null) => {
+    graceTimer = setTimeout(() => finish(code, code === null), STDIO_DRAIN_GRACE_MS);
+    graceTimer.unref?.();
   });
-  proc.on("error", () => {
-    flushLeftover();
-    done = true;
-    notify();
-  });
+  proc.on("close", (code: number | null) => finish(code, code === null));
+  proc.on("error", () => finish(null, true));
 
   while (true) {
     while (pending.length > 0) {
@@ -1160,3 +1240,8 @@ async function* runCodexTurn(
     },
   };
 }
+
+// ── Test seam ───────────────────────────────────────────────────────────────
+// streamProcessOutput is internal to the chat pipeline; exported here so its
+// process-failure handling can be exercised against a fake ChildProcess.
+export const __testables = { streamProcessOutput, STDIO_DRAIN_GRACE_MS };

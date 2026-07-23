@@ -125,6 +125,7 @@ export { instanceSettings } from "./instance_settings.js";
 export { boardApiKeys } from "./board_api_keys.js";
 export { cliAuthChallenges } from "./cli_auth_challenges.js";
 export { commanderLoginChallenges } from "./commander_login_challenges.js";
+export { providerReadinessStatus } from "./provider_readiness_status.js";
 export { executionWorkspaces } from "./execution_workspaces.js";
 export { environments } from "./environments.js";
 export { onboardingProgress } from "./onboarding_progress.js";

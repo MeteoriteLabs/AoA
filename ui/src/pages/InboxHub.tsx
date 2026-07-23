@@ -13,11 +13,7 @@ import type {
   HubLane,
   HubPreferences,
   NotificationPreferences,
-  UpdateHubAutopilotPolicyInput,
-  UpdateNotificationPreferencesInput,
-  UpdateHubPreferencesInput,
 } from "@armyofagents/shared";
-import { DEFAULT_NOTIFICATION_PREFERENCES } from "@armyofagents/shared";
 import { hubItemsApi, type HubItemListRow, type HubListResponse } from "@/api/hub-items";
 import { HubShell } from "@/components/hub/HubShell";
 import { hubTabForItem } from "@/components/hub/hubRegistry";
@@ -175,7 +171,6 @@ export function InboxHub() {
   const [bulkMessage, setBulkMessage] = useState<string | null>(null);
   const [searchText, setSearchText] = useState("");
   const [debouncedSearchText, setDebouncedSearchText] = useState("");
-  const [optimisticPreferences, setOptimisticPreferences] = useState<HubPreferences | null>(null);
   // Waiting-lane dismiss-hole safety net: reveal the current user's personally
   // hidden (dismissed/snoozed) OPEN rows when the "N hidden" chip is toggled on.
   const [showHidden, setShowHidden] = useState(false);
@@ -231,24 +226,13 @@ export function InboxHub() {
     queryFn: () => hubItemsApi.getPreferences(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
-  const serverPreferences = preferencesQuery.data ?? DEFAULT_HUB_PREFERENCES;
-  const preferences = optimisticPreferences ?? serverPreferences;
+  const preferences = preferencesQuery.data ?? DEFAULT_HUB_PREFERENCES;
 
   const notificationPreferencesQuery = useQuery({
     queryKey: selectedCompanyId
       ? queryKeys.notifications.preferences(selectedCompanyId)
       : ["notifications", "preferences", "none"],
     queryFn: () => hubItemsApi.notificationPreferences.get(selectedCompanyId!),
-    enabled: !!selectedCompanyId,
-  });
-  const notificationPreferences =
-    notificationPreferencesQuery.data ?? DEFAULT_NOTIFICATION_PREFERENCES;
-
-  const notificationDigestQuery = useQuery({
-    queryKey: selectedCompanyId
-      ? queryKeys.notifications.digest(selectedCompanyId)
-      : ["notifications", "digest", "none"],
-    queryFn: () => hubItemsApi.notificationDigest.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
 
@@ -293,161 +277,6 @@ export function InboxHub() {
       }
     });
   }, [onHubItemChanged, pushToast, selectedCompanyId]);
-
-  const updatePreferences = useMutation({
-    mutationFn: (patch: UpdateHubPreferencesInput) =>
-      hubItemsApi.updatePreferences(selectedCompanyId!, patch),
-    onMutate: async (patch) => {
-      if (!selectedCompanyId) return { previous: undefined };
-      const queryKey = queryKeys.hubItems.preferences(selectedCompanyId);
-      await queryClient.cancelQueries({ queryKey });
-      const previous = queryClient.getQueryData<HubPreferences>(queryKey);
-      queryClient.setQueryData<HubPreferences>(queryKey, {
-        ...(previous ?? DEFAULT_HUB_PREFERENCES),
-        ...patch,
-      });
-      return { previous };
-    },
-    onError: (_error, _patch, context) => {
-      setOptimisticPreferences(null);
-      if (!selectedCompanyId || !context?.previous) return;
-      queryClient.setQueryData(
-        queryKeys.hubItems.preferences(selectedCompanyId),
-        context.previous,
-      );
-    },
-    onSuccess: (updated) => {
-      setOptimisticPreferences(updated);
-      if (!selectedCompanyId) return;
-      queryClient.setQueryData(queryKeys.hubItems.preferences(selectedCompanyId), updated);
-    },
-    onSettled: async () => {
-      if (!selectedCompanyId) return;
-      await Promise.all([
-        queryClient.invalidateQueries({
-          queryKey: queryKeys.hubItems.preferences(selectedCompanyId),
-        }),
-        queryClient.invalidateQueries({ queryKey: ["hub-items", selectedCompanyId] }),
-      ]);
-      setOptimisticPreferences(null);
-    },
-  });
-
-  const updateNotificationPreferences = useMutation({
-    mutationFn: (patch: UpdateNotificationPreferencesInput) =>
-      hubItemsApi.notificationPreferences.update(selectedCompanyId!, patch),
-    onMutate: async (patch) => {
-      if (!selectedCompanyId) return { previous: undefined };
-      const queryKey = queryKeys.notifications.preferences(selectedCompanyId);
-      await queryClient.cancelQueries({ queryKey });
-      const previous = queryClient.getQueryData<NotificationPreferences>(queryKey);
-      queryClient.setQueryData<NotificationPreferences>(queryKey, {
-        ...(previous ?? DEFAULT_NOTIFICATION_PREFERENCES),
-        ...patch,
-      });
-      return { previous };
-    },
-    onError: (_error, _patch, context) => {
-      if (!selectedCompanyId || !context?.previous) return;
-      queryClient.setQueryData(
-        queryKeys.notifications.preferences(selectedCompanyId),
-        context.previous,
-      );
-    },
-    onSuccess: (updated) => {
-      if (!selectedCompanyId) return;
-      queryClient.setQueryData(
-        queryKeys.notifications.preferences(selectedCompanyId),
-        updated,
-      );
-    },
-    onSettled: async () => {
-      if (!selectedCompanyId) return;
-      await queryClient.invalidateQueries({
-        queryKey: queryKeys.notifications.preferences(selectedCompanyId),
-      });
-    },
-  });
-
-  const resetNotificationPreferences = useMutation({
-    mutationFn: () => hubItemsApi.notificationPreferences.reset(selectedCompanyId!),
-    onSuccess: (updated) => {
-      if (!selectedCompanyId) return;
-      queryClient.setQueryData(
-        queryKeys.notifications.preferences(selectedCompanyId),
-        updated,
-      );
-    },
-    onSettled: async () => {
-      if (!selectedCompanyId) return;
-      await queryClient.invalidateQueries({
-        queryKey: queryKeys.notifications.preferences(selectedCompanyId),
-      });
-    },
-  });
-
-  const updateAutopilotPolicy = useMutation({
-    mutationFn: (patch: UpdateHubAutopilotPolicyInput) =>
-      hubItemsApi.autopilotPolicy.update(selectedCompanyId!, patch),
-    onSuccess: (updated) => {
-      if (!selectedCompanyId) return;
-      queryClient.setQueryData(
-        queryKeys.hubItems.autopilotPolicy(selectedCompanyId),
-        updated,
-      );
-    },
-    onSettled: async () => {
-      if (!selectedCompanyId) return;
-      await Promise.all([
-        queryClient.invalidateQueries({
-          queryKey: queryKeys.hubItems.autopilotPolicy(selectedCompanyId),
-        }),
-        queryClient.invalidateQueries({
-          queryKey: queryKeys.hubItems.autopilotActions(selectedCompanyId),
-        }),
-        queryClient.invalidateQueries({ queryKey: ["hub-items", selectedCompanyId] }),
-        queryClient.invalidateQueries({
-          queryKey: queryKeys.hubItems.counts(selectedCompanyId),
-        }),
-      ]);
-    },
-  });
-
-  const resetAutopilotPolicy = useMutation({
-    mutationFn: () => hubItemsApi.autopilotPolicy.reset(selectedCompanyId!),
-    onSuccess: (updated) => {
-      if (!selectedCompanyId) return;
-      queryClient.setQueryData(
-        queryKeys.hubItems.autopilotPolicy(selectedCompanyId),
-        updated,
-      );
-    },
-    onSettled: async () => {
-      if (!selectedCompanyId) return;
-      await Promise.all([
-        queryClient.invalidateQueries({
-          queryKey: queryKeys.hubItems.autopilotPolicy(selectedCompanyId),
-        }),
-        queryClient.invalidateQueries({
-          queryKey: queryKeys.hubItems.autopilotActions(selectedCompanyId),
-        }),
-        queryClient.invalidateQueries({ queryKey: ["hub-items", selectedCompanyId] }),
-        queryClient.invalidateQueries({
-          queryKey: queryKeys.hubItems.counts(selectedCompanyId),
-        }),
-      ]);
-    },
-  });
-
-  const ackNotificationDigest = useMutation({
-    mutationFn: () => hubItemsApi.notificationDigest.ack(selectedCompanyId!),
-    onSettled: async () => {
-      if (!selectedCompanyId) return;
-      await queryClient.invalidateQueries({
-        queryKey: queryKeys.notifications.digest(selectedCompanyId),
-      });
-    },
-  });
 
   useEffect(() => {
     if (!activeLane) {
@@ -797,14 +626,6 @@ export function InboxHub() {
     }
   };
 
-  const handlePreferencesChange = (patch: UpdateHubPreferencesInput) => {
-    setOptimisticPreferences({ ...preferences, ...patch });
-    updatePreferences.mutate(patch);
-    if (patch.visibleLanes && activeLane && !patch.visibleLanes.includes(activeLane)) {
-      navigate("/inbox");
-    }
-  };
-
   const handleMarkRead = (itemId: string) => {
     if (markingReadItemIds.current.has(itemId)) return;
     markingReadItemIds.current.add(itemId);
@@ -958,37 +779,11 @@ export function InboxHub() {
       hasMore={listQuery.hasNextPage}
       isLoadingMore={listQuery.isFetchingNextPage}
       preferences={preferences}
-      notificationPreferences={notificationPreferences}
-      notificationPreferencesPending={
-        updateNotificationPreferences.isPending ||
-        resetNotificationPreferences.isPending ||
-        ackNotificationDigest.isPending
-      }
-      digestItems={notificationDigestQuery.data?.items ?? []}
       autopilotPolicy={autopilotPolicyQuery.data ?? DEFAULT_AUTOPILOT_POLICY}
       autopilotActions={autopilotActionsQuery.data ?? DEFAULT_AUTOPILOT_ACTIONS}
-      autopilotPending={
-        updateAutopilotPolicy.isPending || resetAutopilotPolicy.isPending
-      }
       onLaneChange={handleLaneChange}
       onSearchTextChange={setSearchText}
       onLoadMore={handleLoadMore}
-      onPreferencesChange={handlePreferencesChange}
-      onUpdateNotificationPreferences={(patch) => {
-        updateNotificationPreferences.mutate(patch);
-      }}
-      onResetNotificationPreferences={() => {
-        resetNotificationPreferences.mutate();
-      }}
-      onAckDigest={() => {
-        ackNotificationDigest.mutate();
-      }}
-      onUpdateAutopilotPolicy={(patch) => {
-        updateAutopilotPolicy.mutate(patch);
-      }}
-      onResetAutopilotPolicy={() => {
-        resetAutopilotPolicy.mutate();
-      }}
       onUndoAutopilotAction={handleUndoAutopilotAction}
       onHistoryStatusChange={handleHistoryStatusChange}
       onSelectItem={handleSelectItem}

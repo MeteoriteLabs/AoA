@@ -26,6 +26,11 @@ export type CommanderVerifyOutcome = "verified" | "needs_auth" | "not_installed"
 export async function resolveCommanderProbeConfig(
   db: Db,
   companyId: string,
+  // Supplied by the caller, which already resolved it via
+  // `resolveCommanderAdapterType`. This helper has no cliTool of its own, and
+  // re-resolving here would risk probing one adapter while resolving another
+  // adapter's credential.
+  adapterType: string,
   actorId: string | null,
 ): Promise<Record<string, unknown>> {
   const [cfg] = await db
@@ -42,7 +47,7 @@ export async function resolveCommanderProbeConfig(
     .limit(1);
   const adapterConfig = (agent?.adapterConfig as Record<string, unknown> | null) ?? {};
 
-  return secretService(db).resolveAdapterConfigForRuntime(companyId, adapterConfig, {
+  return secretService(db).resolveAdapterConfigForRuntime(companyId, adapterType, adapterConfig, {
     consumerType: "agent",
     consumerId: cfg.agentId,
     actorType: "user",

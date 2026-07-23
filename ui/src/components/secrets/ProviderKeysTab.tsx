@@ -32,8 +32,10 @@ export function ProviderKeysTab({
     <section className="space-y-3">
       <div className="flex items-center justify-between gap-3">
         <div>
-          <h3 className="text-sm font-semibold">Provider Keys</h3>
-          <p className="text-xs text-muted-foreground">Company-level runtime credentials used by sandbox providers.</p>
+          <h3 className="text-sm font-semibold">Sandbox Providers</h3>
+          <p className="text-xs text-muted-foreground">
+            Company-level credentials for sandbox runtimes. Not used for CLI or LLM provider authentication.
+          </p>
         </div>
         <Button
           type="button"
@@ -57,7 +59,7 @@ export function ProviderKeysTab({
       {providerKeys.length === 0 ? (
         <div className="rounded-md border border-border bg-card px-4 py-8 text-center">
           <KeyRound className="mx-auto mb-3 size-7 text-muted-foreground/40" />
-          <p className="text-sm font-medium">No provider keys yet</p>
+          <p className="text-sm font-medium">No sandbox provider keys yet</p>
           <p className="mt-1 text-xs text-muted-foreground">
             Add an E2B provider key backed by an existing secret.
           </p>
@@ -89,7 +91,7 @@ export function ProviderKeysTab({
                   type="button"
                   variant="ghost"
                   size="sm"
-                  title="Edit provider key"
+                  title="Edit sandbox provider key"
                   onClick={() => {
                     setEditTarget(key);
                     setDialogOpen(true);
@@ -101,7 +103,7 @@ export function ProviderKeysTab({
                   type="button"
                   variant="ghost"
                   size="sm"
-                  title="Delete provider key"
+                  title="Delete sandbox provider key"
                   onClick={() => onRemove(key.id)}
                 >
                   <Trash2 className="size-3.5" />

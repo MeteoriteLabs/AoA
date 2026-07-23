@@ -23,9 +23,21 @@ import {
   secretProviderConfigPayloadSchema,
   updateSecretProviderConfigSchema,
 } from "@armyofagents/shared";
+import { getProviderByAdapterType } from "@armyofagents/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { getSecretProvider, listSecretProviders } from "../secrets/provider-registry.js";
 import type { SecretProviderVaultRuntimeConfig } from "../secrets/types.js";
+// Task 7's owner-hop resolver. Reused deliberately rather than re-derived: some
+// providers READ a credential another OWNS (pi -> anthropic, cursor_cloud ->
+// cursor), and a lookup on the borrower's own name would find nothing right
+// after a successful save. This import closes a module cycle with provider-key.ts
+// (which imports `secretService` from here); both sides are hoisted function
+// declarations used only at call time, so neither is evaluated during the
+// other's module initialisation.
+import {
+  resolveProviderKeyTarget,
+  type ProviderKeyTarget,
+} from "./providers/provider-key.js";
 
 const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const SENSITIVE_ENV_KEY_RE =
@@ -124,6 +136,88 @@ export function normalizeProviderConfigStatus(
 export function normalizeProviderConfigDefault(status: string, requested?: boolean, existing = false) {
   if (status === "coming_soon") return false;
   return requested ?? existing;
+}
+
+/**
+ * The company-level provider-key storage target an adapter reads, or null when
+ * this adapter has none.
+ *
+ * Null happens three legitimate ways, none of them an error:
+ *   - the adapter is outside the provider catalog (process, http, hermes_local…)
+ *   - the adapter type is unknown entirely
+ *   - the provider owns no API key and borrows none (opencode brokers its own
+ *     per-provider credentials), which `resolveProviderKeyTarget` reports by
+ *     throwing
+ *
+ * Exactly ONE descriptor is consulted — the one for this adapter — which is what
+ * makes it impossible for another provider's company key to reach this
+ * subprocess.
+ */
+export function companyKeyTargetForAdapter(adapterType: string): ProviderKeyTarget | null {
+  const descriptor = getProviderByAdapterType(adapterType);
+  if (!descriptor) return null;
+  try {
+    return resolveProviderKeyTarget(descriptor.id);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolution chain step 2 (design D4): apply the company-level provider key ONLY
+ * when the resolved agent config has no value for that env var. Per-agent
+ * overrides always win and are never rewritten.
+ *
+ * Takes and returns the WHOLE config — returning just `{ env }` would silently
+ * drop `model`, `cwd`, `command` and every other adapter field.
+ */
+export function applyCompanyKeyFallback(
+  config: Record<string, unknown>,
+  adapterType: string,
+  companyKeys: Record<string, string>,
+): Record<string, unknown> {
+  return applyCompanyKeyFallbackForTarget(
+    config,
+    companyKeyTargetForAdapter(adapterType),
+    companyKeys,
+  );
+}
+
+/**
+ * The ONE precedence predicate. Both the pure merge below and the runtime gate
+ * in `resolveAdapterConfigForRuntime` call it, so "when does the company key
+ * apply?" cannot drift between the two — a gate that disagreed with the merge
+ * would either skip a fallback that should have applied or perform a vault read
+ * for a value that is then discarded.
+ *
+ * An explicitly-set empty string is an INTENTIONAL override and is left alone.
+ * Only a genuinely absent value falls back.
+ */
+export function needsCompanyKeyFallback(
+  env: unknown,
+  target: ProviderKeyTarget | null,
+): target is ProviderKeyTarget {
+  if (!target) return false;
+  const record = (env as Record<string, unknown> | undefined) ?? {};
+  return record[target.envVar] === undefined;
+}
+
+/** Shared body, so callers that already resolved the target don't redo it. */
+function applyCompanyKeyFallbackForTarget(
+  config: Record<string, unknown>,
+  target: ProviderKeyTarget | null,
+  companyKeys: Record<string, string>,
+): Record<string, unknown> {
+  const env = { ...((config.env as Record<string, string> | undefined) ?? {}) };
+  // Defence in depth: the runtime path has already gated on this predicate, but
+  // the exported pure function is reachable directly (heartbeat, tests), so the
+  // guard lives here too.
+  if (needsCompanyKeyFallback(env, target) && companyKeys[target.envVar] !== undefined) {
+    env[target.envVar] = companyKeys[target.envVar];
+  }
+  // Always a copy, on every path — a caller must never receive its own object
+  // back and be unable to tell whether mutating it is safe.
+  return { ...config, env };
 }
 
 export function secretService(db: Db) {
@@ -816,14 +910,89 @@ export function secretService(db: Db) {
       return resolved;
     },
 
+    /**
+     * Look up the company-level `provider:<id>` key for THIS adapter only.
+     *
+     * `adapterType` is a required parameter with no default because the adapter
+     * cannot be inferred from the config (several adapters share `env`, `model`,
+     * `cwd`, `command`). Guessing would mean the wrong credential in a CLI;
+     * injecting every company key would mean secret over-exposure.
+     *
+     * Consumer context: the caller's actor attribution is preserved for the
+     * audit row, but consumerType is narrowed to `system` — this is a
+     * COMPANY-level default, not a per-agent binding, and `provider-key.ts`
+     * deliberately writes no `company_secret_bindings` row for it. Without the
+     * narrowing `shouldEnforceSecretBinding` would demand a binding that by
+     * design never exists. This mirrors how every other company-level secret
+     * resolves (heartbeat's adapter-secret resolver, the LLM provider key).
+     */
+    async resolveCompanyProviderKeys(
+      companyId: string,
+      target: ProviderKeyTarget,
+      context: Omit<SecretConsumerContext, "configPath">,
+    ): Promise<Record<string, string>> {
+      // getByName already excludes soft-deleted rows. The status check is a
+      // GRACEFUL skip: `resolveSecretValue` would independently reject a
+      // non-active secret, and that rejection would kill the run instead of
+      // letting it continue keyless on the host CLI's own login.
+      const secret = await getByName(companyId, target.secretName);
+      if (!secret || secret.status !== "active") return {};
+
+      const value = await resolveSecretValue(companyId, secret.id, "latest", {
+        ...context,
+        consumerType: "system",
+        consumerId: `provider-key:${target.ownerId}`,
+        configPath: `provider.${target.secretName}`,
+      });
+      // An empty stored value must NOT be injected: an empty credential shadows
+      // the host CLI's own login and turns a working subscription run into a
+      // silent auth failure. Absent is better than empty.
+      return value ? { [target.envVar]: value } : {};
+    },
+
+    /**
+     * Apply the company-level provider key to an ALREADY env-resolved config.
+     *
+     * Split out from `resolveAdapterConfigForRuntime` because the org-agent
+     * heartbeat assembles its runtime env itself (three scope-specific
+     * `resolveEnvBindings` calls merged by precedence) and never passes through
+     * that method — without this seam the feature would be inert on AoA's
+     * primary agent execution path.
+     *
+     * The vault is touched ONLY when the fallback would actually be used. That
+     * is not an optimisation: resolving unconditionally would (a) fail an agent
+     * that has its own working binding whenever the vault hiccups, and (b) write
+     * a `secret_access_events` row claiming a key was consumed when it was
+     * discarded a line later.
+     */
+    async applyCompanyKeyFallbackForRuntime(
+      companyId: string,
+      adapterType: string,
+      config: Record<string, unknown>,
+      context: Omit<SecretConsumerContext, "configPath">,
+    ): Promise<Record<string, unknown>> {
+      const target = companyKeyTargetForAdapter(adapterType);
+      if (!needsCompanyKeyFallback(config.env, target)) return config;
+      const companyKeys = await this.resolveCompanyProviderKeys(companyId, target, context);
+      return applyCompanyKeyFallbackForTarget(config, target, companyKeys);
+    },
+
+    /**
+     * Resolve an agent's adapterConfig for a real run.
+     *
+     * Chain (design D4): the agent's own env binding -> the company provider key
+     * -> the host CLI's own login. The company key is a FALLBACK; a per-agent
+     * value always wins and is never rewritten.
+     */
     async resolveAdapterConfigForRuntime(
       companyId: string,
+      adapterType: string,
       adapterConfig: Record<string, unknown>,
       context: Omit<SecretConsumerContext, "configPath">,
     ) {
       const resolved = { ...adapterConfig };
       resolved.env = await this.resolveEnvBindings(companyId, adapterConfig.env, context);
-      return resolved;
+      return this.applyCompanyKeyFallbackForRuntime(companyId, adapterType, resolved, context);
     },
 
     async previewRemoteImport(companyId: string, input: unknown) {

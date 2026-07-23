@@ -17,6 +17,7 @@
 
 import { commanderOutputRefsSchema, type CommanderOutputRef } from "@armyofagents/shared";
 import type { AgentStreamChunk } from "./agent-loop.js";
+import { redactSecretsInString } from "../../redaction.js";
 
 // ── Marker regex ───────────────────────────────────────────────────────────────
 
@@ -321,16 +322,42 @@ function handleResultEvent(event: Record<string, unknown>): AgentStreamChunk[] {
   const costUsd = asNum(event.total_cost_usd);
   const costCents = costUsd > 0 ? Math.round(costUsd * 100) : 0;
 
-  return [
-    {
-      type: "done",
-      summary: {
-        runId: "",
-        toolsCalled: [],
-        durationMs: asNum(event.duration_ms),
-        costCents,
-        tokenUsage: { inputTokens, outputTokens, cachedInputTokens },
-      },
+  const chunks: AgentStreamChunk[] = [];
+
+  // A `result` event can report subtype:"success" while still carrying an API
+  // failure (e.g. auth): claude sets is_error + api_error_status and puts the
+  // human-readable reason in `result`. Without this the turn renders as an
+  // empty success — no content, no error (the silent-empty-turn bug).
+  // `is_error` is the documented signal. `api_error_status` only WIDENS it for
+  // the defensive case where the field is absent — it must never override an
+  // explicit `is_error: false`, or a turn the CLI retried past and then
+  // succeeded would render its real answer text as an error.
+  const isError =
+    event.is_error === true ||
+    (event.is_error !== false && typeof event.api_error_status === "number");
+  if (isError) {
+    const raw = typeof event.result === "string" ? event.result.trim() : "";
+    chunks.push({
+      type: "error",
+      // Best-effort scrub only — NOT a sanitization boundary. redactSecretsInString
+      // matches known secret VALUE shapes (sk-ant-*, gh*_*, JWTs, PEM blocks, DSNs);
+      // an opaque/hex bearer token in vendor error text passes through unredacted.
+      // Do not treat this call as a guarantee that the message is secret-free.
+      message:
+        raw.length > 0 ? redactSecretsInString(raw) : "The CLI reported an error but gave no detail.",
+    });
+  }
+
+  chunks.push({
+    type: "done",
+    summary: {
+      runId: "",
+      toolsCalled: [],
+      durationMs: asNum(event.duration_ms),
+      costCents,
+      tokenUsage: { inputTokens, outputTokens, cachedInputTokens },
     },
-  ];
+  });
+
+  return chunks;
 }

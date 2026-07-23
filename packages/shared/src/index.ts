@@ -1342,3 +1342,14 @@ export {
   type PostAuthJourneyResult,
   type FirstRunPersona,
 } from "./onboarding.js";
+
+// Provider readiness (Provider Readiness initiative)
+export { PROBE_OUTCOMES, NON_BLOCKING_PROBE_OUTCOMES, isNonBlockingProbeOutcome } from "./probe-outcome.js";
+export type { ProbeOutcome, NonBlockingProbeOutcome } from "./probe-outcome.js";
+export {
+  ADAPTER_PROBE_RETRY_AFTER_SECONDS,
+  ADAPTER_PROBE_BUSY_ERROR,
+  PROVIDER_READINESS_STALE_MS,
+  isReadinessStale,
+} from "./adapter-probe.js";
+export * from "./providers/provider-catalog.js";

@@ -1452,6 +1452,7 @@ export function companySkillService(db: Db) {
           try {
             const runtimeConfig = await secrets.resolveAdapterConfigForRuntime(
               agent.companyId,
+              adapterType,
               (agent.adapterConfig ?? {}) as Record<string, unknown>,
               {
                 consumerType: "agent",

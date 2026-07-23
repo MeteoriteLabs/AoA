@@ -1240,6 +1240,13 @@
       "when": 1784492278323,
       "tag": "0176_giant_spitfire",
       "breakpoints": true
+    },
+    {
+      "idx": 177,
+      "version": "7",
+      "when": 1784716922443,
+      "tag": "0177_strong_imperial_guard",
+      "breakpoints": true
     }
   ]
 }

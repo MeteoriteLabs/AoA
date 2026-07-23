@@ -683,6 +683,7 @@ describe("cliModeService.chat — per-CLI wiring (MX4)", () => {
       setImmediate(() => {
         proc.stdout.emit("data", Buffer.from("ok"));
         proc.emit("exit", 0, null);
+        proc.emit("close", 0, null);
       });
     };
     proc.stdout.on("newListener", drive);
@@ -899,6 +900,7 @@ describe("cliModeService.chat — codex JSONL parse + one-shot/resume (MX-chatpa
         if (opts.stdout) proc.stdout.emit("data", Buffer.from(opts.stdout));
         if (opts.stderr) proc.stderr.emit("data", Buffer.from(opts.stderr));
         proc.emit("exit", opts.exitCode ?? 0, null);
+        proc.emit("close", opts.exitCode ?? 0, null);
       });
     };
     proc.stdout.on("newListener", drive);
@@ -1407,6 +1409,7 @@ describe("cliModeService.chat — codex JSONL parse + one-shot/resume (MX-chatpa
       setImmediate(() => {
         persistent.stdout.emit("data", Buffer.from(streamJsonLine + "\n"));
         persistent.emit("exit", 0, null);
+        persistent.emit("close", 0, null);
       });
     });
 

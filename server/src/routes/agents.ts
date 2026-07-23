@@ -336,7 +336,7 @@ export function agentRoutes(db: Db) {
     const warnings: string[] = [];
 
     if (adapterType === "opencode_local") {
-      const runtimeConfig = await secretsSvc.resolveAdapterConfigForRuntime(companyId, adapterConfig, {
+      const runtimeConfig = await secretsSvc.resolveAdapterConfigForRuntime(companyId, adapterType, adapterConfig, {
         consumerType: "system",
         consumerId: `adapter-check:${adapterType ?? "unknown"}`,
         actorType: "system",
@@ -563,6 +563,7 @@ export function agentRoutes(db: Db) {
         );
         const runtimeAdapterConfig = await secretsSvc.resolveAdapterConfigForRuntime(
           companyId,
+          type,
           normalizedAdapterConfig,
           {
             consumerType: "system",
@@ -1891,7 +1892,7 @@ export function agentRoutes(db: Db) {
     }
 
     const config = asRecord(agent.adapterConfig) ?? {};
-    const runtimeConfig = await secretsSvc.resolveAdapterConfigForRuntime(agent.companyId, config, {
+    const runtimeConfig = await secretsSvc.resolveAdapterConfigForRuntime(agent.companyId, agent.adapterType, config, {
       consumerType: "agent",
       consumerId: agent.id,
       actorType: "user",

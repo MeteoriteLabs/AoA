@@ -649,43 +649,6 @@ describe("InboxHub page", () => {
     expect(mockPushToast).not.toHaveBeenCalled();
   });
 
-  it("updates notification preferences from hub settings", async () => {
-    const user = userEvent.setup();
-    renderPage("/P4/inbox/waiting");
-
-    await user.click(await screen.findByRole("button", { name: /hub settings/i }));
-    await user.click(screen.getByRole("button", { name: /notification preferences/i }));
-    await user.selectOptions(screen.getByLabelText(/approval request delivery/i), "digest");
-
-    await waitFor(() => {
-      expect(hubItemsApi.notificationPreferences.update).toHaveBeenCalledWith(
-        "company-1",
-        expect.objectContaining({
-          rules: expect.arrayContaining([
-            expect.objectContaining({
-              semanticType: "approval_request",
-              deliveryMode: "digest",
-            }),
-          ]),
-        }),
-      );
-    });
-  });
-
-  it("updates Autopilot policy from hub settings", async () => {
-    const user = userEvent.setup();
-    renderPage("/P4/inbox/waiting");
-
-    await user.click(await screen.findByRole("button", { name: /hub settings/i }));
-    await user.selectOptions(screen.getByRole("combobox", { name: /autopilot mode/i }), "drive");
-
-    await waitFor(() => {
-      expect(hubItemsApi.autopilotPolicy.update).toHaveBeenCalledWith("company-1", {
-        mode: "drive",
-      });
-    });
-  });
-
   it("undoes a recent Autopilot action from Home", async () => {
     const user = userEvent.setup();
     vi.mocked(hubItemsApi.autopilotPolicy.get).mockResolvedValue(
@@ -722,22 +685,6 @@ describe("InboxHub page", () => {
         auditId: "audit-1",
         expectedVersion: 3,
       });
-    });
-  });
-
-  it("acknowledges pending digest items from hub settings", async () => {
-    const user = userEvent.setup();
-    vi.mocked(hubItemsApi.notificationDigest.list).mockResolvedValue({
-      items: [hubItem({ id: "digest-1", title: "Digest reminder" })],
-    });
-    renderPage("/P4/inbox/waiting");
-
-    await user.click(await screen.findByRole("button", { name: /hub settings/i }));
-    await user.click(screen.getByRole("button", { name: /notification preferences/i }));
-    await user.click(await screen.findByRole("button", { name: /acknowledge digest/i }));
-
-    await waitFor(() => {
-      expect(hubItemsApi.notificationDigest.ack).toHaveBeenCalledWith("company-1");
     });
   });
 
@@ -1165,43 +1112,6 @@ describe("InboxHub page", () => {
       expect(hubItemsApi.list).toHaveBeenCalled();
     });
     expect(hubItemsApi.hiddenCount).not.toHaveBeenCalled();
-  });
-
-  it("optimistically applies hub preference lane visibility changes", async () => {
-    let resolvePreferences: (value: HubPreferences) => void = () => {};
-    vi.mocked(hubItemsApi.updatePreferences).mockReturnValueOnce(
-      new Promise<HubPreferences>((resolve) => {
-        resolvePreferences = resolve;
-      }),
-    );
-
-    renderPage("/P4/inbox-hub/waiting");
-
-    await screen.findByRole("navigation", { name: /hub lanes/i });
-    fireEvent.click(screen.getByRole("button", { name: /hub settings/i }));
-    const notificationsToggle = screen.getByRole("checkbox", { name: "Notifications" });
-    expect(notificationsToggle).toBeChecked();
-
-    fireEvent.click(notificationsToggle);
-
-    expect(notificationsToggle).not.toBeChecked();
-    expect(
-      within(screen.getByRole("navigation", { name: /hub lanes/i })).queryByRole("button", {
-        name: /notifications/i,
-      }),
-    ).not.toBeInTheDocument();
-    await waitFor(() => {
-      expect(hubItemsApi.updatePreferences).toHaveBeenCalledWith("company-1", {
-        visibleLanes: ["waiting_on_you", "suggestions"],
-      });
-    });
-
-    resolvePreferences(
-      defaultPreferences({ visibleLanes: ["waiting_on_you", "suggestions"] }),
-    );
-    await waitFor(() => {
-      expect(notificationsToggle).not.toBeChecked();
-    });
   });
 
   it("loads the next cursor page", async () => {

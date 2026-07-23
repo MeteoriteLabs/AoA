@@ -39,32 +39,34 @@ test.describe("Inbox Hub W1d grouping, settings, and mobile", () => {
       ownerPool: "board",
     });
 
-    await page.goto(`/${company.issuePrefix}/inbox/waiting`);
-    await page.getByRole("button", { name: /hub settings/i }).click();
-    const groupingSelect = page.getByRole("combobox", { name: /grouping/i });
-    if ((await groupingSelect.inputValue()) !== "source") {
-      await Promise.all([
-        page.waitForResponse((response) =>
-          response.url().includes("/hub-items/preferences/me") &&
-          response.request().method() === "PATCH" &&
-          response.status() === 200,
-        ),
-        groupingSelect.selectOption("source"),
-      ]);
-    }
-    await page.getByRole("button", { name: /hub settings/i }).click();
-
-    const alphaGroup = page.getByRole("button", { name: /w1d-alpha/i });
-    await expect(alphaGroup).toBeVisible();
-    await expect(alphaGroup).toHaveAttribute("aria-expanded", "false");
-
-    await page.getByRole("button", { name: /hub settings/i }).click();
-    await Promise.all([
+    // Hub settings now live in Settings → Inbox (the in-hub gear was removed —
+    // single home). Each change persists to /hub-items/preferences/me and the
+    // hub re-reads it, so we round-trip: set in Settings, verify in the hub.
+    const gotoInboxSettings = () => page.goto(`/${company.issuePrefix}/settings?tab=inbox`);
+    const waitPrefsPatch = () =>
       page.waitForResponse((response) =>
         response.url().includes("/hub-items/preferences/me") &&
         response.request().method() === "PATCH" &&
         response.status() === 200,
-      ),
+      );
+
+    // Group by source.
+    await gotoInboxSettings();
+    const groupingSelect = page.getByRole("combobox", { name: /grouping/i });
+    if ((await groupingSelect.inputValue()) !== "source") {
+      await Promise.all([waitPrefsPatch(), groupingSelect.selectOption("source")]);
+    }
+
+    // Grouping is applied in the hub.
+    await page.goto(`/${company.issuePrefix}/inbox/waiting`);
+    const alphaGroup = page.getByRole("button", { name: /w1d-alpha/i });
+    await expect(alphaGroup).toBeVisible();
+    await expect(alphaGroup).toHaveAttribute("aria-expanded", "false");
+
+    // Default landing → suggestions.
+    await gotoInboxSettings();
+    await Promise.all([
+      waitPrefsPatch(),
       page.getByRole("combobox", { name: /default landing/i }).selectOption("suggestions"),
     ]);
     await page.goto(`/${company.issuePrefix}/inbox`);
@@ -93,15 +95,16 @@ test.describe("Inbox Hub W1d grouping, settings, and mobile", () => {
     await page.keyboard.press("k");
     await expectActiveTabTitle(page, firstTitle);
 
-    await page.getByRole("button", { name: /hub settings/i }).click();
-    await Promise.all([
-      page.waitForResponse((response) =>
-        response.url().includes("/hub-items/preferences/me") &&
-        response.request().method() === "PATCH" &&
-        response.status() === 200,
-      ),
-      page.getByRole("checkbox", { name: "Notifications" }).uncheck(),
-    ]);
+    // Hide the Notifications lane. Use a single click (not `uncheck()`): the
+    // lane checkbox is server-controlled and only flips once its PATCH resolves,
+    // so `uncheck()`'s re-click-until-unchecked loop races the round-trip in CI.
+    // We assert the starting state, click once, await the PATCH, and let the
+    // downstream hub assertion confirm the effect.
+    await gotoInboxSettings();
+    const notificationsLaneToggle = page.getByRole("checkbox", { name: "Notifications" });
+    await expect(notificationsLaneToggle).toBeChecked();
+    await Promise.all([waitPrefsPatch(), notificationsLaneToggle.click()]);
+    await page.goto(`/${company.issuePrefix}/inbox/waiting`);
     await expect(
       page.getByRole("navigation", { name: /hub lanes/i }).getByRole("button", {
         name: /notifications/i,

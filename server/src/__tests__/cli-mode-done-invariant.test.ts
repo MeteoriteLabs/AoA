@@ -74,6 +74,7 @@ function makeOneShotProcess(opts: {
       if (opts.stdout) proc.stdout.emit("data", Buffer.from(opts.stdout));
       if (opts.stderr) proc.stderr.emit("data", Buffer.from(opts.stderr));
       proc.emit("exit", opts.exitCode ?? 0, null);
+      proc.emit("close", opts.exitCode ?? 0, null);
     });
   };
   proc.stdout.on("newListener", drive);
@@ -93,7 +94,10 @@ function makePersistentProcess() {
     setImmediate(() => proc.stdout.emit("data", Buffer.from(text)));
   };
   proc.exit = (code = 0) => {
-    setImmediate(() => proc.emit("exit", code, null));
+    setImmediate(() => {
+      proc.emit("exit", code, null);
+      proc.emit("close", code, null);
+    });
   };
   return proc;
 }
@@ -193,6 +197,7 @@ describe("cli-mode done-invariant — exactly ONE done chunk per turn", () => {
       setImmediate(() => {
         proc.stdout.emit("data", Buffer.from(textLine + resultLine));
         proc.emit("exit", 0, null);
+        proc.emit("close", 0, null);
       });
     });
 
@@ -234,6 +239,7 @@ describe("cli-mode done-invariant — exactly ONE done chunk per turn", () => {
       setImmediate(() => {
         proc.stdout.emit("data", Buffer.from(toolLine));
         proc.emit("exit", 0, null);
+        proc.emit("close", 0, null);
       });
     });
 

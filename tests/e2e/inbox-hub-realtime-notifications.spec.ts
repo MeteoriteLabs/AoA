@@ -43,9 +43,14 @@ test.describe("Inbox Hub realtime notifications", () => {
     await expectActiveHubTab(page, /W2 realtime reminder toast/i);
     await dismissToasts(page);
 
-    await openNotificationPreferences(page);
-    await page.getByLabel(/reminder delivery/i).selectOption("digest");
-    await expect(page.getByLabel(/reminder delivery/i)).toHaveValue("digest");
+    // The in-hub settings gear was removed (its controls moved to Settings →
+    // Inbox). This test must keep the hub mounted so the live socket stays open,
+    // so delivery-mode changes are driven via the same preferences PATCH the
+    // panel calls — the suppression decision is made server-side at publish time.
+    await updateNotificationPreferences(request, company.id, {
+      deliveryMode: "digest",
+      quietHours: { enabled: false, start: "18:00", end: "09:00", timezone: "UTC" },
+    });
 
     const digest = await seedRealtimeHubItem(company.id, {
       sourceId: "digest",
@@ -63,8 +68,10 @@ test.describe("Inbox Hub realtime notifications", () => {
     });
     await expect(toast(page, "W2 digest reminder summary")).toHaveCount(0);
 
-    await page.getByLabel(/reminder delivery/i).selectOption("silent");
-    await expect(page.getByLabel(/reminder delivery/i)).toHaveValue("silent");
+    await updateNotificationPreferences(request, company.id, {
+      deliveryMode: "silent",
+      quietHours: { enabled: false, start: "18:00", end: "09:00", timezone: "UTC" },
+    });
 
     const silent = await seedRealtimeHubItem(company.id, {
       sourceId: "silent",
@@ -78,7 +85,6 @@ test.describe("Inbox Hub realtime notifications", () => {
     await expect(toast(page, "W2 silent reminder hidden")).toHaveCount(0);
     await expect(page.getByText("W2 silent reminder hidden")).toHaveCount(1);
 
-    await page.getByLabel(/reminder delivery/i).selectOption("realtime");
     await updateNotificationPreferences(request, company.id, {
       deliveryMode: "realtime",
       quietHours: { enabled: true, start: "00:00", end: "00:00", timezone: "UTC" },
@@ -207,14 +213,6 @@ async function publishHubItemChange(
     data: { action: "claim", expectedVersion: item.version },
   });
   expect(res.ok(), await res.text()).toBeTruthy();
-}
-
-async function openNotificationPreferences(page: Page) {
-  const settings = page.getByRole("button", { name: /hub settings/i });
-  await settings.click();
-  const notifications = page.getByRole("button", { name: /notification preferences/i });
-  await notifications.click();
-  await expect(page.getByRole("heading", { name: /notification preferences/i })).toBeVisible();
 }
 
 function toast(page: Page, title: string) {

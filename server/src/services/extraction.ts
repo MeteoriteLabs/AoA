@@ -403,7 +403,7 @@ export function extractionService(db: Db) {
           const msg =
             engineErr instanceof Error
               ? engineErr.message
-              : "No extraction engine available. Install a CLI (e.g. the Claude Code CLI) and run its login flow (`claude login`).";
+              : "No extraction engine available. Install a CLI (e.g. the Claude Code CLI) and run its login flow (`claude auth login`).";
           log.warn(msg);
           await db
             .update(discussionEntries)

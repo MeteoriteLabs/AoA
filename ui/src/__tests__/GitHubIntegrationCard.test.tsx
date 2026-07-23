@@ -89,7 +89,9 @@ describe("GitHubIntegrationCard — App section", () => {
       accountType: "Organization",
     });
     renderCard();
-    expect(await screen.findByText(/myorg/i)).toBeInTheDocument();
+    // "@myorg" now appears in both the status strip (summary) and the App card
+    // (detail) — assert it renders at least once rather than requiring one node.
+    expect((await screen.findAllByText(/myorg/i)).length).toBeGreaterThan(0);
     expect(
       screen.getByRole("button", { name: /disconnect app/i }),
     ).toBeInTheDocument();
@@ -115,7 +117,7 @@ describe("GitHubIntegrationCard — App section", () => {
       accountType: "Organization",
     });
     renderCard();
-    await screen.findByText(/myorg/i);
+    await screen.findAllByText(/myorg/i);
     // PAT input section should still be visible as fallback
     expect(screen.getByPlaceholderText(/github_pat/i)).toBeInTheDocument();
   });
@@ -127,7 +129,7 @@ describe("GitHubIntegrationCard — App section", () => {
       createdAt: new Date().toISOString(),
     });
     renderCard();
-    expect(await screen.findByText(/@octocat/)).toBeInTheDocument();
+    expect((await screen.findAllByText(/@octocat/)).length).toBeGreaterThan(0);
   });
 });
 
@@ -172,7 +174,8 @@ describe("GitHubIntegrationCard — PAT section", () => {
     await waitFor(() =>
       expect(screen.getByText(/connected as/i)).toBeInTheDocument(),
     );
-    expect(screen.getByText(/@octocat/i)).toBeInTheDocument();
+    // "@octocat" appears in both the status strip and the PAT card detail.
+    expect(screen.getAllByText(/@octocat/i).length).toBeGreaterThan(0);
     // Disconnect button is present for the PAT
     expect(screen.getByRole("button", { name: /^disconnect$/i })).toBeInTheDocument();
     // In the connected-PAT state, the PAT input is NOT shown (replaced by connected banner)
@@ -267,5 +270,41 @@ describe("GitHubIntegrationCard — PAT section", () => {
 
     const btn = await screen.findByRole("button", { name: /^connect$/i });
     expect(btn).toBeDisabled();
+  });
+});
+
+describe("GitHubIntegrationCard — card structure", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSelectedCompanyId = "co-1";
+    setupDefaults();
+  });
+
+  it("shows a Not-connected status strip when neither App nor PAT is configured", async () => {
+    renderCard();
+    const strip = await screen.findByTestId("github-status-strip");
+    expect(strip).toHaveTextContent(/not connected/i);
+  });
+
+  it("shows a Connected-via-App status strip when the App is installed", async () => {
+    mockAppStatus.mockResolvedValue({
+      installed: true,
+      accountLogin: "myorg",
+      accountType: "Organization",
+    });
+    renderCard();
+    const strip = await screen.findByTestId("github-status-strip");
+    expect(strip).toHaveTextContent(/connected via github app/i);
+    expect(strip).toHaveTextContent(/myorg/i);
+  });
+
+  it("renders the GitHub App and Personal access token card headers", async () => {
+    renderCard();
+    expect(
+      await screen.findByRole("heading", { name: /^GitHub App$/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: /^Personal access token$/ }),
+    ).toBeInTheDocument();
   });
 });

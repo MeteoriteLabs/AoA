@@ -56,7 +56,7 @@ export function ProviderKeyDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle>{providerKey ? "Edit Provider Key" : "New Provider Key"}</DialogTitle>
+          <DialogTitle>{providerKey ? "Edit Sandbox Provider Key" : "New Sandbox Provider Key"}</DialogTitle>
         </DialogHeader>
         <form className="space-y-4" onSubmit={handleSubmit}>
           {errorMessage && (

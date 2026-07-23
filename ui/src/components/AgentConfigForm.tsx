@@ -49,6 +49,7 @@ import { ReportsToSelect } from "./team/ReportsToSelect";
 import type { UnifiedOrgNode } from "./team/ReportsToSelect";
 import { defaultCreateValues } from "./agent-config-defaults";
 import { getAdapterLabel, getUIAdapter, listAdapterOptions, useDisabledAdaptersSync } from "../adapters";
+import { AgentReadinessBadge } from "./providers/AgentReadinessBadge";
 import { ClaudeLocalAdvancedFields } from "../adapters/claude-local/config-fields";
 import { MarkdownEditor } from "./MarkdownEditor";
 import { FolderBrowserDialog } from "./FolderBrowserDialog";
@@ -679,7 +680,28 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           </div>
         )}
         <div className={cn(cards && !isCreate ? "px-4 pt-4 pb-4 space-y-3 border-t border-border" : cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3", cards && !isCreate && !adapterOpen && "hidden")}>
-          <div className="flex justify-end">
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            {/*
+              Readiness for THIS AGENT'S OWN provider scope. Keyed on the
+              effective (draft-aware) adapterType, so switching the picker below
+              re-points the badge before save. Renders nothing in create mode or
+              for an adapter with no credentialed provider.
+            */}
+            {!isCreate && selectedCompanyId ? (
+              <AgentReadinessBadge
+                // Key by adapter: switching the picker is a different provider,
+                // so remount to drop any Test error/spinner from the old one
+                // (otherwise a failed Codex probe's error renders under a Claude
+                // badge after the switch).
+                key={adapterType}
+                companyId={selectedCompanyId}
+                agentId={props.agent.id}
+                adapterType={adapterType}
+                savedAdapterType={props.agent.adapterType}
+              />
+            ) : (
+              <span />
+            )}
             <Button
               type="button"
               variant="outline"

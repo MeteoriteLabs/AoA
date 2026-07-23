@@ -270,18 +270,20 @@ describe("SettingsPage redesign — Phase F shell", () => {
     try { localStorage.removeItem("aoa.settings-secondary-collapsed"); } catch { /* noop */ }
   });
 
-  it("renders the SecondarySidebar with all 13 section items", () => {
+  it("renders the SecondarySidebar with all 15 section items", () => {
     renderSettings();
     // Defensive: catch silent drift in section count.
     const totalItems = SETTINGS_SECTIONS.flatMap((g) => g.items).length;
-    expect(totalItems).toBe(13);
+    expect(totalItems).toBe(15);
     // Each label appears in both the desktop sidebar and the mobile sub-nav pill row
     // (CSS media queries that hide one or the other are not evaluated in JSDOM).
     expect(screen.getAllByText("General").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Inbox").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Health").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Activity").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Commander").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Memory").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Providers").length).toBeGreaterThan(0);
     expect(screen.queryByText("LLM providers")).toBeNull();
     expect(screen.getAllByText("Budget & caps").length).toBeGreaterThan(0);
     expect(screen.getAllByText("MCP API keys").length).toBeGreaterThan(0);
@@ -456,15 +458,16 @@ describe("SettingsPage redesign — Phase F shell", () => {
     expect(screen.getByLabelText(/expand settings nav/i)).toBeInTheDocument();
   });
 
-  it("GitHub section: renders the GitHubIntegrationCard with section header + transitional pill", async () => {
+  it("GitHub section: renders the GitHubIntegrationCard as a flat panel, no plugins framing", async () => {
     renderSettings("/P4/settings?tab=github");
 
     // Section header h2 — "GitHub" with the brand-colored period.
     const headings = await screen.findAllByRole("heading", { name: /^GitHub/i });
     expect(headings.length).toBeGreaterThan(0);
 
-    // Transitional pill in the section header.
-    expect(screen.getByText(/migrating to plugins/i)).toBeInTheDocument();
+    // The plugins-migration framing is gone.
+    expect(screen.queryByText(/migrating to plugins/i)).toBeNull();
+    expect(screen.queryByText(/→plugins/i)).toBeNull();
 
     // The GitHubIntegrationCard's actual rendered content. With a mocked
     // status of `{ configured: false }` and App not installed, the card shows

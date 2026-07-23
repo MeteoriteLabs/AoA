@@ -20,15 +20,86 @@ import {
 const LOGIN_URL_DISCOVERY_MS = 60_000;
 
 /**
- * Provider completion evidence (Codex P1 #9 — do NOT hardcode auth.json for both):
- *  - openai/codex → `<home>/auth.json`
- *  - anthropic/claude → `<home>/.credentials.json` (dogfood-verified filename;
- *    change here if the live CLI writes elsewhere).
+ * Everything provider-specific about driving an interactive CLI login, in ONE
+ * place (Task 9b). Previously these three concerns were three separate
+ * `provider === "openai" ? … : …` ternaries, which made "add a provider" mean
+ * "find and correctly extend every ternary, and get the ELSE branch right" —
+ * the else branch silently claimed every unknown provider was Claude.
  */
-function credentialFile(provider: CommanderLoginProvider, authHome: string): string {
-  return provider === "openai"
-    ? path.join(authHome, "auth.json")
-    : path.join(authHome, ".credentials.json");
+interface ProviderLoginRunner {
+  /**
+   * The credential home this login writes into. NOTE it takes only `env` — there
+   * is no companyId — so the (provider, authHome) single-flight slot is
+   * HOST-shared and genuinely cross-tenant. Two companies on one host contend
+   * for one slot; the loser gets a 409.
+   */
+  resolveAuthHome: (env: NodeJS.ProcessEnv) => string;
+  runLogin: (args: { runId: string; env: NodeJS.ProcessEnv }) => LoginRunLike;
+  /**
+   * Completion evidence, relative to authHome (Codex P1 #9 — do NOT hardcode
+   * auth.json for both):
+   *   - openai/codex → `auth.json`
+   *   - anthropic/claude → `.credentials.json` (dogfood-verified filename)
+   */
+  credentialFileName: string;
+}
+
+/**
+ * Keyed by the catalog's `ProviderId`. Presence here is what makes a provider
+ * DRIVABLE; the catalog's `selfCompletingLogin` is separately what makes it
+ * OFFERABLE in-app (see services/providers/provider-login.ts). Anthropic is
+ * drivable but not offerable — the onboarding Verify step drives it and accepts
+ * that the founder finishes in a terminal.
+ */
+const LOGIN_RUNNERS: Partial<Record<CommanderLoginProvider, ProviderLoginRunner>> = {
+  openai: {
+    resolveAuthHome: resolveSharedCodexHomeDir,
+    runLogin: (args) =>
+      runCodexLogin({
+        runId: args.runId,
+        env: args.env,
+        discoveryTimeoutMs: LOGIN_URL_DISCOVERY_MS,
+      }),
+    credentialFileName: "auth.json",
+  },
+  anthropic: {
+    resolveAuthHome: resolveClaudeConfigHome,
+    runLogin: (args) =>
+      runClaudeLoginStreaming({
+        runId: args.runId,
+        env: args.env,
+        discoveryTimeoutMs: LOGIN_URL_DISCOVERY_MS,
+      }),
+    credentialFileName: ".credentials.json",
+  },
+};
+
+/**
+ * Whether an interactive login runner is wired for this provider at all.
+ *
+ * A VALUE check, not `hasOwnProperty` (review M-1). On a `Partial<Record<…>>`
+ * an entry written `google: undefined` — precisely the half-finished Stage B
+ * edit this gate exists to catch — HAS the own property, so a presence check
+ * would wave it through the route's 400 guard and into `requireLoginRunner`'s
+ * throw, surfacing as a 502 "sign-in could not start" instead of the honest
+ * 400 "no in-app sign-in for this provider".
+ */
+export function hasLoginRunner(providerId: string): providerId is CommanderLoginProvider {
+  return LOGIN_RUNNERS[providerId as CommanderLoginProvider] !== undefined;
+}
+
+/**
+ * Exported for test (review I-2): this throw is the ENTIRE guard against
+ * spawning the wrong provider's CLI against the wrong credential home, so it
+ * needs a test of its own. Without it a "helpful" default would reintroduce
+ * that hazard with a fully green suite.
+ */
+export function requireLoginRunner(provider: CommanderLoginProvider): ProviderLoginRunner {
+  const runner = LOGIN_RUNNERS[provider];
+  // Explicit throw rather than an implicit "else = claude" fallback: driving the
+  // WRONG CLI would spawn a login against another provider's credential home.
+  if (!runner) throw new Error(`No interactive login runner for provider: ${provider}`);
+  return runner;
 }
 
 function mapRow(r: typeof commanderLoginChallenges.$inferSelect): ChallengeRow {
@@ -136,14 +207,11 @@ export function drizzleChallengeStore(db: Db): ChallengeStore {
 export function buildCommanderLoginService(db: Db): CommanderLoginService {
   return createCommanderLoginService({
     store: drizzleChallengeStore(db),
-    resolveAuthHome: (provider, env) =>
-      provider === "openai" ? resolveSharedCodexHomeDir(env) : resolveClaudeConfigHome(env),
-    runLogin: (provider, args): LoginRunLike =>
-      provider === "openai"
-        ? runCodexLogin({ runId: args.runId, env: args.env, discoveryTimeoutMs: LOGIN_URL_DISCOVERY_MS })
-        : runClaudeLoginStreaming({ runId: args.runId, env: args.env, discoveryTimeoutMs: LOGIN_URL_DISCOVERY_MS }),
+    resolveAuthHome: (provider, env) => requireLoginRunner(provider).resolveAuthHome(env),
+    runLogin: (provider, args): LoginRunLike => requireLoginRunner(provider).runLogin(args),
     credentialPresent: async (provider, authHome) => {
-      const stat = await fs.stat(credentialFile(provider, authHome)).catch(() => null);
+      const file = path.join(authHome, requireLoginRunner(provider).credentialFileName);
+      const stat = await fs.stat(file).catch(() => null);
       return Boolean(stat?.isFile());
     },
     // Persisted-pid kill — ALWAYS identity-verified (Codex P1, round 6 →

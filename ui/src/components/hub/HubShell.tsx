@@ -1,29 +1,15 @@
-import { EyeOff, Menu, Settings, X } from "lucide-react";
+import { EyeOff, Menu, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Group, Panel, Separator, useDefaultLayout } from "react-resizable-panels";
 import { cn } from "@/lib/utils";
 import { useBreakpoint } from "@/lib/useBreakpoint";
 import type { HubAuditRow, HubItemListRow } from "@/api/hub-items";
 import type {
-  HubAutopilotAction,
   HubAutopilotActionRow,
-  HubAutopilotMode,
   HubAutopilotPolicy,
-  HubDensity,
-  HubGroupMode,
   HubItemStatus,
   HubLane,
   HubPreferences,
-  NotificationPreferences,
-  NotificationPreference,
-  UpdateHubPreferencesInput,
-  UpdateHubAutopilotPolicyInput,
-  UpdateNotificationPreferencesInput,
-} from "@armyofagents/shared";
-import {
-  DEFAULT_NOTIFICATION_PREFERENCES,
-  isFounderGatedAutopilotType,
-  isInternalSemanticType,
 } from "@armyofagents/shared";
 import { Button } from "@/components/ui/button";
 import { HubActionBar } from "./HubActionBar";
@@ -106,21 +92,11 @@ interface HubShellProps {
   hasMore?: boolean;
   isLoadingMore?: boolean;
   preferences?: HubPreferences;
-  notificationPreferences?: NotificationPreferences;
-  notificationPreferencesPending?: boolean;
-  digestItems?: HubItemListRow[];
   autopilotPolicy?: HubAutopilotPolicy;
   autopilotActions?: { items: HubAutopilotActionRow[] };
-  autopilotPending?: boolean;
   onLaneChange: (lane: HubRailLane) => void;
   onSearchTextChange?: (value: string) => void;
   onLoadMore?: () => void;
-  onPreferencesChange?: (patch: UpdateHubPreferencesInput) => void;
-  onUpdateNotificationPreferences?: (patch: UpdateNotificationPreferencesInput) => void;
-  onResetNotificationPreferences?: () => void;
-  onAckDigest?: () => void;
-  onUpdateAutopilotPolicy?: (patch: UpdateHubAutopilotPolicyInput) => void;
-  onResetAutopilotPolicy?: () => void;
   onUndoAutopilotAction?: (action: HubAutopilotActionRow) => void;
   onHistoryStatusChange: (status: Extract<HubItemStatus, "open" | "resolved" | "archived">) => void;
   onSelectItem: (itemId: string | null) => void;
@@ -167,21 +143,11 @@ export function HubShell({
   hasMore = false,
   isLoadingMore = false,
   preferences = DEFAULT_PREFERENCES,
-  notificationPreferences = DEFAULT_NOTIFICATION_PREFERENCES,
-  notificationPreferencesPending = false,
-  digestItems = [],
   autopilotPolicy = DEFAULT_AUTOPILOT_POLICY,
   autopilotActions = EMPTY_AUTOPILOT_ACTIONS,
-  autopilotPending = false,
   onLaneChange,
   onSearchTextChange = noop,
   onLoadMore = noop,
-  onPreferencesChange = noop,
-  onUpdateNotificationPreferences = noop,
-  onResetNotificationPreferences = noop,
-  onAckDigest = noop,
-  onUpdateAutopilotPolicy = noop,
-  onResetAutopilotPolicy = noop,
   onUndoAutopilotAction = noop,
   onHistoryStatusChange = noop,
   onSelectItem,
@@ -194,8 +160,6 @@ export function HubShell({
   onLifecycleAction = noop,
   undoAction = null,
 }: HubShellProps) {
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [notificationPanelOpen, setNotificationPanelOpen] = useState(false);
   const [mobileRailOpen, setMobileRailOpen] = useState(false);
   const [railCollapsed, setRailCollapsed] = useState(() => {
     try {
@@ -311,42 +275,6 @@ export function HubShell({
     onLaneChange(lane);
   };
 
-  const updateNotificationRule = (
-    semanticType: NotificationPreferences["rules"][number]["semanticType"],
-    patch: Partial<Pick<NotificationPreferences["rules"][number], "deliveryMode" | "toastEnabled">>,
-  ) => {
-    onUpdateNotificationPreferences({
-      rules: notificationPreferences.rules.map((rule) =>
-        rule.semanticType === semanticType ? { ...rule, ...patch } : rule,
-      ),
-    });
-  };
-
-  const updateQuietHours = (patch: Partial<NotificationPreferences["quietHours"]>) => {
-    onUpdateNotificationPreferences({
-      quietHours: { ...notificationPreferences.quietHours, ...patch },
-    });
-  };
-
-  const updateDigest = (patch: Partial<NotificationPreferences["digest"]>) => {
-    onUpdateNotificationPreferences({
-      digest: { ...notificationPreferences.digest, ...patch },
-    });
-  };
-
-  const updateAutopilotRule = (
-    semanticType: HubAutopilotPolicy["rules"][number]["semanticType"],
-    patch: Partial<
-      Pick<HubAutopilotPolicy["rules"][number], "enabled" | "action" | "minTrustScore">
-    >,
-  ) => {
-    onUpdateAutopilotPolicy({
-      rules: autopilotPolicy.rules.map((rule) =>
-        rule.semanticType === semanticType ? { ...rule, ...patch } : rule,
-      ),
-    });
-  };
-
   const listSection = (
         <section className="flex min-h-0 min-w-0 flex-1 flex-col">
           {/* 42px header — matches the rail header and the viewer tab strip. */}
@@ -381,371 +309,8 @@ export function HubShell({
                   </Button>
                 ))
                 : null}
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                aria-label="Hub settings"
-                aria-expanded={settingsOpen}
-                onClick={() => setSettingsOpen((open) => !open)}
-              >
-                <Settings className="size-4" aria-hidden="true" />
-              </Button>
             </div>
           </div>
-          {settingsOpen ? (
-            <div className="grid gap-3 border-b border-border bg-card px-4 py-3 text-xs">
-              <label className="grid gap-1">
-                <span className="text-muted-foreground">Default landing</span>
-                <select
-                  aria-label="Default landing"
-                  value={preferences.defaultLanding}
-                  onChange={(event) =>
-                    onPreferencesChange({ defaultLanding: event.target.value as "home" | HubLane })
-                  }
-                  className="h-8 rounded border border-border bg-bg px-2"
-                >
-                  <option value="home">Home</option>
-                  <option value="waiting_on_you">Waiting on you</option>
-                  <option value="notifications">Notifications</option>
-                  <option value="suggestions">Suggestions</option>
-                </select>
-              </label>
-              <div className="grid grid-cols-3 gap-2">
-                {(["waiting_on_you", "notifications", "suggestions"] as const).map((lane) => (
-                  <label key={lane} className="flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      checked={preferences.visibleLanes.includes(lane)}
-                      onChange={(event) => {
-                        const next = event.target.checked
-                          ? [...preferences.visibleLanes, lane]
-                          : preferences.visibleLanes.filter((value) => value !== lane);
-                        if (next.length > 0) onPreferencesChange({ visibleLanes: next });
-                      }}
-                    />
-                    <span>{laneTitle(lane)}</span>
-                  </label>
-                ))}
-              </div>
-              <label className="grid gap-1">
-                <span className="text-muted-foreground">Grouping</span>
-                <select
-                  aria-label="Grouping"
-                  value={preferences.groupMode}
-                  onChange={(event) =>
-                    onPreferencesChange({ groupMode: event.target.value as HubGroupMode })
-                  }
-                  className="h-8 rounded border border-border bg-bg px-2"
-                >
-                  <option value="auto">Auto</option>
-                  <option value="source">Source</option>
-                  <option value="scope">Scope</option>
-                  <option value="type">Type</option>
-                  <option value="none">None</option>
-                </select>
-              </label>
-              <label className="grid gap-1">
-                <span className="text-muted-foreground">Density</span>
-                <select
-                  aria-label="Density"
-                  value={preferences.density}
-                  onChange={(event) =>
-                    onPreferencesChange({ density: event.target.value as HubDensity })
-                  }
-                  className="h-8 rounded border border-border bg-bg px-2"
-                >
-                  <option value="comfortable">Comfortable</option>
-                  <option value="compact">Compact</option>
-                </select>
-              </label>
-              <label className="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  aria-label="Autopilot entry"
-                  checked={preferences.showAutopilotEntry}
-                  onChange={(event) =>
-                    onPreferencesChange({ showAutopilotEntry: event.target.checked })
-                  }
-                />
-                <span>Autopilot entry</span>
-              </label>
-              <div className="grid gap-3 border-t border-border pt-3">
-                <div className="flex items-center justify-between gap-3">
-                  <h2 className="text-sm font-semibold">Autopilot</h2>
-                  {autopilotPending ? (
-                    <span className="text-[11px] text-muted-foreground">Saving</span>
-                  ) : null}
-                </div>
-                <label className="grid gap-1">
-                  <span className="text-muted-foreground">Mode</span>
-                  <select
-                    aria-label="Autopilot mode"
-                    value={autopilotPolicy.mode}
-                    disabled={autopilotPending}
-                    onChange={(event) =>
-                      onUpdateAutopilotPolicy({
-                        mode: event.target.value as HubAutopilotMode,
-                      })
-                    }
-                    className="h-8 rounded border border-border bg-bg px-2"
-                  >
-                    <option value="off">Off</option>
-                    <option value="assist">Assist</option>
-                    <option value="drive">Drive</option>
-                  </select>
-                </label>
-                <div className="grid gap-2">
-                  {autopilotPolicy.rules
-                    // Hide internal-only sink types (legacy_other) from the
-                    // founder-facing rules list — they can never fire in a
-                    // fresh install (Task 10). The stored rule stays intact.
-                    .filter((rule) => !isInternalSemanticType(rule.semanticType))
-                    .map((rule) => {
-                    const label = semanticTypeLabel(rule.semanticType);
-                    const founderGated = isFounderGatedAutopilotType(rule.semanticType);
-                    return (
-                      <div key={rule.semanticType} className="grid gap-2 border-t border-border pt-2 first:border-t-0 first:pt-0">
-                        <div className="flex items-center justify-between gap-3">
-                          <div className="font-medium">{label}</div>
-                          {founderGated ? (
-                            <span className="text-[11px] uppercase text-muted-foreground">
-                              Founder-gated
-                            </span>
-                          ) : null}
-                        </div>
-                        {founderGated ? (
-                          <div className="text-muted-foreground">
-                            Escalation only.
-                          </div>
-                        ) : (
-                          <div className="grid gap-2 sm:grid-cols-3">
-                            <label className="flex items-center gap-2 self-end">
-                              <input
-                                type="checkbox"
-                                aria-label={`${label} autopilot enabled`}
-                                checked={rule.enabled}
-                                disabled={autopilotPending}
-                                onChange={(event) =>
-                                  updateAutopilotRule(rule.semanticType, {
-                                    enabled: event.target.checked,
-                                  })
-                                }
-                              />
-                              <span>Enabled</span>
-                            </label>
-                            <label className="grid gap-1">
-                              <span className="text-muted-foreground">Action</span>
-                              <select
-                                aria-label={`${label} autopilot action`}
-                                value={rule.action}
-                                disabled={autopilotPending}
-                                onChange={(event) =>
-                                  updateAutopilotRule(rule.semanticType, {
-                                    action: event.target.value as HubAutopilotAction,
-                                  })
-                                }
-                                className="h-8 rounded border border-border bg-bg px-2"
-                              >
-                                <option value="none">None</option>
-                                <option value="resolve">Resolve</option>
-                                <option value="archive">Archive</option>
-                              </select>
-                            </label>
-                            <label className="grid gap-1">
-                              <span className="text-muted-foreground">Min trust</span>
-                              <input
-                                type="number"
-                                min={0}
-                                max={100}
-                                aria-label={`${label} min trust`}
-                                value={rule.minTrustScore}
-                                disabled={autopilotPending}
-                                onChange={(event) =>
-                                  updateAutopilotRule(rule.semanticType, {
-                                    minTrustScore: Number(event.target.value),
-                                  })
-                                }
-                                className="h-8 rounded border border-border bg-bg px-2"
-                              />
-                            </label>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="justify-start"
-                  disabled={autopilotPending}
-                  onClick={onResetAutopilotPolicy}
-                >
-                  Reset Autopilot
-                </Button>
-              </div>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="justify-start"
-                aria-expanded={notificationPanelOpen}
-                onClick={() => setNotificationPanelOpen((open) => !open)}
-              >
-                Notification preferences
-              </Button>
-              {notificationPanelOpen ? (
-                <div className="grid gap-3 rounded border border-border bg-bg p-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <h2 className="text-sm font-semibold">Notification preferences</h2>
-                    {notificationPreferencesPending ? (
-                      <span className="text-[11px] text-muted-foreground">Saving</span>
-                    ) : null}
-                  </div>
-                  <div className="grid gap-2">
-                    {notificationPreferences.rules
-                      // Hide internal-only sink types (legacy_other) — see the
-                      // autopilot list above (Task 10).
-                      .filter((rule) => !isInternalSemanticType(rule.semanticType))
-                      .map((rule) => {
-                      const label = semanticTypeLabel(rule.semanticType);
-                      return (
-                        <div key={rule.semanticType} className="grid gap-2 border-t border-border pt-2 first:border-t-0 first:pt-0">
-                          <div className="font-medium">{label}</div>
-                          <div className="grid gap-2 sm:grid-cols-2">
-                            <label className="grid gap-1">
-                              <span className="text-muted-foreground">Delivery</span>
-                              <select
-                                aria-label={`${label} delivery`}
-                                value={rule.deliveryMode}
-                                disabled={notificationPreferencesPending}
-                                onChange={(event) =>
-                                  updateNotificationRule(rule.semanticType, {
-                                    deliveryMode: event.target.value as NotificationPreference,
-                                  })
-                                }
-                                className="h-8 rounded border border-border bg-bg px-2"
-                              >
-                                <option value="realtime">Realtime</option>
-                                <option value="digest">Digest</option>
-                                <option value="silent">Silent</option>
-                              </select>
-                            </label>
-                            <label className="flex items-center gap-2 self-end">
-                              <input
-                                type="checkbox"
-                                aria-label={`${label} toast`}
-                                checked={rule.toastEnabled}
-                                disabled={notificationPreferencesPending || rule.deliveryMode !== "realtime"}
-                                onChange={(event) =>
-                                  updateNotificationRule(rule.semanticType, {
-                                    toastEnabled: event.target.checked,
-                                  })
-                                }
-                              />
-                              <span>Toast</span>
-                            </label>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                  <div className="grid gap-2 border-t border-border pt-3">
-                    <label className="flex items-center gap-2">
-                      <input
-                        type="checkbox"
-                        aria-label="Quiet hours"
-                        checked={notificationPreferences.quietHours.enabled}
-                        disabled={notificationPreferencesPending}
-                        onChange={(event) => updateQuietHours({ enabled: event.target.checked })}
-                      />
-                      <span>Quiet hours</span>
-                    </label>
-                    <div className="grid gap-2 sm:grid-cols-3">
-                      <label className="grid gap-1">
-                        <span className="text-muted-foreground">Start</span>
-                        <input
-                          aria-label="Quiet hours start"
-                          value={notificationPreferences.quietHours.start}
-                          disabled={notificationPreferencesPending}
-                          onChange={(event) => updateQuietHours({ start: event.target.value })}
-                          className="h-8 rounded border border-border bg-bg px-2"
-                        />
-                      </label>
-                      <label className="grid gap-1">
-                        <span className="text-muted-foreground">End</span>
-                        <input
-                          aria-label="Quiet hours end"
-                          value={notificationPreferences.quietHours.end}
-                          disabled={notificationPreferencesPending}
-                          onChange={(event) => updateQuietHours({ end: event.target.value })}
-                          className="h-8 rounded border border-border bg-bg px-2"
-                        />
-                      </label>
-                      <label className="grid gap-1">
-                        <span className="text-muted-foreground">Timezone</span>
-                        <input
-                          aria-label="Quiet hours timezone"
-                          value={notificationPreferences.quietHours.timezone}
-                          disabled={notificationPreferencesPending}
-                          onChange={(event) => updateQuietHours({ timezone: event.target.value })}
-                          className="h-8 rounded border border-border bg-bg px-2"
-                        />
-                      </label>
-                    </div>
-                  </div>
-                  <div className="grid gap-2 border-t border-border pt-3">
-                    <label className="flex items-center gap-2">
-                      <input
-                        type="checkbox"
-                        aria-label="Digest enabled"
-                        checked={notificationPreferences.digest.enabled}
-                        disabled={notificationPreferencesPending}
-                        onChange={(event) => updateDigest({ enabled: event.target.checked })}
-                      />
-                      <span>Digest enabled</span>
-                    </label>
-                    <div className="grid gap-1">
-                      <div className="text-muted-foreground">Pending digest</div>
-                      {digestItems.length > 0 ? (
-                        <ul className="grid gap-1">
-                          {digestItems.slice(0, 5).map((item) => (
-                            <li key={item.id} className="truncate rounded border border-border px-2 py-1">
-                              {item.title}
-                            </li>
-                          ))}
-                        </ul>
-                      ) : (
-                        <div className="text-muted-foreground">No pending digest items</div>
-                      )}
-                    </div>
-                    <div className="flex flex-wrap gap-2">
-                      <Button
-                        type="button"
-                        variant="secondary"
-                        size="sm"
-                        disabled={notificationPreferencesPending || digestItems.length === 0}
-                        onClick={onAckDigest}
-                      >
-                        Acknowledge digest
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        disabled={notificationPreferencesPending}
-                        onClick={onResetNotificationPreferences}
-                      >
-                        Reset notification preferences
-                      </Button>
-                    </div>
-                  </div>
-                </div>
-              ) : null}
-            </div>
-          ) : null}
           {!showHome ? (
             <div className="border-b border-border px-4 py-2">
               <input
@@ -979,13 +544,6 @@ function hubItemForTab(tab: HubTab, candidates: HubItemListRow[]): HubItemListRo
     return candidates.find((item) => item.id === hubItemId) ?? null;
   }
   return candidates.find((item) => hubTabForItem(item).key === tab.key) ?? null;
-}
-
-function semanticTypeLabel(value: string) {
-  return value
-    .split("_")
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ");
 }
 
 function isEditableTarget(target: EventTarget | null) {

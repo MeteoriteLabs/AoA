@@ -116,6 +116,9 @@ export const queryKeys = {
   github: {
     patStatus: (companyId: string) => ["github", "patStatus", companyId] as const,
   },
+  providers: {
+    list: (companyId: string) => ["providers", companyId] as const,
+  },
   dashboard: (companyId: string) => ["dashboard", companyId] as const,
   home: (companyId: string) => ["home", companyId] as const,
   sidebarBadges: (companyId: string) => ["sidebar-badges", companyId] as const,
