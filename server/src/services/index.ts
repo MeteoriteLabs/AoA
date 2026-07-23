@@ -9,6 +9,7 @@ export { braindumpService } from "./braindump.js";
 export { activityService, type ActivityFilters } from "./activity.js";
 export { approvalService } from "./approvals.js";
 export { secretService } from "./secrets.js";
+export { mcpConnectorService } from "./mcp-connectors-crud.js";
 export { costService } from "./costs.js";
 export { financeService } from "./finance.js";
 export { quotaWindowsService, providerSlugForAdapterType } from "./quota-windows.js";
