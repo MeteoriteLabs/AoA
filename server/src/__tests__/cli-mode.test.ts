@@ -759,14 +759,17 @@ describe("cliModeService.chat — per-CLI wiring (MX4)", () => {
     expect(args[0]).toBe("--mcp-config");
     expect(typeof args[1]).toBe("string");
     expect(args[1]).toMatch(/\.json$/);
-    expect(args[2]).toBe("--dangerously-skip-permissions");
-    expect(args[3]).toBe("--print");
-    expect(args[4]).toBe("--output-format");
-    expect(args[5]).toBe("stream-json");
-    expect(args[6]).toBe("--include-partial-messages");
-    expect(args[7]).toBe("--verbose");
+    // D2: --strict-mcp-config pairs with --mcp-config so the CLI does NOT also
+    // load the host ~/.claude.json / project .mcp.json (and claude.ai connectors).
+    expect(args[2]).toBe("--strict-mcp-config");
+    expect(args[3]).toBe("--dangerously-skip-permissions");
+    expect(args[4]).toBe("--print");
+    expect(args[5]).toBe("--output-format");
+    expect(args[6]).toBe("stream-json");
+    expect(args[7]).toBe("--include-partial-messages");
+    expect(args[8]).toBe("--verbose");
     // No content positional — argv stops at the flags.
-    expect(args).toHaveLength(8);
+    expect(args).toHaveLength(9);
     expect(args.join(" ")).not.toContain("hello world");
     expect(args).not.toContain("exec");
 
@@ -1427,6 +1430,8 @@ describe("cliModeService.chat — codex JSONL parse + one-shot/resume (MX-chatpa
     expect(args).toEqual([
       "--mcp-config",
       expect.stringMatching(/\.json$/),
+      // D2: strict flag pairs with --mcp-config (no host/project MCP inheritance).
+      "--strict-mcp-config",
       "--dangerously-skip-permissions",
       "--print",
       "--output-format",

@@ -493,7 +493,7 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
     // returns it verbatim.
     const isClaudeFamily = agent.adapterType === "claude_local";
     const config = isClaudeFamily
-      ? { ...resolvedBaseConfig, promptTemplate: triggerPrompt, args: ["--mcp-config", cfgPath, ...prevArgs] }
+      ? { ...resolvedBaseConfig, promptTemplate: triggerPrompt, args: ["--mcp-config", cfgPath, "--strict-mcp-config", ...prevArgs] }
       : { ...resolvedBaseConfig, promptTemplate: triggerPrompt };
     const { executionTarget, runtimeCommandSpec } = resolveAdapterExecutionContext(config, adapter);
 

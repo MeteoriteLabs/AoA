@@ -461,6 +461,7 @@ export async function resolveCliInvocation(
           binary: "claude",
           args: [
             "--mcp-config", configPath,
+            "--strict-mcp-config",
             "--system-prompt-file", safeSystemPromptPath,
             ...claudeModelArgs(commanderModel),
             ...claudeBypassArgs,
@@ -480,6 +481,7 @@ export async function resolveCliInvocation(
         binary: "claude",
         args: [
           "--mcp-config", configPath,
+          "--strict-mcp-config",
           ...claudeModelArgs(commanderModel),
           ...claudeBypassArgs,
           "--print",

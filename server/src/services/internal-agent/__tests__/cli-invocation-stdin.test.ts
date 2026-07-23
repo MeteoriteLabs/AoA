@@ -130,6 +130,45 @@ describe("resolveCliInvocation — claude stdin prompt delivery (W1 fix)", () =>
     expect(invocation!.stdinPrompt).toBe(safeContent);
   });
 
+  // D2 (strict MCP isolation): whenever the Commander argv passes --mcp-config
+  // it MUST also pass --strict-mcp-config, immediately after the config path.
+  // Without it the claude CLI additionally loads the host machine's
+  // ~/.claude.json and project .mcp.json (and claude.ai connectors).
+  it("plain path: argv pairs --mcp-config with --strict-mcp-config (D2)", async () => {
+    const invocation = await resolveCliInvocation(
+      "claude_cli",
+      BASE_PARAMS as any,
+      "safe",
+      undefined,
+      undefined, // plain path
+      true,
+      undefined,
+      "raw-prompt",
+    );
+    expect(invocation!.args).toContain("--mcp-config");
+    expect(invocation!.args).toContain("--strict-mcp-config");
+    // strict flag sits immediately after the config path element.
+    const cfgIdx = invocation!.args.indexOf("--mcp-config");
+    expect(invocation!.args[cfgIdx + 2]).toBe("--strict-mcp-config");
+  });
+
+  it("systemSplit path: argv pairs --mcp-config with --strict-mcp-config (D2)", async () => {
+    const invocation = await resolveCliInvocation(
+      "claude_cli",
+      BASE_PARAMS as any,
+      "ignored-safeContent",
+      undefined,
+      { rawSystemContext: "## System\nYou are Commander.", rawContent: "do it" },
+      true,
+      undefined,
+      undefined,
+    );
+    expect(invocation!.args).toContain("--mcp-config");
+    expect(invocation!.args).toContain("--strict-mcp-config");
+    const cfgIdx = invocation!.args.indexOf("--mcp-config");
+    expect(invocation!.args[cfgIdx + 2]).toBe("--strict-mcp-config");
+  });
+
   it("vendorCliBypassEnabled=false drops --dangerously-skip-permissions but still uses stdin", async () => {
     const invocation = await resolveCliInvocation(
       "claude_cli",
