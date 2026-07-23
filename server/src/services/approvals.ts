@@ -6,9 +6,11 @@ import { agentService } from "./agents.js";
 import { preflightCrewDispatch } from "./crew-budget.js";
 import { dispatchCreatedCrewTasks } from "./crew-task-service.js";
 import { logActivity } from "./activity-log.js";
+import { mcpConnectorService } from "./mcp-connectors-crud.js";
 
 export function approvalService(db: Db) {
   const agentsSvc = agentService(db);
+  const mcpConnectorSvc = mcpConnectorService(db);
   const canResolveStatuses = new Set(["pending", "revision_requested"]);
 
   async function getExistingApproval(id: string) {
@@ -240,6 +242,27 @@ export function approvalService(db: Db) {
         await dispatchCreatedCrewTasks(db, companyId, toDispatch);
       }
 
+      // Plan 2 Task 4: install_mcp_connector approval side-effect — this is the SOLE
+      // activation path in `authenticated` mode (PATCH→active is blocked there, Plan 1
+      // amendment C2). Runs AFTER the guarded status flip (like hire_agent/crew_dispatch),
+      // so a concurrent double-approve only runs the side-effect for the winner (whose
+      // `updated` is truthy). The guards make the common failure modes NO-OPS instead of
+      // throws — the MCP approval tool calls approve() without a wrapping txn, and a throw
+      // after the flip would strand the approval as "approved" with no activation.
+      if (updated.type === "install_mcp_connector") {
+        const payload = updated.payload as Record<string, unknown>;
+        const connectorId = typeof payload.connectorId === "string" ? payload.connectorId : null;
+        if (connectorId) {
+          const connector = await mcpConnectorSvc.getById(connectorId);
+          // null-tolerant (deleted between create & approve → no-op), company-scoped
+          // (update keys on id ALONE, so we check tenancy ourselves), idempotent
+          // (skip if already active). No new throws after the flip.
+          if (connector && connector.companyId === companyId && connector.status !== "active") {
+            await mcpConnectorSvc.update(connectorId, { status: "active" });
+          }
+        }
+      }
+
       return updated;
     },
 
@@ -284,6 +307,22 @@ export function approvalService(db: Db) {
       // W1c: crew_dispatch reject is intentionally a NO-OP on the tasks. Auto-created
       // tasks stay on the Crew Board as 'planning' (parked) — the founder can flip them
       // to Standard or delete them later. Rejecting only closes the dispatch approval.
+
+      // Plan 2 Task 4: rejecting an install_mcp_connector approval sets the connector
+      // `disabled` (NOT deleted — keeps an audit trail; a rejected connector should be
+      // visibly rejected, not vanish). Only flips a still-`pending_approval` connector,
+      // and same guards as approve() (null-tolerant, company-scoped) so it never throws
+      // after the flip.
+      if (updated.type === "install_mcp_connector") {
+        const payload = updated.payload as Record<string, unknown>;
+        const connectorId = typeof payload.connectorId === "string" ? payload.connectorId : null;
+        if (connectorId) {
+          const connector = await mcpConnectorSvc.getById(connectorId);
+          if (connector && connector.companyId === companyId && connector.status === "pending_approval") {
+            await mcpConnectorSvc.update(connectorId, { status: "disabled" });
+          }
+        }
+      }
 
       return updated;
     },
