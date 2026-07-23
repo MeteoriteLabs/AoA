@@ -98,5 +98,10 @@ describe("buildMcpConfig", () => {
     });
     const round = JSON.parse(JSON.stringify(config));
     expect(round.mcpServers.aoa).toBeDefined();
+    expect(round.mcpServers["__proto__"]).toEqual({
+      type: "http",
+      url: "https://x.example.com/mcp",
+      headers: {},
+    });
   });
 });
