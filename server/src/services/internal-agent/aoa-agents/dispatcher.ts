@@ -735,7 +735,18 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
                   autonomyLevel: discussions.autonomyLevel,
                 })
                 .from(discussions)
-                .where(eq(discussions.id, threadIdInPayload))
+                // Cross-tenant guard (defence-in-depth): these thread flags
+                // (crewPaused / useControllerPath / autonomyLevel) GATE crew
+                // dispatch, and threadIdInPayload originates from the wakeup
+                // payload — which can be caller-supplied via agent.dispatch.
+                // Scope the read to the wakeup's own company so a foreign
+                // thread id resolves to NO row (safe defaults below), never a
+                // different tenant's flags. Layer 1 (agent-dispatch.ts) already
+                // refuses foreign ids at the source; this is belt-and-braces.
+                .where(and(
+                  eq(discussions.id, threadIdInPayload),
+                  eq(discussions.companyId, w.companyId),
+                ))
                 .then((rows: Array<{
                   crewPaused: boolean | null;
                   useControllerPath: boolean | null;

@@ -11,22 +11,43 @@
 //   - reason defaults to 'agent_dispatch' when omitted.
 
 import { describe, expect, it, vi } from "vitest";
+import { discussions, issues } from "@armyofagents/db";
 import { agentDispatchTool } from "../services/internal-agent/tools/agent-dispatch.js";
 import type { ToolContext } from "../services/internal-agent/types.js";
 
-// Mock chain for: db.select().from().where().limit() → Promise<rows>
+// Mock chain for: db.select().from(table).where().limit() → Promise<rows>
 // and:           db.insert().values().onConflictDoNothing().returning() → Promise<rows>
+//
+// The tool issues up to three distinct select chains — the Layer-1 cross-tenant
+// guards (discussions for threadId, issues for issueId) and the target-agent
+// lookup. We branch on the `from(table)` argument so the harness is order-
+// independent: each chain resolves the rows keyed to its own table. A `[]`
+// result models "id does not resolve within the caller's company" (the WHERE
+// carries the companyId conjunct, which is what excludes a foreign-tenant row).
 function makeDb(opts: {
   agentRows?: any[];
+  threadRows?: any[];
+  issueRows?: any[];
   insertedRows?: any[];
 } = {}) {
-  // SELECT chain — returns the target agent.
-  const limit = vi.fn().mockResolvedValue(opts.agentRows ?? [
-    { id: "agent-target", companyId: "co-1" },
-  ]);
-  const where = vi.fn().mockReturnValue({ limit });
-  const from = vi.fn().mockReturnValue({ where });
-  const select = vi.fn().mockReturnValue({ from });
+  const agentRows = opts.agentRows ?? [{ id: "agent-target", companyId: "co-1" }];
+  const threadRows = opts.threadRows ?? [{ id: "thread-7" }];
+  const issueRows = opts.issueRows ?? [{ id: "issue-9" }];
+
+  const select = vi.fn().mockImplementation(() => {
+    const state: { table?: unknown } = {};
+    const limit = vi.fn().mockImplementation(() => {
+      if (state.table === discussions) return Promise.resolve(threadRows);
+      if (state.table === issues) return Promise.resolve(issueRows);
+      return Promise.resolve(agentRows);
+    });
+    const where = vi.fn().mockReturnValue({ limit });
+    const from = vi.fn().mockImplementation((t: unknown) => {
+      state.table = t;
+      return { where };
+    });
+    return { from };
+  });
 
   // INSERT chain — returns the inserted row id (or empty on dedup conflict).
   const returning = vi.fn().mockResolvedValue(opts.insertedRows ?? [{ id: "wakeup-1" }]);
@@ -206,6 +227,67 @@ describe("agent.dispatch tool (C2 batch 4)", () => {
     expect(result.success).toBe(true);
     const insertedValues = valuesMock.mock.calls[0][0];
     expect(insertedValues.reason).toBe("agent_dispatch");
+  });
+
+  // ── Cross-tenant confidentiality guard (Layer 1 — validate at the source) ──
+  // A team_member in company A must not be able to smuggle a foreign entity id
+  // into the wakeup payload. The threadId/issueId ownership check runs BEFORE
+  // any enqueue, so a foreign id is refused and never reaches the dispatcher.
+
+  it("SECURITY: refuses a foreign-company threadId (exists in company B, not caller's) — no insert", async () => {
+    // The thread EXISTS in company B, but the company-scoped lookup (WHERE
+    // companyId = caller) returns no row → treated as not-in-company → refused.
+    const { db, insertFn } = makeDb({ threadRows: [] });
+    const ctx = makeCtx(db); // caller is co-1
+    const result = await agentDispatchTool.execute(
+      { agentId: "agent-target", context: { threadId: "thread-in-company-B" } },
+      ctx,
+    );
+    expect(result.success).toBe(false);
+    expect(result.error).toBe("CROSS_COMPANY_FORBIDDEN");
+    expect(result.summary).toContain("threadId");
+    // The foreign id never made it into a wakeup row.
+    expect(insertFn).not.toHaveBeenCalled();
+  });
+
+  it("SECURITY: a same-company threadId dispatches fine (legitimate case preserved)", async () => {
+    const { db, valuesMock, insertFn } = makeDb({
+      threadRows: [{ id: "thread-7" }], // resolves within the caller's company
+    });
+    const ctx = makeCtx(db);
+    const result = await agentDispatchTool.execute(
+      { agentId: "agent-target", context: { threadId: "thread-7", hopCount: 0 } },
+      ctx,
+    );
+    expect(result.success).toBe(true);
+    expect(insertFn).toHaveBeenCalledTimes(1);
+    const insertedValues = valuesMock.mock.calls[0][0];
+    expect(insertedValues.payload.threadId).toBe("thread-7");
+    expect(insertedValues.dedupKey).toBe("agent-target:thread-7:queued");
+  });
+
+  it("SECURITY: refuses a foreign-company issueId (task-branch exposure) — no insert", async () => {
+    const { db, insertFn } = makeDb({ issueRows: [] });
+    const ctx = makeCtx(db);
+    const result = await agentDispatchTool.execute(
+      { agentId: "agent-target", context: { issueId: "issue-in-company-B" } },
+      ctx,
+    );
+    expect(result.success).toBe(false);
+    expect(result.error).toBe("CROSS_COMPANY_FORBIDDEN");
+    expect(result.summary).toContain("issueId");
+    expect(insertFn).not.toHaveBeenCalled();
+  });
+
+  it("SECURITY: a same-company issueId dispatches fine", async () => {
+    const { db, insertFn } = makeDb({ issueRows: [{ id: "issue-9" }] });
+    const ctx = makeCtx(db);
+    const result = await agentDispatchTool.execute(
+      { agentId: "agent-target", context: { issueId: "issue-9" } },
+      ctx,
+    );
+    expect(result.success).toBe(true);
+    expect(insertFn).toHaveBeenCalledTimes(1);
   });
 
   it("rejects missing agentId with INVALID_PARAMS", async () => {

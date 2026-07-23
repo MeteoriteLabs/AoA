@@ -19,8 +19,8 @@
 // Humans always reset hopCount to 0; only agent→agent edges count toward the
 // cap.
 
-import { eq } from "drizzle-orm";
-import { agents, agentWakeupRequests } from "@armyofagents/db";
+import { and, eq } from "drizzle-orm";
+import { agents, agentWakeupRequests, discussions, issues } from "@armyofagents/db";
 import type { AgentTool } from "../types.js";
 import { buildConveneAgentIdempotencyKey } from "./thread-action-keys.js";
 
@@ -84,6 +84,46 @@ export const agentDispatchTool: AgentTool = {
     // Resolve the target agent — required to enforce the cross-company guard
     // and to confirm the agent exists before queuing a wakeup row.
     const threadId = (context?.threadId as string | undefined) ?? null;
+    const issueId = (context?.issueId as string | undefined) ?? null;
+
+    // SECURITY — cross-tenant guard at the SOURCE (root cause). The caller
+    // controls `context`, and any entity ids inside it are written verbatim
+    // into the wakeup payload (or the queued thread action) and later consumed
+    // by the dispatcher's thread-flag gate, the task-claim path, and the crew
+    // context builders. Validate that a caller-supplied threadId / issueId
+    // resolves WITHIN the caller's own company BEFORE it can enter the payload,
+    // so a foreign id can never be enqueued. Mirrors the "Cross-company
+    // dispatch forbidden" guard applied to the target agent below.
+    if (threadId) {
+      const [thread] = await ctx.db
+        .select({ id: discussions.id })
+        .from(discussions)
+        .where(and(eq(discussions.id, threadId), eq(discussions.companyId, ctx.companyId)))
+        .limit(1);
+      if (!thread) {
+        return {
+          success: false,
+          data: null,
+          summary: "Cross-company dispatch forbidden: threadId does not belong to your company",
+          error: "CROSS_COMPANY_FORBIDDEN",
+        };
+      }
+    }
+    if (issueId) {
+      const [issue] = await ctx.db
+        .select({ id: issues.id })
+        .from(issues)
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, ctx.companyId)))
+        .limit(1);
+      if (!issue) {
+        return {
+          success: false,
+          data: null,
+          summary: "Cross-company dispatch forbidden: issueId does not belong to your company",
+          error: "CROSS_COMPANY_FORBIDDEN",
+        };
+      }
+    }
 
     if (ctx.discussionRunMode === "controller_action_gate") {
       if (!ctx.runId) {
