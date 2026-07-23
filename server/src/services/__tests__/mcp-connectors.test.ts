@@ -11,6 +11,12 @@ describe("envVarNameFor", () => {
     // __proto__ must not survive into an env var name
     expect(envVarNameFor("__proto__")).toBe("AOA_MCP___PROTO___TOKEN");
   });
+
+  it("does not collapse runs of separators (A22)", () => {
+    // A `[^a-zA-Z0-9]+` quantifier would map both to AOA_MCP_A_B_TOKEN, so two
+    // distinct connectors would share one env var and one secret would win.
+    expect(envVarNameFor("a-b")).not.toBe(envVarNameFor("a--b"));
+  });
 });
 
 describe("buildConnectorSpecs", () => {
@@ -100,6 +106,69 @@ describe("buildConnectorSpecs", () => {
     expect(specs.bad2).toBeUndefined();
   });
 
+  it("leaves no env entry for a skipped connector", () => {
+    const { env } = buildConnectorSpecs([
+      { ...httpRow, serverName: "bad1", url: null },
+      { ...httpRow, serverName: "bad2", transport: "stdio", command: null },
+      { ...httpRow, serverName: "bad3", transport: "sse" },
+    ]);
+    expect(Object.keys(env)).toEqual([]);
+  });
+
+  it("keeps healthy connectors when another row is malformed", () => {
+    const { specs, env, skipped } = buildConnectorSpecs([
+      {
+        ...httpRow,
+        serverName: "broken",
+        transport: "stdio",
+        command: "npx",
+        args: "not-an-array" as unknown as string[],
+      },
+      httpRow,
+    ]);
+    expect(specs.notion).toBeDefined(); // the healthy row survives
+    expect(specs.broken).toBeUndefined();
+    expect(env.AOA_MCP_BROKEN_TOKEN).toBeUndefined();
+    expect(skipped).toEqual([{ serverName: "broken", reason: "malformed_row" }]);
+  });
+
+  it("reports every skipped connector with a reason", () => {
+    const { skipped } = buildConnectorSpecs([
+      { ...httpRow, serverName: "no-url", url: null },
+      { ...httpRow, serverName: "no-cmd", transport: "stdio", command: null },
+      { ...httpRow, serverName: "weird", transport: "sse" },
+      {
+        ...httpRow,
+        serverName: "broken",
+        transport: "stdio",
+        command: "npx",
+        args: "nope" as unknown as string[],
+      },
+    ]);
+    expect(skipped).toEqual([
+      { serverName: "no-url", reason: "missing_url" },
+      { serverName: "no-cmd", reason: "missing_command" },
+      { serverName: "weird", reason: "unknown_transport" },
+      { serverName: "broken", reason: "malformed_row" },
+    ]);
+  });
+
+  it("substitutes every occurrence of ${TOKEN}, not just the first", () => {
+    // `replace` instead of `replaceAll` leaves a literal ${TOKEN} that expands
+    // to empty at spawn time — an auth failure with no error message.
+    const { specs } = buildConnectorSpecs([
+      { ...httpRow, headerTemplate: { Authorization: "${TOKEN}", Pair: "${TOKEN}/${TOKEN}" } },
+    ]);
+    expect(specs.notion).toEqual({
+      kind: "http",
+      url: "https://mcp.notion.com/mcp",
+      headers: {
+        Authorization: "${AOA_MCP_NOTION_TOKEN}",
+        Pair: "${AOA_MCP_NOTION_TOKEN}/${AOA_MCP_NOTION_TOKEN}",
+      },
+    });
+  });
+
   it("omits the env entry when a connector has no secret", () => {
     const { specs, env } = buildConnectorSpecs([{ ...httpRow, secretValue: null }]);
     expect(specs.notion).toBeDefined();
@@ -117,7 +186,7 @@ describe("buildConnectorSpecs", () => {
   });
 
   it("keeps two connectors independent", () => {
-    const { specs, env } = buildConnectorSpecs([
+    const { specs, env, skipped } = buildConnectorSpecs([
       httpRow,
       { ...httpRow, serverName: "linear", url: "https://mcp.linear.app/mcp", secretValue: "secret-xyz" },
     ]);
@@ -125,5 +194,6 @@ describe("buildConnectorSpecs", () => {
     expect(specs.linear).toBeDefined();
     expect(env.AOA_MCP_NOTION_TOKEN).toBe("secret-abc");
     expect(env.AOA_MCP_LINEAR_TOKEN).toBe("secret-xyz");
+    expect(skipped).toEqual([]); // healthy rows report no skips
   });
 });

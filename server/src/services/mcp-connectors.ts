@@ -1,6 +1,15 @@
 import type { McpServerSpec } from "@armyofagents/adapter-utils";
 
-/** A connector row joined with its resolved secret value. */
+/**
+ * A connector row joined with its resolved secret value. Source table:
+ * `company_mcp_connectors` (packages/db/src/schema/company_mcp_connectors.ts) —
+ * keep the field names identical so drift is greppable.
+ *
+ * PRECONDITION: `args`/`headerTemplate`/`envTemplate` arrive non-null (the
+ * columns are NOT NULL with defaults). These are jsonb, so `$type<string[]>()`
+ * is a compile-time assertion with no runtime guarantee (A5) — buildConnectorSpecs
+ * defends against a violation rather than trusting it.
+ */
 export interface ResolvedConnectorRow {
   serverName: string;
   transport: string;
@@ -13,9 +22,23 @@ export interface ResolvedConnectorRow {
   secretValue: string | null;
 }
 
+/** Why a connector row produced no spec. */
+export type ConnectorSkipReason =
+  | "missing_url"
+  | "missing_command"
+  | "unknown_transport"
+  | "malformed_row";
+
 export interface ConnectorBuildResult {
   specs: Record<string, McpServerSpec>;
   env: Record<string, string>;
+  /**
+   * Connectors that were dropped, and why. A silently vanishing connector is
+   * the worst failure mode for a security-adjacent feature (A8), and a pure
+   * function cannot log — so it reports instead. Callers are expected to
+   * surface this.
+   */
+  skipped: Array<{ serverName: string; reason: ConnectorSkipReason }>;
 }
 
 /**
@@ -42,8 +65,10 @@ export function envVarNameFor(serverName: string): string {
  * stdio `env`, and stdio `args`.
  *
  * Rows that cannot form a valid spec are SKIPPED rather than emitted
- * malformed: http without url, stdio without command, and any unrecognized
- * transport.
+ * malformed: http without url, stdio without command, any unrecognized
+ * transport, and any row whose jsonb columns are the wrong runtime shape. Each
+ * skip is reported in `skipped` — never swallowed. One bad row must degrade to
+ * "that connector is unavailable", never "no connectors at all" (A19).
  */
 export function buildConnectorSpecs(rows: ResolvedConnectorRow[]): ConnectorBuildResult {
   // Null-prototype: serverName is an untrusted runtime string from a DB row. A
@@ -54,46 +79,64 @@ export function buildConnectorSpecs(rows: ResolvedConnectorRow[]): ConnectorBuil
   // /^[a-zA-Z0-9_-]+$/ (amendment A8-CORRECTION).
   const specs: Record<string, McpServerSpec> = Object.create(null);
   const env: Record<string, string> = Object.create(null);
+  const skipped: ConnectorBuildResult["skipped"] = [];
 
   for (const row of rows) {
     const varName = envVarNameFor(row.serverName);
     const substitute = (value: string): string => value.replaceAll("${TOKEN}", `\${${varName}}`);
+    const substituteValues = (template: Record<string, string>): Record<string, string> =>
+      Object.fromEntries(Object.entries(template).map(([k, v]) => [k, substitute(v)]));
 
-    if (row.transport === "http") {
-      if (!row.url) continue;
-      specs[row.serverName] = {
-        kind: "http",
-        url: row.url,
-        headers: Object.fromEntries(
-          Object.entries(row.headerTemplate).map(([k, v]) => [k, substitute(v)]),
-        ),
-      };
-    } else if (row.transport === "stdio") {
-      if (!row.command) continue;
-      specs[row.serverName] = {
-        kind: "stdio",
-        command: row.command,
-        // Substituted like headers/env: Task 4 proved `${VAR}` expands in
-        // stdio args too, so a connector configured as `["--token", "${TOKEN}"]`
-        // must get the real var name. Copying verbatim would emit a literal
-        // `${TOKEN}`, which expands to nothing and authenticates as no-one.
-        args: row.args.map((value) => substitute(value)),
-        env: Object.fromEntries(
-          Object.entries(row.envTemplate).map(([k, v]) => [k, substitute(v)]),
-        ),
-      };
-    } else {
-      // Unknown transport — skip rather than guess. `transport` is free text in
-      // the schema and A2 anticipates "sse" being added later; an `else` that
-      // fell through to stdio would emit a stdio spec for any such row that
-      // happened to carry a command.
+    // A malformed row must not take the healthy ones down with it: `args.map`
+    // and `Object.entries` throw if a jsonb column holds the wrong runtime
+    // shape (A5/A19). Structural validation belongs at write time (Task 11);
+    // this is the defensive floor.
+    try {
+      if (row.transport === "http") {
+        if (!row.url) {
+          skipped.push({ serverName: row.serverName, reason: "missing_url" });
+          continue;
+        }
+        specs[row.serverName] = {
+          kind: "http",
+          url: row.url,
+          headers: substituteValues(row.headerTemplate),
+        };
+      } else if (row.transport === "stdio") {
+        if (!row.command) {
+          skipped.push({ serverName: row.serverName, reason: "missing_command" });
+          continue;
+        }
+        specs[row.serverName] = {
+          kind: "stdio",
+          command: row.command,
+          // Substituted like headers/env: Task 4 proved `${VAR}` expands in
+          // stdio args too, so a connector configured as `["--token", "${TOKEN}"]`
+          // must get the real var name. Copying verbatim would emit a literal
+          // `${TOKEN}`, which expands to nothing and authenticates as no-one.
+          args: row.args.map((value) => substitute(value)),
+          env: substituteValues(row.envTemplate),
+        };
+      } else {
+        // Unknown transport — skip rather than guess. `transport` is free text
+        // in the schema and A2 anticipates "sse" being added later; an `else`
+        // that fell through to stdio would emit a stdio spec for any such row
+        // that happened to carry a command.
+        skipped.push({ serverName: row.serverName, reason: "unknown_transport" });
+        continue;
+      }
+    } catch {
+      skipped.push({ serverName: row.serverName, reason: "malformed_row" });
       continue;
     }
 
+    // MUST stay below the branch. Hoisting it above would write a live
+    // credential into the spawn env for a connector that has no config entry —
+    // readable by the CLI and by every other stdio connector in the run.
     if (row.secretValue) {
       env[varName] = row.secretValue;
     }
   }
 
-  return { specs, env };
+  return { specs, env, skipped };
 }
