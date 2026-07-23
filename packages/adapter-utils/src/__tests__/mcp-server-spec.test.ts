@@ -22,4 +22,26 @@ describe("McpServerSpec", () => {
     expect(isHttpServerSpec(spec)).toBe(true);
     expect(isStdioServerSpec(spec)).toBe(false);
   });
+
+  it("rejects non-objects", () => {
+    for (const value of [null, undefined, "http", 42, true]) {
+      expect(isStdioServerSpec(value)).toBe(false);
+      expect(isHttpServerSpec(value)).toBe(false);
+    }
+  });
+
+  it("rejects an object with the right kind but a missing required field", () => {
+    expect(isStdioServerSpec({ kind: "stdio" })).toBe(false);
+    expect(isHttpServerSpec({ kind: "http" })).toBe(false);
+  });
+
+  it("rejects an object with the right kind but a wrong-typed required field", () => {
+    expect(isStdioServerSpec({ kind: "stdio", command: 123 })).toBe(false);
+    expect(isHttpServerSpec({ kind: "http", url: 123 })).toBe(false);
+  });
+
+  it("rejects an unrelated object", () => {
+    expect(isStdioServerSpec({ foo: "bar" })).toBe(false);
+    expect(isHttpServerSpec({ foo: "bar" })).toBe(false);
+  });
 });

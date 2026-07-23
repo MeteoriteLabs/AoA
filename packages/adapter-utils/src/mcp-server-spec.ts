@@ -6,29 +6,51 @@
  * hand-duplicated in each adapter package by design. This union describes
  * EXTERNAL connectors, which may be remote HTTP.
  *
- * SECRETS: `headers` and `env` values may contain `${VAR}` placeholders that
- * the target CLI expands from process env. Real secret values MUST NOT be
- * placed here — see D5 in the connectors plan.
+ * @packageDocumentation
  */
+
 export interface McpStdioServerSpec {
   kind: "stdio";
   command: string;
   args: string[];
+  /**
+   * SECRETS: values carry `${VAR}` placeholders ONLY. Never a real token —
+   * specs are persisted into run events. See D5.
+   */
   env: Record<string, string>;
 }
 
 export interface McpHttpServerSpec {
   kind: "http";
   url: string;
+  /**
+   * SECRETS: values carry `${VAR}` placeholders ONLY. Never a real token —
+   * specs are persisted into run events. See D5.
+   */
   headers: Record<string, string>;
 }
 
+/**
+ * `${VAR}` placeholders are intended for expansion by the target CLI from
+ * process env (per-CLI; verified for claude_local in Task 4). Real secret
+ * values MUST NOT be placed in `env`/`headers` — see D5 in the connectors plan.
+ */
 export type McpServerSpec = McpStdioServerSpec | McpHttpServerSpec;
 
-export function isStdioServerSpec(spec: McpServerSpec): spec is McpStdioServerSpec {
-  return spec.kind === "stdio";
+export function isStdioServerSpec(spec: unknown): spec is McpStdioServerSpec {
+  return (
+    typeof spec === "object" &&
+    spec !== null &&
+    (spec as { kind?: unknown }).kind === "stdio" &&
+    typeof (spec as { command?: unknown }).command === "string"
+  );
 }
 
-export function isHttpServerSpec(spec: McpServerSpec): spec is McpHttpServerSpec {
-  return spec.kind === "http";
+export function isHttpServerSpec(spec: unknown): spec is McpHttpServerSpec {
+  return (
+    typeof spec === "object" &&
+    spec !== null &&
+    (spec as { kind?: unknown }).kind === "http" &&
+    typeof (spec as { url?: unknown }).url === "string"
+  );
 }
