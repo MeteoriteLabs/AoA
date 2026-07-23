@@ -33,6 +33,15 @@ import { loadConfig } from "../config.js";
  * The DB deliberately enforces none of these (a CHECK on transport would be an
  * enum in disguise, A2), so THIS route is the single enforcement point.
  *
+ * GOVERNANCE (close the stdio→host-exec chain on a multi-tenant host):
+ *  - D7/C1 (`assertTransportAllowed`): a `stdio` connector runs a command on the
+ *    AoA host, so it is refused in `authenticated` mode for founder (BYO) input.
+ *  - C2 (PATCH): in `authenticated` mode PATCH may only set status to
+ *    "disabled" — activation must flow through connector approval, never PATCH
+ *    (which would otherwise be a one- or two-hop activation bypass).
+ *  - C3: client-supplied `source` is stripped; every connector created here is
+ *    forced to "byo", so the D7 catalog exemption is unreachable from this route.
+ *
  * RBAC (A20/D6): create/update/delete/agent-assignment are founder-only — team
  * leads may not add external network access unilaterally. List is any board
  * member.
@@ -44,43 +53,92 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 const templateRecord = z.record(z.string(), z.string());
 
-const createConnectorSchema = z
-  .object({
-    serverName: z.string().regex(SERVER_NAME_RE, {
-      message: "serverName must match /^[a-z0-9-]+$/ (lowercase letters, digits, hyphen)",
+/**
+ * D7 stdio governance gate. A `stdio` connector's `command` executes on the AoA
+ * HOST when the loader serves it — in a multi-tenant/`authenticated` deployment
+ * that is remote code execution. So stdio is admissible ONLY when the host is
+ * the founder's own machine (`local_trusted`) or the entry is a verified catalog
+ * install (`source === "catalog"`). `http` is always fine — it makes a network
+ * request, never a local exec.
+ *
+ * Exported so its full truth table is unit-tested directly. NOTE: this route can
+ * never construct a `catalog` source (C3 forces `byo` and strips any client
+ * `source`), so the `catalog` branch is exercised only by verified catalog
+ * installs on a DIFFERENT route — never by founder input here.
+ */
+export function assertTransportAllowed(
+  transport: string,
+  deploymentMode: string,
+  source: string,
+): void {
+  if (transport !== "stdio") return; // http is always fine
+  if (deploymentMode === "local_trusted") return; // host is the founder's own machine
+  if (source === "catalog") return; // verified catalog entries only (C3)
+  throw badRequest(
+    "Only remote HTTP connectors can be added in this deployment. stdio connectors run a " +
+      "command on the AoA host and are restricted to verified catalog entries.",
+  );
+}
+
+// C3: `source` is DELIBERATELY absent from the schema and stripped from the body
+// before validation, so a client can never set it (a spoofed `source:"catalog"`
+// would otherwise walk past the D7 catalog exemption). Every connector created
+// here is forced to `"byo"` server-side. Other unknown keys are still rejected
+// by `.strict()`.
+const stripClientSource = (val: unknown): unknown => {
+  if (val && typeof val === "object" && !Array.isArray(val) && "source" in val) {
+    const { source: _source, ...rest } = val as Record<string, unknown>;
+    return rest;
+  }
+  return val;
+};
+
+const createConnectorSchema = z.preprocess(
+  stripClientSource,
+  z
+    .object({
+      serverName: z.string().regex(SERVER_NAME_RE, {
+        message: "serverName must match /^[a-z0-9-]+$/ (lowercase letters, digits, hyphen)",
+      }),
+      displayName: z.string().min(1).max(200),
+      transport: z.enum(["http", "stdio"]),
+      url: z.string().url().optional(),
+      command: z.string().min(1).optional(),
+      args: z.array(z.string()).optional().default([]),
+      headerTemplate: templateRecord.optional().default({}),
+      envTemplate: templateRecord.optional().default({}),
+      secretRef: z.string().min(1).optional(),
+    })
+    .strict()
+    .superRefine((val, ctx) => {
+      if (val.transport === "http") {
+        if (!val.url) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["url"], message: "http transport requires url" });
+        }
+        if (val.command !== undefined) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["command"], message: "http transport forbids command" });
+        }
+      } else if (val.transport === "stdio") {
+        if (!val.command) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["command"], message: "stdio transport requires command" });
+        }
+        if (val.url !== undefined) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["url"], message: "stdio transport forbids url" });
+        }
+      }
     }),
-    displayName: z.string().min(1).max(200),
-    transport: z.enum(["http", "stdio"]),
-    url: z.string().url().optional(),
-    command: z.string().min(1).optional(),
-    args: z.array(z.string()).optional().default([]),
-    headerTemplate: templateRecord.optional().default({}),
-    envTemplate: templateRecord.optional().default({}),
-    secretRef: z.string().min(1).optional(),
-    source: z.enum(["byo", "catalog"]).optional().default("byo"),
-  })
-  .strict()
-  .superRefine((val, ctx) => {
-    if (val.transport === "http") {
-      if (!val.url) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["url"], message: "http transport requires url" });
-      }
-      if (val.command !== undefined) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["command"], message: "http transport forbids command" });
-      }
-    } else if (val.transport === "stdio") {
-      if (!val.command) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["command"], message: "stdio transport requires command" });
-      }
-      if (val.url !== undefined) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["url"], message: "stdio transport forbids url" });
-      }
-    }
-  });
+);
 
 // PATCH is intentionally narrow: displayName + status only. Transport-relevant
 // fields (transport/url/command/args/templates/serverName) cannot be edited —
 // `.strict()` makes any such key a 400. Recreate the connector to change them.
+//
+// C2: the schema still accepts all three status values because `local_trusted`
+// (which has no governance gate) may set any of them. The `authenticated`-mode
+// restriction — status may ONLY be set to "disabled" — is enforced in the
+// handler, because PATCH is currently the only activation path (the approval
+// handler is deferred). Without it, `pending_approval → disabled → active`
+// activates in two hops and reaches host-exec (for stdio) with no approval.
 const updateConnectorSchema = z
   .object({
     displayName: z.string().min(1).max(200).optional(),
@@ -124,6 +182,17 @@ export function mcpConnectorRoutes(db: Db) {
 
       const body = req.body as z.infer<typeof createConnectorSchema>;
 
+      // C3: this route only ever creates BYO connectors. Any client `source` was
+      // already stripped in the schema; the value is fixed server-side.
+      const source = "byo";
+
+      const deploymentMode = loadConfig().deploymentMode;
+
+      // C1/D7: reject a host-executing stdio connector in a shared deployment
+      // BEFORE any write. `source` is the server-forced "byo" here, so the
+      // catalog exemption is unreachable from this route by construction.
+      assertTransportAllowed(body.transport, deploymentMode, source);
+
       // Uniqueness (companyId, serverName) — surface a clean 409 instead of a
       // raw unique-violation 500.
       const existing = await svc.getByName(companyId, body.serverName);
@@ -146,7 +215,6 @@ export function mcpConnectorRoutes(db: Db) {
 
       // local_trusted: loopback trust boundary → connectors go live immediately.
       // authenticated: board governance → connector is pending until approved.
-      const deploymentMode = loadConfig().deploymentMode;
       const status = deploymentMode === "local_trusted" ? "active" : "pending_approval";
 
       const created = await svc.create(companyId, {
@@ -159,7 +227,7 @@ export function mcpConnectorRoutes(db: Db) {
         headerTemplate: body.headerTemplate,
         envTemplate: body.envTemplate,
         secretRef: body.secretRef ?? null,
-        source: body.source,
+        source,
         status,
         createdByUserId,
       });
@@ -205,6 +273,25 @@ export function mcpConnectorRoutes(db: Db) {
       if (!existing || existing.companyId !== companyId) {
         res.status(404).json({ error: "Connector not found" });
         return;
+      }
+
+      // C2: in a shared deployment, PATCH may only DEACTIVATE. Activation
+      // (active) and re-arming for approval (pending_approval) must not be
+      // reachable through PATCH — they would bypass the (deferred) approval
+      // gate, including the two-hop pending→disabled→active path. Deactivation
+      // is always safe. local_trusted has no governance gate, so it is
+      // unrestricted.
+      const deploymentMode = loadConfig().deploymentMode;
+      const nextStatus = (req.body as z.infer<typeof updateConnectorSchema>).status;
+      if (
+        deploymentMode !== "local_trusted" &&
+        nextStatus !== undefined &&
+        nextStatus !== "disabled"
+      ) {
+        throw badRequest(
+          "In this deployment a connector can only be disabled via update; activation flows " +
+            "through connector approval, not this endpoint.",
+        );
       }
 
       const updated = await svc.update(id, req.body);

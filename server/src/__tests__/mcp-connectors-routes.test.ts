@@ -48,7 +48,7 @@ vi.mock("../services/permissions.js", () => ({
   }),
 }));
 
-import { mcpConnectorRoutes } from "../routes/mcp-connectors.js";
+import { mcpConnectorRoutes, assertTransportAllowed } from "../routes/mcp-connectors.js";
 import { errorHandler } from "../middleware/index.js";
 
 const COMPANY = "company-A";
@@ -171,9 +171,19 @@ describe("mcp-connectors routes — validation (load-bearing)", () => {
     expect(mockConnectorSvc.create).not.toHaveBeenCalled();
   });
 
+  it("rejects envTemplate with a non-string value -> 400", async () => {
+    const res = await postConnector(makeApp(founderActor), {
+      ...goodStdio,
+      envTemplate: { TOKEN: 123 },
+    });
+    expect(res.status).toBe(400);
+    expect(mockConnectorSvc.create).not.toHaveBeenCalled();
+  });
+
   it("rejects an unknown top-level field -> 400 (strict)", async () => {
     const res = await postConnector(makeApp(founderActor), { ...goodHttp, evil: true });
     expect(res.status).toBe(400);
+    expect(mockConnectorSvc.create).not.toHaveBeenCalled();
   });
 
   it("accepts a good http connector -> 201", async () => {
@@ -182,10 +192,95 @@ describe("mcp-connectors routes — validation (load-bearing)", () => {
     expect(mockConnectorSvc.create).toHaveBeenCalledTimes(1);
   });
 
-  it("accepts a good stdio connector -> 201", async () => {
+  it("accepts a good stdio connector in local_trusted -> 201", async () => {
+    // D7: stdio is host-executing, so it is admissible only when the host is the
+    // founder's own machine. This is the exact case authenticated mode forbids.
+    deploymentMode = "local_trusted";
     const res = await postConnector(makeApp(founderActor), goodStdio);
     expect(res.status).toBe(201);
     expect(mockConnectorSvc.create).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("assertTransportAllowed — D7 stdio gate (unit truth table)", () => {
+  it("stdio BYO in authenticated -> throws", () => {
+    expect(() => assertTransportAllowed("stdio", "authenticated", "byo")).toThrow();
+  });
+
+  it("stdio BYO in local_trusted -> ok", () => {
+    expect(() => assertTransportAllowed("stdio", "local_trusted", "byo")).not.toThrow();
+  });
+
+  it("http BYO in authenticated -> ok", () => {
+    expect(() => assertTransportAllowed("http", "authenticated", "byo")).not.toThrow();
+  });
+
+  it("stdio + catalog in authenticated -> ok (verified-catalog exemption)", () => {
+    expect(() => assertTransportAllowed("stdio", "authenticated", "catalog")).not.toThrow();
+  });
+});
+
+describe("mcp-connectors routes — D7 transport policy (HTTP)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetEffectiveRole.mockResolvedValue("founder");
+    mockConnectorSvc.getByName.mockResolvedValue(null);
+    mockConnectorSvc.create.mockImplementation(async (_c: string, input: any) => ({
+      id: CONNECTOR_ID,
+      companyId: COMPANY,
+      ...input,
+    }));
+    mockApprovalSvc.create.mockResolvedValue({ id: "approval-1" });
+  });
+
+  it("stdio BYO in authenticated -> 400, no write", async () => {
+    deploymentMode = "authenticated";
+    const res = await postConnector(makeApp(founderActor), goodStdio);
+    expect(res.status).toBe(400);
+    expect(mockConnectorSvc.create).not.toHaveBeenCalled();
+  });
+
+  it("stdio BYO in local_trusted -> 201", async () => {
+    deploymentMode = "local_trusted";
+    const res = await postConnector(makeApp(founderActor), goodStdio);
+    expect(res.status).toBe(201);
+  });
+
+  it("http BYO in authenticated -> 201", async () => {
+    deploymentMode = "authenticated";
+    const res = await postConnector(makeApp(founderActor), goodHttp);
+    expect(res.status).toBe(201);
+  });
+});
+
+describe("mcp-connectors routes — C3 client source is not trusted", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetEffectiveRole.mockResolvedValue("founder");
+    mockConnectorSvc.getByName.mockResolvedValue(null);
+    mockConnectorSvc.create.mockImplementation(async (_c: string, input: any) => ({
+      id: CONNECTOR_ID,
+      companyId: COMPANY,
+      ...input,
+    }));
+    mockApprovalSvc.create.mockResolvedValue({ id: "approval-1" });
+  });
+
+  it("a spoofed source:catalog on an http create is stored as byo", async () => {
+    deploymentMode = "authenticated";
+    const res = await postConnector(makeApp(founderActor), { ...goodHttp, source: "catalog" });
+    expect(res.status).toBe(201);
+    expect(mockConnectorSvc.create).toHaveBeenCalledWith(
+      COMPANY,
+      expect.objectContaining({ source: "byo" }),
+    );
+  });
+
+  it("a spoofed source:catalog cannot smuggle a stdio connector past D7", async () => {
+    deploymentMode = "authenticated";
+    const res = await postConnector(makeApp(founderActor), { ...goodStdio, source: "catalog" });
+    expect(res.status).toBe(400);
+    expect(mockConnectorSvc.create).not.toHaveBeenCalled();
   });
 });
 
@@ -344,7 +439,13 @@ describe("mcp-connectors routes — agent assignment", () => {
   });
 });
 
-describe("mcp-connectors routes — patch narrowness", () => {
+function patch(app: express.Express, body: unknown) {
+  return request(app)
+    .patch(`/api/companies/${COMPANY}/mcp-connectors/${CONNECTOR_ID}`)
+    .send(body as object);
+}
+
+describe("mcp-connectors routes — patch narrowness + strict fields", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     deploymentMode = "authenticated";
@@ -354,18 +455,79 @@ describe("mcp-connectors routes — patch narrowness", () => {
   });
 
   it("allows disabling via status -> 200", async () => {
-    const res = await request(makeApp(founderActor))
-      .patch(`/api/companies/${COMPANY}/mcp-connectors/${CONNECTOR_ID}`)
-      .send({ status: "disabled" });
+    const res = await patch(makeApp(founderActor), { status: "disabled" });
     expect(res.status).toBe(200);
     expect(mockConnectorSvc.update).toHaveBeenCalledWith(CONNECTOR_ID, { status: "disabled" });
   });
 
   it("rejects editing transport-relevant fields -> 400 (strict)", async () => {
-    const res = await request(makeApp(founderActor))
-      .patch(`/api/companies/${COMPANY}/mcp-connectors/${CONNECTOR_ID}`)
-      .send({ url: "https://evil.example" });
+    const res = await patch(makeApp(founderActor), { url: "https://evil.example" });
     expect(res.status).toBe(400);
+    expect(mockConnectorSvc.update).not.toHaveBeenCalled();
+  });
+});
+
+describe("mcp-connectors routes — C2 PATCH cannot activate in authenticated", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetEffectiveRole.mockResolvedValue("founder");
+    mockConnectorSvc.getById.mockResolvedValue({ id: CONNECTOR_ID, companyId: COMPANY });
+    mockConnectorSvc.update.mockImplementation(async (_id: string, patchArg: any) => ({
+      id: CONNECTOR_ID,
+      companyId: COMPANY,
+      ...patchArg,
+    }));
+  });
+
+  it("authenticated: pending->active via PATCH -> 400, no write", async () => {
+    deploymentMode = "authenticated";
+    const res = await patch(makeApp(founderActor), { status: "active" });
+    expect(res.status).toBe(400);
+    expect(mockConnectorSvc.update).not.toHaveBeenCalled();
+  });
+
+  it("authenticated: pending->pending_approval via PATCH -> 400, no write", async () => {
+    deploymentMode = "authenticated";
+    const res = await patch(makeApp(founderActor), { status: "pending_approval" });
+    expect(res.status).toBe(400);
+    expect(mockConnectorSvc.update).not.toHaveBeenCalled();
+  });
+
+  it("authenticated: two-hop pending->disabled->active is blocked at the second PATCH", async () => {
+    deploymentMode = "authenticated";
+    const first = await patch(makeApp(founderActor), { status: "disabled" });
+    expect(first.status).toBe(200); // deactivation is always allowed
+    const second = await patch(makeApp(founderActor), { status: "active" });
+    expect(second.status).toBe(400); // re-activation via PATCH is refused
+  });
+
+  it("local_trusted: PATCH -> active is allowed (no governance gate) -> 200", async () => {
+    deploymentMode = "local_trusted";
+    const res = await patch(makeApp(founderActor), { status: "active" });
+    expect(res.status).toBe(200);
+    expect(mockConnectorSvc.update).toHaveBeenCalledWith(CONNECTOR_ID, { status: "active" });
+  });
+});
+
+describe("mcp-connectors routes — M2 PATCH is founder-only", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    deploymentMode = "authenticated";
+    mockConnectorSvc.getById.mockResolvedValue({ id: CONNECTOR_ID, companyId: COMPANY });
+    mockConnectorSvc.update.mockResolvedValue({ id: CONNECTOR_ID, status: "disabled" });
+  });
+
+  it("team_lead PATCH -> 403, no write", async () => {
+    mockGetEffectiveRole.mockResolvedValue("team_lead");
+    const res = await patch(makeApp(founderActor), { status: "disabled" });
+    expect(res.status).toBe(403);
+    expect(mockConnectorSvc.update).not.toHaveBeenCalled();
+  });
+
+  it("team_member PATCH -> 403, no write", async () => {
+    mockGetEffectiveRole.mockResolvedValue("team_member");
+    const res = await patch(makeApp(founderActor), { status: "disabled" });
+    expect(res.status).toBe(403);
     expect(mockConnectorSvc.update).not.toHaveBeenCalled();
   });
 });
