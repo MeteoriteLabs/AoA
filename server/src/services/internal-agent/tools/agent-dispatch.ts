@@ -27,6 +27,52 @@ import { buildConveneAgentIdempotencyKey } from "./thread-action-keys.js";
 /** Matches thread-events.ts MAX_HOP_COUNT. Keep in sync. */
 const MAX_HOP_COUNT = 3;
 
+// SECURITY (Layer A — sanitize at the source). The caller FULLY controls the
+// `context` object, and its keys are written verbatim into the wakeup payload
+// (direct insert) or the queued thread action's `context` (controller-action-
+// gate). The dispatcher later spreads that payload into `runAoaAgent`, so any
+// trust/scope key riding inside `context` — most dangerously `companyId` —
+// would override the trusted, server-set run company and let a company-A agent
+// operate in company B (cross-tenant escalation). Build the forwarded context
+// from an ALLOWLIST of the content-reference keys this tool legitimately
+// carries; every other key (companyId, source, effectiveAutonomy, wakeupId,
+// resolvedModel, continuation keys, userId, agentId, …) is DROPPED. Allowlist
+// (not a denylist) so the next trust key someone adds is dropped by default.
+//
+// The allowlisted set mirrors what the parallel @mention dispatch path enqueues
+// (thread-events.ts: threadId, mentionEntryId, hopCount) plus the task/entry
+// reference keys the crew runner + trigger prompt read downstream. threadId and
+// issueId are additionally ownership-validated below before they can enter the
+// payload. hopCount is auto-managed (always overwritten with incomingHopCount+1)
+// and is therefore never taken from the caller.
+const FORWARDABLE_CONTEXT_KEYS = [
+  "threadId",
+  "issueId",
+  "entryId",
+  "mentionEntryId",
+  "parentEntryId",
+] as const;
+
+/**
+ * Build the wakeup/thread-action payload from ONLY the allowlisted content keys
+ * of the caller-supplied context, then stamp the server-managed hopCount. A
+ * `companyId` (or any other non-allowlisted key) in `context` is dropped and can
+ * never reach the runner's trigger payload.
+ */
+function buildForwardedContext(
+  context: Record<string, unknown> | undefined,
+  hopCount: number,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (context) {
+    for (const key of FORWARDABLE_CONTEXT_KEYS) {
+      if (context[key] !== undefined) out[key] = context[key];
+    }
+  }
+  out.hopCount = hopCount;
+  return out;
+}
+
 export const agentDispatchTool: AgentTool = {
   name: "agent.dispatch",
   description:
@@ -153,10 +199,9 @@ export const agentDispatchTool: AgentTool = {
         payload: {
           targetAgentId: agentId,
           reason: reason ?? "agent_dispatch",
-          context: {
-            ...(context ?? {}),
-            hopCount: incomingHopCount + 1,
-          },
+          // Layer A: allowlist-sanitized — a caller-supplied companyId (or any
+          // other trust/scope key) never enters the queued action's context.
+          context: buildForwardedContext(context, incomingHopCount + 1),
         },
         // hopCount is intentionally NOT folded into the key: the payload's
         // incomingHopCount+1 can differ across re-proposes, so including it would
@@ -226,10 +271,10 @@ export const agentDispatchTool: AgentTool = {
         agentId,
         source: "agent.dispatch",
         reason: reason ?? "agent_dispatch",
-        payload: {
-          ...(context ?? {}),
-          hopCount: incomingHopCount + 1,
-        } as Record<string, unknown>,
+        // Layer A: allowlist-sanitized — a caller-supplied companyId (or any
+        // other trust/scope key) never enters the wakeup payload, so the
+        // dispatcher's spread can't redirect the run into another tenant.
+        payload: buildForwardedContext(context, incomingHopCount + 1) as Record<string, unknown>,
         dedupKey,
         status: "queued",
       })

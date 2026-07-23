@@ -126,6 +126,30 @@ it("failure isolated: adapter throws → never rethrows", async () => {
   expect(r1.status).toBe("failed");
   expect(r1.errorMessage).toBe("boom");
 });
+it("SECURITY (Layer C): agent.companyId !== payload.companyId → refuses (failed), no run/mcpParams/adapter built", async () => {
+  execMock.mockClear();
+  buildMcpMock.mockClear();
+  buildBridgeSpecMock.mockClear();
+  // The loaded agent belongs to "co-OTHER" but the run's company (from the
+  // trusted wakeup row) is "co-1". A company-A agent must never execute in
+  // another company's context — the backstop refuses before any run row,
+  // mcpParams, or adapter execution is built.
+  const insertedRuns: any[] = [];
+  const db: any = {
+    select: () => ch([{ id: "ext-1", companyId: "co-OTHER", name: "Scribe", adapterType: "process", adapterConfig: {}, runtimeConfig: {} }]),
+    insert: () => ({ values: (v: any) => { insertedRuns.push(v); return { returning: () => Promise.resolve([{ id: "run-x" }]) }; } }),
+    update: () => ch([{ id: "e1" }]),
+  };
+  const r = await runAoaAgent(db, "ext-1", { companyId: "co-1", source: "agent.dispatch" });
+  expect(r.status).toBe("failed");
+  expect(r.errorMessage).toBe("aoa agent company mismatch");
+  expect(r.runId).toBeNull();
+  // Refused before the run row insert, the mcp bridge build, and adapter exec.
+  expect(insertedRuns).toHaveLength(0);
+  expect(buildMcpMock).not.toHaveBeenCalled();
+  expect(buildBridgeSpecMock).not.toHaveBeenCalled();
+  expect(execMock).not.toHaveBeenCalled();
+});
 it("not claimable (concurrent): atomic claim empty → adapter NOT called, returns", async () => {
   execMock.mockClear();
   const claimChain:any = { set:()=>claimChain, where:()=>claimChain, returning:()=>Promise.resolve([]) }; // claim RETURNING empty

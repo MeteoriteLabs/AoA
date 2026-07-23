@@ -738,6 +738,49 @@ describe("runAoaDispatch — generalized #99 dispatcher", () => {
     );
   });
 
+  // ── Layer B — trusted fields win over the payload spread ──────────────────
+  // A wakeup whose stored payload carries a hostile `companyId` (smuggled via
+  // agent.dispatch context on some enqueue path) must NOT redirect the run: the
+  // dispatcher sets `companyId: w.companyId` AFTER `...(w.payload)`, so the
+  // trusted wakeup-row company wins. Pre-fix companyId sat BEFORE the spread and
+  // the payload's value clobbered it — a cross-tenant escalation. Modeled on the
+  // chronicler fixture (threadId present → effectiveAutonomy lookup slot).
+  it("SECURITY (Layer B): a wakeup payload.companyId does NOT override the trusted w.companyId in the runAoaAgent call", async () => {
+    const db = makeConcurrencyDb(
+      [
+        [],  // 0 Phase-1 orphan-select
+        [],  // 1 Phase-2 pending-drain
+        // 2 Phase-3 wakeup: trusted row company is "co-chr"; payload smuggles a
+        // FOREIGN companyId ("co-EVIL") + spoofed source/wakeupId.
+        [{ id: "wr-esc", agentId: "a-chr", companyId: "co-chr", source: "sweep.chronicler", payload: { threadId: "t-cp", role: "chronicler", companyId: "co-EVIL", source: "spoofed", wakeupId: "forged" } }],
+        // 3 resolveCompanyConfig
+        [{ autonomyLevel: 0, crewPaused: false, model: "claude-sonnet-4-6", inboundRoutingLevel: "off" }],
+        // 4 effectiveAutonomy thread lookup
+        [{ crewPaused: false, useControllerPath: true, autonomyLevel: 2 }],
+        [],  // 5 D3 SPEND-brake window count
+        [],  // 6 A5/T1.9 run-COUNT brake window count
+        [{ runtimeConfig: {}, adapterConfig: {} }],  // 7 agent row
+        [],  // 8 Phase-4 reclaim-select
+      ],
+      [
+        [{ id: "wr-esc" }],  // update[0] = atomic claim RETURNING
+        [],                   // update[1] = final status update
+      ],
+    );
+
+    await runAoaDispatch(db, { limiterMax: 2, staleMs: 600_000 });
+
+    // The trusted wakeup-row company + source + wakeupId win over the payload.
+    expect(runAoaMock).toHaveBeenCalledWith(
+      db, "a-chr",
+      expect.objectContaining({ companyId: "co-chr", source: "sweep.chronicler", wakeupId: "wr-esc" }),
+    );
+    // Explicit: the foreign payload company was NOT forwarded.
+    const forwarded = runAoaMock.mock.calls[0][2] as { companyId?: string };
+    expect(forwarded.companyId).toBe("co-chr");
+    expect(forwarded.companyId).not.toBe("co-EVIL");
+  });
+
   it("infra sweep (sweep.chronicler) respects thread crewPaused before running", async () => {
     const db = makeConcurrencyDb(
       [

@@ -176,6 +176,24 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
       return { status: "failed", errorMessage: "aoa agent missing", runId };
     }
 
+    // SECURITY (Layer C — cross-tenant backstop). The run's company comes from
+    // payload.companyId (the dispatcher sets it from the trusted wakeup row).
+    // Assert the loaded agent ACTUALLY belongs to that company. A company-A
+    // agent must NEVER execute in another company's context: payload.companyId
+    // becomes mcpParams.companyId below — the tenant its live MCP tools read and
+    // write — plus the run row and cost attribution. This holds even if a future
+    // enqueue path bypasses the agent.dispatch allowlist (Layer A) or the
+    // dispatcher's spread ordering (Layer B). Refuse with a failed status,
+    // mirroring the "aoa agent missing" early-return (runId is still null here,
+    // so no run row, mcpParams, or adapter execution is ever built).
+    if (agent.companyId !== payload.companyId) {
+      log.error(
+        { agentCompanyId: agent.companyId, runCompanyId: payload.companyId },
+        "aoa agent company mismatch; refusing cross-tenant run",
+      );
+      return { status: "failed", errorMessage: "aoa agent company mismatch", runId };
+    }
+
     // W3a (P1 fix): capture the two fields the FAILURE loopback (in the catch,
     // where `agent` is out of scope) needs, so it can card + summarize without a
     // TS2304. The SUCCESS wiring below still uses `agent` directly (in scope).

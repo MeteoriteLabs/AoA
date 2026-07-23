@@ -1056,6 +1056,24 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
               ? crewContinuationAttemptKey(w.idempotencyKey, claimed[0]!.attempts)
               : null;
             const result = await runAoaAgent(db, w.agentId, {
+              // L2 / SECURITY (Layer B): spread the stored payload FIRST, then set
+              // EVERY trusted, server-resolved field AFTER it so a seeded or
+              // attacker-controlled `w.payload` can never override them (last-key-
+              // wins). Originally only `effectiveAutonomy` was defended this way;
+              // `companyId` sat BEFORE the spread and a smuggled `payload.companyId`
+              // (via agent.dispatch context) could redirect the run into another
+              // tenant — the run's live MCP tools then operated on the foreign
+              // company's tasks/memory/artifacts. The run's company is the wakeup
+              // row's trusted `w.companyId`, full stop. `source`, `wakeupId`, and
+              // `resolvedModel` are likewise server-resolved (wakeup row columns /
+              // per-role model resolution) and must not be payload-overridable.
+              ...(w.payload ?? {}),
+              ...(continuationAttemptIdempotencyKey
+                ? {
+                    continuationIdempotencyKey: w.idempotencyKey,
+                    continuationAttemptIdempotencyKey,
+                  }
+                : {}),
               companyId: w.companyId,
               // T1.2 (codex F6): pass the wakeup's ORIGINAL source (e.g.
               // 'thread_mention', 'sweep.adjutant', 'phase-advance') NOT the
@@ -1064,18 +1082,8 @@ export async function runAoaDispatch(db: Db, opts: DispatchOptions): Promise<voi
               source: w.source,
               wakeupId: w.id,
               resolvedModel: roleModel, // Plan 3 Task 9: pass resolved model to runner
-              // L2: spread the stored payload FIRST so the trusted, server-resolved
-              // effectiveAutonomy (thread override ?? company dial) ALWAYS wins. A
-              // stray `payload.effectiveAutonomy` (e.g. an attacker- or bug-seeded
-              // wakeup) must NOT override the dial the activation gate read — keep
-              // gate and runner reading the same value.
-              ...(w.payload ?? {}),
-              ...(continuationAttemptIdempotencyKey
-                ? {
-                    continuationIdempotencyKey: w.idempotencyKey,
-                    continuationAttemptIdempotencyKey,
-                  }
-                : {}),
+              // effectiveAutonomy (thread override ?? company dial) stays AFTER the
+              // spread so the gate and the runner read the SAME dial.
               effectiveAutonomy,
             });
             // P2 + T1.0: status reflects what the runner actually saw.
