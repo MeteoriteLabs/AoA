@@ -406,3 +406,11 @@ git commit -m "test(mcp): end-to-end verification of crew + Commander delivery +
 - **Marketplace `connector` type** + curated catalog + bulk registry import (Plan 3).
 - **Flagship plugins + OAuth broker** (Plan 4).
 - **Hub summary polish** — optionally special-case `serverName` in `approvalSummary` so the connector approval shows the server name instead of "Approval type: install mcp connector" (cosmetic).
+
+## Execution notes (Plan 2)
+
+**P2N1 — Commander connector resolution is best-effort (try/catch + warn); crew/heartbeat fail-hard.** Deliberate: Commander is always-on, so a connector-load DB failure degrades to no-connectors + `logger.warn(..., "Commander MCP connector resolution failed; proceeding without connectors")` rather than failing the turn. Consistent with the loader's A8/A19 warn-and-continue. **Fold into Task 5 (cleanup):** the inline comment's secondary rationale ("tests would throw") is overstated — `cli-mode.test.ts` mocks `resolveAgentConnectors` at module level, so the guard is justified by the production-degradation reason ALONE; correct the comment to say so.
+
+**P2N2 — Commander resolves connectors at the FIRST-message spawn of a persistent claude session; env is fixed at spawn.** A connector added/removed mid-conversation does NOT take effect until the session recycles. Inherent to the persistent-process model (out of scope to change), but a real "I added a connector and Commander still can't see it" debugging gotcha. **Fold into Task 5:** add a one-line code comment at the Commander merge site noting this, and list it under known limitations.
+
+**P2N3 (from P2-2 review, Minor) — crew no-connector regression test asserts only `config.env` deep-equals `{}`, not a full-config snapshot.** Adequate (env is the only field the change touches), but a full captured-config `toEqual` would make byte-identity self-evident. Optional; fold into Task 5 only if cheap.
