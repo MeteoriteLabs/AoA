@@ -137,6 +137,8 @@ export { feedbackVotes } from "./feedback_votes.js";
 export { feedbackExports } from "./feedback_exports.js";
 export { githubInstallations, type GitHubInstallation, type NewGitHubInstallation } from "./github_installations.js";
 export { braindumpCaptures } from "./braindump_captures.js";
+export { companyMcpConnectors } from "./company_mcp_connectors.js";
+export { companyMcpConnectorAgents } from "./company_mcp_connector_agents.js";
 
 // Plugin system
 export { plugins } from "./plugins.js";
