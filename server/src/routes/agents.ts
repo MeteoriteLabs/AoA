@@ -1512,10 +1512,16 @@ export function agentRoutes(db: Db) {
     }
 
     // Validate skillKeys against company's available skills (throws 422 on unknown/ambiguous)
+    // and persist the *canonical* keys — resolveSkillKeys accepts id/slug/normalizable
+    // forms but delivery + enforcement compare against skill.key, so a non-canonical
+    // attach would silently no-op if stored raw. An empty array clears skills as-is.
     if (Object.prototype.hasOwnProperty.call(patchData, "skillKeys")) {
       const requestedKeys = patchData.skillKeys;
       if (Array.isArray(requestedKeys) && requestedKeys.length > 0) {
-        await skillSvc.resolveSkillKeys(existing.companyId, requestedKeys as string[]);
+        patchData.skillKeys = await skillSvc.resolveSkillKeys(
+          existing.companyId,
+          requestedKeys as string[],
+        );
       }
     }
 

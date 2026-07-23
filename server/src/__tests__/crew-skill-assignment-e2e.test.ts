@@ -237,6 +237,36 @@ describe.skipIf(
     expect(row!.skillKeys).toEqual([SKILL_A_KEY]);
   });
 
+  it("ASSIGN (slug form): attaching by SLUG persists the CANONICAL key AND survives deliver+enforce", async () => {
+    if (setupError) throw new Error(String(setupError));
+
+    // The blind spot: the route advertises id/slug/normalizable ref forms as valid,
+    // but a store-raw bug meant a non-canonical attach validated 200 yet was stored
+    // verbatim — so delivery (compares skill.key) and enforcement (compares skill.key)
+    // both silently no-op'd. Drive the SLUG through the real route and prove the whole
+    // loop, not just the 200.
+    const res = await request(makeApp())
+      .patch(`/api/agents/${crewAgentId}`)
+      .send({ skillKeys: ["design-review"] }); // SLUG, not the canonical SKILL_A_KEY
+    expect(res.status).toBe(200);
+    // The response AND the persisted row carry the CANONICAL key, never the raw slug.
+    expect(res.body.skillKeys).toEqual([SKILL_A_KEY]);
+    const [row] = await db
+      .select({ skillKeys: agents.skillKeys })
+      .from(agents)
+      .where(eq(agents.id, crewAgentId));
+    expect(row!.skillKeys).toEqual([SKILL_A_KEY]);
+
+    // DELIVER: the slug-attached skill reaches the agent's runtime context.
+    const entries = await companySkillService(db).listRuntimeSkillEntries(companyId, crewAgentId);
+    expect(entries.map((e) => e.key)).toEqual([SKILL_A_KEY]);
+
+    // ENFORCE: use_skill with the CANONICAL key now succeeds — the slug attach is honest.
+    const allow = await useSkillTool.execute({ key: SKILL_A_KEY }, crewCtx(crewAgentId));
+    expect(allow.success).toBe(true);
+    expect((allow.data as { key: string }).key).toBe(SKILL_A_KEY);
+  });
+
   it("ASSIGN (validation): an unknown skill key is rejected 422 and does NOT change the row", async () => {
     if (setupError) throw new Error(String(setupError));
 
