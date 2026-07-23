@@ -359,6 +359,12 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
       enabledCapabilities,
       bridgeEntrypoint: resolveBridgeEntrypoint(),
       agentKind: "aoa",
+      // T8 Defect A: crew is an autonomous agent actor, not a board/Commander
+      // caller. Without this the bridge defaults AOA_ACTOR_TYPE to "board", and
+      // ask_human's identity gate (actorType==="agent") rejects every crew run.
+      // Mirrors the org heartbeat path (heartbeat.ts). Never set on the
+      // Commander path — that sets actorType:"commander" (cli-mode.ts).
+      actorType: "agent",
       toolAllowlist: toolAllowlistFromConfig,
       agentId,
       runId,

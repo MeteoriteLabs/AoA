@@ -102,7 +102,11 @@ export interface McpConfigParams {
   agentKind?: string;
   /** D2: explicit tool allowlist for AoA agents (comma-separated when passed via env) */
   toolAllowlist?: readonly string[];
-  /** Actor type threaded into the bridge: "commander" when spawned via Commander. */
+  /**
+   * Actor type threaded into the bridge (→ AOA_ACTOR_TYPE): "commander" via
+   * Commander, "agent" for crew ('aoa')/org runs, else the bridge default
+   * "board". Only "commander" receives the Commander tool-policy layer.
+   */
   actorType?: string;
   /** Agent DB ID — set as AOA_AGENT_ID in the bridge so tools can stamp authorAgentId. */
   agentId?: string;

@@ -382,6 +382,30 @@ describe("Spec B Task 5: runner issueId branch", () => {
     expect(publishIssueStatusChangedMock).not.toHaveBeenCalledWith("co-1", "TASK-1", "todo");
   });
 
+  it("(e) crew MCP params carry actorType='agent' + agentKind='aoa' (crew actor identity — T8 Defect A)", async () => {
+    // ask_human's identity gate keys on actorType==='agent'; when the runner
+    // omits actorType the bridge defaults AOA_ACTOR_TYPE to 'board' and the
+    // gate fails for every crew agent. Assert both the config and bridge-spec
+    // builders receive the corrected actor identity.
+    buildMcpMock.mockClear();
+    buildBridgeSpecMock.mockClear();
+    const db = makeDb();
+
+    await runAoaAgent(db as any, "a-1", TASK_PAYLOAD);
+
+    expect(buildBridgeSpecMock).toHaveBeenCalledTimes(1);
+    const bridgeParams = buildBridgeSpecMock.mock.calls[0]![0] as any;
+    expect(bridgeParams.actorType).toBe("agent");
+    expect(bridgeParams.agentKind).toBe("aoa");
+    // Guard against a regression to the unset/'board' actor.
+    expect(bridgeParams.actorType).not.toBe("board");
+    expect(bridgeParams.actorType).not.toBeUndefined();
+
+    // buildMcpConfig (the claude {mcpServers} envelope) gets the SAME params.
+    const cfgParams = buildMcpMock.mock.calls[0]![0] as any;
+    expect(cfgParams.actorType).toBe("agent");
+  });
+
   it("(d'') no release when a DIFFERENT run owns the task (executionRunId !== runId)", async () => {
     getByIdMock.mockResolvedValueOnce({
       id: "TASK-1",

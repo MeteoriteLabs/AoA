@@ -33,6 +33,10 @@ describe("mcp-bridge approval createPending conversationId", () => {
       userId: "user-1",
       userRole: "founder",
       enabledCapabilities: [],
+      // T8 Defect B: the runtime-approval path is Commander-only. This scenario
+      // exercises that path, so the actor must be Commander (previously this
+      // relied on the bridge applying Commander policy to every actor).
+      actorType: "commander",
       agentKind: undefined,
       toolAllowlist: undefined,
       commanderToolPermissions: null,
