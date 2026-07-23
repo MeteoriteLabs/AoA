@@ -271,7 +271,7 @@ export function AgentSkillsTab({
   return (
     <div className="py-2 space-y-4 max-w-[1400px]">
       <p className="text-sm text-muted-foreground">
-        Skills injected into this agent's context on every run.
+        Only skills attached here are provided to this agent at runtime. The agent can't use any skill that isn't attached here.
       </p>
       <div className="flex items-center gap-2 border border-border rounded-md px-3 py-2 text-sm">
         <Search className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
