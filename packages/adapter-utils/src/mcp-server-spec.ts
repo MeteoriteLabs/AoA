@@ -9,6 +9,7 @@
  * @packageDocumentation
  */
 
+/** A locally-spawned MCP server (stdio transport). */
 export interface McpStdioServerSpec {
   kind: "stdio";
   command: string;
@@ -20,6 +21,7 @@ export interface McpStdioServerSpec {
   env: Record<string, string>;
 }
 
+/** A remote MCP server reached over streamable HTTP. */
 export interface McpHttpServerSpec {
   kind: "http";
   url: string;

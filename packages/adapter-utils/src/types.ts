@@ -3,6 +3,7 @@
 // ---------------------------------------------------------------------------
 
 import type { AdapterModelProfile } from "./model-profiles.js";
+import type { McpServerSpec } from "./mcp-server-spec.js";
 
 export interface AdapterAgent {
   id: string;
@@ -196,12 +197,6 @@ export interface McpBridgeSpec {
   env: Record<string, string>;
 }
 
-export type {
-  McpServerSpec,
-  McpStdioServerSpec,
-  McpHttpServerSpec,
-} from "./mcp-server-spec.js";
-
 export type AdapterRuntimePermissionDecision = "allow_once" | "allow_always" | "deny";
 export type AdapterRuntimeDecisionTimeoutPolicy =
   | "deny"
@@ -305,6 +300,17 @@ export interface AdapterExecutionContext {
    * back to existing behavior. Wired by a later milestone.
    */
   mcpBridge?: McpBridgeSpec;
+  /**
+   * Optional external MCP servers (connectors), keyed by server name. Delivered
+   * ALONGSIDE `mcpBridge` — `mcpBridge` remains AoA's own loopback server and is
+   * never represented here. Adapters that do not understand this field simply
+   * ignore it and behave exactly as before.
+   *
+   * SECRETS: values may contain `${VAR}` placeholders expanded by the target CLI
+   * from process env. Never place a real secret in this struct — it is persisted
+   * into run events (see RuntimeHookBridgeSpec note above).
+   */
+  mcpServers?: Record<string, McpServerSpec>;
   /**
    * Optional human-decision broker. Adapters can use this to pause a run for a
    * permission prompt or work-question without knowing how the Hub stores,
