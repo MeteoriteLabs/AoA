@@ -143,6 +143,10 @@ describe("loadEnabledConnectorRows", () => {
   });
 
   it("skips a connector whose secret THROWS and still returns the healthy one (A19)", async () => {
+    // Broken FIRST is the discriminating order: a `try` wrapping the whole loop
+    // would abort at connector 0 and return [], so this case fails it — whereas
+    // broken-last would swallow the late throw and still pass. This is the test
+    // that distinguishes correct per-connector handling from a whole-loop try.
     const { db } = createSequenceDb([
       [
         connectorRow({ id: "c-broken", serverName: "broken", secretRef: "mcp:deleted" }),
@@ -174,9 +178,11 @@ describe("loadEnabledConnectorRows", () => {
   });
 
   it("still returns the healthy connector when the BROKEN one is resolved last", async () => {
-    // Order-independence matters: a `try` wrapping the whole loop would pass the
-    // previous test (broken first, nothing accumulated yet to lose) while
-    // silently discarding everything collected before a late failure.
+    // Order-independence / defense-in-depth: this does NOT catch the whole-loop
+    // `try` mutation (that swallows the late throw and passes — the broken-first
+    // test above is what discriminates it). Its job is the complementary
+    // guarantee: a failure on a LATE connector must not discard results already
+    // accumulated from earlier healthy ones.
     const { db } = createSequenceDb([
       [
         connectorRow({ id: "c-healthy", serverName: "healthy", secretRef: "mcp:notion" }),
@@ -264,7 +270,9 @@ describe("loadEnabledConnectorRows", () => {
   });
 
   it("returns an empty array when the company has no connectors", async () => {
-    const { db } = createSequenceDb([[], []]);
+    // Only one row set: the 0-connector early-return fires before the join
+    // table would ever be queried, so a second (join) select never happens.
+    const { db } = createSequenceDb([[]]);
 
     const rows = await loadEnabledConnectorRows(db, { companyId: "co-1", agentId: "agent-1" });
 
