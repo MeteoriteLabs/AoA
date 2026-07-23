@@ -1,8 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
-const { execMock, createEventMock, buildMcpMock, buildBridgeSpecMock } = vi.hoisted(() => ({
+const { execMock, createEventMock, buildMcpMock, buildBridgeSpecMock, writeFileMock, resolveConnectorsMock } = vi.hoisted(() => ({
   execMock: vi.fn().mockResolvedValue({ exitCode: 0 }),
   createEventMock: vi.fn().mockResolvedValue(undefined),
   buildMcpMock: vi.fn(() => ({ mcpServers: {} })),
+  // Task 2 (Plan 2): capture what the runner writes to the --mcp-config tmp file
+  // so a connector test can prove the placeholder (never the plaintext secret)
+  // lands on disk. Default no-op preserves the pre-task behavior for every other
+  // test (they don't inspect writeFile).
+  writeFileMock: vi.fn().mockResolvedValue(undefined),
+  // Task 2 (Plan 2): the crew connector delivery seam. Default = no connectors
+  // so the existing claude tests (cl-1..cl-4) stay byte-identical; the connector
+  // + regression tests override per-call with mockResolvedValueOnce.
+  resolveConnectorsMock: vi.fn().mockResolvedValue({ extraMcpServers: {}, connectorEnv: {} }),
   // MX2: runner now also builds the provider-neutral bridge spec. Mock mirrors
   // buildMcpBridgeSpec's shape ({command:"node",args,env}) keyed off the params
   // the runner passes (companyId → AOA_SESSION_COMPANY_ID) so the contract is
@@ -25,7 +34,8 @@ vi.mock("../services/costs.js", () => ({ costService: () => ({ createEvent: crea
 vi.mock("../services/internal-agent/cli-mode.js", () => ({ buildMcpConfig: buildMcpMock, buildMcpBridgeSpec: buildBridgeSpecMock }));
 vi.mock("../services/heartbeat.js", () => ({ resolveAdapterExecutionContext: () => ({ executionTarget:{}, runtimeCommandSpec:{} }) }));
 vi.mock("../services/internal-agent/aoa-agents/bridge-path.js", () => ({ resolveBridgeEntrypoint: () => "/x/mcp-bridge.js" }));
-vi.mock("node:fs/promises", () => ({ writeFile: vi.fn().mockResolvedValue(undefined) }));
+vi.mock("node:fs/promises", () => ({ writeFile: writeFileMock, unlink: vi.fn().mockResolvedValue(undefined) }));
+vi.mock("../services/mcp-connectors-loader.js", () => ({ resolveAgentConnectors: resolveConnectorsMock }));
 vi.mock("../middleware/logger.js", () => ({ logger:{ child:()=>({info:vi.fn(),warn:vi.fn(),error:vi.fn()}) } }));
 import { runAoaAgent } from "../services/internal-agent/aoa-agents/runner.js";
 function ch(ret:unknown[]){const c:any={};c.values=()=>c;c.set=()=>c;c.where=()=>c;c.from=()=>c;c.returning=()=>Promise.resolve(ret);c.then=(r:(v:unknown[])=>unknown)=>Promise.resolve(ret).then(r);return c;}
@@ -124,6 +134,69 @@ it("claude-family: user-injected --mcp-config in adapterConfig.EXTRAARGS is stri
   expect(extraArgs[0]).toBe("--mcp-config");
   expect(String(extraArgs[1])).toMatch(/aoa-mcp-cl-3-run-c3\.json$/);
   expect(extraArgs[2]).toBe("--strict-mcp-config");
+});
+it("claude-family: enabled http connector delivered to crew — spec threaded into --mcp-config (placeholder), real secret ONLY in config.env (Plan 2 Task 2)", async () => {
+  execMock.mockClear(); buildMcpMock.mockClear(); writeFileMock.mockClear(); resolveConnectorsMock.mockClear();
+  // The crew connector seam: this agent has ONE enabled http connector. The
+  // env carries the REAL token; the spec header carries only the placeholder.
+  resolveConnectorsMock.mockResolvedValueOnce({
+    extraMcpServers: { notion: { kind:"http", url:"https://mcp.notion.com/mcp", headers:{ Authorization:"Bearer ${AOA_MCP_NOTION_TOKEN}" } } },
+    connectorEnv: { AOA_MCP_NOTION_TOKEN: "secret-abc" },
+  });
+  // buildMcpConfig is mocked; reflect extraMcpServers into the built config so the
+  // written FILE models the real mergeExternalMcpServers output (the real merge is
+  // unit-tested in the pure connector module — here we prove the runner THREADS +
+  // WRITES it, and that the plaintext secret never reaches disk).
+  buildMcpMock.mockImplementationOnce((p:any) => ({ mcpServers: { aoa: {}, ...(p?.extraMcpServers ?? {}) } }));
+  const db:any = {
+    select:()=>ch([{ id:"cl-conn", companyId:"co-1", name:"Scribe", adapterType:"claude_local", adapterConfig:{}, runtimeConfig:{ aoa:{ instruction:"do extraction", role:"scribe" } } }]),
+    insert:()=>({ values:()=>({ returning:()=>Promise.resolve([{id:"run-conn"}]) }) }),
+    update:()=>ch([{ id:"e1" }]),
+  };
+  await runAoaAgent(db, "cl-conn", { companyId:"co-1", source:"discussion_entry_pending", entryId:"e1" });
+
+  // (a) per-agent opt-in: resolved with the REAL agentId (not null) + companyId.
+  expect(resolveConnectorsMock).toHaveBeenCalledTimes(1);
+  expect(resolveConnectorsMock.mock.calls[0][1]).toMatchObject({ companyId:"co-1", agentId:"cl-conn" });
+
+  // (b) threading: buildMcpConfig received the connector spec with the PLACEHOLDER
+  // header — never the plaintext secret.
+  const builtArg = buildMcpMock.mock.calls[buildMcpMock.mock.calls.length-1][0];
+  expect(builtArg.extraMcpServers.notion.headers.Authorization).toBe("Bearer ${AOA_MCP_NOTION_TOKEN}");
+  expect(JSON.stringify(builtArg.extraMcpServers)).not.toContain("secret-abc");
+
+  // (c) on disk: the written --mcp-config file has notion + placeholder, NEVER the token.
+  const written = writeFileMock.mock.calls.map((c:any)=>String(c[1])).join("\n");
+  expect(written).toContain("notion");
+  expect(written).toContain("${AOA_MCP_NOTION_TOKEN}");
+  expect(written).not.toContain("secret-abc");
+
+  // (d) the REAL token rides ONLY in the delivered spawn env.
+  const execArg = execMock.mock.calls[0][0];
+  expect(execArg.config.env.AOA_MCP_NOTION_TOKEN).toBe("secret-abc");
+
+  // (e) Task-12 mcp-config args preserved.
+  expect(execArg.config.args[0]).toBe("--mcp-config");
+  expect(execArg.config.args).toContain("--strict-mcp-config");
+});
+it("claude-family: NO connectors → delivered config.env byte-identical (no AOA_MCP keys added) — Plan 2 regression guard", async () => {
+  execMock.mockClear(); resolveConnectorsMock.mockClear();
+  // Default seam returns empty; assert the runner adds NOTHING to env vs the
+  // pre-task delivery. resolvedBaseConfig.env is {} for an empty adapterConfig
+  // (resolveAdapterConfigForRuntime always sets env = {}), so the merge is a
+  // no-op and env stays exactly {}.
+  resolveConnectorsMock.mockResolvedValueOnce({ extraMcpServers: {}, connectorEnv: {} });
+  const db:any = {
+    select:()=>ch([{ id:"cl-noconn", companyId:"co-1", name:"Scribe", adapterType:"claude_local", adapterConfig:{}, runtimeConfig:{ aoa:{ instruction:"do extraction", role:"scribe" } } }]),
+    insert:()=>({ values:()=>({ returning:()=>Promise.resolve([{id:"run-nc"}]) }) }),
+    update:()=>ch([{ id:"e1" }]),
+  };
+  await runAoaAgent(db, "cl-noconn", { companyId:"co-1", source:"discussion_entry_pending", entryId:"e1" });
+  const execArg = execMock.mock.calls[0][0];
+  // env unchanged (no connector token merged in).
+  expect(execArg.config.env).toEqual({});
+  // Task-12 delivery still intact.
+  expect(execArg.config.args[0]).toBe("--mcp-config");
 });
 it("claude-family: benign non-empty extraArgs → AoA prefix lands in extraArgs, benign args preserved (Task 12, shadow guard)", async () => {
   // Even a BENIGN extraArgs (e.g. --model opus) would be preferred by the adapter
