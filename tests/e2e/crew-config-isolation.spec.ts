@@ -141,6 +141,41 @@ test.describe("crew ambient Claude-config isolation", () => {
 
     await pinCrewAgentToClaude(request, crew);
 
+    // ── T6: a founder-attached skill must actually reach the crew CLI ────────
+    //
+    // Crew agents run through runAoaAgent, never the heartbeat, and the runner
+    // never set `context.skills` — so `listRuntimeSkillEntries` had exactly one
+    // caller (heartbeat) and every crew agent ran with zero company skills while
+    // the Agent Skills tab claimed otherwise. Unit tests can only prove the key
+    // lands on the context object; this is the wiring proof, read from the fake
+    // CLI's own view of the `--add-dir` skills directory the adapter built.
+    //
+    // D17: crew agents ship with NO default skillKeys, so the skill has to be
+    // installed and attached here — which is also exactly the founder path this
+    // is meant to make honest.
+    const skill = await jsonOrThrow<{ key: string; slug: string }>(
+      await request.post(`/api/companies/${company.id}/skills`, {
+        data: {
+          name: "Crew Delivery Probe",
+          description: "Attached to the crew agent so its delivery is observable at the spawn.",
+        },
+      }),
+      "create the company skill to attach",
+    );
+    // buildSkillsDir names the folder after the canonical key with "/" → "--"
+    // (claude-local/src/server/execute.ts:103).
+    const skillFolder = skill.key.replace(/\//g, "--");
+
+    // PATCH validates skillKeys against the company's installed skills and 422s
+    // on an unknown key, so a silently-dropped attachment fails here, loudly,
+    // rather than surfacing as an empty skills directory later.
+    await jsonOrThrow(
+      await request.patch(`/api/agents/${crew.id}`, {
+        data: { skillKeys: [skill.key] },
+      }),
+      "attach the skill to the crew agent",
+    );
+
     // The positive control: an ORG claude_local agent. Same adapter, same spawn
     // path, isolation flag never set (heartbeat doesn't pass it).
     const org = await jsonOrThrow<{ agent: { id: string } }>(
@@ -208,6 +243,13 @@ test.describe("crew ambient Claude-config isolation", () => {
       controlSpawn.configDirEntries,
       "the ambient operator config home must actually contain contamination",
     ).toEqual(expect.arrayContaining([...AMBIENT_CLAUDE_CONFIG_CONTAMINATION.dirs]));
+    // T6 control: nothing attached this skill to the ORG agent, so its skills
+    // directory must not contain it. Without this, the crew assertion below
+    // could pass on a folder that every spawn happens to get.
+    expect(
+      controlSpawn.skillDirEntries ?? [],
+      "the probe skill was never attached to the org agent",
+    ).not.toContain(skillFolder);
 
     // Recorded by the fake CLI itself — the spawn's own inherited environment.
     const invocation = await waitFor<FakeClaudeInvocation>(
@@ -271,5 +313,20 @@ test.describe("crew ambient Claude-config isolation", () => {
         `${name} must never reach a crew run`,
       ).not.toContain(name);
     }
+
+    // 5. 🚨 T6 — the founder-attached skill is REGISTERED with the spawned CLI.
+    //
+    //    `--add-dir <skillsDir>` is how claude-local hands skills to the CLI, and
+    //    the folder below only exists if the runner resolved the agent's
+    //    skillKeys and put the entries on `context.skills`. Read from the
+    //    child's own listing, so this is delivery, not intent.
+    expect(
+      invocation.argv,
+      "the crew spawn must register a skills directory",
+    ).toContain("--add-dir");
+    expect(
+      invocation.skillDirEntries,
+      `the attached skill (${skillFolder}) must be visible to the spawned CLI`,
+    ).toContain(skillFolder);
   });
 });

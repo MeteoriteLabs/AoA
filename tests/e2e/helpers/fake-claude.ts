@@ -62,6 +62,18 @@ export interface FakeClaudeInvocation {
    * Optional for the same back-compat reason as `env`.
    */
   configDirEntries?: string[];
+  /**
+   * The shim's listing of `<--add-dir>/.claude/skills`, taken at spawn time.
+   *
+   * Folder names only — never contents. This is where the adapter materializes
+   * `context.skills` (buildSkillsDir), and `--add-dir` is how the CLI registers
+   * them, so it is the observable end of the skill-delivery path. Like
+   * `configDirEntries`, the directory is removed in the adapter's `finally`, so
+   * only the child can see it without racing cleanup.
+   *
+   * Optional for the same back-compat reason as `env`.
+   */
+  skillDirEntries?: string[];
 }
 
 /**

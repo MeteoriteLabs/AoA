@@ -170,6 +170,27 @@ function recordableConfigDirEntries() {
   }
 }
 
+// The skills the spawn can actually SEE, listed by name from the child's own
+// view of `--add-dir <skillsDir>`.
+//
+// The adapter materializes `context.skills` into
+// `<skillsDir>/.claude/skills/<key with "/"→"--">/SKILL.md` (buildSkillsDir,
+// claude-local/src/server/execute.ts:100-113) and passes the parent directory as
+// `--add-dir`, which is how the real CLI registers them. skillsDir is removed in
+// the adapter's `finally`, so — exactly like configDirEntries — listing it here,
+// in the child, is the only race-free proof of what was delivered.
+//
+// FOLDER NAMES ONLY, never contents.
+function recordableSkillDirEntries() {
+  const flagIndex = argv.indexOf("--add-dir");
+  if (flagIndex < 0 || flagIndex + 1 >= argv.length) return [];
+  try {
+    return fs.readdirSync(path.join(argv[flagIndex + 1], ".claude", "skills")).sort();
+  } catch {
+    return [];
+  }
+}
+
 // Best-effort, never fatal. Called right before exit so any stdin the parent
 // piped in (the prompt, post-stdin-delivery) has been received during the turn.
 function recordInvocation() {
@@ -186,6 +207,7 @@ function recordInvocation() {
         cwd: process.cwd(),
         env: recordableEnv(),
         configDirEntries: recordableConfigDirEntries(),
+        skillDirEntries: recordableSkillDirEntries(),
       }) + "\n",
       "utf8",
     );

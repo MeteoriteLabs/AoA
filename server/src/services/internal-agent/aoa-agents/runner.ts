@@ -31,6 +31,10 @@ import { realProviderStatusDeps } from "../../../adapters/provider-status-deps.j
 import { applyModelResolutionToConfig } from "./runner-model-resolution.js";
 import { resolveCrewExecutionWorkspace } from "./crew-workspace.js";
 import { secretService } from "../../secrets.js";
+// Type-only: erased at compile time, so it does NOT pull company-skills' module
+// graph (adapter registry + agent/project/secret services) into every consumer
+// of the runner. The value import is dynamic, at the call site below.
+import type { RuntimeSkillEntry } from "../../company-skills.js";
 import {
   bindInternalAgentWorkQuestionContinuation,
   finalizeInternalAgentWorkQuestionContinuation,
@@ -688,12 +692,77 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
           }
         }
       }
+      // T6 (P3): deliver the company/marketplace skills the founder attached to
+      // this agent. `listRuntimeSkillEntries` had exactly ONE caller — the
+      // heartbeat (heartbeat.ts:3869-3885) — and crew agents are barred from the
+      // heartbeat, so an attached skill reached org agents and silently reached
+      // no crew agent, while the Agent Skills tab said it did. This block mirrors
+      // heartbeat's, including its two load-bearing details:
+      //
+      //   1. the `length > 0` guard. The claude-local adapter reads
+      //        const dbSkills = (context.skills as …) ?? [];
+      //        buildSkillsDir(dbSkills.length > 0 ? dbSkills : undefined);
+      //      (claude-local/src/server/execute.ts:374-375) — writing `[]` instead
+      //      of omitting the key must not change which branch runs, so the key is
+      //      only ever written when there is something to write.
+      //   2. warn-and-continue. Skill resolution touches the DB and, for
+      //      local_path/catalog skills, the filesystem; broken skill storage must
+      //      be VISIBLE rather than silently reading as "no skills attached" —
+      //      which is exactly what an unattached agent produces (D17: Phase 1
+      //      ships crew agents with no default skillKeys, so the empty result is
+      //      the common case and cannot be allowed to double as the error case).
+      //
+      // Imported dynamically like the runner's other heavy collaborators
+      // (issues.js, crew-context-bundle.js, crew-run-outcome.js):
+      // company-skills.ts pulls in the adapter registry plus the agent, project
+      // and secret services, and every consumer of this module would otherwise
+      // load that graph.
+      //
+      // Placement matches T5's workspace resolution — inside `!adapterResult`,
+      // next to its only consumer. A fake-crew turn never spawns a CLI, so
+      // resolving skills for one costs DB + ancillary-file reads for a context
+      // nothing reads.
+      let agentSkills: RuntimeSkillEntry[] = [];
+      try {
+        const { companySkillService } = await import("../../company-skills.js");
+        agentSkills = await companySkillService(db).listRuntimeSkillEntries(
+          agent.companyId,
+          agent.id,
+        );
+        log.info(
+          { runId, skillCount: agentSkills.length, skillKeys: agentSkills.map((s) => s.key) },
+          "aoa-runner: resolved company skills for crew run",
+        );
+      } catch (skillErr) {
+        // Sanitized err — mirror heartbeat's team-coordination block
+        // (heartbeat.ts:3923), NOT its skills block. A skill-resolution failure
+        // is most plausibly a DB error, and a node-postgres error carries `query`
+        // + `parameters` as own-enumerable props that pino's err serializer would
+        // include — so log identity only, never the raw error.
+        log.warn(
+          {
+            err: skillErr instanceof Error
+              ? { name: skillErr.name, message: skillErr.message }
+              : String(skillErr),
+            companyId: agent.companyId,
+            agentId: agent.id,
+            runId,
+          },
+          "aoa-runner: failed to resolve company skills for crew run; continuing without skill injection",
+        );
+      }
+
       const executionContext: Record<string, unknown> = {
         aoaInstruction: instruction,
         payload,
         paperclipWorkspace: crewWorkspace.workspace,
         paperclipWorkspaces: crewWorkspace.workspaceHints,
       };
+      // Guard, not a convenience: see (1) above — `skills: []` and an absent key
+      // must stay indistinguishable to the adapter.
+      if (agentSkills.length > 0) {
+        executionContext.skills = agentSkills;
+      }
 
       adapterResult = await adapter.execute({
         runId: runId ?? `aoa-${agentId}`,
