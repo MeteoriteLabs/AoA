@@ -104,7 +104,10 @@ import {
   shouldResetTaskSessionForWake,
   type ResolvedWorkspaceForRun,
 } from "./heartbeat-session.js";
-import { resolveWorkspaceForRun as resolveWorkspaceForRunShared } from "./workspace-resolution.js";
+import {
+  resolveExecutionWorkspacePolicyInputs,
+  resolveWorkspaceForRun as resolveWorkspaceForRunShared,
+} from "./workspace-resolution.js";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import { outputDetectionService } from "./output-detection.js";
 import { postRunSummaryComment } from "./run-summary-comment.js";
@@ -129,19 +132,14 @@ import { selectConcurrentPersistedExecutionWorkspace } from "./execution-workspa
 import { workspaceOperationService } from "./workspace-operations.js";
 import {
   buildExecutionWorkspaceAdapterConfig,
-  gateProjectExecutionWorkspacePolicy,
   issueExecutionWorkspaceModeForPersistedWorkspace,
-  parseIssueExecutionWorkspaceSettings,
-  parseProjectExecutionWorkspacePolicy,
   resolveDeliverableWorkspaceMode,
-  resolveExecutionWorkspaceMode,
 } from "./execution-workspace-policy.js";
 import {
   findActiveThreadWorkspace,
   resolveThreadDeliverableWorkspace,
 } from "./heartbeat-thread-workspace.js";
 import { finalizeHeartbeatWorkQuestionContinuation } from "./work-question-continuation-terminal.js";
-import { instanceSettingsService } from "./instance-settings.js";
 import {
   hasSessionCompactionThresholds,
   resolveAdapterExecutionTarget,
@@ -1299,7 +1297,6 @@ export function heartbeatService(db: Db) {
   const outputDetector = outputDetectionService(db);
   const executionWorkspacesSvc = executionWorkspaceService(db);
   const workspaceOperationsSvc = workspaceOperationService(db);
-  const instanceSettings = instanceSettingsService(db);
 
   // Register the secret resolver so API adapters can resolve API keys
   setSecretResolver((companyId, name) =>
@@ -2899,29 +2896,22 @@ export function heartbeatService(db: Db) {
       sessionCodec.deserialize(taskSessionForRun?.sessionParamsJson ?? null),
     );
     // ── Execution workspace policy resolution ─────────────────────────
-    const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
-    const issueExecutionWorkspaceSettings = isolatedWorkspacesEnabled
-      ? parseIssueExecutionWorkspaceSettings(issueContext?.executionWorkspaceSettings ?? null)
-      : null;
+    // Shared with the crew runner via resolveExecutionWorkspacePolicyInputs.
+    // Heartbeat-specific inputs (divergences): the assignee legacy override is
+    // passed through, projectEnv is returned for the env merge below, and the
+    // returned policy/settings feed buildExecutionWorkspaceAdapterConfig.
     const contextProjectId = readNonEmptyString(context.projectId);
     const executionProjectId = issueContext?.projectId ?? contextProjectId;
-    const projectRow = executionProjectId
-      ? await db
-          .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy, env: projects.env })
-          .from(projects)
-          .where(and(eq(projects.id, executionProjectId), eq(projects.companyId, agent.companyId)))
-          .then((rows) => rows[0] ?? null)
-      : null;
-    const projectExecutionWorkspacePolicy = projectRow
-      ? gateProjectExecutionWorkspacePolicy(
-          parseProjectExecutionWorkspacePolicy(projectRow.executionWorkspacePolicy),
-          isolatedWorkspacesEnabled,
-        )
-      : null;
-    const projectEnv = projectRow?.env ?? null;
-    const executionWorkspaceMode = resolveExecutionWorkspaceMode({
-      projectPolicy: projectExecutionWorkspacePolicy,
-      issueSettings: issueExecutionWorkspaceSettings,
+    const {
+      isolatedWorkspacesEnabled,
+      issueExecutionWorkspaceSettings,
+      projectExecutionWorkspacePolicy,
+      projectEnv,
+      executionWorkspaceMode,
+    } = await resolveExecutionWorkspacePolicyInputs(db, {
+      companyId: agent.companyId,
+      executionProjectId,
+      rawIssueExecutionWorkspaceSettings: issueContext?.executionWorkspaceSettings ?? null,
       legacyUseProjectWorkspace: issueAssigneeOverrides?.useProjectWorkspace ?? null,
     });
     const resolvedWorkspace = await resolveWorkspaceForRun(

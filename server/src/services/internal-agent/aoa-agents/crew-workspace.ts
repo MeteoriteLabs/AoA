@@ -1,16 +1,12 @@
 import fs from "node:fs/promises";
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { discussions, issues, projects } from "@armyofagents/db";
+import { discussions, issues } from "@armyofagents/db";
 import { resolveDefaultAgentWorkspaceDir } from "../../../home-paths.js";
-import { instanceSettingsService } from "../../instance-settings.js";
 import {
-  gateProjectExecutionWorkspacePolicy,
-  parseIssueExecutionWorkspaceSettings,
-  parseProjectExecutionWorkspacePolicy,
-  resolveExecutionWorkspaceMode,
-} from "../../execution-workspace-policy.js";
-import { resolveWorkspaceForRun } from "../../workspace-resolution.js";
+  resolveExecutionWorkspacePolicyInputs,
+  resolveWorkspaceForRun,
+} from "../../workspace-resolution.js";
 
 /**
  * T5 — crew execution-workspace resolution (Decision #110, clause 7).
@@ -26,37 +22,33 @@ import { resolveWorkspaceForRun } from "../../workspace-resolution.js";
  * customer's work. D16's tier two ("the workspace repo's own CLAUDE.md is
  * allowed") was satisfied by accident, by the wrong repo.
  *
- * WHAT THIS MIRRORS. Heartbeat resolves the same thing at
- * `heartbeat.ts:2901-2932` (policy inputs → mode → resolver call) →
- * `:3493-3510` (context shape) → `:3516` (`paperclipWorkspaces` hints). This
- * helper reuses heartbeat's own `resolveWorkspaceForRun` (extracted, not
- * copied) and emits the same `context.paperclipWorkspace` shape as heartbeat's
- * isolated-workspaces-DISABLED branch.
+ * WHAT THIS SHARES. Heartbeat resolves the same thing (policy inputs → mode →
+ * resolver call → context shape → `paperclipWorkspaces` hints). The POLICY-INPUT
+ * block — the instance-flag / issue-settings / project-policy reads feeding the
+ * mode — is now the shared `resolveExecutionWorkspacePolicyInputs`
+ * (`services/workspace-resolution.ts`), alongside the `resolveWorkspaceForRun`
+ * resolver both paths already share. There is nothing left to keep in sync by
+ * hand: a change to the policy inputs lands in the shared function for both
+ * callers.
  *
- * ⚠️ KEEP IN SYNC. Only the LEAF helpers are shared — the resolver itself
- * (`services/workspace-resolution.ts`) and the four
- * `execution-workspace-policy.ts` parsers. The POLICY-INPUT block below (the
- * instance-flag / issue-settings / project-policy reads feeding
- * `resolveExecutionWorkspaceMode`) is a re-implementation of
- * `heartbeat.ts:2901-2926`, not an extraction. It was left that way
- * deliberately, because the two paths read overlapping-but-different inputs.
- * The known divergences, all intentional:
+ * The overlapping-but-different inputs the two paths read are absorbed by that
+ * function, either as parameters or as caller-side pre-resolution:
  *
- *   1. Crew has no issue-assignee adapter overrides, so
- *      `legacyUseProjectWorkspace` is always null here.
- *   2. Crew does not merge `projects.env` into the adapter config.
- *   3. Crew does not run `buildExecutionWorkspaceAdapterConfig`
- *      (`heartbeat.ts:2934-2940`), which strips/normalises
- *      `workspaceStrategy` + `workspaceRuntime` on the adapter config. Inert
- *      today — no adapter reads either while crew stays on the
- *      project-primary strategy — but it becomes real the moment crew
- *      realizes worktrees (W3b).
- *   4. Crew derives its project from the TASK's project or the THREAD's
- *      scope; heartbeat derives it from the issue or the wake context.
- *
- * The cost is that a change to the policy inputs must be made in BOTH places —
- * if you edit either one, check the other. Unifying them is a follow-up, not a
- * drive-by.
+ *   1. Crew has no issue-assignee adapter overrides, so it passes
+ *      `legacyUseProjectWorkspace: null` (a shared-function parameter).
+ *   2. Crew does not merge `projects.env` into the adapter config. The shared
+ *      function still returns `projectEnv`; crew simply ignores it (the merge
+ *      is downstream of the block, in heartbeat only).
+ *   3. Crew does not run `buildExecutionWorkspaceAdapterConfig`, which
+ *      strips/normalises `workspaceStrategy` + `workspaceRuntime` on the adapter
+ *      config. That step is downstream of the block, run by heartbeat only.
+ *      Inert for crew today — no adapter reads either while crew stays on the
+ *      project-primary strategy — but it becomes real the moment crew realizes
+ *      worktrees (W3b).
+ *   4. Crew derives its project from the TASK's project or the THREAD's scope
+ *      (below) and passes the resolved `executionProjectId` in; heartbeat
+ *      derives it from the issue or the wake context. Both feed the same shared
+ *      policy read.
  *
  * WHY THAT BRANCH. Crew runs do not realize per-task git worktrees: that is
  * W3b (crew workspaces), and realizing one here would create and persist
@@ -139,11 +131,12 @@ export async function resolveCrewExecutionWorkspace(
   // Declared outside so the catch can name WHICH project lookup was in flight.
   let executionProjectId: string | null = null;
   try {
-    // ── Policy inputs (re-implements heartbeat.ts:2901-2926 — see KEEP IN
-    //    SYNC in the header before editing either) ────────────────────────
-    const isolatedWorkspacesEnabled = (await instanceSettingsService(db).getExperimental())
-      .enableIsolatedWorkspaces;
-
+    // ── Policy inputs (shared with heartbeat via
+    //    resolveExecutionWorkspacePolicyInputs — see WHAT THIS SHARES in the
+    //    header) ───────────────────────────────────────────────────────────
+    // Crew resolves its OWN project (task project → thread scope) and reads the
+    // task's raw workspace settings; the shared function does the identical
+    // instance-flag / project-policy / mode computation heartbeat runs.
     const issueRow = issueId
       ? await db
           .select({
@@ -153,10 +146,6 @@ export async function resolveCrewExecutionWorkspace(
           .from(issues)
           .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))
           .then((rows) => rows[0] ?? null)
-      : null;
-
-    const issueExecutionWorkspaceSettings = isolatedWorkspacesEnabled
-      ? parseIssueExecutionWorkspaceSettings(issueRow?.executionWorkspaceSettings ?? null)
       : null;
 
     // A task's project wins. Otherwise fall back to the THREAD's scope — the
@@ -176,30 +165,17 @@ export async function resolveCrewExecutionWorkspace(
         : null;
 
     executionProjectId = issueRow?.projectId ?? threadProjectId;
-    const projectRow = executionProjectId
-      ? await db
-          .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy })
-          .from(projects)
-          .where(and(eq(projects.id, executionProjectId), eq(projects.companyId, agent.companyId)))
-          .then((rows) => rows[0] ?? null)
-      : null;
 
-    const projectExecutionWorkspacePolicy = projectRow
-      ? gateProjectExecutionWorkspacePolicy(
-          parseProjectExecutionWorkspacePolicy(projectRow.executionWorkspacePolicy),
-          isolatedWorkspacesEnabled,
-        )
-      : null;
-
-    const executionWorkspaceMode = resolveExecutionWorkspaceMode({
-      projectPolicy: projectExecutionWorkspacePolicy,
-      issueSettings: issueExecutionWorkspaceSettings,
+    const { executionWorkspaceMode } = await resolveExecutionWorkspacePolicyInputs(db, {
+      companyId: agent.companyId,
+      executionProjectId,
+      rawIssueExecutionWorkspaceSettings: issueRow?.executionWorkspaceSettings ?? null,
       // Crew agents are not issue assignees with adapter overrides; the legacy
       // per-assignee `useProjectWorkspace` flag has no crew equivalent.
       legacyUseProjectWorkspace: null,
     });
 
-    // ── cwd resolution (heartbeat.ts:2927-2932) ────────────────────────
+    // ── cwd resolution ─────────────────────────────────────────────────
     const resolved = await resolveWorkspaceForRun(
       db,
       agent,

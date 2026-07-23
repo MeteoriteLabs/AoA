@@ -1,9 +1,20 @@
 import fs from "node:fs/promises";
 import { and, asc, eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
-import { issues, projectWorkspaces } from "@armyofagents/db";
+import { issues, projects, projectWorkspaces } from "@armyofagents/db";
+import type {
+  IssueExecutionWorkspaceSettings,
+  ProjectExecutionWorkspacePolicy,
+} from "@armyofagents/shared";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import type { ResolvedWorkspaceForRun } from "./heartbeat-session.js";
+import {
+  gateProjectExecutionWorkspacePolicy,
+  parseIssueExecutionWorkspaceSettings,
+  parseProjectExecutionWorkspacePolicy,
+  resolveExecutionWorkspaceMode,
+} from "./execution-workspace-policy.js";
+import { instanceSettingsService } from "./instance-settings.js";
 
 // AoA canonical name. Rows still using the legacy paperclip name are read
 // transparently via isRepoOnlySentinel below.
@@ -20,6 +31,109 @@ export function isRepoOnlySentinel(cwd: string | null | undefined): boolean {
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+export type ExecutionWorkspacePolicyInputs = {
+  /** Instance experimental flag; gates issue settings + the project policy. */
+  isolatedWorkspacesEnabled: boolean;
+  /** Parsed issue-level settings, or null when isolated workspaces are off. */
+  issueExecutionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
+  /** Gated project policy; null when isolated workspaces are off or there is no project. */
+  projectExecutionWorkspacePolicy: ProjectExecutionWorkspacePolicy | null;
+  /**
+   * The project's `env` column, returned for the caller's downstream env merge.
+   * The merge itself is NOT part of this block (see divergence 2 below) — the
+   * caller decides whether to consume this. null for a project-less run.
+   */
+  projectEnv: unknown;
+  /** The resolved execution-workspace mode fed to `resolveWorkspaceForRun`. */
+  executionWorkspaceMode: ReturnType<typeof resolveExecutionWorkspaceMode>;
+  /** Echoed back unchanged — the project id the policy was read against. */
+  executionProjectId: string | null;
+};
+
+/**
+ * Resolve the execution-workspace POLICY INPUTS that precede
+ * `resolveWorkspaceForRun`: the instance flag, the parsed issue settings, the
+ * gated project policy, and the resolved mode.
+ *
+ * UNIFIES the block that heartbeat (`heartbeat.ts`, the "Execution workspace
+ * policy resolution" section) and the crew runner (`crew-workspace.ts`)
+ * previously implemented twice. The two paths read overlapping-but-different
+ * inputs; those differences are handled OUTSIDE this function, so the block
+ * itself is now identical for both callers:
+ *
+ *   1. Per-assignee legacy `useProjectWorkspace` override — a PARAMETER
+ *      (`legacyUseProjectWorkspace`). Heartbeat passes the issue-assignee
+ *      adapter override; crew has no such concept and passes null.
+ *   2. `projects.env` merge — DOWNSTREAM of this block. This function always
+ *      reads and returns `projectEnv`; the caller decides whether to merge it
+ *      into the adapter config (heartbeat does; crew does not). Reading the
+ *      extra column is inert for the crew path (it ignores the value).
+ *   3. `buildExecutionWorkspaceAdapterConfig` — DOWNSTREAM of this block, run
+ *      only by heartbeat after the resolver. This function returns the policy +
+ *      settings + mode it needs; crew never calls it.
+ *   4. Project derivation — the CALLER resolves `executionProjectId` and the raw
+ *      issue settings before calling. Heartbeat takes them from its in-memory
+ *      issue context / wake context; crew reads the task's project or the
+ *      thread's scope. Both feed the same identical policy read here.
+ *
+ * Company-scoped, so a caller-supplied project id can never select another
+ * tenant's row.
+ */
+export async function resolveExecutionWorkspacePolicyInputs(
+  db: Db,
+  input: {
+    companyId: string;
+    /** Resolved by the caller (task project, thread scope, or wake context). */
+    executionProjectId: string | null;
+    /** Raw `issues.executionWorkspaceSettings`; parsed + gated here. */
+    rawIssueExecutionWorkspaceSettings: unknown;
+    /** Divergence 1: heartbeat's assignee override, or null for crew. */
+    legacyUseProjectWorkspace: boolean | null;
+  },
+): Promise<ExecutionWorkspacePolicyInputs> {
+  const { companyId, executionProjectId, rawIssueExecutionWorkspaceSettings, legacyUseProjectWorkspace } =
+    input;
+
+  const isolatedWorkspacesEnabled = (await instanceSettingsService(db).getExperimental())
+    .enableIsolatedWorkspaces;
+
+  const issueExecutionWorkspaceSettings = isolatedWorkspacesEnabled
+    ? parseIssueExecutionWorkspaceSettings(rawIssueExecutionWorkspaceSettings)
+    : null;
+
+  const projectRow = executionProjectId
+    ? await db
+        .select({ executionWorkspacePolicy: projects.executionWorkspacePolicy, env: projects.env })
+        .from(projects)
+        .where(and(eq(projects.id, executionProjectId), eq(projects.companyId, companyId)))
+        .then((rows) => rows[0] ?? null)
+    : null;
+
+  const projectExecutionWorkspacePolicy = projectRow
+    ? gateProjectExecutionWorkspacePolicy(
+        parseProjectExecutionWorkspacePolicy(projectRow.executionWorkspacePolicy),
+        isolatedWorkspacesEnabled,
+      )
+    : null;
+
+  const projectEnv = projectRow?.env ?? null;
+
+  const executionWorkspaceMode = resolveExecutionWorkspaceMode({
+    projectPolicy: projectExecutionWorkspacePolicy,
+    issueSettings: issueExecutionWorkspaceSettings,
+    legacyUseProjectWorkspace,
+  });
+
+  return {
+    isolatedWorkspacesEnabled,
+    issueExecutionWorkspaceSettings,
+    projectExecutionWorkspacePolicy,
+    projectEnv,
+    executionWorkspaceMode,
+    executionProjectId,
+  };
 }
 
 /**
