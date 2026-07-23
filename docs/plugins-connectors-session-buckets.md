@@ -52,19 +52,30 @@ these for its category before deciding build-vs-consume.
 ## THE BUCKETS
 
 ### Bucket 0 — Foundation / Platform  ⭐ do first, blocks all others
-- **Scope:** The **MCP Connector Host** (reusable): `@modelcontextprotocol/sdk` client,
-  per-company OAuth → `company_secrets`, tool-bridge into `plugin-tool-registry`,
-  reusable landing-spot adapters (→Discussion, →Memory-pending, →Task, →Inbox,
-  →cost_event). Plus cross-cutting: hosting model (local stdio vs remote HTTP),
-  the provider-driver abstraction shared by Google/Microsoft, marketplace surfacing,
-  and RBAC (`principal_permission_grants`).
+> **Split (refined during Bucket 1 discussion — no outbound MCP client exists on `main`):**
+> - **0a — Connection & OAuth framework (the true keystone).** Token store keyed
+>   **per-user AND per-company** as appropriate (Gmail/Calendar are per-user; a company
+>   integration is per-company), encrypted via the `github_pat`/`company_secrets`
+>   pattern; incremental OAuth on the existing login Google app; a **per-service
+>   authorization** model ("this agent may act on my Mail/Calendar/Drive"); and the
+>   reusable **landing-spot adapters** (→Inbox `notifications`, →Memory-pending,
+>   →Task, →Discussion, →cost_event). **Both direct integrations (Google, MS) and
+>   MCP-consumed ones need 0a. Build first.**
+> - **0b — MCP Connector Host (outbound client bridge).** `@modelcontextprotocol/sdk`
+>   client + tool-bridge into `plugin-tool-registry`. **Only for the long-tail buckets
+>   (3–14)** that consume community MCP servers. Google (1) and Microsoft (2) skip it
+>   and call provider SDKs directly.
 - **Verdict:** Build (core platform capability).
-- **Consume:** the SDK itself; study `modelcontextprotocol/servers` patterns.
-- **Session questions:** subprocess vs remote transport? token isolation per tenant?
-  meta-router (Smithery-style) to control context? how connectors appear in AoA's
-  own marketplace catalog (`derivePackages.ts`)?
+- **Consume:** the SDK itself (0b); study `modelcontextprotocol/servers` patterns.
+- **Session questions:** subprocess vs remote transport (0b)? per-user vs per-company
+  token isolation? meta-router (Smithery-style) to control context? how connectors
+  appear in AoA's own marketplace catalog (`derivePackages.ts`)?
 
 ### Bucket 1 — Google Workspace  (its own session, per your call)
+> **Design agreed — see `docs/plugins-connectors-bucket1-google.md` for the full v1
+> spec** (per-user connections, "act as me" per-service authorization, Gmail→Inbox
+> AI-first surface with read+send, Calendar tool-first with full view deferred, Drive
+> hybrid sync, direct `googleapis` not MCP, CASA on the radar).
 - **Scope:** Gmail, Calendar, Drive, Docs, Sheets, Slides, Tasks, Contacts.
 - **Verdict:** **One first-party plugin.** Raw access consumed; glue built:
   Gmail→Discussion→Inbox + Commander "Mail" panel; Calendar = agent/Commander tool;

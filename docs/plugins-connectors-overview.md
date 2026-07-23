@@ -34,8 +34,20 @@ So almost nothing is "built inside the core." A connector = **[consumed MCP serv
 
 ## 1. The architectural keystone — build this FIRST
 
-Before any individual connector, build **one reusable capability inside the plugin
-runtime**: the **MCP Connector Host**.
+> **Refined during the Bucket 1 discussion (see
+> `docs/plugins-connectors-bucket1-google.md`).** Verified on `main`: AoA has **no
+> outbound MCP client** yet, and the deep first-party integrations (Google, Microsoft)
+> need push/granular-scopes/tight control — so they go **direct to the provider SDK**,
+> not through a consumed MCP server. That splits this keystone in two:
+> - **0a — Connection & OAuth framework:** per-user *and* per-company encrypted token
+>   store (github_pat pattern), incremental OAuth, **per-service "act as me"
+>   authorization**, and the reusable landing-spot adapters (→Inbox, →Memory-pending,
+>   →Task, →Discussion). Needed by **every** connector. Build first.
+> - **0b — MCP Connector Host (below):** only for the **long-tail** buckets that
+>   consume community MCP servers.
+
+Before the long-tail connectors, build **one reusable capability inside the plugin
+runtime**: the **MCP Connector Host** (Bucket 0b).
 
 **What it does (once, for all connectors):**
 - Holds a registered MCP **client** (`@modelcontextprotocol/sdk` client half:
