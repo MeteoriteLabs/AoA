@@ -147,5 +147,10 @@ export { extractVerificationUrl, createLoginUrlDetector, isLoopbackUrl } from ".
 export type { LoginUrlDetector } from "./login-url-detector.js";
 export { runAuthStatusAndBranch } from "./auth-probe-branch.js";
 export type { AuthProbeStatus, AuthProbeBranchOptions } from "./auth-probe-branch.js";
-export { isStdioServerSpec, isHttpServerSpec } from "./mcp-server-spec.js";
+export {
+  isStdioServerSpec,
+  isHttpServerSpec,
+  RESERVED_MCP_SERVER_NAMES,
+  stripReservedMcpServerNames,
+} from "./mcp-server-spec.js";
 export type { McpServerSpec, McpStdioServerSpec, McpHttpServerSpec } from "./mcp-server-spec.js";

@@ -56,3 +56,23 @@ export function isHttpServerSpec(spec: unknown): spec is McpHttpServerSpec {
     typeof (spec as { url?: unknown }).url === "string"
   );
 }
+
+/** Server names AoA owns. A connector must never shadow these. */
+export const RESERVED_MCP_SERVER_NAMES = ["aoa", "playwright"] as const;
+
+/**
+ * Drop any entry whose key collides with a name AoA owns. Returns a NEW
+ * null-prototype object — callers merge external connectors into a config that
+ * already contains the reserved servers, so a collision here would silently
+ * replace AoA's own loopback bridge or browser server.
+ */
+export function stripReservedMcpServerNames(
+  servers: Record<string, McpServerSpec>,
+): Record<string, McpServerSpec> {
+  const out: Record<string, McpServerSpec> = Object.create(null);
+  for (const [name, spec] of Object.entries(servers)) {
+    if ((RESERVED_MCP_SERVER_NAMES as readonly string[]).includes(name)) continue;
+    out[name] = spec;
+  }
+  return out;
+}

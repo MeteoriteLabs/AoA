@@ -7,6 +7,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Db } from "@armyofagents/db";
 import type { HumanQuestionRuntimeCapabilities } from "@armyofagents/adapter-utils";
+import { stripReservedMcpServerNames, type McpServerSpec } from "@armyofagents/adapter-utils";
 import type { AgentTool } from "./types.js";
 import type { AgentStreamChunk, ChatInput } from "./agent-loop.js";
 import { createCLISessionStore } from "./cli-session-store.js";
@@ -119,21 +120,26 @@ export interface McpConfigParams {
   effectiveAutonomy?: number | null;
   /** Normalized structured Commander scope for memory/tool policy. */
   contextScope?: NormalizedCommanderContextScope | null;
+  /** External connectors, keyed by server name. Reserved names are filtered. */
+  extraMcpServers?: Record<string, McpServerSpec>;
+}
+
+/**
+ * Serialized MCP config handed to a CLI. `aoa` is always present (AoA's own
+ * loopback bridge). `playwright` is capability-gated. Any other key is an
+ * external connector (see McpServerSpec).
+ */
+interface McpConfigServerEntry {
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  type?: "http";
+  url?: string;
+  headers?: Record<string, string>;
 }
 
 interface McpConfig {
-  mcpServers: {
-    aoa: {
-      command: string;
-      args: string[];
-      env: Record<string, string>;
-    };
-    playwright?: {
-      command: string;
-      args: string[];
-      env: Record<string, string>;
-    };
-  };
+  mcpServers: Record<string, McpConfigServerEntry>;
 }
 
 export const PLAYWRIGHT_MCP_PACKAGE = "@playwright/mcp@0.0.75";
@@ -209,21 +215,30 @@ export function buildMcpBridgeSpec(params: McpConfigParams): McpBridgeSpec {
 }
 
 export function buildMcpConfig(params: McpConfigParams): McpConfig {
-  const config: McpConfig = {
-    mcpServers: {
-      aoa: buildMcpBridgeSpec(params),
-    },
-  };
+  // Null-prototype: connector names are runtime strings from DB rows, and a
+  // connector named `__proto__` assigned onto a normal object literal would set
+  // the prototype instead of adding a key — the server would silently vanish.
+  const mcpServers: Record<string, McpConfigServerEntry> = Object.create(null);
+  mcpServers.aoa = buildMcpBridgeSpec(params);
 
   if (params.enabledCapabilities?.includes("browser_use")) {
-    config.mcpServers.playwright = {
+    mcpServers.playwright = {
       command: "npx",
       args: [PLAYWRIGHT_MCP_PACKAGE, "--headless"],
       env: {},
     };
   }
 
-  return config;
+  for (const [name, spec] of Object.entries(
+    stripReservedMcpServerNames(params.extraMcpServers ?? {}),
+  )) {
+    mcpServers[name] =
+      spec.kind === "http"
+        ? { type: "http", url: spec.url, headers: spec.headers }
+        : { command: spec.command, args: spec.args, env: spec.env };
+  }
+
+  return { mcpServers };
 }
 
 export function toolToMcpFormat(tool: AgentTool) {
