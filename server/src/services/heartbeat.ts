@@ -93,8 +93,7 @@ import {
   prepareHeartbeatMcpDelivery,
   resolveHeartbeatEffectiveAutonomy,
 } from "./heartbeat-mcp.js";
-import { buildConnectorSpecs } from "./mcp-connectors.js";
-import { loadEnabledConnectorRows } from "./mcp-connectors-loader.js";
+import { resolveAgentConnectors } from "./mcp-connectors-loader.js";
 
 export {
   cancelCrewRunsForAgent,
@@ -4286,26 +4285,14 @@ export function heartbeatService(db: Db) {
       let extraMcpServers: Record<string, McpServerSpec> | undefined;
       let connectorEnv: Record<string, string> | undefined;
       if (agent.adapterType === "claude_local") {
-        const connectorRows = await loadEnabledConnectorRows(db, {
+        const resolved = await resolveAgentConnectors(db, {
           companyId: agent.companyId,
           agentId: agent.id,
+          runId: run.id,
+          logger,
         });
-        const built = buildConnectorSpecs(connectorRows);
-        extraMcpServers = built.specs;
-        connectorEnv = built.env;
-        if (built.skipped.length > 0) {
-          // Observability (amendments A8/A19/FIX3): a connector that silently
-          // vanishes is the worst failure mode. Log which and why.
-          logger.warn(
-            {
-              companyId: agent.companyId,
-              agentId: agent.id,
-              runId: run.id,
-              skipped: built.skipped,
-            },
-            "[heartbeat] mcp connectors skipped for agent run",
-          );
-        }
+        extraMcpServers = resolved.extraMcpServers;
+        connectorEnv = resolved.connectorEnv;
       }
 
       const heartbeatMcpDelivery = await prepareHeartbeatMcpDelivery({

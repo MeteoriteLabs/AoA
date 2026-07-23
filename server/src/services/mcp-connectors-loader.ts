@@ -12,8 +12,9 @@
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { companyMcpConnectorAgents, companyMcpConnectors } from "@armyofagents/db";
+import type { McpServerSpec } from "@armyofagents/adapter-utils";
 import { logger } from "../middleware/logger.js";
-import { selectConnectorRowsForAgent, type ResolvedConnectorRow } from "./mcp-connectors.js";
+import { buildConnectorSpecs, selectConnectorRowsForAgent, type ResolvedConnectorRow } from "./mcp-connectors.js";
 import { secretService, type SecretConsumerContext } from "./secrets.js";
 
 export interface LoadEnabledConnectorRowsOptions {
@@ -134,4 +135,59 @@ export async function loadEnabledConnectorRows(
   }
 
   return resolved;
+}
+
+/** Minimal logger surface `resolveAgentConnectors` needs — matches pino's `.warn(meta, msg)` shape. */
+export interface ConnectorLogger {
+  warn: (meta: Record<string, unknown>, msg: string) => void;
+}
+
+export interface ResolveAgentConnectorsInput {
+  companyId: string;
+  /** Real agent id for per-agent opt-in (D4); null for Commander/all-active (D3). */
+  agentId: string | null;
+  runId?: string;
+  logger?: ConnectorLogger;
+}
+
+export interface ResolveAgentConnectorsResult {
+  extraMcpServers: Record<string, McpServerSpec>;
+  connectorEnv: Record<string, string>;
+}
+
+/**
+ * Single place all three delivery paths (heartbeat, crew, Commander) resolve a
+ * company's enabled connectors into `{ extraMcpServers, connectorEnv }`.
+ *
+ * Lives here (not in the pure `mcp-connectors.ts`) deliberately: it needs BOTH
+ * `loadEnabledConnectorRows` (this file, DB I/O) and `buildConnectorSpecs` (the
+ * pure module, which this file already imports one-way). Putting this in the
+ * pure module and importing the loader back would create a
+ * `mcp-connectors.ts ⇄ mcp-connectors-loader.ts` cycle.
+ *
+ * Skipped connectors are logged HERE (a silently vanishing connector is the
+ * worst failure mode — A8/A19) rather than left for callers to remember, so
+ * the skip-log has one unit-testable seam instead of three call-site copies.
+ */
+export async function resolveAgentConnectors(
+  db: Db,
+  input: ResolveAgentConnectorsInput,
+): Promise<ResolveAgentConnectorsResult> {
+  const rows = await loadEnabledConnectorRows(db, {
+    companyId: input.companyId,
+    agentId: input.agentId,
+  });
+  const { specs, env, skipped } = buildConnectorSpecs(rows);
+  if (skipped.length > 0 && input.logger) {
+    input.logger.warn(
+      {
+        companyId: input.companyId,
+        agentId: input.agentId,
+        runId: input.runId,
+        skipped,
+      },
+      "mcp connectors skipped for agent run",
+    );
+  }
+  return { extraMcpServers: specs, connectorEnv: env };
 }

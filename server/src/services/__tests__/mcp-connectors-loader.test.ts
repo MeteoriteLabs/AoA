@@ -37,7 +37,7 @@ vi.mock("../../middleware/logger.js", () => ({
   logger: { warn: (...args: unknown[]) => warn(...args) },
 }));
 
-import { loadEnabledConnectorRows } from "../mcp-connectors-loader.js";
+import { loadEnabledConnectorRows, resolveAgentConnectors } from "../mcp-connectors-loader.js";
 
 // ---------------------------------------------------------------------------
 // Sequence-based mock DB. Each `.select()` consumes the next preset row set and
@@ -278,5 +278,82 @@ describe("loadEnabledConnectorRows", () => {
 
     expect(rows).toEqual([]);
     expect(resolveByName).not.toHaveBeenCalled();
+  });
+});
+
+describe("resolveAgentConnectors", () => {
+  it("resolves an http connector with a resolvable secret into a placeholder spec + real env, no warn", async () => {
+    const { db } = createSequenceDb([
+      [connectorRow({ id: "c1", serverName: "notion", secretRef: "mcp:notion" })],
+      [{ connectorId: "c1" }],
+    ]);
+    resolveByName.mockResolvedValue("secret-abc");
+    const seamWarn = vi.fn();
+
+    const result = await resolveAgentConnectors(db, {
+      companyId: "co-1",
+      agentId: "agent-1",
+      runId: "run-1",
+      logger: { warn: seamWarn },
+    });
+
+    expect(result.extraMcpServers.notion).toEqual({
+      kind: "http",
+      url: "https://mcp.notion.com/mcp",
+      headers: { Authorization: "Bearer ${AOA_MCP_NOTION_TOKEN}" },
+    });
+    expect(result.connectorEnv.AOA_MCP_NOTION_TOKEN).toBe("secret-abc");
+    expect(seamWarn).not.toHaveBeenCalled();
+  });
+
+  it("logs skipped connectors once through the passed-in logger and returns no spec for them", async () => {
+    const { db } = createSequenceDb([
+      [
+        connectorRow({
+          id: "c-bad",
+          serverName: "broken-http",
+          transport: "http",
+          url: null,
+          secretRef: null,
+        }),
+      ],
+      [{ connectorId: "c-bad" }],
+    ]);
+    const seamWarn = vi.fn();
+
+    const result = await resolveAgentConnectors(db, {
+      companyId: "co-1",
+      agentId: "agent-1",
+      logger: { warn: seamWarn },
+    });
+
+    expect(result.extraMcpServers).toEqual({});
+    expect(seamWarn).toHaveBeenCalledTimes(1);
+    expect(seamWarn.mock.calls[0][0]).toMatchObject({
+      companyId: "co-1",
+      agentId: "agent-1",
+      skipped: [{ serverName: "broken-http", reason: "missing_url" }],
+    });
+  });
+
+  it("resolves every active connector without the join query when agentId is null (Commander)", async () => {
+    const { db, selectedTables } = createSequenceDb([
+      [
+        connectorRow({ id: "c1", serverName: "notion", secretRef: "mcp:notion" }),
+        connectorRow({ id: "c2", serverName: "linear", secretRef: "mcp:linear" }),
+      ],
+    ]);
+    resolveByName.mockResolvedValue("secret-abc");
+    const seamWarn = vi.fn();
+
+    const result = await resolveAgentConnectors(db, {
+      companyId: "co-1",
+      agentId: null,
+      logger: { warn: seamWarn },
+    });
+
+    expect(Object.keys(result.extraMcpServers).sort()).toEqual(["linear", "notion"]);
+    expect(selectedTables).toEqual(["company_mcp_connectors"]);
+    expect(seamWarn).not.toHaveBeenCalled();
   });
 });
