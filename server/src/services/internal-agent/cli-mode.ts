@@ -761,7 +761,10 @@ export function cliModeService(db: Db) {
           // resolution failure must degrade to "no connectors" (non-silent via
           // the warn log — A8/A19), never break the user's turn. The loader
           // already isolates per-connector secret failures; this guard also
-          // absorbs a systemic DB error so the chat still answers.
+          // absorbs a systemic DB error so the chat still answers. The guard is
+          // justified by this production-degradation reason ALONE — the unit
+          // tests mock resolveAgentConnectors at module level, so they never
+          // reach (or depend on) this try/catch.
           let connectorSpecs: Record<string, McpServerSpec> = {};
           let connectorEnv: Record<string, string> = {};
           if (config.cliTool === "claude_cli") {
@@ -815,6 +818,12 @@ export function cliModeService(db: Db) {
           // spawn; the claude spawn below inherits it via
           // { ...process.env, ...invocation.spawnEnv }. Connector tokens layer
           // on TOP of the existing spawnEnv (e.g. MAX_THINKING_TOKENS) — no scrub.
+          //
+          // LIMITATION (P2N2): connectors are resolved at the FIRST-message
+          // spawn of a persistent claude session and the env is fixed at spawn,
+          // so a connector added/removed mid-conversation won't take effect
+          // until that session recycles. Real debugging gotcha ("I added a
+          // connector and Commander still can't see it").
           if (Object.keys(connectorEnv).length > 0) {
             invocation.spawnEnv = { ...(invocation.spawnEnv ?? {}), ...connectorEnv };
           }
