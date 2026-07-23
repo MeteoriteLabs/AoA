@@ -58,6 +58,36 @@ export function envVarNameFor(serverName: string): string {
   return `AOA_MCP_${slug}_TOKEN`;
 }
 
+export interface ConnectorSelectionInput<T extends { id: string; status: string }> {
+  connectors: T[];
+  enabledConnectorIds: Set<string>;
+  /** Commander receives every ACTIVE connector, exempt from per-agent opt-in (D3). */
+  isCommander: boolean;
+}
+
+/**
+ * Single source of truth for which connectors an agent run receives.
+ *
+ * Status is checked FIRST and applies to Commander too — the D3 exemption is
+ * from the per-agent opt-in ONLY, never from approval status. A
+ * `pending_approval` connector has not been approved by anyone; handing it to
+ * Commander would make the approval gate bypassable by asking Commander
+ * instead of an agent.
+ *
+ * Deliberately the only place the status rule lives. The loader passes ALL of a
+ * company's connector rows through here rather than pre-filtering by status in
+ * SQL — two copies of a security predicate drift, and the SQL copy is the one
+ * no unit test covers.
+ */
+export function selectConnectorRowsForAgent<T extends { id: string; status: string }>(
+  input: ConnectorSelectionInput<T>,
+): T[] {
+  return input.connectors.filter((c) => {
+    if (c.status !== "active") return false;
+    return input.isCommander || input.enabledConnectorIds.has(c.id);
+  });
+}
+
 /**
  * Convert connector rows into adapter specs + the env map carrying secrets.
  * Templates use the literal token `${TOKEN}`, rewritten to the connector's

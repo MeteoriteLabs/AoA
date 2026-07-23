@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { buildConnectorSpecs, envVarNameFor } from "../mcp-connectors.js";
+import {
+  buildConnectorSpecs,
+  envVarNameFor,
+  selectConnectorRowsForAgent,
+} from "../mcp-connectors.js";
 
 describe("envVarNameFor", () => {
   it("uppercases and sanitizes the server name", () => {
@@ -195,5 +199,47 @@ describe("buildConnectorSpecs", () => {
     expect(env.AOA_MCP_NOTION_TOKEN).toBe("secret-abc");
     expect(env.AOA_MCP_LINEAR_TOKEN).toBe("secret-xyz");
     expect(skipped).toEqual([]); // healthy rows report no skips
+  });
+});
+
+describe("selectConnectorRowsForAgent", () => {
+  const active = { id: "c1", status: "active" };
+  const pending = { id: "c2", status: "pending_approval" };
+  const disabled = { id: "c3", status: "disabled" };
+
+  it("returns only active connectors the agent opted into", () => {
+    const rows = selectConnectorRowsForAgent({
+      connectors: [active, pending, disabled],
+      enabledConnectorIds: new Set(["c1", "c2", "c3"]),
+      isCommander: false,
+    });
+    expect(rows.map((r) => r.id)).toEqual(["c1"]);
+  });
+
+  it("excludes an active connector the agent has not opted into", () => {
+    const rows = selectConnectorRowsForAgent({
+      connectors: [active],
+      enabledConnectorIds: new Set(),
+      isCommander: false,
+    });
+    expect(rows).toEqual([]);
+  });
+
+  it("gives Commander every ACTIVE connector regardless of opt-in (D3)", () => {
+    const rows = selectConnectorRowsForAgent({
+      connectors: [active, pending, disabled],
+      enabledConnectorIds: new Set(),
+      isCommander: true,
+    });
+    expect(rows.map((r) => r.id)).toEqual(["c1"]);
+  });
+
+  it("never gives Commander a non-active connector", () => {
+    const rows = selectConnectorRowsForAgent({
+      connectors: [pending, disabled],
+      enabledConnectorIds: new Set(["c2", "c3"]),
+      isCommander: true,
+    });
+    expect(rows).toEqual([]);
   });
 });
