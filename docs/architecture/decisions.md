@@ -1184,3 +1184,31 @@ The two items deferred by Decision #107 shipped together on `feat/inbox-hub-tabb
 7. **Process success is not task completion.** Technical run completion remains in run ledgers and observability. User-facing task completion and source-Discussion milestones are emitted only from actual task-domain transitions.
 
 **Plan:** `docs/aoa/plans/2026-07-11-commander-ask-human-completion-policy-plan.md`.
+
+## Decision #110 - External MCP connectors: transport union, strict isolation, env-indirection secrets (2026-07-23)
+
+**Status:** Locked 2026-07-23 (design). Not yet implemented — see the plan below. Establishes how AoA consumes EXTERNAL MCP servers. Does not change Decision #93 or #14, which govern AoA as an inbound MCP *server*; this is the outbound direction and is a separate concern.
+
+1. **Connector and plugin are distinct product types.** A **plugin** is code AoA runs (a forked Node worker with UI slots, jobs, webhooks). A **connector** is a pointer plus credentials to an external MCP server, giving agents tools and nothing else. Deciding rule: if it must render UI, run jobs, or receive webhooks inside AoA it is a plugin; if it only gives agents tools it is a connector. A plugin MAY additionally declare a connector. `connector` becomes a fifth marketplace item type alongside `skill | agent | team | plugin` (requires the coordinated two-repo bump of Decision #96).
+
+2. **Additive types, never a breaking union.** `McpBridgeSpec` keeps its exact stdio shape and continues to describe only AoA's own loopback bridge. External servers use a new `McpServerSpec` discriminated union (`stdio | http`) carried on a new optional `AdapterExecutionContext.mcpServers` map. Rationale: `McpBridgeSpec` is hand-duplicated in five packages by deliberate convention with no cross-boundary compiler enforcement, so a breaking edit risks silent drift.
+
+3. **Strict isolation everywhere.** Every Claude-family agent run passes `--strict-mcp-config`. Previously only heartbeat did; crew and Commander silently inherited the host machine's `~/.claude.json` and project `.mcp.json`. AoA is the sole source of truth for what an agent can reach — required for reproducibility, auditability, and revocation.
+
+4. **Commander receives all active company connectors**, exempt from per-agent opt-in, still under strict mode. Strict governs where the list comes from, not how much Commander gets.
+
+5. **Company-level install, per-agent opt-in.** A connector is registered once per company and reaches an agent run only via an explicit enablement row. Mirrors how `browser_use` gates Playwright. BYO connectors are company-level, never agent-level, so credentials have one rotation and revocation point.
+
+6. **Secrets travel by env indirection.** Config files written to disk contain only `${VAR}` placeholders; real values are injected into the spawned process env. This preserves the existing convention (`packages/adapter-utils/src/types.ts:274-286`) that config/context are persisted into run events and must never carry secrets. All four target CLIs support env substitution. External servers additionally receive a scrubbed env via `buildScrubbedCliEnv` — `DATABASE_URL` and provider keys must never reach a third-party server.
+
+7. **stdio policy is deployment-mode-aware.** `local_trusted` may register stdio connectors (the host is the founder's own machine). `authenticated`/cloud restricts BYO to remote HTTP; stdio is permitted only from verified catalog entries. Regardless of mode: pinned versions, a command allowlist, no shell interpolation, and an audit entry per spawn. Consistent with the D6 divergence pattern.
+
+8. **Governance mirrors the agent-hire rule.** Connector installation requires approval in `authenticated` mode and is auto-approved in `local_trusted`.
+
+9. **AoA brokers OAuth; it does not delegate to the CLI.** Whether a CLI-stored MCP OAuth token keys by server name or URL is undocumented, and headless OAuth callbacks remain an open upstream limitation. Brokering and injecting a token as a static `Authorization` header also gives identical behavior across all four MCP-capable adapters, whereas delegation would be Claude-only. Better Auth's `genericOAuth` plugin is the broker substrate; it requires company-scoping (its `account` table is user-keyed and a user may belong to several companies) and explicit token lifetimes or refresh silently never fires.
+
+10. **Adapter rollout is phased by writer complexity, not capability.** All four CLIs already support remote HTTP with auth headers; AoA's writers do not. `claude_local` ships first (its writer is raw `JSON.stringify`), then `gemini_local`, `opencode_local`, `codex_local`. The codex TOML stripper targets only `[mcp_servers.X]` and `[mcp_servers.X.env]`, so header support MUST land with a stripper fix or stale credentials accumulate across runs.
+
+**Deferred:** marketplace `connector` type and bulk registry import; flagship plugin track and the OAuth broker itself; connector tool-call audit logging (deferred until all adapters land so the event shape covers them); tool-count budgeting.
+
+**Key files:** `packages/adapter-utils/src/types.ts`, `server/src/services/internal-agent/cli-mode.ts`, `server/src/services/heartbeat-mcp.ts`, `server/src/services/internal-agent/aoa-agents/runner.ts`, `server/src/services/cli-spawn-safety.ts`, `packages/db/src/schema/company_mcp_connectors.ts`. Plan: `docs/aoa/plans/2026-07-23-mcp-connectors-foundation-byo.md`.
