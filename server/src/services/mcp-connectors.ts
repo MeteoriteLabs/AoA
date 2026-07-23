@@ -38,10 +38,12 @@ export function envVarNameFor(serverName: string): string {
 /**
  * Convert connector rows into adapter specs + the env map carrying secrets.
  * Templates use the literal token `${TOKEN}`, rewritten to the connector's
- * real env var name.
+ * real env var name. All three template surfaces behave alike: http `headers`,
+ * stdio `env`, and stdio `args`.
  *
- * Rows that cannot form a valid spec (http without url, stdio without command)
- * are SKIPPED rather than emitted malformed.
+ * Rows that cannot form a valid spec are SKIPPED rather than emitted
+ * malformed: http without url, stdio without command, and any unrecognized
+ * transport.
  */
 export function buildConnectorSpecs(rows: ResolvedConnectorRow[]): ConnectorBuildResult {
   // Null-prototype: serverName is an untrusted runtime string from a DB row. A
@@ -66,16 +68,26 @@ export function buildConnectorSpecs(rows: ResolvedConnectorRow[]): ConnectorBuil
           Object.entries(row.headerTemplate).map(([k, v]) => [k, substitute(v)]),
         ),
       };
-    } else {
+    } else if (row.transport === "stdio") {
       if (!row.command) continue;
       specs[row.serverName] = {
         kind: "stdio",
         command: row.command,
-        args: [...row.args],
+        // Substituted like headers/env: Task 4 proved `${VAR}` expands in
+        // stdio args too, so a connector configured as `["--token", "${TOKEN}"]`
+        // must get the real var name. Copying verbatim would emit a literal
+        // `${TOKEN}`, which expands to nothing and authenticates as no-one.
+        args: row.args.map((value) => substitute(value)),
         env: Object.fromEntries(
           Object.entries(row.envTemplate).map(([k, v]) => [k, substitute(v)]),
         ),
       };
+    } else {
+      // Unknown transport — skip rather than guess. `transport` is free text in
+      // the schema and A2 anticipates "sse" being added later; an `else` that
+      // fell through to stdio would emit a stdio spec for any such row that
+      // happened to carry a command.
+      continue;
     }
 
     if (row.secretValue) {

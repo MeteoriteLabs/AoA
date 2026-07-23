@@ -61,6 +61,36 @@ describe("buildConnectorSpecs", () => {
     });
   });
 
+  it("substitutes ${TOKEN} in stdio args, not just env", () => {
+    const { specs } = buildConnectorSpecs([
+      {
+        serverName: "pg",
+        transport: "stdio",
+        url: null,
+        command: "npx",
+        args: ["-y", "dbhub", "--token", "${TOKEN}"],
+        headerTemplate: {},
+        envTemplate: {},
+        secretValue: "postgres://x",
+      },
+    ]);
+    expect(specs.pg).toEqual({
+      kind: "stdio",
+      command: "npx",
+      args: ["-y", "dbhub", "--token", "${AOA_MCP_PG_TOKEN}"],
+      env: {},
+    });
+  });
+
+  it("skips an unknown transport even when a command is present", () => {
+    // Not skipped merely for lack of a command: transport is free text in the
+    // schema, and an `else` falling through to stdio would emit a stdio spec.
+    const { specs } = buildConnectorSpecs([
+      { ...httpRow, serverName: "future", transport: "sse", command: "npx" },
+    ]);
+    expect(specs.future).toBeUndefined();
+  });
+
   it("omits an http row with no url and a stdio row with no command", () => {
     const { specs } = buildConnectorSpecs([
       { ...httpRow, serverName: "bad1", url: null },
@@ -77,9 +107,13 @@ describe("buildConnectorSpecs", () => {
   });
 
   it("builds a null-prototype specs map so a __proto__ connector cannot poison it", () => {
-    const { specs } = buildConnectorSpecs([{ ...httpRow, serverName: "__proto__" }]);
+    const { specs, env } = buildConnectorSpecs([{ ...httpRow, serverName: "__proto__" }]);
     expect(Object.prototype.hasOwnProperty.call(specs, "__proto__")).toBe(true);
     expect((specs as Record<string, unknown>).url).toBeUndefined(); // no read-through
+    // The env map must be null-prototype too. Not exploitable today (keys are
+    // always AOA_MCP_*_TOKEN), but A13 requires it and nothing else would catch
+    // a future edit dropping it.
+    expect(Object.getPrototypeOf(env)).toBe(null);
   });
 
   it("keeps two connectors independent", () => {
