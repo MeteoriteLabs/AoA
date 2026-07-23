@@ -184,41 +184,45 @@ git commit -m "feat(crew): persist redacted crew run transcripts (crew runs were
 
 ## Task 2: Ambient Claude-config isolation (crew-only opt-in)
 
-**Scope discipline:** isolate **Claude's config** — do NOT relocate `HOME`/`USERPROFILE` (that breaks git/SSH/npm for tools the agent launches).
+> **Investigation COMPLETE (2026-07-23) — this task was redesigned. Do NOT build `buildIsolatedClaudeEnv`; the mechanism already exists.**
 
-**Files:** create `packages/adapters/claude-local/src/server/hermetic-env.ts`; modify `execute.ts` env assembly (~L251/L402-404); test `packages/adapters/claude-local/src/__tests__/hermetic-env.test.ts`.
+### Established facts
 
-- [ ] **Step 1: Failing test:**
+**The strip seam already exists and is already hardened.** `mergeChildEnv(parentEnv, overlayEnv, unsetEnvKeys)` (`adapter-utils/src/server-utils.ts:368-394`) removes an inherited key **only if the overlay did not set it** — so a pinned value survives while the ambient one is dropped. It is already **case-insensitive on Windows** (`:380-382`), which is precisely the trap a hand-rolled `delete env[key]` would fall into (`CLAUDE_CONFIG_DIR` vs `Claude_Config_Dir` are the same variable on Windows).
 
-```ts
-import { describe, it, expect } from "vitest";
-import { buildIsolatedClaudeEnv } from "../server/hermetic-env.js";
+**It is threaded end-to-end already:** `spawnTrackedChild`/runner (`server-utils.ts:431`, `:508`, `:517`), `execution-target.ts:101,138`, `streaming-login.ts:49,73`.
 
-describe("buildIsolatedClaudeEnv", () => {
-  it("pins CLAUDE_CONFIG_DIR to the per-run home and drops ambient CLAUDE_*/ANTHROPIC_*", () => {
-    const env = buildIsolatedClaudeEnv({ configDir: "/rt/run1/.claude" }, {
-      CLAUDE_CONFIG_DIR: "/home/op/.claude", ANTHROPIC_API_KEY: "sk-leak", PATH: "/usr/bin",
-    });
-    expect(env.CLAUDE_CONFIG_DIR).toBe("/rt/run1/.claude");
-    expect(env.ANTHROPIC_API_KEY).toBeUndefined();
-    expect(env.PATH).toBe("/usr/bin");            // toolchain preserved
-  });
+**There is precedent for a per-adapter opt-in.** codex-local passes `unsetEnvKeys: ["OPENAI_API_KEY"]` at four call sites (`codex-local/src/server/execute.ts:508`, `execute-app-server.ts:192`, `jsonrpc-client.ts:322`, `test.ts:259,348`) to keep the AoA server's key out of agent runs. **claude-local passes none** — that is the gap.
 
-  it("does NOT relocate HOME or USERPROFILE (git/ssh/npm must keep working)", () => {
-    const env = buildIsolatedClaudeEnv({ configDir: "/rt/run1/.claude" }, { HOME: "/home/op", USERPROFILE: "C:\\Users\\op" });
-    expect(env.HOME).toBe("/home/op");
-    expect(env.USERPROFILE).toBe("C:\\Users\\op");
-  });
-});
-```
+**The leak point** is `execute.ts:251` (`{ ...process.env, ...env }`) and the equivalent merge inside the spawn path. **`ANTHROPIC_API_KEY` is not cosmetic** — `resolveClaudeBillingType` (`execute.ts:152-155`) returns `"api"` when it is set, so an ambient server key silently changes an agent run's billing classification. That is the exact leak codex already closes.
 
-- [ ] **Step 2: Run → FAIL.**
-- [ ] **Step 3: Implement** `buildIsolatedClaudeEnv(opts,{parentEnv})`: copy parent env, delete keys matching `CLAUDE_*`/`ANTHROPIC_*`, then set `CLAUDE_CONFIG_DIR = opts.configDir`. Document why HOME is untouched.
-- [ ] **Step 4: Run → PASS.**
-- [ ] **Step 5: Apply in `execute.ts` behind a Claude-specific opt-in.** Do **not** broaden `adapterExecutionTargetUsesManagedHome` (shared by pi/cursor/codex). Gate on an explicit adapter-level flag so **crew runs opt in first**; org/heartbeat keeps current behavior until T11's expansion gate.
-- [ ] **Step 6: Verify + commit.** claude-local + adapter-utils typechecks and suites PASS; **org/heartbeat suites must stay green** (they are unaffected by design).
+### Design (revised)
+
+- **Use `unsetEnvKeys`.** Do not write a parallel env builder.
+- **Add `unsetEnvPrefixes`** alongside it in `mergeChildEnv` — *additive*, so every existing caller is unchanged. Needed because `CLAUDE_*`/`ANTHROPIC_*` is a prefix class: an enumerated list silently leaks any newly-introduced variable, and D9 requires crew agents see *nothing* from the host config. Reuse the existing `sameKey` case-folding for prefix matching (Windows-insensitive, POSIX-exact) — do not write a second comparison rule.
+- **Pin `CLAUDE_CONFIG_DIR` in the overlay `env`**, so the strip's "overlay wins" rule preserves it automatically.
+- **Never touch `HOME`/`USERPROFILE`** — git, SSH and npm all resolve through them for tools the agent launches.
+- **Crew-only opt-in** (D15): thread an explicit flag from the crew runner; org/heartbeat behaviour is unchanged until T11's expansion gate.
+
+- [ ] **Step 1: L1 — extend `mergeChildEnv`.** Failing tests first, in the existing `adapter-utils/src/server-utils.test.ts` (there is already a `describe("mergeChildEnv — unsetEnvKeys escape hatch")` block — extend it, don't start a new file):
+  - a prefix strips every ambient matching key;
+  - an overlay-set key matching the prefix **survives** (same rule as `unsetEnvKeys`);
+  - on Windows, a differently-cased ambient key matching the prefix is dropped;
+  - **no prefixes supplied ⇒ byte-identical behaviour to today** (regression guard for codex).
+
+- [ ] **Step 2: L1 — the claude-local strip list.** Export one shared const naming the prefixes (`CLAUDE_`, `ANTHROPIC_`) plus a documented **keep-list** for anything that must survive. Test that `PATH` and `HOME`/`USERPROFILE` are untouched.
+
+- [ ] **Step 3: Wire it, crew-only.** Pass `unsetEnvPrefixes` + the pinned `CLAUDE_CONFIG_DIR` from claude-local's execute path **only when the crew opt-in flag is set**. Do **not** broaden `adapterExecutionTargetUsesManagedHome` (shared by pi/cursor/codex).
+
+- [ ] **Step 4: L5 — extend the fake-claude harness with `env` capture.** Add `env: Record<string,string>` to `FakeClaudeInvocation` (`tests/e2e/helpers/fake-claude.ts:35-40`) and record it in the fake CLI. **Additive** — existing specs destructure `{argv, stdin, cwd}` and are unaffected.
+
+- [ ] **Step 5: L5 — the isolation spec.** New `tests/e2e/crew-config-isolation.spec.ts`: seed a company + crew agent, set a poisoned ambient `ANTHROPIC_API_KEY` on the server process, dispatch a crew run, then assert **on the recorded invocation env** that `CLAUDE_CONFIG_DIR` is the per-run dir, `ANTHROPIC_API_KEY` is absent, and `PATH` + `HOME`/`USERPROFILE` survived. *This is the assertion that proves the code is **wired**, not merely correct.* Runs locally on Windows via `AOA_E2E_FORCE_WINDOWS=1`.
+
+- [ ] **Step 6: L2 — the no-regression proof.** An explicit test that an **org/heartbeat** claude_local run still receives ambient env unchanged (D15). Per test-rule #2, this is a test, not a claim in a report.
+
+- [ ] **Step 7: Verify + commit.** adapter-utils + claude-local + codex-local suites (codex is the `unsetEnvKeys` incumbent — it must stay green), org/heartbeat suites, `pnpm -r typecheck`.
 ```bash
-git commit -m "feat(agents): isolate Claude config dir per run (crew opt-in); drop ambient CLAUDE_*/ANTHROPIC_*"
+git commit -m "feat(agents): isolate ambient Claude config for crew runs via unsetEnvPrefixes"
 ```
 
 ---
