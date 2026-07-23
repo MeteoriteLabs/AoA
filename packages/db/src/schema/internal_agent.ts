@@ -352,6 +352,13 @@ export const internalAgentRuns = pgTable(
     // Capped at ~16 000 chars; secrets stripped via redactAndCapPrompt().
     promptSnapshot: text("prompt_snapshot"),
 
+    // T1 (crew observability): pointer to this run's NDJSON transcript in the
+    // shared run-log store, mirroring heartbeat_runs.log_store/log_ref. Written
+    // best-effort right after runLogStore.begin() — nullable because a run whose
+    // transcript could not be opened (or which predates T1) still exists.
+    logStore: text("log_store"),
+    logRef: text("log_ref"),
+
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

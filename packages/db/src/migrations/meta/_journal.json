@@ -1254,6 +1254,13 @@
       "when": 1784782188752,
       "tag": "0178_pale_champions",
       "breakpoints": true
+    },
+    {
+      "idx": 179,
+      "version": "7",
+      "when": 1784803482121,
+      "tag": "0179_thin_jack_power",
+      "breakpoints": true
     }
   ]
 }

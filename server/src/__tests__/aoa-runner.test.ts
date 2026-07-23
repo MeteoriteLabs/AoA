@@ -1,8 +1,20 @@
 import { describe, expect, it, vi } from "vitest";
-const { execMock, createEventMock, buildMcpMock, buildBridgeSpecMock } = vi.hoisted(() => ({
+const { execMock, createEventMock, buildMcpMock, buildBridgeSpecMock, runLogStoreMock } = vi.hoisted(() => ({
   execMock: vi.fn().mockResolvedValue({ exitCode: 0 }),
   createEventMock: vi.fn().mockResolvedValue(undefined),
   buildMcpMock: vi.fn(() => ({ mcpServers: {} })),
+  // T1: the runner opens a run transcript before adapter.execute. run-log-store
+  // imports `node:fs` — a DIFFERENT specifier than the `node:fs/promises` this
+  // file mocks — so without this the "mocked" runner would do REAL filesystem
+  // I/O, scattering .ndjson files keyed on fixture ids (co-1/ext-1/run-1) that
+  // repeat across test files. vitest runs files in parallel workers and begin()
+  // TRUNCATES, so that is a latent cross-file flake, not just litter.
+  runLogStoreMock: {
+    begin: vi.fn().mockResolvedValue({ store: "local_file", logRef: "co-1/ext-1/run-1.ndjson" }),
+    append: vi.fn().mockResolvedValue(undefined),
+    finalize: vi.fn().mockResolvedValue({ bytes: 0, compressed: false }),
+    read: vi.fn(),
+  },
   // MX2: runner now also builds the provider-neutral bridge spec. Mock mirrors
   // buildMcpBridgeSpec's shape ({command:"node",args,env}) keyed off the params
   // the runner passes (companyId → AOA_SESSION_COMPANY_ID) so the contract is
@@ -26,7 +38,9 @@ vi.mock("../services/internal-agent/cli-mode.js", () => ({ buildMcpConfig: build
 vi.mock("../services/heartbeat.js", () => ({ resolveAdapterExecutionContext: () => ({ executionTarget:{}, runtimeCommandSpec:{} }) }));
 vi.mock("../services/internal-agent/aoa-agents/bridge-path.js", () => ({ resolveBridgeEntrypoint: () => "/x/mcp-bridge.js" }));
 vi.mock("node:fs/promises", () => ({ writeFile: vi.fn().mockResolvedValue(undefined) }));
+vi.mock("../services/run-log-store.js", () => ({ getRunLogStore: () => runLogStoreMock }));
 vi.mock("../middleware/logger.js", () => ({ logger:{ child:()=>({info:vi.fn(),warn:vi.fn(),error:vi.fn()}) } }));
+import { discussionEntries } from "@armyofagents/db";
 import { runAoaAgent } from "../services/internal-agent/aoa-agents/runner.js";
 function ch(ret:unknown[]){const c:any={};c.values=()=>c;c.set=()=>c;c.where=()=>c;c.from=()=>c;c.returning=()=>Promise.resolve(ret);c.then=(r:(v:unknown[])=>unknown)=>Promise.resolve(ret).then(r);return c;}
 it("happy: bridge attached via adapterConfig.args, run completed, cost emitted, agentId stamped", async () => {
@@ -53,6 +67,13 @@ it("happy: bridge attached via adapterConfig.args, run completed, cost emitted, 
   expect(execArg.mcpBridge).toMatchObject({ command:"node" });
   expect(Array.isArray(execArg.mcpBridge.args)).toBe(true);
   expect(execArg.mcpBridge.env).toMatchObject({ AOA_SESSION_COMPANY_ID:"co-1" });
+  // T1: the run transcript is opened for the agent+run, and the sink is REALLY
+  // wired to the adapter — the pre-T1 bug was two literal no-op callbacks that
+  // silently discarded every byte, so asserting the callbacks reach the store is
+  // the whole point.
+  expect(runLogStoreMock.begin).toHaveBeenCalledWith({ companyId:"co-1", agentId:"ext-1", runId:"run-1" });
+  await execArg.onLog("stdout", "transcript chunk");
+  expect(runLogStoreMock.append.mock.calls.at(-1)?.[1]).toMatchObject({ stream:"stdout", chunk:"transcript chunk" });
   expect(insertedRuns[0].agentId).toBe("ext-1");          // Finding R1: run attributed to the agent
   expect(createEventMock).toHaveBeenCalledTimes(1);
   expect(createEventMock.mock.calls[0][1].agentId).toBe("ext-1");
@@ -87,11 +108,14 @@ it("failure isolated: adapter throws → never rethrows", async () => {
 it("not claimable (concurrent): atomic claim empty → adapter NOT called, returns", async () => {
   execMock.mockClear();
   const claimChain:any = { set:()=>claimChain, where:()=>claimChain, returning:()=>Promise.resolve([]) }; // claim RETURNING empty
-  let upd=0;
   const db:any = {
     select:()=>ch([{ id:"ext-1", companyId:"co-1", name:"Scribe", adapterType:"process", adapterConfig:{}, runtimeConfig:{} }]),
     insert:()=>ch([{ id:"run-9" }]),
-    update:()=> (upd++ === 0 ? claimChain : ch([{ id:"run-9" }])), // 1st update = the claim (empty ⇒ abort)
+    // Discriminate by TABLE, not by call order: the runner now also writes the
+    // run-log pointer (internal_agent_runs.log_store/log_ref) before the claim,
+    // so a positional "1st update === the claim" harness silently handed the
+    // claim a non-empty result and the run proceeded past the abort.
+    update:(tbl:unknown)=> (tbl === discussionEntries ? claimChain : ch([{ id:"run-9" }])),
   };
   // T1.0: not-claimable returns succeeded (it's a concurrent race, not a
   // failure — another run owns this entry). Pre-T1.0 this was undefined.

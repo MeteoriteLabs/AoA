@@ -21,6 +21,10 @@ import { deriveEnabledCapabilities } from "./derive-capabilities.js";
 import { createToolRegistry } from "../tool-registry.js";
 import { redactAndCapPrompt } from "../../prompt-snapshot.js";
 import { maybeExecuteFakeCrewTurn } from "./fake-crew-llm.js";
+import { getRunLogStore } from "../../run-log-store.js";
+import type { RunLogHandle } from "../../run-log-store.js";
+import { createCrewRunLogSink } from "./crew-run-log.js";
+import type { CrewRunLogSink } from "./crew-run-log.js";
 import { getProviderStatus } from "../../../adapters/provider-status.js";
 import type { ProviderStatus } from "../../../adapters/provider-status.js";
 import { realProviderStatusDeps } from "../../../adapters/provider-status-deps.js";
@@ -141,6 +145,14 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
   // presence pattern (heartbeat.ts:2608-2616 add / :4117-4124 remove).
   let presenceThreadId: string | null = null;
   let presenceAgentName: string | null = null;
+  // T1 (crew observability): the run's NDJSON transcript handle + the sink that
+  // feeds it. Both stay null when the transcript could not be opened (or when
+  // there is no runId to attach it to) — the run then behaves exactly as it did
+  // before T1 (no-op callbacks). Finalization lives in the single `finally`
+  // below, so every exit path (benign early returns, success, throw) converges
+  // on exactly one finalize without a per-exit call site.
+  let runLogHandle: RunLogHandle | null = null;
+  let crewLogSink: CrewRunLogSink | null = null;
   // W3a (P1 fix): `const agent` is scoped INSIDE the try, so the catch block
   // cannot read `agent.name`/`agent.runtimeConfig` (TS2304). Capture the two
   // fields the FAILURE loopback needs into function-scope locals right after the
@@ -545,19 +557,99 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
     // T1.0: capture the adapter result so we can build AoaRunResult.
     // Adapters populate `usage`, `costUsd`, `exitCode`, `errorMessage` on
     // their AdapterExecutionResult — that data was previously discarded.
-    const adapterResult =
-      (await maybeExecuteFakeCrewTurn({
-        db,
-        agent: { id: agent.id, name: agent.name },
-        payload,
-        // Controller-mode fake turns queue real create_scope_draft actions; the
-        // seal (below) and direct-run commit then treat them exactly like a real
-        // agent's tool calls — no fake-specific bookkeeping anywhere downstream.
-        runId,
-        discussionRunMode,
-        threadFreshness,
-      })) ??
-      (await adapter.execute({
+    //
+    // T1: this WAS a single `fake ?? adapter.execute(...)` expression. It is now
+    // split so the run transcript is opened ONLY on the branch that actually
+    // spawns a CLI: a fake-crew turn short-circuits execute entirely, and
+    // minting a transcript for it would leave a permanently empty file with a
+    // DB pointer advertising content that never existed.
+    let adapterResult = await maybeExecuteFakeCrewTurn({
+      db,
+      agent: { id: agent.id, name: agent.name },
+      payload,
+      // Controller-mode fake turns queue real create_scope_draft actions; the
+      // seal (below) and direct-run commit then treat them exactly like a real
+      // agent's tool calls — no fake-specific bookkeeping anywhere downstream.
+      runId,
+      discussionRunMode,
+      threadFreshness,
+    });
+
+    if (!adapterResult) {
+      // T1 (crew observability): open the run transcript HERE — immediately
+      // before its only consumer — rather than at run-row insert. Everything
+      // above this point can still bail benignly (the entry-claim race and the
+      // task-checkout conflict both `return` early, and the dispatcher retries
+      // pending entries every tick), and each of those bails would otherwise
+      // mkdir + write a permanent 0-byte .ndjson and an extra UPDATE for a run
+      // that never spawned anything. There is no retention sweeper for
+      // run-logs. Opening it here makes a non-null logRef MEAN "the adapter
+      // actually ran".
+      //
+      // Keyed on the run row's UUID — deliberately NO synthesized fallback id
+      // (one would collide across runs of the same agent and truncate the
+      // previous transcript, since begin() writes an empty file). No runId ⇒
+      // nothing to attach a transcript to ⇒ skip logging for this run.
+      // Entirely best-effort — a logging failure must never change a run outcome.
+      if (runId) {
+        const logRunId = runId;
+        // Resolved inside the try on purpose: getRunLogStore() →
+        // resolveAoaInstanceId() throws on a malformed AOA_INSTANCE_ID
+        // (home-paths.ts:29-31), and an escape from here would fail the run +
+        // terminalize the claimed entry + post a failure card — a logging
+        // concern changing a run outcome, which is exactly what this block
+        // promises never to do. Declared outside so the sink can reuse it.
+        let runLogStore: ReturnType<typeof getRunLogStore> | null = null;
+        try {
+          runLogStore = getRunLogStore();
+          runLogHandle = await runLogStore.begin({
+            companyId: payload.companyId,
+            agentId,
+            runId: logRunId,
+          });
+        } catch (beginErr) {
+          // Fatal to logging only: with no handle there is nothing to write to.
+          log.warn({ err: beginErr, runId: logRunId }, "aoa-runner: failed to open run transcript (best-effort, ignored)");
+          runLogHandle = null;
+        }
+
+        // `runLogStore` is non-null whenever `runLogHandle` is (begin() only
+        // resolves after the store resolved); the second check is for the type
+        // checker, not a real second condition.
+        if (runLogHandle && runLogStore) {
+          // Record the pointer so the transcript is FINDABLE from the run row
+          // (mirrors heartbeat.ts:3843-3856). A failure here is NOT fatal to
+          // logging: logRef is fully deterministic
+          // (<companyId>/<agentId>/<runId>.ndjson — run-log-store.ts:97-100), so
+          // an operator holding the run id can still find the file. The realistic
+          // trigger is migration 0179 not being applied yet, which would fail
+          // this UPDATE on every crew run — discarding the transcript for that
+          // would silently degrade T1 back into the black box it exists to kill.
+          try {
+            await db.update(internalAgentRuns)
+              .set({ logStore: runLogHandle.store, logRef: runLogHandle.logRef })
+              .where(eq(internalAgentRuns.id, logRunId));
+          } catch (pointerErr) {
+            log.warn(
+              { err: pointerErr, runId: logRunId, logRef: runLogHandle.logRef },
+              "aoa-runner: failed to persist run transcript pointer — transcript is still being written and is findable at <companyId>/<agentId>/<runId>.ndjson",
+            );
+          }
+
+          // Wired last, so the sequence reads open → record → wire.
+          crewLogSink = createCrewRunLogSink({
+            store: runLogStore,
+            handle: runLogHandle,
+            // Identity + this run's logger, so a broken store surfaces ONE warn
+            // line traceable back to the run row rather than a silently empty
+            // transcript (which reads exactly like "the agent produced nothing").
+            run: { companyId: payload.companyId, agentId, runId: logRunId },
+            logger: log,
+          });
+        }
+      }
+
+      adapterResult = await adapter.execute({
         runId: runId ?? `aoa-${agentId}`,
         agent,
         runtime: agent.runtimeConfig ?? {},
@@ -566,9 +658,14 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
         executionTarget, runtimeCommandSpec,
         mcpBridge: bridgeSpec,
         humanQuestionCapabilities: adapter.humanQuestionCapabilities,
-        onLog: async () => {}, onMeta: async () => {},
+        // T1: stream the CLI transcript + one redacted adapter.invoke event into
+        // the run log (was: two literal no-ops that discarded everything). Both
+        // sink callbacks swallow store failures internally.
+        onLog: crewLogSink ? crewLogSink.onLog : async () => {},
+        onMeta: crewLogSink ? crewLogSink.onMeta : async () => {},
         authToken: undefined, onSpawn: () => {},
-      }));
+      });
+    }
 
     // Silent-failure guard: a CLI agent can finish its run WITHOUT calling
     // submit_extracted_items (codex/opencode have no MCP-bridge wiring yet — see
@@ -1050,6 +1147,22 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
     // exception — masking every crew failure as a successful wakeup.
     return { status: "failed", errorMessage: errMessage, runId };
   } finally {
+    // T1 (crew observability): seal the run transcript on EVERY exit — success,
+    // adapter-reported failure, thrown failure, and the benign early returns
+    // (entry not claimable / task checkout conflict) that return before the
+    // success path. `finally` is the single site precisely because it is
+    // unmissable and runs exactly once — no per-exit finalize calls to keep in
+    // sync. Best-effort (mirrors the presence/unlink cleanups below) — a
+    // finalize failure must never change a run outcome. The logged logRef is
+    // the pointer an operator follows to read what the CLI actually did.
+    if (runLogHandle) {
+      try {
+        const summary = await getRunLogStore().finalize(runLogHandle);
+        log.info({ runId, logRef: runLogHandle.logRef, bytes: summary.bytes }, "aoa-runner: run transcript finalized");
+      } catch (finalizeErr) {
+        log.warn({ err: finalizeErr, runId }, "aoa-runner: failed to finalize run transcript (best-effort, ignored)");
+      }
+    }
     // Phase 5 (Tasks 5.1/5.2): clear this agent's thread working-presence (run
     // ended — success OR failure). GUARANTEED removal even on throw: the
     // presenceThreadId is only set after the add succeeded, so this never

@@ -66,6 +66,20 @@ vi.mock("../services/costs.js", () => ({ costService: () => ({ createEvent: crea
 vi.mock("../services/internal-agent/cli-mode.js", () => ({ buildMcpConfig: buildMcpMock, buildMcpBridgeSpec: buildBridgeSpecMock }));
 vi.mock("../services/heartbeat.js", () => ({ resolveAdapterExecutionContext: () => ({ executionTarget: {}, runtimeCommandSpec: {} }) }));
 vi.mock("../services/internal-agent/aoa-agents/bridge-path.js", () => ({ resolveBridgeEntrypoint: () => "/x/mcp-bridge.js" }));
+// T1: the runner opens a run transcript before adapter.execute. run-log-store
+// imports `node:fs` — a DIFFERENT specifier than the `node:fs/promises` this
+// file mocks — so without this an otherwise fully-mocked suite does REAL
+// filesystem I/O, writing .ndjson files keyed on fixture ids that repeat across
+// test files. vitest runs files in parallel workers and begin() TRUNCATES, so
+// that is a latent cross-file flake, not just litter.
+vi.mock("../services/run-log-store.js", () => ({
+  getRunLogStore: () => ({
+    begin: async () => ({ store: "local_file", logRef: "test-run.ndjson" }),
+    append: async () => {},
+    finalize: async () => ({ bytes: 0, compressed: false }),
+    read: async () => ({ content: "" }),
+  }),
+}));
 vi.mock("node:fs/promises", () => ({ writeFile: vi.fn().mockResolvedValue(undefined), unlink: vi.fn().mockResolvedValue(undefined) }));
 vi.mock("../middleware/logger.js", () => ({ logger: { child: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }) } }));
 
