@@ -1623,3 +1623,27 @@ Binding rule for Task 6: build the `specs` map with `Object.create(null)`, or co
 **A15 — Naming drift across the three hops (cosmetic, do not churn).** The same concept is called `mcpServers` on `AdapterExecutionContext`, `extraMcpServers` on `McpConfigParams`, and will be threaded as `input.extraMcpServers` in Task 10. These are the same thing. Not worth renaming mid-flight; recorded so Plan 2 authors don't assume they differ.
 
 **A16 — A GREEN VITEST RUN IS NOT EVIDENCE OF A CLEAN TYPECHECK. Every task must run both.** Vitest transpiles without typechecking, so type errors in test files pass silently at runtime. Hit for real in Task 3: all 15 tests passed green while `pnpm --filter @armyofagents/adapter-utils typecheck` was RED — a `{...} as const` had produced `args: readonly []`, which is not assignable to `McpStdioServerSpec.args: string[]`. (Fix was to annotate `const ours: McpServerSpec = {...}` rather than use `as const`.) Note this bites hardest in test files that ARE typechecked: `server/tsconfig.json` excludes `src/__tests__` but NOT `src/services/**/__tests__`, so those are compiled. Always run the relevant `typecheck` alongside the test suite before reporting a task done.
+
+---
+
+## Task 4 GATE RESULT — PASSED (2026-07-23, Claude Code 2.1.126)
+
+**`${VAR}` expansion in a `--mcp-config` file is CONFIRMED WORKING. D5 (env-indirection secret transport) is validated and stands. No fallback to `headersHelper` is required.**
+
+Verified empirically, not from documentation, by observing what the server actually received:
+
+| Path | Placeholder written to config | Value received | Result |
+|---|---|---|---|
+| stdio `args[]` | `${AOA_PROBE_TOKEN}` | `sentinel-12345` | expands |
+| stdio `env{}` | `${AOA_PROBE_TOKEN}` | `sentinel-12345` | expands |
+| **http `headers{}`** | `Bearer ${AOA_PROBE_TOKEN}` | `Bearer sentinel-12345` | expands |
+
+Method: a stdio MCP server that wrote its own `process.argv[2]` / `process.env` to disk, and a local HTTP listener on `127.0.0.1:8899` that recorded the inbound `Authorization` header. Both were driven by a real `claude --mcp-config <file> --strict-mcp-config -p ... --max-turns 1` session. The http case is the important one — it is the primary connector path.
+
+**Method notes for anyone re-running this:**
+
+1. **The `claude mcp ...` management subcommands IGNORE `--mcp-config`.** `claude --mcp-config <f> --strict-mcp-config mcp get probe` reported `No MCP server found` and listed the machine's ambient servers instead. `--mcp-config` applies to a *session run*, not to `mcp get`/`mcp list`. Do not use those subcommands to verify config delivery.
+2. **`--debug` emitted no MCP diagnostics to stderr on 2.1.126.** Grepping debug output is not a viable probe; observe the server side instead.
+3. Pass `< /dev/null` or the run warns about waiting on stdin.
+
+**A17 — claude.ai connector inheritance is CONFIRMED REAL on this machine, which is the premise of D2.** The ambient server list surfaced by `claude mcp get` was: `claude.ai Gmail`, `claude.ai Google Calendar`, `plugin:github:github`, `vibe_kanban`. So a Claude Code CLI logged into a claude.ai account genuinely does inherit that account's connectors, and any AoA run that omits `--strict-mcp-config` would expose them to the agent. This is exactly the leak D2 closes and is direct evidence for making crew/Commander strict (Task 9). NOT yet verified: that `--strict-mcp-config` actually suppresses them *inside a session* — Anthropic documents it, but Task 9 or Task 14 should confirm it empirically now that a working probe method exists.
