@@ -252,6 +252,22 @@ git commit -m "feat(agents): isolate ambient Claude config for crew runs via uns
 - [ ] **Step 6: Close the readiness/run split (deferred here from T2).** Readiness probes the **host** config (`claude-local/src/server/test.ts:153`; login challenges keyed on `CLAUDE_CONFIG_DIR ?? ~/.claude`) while a crew run uses the isolated dir. Left unfixed, Settings → Providers reports anthropic verified while every crew run fails login-required, and the founder's natural remedy (`claude auth login` → credentials into `~/.claude`) does not help. Thread the same crew opt-in into the readiness probe so the crew card measures the directory crew actually uses. **Precedent:** codex mirrors its strip into readiness for exactly this reason (`codex-local/src/server/test.ts:258-259`, `:348`).
   *(T2 shipped the cheap half — a `commandNotes` line naming the pinned dir, so the pre-T3 failure is self-explaining.)*
 
+- [ ] **Step 7b: Strip the session-identity subset for ORG runs (separable, no credential work).** *Observed and independently reproduced during T2, 2026-07-23 — this is evidence, not inference.*
+
+  With the fixture allowlist in place, an **org** (non-isolated) claude_local spawn was recorded carrying, among ~22 keys:
+  ```
+  CLAUDE_CODE_SESSION_ID   CLAUDE_CODE_HOST_SESSION_ID   CLAUDE_CODE_CHILD_SESSION=1
+  CLAUDE_CODE_ENTRYPOINT=claude-desktop   CLAUDE_CODE_EXECPATH   CLAUDE_AGENT_SDK_VERSION
+  CLAUDE_PID   ANTHROPIC_BASE_URL   …
+  ```
+  The reviewer confirmed the recorded `CLAUDE_CODE_SESSION_ID` was **their own live session id**. Chain: Claude Code desktop session → shell → `pnpm test:e2e` → `webServer.env = {...process.env}` → AoA server → heartbeat → claude-local → child CLI. Every hop is plain `process.env` inheritance; **AoA introduces none of it.**
+
+  **Why this is not telemetry.** `CLAUDE_CODE_CHILD_SESSION=1` + `CLAUDE_CODE_SESSION_ID` + `CLAUDE_CODE_ENTRYPOINT` *declare the child to be a continuation of a specific live session* — a behavioural input to the CLI. This is the most plausible mechanism for the live hijack that motivated D9, and it matches a lesson already in this project's history (the Commander 401 that turned out to be a Claude Code child-session artifact → "never diagnose CLI auth from inside a CC subprocess").
+
+  **Why it matters more than its size suggests:** the affected configuration — a server started from an agent-hosted or Claude-desktop-hosted shell — is exactly how AoA is developed, QA'd and live-verified. It silently contaminates the evidence used to validate agent behaviour. That is a **development-integrity** problem, and it is worse than a production bug of equal size because it corrupts the instrument.
+
+  **Why it can ship independently of T3:** that subset carries no credential and no founder-configured auth mode, so stripping it for org runs kills the hijack mechanism **without** needing any provisioning story. Treat it as a separable slice; it does not have to wait for the full org expansion at T11.
+
 - [ ] **Step 7: Document the env-based-auth escape hatch.** An operator whose Claude access is env-based (`CLAUDE_CODE_USE_BEDROCK`, `ANTHROPIC_BEDROCK_BASE_URL`, `ANTHROPIC_BASE_URL`) loses it for crew runs under T2's strip. The mitigation already works — those keys survive in `adapterConfig.env` via overlay-wins — and T2 documented it in `ambient-config.ts`. Verify it still holds **after** provisioning lands, since T3 introduces a second auth source that could mask it.
 - [ ] **Step 6: Verify + commit.**
 ```bash
