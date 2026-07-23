@@ -15,10 +15,12 @@
  * config.env carries the real token, and that the args carry
  * `--strict-mcp-config`.
  *
- * Windows-runnable: passes `initdbFlags` for locale/encoding (per the repo's
- * Windows embedded-PG note) and force-runs (no describe.skipIf) so this can be
- * the authoritative local sign-off. Gated only on embedded-postgres booting;
- * if setup fails the suite surfaces the error rather than silently passing.
+ * Passes `initdbFlags` for locale/encoding (per the repo's Windows embedded-PG
+ * note) so it CAN run locally on Windows — verified passing there during Task 14
+ * sign-off. For CI it is `describe.skipIf(process.platform === "win32")`
+ * (embedded-PG can't boot on the Windows CI runner — Issue #114); Linux CI is
+ * the authoritative gate. If setup fails the suite surfaces the error rather
+ * than silently passing.
  */
 import { readFile } from "node:fs/promises";
 import { mkdtemp, rm } from "node:fs/promises";

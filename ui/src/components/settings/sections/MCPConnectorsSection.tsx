@@ -464,10 +464,11 @@ function ConnectorRow({
     });
   };
 
-  // Exclude terminated agents from the assignable set — a dead agent can never
-  // use a connector, so offering it is noise (and re-granting via the
-  // full-set-replace PUT would resurrect a stale link). Agents whose status the
-  // list doesn't expose are kept (fail-open on unknown).
+  // Hide terminated agents from the assignable checkboxes (they can't run, so
+  // offering them is noise). Note: an already-enabled terminated agent stays in
+  // `selected` (seeded from the full enabledAgentIds) and is PRESERVED on Save —
+  // we hide it from the UI but don't forcibly revoke the link. Agents whose
+  // status the list doesn't expose are kept (fail-open on unknown).
   const sortedAgents = useMemo(
     () =>
       [...agents]
