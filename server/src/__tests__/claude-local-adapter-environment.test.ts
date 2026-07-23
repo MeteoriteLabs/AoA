@@ -15,7 +15,7 @@ afterEach(() => {
 });
 
 describe("claude_local environment diagnostics", () => {
-  it("returns a warning (not an error) when ANTHROPIC_API_KEY is set in host environment", async () => {
+  it("warns that a host-only ANTHROPIC_API_KEY is NOT used (crew strips it; the probe does too)", async () => {
     process.env.ANTHROPIC_API_KEY = "sk-test-host";
 
     const result = await testEnvironment({
@@ -28,13 +28,19 @@ describe("claude_local environment diagnostics", () => {
     });
 
     expect(result.status).toBe("warn");
+    // An ambient server-process key must be reported as unused, NOT as
+    // "Claude will use API-key auth" — a crew run strips it and this probe now
+    // strips it too, so a green "overrides subscription" signal would advertise a
+    // path no real run takes.
     expect(
       result.checks.some(
         (check) =>
-          check.code === "claude_anthropic_api_key_overrides_subscription" &&
-          check.level === "warn",
+          check.code === "claude_anthropic_api_key_server_env_only" && check.level === "warn",
       ),
     ).toBe(true);
+    expect(
+      result.checks.some((check) => check.code === "claude_anthropic_api_key_overrides_subscription"),
+    ).toBe(false);
     expect(result.checks.some((check) => check.level === "error")).toBe(false);
   });
 
