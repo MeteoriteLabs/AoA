@@ -47,6 +47,7 @@ import {
 } from "./runtime-hook-settings.js";
 import {
   CLAUDE_AMBIENT_CONFIG_UNSET_PREFIXES,
+  CLAUDE_SESSION_IDENTITY_UNSET_KEYS,
   ClaudeCredentialsMissingError,
   claudeCredentialChangedSinceProvisioning,
   createIsolatedClaudeConfigDir,
@@ -505,6 +506,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const unsetEnvPrefixes = isolateAmbientConfig
       ? [...CLAUDE_AMBIENT_CONFIG_UNSET_PREFIXES]
       : undefined;
+    // --- Parent session-identity strip (T3c, ALWAYS-ON: org AND crew) ---
+    // The parent Claude Code session's identity/process vars bleed into every
+    // child when AoA's server is started from inside a Claude Code session (how
+    // AoA is developed, QA'd and live-verified). Unlike the operator's ~/.claude
+    // login — which an org agent legitimately inherits — these keys declare the
+    // child a continuation of a specific live session (the most plausible
+    // live-hijack input), carry NO credential, and are never legitimate to pass
+    // on. So they are stripped for EVERY claude_local run via mergeChildEnv's
+    // exact-key unsetEnvKeys. Crew already drops them under the CLAUDE_ prefix
+    // strip above (redundant-but-harmless); org gains exactly this. Both feed the
+    // one mergeChildEnv, and overlay-wins still applies: an agent that explicitly
+    // sets one of these on adapterConfig.env keeps its own value.
+    const unsetEnvKeys = [...CLAUDE_SESSION_IDENTITY_UNSET_KEYS];
     // ------------------------------------------------------
 
     // --- Runtime hook bridge (Task 6) ---
@@ -752,6 +766,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         graceSec,
         onLog,
         onSpawn,
+        unsetEnvKeys,
         ...(unsetEnvPrefixes ? { unsetEnvPrefixes } : {}),
       });
 

@@ -3,7 +3,10 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { execute } from "../server/execute.js";
-import { resolveIsolatedClaudeConfigRoot } from "../server/ambient-config.js";
+import {
+  resolveIsolatedClaudeConfigRoot,
+  CLAUDE_SESSION_IDENTITY_UNSET_KEYS,
+} from "../server/ambient-config.js";
 import type {
   AdapterExecutionContext,
   AdapterProviderSandboxRunInput,
@@ -27,6 +30,21 @@ const AMBIENT_API_KEY = "sk-ant-ambient-server-key";
 /** Not enumerated anywhere in the strip list — proves the PREFIX class works. */
 const AMBIENT_FUTURE_KNOB = "operator-hooks-and-plugins";
 const AMBIENT_HOME = path.join(os.tmpdir(), "operator-home");
+
+/**
+ * The parent Claude Code session's identity, as it bleeds into every child spawn
+ * when AoA's server is started from inside a Claude Code session (T3c). Each key
+ * gets a distinctive ambient value so a test can prove it was the inherited copy
+ * that was dropped. These are stripped from EVERY claude_local run — org and crew.
+ */
+const AMBIENT_SESSION_IDENTITY: Record<string, string> = {
+  CLAUDE_CODE_SESSION_ID: "parent-live-session-id",
+  CLAUDE_CODE_HOST_SESSION_ID: "parent-host-session-id",
+  CLAUDE_CODE_CHILD_SESSION: "1",
+  CLAUDE_CODE_ENTRYPOINT: "claude-desktop",
+  CLAUDE_CODE_EXECPATH: path.join(os.tmpdir(), "parent", "claude"),
+  CLAUDE_PID: "44380",
+};
 
 const CREDENTIAL_BODY = JSON.stringify({ claudeAiOauth: { accessToken: "ambient-fixture-token" } });
 /**
@@ -197,6 +215,7 @@ describe("claude ambient-config isolation at the spawn", () => {
       ANTHROPIC_API_KEY: AMBIENT_API_KEY,
       HOME: AMBIENT_HOME,
       USERPROFILE: AMBIENT_HOME,
+      ...AMBIENT_SESSION_IDENTITY,
     };
     for (const [key, value] of Object.entries(poisoned)) {
       saved[key] = process.env[key];
@@ -438,9 +457,12 @@ describe("claude ambient-config isolation at the spawn", () => {
     }
   });
 
-  // The no-regression proof (D15): org/heartbeat runs never set the flag, and
-  // their env must be byte-for-byte what it was before this change.
-  it("org/heartbeat run: inherits ambient Claude config unchanged", async () => {
+  // The no-regression proof (D15): org/heartbeat runs never set the isolation
+  // flag, so their auth + config env is inherited exactly as before — with the
+  // ONE exception carved out by T3c below (the session-identity subset, which is
+  // stripped for every claude_local run). Everything that is NOT session identity
+  // is unchanged.
+  it("org/heartbeat run: inherits ambient Claude config (except session identity)", async () => {
     const { capture: rawCapture, cleanup } = await runClaude({});
     const capture = requireCapture(rawCapture);
     try {
@@ -448,6 +470,76 @@ describe("claude ambient-config isolation at the spawn", () => {
       expect(capture.env.CLAUDE_CONFIG_DIR).toBe(ambientConfigDir);
       expect(capture.env.CLAUDE_CODE_OPERATOR_KNOB).toBe(AMBIENT_FUTURE_KNOB);
       expect(capture.env.HOME).toBe(AMBIENT_HOME);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  /**
+   * ─────────── T3c: strip the parent session-identity from ORG runs ───────────
+   *
+   * THE DISCRIMINATOR. An org (non-isolated) claude_local run legitimately
+   * inherits the operator's login and config — but NOT the parent Claude Code
+   * session's identity, which declares the child a continuation of a specific
+   * live session and is the most plausible live-hijack mechanism. This proves the
+   * two are separated: the six identity/process keys are dropped while the
+   * operator's auth (ANTHROPIC_API_KEY), config directory (CLAUDE_CONFIG_DIR) and
+   * every non-identity CLAUDE_CODE_* knob survive.
+   */
+  it("org/heartbeat run: strips the parent session-identity but KEEPS auth + config", async () => {
+    const { capture: rawCapture, cleanup } = await runClaude({});
+    const capture = requireCapture(rawCapture);
+    try {
+      // Every session-identity key the parent leaked is gone…
+      for (const key of CLAUDE_SESSION_IDENTITY_UNSET_KEYS) {
+        expect(capture.env[key], `${key} must not reach an org run`).toBeUndefined();
+      }
+      // …while the operator's login and config — the things an org agent works
+      // from — are untouched. This is the whole point: kill the hijack input, keep
+      // the agent's ability to authenticate.
+      expect(capture.env.ANTHROPIC_API_KEY).toBe(AMBIENT_API_KEY);
+      expect(capture.env.CLAUDE_CONFIG_DIR).toBe(ambientConfigDir);
+      // A non-identity CLAUDE_CODE_* key survives — proving this is an exact-key
+      // strip, not a blunt CLAUDE_CODE_ prefix that would also drop config/auth.
+      expect(capture.env.CLAUDE_CODE_OPERATOR_KNOB).toBe(AMBIENT_FUTURE_KNOB);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  /**
+   * Crew already strips the whole CLAUDE_/ANTHROPIC_ prefix, so the identity keys
+   * are gone there too — asserted here as a regression guard so a future change to
+   * the crew prefix strip cannot silently reopen the hijack input for crew runs.
+   */
+  it("crew run: the parent session-identity is also stripped (via the prefix strip)", async () => {
+    const { capture: rawCapture, cleanup } = await runClaude({ isolateAmbientConfig: true });
+    const capture = requireCapture(rawCapture);
+    try {
+      for (const key of CLAUDE_SESSION_IDENTITY_UNSET_KEYS) {
+        expect(capture.env[key], `${key} must not reach a crew run`).toBeUndefined();
+      }
+    } finally {
+      await cleanup();
+    }
+  });
+
+  /**
+   * `mergeChildEnv`'s overlay-wins rule: an agent that EXPLICITLY sets a
+   * session-identity key on adapterConfig.env keeps its own value — only the
+   * AMBIENT inherited copy is dropped. Deliberate: an operator's explicit choice
+   * is honored; the host machine's accidental bleed is not.
+   */
+  it("org/heartbeat run: an agent-set session-identity key survives (overlay wins)", async () => {
+    const { capture: rawCapture, cleanup } = await runClaude({
+      configEnv: { CLAUDE_CODE_ENTRYPOINT: "aoa-agent" },
+    });
+    const capture = requireCapture(rawCapture);
+    try {
+      // The agent's own value wins over both the ambient value and the strip.
+      expect(capture.env.CLAUDE_CODE_ENTRYPOINT).toBe("aoa-agent");
+      // …but the keys the agent did NOT override are still dropped.
+      expect(capture.env.CLAUDE_CODE_SESSION_ID).toBeUndefined();
     } finally {
       await cleanup();
     }

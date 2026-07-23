@@ -231,6 +231,16 @@ test.describe("crew ambient Claude-config isolation", () => {
       controlEnv.CLAUDE_CODE_E2E_OPERATOR_KNOB,
       "ambient poison must reach an UNISOLATED claude spawn — otherwise the crew absence assertions below prove nothing",
     ).toBe(AMBIENT_CLAUDE_CONFIG_POISON.CLAUDE_CODE_E2E_OPERATOR_KNOB);
+    // T3c: the parent Claude Code session's identity is stripped from EVERY
+    // claude_local spawn — org included — not just the crew prefix strip. This is
+    // the discriminator, and it is not vacuous: the OPERATOR_KNOB assertion just
+    // above proves this SAME poison block reaches the unisolated org spawn, so the
+    // session id's absence here is the always-on strip removing it, not the poison
+    // failing to arrive.
+    expect(
+      controlEnv.CLAUDE_CODE_SESSION_ID,
+      "the parent session identity must never reach an org (or any) claude_local spawn",
+    ).toBeUndefined();
     // Presence only: the fixture masks secret-shaped VALUES (it would otherwise
     // record a developer's real CLAUDE_CODE_OAUTH_TOKEN). The control's strength
     // comes from the two full-value assertions either side of this one.

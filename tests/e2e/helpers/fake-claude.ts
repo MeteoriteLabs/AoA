@@ -88,11 +88,19 @@ export interface FakeClaudeInvocation {
  *
  * `CLAUDE_CODE_E2E_OPERATOR_KNOB` is deliberately not enumerated in any strip
  * list — it proves the CLAUDE_ PREFIX class, not a known-key denylist.
+ *
+ * `CLAUDE_CODE_SESSION_ID` is the parent Claude Code session's identity (T3c): it
+ * bleeds into the server when AoA is started from inside a Claude Code session,
+ * and is stripped from EVERY claude_local spawn — org AND crew — not just the
+ * crew prefix strip. The spec asserts the ORG control spawn (unisolated) does not
+ * carry it, while `CLAUDE_CODE_E2E_OPERATOR_KNOB` from this same block DOES reach
+ * it — the discriminator between the always-on identity strip and the rest.
  */
 export const AMBIENT_CLAUDE_CONFIG_POISON = {
   ANTHROPIC_API_KEY: "sk-ant-e2e-ambient-operator-key",
   CLAUDE_CONFIG_DIR: path.join(os.tmpdir(), "aoa-e2e-ambient-claude-config"),
   CLAUDE_CODE_E2E_OPERATOR_KNOB: "operator-hooks-and-plugins",
+  CLAUDE_CODE_SESSION_ID: "e2e-parent-live-session-id",
 } as const;
 
 /**

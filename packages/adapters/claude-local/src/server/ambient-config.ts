@@ -47,6 +47,47 @@ export const CLAUDE_AMBIENT_CONFIG_UNSET_PREFIXES: readonly string[] = [
 ];
 
 /**
+ * Session-/process-identity variables that a Claude Code parent leaks into every
+ * child it spawns, stripped from EVERY claude_local run — org AND crew — via
+ * `mergeChildEnv`'s exact-key `unsetEnvKeys` mechanism.
+ *
+ * Unlike the operator's `~/.claude` login (which an org agent legitimately
+ * inherits and works from), these keys are NEVER legitimate to pass to a child:
+ * `CLAUDE_CODE_CHILD_SESSION=1` + `CLAUDE_CODE_SESSION_ID` + `CLAUDE_CODE_ENTRYPOINT`
+ * *declare the child to be a continuation of a specific live session* — a
+ * behavioural input to the CLI, and the most plausible mechanism behind the
+ * observed live agent-hijack. When AoA's server is started from inside a Claude
+ * Code session (which is exactly how AoA is developed, QA'd and live-verified),
+ * an org claude_local child inherits the PARENT session's identity and silently
+ * contaminates the very runs used to validate agent behaviour.
+ *
+ * 🚨 EXACT KEYS, not a prefix. The `CLAUDE_CODE_*` namespace also carries pure
+ * config (`CLAUDE_CODE_DISABLE_CRON`, `CLAUDE_CODE_EMIT_TOOL_USE_SUMMARIES`, …)
+ * and AUTH (`CLAUDE_CODE_OAUTH_SCOPES`, `CLAUDE_CODE_SDK_HAS_OAUTH_REFRESH`),
+ * neither of which may be dropped for an org run — an org agent keeps its login.
+ * So this is an enumerated set of the six identity/process keys observed on a
+ * live parent, NOT the crew-only `CLAUDE_`/`ANTHROPIC_` prefix strip. Crew is
+ * already covered by that prefix (this is redundant-but-harmless there); org
+ * gains exactly the identity strip and nothing else.
+ *
+ * Carries NO credential and NO founder-configured auth mode, so stripping it can
+ * break no login — which is why it ships always-on and independently of T3's
+ * credential provisioning.
+ *
+ * `mergeChildEnv`'s overlay-wins rule still applies: an agent that explicitly
+ * sets one of these on `adapterConfig.env` keeps its own value; only the AMBIENT
+ * inherited copy is dropped.
+ */
+export const CLAUDE_SESSION_IDENTITY_UNSET_KEYS: readonly string[] = [
+  "CLAUDE_CODE_SESSION_ID",
+  "CLAUDE_CODE_HOST_SESSION_ID",
+  "CLAUDE_CODE_CHILD_SESSION",
+  "CLAUDE_CODE_ENTRYPOINT",
+  "CLAUDE_CODE_EXECPATH",
+  "CLAUDE_PID",
+];
+
+/**
  * Variables that MUST survive the strip. None of them match the prefixes above,
  * so this list is a regression guard, not a filter: it fails loudly if the
  * prefix list is ever widened into something that would take the agent's ability
