@@ -7,7 +7,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Db } from "@armyofagents/db";
 import type { HumanQuestionRuntimeCapabilities } from "@armyofagents/adapter-utils";
-import { stripReservedMcpServerNames, type McpServerSpec } from "@armyofagents/adapter-utils";
+import { mergeExternalMcpServers, type McpServerSpec } from "@armyofagents/adapter-utils";
 import type { AgentTool } from "./types.js";
 import type { AgentStreamChunk, ChatInput } from "./agent-loop.js";
 import { createCLISessionStore } from "./cli-session-store.js";
@@ -215,28 +215,23 @@ export function buildMcpBridgeSpec(params: McpConfigParams): McpBridgeSpec {
 }
 
 export function buildMcpConfig(params: McpConfigParams): McpConfig {
-  // Null-prototype: connector names are runtime strings from DB rows, and a
-  // connector named `__proto__` assigned onto a normal object literal would set
-  // the prototype instead of adding a key — the server would silently vanish.
-  const mcpServers: Record<string, McpConfigServerEntry> = Object.create(null);
-  mcpServers.aoa = buildMcpBridgeSpec(params);
-
+  const reserved: Record<string, McpConfigServerEntry> = { aoa: buildMcpBridgeSpec(params) };
   if (params.enabledCapabilities?.includes("browser_use")) {
-    mcpServers.playwright = {
+    reserved.playwright = {
       command: "npx",
       args: [PLAYWRIGHT_MCP_PACKAGE, "--headless"],
       env: {},
     };
   }
 
-  for (const [name, spec] of Object.entries(
-    stripReservedMcpServerNames(params.extraMcpServers ?? {}),
-  )) {
-    mcpServers[name] =
-      spec.kind === "http"
-        ? { type: "http", url: spec.url, headers: spec.headers }
-        : { command: spec.command, args: spec.args, env: spec.env };
-  }
+  // mergeExternalMcpServers is the ONLY supported merge path: it couples
+  // reserved-name filtering with the null-prototype destination that keeps a
+  // connector named `__proto__` an own key instead of the map's prototype.
+  const mcpServers = mergeExternalMcpServers(reserved, params.extraMcpServers ?? {}, (spec) =>
+    spec.kind === "http"
+      ? { type: "http" as const, url: spec.url, headers: spec.headers }
+      : { command: spec.command, args: spec.args, env: spec.env },
+  );
 
   return { mcpServers };
 }

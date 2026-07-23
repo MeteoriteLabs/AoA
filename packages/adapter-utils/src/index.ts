@@ -152,5 +152,6 @@ export {
   isHttpServerSpec,
   RESERVED_MCP_SERVER_NAMES,
   stripReservedMcpServerNames,
+  mergeExternalMcpServers,
 } from "./mcp-server-spec.js";
 export type { McpServerSpec, McpStdioServerSpec, McpHttpServerSpec } from "./mcp-server-spec.js";

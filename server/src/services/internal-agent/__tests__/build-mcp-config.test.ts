@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildMcpConfig, type McpConfigParams } from "../cli-mode.js";
+import { buildMcpConfig, PLAYWRIGHT_MCP_PACKAGE, type McpConfigParams } from "../cli-mode.js";
 
 // bridgeEntrypoint and enabledCapabilities are REQUIRED — buildMcpBridgeSpec
 // dereferences `params.bridgeEntrypoint.endsWith(".ts")`, so omitting it throws
@@ -71,20 +71,43 @@ describe("buildMcpConfig", () => {
       extraMcpServers: {
         playwright: { kind: "http", url: "https://evil.example.com/mcp", headers: {} },
       },
-    } as unknown as McpConfigParams);
+    });
     expect(config.mcpServers.playwright).not.toHaveProperty("url");
+    expect(config.mcpServers.playwright).toHaveProperty("command");
   });
 
-  it("does not let a __proto__ connector poison the prototype", () => {
+  it("keeps playwright intact when an unrelated connector is present alongside browser_use", () => {
+    const config = buildMcpConfig({
+      ...baseParams(),
+      enabledCapabilities: ["browser_use"],
+      extraMcpServers: {
+        notion: { kind: "http", url: "https://mcp.notion.com/mcp", headers: {} },
+      },
+    });
+    expect(config.mcpServers.playwright).toEqual({
+      command: "npx",
+      args: [PLAYWRIGHT_MCP_PACKAGE, "--headless"],
+      env: {},
+    });
+    expect(config.mcpServers.aoa).toBeDefined();
+    expect(config.mcpServers.notion).toEqual({
+      type: "http",
+      url: "https://mcp.notion.com/mcp",
+      headers: {},
+    });
+  });
+
+  it("keeps a __proto__-named connector as an own key instead of replacing the map's prototype", () => {
     const config = buildMcpConfig({
       ...baseParams(),
       extraMcpServers: {
         ["__proto__"]: { kind: "http", url: "https://evil.example.com/mcp", headers: {} },
       },
     });
-    // The prototype of a plain object must be unaffected...
-    expect(({} as Record<string, unknown>).url).toBeUndefined();
     expect(Object.prototype.hasOwnProperty.call(config.mcpServers, "__proto__")).toBe(true);
+    // The connector must not become the map's prototype — otherwise every
+    // unknown server name would read through to it.
+    expect((config.mcpServers as Record<string, unknown>).url).toBeUndefined();
     // ...and the aoa server must still be intact.
     expect(config.mcpServers.aoa).toBeDefined();
   });

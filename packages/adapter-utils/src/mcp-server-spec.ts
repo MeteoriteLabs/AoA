@@ -65,6 +65,13 @@ export const RESERVED_MCP_SERVER_NAMES = ["aoa", "playwright"] as const;
  * null-prototype object — callers merge external connectors into a config that
  * already contains the reserved servers, so a collision here would silently
  * replace AoA's own loopback bridge or browser server.
+ *
+ * WARNING: this function's null prototype is NOT transitive. It protects only
+ * the object returned here. If you then copy these entries into a map of your
+ * own (`Object.assign({...}, stripped)`, `{...reserved, ...stripped}`, or a
+ * `for` loop writing into a `{}`), a connector named `__proto__` sets your
+ * destination's prototype instead of adding a key and the server silently
+ * vanishes. Callers that need to merge MUST use `mergeExternalMcpServers`.
  */
 export function stripReservedMcpServerNames(
   servers: Record<string, McpServerSpec>,
@@ -73,6 +80,34 @@ export function stripReservedMcpServerNames(
   for (const [name, spec] of Object.entries(servers)) {
     if ((RESERVED_MCP_SERVER_NAMES as readonly string[]).includes(name)) continue;
     out[name] = spec;
+  }
+  return out;
+}
+
+/**
+ * Merge external connectors into a set of AoA-owned servers, returning a
+ * null-prototype map.
+ *
+ * This is the ONLY supported way to build an MCP server map that contains
+ * external connectors. It couples the two protections that must never be
+ * separated: reserved-name filtering AND a null-prototype destination.
+ * Connector names are untrusted runtime strings from DB rows — assigning one
+ * named `__proto__` onto a normal object literal sets the prototype instead of
+ * adding a key, and the server silently vanishes.
+ *
+ * Do NOT call stripReservedMcpServerNames and merge the result yourself; the
+ * returned object's prototype is not transitive to your destination map.
+ */
+export function mergeExternalMcpServers<T>(
+  reserved: Record<string, T>,
+  external: Record<string, McpServerSpec>,
+  toEntry: (spec: McpServerSpec) => T,
+): Record<string, T> {
+  const out: Record<string, T> = Object.create(null);
+  for (const [name, value] of Object.entries(reserved)) out[name] = value;
+  for (const [name, spec] of Object.entries(stripReservedMcpServerNames(external))) {
+    if (Object.prototype.hasOwnProperty.call(out, name)) continue; // reserved wins
+    out[name] = toEntry(spec);
   }
   return out;
 }
