@@ -658,6 +658,15 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
         executionTarget, runtimeCommandSpec,
         mcpBridge: bridgeSpec,
         humanQuestionCapabilities: adapter.humanQuestionCapabilities,
+        // T2 (D9): CREW-ONLY ambient-config isolation. A crew run inherited the
+        // operator's whole environment, so the host machine's ~/.claude
+        // (SessionStart hooks, third-party skills, plugins) and the server's
+        // ambient ANTHROPIC_API_KEY bled into the agent — observed live
+        // hijacking a run. Set unconditionally HERE because this call site IS
+        // the crew path; heartbeat (org) never sets it, so org behavior is
+        // unchanged. Honoring the flag is per-adapter opt-in — claude_local
+        // acts on it, the others currently ignore it.
+        isolateAmbientConfig: true,
         // T1: stream the CLI transcript + one redacted adapter.invoke event into
         // the run log (was: two literal no-ops that discarded everything). Both
         // sink callbacks swallow store failures internally.

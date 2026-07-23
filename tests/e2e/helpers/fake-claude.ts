@@ -36,7 +36,39 @@ export interface FakeClaudeInvocation {
   argv: string[];
   stdin: string;
   cwd: string;
+  /**
+   * An ALLOWLISTED slice of the shim's OWN inherited environment (CLAUDE_* /
+   * ANTHROPIC_* plus PATH/HOME/USERPROFILE/AOA_AGENT_ID — never the whole env,
+   * which would write the developer's shell and the per-run AOA_API_KEY in the
+   * clear). Additive (existing specs destructure only argv/stdin/cwd): it is
+   * the only way to prove what a spawn actually received, which a unit test of
+   * the env builder cannot show. Used by crew-config-isolation.spec.ts to
+   * assert the D9 ambient-config strip is wired, not merely correct.
+   *
+   * Optional: the JSONL persists across branches, so lines recorded before this
+   * field existed are still readable.
+   */
+  env?: Record<string, string>;
 }
+
+/**
+ * POISONED ambient Claude config, exported to the webServer env by
+ * playwright.config.ts and asserted by crew-config-isolation.spec.ts.
+ *
+ * These are the operator-machine leaks D9 exists to stop: a host `~/.claude`
+ * (SessionStart hooks, third-party skills, plugins) and the server's own
+ * Anthropic key. They are set on the SERVER process — the spec's whole point is
+ * that a crew spawn must not inherit them, and only a real ambient value can
+ * prove that. Values are obviously-fake; the fake CLI ignores all of them.
+ *
+ * `CLAUDE_CODE_E2E_OPERATOR_KNOB` is deliberately not enumerated in any strip
+ * list — it proves the CLAUDE_ PREFIX class, not a known-key denylist.
+ */
+export const AMBIENT_CLAUDE_CONFIG_POISON = {
+  ANTHROPIC_API_KEY: "sk-ant-e2e-ambient-operator-key",
+  CLAUDE_CONFIG_DIR: path.join(os.tmpdir(), "aoa-e2e-ambient-claude-config"),
+  CLAUDE_CODE_E2E_OPERATOR_KNOB: "operator-hooks-and-plugins",
+} as const;
 
 /** Read all recorded invocations (oldest first). Empty if none yet. */
 export function readFakeClaudeInvocations(): FakeClaudeInvocation[] {

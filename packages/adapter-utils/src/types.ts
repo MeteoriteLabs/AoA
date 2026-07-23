@@ -341,6 +341,22 @@ export interface AdapterExecutionContext {
    * is caught by redactEnvForLogs). Sibling of authToken, not nested in context.
    */
   runtimeHookToken?: string;
+  /**
+   * NON-SECRET plain boolean: isolate this run from the HOST machine's ambient
+   * agent configuration (D9). Set ONLY by the crew runner (`runAoaAgent`, agents
+   * with kind='aoa'); org/heartbeat runs leave it unset and are unaffected.
+   *
+   * Honoring it is per-adapter opt-in — today claude_local strips the ambient
+   * `CLAUDE_*`/`ANTHROPIC_*` classes and pins `CLAUDE_CONFIG_DIR` to a per-run
+   * directory, so the operator's `~/.claude` (SessionStart hooks, third-party
+   * skills, plugins) and the server's ambient API key cannot bleed into a crew
+   * agent. Other adapters currently ignore it.
+   *
+   * This is env hygiene, NOT process sandboxing: HOME/USERPROFILE/PATH are never
+   * relocated (git, SSH and npm resolve through them for the tools the agent
+   * launches).
+   */
+  isolateAmbientConfig?: boolean;
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onMeta?: (meta: AdapterInvocationMeta) => Promise<void>;
   authToken?: string;

@@ -123,13 +123,51 @@ try {
   resolveStdinEnd();
 }
 
+// Env keys worth recording, as an ALLOWLIST — never the whole environment.
+// The webServer env is `{...process.env, …}`, so dumping process.env would write
+// the developer's entire shell (plus AOA_API_KEY, the per-run token production
+// redacts via redactEnvForLogs) in the clear to a fixed, never-swept tmpdir path,
+// once per spawn for the whole suite.
+//
+// The prefixes are what the D9 assertions need: recording the CLASS (not named
+// keys) keeps absence proofs honest — a leaked CLAUDE_*/ANTHROPIC_* variable
+// nobody enumerated still shows up.
+const ENV_RECORD_PREFIXES = ["CLAUDE_", "ANTHROPIC_"];
+const ENV_RECORD_KEYS = ["PATH", "Path", "HOME", "USERPROFILE", "AOA_AGENT_ID"];
+
+// The two recorded prefix classes are exactly where Claude's vendor credentials
+// live — CLAUDE_CODE_OAUTH_TOKEN (the headless subscription-OAuth token, named
+// as a credential at server/src/services/extraction-cli.ts:235) starts with
+// CLAUDE_ and is NOT in the poison set that force-overwrites ANTHROPIC_API_KEY,
+// so a developer's real one would otherwise be written verbatim.
+//
+// Mask the VALUE, keep the KEY: every absence proof asserts on key presence, so
+// redaction costs nothing. Mirrors what production does via redactEnvForLogs.
+const SECRETISH = /(token|api[_-]?key|secret|password|credential)/i;
+
+function recordableEnv() {
+  const out = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value === undefined) continue;
+    const keep =
+      ENV_RECORD_KEYS.includes(key) ||
+      ENV_RECORD_PREFIXES.some((p) => key.toLowerCase().startsWith(p.toLowerCase()));
+    if (keep) out[key] = SECRETISH.test(key) ? "<redacted>" : value;
+  }
+  return out;
+}
+
 // Best-effort, never fatal. Called right before exit so any stdin the parent
 // piped in (the prompt, post-stdin-delivery) has been received during the turn.
 function recordInvocation() {
   try {
     fs.appendFileSync(
       INVOCATIONS_PATH,
-      JSON.stringify({ argv, stdin: stdinContent, cwd: process.cwd() }) + "\n",
+      // `env` (additive): the allowlisted slice of the shim's OWN inherited
+      // environment. The only place the effect of a spawn-time env strip is
+      // observable — asserted by crew-config-isolation.spec.ts. Existing specs
+      // read argv/stdin/cwd and are unaffected.
+      JSON.stringify({ argv, stdin: stdinContent, cwd: process.cwd(), env: recordableEnv() }) + "\n",
       "utf8",
     );
   } catch {

@@ -44,6 +44,10 @@ import {
   buildPreToolUseSettings,
   writeRuntimeHookSettingsFile,
 } from "./runtime-hook-settings.js";
+import {
+  CLAUDE_AMBIENT_CONFIG_UNSET_PREFIXES,
+  createIsolatedClaudeConfigDir,
+} from "./ambient-config.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const AOA_SKILLS_CANDIDATES = [
@@ -363,6 +367,64 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const dbSkills = (context.skills as Array<{ key: string; name: string; markdown: string; files?: Array<{ path: string; content: string }> }> | undefined) ?? [];
   const skillsDir = await buildSkillsDir(dbSkills.length > 0 ? dbSkills : undefined);
 
+  // --- Ambient Claude-config isolation (D9, crew-only) ---
+  // Opt-in per run via ctx.isolateAmbientConfig — set by the crew runner, never
+  // by heartbeat, so org runs keep inheriting the operator's environment exactly
+  // as before. When on: pin CLAUDE_CONFIG_DIR to a per-run directory (an
+  // overlay-set key survives the strip by mergeChildEnv's "overlay wins" rule)
+  // and strip the ambient CLAUDE_*/ANTHROPIC_* classes at the spawn.
+  //
+  // LOCAL TARGETS ONLY. A remote child (docker / provider-sandbox) never sees
+  // the host env, so it is isolated by construction and the strip is moot —
+  // while a pinned HOST tmpdir path forwarded into the container is actively
+  // wrong (a `C:\…` path inside Linux) AND would override the managed
+  // `env.HOME = runtimeRootDir` below, which is how the CLI finds a correct
+  // in-container ~/.claude. Same short-circuit as opencode-local's
+  // runtime-config.ts on `targetIsRemote`.
+  const isolateAmbientConfig = ctx.isolateAmbientConfig === true && !isRemoteExecutionTarget;
+  // Find an agent-configured CLAUDE_CONFIG_DIR using the SAME case-folding the
+  // strip uses (server-utils.ts sameKey): on Windows `Claude_Config_Dir` IS
+  // `CLAUDE_CONFIG_DIR`. A direct property read would miss that spelling and
+  // mint a per-run dir as well — the overlay would then carry two spellings of
+  // ONE Windows variable with different values, both surviving the strip (both
+  // are overlay keys), and which one the child ends up with is not decided here.
+  // An empty/whitespace value counts as unconfigured (pinning "" helps nobody).
+  const configuredConfigDirKey = Object.keys(env).find(
+    (key) =>
+      (process.platform === "win32"
+        ? key.toLowerCase() === "claude_config_dir"
+        : key === "CLAUDE_CONFIG_DIR") && env[key].trim().length > 0,
+  );
+  let isolatedConfigDir: string | null = null;
+  if (isolateAmbientConfig && !configuredConfigDirKey) {
+    // Only mint a per-run dir when the agent did NOT configure one. An operator
+    // pointing crew at a dedicated, already-logged-in config home via
+    // adapterConfig.env is the supported (and, pre-T3, the only) way to give a
+    // crew run working credentials — clobbering it would silently break the one
+    // escape hatch, and every other provider-auth variable set that way survives.
+    isolatedConfigDir = await createIsolatedClaudeConfigDir();
+    env.CLAUDE_CONFIG_DIR = isolatedConfigDir;
+  }
+  if (isolateAmbientConfig) {
+    // Surfaced through onMeta next to the redacted env. Pre-T3 a MINTED dir is
+    // empty, so a crew run can fail login-required while Settings → Providers
+    // (which probes the HOST config) reports the provider verified. Naming the
+    // directory here makes that failure self-explaining instead of a dead end.
+    // The "(agent-configured)" marker matters: without it the note reads as
+    // though AoA overrode the operator's own setting, which is the opposite of
+    // what happened.
+    const effectiveConfigDir = isolatedConfigDir ?? env[configuredConfigDirKey!];
+    commandNotes.push(
+      `Ambient Claude config isolated (crew run); CLAUDE_CONFIG_DIR pinned to ${effectiveConfigDir}${
+        isolatedConfigDir === null ? " (agent-configured)" : ""
+      }`,
+    );
+  }
+  const unsetEnvPrefixes = isolateAmbientConfig
+    ? [...CLAUDE_AMBIENT_CONFIG_UNSET_PREFIXES]
+    : undefined;
+  // ------------------------------------------------------
+
   // --- Runtime hook bridge (Task 6) ---
   // bridged = true when caller explicitly sets runtimeHookBridge.enabled
   const bridged = runtimeHookBridge?.enabled === true;
@@ -609,6 +671,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       graceSec,
       onLog,
       onSpawn,
+      ...(unsetEnvPrefixes ? { unsetEnvPrefixes } : {}),
     });
 
     const parsedStream = parseClaudeStreamJson(proc.stdout);
@@ -747,6 +810,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     fs.rm(skillsDir, { recursive: true, force: true }).catch(() => {});
     if (hookSettingsTmpDir) {
       fs.rm(hookSettingsTmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+    if (isolatedConfigDir) {
+      fs.rm(isolatedConfigDir, { recursive: true, force: true }).catch(() => {});
     }
   }
 }
