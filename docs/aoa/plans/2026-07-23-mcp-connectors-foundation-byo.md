@@ -1586,3 +1586,20 @@ Recorded as they are decided, so later tasks are not built against a stale spec.
 **A5 — Guards validate the discriminant + ONE field only (Tasks 6 and 11, read this).** `isStdioServerSpec` checks `kind` + `typeof command === "string"`; `isHttpServerSpec` checks `kind` + `typeof url === "string"`. They do NOT validate `args`, `env`, or `headers`, yet they narrow to interfaces that promise those are well-shaped. This is deliberate: the two nullable DB columns (`url`, `command`) are exactly the ones checked, and the jsonb columns are `notNull().default(...)`. **But `$type<string[]>()` on a jsonb column is a compile-time assertion with no runtime guarantee** — a hand-written or imported row could pass the guard and then throw on `spec.args.map(...)`. Do not treat a passing guard as proof those three fields are well-formed.
 
 **A6 — `@packageDocumentation` does not bind module docs under `tsc` (Task 1 follow-up).** It is a TSDoc/API-Extractor convention; `tsc` ignores it for doc binding and strips the separating blank line on `.d.ts` emit, so the module block still attaches to whichever interface follows it. The fix is a one-line JSDoc on each interface so `tsc` binds the nearest comment. Folded into Task 2. The security-relevant field-level warnings were unaffected and bind correctly.
+
+**A7 — Task 1 Step 5 is VOID. Do not re-add it.** Step 5 mandated a `export type {...} from "./mcp-server-spec.js"` re-export in `types.ts`. Step 5b then made it redundant (`index.ts` imports the types and guards directly from `./mcp-server-spec.js`), and Task 2 deleted it as verified-dead. If this plan is ever re-run or resumed, SKIP Task 1 Step 5. `types.ts` should contain only the `import type { McpServerSpec }` that `AdapterExecutionContext` needs.
+
+**A8 — Prototype-pollution guard required in Tasks 3 and 6.** `buildMcpConfig` assigns `config.mcpServers[name] = ...` where `name` is a runtime string from a DB row. A connector named `__proto__` would set the object's prototype instead of adding a key, and the server would **silently vanish with no error** — the worst possible failure mode for a security-adjacent feature. Required in Task 3: build the servers map with `Object.create(null)` OR validate names against `/^[a-zA-Z0-9_-]+$/` before assignment. Required in Task 11: validate `serverName` against that charset at registration time so bad names never reach the DB. Note the plan sanitizes only the derived env-var slug (`envVarNameFor`), NOT the key itself.
+
+**A9 — Reserved names belong in one shared export (do in Task 3).** Task 3's guard hand-types `if (name === "aoa" || name === "playwright") continue;`. Plan 2 would replicate those literals into three more adapter writers with nothing linking them. Instead add to `packages/adapter-utils/src/mcp-server-spec.ts`, next to the guards:
+
+```ts
+export const RESERVED_MCP_SERVER_NAMES = ["aoa", "playwright"] as const;
+export function stripReservedMcpServerNames(
+  servers: Record<string, McpServerSpec>,
+): Record<string, McpServerSpec>;
+```
+
+Task 3 and all of Plan 2 then call one function. (Note: the reviewer referred to this as "Task 4" — the reserved-name guard is in **Task 3**; Task 4 is the `${VAR}` expansion gate.)
+
+**A10 — `Record<string, McpServerSpec>` carrier shape is CORRECT; do not change it.** Questioned during review and affirmed: the Record makes duplicate server names structurally unrepresentable, which is exactly the per-run uniqueness invariant. An array of `{name, spec}` would permit duplicates and force every consumer to decide first-wins vs last-wins independently. Compile-time exclusion of reserved names is NOT achievable on the real path — the producer builds the map in a loop from DB rows with runtime-string keys, so a runtime guard at the serialization boundary is the only enforcement that works.
