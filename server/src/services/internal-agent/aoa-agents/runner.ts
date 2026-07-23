@@ -819,16 +819,36 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
       }
     }
 
-    // Spec B Task 5 — TASK SILENT-STUCK GUARD. Symmetric to the entry guard
-    // above. A non-claude adapter (no MCP bridge) or a hung claude run can exit
-    // "successfully" WITHOUT ever calling set_task_status — leaving the task we
-    // checked out stuck 'in_progress' forever (silent stall). If the task is
-    // still 'in_progress' AND still locked by THIS run (executionRunId===runId),
-    // the agent did not move it: RELEASE it back to 'todo' (clear the execution
-    // lock so the founder/heartbeat can re-dispatch it) and THROW so the run is
-    // marked failed loudly via the catch below. The release is guarded on
-    // executionRunId=runId so a concurrent run that legitimately re-claimed the
-    // task is never clobbered.
+    // Spec B Task 5 — TASK SILENT-STUCK GUARD (autonomy-aware, T10 fix).
+    // Symmetric to the entry guard above. A non-claude adapter (no MCP bridge) or
+    // a hung claude run can exit "successfully" WITHOUT ever moving its task —
+    // leaving the task we checked out stuck 'in_progress' forever. BUT: whether a
+    // still-in_progress task is a FAILURE depends on the autonomy dial the agent
+    // ran under.
+    //
+    //  • effectiveAutonomy >= 1 (Assist/Drive): the A4 dial-gate PERMITTED an
+    //    advance (Assist → in_review, Drive → done). A task still in_progress
+    //    means the agent was allowed to move it but didn't → a genuine stall:
+    //    RELEASE it back to 'todo' (clear the lock) and THROW so the run is marked
+    //    failed loudly. This is the guard's real purpose and is preserved.
+    //  • effectiveAutonomy === 0 (Manual): the A4 dial-gate FORBIDS any advance
+    //    (set-task-status-tool refuses in_review/done at Manual). A task still
+    //    in_progress is therefore the EXPECTED terminal state, NOT a failure — the
+    //    agent physically could not satisfy the guard. Do NOT release-to-todo and
+    //    do NOT throw: the run SUCCEEDS and the agent's posted work stands. We
+    //    clear ONLY the execution lock so the task is founder-actionable (Manual
+    //    means the founder advances it) and not stuck-locked; status stays
+    //    in_progress so nothing masquerades as review-ready, and Manual gates
+    //    agent-initiated re-dispatch so this does not loop (Decision #109).
+    //
+    // effectiveAutonomy is `null` only for synthetic/legacy callers that never
+    // pass a dial (the dispatcher ALWAYS resolves a number for real task runs) —
+    // treat unknown as "fire the guard" so behaviour for those callers is
+    // unchanged; the Manual exemption requires a POSITIVE `=== 0`.
+    // Both writes are guarded on executionRunId=runId AND status='in_progress' so
+    // a concurrent run that legitimately re-claimed the task is never clobbered.
+    const effectiveAutonomy: number | null =
+      typeof payload.effectiveAutonomy === "number" ? payload.effectiveAutonomy : null;
     if (payload.issueId && runId) {
       const { issueService } = await import("../../issues.js");
       const task = await issueService(db).getById(payload.issueId);
@@ -847,30 +867,62 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
             { issueId: payload.issueId, questionId: parkedQuestion.id },
             "crew task run parked on an open human question",
           );
+        } else if (effectiveAutonomy === 0) {
+          // Manual: the agent was never permitted to advance → not a failure.
+          // Clear the execution lock (atomic, guarded on runId + in_progress) so
+          // the founder can advance the still-in_progress task without it being
+          // stuck-locked. Zero rows (a concurrent re-claim) → leave it alone.
+          // Clear the SAME four lock fields the dispatcher's canonical release
+          // clears (dispatcher.ts:175-181) — executionAgentNameKey/executionLockedAt
+          // are harmless once executionRunId is null (heartbeat reads them only
+          // inside `if (activeExecutionRun)`), but keep the field-set aligned.
+          // BEST-EFFORT: unlike the Assist+ branch this path deliberately does NOT
+          // fail the run — the agent's posted work already stands and the lock-clear
+          // is cleanup, not correctness. A transient DB error here must NOT
+          // propagate to the outer catch and mark an otherwise-successful Manual run
+          // failed (which would reintroduce the exact failure this fix removes).
+          try {
+            await db.update(issues)
+              .set({ executionRunId: null, checkoutRunId: null, executionAgentNameKey: null, executionLockedAt: null, updatedAt: new Date() })
+              .where(and(eq(issues.id, payload.issueId), eq(issues.executionRunId, runId), eq(issues.status, "in_progress")));
+            log.info(
+              { issueId: payload.issueId, effectiveAutonomy },
+              "crew task run finished at Manual autonomy — task left in_progress for the founder, execution lock cleared (not a failure)",
+            );
+          } catch (lockClearErr) {
+            log.warn(
+              { err: lockClearErr, issueId: payload.issueId },
+              "Manual-autonomy execution-lock clear failed (best-effort, ignored) — run stays successful",
+            );
+          }
         } else {
           const released = await db.update(issues)
-          // Atomic status guard (Codex P2): a concurrent set_task_status between
-          // the getById read and this write keeps executionRunId (only checkoutRunId
-          // is cleared on leaving in_progress), so without status='in_progress' here
-          // this could revert an in_review/done task back to todo.
-          .set({ status: "todo", executionRunId: null, checkoutRunId: null, updatedAt: new Date() })
-          .where(and(eq(issues.id, payload.issueId), eq(issues.executionRunId, runId), eq(issues.status, "in_progress")))
-          .returning({ id: issues.id });
-        // Only publish + throw if the guarded UPDATE actually released the row. A
-        // ZERO-row result means set_task_status won the race and already moved the
-        // task — the agent DID move it, so the run is NOT a failure (Codex P2).
-        if (released.length > 0) {
-          log.warn({ issueId: payload.issueId }, "crew task run finished without set_task_status — released task to todo");
-          // Task 5.6: this is a CREW status-MOVE (in_progress → todo) that bypasses
-          // issueService.update; publish issue.status_changed so the board reflects
-          // the card dropping back to todo. Best-effort — must not mask the throw.
-          try {
-            publishIssueStatusChanged(payload.companyId, payload.issueId, "todo");
-          } catch (publishErr) {
-            log.warn({ err: publishErr, issueId: payload.issueId }, "issue.status_changed publish failed on silent-stuck release (best-effort, ignored)");
+            // Atomic status guard (Codex P2): a concurrent set_task_status between
+            // the getById read and this write keeps executionRunId (only checkoutRunId
+            // is cleared on leaving in_progress), so without status='in_progress' here
+            // this could revert an in_review/done task back to todo.
+            .set({ status: "todo", executionRunId: null, checkoutRunId: null, updatedAt: new Date() })
+            .where(and(eq(issues.id, payload.issueId), eq(issues.executionRunId, runId), eq(issues.status, "in_progress")))
+            .returning({ id: issues.id });
+          // Only publish + throw if the guarded UPDATE actually released the row. A
+          // ZERO-row result means set_task_status won the race and already moved the
+          // task — the agent DID move it, so the run is NOT a failure (Codex P2).
+          if (released.length > 0) {
+            log.warn({ issueId: payload.issueId, effectiveAutonomy }, "crew task run finished with the task still in_progress (not advanced) — released task to todo");
+            // Task 5.6: this is a CREW status-MOVE (in_progress → todo) that bypasses
+            // issueService.update; publish issue.status_changed so the board reflects
+            // the card dropping back to todo. Best-effort — must not mask the throw.
+            try {
+              publishIssueStatusChanged(payload.companyId, payload.issueId, "todo");
+            } catch (publishErr) {
+              log.warn({ err: publishErr, issueId: payload.issueId }, "issue.status_changed publish failed on silent-stuck release (best-effort, ignored)");
+            }
+            // The agent WAS permitted to advance (effectiveAutonomy >= 1) but the task
+            // is still in_progress — a genuine stall. (The prior "no set_task_status
+            // call" text was an assumption: the agent may have called it and hit a
+            // different refusal.)
+            throw new Error("crew task run finished with the task still in progress (not advanced)");
           }
-          throw new Error("crew task run completed without moving the task (no set_task_status call)");
-        }
         }
       }
     }

@@ -50,7 +50,14 @@ export const internalAgentConfig = pgTable(
     cliTool: text("cli_tool"), // 'claude_cli' | 'codex' | 'opencode' | null
 
     // Autonomy
-    autonomyLevel: integer("autonomy_level").notNull().default(0), // 0-2 (Manual/Assist/Drive); default is Manual.
+    // 0-2 (Manual/Assist/Drive). Default is Assist (1): a fresh company's crew
+    // must be able to hand a finished task to review (in_review) out of the box.
+    // At Manual (0) the A4 dial-gate forbids ANY advance, so every crew run left
+    // its task stuck in_progress and the completion guard failed it (Decision
+    // #109). Assist advances only to in_review — completing to `done` still
+    // requires Drive (2). A schema-default change affects NEW rows only; existing
+    // company configs keep their stored value.
+    autonomyLevel: integer("autonomy_level").notNull().default(1),
 
     // Capabilities
     enabledCapabilities: jsonb("enabled_capabilities").notNull().default([

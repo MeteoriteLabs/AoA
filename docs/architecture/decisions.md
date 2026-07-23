@@ -1183,6 +1183,22 @@ The two items deferred by Decision #107 shipped together on `feat/inbox-hub-tabb
 
 7. **Process success is not task completion.** Technical run completion remains in run ledgers and observability. User-facing task completion and source-Discussion milestones are emitted only from actual task-domain transitions.
 
+**Addendum (2026-07-24) — crew completion at default autonomy (product-approved):**
+
+8. **The default autonomy is Assist (1), not Manual (0).** `internal_agent_config.autonomyLevel` now defaults to `1` (migration `0180_little_omega_sentinel`). A fresh company's crew must be able to hand a finished task to `in_review` out of the box; completing to `done` still requires Drive (2). Rationale: at Manual (0) the A4 dial-gate (`set-task-status-tool.ts` → `assertAgentStatusTransition`) forbids **any** status advance, so a crew agent physically could not move its task — and the runner's silent-stuck guard then failed the run and ping-ponged the task back to `todo` forever. Schema-default changes affect NEW company rows only; existing configs keep their stored value (intentional — no mass migration).
+
+   **Full blast radius — this one row is read by MORE than Commander.** A future engineer scoping the D18 crew/Commander column-split (filed follow-up) MUST NOT treat `internal_agent_config.autonomyLevel` as Commander-only. The same value gates, at minimum:
+   - **Commander** — its own tool/completion autonomy.
+   - **Crew task runs** — the dispatcher resolves `effectiveAutonomy` from it (`dispatcher.ts:803`, thread override `??` company); it is the dial this fix's completion guard reads.
+   - **Org-agent heartbeat runs** — `heartbeat.ts:4098-4118` → `resolveHeartbeatEffectiveAutonomy`. Fresh companies now run **org heartbeat agents at Assist**, not Manual.
+   - **Adjutant / thread scope-compilation** — `controller-adjutant-runner.ts:119` (and `thread-events.ts`) early-return when the effective dial is `< 1`. This flow was **OFF** at the old Manual default and is now **ON** at Assist.
+
+   **D18 tension (accepted by the product owner):** D18 (`docs/aoa/plans/2026-07-03-discussions-end-to-end-design.md:70`) wanted a **separate** crew/Discussions autonomy column so this dial stayed Commander-only — that split is **not yet built**, so today one row drives all four flows above. Raising the shared default to Assist was accepted deliberately.
+
+   **Nothing dangerous unlocks at Assist.** Assist permits advancing only to `in_review` (never `done` — that needs Drive), enables agent-*initiated* scope-compilation, and does **not** auto-dispatch or auto-complete anything. Every real crew dispatch still passes `preflightCrewDispatch` (company budget hard-stop + thread pause/disable) and every founder-gated approval path (crew_dispatch approval, memory candidates, spend brakes) is unchanged.
+
+9. **A Manual-autonomy crew run that did its work is a SUCCESS, not a failure.** The crew runner's completion guard (`runner.ts`, "TASK SILENT-STUCK GUARD") treats a still-`in_progress` task after the run as a failure **only when the agent was permitted to advance it** — i.e. `effectiveAutonomy >= 1` (Assist/Drive). At `effectiveAutonomy === 0` (Manual) a still-`in_progress` task is the **expected terminal state** (the dial-gate forbade the advance): the run completes successfully, the agent's posted comment/artifact stands, the task is **not** released to `todo`, and no "Failed" card posts. The runner clears only the execution lock so the still-`in_progress` task is founder-actionable (Manual = the founder advances it) without being stuck-locked; Manual also gates agent-initiated re-dispatch, so the task does not loop. The guard's real purpose — catching a genuinely hung run at Assist/Drive that never moved the task — is preserved (unknown/`null` dial still fires the guard; only a positive `=== 0` exempts). The guard's error text was corrected from the misleading `"...no set_task_status call"` (an assumption) to `"crew task run finished with the task still in progress (not advanced)"`.
+
 **Plan:** `docs/aoa/plans/2026-07-11-commander-ask-human-completion-policy-plan.md`.
 
 ## Decision #110 - Two-tier Claude instruction isolation for agent runs (2026-07-23)

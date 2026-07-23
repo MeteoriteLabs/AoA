@@ -334,8 +334,10 @@ describe("Spec B Task 5: runner issueId branch", () => {
     const result = await runAoaAgent(db as any, "a-1", TASK_PAYLOAD);
 
     // The throw lands in the catch → run row marked failed → failed AoaRunResult.
+    // (No effectiveAutonomy on the payload → unknown dial → guard fires, as before
+    // this fix. The Manual exemption requires a positive effectiveAutonomy===0.)
     expect(result.status).toBe("failed");
-    expect(result.errorMessage).toMatch(/without moving the task|set_task_status/i);
+    expect(result.errorMessage).toMatch(/still in progress|not advanced/i);
 
     // The task was RELEASED back to 'todo' with the execution lock cleared.
     const release = db._sets.find(
@@ -417,6 +419,99 @@ describe("Spec B Task 5: runner issueId branch", () => {
     const result = await runAoaAgent(db as any, "a-1", TASK_PAYLOAD);
 
     // Not our lock → do not touch it; complete normally.
+    expect(result.status).not.toBe("failed");
+    const release = db._sets.find((s: any) => s.set?.status === "todo");
+    expect(release).toBeUndefined();
+  });
+
+  // ── Autonomy-aware completion guard (T10 fix) ──────────────────────────────
+  // The silent-stuck guard's release-to-todo + throw must fire ONLY when the
+  // agent was PERMITTED to advance the task (effectiveAutonomy >= 1) but didn't.
+  // At Manual (effectiveAutonomy === 0) the A4 dial-gate FORBIDS any advance, so
+  // a task still in_progress after the run is the EXPECTED terminal state — not a
+  // failure. Before this fix every Manual crew run failed here (the agent's
+  // correctly-refused set_task_status call could never satisfy the guard).
+
+  it("(f) MANUAL (effectiveAutonomy=0): task still in_progress + owned by this run → run SUCCEEDS, NOT released to todo, lock cleared, no throw", async () => {
+    // Same silent-stuck state as (d) — but at Manual the agent was never allowed
+    // to advance, so this is a success, not a stall.
+    getByIdMock.mockResolvedValueOnce({
+      id: "TASK-1",
+      status: "in_progress",
+      executionRunId: "run-1",
+    });
+    const db = makeDb();
+
+    const result = await runAoaAgent(db as any, "a-1", {
+      ...TASK_PAYLOAD,
+      effectiveAutonomy: 0,
+    });
+
+    // The run is NOT failed — the agent did its work; Manual just means the
+    // founder advances the card.
+    expect(result.status).toBe("succeeded");
+
+    // NOT released to 'todo' (no ping-pong back to the queue).
+    const release = db._sets.find((s: any) => s.set?.status === "todo");
+    expect(release).toBeUndefined();
+
+    // The execution lock IS cleared so the task is founder-actionable and not
+    // stuck-locked — status stays untouched (undefined in the write). This is the
+    // discriminator: it proves the guard block WAS entered and took the Manual
+    // branch (not that the guard was skipped because the task wasn't in_progress).
+    const lockClear = db._sets.find(
+      (s: any) =>
+        s.set?.executionRunId === null &&
+        s.set?.checkoutRunId === null &&
+        s.set?.status === undefined,
+    );
+    expect(lockClear).toBeDefined();
+
+    // No board broadcast of a todo status-move; the card did not move.
+    expect(publishIssueStatusChangedMock).not.toHaveBeenCalledWith("co-1", "TASK-1", "todo");
+  });
+
+  it("(g) ASSIST (effectiveAutonomy=1): task still in_progress + owned by this run → guard STILL fires (release + fail) — regression guard for the guard", async () => {
+    // Identical task state to (f), only the dial differs. At Assist the agent WAS
+    // permitted to advance (→ in_review) but didn't → a genuine stall the guard
+    // must still catch. This pins that the autonomy gate did not neuter the
+    // guard's real purpose.
+    getByIdMock.mockResolvedValueOnce({
+      id: "TASK-1",
+      status: "in_progress",
+      executionRunId: "run-1",
+    });
+    const db = makeDb();
+
+    const result = await runAoaAgent(db as any, "a-1", {
+      ...TASK_PAYLOAD,
+      effectiveAutonomy: 1,
+    });
+
+    expect(result.status).toBe("failed");
+    expect(result.errorMessage).toMatch(/still in progress|not advanced/i);
+
+    const release = db._sets.find(
+      (s: any) => s.set?.status === "todo" && s.set?.executionRunId === null,
+    );
+    expect(release).toBeDefined();
+    expect(release.set.checkoutRunId).toBe(null);
+    expect(publishIssueStatusChangedMock).toHaveBeenCalledWith("co-1", "TASK-1", "todo");
+  });
+
+  it("(h) ASSIST (effectiveAutonomy=1): task moved to in_review (agent succeeded) → guard no-op, run completes", async () => {
+    getByIdMock.mockResolvedValueOnce({
+      id: "TASK-1",
+      status: "in_review",
+      executionRunId: "run-1",
+    });
+    const db = makeDb();
+
+    const result = await runAoaAgent(db as any, "a-1", {
+      ...TASK_PAYLOAD,
+      effectiveAutonomy: 1,
+    });
+
     expect(result.status).not.toBe("failed");
     const release = db._sets.find((s: any) => s.set?.status === "todo");
     expect(release).toBeUndefined();
