@@ -1695,3 +1695,13 @@ Empirically settled, so Task 14 need not re-open it (though a light re-confirm t
 | `--mcp-config empty.json --strict-mcp-config` | **NONE** |
 
 So the flag scopes BOTH file config AND claude.ai account connectors — the account-channel concern in A28 does not materialize. D2's guarantee (AoA is the sole source of truth for what an agent can reach) holds completely for crew and Commander once Task 9's flag is in place. No D2 hole to escalate.
+
+## Task 10 LIVE PROBE — full connector delivery verified end-to-end (2026-07-23, Claude Code 2.1.126)
+
+The complete D5 chain works on a real CLI, not just in unit tests. Method: a local HTTP MCP listener that records its inbound `Authorization` header, plus a config file of the exact shape `buildMcpConfig` emits for a connector — `{"slack":{"type":"http","url":"...","headers":{"Authorization":"Bearer ${AOA_MCP_SLACK_TOKEN}"}}}` — driven by `claude --mcp-config <file> --strict-mcp-config` with `AOA_MCP_SLACK_TOKEN=live-connector-token-999` in the process env (mirroring how Task 10 delivers it via `config.env`).
+
+Result: the connector received `Authorization: Bearer live-connector-token-999` — the real token, expanded by the CLI from the on-disk placeholder. Confirms placeholder-on-disk → token-in-env → CLI-expands → connector-gets-real-credential, with no plaintext secret in the config file, under strict isolation.
+
+**A29 — Task 8's `buildConnectorProcessEnv` is deliberately NOT used on the claude_local heartbeat path; this is correct, not dead code.** The claude adapter spawns via `mergeChildEnv(process.env, opts.env)` (`packages/adapter-utils/src/server-utils.ts:508`) and NEEDS the full host env — PATH, HOME, and the CLI's own login/API auth. Scrubbing there would strip the credentials the `claude` binary itself requires and break auth. Task 10 therefore merges `connectorEnv` into `config.env` without scrubbing. `buildConnectorProcessEnv` (scrub-to-minimal) is for a DIFFERENT spawn model — a locally-spawned stdio connector process that should NOT inherit the host env — which is a Plan 2 / future concern, not this path. Do not "fix" Task 10 to call it, and do not delete Task 8 as unused.
+
+**A30 — `config.env` reaches the spawned claude child — traced.** For anyone auditing the secret hop: `claude-local/src/server/execute.ts:243-245` (copies `config.env` into spawn env) → `:598-612` (passes to `runAdapterExecutionTargetProcess`) → `adapter-utils/src/execution-target.ts:514` → `server-utils.ts:508` `mergeChildEnv(process.env, opts.env)`. Connector tokens land in the child env on top of the inherited host env.
