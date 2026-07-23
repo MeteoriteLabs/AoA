@@ -32,6 +32,50 @@
 
 ---
 
+## Test strategy — required coverage per task
+
+The repo has **five** distinct test layers. A task is not done until it has coverage at every layer that applies to it. Unit-testing a pure function proves the function is right; it does **not** prove it is wired — and "correct but not wired" is the failure mode that has bitten this branch twice (Phase 5's fail-closed defeated by hook coalescing; T1's sink existing while the test harness masked whether the runner used it).
+
+| Layer | Location | Pattern |
+|---|---|---|
+| **L1 Unit / pure** | `server/src/**/__tests__/*.test.ts` | Import and call directly. No mocks. |
+| **L2 Service + mock DB** | `server/src/__tests__/*.test.ts` | Proxy table stubs + `createSequenceDb`. Mock `@armyofagents/db` and `drizzle-orm`. |
+| **L3 Schema / migration** | `packages/db/src/__tests__/*-schema.test.ts` | e.g. `commander-wave1-schema.test.ts`. Asserts columns, nullability, defaults, FK/cascade. |
+| **L4 Integration (real PG)** | `server/src/__tests__/*.integration.test.ts` | Embedded Postgres. On Windows use `initdbFlags: ["--encoding=UTF8","--locale=C"]`. |
+| **L5 E2E (Playwright)** | `tests/e2e/*.spec.ts` | `seedCompany` + the **fake-claude CLI harness** (`helpers/fake-claude.ts`), which records every invocation. Linux is the required gate; Windows self-skips in CI but **runs locally via `AOA_E2E_FORCE_WINDOWS=1`**. |
+
+### The fake-claude harness is the key asset for T2–T6
+
+`readFakeClaudeInvocations()` returns `FakeClaudeInvocation[]`, currently `{ argv, stdin, cwd }` — it captures what the CLI was *actually* invoked with. That makes the isolation and skill-delivery work provable end-to-end instead of only at unit level.
+
+> **T2 must extend it with `env`.** Without captured env there is no way to prove `CLAUDE_CONFIG_DIR` was pinned and ambient `ANTHROPIC_*` was dropped **in the real spawn** — which is the entire point of T2–T4. This is an additive field on a shared helper; existing specs that destructure `{argv, stdin, cwd}` are unaffected.
+
+### Coverage matrix
+
+| Task | L1 Unit | L2 Service+mock | L3 Schema | L4 Integration | L5 E2E |
+|---|---|---|---|---|---|
+| **T1** | `redactMeta`, sink, warn-latch ✅ | runner wiring ✅ | **ADD** — `logStore`/`logRef` present + nullable | **ADD** — migration 0179 applies + pointer round-trips | — |
+| **T2** | `buildIsolatedClaudeEnv` | — | — | — | **ADD** — env capture + isolation spec (see below) |
+| **T3** | `provisionClaudeConfigHome` | — | — | — | credentials-only home; no `settings.json`/`plugins/`/user `skills/` in the spawned config dir |
+| **T4** | env policy per D16 | — | — | — | folded into the T2 isolation spec |
+| **T5** | resolution helper | runner sets `paperclipWorkspace` | — | **ADD** — real workspace resolved for a `software_development` project | **ADD** — assert spawn `cwd` is the workspace (harness already records `cwd`) |
+| **T6** | — | `context.skills` set / omitted / warn-on-failure | — | — | **ADD** — attached skill reaches the CLI (assert via `argv` / skills dir) |
+| **T7** | — | — | — | assign → deliver → enforce round-trip | **EXTEND** `agent-skill-toggle-persist.spec.ts` — attached skill is delivered, unattached is denied |
+| **T8** | actor-identity shape | **bridge-level** (not just tool-level) | — | — | `ask_human` still works for crew |
+| **T9** | tool-level allow/deny | **bridge-level** + Commander-no-`ctx.agentId` regression | — | cross-company agent lookup denied | denied-skill surfaces cleanly |
+| **T10** | regression test for the identified root cause | — | — | — | — |
+| **T11** | — | — | — | — | full multi-surface live verification |
+
+### Test-type rules for this phase
+
+1. **Every security boundary gets a negative test.** T9 is the boundary (D7 open library + D8 per-agent curation): unattached skill denied, cross-company agent denied, Commander unaffected. A test that only proves the happy path proves nothing about a boundary.
+2. **Every "we didn't break the other path" claim gets an explicit test**, not an assertion in a report. T2 is crew-only opt-in ⇒ an org/heartbeat test must prove org env is unchanged.
+3. **Every wiring change gets a layer above unit.** If a task adds a function AND calls it, the call site needs L2 or L5 coverage. T1's review caught exactly this — the runner suite could not assert the sink was wired until the store was mocked.
+4. **Prefer extending an existing spec** over adding a new one where the surface already has coverage (T7 → `agent-skill-toggle-persist.spec.ts`).
+5. **Integration tests must be Windows-runnable** (`initdbFlags` as above) so they can be verified locally, not only on the Linux gate.
+
+---
+
 ## Task 1: Crew run transcripts (P1) — with redaction + real run id
 
 > **Step 1 investigation COMPLETE (2026-07-23).** Findings below corrected this task's design. Do not re-derive them; do verify anything you depend on.
