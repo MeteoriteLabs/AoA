@@ -194,7 +194,9 @@ git commit -m "feat(crew): persist redacted crew run transcripts (crew runs were
 
 **There is precedent for a per-adapter opt-in.** codex-local passes `unsetEnvKeys: ["OPENAI_API_KEY"]` at four call sites (`codex-local/src/server/execute.ts:508`, `execute-app-server.ts:192`, `jsonrpc-client.ts:322`, `test.ts:259,348`) to keep the AoA server's key out of agent runs. **claude-local passes none** — that is the gap.
 
-**The leak point** is `execute.ts:251` (`{ ...process.env, ...env }`) and the equivalent merge inside the spawn path. **`ANTHROPIC_API_KEY` is not cosmetic** — `resolveClaudeBillingType` (`execute.ts:152-155`) returns `"api"` when it is set, so an ambient server key silently changes an agent run's billing classification. That is the exact leak codex already closes.
+**The leak point** is `execute.ts:251` (`{ ...process.env, ...env }`) and the equivalent merge inside the spawn path.
+
+**`ANTHROPIC_API_KEY` is not cosmetic** — ⚠️ *mechanism corrected 2026-07-23; the first version of this line was wrong and the implementer caught it.* It does **not** flow through `resolveClaudeBillingType`. That helper reads the adapter's **overlay** env (`buildAoaEnv` + `AOA_*` + `config.env`, assembled at `execute.ts:183`) and is called at `:366` with that overlay, which never merges `process.env`. The real leak is that **the spawned child inherits the ambient key and the `claude` CLI itself switches to API-key auth** — so a crew run silently bills against the operator's key instead of the subscription. Same severity, different mechanism, and the same leak codex already closes. **Assert on the child env, not on the billing-type helper.**
 
 ### Design (revised)
 
@@ -228,6 +230,8 @@ git commit -m "feat(agents): isolate ambient Claude config for crew runs via uns
 ---
 
 ## Task 3: Per-run Claude config home provisioning (auth)
+
+> 🚨 **T3 became a BLOCKING prerequisite the moment T2 landed.** T2 pins `CLAUDE_CONFIG_DIR` to an **empty** per-run directory, so on this branch a crew run against the real `claude` CLI is **unauthenticated** until T3 provisions credentials into it. This is by design — T2's brief scoped provisioning out — but it means the branch cannot complete a live crew run until T3 ships. Do not attempt live crew verification (T10, T11) before this task.
 
 **Files:** `packages/adapters/claude-local/src/server/` (a `provisionClaudeConfigHome` helper) + wherever the per-run root is created; test alongside.
 
