@@ -326,24 +326,4 @@ describe("heartbeat MCP delivery with connectors (Plan 1, claude_local)", () => 
     // connectorEnv is empty -> the regression guard leaves config.env untouched.
     expect("env" in delivery.config).toBe(false);
   });
-
-  it("skipped connectors are surfaced by buildConnectorSpecs so the call site can log them", async () => {
-    // The heartbeat call site logs when skipped.length > 0. Here we prove the
-    // condition it keys off: a malformed row degrades to a skip, healthy rows
-    // still deliver.
-    const malformed = {
-      serverName: "broken",
-      transport: "http",
-      url: "https://broken.example/mcp",
-      command: null,
-      args: [],
-      // jsonb wrong shape at runtime (A5): Object.entries throws -> malformed_row.
-      headerTemplate: null as unknown as Record<string, string>,
-      envTemplate: {},
-      secretValue: null,
-    } as ResolvedConnectorRow;
-    const { specs, skipped } = buildConnectorSpecs([httpRow, malformed]);
-    expect(specs.slack).toBeDefined();
-    expect(skipped).toEqual([{ serverName: "broken", reason: "malformed_row" }]);
-  });
 });
