@@ -272,6 +272,9 @@ export const queryKeys = {
     keys: (companyId: string) => ["mcp", companyId, "keys"] as const,
     clients: (companyId: string) => ["mcp", companyId, "clients"] as const,
   },
+  mcpConnectors: {
+    list: (companyId: string) => ["mcp-connectors", companyId] as const,
+  },
   detectedOutputs: {
     byIssue: (issueId: string) => ["detected-outputs", "issue", issueId] as const,
     byRun: (runId: string) => ["detected-outputs", "run", runId] as const,

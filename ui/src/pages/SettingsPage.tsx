@@ -10,6 +10,7 @@ import { GeneralSection } from "@/components/settings/sections/GeneralSection";
 import { ArchiveCompanySection } from "@/components/settings/sections/ArchiveCompanySection";
 import { BudgetCapsSection } from "@/components/settings/sections/BudgetCapsSection";
 import { MCPApiKeysSection } from "@/components/settings/sections/MCPApiKeysSection";
+import { MCPConnectorsSection } from "@/components/settings/sections/MCPConnectorsSection";
 import { LLMProvidersSectionWrapper } from "@/components/settings/sections/LLMProvidersSectionWrapper";
 import { PluginsSectionWrapper } from "@/components/settings/sections/PluginsSectionWrapper";
 import { MarketplacePrefsSection } from "@/components/settings/sections/MarketplacePrefsSection";
@@ -26,7 +27,7 @@ import { InboxSection } from "@/components/settings/sections/InboxSection";
 // bookmarks (?tab=llm) survive and normalize to "memory" rather than silently
 // falling back to General (Rev 3, finding #10).
 export const VALID_SECTIONS: readonly SettingsSectionAlias[] = [
-  "general", "health", "commander", "memory", "llm", "providers", "budget", "mcp", "github", "plugins", "marketplace", "archive",
+  "general", "health", "commander", "memory", "llm", "providers", "budget", "mcp", "connectors", "github", "plugins", "marketplace", "archive",
   "activity", "environments", "secrets", "inbox",
 ];
 
@@ -55,6 +56,8 @@ function renderActiveSection(id: SettingsSectionId) {
       return <BudgetCapsSection />;
     case "mcp":
       return <MCPApiKeysSection />;
+    case "connectors":
+      return <MCPConnectorsSection />;
     case "github":
       return <GitHubSection />;
     case "plugins":
