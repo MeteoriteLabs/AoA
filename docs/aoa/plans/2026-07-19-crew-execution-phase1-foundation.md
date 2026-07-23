@@ -34,56 +34,107 @@
 
 ## Task 1: Crew run transcripts (P1) — with redaction + real run id
 
-**Files:** read `server/src/services/run-log-store.ts` + heartbeat's usage; create `server/src/services/internal-agent/aoa-agents/crew-run-log.ts`; modify `runner.ts` (~L569 no-op callbacks); test `.../aoa-agents/__tests__/crew-run-log.test.ts`.
+> **Step 1 investigation COMPLETE (2026-07-23).** Findings below corrected this task's design. Do not re-derive them; do verify anything you depend on.
 
-- [ ] **Step 1: Read the real API.** Find the run-log store's exported functions + how heartbeat calls them (begin/append/finalize semantics — note `begin()` truncates an existing path). Record signatures in your report. **Mirror it; do not invent a second mechanism.**
+### Established facts
 
-- [ ] **Step 2: Decide + record the ID + lifecycle invariant.** Use the run row's UUID assigned at `runner.ts:168`. **Do NOT use an `aoa-${agentId}` fallback** — it collides across runs. If the run id is missing, throw (invariant failure), don't silently degrade.
+**The store API takes no `kind` field** (`run-log-store.ts:30-38`):
+```ts
+begin(input: { companyId: string; agentId: string; runId: string }): Promise<RunLogHandle>
+append(handle, event: { stream: "stdout"|"stderr"|"system"; chunk: string; ts: string }): Promise<void>
+finalize(handle): Promise<RunLogFinalizeSummary>   // { bytes, sha256?, compressed }
+read(handle, opts?): Promise<RunLogReadResult>
+```
 
-- [ ] **Step 3: Write the failing test** covering forwarding, redaction, and never-throwing:
+**Heartbeat splits the two callbacks across two stores** — it does NOT put meta in the log file:
+- `onLog(stream, chunk)` → `runLogStore.append(handle, { stream, chunk, ts })` (`heartbeat.ts:3857-3868`) plus a live event.
+- `onMeta(meta)` → `appendRunEvent(...{ eventType: "adapter.invoke", payload: meta })` → the **`heartbeat_run_events` table** (`heartbeat.ts:3968-3976`).
+
+**Crew has no equivalent events table**, so crew meta must ride the NDJSON as a `system`-stream chunk.
+
+**The redaction risk is confirmed** — `AdapterInvocationMeta` (`adapter-utils/src/types.ts:171`) carries `prompt?`, `env?` and `context?`. *(Heartbeat persists this unredacted into `heartbeat_run_events.payload` today. Pre-existing, org-path, out of scope — file a follow-up, do not fix here.)*
+
+**`internal_agent_runs` has no `logStore`/`logRef` columns** (`internal_agent.ts:288-311`), unlike `heartbeat_runs` which sets both immediately after `begin()` (`heartbeat.ts:3849-3856`). Filesystem-only therefore means the transcript is *reconstructable* but not *findable*.
+
+### Design (revised by the above)
+
+- `onLog` mirrors heartbeat exactly.
+- `onMeta` → one **redacted** `system`-stream chunk in the same NDJSON (no new table).
+- **Add nullable `logStore` + `logRef` to `internal_agent_runs`**, mirroring `heartbeat_runs`, set right after `begin()`. Two nullable columns is a small price for a transcript you can actually locate; without it, T10 has to guess paths. *(This supersedes v2's "filesystem-only, defer discoverability" call — the investigation changed the answer.)*
+- `finalize()` on run end, on **both** the success and failure paths.
+
+- [x] **Step 1: Read the real API.** — done, above.
+
+- [ ] **Step 2: Confirm the ID + lifecycle invariant.** Use the run row's UUID assigned at `runner.ts:168`. **No `aoa-${agentId}` fallback** — it collides across runs. Missing run id ⇒ throw (invariant failure), don't silently degrade. Note `begin()` truncates an existing path, so call it exactly once per run.
+
+- [ ] **Step 3: Write the failing test** against the REAL append signature:
 
 ```ts
 import { describe, it, expect, vi } from "vitest";
 import { createCrewRunLogSink, redactMeta } from "../crew-run-log.js";
 
-describe("crew run log", () => {
-  it("forwards stdout/stderr chunks and a REDACTED meta record", async () => {
+describe("redactMeta", () => {
+  it("drops prompt/context/env and keeps operational fields", () => {
+    const out = redactMeta({
+      adapterType: "claude_local", command: "claude", commandArgs: ["--print"],
+      cwd: "/w", prompt: "SECRET PROMPT", env: { TOKEN: "sk-leak" }, context: { payload: "SECRET" },
+    });
+    expect(out.command).toBe("claude");
+    expect(out.cwd).toBe("/w");
+    expect(out.prompt).toBeUndefined();
+    expect(out.env).toBeUndefined();
+    expect(out.context).toBeUndefined();
+    expect(out.promptChars).toBe(13);            // length only, for debugging
+    expect(out.contextKeys).toEqual(["payload"]); // shape only, never values
+  });
+});
+
+describe("createCrewRunLogSink", () => {
+  it("forwards log chunks verbatim and meta as one redacted system chunk", async () => {
     const append = vi.fn().mockResolvedValue(undefined);
-    const sink = createCrewRunLogSink({ companyId: "c1", agentId: "a1", runId: "11111111-1111-1111-1111-111111111111" }, { append });
+    const handle = { store: "local_file" as const, logRef: "r" };
+    const sink = createCrewRunLogSink({ store: { append }, handle });
+
     await sink.onLog("stdout", "hello\n");
-    await sink.onMeta({ adapterType: "claude_local", command: "claude", commandArgs: ["--print"], prompt: "SECRET PROMPT", context: { payload: "SECRET" } });
-    const kinds = append.mock.calls.map((c) => (c[0] as { kind: string }).kind);
-    expect(kinds).toEqual(["log", "meta"]);
-    const meta = append.mock.calls[1][0] as { meta: Record<string, unknown> };
-    expect(meta.meta.command).toBe("claude");
-    expect(meta.meta.prompt).toBeUndefined();   // prompt must never be persisted raw
-    expect(meta.meta.context).toBeUndefined();
-    expect(meta.meta.promptChars).toBe(13);     // length only, for debugging
+    await sink.onMeta({ adapterType: "claude_local", command: "claude", prompt: "SECRET PROMPT" });
+
+    expect(append).toHaveBeenCalledTimes(2);
+    const [, first] = append.mock.calls[0];
+    expect(first).toMatchObject({ stream: "stdout", chunk: "hello\n" });
+    expect(typeof first.ts).toBe("string");
+
+    const [, second] = append.mock.calls[1];
+    expect(second.stream).toBe("system");
+    const parsed = JSON.parse(second.chunk);
+    expect(parsed.event).toBe("adapter.invoke");
+    expect(parsed.meta.command).toBe("claude");
+    expect(parsed.meta.prompt).toBeUndefined();
+    expect(second.chunk).not.toContain("SECRET PROMPT");   // the real guarantee
   });
 
   it("never throws when the store fails", async () => {
     const append = vi.fn().mockRejectedValue(new Error("disk full"));
-    const sink = createCrewRunLogSink({ companyId: "c1", agentId: "a1", runId: "r-uuid" }, { append });
+    const sink = createCrewRunLogSink({ store: { append }, handle: { store: "local_file", logRef: "r" } });
     await expect(sink.onLog("stderr", "boom")).resolves.toBeUndefined();
-    await expect(sink.onMeta({ adapterType: "claude_local" })).resolves.toBeUndefined();
+    await expect(sink.onMeta({ adapterType: "claude_local", command: "claude" })).resolves.toBeUndefined();
   });
 });
 ```
 
 - [ ] **Step 4: Run → FAIL.** `pnpm test:run server/src/services/internal-agent/aoa-agents/__tests__/crew-run-log.test.ts`
 
-- [ ] **Step 5: Implement `crew-run-log.ts`.** Include `redactMeta`, which keeps operational fields (`adapterType`, `command`, `commandArgs`, `cwd`, `exitCode`) and **drops `prompt`/`context`**, substituting `promptChars`/`contextKeys` for debuggability. `env` is already redacted upstream but re-assert it. Keep the injected-`append` seam. All appends best-effort (never throw).
+- [ ] **Step 5: Implement `crew-run-log.ts`.** `redactMeta` keeps `adapterType`/`command`/`commandArgs`/`commandNotes`/`cwd`/`promptMetrics`, drops `prompt`/`env`/`context`, and substitutes `promptChars`/`contextKeys`. Sink takes an injected `{ store, handle }` seam. Every append best-effort (never throws, never rejects).
 
-- [ ] **Step 6: Wire into `runner.ts`** — replace `onLog: async () => {}, onMeta: async () => {}` with the sink, using the run UUID. Change nothing else in that call.
+- [ ] **Step 6: Add the columns.** Nullable `logStore` + `logRef` on `internal_agent_runs`, mirroring `heartbeat_runs`. **`pnpm db:generate` — never hand-write SQL** (Critical Rule #1).
 
-- [ ] **Step 7: Discoverability decision (record it).** `internal_agent_runs` has **no** log columns, unlike `heartbeat_runs` (`heartbeat_runs.ts:26`), and crew live-run projections omit logs (`agents-live-runs.ts:46`). For Phase 1, transcripts are **filesystem-only at a deterministic path**; surfacing them in the run API/UI is explicitly deferred to a follow-up (note it in the plan's Phase-2 backlog). Do not silently pretend the UI will show them.
+- [ ] **Step 7: Wire into `runner.ts`.** `begin()` after the run row exists (`runner.ts:168`), persist the handle to the new columns, replace `onLog: async () => {}, onMeta: async () => {}` (~L569) with the sink, and `finalize()` on **both** the success and failure exits. Change nothing else in that call.
 
-- [ ] **Step 8: Verify + commit.** Server typecheck + crew suites PASS.
+- [ ] **Step 8: Verify + commit.** `pnpm -r typecheck`, crew suites, and a migration-idempotency check PASS.
 ```bash
 git commit -m "feat(crew): persist redacted crew run transcripts (crew runs were a black box)"
 ```
 
-- [ ] **Step 9: Capture evidence.** Dispatch one crew task; confirm the NDJSON appears. **Report a redaction-safe summary (event kinds, counts, exit code) — do NOT paste raw transcript lines.**
+- [ ] **Step 9: Capture evidence.** Dispatch one crew task; confirm the NDJSON exists and `logRef` is populated on the run row. **Report a redaction-safe summary (stream kinds, chunk counts, exit code) — do NOT paste raw transcript lines.**
 
 ---
 
