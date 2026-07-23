@@ -409,7 +409,9 @@ git commit -m "fix(crew): <root cause> — crew runs complete and move the task"
 - [ ] `pnpm -r typecheck`, the touched suites, and `pnpm build` → PASS. **Org/heartbeat suites explicitly included** (T2 is crew-opt-in, so they must be unchanged).
 - [ ] **Live end-to-end** on the isolated instance: Discussion → scope → dispatch → (1) transcript persisted, (2) no operator hooks/skills present, (3) only the agent's attached skills, (4) task **completes**, (5) **"Run finished"** entry with clickable chips, (6) each chip opens the right Thread body.
 - [ ] **Denied-skill check:** a crew agent invoking an unattached skill gets `NOT_ENABLED`. **`ask_human` still works for crew** (T8 regression guard).
-- [ ] **Org-expansion gate (explicit):** only after auth + workspace + toolchain tests pass, decide whether to extend T2/T3/T4 isolation to org/heartbeat runs. Record the decision; do **not** flip it silently.
+- [ ] **Isolation-expansion gate (explicit).** Only after auth + workspace + toolchain tests pass, decide whether to extend T2/T3/T4 isolation beyond crew. Record each decision; do **not** flip either silently. **Two distinct populations:**
+  - **Org / heartbeat agents** — same claude-local adapter, so the wiring is the one T2 already built. Lowest-risk expansion.
+  - **Commander** — *deferred here by product-owner decision, 2026-07-23.* Commander runs CLI-mode through `cliModeService`, **not** `runAoaAgent`, so T2's crew-only opt-in does not reach it. It has the same `~/.claude` exposure (hooks, third-party skills, plugins) and is the most visible surface, but it is a **second wiring site with its own auth path**, and a broken Commander is more disruptive than a broken crew agent. Evaluate it only once crew isolation is proven live, using the T1 transcripts as evidence that isolation did not break auth or the toolchain.
 - [ ] **Docs:** update `docs/architecture/decisions.md` (hermetic execution + the T4 CLAUDE.md policy) **and reconcile `CLAUDE.md:212`**, which currently states `use_skill` is board/Commander-only and `ask_human` is heartbeat-only — both now inaccurate for crew.
 
 ---
