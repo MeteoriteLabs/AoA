@@ -55,7 +55,9 @@ These were decided during design review. Do not relitigate them while executing.
 - `server/src/services/heartbeat.ts:4254-4279` — resolve connectors into params
 - `server/src/services/internal-agent/aoa-agents/runner.ts:364, 496` — crew path + strict flag
 - `packages/db/src/schema/index.ts` — export new tables
-- `ui/src/components/AgentConfigForm.tsx:1058-1068` — close the `extraArgs` hatch
+- `packages/adapter-utils/src/index.ts` — add the new types to the export allowlist
+- `server/src/services/mcp-arg-sanitize.ts` (new) — strip user-supplied `--mcp-config` at the injection points
+- `server/src/app.ts:307` — mount the connector router on the `api` sub-router
 
 ---
 
@@ -151,7 +153,7 @@ export function isHttpServerSpec(spec: McpServerSpec): spec is McpHttpServerSpec
 Run: `pnpm vitest run packages/adapter-utils/src/__tests__/mcp-server-spec.test.ts`
 Expected: PASS (2 tests)
 
-- [ ] **Step 5: Re-export from the package entry point**
+- [ ] **Step 5: Re-export from `types.ts`**
 
 In `packages/adapter-utils/src/types.ts`, immediately after the existing `McpBridgeSpec` interface (ends line 197), add:
 
@@ -161,6 +163,24 @@ export type {
   McpStdioServerSpec,
   McpHttpServerSpec,
 } from "./mcp-server-spec.js";
+export { isStdioServerSpec, isHttpServerSpec } from "./mcp-server-spec.js";
+```
+
+- [ ] **Step 5b: Also add to the package entry allowlist**
+
+`packages/adapter-utils/src/index.ts` is an **explicit named-export allowlist** — it does NOT `export * from "./types.js"`. Without this step, `import type { McpServerSpec } from "@armyofagents/adapter-utils"` (used in Tasks 3, 6, 10) fails to resolve.
+
+Next to the existing `McpBridgeSpec` entry (around `index.ts:19`), add:
+
+```ts
+  McpServerSpec,
+  McpStdioServerSpec,
+  McpHttpServerSpec,
+```
+
+and export the two guards alongside the other value exports:
+
+```ts
 export { isStdioServerSpec, isHttpServerSpec } from "./mcp-server-spec.js";
 ```
 
@@ -241,12 +261,17 @@ Create `server/src/services/internal-agent/__tests__/build-mcp-config.test.ts`:
 import { describe, expect, it } from "vitest";
 import { buildMcpConfig, type McpConfigParams } from "../cli-mode.js";
 
+// NOTE: bridgeEntrypoint and enabledCapabilities are REQUIRED. buildMcpBridgeSpec
+// dereferences `params.bridgeEntrypoint.endsWith(".ts")` (cli-mode.ts:163), so
+// omitting it throws TypeError before any assertion runs.
 function baseParams(): McpConfigParams {
   return {
     companyId: "11111111-1111-1111-1111-111111111111",
     userId: "22222222-2222-2222-2222-222222222222",
     userRole: "founder",
-  } as McpConfigParams;
+    enabledCapabilities: [],
+    bridgeEntrypoint: "/tmp/aoa-mcp-bridge.js",
+  } as unknown as McpConfigParams;
 }
 
 describe("buildMcpConfig", () => {
@@ -809,12 +834,13 @@ Expected: PASS (7 tests total)
 Append to `server/src/services/mcp-connectors.ts`:
 
 ```ts
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
+import type { Db } from "@armyofagents/db";
 import {
   companyMcpConnectors,
   companyMcpConnectorAgents,
 } from "@armyofagents/db";
-import { getCompanySecretValue } from "./company-secrets.js";
+import { secretService } from "./index.js";
 
 export interface LoadConnectorRowsInput {
   companyId: string;
@@ -827,7 +853,7 @@ export interface LoadConnectorRowsInput {
  * Returns rows shaped for buildConnectorSpecs.
  */
 export async function loadEnabledConnectorRows(
-  db: Database,
+  db: Db,
   input: LoadConnectorRowsInput,
 ): Promise<ResolvedConnectorRow[]> {
   const connectors = await db
@@ -863,8 +889,21 @@ export async function loadEnabledConnectorRows(
     isCommander: input.agentId === null,
   });
 
+  const svc = secretService(db);
   const rows: ResolvedConnectorRow[] = [];
   for (const c of allowed) {
+    let secretValue: string | null = null;
+    if (c.secretRef) {
+      // resolveByName is the one-shot form; a SecretConsumerContext is MANDATORY
+      // and is what makes the read auditable. Mirrors the github_pat read in
+      // server/src/routes/workspace-git.ts:195-211.
+      secretValue = await svc.resolveByName(input.companyId, c.secretRef, {
+        consumerType: "system",
+        consumerId: "mcp-connectors",
+        actorType: "system",
+        configPath: `mcp.connector.${c.serverName}`,
+      });
+    }
     rows.push({
       serverName: c.serverName,
       transport: c.transport,
@@ -873,16 +912,14 @@ export async function loadEnabledConnectorRows(
       args: c.args ?? [],
       headerTemplate: c.headerTemplate ?? {},
       envTemplate: c.envTemplate ?? {},
-      secretValue: c.secretRef
-        ? await getCompanySecretValue(db, input.companyId, c.secretRef)
-        : null,
+      secretValue,
     });
   }
   return rows;
 }
 ```
 
-Import the `Database` type from wherever sibling services in `server/src/services/` import it, and match the real accessor name in the company-secrets service — if it is not `getCompanySecretValue`, use the existing one rather than adding a wrapper.
+The secrets service is factory-style: `secretService(db)` from `server/src/services/secrets.ts` (re-exported via `services/index.js`). If `resolveByName` returns a wrapper rather than a bare string, unwrap it — do not add a new accessor.
 
 - [ ] **Step 6: Typecheck**
 
@@ -911,27 +948,29 @@ git commit -m "feat(mcp): add per-agent connector selection and database loader"
 Append to `server/src/services/__tests__/mcp-connectors.test.ts`:
 
 ```ts
-import { buildConnectorProcessEnv } from "../mcp-connectors.js";
+import { mergeConnectorEnv } from "../mcp-connectors.js";
 
-describe("buildConnectorProcessEnv", () => {
+// mergeConnectorEnv is the PURE half — it takes an already-scrubbed base so it
+// can be tested with synthetic input. The real scrubbing is done by
+// buildScrubbedCliEnv, which reads process.env internally and is not injectable.
+describe("mergeConnectorEnv", () => {
   it("includes connector secrets", () => {
-    const env = buildConnectorProcessEnv(
-      { AOA_MCP_NOTION_TOKEN: "secret-abc" },
-      { PATH: "/usr/bin", DATABASE_URL: "postgres://prod" },
-    );
+    const env = mergeConnectorEnv({ PATH: "/usr/bin" }, { AOA_MCP_NOTION_TOKEN: "secret-abc" });
     expect(env.AOA_MCP_NOTION_TOKEN).toBe("secret-abc");
   });
 
-  it("never forwards DATABASE_URL to an external server", () => {
-    const env = buildConnectorProcessEnv(
-      {},
-      { PATH: "/usr/bin", DATABASE_URL: "postgres://prod" },
-    );
-    expect(env.DATABASE_URL).toBeUndefined();
+  it("preserves PATH so npx-based stdio connectors can resolve", () => {
+    const env = mergeConnectorEnv({ PATH: "/usr/bin" }, {});
+    expect(env.PATH).toBe("/usr/bin");
   });
 
-  it("preserves PATH so npx-based stdio connectors can resolve", () => {
-    const env = buildConnectorProcessEnv({}, { PATH: "/usr/bin" });
+  it("drops undefined values from the scrubbed base", () => {
+    const env = mergeConnectorEnv({ PATH: "/usr/bin", EMPTY: undefined }, {});
+    expect(env).not.toHaveProperty("EMPTY");
+  });
+
+  it("never lets a connector var overwrite PATH", () => {
+    const env = mergeConnectorEnv({ PATH: "/usr/bin" }, { PATH: "/evil" });
     expect(env.PATH).toBe("/usr/bin");
   });
 });
@@ -950,26 +989,43 @@ Append to `server/src/services/mcp-connectors.ts`:
 import { buildScrubbedCliEnv } from "./cli-spawn-safety.js";
 
 /**
- * Env for a spawned CLI that will talk to EXTERNAL MCP servers. Starts from the
- * scrubbed base (denylist + secret-ish heuristics in cli-spawn-safety) and adds
- * back ONLY the connector token vars we generated. AoA's own DATABASE_URL and
- * provider keys must never reach a third-party server.
+ * PURE merge half, so it can be unit-tested with synthetic input.
+ * PATH and other scrubbed-base entries win over connector vars — a connector
+ * must never be able to redirect the executable lookup path.
+ */
+export function mergeConnectorEnv(
+  scrubbedBase: NodeJS.ProcessEnv,
+  connectorEnv: Record<string, string>,
+): Record<string, string> {
+  const out: Record<string, string> = { ...connectorEnv };
+  for (const [key, value] of Object.entries(scrubbedBase)) {
+    if (value !== undefined) out[key] = value;
+  }
+  return out;
+}
+
+/**
+ * Env for a spawned CLI that will talk to EXTERNAL MCP servers.
+ *
+ * buildScrubbedCliEnv(keep) takes a KEEP-ALLOWLIST and reads process.env
+ * internally (cli-spawn-safety.ts:67-85) — it does NOT take a base env. We pass
+ * an empty allowlist so nothing secret-ish survives, then add back only the
+ * connector token vars we generated. AoA's own DATABASE_URL and provider keys
+ * must never reach a third-party server.
  */
 export function buildConnectorProcessEnv(
   connectorEnv: Record<string, string>,
-  baseEnv: NodeJS.ProcessEnv,
 ): Record<string, string> {
-  const scrubbed = buildScrubbedCliEnv(baseEnv);
-  return { ...scrubbed, ...connectorEnv };
+  return mergeConnectorEnv(buildScrubbedCliEnv([]), connectorEnv);
 }
 ```
+
+Before implementing, read `server/src/services/cli-spawn-safety.ts:67-85` and confirm that an empty `keep` still preserves `PATH`. If it does not, pass `["PATH"]` (plus `NODE_PATH` if stdio connectors need it) — stdio connectors cannot resolve `npx` without it.
 
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `pnpm vitest run server/src/services/__tests__/mcp-connectors.test.ts`
-Expected: PASS (10 tests total)
-
-If `buildScrubbedCliEnv` has a different signature, read `server/src/services/cli-spawn-safety.ts:20-52` and adapt the call — do not reimplement scrubbing.
+Expected: PASS (11 tests total)
 
 - [ ] **Step 5: Commit**
 
@@ -1038,9 +1094,9 @@ to:
 args: ["--mcp-config", cfgPath, "--strict-mcp-config", ...prevArgs],
 ```
 
-- [ ] **Step 4: Add the flag to the Commander path**
+- [ ] **Step 4: Add the flag to BOTH Commander argv sites**
 
-In `server/src/services/internal-agent/cli-mode.ts`, in the `claude_cli` branch that builds argv (~line 450), insert `"--strict-mcp-config"` immediately after the `configPath` element, matching the crew change above.
+`server/src/services/internal-agent/cli-mode.ts` builds Claude argv in **two** places, not one — `cli-mode.ts:453` (the `--system-prompt-file` path) and `cli-mode.ts:472` (the plain path). Insert `"--strict-mcp-config"` immediately after the `configPath` element in **both**, matching the crew change above. Fixing only one leaves half of Commander's runs inheriting host config.
 
 - [ ] **Step 5: Verify no run regressions**
 
@@ -1059,12 +1115,16 @@ git commit -m "fix(mcp): pass --strict-mcp-config on crew and Commander runs (D2
 ## Task 10: Deliver connectors on the `claude_local` heartbeat path
 
 **Files:**
-- Modify: `server/src/services/heartbeat-mcp.ts:6-10, 38-61`
-- Modify: `server/src/services/heartbeat.ts:4254-4279`
+- Modify: `server/src/services/heartbeat-mcp.ts:31-61`
+- Modify: `server/src/services/heartbeat.ts:4254-4272`
 
-- [ ] **Step 1: Extend the delivery input type**
+> **Naming:** the exported function is **`prepareHeartbeatMcpDelivery`** (`heartbeat-mcp.ts:31`). There is no `applyHeartbeatMcpDelivery`.
+>
+> **Shape:** `HeartbeatMcpDelivery` (lines 6-10) is the **output** type — `{ config, mcpBridge, cleanup }`, with **no `env` field**. The **input** is an inline anonymous object literal in the function signature at lines 31-37 (`{ adapterType, agentId, runId, config, params }`), so there is no named input interface to extend — widen the inline parameter type instead.
 
-In `server/src/services/heartbeat-mcp.ts`, add to the input interface (lines 6-10):
+- [ ] **Step 1: Extend the inline input parameter**
+
+In `server/src/services/heartbeat-mcp.ts`, add these two optional properties to the inline parameter object type at lines 31-37:
 
 ```ts
   /** External connectors resolved for this agent. Empty when none enabled. */
@@ -1101,17 +1161,27 @@ await fs.writeFile(
 );
 ```
 
-- [ ] **Step 3: Merge connector env into the returned delivery**
+- [ ] **Step 3: Merge connector env into the returned config**
 
-Still in `heartbeat-mcp.ts`, where the delivery object is returned with the `[argKey]` args, also merge `input.connectorEnv` into the env the adapter will spawn with. Locate the returned `config` object and add:
+`HeartbeatMcpDelivery` has no `env` field — the only env the adapter sees is `config.env` inside the passed-through adapter config. In the `claude_local` return (the one that sets `[argKey]`), add alongside it:
 
 ```ts
-env: { ...(input.config.env as Record<string, string> | undefined), ...(input.connectorEnv ?? {}) },
+env: {
+  ...(input.config.env as Record<string, string> | undefined),
+  ...(input.connectorEnv ?? {}),
+},
+```
+
+**Critical:** `prepareHeartbeatMcpDelivery` has an **early return at lines 39-45** for every non-`claude_local` adapter, which returns `input.config` untouched. A merge placed only in the second return silently no-ops for codex/opencode/gemini. That is acceptable for Plan 1 (claude-only scope) but **must** be revisited in Plan 2 — add a comment at the early return recording this so it isn't missed:
+
+```ts
+// NOTE(Plan 2): connectorEnv is NOT merged on this path. Non-claude adapters
+// receive connectors via ctx.mcpServers, wired in the per-adapter plan.
 ```
 
 - [ ] **Step 4: Resolve connectors at the heartbeat call site**
 
-In `server/src/services/heartbeat.ts` around lines 4254-4279, before building the MCP params, resolve the agent's connectors:
+In `server/src/services/heartbeat.ts`, before the `prepareHeartbeatMcpDelivery` call at **line 4272**, resolve the agent's connectors:
 
 ```ts
 const connectorRows = await loadEnabledConnectorRows(db, {
@@ -1121,9 +1191,11 @@ const connectorRows = await loadEnabledConnectorRows(db, {
 const { specs: extraMcpServers, env: connectorEnv } = buildConnectorSpecs(connectorRows);
 ```
 
-Then pass `extraMcpServers` and `connectorEnv` into the `applyHeartbeatMcpDelivery` call.
+Then pass `extraMcpServers` and `connectorEnv` as additional properties on the object handed to `prepareHeartbeatMcpDelivery(...)` at line 4272.
 
-`loadEnabledConnectorRows` is implemented in Task 7, Step 6.
+**Do not mutate `heartbeatMcpParams`** (declared `as const` at lines 4254-4271) — pass the connector fields as siblings on the delivery call's argument object instead.
+
+`loadEnabledConnectorRows` is implemented in Task 7, Step 5.
 
 - [ ] **Step 5: Typecheck and run the server suite**
 
@@ -1145,7 +1217,19 @@ git commit -m "feat(mcp): deliver company connectors to claude_local heartbeat r
 - Create: `server/src/routes/mcp-connectors.ts`
 - Modify: `server/src/app.ts` (mount the router)
 
-Follow the structure of `server/src/routes/goals.ts` for router shape and `server/src/routes/mcp.ts` for the settings-adjacent auth pattern.
+Follow the structure of `server/src/routes/goals.ts` for router shape. (Note: there is **no** `server/src/routes/mcp.ts` — the inbound MCP key routes live in `server/src/mcp/server.ts:332-360`. Do not look for a file that doesn't exist.)
+
+Auth helpers are real and live in `server/src/routes/authz.ts`:
+
+```ts
+import { assertBoard, assertCompanyAccess } from "./authz.js";
+```
+
+Deployment mode comes from `loadConfig()` (`server/src/config.ts:117`), field `deploymentMode`, defaulting to `"local_trusted"`:
+
+```ts
+import { loadConfig } from "../config.js";
+```
 
 - [ ] **Step 1: Write the failing test for the transport policy**
 
@@ -1207,13 +1291,27 @@ export function assertTransportAllowed(
 }
 ```
 
-Then add the router with these endpoints, all behind `assertBoard` + `assertCompanyAccess`:
+Then add the router as a `(db: Db) => Router` factory, matching `goals.ts:18`. **Router paths carry no `/api` prefix** — the app mounts the whole api sub-router at `/api`. All endpoints sit behind `assertBoard` + `assertCompanyAccess`:
 
-- `GET /api/companies/:companyId/mcp-connectors` — list
-- `POST /api/companies/:companyId/mcp-connectors` — create. Calls `assertTransportAllowed`. Sets `status` to `"active"` when the company's deployment mode is `local_trusted`, otherwise `"pending_approval"` and raises an approval via `approvalService` (D6, mirroring the agent-hire rule in `server/src/routes/agents.ts:784`).
-- `PATCH /api/companies/:companyId/mcp-connectors/:id` — update display name / status
-- `DELETE /api/companies/:companyId/mcp-connectors/:id` — remove
-- `PUT /api/companies/:companyId/mcp-connectors/:id/agents` — replace the enabled-agent set
+- `GET /companies/:companyId/mcp-connectors` — list
+- `POST /companies/:companyId/mcp-connectors` — create. Calls `assertTransportAllowed`. Sets `status` to `"active"` when `loadConfig().deploymentMode === "local_trusted"`, otherwise `"pending_approval"` and raises an approval (D6).
+- `PATCH /companies/:companyId/mcp-connectors/:id` — update display name / status
+- `DELETE /companies/:companyId/mcp-connectors/:id` — remove
+- `PUT /companies/:companyId/mcp-connectors/:id/agents` — replace the enabled-agent set
+
+For the approval, mirror the **real** agent-hire path at `server/src/routes/agents.ts:1088-1120` (not line 784, which is an unrelated scheduler route):
+
+```ts
+import { approvalService } from "../services/index.js";
+// ...
+const approvalsSvc = approvalService(db);
+const approval = await approvalsSvc.create(companyId, {
+  type: "install_mcp_connector",
+  requestedByUserId: req.user.id,
+  status: "pending",
+  payload: { connectorId: created.id, serverName: created.serverName },
+});
+```
 
 Restrict create/update/delete to `founder` (team leads may not add external network access unilaterally).
 
@@ -1224,11 +1322,13 @@ Expected: PASS (4 tests)
 
 - [ ] **Step 5: Mount the router**
 
-In `server/src/app.ts`, alongside the other company-scoped routers (~line 417), add:
+Company-scoped routers mount on the **`api` sub-router**, not on `app` directly (`app.use("/api", api)` happens at `app.ts:553`). Alongside `api.use(goalRoutes(db))` at **`app.ts:307`**, add:
 
 ```ts
-app.use(mcpConnectorRoutes);
+api.use(mcpConnectorRoutes(db));
 ```
+
+Mounting with `app.use(...)` or at line 417 (which is plugin-runtime composition) would put the routes at the wrong path.
 
 - [ ] **Step 6: Commit**
 
@@ -1243,17 +1343,29 @@ git commit -m "feat(mcp): add connector CRUD routes with deployment-aware stdio 
 
 The agent config form lets a founder hand-type `--mcp-config,/path/servers.json`, bypassing every control in this plan.
 
+> **Why this is NOT an adapter-side fix.** The adapter cannot tell AoA's injected
+> args from the user's: `claude-local/src/server/execute.ts:258-262` reads a single
+> `config.extraArgs` (falling back to `config.args`), and AoA injects its own
+> `--mcp-config <path> --strict-mcp-config` into **that exact key**
+> (`heartbeat-mcp.ts:52-60`, `runner.ts:496`). Stripping inside the adapter would
+> delete AoA's own config and **break every `claude_local` MCP run**.
+>
+> The strip must happen **server-side, at the injection points**, where the user's
+> args are still a separate array before AoA prepends its own.
+
 **Files:**
-- Modify: `packages/adapters/claude-local/src/server/execute.ts:517-552`
-- Create: `packages/adapters/claude-local/src/server/__tests__/strip-mcp-args.test.ts`
+- Create: `server/src/services/mcp-arg-sanitize.ts`
+- Create: `server/src/services/__tests__/mcp-arg-sanitize.test.ts`
+- Modify: `server/src/services/heartbeat-mcp.ts:52-60`
+- Modify: `server/src/services/internal-agent/aoa-agents/runner.ts:496`
 
 - [ ] **Step 1: Write the failing test**
 
-Create `packages/adapters/claude-local/src/server/__tests__/strip-mcp-args.test.ts`:
+Create `server/src/services/__tests__/mcp-arg-sanitize.test.ts`:
 
 ```ts
 import { describe, expect, it } from "vitest";
-import { stripUserMcpArgs } from "../execute.js";
+import { stripUserMcpArgs } from "../mcp-arg-sanitize.js";
 
 describe("stripUserMcpArgs", () => {
   it("removes a user-supplied --mcp-config and its value", () => {
@@ -1272,18 +1384,22 @@ describe("stripUserMcpArgs", () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pnpm vitest run packages/adapters/claude-local/src/server/__tests__/strip-mcp-args.test.ts`
-Expected: FAIL — `stripUserMcpArgs is not exported`
+Run: `pnpm vitest run server/src/services/__tests__/mcp-arg-sanitize.test.ts`
+Expected: FAIL — `Cannot find module '../mcp-arg-sanitize.js'`
 
-- [ ] **Step 3: Implement and apply**
+- [ ] **Step 3: Implement the sanitizer**
 
-In `packages/adapters/claude-local/src/server/execute.ts`, add and export:
+Create `server/src/services/mcp-arg-sanitize.ts`:
 
 ```ts
 /**
- * MCP configuration is owned by AoA (see the connectors plan, D2). A user-typed
- * --mcp-config in the agent's "Extra args" box would bypass company approval,
- * per-agent enablement, env scrubbing, and audit. Strip it.
+ * MCP configuration is owned by AoA (D2). A user-typed --mcp-config in the
+ * agent's "Extra args" box would bypass company approval, per-agent enablement,
+ * env scrubbing, and audit.
+ *
+ * Apply this ONLY to user-supplied args, at the server-side injection points,
+ * BEFORE AoA prepends its own flags. Never apply it to the combined array — the
+ * adapter cannot distinguish the two and would strip AoA's own config.
  */
 export function stripUserMcpArgs(args: string[]): string[] {
   const out: string[] = [];
@@ -1300,18 +1416,42 @@ export function stripUserMcpArgs(args: string[]): string[] {
 }
 ```
 
-Apply it to the user-supplied `extraArgs` in the existing bypass-stripping block (lines 517-552), **not** to the args AoA itself injects.
-
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `pnpm vitest run packages/adapters/claude-local/src/server/__tests__/strip-mcp-args.test.ts`
+Run: `pnpm vitest run server/src/services/__tests__/mcp-arg-sanitize.test.ts`
 Expected: PASS (3 tests)
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Apply at both injection points**
+
+In `server/src/services/heartbeat-mcp.ts` (lines 52-60), wrap the user's args:
+
+```ts
+[argKey]: [
+  "--mcp-config",
+  configPath,
+  "--strict-mcp-config",
+  ...stripUserMcpArgs(existingArgs),
+],
+```
+
+In `server/src/services/internal-agent/aoa-agents/runner.ts:496`, do the same to `prevArgs`:
+
+```ts
+args: ["--mcp-config", cfgPath, "--strict-mcp-config", ...stripUserMcpArgs(prevArgs)],
+```
+
+Import `stripUserMcpArgs` from `./mcp-arg-sanitize.js` (adjust the relative path in `runner.ts`).
+
+- [ ] **Step 6: Verify MCP runs still work**
+
+Run: `pnpm vitest run server/src`
+Expected: PASS. Then confirm manually that a `claude_local` run still receives `--mcp-config` — this is the regression the audit caught, so do not skip it.
+
+- [ ] **Step 7: Commit**
 
 ```bash
-git add packages/adapters/claude-local/src/server/execute.ts packages/adapters/claude-local/src/server/__tests__/strip-mcp-args.test.ts
-git commit -m "fix(mcp): strip user-supplied --mcp-config from agent extraArgs"
+git add server/src/services/mcp-arg-sanitize.ts server/src/services/__tests__/mcp-arg-sanitize.test.ts server/src/services/heartbeat-mcp.ts server/src/services/internal-agent/aoa-agents/runner.ts
+git commit -m "fix(mcp): strip user-supplied --mcp-config at server-side injection points"
 ```
 
 ---
@@ -1330,7 +1470,11 @@ A **sibling** of the existing MCP page, never an extension of it — that page i
 Create `ui/src/api/mcpConnectors.ts`, mirroring the shape of `ui/src/api/mcp.ts`:
 
 ```ts
-import { apiFetch } from "./client";
+// The client exports `api` (client.ts:72), NOT `apiFetch`.
+// client.ts:1 sets `const BASE = "/api"` and prepends it, so paths here must
+// NOT include /api — otherwise requests hit /api/api/...
+// Bodies are passed as plain objects, never pre-stringified.
+import { api } from "./client";
 
 export interface McpConnector {
   id: string;
@@ -1344,23 +1488,17 @@ export interface McpConnector {
 
 export const mcpConnectorsApi = {
   list: (companyId: string) =>
-    apiFetch<McpConnector[]>(`/api/companies/${companyId}/mcp-connectors`),
+    api.get<McpConnector[]>(`/companies/${companyId}/mcp-connectors`),
   create: (companyId: string, body: Partial<McpConnector> & { secretValue?: string }) =>
-    apiFetch<McpConnector>(`/api/companies/${companyId}/mcp-connectors`, {
-      method: "POST",
-      body: JSON.stringify(body),
-    }),
+    api.post<McpConnector>(`/companies/${companyId}/mcp-connectors`, body),
   remove: (companyId: string, id: string) =>
-    apiFetch<void>(`/api/companies/${companyId}/mcp-connectors/${id}`, { method: "DELETE" }),
+    api.delete<{ ok: true }>(`/companies/${companyId}/mcp-connectors/${id}`),
   setAgents: (companyId: string, id: string, agentIds: string[]) =>
-    apiFetch<void>(`/api/companies/${companyId}/mcp-connectors/${id}/agents`, {
-      method: "PUT",
-      body: JSON.stringify({ agentIds }),
-    }),
+    api.put<{ ok: true }>(`/companies/${companyId}/mcp-connectors/${id}/agents`, { agentIds }),
 };
 ```
 
-Match the real export/helper names in `ui/src/api/mcp.ts` — if that file uses a different fetch helper, use the same one.
+Confirm `api.put` exists in `ui/src/api/client.ts`; if it does not, use `api.post` and change the route verb to match. Mirror the call style in `ui/src/api/mcp.ts:8` exactly.
 
 - [ ] **Step 2: Build the section component**
 
