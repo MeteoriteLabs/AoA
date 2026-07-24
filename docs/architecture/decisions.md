@@ -1331,18 +1331,40 @@ uninstall must never destroy them.
    to it. That was the only unguarded path, and it is where the refusal lives.
    The refusal is raised **before** the transaction opens.
 
-5. **Whole-team refusal, all-or-nothing.** A `deletedAgentIds` that silently
-   omits members the caller asked to remove is a worse failure than a named
-   refusal. **Consequence:** once Steward is published into `default-crew`,
-   that team becomes un-uninstallable through this route. Accepted — the crew
-   team is a company-wide singleton the bootstrap installs and the repair path
-   assumes exists; wholesale removal is not a supported operation.
+5. **Team uninstall DETACHES protected agents; it does not refuse.**
+   `uninstallTeam` partitions before any write, deletes the unprotected members
+   and the team row, retains the protected agents, and returns
+   `{ deletedAgentIds, retainedAgents }` (the route also projects
+   `retainedAgentIds`). Retained agents are excluded from **both** the
+   `aoa_agent_triggers` delete and the `agents` delete — excluding them from
+   only the latter would leave the row alive with its triggers wiped, which is
+   point 7's harm arriving through this door.
+
+   *Superseded reasoning, recorded so it is not re-adopted:* an earlier revision
+   refused the whole uninstall, on the argument that a `deletedAgentIds`
+   silently omitting requested members is worse than a named refusal. That is
+   an argument against **silence**, not against partial retention — an explicit
+   `retainedAgents` is not silent, and agents are not owned by teams. It also
+   rested on a false premise: `teamsService.loadTeamForRosterEdit` refuses both
+   `addMember` and `removeMember` when `parentProjectId === null`, and the crew
+   team is company-wide, so there was **no** detach path and no other route.
+   Refusing would have made the crew team permanently un-removable with the
+   only exit being deletion of the company.
 
 6. **Over-matching is deliberate and safe-by-direction.** A third-party agent
    named `Commander` is treated as protected. That is recoverable (rename, then
    delete); the inverse — deleting a real Commander — is not.
 
-7. **This is a guardrail, not an authorization boundary, and the code says so.**
+7. **A catalog update must not functionally destroy a protected agent.**
+   `applyCrewAgentUpdate` deletes every `aoa_agent_triggers` row and re-inserts
+   only what the template carries, so a catalog change could drop Steward's
+   `sweep`/`role:steward` trigger and silently stop hub curation — the row
+   survives while the function dies. Trigger replacement is therefore skipped
+   for protected agents. Deliberate trade: a catalog-*added* trigger will never
+   reach Commander or Steward, whose triggers are AoA-seeded anyway; first
+   install still honours the template.
+
+8. **This is a guardrail, not an authorization boundary, and the code says so.**
    A founder who renames a NULL-origin Steward before uninstalling erases its
    last signal. Closing that with the `sweep`/`role:steward` trigger was
    considered and rejected: the trigger is founder-writable *and* deletable, so

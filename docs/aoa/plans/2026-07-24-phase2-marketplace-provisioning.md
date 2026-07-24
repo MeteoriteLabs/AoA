@@ -933,12 +933,12 @@ stops being enough.
 >    added, the whole install fails and every new company silently degrades to
 >    the legacy `@legacy` roster. Fail-closed and logged, but the *symptom*
 >    appears in AoA while the *cause* is a merge in the other repo.
-> 2. **Publishing Steward makes `default-crew` un-uninstallable** through
->    `DELETE /marketplace/teams/:teamId`. T2.5's guard is whole-team
->    all-or-nothing (Decision #113 point 5), so the moment Steward is a member,
->    that route always 409s. **Accepted, but confirm it is still the intent at
->    publish time** — no UI consumes that route today, so nobody will notice
->    until one does.
+> 2. **Publishing Steward changes what a team uninstall returns.** T2.5 now
+>    **detaches** protected agents rather than refusing (Decision #113 point 5,
+>    revised) — `DELETE /marketplace/teams/:teamId` deletes the unprotected
+>    members and the team row and returns Steward in `retainedAgentIds`. No 409.
+>    Confirm any UI built against that route surfaces `retainedAgentIds`, or a
+>    founder sees "uninstalled" and an agent that is still there.
 > 3. **Publishing Steward must be paired with reconciling the pre-existing
 >    legacy Steward row**, or companies created between T2.3 and T2.4 end up
 >    with **two** Steward agents (both carrying the `sweep` trigger → duplicated
