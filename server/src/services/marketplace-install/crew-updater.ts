@@ -28,14 +28,36 @@ export interface CrewAgentRow {
  * replaceExisting: true → ALL files replaced (no preservation of edits).
  * Also replaces: skillKeys, runtimeConfig.aoa.toolAllowlist, templateVersion.
  * Triggers are replaced (DELETE + re-INSERT) from catalog definition.
+ *
+ * Deliberately does NOT touch `name`, `role`, `title`, `icon`, `capabilities`,
+ * `permissions`, `metadata` or `adapterType` — those are the founder's, not the
+ * catalog's. (T2.3b's adoption path leans on that: it re-points a legacy row at
+ * its catalog template without renaming the agent or moving its provider.)
+ *
+ * Every network fetch happens BEFORE the transaction, so a fetch failure leaves
+ * the row exactly as it was. That is what makes {@link applyCrewAgentUpdate}
+ * safe to use for adoption: either the row becomes fully marketplace-managed, or
+ * nothing changed.
  */
 export async function applyCrewAgentUpdate(opts: {
   db: Db;
   agentRow: CrewAgentRow;
   catalogItem: CatalogItem;
   instructionsService: AgentInstructionsServiceLike;
+  /**
+   * Stamp `templateOrigin` as part of the same write (T2.3b adoption).
+   *
+   * Omitted on the normal update path — the row already carries the origin that
+   * selected `catalogItem`. Supplied when re-pointing an unmanaged (`…@legacy`
+   * or NULL-origin) row at its catalog template, so origin, version and content
+   * land in ONE transaction. Stamping the origin separately would leave a window
+   * where the row reads "marketplace-managed" while still carrying legacy
+   * content — and `crew-updater` skips rows with a null `templateVersion`, so
+   * that window would not self-heal.
+   */
+  setTemplateOrigin?: string;
 }): Promise<void> {
-  const { db, agentRow, catalogItem, instructionsService } = opts;
+  const { db, agentRow, catalogItem, instructionsService, setTemplateOrigin } = opts;
 
   const bodyText = await fetchCatalogResource(catalogItem, "agent template for update");
   const parsed = parseMarketplaceAgentTemplate(bodyText, catalogItem);
@@ -82,6 +104,7 @@ export async function applyCrewAgentUpdate(opts: {
         skillKeys: template.skillKeys,
         runtimeConfig: updatedRc,
         templateVersion: catalogItem.version,
+        ...(setTemplateOrigin ? { templateOrigin: setTemplateOrigin } : {}),
         ...(materialized ? { adapterConfig: materialized.adapterConfig } : {}),
         updatedAt: new Date(),
       })

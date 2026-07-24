@@ -245,7 +245,72 @@ git commit -m "feat(marketplace): install the default crew from the marketplace 
 
 ---
 
-## T2.3b — Make crew provisioning repairable (the one-way door)
+## T2.3b — Make crew provisioning repairable (the one-way door) — ✅ SHIPPED 2026-07-24
+
+> **Execution notes — one plan instruction was overturned, deliberately.**
+>
+> 1. **"Reuse `provisionCompanyCrew`" is right for ONE of the three degraded
+>    states and wrong for the most important one.** For a `@legacy`/NULL-origin
+>    company, `installTeam` inserts a fresh row per roster entry and
+>    `resolveAgentNameConflict` renames each collision — so re-running the
+>    provisioner mints `Scout-2` / `Reviewer-2` / `default-crew-2`, all carrying
+>    the same `templateOrigin`, and leaves the ORIGINAL rows (the ones tasks and
+>    runs point at) still `@legacy` and still frozen out. It repairs nothing.
+>    Deleting the legacy rows instead is worse — they own work by id.
+>    So the `unmanaged` state is repaired by **adoption**: re-point each existing
+>    row at its catalog template in place via `applyCrewAgentUpdate` (which gained
+>    an optional `setTemplateOrigin` so origin + version + content land in one
+>    transaction). Agent ids, names, titles, roles and adapters survive.
+>    Adoption claims exactly the rows a fresh install would have collided with,
+>    which is why it cannot duplicate them. `provisionCompanyCrew` IS reused
+>    verbatim — for the `crewless` state, where nothing can collide.
+>    This is proven by a permanent ABLATION test.
+> 2. **Diagnosis-before-action is the whole safety property.** `repairCompanyCrew`
+>    always classifies first (`healthy` / `operation-row-stale` / `crewless` /
+>    `unmanaged`); the classification is the only thing standing between repair
+>    and a duplicate roster.
+> 3. **Step 4 was already done** — `claimOperationForDispatch` (T2.3 fix round)
+>    already claims `pending`/`failure`/stale-`running`. Confirmed, built on.
+> 4. **The plan's Step 4b case 2 needed narrowing.** "Operation row is not
+>    `success`" is NOT the same as "stale": a FRESH `running` row belongs to a
+>    live install. Repair seals only rows that `claimOperationForDispatch` would
+>    actually claim (`failure`, `pending`, `running` older than
+>    `OPERATION_CLAIM_STALE_AFTER_MS`) and never `requested`.
+> 5. Repair also writes the `teams` row + `team_members` links an install would
+>    have written, which is exactly what the already-wired `reconcileTeamMembers`
+>    needs to install roster members with no legacy counterpart (Reviewer).
+
+### Step 5 — the trigger: BOTH, boot-time reconcile primary
+
+**Chosen:** a boot/interval reconcile pass (`runCrewRepairPass`, called from
+`runCrewUpdateCheck` in `server/src/index.ts`) **plus** an authenticated
+founder-only route (`POST /api/companies/:cid/marketplace/crew/repair`).
+
+**Argument.** The companies that need repair are by construction the ones whose
+founder has no idea anything is wrong — the crew looks present and simply never
+receives an update. A button only helps someone who already knows to press it,
+so route-only would leave the majority permanently frozen. The reconcile is
+affordable because it rides the pass that already exists: it reuses the catalog
+`runCrewUpdateCheck` just loaded (zero extra catalog fetches), costs one indexed
+diagnosis and nothing else for a healthy company, and is self-terminating (a
+repaired company is permanently healthy, so the backlog only shrinks).
+
+Guards, all required before this was acceptable:
+- **No catalog → no pass.** `runCrewUpdateCheck` already returns early on an
+  empty cache, so a genuinely offline instance does zero repair work and retries
+  nothing. That is the "must not re-run every boot with no network" requirement.
+- **`CREW_REPAIR_MAX_PER_PASS = 5`** — a many-company instance cannot turn a boot
+  into a CDN stampede; the remainder are taken by later passes.
+- **`CREW_REPAIR_COOLDOWN_MS = 6h`**, process-local and honestly documented as
+  such. It guards tight re-entry (route in a loop, interval landing next to a
+  boot), not a crash-looping process; the per-pass cap bounds that, and a failed
+  repair writes nothing (adoption fetches before it writes, per agent).
+- **Fail closed.** If no crew row maps onto the roster, repair installs nothing
+  and logs why. A visible unrepaired company beats two parallel crews.
+
+The route is kept because it is attributable, immediate, and returns the
+diagnosis — so "is this company frozen out of crew updates?" is answerable
+without DB access.
 
 **Added 2026-07-24 during T2.3 review. This is not optional polish — without it
 T2.3's core property is one network call wide.**
@@ -262,24 +327,24 @@ today that property depends on one network call at one moment, with no retry.
 This also makes the T2.3 degrade path *safe to choose*: bounded deadlines and
 fail-open behaviour are only acceptable if the resulting state is recoverable.
 
-- [ ] **Step 1: Failing test** — a company whose crew is `@legacy`/unmanaged can
+- [x] **Step 1: Failing test** — a company whose crew is `@legacy`/unmanaged can
   be re-provisioned into a marketplace-managed crew, and afterwards
   `crew-updater` no longer skips it. **Discriminator:** assert the *origins
   change* (`@legacy`/null → `agent:aoa-curated/…`) and that a subsequent update
   check now considers the company — not merely that a route returned 200.
-- [ ] **Step 2: Failing test — repair must be safe to re-run** on an
+- [x] **Step 2: Failing test — repair must be safe to re-run** on an
   already-marketplace-managed company (no duplicate agents, no second team, no
   clobbering of founder customizations). Re-running repair is the single most
   likely operator action.
-- [ ] **Step 3: Run → FAIL.**
-- [ ] **Step 4: Implement.** Reuse `provisionCompanyCrew`. **Note the review
+- [x] **Step 3: Run → FAIL.**
+- [x] **Step 4: Implement.** Reuse `provisionCompanyCrew`. **Note the review
   finding this depends on:** `crew-bootstrap.ts:134-140` currently treats *any*
   non-`pending` operation as "someone else owns this install", including
   `failure` — so a previously-failed bootstrap would make repair a no-op and
   leave the company crewless. Narrow that guard to `pending | running | success`
   **before** wiring repair, or the repair path is dead on arrival for exactly
   the companies that need it most.
-- [ ] **Step 4b: Cover the two residual states T2.3 deliberately left visible.**
+- [x] **Step 4b: Cover the two residual states T2.3 deliberately left visible.**
   Both are known, both are the *right* trade (a visible gap beats an
   unrepairable clobber), and both are only acceptable because this task exists:
   1. **`unknown` witness → crewless.** `inspectCrewTeamInstall` fails closed on
@@ -292,12 +357,12 @@ fail-open behaviour are only acceptable if the resulting state is recoverable.
      stays claimable (`operationRepaired: false`, logged ERROR). Repair will
      then find a legitimately claimable `failure` row — correct, just noisier.
      Do not "fix" this by retrying inside T2.3; retry belongs here.
-- [ ] **Step 5: Decide and record the trigger.** Options: an authenticated
+- [x] **Step 5: Decide and record the trigger.** Options: an authenticated
   founder/admin route, a boot-time reconcile for degraded companies, or both.
   Boot-time reconcile is the one that fixes companies whose founder will never
   know to click anything — prefer it, but it must be rate-limited and must not
   re-run on every boot for a company that legitimately has no network.
-- [ ] **Step 6: Run → PASS. Verify + commit.**
+- [x] **Step 6: Run → PASS. Verify + commit.**
 ```bash
 git commit -m "feat(marketplace): make crew provisioning repairable after a degraded bootstrap"
 ```

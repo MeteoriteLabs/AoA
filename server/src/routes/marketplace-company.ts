@@ -16,6 +16,13 @@ import { z } from "zod";
 import { and, eq, ne } from "drizzle-orm";
 import { type Db, marketplacePendingUpdates, companySkills, plugins } from "@armyofagents/db";
 import { assertBoard, assertCanManageInstanceSettings, assertCompanyAccess } from "./authz.js";
+import { assertRole } from "../middleware/rbac.js";
+import {
+  diagnoseCrewProvisioning,
+  repairCompanyCrew,
+  type CrewRepairDiagnosis,
+} from "../services/crew-repair.js";
+import type { AgentInstructionsServiceLike } from "../services/marketplace-install/agent-create.js";
 import { marketplaceSettingsService } from "../services/marketplace-settings.js";
 import { computeSectionDiff, applyMergeDecisions } from "../services/marketplace-merge.js";
 import { marketplaceNotifications } from "../services/marketplace-notifications.js";
@@ -40,6 +47,19 @@ export interface MarketplaceCompanyRoutesDeps {
   };
   pluginRollback?: {
     getRollbackTarget(pluginId: string): Promise<{ packageName: string; version: string } | null>;
+  };
+  /** Required by POST /crew/repair (T2.3b); the route 503s without it. */
+  instructionsService?: AgentInstructionsServiceLike;
+}
+
+/** Route-safe view of a diagnosis — ids and counts, no row payloads. */
+function summarizeDiagnosis(diagnosis: CrewRepairDiagnosis) {
+  return {
+    verdict: diagnosis.verdict,
+    teamId: diagnosis.teamId,
+    managedCrewCount: diagnosis.managedCrew.length,
+    unmanagedCrewNames: diagnosis.unmanagedCrew.map((row) => row.name),
+    operationStatus: diagnosis.operation?.status ?? null,
   };
 }
 
@@ -437,6 +457,49 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
     });
 
     res.json({ ok: true });
+  });
+
+  // ── Crew provisioning repair (T2.3b) ──────────────────────────────────────
+  //
+  // The boot pass (index.ts) is what actually reaches the companies whose
+  // founder will never know anything is wrong. This route exists alongside it
+  // for the operator who DOES know: it is attributable, immediate, and returns
+  // the diagnosis, so "is this company frozen out of crew updates?" is
+  // answerable without DB access.
+  //
+  // Founder-only: it rewrites crew agents' instruction bundles, skillKeys and
+  // triggers from the catalog.
+  router.post("/crew/repair", async (req, res) => {
+    assertBoard(req);
+    const companyId = (req.params as Record<string, string>).companyId;
+    assertCompanyAccess(req, companyId);
+    await assertRole(db, req, companyId, "founder");
+
+    const instructionsService = deps.instructionsService;
+    if (!instructionsService) {
+      res.status(503).json({ error: "Agent instructions service is not available" });
+      return;
+    }
+
+    const catalog = await deps.catalogService.readCache();
+    if (!catalog) {
+      // No catalog = nothing to repair towards. Distinct from "nothing to do".
+      res.status(503).json({ error: "Marketplace catalog is not available" });
+      return;
+    }
+
+    const diagnosis = await diagnoseCrewProvisioning(db, companyId);
+    if (diagnosis.verdict === "healthy") {
+      res.json({ diagnosis: summarizeDiagnosis(diagnosis), result: { action: "none" } });
+      return;
+    }
+
+    const result = await repairCompanyCrew(db, companyId, {
+      catalogItems: catalog.items,
+      instructionsService,
+      requestedByUserId: req.actor.userId ?? "board",
+    });
+    res.json({ diagnosis: summarizeDiagnosis(diagnosis), result });
   });
 
   // ── Request install ────────────────────────────────────────────────────────

@@ -107,6 +107,7 @@ import { providerRoutes } from "./routes/providers.js";
 import { MarketplaceCatalogService, registerMarketplaceCatalogService } from "./services/aoa-marketplace.js";
 import { pluginLoader } from "./services/plugin-loader.js";
 import { pluginRollbackService } from "./services/plugin-rollback.js";
+import { agentInstructionsService } from "./services/agent-instructions.js";
 import { pluginRegistryService } from "./services/plugin-registry.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createPluginEventBus } from "./services/plugin-event-bus.js";
@@ -546,6 +547,7 @@ export async function createApp(
         },
       },
       pluginRollback: pluginRollbackService(db),
+      instructionsService: agentInstructionsService(),
     }),
   );
 

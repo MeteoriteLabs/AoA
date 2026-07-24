@@ -82,6 +82,7 @@ import { backfillCrewOriginKind } from "./services/internal-agent/aoa-agents/bac
 import { reconcileAutonomyScale } from "./services/internal-agent/aoa-agents/reconcile-autonomy-scale.js";
 import { checkCrewUpdates } from "./services/marketplace-install/crew-updater.js";
 import { reconcileTeamMembers } from "./services/marketplace-install/team-reconcile.js";
+import { runCrewRepairPass } from "./services/crew-repair.js";
 import { agentInstructionsService } from "./services/agent-instructions.js";
 
 type BetterAuthSessionUser = {
@@ -903,6 +904,23 @@ async function runCrewUpdateCheck(): Promise<void> {
     if (!Array.isArray(catalogData)) return;
 
     const allCompanies = await (db as any).select({ id: companies.id }).from(companies);
+
+    // T2.3b — repair BEFORE the update check, in the same pass, on the catalog
+    // already loaded above. Order matters: a company adopted here is inside the
+    // update pipeline immediately, and the reconcileTeamMembers loop below is
+    // what installs any roster member it had no local counterpart for (e.g.
+    // Reviewer, which has no legacy seeder at all).
+    //
+    // This runs only when a catalog exists (the early return above), so a
+    // genuinely offline instance does no repair work and retries nothing.
+    // Healthy companies cost one indexed query and nothing else.
+    await runCrewRepairPass({
+      db: db as any,
+      companyIds: allCompanies.map((c: { id: string }) => c.id),
+      catalogItems: catalogData as any,
+      instructionsService: agentInstructionsService(),
+    }).catch((err) => logger.warn({ err }, "crew provisioning repair pass failed"));
+
     for (const company of allCompanies) {
       // Per-company isolation: a failure for one company must not abort the
       // update check for the remaining companies.

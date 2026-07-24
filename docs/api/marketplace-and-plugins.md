@@ -20,6 +20,7 @@ POST /api/companies/{companyId}/marketplace/updates/{id}/apply
 GET /api/companies/{companyId}/marketplace/updates/{id}/diff
 POST /api/companies/{companyId}/marketplace/updates/{id}/merge
 POST /api/companies/{companyId}/marketplace/request-install
+POST /api/companies/{companyId}/marketplace/crew/repair
 GET /api/companies/{companyId}/marketplace/resolve/{catalogItemId}
 POST /api/companies/{companyId}/marketplace/install
 GET /api/companies/{companyId}/marketplace/install/{operationId}
@@ -27,6 +28,15 @@ DELETE /api/companies/{companyId}/marketplace/teams/{teamId}
 ```
 
 Marketplace catalog data comes from the configured AoA marketplace CDN with a build-time snapshot fallback. Company routes apply company policy and installation state.
+
+`POST .../marketplace/crew/repair` is founder-only. It diagnoses whether the
+company's AoA crew is inside the marketplace update pipeline and repairs it if
+not — adopting `…@legacy`/unstamped crew agents in place (same agent rows, same
+names and titles), re-provisioning a company that has no crew at all, or
+correcting an install-operation row that reports failure over a committed crew.
+It returns `{ diagnosis, result }` and is a no-op on a healthy company. The same
+repair runs unattended as part of the boot/24h crew update pass, capped per pass;
+the route exists for an operator who already knows a specific company is stuck.
 
 ## Company Plugins
 
