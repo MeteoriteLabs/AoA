@@ -128,7 +128,7 @@ describe("mergeSkillUpdate - bundle re-materialization (T2.8)", () => {
     });
 
     // -- the discriminator: FILE BYTES, at the path the row now advertises --
-    const bundlePath = activeBundlePath(capture, v1Dir);
+    const bundlePath = activeBundlePath(capture, v1Dir)!;
     expect(bundlePath).toBe(managedCatalogSkillDir(COMPANY_ID, CATALOG_ITEM_ID, "2.0.0"));
     expect(bundlePath).not.toBe(v1Dir);
     expect(await readFile(path.join(bundlePath, "references", "guide.md"), "utf8")).toBe("v2 guide\n");
@@ -162,7 +162,7 @@ describe("mergeSkillUpdate - bundle re-materialization (T2.8)", () => {
       decisions: { Overview: "theirs" },
     });
 
-    const bundlePath = activeBundlePath(capture, v1Dir);
+    const bundlePath = activeBundlePath(capture, v1Dir)!;
     // Gone from the tree the runtime reads...
     expect(existsSync(path.join(bundlePath, "scripts", "legacy.js"))).toBe(false);
     // ...and gone from the inventory, which is what the UI and trust level read.
@@ -198,7 +198,7 @@ describe("mergeSkillUpdate - bundle re-materialization (T2.8)", () => {
     expect(capture.skillSet.markdown).toContain("FOUNDER EDIT.");
     expect(capture.skillSet.markdown).not.toContain("v2 overview.");
     // ...while the bundle still advanced. Markdown and files move independently.
-    const bundlePath = activeBundlePath(capture, v1Dir);
+    const bundlePath = activeBundlePath(capture, v1Dir)!;
     expect(await readFile(path.join(bundlePath, "references", "guide.md"), "utf8")).toBe("v2 guide\n");
     // The row stays `customized` - a merge exists because it diverged.
     expect(capture.skillSet.customized).toBe(true);
@@ -255,6 +255,77 @@ describe("mergeSkillUpdate - bundle re-materialization (T2.8)", () => {
     // survives and the founder can retry.
     expect(capture.transactionCount).toBe(0);
     expect(await readFile(path.join(v1Dir, "references", "guide.md"), "utf8")).toBe("v1 guide\n");
+  });
+
+  /**
+   * C4. Both the merged markdown and the bundle come from `catalogItem`, so
+   * that is the only version the row's own contents justify. The pending row's
+   * `latestVersion` can lag when the catalog advances between checker runs.
+   */
+  it("stamps sourceRef from the catalog item, not the pending row's latestVersion", async () => {
+    const repo = await createRepoWithTwoCommits();
+    repoState.url = repo.url;
+    stubUpstreamMarkdown(V2_FILES["skills/research/SKILL.md"]);
+
+    const v1Dir = await materializeV1(repo.v1Sha);
+    const { db, capture } = createDb();
+
+    await mergeSkillUpdate({
+      db,
+      companyId: COMPANY_ID,
+      skill: skillRow({ v1Dir, v1Sha: repo.v1Sha }),
+      catalogItem: catalogItem({ version: "2.1.0", commitSha: repo.v2Sha }),
+      pendingUpdateId: "upd-1",
+      latestVersion: "2.0.0", // stale: the catalog moved on since the row was written
+      decisions: { Overview: "theirs" },
+    });
+
+    expect(capture.skillSet.sourceRef).toBe("2.1.0");
+    // …and the directory agrees with the stamp, so a later idempotency check
+    // cannot conclude "installed" against a tree at a different version.
+    expect(capture.skillSet.metadata.catalogBundleInstallPath).toBe(
+      managedCatalogSkillDir(COMPANY_ID, CATALOG_ITEM_ID, "2.1.0"),
+    );
+  });
+
+  /**
+   * C3. The whole-bundle analogue of a removed file. Latent against today's
+   * catalog (498/498 published skills carry a bundle), but the row must never
+   * keep naming a tree the item no longer has.
+   */
+  it("clears the bundle pointer when upstream drops the bundle entirely", async () => {
+    const repo = await createRepoWithTwoCommits();
+    repoState.url = repo.url;
+    stubUpstreamMarkdown("# Research\n\n## Overview\n\nv2 overview.\n");
+
+    const v1Dir = await materializeV1(repo.v1Sha);
+    const { db, capture } = createDb();
+
+    const result = await mergeSkillUpdate({
+      db,
+      companyId: COMPANY_ID,
+      skill: skillRow({ v1Dir, v1Sha: repo.v1Sha }),
+      catalogItem: { ...catalogItem({ version: "2.0.0", commitSha: repo.v2Sha }), skill: undefined },
+      pendingUpdateId: "upd-1",
+      latestVersion: "2.0.0",
+      decisions: { Overview: "theirs" },
+    });
+
+    expect(result.bundleMaterialized).toBe(false);
+    // The effective pointer - what `listRuntimeSkillEntries` would resolve after
+    // this merge - no longer names the old tree. Asserted through the same
+    // fallback the other tests use, so leaving metadata untouched fails as
+    // "the row still points at v1's scripts", not as a TypeError.
+    expect(activeBundlePath(capture, v1Dir)).toBeUndefined();
+    expect(capture.skillSet.metadata.catalogBundleInstallPath).toBeUndefined();
+    expect(capture.skillSet.metadata.catalogSkillBundle).toBeUndefined();
+    // …and the row stops claiming it ships scripts.
+    expect(capture.skillSet.trustLevel).toBe("markdown_only");
+    expect(capture.skillSet.fileInventory).toEqual([]);
+    // Unrelated metadata survives - this is a patch, not a replacement.
+    expect(capture.skillSet.metadata.catalogTrustTier).toBe("verified");
+    // The old tree itself is still on disk; only the reference is dropped.
+    expect(existsSync(path.join(v1Dir, "scripts", "legacy.js"))).toBe(true);
   });
 
   it("still merges a markdown-only catalog skill that has no bundle", async () => {
@@ -318,65 +389,11 @@ describe("POST /updates/:id/merge - the route reaches disk", () => {
     stubUpstreamMarkdown(V2_FILES["skills/research/SKILL.md"]);
 
     const v1Dir = await materializeV1(repo.v1Sha);
-    const capture: any = { skillSet: null, transactionCount: 0 };
-
-    const app = express();
-    app.use(express.json());
-    app.use((req: any, _res, next) => {
-      req.actor = { type: "board", source: "local_implicit", userId: "u1", companyId: COMPANY_ID };
-      next();
+    const { app, capture } = buildMergeApp({
+      updateRow: pendingUpdateRow(),
+      skill: skillRow({ v1Dir, v1Sha: repo.v1Sha }),
+      catalogItem: catalogItem({ version: "2.0.0", commitSha: repo.v2Sha }),
     });
-
-    let selectCall = 0;
-    const db: any = {
-      select: () => {
-        selectCall++;
-        const rows =
-          selectCall === 1
-            ? [
-                {
-                  id: "upd-1",
-                  companyId: COMPANY_ID,
-                  catalogItemId: CATALOG_ITEM_ID,
-                  itemType: "skill",
-                  currentVersion: "1.0.0",
-                  latestVersion: "2.0.0",
-                  status: "pending",
-                },
-              ]
-            : [skillRow({ v1Dir, v1Sha: repo.v1Sha })];
-        return { from: () => ({ where: () => Promise.resolve(rows) }) };
-      },
-      transaction: async (cb: (tx: any) => Promise<unknown>) => {
-        capture.transactionCount++;
-        let call = 0;
-        return cb({
-          update: () => ({
-            set: (values: any) => ({
-              where: async () => {
-                if (++call === 1) capture.skillSet = values;
-              },
-            }),
-          }),
-        });
-      },
-    };
-
-    app.use(
-      "/api/companies/:companyId/marketplace",
-      createMarketplaceCompanyRouter({
-        db,
-        catalogService: {
-          readCache: async () =>
-            ({
-              schemaVersion: "1.0.0",
-              generatedAt: "2026-07-24T00:00:00Z",
-              itemCount: 1,
-              items: [catalogItem({ version: "2.0.0", commitSha: repo.v2Sha })],
-            }) as any,
-        },
-      }),
-    );
 
     const res = await request(app)
       .post(`/api/companies/${COMPANY_ID}/marketplace/updates/upd-1/merge`)
@@ -385,11 +402,50 @@ describe("POST /updates/:id/merge - the route reaches disk", () => {
     expect(res.status).toBe(200);
     expect(res.body.bundleMaterialized).toBe(true);
 
-    const bundlePath = activeBundlePath(capture, v1Dir);
+    const bundlePath = activeBundlePath(capture, v1Dir)!;
     expect(bundlePath).toBe(managedCatalogSkillDir(COMPANY_ID, CATALOG_ITEM_ID, "2.0.0"));
     expect(await readFile(path.join(bundlePath, "references", "guide.md"), "utf8")).toBe("v2 guide\n");
     expect(existsSync(path.join(bundlePath, "scripts", "legacy.js"))).toBe(false);
   });
+
+  /**
+   * C1. A merge is only reviewable while the update is open. Replaying one
+   * against an `applied` row recomputes a destination equal to the row's LIVE
+   * `catalogBundleInstallPath`, and asks the materializer to replace it.
+   *
+   * The modal makes this reachable: on a failed request it toasts and
+   * re-enables the button without closing, so a commit whose response was lost
+   * becomes a second click.
+   */
+  it.each(["applied", "dismissed"] as const)(
+    "refuses to replay a merge against a %s update, leaving the live bundle intact",
+    async (status) => {
+      const repo = await createRepoWithTwoCommits();
+      repoState.url = repo.url;
+      stubUpstreamMarkdown(V2_FILES["skills/research/SKILL.md"]);
+
+      // The state after a successful merge: files at v2, row pointing at them.
+      const liveDir = await materializeAt(repo.v2Sha, "2.0.0");
+      const { app, capture } = buildMergeApp({
+        updateRow: { ...pendingUpdateRow(), status },
+        skill: skillRow({ v1Dir: liveDir, v1Sha: repo.v2Sha }),
+        catalogItem: catalogItem({ version: "2.0.0", commitSha: repo.v2Sha }),
+      });
+
+      const res = await request(app)
+        .post(`/api/companies/${COMPANY_ID}/marketplace/updates/upd-1/merge`)
+        .send({ decisions: { Overview: "theirs" } });
+
+      expect(res.status).toBe(409);
+      expect(res.body.error).toContain(status);
+      expect(capture.transactionCount).toBe(0);
+      // The live bundle is untouched - the harm this whole task exists to fix.
+      expect(await readFile(path.join(liveDir, "references", "guide.md"), "utf8")).toBe("v2 guide\n");
+      expect(await readFile(path.join(liveDir, "SKILL.md"), "utf8")).toBe(
+        V2_FILES["skills/research/SKILL.md"],
+      );
+    },
+  );
 });
 
 // -- helpers ----------------------------------------------------------------
@@ -402,27 +458,98 @@ function stubUpstreamMarkdown(markdown: string) {
 }
 
 /**
- * The bundle directory the runtime reads AFTER the merge.
+ * The bundle directory the runtime reads AFTER the merge, or `undefined` when
+ * the row no longer names one.
  *
  * Models `listRuntimeSkillEntries` exactly: it reads
- * `metadata.catalogBundleInstallPath` off the row, whatever that is. A merge
- * that does not patch metadata leaves the PREVIOUS pointer in place - so the
- * byte assertions below fail with "the old files are still live" rather than a
- * TypeError, which is the actual defect T2.8 fixes.
+ * `metadata.catalogBundleInstallPath` off the row, whatever that is. The row's
+ * metadata after the merge is what the merge WROTE if it wrote metadata at all,
+ * and otherwise the metadata it already had — so a merge that fails to patch
+ * leaves the PREVIOUS pointer live, and the assertions read "the old files are
+ * still live" rather than throwing a TypeError. That distinction is what makes
+ * these ablations legible.
  */
-function activeBundlePath(capture: any, previous: string): string {
-  const patched = capture.skillSet?.metadata?.catalogBundleInstallPath;
-  return typeof patched === "string" ? patched : previous;
+function activeBundlePath(capture: any, previous: string): string | undefined {
+  const set = capture.skillSet ?? {};
+  const metadata = "metadata" in set ? set.metadata : { catalogBundleInstallPath: previous };
+  const pointer = metadata?.catalogBundleInstallPath;
+  return typeof pointer === "string" ? pointer : undefined;
 }
 
 /** Materialize v1 exactly as `installSkill` would, so the merge has a real predecessor. */
-async function materializeV1(commitSha: string): Promise<string> {
+function materializeV1(commitSha: string): Promise<string> {
+  return materializeAt(commitSha, "1.0.0");
+}
+
+async function materializeAt(commitSha: string, version: string): Promise<string> {
   const { materializeSkillBundle } = await import(
     "../services/marketplace-install/skill-bundle-materializer.js"
   );
-  const destination = managedCatalogSkillDir(COMPANY_ID, CATALOG_ITEM_ID, "1.0.0");
+  const destination = managedCatalogSkillDir(COMPANY_ID, CATALOG_ITEM_ID, version);
   await materializeSkillBundle(bundleAt(commitSha) as any, { destination, overwrite: true });
   return destination;
+}
+
+function pendingUpdateRow() {
+  return {
+    id: "upd-1",
+    companyId: COMPANY_ID,
+    catalogItemId: CATALOG_ITEM_ID,
+    itemType: "skill",
+    currentVersion: "1.0.0",
+    latestVersion: "2.0.0",
+    status: "pending",
+  };
+}
+
+/** The real router over a mock Drizzle handle, for the route-level assertions. */
+function buildMergeApp(opts: { updateRow: any; skill: MergeableSkillRow; catalogItem: any }) {
+  const capture: any = { skillSet: null, transactionCount: 0 };
+  const app = express();
+  app.use(express.json());
+  app.use((req: any, _res: any, next: any) => {
+    req.actor = { type: "board", source: "local_implicit", userId: "u1", companyId: COMPANY_ID };
+    next();
+  });
+
+  let selectCall = 0;
+  const db: any = {
+    select: () => {
+      selectCall++;
+      const rows = selectCall === 1 ? [opts.updateRow] : [opts.skill];
+      return { from: () => ({ where: () => Promise.resolve(rows) }) };
+    },
+    transaction: async (cb: (tx: any) => Promise<unknown>) => {
+      capture.transactionCount++;
+      let call = 0;
+      return cb({
+        update: () => ({
+          set: (values: any) => ({
+            where: async () => {
+              if (++call === 1) capture.skillSet = values;
+            },
+          }),
+        }),
+      });
+    },
+  };
+
+  app.use(
+    "/api/companies/:companyId/marketplace",
+    createMarketplaceCompanyRouter({
+      db,
+      catalogService: {
+        readCache: async () =>
+          ({
+            schemaVersion: "1.0.0",
+            generatedAt: "2026-07-24T00:00:00Z",
+            itemCount: 1,
+            items: [opts.catalogItem],
+          }) as any,
+      },
+    }),
+  );
+  return { app, capture };
 }
 
 function bundleAt(commitSha: string) {

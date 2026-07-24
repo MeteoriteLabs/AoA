@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import {
   access,
@@ -8,6 +9,7 @@ import {
   mkdtemp,
   readdir,
   readFile,
+  rename,
   rm,
   stat,
 } from "node:fs/promises";
@@ -124,35 +126,44 @@ export async function materializeSkillBundle(
   const repoUrl = repoUrlForBundle(bundle, options);
   const checkoutRef = unsafeTestValue(options.unsafeTestCheckoutRef, "unsafeTestCheckoutRef") ?? bundle.commitSha;
 
-  await prepareDestination(destination, options.overwrite ?? false);
+  const replacing = await prepareDestination(destination, options.overwrite ?? false);
+
+  // Staging: when we are REPLACING an existing tree, the new content is built in
+  // a sibling and swapped in at the end. See {@link stageDirectoryFor}.
+  const stagingDir = replacing ? stageDirectoryFor(destination) : destination;
+  if (replacing) await rm(stagingDir, { recursive: true, force: true }).catch(() => {});
 
   // Owned = this call must clean it up. A CACHED checkout belongs to the cache
   // and is removed by disposeBundleCheckoutCache, never here.
   let owned: CachedCheckout | null = null;
   let checkout: CachedCheckout;
-  const cache = options.checkoutCache;
-  if (cache) {
-    const key = `${repoUrl}@${checkoutRef}#${bundle.commitSha}`;
-    let entry = cache.get(key);
-    if (!entry) {
-      entry = prepareCheckout(repoUrl, checkoutRef, bundle.commitSha, options.signal);
-      cache.set(key, entry);
-    }
-    checkout = await entry;
-  } else {
-    owned = await prepareCheckout(repoUrl, checkoutRef, bundle.commitSha, options.signal);
-    checkout = owned;
-  }
-
   try {
+    const cache = options.checkoutCache;
+    if (cache) {
+      const key = `${repoUrl}@${checkoutRef}#${bundle.commitSha}`;
+      let entry = cache.get(key);
+      if (!entry) {
+        entry = prepareCheckout(repoUrl, checkoutRef, bundle.commitSha, options.signal);
+        cache.set(key, entry);
+      }
+      checkout = await entry;
+    } else {
+      owned = await prepareCheckout(repoUrl, checkoutRef, bundle.commitSha, options.signal);
+      checkout = owned;
+    }
+
     const sourceDir = path.resolve(checkout.checkoutDir, bundlePath);
     assertWithin(checkout.checkoutDir, sourceDir, `Unsafe bundle path "${bundle.path}"`);
     await assertFile(path.join(sourceDir, "SKILL.md"), "Bundle is missing SKILL.md");
 
-    await copyDirectorySkippingSymlinks(sourceDir, destination);
-    const markdown = await readFile(path.join(destination, "SKILL.md"), "utf8");
-    const fileInventory = await collectInventory(destination);
-    const byteCount = await sumBytes(destination, fileInventory.map((entry) => entry.path));
+    // Everything is read out of the STAGING tree, before the swap: a failure
+    // here must still leave the previous bundle in place.
+    await copyDirectorySkippingSymlinks(sourceDir, stagingDir);
+    const markdown = await readFile(path.join(stagingDir, "SKILL.md"), "utf8");
+    const fileInventory = await collectInventory(stagingDir);
+    const byteCount = await sumBytes(stagingDir, fileInventory.map((entry) => entry.path));
+
+    if (replacing) await swapIntoPlace(stagingDir, destination);
 
     return {
       destination,
@@ -161,9 +172,58 @@ export async function materializeSkillBundle(
       fileCount: fileInventory.length,
       byteCount,
     };
+  } catch (err) {
+    if (replacing) await removeTempTree(stagingDir);
+    throw err;
   } finally {
     if (owned) await removeTempTree(owned.tempRoot);
   }
+}
+
+/**
+ * Sibling path the replacement tree is built in.
+ *
+ * A sibling, not an OS temp dir, so the final move is a rename within one
+ * filesystem rather than a cross-device copy — otherwise the "swap" would be
+ * another slow non-atomic copy and buy nothing.
+ */
+function stageDirectoryFor(destination: string): string {
+  return `${destination}.incoming-${process.pid}-${randomBytes(6).toString("hex")}`;
+}
+
+/**
+ * Move a fully-built staging tree over an existing destination.
+ *
+ * **Why this exists.** `materializeSkillBundle` used to `rm -rf` the destination
+ * and only then start a network fetch, so a caller replacing a LIVE bundle
+ * directory (one that `company_skills.metadata.catalogBundleInstallPath` points
+ * at) destroyed it up to a full network timeout before knowing whether it could
+ * produce a replacement — and if the fetch then failed, the bundle was simply
+ * gone. Silently: `readAncillarySkillFiles` swallows a missing directory
+ * (`company-skills.ts` `walkLocalFiles`) and hands the agent an empty file list.
+ * The same window let a concurrent reader observe a half-copied tree.
+ *
+ * Ordering is chosen so that no step can leave the destination missing except
+ * for the moment between two local renames:
+ *
+ * 1. `destination` → `outgoing`. If this throws, nothing has been destroyed and
+ *    the caller removes the staging tree.
+ * 2. `staging` → `destination`. Practically cannot fail — same parent, and
+ *    `destination` was just vacated — but if it does, `outgoing` is renamed back
+ *    and the error propagates with the old bundle restored.
+ * 3. `outgoing` is removed best-effort. A leaked directory is a smaller problem
+ *    than a masked failure (same reasoning as {@link removeTempTree}).
+ */
+async function swapIntoPlace(staging: string, destination: string): Promise<void> {
+  const outgoing = `${destination}.outgoing-${randomBytes(6).toString("hex")}`;
+  await rename(destination, outgoing);
+  try {
+    await rename(staging, destination);
+  } catch (err) {
+    await rename(outgoing, destination).catch(() => {});
+    throw err;
+  }
+  await removeTempTree(outgoing);
 }
 
 /**
@@ -286,14 +346,20 @@ function validateDestination(destination: string) {
   }
 }
 
-async function prepareDestination(destination: string, overwrite: boolean) {
+/**
+ * Decide how the destination will be written, WITHOUT destroying anything.
+ *
+ * Returns true when an existing tree is about to be replaced, which is the
+ * signal to build in a staging sibling and {@link swapIntoPlace} at the end.
+ * Deliberately no longer removes the destination up front — see
+ * {@link swapIntoPlace} for what that cost.
+ */
+async function prepareDestination(destination: string, overwrite: boolean): Promise<boolean> {
   const exists = await pathExists(destination);
   if (exists && !overwrite) {
     throw new Error(`Destination already exists: ${destination}`);
   }
-  if (exists) {
-    await rm(destination, { recursive: true, force: true });
-  }
+  return exists;
 }
 
 /**

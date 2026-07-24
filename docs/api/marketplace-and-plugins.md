@@ -36,15 +36,23 @@ instruction bundle); `/merge` takes a `decisions` map of section → `"mine"` |
 `"theirs"`. `/apply` is the unreviewed one-click landing and refuses team
 updates.
 
+Both verbs require the update to still be open: like `/apply`, `/merge` answers
+409 when the update is not `pending` or `conflict`, so a merge cannot be
+replayed against one already applied or dismissed.
+
 Merging a **skill** whose catalog item carries a bundle also re-materializes the
 bundle's `references/`, `scripts/` and `assets/` from the upstream commit, into
 a new version-scoped directory that the row's
 `metadata.catalogBundleInstallPath` is repointed at in the same transaction —
-so a file the upstream commit deleted is not delivered to agents afterwards.
-The founder's merged markdown is what lands in `company_skills.markdown`; the
+so a file the upstream commit deleted is not delivered to agents afterwards. If
+the catalog item has stopped carrying a bundle altogether, the pointer and file
+inventory are cleared instead and the row returns to `markdown_only`. The
+founder's merged markdown is what lands in `company_skills.markdown`; the
 bundle's own SKILL.md is never written over it. The checkout runs before the
 transaction, so a failed fetch leaves the pending update untouched and
-retryable. The response reports `bundleMaterialized` and, when a bundle was
+retryable, and replacing an existing bundle directory is staged and renamed into
+place rather than deleted up front — a failed fetch never leaves a skill with no
+bundle. The response reports `bundleMaterialized` and, when a bundle was
 written, `bundleFileCount`.
 
 `POST .../marketplace/crew/repair` is founder-only. It diagnoses whether the

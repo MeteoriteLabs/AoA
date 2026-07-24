@@ -585,6 +585,20 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
       return;
     }
 
+    // The same guard `/apply` carries (see :272). `/merge` never had one, which
+    // was survivable while a merge only rewrote a markdown column — a replay
+    // just wrote the same bytes again. It stopped being survivable once a merge
+    // started writing FILES: an already-`applied` row's bundle directory is the
+    // LIVE one, so replaying a merge asks the materializer to replace a tree the
+    // row currently points at. The modal makes that reachable — on a failed
+    // request it shows an error and re-enables the button without closing
+    // (`SnapshotUpdateModal.tsx` `onError`), so "the response was lost after the
+    // commit landed" turns into a second click against an applied row.
+    if (update.status !== "pending" && update.status !== "conflict") {
+      res.status(409).json({ error: `Update is not pending (current: ${update.status})` });
+      return;
+    }
+
     if (update.itemType === "agent") {
       // An agent merge legitimately carries ZERO decisions: the founder opened
       // a `null`-provenance update, found nothing of theirs in the way, and

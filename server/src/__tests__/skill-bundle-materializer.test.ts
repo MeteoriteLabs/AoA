@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -138,6 +138,59 @@ describe("materializeSkillBundle", () => {
     expect(existsSync(path.join(destination, "old.txt"))).toBe(false);
   });
 
+  // ── Replacing an existing tree is non-destructive until it can succeed ────
+  //
+  // `overwrite: true` used to `rm -rf` the destination and only THEN start a
+  // network fetch, so a caller replacing a LIVE bundle directory destroyed it
+  // before knowing whether it could produce a replacement — and a failed fetch
+  // left no bundle at all. Silently, because `readAncillarySkillFiles` swallows
+  // a missing directory and hands the agent an empty file list.
+  it("leaves an existing destination intact when the fetch fails", async () => {
+    const { repo, commitSha } = await createRepo({ "SKILL.md": "# Skill\n" });
+    const destination = await tempDir("bundle-live-");
+    await mkdir(path.join(destination, "scripts"), { recursive: true });
+    await writeFile(path.join(destination, "SKILL.md"), "# Live\n");
+    await writeFile(path.join(destination, "scripts", "live.js"), "live");
+
+    await expect(
+      materializeSkillBundle(makeBundle({ commitSha: FULL_SHA, path: "." }), {
+        destination,
+        unsafeTestRepoUrl: repo,
+        // A ref the repo does not have: `git fetch` fails AFTER the destination
+        // would previously have been removed.
+        unsafeTestCheckoutRef: "0".repeat(40),
+        overwrite: true,
+      }),
+    ).rejects.toThrow();
+
+    expect(await readFile(path.join(destination, "SKILL.md"), "utf8")).toBe("# Live\n");
+    expect(await readFile(path.join(destination, "scripts", "live.js"), "utf8")).toBe("live");
+    // No staging debris left beside it.
+    expect(await siblingsOf(destination)).toEqual([path.basename(destination)]);
+    void commitSha;
+  });
+
+  it("replaces an existing destination atomically, without a visible empty window", async () => {
+    const { repo, commitSha } = await createRepo({
+      "SKILL.md": "# New\n",
+      "references/new.md": "new",
+    });
+    const destination = await tempDir("bundle-swap-");
+    await writeFile(path.join(destination, "stale.txt"), "stale");
+
+    const result = await materializeSkillBundle(makeBundle({ commitSha, path: "." }), {
+      destination,
+      unsafeTestRepoUrl: repo,
+      overwrite: true,
+    });
+
+    expect(result.destination).toBe(path.resolve(destination));
+    expect(normalizeNewlines(await readFile(path.join(destination, "SKILL.md"), "utf8"))).toBe("# New\n");
+    expect(existsSync(path.join(destination, "stale.txt"))).toBe(false);
+    // The staging and outgoing siblings are both cleaned up.
+    expect(await siblingsOf(destination)).toEqual([path.basename(destination)]);
+  });
+
   // ── The caller's deadline actually reaches `git` ──────────────────────────
   // `installTeam` → `installSkill` → here → `execFile`. Every docblock in that
   // chain claims an abort kills a running clone; nothing asserted it, at any
@@ -263,6 +316,13 @@ async function createRepo(files: Record<string, string>) {
 
 function tempDir(prefix: string) {
   return mkdtemp(path.join(os.tmpdir(), prefix));
+}
+
+/** Entries sharing the destination's parent — catches leaked staging siblings. */
+async function siblingsOf(destination: string): Promise<string[]> {
+  const base = path.basename(destination);
+  const entries = await readdir(path.dirname(destination));
+  return entries.filter((name) => name === base || name.startsWith(`${base}.`)).sort();
 }
 
 function git(cwd: string, ...args: string[]) {

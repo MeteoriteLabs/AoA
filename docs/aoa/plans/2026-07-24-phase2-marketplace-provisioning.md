@@ -1304,6 +1304,71 @@ IS founder-editable. The two paths stay separate.
   `materializeSkillBundle`, with only the remote redirected via the
   test-env-guarded `unsafeTestRepoUrl`.
 
+### Review round 2 (CHANGES REQUESTED → addressed) — the fix created a CRITICAL
+
+The reviewer was right on every item. One of them was a defect **this task
+introduced**, and it inverted the decision-1 claim above.
+
+**C1 (CRITICAL) — `/merge` had no status guard, and re-materialization made a
+replay destructive.** `/apply` checks `status` (`marketplace-company.ts:272`);
+`/merge` checked only `itemType`. Harmless while a merge rewrote a markdown
+column — a replay wrote the same bytes. Not harmless once it wrote FILES: after
+a successful merge the row's `catalogBundleInstallPath` **is** the destination
+the merge recomputes, and `materializeSkillBundle` ran `prepareDestination`
+(`rm -rf` under `overwrite`) **before** `prepareCheckout` — so a replay deleted
+the live tree, then failed its fetch, and the bundle was gone. Silent, because
+`walkLocalFiles` swallows a missing directory and `readAncillarySkillFiles`
+returns `[]`. Reachable because `SnapshotUpdateModal`'s `onError` toasts and
+re-enables the button **without closing**, so a commit whose response was lost
+becomes a second click. Fixed with the `/apply` guard, which covers the agent
+branch too.
+
+This is where **"dead disk, not corruption" was wrong**: it holds only while the
+destination differs from the row's live pointer. Decision 2 waved the
+equal-version case through as "the directory is the one just written" — true
+within one successful call, false across calls.
+
+**C2 (Important) — the same root cause as a concurrency window**, and the reason
+the guard alone was not enough: relying on it is exactly the "safe because the
+caller always checks" reasoning standing rule 3 forbids. `materializeSkillBundle`
+now builds the replacement in a **staging sibling and renames it into place**
+(`stageDirectoryFor` / `swapIntoPlace`), so no caller can delete a live tree it
+then fails to replace, and a concurrent reader never sees a half-copied `cp`.
+Ordering is `destination→outgoing`, `staging→destination`, best-effort remove;
+a failure at step 2 renames `outgoing` back. This improves `installSkill` and
+`applySkillUpdate` too.
+
+**C3 (Important) — the markdown-only branch left a stale bundle pointer.** When
+an item stops carrying a bundle the merge advanced the markdown and left the row
+naming the old tree forever. Now cleared, with `fileInventory` reset and
+`trustLevel` back to `markdown_only` (`resolveBundleColumns`). **Correction to
+the review's evidence:** the shipped snapshot has **498 skills, 0 of them
+bundle-less** — the 16 bundle-less items are the 11 agents, 4 plugins and 1 team,
+which never reach this path. So the gap is latent, not live; fixed anyway
+because the function's contract is "the row describes what is on disk".
+`skill-auto-updater.ts`'s `resolveSkillUpdatePayload` has the identical gap on
+the auto-apply path and is **not** fixed here — filed.
+
+**C4 — taken.** `sourceRef` now stamps `catalogItem.version`; both the merged
+markdown and the bundle come from `catalogItem`, so it is the only stamp the
+row's contents justify.
+
+**C5 — docblock softened.** The `updateFile` gate is on the row's `sourceType`,
+not on the path, and the bundle directory is not jailed: `POST /skills/import`
+with `source` set to it yields a `local_path` row that `PATCH /skills/:id/files`
+will then write into, and `PATCH /agents/:id/instructions-bundle` with
+`mode:"external"` accepts any absolute `rootPath`. Stated honestly now; jailing
+that root is filed.
+
+**Ablations, each fix separately:**
+- C1 guard removed → both replay tests fail `expected 200 to be 409` (the live
+  tree survived, because C2 was in place — defence in depth confirmed).
+- C2 reverted to `rm`-first → `leaves an existing destination intact when the
+  fetch fails` dies with `ENOENT ... SKILL.md`. That is the reviewer's PROBE B,
+  reproduced at unit level: the failed fetch deleted the live bundle.
+- C3 reverted → the effective pointer still resolves to v1's tree.
+- C4 reverted → `expected '2.0.0' to be '2.1.0'`.
+
 ---
 
 ## T2.7b — Fence-aware and line-ending-safe section splitting (found in T2.7 review)

@@ -35,20 +35,31 @@
  * two are safe to keep separate precisely because a catalog skill's bundle
  * directory is NOT founder-editable — see below.
  *
- * ── Why re-materializing cannot destroy founder edits ───────────────────────
+ * ── Why re-materializing does not destroy founder edits ─────────────────────
  *
- * For `sourceType = "catalog"` the founder has no write path to the bundle
- * directory at all. `companySkillsService.updateFile` writes to disk only for
- * `sourceType === "local_path"` (`company-skills.ts:1586`); for a catalog skill
- * it updates the `markdown` column and sets `customized = true`, and
- * `readFile` returns `null` for every non-`SKILL.md` path. The founder's edits
- * therefore live entirely in the column that the merge preserves.
+ * Through the skill surface, a founder editing THIS skill edits the `markdown`
+ * column, not the bundle directory: `companySkillsService.updateFile` writes to
+ * disk only when the row's `sourceType === "local_path"`
+ * (`company-skills.ts:1591`), and `readFile` returns `null` for every
+ * non-`SKILL.md` path on a catalog row. The merge preserves that column — it
+ * writes `merged` on every branch.
+ *
+ * **The guarantee is on the row's `sourceType`, not on the path.** The bundle
+ * directory itself is not jailed, and a founder can get a differently-typed row
+ * to name it — `POST /skills/import` with `source` set to the bundle directory
+ * produces a `local_path` row whose `sourceLocator` is that directory, after
+ * which `PATCH /skills/:id/files` writes into it; `PATCH
+ * /agents/:id/instructions-bundle` with `mode: "external"` accepts any absolute
+ * `rootPath` and both writes and removes inside it. Neither happens during a
+ * normal merge, but "nothing can ever write there" would be false. Jailing that
+ * root is filed separately.
  *
  * The destination is additionally **version-scoped**
  * (`.aoa/marketplace-skills/<company>/<item>/<version>`), so a merge to a new
- * version writes a directory that did not exist and deletes nothing. `overwrite`
- * only matters when a merge is retried at the same version, where the delete
- * removes bytes this same function wrote.
+ * version writes a directory that did not exist. Replacing an existing tree is
+ * now non-destructive regardless: `materializeSkillBundle` stages the
+ * replacement in a sibling and renames it into place, so a failed fetch can no
+ * longer leave the caller with no bundle at all.
  *
  * ── Stale files, and why the pointer is the fix ─────────────────────────────
  *
@@ -56,10 +67,13 @@
  * version directory is a fresh copy of the upstream tree, `fileInventory` is
  * recomputed from it, and `catalogBundleInstallPath` is moved onto it in the
  * same transaction — so the consumer reads a tree the removed file was never
- * copied into. The previous version's directory is left on disk, deliberately
- * and consistently with `installSkill` / `applySkillUpdate`: it is unreferenced
- * once the pointer moves, and an `fs.rm` of a path derived from a *stale* row
- * is the exact hazard class Decision #115 refused. Moving the pointer is the
+ * copied into. When upstream drops the bundle ENTIRELY the pointer is cleared
+ * instead; see {@link resolveBundleColumns}.
+ *
+ * The previous version's directory is left on disk, deliberately and
+ * consistently with `installSkill` / `applySkillUpdate`: it is unreferenced once
+ * the pointer moves, and an `fs.rm` of a path derived from a *stale* row is the
+ * exact hazard class Decision #115 refused. Moving the pointer is the
  * correctness fix; reclaiming old version directories is disk hygiene and
  * belongs to a sweeper, not to a founder-facing request.
  *
@@ -73,21 +87,29 @@
  * - **Transaction fails after the clone:** a directory exists at the new
  *   version, referenced by nothing. The row still points at the old version's
  *   files, which still match its old markdown — self-consistent, just not
- *   advanced. A retry re-materializes the same version over itself
- *   (`overwrite: true`) and commits. The residue is dead disk, not corruption.
+ *   advanced. A retry re-materializes the same version over itself and commits.
+ *   The residue is dead disk, not corruption.
  *
- * The reverse order is the bug being fixed, now with a stamped `sourceRef`
+ * The reverse order is the bug this module fixed, now with a stamped `sourceRef`
  * hiding it. Disk-first fails loudly; DB-first fails silently.
+ *
+ * **"Dead disk, not corruption" is only true because the destination is not the
+ * live tree.** When the two coincide — a merge replayed against an already
+ * `applied` row — the pre-swap materializer deleted the live bundle before
+ * fetching its replacement. Two independent changes close that: the route
+ * refuses a non-`pending`/`conflict` update (409), and the materializer stages
+ * and renames instead of deleting up front.
  */
 import { eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { companySkills, marketplacePendingUpdates } from "@armyofagents/db";
-import type { CatalogItem } from "@armyofagents/shared";
+import type { CatalogItem, MarketplaceSkillBundle } from "@armyofagents/shared";
 import { computeSectionDiff, applyMergeDecisions } from "../marketplace-merge.js";
 import {
   deriveBundleTrustLevel,
   managedCatalogSkillDir,
   materializeSkillBundle,
+  type MaterializeSkillBundleResult,
 } from "./skill-bundle-materializer.js";
 
 /**
@@ -188,19 +210,12 @@ export async function mergeSkillUpdate(
       .set({
         // `merged`, never `materialized.markdown` — see the file docblock.
         markdown: merged,
-        sourceRef: latestVersion,
+        // `catalogItem.version`, not the pending row's `latestVersion`: both the
+        // merged markdown and the bundle now come from `catalogItem`, so this is
+        // the only stamp the row's own contents justify.
+        sourceRef: catalogItem.version,
         customized: true,
-        ...(materialized
-          ? {
-              trustLevel: deriveBundleTrustLevel(materialized.fileInventory),
-              fileInventory: materialized.fileInventory as unknown as Record<string, unknown>[],
-              metadata: {
-                ...asRecord(skill.metadata),
-                catalogSkillBundle: bundle,
-                catalogBundleInstallPath: materialized.destination,
-              },
-            }
-          : {}),
+        ...resolveBundleColumns(skill.metadata, bundle, materialized),
         updatedAt: new Date(),
       })
       .where(eq(companySkills.id, skill.id));
@@ -218,6 +233,63 @@ export async function mergeSkillUpdate(
         fileCount: materialized.fileCount,
       }
     : { bundleMaterialized: false };
+}
+
+/**
+ * The bundle-derived columns, for all three shapes the upstream item can take.
+ *
+ * - **Upstream has a bundle** → point at the tree just written and recompute
+ *   `fileInventory` / `trustLevel` from it.
+ * - **Upstream has no bundle and the row never had one** → contribute nothing.
+ *   A markdown-only row must not be stamped with an empty inventory it never had.
+ * - **Upstream has no bundle but the row DOES** → clear the pointer. This is the
+ *   whole-bundle analogue of a removed file, and without it the row would keep
+ *   naming the old version's directory forever: agents would go on receiving
+ *   scripts upstream no longer publishes, and `trustLevel` would go on asserting
+ *   `scripts_executables` for a bundle that no longer exists. Nothing else
+ *   repairs it — `customized` is now `true`, so `applySkillUpdate` never touches
+ *   the row again.
+ *
+ * Not reachable against today's catalog (all 498 published skills in the shipped
+ * snapshot carry `skill.bundle`; the 16 bundle-less items are the agents,
+ * plugins and team, which never reach this path). It is a latent gap, closed
+ * because this function's contract is "the row describes what is on disk".
+ *
+ * `skill-auto-updater.ts`'s `resolveSkillUpdatePayload` has the identical gap on
+ * the auto-apply path and is NOT fixed here — see the plan's T2.8 notes.
+ */
+function resolveBundleColumns(
+  currentMetadata: unknown,
+  bundle: MarketplaceSkillBundle | undefined,
+  materialized: MaterializeSkillBundleResult | null,
+) {
+  const metadata = asRecord(currentMetadata);
+  if (materialized) {
+    return {
+      trustLevel: deriveBundleTrustLevel(materialized.fileInventory),
+      fileInventory: materialized.fileInventory as unknown as Record<string, unknown>[],
+      metadata: {
+        ...metadata,
+        catalogSkillBundle: bundle,
+        catalogBundleInstallPath: materialized.destination,
+      },
+    };
+  }
+
+  const hadBundle =
+    typeof metadata.catalogBundleInstallPath === "string" || metadata.catalogSkillBundle != null;
+  if (!hadBundle) return {};
+
+  const {
+    catalogSkillBundle: _bundle,
+    catalogBundleInstallPath: _installPath,
+    ...rest
+  } = metadata;
+  return {
+    trustLevel: "markdown_only" as const,
+    fileInventory: [] as unknown as Record<string, unknown>[],
+    metadata: rest,
+  };
 }
 
 /**
