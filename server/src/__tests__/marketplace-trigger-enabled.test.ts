@@ -258,7 +258,13 @@ describe("applyCrewAgentUpdate — trigger re-insert", () => {
     };
 
     await applyCrewAgentUpdate({
-      db: { transaction: (fn: (t: unknown) => Promise<unknown>) => fn(tx) } as never,
+      db: {
+        // D22/F2: the indexed re-read before materialize.
+        select: () => ({
+          from: () => ({ where: () => ({ limit: async () => [{ instructionsCustomized: false }] }) }),
+        }),
+        transaction: (fn: (t: unknown) => Promise<unknown>) => fn(tx),
+      } as never,
       agentRow: {
         id: "agent-1",
         companyId: "co-1",
@@ -335,7 +341,13 @@ describe("applyCrewAgentUpdate — protected agents keep their triggers (D23)", 
     };
 
     await applyCrewAgentUpdate({
-      db: { transaction: (fn: (t: unknown) => Promise<unknown>) => fn(tx) } as never,
+      db: {
+        // D22/F2: the indexed re-read before materialize.
+        select: () => ({
+          from: () => ({ where: () => ({ limit: async () => [{ instructionsCustomized: false }] }) }),
+        }),
+        transaction: (fn: (t: unknown) => Promise<unknown>) => fn(tx),
+      } as never,
       agentRow: {
         id: "agent-1",
         companyId: "co-1",

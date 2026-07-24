@@ -77,8 +77,20 @@ const AGENT_ROW = {
   instructionsCustomized: false as boolean | null,
 };
 
-/**
- * Drizzle's builders are thenable AND chainable. `update().set().where()` is
+/** F2: the single indexed re-read `applyCrewAgentUpdate` does before materializing. */
+function liveSelect(state: boolean | null | undefined) {
+  return vi.fn().mockReturnValue({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        limit: vi.fn().mockResolvedValue(
+          state === undefined ? [] : [{ instructionsCustomized: state }],
+        ),
+      }),
+    }),
+  });
+}
+
+/** Drizzle's builders are thenable AND chainable. `update().set().where()` is
  * awaited directly in some places and `.returning()`-ed in others, so the mock
  * has to be both.
  */
@@ -111,12 +123,31 @@ function makeTxMock(
   };
 }
 
-/** Top-level db mock for the notify path (pending-update insert). */
-function makeNotifyDb(rows: unknown[]) {
+/**
+ * Top-level db mock for the notify path (pending-update insert).
+ *
+ * `select` serves BOTH shapes: `checkCrewUpdates`' batch `.from().where()`
+ * (awaited directly) and `applyCrewAgentUpdate`'s F2 re-read
+ * `.from().where().limit()`. `liveState` defaults to the first row's snapshot
+ * value, so an unchanged row behaves as it would in production; pass it
+ * explicitly to simulate a founder edit landing mid-pass.
+ */
+function makeNotifyDb(rows: unknown[], liveState?: boolean | null) {
   const insertedValues: Record<string, unknown>[] = [];
+  const resolvedLive =
+    liveState !== undefined
+      ? liveState
+      : ((rows[0] as { instructionsCustomized?: boolean | null } | undefined)
+          ?.instructionsCustomized ?? null);
   const db = {
     select: vi.fn().mockReturnValue({
-      from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(rows) }),
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([{ instructionsCustomized: resolvedLive }]),
+          then: (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) =>
+            Promise.resolve(rows).then(resolve, reject),
+        }),
+      }),
     }),
     insert: vi.fn().mockReturnValue({
       values: vi.fn().mockImplementation((v: Record<string, unknown>) => {
@@ -150,6 +181,7 @@ describe("applyCrewAgentUpdate", () => {
     const updatedFields: Record<string, unknown> = {};
     const txMock = makeTxMock(updatedFields);
     const db = {
+      select: liveSelect(false),
       transaction: vi.fn().mockImplementation((fn: (tx: unknown) => Promise<unknown>) => fn(txMock)),
     };
 
@@ -175,6 +207,7 @@ describe("applyCrewAgentUpdate", () => {
     const updatedFields: Record<string, unknown> = {};
     const txMock = makeTxMock(updatedFields);
     const db = {
+      select: liveSelect(false),
       transaction: vi.fn().mockImplementation((fn: (tx: unknown) => Promise<unknown>) => fn(txMock)),
     };
 
@@ -196,6 +229,7 @@ describe("applyCrewAgentUpdate", () => {
     const updatedFields: Record<string, unknown> = {};
     const txMock = makeTxMock(updatedFields);
     const db = {
+      select: liveSelect(false),
       transaction: vi.fn().mockImplementation((fn: (tx: unknown) => Promise<unknown>) => fn(txMock)),
     };
 
@@ -219,6 +253,7 @@ describe("applyCrewAgentUpdate — D22 customization guard", () => {
     const updatedFields: Record<string, unknown> = {};
     const txMock = makeTxMock(updatedFields);
     const db = {
+      select: liveSelect(false),
       transaction: vi.fn().mockImplementation((fn: (tx: unknown) => Promise<unknown>) => fn(txMock)),
     };
 
@@ -238,12 +273,52 @@ describe("applyCrewAgentUpdate — D22 customization guard", () => {
 
   it("refuses a row whose customization state is unknown (pre-D22 row)", async () => {
     const mockMaterialize = vi.fn().mockResolvedValue({ adapterConfig: {} });
-    const db = { transaction: vi.fn() };
+    const db = { select: liveSelect(false), transaction: vi.fn() };
 
     await expect(
       applyCrewAgentUpdate({
         db: db as any,
         agentRow: { ...AGENT_ROW, instructionsCustomized: null },
+        catalogItem: CATALOG_ITEM,
+        instructionsService: { materializeManagedBundle: mockMaterialize } as any,
+      }),
+    ).rejects.toBeInstanceOf(AgentInstructionsCustomizedError);
+    expect(mockMaterialize).not.toHaveBeenCalled();
+  });
+
+  // F2: the batch snapshot `checkCrewUpdates` hands us is stale by every
+  // preceding agent's full apply cycle. The re-read is what actually protects
+  // the disk.
+  it("re-reads the row before materializing and refuses if the founder edited mid-pass", async () => {
+    const mockMaterialize = vi.fn().mockResolvedValue({ adapterConfig: {} });
+    const db = {
+      // Snapshot said `false`; the live row now says `true`.
+      select: liveSelect(true),
+      transaction: vi.fn(),
+    };
+
+    await expect(
+      applyCrewAgentUpdate({
+        db: db as any,
+        agentRow: { ...AGENT_ROW, instructionsCustomized: false },
+        catalogItem: CATALOG_ITEM,
+        instructionsService: { materializeManagedBundle: mockMaterialize } as any,
+      }),
+    ).rejects.toBeInstanceOf(AgentInstructionsCustomizedError);
+
+    expect(db.select).toHaveBeenCalled();
+    expect(mockMaterialize).not.toHaveBeenCalled();
+    expect(db.transaction).not.toHaveBeenCalled();
+  });
+
+  it("refuses when the row vanished between the snapshot and the re-read", async () => {
+    const mockMaterialize = vi.fn().mockResolvedValue({ adapterConfig: {} });
+    const db = { select: liveSelect(undefined), transaction: vi.fn() };
+
+    await expect(
+      applyCrewAgentUpdate({
+        db: db as any,
+        agentRow: { ...AGENT_ROW, instructionsCustomized: false },
         catalogItem: CATALOG_ITEM,
         instructionsService: { materializeManagedBundle: mockMaterialize } as any,
       }),
@@ -257,6 +332,7 @@ describe("applyCrewAgentUpdate — D22 customization guard", () => {
     // Empty RETURNING = the `instructions_customized = false` predicate no longer matched.
     const txMock = makeTxMock(updatedFields, { agentUpdateReturning: [] });
     const db = {
+      select: liveSelect(false),
       transaction: vi.fn().mockImplementation((fn: (tx: unknown) => Promise<unknown>) => fn(txMock)),
     };
 
@@ -275,6 +351,7 @@ describe("applyCrewAgentUpdate — D22 customization guard", () => {
     const updatedFields: Record<string, unknown> = {};
     const txMock = makeTxMock(updatedFields);
     const db = {
+      select: liveSelect(false),
       transaction: vi.fn().mockImplementation((fn: (tx: unknown) => Promise<unknown>) => fn(txMock)),
     };
 
@@ -394,14 +471,11 @@ describe("checkCrewUpdates", () => {
     const updatedFields: Record<string, unknown> = {};
     const txMock = makeTxMock(updatedFields);
 
+    const { db: notifyDb } = makeNotifyDb([
+      { ...AGENT_ROW, companyId: "co-1", templateOrigin: CATALOG_ITEM.id, kind: "aoa" },
+    ]);
     const db = {
-      select: vi.fn().mockReturnValue({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue([
-            { ...AGENT_ROW, companyId: "co-1", templateOrigin: CATALOG_ITEM.id, kind: "aoa" },
-          ]),
-        }),
-      }),
+      ...notifyDb,
       transaction: vi.fn().mockImplementation((fn: (tx: unknown) => Promise<unknown>) => fn(txMock)),
     };
 

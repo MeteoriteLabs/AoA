@@ -1445,14 +1445,54 @@ artifact class was governed two different ways for no stated reason.
    of byte-identical content marks the agent customized. A false "customized"
    costs one notification; a false "untouched" costs the founder's work.
 
-6. **The gate runs before the fetch and before `materializeManagedBundle`.**
-   Ordering is load-bearing: a check inside the transaction would throw *after*
-   the `fs.rm` had already deleted the edits. The transactional
-   `instructions_customized = false` predicate is defence in depth for the
-   concurrent case — it stops the DB claiming the update applied — but it cannot
-   un-delete files. The residual window (gate read → `fs.rm`) is not closed;
-   closing it needs the edit routes and the updater to share a lock. Not done,
-   not claimed.
+6. **Three checks, at progressively tighter windows.** Ordering is load-bearing:
+   a check inside the transaction would throw *after* the `fs.rm` had already
+   deleted the edits.
+   (a) A gate on the caller's snapshot, before any fetch. That snapshot comes
+   from `checkCrewUpdates`' single **batch SELECT of every crew agent, taken
+   before its loop** — so for the k-th agent it is stale by every preceding
+   agent's entire apply cycle (template fetch + N file fetches + `fs.rm` +
+   writes + transaction), seconds to tens of seconds over a CDN. This gate
+   avoids pointless work; it is not the safety boundary.
+   (b) A single indexed PK re-read immediately before `materializeManagedBundle`.
+   **This is the disk-safety gate.** It reduces the exposed window to the gap
+   between that read and the `fs.rm`.
+   (c) The transactional `instructions_customized = false` predicate, which
+   closes the database half completely.
+   The window in (b) is not closed; closing it needs the edit routes and the
+   updater to share a lock. Not done, not claimed. And the two post-materialize
+   failure states differ and must not be conflated: an ordinary transaction
+   error loses no founder work (catalog-vs-catalog inconsistency, next pass
+   converges), while a **lost optimistic lock** means the `fs.rm` already ran —
+   DB reads `customized = true` at the OLD `templateVersion` while disk holds
+   pure catalog content. The founder sees a pending update rather than a silent
+   success: the best available outcome, not a good one.
+
+10. **There are FIVE instruction-changing write paths, not four.** The four
+   `/agents/:id/instructions*` routes are the obvious set. The fifth is the
+   **generic `PATCH /agents/:id`**, whose free-form `adapterConfig` is what the
+   shipped Config tab uses to edit `promptTemplate`. It was missed in the first
+   implementation, and the miss was a live regression of this very decision: the
+   founder's Prompt Template was deleted on the next catalog bump with no
+   notification and no revision row. It is gated on
+   `INSTRUCTION_BEARING_ADAPTER_CONFIG_KEYS`, derived from what
+   `applyBundleConfig` actually destroys — `promptTemplate` and
+   `bootstrapPromptTemplate` are DELETED (both founder-editable, both read at
+   runtime), and the four `instructions*` bundle keys are OVERWRITTEN.
+   `agentsMdPath` is included though not destroyed, because the route already
+   treats it as an instruction change for authz. `cwd` is deliberately excluded
+   (dominantly a workspace setting; stamping every `cwd` edit would freeze
+   agents out of updates), as is `instructions` (no live reader — verified).
+   `agent-instructions-service.test.ts` pins the destruction set so the key list
+   cannot drift from it silently.
+
+11. **The flag is stamped BEFORE founder content reaches disk.** The three
+   bundle routes learn the `adapterConfig` to persist *from* the disk operation,
+   so the main write cannot move ahead of it; they issue a separate cheap
+   pre-write instead. Writing disk first left a window in which an edited bundle
+   existed with `instructions_customized = false` — fail-open, and contrary to
+   this decision's own asymmetry. Over-stamping a write that then fails costs one
+   spurious notification; under-stamping costs the founder's work.
 
 7. **`applyCrewAgentUpdate` throws `AgentInstructionsCustomizedError` rather
    than silently skipping,** so callers must make an explicit fallback choice.

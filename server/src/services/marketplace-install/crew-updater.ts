@@ -97,19 +97,35 @@ function isReplaceable(state: boolean | null | undefined): boolean {
  * transaction. A gate placed inside the transaction would throw *after* the
  * files were already gone, which is no gate at all.
  *
- * ⚠️ **Residual race, stated honestly.** The gate reads a snapshot taken by the
- * caller. A founder edit that commits between that read and the `fs.rm` is
- * still lost on disk. The transactional `instructions_customized = false`
- * predicate below closes the *database* half — the row is never stamped as
- * updated in that case, so the founder still sees a pending update — but it
- * cannot un-delete files. Closing the disk half needs the edit routes and this
- * path to share a lock; not done, and not claimed.
+ * ⚠️ **Residual race, measured rather than hand-waved.** There are THREE checks,
+ * and they bound progressively tighter windows:
  *
- * ⚠️ **The write is still not atomic with the filesystem.** If the transaction
- * fails after a successful materialize, the row keeps its old `templateVersion`
- * while the bundle on disk already holds new catalog content. That is now a
- * catalog-vs-catalog inconsistency rather than destroyed founder work, and the
- * next pass converges it.
+ * 1. The gate below reads `agentRow` — a snapshot from `checkCrewUpdates`' one
+ *    batch SELECT of every crew agent, taken BEFORE its loop. For the k-th
+ *    agent that snapshot is stale by every preceding agent's entire apply cycle.
+ *    This gate is therefore about avoiding pointless work, not about safety.
+ * 2. A single indexed re-read immediately before `materializeManagedBundle`.
+ *    This is the real disk-safety gate; the window it leaves is the gap between
+ *    that read and the `fs.rm`.
+ * 3. The transactional `instructions_customized = false` predicate, which closes
+ *    the DATABASE half completely.
+ *
+ * A founder edit committing inside window (2) is still lost on disk. Closing it
+ * needs the edit routes and this path to share a lock; not done, not claimed.
+ *
+ * ⚠️ **Two different post-materialize failure states — do not conflate them:**
+ *
+ * - **Ordinary transaction failure** (DB error): the row keeps its old
+ *   `templateVersion` while the bundle on disk already holds new catalog
+ *   content. Catalog-vs-catalog inconsistency, no founder work lost, and the
+ *   next pass converges it.
+ * - **Lost optimistic lock** (a founder edit committed inside window (2), so the
+ *   UPDATE's `= false` predicate matches nothing): the `fs.rm` has ALREADY run,
+ *   so the edit is gone from disk. The resulting state is one no reader would
+ *   guess: DB says `instructions_customized = true` with the OLD
+ *   `templateVersion`, while disk holds pure catalog content and none of the
+ *   founder's bytes. The founder sees a pending update rather than a silent
+ *   success — which is the best available outcome, not a good one.
  *
  * Do NOT call this from a path that has not consulted `agentUpdatePolicy`.
  * (T2.3b's crew repair deliberately does not: it adopts the row POINTER and
@@ -155,6 +171,27 @@ export async function applyCrewAgentUpdate(opts: {
     adapterType: agentRow.adapterType,
     adapterConfig: agentRow.adapterConfig,
   };
+
+  // D22/F2 — SECOND gate, as late as possible before the destructive write.
+  //
+  // The snapshot the first gate read came from `checkCrewUpdates`' single batch
+  // SELECT of every crew agent, taken BEFORE the loop. For the k-th agent that
+  // snapshot is stale by every preceding agent's full apply cycle (template
+  // fetch + N instruction-file fetches + fs.rm + writes + transaction) PLUS this
+  // agent's own two network fetches above — seconds to tens of seconds over a
+  // CDN, not a tight window. One indexed PK read collapses it to the gap between
+  // here and the `fs.rm` below.
+  //
+  // It does NOT close the window; only a lock shared with the edit routes would,
+  // and that is deliberately out of scope. Fails closed on a vanished row.
+  const [live] = await db
+    .select({ instructionsCustomized: agents.instructionsCustomized })
+    .from(agents)
+    .where(eq(agents.id, agentRow.id))
+    .limit(1);
+  if (!live || !isReplaceable(live.instructionsCustomized)) {
+    throw new AgentInstructionsCustomizedError(agentRow.id, live?.instructionsCustomized ?? null);
+  }
 
   const materialized = instructionFiles
     ? await instructionsService.materializeManagedBundle(
@@ -311,9 +348,13 @@ export async function checkCrewUpdates(opts: {
     // whatever the policy says. `agentUpdatePolicy: "auto"` is consent to take
     // catalog content over CATALOG content — not consent to discard the
     // founder's own edits, which they would have no way to recover.
+    // Hoisted so the diagnostic below can report it — and evaluated once, so a
+    // window boundary crossed mid-loop cannot make the decision and the log
+    // disagree.
+    const withinWindow = isWithinUpdateWindow(settings.updateWindow);
     const autoApply =
       settings.agentUpdatePolicy === "auto" &&
-      isWithinUpdateWindow(settings.updateWindow) &&
+      withinWindow &&
       isReplaceable(agent.instructionsCustomized);
 
     if (autoApply) {
@@ -335,14 +376,20 @@ export async function checkCrewUpdates(opts: {
       settings.agentUpdatePolicy === "auto" &&
       !isReplaceable(agent.instructionsCustomized)
     ) {
+      // `withinWindow` is in the payload deliberately: D22 and the update window
+      // can BOTH be suppressing an auto-apply, and a message naming only D22
+      // would send whoever debugs "why didn't my auto-update apply" down the
+      // wrong path.
       logger.info(
         {
           agentId: agent.id,
           catalogItemId: catalogItem.id,
           instructionsCustomized: agent.instructionsCustomized,
+          withinWindow,
         },
         "marketplace: crew agent instructions are customized (or of unknown provenance) — " +
-          "routing the update to notify instead of full replacement (D22)",
+          "routing the update to notify instead of full replacement (D22)" +
+          (withinWindow ? "" : " (the update window is also closed)"),
       );
     }
 
