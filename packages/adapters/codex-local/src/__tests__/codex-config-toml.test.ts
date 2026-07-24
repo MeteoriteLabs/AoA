@@ -354,7 +354,7 @@ describe("writeCodexMcpConfigToml", () => {
     expect(parsed["mcp_servers.aoa"].args).toEqual(["/new/bridge.js"]);
     expect(raw.match(/^\[mcp_servers\.aoa\]$/gm) ?? []).toHaveLength(1);
     expect(raw.match(/^# >>> aoa-managed/gm) ?? []).toHaveLength(1);
-    expect(raw.match(/^# <<< aoa-managed$/gm) ?? []).toHaveLength(1);
+    expect(raw.match(/^# <<< aoa-managed/gm) ?? []).toHaveLength(1);
   });
 
   it("upgrades a legacy pre-fence config.toml without duplicating the aoa block", async () => {
@@ -405,6 +405,173 @@ describe("writeCodexMcpConfigToml", () => {
     const raw2 = await fs.readFile(path.join(tmpDir, "config.toml"), "utf8");
     expect(raw2.match(/^\[mcp_servers\.aoa\]$/gm) ?? []).toHaveLength(1);
     expect(raw2.match(/^# >>> aoa-managed/gm) ?? []).toHaveLength(1);
+  });
+
+  // -------------------------------------------------------------------------
+  // I1 regression (data loss). An UNMATCHED start-fence line — a user comment
+  // that looks like one, or a real fence whose closing line someone deleted
+  // while tidying the file — must NOT be treated as a fence. The previous
+  // strip-to-EOF behaviour silently deleted the rest of the user's config.
+  // -------------------------------------------------------------------------
+
+  it("an ORPHAN start fence (no end fence) preserves everything after it", async () => {
+    const preExisting = [
+      "[other]",
+      'foo = "bar"',
+      "# >>> aoa-managed servers I used to run manually",
+      "[mcp_servers.mine]",
+      'command = "mine"',
+      'token = "SECRET"',
+      "",
+    ].join("\n");
+    await fs.writeFile(path.join(tmpDir, "config.toml"), preExisting, "utf8");
+
+    await writeCodexMcpConfigToml(tmpDir, {
+      command: "node",
+      args: ["/bridge.js"],
+      env: { AOA_SESSION_COMPANY_ID: "c" },
+    });
+
+    const raw = await fs.readFile(path.join(tmpDir, "config.toml"), "utf8");
+
+    // The user's tail survives — this is the exact data loss that was reported.
+    expect(raw).toContain("[mcp_servers.mine]");
+    expect(raw).toContain('token = "SECRET"');
+    expect(raw).toContain('command = "mine"');
+    expect(raw).toContain("# >>> aoa-managed servers I used to run manually");
+    expect(parseToml(raw)["other"].foo).toBe("bar");
+    // And the fresh AoA block was still written.
+    expect(parseToml(raw)["mcp_servers.aoa"].args).toEqual(["/bridge.js"]);
+
+    // A SECOND write must still find its own (real, matched) fence rather than
+    // pairing the orphan start with AoA's end line — otherwise the user's tail
+    // would be swallowed on the next run instead of this one.
+    await writeCodexMcpConfigToml(tmpDir, {
+      command: "node",
+      args: ["/bridge2.js"],
+      env: { AOA_SESSION_COMPANY_ID: "c" },
+    });
+    const raw2 = await fs.readFile(path.join(tmpDir, "config.toml"), "utf8");
+    expect(raw2).toContain('token = "SECRET"');
+    expect(raw2).toContain("[mcp_servers.mine]");
+    expect(raw2.match(/^\[mcp_servers\.aoa\]$/gm) ?? []).toHaveLength(1);
+    expect(parseToml(raw2)["mcp_servers.aoa"].args).toEqual(["/bridge2.js"]);
+  });
+
+  it("an indented orphan start fence also preserves the tail", async () => {
+    const preExisting = [
+      "[other]",
+      'foo = "bar"',
+      "   # >>> aoa-managed (leftover from a hand edit)",
+      "[mcp_servers.mine]",
+      'token = "SECRET"',
+      "",
+    ].join("\n");
+    await fs.writeFile(path.join(tmpDir, "config.toml"), preExisting, "utf8");
+
+    await writeCodexMcpConfigToml(tmpDir, {
+      command: "node",
+      args: ["/bridge.js"],
+      env: { AOA_SESSION_COMPANY_ID: "c" },
+    });
+
+    const raw = await fs.readFile(path.join(tmpDir, "config.toml"), "utf8");
+    expect(raw).toContain('token = "SECRET"');
+    expect(raw).toContain("[mcp_servers.mine]");
+  });
+
+  it("does not treat a near-miss comment like '# >>> aoa-managed-notes' as a fence", async () => {
+    const preExisting = [
+      "# >>> aoa-managed-notes for myself",
+      "[mcp_servers.mine]",
+      'token = "SECRET"',
+      "# <<< aoa-managed-notes",
+      "",
+    ].join("\n");
+    await fs.writeFile(path.join(tmpDir, "config.toml"), preExisting, "utf8");
+
+    await writeCodexMcpConfigToml(tmpDir, {
+      command: "node",
+      args: ["/bridge.js"],
+      env: { AOA_SESSION_COMPANY_ID: "c" },
+    });
+
+    const raw = await fs.readFile(path.join(tmpDir, "config.toml"), "utf8");
+    // The whole "-notes" region is user content: it must be untouched, even
+    // though it has a matching-looking start AND end.
+    expect(raw).toContain("# >>> aoa-managed-notes for myself");
+    expect(raw).toContain("[mcp_servers.mine]");
+    expect(raw).toContain('token = "SECRET"');
+    expect(raw).toContain("# <<< aoa-managed-notes");
+  });
+
+  it("still strips a MATCHED fence pair written by an older fence format", async () => {
+    // Guard the fix above did not cost us the core property: an end line in the
+    // ORIGINAL bare format (`# <<< aoa-managed`) still closes a region.
+    const preExisting = [
+      "[keep_me]",
+      'x = "y"',
+      "# >>> aoa-managed (do not edit below; regenerated each run)",
+      "[mcp_servers.stale_connector]",
+      'url = "https://stale.example.com/mcp"',
+      "# <<< aoa-managed",
+      "",
+    ].join("\n");
+    await fs.writeFile(path.join(tmpDir, "config.toml"), preExisting, "utf8");
+
+    await writeCodexMcpConfigToml(tmpDir, {
+      command: "node",
+      args: ["/bridge.js"],
+      env: { AOA_SESSION_COMPANY_ID: "c" },
+    });
+
+    const raw = await fs.readFile(path.join(tmpDir, "config.toml"), "utf8");
+    expect(raw).not.toContain("stale_connector");
+    expect(raw).not.toContain("stale.example.com");
+    expect(parseToml(raw)["keep_me"].x).toBe("y");
+  });
+
+  it("writes atomically and leaves no temp file behind", async () => {
+    await writeCodexMcpConfigToml(tmpDir, {
+      command: "node",
+      args: ["/bridge.js"],
+      env: { AOA_SESSION_COMPANY_ID: "c" },
+    });
+
+    const entries = await fs.readdir(tmpDir);
+    expect(entries).toContain("config.toml");
+    expect(entries.filter((name) => name.includes(".tmp-"))).toEqual([]);
+  });
+
+  // M1: the strippers are LF-internal, so a CRLF file must be re-emitted as
+  // CRLF or a Windows user's config silently changes line endings on every run.
+  it("preserves CRLF line endings in an existing config.toml", async () => {
+    const preExisting = ["[other]", 'foo = "bar"', ""].join("\r\n");
+    await fs.writeFile(path.join(tmpDir, "config.toml"), preExisting, "utf8");
+
+    await writeCodexMcpConfigToml(tmpDir, {
+      command: "node",
+      args: ["/bridge.js"],
+      env: { AOA_SESSION_COMPANY_ID: "c" },
+    });
+
+    const raw = await fs.readFile(path.join(tmpDir, "config.toml"), "utf8");
+    expect(raw).toContain("\r\n");
+    // No bare LF survives (every newline is a CRLF).
+    expect(/[^\r]\n/.test(raw)).toBe(false);
+    expect(parseToml(raw)["other"].foo).toBe("bar");
+    expect(parseToml(raw)["mcp_servers.aoa"].args).toEqual(["/bridge.js"]);
+  });
+
+  it("keeps an LF file on LF", async () => {
+    await fs.writeFile(path.join(tmpDir, "config.toml"), '[other]\nfoo = "bar"\n', "utf8");
+    await writeCodexMcpConfigToml(tmpDir, {
+      command: "node",
+      args: ["/bridge.js"],
+      env: { AOA_SESSION_COMPANY_ID: "c" },
+    });
+    const raw = await fs.readFile(path.join(tmpDir, "config.toml"), "utf8");
+    expect(raw).not.toContain("\r\n");
   });
 
   it("keeps the top-level model line working alongside the fence", async () => {

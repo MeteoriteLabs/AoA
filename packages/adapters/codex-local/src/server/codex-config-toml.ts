@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 
 /**
  * Serialize ALL config.toml mutations for a given managed home. The home is
@@ -158,51 +159,157 @@ function stripAoaMcpBlocks(existing: string, serverName: string): string {
 }
 
 /**
- * Ownership fence (Plan 2b B5). Everything AoA writes into a managed
- * `config.toml` lives between these two sentinel comment lines, so a later run
- * can remove ALL previously AoA-owned content without knowing the names it
- * wrote. Without the fence there is no way to enumerate prior writes: once a
- * connector block is written, disabling or deleting the connector would leave
- * its `[mcp_servers.<name>]` table in the file forever and the agent would keep
- * the tool. Content OUTSIDE the fence is user-authored and is never touched.
+ * Ownership fence (Plan 2b B5). AoA's `[mcp_servers.*]` tables live between
+ * these two sentinel comment lines, so a later run can remove ALL previously
+ * AoA-owned server blocks without knowing the names it wrote. Without the fence
+ * there is no way to enumerate prior writes: once a connector block is written,
+ * disabling or deleting the connector would leave its `[mcp_servers.<name>]`
+ * table in the file forever and the agent would keep the tool. Content OUTSIDE
+ * the fence is user-authored and is never touched.
+ *
+ * EXCEPTION: the top-level `model = "..."` line written by
+ * {@link writeCodexModelConfigToml} is deliberately kept OUTSIDE (above) the
+ * fence — TOML requires top-level keys to precede the first table header, and
+ * the fence opens immediately before a table. That line is AoA-owned too, but it
+ * is managed by its own strip (`stripTopLevelModelLine`), not by the fence.
  *
  * The PREFIXES are the persisted on-disk contract — changing them orphans the
  * fenced content in every already-written config.toml. The human-facing tail of
- * the start line is cosmetic: detection matches on the prefix only, so the
+ * each line is cosmetic: detection matches the prefix plus a terminator, so the
  * wording can be reworded later without stranding existing files.
  */
 const AOA_MANAGED_FENCE_START_PREFIX = "# >>> aoa-managed";
 const AOA_MANAGED_FENCE_END_PREFIX = "# <<< aoa-managed";
 export const AOA_MANAGED_FENCE_START = `${AOA_MANAGED_FENCE_START_PREFIX} (do not edit below; regenerated each run)`;
-export const AOA_MANAGED_FENCE_END = AOA_MANAGED_FENCE_END_PREFIX;
+// Self-describing on purpose: a bare `# <<< aoa-managed` reads like a stray
+// comment, and a user tidying the file who deletes it would orphan the start
+// fence. (An orphan start is now inert — see findFencedRegions — but the file
+// would still silently stop being cleaned.)
+export const AOA_MANAGED_FENCE_END = `${AOA_MANAGED_FENCE_END_PREFIX} (end of AoA-managed block; do not remove this line)`;
 
 /**
- * Remove every fenced AoA-managed region (fence lines inclusive) from existing
- * TOML text, preserving all other content verbatim.
+ * A fence line is the prefix followed by a TERMINATOR — end-of-line, a space, or
+ * `(`. Without this, `startsWith(prefix)` also swallows a user comment such as
+ * `# >>> aoa-managed-notes for myself`, which would make the rest of their file
+ * look AoA-owned.
+ */
+function isFenceLine(trimmed: string, prefix: string): boolean {
+  if (!trimmed.startsWith(prefix)) return false;
+  const rest = trimmed.slice(prefix.length);
+  return rest.length === 0 || rest.startsWith(" ") || rest.startsWith("(");
+}
+
+/**
+ * Locate MATCHED fence regions as inclusive `[startIdx, endIdx]` line ranges.
  *
- * - Multiple regions are handled (defensive — the writer emits one).
- * - An UNTERMINATED fence (truncated/interrupted write) is stripped to EOF: the
- *   region is AoA-owned by definition and fully regenerated below, so keeping a
- *   half-written table would only risk a parse error.
+ * An UNMATCHED start fence is NOT a fence: it is left in place along with
+ * everything after it. A user comment that happens to look like a start fence
+ * (or a start fence whose closing line someone deleted while tidying the file)
+ * must never cause the remainder of their config to be deleted — data loss is a
+ * far worse failure than leaving a stale AoA block behind, and the legacy
+ * per-name strip still cleans the unfenced `[mcp_servers.aoa]` block anyway.
+ *
+ * Pairing is NEAREST-start-wins: a second start before any end supersedes the
+ * first, so at worst we strip the smallest plausible region. The writer only
+ * ever emits one matched pair; this only matters for hand-edited files.
+ */
+function findFencedRegions(lines: string[]): Array<[number, number]> {
+  const regions: Array<[number, number]> = [];
+  let openIdx: number | null = null;
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+    if (isFenceLine(trimmed, AOA_MANAGED_FENCE_START_PREFIX)) {
+      openIdx = i;
+      continue;
+    }
+    if (openIdx !== null && isFenceLine(trimmed, AOA_MANAGED_FENCE_END_PREFIX)) {
+      regions.push([openIdx, i]);
+      openIdx = null;
+    }
+  }
+  // openIdx !== null here == unmatched start: intentionally dropped, not stripped.
+  return regions;
+}
+
+/**
+ * Remove every MATCHED fenced AoA-managed region (fence lines inclusive) from
+ * existing TOML text, preserving all other content verbatim. Multiple regions
+ * are handled (defensive — the writer emits one).
  */
 function stripAoaManagedFencedRegions(existing: string): string {
   const lines = existing.split(/\r?\n/);
-  const kept: string[] = [];
-  let inFence = false;
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!inFence && trimmed.startsWith(AOA_MANAGED_FENCE_START_PREFIX)) {
-      inFence = true;
-      continue;
-    }
-    if (inFence) {
-      if (trimmed.startsWith(AOA_MANAGED_FENCE_END_PREFIX)) inFence = false;
-      continue;
-    }
-    kept.push(line);
+  const regions = findFencedRegions(lines);
+  if (regions.length === 0) return trimTrailingBlankLines(lines).join("\n");
+
+  const dropped = new Set<number>();
+  for (const [start, end] of regions) {
+    for (let i = start; i <= end; i++) dropped.add(i);
   }
-  while (kept.length > 0 && kept[kept.length - 1].trim() === "") kept.pop();
-  return kept.join("\n");
+  const kept = lines.filter((_line, idx) => !dropped.has(idx));
+  return trimTrailingBlankLines(kept).join("\n");
+}
+
+/**
+ * Collapse trailing blank lines so re-appended blocks are separated by exactly
+ * one blank line each run (idempotent output). Mutates + returns the array.
+ */
+function trimTrailingBlankLines(lines: string[]): string[] {
+  while (lines.length > 0 && lines[lines.length - 1].trim() === "") lines.pop();
+  return lines;
+}
+
+/**
+ * The strippers work in LF internally (they split on `/\r?\n/`). Detect the
+ * file's existing convention so a CRLF config.toml — the norm when a Windows
+ * user has edited it — is written back as CRLF rather than silently rewritten
+ * to LF. A file with no newline at all (or a brand-new file) uses LF.
+ */
+function detectEol(existing: string): "\r\n" | "\n" {
+  return existing.includes("\r\n") ? "\r\n" : "\n";
+}
+
+function applyEol(body: string, eol: "\r\n" | "\n"): string {
+  return eol === "\n" ? body : body.replace(/\r?\n/g, eol);
+}
+
+/**
+ * Write `contents` to `target` atomically: write a unique sibling temp file,
+ * then `rename` it over the destination. A rename is atomic on both POSIX and
+ * NTFS, so a crashed/killed run can never leave a half-written config.toml —
+ * a reader sees either the old file or the new one, never a truncated fence.
+ * The temp file is always removed on failure.
+ *
+ * Windows retry: an antivirus/indexer/editor holding a transient handle on the
+ * destination makes `rename` fail with EPERM/EACCES/EBUSY. Those are momentary,
+ * so retry a few times with a short backoff before surfacing the error.
+ */
+async function writeFileAtomically(target: string, contents: string): Promise<void> {
+  const tempPath = `${target}.tmp-${process.pid}-${randomUUID()}`;
+  const handle = await fs.open(tempPath, "wx");
+  try {
+    await handle.writeFile(contents, "utf8");
+    await handle.close();
+  } catch (err) {
+    await handle.close().catch(() => {});
+    await fs.rm(tempPath, { force: true }).catch(() => {});
+    throw err;
+  }
+
+  const retryableCodes = new Set(["EPERM", "EACCES", "EBUSY"]);
+  const maxAttempts = 5;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await fs.rename(tempPath, target);
+      return;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException)?.code ?? "";
+      if (attempt >= maxAttempts || !retryableCodes.has(code)) {
+        await fs.rm(tempPath, { force: true }).catch(() => {});
+        throw err;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20 * attempt));
+    }
+  }
 }
 
 /** Wrap AoA-owned body text in the ownership fence. */
@@ -248,7 +355,7 @@ export async function writeCodexMcpConfigToml(
     const block = fenceAoaManaged(renderMcpBlock(spec, serverName));
     const body = preserved.trim().length > 0 ? `${preserved}\n\n${block}\n` : `${block}\n`;
 
-    await fs.writeFile(target, body, "utf8");
+    await writeFileAtomically(target, applyEol(body, detectEol(existing)));
   });
 }
 
@@ -302,7 +409,7 @@ export async function writeCodexModelConfigToml(
     const body =
       preserved.trim().length > 0 ? `${modelLine}\n\n${preserved}\n` : `${modelLine}\n`;
 
-    await fs.writeFile(target, body, "utf8");
+    await writeFileAtomically(target, applyEol(body, detectEol(existing)));
   });
 }
 
@@ -321,10 +428,9 @@ export async function clearCodexModelConfigToml(
     if (!existing) return;
 
     const preserved = stripTopLevelModelLine(existing);
-    await fs.writeFile(
+    await writeFileAtomically(
       target,
-      preserved.trim().length > 0 ? `${preserved}\n` : "",
-      "utf8",
+      applyEol(preserved.trim().length > 0 ? `${preserved}\n` : "", detectEol(existing)),
     );
   });
 }
