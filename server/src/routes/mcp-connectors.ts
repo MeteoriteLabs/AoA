@@ -1,7 +1,9 @@
 import { Router } from "express";
 import { z } from "zod";
 import type { Db } from "@armyofagents/db";
+import type { McpConnectorCatalogEntry } from "@armyofagents/shared";
 import { validate } from "../middleware/validate.js";
+import { logger } from "../middleware/logger.js";
 import {
   approvalService,
   logActivity,
@@ -9,7 +11,21 @@ import {
   secretService,
 } from "../services/index.js";
 import { badRequest, conflict, forbidden } from "../errors.js";
-import { createConnector } from "../services/mcp-connector-create.js";
+import {
+  createConnectorCatalogService,
+  DEFAULT_CONNECTOR_CATALOG_URL,
+  type ConnectorCatalogService,
+} from "../services/mcp-connector-catalog.js";
+import {
+  CONSENT_TOKEN_TTL_MS,
+  mintConsentToken,
+  resolveConsentSecret,
+  verifyConsentToken,
+} from "../services/mcp-connector-consent.js";
+import {
+  createConnector,
+  type CreateConnectorInput,
+} from "../services/mcp-connector-create.js";
 import { resolveConnectorStatus } from "../services/mcp-connector-status.js";
 import { assertTransportAllowed } from "../services/mcp-connector-transport-gate.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
@@ -163,11 +179,118 @@ const replaceAgentsSchema = z
   })
   .strict();
 
-export function mcpConnectorRoutes(db: Db) {
+/**
+ * Catalog install body. `entryId` selects one of the server-fetched curated
+ * entries; NOTHING else about the connector is client-controlled.
+ *
+ * `.strict()` is load-bearing twice over:
+ *  1. A bare `z.object()` STRIPS unknown keys. If `consentToken` were ever
+ *     dropped from this schema, the field would silently vanish from `req.body`
+ *     and the consent gate would evaluate "no token supplied" — the gate would
+ *     disappear rather than fail. Declaring it AND rejecting unknowns means a
+ *     mistake here is a 400, never a silent downgrade.
+ *  2. It REJECTS (rather than ignores) an injected `source` / `status` /
+ *     `requiresSecret` / `trust` / `transport` / `command` / `args`. The BYO
+ *     route strips a client `source` because it also accepts real connector
+ *     fields; here every one of those axes comes from the catalog entry, so the
+ *     honest answer to a client that sends one is "no", not "ignored".
+ */
+export const installFromCatalogSchema = z
+  .object({
+    entryId: z.string().min(1),
+    consentToken: z.string().min(1).optional(),
+  })
+  .strict();
+
+/**
+ * Only an UNVERIFIED `stdio` entry needs command-bound consent.
+ *
+ * `stdio` because that is the transport that spawns a process on the AoA host;
+ * `http` only makes a network call, so there is no command to consent to.
+ * `!== "verified"` (rather than `=== "community"`) fails CLOSED: an unrecognised
+ * or absent tier demands consent instead of skipping it.
+ */
+function requiresInstallConsent(entry: McpConnectorCatalogEntry): boolean {
+  return entry.transport === "stdio" && entry.trust?.tier !== "verified";
+}
+
+/**
+ * The exact argv a consent token binds to. Deliberately ONE definition shared by
+ * the minting side and the verifying side — if the two ever constructed this
+ * shape differently (say one passed `args: undefined` and the other `[]`) every
+ * minted token would silently fail to verify, or worse, a token could verify
+ * against argv it was not minted for.
+ */
+function consentSpecFor(entry: McpConnectorCatalogEntry) {
+  return { command: entry.command ?? "", args: entry.args };
+}
+
+/**
+ * Catalog entry -> `createConnector` input.
+ *
+ * D5 — template KEYS become EMPTY-VALUED entries. The catalog never carries a
+ * credential (the shared schema constrains the key charsets precisely so a key
+ * cannot smuggle a `Name: value` pair), so the connector is installed
+ * credential-UNBOUND and the founder binds a real secret afterwards via
+ * POST …/:id/credentials. `secretRef` is therefore always null here.
+ *
+ * `source` is the literal `"catalog"` — the vocabulary in
+ * `company_mcp_connectors.ts` and in `assertTransportAllowed`. Any other string
+ * (notably `"marketplace"`) would silently make the D7 catalog branch dead code
+ * and route every catalog install through the BYO refusal instead.
+ *
+ * Pure and exported so the mapping is unit-tested without a route, a DB, or a
+ * request.
+ */
+export function entryToCreateInput(
+  entry: McpConnectorCatalogEntry,
+  companyId: string,
+  deploymentMode: string,
+  actor: CreateConnectorInput["actor"],
+): CreateConnectorInput {
+  // Plain assignment onto a fresh `{}` is deliberate. Both the header and env
+  // name charsets admit `__proto__`, and `obj["__proto__"] = ""` is a no-op
+  // (assigning a non-object to [[Prototype]] is ignored) — so such a key is
+  // DROPPED rather than propagated into a downstream header/env writer, and
+  // `Object.prototype` is never touched. `Object.fromEntries` would instead
+  // define it as a real own property and carry it downstream.
+  const headerTemplate: Record<string, string> = {};
+  for (const key of entry.headerTemplateKeys) headerTemplate[key] = "";
+  const envTemplate: Record<string, string> = {};
+  for (const key of entry.envTemplateKeys) envTemplate[key] = "";
+
+  return {
+    companyId,
+    serverName: entry.serverName,
+    displayName: entry.displayName,
+    transport: entry.transport,
+    url: entry.url ?? null,
+    command: entry.command ?? null,
+    args: entry.args,
+    headerTemplate,
+    envTemplate,
+    secretRef: null,
+    requiresSecret: entry.requiresSecret,
+    source: "catalog",
+    deploymentMode,
+    actor,
+  };
+}
+
+export interface McpConnectorRouteOptions {
+  /** Injectable so route tests never touch the network. */
+  catalog?: ConnectorCatalogService;
+}
+
+export function mcpConnectorRoutes(db: Db, opts: McpConnectorRouteOptions = {}) {
   const router = Router();
   const svc = mcpConnectorService(db);
   const secretsSvc = secretService(db);
   const approvalsSvc = approvalService(db);
+  // Constructing this performs no I/O — the fetch happens on the first `load()`,
+  // i.e. only when a founder actually opens the shelf.
+  const connectorCatalog =
+    opts.catalog ?? createConnectorCatalogService({ url: DEFAULT_CONNECTOR_CATALOG_URL });
 
   // List — any board member with access to the company.
   router.get("/companies/:companyId/mcp-connectors", async (req, res) => {
@@ -177,6 +300,176 @@ export function mcpConnectorRoutes(db: Db) {
     const rows = await svc.list(companyId);
     res.json(rows);
   });
+
+  // The curated shelf — founder only, and THE way the UI obtains a consent token.
+  //
+  // WHY THE TOKEN IS MINTED HERE, in the same response that carries the command:
+  // the token's whole job is to bind consent to the exact `(entryId, command,
+  // args)` the founder was shown, because `connectors.json` re-syncs on a 6h TTL
+  // and the entry rendered in a dialog is a DIFFERENT read of a mutable remote
+  // file from the entry read at install time. Minting from the same read that is
+  // serialised into this response makes "the bytes displayed" and "the bytes
+  // signed" the same bytes BY CONSTRUCTION — there is no window in which a client
+  // could render entry X's command while holding a token bound to entry Y.
+  //
+  // A separate `POST …/consent` mint endpoint would give the same binding but
+  // costs a second round trip and a second catalog read that can disagree with
+  // this one. It is NOT more secure: the server cannot prove a human read a
+  // dialog either way, and an attacker holding a founder session could call
+  // either endpoint. The token is a TOCTOU binding, not an anti-automation
+  // device — so the cheaper shape with the stronger same-read invariant wins.
+  //
+  // Founder-only (not board-wide like the list above) because this endpoint mints
+  // signed install material and only a founder can act on it. Loosening later is
+  // safe; tightening later would be a breaking change.
+  //
+  // ⚠ Task 14 (UI): `consentExpiresAt` is present so the shelf can REFETCH before
+  // opening the install dialog. Tokens live 15 minutes; rendering a dialog from a
+  // shelf loaded an hour ago will 400 with `expired`.
+  router.get("/companies/:companyId/mcp-connectors/catalog", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertBoard(req);
+    assertCompanyAccess(req, companyId);
+    await assertRole(db, req, companyId, "founder");
+
+    const nowMs = Date.now();
+    const { entries, stale } = await connectorCatalog.load(nowMs);
+    const deploymentMode = loadConfig().deploymentMode;
+
+    // Resolved once, and only if some entry actually needs it. A missing signing
+    // secret must degrade to "no tokens" (installs then fail loudly) rather than
+    // 500 the whole shelf.
+    let secret: string | null = null;
+    if (entries.some(requiresInstallConsent)) {
+      try {
+        secret = resolveConsentSecret();
+      } catch (err) {
+        logger.warn(
+          { err },
+          "connector shelf: no signing secret available — consent tokens omitted",
+        );
+      }
+    }
+
+    const shelf = entries.map((entry) => {
+      // A PROJECTION of the real gate, not a second implementation of it — same
+      // function, same arguments the install handler will pass, so the shelf can
+      // never disagree with what install will do.
+      let installable = true;
+      try {
+        assertTransportAllowed(entry.transport, deploymentMode, "catalog", entry.trust?.tier);
+      } catch {
+        installable = false;
+      }
+
+      const consentRequired = requiresInstallConsent(entry);
+      const base = { ...entry, installable, consentRequired };
+
+      // No token for an entry D7 will refuse. Handing one out would suggest
+      // consent is the thing standing in the way, when the deployment simply may
+      // not run host code at all.
+      if (!consentRequired || !installable || !secret) return base;
+
+      return {
+        ...base,
+        consentToken: mintConsentToken(secret, entry.id, consentSpecFor(entry), nowMs),
+        consentExpiresAt: nowMs + CONSENT_TOKEN_TTL_MS,
+      };
+    });
+
+    res.json({ entries: shelf, stale });
+  });
+
+  // Install from the curated catalog — founder only.
+  //
+  // C5 — RBAC IS DELIBERATELY *NOT* `canInstallType` from
+  // routes/marketplace-installs.ts. That helper returns true for `team_lead` on
+  // anything that is not a plugin, so routing through it would make the
+  // marketplace a WEAKER door onto an object whose own CRUD (create/update/
+  // delete/agent-assignment, above) is founder-only. Connectors are not catalog
+  // items and do not go through marketplace-install/orchestrator.ts at all.
+  //
+  // ORDER OF OPERATIONS IS THE SECURITY PROPERTY. authz, then entry resolution,
+  // then D7, then consent, then the shared create. In particular:
+  //
+  //  - D7 (`assertTransportAllowed`) is AUTHORIZATION: may this deployment cause
+  //    a command to execute on the AoA host at all? It runs first, before any
+  //    write, and its answer is final.
+  //  - The consent token is a UX/TOCTOU binding: were these the exact bytes the
+  //    founder was shown? It runs second, and ONLY for unverified stdio.
+  //
+  // NEITHER SUBSTITUTES FOR THE OTHER. A perfectly valid consent token does not
+  // rescue an unverified stdio entry from D7 in `authenticated` mode — the gate
+  // has already thrown by the time the consent branch is reached. There is a test
+  // pinning exactly that; it is the most important assertion in this file's suite.
+  router.post(
+    "/companies/:companyId/mcp-connectors/install",
+    validate(installFromCatalogSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertBoard(req);
+      assertCompanyAccess(req, companyId);
+      await assertRole(db, req, companyId, "founder");
+
+      const { entryId, consentToken } = req.body as z.infer<typeof installFromCatalogSchema>;
+
+      // Linear scan over the fetched array on purpose: a keyed object lookup
+      // would make `entryId: "__proto__"` resolve to something that is not an
+      // entry. The client picks WHICH curated entry, never what is in it.
+      const { entries } = await connectorCatalog.load(Date.now());
+      const entry = entries.find((e) => e.id === entryId);
+      if (!entry) {
+        res.status(404).json({ error: "Connector not found in catalog" });
+        return;
+      }
+
+      const deploymentMode = loadConfig().deploymentMode;
+
+      // (1) D7 — authorization. Before any write, independent of consent.
+      assertTransportAllowed(entry.transport, deploymentMode, "catalog", entry.trust?.tier);
+
+      // (2) Consent — UX/TOCTOU binding, unverified stdio only.
+      if (requiresInstallConsent(entry)) {
+        if (!consentToken) {
+          throw badRequest(
+            "This connector runs a command on the AoA host and its publisher is not verified. " +
+              "Review the exact command on the connector shelf and confirm it to continue.",
+          );
+        }
+        // `resolveConsentSecret()` throwing here is a server misconfiguration and
+        // is allowed to surface as a 500: failing the install closed is correct,
+        // and silently treating "no secret" as "consent satisfied" would be the
+        // one outcome worse than an error page.
+        const verdict = verifyConsentToken(
+          resolveConsentSecret(),
+          entry.id,
+          consentSpecFor(entry),
+          consentToken,
+          Date.now(),
+        );
+        if (!verdict.ok) {
+          // The reason is named because the fixes differ: `expired` means reload
+          // the shelf, `signature_mismatch` means the command changed under you.
+          throw badRequest(
+            `Install confirmation is not valid for this connector (${verdict.reason}). ` +
+              "Reload the connector shelf, review the command, and confirm again.",
+          );
+        }
+      }
+
+      const actor = getActorInfo(req);
+
+      // (3) The SHARED create service — same 409, secretRef check, status
+      // derivation, approval and activity log as the BYO route. Nothing about
+      // governance is re-implemented here.
+      const { connector: created, approvalId } = await createConnector(
+        { svc, secretsSvc, approvalsSvc, logActivity: (logEntry) => logActivity(db, logEntry) },
+        entryToCreateInput(entry, companyId, deploymentMode, actor),
+      );
+
+      res.status(201).json({ ...created, approvalId });
+    },
+  );
 
   // Create — founder only.
   router.post(

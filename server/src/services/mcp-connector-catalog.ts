@@ -46,6 +46,20 @@ import {
 } from "@armyofagents/shared";
 import { logger } from "../middleware/logger.js";
 
+/**
+ * A SECOND CDN artifact alongside `catalog.json`, never inside it — see the
+ * separation rationale in the file header and in `@armyofagents/shared`'s
+ * `mcp-connector-catalog.ts`.
+ *
+ * A plain constant with no env override, matching `DEFAULT_CDN_URL` in
+ * `aoa-marketplace.ts`. Overriding is done by injecting `url` here (tests) or a
+ * whole `ConnectorCatalogService` into the route factory — not by an env var,
+ * which would need documenting for CI's undocumented-env guard and would give
+ * an operator a way to point the shelf at an arbitrary host.
+ */
+export const DEFAULT_CONNECTOR_CATALOG_URL =
+  "https://meteoritelabs.github.io/aoa-marketplace-cdn/connectors.json";
+
 /** Matches the marketplace catalog sync cadence. */
 export const CONNECTOR_CATALOG_TTL_MS = 6 * 60 * 60 * 1000;
 
