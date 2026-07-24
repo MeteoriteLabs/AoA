@@ -1295,3 +1295,60 @@ The two items deferred by Decision #107 shipped together on `feat/inbox-hub-tabb
 **Key files:** `server/src/services/crew-provisioning.ts`, `server/src/services/marketplace-install/crew-bootstrap.ts`, `server/src/services/aoa-marketplace.ts`, `server/src/services/companies.ts`, `server/src/services/marketplace-install/orchestrator.ts`, `server/src/services/marketplace-install/team-installer.ts`, `server/src/services/marketplace-install/operation-store.ts`.
 
 **Plan:** `docs/aoa/plans/2026-07-24-phase2-marketplace-provisioning.md` (T2.3).
+
+## Decision #113 — Protected AoA agents are identity-keyed, and the guard lives at team uninstall (D23) (2026-07-24)
+
+**Context.** Commander and Steward are essential to AoA: Commander is the
+always-on internal assistant, Steward drives Inbox Hub curation. A marketplace
+uninstall must never destroy them.
+
+**Decisions.**
+
+1. **Protection is an AoA fact, enforced server-side** — not catalog metadata.
+   Neither agent is published to the catalog, so there is nothing upstream to
+   express it with even if we wanted to.
+
+2. **The set is keyed on agent IDENTITY, not on `templateOrigin`.** The obvious
+   origin-keyed design silently fails to protect the very agent it names:
+   `backfill-template-origin.ts`'s `CREW_NAMES` omits **Steward and
+   Chronicler**, and that backfill is the column's only writer, so Steward's
+   `templateOrigin` is `NULL` permanently. A canonical role slug is recovered
+   from **either** signal a row can carry — the origin (legacy-suffixed or a
+   catalog id) **or** the name — and either alone suffices.
+
+3. **Steward's NULL origin must NOT be "fixed" by stamping it.** That NULL is
+   load-bearing: the marketplace-managed gate requires
+   `templateOrigin IS NOT NULL AND NOT LIKE '%@legacy'`, which is precisely why
+   seeding infrastructure agents cannot flip a company to "managed". Stamping
+   Steward a non-`@legacy` origin would make every company self-report as
+   marketplace-managed and **suppress its entire crew**.
+
+4. **The guard belongs at team uninstall, not at agent delete.** `DELETE
+   /agents/:id` already hard-refuses every `kind='aoa'` row for all actors.
+   There are exactly three `delete(agents)` sites: the agents service, whole-
+   company delete (intended), and `team-uninstaller.ts`, which deletes members
+   with raw SQL inside its own transaction — so a per-agent guard is invisible
+   to it. That was the only unguarded path, and it is where the refusal lives.
+   The refusal is raised **before** the transaction opens.
+
+5. **Whole-team refusal, all-or-nothing.** A `deletedAgentIds` that silently
+   omits members the caller asked to remove is a worse failure than a named
+   refusal. **Consequence:** once Steward is published into `default-crew`,
+   that team becomes un-uninstallable through this route. Accepted — the crew
+   team is a company-wide singleton the bootstrap installs and the repair path
+   assumes exists; wholesale removal is not a supported operation.
+
+6. **Over-matching is deliberate and safe-by-direction.** A third-party agent
+   named `Commander` is treated as protected. That is recoverable (rename, then
+   delete); the inverse — deleting a real Commander — is not.
+
+7. **This is a guardrail, not an authorization boundary, and the code says so.**
+   A founder who renames a NULL-origin Steward before uninstalling erases its
+   last signal. Closing that with the `sweep`/`role:steward` trigger was
+   considered and rejected: the trigger is founder-writable *and* deletable, so
+   it adds a signal without closing the hole while making the predicate
+   db-aware. The gap closes for Steward the moment it is published (the origin
+   then carries the slug through any rename) and never applied to Commander.
+
+**Related.** [Decision #111] (company-wide teams), [Decision #112] (marketplace
+crew at company creation).
