@@ -1,5 +1,38 @@
 # Phase 2 — Marketplace Provisioning — Implementation Plan
 
+> ## ✅ PLANNED SCOPE COMPLETE (2026-07-25) — except T2.4, which needs product-owner sign-off
+>
+> **Shipped:** T2.1 · T2.2 · T2.3 (+ **T2.3b/c/d/e**, all discovered mid-flight) ·
+> T2.5 · T2.6 · T2.7 · T2.8 · T2.9 · T2.10. Every task went through
+> implement → spec review → code-quality review → fix round; several took three
+> rounds. Decisions **#111–#115** recorded.
+>
+> **The headline:** the phase's own deliverable **never worked** until T2.3d/T2.3e.
+> Every live company create failed on `triggers[].enabled` (a `.strict()` schema
+> vs. what all 9 published crew agents actually declare), and once that was fixed
+> the installed crew was **inert** (`paused`, excluded by 6 execution paths) and
+> on the **wrong adapter**. Neither was findable from the test suite: every
+> fixture hand-wrote agent bodies, and the bundled snapshot carries only the
+> catalog *index* — trigger data lives in the separately-fetched `agent.json`.
+> Both were found only because someone measured against the **live catalog**.
+> Verbatim published bodies are now checked in under
+> `server/src/__tests__/__fixtures__/published-catalog/`.
+>
+> **Exit criterion now holds and is proven** — the bootstrap integration test
+> calls the real agent-selection query with a deliberately-paused control row, so
+> it cannot pass for free.
+>
+> **BLOCKED — T2.4** touches two external public repos
+> (`MeteoriteLabs/aoa-marketplace`, `aoa-marketplace-cdn`). Not started; needs an
+> explicit go-ahead. Its pre-publish checklist has grown three consequences from
+> this phase's findings — read it before authorising.
+>
+> **Follow-ups this phase generated** (all filed with reproduction detail, none
+> started): T2.7b (fence-aware + line-ending-safe splitting) · T2.8b (byte-derive
+> the skill `customized` flag) · T2.8c(a)(b) · T2.9b/c/d/e · `task_4ede0b60`
+> (41 integration files share a fail-open setup guard).
+
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax.
 
 **Goal:** company creation installs the crew **from the marketplace** (not legacy hardcoded seeders), each agent arrives with its declared skills, and an upstream agent/skill change flows down through detect → notify → diff → merge **without discarding founder edits**.
