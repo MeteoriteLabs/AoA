@@ -23,12 +23,22 @@ export function companySkillRoutes(db: Db) {
   /**
    * T2.9 — the founder-visible record of a refused install. The service owns the
    * gate (it throws / reports `refusedCustomized`); the route owns telling the
-   * founder, next to the activity log it already writes. Best-effort: a failed
-   * notification must not turn a correct refusal into a 500.
+   * founder, next to the activity log it already writes.
+   *
+   * Entirely best-effort, name lookup included: a correct 409 must never become
+   * a 500 because the notification we tried to attach to it failed.
+   *
+   * Skips silently when the skill no longer exists. Refusing on an empty
+   * RETURNING is right (see the service), but that case can also mean the row was
+   * deleted concurrently — and a durable "Kept your edits to X" hub item for a
+   * deleted skill would never be auto-closed (`company_skill` has no
+   * SOURCE_RECONCILERS entry).
    */
-  async function notifyRefusedCustomized(companyId: string, skillName: string, skillId: string) {
+  async function notifyRefusedCustomized(companyId: string, skillId: string) {
     try {
-      await marketplaceNotifications.skillUpdateRefusedCustomized(db, companyId, skillName, skillId);
+      const skill = await svc.getById(skillId);
+      if (!skill || skill.companyId !== companyId) return;
+      await marketplaceNotifications.skillUpdateRefusedCustomized(db, companyId, skill.name, skillId);
     } catch {
       // marketplaceNotifications already logs; never fail the request on this.
     }
@@ -228,7 +238,7 @@ export function companySkillRoutes(db: Db) {
       // T2.9 — rows this import declined to overwrite because they carry
       // founder edits. Surfaced in the response body AND as a hub item.
       for (const refused of result.refusedCustomized) {
-        await notifyRefusedCustomized(companyId, refused.name, refused.skillId);
+        await notifyRefusedCustomized(companyId, refused.skillId);
       }
 
       const actor = getActorInfo(req);
@@ -325,14 +335,24 @@ export function companySkillRoutes(db: Db) {
     try {
       result = await svc.installUpdate(companyId, skillId);
     } catch (err) {
-      // T2.9 — refused because the skill carries founder edits. Notify, then let
-      // the 409 propagate to the error handler unchanged.
       const refusal = customizedRefusalFrom(err);
-      if (refusal) {
-        const skill = await svc.getById(refusal.skillId);
-        await notifyRefusedCustomized(companyId, skill?.name ?? "skill", refusal.skillId);
-      }
-      throw err;
+      if (!refusal) throw err;
+
+      // T2.9 — refused because the skill carries founder edits. Everything from
+      // here is best-effort: the founder must get the 409, never a 500 caused by
+      // the notification we tried to attach to it. The name lookup lives INSIDE
+      // the guarded block for that reason.
+      await notifyRefusedCustomized(companyId, refusal.skillId);
+
+      // Answer with the catalog path's top-level `code` as well as the
+      // HttpError-shaped `details`, so one client check works on both surfaces
+      // (`MarketplaceUpdatesPanel` reads the top-level form).
+      res.status(409).json({
+        error: (err as HttpError).message,
+        code: SKILL_CUSTOMIZED_ERROR_CODE,
+        details: (err as HttpError).details,
+      });
+      return;
     }
 
     if (!result) {

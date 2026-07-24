@@ -1537,8 +1537,8 @@ Every write that can replace an installed row's `markdown`:
 |---|---|---|---|
 | 1 | `POST /skills/:id/install-update` | `installUpdate` | **YES** (T2.9) — pre-read + `customized = false` predicate; throws 409 `SKILL_CUSTOMIZED` |
 | 2 | `POST /skills/import` | `importFromSource` → `upsertImportedSkills` | **YES** (T2.9) — `preserve_founder_edits`; refusals in `refusedCustomized` + `warnings` |
-| 3 | `POST /skills/scan-projects` | `scanProjectWorkspaces` (own inline UPDATE) | no — see T2.9e |
-| 4 | `POST /skills/import-package` (+ MCP) | `importPackageFiles` | no, deliberately — see T2.9c |
+| 3 | `POST /skills/scan-projects` | `scanProjectWorkspaces` (own inline UPDATE) | **YES** (review round 2) — pre-read + predicate; refusals land in `conflicts[]` |
+| 4 | `POST /skills/import-package` | `importPackageFiles` | no, deliberately — see T2.9c |
 | 5 | `POST /skills` | `createLocalSkill` | no, deliberately — see T2.9b |
 | 6 | company bundle import | `company-portability.ts` | no, deliberately — see T2.9d |
 | 7 | catalog install | `installSkill` | n/a — refuses any version change outright |
@@ -1546,15 +1546,32 @@ Every write that can replace an installed row's `markdown`:
 
 The guard sits on the **shared upsert primitive** (`upsertImportedSkills`), which 2/4/5/6
 all funnel through, and its `CustomizedSkillWritePolicy` argument is **required with no
-default** — a future install path cannot compile without stating which side wins.
+default** — a future install path cannot compile without stating which side wins. Row 3
+keeps its own inline UPDATE (it matches on `sourceLocator`, not the canonical key) and
+carries the same pre-read + predicate.
 
-### Correction to the brief's premise (verified in code, 2026-07-24)
+**`caller_is_authoritative` clears `customized`.** A path that legitimately replaces the
+markdown with its own bytes has just erased whatever founder edit the flag described, so
+leaving it set turns a stale `true` into a permanent refusal by every other path — the row
+would be told it has local edits it no longer has, with delete-and-re-import the only exit.
+Found in review round 2; this is what makes the two policies mean what they claim.
 
-The `github` / `url` / `skills_sh` rows named in the brief **cannot reach `customized = true`
-today**: `customized` is only ever written by `companySkillsService.updateFile`
+### Correction to the brief's premise — and the reviewer's correction to mine
+
+`customized` is only ever written by `companySkillsService.updateFile`
 (`company-skills.ts:1623`, `:1632`), which first requires `deriveSkillSourceInfo().editable`
-— true only for `local_path` and `catalog` (`:2377`). So the live lossy chain is narrower
-than "github reinstall eats founder edits":
+— true only for `local_path` and `catalog` (`:2377`). I concluded from this that a
+`github` / `url` row can never carry the flag.
+
+**Review round 2 refuted the reachability half of that.** `sourceType` is *mutable after the
+flag is set*, and the upsert's update branch writes `sourceType: imp.sourceType`. So: edit a
+`local_path` skill (`customized = true`) → company bundle import with `replace` declaring the
+same key and `sourceType: "github"` (validated only as `z.string().min(1)`) → the row is now
+`github` **and** `customized`. My *severity* conclusion survives — the founder's bytes are
+already gone by then, so the flag is stale rather than protective — but that staleness is
+exactly the F1 bug, so it is not academic.
+
+The live lossy chain is still narrower than "github reinstall eats founder edits":
 
 - **`local_path` rows** *can* be customized, and `installUpdate` accepts them. Normally the
   founder's edit is on the same disk the reinstall re-reads, so nothing is lost — **except**
@@ -1589,29 +1606,33 @@ for the row it creates.
 
 ---
 
-## T2.9c — `importPackageFiles` deletes the skill directory before it knows it may write
+## T2.9c — `importPackageFiles` has no founder-edit check
 
-`importPackageFiles` `fs.rm(skillDir, { recursive: true, force: true })`s and rewrites the
-whole directory (`company-skills.ts:1769-1778`) **before** the upsert. That is the same
-delete-before-commit shape T2.8's review found on the merge path and fixed with
-stage-then-rename. Consequences:
+A package re-upload rewrites the skill directory and the row with no `customized` check at
+all, so it silently destroys founder edits (both on disk and in the row) for a `local_path`
+skill.
 
-1. It must stay `caller_is_authoritative` today — refusing at the DB layer after the disk
-   is already gone would leave the founder's markdown in the row and the caller's files on
-   disk, a torn state strictly worse than the overwrite.
-2. An MCP/agent package re-import therefore destroys founder edits **on disk** for a
-   `local_path` skill with no check at all.
+**Corrected in review round 2 — do NOT budget a materializer rewrite for this.** My first
+write-up argued the check was blocked by ordering: `importPackageFiles` `fs.rm`s and
+rewrites the directory (`company-skills.ts:1769-1778`) *before* the upsert, so a refusal at
+the upsert would leave the founder's markdown in the row and the caller's files on disk — a
+torn state worse than the overwrite. That is true **only for a refusal placed at the
+upsert**. `doWork` already reads the whole company at step 1 and already holds the per-slug
+lock, so the check belongs there, **before `fs.rm` ever runs**: no torn state, no
+reordering, no stage-then-rename. The one thing that used to block it — `listFull` not
+carrying `customized` — is gone, because T2.9 added `listFullRows` for exactly this.
 
-The fix is to reuse `skill-bundle-materializer`'s `stageDirectoryFor` / `swapIntoPlace` so
-the write is atomic, and only then decide the `customized` policy. Not done in T2.9 because
-it is a behaviour change to a path T2.9 does not otherwise touch.
+So this is deferred because it is a **product decision**, not a technical one: who owns a
+package-imported skill after the founder has edited it in the UI? `importPackageFiles` is
+documented as "the caller is the authoritative source", and flipping it means an agent's
+package upload now *fails* for a reason the agent must handle. That call belongs with the
+product owner, and it is three lines once made.
 
-**Files:** `server/src/services/company-skills.ts` `importPackageFiles`;
-`server/src/services/marketplace-install/skill-bundle-materializer.ts`.
+**Files:** `server/src/services/company-skills.ts` `importPackageFiles` (step 1 of `doWork`).
 
 ---
 
-## T2.9d — company bundle import has no founder-edit surface
+## T2.9d — company bundle import has no founder-edit surface, and pairs results by index
 
 `company-portability.ts` pairs `upsertImportedSkills` results to inputs **positionally**,
 so `preserve_founder_edits` (which returns a short array on refusal) would mis-pair every
@@ -1620,22 +1641,22 @@ into a company with customized skills overwrites them. The import plan already h
 `collisionStrategy` (`skip` / `replace` / `rename`) and a conflict surface — the right fix
 is to make `customized` a planned collision reason there, not to flip the policy.
 
-**Files:** `server/src/services/company-portability.ts` (~`:2610`), the import planner.
+The positional pairing is itself a latent (pre-existing, rare) bug: `caller_is_authoritative`
+*also* returns a short array when a row is concurrently deleted between the read and the
+UPDATE, at which point every subsequent `id` in `resultSkills` is wrong. Pair by key.
+
+**Files:** `server/src/services/company-portability.ts` (~`:2610-2623`), the import planner.
 
 ---
 
-## T2.9e — project scan re-syncs over customized rows
+## ~~T2.9e — project scan re-syncs over customized rows~~ — ✅ CLOSED in review round 2
 
-`scanProjectWorkspaces` updates an existing `local_path` row matched on `sourceLocator`
-with its own inline UPDATE (`company-skills.ts:1972-1984`) — it does not go through the
-upsert primitive and does not read `customized`. Same narrow live exposure as T2.9's
-`local_path` case (the scanned directory is normally also the founder's edit surface).
-Deliberately left alone because a bulk sweep needs a *report*, not an exception: refusals
-should land in the existing `conflicts[]` array with a `customized` reason, which is a
-UI-visible contract change.
-
-**Files:** `server/src/services/company-skills.ts` `scanProjectWorkspaces`;
-`CompanySkillProjectScanConflict` in `packages/shared/src/types/company-skill.ts`.
+Folded into T2.9 rather than deferred. `scanProjectWorkspaces` now pre-reads `customized`
+and carries the `customized = false` predicate on its inline UPDATE; refusals land in the
+existing `conflicts[]` array (no type change needed) so one edited skill does not abort the
+sweep for every other project. This was the cheapest and most-exposed of the four
+follow-ups — a bulk re-sync silently reverting every matching row at once — and deferring
+it was the wrong ordering.
 
 ---
 

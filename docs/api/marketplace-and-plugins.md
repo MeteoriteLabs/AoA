@@ -167,11 +167,19 @@ Skills are company-scoped and may be installed directly, imported from packages,
 `PATCH .../skills/{skillId}/files`, `company_skills.customized` is `true` and the
 source-re-read paths refuse rather than replace it:
 
-- `POST .../skills/{skillId}/install-update` → **409** with
-  `details.code = "SKILL_CUSTOMIZED"`. Nothing in the database or on disk is changed.
+- `POST .../skills/{skillId}/install-update` → **409** with `code = "SKILL_CUSTOMIZED"` at
+  the top level (matching the catalog apply path) and the same value plus `skillId` under
+  `details`. Nothing in the database or on disk is changed.
 - `POST .../skills/import` → **201** with the affected skills listed in
   `refusedCustomized` (and a matching entry in `warnings`); they are absent from
   `imported`. Un-edited skills in the same import still update.
+- `POST .../skills/scan-projects` → **200** with the affected skills listed in
+  `conflicts` (reason names the local edits); they are absent from `updated`. One edited
+  skill never aborts the sweep.
+
+Paths where the caller *is* the authoring surface — `POST .../skills`,
+`POST .../skills/import-package`, and company bundle import — overwrite by design and
+**clear** `customized`, because the bytes they just wrote are now the row's truth.
 
 Both also raise a founder hub item. To take the upstream version, delete the skill and
 re-import it. This mirrors the catalog apply path, which answers 409 `SKILL_CUSTOMIZED`

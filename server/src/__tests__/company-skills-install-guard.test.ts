@@ -35,7 +35,9 @@ vi.mock("../middleware/logger.js", () => ({
 }));
 
 vi.mock("../adapters/registry.js", () => ({ findActiveServerAdapter: vi.fn() }));
-vi.mock("../services/projects.js", () => ({ projectService: () => ({ list: vi.fn() }) }));
+
+const projectListMock = vi.hoisted(() => vi.fn().mockResolvedValue([]));
+vi.mock("../services/projects.js", () => ({ projectService: () => ({ list: projectListMock }) }));
 vi.mock("../services/secrets.js", () => ({ secretService: () => ({}) }));
 vi.mock("../services/agents.js", () => ({
   agentService: () => ({
@@ -200,6 +202,7 @@ async function makeTempDir(prefix: string) {
 beforeEach(() => {
   httpBodies.clear();
   vi.clearAllMocks();
+  projectListMock.mockResolvedValue([]);
 });
 
 afterEach(async () => {
@@ -372,5 +375,160 @@ describe("importFromSource — customized guard", () => {
     expect(result.imported).toHaveLength(1);
     expect(result.refusedCustomized).toEqual([]);
     expect(fake.inserted).toHaveLength(0); // updated in place, not duplicated
+  });
+});
+
+// ── 3. F1 — an authoritative overwrite must clear the now-stale flag ─────────
+
+describe("caller_is_authoritative clears `customized` (F1)", () => {
+  const PACKAGE_V1 = "---\nname: Playbook\n---\n\n# Playbook v1\n";
+  const PACKAGE_V2 = "---\nname: Playbook\n---\n\n# Playbook v2\n";
+
+  // importPackageFiles writes under resolveAoaInstanceRoot(); point that at a
+  // temp dir so the test never touches the developer's real ~/.aoa.
+  let previousAoaHome: string | undefined;
+  beforeEach(async () => {
+    previousAoaHome = process.env.AOA_HOME;
+    process.env.AOA_HOME = await makeTempDir("aoa-t29-home-");
+  });
+  afterEach(() => {
+    if (previousAoaHome === undefined) delete process.env.AOA_HOME;
+    else process.env.AOA_HOME = previousAoaHome;
+  });
+
+  /**
+   * The reviewer's four-step sequence, end to end:
+   *   1. package import  → local_path row, customized=false
+   *   2. founder edits SKILL.md → customized=true
+   *   3. package re-upload (authoritative) → markdown=v2
+   *   4. a LATER install must still succeed — before F1 the row was permanently
+   *      refused and told it had "local edits" it no longer had.
+   */
+  it("a package re-upload after a founder edit does not permanently block later installs", async () => {
+    const fake = makeFakeDb([]);
+    const svc = companySkillService(fake.db);
+
+    // 1. first package import
+    const created = await svc.importPackageFiles("co-1", { "SKILL.md": PACKAGE_V1 });
+    const row = fake.rows.find((r) => r.id === created.id)!;
+    expect(row.customized).toBe(false);
+    // Guard the isolation: this must live under the temp AOA_HOME, not ~/.aoa.
+    expect(row.sourceLocator.startsWith(path.resolve(process.env.AOA_HOME!))).toBe(true);
+
+    // 2. founder edits it in the UI — local_path is editable
+    await svc.updateFile("co-1", created.id, "SKILL.md", "# my own words\n");
+    expect(row.customized).toBe(true);
+
+    // 3. package v2 replaces the bytes wholesale
+    await svc.importPackageFiles("co-1", { "SKILL.md": PACKAGE_V2 });
+    expect(row.markdown).toBe(PACKAGE_V2);
+    // The founder's edit is gone, so the flag describing it must be gone too.
+    expect(row.customized).toBe(false);
+
+    // 4. the row is not frozen: a later reinstall from its source still lands.
+    const updated = await svc.installUpdate("co-1", created.id);
+    expect(updated).not.toBeNull();
+    expect(fake.rows[0]!.markdown).toBe(PACKAGE_V2);
+  });
+
+  it("preserve_founder_edits does NOT clear the flag (discriminator)", async () => {
+    const SOURCE_URL = "https://example.com/f1/SKILL.md";
+    httpBodies.set(SOURCE_URL, UPSTREAM_MARKDOWN);
+    const fake = makeFakeDb([
+      urlSkillRow({ key: "url/example-com/x/brainstorming", customized: true }),
+    ]);
+    const svc = companySkillService(fake.db);
+
+    await expect(svc.installUpdate("co-1", "skill-1")).rejects.toMatchObject({ status: 409 });
+
+    // Refusing must never be a back door to clearing the flag.
+    expect(fake.rows[0]!.customized).toBe(true);
+    expect(fake.rows[0]!.markdown).toBe(FOUNDER_MARKDOWN);
+  });
+});
+
+// ── 4. F2 — the project scan is a third source-re-read path ──────────────────
+
+describe("scanProjectWorkspaces — customized guard (F2)", () => {
+  const ON_DISK = "---\nname: Scanned\n---\n\n# from the repo\n";
+
+  async function makeScannedWorkspace() {
+    const workspaceCwd = await makeTempDir("aoa-t29-scan-ws-");
+    const skillDir = path.join(workspaceCwd, "skills", "scanned");
+    await fs.mkdir(skillDir, { recursive: true });
+    await fs.writeFile(path.join(skillDir, "SKILL.md"), ON_DISK, "utf8");
+    projectListMock.mockResolvedValue([
+      {
+        id: "proj-1",
+        name: "Core",
+        workspaces: [{ id: "ws-1", name: "main", cwd: workspaceCwd }],
+      },
+    ]);
+    return { workspaceCwd, skillDir: path.resolve(skillDir) };
+  }
+
+  function scannedRow(skillDir: string, overrides: Row = {}): Row {
+    return urlSkillRow({
+      id: "skill-scan-1",
+      key: "company/co-1/scanned",
+      slug: "scanned",
+      name: "Scanned",
+      sourceType: "local_path",
+      sourceLocator: skillDir,
+      metadata: { sourceKind: "project_scan" },
+      ...overrides,
+    });
+  }
+
+  it("refuses a CUSTOMIZED row, reports it in conflicts[], and leaves the founder's bytes", async () => {
+    const { skillDir } = await makeScannedWorkspace();
+    const fake = makeFakeDb([scannedRow(skillDir, { customized: true })]);
+    const svc = companySkillService(fake.db);
+
+    const result = await svc.scanProjectWorkspaces("co-1", {});
+
+    expect(result.updated).toHaveLength(0);
+    expect(result.conflicts).toEqual([
+      expect.objectContaining({
+        existingSkillId: "skill-scan-1",
+        path: skillDir,
+        reason: expect.stringMatching(/local edits/i),
+      }),
+    ]);
+    // The stored bytes, not a status string.
+    expect(fake.rows[0]!.markdown).toBe(FOUNDER_MARKDOWN);
+    expect(fake.appliedUpdates).toHaveLength(0);
+  });
+
+  it("still re-syncs an UNCUSTOMIZED row (discriminator)", async () => {
+    const { skillDir } = await makeScannedWorkspace();
+    const fake = makeFakeDb([scannedRow(skillDir, { customized: false })]);
+    const svc = companySkillService(fake.db);
+
+    const result = await svc.scanProjectWorkspaces("co-1", {});
+
+    expect(result.conflicts).toHaveLength(0);
+    expect(result.updated).toHaveLength(1);
+    expect(fake.rows[0]!.markdown).toBe(ON_DISK);
+  });
+
+  it("optimistic lock: a founder edit landing mid-sweep is reported, not clobbered", async () => {
+    const { skillDir } = await makeScannedWorkspace();
+    const row = scannedRow(skillDir, { customized: false });
+    const fake = makeFakeDb([row]);
+    const svc = companySkillService(fake.db);
+
+    const originalUpdate = fake.db.update;
+    fake.db.update = (...args: unknown[]) => {
+      row.customized = true;
+      fake.db.update = originalUpdate;
+      return originalUpdate(...args);
+    };
+
+    const result = await svc.scanProjectWorkspaces("co-1", {});
+
+    expect(result.updated).toHaveLength(0);
+    expect(result.conflicts).toHaveLength(1);
+    expect(fake.rows[0]!.markdown).toBe(FOUNDER_MARKDOWN);
   });
 });

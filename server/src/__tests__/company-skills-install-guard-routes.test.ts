@@ -78,13 +78,52 @@ describe("POST /skills/:skillId/install-update — customized refusal", () => {
         skillId: "skill-1",
       }),
     );
-    getByIdMock.mockResolvedValue({ id: "skill-1", name: "Brainstorming" });
+    getByIdMock.mockResolvedValue({ id: "skill-1", name: "Brainstorming", companyId: "c1" });
 
     const res = await request(buildApp()).post("/companies/c1/skills/skill-1/install-update");
 
     expect(res.status).toBe(409);
+    // F4 — top-level `code` matches the catalog path's shape so one client check
+    // works on both; `details` carries the skill id.
+    expect(res.body.code).toBe(SKILL_CUSTOMIZED_ERROR_CODE);
     expect(res.body.details).toMatchObject({ code: SKILL_CUSTOMIZED_ERROR_CODE, skillId: "skill-1" });
     expect(notifyMock).toHaveBeenCalledWith({}, "c1", "Brainstorming", "skill-1");
+  });
+
+  it("F5 — a failing name lookup still yields the 409, not a 500", async () => {
+    installUpdateMock.mockRejectedValue(
+      conflict("has local edits", { code: SKILL_CUSTOMIZED_ERROR_CODE, skillId: "skill-1" }),
+    );
+    getByIdMock.mockRejectedValue(new Error("db blip"));
+
+    const res = await request(buildApp()).post("/companies/c1/skills/skill-1/install-update");
+
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe(SKILL_CUSTOMIZED_ERROR_CODE);
+    expect(notifyMock).not.toHaveBeenCalled();
+  });
+
+  it("F6 — no durable hub item for a skill that no longer exists", async () => {
+    installUpdateMock.mockRejectedValue(
+      conflict("has local edits", { code: SKILL_CUSTOMIZED_ERROR_CODE, skillId: "skill-1" }),
+    );
+    getByIdMock.mockResolvedValue(null); // lost the delete race
+
+    const res = await request(buildApp()).post("/companies/c1/skills/skill-1/install-update");
+
+    expect(res.status).toBe(409);
+    expect(notifyMock).not.toHaveBeenCalled();
+  });
+
+  it("does not notify for a skill belonging to another company", async () => {
+    installUpdateMock.mockRejectedValue(
+      conflict("has local edits", { code: SKILL_CUSTOMIZED_ERROR_CODE, skillId: "skill-1" }),
+    );
+    getByIdMock.mockResolvedValue({ id: "skill-1", name: "Brainstorming", companyId: "other-co" });
+
+    await request(buildApp()).post("/companies/c1/skills/skill-1/install-update");
+
+    expect(notifyMock).not.toHaveBeenCalled();
   });
 
   it("does not notify on a successful install-update (discriminator)", async () => {
@@ -100,7 +139,7 @@ describe("POST /skills/:skillId/install-update — customized refusal", () => {
     installUpdateMock.mockRejectedValue(
       conflict("has local edits", { code: SKILL_CUSTOMIZED_ERROR_CODE, skillId: "skill-1" }),
     );
-    getByIdMock.mockResolvedValue({ id: "skill-1", name: "Brainstorming" });
+    getByIdMock.mockResolvedValue({ id: "skill-1", name: "Brainstorming", companyId: "c1" });
     notifyMock.mockRejectedValue(new Error("hub down"));
 
     const res = await request(buildApp()).post("/companies/c1/skills/skill-1/install-update");
@@ -127,6 +166,8 @@ describe("POST /skills/import — customized refusal", () => {
         { skillId: "skill-1", key: "acme/skills/brainstorming", slug: "brainstorming", name: "Brainstorming", reason: "customized" },
       ],
     });
+
+    getByIdMock.mockResolvedValue({ id: "skill-1", name: "Brainstorming", companyId: "c1" });
 
     const res = await request(buildApp())
       .post("/companies/c1/skills/import")

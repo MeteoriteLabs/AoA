@@ -1132,8 +1132,15 @@ function serializeFileInventory(
 
 /**
  * T2.9 — refusal for an install/reinstall that would have overwritten founder
- * edits. Mirrors the catalog path's 409 + `SKILL_CUSTOMIZED` contract
- * (`routes/marketplace-company.ts:383-387`) so both surfaces answer the same way.
+ * edits. Carries the same `SKILL_CUSTOMIZED` code as the catalog path
+ * (`routes/marketplace-company.ts:383-387`).
+ *
+ * NOTE the wire shapes are not identical by construction: `HttpError` nests
+ * whatever it is given under `details`, whereas the catalog route hand-builds a
+ * top-level `code`. The install-update route therefore emits BOTH — it answers
+ * directly instead of rethrowing — so one client check works on either surface.
+ * Any future route that just rethrows this error will produce the nested form
+ * only.
  */
 function skillCustomizedConflict(skill: Pick<CompanySkill, "id" | "name">) {
   return conflict(
@@ -2029,7 +2036,11 @@ export function companySkillService(db: Db) {
     result.scannedProjects = projectIds.size;
     result.scannedWorkspaces = targets.length;
 
-    const existingSkills = await listFull(companyId);
+    const existingRows = await listFullRows(companyId);
+    const existingSkills = existingRows.map(toCompanySkill);
+    // T2.9 — `customized` is not on `CompanySkill`; carry it alongside so the
+    // re-sync below can refuse a row the founder has edited.
+    const customizedById = new Map(existingRows.map((row) => [row.id, row.customized === true]));
     const usedSlugs = new Set(existingSkills.map((s) => s.slug));
     const usedKeys = new Set(existingSkills.map((s) => s.key));
 
@@ -2057,8 +2068,33 @@ export function companySkillService(db: Db) {
         );
 
         if (existingByLocator) {
+          // T2.9 — a bulk re-sync must not silently revert a row the founder has
+          // edited. This is the same gate `installUpdate` and `importFromSource`
+          // apply, reported through the `conflicts[]` channel this result object
+          // already has rather than as an exception: one edited skill must not
+          // abort the sweep for every other project.
+          const conflictForCustomized = (): CompanySkillProjectScanConflict => ({
+            slug: existingByLocator.slug,
+            key: existingByLocator.key,
+            projectId: target.projectId,
+            projectName: target.projectName,
+            workspaceId: target.workspaceId,
+            workspaceName: target.workspaceName,
+            path: skillDir,
+            existingSkillId: existingByLocator.id,
+            existingSkillKey: existingByLocator.key,
+            existingSourceLocator: existingByLocator.sourceLocator,
+            reason:
+              `Skill "${existingByLocator.name}" has local edits — left untouched. `
+              + "Delete the skill and re-scan if you want the version on disk.",
+          });
+
+          if (customizedById.get(existingByLocator.id)) {
+            result.conflicts.push(conflictForCustomized());
+            continue;
+          }
+
           // Update existing
-          const { frontmatter } = parseFrontmatterMarkdown(imported.markdown);
           const [updated] = await db
             .update(companySkills)
             .set({
@@ -2070,9 +2106,17 @@ export function companySkillService(db: Db) {
               metadata: imported.metadata,
               updatedAt: new Date(),
             })
-            .where(eq(companySkills.id, existingByLocator.id))
+            // Optimistic lock: a founder edit committed between the read above and
+            // this write makes RETURNING empty, and we refuse instead of clobbering.
+            .where(and(eq(companySkills.id, existingByLocator.id), eq(companySkills.customized, false)))
             .returning();
-          if (updated) result.updated.push(toCompanySkill(updated));
+          if (updated) {
+            result.updated.push(toCompanySkill(updated));
+          } else {
+            // Empty RETURNING: concurrent founder edit (or, rarely, a concurrent
+            // delete). Refuse either way — same approximation as the other paths.
+            result.conflicts.push(conflictForCustomized());
+          }
           continue;
         }
 
@@ -2408,10 +2452,18 @@ export function companySkillService(db: Db) {
    * no default on purpose: a future install path cannot compile without saying
    * which side wins.
    *
+   * `caller_is_authoritative` additionally clears `customized` on the rows it
+   * overwrites: it just replaced the bytes, so the flag would otherwise be a
+   * stale claim that permanently blocks every later install (T2.9 F1).
+   *
    * Under `preserve_founder_edits` a refused row is skipped, reported in
-   * `refused`, and absent from `skills` — so `skills` is NOT positionally
-   * aligned with `imports`. Callers that pair the two by index must pass
-   * `caller_is_authoritative` (or be rewritten to pair by key).
+   * `refused`, and absent from `skills`.
+   *
+   * `skills` is NOT positionally aligned with `imports` under EITHER policy —
+   * `caller_is_authoritative` also drops a row whose UPDATE returns nothing
+   * because it was concurrently deleted. It is merely far likelier to be aligned.
+   * Callers that pair by index (`company-portability.ts`) inherit that pre-existing
+   * hazard; the durable fix is to pair by key. Filed as T2.9d.
    */
   async function upsertImportedSkills(
     companyId: string,
@@ -2469,6 +2521,14 @@ export function companySkillService(db: Db) {
             compatibility: imp.compatibility,
             fileInventory: serializeFileInventory(imp.fileInventory),
             metadata: imp.metadata,
+            // T2.9 F1 — `caller_is_authoritative` just replaced the markdown with
+            // its own bytes, so any founder edit the flag was describing is gone.
+            // Leaving `customized = true` here would make a TRUE statement before
+            // this guard existed and a FALSE one after it: the row would be
+            // permanently refused by `installUpdate` and by every later import,
+            // told it has local edits it no longer has. Clearing it is what makes
+            // the two policies mean what they say.
+            ...(preserve ? {} : { customized: false }),
             updatedAt: new Date(),
           })
           .where(
