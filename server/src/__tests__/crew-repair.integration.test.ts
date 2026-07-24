@@ -47,6 +47,7 @@ import { provisionCompanyCrew } from "../services/crew-provisioning.js";
 import {
   ADOPTED_TEMPLATE_VERSION,
   CREW_REPAIR_COOLDOWN_MS,
+  CREW_REPAIR_FORCE_FLOOR_MS,
   diagnoseCrewProvisioning,
   repairCompanyCrew,
   resetCrewRepairCooldowns,
@@ -58,6 +59,7 @@ import { reconcileTeamMembers } from "../services/marketplace-install/team-recon
 import { ensureInfrastructureAgents } from "../services/internal-agent/aoa-agents/crew-seeding.js";
 import { backfillCrewTemplateOrigin } from "../services/internal-agent/aoa-agents/backfill-template-origin.js";
 import { agentInstructionsService } from "../services/agent-instructions.js";
+import { installSkill } from "../services/marketplace-install/skill-installer.js";
 import { createMarketplaceCompanyRouter } from "../routes/marketplace-company.js";
 import { errorHandler } from "../middleware/error-handler.js";
 
@@ -671,24 +673,33 @@ describe.skipIf(
     expect(result).toMatchObject({ action: "skipped", reason: "unadoptable-roster-member" });
   }, 240_000);
 
-  it("writes NOTHING when a required skill body cannot be fetched", async () => {
+  it("writes NOTHING when a required skill cannot be installed", async () => {
     if (setupError) throw new Error(String(setupError));
     const companyId = await createLegacyCompany("Skill Fetch Co");
     await withCatalog();
     brokenUrls.add(`${FIXTURE_HOST}/skills/fixture-fetched-skill/SKILL.md`);
     const before = await crewRows(companyId);
 
+    let clock = Date.now();
+    setCrewRepairClock(() => clock);
     const result = await repairCompanyCrew(db, companyId, { catalogItems: CATALOG_ITEMS });
 
-    // A crew that advertises skill keys with no rows behind them answers
-    // "Skill not found for this company" on every use_skill call.
+    // The CREW is untouched — no adoption, no team row, nothing that could read
+    // as a healthy install. A crew that advertises skill keys with no rows
+    // behind them answers "Skill not found for this company" on every use_skill.
     expect(await crewRows(companyId)).toEqual(before);
-    expect(await installedSkillKeys(companyId)).toEqual([]);
     expect(await teamRowCount(companyId)).toBe(0);
-    expect(result).toMatchObject({ action: "skipped", reason: "skill-content-unavailable" });
+    expect(await operationRow(companyId)).toHaveLength(0);
+    // Skill rows that DID install are deliberately left behind: they are
+    // additive, version-scoped, and `installSkill` answers `alreadyInstalled` on
+    // the retry, so the next attempt re-uses them instead of re-cloning. Being
+    // outside the transaction is what keeps 17 git clones out of it.
+    expect(await installedSkillKeys(companyId)).toEqual([INLINE_SKILL_ID]);
+    expect(result).toMatchObject({ action: "skipped", reason: "skill-install-failed" });
 
     // …and it is still repairable once the CDN comes back.
     brokenUrls.clear();
+    clock += CREW_REPAIR_FORCE_FLOOR_MS + 1;
     const second = await repairCompanyCrew(db, companyId, {
       catalogItems: CATALOG_ITEMS,
       force: true,
@@ -822,6 +833,14 @@ describe.skipIf(
       VALUES (${companyId}, 'Crewless Co', ${nextIssuePrefix()})
     `);
     await ensureInfrastructureAgents(db, companyId);
+    // Production parity, and it is load-bearing: the boot backfill stamps
+    // Commander `aoa-curated/standard-crew/commander@legacy` (it is in
+    // CREW_NAMES). A fixture whose Commander carried a NULL origin instead
+    // would hide any rule that keys off that stamp — which is exactly how the
+    // earlier version of this suite missed the renamed-crew regression.
+    await backfillCrewTemplateOrigin(db);
+    const commander = (await crewRows(companyId)).find((r) => r.name === "Commander")!;
+    expect(commander.template_origin).toBe("aoa-curated/standard-crew/commander@legacy");
 
     const result = await repairCompanyCrew(db, companyId, { catalogItems: CATALOG_ITEMS });
 
@@ -924,6 +943,8 @@ describe.skipIf(
       VALUES (${companyId}, ${TEAM_ID}, 'team', 'running', ${`bootstrap-crew:${companyId}`}, now())
     `);
     const before = await crewRows(companyId);
+    let clock = Date.now();
+    setCrewRepairClock(() => clock);
 
     const result = await repairCompanyCrew(db, companyId, { catalogItems: CATALOG_ITEMS });
 
@@ -937,6 +958,7 @@ describe.skipIf(
       UPDATE marketplace_install_operations SET started_at = now() - interval '30 minutes'
       WHERE company_id = ${companyId}
     `);
+    clock += CREW_REPAIR_FORCE_FLOOR_MS + 1;
     const second = await repairCompanyCrew(db, companyId, {
       catalogItems: CATALOG_ITEMS,
       force: true,
@@ -945,6 +967,165 @@ describe.skipIf(
       SCOUT_ID,
     );
     expect(second.action).toBe("adopted");
+  }, 240_000);
+
+  // -- The roster's skills go through the REAL installer --------------------
+  // A hand-rolled insert cannot produce a materialized bundle, a derived
+  // `trustLevel`, a real `fileInventory` or the
+  // `catalogSkillBundle`/`catalogBundleInstallPath` metadata — and because it
+  // stamps `sourceRef` to the current version, `installSkill`'s idempotency
+  // guard would answer `alreadyInstalled` for that key FOREVER, so the bundle
+  // would never be materialized for that company. All 17 skills the live crew
+  // team requires carry a bundle.
+  //
+  // Field parity against rows the real installer wrote is the check a
+  // re-implementation cannot pass.
+  it("writes skill rows byte-identical to the real installer, not a hand-rolled copy", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const repaired = await createLegacyCompany("Skill Parity Co");
+    const reference = await createLegacyCompany("Skill Reference Co");
+    await withCatalog();
+
+    await repairCompanyCrew(db, repaired, { catalogItems: CATALOG_ITEMS });
+    for (const item of CATALOG_ITEMS.filter((i) => i.type === "skill")) {
+      await installSkill({ catalogItem: item, companyId: reference, db });
+    }
+
+    const shape = async (companyId: string) =>
+      rowsOf<Record<string, unknown>>(
+        await db.execute(sql`
+          SELECT key, slug, name, description, markdown, source_type, source_locator,
+                 source_ref, trust_level, compatibility, file_inventory,
+                 metadata - 'installedAt' AS metadata
+          FROM company_skills WHERE company_id = ${companyId} ORDER BY key
+        `),
+      );
+    const rows = await shape(repaired);
+    expect(rows).toEqual(await shape(reference));
+    expect(rows).toHaveLength(2);
+    // Specifics the hand-rolled version got wrong: it omitted catalogProvider
+    // entirely and hardcoded trust/inventory.
+    expect(rows[0].metadata as Record<string, unknown>).toHaveProperty("catalogProvider");
+    expect(rows.map((r) => r.source_ref)).toEqual(["1.0.0", "1.0.0"]);
+  }, 240_000);
+
+  // -- The rename hazard --------------------------------------------------
+  // `PATCH /agents/:id` lets a founder rename a crew agent, and it does not
+  // touch `templateOrigin`. Matching on name alone therefore mis-classifies a
+  // renamed crew as "crewless" and installs a SECOND parallel crew beside rows
+  // that own every task, run and assignment — permanently, because the company
+  // then reads `healthy`. The boot backfill's `.../<slug>@legacy` stamp survives
+  // the rename and is the join key that actually holds.
+  it("adopts a fully RENAMED legacy crew via its legacy origin, not by name", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const companyId = await createLegacyCompany("Renamed Crew Co");
+    await db.execute(sql`
+      UPDATE agents SET name = 'Recon ' || name
+      WHERE company_id = ${companyId} AND kind = 'aoa' AND name NOT IN ('Commander', 'Steward')
+    `);
+    await withCatalog();
+
+    const result = await repairCompanyCrew(db, companyId, { catalogItems: CATALOG_ITEMS });
+
+    const after = await crewRows(companyId);
+    // No parallel crew: no row named plain "Scout"/"Adjutant" was installed.
+    expect(after.some((r) => r.name === "Scout" || r.name === "Adjutant")).toBe(false);
+    // The founder's own rows were adopted in place, keeping their names.
+    expect(after.find((r) => r.name === "Recon Scout")!.template_origin).toBe(SCOUT_ID);
+    expect(after.find((r) => r.name === "Recon Adjutant")!.template_origin).toBe(ADJUTANT_ID);
+    expect(await teamRowCount(companyId)).toBe(1);
+    expect(await teamMemberNames(companyId)).toEqual(["Recon Adjutant", "Recon Scout"]);
+    expect(result.action).toBe("adopted");
+  }, 240_000);
+
+  // The partial rename reaches the same end state through the same door.
+  it("adopts a PARTIALLY renamed legacy crew without leaving a member behind", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const companyId = await createLegacyCompany("Partly Renamed Co");
+    await db.execute(sql`
+      UPDATE agents SET name = 'Recon' WHERE company_id = ${companyId} AND name = 'Scout'
+    `);
+    await withCatalog();
+
+    const result = await repairCompanyCrew(db, companyId, { catalogItems: CATALOG_ITEMS });
+
+    const after = await crewRows(companyId);
+    expect(after.find((r) => r.name === "Recon")!.template_origin).toBe(SCOUT_ID);
+    expect(after.find((r) => r.name === "Adjutant")!.template_origin).toBe(ADJUTANT_ID);
+    expect(after.some((r) => r.name === "Scout")).toBe(false);
+    expect(result).toMatchObject({ action: "adopted", unmatchedItemIds: [REVIEWER_ID] });
+
+    // ...and the follow-on reconcile adds ONLY the member with no local row.
+    const reconciled = await reconcileTeamMembers({
+      db,
+      companyId,
+      catalogItems: CATALOG_ITEMS,
+      instructionsService: agentInstructionsService(),
+    });
+    const final = await crewRows(companyId);
+    expect(final.some((r) => r.name === "Scout")).toBe(false);
+    expect(final.some((r) => r.name === "Reviewer")).toBe(true);
+    expect(reconciled.membersAdded).toBe(1);
+  }, 240_000);
+
+  // -- The refusal that guards the crewless branch -------------------------
+  it("refuses to provision beside a crew row it cannot account for", async () => {
+    if (setupError) throw new Error(String(setupError));
+    await withCatalog();
+    const companyId = randomUUID();
+    await db.execute(sql`
+      INSERT INTO companies (id, name, issue_prefix)
+      VALUES (${companyId}, 'Ambiguous Co', ${nextIssuePrefix()})
+    `);
+    await ensureInfrastructureAgents(db, companyId);
+    await backfillCrewTemplateOrigin(db);
+    // A crew row with NO origin and a non-roster name: it could be a custom
+    // agent, or a roster member renamed before the backfill could stamp it.
+    // Unknowable — so provisioning the roster beside it is not allowed.
+    await db.execute(sql`
+      INSERT INTO agents (company_id, name, kind, role, adapter_type)
+      VALUES (${companyId}, 'Recon', 'aoa', 'general', 'claude_local')
+    `);
+    const before = await crewRows(companyId);
+
+    const result = await repairCompanyCrew(db, companyId, { catalogItems: CATALOG_ITEMS });
+
+    expect(await crewRows(companyId)).toEqual(before);
+    expect(await teamRowCount(companyId)).toBe(0);
+    expect(result).toMatchObject({ action: "skipped", reason: "unaccounted-crew-rows" });
+  }, 240_000);
+
+  // Discriminator for that refusal: a leftover row for a role the catalog does
+  // NOT carry (a retired Dispatcher) is provably not a renamed roster member,
+  // because the backfill stamped its slug from its name. Installing the roster
+  // cannot duplicate it, so this must NOT block a legitimate crewless repair.
+  it("still provisions a crewless company carrying a retired non-roster crew row", async () => {
+    if (setupError) throw new Error(String(setupError));
+    await withCatalog();
+    const companyId = randomUUID();
+    await db.execute(sql`
+      INSERT INTO companies (id, name, issue_prefix)
+      VALUES (${companyId}, 'Retired Role Co', ${nextIssuePrefix()})
+    `);
+    await ensureInfrastructureAgents(db, companyId);
+    await db.execute(sql`
+      INSERT INTO agents (company_id, name, kind, role, adapter_type, template_origin)
+      VALUES (${companyId}, 'Dispatcher', 'aoa', 'general', 'claude_local',
+              'aoa-curated/standard-crew/dispatcher@legacy')
+    `);
+    await backfillCrewTemplateOrigin(db);
+
+    const result = await repairCompanyCrew(db, companyId, { catalogItems: CATALOG_ITEMS });
+
+    const after = await crewRows(companyId);
+    expect(
+      after
+        .filter((r) => r.template_origin?.startsWith("agent:aoa-curated/"))
+        .map((r) => r.name)
+        .sort(),
+    ).toEqual(["Adjutant", "Reviewer", "Scout"]);
+    expect(after.filter((r) => r.name === "Dispatcher")).toHaveLength(1);
+    expect(result.action).toBe("reprovisioned");
   }, 240_000);
 
   it("skips when the catalog has no crew team item", async () => {
@@ -1144,7 +1325,8 @@ describe.skipIf(
     await seedUserRole(companyId, founderId, "founder");
     currentActor = boardActor(founderId, companyId);
     cdnReachable = true;
-    setCrewRepairClock(() => Date.now());
+    let clock = Date.now();
+    setCrewRepairClock(() => clock);
 
     // First call fails closed (team.json is down) and takes the cooldown.
     brokenUrls.add(`${FIXTURE_HOST}/teams/default-crew/team.json`);
@@ -1167,7 +1349,18 @@ describe.skipIf(
     );
     expect(looped.body.result.reason).toBe("cooldown");
 
-    // …but an explicit operator override is honoured immediately.
+    // `force` clears the 6h cooldown but NOT the short floor — a founder holding
+    // the button down must not become a fetch loop either.
+    const tooSoon = await request(app)
+      .post(`/api/companies/${companyId}/marketplace/crew/repair`)
+      .send({ force: true });
+    expect((await crewRows(companyId)).find((r) => r.name === "Scout")!.template_origin).toMatch(
+      /@legacy$/,
+    );
+    expect(tooSoon.body.result.reason).toBe("cooldown");
+
+    // …past the floor, the operator override is honoured without waiting 6h.
+    clock += CREW_REPAIR_FORCE_FLOOR_MS + 1;
     const forced = await request(app)
       .post(`/api/companies/${companyId}/marketplace/crew/repair`)
       .send({ force: true });

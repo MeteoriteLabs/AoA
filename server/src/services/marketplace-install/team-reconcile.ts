@@ -118,23 +118,40 @@ export async function reconcileTeamMembers(
     // from `CREW_NAMES`) and for any partially-adopted crew. Name collision is
     // the right test because it is exactly what `resolveAgentNameConflict`
     // would have renamed around.
-    const unmanagedNames = new Set(
-      (
-        (await db
-          .select({ name: agents.name, templateOrigin: agents.templateOrigin })
-          .from(agents)
-          .where(and(eq(agents.companyId, companyId), eq(agents.kind, "aoa")))) as Array<{
-          name: string;
-          templateOrigin: string | null;
-        }>
-      )
-        .filter((row) => !row.templateOrigin || row.templateOrigin.endsWith("@legacy"))
-        .map((row) => row.name),
+    const unmanagedRows = (
+      (await db
+        .select({ name: agents.name, templateOrigin: agents.templateOrigin })
+        .from(agents)
+        .where(and(eq(agents.companyId, companyId), eq(agents.kind, "aoa")))) as Array<{
+        name: string;
+        templateOrigin: string | null;
+      }>
+    ).filter((row) => !row.templateOrigin || row.templateOrigin.endsWith("@legacy"));
+    const unmanagedNames = new Set(unmanagedRows.map((row) => row.name));
+    // Name alone is not enough: a founder can rename a crew agent without
+    // touching `templateOrigin`, and `backfillCrewTemplateOrigin`'s
+    // `…/<slug>@legacy` stamp survives that rename. Match on either.
+    const unmanagedLegacySlugs = new Set(
+      unmanagedRows
+        .map((row) => row.templateOrigin)
+        .filter((origin): origin is string => !!origin && origin.endsWith("@legacy"))
+        .map((origin) => origin.slice(0, -"@legacy".length).split("/").pop()!.toLowerCase()),
     );
+    const legacySlugsFor = (spec: { templateOrigin: string; name: string }): string[] => {
+      const idTail = (spec.templateOrigin.split("/").pop() ?? "").toLowerCase();
+      return [
+        spec.name.trim().toLowerCase().replace(/\s+/g, "-"),
+        idTail,
+        idTail.replace(/^aoa-/, ""),
+      ].filter(Boolean);
+    };
 
     let addedForThisTeam = 0;
     for (const memberSpec of missing) {
-      if (unmanagedNames.has(memberSpec.name)) {
+      if (
+        unmanagedNames.has(memberSpec.name) ||
+        legacySlugsFor(memberSpec).some((slug) => unmanagedLegacySlugs.has(slug))
+      ) {
         logger.warn(
           { companyId, teamId: teamRow.id, templateOrigin: memberSpec.templateOrigin, name: memberSpec.name },
           "team-reconcile: an unmanaged agent already holds this roster member's name — refusing " +

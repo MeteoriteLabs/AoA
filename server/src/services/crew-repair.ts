@@ -33,19 +33,27 @@
  *
  * ── The three degraded shapes ───────────────────────────────────────────────
  *
- * The **roster** (`team.json`) is the sole authority on what counts as crew —
- * not a hardcoded name list. Everything is decided by matching the roster
- * against this company's `kind='aoa'` rows:
+ * The **roster** (`team.json`) is the authority on what counts as crew.
+ * Everything is decided by matching it against this company's `kind='aoa'` rows,
+ * on **name OR legacy-origin slug** — name alone is not a stable join key,
+ * because a founder can rename a crew agent through `PATCH /agents/:id` without
+ * touching `templateOrigin`:
  *
- * 1. **No roster row matches, nothing adopted** → genuinely crewless. This is
- *    the residual state T2.3's `unknown` witness leaves behind. Nothing can
- *    collide, so {@link provisionCompanyCrew} is re-run verbatim.
- * 2. **Some roster rows match** → adopt them. Re-running the provisioner here
+ * 1. **Some roster rows match** → adopt them. Re-running the provisioner here
  *    would be wrong: `installTeam` inserts a fresh row per roster entry and
  *    `resolveAgentNameConflict` renames each collision, minting `Scout-2` /
  *    `default-crew-2` sharing one `templateOrigin` while leaving the ORIGINAL
  *    rows — the ones tasks, runs and assignments point at by id — still frozen.
- * 3. **Installed, but the operation row still reads claimable** → seal it. The
+ * 2. **No roster row matches, and every remaining crew row is accounted for**
+ *    (i.e. only infrastructure is left) → genuinely crewless. This is the
+ *    residual state T2.3's `unknown` witness leaves behind. Nothing can collide,
+ *    so {@link provisionCompanyCrew} is re-run verbatim.
+ * 3. **No roster row matches, but crew rows remain unaccounted for** → REFUSE.
+ *    Those rows own real work; installing the roster beside them creates a
+ *    second, parallel crew and the company then reads `healthy` forever. See
+ *    {@link isInfrastructureRow} for why its exemption list is safe stale in
+ *    both directions, unlike the classification list it replaced.
+ * 4. **Installed, but the operation row still reads claimable** → seal it. The
  *    T2.3 averted-clobber repair writes that row on the connection that just
  *    failed; when the DB is what broke, it stays claimable and the next
  *    provisioning pass re-installs over a committed roster.
@@ -72,6 +80,7 @@ import { logger } from "../middleware/logger.js";
 import { marketplaceNotifications } from "./marketplace-notifications.js";
 import { resolveTeamSlugConflict } from "./marketplace-install/conflict-resolver.js";
 import { fetchCatalogResource } from "./marketplace-install/fetch-resource.js";
+import { installSkill } from "./marketplace-install/skill-installer.js";
 import {
   OPERATION_CLAIM_STALE_AFTER_MS,
   updateOperation,
@@ -81,21 +90,27 @@ import {
   crewBootstrapIdempotencyKey,
 } from "./marketplace-install/crew-bootstrap.js";
 import { provisionCompanyCrew, type CrewProvisioningOutcome } from "./crew-provisioning.js";
+import { ADOPTED_TEMPLATE_VERSION } from "./marketplace-install/crew-constants.js";
+
+export { ADOPTED_TEMPLATE_VERSION } from "./marketplace-install/crew-constants.js";
 
 /**
- * The `templateVersion` an adopted row carries.
+ * Budget for the `team.json` fetch — the one resource repair fetches directly.
  *
- * It must be non-null (`crew-updater` skips rows without one) and must never
- * equal a published catalog version (or the updater would think the row is
- * synced when it still holds legacy content). A `0.0.0` prerelease satisfies
- * both and is honest about what the row actually contains: pre-catalog content
- * of unknown provenance. Do NOT replace this with the current catalog version —
- * that would claim the row is up to date with content it has never seen.
+ * Skill bodies do NOT run against this clock: they go through `installSkill`,
+ * which owns its own per-item fetch and git-clone timeouts, at
+ * {@link CREW_REPAIR_FETCH_CONCURRENCY} in flight. Sizing a single aggregate
+ * deadline across 17 bundle materializations would either abort healthy work or
+ * be so loose it bounded nothing; per-item timeouts times bounded concurrency is
+ * the honest bound, and it is stated rather than overclaimed.
  */
-export const ADOPTED_TEMPLATE_VERSION = "0.0.0-legacy";
-
-/** Aggregate budget for repair's resource fetches (team.json + skill bodies). */
 export const CREW_REPAIR_FETCH_DEADLINE_MS = 30_000;
+
+/**
+ * Skill-body fetches in flight during repair's pre-flight. Matches
+ * `CREW_INSTALL_FETCH_CONCURRENCY` — same CDN, same politeness budget.
+ */
+export const CREW_REPAIR_FETCH_CONCURRENCY = 6;
 
 /** A `templateOrigin` that puts the row inside the update pipeline. */
 export function isMarketplaceManagedOrigin(origin: string | null): origin is string {
@@ -239,7 +254,8 @@ export type CrewRepairSkipReason =
   | "team-template-unavailable"
   | "empty-roster"
   | "unadoptable-roster-member"
-  | "skill-content-unavailable";
+  | "unaccounted-crew-rows"
+  | "skill-install-failed";
 
 export type CrewRepairResult =
   | { action: "none"; verdict: CrewRepairVerdict }
@@ -313,8 +329,13 @@ export async function repairCompanyCrew(
   // the founder route included. A loop on the route otherwise drives unbounded
   // fetches, and on a crewless company each call is a full provisioning attempt
   // (catalog wait + install deadline + ~27 fetches).
-  if (!deps.force && !claimRepairAttempt(companyId)) {
-    return skip(diagnosis, "cooldown", "a repair for this company was attempted recently");
+  const minGapMs = deps.force ? CREW_REPAIR_FORCE_FLOOR_MS : CREW_REPAIR_COOLDOWN_MS;
+  if (!claimRepairAttempt(companyId, minGapMs)) {
+    return skip(
+      diagnosis,
+      "cooldown",
+      `a repair for this company was attempted within the last ${Math.round(minGapMs / 1000)}s`,
+    );
   }
 
   if (diagnosis.verdict === "operation-row-stale") {
@@ -388,16 +409,17 @@ async function repairDegradedCrew(
     }
 
     // ── Partition the company's crew against the roster ────────────────────
-    // The roster is the ONLY authority on what is crew. Matching by the roster's
-    // own `name` is not a heuristic — it is the same key
-    // `resolveAgentNameConflict` uses, so "adoptable" and "would have been
-    // renamed to `-2` by a re-install" are the same set by construction.
+    // Matched on name OR legacy-origin slug. Name alone is NOT a stable join
+    // key: a founder may rename a crew agent through `PATCH /agents/:id`, which
+    // leaves `templateOrigin` untouched. `backfillCrewTemplateOrigin` writes
+    // `aoa-curated/standard-crew/<slug>@legacy` once, at boot, and nothing
+    // rewrites it — so for any row that backfill has touched, the legacy slug
+    // survives every rename and is the join key that actually holds.
     const byOrigin = new Map(
       diagnosis.managedCrew.map((row) => [row.templateOrigin as string, row]),
     );
-    const byName = new Map(
-      [...diagnosis.managedCrew, ...diagnosis.unmanagedCrew].map((row) => [row.name, row]),
-    );
+    const allCrew = [...diagnosis.managedCrew, ...diagnosis.unmanagedCrew];
+    const claimedRowIds = new Set<string>();
 
     const adoptable: Array<{ row: CrewAgentSnapshot; entry: RosterEntry }> = [];
     const alreadyAdopted: string[] = [];
@@ -405,20 +427,26 @@ async function repairDegradedCrew(
     for (const entry of roster) {
       if (byOrigin.has(entry.templateOrigin)) {
         alreadyAdopted.push(entry.templateOrigin);
+        claimedRowIds.add(byOrigin.get(entry.templateOrigin)!.id);
         continue;
       }
-      const row = byName.get(entry.name);
+      const slugs = legacySlugsForRosterEntry(entry);
+      const row = allCrew.find(
+        (candidate) =>
+          !claimedRowIds.has(candidate.id) &&
+          (candidate.name === entry.name || matchesLegacySlug(candidate.templateOrigin, slugs)),
+      );
       if (!row) {
         unmatched.push(entry.templateOrigin);
         continue;
       }
-      // A same-named row already managed under a DIFFERENT origin is not ours
-      // to re-point. Fail closed rather than guess.
+      claimedRowIds.add(row.id);
+      // A row already managed under a DIFFERENT origin is not ours to re-point.
       if (isMarketplaceManagedOrigin(row.templateOrigin)) {
         return skip(
           diagnosis,
           "unadoptable-roster-member",
-          `agent "${entry.name}" is already managed as ${row.templateOrigin}, not ${entry.templateOrigin}`,
+          `agent "${row.name}" is already managed as ${row.templateOrigin}, not ${entry.templateOrigin}`,
         );
       }
       const item = catalogById.get(entry.templateOrigin);
@@ -429,16 +457,46 @@ async function repairDegradedCrew(
         return skip(
           diagnosis,
           "unadoptable-roster-member",
-          `${entry.templateOrigin} (matched local agent "${entry.name}") is not an agent in the catalog`,
+          `${entry.templateOrigin} (matched local agent "${row.name}") is not an agent in the catalog`,
         );
       }
       adoptable.push({ row, entry });
     }
 
+    // ── The refusal that guards the crewless branch ─────────────────────────
+    // Every crew row that is NOT infrastructure and did NOT map to a roster
+    // entry is unaccounted for. Provisioning on top of those installs a second,
+    // parallel crew beside rows that own every task, run and assignment — and
+    // the company then reads `healthy`, so nothing ever revisits it. Refuse.
+    //
+    // The infrastructure exemption is safe in BOTH stale directions, unlike the
+    // classification list it replaces: an entry that should have been removed
+    // (post-T2.4 Steward) only means we do not refuse over a row the roster has
+    // already claimed above; an entry that is missing means we refuse — which is
+    // the fail-closed direction. It is keyed on the legacy slug first so a
+    // renamed Commander is still recognised.
+    const rosterSlugs = new Set<string>();
+    for (const entry of roster) {
+      for (const slug of legacySlugsForRosterEntry(entry)) rosterSlugs.add(slug);
+    }
+    const unaccounted = allCrew.filter(
+      (row) => !claimedRowIds.has(row.id) && !isAccountedFor(row, rosterSlugs),
+    );
+    if (unaccounted.length > 0 && adoptable.length === 0 && alreadyAdopted.length === 0) {
+      return skip(
+        diagnosis,
+        "unaccounted-crew-rows",
+        `this company has crew agent(s) that map to no roster entry by name or legacy origin ` +
+          `(${unaccounted.map((r) => `${r.name}[${r.templateOrigin ?? "no-origin"}]`).join(", ")}) — ` +
+          "installing the roster here would create a second, parallel crew beside rows that own " +
+          "existing work",
+      );
+    }
+
     if (adoptable.length === 0 && alreadyAdopted.length === 0) {
-      // Not one roster member has a local row: genuinely crewless. This is the
-      // one shape where nothing can collide, so the ordinary provisioning path
-      // is exactly right — degrade-to-legacy included.
+      // Not one roster member has a local row, and nothing is unaccounted for:
+      // genuinely crewless. This is the one shape where nothing can collide, so
+      // the ordinary provisioning path is exactly right — degrade included.
       logger.warn({ companyId }, "crew repair: no roster member has a local row — re-provisioning");
       const provision = deps.provision ?? provisionCompanyCrew;
       const outcome = await provision(db, companyId, {
@@ -448,29 +506,56 @@ async function repairDegradedCrew(
       return { action: "reprovisioned", outcome };
     }
 
-    // ── B3: the roster's skills, or the crew advertises keys it cannot load ──
-    // `installTeam` inserts a `company_skills` row per required skill; adoption
-    // must too, or `handleUseSkill` answers "Skill not found for this company"
-    // for every declared key — and `reconcileTeamMembers` would install Reviewer
-    // with the same dangling keys.
-    let skillsToInstall: Array<{ item: CatalogItem; markdown: string }>;
+    // ── The roster's skills, or the crew advertises keys it cannot load ──────
+    // Without these rows `handleUseSkill` answers "Skill not found for this
+    // company" for every declared key, and `reconcileTeamMembers` installs
+    // Reviewer with the same dangling keys.
+    //
+    // Deliberately OUTSIDE the transaction, and deliberately through the real
+    // `installSkill`. Outside, because `installSkill` materializes
+    // `catalogItem.skill.bundle` with a git clone — every one of the 17 skills
+    // the live crew team requires carries a bundle, and holding a transaction
+    // plus an advisory lock across 17 clones is not acceptable. That is safe
+    // here in a way the agent writes are not: these are additive, idempotent
+    // (`installSkill` answers `alreadyInstalled` on retry), version-scoped
+    // NEW-FILE writes — never a delete of founder data. If the transaction below
+    // then fails, the rows simply survive and the next attempt re-uses them.
+    //
+    // Through the real installer, because a hand-rolled insert cannot produce a
+    // materialized bundle, a derived `trustLevel`, a real `fileInventory` or the
+    // `catalogSkillBundle`/`catalogBundleInstallPath` metadata — and stamping
+    // `sourceRef` to the current version makes `installSkill`'s idempotency
+    // guard answer `alreadyInstalled` for that key FOREVER, so the bundle would
+    // never be materialized for the company. Worse than writing no row at all.
+    let installedSkillIds: string[];
     try {
-      skillsToInstall = await loadMissingRosterSkills(db, {
+      installedSkillIds = await installMissingRosterSkills(db, {
         companyId,
         teamItem,
         catalogById,
-        signal: deadline.signal,
       });
     } catch (err) {
-      return skip(diagnosis, "skill-content-unavailable", errText(err));
+      return skip(diagnosis, "skill-install-failed", errText(err));
     }
 
     const rosterOrigins = roster.map((entry) => entry.templateOrigin);
     const committed = await db.transaction(async (tx) => {
-      // Serialize repairs for this company, and (because the operation row is
-      // sealed in the SAME transaction, on the unique idempotency key) exclude a
-      // concurrent bootstrap too. `teams` has no unique index on
-      // (companyId, templateOrigin), so nothing else prevents two team rows.
+      // Serializes crew REPAIRS for this company across sessions and processes
+      // (advisory locks are database-wide and released at transaction end).
+      // `teams` has no unique index on (companyId, templateOrigin), so nothing
+      // else prevents two team rows.
+      //
+      // ⚠️ Scope, precisely: this is NOT a general "one crew writer" invariant.
+      // (a) The `install-in-flight` guard above reads the operation row taken
+      //     BEFORE this lock, so a bootstrap that inserts `pending` and claims
+      //     it inside that window is mid-`installTeam` when `sealBootstrapOperation`
+      //     overwrites the row — both can then write a team row. Sealing here
+      //     only excludes a bootstrap that has not created its row yet (it
+      //     blocks on the unique idempotency index until this commits).
+      // (b) The public marketplace install route takes no such lock at all.
+      // A partial unique index on (companyId, templateOrigin) would cover both,
+      // but it changes `installTeam` semantics for every caller — filed, not
+      // done here.
       await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`crew-repair:${companyId}`}))`);
 
       // Re-read inside the lock: a racing repair may have finished since the
@@ -496,32 +581,6 @@ async function repairDegradedCrew(
           .where(eq(agents.id, row.id));
       }
 
-      for (const skill of skillsToInstall) {
-        await tx
-          .insert(companySkills)
-          .values({
-            companyId,
-            key: skill.item.id,
-            slug: skill.item.id.split("/").pop() ?? skill.item.id,
-            name: skill.item.name,
-            description: skill.item.description,
-            markdown: skill.markdown,
-            sourceType: "catalog",
-            sourceLocator: skill.item.id,
-            sourceRef: skill.item.version,
-            trustLevel: "markdown_only",
-            compatibility: "compatible",
-            fileInventory: [],
-            metadata: {
-              catalogCategory: skill.item.category,
-              catalogTags: skill.item.tags,
-              catalogTrustTier: skill.item.trust.tier,
-              installedAt: new Date().toISOString(),
-            },
-          })
-          .onConflictDoNothing();
-      }
-
       let teamId = existingTeam?.id ?? null;
       if (!teamId) {
         const slug = await resolveTeamSlugConflict({
@@ -540,6 +599,15 @@ async function repairDegradedCrew(
             description: teamBody.description ?? teamItem.description,
             manifest: teamBody.manifest ?? {},
             templateOrigin: teamItem.id,
+            // The PUBLISHED version, not ADOPTED_TEMPLATE_VERSION. The sentinel
+            // cannot go here: `TeamManifestSchema` validates `^\d+\.\d+\.\d+$`
+            // and `team-export.ts` feeds this field straight in, so a prerelease
+            // string would throw on company export. Consequence to know about:
+            // if the team-template update check behind
+            // `marketplace-update-checker.ts`'s TODO ever lands, a repaired
+            // company's TEAM row will read as up to date while its AGENT rows
+            // honestly carry the sentinel. Agents are what the updater walks
+            // today, so this is inert — revisit when that TODO is picked up.
             templateVersion: teamItem.version,
           })
           .returning({ id: teams.id });
@@ -557,7 +625,6 @@ async function repairDegradedCrew(
     });
 
     const adoptedItemIds = adoptable.map(({ entry }) => entry.templateOrigin);
-    const installedSkillIds = skillsToInstall.map((s) => s.item.id);
     logger.info(
       {
         companyId,
@@ -596,24 +663,27 @@ async function repairDegradedCrew(
 }
 
 /**
- * Fetch bodies for the roster's required skills that this company does not have
- * yet. Already-installed keys are skipped without a fetch, so a repair on a
- * company that already has them costs nothing here.
+ * Install the roster's required skills this company does not have yet, through
+ * the real {@link installSkill}.
  *
- * @throws if any needed body cannot be fetched — the caller fails closed, since
- * a crew advertising skill keys with no rows behind them is the defect this
- * exists to prevent.
+ * Already-installed keys are dropped before any work, so a repair on a company
+ * that already has them costs nothing. Bounded concurrency for the same reason
+ * `installTeam` has it: the live crew team requires 17 skills, and doing them
+ * sequentially at the ~2s/request "sluggish CDN" case `crew-bootstrap.ts` is
+ * sized against would take ~34s before the git clones. Aggregate time is bounded
+ * by concurrency x each item's own fetch/clone timeout rather than by a single
+ * deadline — stated plainly rather than claimed tighter than it is.
+ *
+ * @throws if any skill cannot be installed. The caller fails the whole repair
+ * closed: a crew advertising skill keys with no rows behind them is the defect
+ * this exists to prevent, and a partially-skilled crew is no better than a
+ * retryable one.
  */
-async function loadMissingRosterSkills(
+async function installMissingRosterSkills(
   db: Db,
-  opts: {
-    companyId: string;
-    teamItem: CatalogItem;
-    catalogById: Map<string, CatalogItem>;
-    signal: AbortSignal;
-  },
-): Promise<Array<{ item: CatalogItem; markdown: string }>> {
-  const { companyId, teamItem, catalogById, signal } = opts;
+  opts: { companyId: string; teamItem: CatalogItem; catalogById: Map<string, CatalogItem> },
+): Promise<string[]> {
+  const { companyId, teamItem, catalogById } = opts;
   const required = (teamItem.requires ?? [])
     .filter((req) => req.type === "skill")
     .map((req) => catalogById.get(req.id))
@@ -633,16 +703,107 @@ async function loadMissingRosterSkills(
       ),
     )) as Array<{ key: string }>;
   const have = new Set(existing.map((row) => row.key));
+  const missing = required.filter((item) => !have.has(item.id));
 
-  const out: Array<{ item: CatalogItem; markdown: string }> = [];
-  for (const item of required) {
-    if (have.has(item.id)) continue;
-    const markdown =
-      item.content?.inline ??
-      (await fetchCatalogResource(item, "skill content (crew repair)", signal));
-    out.push({ item, markdown });
+  await mapWithConcurrency(missing, CREW_REPAIR_FETCH_CONCURRENCY, async (item) => {
+    await installSkill({ catalogItem: item, companyId, db });
+  });
+  return missing.map((item) => item.id);
+}
+
+/**
+ * The `…@legacy` origin slugs a roster entry could have been seeded under.
+ *
+ * `backfillCrewTemplateOrigin` derives its slug from the agent's NAME at boot
+ * (`lower(replace(name,' ','-'))`), and the catalog id's last segment is the
+ * same role with an `aoa-` prefix. Both are offered because neither is
+ * guaranteed: a role could be published under an id that does not match its
+ * display name.
+ */
+function legacySlugsForRosterEntry(entry: RosterEntry): Set<string> {
+  const fromName = entry.name.trim().toLowerCase().replace(/\s+/g, "-");
+  const idTail = (entry.templateOrigin.split("/").pop() ?? "").toLowerCase();
+  return new Set([fromName, idTail, idTail.replace(/^aoa-/, "")].filter(Boolean));
+}
+
+/** Does this row's `…@legacy` origin name one of `slugs`? */
+function matchesLegacySlug(origin: string | null, slugs: ReadonlySet<string>): boolean {
+  if (!origin || !origin.endsWith("@legacy")) return false;
+  const slug = origin.slice(0, -"@legacy".length).split("/").pop() ?? "";
+  return slugs.has(slug.toLowerCase());
+}
+
+/**
+ * Agents AoA seeds for itself rather than from the catalog, exempt from the
+ * "unaccounted crew rows" refusal.
+ *
+ * ⚠️ This is NOT a classification input — it never decides whether a company has
+ * a crew. It only suppresses a refusal, and it is consulted AFTER roster
+ * matching, which makes both stale directions safe: a stale entry (Steward,
+ * once T2.4 publishes it) can only fail to refuse over a row the roster already
+ * claimed; a missing entry refuses, which is the fail-closed direction. An
+ * earlier revision used a list like this to decide classification, and a stale
+ * entry there minted a duplicate — do not move it back.
+ *
+ * Matched on the legacy origin slug first so a RENAMED Commander is still
+ * recognised; a renamed Steward (which has no origin — it is absent from
+ * `CREW_NAMES`) falls through to the refusal, which is correct.
+ */
+const INFRASTRUCTURE_LEGACY_SLUGS: ReadonlySet<string> = new Set(["commander", "steward"]);
+const INFRASTRUCTURE_NAMES: ReadonlySet<string> = new Set(["Commander", "Steward"]);
+
+function isInfrastructureRow(row: CrewAgentSnapshot): boolean {
+  if (matchesLegacySlug(row.templateOrigin, INFRASTRUCTURE_LEGACY_SLUGS)) return true;
+  return row.templateOrigin === null && INFRASTRUCTURE_NAMES.has(row.name);
+}
+
+/**
+ * Can this leftover crew row be safely ignored when deciding whether to install
+ * the roster beside it?
+ *
+ * Two ways to be sure, and one ambiguous case that must fail closed:
+ * - **Infrastructure** — AoA seeds it, the catalog does not.
+ * - **A `…@legacy` origin naming a role the roster does NOT carry** (a retired
+ *   Dispatcher, say). `backfillCrewTemplateOrigin` stamped that slug from the
+ *   name at boot and nothing rewrites it, so the row provably is not a renamed
+ *   roster member — installing the roster cannot duplicate it.
+ * - **A NULL-origin row with a non-roster name** — ambiguous. It could be a
+ *   genuinely custom crew agent, or a roster member the founder renamed BEFORE
+ *   the backfill could stamp it (backfill matches on `CREW_NAMES`, so a rename
+ *   makes the row invisible to it, permanently). We cannot tell, so we refuse.
+ *
+ * Known false positive: a company carrying a retired `Scribe` row (never in
+ * `CREW_NAMES`, so NULL origin) **and no crew at all** is refused rather than
+ * provisioned. That is rare — Scribe was seeded alongside a full crew — and the
+ * refusal names the row, so it is a short human decision rather than a silent
+ * second crew.
+ */
+function isAccountedFor(row: CrewAgentSnapshot, rosterSlugs: ReadonlySet<string>): boolean {
+  if (isInfrastructureRow(row)) return true;
+  if (row.templateOrigin?.endsWith("@legacy")) {
+    return !matchesLegacySlug(row.templateOrigin, rosterSlugs);
   }
-  return out;
+  return false;
+}
+
+/** Run `worker` over `items` with at most `limit` in flight. */
+async function mapWithConcurrency<T>(
+  items: readonly T[],
+  limit: number,
+  worker: (item: T) => Promise<void>,
+): Promise<void> {
+  if (items.length === 0) return;
+  const width = Math.max(1, Math.min(limit, items.length));
+  let cursor = 0;
+  await Promise.all(
+    Array.from({ length: width }, async () => {
+      for (;;) {
+        const index = cursor++;
+        if (index >= items.length) return;
+        await worker(items[index]);
+      }
+    }),
+  );
 }
 
 function skip(
@@ -801,11 +962,22 @@ const recentAttempts = new Map<string, number>();
 /** Test seam: the clock the cooldown reads. */
 let repairClock: () => number = () => Date.now();
 
+/**
+ * Floor that applies even to an explicit `force`.
+ *
+ * `force` exists so a founder who has just fixed the underlying cause does not
+ * wait six hours. It is not a licence to loop: repair fetches `team.json` plus
+ * every missing skill body, and on a crewless company it runs a full
+ * `provisionCompanyCrew` (catalog wait + install deadline + ~27 fetches). One
+ * minute is far below any human retry cadence and far above a scripted one.
+ */
+export const CREW_REPAIR_FORCE_FLOOR_MS = 60_000;
+
 /** @returns true if this caller may attempt a repair now. */
-function claimRepairAttempt(companyId: string): boolean {
+function claimRepairAttempt(companyId: string, minGapMs: number): boolean {
   const now = repairClock();
   const last = recentAttempts.get(companyId);
-  if (last !== undefined && now - last < CREW_REPAIR_COOLDOWN_MS) return false;
+  if (last !== undefined && now - last < minGapMs) return false;
   recentAttempts.set(companyId, now);
   return true;
 }
@@ -918,6 +1090,9 @@ export async function runCrewRepairPass(opts: {
         else result.skippedFailClosed += 1;
         // Neither consumes budget: a skip did no productive work, and charging
         // for it lets a few unrepairable companies starve the rest forever.
+      } else if (repair.action === "none") {
+        // Raced healthy between the diagnosis above and the repair's own
+        // re-diagnosis. Nothing happened, so it is neither repaired nor charged.
       } else {
         result.repaired += 1;
         budget -= 1;

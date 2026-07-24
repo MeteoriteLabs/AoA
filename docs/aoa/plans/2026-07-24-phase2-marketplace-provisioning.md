@@ -350,6 +350,68 @@ in-transaction re-read.
 > inside the same transaction (on its unique idempotency key) excludes both a
 > concurrent repair and a concurrent bootstrap. Filed as a follow-up.
 
+### Second review round (2026-07-24) — the rename hazard, and the real skill installer
+
+**F1 was a regression I introduced.** Removing `INFRASTRUCTURE_AGENT_NAMES` to
+fix B4 also removed the signal a refusal depended on, and the refusal went with
+it instead of being re-expressed. `PATCH /agents/:id` lets a founder rename a
+crew agent without touching `templateOrigin`, so a name-only match read a
+renamed crew as *crewless* and installed a second parallel crew beside the rows
+that own every task, run and assignment — permanently, because the company then
+reads `healthy`. Reproduced by ablation.
+
+Fixed by matching the roster to local rows on **name OR legacy-origin slug**.
+`backfillCrewTemplateOrigin` writes `aoa-curated/standard-crew/<slug>@legacy`
+once at boot and nothing rewrites it, so the slug survives every rename and is
+the join key that actually holds. A renamed crew is now *adopted in place*,
+keeping the founder's names. The same matching closes **F2** (partial rename),
+and `reconcileTeamMembers`'s guard matches on slug too.
+
+The refusal is back as `unaccounted-crew-rows`, but stated precisely, because
+"any leftover row" would break the legitimate crewless path (a real crewless
+company has Commander stamped `…/commander@legacy`):
+- **infrastructure** → accounted;
+- **a `…@legacy` origin naming a role the roster does NOT carry** (a retired
+  Dispatcher) → accounted; the backfill stamped that slug from the name, so the
+  row provably is not a renamed roster member and cannot be duplicated;
+- **a NULL-origin row with a non-roster name** → ambiguous (it may be a roster
+  member renamed *before* the backfill could stamp it) → **refuse**. Known false
+  positive: a company with a retired `Scribe` row and no crew at all is refused
+  rather than provisioned. Rare, named in the log, and a short human decision
+  beats a silent second crew.
+
+**F3 — skills now go through the real `installSkill`.** The hand-rolled insert
+dropped the bundle, hardcoded `trustLevel`/`fileInventory`, and — because it
+stamped `sourceRef` to the current version — made `installSkill`'s idempotency
+guard answer `alreadyInstalled` for that key **forever**, so the bundle would
+never be materialized for that company. Both halves ablation-proved (`PROBE
+alreadyInstalled = true`). All 17 skills the live crew team requires carry a
+bundle. Skills are installed **outside** the transaction, deliberately:
+`installSkill` git-clones each bundle, and holding a transaction plus an
+advisory lock across 17 clones is not acceptable. That is safe in a way the
+agent writes are not — additive, idempotent, version-scoped new-file writes,
+never a delete of founder data — so a later transaction failure simply leaves
+rows the next attempt re-uses.
+
+> **Follow-up filed: `installTeam` has the identical defect.**
+> `team-installer.ts` phase 3 does its own hand-rolled `company_skills` insert
+> with `trustLevel: "markdown_only"` and `fileInventory: []`. Every
+> freshly-bootstrapped company therefore gets the same bundle-less, poisoned
+> rows. Out of scope here (it changes every founder-initiated team install), but
+> it means a *repaired* company currently ends up with better skill rows than a
+> newly created one.
+
+**Also:** bounded concurrency for skill installs (F4 — sequential would have
+blown the deadline and then not retried for a full cooldown); the advisory-lock
+comment now states its true scope, naming the two gaps it does not cover (F5);
+`team-reconcile.test.ts`'s positional mock replaced with keyed dispatch, which
+had been silently answering the new query with the wrong fixture so the guard
+never executed (F6); the team row keeps the published version with the
+`TeamManifestSchema` `^\d+\.\d+\.\d+$` constraint recorded (F7);
+`action: "none"` no longer counts as repaired or charges budget (F8); the route
+docblock corrected and `force` given a 60s floor (F9); `resolver.ts` gives an
+adopted row its own copy instead of a generic version-mismatch (F10).
+
 ### Step 5 — the trigger: BOTH, boot-time reconcile primary
 
 **Chosen:** a boot/interval reconcile pass (`runCrewRepairPass`, called from

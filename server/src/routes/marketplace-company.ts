@@ -464,8 +464,13 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
   // the diagnosis, so "is this company frozen out of crew updates?" is
   // answerable without DB access.
   //
-  // Founder-only: it rewrites crew agents' instruction bundles, skillKeys and
-  // triggers from the catalog.
+  // Founder-only. It does NOT rewrite instruction bundles, skillKeys or
+  // triggers — adoption is pointer-only (`templateOrigin` + `templateVersion`)
+  // precisely so an unattended pass can never destroy founder-edited content;
+  // the follow-on content change flows through `agentUpdatePolicy`. Do not
+  // "improve" this by calling `applyCrewAgentUpdate` here: it deletes the
+  // agent's managed-instructions directory outside any transaction. It is
+  // founder-only because it changes how the company's agents are GOVERNED.
   router.post("/crew/repair", async (req, res) => {
     assertBoard(req);
     const companyId = (req.params as Record<string, string>).companyId;
@@ -494,6 +499,8 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
     const result = await repairCompanyCrew(db, companyId, {
       catalogItems: catalog.items,
       requestedByUserId: req.actor.userId ?? "board",
+      // `force` skips the 6h cooldown but NOT the short floor — a founder
+      // holding the button down must not become a fetch loop either.
       force,
     });
     res.json({ diagnosis: summarizeDiagnosis(diagnosis), result });
