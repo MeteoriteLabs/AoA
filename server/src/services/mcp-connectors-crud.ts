@@ -25,6 +25,14 @@ export type ConnectorInsert = {
   headerTemplate?: Record<string, string>;
   envTemplate?: Record<string, string>;
   secretRef?: string | null;
+  /**
+   * Whether the connector CANNOT function without a bound secret. Comes from the
+   * catalog entry at install; false for BYO. Load-bearing downstream:
+   * `resolveConnectorStatus` refuses to mark a requiresSecret connector `active`
+   * while no secret is bound, so dropping it here would let an approval activate
+   * an uncredentialed connector.
+   */
+  requiresSecret?: boolean;
   source?: string;
   status: string;
   createdByUserId?: string | null;
@@ -107,6 +115,7 @@ export function mcpConnectorService(db: Db) {
           headerTemplate: input.headerTemplate ?? {},
           envTemplate: input.envTemplate ?? {},
           secretRef: input.secretRef ?? null,
+          requiresSecret: input.requiresSecret ?? false,
           source: input.source ?? "byo",
           status: input.status,
           createdByUserId: input.createdByUserId ?? null,

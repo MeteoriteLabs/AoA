@@ -8,7 +8,8 @@ import {
   mcpConnectorService,
   secretService,
 } from "../services/index.js";
-import { badRequest, conflict, forbidden } from "../errors.js";
+import { badRequest, forbidden } from "../errors.js";
+import { createConnector } from "../services/mcp-connector-create.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { assertRole } from "../middleware/rbac.js";
 import { loadConfig } from "../config.js";
@@ -27,11 +28,18 @@ import { loadConfig } from "../config.js";
  *  - transport/url/command coherence (A20).
  *  - args/headerTemplate/envTemplate structural shape (A26): the runtime
  *    `buildConnectorSpecs` only guarantees "won't throw", not "well-formed".
- *  - secretRef must reference an existing company secret (A19/A20) so the
- *    dangling-ref state is hard to create.
  *
  * The DB deliberately enforces none of these (a CHECK on transport would be an
- * enum in disguise, A2), so THIS route is the single enforcement point.
+ * enum in disguise, A2), so THIS route is the single enforcement point for the
+ * SHAPE of founder input.
+ *
+ * WHAT IS NOT HERE (I2): everything downstream of shape — the
+ * (companyId, serverName) 409, the secretRef-existence check (A19/A20), status
+ * derivation, the `install_mcp_connector` approval, and the activity log — lives
+ * in the shared `createConnector` service (services/mcp-connector-create.ts).
+ * That extraction is deliberate: the catalog install route creates connectors
+ * too, and a second inline copy of that governance would drift, with the
+ * marketplace copy being the untested one.
  *
  * GOVERNANCE (close the stdio→host-exec chain on a multi-tenant host):
  *  - D7/C1 (`assertTransportAllowed`): a `stdio` connector runs a command on the
@@ -49,7 +57,6 @@ import { loadConfig } from "../config.js";
 
 // LOAD-BEARING: lowercase letters, digits, hyphen only. Do not widen.
 const SERVER_NAME_RE = /^[a-z0-9-]+$/;
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const templateRecord = z.record(z.string(), z.string());
 
@@ -211,66 +218,34 @@ export function mcpConnectorRoutes(db: Db) {
       // has no catalog provenance and therefore no tier to vouch for it (C4).
       assertTransportAllowed(body.transport, deploymentMode, source, undefined);
 
-      // Uniqueness (companyId, serverName) — surface a clean 409 instead of a
-      // raw unique-violation 500.
-      const existing = await svc.getByName(companyId, body.serverName);
-      if (existing) {
-        throw conflict(`A connector named "${body.serverName}" already exists`);
-      }
-
-      // secretRef must point at an existing company secret (A19/A20): reject the
-      // dangling-ref state at write time rather than letting the delivery path
-      // silently drop the connector later.
-      if (body.secretRef) {
-        const secret = await secretsSvc.getByName(companyId, body.secretRef);
-        if (!secret) {
-          throw badRequest(`secretRef "${body.secretRef}" does not reference an existing secret`);
-        }
-      }
-
       const actor = getActorInfo(req);
-      const createdByUserId = UUID_RE.test(actor.actorId) ? actor.actorId : null;
 
-      // local_trusted: loopback trust boundary → connectors go live immediately.
-      // authenticated: board governance → connector is pending until approved.
-      const status = deploymentMode === "local_trusted" ? "active" : "pending_approval";
-
-      const created = await svc.create(companyId, {
-        serverName: body.serverName,
-        displayName: body.displayName,
-        transport: body.transport,
-        url: body.url ?? null,
-        command: body.command ?? null,
-        args: body.args,
-        headerTemplate: body.headerTemplate,
-        envTemplate: body.envTemplate,
-        secretRef: body.secretRef ?? null,
-        source,
-        status,
-        createdByUserId,
-      });
-
-      let approvalId: string | null = null;
-      if (status === "pending_approval") {
-        const approval = await approvalsSvc.create(companyId, {
-          type: "install_mcp_connector",
-          requestedByUserId: actor.actorType === "user" ? actor.actorId : null,
-          status: "pending",
-          payload: { connectorId: created.id, serverName: created.serverName },
-        });
-        approvalId = approval?.id ?? null;
-      }
-
-      await logActivity(db, {
-        companyId,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-        agentId: actor.agentId,
-        action: "mcp_connector.created",
-        entityType: "mcp_connector",
-        entityId: created.id,
-        details: { serverName: created.serverName, transport: created.transport, status },
-      });
+      // Everything past the D7 gate — the (companyId, serverName) 409, the
+      // secretRef-existence check, status derivation, the approval, and the
+      // activity log — lives in the SHARED create service so the catalog install
+      // route cannot fork it into an untested copy.
+      const { connector: created, approvalId } = await createConnector(
+        { svc, secretsSvc, approvalsSvc, logActivity: (entry) => logActivity(db, entry) },
+        {
+          companyId,
+          serverName: body.serverName,
+          displayName: body.displayName,
+          transport: body.transport,
+          url: body.url ?? null,
+          command: body.command ?? null,
+          args: body.args,
+          headerTemplate: body.headerTemplate,
+          envTemplate: body.envTemplate,
+          secretRef: body.secretRef ?? null,
+          // BYO: the founder supplies every credential up front, so a BYO
+          // connector is never in the "installed but uncredentialed" state that
+          // `requiresSecret` exists to describe.
+          requiresSecret: false,
+          source,
+          deploymentMode,
+          actor,
+        },
+      );
 
       res.status(201).json({ ...created, approvalId });
     },
