@@ -1369,7 +1369,19 @@ git commit -m "fix(marketplace): fence-aware section splitting and line-ending-s
 row byte-identical to the catalog — is **permanently opted out of auto-update
 for that skill**, with the review UI reporting success.
 
-This is the **same failure the agent side already had to fix**. T2.7's review
+**Correction (T2.8 review):** my first framing of this called it the *same*
+failure as the agent side and a "permanent freeze-out". That is too strong, and
+the difference is the whole argument. On the agent side, `customized`
+**blocked updates outright** under D22 — hence a backlog that had to be drained.
+On the skill side `customized` is consulted in exactly **one** place
+(`skill-auto-updater.ts:128`), and `marketplace-update-checker.ts` never reads
+it at all — so pending updates keep being raised and `/merge` stays available
+forever. The row forfeits the **one-click auto-apply path**, not the update
+pipeline. A permanent papercut, not a freeze-out. Still worth closing (`true` is
+a false statement about the bytes), but it is not urgent and it is **not a
+one-liner** — see Step 4.
+
+The shape of the fix is the same one the agent side already built. T2.7's review
 found it there (a bundle that matched upstream could never reach
 `customized = false`, and the modal said "no local changes found"), and
 Decision #115 fixed it by deriving the flag from the **bytes**: `false` iff the
@@ -1377,10 +1389,10 @@ result is byte-identical to upstream, else `true`, never back to `null`. The
 skill side still hard-codes `true`, so the two review paths now disagree about
 what accepting upstream means.
 
-"Conservative" is the wrong read: over-marking costs a permanent freeze-out with
-no recovery affordance, while the agent path proved the byte comparison is
-cheap and safe. Pre-existing, but the asymmetry is newly visible and newly
-indefensible.
+So "conservative" is a defensible read here in a way it was not for agents —
+the cost is a lost affordance, not a lost pipeline. Closing it is still right,
+because `customized = true` on a byte-identical row is simply untrue and the
+next reader will reason from it.
 
 **Files:** the skill branch of `POST /updates/:id/merge`
 (`server/src/routes/marketplace-company.ts`), mirroring
