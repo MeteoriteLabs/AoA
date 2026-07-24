@@ -27,7 +27,21 @@
 - Published agents: Adjutant, Chronicler, Engineer, Librarian, Memory Keeper, Navigator, Planner, Reviewer, Scout, GitHub Issue Triager, Senior Engineer.
 - **Steward is NOT published** → T2.4 required.
 - **Chronicler, Memory Keeper, Navigator declare ZERO skills** → T2.4 required.
-- The bundled fallback `ui/src/aoa-marketplace-snapshot.json` mirrors the CDN (D11 offline bootstrap works).
+- ~~The bundled fallback `ui/src/aoa-marketplace-snapshot.json` mirrors the CDN (D11 offline bootstrap works).~~
+  **❌ REFUTED during T2.3 (2026-07-24). D11 offline bootstrap does NOT work.**
+  The snapshot carries only the catalog **index**. `installTeam` then fetches the
+  team body, **every** agent template, and every skill body over the network
+  (`team-installer.ts:109`, `:121`, `:140` — published skills have
+  `content.inline === null`, so their bodies are fetched too). Independently
+  confirmed. Consequences, which are product-level, not just test-level:
+  - A genuinely network-isolated instance **always** degrades to the legacy
+    seeders and therefore gets a permanently non-updateable `@legacy` crew —
+    the exact condition this phase exists to eliminate.
+  - No amount of snapshot injection can make creation offline-capable; that
+    would need bundled resource bodies, not just an index.
+  - Any test asserting "offline → marketplace roster" is only honest if it also
+    stubs the resource fetches, and must not be described as proving offline
+    bootstrap. Recorded on Decision #112.
 
 **The single root cause this phase fixes:** company create runs the legacy seeders, which stamp `templateOrigin` `…@legacy`, and `crew-updater.ts:151` skips `@legacy` rows **forever** — so every company is permanently frozen out of the update pipeline that is already built and running.
 
@@ -267,6 +281,25 @@ git commit -m "feat(marketplace): refuse uninstall of protected AoA agent origin
 ⚠️ **This task touches TWO EXTERNAL REPOS and publishes publicly. STOP and confirm with the product owner before opening either PR.** (Write access confirmed; PRs pre-authorised in principle — still confirm at the moment of publishing.)
 
 **Repos:** `MeteoriteLabs/aoa-marketplace` (source: `content/agents/`, `content/teams/default-crew/`) and `MeteoriteLabs/aoa-marketplace-cdn` (published `catalog.json`).
+
+> **⚠️ Cross-repo blast radius, found during T2.3 (2026-07-24).** After T2.3,
+> **an edit in the catalog repo can silently regress provisioning in this one.**
+> Two specific couplings to check in Step 6's dependency audit — not optional:
+> 1. **Adding a plugin dependency to `default-crew` breaks company creation's
+>    marketplace path.** The bootstrap plugin installer throws by design; the
+>    team has no plugin deps today, so it is unreachable — the moment one is
+>    added, the whole install fails and every new company silently degrades to
+>    the legacy `@legacy` roster. Fail-closed and logged, but the *symptom*
+>    appears in AoA while the *cause* is a merge in the other repo.
+> 2. **Publishing Steward must be paired with reconciling the pre-existing
+>    legacy Steward row**, or companies created between T2.3 and T2.4 end up
+>    with **two** Steward agents (both carrying the `sweep` trigger → duplicated
+>    hub curation). `team-reconcile.ts:96-107` builds `installedOrigins` from a
+>    join on `teamMembers`, so a legacy Steward fails the lookup twice over —
+>    it is neither a team member nor origin-stamped, making the duplicate
+>    install unavoidable rather than merely likely. Chronicler has the identical
+>    NULL-origin gap. See the T2.5 blocker note for why that NULL must not
+>    simply be stamped non-`@legacy`.
 
 - [ ] **Step 1: Author the Steward agent package** in `aoa-marketplace/content/agents/aoa-steward/` — `agent.json` + `AGENTS.md` + `manifest.json`, modelled on `content/agents/aoa-scout/`. Source the instruction text from `ensure-steward.ts:4` and `server/src/onboarding-assets/steward/`. Preserve the **sweep trigger** (`{kind:"sweep", config:{role:"steward"}}`) and the two-tool allowlist (`hub.readCurationContext`, `hub.updateCurationSummary`).
 - [ ] **Step 2: Declare skills** for **Chronicler, Memory Keeper, Navigator** (currently zero) and Steward. Per D17 these are purpose-built per agent — draw from the 498 published skills where a genuine fit exists; **do not pad**. If a role has no honest skill fit, declare none and say so.
