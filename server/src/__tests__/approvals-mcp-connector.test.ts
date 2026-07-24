@@ -38,6 +38,17 @@ vi.mock("@armyofagents/db", () => ({
 }));
 vi.mock("drizzle-orm", () => drizzleOperatorStubs());
 
+// approve() resolves the deployment mode (for the connector status re-derivation)
+// via loadConfig(), which reads the real ~/.aoa/config.json. Pinned here so this
+// suite depends on nothing outside the repo. It is NOT benign-by-luck: today the
+// mode cannot change the outcome (applyConnectorApproval passes `approved: true`,
+// which satisfies the resolver's governance branch in every mode), but that is a
+// property of the CURRENT resolver, not of this test — without the mock, a future
+// mode-sensitive rule would make these assertions silently machine-dependent.
+vi.mock("../config.js", () => ({
+  loadConfig: () => ({ deploymentMode: "authenticated" }),
+}));
+
 // Hoisted collaborator mocks — the mock factories close over them and the test
 // bodies assert on them.
 const mocks = vi.hoisted(() => ({
