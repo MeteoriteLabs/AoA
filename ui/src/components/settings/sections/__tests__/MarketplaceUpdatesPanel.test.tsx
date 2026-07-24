@@ -128,6 +128,80 @@ describe("MarketplaceUpdatesPanel", () => {
     expect(screen.getByRole("dialog")).toHaveTextContent("Reviewing Senior Engineer");
   });
 
+  // ── F3: `/apply` handles agents and skills now; the button must reach it ──
+  //
+  // `UpdateCard` used to render "Update" only for plugins, so the agent branch
+  // of `/apply` was unreachable from the UI: an agent with nothing to review
+  // still had to go through the merge modal.
+
+  const agentUpdate = (overrides: Partial<PendingUpdate> = {}) =>
+    update({
+      id: "agent-update-1",
+      catalogItemId: "agent:test/senior-engineer",
+      catalogItemName: "Senior Engineer",
+      itemType: "agent",
+      ...overrides,
+    });
+
+  it("offers one-click apply for a PENDING agent update", async () => {
+    pendingUpdates = [agentUpdate()];
+    renderPanel();
+
+    await userEvent.click(screen.getByRole("button", { name: "Update Senior Engineer" }));
+
+    await waitFor(() =>
+      expect(marketplaceApi.applyUpdate).toHaveBeenCalledWith("company-1", "agent-update-1"),
+    );
+  });
+
+  // THE DISCRIMINATOR: a `conflict` row is one whose local copy diverges. Its
+  // `/apply` answers 409 by design, so offering the button would be a dead end.
+  it("offers ONLY review for a CONFLICT agent update", async () => {
+    pendingUpdates = [agentUpdate({ status: "conflict" })];
+    renderPanel();
+
+    expect(screen.queryByRole("button", { name: "Update Senior Engineer" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Review Senior Engineer" })).toBeInTheDocument();
+  });
+
+  it("falls through to review when apply reports the agent is customized", async () => {
+    pendingUpdates = [agentUpdate()];
+    vi.mocked(marketplaceApi.applyUpdate).mockRejectedValueOnce(
+      new ApiError("Agent instructions are customized. Manual merge required.", 409, {
+        code: "AGENT_INSTRUCTIONS_CUSTOMIZED",
+      }),
+    );
+
+    renderPanel();
+
+    await userEvent.click(screen.getByRole("button", { name: "Update Senior Engineer" }));
+
+    expect(await screen.findByRole("dialog")).toHaveTextContent("Reviewing Senior Engineer");
+  });
+
+  // The discriminator: `/apply` also answers 409 for a row that is simply no
+  // longer pending. That is not a merge situation and has no diff to show, so
+  // it must surface as an error rather than opening an empty review.
+  it("does NOT open review for a bare stale-status 409", async () => {
+    pendingUpdates = [agentUpdate()];
+    vi.mocked(marketplaceApi.applyUpdate).mockRejectedValueOnce(
+      new ApiError("Update is not pending (current: applied)", 409, {
+        error: "Update is not pending (current: applied)",
+      }),
+    );
+
+    renderPanel();
+
+    await userEvent.click(screen.getByRole("button", { name: "Update Senior Engineer" }));
+
+    await waitFor(() =>
+      expect(toastMocks.pushToast).toHaveBeenCalledWith(
+        expect.objectContaining({ title: "Failed to apply update", tone: "error" }),
+      ),
+    );
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
   it("shows capability approval when a plugin update introduces new permissions", async () => {
     pendingUpdates = [update({})];
     vi.mocked(marketplaceApi.applyUpdate).mockResolvedValueOnce({

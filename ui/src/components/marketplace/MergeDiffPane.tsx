@@ -46,11 +46,17 @@ export function MergeDiffPane({ sections, onChange }: MergeDiffPaneProps) {
     onChange(next);
   }
 
-  const decidable = sections.filter((s) => s.state !== "unchanged");
-
+  // Gated on `sections.length`, NOT on "has a section whose state is changed".
+  // `computeSectionDiff` calls a section `unchanged` when the two sides are
+  // TRIM-equal, while the merge only treats a file as wholesale-upstream when
+  // they are BYTE-equal. So an all-`unchanged` review can still be a real
+  // divergence — trailing whitespace — and unchanged sections render no
+  // per-section buttons. Hiding the bar there left the founder with literally
+  // no control that could resolve the update to upstream, and therefore no way
+  // out of `instructions_customized = true`.
   return (
     <div className="space-y-4 max-h-[60vh] overflow-y-auto pr-1">
-      {decidable.length > 0 && (
+      {sections.length > 0 && (
         <div className="flex items-center justify-end gap-2">
           <Button size="sm" variant="ghost" onClick={() => pickAll("mine")}>
             Keep all mine

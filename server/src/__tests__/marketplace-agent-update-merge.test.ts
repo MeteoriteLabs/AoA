@@ -54,6 +54,7 @@ import {
   AgentMergeConflictError,
   computeAgentUpdateDiff,
   mergeAgentUpdate,
+  readAgentInstructionSnapshot,
   type MergeableAgentRow,
 } from "../services/marketplace-install/agent-update-merge.js";
 import { applyCrewAgentUpdate } from "../services/marketplace-install/crew-updater.js";
@@ -606,6 +607,219 @@ describe("mergeAgentUpdate — catalog-owned fields and D23", () => {
     // founder-approved merge becomes the way to silently stop Steward.
     expect(harness.triggerDeletes).toBe(0);
     expect(harness.triggerInserts).toHaveLength(0);
+  });
+});
+
+describe("mergeAgentUpdate — trim-equal divergence (F2)", () => {
+  // `computeSectionDiff` calls a section `unchanged` on `.trim()` equality,
+  // while the merge's wholesale-upstream relaxation requires BYTE equality. A
+  // bundle differing from the catalog only by trailing whitespace therefore
+  // produced an all-`unchanged` diff — reported to the founder as "no local
+  // changes found" — that nonetheless merged to `instructions_customized =
+  // true`. And with every section `unchanged` the pane rendered no per-section
+  // buttons, so there was no control that could resolve it to upstream: a
+  // permanent freeze-out announced as a success.
+  const CLEAN = "You are Scout.\n\n## Output\nPost one entry.\n";
+  const TRAILING_WS = `${CLEAN}\n`;
+
+  beforeEach(() => {
+    upstreamState.files = { "AGENTS.md": CLEAN };
+  });
+
+  it("reports `identical: false` for a whitespace-only divergence", async () => {
+    const agent = await installAgent({ founderEdit: TRAILING_WS });
+    const { diff, identical } = await computeAgentUpdateDiff({
+      instructions,
+      agent,
+      catalogItem: CATALOG_ITEM,
+    });
+
+    // Every section still reads `unchanged` — that is the trap.
+    expect(diff.every((s) => s.state === "unchanged")).toBe(true);
+    // …but the honest byte test disagrees, and the modal copy follows this.
+    expect(identical).toBe(false);
+  });
+
+  it("reaches customized = false once the founder accepts upstream", async () => {
+    const agent = await installAgent({ founderEdit: TRAILING_WS });
+    agent.instructionsCustomized = null;
+    const { diff } = await computeAgentUpdateDiff({ instructions, agent, catalogItem: CATALOG_ITEM });
+    const harness = makeDb();
+
+    const outcome = await mergeAgentUpdate({
+      db: harness.db as never,
+      instructions,
+      agent,
+      catalogItem: CATALOG_ITEM,
+      pendingUpdateId: "pending-1",
+      decisions: Object.fromEntries(diff.map((s) => [s.header, "theirs" as const])),
+    });
+
+    expect(await readManaged("AGENTS.md")).toBe(CLEAN);
+    expect(outcome.pureUpstream).toBe(true);
+    expect(outcome.instructionsCustomized).toBe(false);
+  });
+
+  it("keeps the founder's exact bytes when they decline", async () => {
+    const agent = await installAgent({ founderEdit: TRAILING_WS });
+    const harness = makeDb();
+
+    const outcome = await mergeAgentUpdate({
+      db: harness.db as never,
+      instructions,
+      agent,
+      catalogItem: CATALOG_ITEM,
+      pendingUpdateId: "pending-1",
+      decisions: {},
+    });
+
+    expect(await readManaged("AGENTS.md")).toBe(TRAILING_WS);
+    expect(outcome.instructionsCustomized).toBe(true);
+  });
+});
+
+describe("mergeAgentUpdate — byte fidelity through the real filesystem", () => {
+  // The pure-function sweep covered these shapes; this pushes three of them
+  // through the actual `agentInstructionsService` so an encoding assumption in
+  // the writer cannot hide behind an in-memory stub.
+  const SHAPES: [name: string, content: string][] = [
+    ["BOM", "﻿# Scout\n\n## Output\nPost one entry.\n"],
+    ["CRLF", "# Scout\r\n\r\n## Output\r\nPost one entry.\r\n"],
+    ["no trailing newline + tabs", "# Scout\n\n## Output\n\tPost one entry.   "],
+  ];
+
+  for (const [name, content] of SHAPES) {
+    it(`round-trips ${name} unchanged when the founder keeps everything`, async () => {
+      upstreamState.files = { "AGENTS.md": UPSTREAM_AGENTS_MD };
+      const agent = await installAgent({ founderEdit: content });
+      const { diff } = await computeAgentUpdateDiff({ instructions, agent, catalogItem: CATALOG_ITEM });
+      const harness = makeDb();
+
+      await mergeAgentUpdate({
+        db: harness.db as never,
+        instructions,
+        agent,
+        catalogItem: CATALOG_ITEM,
+        pendingUpdateId: "pending-1",
+        decisions: Object.fromEntries(diff.map((s) => [s.header, "mine" as const])),
+      });
+
+      expect(await readManaged("AGENTS.md")).toBe(content);
+    });
+
+    it(`writes ${name} verbatim when it is the upstream content and the founder accepts`, async () => {
+      upstreamState.files = { "AGENTS.md": content };
+      const agent = await installAgent({ founderEdit: "# Something else entirely\n" });
+      const { diff } = await computeAgentUpdateDiff({ instructions, agent, catalogItem: CATALOG_ITEM });
+      const harness = makeDb();
+
+      const outcome = await mergeAgentUpdate({
+        db: harness.db as never,
+        instructions,
+        agent,
+        catalogItem: CATALOG_ITEM,
+        pendingUpdateId: "pending-1",
+        decisions: Object.fromEntries(diff.map((s) => [s.header, "theirs" as const])),
+      });
+
+      expect(await readManaged("AGENTS.md")).toBe(content);
+      expect(outcome.instructionsCustomized).toBe(false);
+    });
+  }
+});
+
+describe("mergeAgentUpdate — no-op write suppression (F5)", () => {
+  it("does not rewrite a file whose merged content already matches disk", async () => {
+    upstreamState.files = { "AGENTS.md": UPSTREAM_AGENTS_MD, "TOOLS.md": "## Tools\nshared\n" };
+    const agent = await installAgent({ extraFiles: { "TOOLS.md": "## Tools\nshared\n" } });
+    const harness = makeDb();
+    const before = await fs.stat(path.join(managedRoot(), "TOOLS.md"));
+
+    const { diff } = await computeAgentUpdateDiff({ instructions, agent, catalogItem: CATALOG_ITEM });
+
+    // A delegating wrapper rather than a spy: `writeMergedAgentBundle` holds the
+    // service by reference, and this records exactly what the merge asked to be
+    // written without changing any behaviour.
+    const written: string[] = [];
+    const recording = {
+      ...instructions,
+      writeFile: async (a: Parameters<typeof instructions.writeFile>[0], p: string, c: string) => {
+        written.push(p);
+        return instructions.writeFile(a, p, c);
+      },
+    };
+
+    await mergeAgentUpdate({
+      db: harness.db as never,
+      instructions: recording,
+      agent,
+      catalogItem: CATALOG_ITEM,
+      pendingUpdateId: "pending-1",
+      // AGENTS.md genuinely changes; TOOLS.md is byte-identical on both sides.
+      decisions: Object.fromEntries(diff.map((s) => [s.header, "theirs" as const])),
+    });
+
+    // AGENTS.md diverges and is rewritten; TOOLS.md is byte-identical on both
+    // sides and must be left alone — `writeFile` round-trips through a UTF-8
+    // decode/encode, which churns mtime and would mangle a non-UTF-8 file.
+    expect(written).toContain("AGENTS.md");
+    expect(written).not.toContain("TOOLS.md");
+    const after = await fs.stat(path.join(managedRoot(), "TOOLS.md"));
+    expect(after.mtimeMs).toBe(before.mtimeMs);
+  });
+});
+
+describe("readAgentInstructionSnapshot — virtual-path collision (F7)", () => {
+  it("excludes a REAL on-disk promptTemplate.legacy.md from review entirely", async () => {
+    // `agentInstructionsService.readFile` short-circuits on this exact path and
+    // returns `adapterConfig.promptTemplate` rather than the file's bytes, so
+    // the merge genuinely cannot see the real content. It therefore refuses to
+    // act on the path in either direction rather than writing the config value
+    // over the founder's file.
+    const agent = await installAgent({
+      extraFiles: { "promptTemplate.legacy.md": "# a real file the founder wrote\n" },
+      adapterConfigSeed: { promptTemplate: "the adapterConfig value" },
+    });
+
+    const snapshot = await readAgentInstructionSnapshot(instructions, agent);
+    expect(snapshot.files).not.toHaveProperty("promptTemplate.legacy.md");
+    expect(snapshot.virtualPaths.has("promptTemplate.legacy.md")).toBe(false);
+    expect(snapshot.shadowedPaths.has("promptTemplate.legacy.md")).toBe(true);
+  });
+
+  it("a shadowed file blocks the pure-upstream claim and survives the merge", async () => {
+    upstreamState.files = { "AGENTS.md": UPSTREAM_AGENTS_MD };
+    const agent = await installAgent({
+      extraFiles: { "promptTemplate.legacy.md": "# a real file the founder wrote\n" },
+      adapterConfigSeed: { promptTemplate: "the adapterConfig value" },
+    });
+    const { diff } = await computeAgentUpdateDiff({ instructions, agent, catalogItem: CATALOG_ITEM });
+    const harness = makeDb();
+
+    const outcome = await mergeAgentUpdate({
+      db: harness.db as never,
+      instructions,
+      agent,
+      catalogItem: CATALOG_ITEM,
+      pendingUpdateId: "pending-1",
+      decisions: Object.fromEntries(diff.map((s) => [s.header, "theirs" as const])),
+    });
+
+    // Untouched on disk, and the adapterConfig value untouched too.
+    expect(await readManaged("promptTemplate.legacy.md")).toBe("# a real file the founder wrote\n");
+    expect((harness.agentSets[0]!.adapterConfig as Record<string, unknown>).promptTemplate)
+      .toBe("the adapterConfig value");
+    // Fails closed: unaccounted local content means this is not pure upstream.
+    expect(outcome.pureUpstream).toBe(false);
+    expect(outcome.instructionsCustomized).toBe(true);
+  });
+
+  it("treats promptTemplate as virtual when no such file exists on disk", async () => {
+    const agent = await installAgent({ adapterConfigSeed: { promptTemplate: "legacy value" } });
+    const snapshot = await readAgentInstructionSnapshot(instructions, agent);
+    expect(snapshot.files["promptTemplate.legacy.md"]).toBe("legacy value");
+    expect(snapshot.virtualPaths.has("promptTemplate.legacy.md")).toBe(true);
+    expect(snapshot.shadowedPaths.size).toBe(0);
   });
 });
 

@@ -1591,17 +1591,44 @@ loop.
    It was read in three places and written in none. `conflict` = the local copy
    is (or may be) divergent, so the update cannot be taken wholesale;
    `pending` = held back only by policy or the update window, one click from
-   landing. Reconciliation is bidirectional but only moves rows already in
-   `pending`/`conflict` — an `applied` or `dismissed` row is never resurrected
-   here; that stays with `upsertPendingUpdate`, which does it only for a
-   genuinely newer release.
+   landing. Reconciliation is bidirectional.
+
+   **`checkCrewUpdates` is the ONLY writer of `itemType: "agent"` rows**, so it
+   owns every state transition for them. `upsertPendingUpdate`
+   (marketplace-update-checker.ts), which owns the equivalent logic for skills
+   and plugins, has no agent caller — `checkCompany` still carries a
+   `TODO: Add agent + team template checks`. A first version of this decision
+   deferred re-opening to it; that was wrong, and with the unique index on
+   (companyId, catalogItemId) `onConflictDoNothing` cannot re-open anything, so
+   dismiss was permanent *per agent* rather than per version and an agent that
+   ever took an update never announced another one. The agent path therefore
+   re-opens `applied`/`dismissed` rows itself, for a strictly newer release only
+   (`compareVersions`), mirroring `upsertPendingUpdate`'s rule so the two kinds
+   behave the same.
 
 6. **`/apply` handles agents; 501 now means TEAM updates only.** Forcing a
    provably untouched agent through a review it has nothing to review is the
    failure mode on the far side of D22. `/apply` delegates to
    `applyCrewAgentUpdate`, which owns the D22 gate, and answers 409
    `AGENT_INSTRUCTIONS_CUSTOMIZED` for `true`/`null` rows — the shape the skill
-   path already used.
+   path already used. The **UI offers it for `pending` rows only**: a `conflict`
+   row is one whose local copy diverges, so its `/apply` answers 409 by design
+   and the card sends it straight to Review. A 409 received anyway (the status
+   went stale between render and click) opens the review modal rather than
+   surfacing an error. Wiring this also un-stranded the *skill* `/apply`, which
+   had been equally unreachable — `UpdateCard` rendered its Update button only
+   for plugins.
+
+   **`bundlesAreByteIdentical`, not "every section is `unchanged`", decides what
+   the review modal tells the founder.** `computeSectionDiff` classifies a
+   section `unchanged` on `.trim()`; the wholesale-upstream relaxation in (3)
+   requires byte equality. Reading "identical" off the states therefore reported
+   *"No local changes found"* about a trailing-whitespace divergence that then
+   merged to `true`. The bulk `Accept all upstream` / `Keep all mine` control
+   renders whenever there is any section at all, for the same reason: unchanged
+   sections render no per-section buttons, so gating the bar on "has a changed
+   section" left an all-`unchanged` review with no control able to resolve it to
+   upstream — a permanent freeze-out announced as success.
 
 7. **A merge moves the catalog-owned non-instruction fields too** — `skillKeys`,
    `runtimeConfig.aoa.toolAllowlist`, `templateVersion`, triggers — mirroring
@@ -1625,6 +1652,23 @@ re-declare them customized on every review) lands upstream verbatim and stamps
 `instructions_customized = false`, returning the agent to auto-update
 permanently.
 
+**A file the founder declines wholesale is not created.** An upstream-only file
+whose every section resolves to "mine" is skipped outright — it appears in
+neither the write set nor the delete set, because there is nothing on disk to
+delete. Letting it fall through to `applyMergeDecisions` produced a one-newline
+phantom file that the agent then read and that showed as the founder's own
+content in every later diff.
+
+**A real on-disk file whose name collides with a legacy prompt pseudo-file is
+excluded from review in both directions.** `agentInstructionsService.readFile`
+short-circuits on `promptTemplate.legacy.md` and returns
+`adapterConfig.promptTemplate` rather than the file's bytes, so the merge cannot
+see such a file's contents at all — "disk wins" is not implementable here. It is
+therefore never written, never deleted, and its `adapterConfig` counterpart is
+left out too; the collision is logged with the rename that would bring it under
+review, and it **forces `pureUpstream` false**, because unaccounted local content
+must never be mistaken for pure catalog content.
+
 **Known gaps, stated rather than hidden.** Files are written before the
 transaction: a transaction failure leaves the merged bundle on disk with the row
 still on the old `templateVersion`, so the pending update survives and the next
@@ -1634,7 +1678,14 @@ update are serialised by the pending row's `pending`/`conflict` → `applied` cl
 and the loser gets 409, but that cannot un-write the files the loser already put
 on disk. An upstream entry-file rename is honoured only when the upstream entry
 file survives the merge; otherwise the old entry file is kept and `pureUpstream`
-is forced false.
+is forced false. And the reassembly path (mixed merges only — never the wholesale
+ones) inherits two defects from the skill primitives it shares: `\n\n` joins
+damage a CRLF document, and `splitSections` is fence-unaware, so a `## ` line
+inside a fenced example is independently decidable and carries the closing fence
+with it. Both matter more for agents than they ever did for skills, because
+AGENTS.md bundles routinely carry fenced examples; fixing them means changing
+the shipped skill merge, so they are marked at the call site rather than done
+here.
 
 **Related.** [Decision #113] (protected AoA agents — the trigger carve-out this
 composes with), [Decision #114] (D22, which this completes), T2.8 (skill-bundle

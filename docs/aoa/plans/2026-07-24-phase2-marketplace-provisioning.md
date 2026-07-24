@@ -1134,6 +1134,91 @@ the founder's lines gone.
   upstream entry file survives the merge; otherwise the old entry file is kept
   and `pureUpstream` is forced false.
 
+### Review round 2 (2026-07-24) — four required findings, all taken
+
+The reviewer's byte-fidelity sweep (21 document shapes, all 441 mine×upstream
+pairs round-tripping exactly under both wholesale paths, plus a 4,000-iteration
+random-decision sweep with no unsound `pureUpstream: true`) confirmed the
+`__preamble__` fix and the flag's soundness direction. Four defects around it did
+not hold.
+
+**F1 — a declined upstream-only file was still created, containing `"\n"`.**
+When a file exists only upstream and every section resolves to "mine",
+`allTheirs` is false and the `allMine` shortcut requires a local side, so control
+fell to `applyMergeDecisions`, which drops every section, joins nothing, and
+returns `"".trim() + "\n"`. **Directly reachable from the `Keep all mine` bulk
+control this task added.** The founder declined a file they never had and it
+landed on disk, then read as their own content in every later diff. Now given its
+own branch: skipped entirely, in neither `files` nor `deletedFiles` (there is
+nothing on disk to delete), so `survivingUpstreamParity` still fails it and
+`pureUpstream` still comes out false — same verdict, no artifact. A second test
+pins the discriminator: a *partially* declined upstream file is still created.
+
+**F2 — a trim-equal bundle could never reach `customized = false`, and the modal
+said the opposite.** `identical` was derived from section *states*, and
+`computeSectionDiff` classifies `unchanged` on `.trim()` — while the merge's
+wholesale-upstream relaxation requires BYTE equality (deliberately). So a
+trailing-whitespace-only divergence reported `identical: true`, rendered *"No
+local changes found"*, and then merged to `instructions_customized = true`. Worse,
+with every section `unchanged` the pane rendered no per-section buttons **and**
+the bulk bar was gated on `decidable.length > 0`, so there was no control in the
+UI capable of resolving it to upstream at all. A permanent freeze-out reported as
+success. Both halves fixed: `identical` is now `bundlesAreByteIdentical` (file
+set + contents + entry file), and the bulk bar renders on `sections.length > 0`.
+Ablated: reverting either half fails its tests.
+
+**F3 — the new agent `/apply` branch was unreachable from the UI.** `UpdateCard`
+rendered "Update" only when `isPlugin`, so *"an agent with no local divergence
+lands with one click"* was true server-side only. Wired rather than
+de-claimed: `onApply` is now offered for any `pending` row (a `conflict` row goes
+straight to Review, because its `/apply` answers 409 by design), the panel's
+apply handler is generalised from `applyPluginUpdate` to `applyUpdate`, and a 409
+falls through to the review modal so a status that went stale between render and
+click is not a dead end. This also un-strands the **skill** `/apply`, which was
+equally unreachable.
+
+**F4 — the reconcile's stated escape hatch did not exist.** The shipped comment
+scoped the reconcile to `pending`/`conflict` "because that re-opening decision
+belongs to `upsertPendingUpdate`". It does not: `upsertPendingUpdate` has no
+agent caller (`checkCompany` still carries `TODO: Add agent + team template
+checks`), and with the unique index `onConflictDoNothing` can never re-open a
+row. So dismiss was permanent **per agent** rather than per version, and an agent
+that ever took an update never announced another one — the row sat `applied` with
+`latestVersion` frozen, invisible to the panel, the reconcile and the insert
+alike. Comment corrected AND the widening taken: `applied`/`dismissed` re-open
+when `compareVersions(catalogItem.version, row.latestVersion) > 0`, mirroring
+`upsertPendingUpdate`'s rule exactly. A re-opened row counts as news and fires
+the notification; a same-version dismissal still holds (the discriminator).
+
+**Lower findings.** F5: files whose merged content already equals disk are no
+longer rewritten — `writeFile` round-trips through a UTF-8 decode/encode, which
+churns mtime and would mangle a non-UTF-8 file in the bundle root. F6: a `TODO`
+at the `applyMergeDecisions` call site naming the two inherited skill-primitive
+defects (bare-`\n\n` joins damage CRLF; `splitSections` is fence-unaware, so a
+`## ` inside a fenced example is independently decidable and carries the closing
+fence) — they do not reach the wholesale paths, and fixing them means changing
+the shipped skill merge. F7: the reconcile refreshes `currentVersion` too, so a
+row whose agent advanced by another path cannot render a stale "1 → 3".
+
+**F7's second half changed shape.** The reviewer asked for a one-line guard so a
+real on-disk `promptTemplate.legacy.md` is not overwritten by the `adapterConfig`
+value. Investigating it found the file is *unreadable through the service at
+all*: `agentInstructionsService.readFile` short-circuits on that exact path and
+returns `adapterConfig.promptTemplate` instead of the file's bytes (pre-existing,
+and the same short-circuit is what makes the pseudo-file work for the editor).
+Disk therefore cannot simply "win". The merge instead refuses to act on such a
+path in either direction — excluded from the diff, never written, never deleted,
+and the `adapterConfig` value for that key excluded too — reports it as
+`shadowedPaths`, logs a warning naming the rename that would bring it under
+review, and **forces `pureUpstream` false** so unaccounted local content can
+never be mistaken for pure catalog content.
+
+**End-to-end byte fidelity through the real filesystem.** The reviewer's sweep
+ran at the pure-function layer. BOM, CRLF, and no-trailing-newline+tabs are now
+also pushed through `writeMergedAgentBundle` against the real
+`agentInstructionsService`, in both directions (kept verbatim as "mine", written
+verbatim as upstream).
+
 ---
 
 ## T2.8 — Bundle re-materialization on merge (P12)

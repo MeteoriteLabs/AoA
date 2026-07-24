@@ -51,6 +51,7 @@ import { protectedAgentRole } from "../protected-agents.js";
 import {
   LEGACY_PROMPT_VIRTUAL_FILES,
   applyAgentMergeDecisions,
+  bundlesAreByteIdentical,
   computeAgentSectionDiff,
   isLegacyPromptVirtualFile,
   type AgentMergeResult,
@@ -122,27 +123,61 @@ function asNonEmptyString(value: unknown): string | null {
  * virtual entries are filtered out of the disk walk and re-derived from
  * `adapterConfig` here; that keeps one source of truth for their contents and
  * covers `bootstrapPromptTemplate`, which `getBundle` does not list at all.
+ *
+ * A REAL file whose name collides with one of those pseudo-paths is reported as
+ * `shadowedPaths` and excluded from the snapshot entirely — see the comment at
+ * the collision check for why "disk wins" is not implementable here.
  */
 export async function readAgentInstructionSnapshot(
   instructions: AgentBundleServiceLike,
   agent: BundleAgentLike,
-): Promise<{ files: Record<string, string>; entryFile: string }> {
+): Promise<AgentInstructionSnapshot> {
   const bundle = await instructions.getBundle(agent);
   const files: Record<string, string> = {};
+  const shadowedPaths = new Set<string>();
 
   for (const file of bundle.files) {
     if (file.virtual) continue;
+    // NAME COLLISION, fail closed. A founder may legitimately keep a real file
+    // called `promptTemplate.legacy.md` in their bundle root — and it is not
+    // readable through this service at all: `agentInstructionsService.readFile`
+    // short-circuits on that exact path and returns `adapterConfig.promptTemplate`
+    // instead of the file's bytes (pre-existing, and the same short-circuit is
+    // what makes the pseudo-file work for the editor). Since the merge cannot
+    // see the real content, it must not act on the path in EITHER direction: it
+    // is left out of the diff, never written, never deleted, and the
+    // `adapterConfig` value for that key is left out too. `shadowedPaths` is
+    // then reported so the caller refuses to claim the bundle is pure upstream
+    // while a local file it could not account for is sitting there.
+    if (isLegacyPromptVirtualFile(file.path)) {
+      shadowedPaths.add(file.path);
+      continue;
+    }
     const detail = await instructions.readFile(agent, file.path);
     files[file.path] = detail.content;
   }
 
   const config = asRecord(agent.adapterConfig);
+  const virtualPaths = new Set<string>();
   for (const [virtualPath, configKey] of Object.entries(LEGACY_PROMPT_VIRTUAL_FILES)) {
+    if (shadowedPaths.has(virtualPath)) continue;
     const value = asNonEmptyString(config[configKey]);
-    if (value !== null) files[virtualPath] = value;
+    if (value !== null) {
+      files[virtualPath] = value;
+      virtualPaths.add(virtualPath);
+    }
   }
 
-  return { files, entryFile: bundle.entryFile };
+  if (shadowedPaths.size > 0) {
+    logger.warn(
+      { agentId: agent.id, shadowedPaths: [...shadowedPaths] },
+      "marketplace: agent bundle contains real files whose names collide with the legacy prompt "
+        + "pseudo-files; excluding them from the update review (they cannot be read through the "
+        + "instructions service). Rename them to bring them under review.",
+    );
+  }
+
+  return { files, entryFile: bundle.entryFile, virtualPaths, shadowedPaths };
 }
 
 export interface UpstreamAgentInstructions {
@@ -166,11 +201,25 @@ export async function loadUpstreamAgentInstructions(
   };
 }
 
+export interface AgentInstructionSnapshot {
+  /** The reviewable bundle, as `path → content`. */
+  files: Record<string, string>;
+  entryFile: string;
+  /** Paths backed by `adapterConfig` rather than disk, for THIS agent. */
+  virtualPaths: Set<string>;
+  /**
+   * Real on-disk files excluded from review because their name collides with a
+   * legacy prompt pseudo-file. Non-empty means the bundle can never be reported
+   * as pure upstream — there is local content the merge could not account for.
+   */
+  shadowedPaths: Set<string>;
+}
+
 export interface AgentUpdateDiff {
   diff: AgentSectionDiff[];
   upstream: UpstreamAgentInstructions;
   /** The agent's current bundle, as `path → content`. */
-  local: { files: Record<string, string>; entryFile: string };
+  local: AgentInstructionSnapshot;
   localEntryFile: string;
   /** True when the local bundle already equals upstream byte-for-byte. */
   identical: boolean;
@@ -184,10 +233,17 @@ export async function computeAgentUpdateDiff(opts: {
 }): Promise<AgentUpdateDiff> {
   const upstream = await loadUpstreamAgentInstructions(opts.catalogItem);
   const local = await readAgentInstructionSnapshot(opts.instructions, opts.agent);
-  const diff = computeAgentSectionDiff(local.files, upstream.files);
+  const diff = computeAgentSectionDiff(local.files, upstream.files, local.virtualPaths);
+  // BYTE equality, not "every section is `unchanged`". `computeSectionDiff`
+  // classifies `unchanged` on `.trim()`, so a trailing-whitespace-only
+  // divergence yields an all-`unchanged` diff — and the modal would then tell
+  // the founder "no local changes found" about a bundle that merges to
+  // `instructions_customized = true`. The claim has to match what the merge
+  // will actually decide.
   const identical =
-    diff.every((section) => section.state === "unchanged")
-    && local.entryFile === upstream.entryFile;
+    bundlesAreByteIdentical(local.files, upstream.files)
+    && local.entryFile === upstream.entryFile
+    && local.shadowedPaths.size === 0;
   return { diff, upstream, local, localEntryFile: local.entryFile, identical };
 }
 
@@ -207,8 +263,12 @@ export async function writeMergedAgentBundle(opts: {
   merged: AgentMergeResult;
   upstreamEntryFile: string;
   localEntryFile: string;
+  /** The bundle as it is on disk right now — used to skip no-op writes. */
+  localFiles: Record<string, string>;
+  /** Paths backed by `adapterConfig` rather than disk, for THIS agent. */
+  virtualPaths: ReadonlySet<string>;
 }): Promise<{ adapterConfig: Record<string, unknown>; keptUndeletableFiles: string[] }> {
-  const { instructions, merged, upstreamEntryFile } = opts;
+  const { instructions, merged, upstreamEntryFile, localFiles, virtualPaths } = opts;
   let adapterConfig = asRecord(opts.agent.adapterConfig);
   const agentFor = (): BundleAgentLike => ({
     id: opts.agent.id,
@@ -219,6 +279,7 @@ export async function writeMergedAgentBundle(opts: {
 
   // 1. Virtual (adapterConfig-backed) files — set or clear, no disk involved.
   for (const [virtualPath, configKey] of Object.entries(LEGACY_PROMPT_VIRTUAL_FILES)) {
+    if (!virtualPaths.has(virtualPath)) continue;
     if (virtualPath in merged.files) {
       adapterConfig = { ...adapterConfig, [configKey]: merged.files[virtualPath]! };
     } else if (merged.deletedFiles.includes(virtualPath)) {
@@ -228,9 +289,13 @@ export async function writeMergedAgentBundle(opts: {
     }
   }
 
-  // 2. Real files.
+  // 2. Real files. Files whose merged content already equals what is on disk
+  //    are SKIPPED, not rewritten: `writeFile` round-trips through a UTF-8
+  //    decode/encode, so rewriting an untouched file both churns its mtime and
+  //    would mangle any non-UTF-8 file a founder keeps in the bundle root.
   for (const [relativePath, content] of Object.entries(merged.files)) {
-    if (isLegacyPromptVirtualFile(relativePath)) continue;
+    if (virtualPaths.has(relativePath)) continue;
+    if (localFiles[relativePath] === content) continue;
     const written = await instructions.writeFile(agentFor(), relativePath, content);
     adapterConfig = written.adapterConfig;
   }
@@ -247,7 +312,7 @@ export async function writeMergedAgentBundle(opts: {
   // 4. Deletions.
   const keptUndeletableFiles: string[] = [];
   for (const relativePath of merged.deletedFiles) {
-    if (isLegacyPromptVirtualFile(relativePath)) continue;
+    if (virtualPaths.has(relativePath)) continue;
     if (relativePath === entryFile) {
       keptUndeletableFiles.push(relativePath);
       continue;
@@ -338,9 +403,17 @@ export async function mergeAgentUpdate(opts: {
     merged,
     upstreamEntryFile: upstream.entryFile,
     localEntryFile,
+    localFiles: local.files,
+    virtualPaths: local.virtualPaths,
   });
 
-  const pureUpstream = merged.pureUpstream && keptUndeletableFiles.length === 0;
+  const pureUpstream =
+    merged.pureUpstream
+    && keptUndeletableFiles.length === 0
+    // A shadowed file is local content the merge could neither read nor
+    // reconcile. Claiming pure catalog content over it would re-open the agent
+    // to auto-update while an unaccounted local file sits in its bundle.
+    && local.shadowedPaths.size === 0;
   const instructionsCustomized = !pureUpstream;
 
   const protectedRole = protectedAgentRole({

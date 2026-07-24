@@ -7,6 +7,7 @@ import { parseMarketplaceAgentTemplate, normalizeMarketplaceAgentTemplate } from
 import { loadMarketplaceInstructionFiles } from "./agent-create.js";
 import type { AgentInstructionsServiceLike } from "./agent-create.js";
 import { marketplaceNotifications } from "../marketplace-notifications.js";
+import { compareVersions } from "../marketplace-update-checker.js";
 import { isWithinUpdateWindow } from "./skill-auto-updater.js";
 import { protectedAgentRole } from "../protected-agents.js";
 import { logger } from "../../middleware/logger.js";
@@ -443,29 +444,74 @@ export async function checkCrewUpdates(opts: {
       pendingInserted = inserted.length > 0;
 
       if (!pendingInserted) {
-        // A row already existed. Reconcile its status and version with what we
-        // just observed, but ONLY from the two live states — an `applied` or
-        // `dismissed` row must not be resurrected by a re-run of the checker
-        // (that re-opening decision belongs to `upsertPendingUpdate`, which
-        // makes it deliberately and only for a genuinely newer release).
+        // A row already exists for this (companyId, catalogItemId) — the unique
+        // index means `onConflictDoNothing` can never update it, so every
+        // transition has to happen here.
         //
-        // Bidirectional on purpose: an agent whose divergence was resolved by a
-        // merge that landed pure catalog content is no longer in conflict, and
-        // a stale red badge is its own kind of lie.
-        await db
-          .update(marketplacePendingUpdates)
-          .set({
-            status: nextStatus,
-            latestVersion: catalogItem.version,
-            updatedAt: new Date(),
+        // ⚠️ **The agent path is the ONLY writer of `itemType: "agent"` rows.**
+        // `upsertPendingUpdate` (marketplace-update-checker.ts) — which owns the
+        // equivalent logic for skills and plugins, including re-opening an
+        // `applied`/`dismissed` row for a genuinely newer release — has no agent
+        // caller; `checkCompany` still carries a `TODO: Add agent + team
+        // template checks`. So there is no other path that will ever revive
+        // these rows, and this block must handle all four states itself:
+        //
+        // - `pending` / `conflict` → reconcile status + versions. Bidirectional
+        //   on purpose: an agent whose divergence a merge resolved is no longer
+        //   in conflict, and a stale red badge is its own kind of lie.
+        // - `applied` / `dismissed` → re-open ONLY for a version strictly newer
+        //   than the one that was applied or dismissed. Without this, dismiss
+        //   was permanent *per agent* rather than per version, and an agent that
+        //   ever took an update never announced another one: the row sat
+        //   `applied` with `latestVersion` frozen and invisible to the panel,
+        //   the reconcile and the insert alike. Mirrors
+        //   `upsertPendingUpdate`'s rule exactly so the two kinds behave the
+        //   same.
+        const [existing] = await db
+          .select({
+            status: marketplacePendingUpdates.status,
+            latestVersion: marketplacePendingUpdates.latestVersion,
           })
+          .from(marketplacePendingUpdates)
           .where(
             and(
               eq(marketplacePendingUpdates.companyId, companyId),
               eq(marketplacePendingUpdates.catalogItemId, catalogItem.id),
-              inArray(marketplacePendingUpdates.status, ["pending", "conflict"]),
             ),
-          );
+          )
+          .limit(1);
+
+        const isLive = existing?.status === "pending" || existing?.status === "conflict";
+        const isNewerRelease =
+          existing !== undefined
+          && !isLive
+          && compareVersions(catalogItem.version, existing.latestVersion) > 0;
+
+        if (existing && (isLive || isNewerRelease)) {
+          await db
+            .update(marketplacePendingUpdates)
+            .set({
+              status: nextStatus,
+              // `currentVersion` is refreshed too: the agent's version can move
+              // by another path (a merge, an adoption), and a row still showing
+              // the version it was minted at renders a wrong "1 → 3".
+              currentVersion: agent.templateVersion ?? "0.0.0",
+              latestVersion: catalogItem.version,
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(marketplacePendingUpdates.companyId, companyId),
+                eq(marketplacePendingUpdates.catalogItemId, catalogItem.id),
+                inArray(
+                  marketplacePendingUpdates.status,
+                  isLive ? ["pending", "conflict"] : ["applied", "dismissed"],
+                ),
+              ),
+            );
+          // A re-opened row is news; a reconciled live row is not.
+          pendingInserted = isNewerRelease;
+        }
       }
     } catch (err) {
       logger.error({ err }, "marketplace: failed to record pending update");

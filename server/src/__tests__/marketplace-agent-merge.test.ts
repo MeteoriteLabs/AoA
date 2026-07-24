@@ -11,6 +11,7 @@ import {
   LEGACY_PROMPT_TEMPLATE_FILE,
   agentSectionKey,
   applyAgentMergeDecisions,
+  bundlesAreByteIdentical,
   computeAgentSectionDiff,
 } from "../services/marketplace-agent-merge.js";
 
@@ -72,6 +73,44 @@ describe("computeAgentSectionDiff", () => {
     const styleSections = diff.filter((s) => s.file === "STYLE.md");
     expect(styleSections.length).toBeGreaterThan(0);
     expect(styleSections.every((s) => s.state === "added")).toBe(true);
+  });
+
+  it("does NOT create an upstream-only file the founder declined wholesale", () => {
+    // F1. `allTheirs` is false (every decision is "mine") and the `allMine`
+    // shortcut needs a local side, so control used to fall through to
+    // `applyMergeDecisions`, which drops every added/"mine" section and returns
+    // `"\n"` — materialising a one-newline phantom the agent then reads and
+    // every later diff shows as the founder's own content. Directly reachable
+    // from the `Keep all mine` bulk control.
+    const mine = { "AGENTS.md": "## A\nalpha\n" };
+    const theirs = { "AGENTS.md": "## A\nalpha\n", "NEW.md": "## New\nbrand new upstream file\n" };
+    const diff = computeAgentSectionDiff(mine, theirs);
+    const merged = applyAgentMergeDecisions(
+      diff,
+      Object.fromEntries(diff.map((s) => [s.header, "mine" as const])),
+      { mine, upstream: theirs },
+    );
+
+    expect(merged.files).not.toHaveProperty("NEW.md");
+    // It was never on disk, so it is not a deletion either.
+    expect(merged.deletedFiles).not.toContain("NEW.md");
+    expect(merged.files["AGENTS.md"]).toBe(mine["AGENTS.md"]);
+    // Declining an upstream file is still a divergence from upstream.
+    expect(merged.pureUpstream).toBe(false);
+  });
+
+  it("still creates an upstream-only file when only SOME of it is declined", () => {
+    // The discriminator for F1's fix: skipping the file wholesale must not
+    // swallow a partial acceptance.
+    const mine = { "AGENTS.md": "## A\nalpha\n" };
+    const theirs = { "AGENTS.md": "## A\nalpha\n", "NEW.md": "## Keep\nyes\n\n## Drop\nno\n" };
+    const diff = computeAgentSectionDiff(mine, theirs);
+    const decisions = Object.fromEntries(diff.map((s) => [s.header, "theirs" as const]));
+    decisions[agentSectionKey("NEW.md", "Drop")] = "mine";
+    const merged = applyAgentMergeDecisions(diff, decisions, { mine, upstream: theirs });
+
+    expect(merged.files["NEW.md"]).toContain("## Keep");
+    expect(merged.files["NEW.md"]).not.toContain("## Drop");
   });
 
   it("marks a whole local-only file as `removed`", () => {
@@ -229,5 +268,45 @@ describe("applyAgentMergeDecisions", () => {
     );
     expect(dropped.deletedFiles).toContain(LEGACY_PROMPT_TEMPLATE_FILE);
     expect(dropped.pureUpstream).toBe(true);
+  });
+});
+
+describe("bundlesAreByteIdentical", () => {
+  // F2. `computeSectionDiff` classifies `unchanged` on `.trim()`, but the
+  // merge's wholesale-upstream relaxation requires BYTE equality. Deriving
+  // "identical" from section states therefore reported "no local changes" about
+  // a bundle that would then merge to `instructions_customized = true` — a
+  // permanent freeze-out announced as a success.
+  const TRAILING_WS = "## A\nalpha\n\n";
+  const CLEAN = "## A\nalpha\n";
+
+  it("is false for a trailing-whitespace-only divergence that every section calls `unchanged`", () => {
+    const diff = computeAgentSectionDiff({ "AGENTS.md": TRAILING_WS }, { "AGENTS.md": CLEAN });
+    expect(diff.every((s) => s.state === "unchanged")).toBe(true);
+    expect(bundlesAreByteIdentical({ "AGENTS.md": TRAILING_WS }, { "AGENTS.md": CLEAN })).toBe(false);
+  });
+
+  it("is true only for an exact match", () => {
+    expect(bundlesAreByteIdentical({ "AGENTS.md": CLEAN }, { "AGENTS.md": CLEAN })).toBe(true);
+    expect(bundlesAreByteIdentical({ a: "x" }, { a: "x", b: "y" })).toBe(false);
+    expect(bundlesAreByteIdentical({ a: "x", b: "y" }, { a: "x" })).toBe(false);
+  });
+
+  it("a trim-equal bundle CAN still be resolved to pure upstream", () => {
+    // The recovery path the missing bulk bar used to make unreachable.
+    const mine = { "AGENTS.md": TRAILING_WS };
+    const upstream = { "AGENTS.md": CLEAN };
+    const diff = computeAgentSectionDiff(mine, upstream);
+
+    const defaults = applyAgentMergeDecisions(diff, {}, { mine, upstream });
+    expect(defaults.pureUpstream).toBe(false);
+
+    const allTheirs = applyAgentMergeDecisions(
+      diff,
+      Object.fromEntries(diff.map((s) => [s.header, "theirs" as const])),
+      { mine, upstream },
+    );
+    expect(allTheirs.files["AGENTS.md"]).toBe(CLEAN);
+    expect(allTheirs.pureUpstream).toBe(true);
   });
 });

@@ -19,8 +19,6 @@ export function UpdateCard({
   onReview,
   isPending,
 }: UpdateCardProps) {
-  const isPlugin = update.itemType === "plugin";
-
   return (
     <Card>
       <CardContent className="flex items-center justify-between gap-4 py-3 px-4">
@@ -39,7 +37,14 @@ export function UpdateCard({
               Conflict
             </Badge>
           )}
-          {isPlugin && onApply && (
+          {/*
+            No longer plugin-only. `POST /updates/:id/apply` handles skills and
+            agents too, and gating the button on `isPlugin` made that branch
+            unreachable from the UI — an agent with nothing to review still had
+            to go through the merge modal. The panel decides WHICH updates get
+            `onApply` (only `pending` ones — a `conflict` row must be reviewed).
+          */}
+          {onApply && (
             <Button
               size="sm"
               variant="outline"
@@ -50,7 +55,7 @@ export function UpdateCard({
               Update
             </Button>
           )}
-          {!isPlugin && onReview && (
+          {onReview && (
             <Button
               size="sm"
               variant="outline"

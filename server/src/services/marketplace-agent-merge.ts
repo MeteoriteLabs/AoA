@@ -70,6 +70,16 @@ export const LEGACY_PROMPT_VIRTUAL_FILES: Readonly<Record<string, "promptTemplat
   [LEGACY_BOOTSTRAP_PROMPT_TEMPLATE_FILE]: "bootstrapPromptTemplate",
 };
 
+/**
+ * Is this path a legacy-prompt pseudo-file *by name*?
+ *
+ * Name alone is not sufficient at the I/O boundary: a founder may have a REAL
+ * file called `promptTemplate.legacy.md` sitting in their bundle root, and
+ * routing that to `adapterConfig` would delete it from disk. Callers that write
+ * pass the per-agent `virtualPaths` set computed by
+ * `readAgentInstructionSnapshot`, where disk wins. This predicate is the
+ * default for callers that have no such set (the pure-function tests).
+ */
 export function isLegacyPromptVirtualFile(filePath: string): boolean {
   return Object.prototype.hasOwnProperty.call(LEGACY_PROMPT_VIRTUAL_FILES, filePath);
 }
@@ -125,7 +135,10 @@ function toAgentSections(file: string, sections: SectionDiff[], virtual: boolean
 export function computeAgentSectionDiff(
   mine: Record<string, string>,
   theirs: Record<string, string>,
+  virtualPaths?: ReadonlySet<string>,
 ): AgentSectionDiff[] {
+  const isVirtual = (file: string) =>
+    virtualPaths ? virtualPaths.has(file) : isLegacyPromptVirtualFile(file);
   const mineFiles = Object.keys(mine).sort((a, b) => a.localeCompare(b));
   const upstreamOnlyFiles = Object.keys(theirs)
     .filter((file) => !(file in mine))
@@ -134,7 +147,7 @@ export function computeAgentSectionDiff(
   const out: AgentSectionDiff[] = [];
 
   for (const file of mineFiles) {
-    const virtual = isLegacyPromptVirtualFile(file);
+    const virtual = isVirtual(file);
     if (!(file in theirs)) {
       const sections = deduplicateHeaders(splitSections(mine[file]!)).map<SectionDiff>((s) => ({
         header: s.header,
@@ -155,10 +168,31 @@ export function computeAgentSectionDiff(
       mine: "",
       theirs: s.content,
     }));
-    out.push(...toAgentSections(file, sections, isLegacyPromptVirtualFile(file)));
+    out.push(...toAgentSections(file, sections, isVirtual(file)));
   }
 
   return out;
+}
+
+/**
+ * Is the local bundle byte-identical to upstream?
+ *
+ * **Deliberately NOT derived from section states.** `computeSectionDiff`
+ * classifies a section `unchanged` on `.trim()` equality, so a bundle that
+ * differs from upstream only by trailing whitespace produces an all-`unchanged`
+ * diff — while the wholesale-upstream relaxation in
+ * {@link applyAgentMergeDecisions} requires BYTE equality. Reading "identical"
+ * off the states therefore told the founder "no local changes found" about a
+ * bundle that would then merge to `instructions_customized = true`.
+ */
+export function bundlesAreByteIdentical(
+  mine: Record<string, string>,
+  upstream: Record<string, string>,
+): boolean {
+  const mineKeys = Object.keys(mine);
+  const upstreamKeys = Object.keys(upstream);
+  if (mineKeys.length !== upstreamKeys.length) return false;
+  return mineKeys.every((file) => file in upstream && mine[file] === upstream[file]);
 }
 
 export interface AgentMergeResult {
@@ -243,6 +277,18 @@ export function applyAgentMergeDecisions(
     );
     const allMine = effective.every((decision) => decision === "mine");
 
+    // A file the founder does not have and declined WHOLESALE is simply not
+    // created. Without this branch it falls to `applyMergeDecisions`, which
+    // drops every `added`/"mine" section, joins nothing, and returns `"\n"` —
+    // so declining a new upstream file materialised a one-newline phantom on
+    // disk that then showed as the founder's own content in every later diff.
+    // Directly reachable from the `Keep all mine` bulk control.
+    //
+    // It belongs in NEITHER map: there is nothing on disk to delete. `continue`
+    // leaves it missing from `files`, so `survivingUpstreamParity` fails it and
+    // `pureUpstream` still comes out false — the same verdict, no artifact.
+    if (allMine && !(file in mine)) continue;
+
     let content: string | null;
     if (allTheirs) {
       // Local-only file, wholly given away → it goes. Dropping a file upstream
@@ -252,6 +298,18 @@ export function applyAgentMergeDecisions(
     } else if (allMine && file in mine) {
       content = mine[file]!;
     } else {
+      // TODO(marketplace): the reassembly path inherits two defects from the
+      // skill primitives, and they bite harder for agents than they ever did
+      // for skills — AGENTS.md bundles routinely carry fenced examples.
+      //  1. `applyMergeDecisions` joins with a bare "\n\n", so a CRLF document
+      //     comes back with LF separators between sections.
+      //  2. `splitSections` is fence-unaware: a "## " line inside a ``` block
+      //     becomes an independently decidable section AND carries the closing
+      //     fence with it, so accepting one side and keeping the other can
+      //     leave the fence unbalanced.
+      // Neither reaches the wholesale (all-mine / all-upstream) paths above.
+      // Fixing them means changing `marketplace-merge.ts`, which the shipped
+      // skill merge also uses — out of scope for T2.7, not forgotten.
       content = applyMergeDecisions(sections, decisions);
     }
 
@@ -263,9 +321,9 @@ export function applyAgentMergeDecisions(
     if (!matchesUpstream) pureUpstream = false;
   }
 
-  // Every upstream file is always present in the diff, so this is a defensive
-  // parity check rather than a reachable branch — but `pureUpstream` gates a
-  // flag that re-opens the agent to silent overwrites, so it fails closed.
+  // Reachable, and load-bearing: the declined-upstream-only branch above
+  // `continue`s without touching `pureUpstream`, so this is what registers that
+  // an upstream file the founder refused is missing from the result.
   const survivingUpstreamParity = Object.keys(upstream).every((file) => file in files);
 
   return { files, deletedFiles, pureUpstream: pureUpstream && survivingUpstreamParity };

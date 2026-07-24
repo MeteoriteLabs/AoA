@@ -136,7 +136,11 @@ function makeTxMock(
 function makeNotifyDb(
   rows: unknown[],
   liveState?: boolean | null,
-  opts?: { pendingRowAlreadyExists?: boolean },
+  opts?: {
+    pendingRowAlreadyExists?: boolean;
+    /** The row `checkCrewUpdates` reads back after `onConflictDoNothing` loses. */
+    existingPendingRow?: { status: string; latestVersion: string };
+  },
 ) {
   const insertedValues: Record<string, unknown>[] = [];
   /** T2.7: SET payloads of the pending-row status reconcile (top-level, not tx). */
@@ -150,7 +154,13 @@ function makeNotifyDb(
     select: vi.fn().mockReturnValue({
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockReturnValue({
-          limit: vi.fn().mockResolvedValue([{ instructionsCustomized: resolvedLive }]),
+          limit: vi
+            .fn()
+            .mockResolvedValue(
+              opts?.existingPendingRow
+                ? [opts.existingPendingRow]
+                : [{ instructionsCustomized: resolvedLive }],
+            ),
           then: (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) =>
             Promise.resolve(rows).then(resolve, reject),
         }),
@@ -488,7 +498,10 @@ describe("checkCrewUpdates — conflict status (T2.7)", () => {
   async function runNotify(
     instructionsCustomized: boolean | null,
     settings = AUTO_SETTINGS,
-    opts?: { pendingRowAlreadyExists?: boolean },
+    opts?: {
+      pendingRowAlreadyExists?: boolean;
+      existingPendingRow?: { status: string; latestVersion: string };
+    },
   ) {
     const harness = makeNotifyDb(
       [
@@ -538,6 +551,7 @@ describe("checkCrewUpdates — conflict status (T2.7)", () => {
   it("promotes an ALREADY-EXISTING pending row to `conflict` when the agent diverged", async () => {
     const { insertedValues, pendingUpdateSets } = await runNotify(true, AUTO_SETTINGS, {
       pendingRowAlreadyExists: true,
+      existingPendingRow: { status: "pending", latestVersion: "0.0.9" },
     });
     // The insert lost the race with an existing row, so the status has to be
     // reconciled by an explicit UPDATE — `onConflictDoNothing` alone would leave
@@ -553,8 +567,59 @@ describe("checkCrewUpdates — conflict status (T2.7)", () => {
   it("demotes an existing row back to `pending` once the divergence is gone", async () => {
     const { pendingUpdateSets } = await runNotify(false, NOTIFY_SETTINGS, {
       pendingRowAlreadyExists: true,
+      existingPendingRow: { status: "conflict", latestVersion: "0.0.9" },
     });
     expect(pendingUpdateSets[0]).toMatchObject({ status: "pending" });
+  });
+
+  // ── F4: this block is the ONLY writer of `itemType: "agent"` rows ─────────
+  //
+  // `upsertPendingUpdate`, which owns re-opening for skills and plugins, has no
+  // agent caller (`checkCompany` still carries `TODO: Add agent + team template
+  // checks`). Without the re-open here, `onConflictDoNothing` + the unique
+  // index made dismiss permanent PER AGENT rather than per version, and an
+  // agent that ever took an update never announced another one.
+
+  it("re-opens a DISMISSED row for a genuinely newer release", async () => {
+    const { pendingUpdateSets } = await runNotify(true, AUTO_SETTINGS, {
+      pendingRowAlreadyExists: true,
+      existingPendingRow: { status: "dismissed", latestVersion: "0.0.5" },
+    });
+    expect(pendingUpdateSets[0]).toMatchObject({
+      status: "conflict",
+      latestVersion: CATALOG_ITEM.version,
+    });
+    const { marketplaceNotifications } = await import("../services/marketplace-notifications.js");
+    expect(marketplaceNotifications.updateAvailable).toHaveBeenCalled();
+  });
+
+  it("re-opens an APPLIED row for a genuinely newer release", async () => {
+    const { pendingUpdateSets } = await runNotify(false, NOTIFY_SETTINGS, {
+      pendingRowAlreadyExists: true,
+      existingPendingRow: { status: "applied", latestVersion: "0.0.5" },
+    });
+    expect(pendingUpdateSets[0]).toMatchObject({ status: "pending" });
+  });
+
+  // THE DISCRIMINATOR for the re-open: a dismissal must still hold for the
+  // version it was made against, or "dismiss" would mean nothing at all.
+  it("does NOT re-open a dismissed row at the SAME version", async () => {
+    const { pendingUpdateSets } = await runNotify(true, AUTO_SETTINGS, {
+      pendingRowAlreadyExists: true,
+      existingPendingRow: { status: "dismissed", latestVersion: CATALOG_ITEM.version },
+    });
+    expect(pendingUpdateSets).toHaveLength(0);
+  });
+
+  it("refreshes currentVersion so the card cannot render a stale range", async () => {
+    // F7. The agent's version can move by another path (a merge, an adoption);
+    // a row still carrying the version it was minted at renders a wrong
+    // "0.0.1 → 0.1.0".
+    const { pendingUpdateSets } = await runNotify(true, AUTO_SETTINGS, {
+      pendingRowAlreadyExists: true,
+      existingPendingRow: { status: "pending", latestVersion: "0.0.9" },
+    });
+    expect(pendingUpdateSets[0]).toMatchObject({ currentVersion: AGENT_ROW.templateVersion });
   });
 });
 

@@ -73,6 +73,38 @@ describe("MergeDiffPane — agent bundles", () => {
   });
 });
 
+describe("MergeDiffPane — all-unchanged reviews (F2)", () => {
+  // `computeSectionDiff` calls a section `unchanged` on TRIM equality, so a
+  // trailing-whitespace-only divergence renders an all-`unchanged` review —
+  // and unchanged sections render no per-section buttons. Gating the bulk bar
+  // on "has a changed section" therefore left the founder with no control at
+  // all that could resolve the update to upstream, and no way out of
+  // `instructions_customized = true`.
+  const ALL_UNCHANGED: SectionDiff[] = [
+    {
+      header: "AGENTS.md::__preamble__",
+      file: "AGENTS.md",
+      section: "__preamble__",
+      state: "unchanged",
+      mine: "You are Scout.\n\n",
+      theirs: "You are Scout.\n",
+    },
+  ];
+
+  it("still offers the bulk controls when every section is unchanged", () => {
+    render(<MergeDiffPane sections={ALL_UNCHANGED} onChange={vi.fn()} />);
+    expect(screen.getByRole("button", { name: "Accept all upstream" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Accept upstream" })).not.toBeInTheDocument();
+  });
+
+  it("resolves an all-unchanged review to upstream", () => {
+    const onChange = vi.fn();
+    render(<MergeDiffPane sections={ALL_UNCHANGED} onChange={onChange} />);
+    fireEvent.click(screen.getByRole("button", { name: "Accept all upstream" }));
+    expect(onChange.mock.calls.at(-1)![0]).toEqual({ "AGENTS.md::__preamble__": "theirs" });
+  });
+});
+
 describe("MergeDiffPane — skill updates (no file metadata)", () => {
   it("still renders a bare heading and the introduction alias", () => {
     const skillSections: SectionDiff[] = [
