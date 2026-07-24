@@ -1,5 +1,5 @@
 import { useLayoutEffect, useMemo, useState } from "react";
-import { Bot, Home, Puzzle, Sparkles, Users } from "lucide-react";
+import { Bot, Cable, Home, Puzzle, Sparkles, Users } from "lucide-react";
 import type { MarketplaceItemType } from "@armyofagents/shared";
 import { useNavigate, useOutletContext } from "@/lib/router";
 import { useCatalog } from "@/hooks/useCatalog";
@@ -11,11 +11,18 @@ import {
 } from "@/components/SecondarySidebar";
 import type { LobbyOutletContext } from "@/components/LobbyLayout";
 
-export type MarketplaceSidebarKey = "home" | MarketplaceItemType | "aoa";
+/**
+ * `"connector"` is a SIDEBAR key only — deliberately not a `MarketplaceItemType`.
+ * Connectors are served by their own company-scoped endpoint and must never enter
+ * `MarketplaceItemTypeSchema`: `catalog.json` is parsed with a whole-array
+ * `z.enum`, so one unknown item type fails the whole parse and the sync failure
+ * path preserves the stale cache — freezing skills and agents fleet-wide.
+ */
+export type MarketplaceSidebarKey = "home" | MarketplaceItemType | "aoa" | "connector";
 
 /**
  * Builds the marketplace floating secondary sidebar (Home / Skills / Plugins /
- * Agents / Teams | AoA), pushes it to the persistent LobbyLayout via the outlet
+ * Agents / Teams / Connectors | AoA), pushes it to the persistent LobbyLayout via the outlet
  * context, and returns `pillItems` for the mobile sub-nav (§8.6). Type counts
  * exclude AoA items; the AoA entry counts AoA-first-party items. Called by every
  * marketplace page so the sidebar chrome is consistent.
@@ -45,6 +52,9 @@ export function useMarketplaceSidebar(activeKey: MarketplaceSidebarKey): {
     const go = (key: MarketplaceSidebarKey) => {
       if (key === "home") navigate("/marketplace");
       else if (key === "aoa") navigate("/marketplace?view=aoa");
+      // Static path, not `?type=` — connectors are not catalog items, so they
+      // never travel through the type query param or `pathToItemType()`.
+      else if (key === "connector") navigate("/marketplace/connectors");
       else navigate(`/marketplace?type=${key}`);
     };
     const mk = (
@@ -55,6 +65,9 @@ export function useMarketplaceSidebar(activeKey: MarketplaceSidebarKey): {
       id,
       label,
       icon,
+      // Connectors carry no count: their catalog is company-scoped AND
+      // founder-only, so fetching it just to badge the rail would fire a
+      // privileged request from every marketplace page, for every role.
       count: counts[id as keyof typeof counts],
       active: activeKey === id,
       onClick: () => go(id),
@@ -65,12 +78,13 @@ export function useMarketplaceSidebar(activeKey: MarketplaceSidebarKey): {
       mk("plugin", "Plugins", <Puzzle />),
       mk("agent", "Agents", <Bot />),
       mk("team", "Teams", <Users />),
+      mk("connector", "Connectors", <Cable />),
       mk("aoa", "AoA", <Sparkles className="text-brand" />),
     ];
   }, [counts, activeKey, navigate]);
 
   const sections = useMemo<SecondarySidebarSection[]>(
-    () => [{ items: pillItems.slice(0, 5) }, { items: pillItems.slice(5) }],
+    () => [{ items: pillItems.slice(0, 6) }, { items: pillItems.slice(6) }],
     [pillItems],
   );
 

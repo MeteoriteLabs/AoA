@@ -2,8 +2,13 @@ import { expect, test, type Page } from "@playwright/test";
 import { cleanupTestCompanies, seedCompany } from "./helpers/seed-company";
 
 /**
- * E2E: the connector shelf journey — browse → install → "Needs setup" → bind a
- * credential → active.
+ * E2E: the connector journey — browse + install in MARKETPLACE → "Needs setup"
+ * in SETTINGS → bind a credential → active.
+ *
+ * SURFACE SPLIT. Browsing and installing live on Marketplace → Connectors, the
+ * sibling of Skills/Plugins/Agents/Teams; Settings → Connectors manages what is
+ * already installed. This spec walks that hand-off end to end, because the seam
+ * between two routes is exactly what unit tests cannot see.
  *
  * WHAT THIS IS FOR. The connector unit suite (172 adversarial tests) already
  * pins the security matrix: the D7 host-exec gate, consent-token binding, RBAC,
@@ -60,10 +65,20 @@ test.describe("connector shelf install journey", () => {
     });
     expect(secretRes.ok()).toBe(true);
 
+    // Start where a founder with nothing installed starts. Landing on the
+    // company-prefixed route is also what makes the seeded company the SELECTED
+    // company, which is what the (company-scoped) marketplace surface installs
+    // into — so the empty-state CTA is both the journey and the setup.
     await page.goto(`/${company.issuePrefix}/settings?tab=connectors`);
     await expect(page.getByRole("heading", { level: 2, name: /^Connectors\.$/ })).toBeVisible();
+    const emptyState = page.getByTestId("connectors-empty-state");
+    await expect(emptyState).toBeVisible();
+    await emptyState.getByRole("link", { name: /browse connectors in marketplace/i }).click();
 
-    // ── Browse ──────────────────────────────────────────────────────────────
+    await expect(page).toHaveURL(/\/marketplace\/connectors$/);
+    await expect(page.getByRole("heading", { level: 1, name: /^Connectors\.$/ })).toBeVisible();
+
+    // ── Browse (Marketplace) ────────────────────────────────────────────────
     const card = page.getByTestId(`connector-shelf-card-${NOTES_ENTRY_ID}`);
     await expect(card).toBeVisible({ timeout: 15_000 });
     // The card must say the credential is coming BEFORE the install, not after.
@@ -79,13 +94,18 @@ test.describe("connector shelf install journey", () => {
     // failure mode the whole credential affordance exists to close.
     await expect(page.getByText(/is installed but needs a credential/i)).toBeVisible();
 
-    // ── "Needs setup" ───────────────────────────────────────────────────────
+    // Installed twice is a 409, so the shelf must stop offering it.
+    await expect(card.getByText("Installed", { exact: true })).toBeVisible();
+
+    // ── "Needs setup" (Settings) ────────────────────────────────────────────
+    await page.goto(`/${company.issuePrefix}/settings?tab=connectors`);
+    await expect(page.getByRole("heading", { level: 2, name: /^Connectors\.$/ })).toBeVisible();
+    // Settings must no longer render a browsable catalog.
+    await expect(page.getByTestId(`connector-shelf-card-${NOTES_ENTRY_ID}`)).toHaveCount(0);
     const row = connectorRow(page, "E2E Notes");
     await expect(row).toBeVisible();
     await expect(row.getByText("Needs setup", { exact: true })).toBeVisible();
     await expect(row).toContainText("This connector needs a credential before agents can use it.");
-    // Installed twice is a 409, so the shelf must stop offering it.
-    await expect(card.getByText("Installed", { exact: true })).toBeVisible();
 
     // ── Bind the credential ─────────────────────────────────────────────────
     await row.getByRole("button", { name: "Add credential" }).click();
@@ -105,8 +125,12 @@ test.describe("connector shelf install journey", () => {
   }) => {
     const company = await seedCompany(request, `E2E-Connectors-Stdio-${Date.now()}`);
 
+    // Select the seeded company (the marketplace surface installs into the
+    // selected company) before hopping to the global marketplace route.
     await page.goto(`/${company.issuePrefix}/settings?tab=connectors`);
     await expect(page.getByRole("heading", { level: 2, name: /^Connectors\.$/ })).toBeVisible();
+    await page.goto(`/marketplace/connectors`);
+    await expect(page.getByRole("heading", { level: 1, name: /^Connectors\.$/ })).toBeVisible();
 
     const card = page.getByTestId(`connector-shelf-card-${STDIO_ENTRY_ID}`);
     await expect(card).toBeVisible({ timeout: 15_000 });
@@ -130,7 +154,10 @@ test.describe("connector shelf install journey", () => {
     await confirmBtn.click();
 
     await expect(dialog).toBeHidden();
+    await expect(page.getByTestId("connector-install-notice")).toBeVisible();
+
     // No credential required, local_trusted ⇒ implicitly approved ⇒ active.
+    await page.goto(`/${company.issuePrefix}/settings?tab=connectors`);
     const row = connectorRow(page, "E2E Local Tool");
     await expect(row).toBeVisible();
     await expect(row.getByText("Active", { exact: true })).toBeVisible();

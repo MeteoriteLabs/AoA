@@ -15,7 +15,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/EmptyState";
-import { ConnectorShelf } from "./connectors/ConnectorShelf";
+import { Link } from "@/lib/router";
 
 const SERVER_NAME_RE = /^[a-z0-9-]+$/;
 
@@ -94,8 +94,8 @@ export function MCPConnectorsSection() {
   const [headersText, setHeadersText] = useState("");
   const [formError, setFormError] = useState<string | null>(null);
   const [approvalNotice, setApprovalNotice] = useState<string | null>(null);
-  // Post-install follow-through: names the NEXT step (credential / approval).
-  const [installNotice, setInstallNotice] = useState<string | null>(null);
+  // (The post-install follow-through notice moved with the shelf to
+  // Marketplace → Connectors — that is where an install now happens.)
   // Inline surface for disable/remove failures (previously swallowed silently).
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -213,8 +213,10 @@ export function MCPConnectorsSection() {
           Connectors<span className="text-brand">.</span>
         </h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          External tools and data sources your agents can use. These are outbound — your
-          agents reach out to remote MCP servers. Inbound API keys live under MCP API keys.
+          Manage the external tools and data sources your agents can use: bind credentials,
+          choose which agents get access, disable or remove. Browse and install new ones in
+          Marketplace → Connectors. These are outbound — your agents reach out to remote MCP
+          servers. Inbound API keys live under MCP API keys.
         </p>
       </div>
 
@@ -223,52 +225,45 @@ export function MCPConnectorsSection() {
           <EmptyState icon={Cable} message="Select a company to manage connectors." />
         ) : (
           <div className="space-y-6">
-            {/* Curated shelf — founder only, because GET …/catalog is founder-only
-                and mints signed install material. */}
-            {isFounder && (
-              <div className="space-y-4">
-                <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                  Browse connectors
-                </div>
-                <ConnectorShelf
-                  companyId={companyId}
-                  installed={connectors ?? []}
-                  onInstalled={(created) => {
-                    setActionError(null);
-                    setApprovalNotice(null);
-                    // The two things a founder must do next, in the order the
-                    // server will demand them. Silence here is exactly the
-                    // failure mode this task exists to close.
-                    setInstallNotice(
-                      created.status === "needs_credentials"
-                        ? `"${created.displayName}" is installed but needs a credential before agents can use it — use "Add credential" on its row below.`
-                        : created.status === "pending_approval"
-                          ? `"${created.displayName}" is installed and waiting for board approval.`
-                          : `"${created.displayName}" is installed and active.`,
-                    );
-                  }}
-                />
-                {installNotice && (
-                  <div className="rounded-md border border-info/30 bg-info/[0.06] px-3 py-2 text-sm text-foreground">
-                    {installNotice}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Registered connectors */}
+            {/* Registered connectors — this section is the MANAGE half of the
+                journey. Browsing and installing moved to Marketplace →
+                Connectors, so connectors are acquired exactly where skills,
+                agents, plugins and teams are. */}
             <div className="space-y-4">
-              <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                Registered connectors
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                  Registered connectors
+                </div>
+                {isFounder && (
+                  <Link
+                    to="/marketplace/connectors"
+                    className="text-xs font-medium text-brand hover:underline"
+                  >
+                    Browse connectors →
+                  </Link>
+                )}
               </div>
               <div className="rounded-md border border-border px-4 py-4 space-y-3">
                 {actionError && <div className="text-sm text-destructive">{actionError}</div>}
                 {(connectors ?? []).length === 0 ? (
-                  <EmptyState
-                    icon={PlugZap}
-                    message="No connectors yet"
-                    description="Connectors give your agents access to external tools and data sources — like a hosted MCP server for docs, tickets, or search."
-                  />
+                  // Not a dead end: the one thing a founder with zero connectors
+                  // needs is the way to get one, and that way is now a different
+                  // route. Naming it (and linking it) is the whole reason this
+                  // empty state exists.
+                  <div data-testid="connectors-empty-state">
+                    <EmptyState
+                      icon={PlugZap}
+                      message="No connectors yet"
+                      description="Connectors give your agents access to external tools and data sources — like a hosted MCP server for docs, tickets, or search. Install one from the Marketplace, then come back here to bind its credential and choose which agents may use it."
+                    />
+                    {isFounder && (
+                      <div className="-mt-8 flex justify-center pb-4">
+                        <Link to="/marketplace/connectors">
+                          <Button size="sm">Browse connectors in Marketplace</Button>
+                        </Link>
+                      </div>
+                    )}
+                  </div>
                 ) : (
                   <div className="space-y-2">
                     {(connectors ?? []).map((c) => (

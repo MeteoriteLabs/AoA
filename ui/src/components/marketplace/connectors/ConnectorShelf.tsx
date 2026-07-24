@@ -147,25 +147,48 @@ export interface ConnectorShelfProps {
    *  Matched on `serverName`, which is the (companyId, serverName) uniqueness
    *  key the server enforces — installing a second time 409s. */
   installed: McpConnector[];
-  /** Called after a successful install so the section can point the founder at
+  /** Called after a successful install so the surface can point the founder at
    *  the credential step when the new connector landed unconfigured. */
   onInstalled: (connector: McpConnector) => void;
+  /** Optional free-text filter over name/description/serverName. Filtering is
+   *  presentational only — an entry hidden by search is still installable, and
+   *  nothing about consent or availability is derived from it. */
+  search?: string;
 }
 
 /**
- * The curated connector shelf.
+ * The curated connector shelf — the BROWSE + INSTALL half of the connector
+ * journey. It is mounted by the Marketplace connectors surface
+ * (`pages/MarketplaceConnectors.tsx`), which is where every other installable
+ * type (skills, agents, plugins, teams) is browsed and installed from.
  *
- * WHY IT LIVES IN SETTINGS → CONNECTORS rather than the Marketplace surface:
- * the catalog endpoint is company-scoped AND founder-only, while the Marketplace
- * renders inside `LobbyShell` — a pre-company-selection surface with no
- * guaranteed company in context. More importantly the journey does not end at
- * install: a catalog connector lands as `needs_credentials` and is useless until
- * a secret is bound and (in shared deployments) an approval clears. Browse →
- * install → bind → enable-for-agents is one continuous task, and splitting its
- * first step onto another route would hand the founder a connector and no way
- * back to finish it.
+ * It used to live in Settings → Connectors. That placement invented a second
+ * pattern: Settings is where you MANAGE what you already have, and a browsable
+ * catalog hidden inside it is not discoverable as "the place you get things".
+ * The two arguments for the old placement both resolved:
+ *
+ *  - "No company in context on the Marketplace" — false. The marketplace API is
+ *    already company-scoped and the other types resolve their target through
+ *    `CompanyContext.selectedCompanyId` + `CompanyPicker` (see
+ *    `install/SnapshotInstallModal.tsx`). This surface follows that exact
+ *    mechanism; the only difference is the picker is hoisted to the page,
+ *    because the connector CATALOG fetch is itself company-scoped.
+ *  - "The journey does not end at install" — true, and the reason this component
+ *    hands its caller the created connector: the surface points the founder
+ *    straight at Settings → Connectors for the credential/approval step, the
+ *    same way a skill install toast points at the company's skills.
+ *
+ * This component owns NOTHING about placement. Everything security-critical —
+ * the exact argv shown for unverified stdio, the consent-token freshness
+ * refetch, greying with the SERVER's `unavailableReason` — is unchanged by the
+ * move and must stay that way.
  */
-export function ConnectorShelf({ companyId, installed, onInstalled }: ConnectorShelfProps) {
+export function ConnectorShelf({
+  companyId,
+  installed,
+  onInstalled,
+  search = "",
+}: ConnectorShelfProps) {
   const queryClient = useQueryClient();
   const [dialogEntryId, setDialogEntryId] = useState<string | null>(null);
   const [pendingId, setPendingId] = useState<string | null>(null);
@@ -182,6 +205,19 @@ export function ConnectorShelf({ companyId, installed, onInstalled }: ConnectorS
   // entry (new token, and the command that token was minted for) automatically.
   const dialogEntry = entries.find((e) => e.id === dialogEntryId) ?? null;
   const installedNames = new Set(installed.map((c) => c.serverName));
+
+  // Search filters what is DRAWN, never what `dialogEntry` resolves against —
+  // typing while the consent dialog is open must not silently unmount the
+  // dialog (and with it the argv the founder is mid-way through reading).
+  const q = search.trim().toLowerCase();
+  const visibleEntries = q
+    ? entries.filter(
+        (e) =>
+          e.displayName.toLowerCase().includes(q) ||
+          e.serverName.toLowerCase().includes(q) ||
+          (e.description ?? "").toLowerCase().includes(q),
+      )
+    : entries;
 
   const installMutation = useMutation({
     mutationFn: (body: { entryId: string; consentToken?: string }) =>
@@ -240,14 +276,16 @@ export function ConnectorShelf({ companyId, installed, onInstalled }: ConnectorS
   if (catalogQuery.isError) {
     return (
       <div className="text-sm text-muted-foreground">
-        Could not load the connector catalog. You can still add a connector by hand below.
+        Could not load the connector catalog. You can still add a connector by hand in
+        Settings → Connectors.
       </div>
     );
   }
   if (entries.length === 0) {
     return (
       <div className="text-sm text-muted-foreground">
-        No curated connectors are available right now. You can add one by hand below.
+        No curated connectors are available right now. You can add one by hand in Settings
+        → Connectors.
       </div>
     );
   }
@@ -260,8 +298,13 @@ export function ConnectorShelf({ companyId, installed, onInstalled }: ConnectorS
         </div>
       )}
       {error && <div className="text-sm text-destructive">{error}</div>}
+      {visibleEntries.length === 0 ? (
+        <div className="rounded-xl border border-border bg-card p-6 text-sm text-dim text-center">
+          No matches.
+        </div>
+      ) : (
       <div className="grid gap-3 sm:grid-cols-2">
-        {entries.map((entry) => (
+        {visibleEntries.map((entry) => (
           <ShelfCard
             key={entry.id}
             entry={entry}
@@ -271,6 +314,7 @@ export function ConnectorShelf({ companyId, installed, onInstalled }: ConnectorS
           />
         ))}
       </div>
+      )}
 
       <ConnectorInstallDialog
         entry={dialogEntry}

@@ -499,7 +499,8 @@ export default function Marketplace() {
             Marketplace<span className="text-brand">.</span>
           </h1>
           <p className="mt-1 text-[0.86rem] text-dim">
-            Skills, plugins, agents, and teams — installable from any GitHub repo.
+            Skills, plugins, agents, and teams — installable from any GitHub repo. External
+            MCP connectors live under Connectors.
           </p>
         </div>
 

@@ -49,6 +49,7 @@ import MarketplaceDetail from "./pages/MarketplaceDetail";
 import MarketplaceSearch from "./pages/MarketplaceSearch";
 import MarketplaceUpdates from "./pages/MarketplaceUpdates";
 import MarketplacePackageDetail from "./pages/MarketplacePackageDetail";
+import MarketplaceConnectors from "./pages/MarketplaceConnectors";
 import { queryKeys } from "./lib/queryKeys";
 import { useCompany } from "./context/CompanyContext";
 import { useDialog } from "./context/DialogContext";
@@ -334,6 +335,10 @@ export function App() {
               <Route path="instance/access" element={<InstanceAccessPage />} />
               <Route path="marketplace" element={<Marketplace />} />
               <Route path="marketplace/search" element={<MarketplaceSearch />} />
+              {/* Static segment — outranks `marketplace/:type` (which would
+                  otherwise bounce it to `?type=connectors`, a type the catalog
+                  does not and must not have). */}
+              <Route path="marketplace/connectors" element={<MarketplaceConnectors />} />
               <Route path="marketplace/package/:id/*" element={<MarketplacePackageDetail />} />
               <Route path="marketplace/:type" element={<MarketplaceTypeRedirect />} />
               <Route path="marketplace/:type/:slug/*" element={<MarketplaceDetail />} />
