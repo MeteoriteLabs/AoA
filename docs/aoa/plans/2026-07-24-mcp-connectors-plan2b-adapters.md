@@ -147,3 +147,18 @@ Do this BEFORE codex's HTTP writer — it changes where the file lives and how i
 - **codex `sandbox-docker`** — MCP config (bridge AND connectors) is skipped for that target; pre-existing.
 - **codex remote targets** — `CODEX_HOME` points at a remote path while the writer writes locally, with no sync step; pre-existing.
 - **opencode repo pollution** — `opencode.json` is written into the agent's working directory (often a real repo). Only placeholders, but the placeholder NAMES enumerate the company's connectors. Pre-existing pattern (the `aoa` bridge already does this); connectors widen it.
+
+---
+
+## Task 1 GATE RESULT (2026-07-24)
+
+| CLI | Secret mechanism | Verified? | Decision |
+|---|---|---|---|
+| **claude** | `${VAR}` expansion in args/env/headers | ✅ Plan 1 Task 4, live | shipped |
+| **codex** | **env-var-NAME indirection** — flat `url` + `bearer_token_env_var`; also `env_http_headers` (header→var-name map). NOT `${VAR}` expansion. | ✅ live, against installed `codex-cli 0.144.1` (`codex mcp add --help` + hand-written blocks round-tripped through `codex mcp get --json`) | **HTTP connectors viable — build it (B4 flat form)** |
+| **gemini** | `env` block documented to expand `$VAR`/`${VAR}`; **`headers` expansion NOT documented and NOT verifiable here** | ❌ **BLOCKED** — `gemini-cli 0.52.0` fetches fine via npx, but exits at an auth wall (`Please set an Auth method … GEMINI_API_KEY / GOOGLE_GENAI_USE_VERTEXAI / GOOGLE_GENAI_USE_GCA`) **before ever connecting the MCP server**. The local listener was never contacted. Verifying requires a Google credential, which is the founder's to supply — not something to set up here. | **DEFER HTTP connectors (B6).** gemini has NO env-var-name fallback, so an unexpanded header authenticates as no-one, silently. |
+| **opencode** | `{env:VAR}` (externally documented) | ❌ **BLOCKED** — not installed, and no `opencode` / `opencode-ai` / `@opencode-ai/opencode` package resolves on npm from here. Could not probe. | **DEFER HTTP connectors (B6).** |
+
+**Consequence — Plan 2b scope narrows to codex + the shared server wiring.** Tasks 2, 3, 4, 5, 7 proceed as written. **Task 6 is cut** to a deferred follow-up: gemini and opencode HTTP writers wait until their mechanisms can be verified on a machine with those CLIs authenticated. The server-side plural-carrier wiring (Task 3) is adapter-agnostic, so when those writers are built later they plug into a delivery path that already works.
+
+**To un-block later:** run the same probe method (local HTTP listener recording the inbound `Authorization` header, driven by a real one-shot session) on a machine where `gemini` is authenticated and `opencode` is installed. Do NOT ship either HTTP writer on documentation alone — codex's documented-looking `${VAR}` assumption turned out to be wrong, which is exactly why this gate exists.
