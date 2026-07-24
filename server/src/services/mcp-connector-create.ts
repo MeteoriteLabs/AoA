@@ -19,11 +19,10 @@
  *
  * STATUS: on THIS PATH, `resolveConnectorStatus` is the only thing that decides
  * the status — this function does not branch on deployment mode itself, it hands
- * the axes to that resolver and persists the answer. That is a property of the
- * create path, NOT a codebase-wide guarantee: `services/approvals.ts` still
- * writes `status: "active"` directly on approve (being closed in a following
- * task), and PATCH → "active" stays deliberately open in `local_trusted`. See
- * the SCOPE note in mcp-connector-status.ts before relying on it more broadly.
+ * the axes to that resolver and persists the answer. The approve path
+ * (`applyConnectorApproval`) and the credential-binding route now do the same;
+ * PATCH → "active" stays deliberately open in `local_trusted` only. See the
+ * SCOPE note in mcp-connector-status.ts before relying on it more broadly.
  *
  * DEPENDENCIES ARE INJECTED so the governance above is unit-testable with no DB.
  */

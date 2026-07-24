@@ -2,11 +2,108 @@ import { and, asc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { approvalComments, approvals, issues } from "@armyofagents/db";
 import { notFound, unprocessable } from "../errors.js";
+import { loadConfig } from "../config.js";
 import { agentService } from "./agents.js";
 import { preflightCrewDispatch } from "./crew-budget.js";
 import { dispatchCreatedCrewTasks } from "./crew-task-service.js";
 import { logActivity } from "./activity-log.js";
 import { mcpConnectorService } from "./mcp-connectors-crud.js";
+import { resolveConnectorStatus } from "./mcp-connector-status.js";
+
+/**
+ * The slice of `mcpConnectorService` the two helpers below need. Structural, so
+ * the truth table can be unit-tested with plain object stubs and no DB.
+ */
+export type ConnectorApprovalTarget = {
+  getById: (id: string) => Promise<
+    | {
+      companyId: string;
+      status: string;
+      requiresSecret?: boolean | null;
+      secretRef?: string | null;
+    }
+    | null
+  >;
+  update: (id: string, patch: { status: string }) => Promise<unknown>;
+};
+
+/**
+ * C2 — approving a connector must NOT unconditionally activate it.
+ *
+ * Governance (approved?) and credentials (secret required? bound?) are
+ * ORTHOGONAL axes. The previous implementation collapsed them: it flipped ANY
+ * non-active connector straight to `active`, so approving a connector that
+ * requires a secret it does not have activated it UNCREDENTIALED — the one thing
+ * the design forbids. This delegates the decision to `resolveConnectorStatus`,
+ * which is unconditionally incapable of returning "active" while
+ * `requiresSecret && !hasSecret`, so nothing here decides `active` on its own.
+ *
+ * `deploymentMode` is passed through rather than assumed. With `approved: true`
+ * the resolver's governance branch is already satisfied for every mode, so today
+ * this argument cannot change the outcome — it is threaded anyway so this call
+ * stays correct-by-construction if the resolver ever grows a mode-specific rule
+ * (e.g. a `cloud_auth` tier), instead of silently hard-coding an assumption.
+ *
+ * SAFETY PROPERTIES (preserved from the inline block this replaces — approve()
+ * is called by the MCP approval tool with NO wrapping transaction, so a throw
+ * after the approval status flip would strand the approval as "approved" with no
+ * activation):
+ *  - null-tolerant: connector deleted between create and approve → no-op
+ *  - company-scoped: `update` keys on id ALONE, so tenancy is checked here
+ *  - idempotent: no write when the status is already the resolved one
+ *  - no new throw paths
+ */
+export async function applyConnectorApproval(
+  svc: ConnectorApprovalTarget,
+  companyId: string,
+  connectorId: string,
+  deploymentMode: string,
+): Promise<void> {
+  const connector = await svc.getById(connectorId);
+  if (!connector || connector.companyId !== companyId) return;
+
+  const next = resolveConnectorStatus({
+    deploymentMode,
+    approved: true,
+    requiresSecret: connector.requiresSecret === true,
+    // An empty-string secretRef names no secret, so it is NOT a bound credential;
+    // `!= null` alone would read "" as bound and activate an unusable connector.
+    hasSecret: Boolean(connector.secretRef),
+  });
+
+  if (connector.status !== next) {
+    await svc.update(connectorId, { status: next });
+  }
+}
+
+/**
+ * C2 — rejection must cover `needs_credentials` too.
+ *
+ * The previous guard matched only `pending_approval`. Once approval became
+ * credential-aware, an approved-but-uncredentialed connector sits in
+ * `needs_credentials`, and rejecting it was a SILENT NO-OP: the connector stayed
+ * on a path that reaches `active` the moment a secret is bound.
+ *
+ * `active` is deliberately NOT covered: reject closes an *install* request, it is
+ * not a kill switch for a connector already in service (PATCH → disabled is that).
+ * Rejected connectors are disabled rather than deleted so the audit trail — and
+ * the founder-visible "this was rejected" state — survives.
+ *
+ * Same safety properties as `applyConnectorApproval`: null-tolerant,
+ * company-scoped, idempotent, and it never throws after the status flip.
+ */
+export async function applyConnectorRejection(
+  svc: ConnectorApprovalTarget,
+  companyId: string,
+  connectorId: string,
+): Promise<void> {
+  const connector = await svc.getById(connectorId);
+  if (!connector || connector.companyId !== companyId) return;
+
+  if (connector.status === "pending_approval" || connector.status === "needs_credentials") {
+    await svc.update(connectorId, { status: "disabled" });
+  }
+}
 
 export function approvalService(db: Db) {
   const agentsSvc = agentService(db);
@@ -62,6 +159,15 @@ export function approvalService(db: Db) {
       // every caller; a throw after the flip would strand the approval when there is no
       // wrapping txn (tasks stuck in planning, approval closed). Payload is immutable
       // across the status flip, so reading it from `existing` is equivalent to `updated`.
+      // Same reasoning, Plan 3a Task 7: resolve the deployment mode BEFORE the flip.
+      // `loadConfig()` reads the config file and can throw on a malformed env
+      // (parseTrustProxy / parseOptionalPortEnv), and the connector side-effect runs
+      // AFTER the flip where a throw would strand the approval as "approved" with no
+      // activation. `type` is immutable across the flip — the crew_dispatch block above
+      // already relies on that — so reading it from `existing` is equivalent.
+      const connectorDeploymentMode =
+        existing.type === "install_mcp_connector" ? loadConfig().deploymentMode : null;
+
       let crewDispatchCandidates: Array<{
         id: string;
         assigneeAgentId: string | null;
@@ -242,24 +348,28 @@ export function approvalService(db: Db) {
         await dispatchCreatedCrewTasks(db, companyId, toDispatch);
       }
 
-      // Plan 2 Task 4: install_mcp_connector approval side-effect — this is the SOLE
-      // activation path in `authenticated` mode (PATCH→active is blocked there, Plan 1
-      // amendment C2). Runs AFTER the guarded status flip (like hire_agent/crew_dispatch),
-      // so a concurrent double-approve only runs the side-effect for the winner (whose
-      // `updated` is truthy). The guards make the common failure modes NO-OPS instead of
-      // throws — the MCP approval tool calls approve() without a wrapping txn, and a throw
-      // after the flip would strand the approval as "approved" with no activation.
+      // Plan 2 Task 4 / Plan 3a Task 7: install_mcp_connector approval side-effect — this
+      // is the SOLE activation path in `authenticated` mode (PATCH→active is blocked there,
+      // Plan 1 amendment C2). Runs AFTER the guarded status flip (like
+      // hire_agent/crew_dispatch), so a concurrent double-approve only runs the side-effect
+      // for the winner (whose `updated` is truthy). The decision itself — including all the
+      // null/tenancy/idempotence guards that keep it from throwing after the flip — lives in
+      // `applyConnectorApproval`, which routes through the single status resolver so an
+      // approval can never activate an uncredentialed connector.
       if (updated.type === "install_mcp_connector") {
         const payload = updated.payload as Record<string, unknown>;
         const connectorId = typeof payload.connectorId === "string" ? payload.connectorId : null;
-        if (connectorId) {
-          const connector = await mcpConnectorSvc.getById(connectorId);
-          // null-tolerant (deleted between create & approve → no-op), company-scoped
-          // (update keys on id ALONE, so we check tenancy ourselves), idempotent
-          // (skip if already active). No new throws after the flip.
-          if (connector && connector.companyId === companyId && connector.status !== "active") {
-            await mcpConnectorSvc.update(connectorId, { status: "active" });
-          }
+        // `connectorDeploymentMode !== null` is true by construction (resolved above
+        // under this same `type` check). It is written as a guard rather than a `!`
+        // so that if the invariant ever breaks the result is a silent skip, not a
+        // throw after the flip.
+        if (connectorId && connectorDeploymentMode !== null) {
+          await applyConnectorApproval(
+            mcpConnectorSvc,
+            companyId,
+            connectorId,
+            connectorDeploymentMode,
+          );
         }
       }
 
@@ -308,19 +418,17 @@ export function approvalService(db: Db) {
       // tasks stay on the Crew Board as 'planning' (parked) — the founder can flip them
       // to Standard or delete them later. Rejecting only closes the dispatch approval.
 
-      // Plan 2 Task 4: rejecting an install_mcp_connector approval sets the connector
-      // `disabled` (NOT deleted — keeps an audit trail; a rejected connector should be
-      // visibly rejected, not vanish). Only flips a still-`pending_approval` connector,
-      // and same guards as approve() (null-tolerant, company-scoped) so it never throws
-      // after the flip.
+      // Plan 2 Task 4 / Plan 3a Task 7: rejecting an install_mcp_connector approval sets the
+      // connector `disabled` (NOT deleted — keeps an audit trail; a rejected connector should
+      // be visibly rejected, not vanish). `applyConnectorRejection` owns which statuses are
+      // in scope — pending_approval AND needs_credentials, the latter being the one the old
+      // inline guard silently skipped — plus the same null/tenancy guards as approve(), so it
+      // never throws after the flip.
       if (updated.type === "install_mcp_connector") {
         const payload = updated.payload as Record<string, unknown>;
         const connectorId = typeof payload.connectorId === "string" ? payload.connectorId : null;
         if (connectorId) {
-          const connector = await mcpConnectorSvc.getById(connectorId);
-          if (connector && connector.companyId === companyId && connector.status === "pending_approval") {
-            await mcpConnectorSvc.update(connectorId, { status: "disabled" });
-          }
+          await applyConnectorRejection(mcpConnectorSvc, companyId, connectorId);
         }
       }
 
