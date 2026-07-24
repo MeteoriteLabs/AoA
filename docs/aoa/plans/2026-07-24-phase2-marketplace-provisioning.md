@@ -64,7 +64,7 @@
 - **T2.1 before T2.3:** `installTeam` hard-requires a department that does not exist at company-create time. Without the nullable parent there is nowhere to install to.
 - **T2.2 before T2.3:** `isCrewMarketplaceManaged` suppresses the *entire* `ensureAllCrewAgents`. The moment T2.3 makes a company marketplace-managed, Commander and Steward stop being seeded — Inbox Hub curation breaks silently.
 
-Order: **T2.1 → T2.2 → T2.3 → T2.3b → T2.3c → T2.3d → T2.3e → T2.5 → T2.4 → T2.6 → T2.7 → T2.8 → T2.9 → T2.10 → T2.7b**. (T2.5 protected-origins before T2.4 so Steward is protected the moment it becomes marketplace-managed.)
+Order: **T2.1 → T2.2 → T2.3 → T2.3b → T2.3c → T2.3d → T2.3e → T2.5 → T2.4 → T2.6 → T2.7 → T2.8 → T2.9 → T2.10 → T2.8b → T2.7b**. (T2.5 protected-origins before T2.4 so Steward is protected the moment it becomes marketplace-managed.)
 
 ---
 
@@ -1325,7 +1325,8 @@ tail
 2. **`applyMergeDecisions` joins with a bare `"
 
 "`**, so a mixed merge of a
-   CRLF document emits bare LF and trims a trailing `` — mangled line endings
+   CRLF document emits bare LF and trims a trailing `
+` — mangled line endings
    on a Windows-first codebase.
 
 Neither reaches the wholesale keep-all-mine / accept-all-upstream paths (those
@@ -1357,6 +1358,47 @@ behaviour and the fence case needs its own fixture set. Marked with a TODO at
 - [ ] **Step 5: Run → PASS. Verify + commit.**
 ```bash
 git commit -m "fix(marketplace): fence-aware section splitting and line-ending-safe merge"
+```
+
+---
+
+## T2.8b — Derive the skill `customized` flag from bytes, like the agent side
+
+**Why:** after a reviewed **skill** merge, `customized` is set to `true`
+**unconditionally**. So a founder who clicks *Accept all upstream* — landing a
+row byte-identical to the catalog — is **permanently opted out of auto-update
+for that skill**, with the review UI reporting success.
+
+This is the **same failure the agent side already had to fix**. T2.7's review
+found it there (a bundle that matched upstream could never reach
+`customized = false`, and the modal said "no local changes found"), and
+Decision #115 fixed it by deriving the flag from the **bytes**: `false` iff the
+result is byte-identical to upstream, else `true`, never back to `null`. The
+skill side still hard-codes `true`, so the two review paths now disagree about
+what accepting upstream means.
+
+"Conservative" is the wrong read: over-marking costs a permanent freeze-out with
+no recovery affordance, while the agent path proved the byte comparison is
+cheap and safe. Pre-existing, but the asymmetry is newly visible and newly
+indefensible.
+
+**Files:** the skill branch of `POST /updates/:id/merge`
+(`server/src/routes/marketplace-company.ts`), mirroring
+`agent-update-merge.ts`'s byte comparison.
+
+- [ ] **Step 1: Failing test** — an all-"accept upstream" skill merge lands
+  `customized = false` and the skill re-enters auto-update.
+- [ ] **Step 2: Failing test — the discriminator.** A *mixed* merge (any section
+  kept from the founder) still lands `customized = true`. Without this, simply
+  hard-coding `false` would pass Step 1.
+- [ ] **Step 3: Run → FAIL. Step 4: Implement** the byte comparison. Reuse the
+  agent side's shape rather than writing a second one — and note the agent
+  version compares the **file set**, contents, *and* entry file, because
+  reassembly does not reproduce upstream bytes (hence its verbatim shortcuts).
+  Check whether the skill path has the same reassembly hazard.
+- [ ] **Step 5: Run → PASS. Verify + commit.**
+```bash
+git commit -m "fix(marketplace): derive skill customization from merge result bytes, not unconditionally"
 ```
 
 ---
