@@ -50,4 +50,32 @@ describe("McpConnectorCatalogEntrySchema", () => {
     expect(result.entries[0].id).toBe("notion");
     expect(result.dropped).toEqual(["broken"]);
   });
+
+  it("rejects a headerTemplateKeys entry smuggling a `Name: value` pair", () => {
+    const r = McpConnectorCatalogEntrySchema.safeParse({
+      ...httpEntry,
+      headerTemplateKeys: ["Authorization: Bearer sk-live-actualsecret12345"],
+    });
+    expect(r.success).toBe(false);
+  });
+
+  it("rejects an envTemplateKeys entry smuggling a bare secret value", () => {
+    const r = McpConnectorCatalogEntrySchema.safeParse({
+      ...httpEntry,
+      transport: "stdio",
+      command: "npx",
+      url: undefined,
+      envTemplateKeys: ["sk-live-actualsecret12345"],
+    });
+    expect(r.success).toBe(false);
+  });
+
+  it("accepts legitimate header and env template key names", () => {
+    const r = McpConnectorCatalogEntrySchema.safeParse({
+      ...httpEntry,
+      headerTemplateKeys: ["Authorization", "X-Api-Key"],
+      envTemplateKeys: ["NOTION_TOKEN", "_PRIVATE"],
+    });
+    expect(r.success).toBe(true);
+  });
 });

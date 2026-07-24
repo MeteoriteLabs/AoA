@@ -17,6 +17,20 @@ import { z } from "zod";
 
 const SERVER_NAME_RE = /^[a-z0-9-]+$/;
 
+// RFC 7230 §3.2.6 token charset for HTTP header field-names. Deliberately
+// excludes `:` and whitespace — those are exactly what would let a "key" smuggle
+// a `Name: value` pair (or a whole secret) past this schema and into the
+// downstream TOML/JSON header-map writers (Plan 2b's codex `env_http_headers`).
+// This keeps the docstring above ("Values never appear here") actually
+// enforced, not just documented.
+const HEADER_NAME_RE = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/;
+
+// POSIX environment-variable name charset. Deliberately excludes `=` and
+// whitespace — those are exactly what would let a "key" smuggle a `NAME=value`
+// pair (or a whole secret) past this schema and into downstream env-map
+// writers. Same rationale as HEADER_NAME_RE above.
+const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
 /** Fail-closed: an entry with no trust block is community, never verified. */
 export const McpConnectorTrustSchema = z
   .object({
@@ -34,10 +48,20 @@ export const McpConnectorCatalogEntrySchema = z
     url: z.string().url().optional(),
     command: z.string().min(1).optional(),
     args: z.array(z.string()).default([]),
-    /** Header NAMES this connector authenticates with. Values never appear here. */
-    headerTemplateKeys: z.array(z.string().min(1)).default([]),
-    /** Env var NAMES a stdio server expects. Values never appear here. */
-    envTemplateKeys: z.array(z.string().min(1)).default([]),
+    /**
+     * Header NAMES this connector authenticates with. Values never appear here.
+     * Constrained to the RFC 7230 token charset (no `:`, no whitespace) so this
+     * field cannot smuggle a `Name: value` pair — or a bare credential — through
+     * the catalog and into a downstream header-map writer.
+     */
+    headerTemplateKeys: z.array(z.string().regex(HEADER_NAME_RE)).default([]),
+    /**
+     * Env var NAMES a stdio server expects. Values never appear here.
+     * Constrained to the POSIX env-name charset (no `=`, no whitespace) so this
+     * field cannot smuggle a `NAME=value` pair — or a bare credential — through
+     * the catalog and into a downstream env-map writer.
+     */
+    envTemplateKeys: z.array(z.string().regex(ENV_NAME_RE)).default([]),
     requiresSecret: z.boolean().default(false),
     secretLabel: z.string().max(200).optional(),
     docsUrl: z.string().url().optional(),
