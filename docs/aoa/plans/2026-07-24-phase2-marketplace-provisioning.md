@@ -64,7 +64,7 @@
 - **T2.1 before T2.3:** `installTeam` hard-requires a department that does not exist at company-create time. Without the nullable parent there is nowhere to install to.
 - **T2.2 before T2.3:** `isCrewMarketplaceManaged` suppresses the *entire* `ensureAllCrewAgents`. The moment T2.3 makes a company marketplace-managed, Commander and Steward stop being seeded — Inbox Hub curation breaks silently.
 
-Order: **T2.1 → T2.2 → T2.3 → T2.3b → T2.5 → T2.4 → T2.6 → T2.7 → T2.8 → T2.9 → T2.10**. (T2.5 protected-origins before T2.4 so Steward is protected the moment it becomes marketplace-managed.)
+Order: **T2.1 → T2.2 → T2.3 → T2.3b → T2.3c → T2.5 → T2.4 → T2.6 → T2.7 → T2.8 → T2.9 → T2.10**. (T2.5 protected-origins before T2.4 so Steward is protected the moment it becomes marketplace-managed.)
 
 ---
 
@@ -497,6 +497,46 @@ fail-open behaviour are only acceptable if the resulting state is recoverable.
 - [x] **Step 6: Run → PASS. Verify + commit.**
 ```bash
 git commit -m "feat(marketplace): make crew provisioning repairable after a degraded bootstrap"
+```
+
+---
+
+## T2.3c — Install team skills through the real installer (found via T2.3b)
+
+**Why:** `team-installer.ts:243-269` (phase 3 of `installTeam`) hand-rolls the
+`company_skills` insert instead of calling `installSkill`. It hardcodes
+`trustLevel: "markdown_only"`, `fileInventory: []`, no `catalogSkillBundle` /
+`catalogBundleInstallPath` metadata, and takes markdown from the fetched body
+rather than the bundle's. **All 17 skills the default crew requires carry
+`skill.bundle` in the live catalog**, so every company created by T2.3 gets 17
+bundle-less rows — and because `sourceRef` is stamped to the current version,
+`installSkill`'s idempotency guard (`skill-installer.ts:67-70`) later returns
+`alreadyInstalled: true`, so **the bundle is never materialized. Permanently.**
+
+T2.3b fixed this for the *repair* path. Left alone, a **repaired** company would
+have strictly better skill rows than a **newly created** one — and the phase's
+own goal is "each agent arrives with its declared skills". A bundle-less skill
+is not the declared skill.
+
+**Scope note:** this changes every founder-initiated team install, not just the
+bootstrap. That is a *fix* for those callers too — they are getting the same
+poisoned rows today.
+
+**Files:** `server/src/services/marketplace-install/team-installer.ts`, its tests.
+
+- [ ] **Step 1: Failing test** — after `installTeam`, a bundle-carrying skill has
+  real bundle metadata and a non-empty `fileInventory`, and a subsequent
+  `installSkill` for the same key does **not** report `alreadyInstalled` against
+  a bundle that was never materialized. **Discriminator:** assert *field parity*
+  against a row the real `installSkill` wrote — the check a re-implementation
+  cannot pass. (T2.3b used exactly this; reuse the approach.)
+- [ ] **Step 2: Run → FAIL. Step 3: Route the insert through `installSkill`.**
+  Mind the transaction: `installSkill` git-clones bundles, and T2.3b concluded
+  17 clones inside a transaction holding an advisory lock is unacceptable —
+  match whatever seam T2.3b settled on, and say which you chose.
+- [ ] **Step 4: Run → PASS. Step 5: Verify + commit.**
+```bash
+git commit -m "fix(marketplace): install team skills through the real installer (bundles + trust level)"
 ```
 
 ---
