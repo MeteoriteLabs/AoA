@@ -574,6 +574,295 @@ describe("writeCodexMcpConfigToml", () => {
     expect(raw).not.toContain("\r\n");
   });
 
+  // -------------------------------------------------------------------------
+  // Plan 2b Task 5: EXTERNAL connectors. The same writer emits the `aoa` bridge
+  // block AND one [mcp_servers.<name>] per external connector, all inside ONE
+  // fence (C1 — a second fencing writer would delete the first's region).
+  //
+  // Remote HTTP connectors use codex's FLAT env-var-NAME indirection:
+  //   url = "..."  +  bearer_token_env_var = "AOA_MCP_X_TOKEN"
+  // codex does NOT expand ${VAR}; the real token never enters this file.
+  // -------------------------------------------------------------------------
+
+  const BRIDGE = {
+    command: "node",
+    args: ["/bridge.js"],
+    env: { AOA_SESSION_COMPANY_ID: "c" },
+  };
+  // A realistic-looking secret VALUE. It must never appear in the emitted TOML.
+  const REAL_TOKEN = "ntn_9f83hd83jdSECRETVALUE0192";
+
+  describe("external connectors", () => {
+    it("emits the aoa bridge AND one block per connector inside ONE fence", async () => {
+      await writeCodexMcpConfigToml(tmpDir, BRIDGE, {
+        externalServers: {
+          notion: {
+            kind: "http",
+            url: "https://mcp.notion.com/mcp",
+            headers: { Authorization: "Bearer ${AOA_MCP_NOTION_TOKEN}" },
+            authTokenEnvVar: "AOA_MCP_NOTION_TOKEN",
+          },
+          filesystem: {
+            kind: "stdio",
+            command: "npx",
+            args: ["-y", "@modelcontextprotocol/server-filesystem", "/data"],
+            env: { FS_ROOT: "/data" },
+          },
+        },
+      });
+
+      const raw = await fs.readFile(path.join(tmpDir, "config.toml"), "utf8");
+
+      // Exactly one fence pair.
+      expect(raw.match(/^# >>> aoa-managed/gm) ?? []).toHaveLength(1);
+      expect(raw.match(/^# <<< aoa-managed/gm) ?? []).toHaveLength(1);
+
+      // Everything AoA writes is INSIDE that one fence.
+      const startIdx = raw.indexOf("# >>> aoa-managed");
+      const endIdx = raw.indexOf("# <<< aoa-managed");
+      for (const header of [
+        "[mcp_servers.aoa]",
+        "[mcp_servers.notion]",
+        "[mcp_servers.filesystem]",
+      ]) {
+        const idx = raw.indexOf(header);
+        expect(idx).toBeGreaterThan(startIdx);
+        expect(idx).toBeLessThan(endIdx);
+      }
+
+      const parsed = parseToml(raw);
+      expect(parsed["mcp_servers.aoa"].command).toBe("node");
+      expect(parsed["mcp_servers.aoa.env"].AOA_SESSION_COMPANY_ID).toBe("c");
+    });
+
+    it("emits the FLAT bearer_token_env_var form for an http connector — no headers sub-table, no plaintext token", async () => {
+      await writeCodexMcpConfigToml(tmpDir, BRIDGE, {
+        externalServers: {
+          notion: {
+            kind: "http",
+            url: "https://mcp.notion.com/mcp",
+            headers: { Authorization: "Bearer ${AOA_MCP_NOTION_TOKEN}" },
+            authTokenEnvVar: "AOA_MCP_NOTION_TOKEN",
+          },
+        },
+      });
+
+      const raw = await fs.readFile(path.join(tmpDir, "config.toml"), "utf8");
+      const parsed = parseToml(raw);
+
+      expect(parsed["mcp_servers.notion"].url).toBe("https://mcp.notion.com/mcp");
+      expect(parsed["mcp_servers.notion"].bearer_token_env_var).toBe("AOA_MCP_NOTION_TOKEN");
+
+      // FLAT form only — the sub-table would be orphaned by the per-name stripper.
+      expect(raw).not.toContain("[mcp_servers.notion.http_headers]");
+      expect(parsed["mcp_servers.notion.http_headers"]).toBeUndefined();
+      // No `${VAR}`-bearing header string leaks into the file either.
+      expect(raw).not.toContain("Authorization");
+      expect(raw).not.toContain("${AOA_MCP_NOTION_TOKEN}");
+      // And absolutely no real secret value.
+      expect(raw).not.toContain(REAL_TOKEN);
+      expect(raw).not.toContain("SECRETVALUE");
+    });
+
+    it("omits the bearer line for an http connector with no authTokenEnvVar", async () => {
+      await writeCodexMcpConfigToml(tmpDir, BRIDGE, {
+        externalServers: {
+          public_docs: { kind: "http", url: "https://docs.example.com/mcp", headers: {} },
+        },
+      });
+
+      const raw = await fs.readFile(path.join(tmpDir, "config.toml"), "utf8");
+      const parsed = parseToml(raw);
+      expect(parsed["mcp_servers.public_docs"].url).toBe("https://docs.example.com/mcp");
+      expect(parsed["mcp_servers.public_docs"].bearer_token_env_var).toBeUndefined();
+      expect(raw).not.toContain("bearer_token_env_var");
+    });
+
+    it("emits command/args + a nested .env table for a stdio connector", async () => {
+      await writeCodexMcpConfigToml(tmpDir, BRIDGE, {
+        externalServers: {
+          filesystem: {
+            kind: "stdio",
+            command: "npx",
+            args: ["-y", "@modelcontextprotocol/server-filesystem", "/data"],
+            env: { FS_ROOT: "/data", FS_TOKEN: "${AOA_MCP_FS_TOKEN}" },
+          },
+        },
+      });
+
+      const raw = await fs.readFile(path.join(tmpDir, "config.toml"), "utf8");
+      const parsed = parseToml(raw);
+      expect(parsed["mcp_servers.filesystem"].command).toBe("npx");
+      expect(parsed["mcp_servers.filesystem"].args).toEqual([
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "/data",
+      ]);
+      expect(parsed["mcp_servers.filesystem.env"].FS_ROOT).toBe("/data");
+      expect(parsed["mcp_servers.filesystem.env"].FS_TOKEN).toBe("${AOA_MCP_FS_TOKEN}");
+      expect(raw).not.toContain(REAL_TOKEN);
+    });
+
+    it("filters out reserved connector names (aoa, playwright)", async () => {
+      await writeCodexMcpConfigToml(tmpDir, BRIDGE, {
+        externalServers: {
+          aoa: { kind: "http", url: "https://evil.example.com/mcp", headers: {} },
+          playwright: { kind: "stdio", command: "evil-bin", args: [], env: {} },
+          ok: { kind: "http", url: "https://ok.example.com/mcp", headers: {} },
+        },
+      });
+
+      const raw = await fs.readFile(path.join(tmpDir, "config.toml"), "utf8");
+      expect(raw).not.toContain("evil.example.com");
+      expect(raw).not.toContain("evil-bin");
+      expect(raw).not.toContain("[mcp_servers.playwright]");
+      // AoA's own bridge block is intact and appears exactly once.
+      expect(raw.match(/^\[mcp_servers\.aoa\]$/gm) ?? []).toHaveLength(1);
+      const parsed = parseToml(raw);
+      expect(parsed["mcp_servers.aoa"].command).toBe("node");
+      expect(parsed["mcp_servers.aoa"].args).toEqual(["/bridge.js"]);
+      expect(parsed["mcp_servers.ok"].url).toBe("https://ok.example.com/mcp");
+    });
+
+    it("SKIPS an unsupported/unknown transport without failing or emitting a malformed block", async () => {
+      await writeCodexMcpConfigToml(tmpDir, BRIDGE, {
+        externalServers: {
+          websocket_thing: { kind: "ws", url: "wss://example.com/mcp" } as never,
+          ok: { kind: "http", url: "https://ok.example.com/mcp", headers: {} },
+        },
+      });
+
+      const raw = await fs.readFile(path.join(tmpDir, "config.toml"), "utf8");
+      expect(raw).not.toContain("websocket_thing");
+      expect(raw).not.toContain("wss://example.com/mcp");
+      // The rest of the file is still well-formed and the good connector landed.
+      const parsed = parseToml(raw);
+      expect(parsed["mcp_servers.ok"].url).toBe("https://ok.example.com/mcp");
+      expect(parsed["mcp_servers.aoa"].command).toBe("node");
+    });
+
+    it("SKIPS a connector name that is not a safe TOML bare key (no injection)", async () => {
+      await writeCodexMcpConfigToml(tmpDir, BRIDGE, {
+        externalServers: {
+          'bad"]\n[evil]\nx = "1': {
+            kind: "http",
+            url: "https://evil.example.com/mcp",
+            headers: {},
+          },
+          ok: { kind: "http", url: "https://ok.example.com/mcp", headers: {} },
+        },
+      });
+
+      const raw = await fs.readFile(path.join(tmpDir, "config.toml"), "utf8");
+      expect(raw).not.toContain("[evil]");
+      expect(raw).not.toContain("evil.example.com");
+      expect(parseToml(raw)["mcp_servers.ok"].url).toBe("https://ok.example.com/mcp");
+    });
+
+    it("removes a connector block that is no longer present, preserving user blocks", async () => {
+      const userBlock = [
+        "[mcp_servers.mine]",
+        'command = "my-server"',
+        "",
+        "[mcp_servers.mine.env]",
+        'MY_TOKEN = "keep-me"',
+      ].join("\n");
+      await fs.writeFile(
+        path.join(tmpDir, "config.toml"),
+        `[other]\nfoo = "bar"\n\n${userBlock}\n`,
+        "utf8",
+      );
+
+      await writeCodexMcpConfigToml(tmpDir, BRIDGE, {
+        externalServers: {
+          notion: {
+            kind: "http",
+            url: "https://mcp.notion.com/mcp",
+            headers: {},
+            authTokenEnvVar: "AOA_MCP_NOTION_TOKEN",
+          },
+          linear: { kind: "http", url: "https://mcp.linear.app/mcp", headers: {} },
+        },
+      });
+      let raw = await fs.readFile(path.join(tmpDir, "config.toml"), "utf8");
+      expect(raw).toContain("[mcp_servers.notion]");
+      expect(raw).toContain("[mcp_servers.linear]");
+
+      // Second write: `linear` was disabled/deleted — its block must be gone.
+      await writeCodexMcpConfigToml(tmpDir, BRIDGE, {
+        externalServers: {
+          notion: {
+            kind: "http",
+            url: "https://mcp.notion.com/mcp",
+            headers: {},
+            authTokenEnvVar: "AOA_MCP_NOTION_TOKEN",
+          },
+        },
+      });
+      raw = await fs.readFile(path.join(tmpDir, "config.toml"), "utf8");
+      expect(raw).not.toContain("linear");
+      expect(raw).not.toContain("mcp.linear.app");
+      expect(raw.match(/^\[mcp_servers\.notion\]$/gm) ?? []).toHaveLength(1);
+      // User content outside the fence survives byte-for-byte.
+      expect(raw).toContain(userBlock);
+      expect(parseToml(raw)["other"].foo).toBe("bar");
+      expect(raw.match(/^# >>> aoa-managed/gm) ?? []).toHaveLength(1);
+    });
+
+    it("cleans previously-written connectors when called with an EMPTY external map and no bridge", async () => {
+      await writeCodexMcpConfigToml(tmpDir, BRIDGE, {
+        externalServers: {
+          notion: {
+            kind: "http",
+            url: "https://mcp.notion.com/mcp",
+            headers: {},
+            authTokenEnvVar: "AOA_MCP_NOTION_TOKEN",
+          },
+        },
+      });
+      await writeCodexMcpConfigToml(tmpDir, null, { externalServers: {} });
+
+      const raw = await fs.readFile(path.join(tmpDir, "config.toml"), "utf8");
+      expect(raw).not.toContain("mcp_servers.notion");
+      expect(raw).not.toContain("AOA_MCP_NOTION_TOKEN");
+      expect(raw).not.toContain("[mcp_servers.aoa]");
+    });
+
+    it("writes the temp file with 0600 so bearer env-var names are not world-readable", async () => {
+      await writeCodexMcpConfigToml(tmpDir, BRIDGE, {
+        externalServers: {
+          notion: {
+            kind: "http",
+            url: "https://mcp.notion.com/mcp",
+            headers: {},
+            authTokenEnvVar: "AOA_MCP_NOTION_TOKEN",
+          },
+        },
+      });
+      const stat = await fs.stat(path.join(tmpDir, "config.toml"));
+      if (process.platform !== "win32") {
+        expect(stat.mode & 0o777).toBe(0o600);
+      } else {
+        expect(stat.isFile()).toBe(true);
+      }
+    });
+
+    it("sweeps stale sibling temp files but leaves fresh ones alone", async () => {
+      const stale = path.join(tmpDir, "config.toml.tmp-999-stale");
+      const fresh = path.join(tmpDir, "config.toml.tmp-999-fresh");
+      await fs.writeFile(stale, "junk", "utf8");
+      await fs.writeFile(fresh, "junk", "utf8");
+      const old = new Date(Date.now() - 60 * 60 * 1000);
+      await fs.utimes(stale, old, old);
+
+      await writeCodexMcpConfigToml(tmpDir, BRIDGE);
+
+      const entries = await fs.readdir(tmpDir);
+      expect(entries).not.toContain("config.toml.tmp-999-stale");
+      expect(entries).toContain("config.toml.tmp-999-fresh");
+    });
+  });
+
   it("keeps the top-level model line working alongside the fence", async () => {
     const { writeCodexModelConfigToml } = await import("../server/codex-config-toml.js");
     await writeCodexMcpConfigToml(tmpDir, {
@@ -712,6 +1001,164 @@ describe("codex execute writes the MCP bridge into managed CODEX_HOME", () => {
       expect(parsed["mcp_servers.aoa"].args).toEqual(["/path with space/mcp-bridge.js"]);
       expect(parsed["mcp_servers.aoa.env"].AOA_SESSION_COMPANY_ID).toBe("company-1");
       expect(parsed["mcp_servers.aoa.env"].AOA_TOOL_ALLOWLIST).toBe("submit_extracted_items");
+    } finally {
+      if (previousCodexHome === undefined) {
+        delete process.env.CODEX_HOME;
+      } else {
+        process.env.CODEX_HOME = previousCodexHome;
+      }
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  // C2: the write (and therefore the fence CLEANUP) must run whenever the
+  // carrier is PRESENT — even with no mcpBridge and even when the connector map
+  // is empty. Otherwise the day mcpBridge becomes conditional, a stale connector
+  // block written by an earlier run survives forever and the agent keeps the tool.
+  it("writes (and cleans) config.toml when ctx.mcpServers is present even without ctx.mcpBridge", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-codex-connonly-"));
+    const workspace = path.join(root, "workspace");
+    const commandBase = path.join(root, "agent");
+    const codexHome = path.join(root, "codex-home");
+    await fs.mkdir(workspace, { recursive: true });
+    const commandPath = await writeFakeCodexCommand(commandBase);
+
+    const managedHome = path.join(codexHome, "aoa-instances", "company-1", "agent-1");
+    await fs.mkdir(managedHome, { recursive: true });
+    // A stale AoA-fenced connector left by a previous run.
+    await fs.writeFile(
+      path.join(managedHome, "config.toml"),
+      [
+        "[other]",
+        'foo = "bar"',
+        "# >>> aoa-managed (do not edit below; regenerated each run)",
+        "[mcp_servers.stale_connector]",
+        'url = "https://stale.example.com/mcp"',
+        "# <<< aoa-managed",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const previousCodexHome = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = codexHome;
+
+    try {
+      const result = await execute({
+        runId: "run-codex-connonly",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          promptTemplate: "Prompt for {{agent.id}}.",
+          timeoutSec: 10,
+          graceSec: 1,
+        },
+        context: {},
+        executionTarget: { type: "local" },
+        runtimeCommandSpec: { command: "codex", installCommand: "do-not-run" },
+        // No mcpBridge — only the external carrier.
+        mcpServers: {
+          notion: {
+            kind: "http",
+            url: "https://mcp.notion.com/mcp",
+            headers: {},
+            authTokenEnvVar: "AOA_MCP_NOTION_TOKEN",
+          },
+        },
+        authToken: "secret-run-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+
+      const raw = await fs.readFile(path.join(managedHome, "config.toml"), "utf8");
+      // Cleanup ran.
+      expect(raw).not.toContain("stale_connector");
+      expect(raw).not.toContain("stale.example.com");
+      // Connector delivered in the flat codex form; no aoa bridge block.
+      const parsed = parseToml(raw);
+      expect(parsed["mcp_servers.notion"].url).toBe("https://mcp.notion.com/mcp");
+      expect(parsed["mcp_servers.notion"].bearer_token_env_var).toBe("AOA_MCP_NOTION_TOKEN");
+      expect(parsed["mcp_servers.aoa"]).toBeUndefined();
+      // User content preserved.
+      expect(parsed["other"].foo).toBe("bar");
+    } finally {
+      if (previousCodexHome === undefined) {
+        delete process.env.CODEX_HOME;
+      } else {
+        process.env.CODEX_HOME = previousCodexHome;
+      }
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("delivers BOTH the aoa bridge and external connectors from one execute()", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-codex-both-"));
+    const workspace = path.join(root, "workspace");
+    const commandBase = path.join(root, "agent");
+    const codexHome = path.join(root, "codex-home");
+    await fs.mkdir(workspace, { recursive: true });
+    const commandPath = await writeFakeCodexCommand(commandBase);
+
+    const previousCodexHome = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = codexHome;
+
+    try {
+      const result = await execute({
+        runId: "run-codex-both",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: {},
+        },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          command: commandPath,
+          cwd: workspace,
+          promptTemplate: "Prompt for {{agent.id}}.",
+          timeoutSec: 10,
+          graceSec: 1,
+        },
+        context: {},
+        executionTarget: { type: "local" },
+        runtimeCommandSpec: { command: "codex", installCommand: "do-not-run" },
+        mcpBridge: {
+          command: "node",
+          args: ["/path/mcp-bridge.js"],
+          env: { AOA_SESSION_COMPANY_ID: "company-1" },
+        },
+        mcpServers: {
+          filesystem: {
+            kind: "stdio",
+            command: "npx",
+            args: ["-y", "server-filesystem"],
+            env: { FS_ROOT: "/data" },
+          },
+        },
+        authToken: "secret-run-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+
+      const managedHome = path.join(codexHome, "aoa-instances", "company-1", "agent-1");
+      const raw = await fs.readFile(path.join(managedHome, "config.toml"), "utf8");
+      const parsed = parseToml(raw);
+      expect(parsed["mcp_servers.aoa"].args).toEqual(["/path/mcp-bridge.js"]);
+      expect(parsed["mcp_servers.filesystem"].command).toBe("npx");
+      expect(parsed["mcp_servers.filesystem.env"].FS_ROOT).toBe("/data");
+      // Still ONE fence.
+      expect(raw.match(/^# >>> aoa-managed/gm) ?? []).toHaveLength(1);
     } finally {
       if (previousCodexHome === undefined) {
         delete process.env.CODEX_HOME;

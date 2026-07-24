@@ -7,7 +7,10 @@ export {
   AOA_MANAGED_FENCE_START,
   AOA_MANAGED_FENCE_END,
 } from "./codex-config-toml.js";
-export type { CodexMcpBridgeSpec } from "./codex-config-toml.js";
+export type {
+  CodexMcpBridgeSpec,
+  WriteCodexMcpConfigOptions,
+} from "./codex-config-toml.js";
 export {
   ensureCodexAuthInHome,
   readSharedCodexModel,

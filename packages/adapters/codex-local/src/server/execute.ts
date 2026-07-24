@@ -349,20 +349,34 @@ export async function execute(
   // path. The managed home is adapter-owned (only holds auth.json + this
   // file); writeCodexMcpConfigToml preserves any unrelated content and is
   // idempotent. auth.json is untouched; CODEX_HOME's value is unchanged.
-  if (ctx.mcpBridge) {
+  //
+  // External connectors (Plan 2b Task 5) ride along in the SAME write: the
+  // writer renders the bridge and every connector into one fenced region.
+  //
+  // The gate tests PRESENCE, not emptiness: a run that delivers
+  // `mcpServers: {}` (every connector disabled/deleted) must still reach the
+  // writer, because the writer's fence strip is what REMOVES the connector
+  // blocks a previous run wrote. Gating on non-emptiness would leave a disabled
+  // connector — and its bearer-token env-var name — in config.toml forever, and
+  // the agent would keep the tool. Same reason `ctx.mcpBridge` alone no longer
+  // guards this: the day the bridge becomes conditional, cleanup must not stop.
+  if (ctx.mcpBridge !== undefined || ctx.mcpServers !== undefined) {
     if (executionTarget.type === "sandbox-docker") {
       // MX3: sandbox-docker codex MCP wiring is a follow-up — CODEX_HOME there
       // is the container path "/tmp/aoa-codex-home" which is not writable from
       // the host at this point. The §17 acceptance path is type:"local".
       await onLog(
         "stderr",
-        `[aoa] codex MCP bridge config.toml is not yet wired for sandbox-docker execution targets; skipping (MX3 follow-up).\n`,
+        `[aoa] codex MCP bridge + external connector config.toml is not yet wired for sandbox-docker execution targets; skipping both (MX3 follow-up).\n`,
       );
     } else {
-      await writeCodexMcpConfigToml(managedCodexHome, ctx.mcpBridge);
+      await writeCodexMcpConfigToml(managedCodexHome, ctx.mcpBridge ?? null, {
+        externalServers: ctx.mcpServers ?? {},
+      });
+      const connectorCount = Object.keys(ctx.mcpServers ?? {}).length;
       await onLog(
         "stderr",
-        `[aoa] Wrote managed Codex config.toml [mcp_servers.aoa] for company ${agent.companyId}\n`,
+        `[aoa] Wrote managed Codex config.toml (${ctx.mcpBridge ? "[mcp_servers.aoa] + " : ""}${connectorCount} external connector${connectorCount === 1 ? "" : "s"}) for company ${agent.companyId}\n`,
       );
     }
   }

@@ -1,6 +1,12 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import {
+  isHttpServerSpec,
+  isStdioServerSpec,
+  stripReservedMcpServerNames,
+  type McpServerSpec,
+} from "@armyofagents/adapter-utils";
 
 /**
  * Serialize ALL config.toml mutations for a given managed home. The home is
@@ -125,6 +131,78 @@ function renderMcpBlock(spec: CodexMcpBridgeSpec, serverName: string): string {
 }
 
 /**
+ * A connector name becomes a TOML table-header path segment
+ * (`[mcp_servers.<name>]`). Names are untrusted runtime strings from DB rows, so
+ * restrict them to TOML BARE keys (`A-Za-z0-9_-`). A name containing `]`, a
+ * quote, or a newline would otherwise close the header early and let a
+ * connector row inject arbitrary tables into codex's config. Anything outside
+ * the bare-key set is skipped, not quoted: codex's own `codex mcp add` refuses
+ * such names too, so quoting would only produce a server codex cannot address.
+ */
+const SAFE_MCP_SERVER_NAME = /^[A-Za-z0-9_-]+$/;
+
+/**
+ * Render ONE external connector as a codex `[mcp_servers.<name>]` block, or
+ * `null` when the entry cannot be represented (unknown transport, unsafe name).
+ * Skipping is deliberate: an adapter that cannot support a transport must drop
+ * that entry and keep running rather than fail the whole run.
+ *
+ * stdio mirrors the bridge shape. HTTP uses codex's FLAT env-var-NAME
+ * indirection — verified against codex-cli 0.144.1 via
+ * `codex mcp add --url … --bearer-token-env-var …`:
+ *
+ *   [mcp_servers.notion]
+ *   url = "https://mcp.notion.com/mcp"
+ *   bearer_token_env_var = "AOA_MCP_NOTION_TOKEN"
+ *
+ * codex does NOT expand `${VAR}` inside values, so the `${VAR}`-bearing
+ * `headers` map on McpHttpServerSpec is intentionally NOT emitted — writing it
+ * would hand the connector a literal `${VAR}` as its token. The env var NAME is
+ * read straight off `spec.authTokenEnvVar`; it is never reverse-engineered out
+ * of a header string. The real token reaches the child through the spawn env
+ * (connectorEnv → config.env → execute()'s child env), never through this file.
+ *
+ * The FLAT form is required over `[mcp_servers.<name>.http_headers]`: the
+ * legacy per-name stripper only knows `[mcp_servers.<n>]` and
+ * `[mcp_servers.<n>.env]`, so a third sub-table could be orphaned. Flat keys
+ * are always carried with their parent header.
+ */
+function renderExternalMcpBlock(name: string, spec: McpServerSpec): string | null {
+  if (!SAFE_MCP_SERVER_NAME.test(name)) return null;
+
+  if (isStdioServerSpec(spec)) {
+    const lines: string[] = [];
+    lines.push(`[mcp_servers.${name}]`);
+    lines.push(`command = ${tomlString(spec.command)}`);
+    lines.push(`args = ${tomlStringArray(spec.args ?? [])}`);
+    const envEntries = Object.entries(spec.env ?? {});
+    if (envEntries.length > 0) {
+      lines.push("");
+      lines.push(`[mcp_servers.${name}.env]`);
+      for (const [key, value] of envEntries) {
+        if (!SAFE_MCP_SERVER_NAME.test(key)) continue;
+        lines.push(`${key} = ${tomlString(value)}`);
+      }
+    }
+    return lines.join("\n");
+  }
+
+  if (isHttpServerSpec(spec)) {
+    const lines: string[] = [];
+    lines.push(`[mcp_servers.${name}]`);
+    lines.push(`url = ${tomlString(spec.url)}`);
+    const envVar = spec.authTokenEnvVar;
+    if (typeof envVar === "string" && SAFE_MCP_SERVER_NAME.test(envVar)) {
+      lines.push(`bearer_token_env_var = ${tomlString(envVar)}`);
+    }
+    return lines.join("\n");
+  }
+
+  // Unknown/unsupported transport — skip, never fail the run.
+  return null;
+}
+
+/**
  * Strip any prior `[mcp_servers.<serverName>]` and
  * `[mcp_servers.<serverName>.env]` blocks from existing TOML text, leaving all
  * other content untouched. A "block" runs from its table header up to (but not
@@ -211,7 +289,17 @@ function isFenceLine(trimmed: string, prefix: string): boolean {
  *
  * Pairing is NEAREST-start-wins: a second start before any end supersedes the
  * first, so at worst we strip the smallest plausible region. The writer only
- * ever emits one matched pair; this only matters for hand-edited files.
+ * ever emits one matched pair; this only matters for hand-edited files. The
+ * cost is deliberate: an orphan start pasted INSIDE AoA's own region strands
+ * everything above it in that region permanently (it is never stripped again).
+ * The alternative — pairing the FIRST start with the next end — reintroduces
+ * the I1 data-loss bug, where an orphan start above user content makes the
+ * strip swallow that content. Stranding an AoA block beats deleting a user's.
+ *
+ * Detection is LINE-BASED and not TOML-string-aware: a fence-looking line that
+ * happens to sit inside a multi-line TOML string literal would be treated as a
+ * real fence. Contrived (codex's config.toml has no multi-line string keys) —
+ * documented, not fixed.
  */
 function findFencedRegions(lines: string[]): Array<[number, number]> {
   const regions: Array<[number, number]> = [];
@@ -235,6 +323,12 @@ function findFencedRegions(lines: string[]): Array<[number, number]> {
  * Remove every MATCHED fenced AoA-managed region (fence lines inclusive) from
  * existing TOML text, preserving all other content verbatim. Multiple regions
  * are handled (defensive — the writer emits one).
+ *
+ * SINGLE-WRITER INVARIANT: because this strips ALL fenced regions, there must
+ * be exactly ONE function that emits a fence — {@link writeCodexMcpConfigToml}.
+ * A second fenced writer would delete the first's region on every run, so the
+ * bridge and the external connectors would alternately erase each other. New
+ * AoA-owned config belongs in that writer's block list, not in a new fence.
  */
 function stripAoaManagedFencedRegions(existing: string): string {
   const lines = existing.split(/\r?\n/);
@@ -282,10 +376,47 @@ function applyEol(body: string, eol: "\r\n" | "\n"): string {
  * Windows retry: an antivirus/indexer/editor holding a transient handle on the
  * destination makes `rename` fail with EPERM/EACCES/EBUSY. Those are momentary,
  * so retry a few times with a short backoff before surfacing the error.
+ *
+ * MODE: the temp file is opened 0600 and `rename` REPLACES the destination
+ * inode, so config.toml's mode is re-derived from the temp file on every write
+ * (a default 0644 open would silently widen it back each run). This file now
+ * carries connector configuration and bearer-token env-var NAMES, and its
+ * sibling `auth.json` in the same managed home is explicitly 0600. win32
+ * ignores the mode argument, matching the `platform !== "win32"` guard used for
+ * auth.json.
  */
+const TEMP_FILE_SWEEP_MAX_AGE_MS = 5 * 60 * 1000;
+
+/**
+ * Best-effort removal of orphaned sibling temp files from a crashed/killed
+ * earlier write. Post-connectors each orphan is a config file sitting in a
+ * credential-bearing directory, so leaving them around is worse than it was.
+ * Only files older than {@link TEMP_FILE_SWEEP_MAX_AGE_MS} are touched, so a
+ * concurrent in-flight write from another process is never disturbed. Every
+ * failure is swallowed — sweeping must not be able to fail a run.
+ */
+async function sweepStaleTempFiles(target: string): Promise<void> {
+  try {
+    const dir = path.dirname(target);
+    const prefix = `${path.basename(target)}.tmp-`;
+    const cutoff = Date.now() - TEMP_FILE_SWEEP_MAX_AGE_MS;
+    const entries = await fs.readdir(dir);
+    for (const name of entries) {
+      if (!name.startsWith(prefix)) continue;
+      const candidate = path.join(dir, name);
+      const stat = await fs.stat(candidate).catch(() => null);
+      if (!stat?.isFile() || stat.mtimeMs > cutoff) continue;
+      await fs.rm(candidate, { force: true }).catch(() => {});
+    }
+  } catch {
+    // best-effort only
+  }
+}
+
 async function writeFileAtomically(target: string, contents: string): Promise<void> {
+  await sweepStaleTempFiles(target);
   const tempPath = `${target}.tmp-${process.pid}-${randomUUID()}`;
-  const handle = await fs.open(tempPath, "wx");
+  const handle = await fs.open(tempPath, "wx", 0o600);
   try {
     await handle.writeFile(contents, "utf8");
     await handle.close();
@@ -328,12 +459,36 @@ function fenceAoaManaged(body: string): string {
  * `[mcp_servers.<serverName>]` (+ `.env`) block), preserve everything else
  * verbatim, then append a freshly-rendered, fenced block. `auth.json` is never
  * touched.
+ *
+ * This is ALSO the writer for EXTERNAL connectors (`options.externalServers`) —
+ * deliberately, not as a convenience. See the single-writer invariant note
+ * inside. `spec` may be null: a run with connectors but no bridge still writes
+ * (and therefore still cleans) the file.
  */
+export interface WriteCodexMcpConfigOptions {
+  /**
+   * EXTERNAL MCP connectors keyed by server name (Plan 2b Task 5). Rendered
+   * into the SAME fenced region as the bridge. Reserved names (`aoa`,
+   * `playwright`) are filtered here; entries whose transport codex cannot
+   * express, or whose name is not a safe TOML bare key, are skipped.
+   *
+   * Pass an EMPTY object (rather than omitting the field) to mean "this run has
+   * no connectors" — the writer then removes every previously-written connector
+   * block. Omitting it has the same effect, since the fence strip is
+   * unconditional; the distinction only matters at the execute() call site.
+   */
+  externalServers?: Record<string, McpServerSpec>;
+  /** Table name for AoA's own loopback bridge. */
+  serverName?: string;
+}
+
 export async function writeCodexMcpConfigToml(
   managedHomeDir: string,
-  spec: CodexMcpBridgeSpec,
-  serverName = "aoa",
+  spec: CodexMcpBridgeSpec | null | undefined,
+  options: WriteCodexMcpConfigOptions = {},
 ): Promise<void> {
+  const serverName = options.serverName ?? "aoa";
+  const externalServers = options.externalServers ?? {};
   return withCodexHomeConfigLock(managedHomeDir, async () => {
     await fs.mkdir(managedHomeDir, { recursive: true });
     const target = path.join(managedHomeDir, "config.toml");
@@ -352,8 +507,32 @@ export async function writeCodexMcpConfigToml(
     //     left by a pre-fence writer, so an existing file upgrades on the first
     //     write instead of ending up with two `aoa` blocks.
     const preserved = stripAoaMcpBlocks(stripAoaManagedFencedRegions(existing), serverName);
-    const block = fenceAoaManaged(renderMcpBlock(spec, serverName));
-    const body = preserved.trim().length > 0 ? `${preserved}\n\n${block}\n` : `${block}\n`;
+
+    // SINGLE-WRITER INVARIANT (C1): the bridge block and every external
+    // connector block are rendered into ONE fenced region by THIS function. Do
+    // not add a second function that emits its own fence — the strip above
+    // removes ALL fenced regions, so whichever fenced writer ran second would
+    // delete the other's region and the two would erase each other run to run.
+    const blocks: string[] = [];
+    if (spec) blocks.push(renderMcpBlock(spec, serverName));
+    for (const [name, connector] of Object.entries(
+      stripReservedMcpServerNames(externalServers),
+    )) {
+      const rendered = renderExternalMcpBlock(name, connector);
+      if (rendered) blocks.push(rendered);
+    }
+
+    // Nothing AoA-owned to write → emit no fence at all (an empty fence pair is
+    // just noise). The strip above already removed prior AoA content, so this is
+    // still a full cleanup pass.
+    const fenced = blocks.length > 0 ? fenceAoaManaged(blocks.join("\n\n")) : "";
+
+    let body: string;
+    if (preserved.trim().length > 0) {
+      body = fenced ? `${preserved}\n\n${fenced}\n` : `${preserved}\n`;
+    } else {
+      body = fenced ? `${fenced}\n` : "";
+    }
 
     await writeFileAtomically(target, applyEol(body, detectEol(existing)));
   });
