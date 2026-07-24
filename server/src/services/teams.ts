@@ -323,6 +323,17 @@ export function teamsService(db: Db) {
       if (teamRows.length === 0) throw notFound(`team ${teamId} not found`);
       const team = teamRows[0];
 
+      // A company-wide team (D21) has no parent department to check membership
+      // against. Rather than silently skipping the tenancy-bearing check, this
+      // path is closed: crew membership is written by the installer inside its
+      // own transaction, and opening a founder-facing add path needs its own
+      // company-scoped agent check.
+      if (team.parentProjectId === null) {
+        throw badRequest(
+          `team ${teamId} is company-wide (no parent department) — members cannot be added through this path`,
+        );
+      }
+
       // Verify agent is a member of the team's parent department
       const deptMembership = await db
         .select()

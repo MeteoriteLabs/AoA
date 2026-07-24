@@ -93,7 +93,11 @@ export function TeamsListPage() {
         id: t.id,
         name: t.name,
         slug: t.slug,
-        parentProjectName: projectsById.get(t.parentProjectId)?.name ?? "—",
+        // Company-wide teams (D21) have no parent department — same "—" as an
+        // unresolvable id.
+        parentProjectName: t.parentProjectId
+          ? projectsById.get(t.parentProjectId)?.name ?? "—"
+          : "—",
         status: t.status,
         memberCount: t.memberCount ?? 0,
         leadName,

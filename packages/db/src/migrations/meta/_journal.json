@@ -1268,6 +1268,13 @@
       "when": 1784834553178,
       "tag": "0180_little_omega_sentinel",
       "breakpoints": true
+    },
+    {
+      "idx": 181,
+      "version": "7",
+      "when": 1784873201946,
+      "tag": "0181_light_overlord",
+      "breakpoints": true
     }
   ]
 }

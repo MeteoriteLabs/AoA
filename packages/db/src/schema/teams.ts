@@ -9,7 +9,12 @@ export const teams = pgTable(
   {
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
-    parentProjectId: uuid("parent_project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+    // Nullable since D21: NULL = a company-wide team with no parent department.
+    // AoA crew (Adjutant, Scout, …) are company-wide singletons installed before
+    // any department exists, and `onDelete: cascade` would otherwise let a
+    // department deletion take the crew team with it. Departmental teams still
+    // set this and still cascade.
+    parentProjectId: uuid("parent_project_id").references(() => projects.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     slug: text("slug").notNull(),
     description: text("description"),

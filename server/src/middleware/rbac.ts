@@ -55,12 +55,17 @@ export async function assertRole(
 /**
  * Asserts that the current user has access to the specified department.
  * Founder: full access. Team lead: only their department. Team member: no department management.
+ *
+ * `departmentId` may be null for a company-wide entity with no parent
+ * department (D21 — e.g. the AoA crew team). There is no department to be lead
+ * of, so the lead-scoped grant cannot apply: only the founder / instance-admin
+ * / local-trusted paths above pass. Fails closed for team leads and members.
  */
 export async function assertDepartmentAccess(
   db: Db,
   req: Request,
   companyId: string,
-  departmentId: string,
+  departmentId: string | null,
 ): Promise<void> {
   if (req.actor.type === "agent") return;
   if (req.actor.type === "none") throw unauthorized();
@@ -72,6 +77,10 @@ export async function assertDepartmentAccess(
 
   const perms = permissionService(db);
   if (await perms.isFounder(companyId, userId)) return;
+
+  if (departmentId === null) {
+    throw forbidden("Company-wide entity — founder access required");
+  }
 
   const isLead = await perms.isTeamLeadForDepartment(companyId, userId, departmentId);
   if (!isLead) {

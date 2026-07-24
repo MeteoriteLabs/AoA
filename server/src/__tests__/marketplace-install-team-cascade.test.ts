@@ -177,6 +177,70 @@ describe("installTeam — Saga cascade", () => {
     ).rejects.toThrow(/department.*not found/i);
   });
 
+  // ── D21: company-wide teams (no parent department) ────────────────────────
+  //
+  // AoA crew are company-wide singletons — Adjutant serves every department —
+  // and nothing creates a department at company-create time, so the crew must
+  // be installable before any department exists. `targetDepartmentId: null`
+  // means "company-wide": the department pre-flight is skipped entirely and
+  // `teams.parent_project_id` is written NULL.
+
+  // Rejects every read so the assertion is "pre-flight never ran", not merely
+  // "a lookup happened to succeed". The happy-path mockDb returns a department
+  // row for ANY select, so reusing it would let this test pass while the
+  // precondition still fired against a null id.
+  const dbNoSelectAllowed = {
+    ...mockDb,
+    select: () => {
+      throw new Error("department pre-flight must not run for a company-wide install");
+    },
+  };
+
+  it("D21: installs a company-wide team when targetDepartmentId is null", async () => {
+    const result = await installTeam({
+      catalogItem: TEAM, catalog: CATALOG, companyId: "c1",
+      targetDepartmentId: null, db: dbNoSelectAllowed as any, installPlugin: mockPluginInstaller,
+    });
+
+    expect(teamInserts).toHaveLength(1);
+    expect(teamInserts[0].parentProjectId).toBeNull();
+    expect(result.teamId).toBeDefined();
+  });
+
+  it("D21: installs a company-wide team when targetDepartmentId is omitted", async () => {
+    const result = await installTeam({
+      catalogItem: TEAM, catalog: CATALOG, companyId: "c1",
+      db: dbNoSelectAllowed as any, installPlugin: mockPluginInstaller,
+    });
+
+    expect(teamInserts).toHaveLength(1);
+    expect(teamInserts[0].parentProjectId).toBeNull();
+    expect(result.teamId).toBeDefined();
+  });
+
+  it("D21: a supplied-but-wrong-type project is still rejected (never silently nulled)", async () => {
+    // A `type: "project"` row is not a department. Relaxing the precondition
+    // for null must not degrade validation of a supplied id into a fallback.
+    const dbProjectNotDept = {
+      ...mockDb,
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            limit: () => Promise.resolve([{ id: "proj-uuid-1", type: "project", companyId: "c1" }]),
+          }),
+        }),
+      }),
+    };
+
+    await expect(
+      installTeam({
+        catalogItem: TEAM, catalog: CATALOG, companyId: "c1",
+        targetDepartmentId: "proj-uuid-1", db: dbProjectNotDept as any, installPlugin: mockPluginInstaller,
+      }),
+    ).rejects.toThrow(/department.*not found/i);
+    expect(teamInserts).toHaveLength(0);
+  });
+
   it("phase 2: installs all required plugins (idempotent preconditions)", async () => {
     await installTeam({
       catalogItem: TEAM, catalog: CATALOG, companyId: "c1",

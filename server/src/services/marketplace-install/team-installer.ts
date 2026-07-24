@@ -13,7 +13,13 @@ export interface InstallTeamOpts {
   catalogItem: CatalogItem;            // type='team'
   catalog: MarketplaceCatalogFile;     // for resolving requires
   companyId: string;
-  targetDepartmentId: string;          // required for team installs (M2.D8)
+  /**
+   * Department to parent the team under. `null`/absent = a company-wide team
+   * (D21) — used by the internal crew bootstrap, which runs before any
+   * department exists. The public install route still requires one for
+   * founder-initiated team installs (marketplace-installs.ts).
+   */
+  targetDepartmentId?: string | null;
   db: Db;
   installPlugin: PluginInstallerFn;    // injected to break circular dep
 }
@@ -40,7 +46,8 @@ interface TeamTemplateBody {
  * Install a team catalog item via Saga pattern (3 phases).
  *
  * **Phase 1 — Pre-flight (no writes):**
- *   - Validate target department exists and belongs to company
+ *   - Validate target department exists and belongs to company (skipped when
+ *     no department is supplied — that installs a company-wide team, D21)
  *   - Validate all required catalog items resolve in the catalog
  *   - Fetch + parse team.json + each required agent.json + skill content
  *
@@ -74,14 +81,20 @@ export async function installTeam(opts: InstallTeamOpts): Promise<InstallTeamRes
   // ====== Phase 1: Pre-flight ======
   const phase1Start = Date.now();
 
-  // 1a: Target department exists?
-  const dept = await db
-    .select()
-    .from(projects)
-    .where(and(eq(projects.id, targetDepartmentId), eq(projects.companyId, companyId)))
-    .limit(1);
-  if (dept.length === 0 || dept[0].type !== "department") {
-    throw new Error(`Target department not found: ${targetDepartmentId}`);
+  // 1a: Target department exists? Skipped entirely for a company-wide install
+  // (D21) — there is nothing to validate. When an id IS supplied it is still
+  // fully validated (exists + belongs to this company + is a department); a
+  // bad id is an error, never a silent fallback to company-wide.
+  const parentProjectId = targetDepartmentId ?? null;
+  if (parentProjectId !== null) {
+    const dept = await db
+      .select()
+      .from(projects)
+      .where(and(eq(projects.id, parentProjectId), eq(projects.companyId, companyId)))
+      .limit(1);
+    if (dept.length === 0 || dept[0].type !== "department") {
+      throw new Error(`Target department not found: ${parentProjectId}`);
+    }
   }
 
   // 1b: Resolve requires
@@ -273,7 +286,7 @@ export async function installTeam(opts: InstallTeamOpts): Promise<InstallTeamRes
       .insert(teams)
       .values({
         companyId,
-        parentProjectId: targetDepartmentId,
+        parentProjectId,
         name: catalogItem.name,
         slug: resolvedSlug,
         description: teamBody.description ?? catalogItem.description,

@@ -149,6 +149,17 @@ describe("POST /api/companies/:companyId/marketplace/install", () => {
     expect(res.body.error).toMatch(/targetDepartmentId/);
   });
 
+  it("returns 400 when targetDepartmentId missing for team installs", async () => {
+    // D21 made `teams.parent_project_id` nullable so the internal bootstrap can
+    // install a company-wide crew. The PUBLIC install API is unchanged: a
+    // founder-initiated team install must still name a department.
+    const res = await request(buildApp())
+      .post(`/api/companies/${C_ID}/marketplace/install`)
+      .send({ catalogItemId: MIXED_TEAM.id });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/targetDepartmentId/);
+  });
+
   it("returns 404 for unknown catalogItemId", async () => {
     const res = await request(buildApp())
       .post(`/api/companies/${C_ID}/marketplace/install`)
