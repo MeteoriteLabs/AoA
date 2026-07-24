@@ -64,7 +64,7 @@
 - **T2.1 before T2.3:** `installTeam` hard-requires a department that does not exist at company-create time. Without the nullable parent there is nowhere to install to.
 - **T2.2 before T2.3:** `isCrewMarketplaceManaged` suppresses the *entire* `ensureAllCrewAgents`. The moment T2.3 makes a company marketplace-managed, Commander and Steward stop being seeded — Inbox Hub curation breaks silently.
 
-Order: **T2.1 → T2.2 → T2.3 → T2.3b → T2.3c → T2.3d → T2.3e → T2.5 → T2.4 → T2.6 → T2.7 → T2.8 → T2.9 → T2.10**. (T2.5 protected-origins before T2.4 so Steward is protected the moment it becomes marketplace-managed.)
+Order: **T2.1 → T2.2 → T2.3 → T2.3b → T2.3c → T2.3d → T2.3e → T2.5 → T2.4 → T2.6 → T2.7 → T2.8 → T2.9 → T2.10 → T2.7b**. (T2.5 protected-origins before T2.4 so Steward is protected the moment it becomes marketplace-managed.)
 
 ---
 
@@ -1229,6 +1229,61 @@ verbatim as upstream).
 - [ ] **Step 2: Run → FAIL.** **Step 3: Call the materializer from the merge path.** **Step 4: Run → PASS.** **Step 5: Commit.**
 ```bash
 git commit -m "fix(marketplace): re-materialize bundled skill files on reviewed merge"
+```
+
+---
+
+## T2.7b — Fence-aware and line-ending-safe section splitting (found in T2.7 review)
+
+**Why:** two defects live in `marketplace-merge.ts`, shared with the **already
+shipped** skill merge, and T2.7 has just made them reachable on a path that
+matters more:
+
+1. **`splitSections` is fence-unaware.** A `## ` line inside a ``` fenced block
+   becomes an independently-decidable section and carries the closing fence with
+   it — so accepting one side and keeping the other leaves the fence
+   **unbalanced**, corrupting the document. Measured in review:
+   `"## Real
+```md
+## NotAHeading
+…```
+tail
+"` splits into three sections.
+2. **`applyMergeDecisions` joins with a bare `"
+
+"`**, so a mixed merge of a
+   CRLF document emits bare LF and trims a trailing `` — mangled line endings
+   on a Windows-first codebase.
+
+Neither reaches the wholesale keep-all-mine / accept-all-upstream paths (those
+take verbatim shortcuts, proven byte-exact over 441 document pairs + a
+4,000-iteration random sweep), so this is the **mixed-decision** path only. But
+that is exactly the path section-level review exists for, and **AGENTS.md
+bundles routinely carry fenced examples** — far more than skill markdown did.
+
+**Deliberately deferred out of T2.7** because the fix changes shipped skill-merge
+behaviour and the fence case needs its own fixture set. Marked with a TODO at
+`marketplace-agent-merge.ts:303-309` and in Decision #115's "Known gaps".
+
+**Files:** `server/src/services/marketplace-merge.ts` (`splitSections`,
+`applyMergeDecisions`), plus skill-merge tests that may encode current behaviour.
+
+- [ ] **Step 1: Failing tests.** A fenced `## ` stays inside its parent section
+  (**discriminator:** the fence must still balance after accepting one side and
+  keeping the other); a CRLF document survives a *mixed* merge with CRLF intact;
+  and a mixed merge of an LF document is unchanged from today (regression).
+- [ ] **Step 2: Run → FAIL.**
+- [ ] **Step 3: Implement** fence-aware splitting and line-ending preservation.
+  Detect the document's dominant ending and re-join with it rather than
+  hardcoding `"
+
+"`.
+- [ ] **Step 4: Check the skill side.** These primitives are shared — confirm no
+  shipped skill-merge test encoded the broken behaviour, and if one did, fix the
+  test with a note rather than preserving the bug.
+- [ ] **Step 5: Run → PASS. Verify + commit.**
+```bash
+git commit -m "fix(marketplace): fence-aware section splitting and line-ending-safe merge"
 ```
 
 ---
