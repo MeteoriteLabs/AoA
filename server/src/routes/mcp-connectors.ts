@@ -84,7 +84,32 @@ import { loadConfig } from "../config.js";
 // LOAD-BEARING: lowercase letters, digits, hyphen only. Do not widen.
 const SERVER_NAME_RE = /^[a-z0-9-]+$/;
 
-const templateRecord = z.record(z.string(), z.string());
+// FU-20 — a template VALUE may only be EMPTY or REFERENCE a secret through a
+// `${...}` placeholder; a literal credential is refused at the door.
+//
+// Why this is security, not hygiene: `header_template` / `env_template` are plain
+// jsonb columns, NOT the encrypted `company_secrets` store. A real token pasted
+// here is persisted verbatim, written verbatim into the agent's on-disk CLI config
+// (a git repo the agent can commit and push), returned in full by the board-wide
+// list route, and echoed by the error handler on any 5xx. The D5 model is: config
+// holds a placeholder, the credential lives in `company_secrets` and rides in the
+// process env. `${TOKEN}` is the placeholder `buildConnectorSpecs` rewrites to the
+// connector's real env var; `${...}` more generally is a reference, never a literal.
+//
+// This lives on `templateRecord`, so it covers EVERY write path that validates
+// through it — today the BYO create route's `headerTemplate` AND `envTemplate`.
+// `args` is deliberately NOT covered: a positional arg is legitimately a literal
+// (`["-y", "fs-mcp"]`), so the same rule there would reject every valid stdio
+// connector (FU-20 records that as its own separate decision).
+const SECRET_PLACEHOLDER_RE = /\$\{[^}]+\}/;
+const templateValue = z.string().refine((v) => v === "" || SECRET_PLACEHOLDER_RE.test(v), {
+  message:
+    'A connector template value must be empty or reference a secret with a ${...} placeholder ' +
+    '(e.g. "Bearer ${TOKEN}"). Do not paste a real credential here — store it as a company ' +
+    "secret and reference it, or bind one after install via " +
+    "POST /companies/:companyId/mcp-connectors/:id/credentials.",
+});
+const templateRecord = z.record(z.string(), templateValue);
 
 // C3: `source` is DELIBERATELY absent from the schema and stripped from the body
 // before validation, so a client can never set it (a spoofed `source:"catalog"`

@@ -1372,7 +1372,7 @@ describe("[inv-5] catalog installs never carry a secret value", () => {
 const RAW_SECRET = "sk-live-REALSECRET-0xdeadbeef";
 
 describe("[ESC-4] a literal credential in headerTemplate / envTemplate / args", () => {
-  it("CHARACTERIZATION: the BYO route accepts it and persists it verbatim (plain jsonb, not company_secrets)", async () => {
+  it("FIXED (FU-20): the BYO route REJECTS a literal headerTemplate value and persists nothing", async () => {
     deploymentMode = "local_trusted";
     const res = await createByo(makeApp(founderActor), {
       serverName: "alpha",
@@ -1381,11 +1381,30 @@ describe("[ESC-4] a literal credential in headerTemplate / envTemplate / args", 
       url: "https://attacker.example/mcp",
       headerTemplate: { "X-Api-Key": RAW_SECRET },
     });
-    expect(res.status).toBe(201);
-    expect(persistedInsert().headerTemplate).toEqual({ "X-Api-Key": RAW_SECRET });
+    expect(res.status).toBe(400);
+    expect(mockConnectorSvc.create).not.toHaveBeenCalled();
+    // The refusal is actionable — it names the secret-ref path, not a bare 400.
+    expect(JSON.stringify(res.body)).toMatch(/\$\{\.\.\.\}|placeholder|credentials/);
   });
 
-  it("CHARACTERIZATION: the stdio shape (args + envTemplate) is accepted too", async () => {
+  it("FIXED (FU-20): a literal envTemplate value is rejected too (templateRecord covers both maps)", async () => {
+    deploymentMode = "local_trusted";
+    const res = await createByo(makeApp(founderActor), {
+      serverName: "beta",
+      displayName: "Beta",
+      transport: "stdio",
+      command: "npx",
+      args: ["-y", "tool"],
+      envTemplate: { BETA_TOKEN: RAW_SECRET },
+    });
+    expect(res.status).toBe(400);
+    expect(mockConnectorSvc.create).not.toHaveBeenCalled();
+  });
+
+  it("CHARACTERIZATION: `args` are NOT covered by FU-20 — a positional arg is legitimately a literal", async () => {
+    // Deliberate scope boundary: the same "empty-or-placeholder" rule on `args`
+    // would reject every valid stdio connector (`["-y", "fs-mcp"]`). So a literal
+    // in `args` still lands; FU-20 records that as its own separate decision.
     deploymentMode = "local_trusted";
     const res = await createByo(makeApp(founderActor), {
       serverName: "beta",
@@ -1393,11 +1412,25 @@ describe("[ESC-4] a literal credential in headerTemplate / envTemplate / args", 
       transport: "stdio",
       command: "npx",
       args: ["-y", "tool", "--token", RAW_SECRET],
-      envTemplate: { BETA_TOKEN: RAW_SECRET },
     });
     expect(res.status).toBe(201);
     expect(persistedInsert().args).toEqual(["-y", "tool", "--token", RAW_SECRET]);
-    expect(persistedInsert().envTemplate).toEqual({ BETA_TOKEN: RAW_SECRET });
+  });
+
+  it("FIXED (FU-20): the legitimate shapes still pass — empty value and a ${...} placeholder", async () => {
+    deploymentMode = "local_trusted";
+    const res = await createByo(makeApp(founderActor), {
+      serverName: "gamma",
+      displayName: "Gamma",
+      transport: "http",
+      url: "https://mcp.example/mcp",
+      headerTemplate: { Authorization: "Bearer ${TOKEN}", "X-Empty": "" },
+    });
+    expect(res.status).toBe(201);
+    expect(persistedInsert().headerTemplate).toEqual({
+      Authorization: "Bearer ${TOKEN}",
+      "X-Empty": "",
+    });
   });
 
   it("CHARACTERIZATION: it then flows verbatim into the adapter spec that config writers serialise", () => {
@@ -1440,8 +1473,11 @@ describe("[ESC-4] a literal credential in headerTemplate / envTemplate / args", 
     expect(s).toMatch(/"Authorization":"\[REDACTED\]"/); // only the exact key matches
   });
 
-  // DESIRED STATE — [ESC-4]. Three independent halves, each its own decision.
-  it.fails("[ESC-4a] DESIRED: create rejects a literal credential in headerTemplate", async () => {
+  // [ESC-4] Three independent halves, each its own decision. Only [ESC-4a] (reject
+  // literals at write time) is fixed here (FU-20). [ESC-4b] (widen log redaction)
+  // and [ESC-4c] (strip templates from the board-wide list route for non-founders)
+  // are separate decisions and remain `.fails` until taken.
+  it("[ESC-4a] FIXED (FU-20): create rejects a literal credential in headerTemplate", async () => {
     deploymentMode = "local_trusted";
     const res = await createByo(makeApp(founderActor), {
       serverName: "alpha",
