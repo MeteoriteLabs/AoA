@@ -1,3 +1,4 @@
+import type { McpConnectorCatalogEntry } from "@armyofagents/shared";
 import { api } from "./client";
 
 /**
@@ -20,7 +21,20 @@ export interface McpConnector {
   envTemplate: Record<string, string>;
   secretRef: string | null;
   source: "byo" | "catalog";
-  status: "pending_approval" | "active" | "disabled";
+  /**
+   * `needs_credentials` is PRODUCTION-REACHABLE (P3a-11): a catalog install
+   * whose entry declares `requiresSecret` lands here with no bound secret, and
+   * stays there until POST …/:id/credentials binds one. Omitting it from this
+   * union is what let `StatusBadge` render nothing at all for a freshly
+   * installed connector.
+   */
+  status: "pending_approval" | "needs_credentials" | "active" | "disabled";
+  /**
+   * Declared by the catalog entry at install time. `true` + `secretRef === null`
+   * is exactly the "installed but unusable" state the credential-binding
+   * affordance exists to close.
+   */
+  requiresSecret: boolean;
   createdByUserId: string | null;
   createdAt: string;
   updatedAt: string;
@@ -45,9 +59,49 @@ export interface CreateConnectorInput {
   secretRef?: string;
 }
 
+/**
+ * A curated `connectors.json` entry decorated by
+ * `GET …/mcp-connectors/catalog` with the deployment's own answers:
+ *
+ *  - `installable` — a PROJECTION of the server's D7 transport gate. `false`
+ *    means this deployment refuses the entry outright (unverified stdio on a
+ *    shared host); the shelf renders it greyed WITH the reason rather than
+ *    hiding it.
+ *  - `consentRequired` — true only for UNVERIFIED stdio, i.e. the one case
+ *    where a command runs on the host without a verified publisher vouching
+ *    for it.
+ *  - `consentToken` / `consentExpiresAt` — present only when consent is
+ *    required AND the deployment permits the install AND a signing secret
+ *    exists. The token is minted from the SAME catalog read that produced the
+ *    command shown here, and lives 15 minutes: the shelf must refetch before
+ *    opening a stale install dialog or the install 400s.
+ */
+export interface McpConnectorShelfEntry extends McpConnectorCatalogEntry {
+  installable: boolean;
+  consentRequired: boolean;
+  consentToken?: string;
+  consentExpiresAt?: number;
+}
+
+export interface McpConnectorShelf {
+  entries: McpConnectorShelfEntry[];
+  stale: boolean;
+}
+
 export const mcpConnectorsApi = {
   list: (companyId: string) =>
     api.get<McpConnector[]>(`/companies/${companyId}/mcp-connectors`),
+  catalog: (companyId: string) =>
+    api.get<McpConnectorShelf>(`/companies/${companyId}/mcp-connectors/catalog`),
+  install: (companyId: string, body: { entryId: string; consentToken?: string }) =>
+    api.post<McpConnector & { approvalId?: string | null }>(
+      `/companies/${companyId}/mcp-connectors/install`,
+      body,
+    ),
+  bindCredentials: (companyId: string, id: string, secretRef: string) =>
+    api.post<McpConnector>(`/companies/${companyId}/mcp-connectors/${id}/credentials`, {
+      secretRef,
+    }),
   create: (companyId: string, body: CreateConnectorInput) =>
     api.post<McpConnector & { approvalId?: string | null }>(
       `/companies/${companyId}/mcp-connectors`,

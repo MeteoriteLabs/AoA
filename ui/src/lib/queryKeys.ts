@@ -274,6 +274,7 @@ export const queryKeys = {
   },
   mcpConnectors: {
     list: (companyId: string) => ["mcp-connectors", companyId] as const,
+    catalog: (companyId: string) => ["mcp-connectors", companyId, "catalog"] as const,
   },
   detectedOutputs: {
     byIssue: (issueId: string) => ["detected-outputs", "issue", issueId] as const,

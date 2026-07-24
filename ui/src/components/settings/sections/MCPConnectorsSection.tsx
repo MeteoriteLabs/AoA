@@ -15,6 +15,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/EmptyState";
+import { ConnectorShelf } from "./connectors/ConnectorShelf";
 
 const SERVER_NAME_RE = /^[a-z0-9-]+$/;
 
@@ -29,10 +30,26 @@ function TransportBadge({ transport }: { transport: McpConnector["transport"] })
   );
 }
 
-function StatusBadge({ status }: { status: McpConnector["status"] }) {
+/**
+ * Every status must produce a visible badge — including one this build has never
+ * heard of.
+ *
+ * This function used to end at `disabled`, with `needs_credentials` falling
+ * through to the "Disabled" branch by accident of ordering (and, before the
+ * union was widened, an unknown status rendering nothing at all). P3a-11 made
+ * `needs_credentials` a production state — every catalog install with
+ * `requiresSecret` lands there — so the miss was directly on the central
+ * journey: install Notion, get a row with the wrong state and no next step.
+ *
+ * The fallback renders the RAW status rather than nothing, because a server that
+ * grows a fifth status should degrade to an ugly badge, not an invisible one.
+ */
+export function StatusBadge({ status }: { status: McpConnector["status"] }) {
   if (status === "active") return <Badge variant="active">Active</Badge>;
   if (status === "pending_approval") return <Badge variant="pending">Pending approval</Badge>;
-  return <Badge variant="archived">Disabled</Badge>;
+  if (status === "needs_credentials") return <Badge variant="draft">Needs setup</Badge>;
+  if (status === "disabled") return <Badge variant="archived">Disabled</Badge>;
+  return <Badge variant="idle">{status}</Badge>;
 }
 
 export function MCPConnectorsSection() {
@@ -77,6 +94,8 @@ export function MCPConnectorsSection() {
   const [headersText, setHeadersText] = useState("");
   const [formError, setFormError] = useState<string | null>(null);
   const [approvalNotice, setApprovalNotice] = useState<string | null>(null);
+  // Post-install follow-through: names the NEXT step (credential / approval).
+  const [installNotice, setInstallNotice] = useState<string | null>(null);
   // Inline surface for disable/remove failures (previously swallowed silently).
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -204,6 +223,39 @@ export function MCPConnectorsSection() {
           <EmptyState icon={Cable} message="Select a company to manage connectors." />
         ) : (
           <div className="space-y-6">
+            {/* Curated shelf — founder only, because GET …/catalog is founder-only
+                and mints signed install material. */}
+            {isFounder && (
+              <div className="space-y-4">
+                <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                  Browse connectors
+                </div>
+                <ConnectorShelf
+                  companyId={companyId}
+                  installed={connectors ?? []}
+                  onInstalled={(created) => {
+                    setActionError(null);
+                    setApprovalNotice(null);
+                    // The two things a founder must do next, in the order the
+                    // server will demand them. Silence here is exactly the
+                    // failure mode this task exists to close.
+                    setInstallNotice(
+                      created.status === "needs_credentials"
+                        ? `"${created.displayName}" is installed but needs a credential before agents can use it — use "Add credential" on its row below.`
+                        : created.status === "pending_approval"
+                          ? `"${created.displayName}" is installed and waiting for board approval.`
+                          : `"${created.displayName}" is installed and active.`,
+                    );
+                  }}
+                />
+                {installNotice && (
+                  <div className="rounded-md border border-info/30 bg-info/[0.06] px-3 py-2 text-sm text-foreground">
+                    {installNotice}
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Registered connectors */}
             <div className="space-y-4">
               <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
@@ -421,6 +473,32 @@ function ConnectorRow({
 }: ConnectorRowProps) {
   const queryClient = useQueryClient();
   const [showAgents, setShowAgents] = useState(false);
+  const [showCredential, setShowCredential] = useState(false);
+  const [credentialRef, setCredentialRef] = useState("");
+  const [credentialError, setCredentialError] = useState<string | null>(null);
+
+  // "Installed but unusable": the catalog entry declared a credential and none
+  // is bound. This is the state every `requiresSecret` catalog install lands in,
+  // so it must carry its own next step rather than relying on the founder
+  // guessing that a secret goes somewhere.
+  const needsCredential = connector.requiresSecret && !connector.secretRef;
+  const expectedKeys = [
+    ...Object.keys(connector.headerTemplate ?? {}),
+    ...Object.keys(connector.envTemplate ?? {}),
+  ];
+
+  const bindCredentialMutation = useMutation({
+    mutationFn: (secretRef: string) =>
+      mcpConnectorsApi.bindCredentials(companyId, connector.id, secretRef),
+    onSuccess: () => {
+      setCredentialError(null);
+      setShowCredential(false);
+      setCredentialRef("");
+      queryClient.invalidateQueries({ queryKey: queryKeys.mcpConnectors.list(companyId) });
+    },
+    onError: (err) =>
+      setCredentialError(err instanceof ApiError ? err.message : "Failed to bind credential"),
+  });
   // Seeded from the connector's CURRENT enabled-agent set (A34). PUT …/agents
   // REPLACES the whole set, so starting empty would silently wipe agents the
   // founder didn't touch. Re-seeding on open (and after a save-driven refetch)
@@ -483,7 +561,10 @@ function ConnectorRow({
   );
 
   return (
-    <div className="rounded-md border border-border px-3 py-3 space-y-3">
+    <div
+      data-testid={`connector-row-${connector.id}`}
+      className="rounded-md border border-border px-3 py-3 space-y-3"
+    >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
@@ -501,6 +582,11 @@ function ConnectorRow({
         </div>
         {isFounder && (
           <div className="flex items-center gap-1 shrink-0">
+            {needsCredential && (
+              <Button size="sm" onClick={() => setShowCredential((v) => !v)}>
+                Add credential
+              </Button>
+            )}
             <Button
               size="sm"
               variant="ghost"
@@ -525,6 +611,53 @@ function ConnectorRow({
           </div>
         )}
       </div>
+
+      {isFounder && needsCredential && !showCredential && (
+        <div className="text-xs text-muted-foreground">
+          This connector needs a credential before agents can use it.
+        </div>
+      )}
+
+      {isFounder && showCredential && (
+        <div className="rounded-md border border-border-soft bg-muted/20 px-3 py-3 space-y-2">
+          <div className="text-xs text-muted-foreground">
+            Point this connector at an existing company secret (Settings → Secrets). The{" "}
+            <code>{"${TOKEN}"}</code> placeholder in its
+            {expectedKeys.length > 0 ? (
+              <>
+                {" "}
+                template keys (<span className="font-mono">{expectedKeys.join(", ")}</span>)
+              </>
+            ) : (
+              " templates"
+            )}{" "}
+            resolves to the secret's value.
+          </div>
+          <label className="space-y-1 block">
+            <div className="text-xs text-muted-foreground">Secret reference</div>
+            <input
+              className={inputCls}
+              aria-label="Secret reference"
+              value={credentialRef}
+              onChange={(e) => setCredentialRef(e.target.value)}
+              placeholder="mcp:notion"
+            />
+          </label>
+          {credentialError && <div className="text-sm text-destructive">{credentialError}</div>}
+          <div className="flex justify-end gap-1">
+            <Button size="sm" variant="ghost" onClick={() => setShowCredential(false)}>
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              onClick={() => bindCredentialMutation.mutate(credentialRef.trim())}
+              disabled={bindCredentialMutation.isPending || !credentialRef.trim()}
+            >
+              {bindCredentialMutation.isPending ? "Saving..." : "Save credential"}
+            </Button>
+          </div>
+        </div>
+      )}
 
       {isFounder && showAgents && (
         <div className="rounded-md border border-border-soft bg-muted/20 px-3 py-3 space-y-2">
