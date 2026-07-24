@@ -1,5 +1,17 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import {
+  isHttpServerSpec,
+  isStdioServerSpec,
+  mergeExternalMcpServers,
+  readAoaManagedServerNames,
+  reservedMcpServerNameCollisions,
+  sweepAoaManagedEntries,
+  writeAoaManagedServerNames,
+  type McpServerSpec,
+  type McpWriterResult,
+  type McpWriterSkip,
+} from "@armyofagents/adapter-utils";
 
 /**
  * T2.2 — gemini MCP bridge spec writer.
@@ -50,15 +62,69 @@ export interface GeminiMcpBridgeSpec {
   env: Record<string, string>;
 }
 
+/** An `mcpServers.<name>` entry in gemini's settings.json. */
+type GeminiMcpEntry =
+  | { command: string; args: string[]; env?: Record<string, string> }
+  | { httpUrl: string; headers?: Record<string, string> };
+
+/**
+ * Render ONE external connector as a gemini `mcpServers.<name>` entry.
+ *
+ * SECRET PLACEHOLDERS ARE EMITTED VERBATIM. gemini's native interpolation
+ * syntax IS `${VAR}` — the exact form the specs already carry — so unlike the
+ * opencode writer (which must rewrite to `{env:VAR}`) and the codex writer
+ * (which cannot expand at all and uses env-var-NAME indirection), there is
+ * nothing to translate here. Verified live against gemini-cli: a header of
+ * `Bearer ${AOA_PROBE_TOKEN}` arrived at the listener fully expanded, in
+ * `headers`, `args` and `env` alike (Plan 2b B2N9). Do not "helpfully" rewrite
+ * these — any rewrite would break the one CLI whose syntax already matches.
+ */
+function toGeminiEntry(spec: McpServerSpec): GeminiMcpEntry {
+  if (isHttpServerSpec(spec)) {
+    return { httpUrl: spec.url, headers: { ...(spec.headers ?? {}) } };
+  }
+  const stdio = spec as Extract<McpServerSpec, { kind: "stdio" }>;
+  return {
+    command: stdio.command,
+    args: [...(stdio.args ?? [])],
+    env: { ...(stdio.env ?? {}) },
+  };
+}
+
+export interface WriteGeminiMcpSettingsOptions {
+  /**
+   * EXTERNAL MCP connectors keyed by server name. Rendered alongside the bridge
+   * into `mcpServers`. Pass an EMPTY object to mean "this run has no
+   * connectors" — the sweep then removes every connector a previous run wrote.
+   */
+  externalServers?: Record<string, McpServerSpec>;
+  /** Key for AoA's own loopback bridge. */
+  serverName?: string;
+}
+
 /**
  * Write/merge `<cwd>/.gemini/settings.json` so gemini discovers the AoA
- * internal-agent MCP bridge. Idempotent. Preserves unrelated keys.
+ * internal-agent MCP bridge plus every external connector. Idempotent.
+ * Preserves unrelated keys and the user's own `mcpServers.*` entries.
+ *
+ * STALENESS (B5): AoA-owned entry names are recorded in a sidecar manifest and
+ * swept on the next run — see `mcp-managed-manifest.ts` for the rationale and
+ * the rejected alternatives. Notably, the sidecar was chosen over an in-file
+ * manifest key precisely so that this writer does NOT have to bet on gemini
+ * tolerating an unknown key in settings.json — a property that could not be
+ * verified here (gemini exits at an auth wall before config load is
+ * observable), and whose failure mode on the sibling CLI is total MCP loss.
+ *
+ * `spec` may be null: a run with connectors but no bridge still writes — and
+ * therefore still cleans — the file.
  */
 export async function writeGeminiMcpSettingsJson(
   cwd: string,
-  spec: GeminiMcpBridgeSpec,
-  serverName = "aoa",
-): Promise<void> {
+  spec: GeminiMcpBridgeSpec | null | undefined,
+  options: WriteGeminiMcpSettingsOptions = {},
+): Promise<McpWriterResult> {
+  const serverName = options.serverName ?? "aoa";
+  const externalServers = options.externalServers ?? {};
   const geminiDir = path.join(cwd, ".gemini");
   await fs.mkdir(geminiDir, { recursive: true });
   const target = path.join(geminiDir, "settings.json");
@@ -79,24 +145,73 @@ export async function writeGeminiMcpSettingsJson(
     typeof existing.mcpServers === "object"
     && existing.mcpServers !== null
     && !Array.isArray(existing.mcpServers)
-      ? { ...(existing.mcpServers as Record<string, unknown>) }
+      ? (existing.mcpServers as Record<string, unknown>)
       : {};
-  delete existingServers[serverName];
 
-  const nextBlock = {
-    // Claude-shape: command as string, args as string[]. (opencode's "command
-    // as combined array" shape is the OTHER convention — easy to confuse.)
-    command: spec.command,
-    args: [...spec.args],
-    env: { ...spec.env },
-  };
+  // B5 sweep: drop every entry a PREVIOUS AoA run owned, so a deleted/disabled
+  // connector stops being offered to the agent. `serverName` is included even
+  // when it predates the manifest, preserving the bridge's full-replace
+  // semantics (no stale env carryover).
+  //
+  // The manifest lives in `.gemini/` (beside settings.json), NOT in cwd — it is
+  // AoA-created and already gemini-scoped, which keeps the pollution radius
+  // where the plan put settings.json itself.
+  const previouslyManaged = await readAoaManagedServerNames(geminiDir);
+  const preserved = sweepAoaManagedEntries(existingServers, [
+    ...previouslyManaged,
+    serverName,
+  ]);
+
+  // Classify what we cannot deliver BEFORE merging — nothing is dropped
+  // silently. Reserved names are filtered inside mergeExternalMcpServers too;
+  // collecting them here is purely so they can be REPORTED.
+  const skipped: McpWriterSkip[] = [];
+  for (const name of reservedMcpServerNameCollisions(externalServers, [serverName])) {
+    skipped.push({ serverName: name, reason: "reserved_name" });
+  }
+  const deliverable: Record<string, McpServerSpec> = Object.create(null);
+  for (const [name, connector] of Object.entries(externalServers)) {
+    if (isHttpServerSpec(connector) || isStdioServerSpec(connector)) {
+      deliverable[name] = connector;
+      continue;
+    }
+    skipped.push({ serverName: name, reason: "unsupported_transport" });
+  }
+  // NOTE: no `secret_unreachable` case. gemini expands `${VAR}` in headers,
+  // args and env alike (B2N9, verified live), so every connector shape has a
+  // working route for its credential. That skip is codex-only.
+
+  const bridge: Record<string, GeminiMcpEntry> = Object.create(null);
+  if (spec) {
+    bridge[serverName] = {
+      // Claude-shape: command as string, args as string[]. (opencode's "command
+      // as combined array" shape is the OTHER convention — easy to confuse.)
+      command: spec.command,
+      args: [...spec.args],
+      env: { ...spec.env },
+    };
+  }
+
+  // mergeExternalMcpServers is the ONLY safe merge: reserved-name filtering and
+  // a null-prototype destination in one call. A connector named `__proto__`
+  // assigned onto a normal object literal would replace the prototype instead
+  // of creating a key, and the server would silently vanish.
+  const aoaOwned = mergeExternalMcpServers<GeminiMcpEntry>(
+    bridge,
+    deliverable,
+    toGeminiEntry,
+    [serverName],
+  );
+
+  const nextServers: Record<string, unknown> = Object.create(null);
+  for (const [name, value] of Object.entries(preserved)) nextServers[name] = value;
+  for (const [name, value] of Object.entries(aoaOwned)) nextServers[name] = value;
+
+  const managedServerNames = Object.keys(aoaOwned);
 
   const next = {
     ...existing,
-    mcpServers: {
-      ...existingServers,
-      [serverName]: nextBlock,
-    },
+    mcpServers: nextServers,
   };
 
   // 2-space indent + trailing newline (same as opencode T2.1).
@@ -119,6 +234,13 @@ export async function writeGeminiMcpSettingsJson(
     await fs.unlink(tempPath).catch(() => {});
     throw err;
   }
+
+  // Manifest AFTER the config, deliberately: a crash between the two leaves a
+  // manifest that UNDER-claims (stale entry survives one more sweep) rather
+  // than one that OVER-claims (could delete a key AoA never wrote).
+  await writeAoaManagedServerNames(geminiDir, managedServerNames);
+
+  return { managedServerNames, skipped };
 }
 
 /**

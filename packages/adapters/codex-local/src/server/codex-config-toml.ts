@@ -4,8 +4,12 @@ import { randomUUID } from "node:crypto";
 import {
   isHttpServerSpec,
   isStdioServerSpec,
+  reservedMcpServerNameCollisions,
+  stdioSpecCarriesSecretPlaceholder,
   stripReservedMcpServerNames,
   type McpServerSpec,
+  type McpWriterResult,
+  type McpWriterSkip,
 } from "@armyofagents/adapter-utils";
 
 /**
@@ -167,10 +171,42 @@ const SAFE_MCP_SERVER_NAME = /^[A-Za-z0-9_-]+$/;
  * `[mcp_servers.<n>.env]`, so a third sub-table could be orphaned. Flat keys
  * are always carried with their parent header.
  */
-function renderExternalMcpBlock(name: string, spec: McpServerSpec): string | null {
-  if (!SAFE_MCP_SERVER_NAME.test(name)) return null;
+type RenderedExternalBlock =
+  | { block: string }
+  | { block: null; reason: McpWriterSkip["reason"] };
+
+function renderExternalMcpBlock(name: string, spec: McpServerSpec): RenderedExternalBlock {
+  if (!SAFE_MCP_SERVER_NAME.test(name)) return { block: null, reason: "unsafe_name" };
 
   if (isStdioServerSpec(spec)) {
+    // ── B2N9: codex CANNOT deliver a stdio connector's secret ───────────────
+    // Probed against the real CLI with a recorder MCP server that dumps the
+    // env/argv it was actually spawned with:
+    //   * codex does NOT expand `${VAR}` in stdio `args` or `env` — the child
+    //     receives the literal eight characters, and
+    //   * codex SCRUBS its own environment before spawning an MCP child, so the
+    //     "the child inherits the token anyway" fallback that makes opencode
+    //     forgiving does not exist here, and
+    //   * `--bearer-token-env-var` is HTTP-ONLY; stdio's `--env` takes a
+    //     literal `KEY=VALUE`. There is no stdio name-indirection.
+    // So there is NO route by which this credential reaches the server. Writing
+    // the block anyway produces a connector that silently authenticates as
+    // no-one — the exact failure the classified-skip channel exists to prevent,
+    // and strictly worse than a reported absence.
+    //
+    // The two tempting "fixes" are both REGRESSIONS, not fixes:
+    //   * expanding the placeholder at write time writes a LIVE credential into
+    //     config.toml on disk, reversing D5 (placeholder on disk, value in the
+    //     spawn env);
+    //   * `shell_environment_policy.inherit = "all"` is GLOBAL — it would leak
+    //     every env var, including OTHER connectors' tokens, into every shell
+    //     command the agent runs.
+    // Stdio connectors WITHOUT a secret are unaffected and deliver normally;
+    // HTTP connectors are unaffected (`bearer_token_env_var` works).
+    if (stdioSpecCarriesSecretPlaceholder(spec)) {
+      return { block: null, reason: "secret_unreachable" };
+    }
+
     const lines: string[] = [];
     lines.push(`[mcp_servers.${name}]`);
     lines.push(`command = ${tomlString(spec.command)}`);
@@ -184,7 +220,7 @@ function renderExternalMcpBlock(name: string, spec: McpServerSpec): string | nul
         lines.push(`${key} = ${tomlString(value)}`);
       }
     }
-    return lines.join("\n");
+    return { block: lines.join("\n") };
   }
 
   if (isHttpServerSpec(spec)) {
@@ -195,11 +231,11 @@ function renderExternalMcpBlock(name: string, spec: McpServerSpec): string | nul
     if (typeof envVar === "string" && SAFE_MCP_SERVER_NAME.test(envVar)) {
       lines.push(`bearer_token_env_var = ${tomlString(envVar)}`);
     }
-    return lines.join("\n");
+    return { block: lines.join("\n") };
   }
 
   // Unknown/unsupported transport — skip, never fail the run.
-  return null;
+  return { block: null, reason: "unsupported_transport" };
 }
 
 /**
@@ -486,7 +522,7 @@ export async function writeCodexMcpConfigToml(
   managedHomeDir: string,
   spec: CodexMcpBridgeSpec | null | undefined,
   options: WriteCodexMcpConfigOptions = {},
-): Promise<void> {
+): Promise<McpWriterResult> {
   const serverName = options.serverName ?? "aoa";
   const externalServers = options.externalServers ?? {};
   return withCodexHomeConfigLock(managedHomeDir, async () => {
@@ -514,12 +550,29 @@ export async function writeCodexMcpConfigToml(
     // removes ALL fenced regions, so whichever fenced writer ran second would
     // delete the other's region and the two would erase each other run to run.
     const blocks: string[] = [];
-    if (spec) blocks.push(renderMcpBlock(spec, serverName));
+    const managedServerNames: string[] = [];
+    const skipped: McpWriterSkip[] = [];
+    if (spec) {
+      blocks.push(renderMcpBlock(spec, serverName));
+      managedServerNames.push(serverName);
+    }
+    // M2 (B2N10): `serverName` is CONFIGURABLE, so the hardcoded reserved list
+    // alone left a hole — a connector sharing the bridge's actual table name
+    // would emit a second `[mcp_servers.<same>]`, and codex (last-wins) would
+    // let the connector REPLACE AoA's own loopback bridge. Pass the real name.
+    for (const name of reservedMcpServerNameCollisions(externalServers, [serverName])) {
+      skipped.push({ serverName: name, reason: "reserved_name" });
+    }
     for (const [name, connector] of Object.entries(
-      stripReservedMcpServerNames(externalServers),
+      stripReservedMcpServerNames(externalServers, [serverName]),
     )) {
       const rendered = renderExternalMcpBlock(name, connector);
-      if (rendered) blocks.push(rendered);
+      if (rendered.block === null) {
+        skipped.push({ serverName: name, reason: rendered.reason });
+        continue;
+      }
+      blocks.push(rendered.block);
+      managedServerNames.push(name);
     }
 
     // Nothing AoA-owned to write → emit no fence at all (an empty fence pair is
@@ -535,6 +588,9 @@ export async function writeCodexMcpConfigToml(
     }
 
     await writeFileAtomically(target, applyEol(body, detectEol(existing)));
+    // codex needs no ownership manifest: its comment FENCE already records
+    // exactly which region AoA owns, in the config file itself.
+    return { managedServerNames, skipped };
   });
 }
 

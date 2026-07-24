@@ -152,6 +152,23 @@ export {
   isHttpServerSpec,
   RESERVED_MCP_SERVER_NAMES,
   stripReservedMcpServerNames,
+  reservedMcpServerNameCollisions,
   mergeExternalMcpServers,
+  AOA_SECRET_PLACEHOLDER_PATTERN,
+  containsAoaSecretPlaceholder,
+  stdioSpecCarriesSecretPlaceholder,
 } from "./mcp-server-spec.js";
-export type { McpServerSpec, McpStdioServerSpec, McpHttpServerSpec } from "./mcp-server-spec.js";
+export type {
+  McpServerSpec,
+  McpStdioServerSpec,
+  McpHttpServerSpec,
+  McpWriterSkipReason,
+  McpWriterSkip,
+  McpWriterResult,
+} from "./mcp-server-spec.js";
+export {
+  AOA_MCP_MANIFEST_FILENAME,
+  readAoaManagedServerNames,
+  writeAoaManagedServerNames,
+  sweepAoaManagedEntries,
+} from "./mcp-managed-manifest.js";

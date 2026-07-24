@@ -120,8 +120,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // radius to the adapter-controlled workspace. Idempotent, preserves
   // unrelated keys, strips prior aoa block before splicing — see
   // gemini-settings-json.ts header.
-  if (ctx.mcpBridge) {
-    await writeGeminiMcpSettingsJson(cwd, ctx.mcpBridge);
+  //
+  // External connectors (Plan 2b Task 6) ride along in the SAME write.
+  //
+  // C2 — the gate tests PRESENCE, not truthiness/emptiness: a run that delivers
+  // `mcpServers: {}` (every connector deleted or disabled) MUST still reach the
+  // writer, because the writer's sweep is what REMOVES the entries a previous
+  // run wrote. Gating on non-emptiness would leave a revoked connector in
+  // settings.json forever and the agent would keep the tool. Same reason
+  // `ctx.mcpBridge` alone no longer guards this: the day the bridge becomes
+  // conditional, cleanup must not stop with it.
+  if (ctx.mcpBridge !== undefined || ctx.mcpServers !== undefined) {
+    const result = await writeGeminiMcpSettingsJson(cwd, ctx.mcpBridge ?? null, {
+      externalServers: ctx.mcpServers ?? {},
+    });
     if (executionTargetIsRemote) {
       await syncAdapterExecutionTargetFile({
         runId,
@@ -135,7 +147,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         onLog,
       });
     }
-    await onLog("stdout", "[aoa] Wired gemini MCP bridge via .gemini/settings.json\n");
+    const connectorCount = Object.keys(ctx.mcpServers ?? {}).length;
+    await onLog(
+      "stdout",
+      `[aoa] Wired gemini MCP config via .gemini/settings.json (${ctx.mcpBridge ? "bridge + " : ""}${connectorCount} external connector${connectorCount === 1 ? "" : "s"})\n`,
+    );
+    // Never let a connector vanish silently — the founder would believe the
+    // agent has a tool it does not have.
+    for (const skip of result.skipped) {
+      await onLog(
+        "stdout",
+        `[aoa] gemini MCP connector "${skip.serverName}" skipped: ${skip.reason}\n`,
+      );
+    }
   }
 
   const envConfig = parseObject(config.env);

@@ -70,6 +70,94 @@ export function isHttpServerSpec(spec: unknown): spec is McpHttpServerSpec {
 export const RESERVED_MCP_SERVER_NAMES = ["aoa", "playwright"] as const;
 
 /**
+ * Why a writer dropped a connector it was handed.
+ *
+ * ONE classified-skip vocabulary shared by every native-config writer (codex
+ * TOML, opencode JSON, gemini JSON) — deliberately mirroring the server-side
+ * `ConnectorSkipReason` in `server/src/services/mcp-connectors.ts`, which
+ * classifies the skips that happen EARLIER (bad DB row → no spec at all). The
+ * two stages are different modules on opposite sides of the adapter boundary
+ * (adapters must not import from the server) but they answer the same operator
+ * question — "why is my connector not there?" — so they must not drift into two
+ * different vocabularies. A writer that silently drops a connector is the worst
+ * failure mode for a security-adjacent feature: the founder believes the agent
+ * has the tool and it does not.
+ *
+ * Writers RETURN these rather than logging: they are pure-ish file writers with
+ * no logger, and returning keeps them unit-testable. The `execute()` call site
+ * surfaces them on the run's stderr stream.
+ */
+export type McpWriterSkipReason =
+  /** Name collides with a name AoA owns (`aoa`, `playwright`, the bridge name). */
+  | "reserved_name"
+  /** Transport this CLI cannot express (or an unrecognized `kind`). */
+  | "unsupported_transport"
+  /** Name is not expressible in this CLI's config (e.g. not a TOML bare key). */
+  | "unsafe_name"
+  /**
+   * The connector needs a secret, and THIS CLI has no route to deliver it —
+   * see {@link stdioSpecCarriesSecretPlaceholder}. Emitting the entry anyway
+   * would produce a server that silently authenticates as no-one.
+   */
+  | "secret_unreachable";
+
+export interface McpWriterSkip {
+  serverName: string;
+  reason: McpWriterSkipReason;
+}
+
+/** What every native-config MCP writer returns. */
+export interface McpWriterResult {
+  /**
+   * Server names this run wrote and therefore OWNS. Persisted by JSON writers
+   * (see `mcp-managed-manifest.ts`) so a later run can sweep the ones that are
+   * no longer active. Includes the bridge name when a bridge was written.
+   */
+  managedServerNames: string[];
+  /** Connectors dropped, and why. Never silently swallowed. */
+  skipped: McpWriterSkip[];
+}
+
+/**
+ * Matches the `${AOA_MCP_<SLUG>_TOKEN}` placeholder that `buildConnectorSpecs`
+ * substitutes into `args` / `env` / `headers` in place of the literal `${TOKEN}`
+ * template token. The real credential never appears in a spec (D5) — only this
+ * placeholder, which the target CLI is expected to expand from its process env.
+ *
+ * Deliberately anchored on the `AOA_MCP_` prefix: a writer that rewrote or
+ * refused every `${...}`-looking string would also mangle a user's own
+ * unrelated literal text.
+ */
+export const AOA_SECRET_PLACEHOLDER_PATTERN = /\$\{(AOA_MCP_[A-Za-z0-9_]*)\}/g;
+
+/** True when `value` contains at least one `${AOA_MCP_*}` placeholder. */
+export function containsAoaSecretPlaceholder(value: string): boolean {
+  // Fresh regex per call: the exported one is /g and therefore stateful.
+  return new RegExp(AOA_SECRET_PLACEHOLDER_PATTERN.source).test(value);
+}
+
+/**
+ * True when a stdio spec's `args` or `env` still carry a `${AOA_MCP_*}`
+ * placeholder — i.e. the connector's credential is delivered by placeholder
+ * expansion rather than by an env-var-NAME indirection.
+ *
+ * Only codex needs this (Plan 2b B2N9, verified against the real CLIs): codex
+ * expands nothing inside `args`/`env` AND scrubs its own environment before
+ * spawning an MCP child, so there is NO route by which the credential can
+ * reach the server. claude, opencode and gemini all expand their own syntax and
+ * therefore must NOT call this — for them a placeholder is the working design.
+ */
+export function stdioSpecCarriesSecretPlaceholder(spec: McpStdioServerSpec): boolean {
+  for (const arg of spec.args ?? []) {
+    if (typeof arg === "string" && containsAoaSecretPlaceholder(arg)) return true;
+  }
+  for (const value of Object.values(spec.env ?? {})) {
+    if (typeof value === "string" && containsAoaSecretPlaceholder(value)) return true;
+  }
+  return false;
+}
+
+/**
  * Drop any entry whose key collides with a name AoA owns. Returns a NEW
  * null-prototype object — callers merge external connectors into a config that
  * already contains the reserved servers, so a collision here would silently
@@ -96,16 +184,40 @@ export const RESERVED_MCP_SERVER_NAMES = ["aoa", "playwright"] as const;
  * remains useful on its own for writers that never build a destination map at
  * all — e.g. the codex TOML writer, which concatenates `[mcp_servers.<name>]`
  * sections as strings and so needs the filter without the prototype concern.
+ *
+ * `alsoReserved` (Plan 2b B2N10 M2) adds caller-specific names to the filter.
+ * The bridge's table name is CONFIGURABLE (`options.serverName`), so filtering
+ * only the hardcoded list left a hole: an adapter run with a non-default bridge
+ * name — say `serverName: "aoa-crew"` — plus a connector called `aoa-crew`
+ * emitted two blocks with the same name. codex concatenates strings and does
+ * not de-duplicate, so the connector's block (written second) would win and
+ * REPLACE AoA's own loopback bridge, exactly the substitution the reserved-name
+ * filter exists to prevent. Callers pass their real bridge name here.
  */
 export function stripReservedMcpServerNames(
   servers: Record<string, McpServerSpec>,
+  alsoReserved: readonly string[] = [],
 ): Record<string, McpServerSpec> {
+  const reserved = new Set<string>([...RESERVED_MCP_SERVER_NAMES, ...alsoReserved]);
   const out: Record<string, McpServerSpec> = Object.create(null);
   for (const [name, spec] of Object.entries(servers)) {
-    if ((RESERVED_MCP_SERVER_NAMES as readonly string[]).includes(name)) continue;
+    if (reserved.has(name)) continue;
     out[name] = spec;
   }
   return out;
+}
+
+/**
+ * Names {@link stripReservedMcpServerNames} would drop from `servers` — the
+ * complement of what it keeps. Writers use this to REPORT reserved-name
+ * collisions as classified skips instead of dropping them silently.
+ */
+export function reservedMcpServerNameCollisions(
+  servers: Record<string, McpServerSpec>,
+  alsoReserved: readonly string[] = [],
+): string[] {
+  const reserved = new Set<string>([...RESERVED_MCP_SERVER_NAMES, ...alsoReserved]);
+  return Object.keys(servers).filter((name) => reserved.has(name));
 }
 
 /**
@@ -132,10 +244,11 @@ export function mergeExternalMcpServers<T>(
   reserved: Record<string, T>,
   external: Record<string, McpServerSpec>,
   toEntry: (spec: McpServerSpec) => T,
+  alsoReserved: readonly string[] = [],
 ): Record<string, T> {
   const out: Record<string, T> = Object.create(null);
   for (const [name, value] of Object.entries(reserved)) out[name] = value;
-  for (const [name, spec] of Object.entries(stripReservedMcpServerNames(external))) {
+  for (const [name, spec] of Object.entries(stripReservedMcpServerNames(external, alsoReserved))) {
     if (Object.prototype.hasOwnProperty.call(out, name)) continue; // reserved wins
     out[name] = toEntry(spec);
   }

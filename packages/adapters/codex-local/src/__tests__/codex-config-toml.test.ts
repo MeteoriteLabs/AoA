@@ -678,14 +678,14 @@ describe("writeCodexMcpConfigToml", () => {
       expect(raw).not.toContain("bearer_token_env_var");
     });
 
-    it("emits command/args + a nested .env table for a stdio connector", async () => {
+    it("emits command/args + a nested .env table for a SECRETLESS stdio connector", async () => {
       await writeCodexMcpConfigToml(tmpDir, BRIDGE, {
         externalServers: {
           filesystem: {
             kind: "stdio",
             command: "npx",
             args: ["-y", "@modelcontextprotocol/server-filesystem", "/data"],
-            env: { FS_ROOT: "/data", FS_TOKEN: "${AOA_MCP_FS_TOKEN}" },
+            env: { FS_ROOT: "/data" },
           },
         },
       });
@@ -699,8 +699,189 @@ describe("writeCodexMcpConfigToml", () => {
         "/data",
       ]);
       expect(parsed["mcp_servers.filesystem.env"].FS_ROOT).toBe("/data");
-      expect(parsed["mcp_servers.filesystem.env"].FS_TOKEN).toBe("${AOA_MCP_FS_TOKEN}");
       expect(raw).not.toContain(REAL_TOKEN);
+    });
+
+    // ── B2N9: codex cannot deliver a stdio connector's secret ───────────────
+    // Verified against the real CLI: codex expands nothing in stdio `args`/`env`
+    // AND scrubs its own environment before spawning an MCP child, and
+    // `--bearer-token-env-var` is HTTP-only. There is NO route for the
+    // credential, so emitting the block would produce a connector that silently
+    // authenticates as no-one. Skip-with-reason is the required behaviour.
+    describe("stdio secret placeholders (B2N9)", () => {
+      it("SKIPS a stdio connector whose env still carries an ${AOA_MCP_*} placeholder", async () => {
+        const result = await writeCodexMcpConfigToml(tmpDir, BRIDGE, {
+          externalServers: {
+            filesystem: {
+              kind: "stdio",
+              command: "npx",
+              args: ["-y", "server-filesystem", "/data"],
+              env: { FS_ROOT: "/data", FS_TOKEN: "${AOA_MCP_FS_TOKEN}" },
+            },
+          },
+        });
+
+        const raw = await fs.readFile(path.join(tmpDir, "config.toml"), "utf8");
+        expect(raw).not.toContain("[mcp_servers.filesystem]");
+        expect(result.skipped).toEqual([
+          { serverName: "filesystem", reason: "secret_unreachable" },
+        ]);
+        expect(result.managedServerNames).toEqual(["aoa"]);
+        // The bridge is unaffected — one bad connector must not take the run down.
+        expect(raw).toContain("[mcp_servers.aoa]");
+      });
+
+      it("SKIPS a stdio connector whose ARGS carry the placeholder", async () => {
+        const result = await writeCodexMcpConfigToml(tmpDir, BRIDGE, {
+          externalServers: {
+            slack: {
+              kind: "stdio",
+              command: "npx",
+              args: ["srv", "--token", "${AOA_MCP_SLACK_TOKEN}"],
+              env: {},
+            },
+          },
+        });
+
+        const raw = await fs.readFile(path.join(tmpDir, "config.toml"), "utf8");
+        expect(raw).not.toContain("[mcp_servers.slack]");
+        expect(raw).not.toContain("${AOA_MCP_SLACK_TOKEN}");
+        expect(result.skipped).toEqual([
+          { serverName: "slack", reason: "secret_unreachable" },
+        ]);
+      });
+
+      it("does NOT expand the placeholder at write time (that would reverse D5)", async () => {
+        // Guard against the tempting "fix": resolving the value here would put
+        // a live credential in config.toml on disk.
+        process.env.AOA_MCP_FS_TOKEN = REAL_TOKEN;
+        try {
+          await writeCodexMcpConfigToml(tmpDir, BRIDGE, {
+            externalServers: {
+              filesystem: {
+                kind: "stdio",
+                command: "npx",
+                args: [],
+                env: { FS_TOKEN: "${AOA_MCP_FS_TOKEN}" },
+              },
+            },
+          });
+          const raw = await fs.readFile(path.join(tmpDir, "config.toml"), "utf8");
+          expect(raw).not.toContain(REAL_TOKEN);
+        } finally {
+          delete process.env.AOA_MCP_FS_TOKEN;
+        }
+      });
+
+      it("does NOT set a global shell_environment_policy inherit escape hatch", async () => {
+        // The other tempting "fix": inherit=all is GLOBAL and would leak every
+        // env var — including OTHER connectors' tokens — into every shell
+        // command the agent runs.
+        await writeCodexMcpConfigToml(tmpDir, BRIDGE, {
+          externalServers: {
+            filesystem: {
+              kind: "stdio",
+              command: "npx",
+              args: [],
+              env: { FS_TOKEN: "${AOA_MCP_FS_TOKEN}" },
+            },
+          },
+        });
+        const raw = await fs.readFile(path.join(tmpDir, "config.toml"), "utf8");
+        expect(raw).not.toContain("shell_environment_policy");
+        expect(raw).not.toContain("inherit");
+      });
+
+      it("HTTP connectors are unaffected — bearer_token_env_var works", async () => {
+        const result = await writeCodexMcpConfigToml(tmpDir, BRIDGE, {
+          externalServers: {
+            notion: {
+              kind: "http",
+              url: "https://mcp.notion.com/mcp",
+              headers: { Authorization: "Bearer ${AOA_MCP_NOTION_TOKEN}" },
+              authTokenEnvVar: "AOA_MCP_NOTION_TOKEN",
+            },
+          },
+        });
+        expect(result.skipped).toEqual([]);
+        expect(result.managedServerNames.sort()).toEqual(["aoa", "notion"]);
+      });
+
+      it("a NON-DEFAULT bridge name is reserved against connectors too (M2)", async () => {
+        // codex concatenates TOML strings and does not de-duplicate, so a
+        // colliding connector block would be written second and win, REPLACING
+        // AoA's own loopback bridge.
+        const result = await writeCodexMcpConfigToml(tmpDir, BRIDGE, {
+          serverName: "aoa-crew",
+          externalServers: {
+            "aoa-crew": { kind: "http", url: "https://evil.example.com/mcp", headers: {} },
+          },
+        });
+
+        const raw = await fs.readFile(path.join(tmpDir, "config.toml"), "utf8");
+        expect(raw).not.toContain("evil.example.com");
+        expect(raw.match(/\[mcp_servers\.aoa-crew\]/g)).toHaveLength(1);
+        expect(result.skipped).toEqual([
+          { serverName: "aoa-crew", reason: "reserved_name" },
+        ]);
+      });
+
+      it("a connector named __proto__ neither pollutes the prototype nor vanishes", async () => {
+        // `__proto__` passes the TOML bare-key charset check, so it reaches the
+        // emitter. codex concatenates strings (no destination map), and the
+        // reserved-name filter returns a null-prototype map, so there is no
+        // [[Set]] hop where the key could become a prototype.
+        const result = await writeCodexMcpConfigToml(tmpDir, BRIDGE, {
+          externalServers: {
+            ["__proto__"]: { kind: "http", url: "https://attacker.example.com/mcp", headers: {} },
+          },
+        });
+
+        expect(({} as Record<string, unknown>).url).toBeUndefined();
+        expect(({} as Record<string, unknown>).kind).toBeUndefined();
+
+        const raw = await fs.readFile(path.join(tmpDir, "config.toml"), "utf8");
+        expect(raw).toContain("[mcp_servers.__proto__]");
+        expect(result.managedServerNames).toContain("__proto__");
+        // The bridge survived — the real risk of a lost/aliased key.
+        expect(raw).toContain("[mcp_servers.aoa]");
+      });
+
+      it("a real-looking secret in an http header value NEVER lands on disk", async () => {
+        // codex emits `url` + `bearer_token_env_var` ONLY. The `headers` map is
+        // deliberately not emitted at all, so even a caller that wrongly put a
+        // live token there cannot leak it into config.toml.
+        await writeCodexMcpConfigToml(tmpDir, BRIDGE, {
+          externalServers: {
+            notion: {
+              kind: "http",
+              url: "https://mcp.notion.com/mcp",
+              headers: { Authorization: "Bearer REALSECRET" },
+              authTokenEnvVar: "AOA_MCP_NOTION_TOKEN",
+            },
+          },
+        });
+
+        const raw = await fs.readFile(path.join(tmpDir, "config.toml"), "utf8");
+        expect(raw).not.toContain("REALSECRET");
+        expect(raw).not.toContain("Authorization");
+        expect(raw).toContain('bearer_token_env_var = "AOA_MCP_NOTION_TOKEN"');
+      });
+
+      it("classifies an unsafe name and an unknown transport distinctly", async () => {
+        const result = await writeCodexMcpConfigToml(tmpDir, BRIDGE, {
+          externalServers: {
+            "bad name]": { kind: "http", url: "https://x.example.com/mcp", headers: {} },
+            weird: { kind: "sse", url: "https://y.example.com" } as never,
+          },
+        });
+        expect(result.skipped).toEqual(
+          expect.arrayContaining([
+            { serverName: "bad name]", reason: "unsafe_name" },
+            { serverName: "weird", reason: "unsupported_transport" },
+          ]),
+        );
+      });
     });
 
     it("filters out reserved connector names (aoa, playwright)", async () => {

@@ -132,8 +132,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // tool, and the wakeup logged "succeeded" while having done nothing.
   // writeOpenCodeMcpConfigJson is idempotent and preserves any unrelated
   // top-level config (theme, model, other mcp servers) — see its header.
-  if (ctx.mcpBridge) {
-    await writeOpenCodeMcpConfigJson(cwd, ctx.mcpBridge);
+  //
+  // External connectors (Plan 2b Task 6) ride along in the SAME write.
+  //
+  // C2 — the gate tests PRESENCE, not truthiness/emptiness: a run that delivers
+  // `mcpServers: {}` (every connector deleted or disabled) MUST still reach the
+  // writer, because the writer's sweep is what REMOVES the entries a previous
+  // run wrote. Gating on non-emptiness would leave a revoked connector in
+  // opencode.json forever and the agent would keep the tool. Same reason
+  // `ctx.mcpBridge` alone no longer guards this: the day the bridge becomes
+  // conditional, cleanup must not stop with it.
+  if (ctx.mcpBridge !== undefined || ctx.mcpServers !== undefined) {
+    const result = await writeOpenCodeMcpConfigJson(cwd, ctx.mcpBridge ?? null, {
+      externalServers: ctx.mcpServers ?? {},
+    });
     if (executionTargetIsRemote) {
       await syncAdapterExecutionTargetFile({
         runId,
@@ -147,7 +159,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         onLog,
       });
     }
-    await onLog("stderr", "[aoa] Wired opencode MCP bridge via opencode.json\n");
+    const connectorCount = Object.keys(ctx.mcpServers ?? {}).length;
+    await onLog(
+      "stderr",
+      `[aoa] Wired opencode MCP config via opencode.json (${ctx.mcpBridge ? "bridge + " : ""}${connectorCount} external connector${connectorCount === 1 ? "" : "s"})\n`,
+    );
+    // A connector that vanishes without a word is the worst failure mode for a
+    // security-adjacent feature — the founder believes the agent has the tool.
+    for (const skip of result.skipped) {
+      await onLog(
+        "stderr",
+        `[aoa] opencode MCP connector "${skip.serverName}" skipped: ${skip.reason}\n`,
+      );
+    }
   }
 
   const envConfig = parseObject(config.env);

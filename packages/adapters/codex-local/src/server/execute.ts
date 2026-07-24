@@ -370,7 +370,7 @@ export async function execute(
         `[aoa] codex MCP bridge + external connector config.toml is not yet wired for sandbox-docker execution targets; skipping both (MX3 follow-up).\n`,
       );
     } else {
-      await writeCodexMcpConfigToml(managedCodexHome, ctx.mcpBridge ?? null, {
+      const result = await writeCodexMcpConfigToml(managedCodexHome, ctx.mcpBridge ?? null, {
         externalServers: ctx.mcpServers ?? {},
       });
       const connectorCount = Object.keys(ctx.mcpServers ?? {}).length;
@@ -378,6 +378,16 @@ export async function execute(
         "stderr",
         `[aoa] Wrote managed Codex config.toml (${ctx.mcpBridge ? "[mcp_servers.aoa] + " : ""}${connectorCount} external connector${connectorCount === 1 ? "" : "s"}) for company ${agent.companyId}\n`,
       );
+      // B2N9: `secret_unreachable` lands here for a stdio connector whose token
+      // codex has no way to deliver. Reporting is the whole point — emitting an
+      // unauthenticated entry instead would look like success and fail silently
+      // at the connector.
+      for (const skip of result.skipped) {
+        await onLog(
+          "stderr",
+          `[aoa] codex MCP connector "${skip.serverName}" skipped: ${skip.reason}\n`,
+        );
+      }
     }
   }
 

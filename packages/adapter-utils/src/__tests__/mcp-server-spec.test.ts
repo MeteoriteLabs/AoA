@@ -2,8 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   isHttpServerSpec,
   isStdioServerSpec,
+  containsAoaSecretPlaceholder,
   mergeExternalMcpServers,
+  reservedMcpServerNameCollisions,
   RESERVED_MCP_SERVER_NAMES,
+  stdioSpecCarriesSecretPlaceholder,
   stripReservedMcpServerNames,
   type McpServerSpec,
 } from "../mcp-server-spec.js";
@@ -180,5 +183,98 @@ describe("mergeExternalMcpServers", () => {
       passthrough,
     );
     expect(Object.keys(out)).toEqual(["aoa"]);
+  });
+});
+
+// ── Plan 2b Task 6 ──────────────────────────────────────────────────────────
+
+describe("stripReservedMcpServerNames — caller's configured bridge name (M2)", () => {
+  it("drops a connector colliding with the caller's non-default serverName", () => {
+    // The bridge's table/key name is CONFIGURABLE. Filtering only the hardcoded
+    // list left a hole: on codex (string concatenation, last-wins) the
+    // connector's block would REPLACE AoA's own loopback bridge.
+    const out = stripReservedMcpServerNames(
+      { "aoa-crew": httpSpec("https://evil.example.com"), notion: httpSpec("https://n") },
+      ["aoa-crew"],
+    );
+    expect(Object.keys(out)).toEqual(["notion"]);
+  });
+
+  it("still drops the hardcoded reserved names when extras are supplied", () => {
+    const out = stripReservedMcpServerNames(
+      { aoa: httpSpec("https://a"), playwright: httpSpec("https://b"), ok: httpSpec("https://c") },
+      ["aoa-crew"],
+    );
+    expect(Object.keys(out)).toEqual(["ok"]);
+  });
+
+  it("is unchanged when no extras are supplied (back-compat)", () => {
+    const out = stripReservedMcpServerNames({ aoa: httpSpec("https://a"), ok: httpSpec("https://c") });
+    expect(Object.keys(out)).toEqual(["ok"]);
+  });
+});
+
+describe("reservedMcpServerNameCollisions", () => {
+  it("reports exactly the names strip would drop, so writers can classify them", () => {
+    const servers = {
+      aoa: httpSpec("https://a"),
+      "aoa-crew": httpSpec("https://b"),
+      notion: httpSpec("https://c"),
+    };
+    const collisions = reservedMcpServerNameCollisions(servers, ["aoa-crew"]);
+    expect(collisions.sort()).toEqual(["aoa", "aoa-crew"]);
+    expect(Object.keys(stripReservedMcpServerNames(servers, ["aoa-crew"]))).toEqual(["notion"]);
+  });
+});
+
+describe("AoA secret placeholder detection (B2N9)", () => {
+  it("detects the ${AOA_MCP_*} placeholder form", () => {
+    expect(containsAoaSecretPlaceholder("Bearer ${AOA_MCP_NOTION_TOKEN}")).toBe(true);
+  });
+
+  it("leaves unrelated ${...} text alone", () => {
+    // A writer that treated every ${...} as ours would mangle a user's own
+    // literal text.
+    expect(containsAoaSecretPlaceholder("${HOME}/bin")).toBe(false);
+    expect(containsAoaSecretPlaceholder("no placeholders here")).toBe(false);
+  });
+
+  it("is not stateful across calls (the exported /g regex is shared)", () => {
+    const value = "Bearer ${AOA_MCP_X_TOKEN}";
+    expect(containsAoaSecretPlaceholder(value)).toBe(true);
+    expect(containsAoaSecretPlaceholder(value)).toBe(true);
+  });
+
+  it("flags a stdio spec carrying a placeholder in args", () => {
+    expect(
+      stdioSpecCarriesSecretPlaceholder({
+        kind: "stdio",
+        command: "npx",
+        args: ["srv", "--token", "${AOA_MCP_X_TOKEN}"],
+        env: {},
+      }),
+    ).toBe(true);
+  });
+
+  it("flags a stdio spec carrying a placeholder in env values", () => {
+    expect(
+      stdioSpecCarriesSecretPlaceholder({
+        kind: "stdio",
+        command: "npx",
+        args: [],
+        env: { API_KEY: "${AOA_MCP_X_TOKEN}" },
+      }),
+    ).toBe(true);
+  });
+
+  it("does NOT flag a secretless stdio spec", () => {
+    expect(
+      stdioSpecCarriesSecretPlaceholder({
+        kind: "stdio",
+        command: "npx",
+        args: ["srv", "--verbose"],
+        env: { LOG: "debug" },
+      }),
+    ).toBe(false);
   });
 });

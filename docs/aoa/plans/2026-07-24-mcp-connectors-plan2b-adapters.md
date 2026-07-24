@@ -119,15 +119,15 @@ Do this BEFORE codex's HTTP writer — it changes where the file lives and how i
 
 ---
 
-## Task 6 — opencode + gemini writers (gemini CONDITIONAL on Task 1)
+## Task 6 — opencode + gemini writers (gemini CONDITIONAL on Task 1) — DONE
 
 **Files:** `opencode-config-json.ts`, `gemini-settings-json.ts`, both `execute.ts` + tests.
 
-- [ ] **Step 1: failing tests.** opencode: external http → `{type:"remote", url, headers:{Authorization:"Bearer {env:AOA_MCP_X_TOKEN}"}}` (note `{env:VAR}` syntax, per B2); external stdio → the existing `type:"local"` combined-array shape. gemini: **only if Task 1 verified header expansion** → `{httpUrl, headers:{Authorization:"Bearer ${AOA_MCP_X_TOKEN}"}}`; otherwise gemini emits stdio connectors only and http connectors are skipped with a warn. Both: multi-server, reserved names filtered, no plaintext secret, user-authored entries preserved, AoA-managed stale entries removed (B5 — these writers build maps, so track AoA-managed names in the emitted structure or strip by a known prefix/marker).
-- [ ] **Step 2:** run → FAIL.
-- [ ] **Step 3: implement** both writers with a transport switch, using `mergeExternalMcpServers` (they build destination maps — this gives reserved-name filtering + the null-prototype destination in one call, per Plan-1 A14). Keep the existing atomic temp+rename and the `syncAdapterExecutionTargetFile` remote push.
-- [ ] **Step 4: read `ctx.mcpServers`** in both `execute.ts` call sites (same restructure as codex: write when bridge OR connectors present).
-- [ ] **Step 5:** tests + typecheck. **Commit** `feat(mcp): opencode + gemini writers emit external connectors`.
+- [x] **Step 1: failing tests.** opencode: external http → `{type:"remote", url, headers:{Authorization:"Bearer {env:AOA_MCP_X_TOKEN}"}}` (note `{env:VAR}` syntax, per B2); external stdio → the existing `type:"local"` combined-array shape. gemini: **only if Task 1 verified header expansion** → `{httpUrl, headers:{Authorization:"Bearer ${AOA_MCP_X_TOKEN}"}}`; otherwise gemini emits stdio connectors only and http connectors are skipped with a warn. Both: multi-server, reserved names filtered, no plaintext secret, user-authored entries preserved, AoA-managed stale entries removed (B5 — these writers build maps, so track AoA-managed names in the emitted structure or strip by a known prefix/marker).
+- [x] **Step 2:** run → FAIL.
+- [x] **Step 3: implement** both writers with a transport switch, using `mergeExternalMcpServers` (they build destination maps — this gives reserved-name filtering + the null-prototype destination in one call, per Plan-1 A14). Keep the existing atomic temp+rename and the `syncAdapterExecutionTargetFile` remote push.
+- [x] **Step 4: read `ctx.mcpServers`** in both `execute.ts` call sites (same restructure as codex: write when bridge OR connectors present).
+- [x] **Step 5:** tests + typecheck. **Commit** `feat(mcp): opencode + gemini writers emit external connectors`.
 
 ---
 
@@ -229,5 +229,21 @@ So I1 is real but **codex-only**; opencode and gemini handle stdio secrets nativ
 - **DO NOT** "fix" this by expanding the placeholder at write time. That writes a live credential into `config.toml` on disk and reverses D5. Also do NOT set `shell_environment_policy.inherit=all` — it is global, so it would leak every env var (including OTHER connectors' tokens) into every shell command the agent runs. Both are regressions, not fixes.
 - **opencode TRAP for Task 6**: the `${AOA_MCP_X_TOKEN}` → `{env:AOA_MCP_X_TOKEN}` rewrite must be applied to stdio `args` and `env` VALUES as well as to HTTP headers. A writer that rewrites only headers reproduces I1 on opencode.
 - **gemini**: placeholders are already in gemini's native `${VAR}` syntax — emit verbatim, no rewrite.
+
+**B2N11 — TASK 6 RESULT: B5 staleness for the JSON writers is a SIDECAR MANIFEST, decided empirically.**
+
+The codex fence (sentinel comments) has no JSON equivalent, so opencode/gemini needed another way to know which entries AoA owns. The obvious candidate — a top-level manifest key in the config itself — was **probed against the real CLI and is FATAL**:
+
+```
+$ opencode mcp list          # opencode.json carrying "$aoaManagedMcpServers": ["probe"]
+Error: Configuration is invalid at .../opencode.json
+↳ Unrecognized key: $aoaManagedMcpServers
+```
+
+An invalid config does not degrade gracefully — opencode loads **zero** MCP servers, so AoA's own bridge dies with it and the agent runs toolless. A marker nested *inside* an entry (`mcp.<name>.aoaManaged`) IS tolerated today (probed: entry loads, `mcp list` connects), but that is one zod schema's unspecified leniency, not a contract; if upstream tightens it we land in the failure above. gemini's tolerance could not be probed at all (it exits at an auth wall before config load is observable).
+
+**Chosen: `.aoa-mcp-managed.json` sidecar** (`<cwd>/` for opencode, `<cwd>/.gemini/` for gemini) holding `{"managedServerNames": [...]}`. It sits entirely outside the CLI's schema surface, so it cannot break the CLI and depends on no unverified upstream behaviour. Costs accepted: one extra file, and two non-atomic writes. Write order is **config first, manifest second** — a crash between them leaves a manifest that UNDER-claims (a stale entry survives one more sweep) rather than OVER-claims (which could delete a key AoA never wrote). Every manifest read failure returns `[]` = sweep nothing. The sweep removes only names AoA itself recorded, so a user's hand-added server is never touched. Implementation: `packages/adapter-utils/src/mcp-managed-manifest.ts`.
+
+**B2N12 — TASK 6: one classified-skip channel now spans all three writers.** The brief assumed B6 had already built a skip channel for gemini; it had not (B6's gemini clause was voided by the gate result), and the only classified-skip vocabulary in the tree was server-side (`ConnectorSkipReason` in `mcp-connectors.ts`), which adapters cannot import. Rather than invent three parallel log-only paths, `McpWriterSkipReason` / `McpWriterSkip` / `McpWriterResult` now live in adapter-utils, deliberately mirroring the server enum: `reserved_name | unsupported_transport | unsafe_name | secret_unreachable`. All three writers RETURN skips (keeping them unit-testable); each `execute()` surfaces them on the run log. `secret_unreachable` is the B2N9 codex stdio case and is emitted by codex only.
 
 **B2N10 — Task 5 review minors carried forward (none blocking).** M1 duplicate table header if a user's out-of-fence `[mcp_servers.<name>]` collides with a managed one (codex last-wins; cosmetic). M2 `stripReservedMcpServerNames` filters the hardcoded reserved list rather than the actual `options.serverName` — one-line fix. M3 no test covers the exact C2 combination at execute level. M4 a connector whose auth is unrepresentable emits an unauthenticated entry instead of being skipped — **now superseded by B2N9, which makes skip-with-reason the required behaviour.** M5 Commander's codex path passes no connectors (pre-existing; Plan 2 wired Commander for claude only). M6 add a comment noting the fence guard depends on JS `$` not matching before a trailing newline — a Python port of the same regex would be exploitable.
