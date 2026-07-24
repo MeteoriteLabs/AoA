@@ -142,11 +142,20 @@ forward-compat release *before* any CDN change that relies on it.
 
 ## Pre-existing, not caused by this work
 
-### FU-12 — `*-routes-contract` perf flakes are load-dependent · P2
+### FU-12 — wall-clock assertions flake under full-suite load · P2
 `discussions-routes-contract`, `teams-routes-contract` and `routines-routes-contract` each
 failed a 3000 ms budget under full-suite load and passed in isolation (e.g. 1482 ms). It is
 not a specific file — it is whichever loses the scheduling race. Either raise the budget or
 stop asserting wall-clock in a parallel suite.
+
+**Widened 2026-07-24 (Plan 3a Tasks 7/8):** the same class also hits
+`packages/adapters/opencode-local` — `execute-target.test.ts` and
+`execute-mcp-gate.test.ts` spawn real subprocesses, take ~3.9 s each in isolation, and hit
+the 30 s `testTimeout` under load. Measured across three consecutive full-suite runs on an
+unchanged tree the failing set was 6, 4 and 7 files, always drawn from this pool — so a
+full-suite failing-file count is only meaningful when diffed against a baseline run on the
+same machine, and any file in this pool must be re-run in isolation before it is called a
+regression.
 
 ### FU-13 — `github-integration` test asserts the wrong host · P2
 Expects `http://localhost:5173/…`, gets `http://127.0.0.1:3100/…`. Confirmed failing on
