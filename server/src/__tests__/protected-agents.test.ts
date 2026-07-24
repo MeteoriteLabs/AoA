@@ -12,6 +12,7 @@
  */
 import { describe, it, expect } from "vitest";
 import {
+  protectedAgentRefusal,
   protectedAgentRole,
   protectedAgentsIn,
   PROTECTED_AGENT_ROLES,
@@ -126,6 +127,38 @@ describe("protectedAgentsIn", () => {
         { id: "a-2", name: "Engineer", templateOrigin: "agent:aoa-curated/aoa-engineer" },
       ]),
     ).toEqual([]);
+  });
+});
+
+describe("protectedAgentRefusal", () => {
+  const commander = PROTECTED_AGENT_ROLES.find((r) => r.slug === "commander")!;
+  const steward = PROTECTED_AGENT_ROLES.find((r) => r.slug === "steward")!;
+
+  it("uses the caller's verb and ends with an actionable next step", () => {
+    const msg = protectedAgentRefusal([{ name: "Commander", role: commander }], {
+      operation: "Deleting this agent",
+      remedy: "Pause it from the agent page if you want it to stop working.",
+    });
+
+    expect(msg).toMatch(/^Deleting this agent would remove a protected AoA agent: Commander/);
+    expect(msg).toMatch(/Pause it from the agent page/);
+    // The bug this parameterisation fixed: every message used to end
+    // "…cannot be uninstalled", a non-sequitur after "Deleting this agent".
+    expect(msg).not.toMatch(/cannot be uninstalled/);
+  });
+
+  it("pluralises and names every blocked agent", () => {
+    const msg = protectedAgentRefusal(
+      [
+        { name: "Commander", role: commander },
+        { name: "Steward", role: steward },
+      ],
+      { operation: "Doing the thing", remedy: "Try something else." },
+    );
+
+    expect(msg).toMatch(/protected AoA agents:/);
+    expect(msg).toMatch(/Commander/);
+    expect(msg).toMatch(/Steward/);
   });
 });
 

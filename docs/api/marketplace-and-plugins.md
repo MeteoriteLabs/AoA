@@ -51,11 +51,27 @@ is stuck. Both share a 6-hour per-company cooldown — send `{"force": true}` to
 override it after fixing the underlying cause.
 
 `DELETE .../marketplace/teams/{teamId}` is founder-only and permanently deletes
-every agent on the team. It answers **409** — with `{ error, protectedAgents }` —
-when the roster contains a **protected AoA agent** (Commander, Steward). Those
-agents are part of AoA itself, so nothing is deleted and the team stays
-installed; the response names each blocking agent. Protection is decided
-server-side from the agent's identity, not from catalog metadata.
+every agent on the team — **except protected AoA agents** (Commander, Steward),
+which are **detached rather than destroyed**: the agent row and its triggers
+survive, and only its team membership goes away with the team. The response
+reports both sides, so retention is never silent:
+
+```json
+{ "success": true,
+  "deletedAgentIds": ["…"],
+  "retainedAgentIds": ["…"],
+  "retainedAgents": [{ "id": "…", "name": "Steward", "role": "steward", "why": "…" }] }
+```
+
+Protection is decided server-side from the agent's identity, not from catalog
+metadata. It is not a refusal because there would be no way back from one: the
+AoA crew team is company-wide (`parentProjectId` is null), and roster edits —
+both `addMember` and `removeMember` — are refused on a team with no parent
+department, so a founder could neither detach the agent nor remove the team.
+
+`DELETE /api/companies/{companyId}/agents/{agentId}` does refuse outright, with
+**409**: deleting a single agent has an obvious alternative (pause it), so there
+is no dead end.
 
 ## Company Plugins
 

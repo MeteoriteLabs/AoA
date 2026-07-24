@@ -8,7 +8,7 @@ import {
   marketplaceInstallOperations,
 } from "@armyofagents/db";
 import { logger } from "../../middleware/logger.js";
-import { protectedAgentsIn, protectedAgentRefusal } from "../protected-agents.js";
+import { protectedAgentsIn } from "../protected-agents.js";
 
 export interface UninstallTeamOpts {
   db: Db;
@@ -16,31 +16,25 @@ export interface UninstallTeamOpts {
   teamId: string;
 }
 
-export interface UninstallTeamResult {
-  deletedAgentIds: string[];
-}
-
-/** A protected agent this uninstall would have destroyed. */
-export interface BlockedProtectedAgent {
+/** A protected agent this uninstall detached instead of destroying. */
+export interface RetainedProtectedAgent {
   id: string;
   name: string;
+  /** Canonical protected-role slug, e.g. `steward`. */
   role: string;
+  /** Why it is protected — founder-facing, from `PROTECTED_AGENT_ROLES`. */
+  why: string;
 }
 
-/**
- * Thrown when a team uninstall would destroy a protected AoA agent (D23).
- *
- * Distinct type so the route can answer 409 rather than the catch-all 500 —
- * this is a client-correctable refusal, not a server fault.
- */
-export class ProtectedAgentUninstallError extends Error {
-  readonly protectedAgents: BlockedProtectedAgent[];
-
-  constructor(message: string, protectedAgents: BlockedProtectedAgent[]) {
-    super(message);
-    this.name = "ProtectedAgentUninstallError";
-    this.protectedAgents = protectedAgents;
-  }
+export interface UninstallTeamResult {
+  deletedAgentIds: string[];
+  /**
+   * Protected agents kept alive and detached. Carries the reason each was kept
+   * because the founder needs to see *which* and *why*, not just a count — the
+   * route projects the ids out of this as `retainedAgentIds` rather than the
+   * service returning the same set twice.
+   */
+  retainedAgents: RetainedProtectedAgent[];
 }
 
 /**
@@ -51,27 +45,32 @@ export class ProtectedAgentUninstallError extends Error {
  * because the team row is gone after the first run).
  *
  * Cascade order:
- *   1. aoaAgentTriggers   WHERE agentId IN (team's agents)
- *   2. agents             WHERE companyId + id IN (team's agents)  → FK-cascades team_members
- *   3. teams              WHERE companyId + id = teamId            → FK-cascades team_members
- *   4. marketplace_install_operations                              → audit log
+ *   1. aoaAgentTriggers   WHERE agentId IN (destroyed agents)
+ *   2. agents             WHERE companyId + id IN (destroyed agents) → FK-cascades team_members
+ *   3. teams              WHERE companyId + id = teamId              → FK-cascades team_members
+ *   4. marketplace_install_operations                                → audit log
  *
- * ── Protected agents (D23) ──────────────────────────────────────────────────
+ * ── Protected agents (D23): detach, don't destroy ───────────────────────────
  *
  * This function deletes member agents with raw SQL, so **`DELETE /agents/:id`'s
- * guards never see it** — a per-agent route check cannot cover this path. If any
- * member is a protected AoA agent ({@link protectedAgentsIn}) the whole uninstall
- * is refused with {@link ProtectedAgentUninstallError}, before the transaction
- * opens and before anything is written.
+ * guards never see it** — a per-agent route check cannot cover this path. Any
+ * member that is a protected AoA agent ({@link protectedAgentsIn}) is therefore
+ * excluded from BOTH deletes: the agent row and its `aoa_agent_triggers` rows
+ * survive. Deleting the team row FK-cascades away its `team_members` row, which
+ * is the whole detachment — agents are not owned by teams (`teams.dismantle`
+ * dismantles a team without touching its agents, and a protected agent that was
+ * never a member already survives an uninstall untouched).
  *
- * Whole-team refusal rather than "delete the rest, keep the protected ones":
- * this operation is documented all-or-nothing, and silently returning a
- * `deletedAgentIds` that omits members the caller asked to remove is a worse
- * failure than refusing. The refusal names the blocking agents.
- *
- * ⚠️ Once T2.4 publishes Steward into `team:aoa-curated/default-crew`, that team
- * becomes un-uninstallable through this route for exactly this reason. That is
- * intended, but it is a product-visible consequence — not an accident.
+ * **Why not refuse the whole uninstall.** That was the first implementation and
+ * it was wrong: the crew team is created company-wide (`crew-bootstrap.ts`
+ * passes no `targetDepartmentId`), and `loadTeamForRosterEdit` refuses BOTH
+ * `addMember` and `removeMember` when `parentProjectId` is null. So a refusal
+ * would leave the founder unable to detach the protected agent, unable to
+ * uninstall the team, and with deleting the whole company as the only exit.
+ * A department-parented team has `removeMember` as a way out; the company-wide
+ * crew team has none. Reporting retention is not the same as silently omitting
+ * requested members — {@link UninstallTeamResult.retainedAgents} says exactly
+ * what was kept and why.
  */
 export async function uninstallTeam(opts: UninstallTeamOpts): Promise<UninstallTeamResult> {
   const { db, companyId, teamId } = opts;
@@ -102,27 +101,25 @@ export async function uninstallTeam(opts: UninstallTeamOpts): Promise<UninstallT
     .innerJoin(agents, eq(agents.id, teamMembers.agentId))
     .where(and(eq(teamMembers.teamId, teamId), eq(agents.companyId, companyId)));
 
-  const blocked = protectedAgentsIn(memberRows);
-  if (blocked.length > 0) {
-    const protectedAgents: BlockedProtectedAgent[] = blocked.map(({ agent, role }) => ({
+  // ── D23: partition into destroy vs. detach, BEFORE any write ──────────────
+
+  const retainedAgents: RetainedProtectedAgent[] = protectedAgentsIn(memberRows).map(
+    ({ agent, role }) => ({
       id: agent.agentId,
       name: agent.name,
       role: role.slug,
-    }));
-    logger.warn(
-      { companyId, teamId, protectedAgents },
-      "marketplace: team uninstall refused — protected AoA agents",
-    );
-    throw new ProtectedAgentUninstallError(
-      protectedAgentRefusal(
-        blocked.map(({ agent, role }) => ({ name: agent.name, role })),
-        "Uninstalling this team",
-      ),
-      protectedAgents,
+      why: role.why,
+    }),
+  );
+  const retainedIds = new Set(retainedAgents.map((a) => a.id));
+  const agentIds = memberRows.map((m) => m.agentId).filter((id) => !retainedIds.has(id));
+
+  if (retainedAgents.length > 0) {
+    logger.info(
+      { companyId, teamId, retainedAgents },
+      "marketplace: retaining protected AoA agents through team uninstall",
     );
   }
-
-  const agentIds = memberRows.map((m) => m.agentId);
 
   // ── Atomic delete ─────────────────────────────────────────────────────────
 
@@ -130,7 +127,12 @@ export async function uninstallTeam(opts: UninstallTeamOpts): Promise<UninstallT
 
   await db.transaction(async (tx) => {
     if (agentIds.length > 0) {
-      // 1. Delete trigger rows for all team agents
+      // 1. Delete trigger rows for the team agents being destroyed.
+      //    `agentIds` excludes retained agents on purpose: dropping a protected
+      //    agent's triggers destroys it functionally even though the row lives
+      //    (`sweep-steward.ts` selects on kind='sweep' + enabled, and
+      //    `seedCrewAgent` only seeds triggers for a NEWLY inserted row, so a
+      //    wiped trigger is never restored).
       await tx
         .delete(aoaAgentTriggers)
         .where(inArray(aoaAgentTriggers.agentId, agentIds));
@@ -144,7 +146,9 @@ export async function uninstallTeam(opts: UninstallTeamOpts): Promise<UninstallT
       deletedAgentIds.push(...deleted.map((r) => r.id));
     }
 
-    // 3. Delete team row (FK cascade also removes any remaining team_members rows)
+    // 3. Delete team row. The FK cascade removes the retained agents'
+    //    `team_members` rows — that is the detach: the agent row survives with
+    //    its triggers, config and history, it simply stops being on this team.
     await tx
       .delete(teams)
       .where(and(eq(teams.id, teamId), eq(teams.companyId, companyId)));
@@ -160,6 +164,9 @@ export async function uninstallTeam(opts: UninstallTeamOpts): Promise<UninstallT
     });
   });
 
-  logger.info({ companyId, teamId, deletedAgentIds }, "marketplace: team uninstalled");
-  return { deletedAgentIds };
+  logger.info(
+    { companyId, teamId, deletedAgentIds, retainedAgentIds: retainedAgents.map((a) => a.id) },
+    "marketplace: team uninstalled",
+  );
+  return { deletedAgentIds, retainedAgents };
 }

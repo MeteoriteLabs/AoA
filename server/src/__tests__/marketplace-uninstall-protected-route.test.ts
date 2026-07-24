@@ -1,7 +1,8 @@
 /**
  * T2.5 (D23) — `DELETE /api/companies/:companyId/marketplace/teams/:teamId`
- * must surface a protected-agent refusal as a distinguishable client error,
- * not as the generic 500 the catch-all previously produced.
+ * detaches protected AoA agents instead of destroying them, and must REPORT
+ * what it kept. A 200 that silently retained members the caller asked to remove
+ * would be the failure mode that made refusing outright look attractive.
  */
 import { describe, it, expect, vi } from "vitest";
 import express from "express";
@@ -23,11 +24,11 @@ vi.mock("@armyofagents/db", () => {
   };
 });
 vi.mock("drizzle-orm", () => ({
-  eq: () => Symbol("op:eq"),
-  and: () => Symbol("op:and"),
-  gt: () => Symbol("op:gt"),
-  isNull: () => Symbol("op:isNull"),
-  inArray: () => Symbol("op:inArray"),
+  eq: () => ({ __op: "eq" }),
+  and: (...args: unknown[]) => ({ __op: "and", args }),
+  gt: () => ({ __op: "gt" }),
+  isNull: () => ({ __op: "isNull" }),
+  inArray: (_col: unknown, ids: string[]) => ({ __op: "inArray", ids }),
 }));
 vi.mock("../services/live-events.js", () => ({ publishLiveEvent: vi.fn() }));
 vi.mock("../routes/authz.js", () => ({
@@ -52,11 +53,27 @@ function buildApp(teamRow: Record<string, unknown> | null, memberRows: MemberRow
     next();
   });
 
-  const deleted = vi.fn().mockReturnValue({
-    where: vi.fn().mockReturnValue({
-      returning: vi.fn().mockResolvedValue(memberRows.map((m) => ({ id: m.agentId }))),
+  const deletedIds: string[] = [];
+  const idsIn = (pred: any): string[] | null => {
+    if (!pred || typeof pred !== "object") return null;
+    if (pred.__op === "inArray") return pred.ids ?? [];
+    if (pred.__op === "and") {
+      for (const arg of pred.args ?? []) {
+        const found = idsIn(arg);
+        if (found) return found;
+      }
+    }
+    return null;
+  };
+  // `returning()` echoes back what the code ASKED to delete, so a retained
+  // agent can only be missing because the route's service excluded it.
+  const deleted = vi.fn().mockImplementation((table: { __table?: string }) => ({
+    where: vi.fn().mockImplementation((pred: unknown) => {
+      const ids = idsIn(pred);
+      if (table?.__table === "agents" && ids) deletedIds.push(...ids);
+      return { returning: vi.fn().mockResolvedValue((ids ?? []).map((id) => ({ id }))) };
     }),
-  });
+  }));
 
   const db: any = {
     select: () => ({
@@ -95,7 +112,7 @@ function buildApp(teamRow: Record<string, unknown> | null, memberRows: MemberRow
     pluginLoader: {} as any,
   });
   app.use("/api/companies/:companyId/marketplace", router);
-  return { app, deleted };
+  return { app, deletedIds };
 }
 
 const TEAM_ROW = {
@@ -105,23 +122,27 @@ const TEAM_ROW = {
 };
 
 describe("DELETE /marketplace/teams/:teamId — protected agents (D23)", () => {
-  it("returns 409 and names the protected agent, deleting nothing", async () => {
-    const { app, deleted } = buildApp(TEAM_ROW, [
+  it("returns 200, keeps the protected agent, and reports it with a reason", async () => {
+    const { app, deletedIds } = buildApp(TEAM_ROW, [
       { agentId: "a-scout", name: "Scout", templateOrigin: "agent:aoa-curated/aoa-scout" },
       { agentId: "a-steward", name: "Steward", templateOrigin: null },
     ]);
 
     const res = await request(app).delete("/api/companies/c1/marketplace/teams/t-1");
 
-    expect(res.status).toBe(409);
-    expect(res.body.error).toMatch(/Steward/);
-    expect(res.body.protectedAgents).toEqual([{ id: "a-steward", name: "Steward", role: "steward" }]);
-    expect(deleted).not.toHaveBeenCalled();
+    expect(res.status).toBe(200);
+    expect(res.body.deletedAgentIds).toEqual(["a-scout"]);
+    expect(res.body.retainedAgentIds).toEqual(["a-steward"]);
+    expect(res.body.retainedAgents).toEqual([
+      { id: "a-steward", name: "Steward", role: "steward", why: expect.stringMatching(/Inbox Hub/) },
+    ]);
+    // The founder is never left guessing: the retained agent is never destroyed.
+    expect(deletedIds).toEqual(["a-scout"]);
   });
 
-  // Discriminator: the route is not simply refusing every team uninstall.
-  it("still returns 200 for a team with no protected members", async () => {
-    const { app } = buildApp(TEAM_ROW, [
+  // Discriminator: the route is not simply retaining every crew member.
+  it("destroys every member of a team with no protected agents", async () => {
+    const { app, deletedIds } = buildApp(TEAM_ROW, [
       { agentId: "a-scout", name: "Scout", templateOrigin: "agent:aoa-curated/aoa-scout" },
       { agentId: "a-chron", name: "Chronicler", templateOrigin: null },
     ]);
@@ -129,7 +150,13 @@ describe("DELETE /marketplace/teams/:teamId — protected agents (D23)", () => {
     const res = await request(app).delete("/api/companies/c1/marketplace/teams/t-1");
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ success: true, deletedAgentIds: ["a-scout", "a-chron"] });
+    expect(res.body).toEqual({
+      success: true,
+      deletedAgentIds: ["a-scout", "a-chron"],
+      retainedAgentIds: [],
+      retainedAgents: [],
+    });
+    expect(deletedIds).toEqual(["a-scout", "a-chron"]);
   });
 
   it("still returns 404 for a missing team", async () => {

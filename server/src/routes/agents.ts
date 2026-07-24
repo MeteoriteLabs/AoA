@@ -1649,6 +1649,14 @@ export function agentRoutes(db: Db) {
     // FX-del: AoA agents (Commander + sub-agents) are reserved framework
     // agents. Terminate is hard-blocked for ALL actors (founders included) —
     // before the company/role gate. kind='org' is unaffected.
+    //
+    // ⚠️ D23 asymmetry: unlike DELETE above, this gates on `kind` ALONE. That
+    // covers Commander and Steward today because both are kind='aoa', but if
+    // crew rows ever become individually terminable this loses protection while
+    // delete keeps it. Add the `protectedAgentRole` check here at that point.
+    // (Not added now: terminate is reversible — it sets status, it destroys
+    // nothing — so the fail-closed argument that justifies the delete guard
+    // does not apply with the same force.)
     if (existing.kind === "aoa") {
       res.status(409).json({
         error:
@@ -1686,6 +1694,18 @@ export function agentRoutes(db: Db) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
+    // `getById` is NOT company-scoped, and both 409s below describe the row
+    // (the protected one echoes its name). Scope the caller to the agent's
+    // company BEFORE either can answer — this tightens the pre-existing FX-del
+    // refusal too. The founder gate still runs below; this is access, not role.
+    //
+    // Stated precisely: this stops the *content* of the row leaking across
+    // tenants (name, kind). It does NOT make existence unobservable — a
+    // cross-tenant hit now answers 403 where a miss answers 404, the same
+    // oracle every other `assertCompanyAccess` route in this file has. Closing
+    // that would mean 404-ing on forbidden everywhere, which is a separate
+    // decision about the whole file, not this handler.
+    assertCompanyAccess(req, existing.companyId);
     // D23 (T2.5): protected AoA agents are refused on identity, independent of
     // `kind`. Deliberately BEFORE the FX-del check below: that one is scoped to
     // kind='aoa', so it would stop covering a protected agent the day crew rows
@@ -1693,10 +1713,10 @@ export function agentRoutes(db: Db) {
     const protectedRole = protectedAgentRole(existing);
     if (protectedRole) {
       res.status(409).json({
-        error: protectedAgentRefusal(
-          [{ name: existing.name, role: protectedRole }],
-          "Deleting this agent",
-        ),
+        error: protectedAgentRefusal([{ name: existing.name, role: protectedRole }], {
+          operation: "Deleting this agent",
+          remedy: "Pause it from the agent page if you want it to stop working.",
+        }),
       });
       return;
     }

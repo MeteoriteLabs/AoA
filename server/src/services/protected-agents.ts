@@ -1,6 +1,9 @@
 /**
  * @fileoverview Protected AoA agents (D23, T2.5) — which agents the product
- * refuses to uninstall, and how a row is recognised as one of them.
+ * will not let a destructive operation take away, and how a row is recognised
+ * as one of them. **Membership only.** What each caller does about a match
+ * differs by caller (see "Three consumers" below); this module never decides
+ * between refusing, detaching and preserving.
  *
  * **Why this is server-side and not catalog metadata.** Whether an agent is
  * essential to AoA is an *AoA fact*. A published `agent.v1` artifact cannot
@@ -47,9 +50,23 @@
  * founder names `Commander`, or that ships under an id ending `…/aoa-steward`,
  * is treated as protected. That is a recoverable annoyance (rename it, then
  * delete); the inverse is not recoverable.
+ *
+ * ── Three consumers, three different responses ──────────────────────────────
+ *
+ * Membership is shared; what each caller *does* about it is not:
+ *  - `team-uninstaller.ts` — **detaches**: keeps the agent + its triggers,
+ *    deletes the rest of the team, and reports what it kept.
+ *  - `routes/agents.ts` `DELETE /agents/:id` — **refuses** with 409.
+ *  - `crew-updater.ts` — **preserves triggers** through a catalog update.
+ *
+ * ⚠️ This set is intentionally NOT shared with `crew-repair.ts`'s
+ * `INFRASTRUCTURE_*` sets, which happen to be identical today. Growing this set
+ * adds protection; growing that one *removes* a refusal. See the docblock there
+ * — and `protected-agents-parity.test.ts`, which fails if they diverge so the
+ * divergence is a decision instead of an inheritance.
  */
 
-/** An agent AoA refuses to let a marketplace operation destroy. */
+/** An agent AoA protects from destructive marketplace and lifecycle operations. */
 export interface ProtectedAgentRole {
   /** Canonical role slug — the value both signals normalise to. */
   slug: string;
@@ -112,6 +129,12 @@ export function agentRoleSlugFromName(name: string): string {
  *
  * The `aoa-` prefix is stripped because published crew ids carry it and the
  * backfilled legacy slugs do not.
+ *
+ * ⚠️ Looks like `crewLegacySlugCandidates` (`marketplace-install/crew-constants.ts`)
+ * and is deliberately NOT shared with it. Same direction hazard as the
+ * membership sets: broadening the parse here means MORE protection, broadening
+ * it there means more roster matches and therefore FEWER repair refusals. The
+ * duplication is the cheaper of the two failure modes.
  */
 export function agentRoleSlugFromOrigin(origin: string | null | undefined): string | null {
   if (!origin) return null;
@@ -141,6 +164,9 @@ export function protectedAgentRole(row: ProtectedAgentCandidate): ProtectedAgent
     const match = BY_SLUG.get(fromOrigin);
     if (match) return match;
   }
+  // Falls THROUGH to the name on a non-match rather than short-circuiting. That
+  // is the load-bearing structural property: a tampered, rewritten or
+  // renamed-away origin can only ever ADD protection, never suppress it.
   return BY_SLUG.get(agentRoleSlugFromName(row.name)) ?? null;
 }
 
@@ -160,16 +186,21 @@ export function protectedAgentsIn<T extends ProtectedAgentCandidate>(
  * Refusal copy naming every protected agent that blocked the operation, so the
  * founder can act on it without reading a log.
  *
- * @param operation - human phrasing of what was refused, e.g.
- *   `"Uninstalling this team"` or `"Deleting this agent"`.
+ * The closing verb is parameterised rather than hardcoded: an earlier revision
+ * ended every message with "cannot be uninstalled", which read as a non-sequitur
+ * on the delete route ("Deleting this agent … cannot be uninstalled").
+ *
+ * @param operation - what was refused, e.g. `"Deleting this agent"`.
+ * @param remedy - what the founder can do instead. Required: a refusal with no
+ *   next step is the failure mode that made the team-uninstall refusal a dead
+ *   end (see `team-uninstaller.ts`'s D23 note).
  */
 export function protectedAgentRefusal(
   blocked: readonly { name: string; role: ProtectedAgentRole }[],
-  operation: string,
+  { operation, remedy }: { operation: string; remedy: string },
 ): string {
   const detail = blocked.map((b) => `${b.name} (${b.role.why})`).join("; ");
-  return (
-    `${operation} would remove ${blocked.length === 1 ? "a protected AoA agent" : "protected AoA agents"}: ` +
-    `${detail}. Protected agents are part of AoA itself and cannot be uninstalled.`
-  );
+  const subject =
+    blocked.length === 1 ? "a protected AoA agent" : "protected AoA agents";
+  return `${operation} would remove ${subject}: ${detail}. Protected agents are part of AoA itself. ${remedy}`;
 }

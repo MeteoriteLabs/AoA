@@ -93,9 +93,11 @@ import {
   DEFAULT_CREW_TEAM_ITEM_ID,
   crewBootstrapIdempotencyKey,
 } from "./marketplace-install/crew-bootstrap.js";
-import { PROTECTED_AGENT_NAMES, PROTECTED_AGENT_SLUGS } from "./protected-agents.js";
 import { provisionCompanyCrew, type CrewProvisioningOutcome } from "./crew-provisioning.js";
-import { ADOPTED_TEMPLATE_VERSION } from "./marketplace-install/crew-constants.js";
+import {
+  ADOPTED_TEMPLATE_VERSION,
+  crewLegacySlugCandidates,
+} from "./marketplace-install/crew-constants.js";
 
 export { ADOPTED_TEMPLATE_VERSION } from "./marketplace-install/crew-constants.js";
 
@@ -731,17 +733,11 @@ async function installMissingRosterSkills(
 
 /**
  * The `…@legacy` origin slugs a roster entry could have been seeded under.
- *
- * `backfillCrewTemplateOrigin` derives its slug from the agent's NAME at boot
- * (`lower(replace(name,' ','-'))`), and the catalog id's last segment is the
- * same role with an `aoa-` prefix. Both are offered because neither is
- * guaranteed: a role could be published under an id that does not match its
- * display name.
+ * See {@link crewLegacySlugCandidates} — `team-reconcile` derives the identical
+ * candidate set and used to carry its own copy of this.
  */
 function legacySlugsForRosterEntry(entry: RosterEntry): Set<string> {
-  const fromName = entry.name.trim().toLowerCase().replace(/\s+/g, "-");
-  const idTail = (entry.templateOrigin.split("/").pop() ?? "").toLowerCase();
-  return new Set([fromName, idTail, idTail.replace(/^aoa-/, "")].filter(Boolean));
+  return crewLegacySlugCandidates(entry);
 }
 
 /** Does this row's `…@legacy` origin name one of `slugs`? */
@@ -767,15 +763,31 @@ function matchesLegacySlug(origin: string | null, slugs: ReadonlySet<string>): b
  * recognised; a renamed Steward (which has no origin — it is absent from
  * `CREW_NAMES`) falls through to the refusal, which is correct.
  *
- * The membership comes from {@link PROTECTED_AGENT_ROLES} (D23) so the two
- * cannot drift — the agents AoA refuses to uninstall are exactly the agents AoA
- * seeds for itself. The **matching rule stays local**: `protectedAgentRole`
- * matches a name regardless of origin, which is right for a destructive
- * refusal but wrong here, where a non-NULL origin means the row has already
- * been through roster matching.
+ * ⚠️ **This membership is deliberately LOCAL, not shared with D23's
+ * `PROTECTED_AGENT_ROLES`, even though the two sets are currently identical.**
+ * They are safe in *opposite* directions, so aliasing one to the other turns a
+ * one-line edit into a silent cross-file semantic change:
+ *
+ * - In the D23 uninstall guard, a **larger** set means **more** refusals. Its
+ *   own docblock states the bias ("over-matching keeps an essential agent
+ *   alive, under-matching destroys it"), so that set is under standing pressure
+ *   to grow.
+ * - Here, a **larger** set means more rows counted as accounted-for → **fewer**
+ *   unaccounted rows → **fewer** refusals at the `unaccounted-crew-rows` gate →
+ *   repair re-provisions on top of rows it should have refused over. That is
+ *   the duplicate-crew outcome this file's header warns about by name.
+ *
+ * `protected-agents-parity.test.ts` asserts the two sets are equal, so adding a
+ * third protected role fails a test and forces a conscious decision here rather
+ * than inheriting a widened set. Do not "fix" that test by aliasing.
+ *
+ * The **matching rule** is local for a second, independent reason:
+ * `protectedAgentRole` matches a name regardless of origin, which is right for
+ * a destructive guard but wrong here, where a non-NULL origin means the row has
+ * already been through roster matching.
  */
-const INFRASTRUCTURE_LEGACY_SLUGS: ReadonlySet<string> = PROTECTED_AGENT_SLUGS;
-const INFRASTRUCTURE_NAMES: ReadonlySet<string> = PROTECTED_AGENT_NAMES;
+export const INFRASTRUCTURE_LEGACY_SLUGS: ReadonlySet<string> = new Set(["commander", "steward"]);
+export const INFRASTRUCTURE_NAMES: ReadonlySet<string> = new Set(["Commander", "Steward"]);
 
 function isInfrastructureRow(row: CrewAgentSnapshot): boolean {
   if (matchesLegacySlug(row.templateOrigin, INFRASTRUCTURE_LEGACY_SLUGS)) return true;

@@ -31,7 +31,6 @@ import {
   installTeam,
   installMarketplacePlugin,
   uninstallTeam,
-  ProtectedAgentUninstallError,
   findOperationById,
   updateOperation,
   type Installers,
@@ -427,14 +426,16 @@ export function createMarketplaceInstallRouter(deps: MarketplaceInstallRoutesDep
     const { teamId } = req.params;
     try {
       const result = await uninstallTeam({ db, companyId, teamId });
-      res.json({ success: true, deletedAgentIds: result.deletedAgentIds });
+      // D23: protected AoA agents are detached, not destroyed. Report them
+      // explicitly — a 200 that silently kept members the caller asked to
+      // remove would be the failure mode that made refusing look attractive.
+      res.json({
+        success: true,
+        deletedAgentIds: result.deletedAgentIds,
+        retainedAgentIds: result.retainedAgents.map((a) => a.id),
+        retainedAgents: result.retainedAgents,
+      });
     } catch (err) {
-      // D23: a protected AoA agent in the roster is a client-correctable
-      // refusal, not a server fault — it must not land in the 500 bucket.
-      if (err instanceof ProtectedAgentUninstallError) {
-        res.status(409).json({ error: err.message, protectedAgents: err.protectedAgents });
-        return;
-      }
       const message = err instanceof Error ? err.message : String(err);
       if (message.includes("not found")) {
         res.status(404).json({ error: message });

@@ -8,6 +8,7 @@ import { loadMarketplaceInstructionFiles } from "./agent-create.js";
 import type { AgentInstructionsServiceLike } from "./agent-create.js";
 import { marketplaceNotifications } from "../marketplace-notifications.js";
 import { isWithinUpdateWindow } from "./skill-auto-updater.js";
+import { protectedAgentRole } from "../protected-agents.js";
 import { logger } from "../../middleware/logger.js";
 
 export interface CrewAgentRow {
@@ -33,6 +34,12 @@ export interface CrewAgentRow {
  * `permissions`, `metadata` or `adapterType` — those are the founder's, not the
  * catalog's.
  *
+ * **D23 exception:** for a protected AoA agent the trigger replacement is
+ * skipped entirely (see the guard at the DELETE below). Everything else —
+ * instructions, `skillKeys`, `toolAllowlist`, `templateVersion` — is still
+ * fully replaced, so this is a narrow carve-out for the one field whose loss is
+ * silent and unrecoverable, not a general exemption.
+ *
  * ⚠️ **THIS IS NOT ATOMIC, AND ITS DESTRUCTIVE HALF IS NOT ROLLED BACK.**
  * Network fetches happen before the transaction, but so does
  * `instructionsService.materializeManagedBundle(..., { replaceExisting: true })`
@@ -55,6 +62,14 @@ export async function applyCrewAgentUpdate(opts: {
   instructionsService: AgentInstructionsServiceLike;
 }): Promise<void> {
   const { db, agentRow, catalogItem, instructionsService } = opts;
+
+  // D23: is this row a protected AoA agent? `catalogItem.id` is the origin the
+  // row is being updated against, which is the strongest identity signal
+  // available here — `CrewAgentRow` does not carry `templateOrigin`, and a row
+  // only reaches this function because `checkCrewUpdates` matched it to this
+  // item. The name is checked too (`protectedAgentRole` falls through to it),
+  // so a mis-pointed row is still recognised.
+  const protectedRole = protectedAgentRole({ name: agentRow.name, templateOrigin: catalogItem.id });
 
   const bodyText = await fetchCatalogResource(catalogItem, "agent template for update");
   const parsed = parseMarketplaceAgentTemplate(bodyText, catalogItem);
@@ -109,15 +124,32 @@ export async function applyCrewAgentUpdate(opts: {
     // Replace triggers: delete existing, re-insert from catalog.
     // `enabled` is taken from the catalog (T2.3d) — an update must not silently
     // re-enable a trigger the catalog disabled.
-    await tx.delete(aoaAgentTriggers).where(eq(aoaAgentTriggers.agentId, agentRow.id));
-    for (const trigger of template.triggers ?? []) {
-      await tx.insert(aoaAgentTriggers).values({
-        companyId: agentRow.companyId,
-        agentId: agentRow.id,
-        kind: trigger.kind,
-        enabled: trigger.enabled,
-        config: trigger.config,
-      });
+    //
+    // D23: SKIPPED ENTIRELY for a protected AoA agent. A protected agent's
+    // triggers are AoA-owned, not catalog-owned, and the wipe is unrecoverable:
+    // `sweep-steward.ts` selects on kind='sweep' + enabled=true, and
+    // `seedCrewAgent` only seeds triggers for a NEWLY INSERTED row — so a
+    // catalog template that omits the sweep trigger would silently stop Steward
+    // forever, which is verbatim the harm the protected set exists to prevent.
+    // The cost is that a catalog-ADDED trigger never reaches these two roles;
+    // that is the right trade for two agents, and install (`agent-create.ts`)
+    // still honours the template's triggers on first install.
+    if (protectedRole) {
+      logger.info(
+        { agentId: agentRow.id, role: protectedRole.slug, catalogItemId: catalogItem.id },
+        "marketplace: preserving protected AoA agent's triggers through a catalog update",
+      );
+    } else {
+      await tx.delete(aoaAgentTriggers).where(eq(aoaAgentTriggers.agentId, agentRow.id));
+      for (const trigger of template.triggers ?? []) {
+        await tx.insert(aoaAgentTriggers).values({
+          companyId: agentRow.companyId,
+          agentId: agentRow.id,
+          kind: trigger.kind,
+          enabled: trigger.enabled,
+          config: trigger.config,
+        });
+      }
     }
 
     // Mark pending update as applied

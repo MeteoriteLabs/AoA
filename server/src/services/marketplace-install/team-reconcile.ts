@@ -34,6 +34,7 @@ import { parseMarketplaceAgentTemplate, normalizeMarketplaceAgentTemplate } from
 import { createMarketplaceAgent } from "./agent-create.js";
 import type { AgentInstructionsServiceLike } from "./agent-create.js";
 import { resolveAgentNameConflict } from "./conflict-resolver.js";
+import { crewLegacySlugCandidates } from "./crew-constants.js";
 import { logger } from "../../middleware/logger.js";
 
 interface TeamTemplateBody {
@@ -137,20 +138,12 @@ export async function reconcileTeamMembers(
         .filter((origin): origin is string => !!origin && origin.endsWith("@legacy"))
         .map((origin) => origin.slice(0, -"@legacy".length).split("/").pop()!.toLowerCase()),
     );
-    const legacySlugsFor = (spec: { templateOrigin: string; name: string }): string[] => {
-      const idTail = (spec.templateOrigin.split("/").pop() ?? "").toLowerCase();
-      return [
-        spec.name.trim().toLowerCase().replace(/\s+/g, "-"),
-        idTail,
-        idTail.replace(/^aoa-/, ""),
-      ].filter(Boolean);
-    };
 
     let addedForThisTeam = 0;
     for (const memberSpec of missing) {
       if (
         unmanagedNames.has(memberSpec.name) ||
-        legacySlugsFor(memberSpec).some((slug) => unmanagedLegacySlugs.has(slug))
+        [...crewLegacySlugCandidates(memberSpec)].some((slug) => unmanagedLegacySlugs.has(slug))
       ) {
         logger.warn(
           { companyId, teamId: teamRow.id, templateOrigin: memberSpec.templateOrigin, name: memberSpec.name },

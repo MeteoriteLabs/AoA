@@ -878,21 +878,43 @@ it was the only unguarded path to destroying a protected agent, and it is now
 where the refusal lives (`ProtectedAgentUninstallError`, raised **before** the
 transaction opens; route answers 409, not the catch-all 500).
 
-**Whole-team refusal, deliberately.** Not "delete the rest, keep the protected
-ones": the operation is documented all-or-nothing and a `deletedAgentIds` that
-silently omits requested members is a worse failure than a named refusal.
-⚠️ **Consequence for T2.4:** once Steward joins `team:aoa-curated/default-crew`,
-that team becomes un-uninstallable through this route. Intended, but product-visible.
+**Team uninstall DETACHES rather than refusing** (revised after review; the
+first implementation refused the whole uninstall). A refusal was a dead end: the
+crew team is company-wide (`crew-bootstrap.ts` passes no `targetDepartmentId`),
+and `loadTeamForRosterEdit` refuses BOTH `addMember` and `removeMember` when
+`parentProjectId` is null — so after T2.4 the founder could neither detach
+Steward nor uninstall the team, leaving *deleting the company* as the only exit.
+A department-parented team has `removeMember` as a way out; the company-wide crew
+team has none. Retention is reported (`retainedAgentIds` + `retainedAgents` with
+a reason each), which is the opposite of silently omitting requested members.
+The per-agent `DELETE /agents/:id` still refuses with 409 — deleting one agent
+has an obvious alternative (pause it), so there is no dead end there.
 
-`crew-repair.ts`'s parallel `INFRASTRUCTURE_*` lists now derive from the same
-constant so the two cannot drift; its **matching rule is left local** on purpose
-(it requires a NULL origin for the name match — right for refusal-suppression
-after roster matching, wrong for a destructive guard).
+**Three consumers, three responses:** uninstall detaches, agent-delete refuses,
+and `crew-updater.applyCrewAgentUpdate` **preserves triggers**. That last one is
+functional destruction, not row destruction: the updater wipes every
+`aoa_agent_triggers` row and re-inserts only the template's. Unreachable today
+(Steward's origin is NULL) but reachable the instant T2.4 publishes it — and a
+Steward without its `sweep`/`role:steward` trigger is permanently dead
+(`sweep-steward.ts` selects on kind+enabled; `seedCrewAgent` only seeds triggers
+for a NEWLY inserted row).
+
+`crew-repair.ts`'s `INFRASTRUCTURE_*` membership is **kept local, not shared** —
+the two sets are safe in opposite directions (growing the protected set adds
+protection; growing crew-repair's set REMOVES `unaccounted-crew-rows` refusals
+and lets repair mint a duplicate crew). `protected-agents-parity.test.ts` asserts
+they are equal *and* are separate objects, so a third protected role trips a test
+instead of silently changing repair. The slug *parsing* is split for the same
+directional reason; the two byte-identical roster-side copies
+(`crew-repair.legacySlugsForRosterEntry`, `team-reconcile.legacySlugsFor`) were
+collapsed into `crewLegacySlugCandidates` since those two are on the same side.
 
 **Not tamper-proof, and the docblock says so:** a founder who renames a
 NULL-origin Steward *first* erases its last signal. That closes for Steward the
 moment T2.4 publishes it. This is a guardrail against destructive operations,
-not an authorization boundary.
+not an authorization boundary. `POST /agents/:id/terminate` still gates on
+`kind='aoa'` alone (terminate is reversible); a comment there names the day that
+stops being enough.
 
 ---
 

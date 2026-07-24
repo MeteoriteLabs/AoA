@@ -274,3 +274,96 @@ describe("applyCrewAgentUpdate — trigger re-insert", () => {
     expect(rows.map((r) => r.enabled)).toEqual([true, true]);
   });
 });
+
+// ─── D23: a catalog update must not functionally destroy a protected agent ───
+//
+// `applyCrewAgentUpdate` wipes ALL of an agent's `aoa_agent_triggers` rows and
+// re-inserts only what the template carries. Unreachable for Steward today (its
+// `templateOrigin` is NULL, so `checkCrewUpdates` never matches it) — but it
+// becomes reachable the moment T2.4 publishes Steward, which is the same event
+// relied on elsewhere to close the rename gap.
+//
+// A Steward that loses its `sweep`/`role:steward` trigger stops running
+// permanently: `sweep-steward.ts` selects on kind='sweep' + enabled=true, and
+// `seedCrewAgent` only seeds triggers for a NEWLY INSERTED row, so nothing ever
+// restores it. The row survives; the agent is dead. That is verbatim the harm
+// `PROTECTED_AGENT_ROLES[1].why` names.
+
+describe("applyCrewAgentUpdate — protected agents keep their triggers (D23)", () => {
+  beforeEach(() => {
+    updateBody.value = "";
+  });
+
+  async function runUpdateFor(
+    agentName: string,
+    item: CatalogItem,
+  ): Promise<{ inserted: Array<Record<string, unknown>>; deleteCount: number }> {
+    updateBody.value = ENGINEER_BODY;
+    const inserted: Array<Record<string, unknown>> = [];
+    let deleteCount = 0;
+    const tx = {
+      update: () => ({ set: () => ({ where: () => Promise.resolve(undefined) }) }),
+      insert: () => ({
+        values: (row: Record<string, unknown>) => {
+          inserted.push(row);
+          return Promise.resolve(undefined);
+        },
+      }),
+      delete: () => ({
+        where: () => {
+          deleteCount += 1;
+          return Promise.resolve(undefined);
+        },
+      }),
+    };
+
+    await applyCrewAgentUpdate({
+      db: { transaction: (fn: (t: unknown) => Promise<unknown>) => fn(tx) } as never,
+      agentRow: {
+        id: "agent-1",
+        companyId: "co-1",
+        name: agentName,
+        adapterType: "claude_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        skillKeys: [],
+        templateVersion: "0.0.1",
+      },
+      catalogItem: item,
+      instructionsService: {
+        materializeManagedBundle: vi.fn().mockResolvedValue({ adapterConfig: {} }),
+      } as never,
+    });
+    return { inserted, deleteCount };
+  }
+
+  // The id T2.4 will publish Steward under.
+  const STEWARD_ITEM = catalogItem("aoa-steward", "Steward");
+
+  it("never deletes a protected agent's triggers, matched on the catalog origin", async () => {
+    const { inserted, deleteCount } = await runUpdateFor("Steward", STEWARD_ITEM);
+
+    expect(deleteCount).toBe(0);
+    expect(inserted).toEqual([]);
+  });
+
+  it("protects a RENAMED Steward too (origin slug carries the identity)", async () => {
+    const { deleteCount } = await runUpdateFor("Hub Curator", STEWARD_ITEM);
+    expect(deleteCount).toBe(0);
+  });
+
+  it("protects a Steward whose origin does NOT say steward (name falls through)", async () => {
+    const { deleteCount } = await runUpdateFor("Steward", ENGINEER_ITEM);
+    expect(deleteCount).toBe(0);
+  });
+
+  // THE DISCRIMINATOR: an unprotected crew agent is still fully replaced. A
+  // blanket "never touch crew triggers" guard passes every test above and fails
+  // this one — and would silently freeze the trigger config of all 9 crew roles.
+  it("still wipes and re-inserts an unprotected crew agent's triggers", async () => {
+    const { inserted, deleteCount } = await runUpdateFor("Engineer", ENGINEER_ITEM);
+
+    expect(deleteCount).toBe(1);
+    expect(inserted.map((r) => r.kind)).toEqual(["mention", "phase-advance"]);
+  });
+});

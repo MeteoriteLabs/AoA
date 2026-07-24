@@ -24,3 +24,36 @@
  * that field straight in, so a prerelease string would throw on company export.
  */
 export const ADOPTED_TEMPLATE_VERSION = "0.0.0-legacy";
+
+/**
+ * Every `…@legacy` origin slug a catalog roster entry could have been seeded
+ * under locally, given its published id and display name.
+ *
+ * `backfillCrewTemplateOrigin` derives its slug from the agent's NAME at boot
+ * (`lower(replace(name,' ','-'))`), and the catalog id's last segment is the
+ * same role with an `aoa-` prefix. All three are offered because none is
+ * guaranteed: a role can be published under an id that does not match its
+ * display name, and the `aoa-` prefix is a publishing convention rather than a
+ * contract.
+ *
+ * Shared by `crew-repair.legacySlugsForRosterEntry` and
+ * `team-reconcile.legacySlugsFor`, which were byte-identical implementations of
+ * this — and are on the SAME side of the matching problem (both ask "could this
+ * roster entry already exist locally under a legacy origin?"), so a change here
+ * moves them together in the same direction.
+ *
+ * ⚠️ Deliberately NOT shared with `services/protected-agents.ts`'s
+ * `agentRoleSlugFromOrigin`, which looks superficially similar. That one
+ * resolves a single canonical slug for a **destructive guard**, where a broader
+ * parse means more protection; here a broader parse means more roster matches,
+ * hence FEWER `unaccounted-crew-rows` refusals. Same direction hazard as the
+ * membership sets (see `crew-repair.ts`), so the parsing stays split too.
+ */
+export function crewLegacySlugCandidates(entry: {
+  templateOrigin: string;
+  name: string;
+}): Set<string> {
+  const fromName = entry.name.trim().toLowerCase().replace(/\s+/g, "-");
+  const idTail = (entry.templateOrigin.split("/").pop() ?? "").toLowerCase();
+  return new Set([fromName, idTail, idTail.replace(/^aoa-/, "")].filter(Boolean));
+}
