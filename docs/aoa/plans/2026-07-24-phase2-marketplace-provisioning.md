@@ -64,7 +64,7 @@
 - **T2.1 before T2.3:** `installTeam` hard-requires a department that does not exist at company-create time. Without the nullable parent there is nowhere to install to.
 - **T2.2 before T2.3:** `isCrewMarketplaceManaged` suppresses the *entire* `ensureAllCrewAgents`. The moment T2.3 makes a company marketplace-managed, Commander and Steward stop being seeded — Inbox Hub curation breaks silently.
 
-Order: **T2.1 → T2.2 → T2.3 → T2.3b → T2.3c → T2.5 → T2.4 → T2.6 → T2.7 → T2.8 → T2.9 → T2.10**. (T2.5 protected-origins before T2.4 so Steward is protected the moment it becomes marketplace-managed.)
+Order: **T2.1 → T2.2 → T2.3 → T2.3b → T2.3c → T2.3d → T2.5 → T2.4 → T2.6 → T2.7 → T2.8 → T2.9 → T2.10**. (T2.5 protected-origins before T2.4 so Steward is protected the moment it becomes marketplace-managed.)
 
 ---
 
@@ -613,6 +613,67 @@ poisoned rows today.
 - [x] **Step 4: Run → PASS. Step 5: Verify + commit.**
 ```bash
 git commit -m "fix(marketplace): install team skills through the real installer (bundles + trust level)"
+```
+
+---
+
+## T2.3d — Accept and honour `triggers[].enabled` (T2.3 DOES NOT WORK IN PRODUCTION)
+
+> **🔴 This is a live blocker on the phase's own deliverable. Do it before T2.5/T2.4 —
+> the exit criteria cannot pass until it lands.**
+
+**Why:** every published crew agent declares `aoa.triggers[].enabled`, but
+`marketplace-install/agent-runtime.ts:87-92` types triggers as `.strict()` with
+only `kind` + `config`. So pre-flight validation fails:
+
+```
+crew provisioning DEGRADED to the legacy seeders (install failed:
+  code: "unrecognized_keys", keys: ["enabled"], path: ["aoa","triggers",0])
+```
+
+**Every live company create fails and lands on the `@legacy` roster** — the exact
+state this phase exists to eliminate. Independently verified 2026-07-24 by
+fetching all 11 published `aoa-curated` agent bodies from
+`raw.githubusercontent.com`: **9/9 agents that declare triggers declare
+`enabled`** (adjutant, chronicler, engineer ×2, librarian, memory-keeper,
+navigator, planner, reviewer, scout). The two with zero triggers are unaffected.
+
+**Why no test caught it:** every fixture catalog in the repo hand-writes triggers
+without `enabled`, and the catalog *index* (the bundled snapshot) carries no
+trigger data at all — triggers live in the separately-fetched `agent.json`. The
+fixtures were not wrong about the schema; they were wrong about the **catalog**.
+This is a fixture-fidelity failure, and it is the third defect this phase caused
+by a fixture diverging from production.
+
+**Do NOT just relax the schema.** `normalizeMarketplaceAgentTemplate:306` maps
+only `kind`/`config`, and `agent-create.ts:105` hardcodes `enabled: true` — so a
+bare schema relaxation would install a trigger the catalog marked **disabled**
+as **enabled**. The DB already supports the value: `aoa_agent_triggers.enabled`
+is `notNull().default(true)`.
+
+**Files:** `server/src/services/marketplace-install/agent-runtime.ts` (`:87`
+schema, `:306` normalizer), `agent-create.ts` (`:105` insert),
+`crew-updater.ts` (`:111` trigger re-insert), fixtures.
+
+- [ ] **Step 1: Failing test against a PRODUCTION-SHAPED fixture.** Copy a real
+  published `agent.json` body (triggers carrying `enabled`) rather than
+  hand-writing one. It must fail today with `unrecognized_keys: ["enabled"]`.
+- [ ] **Step 2: Failing test — `enabled: false` is HONOURED.** The discriminator:
+  a catalog trigger marked disabled must produce `aoa_agent_triggers.enabled =
+  false`, not `true`. A test that only asserts "install succeeds" would pass a
+  bare schema relaxation and miss the semantic bug entirely.
+- [ ] **Step 3: Run → FAIL.**
+- [ ] **Step 4: Implement** — accept `enabled` (default `true` when absent,
+  preserving today's behaviour), thread it through the normalizer, and honour it
+  at BOTH insert sites (`agent-create.ts` and `crew-updater.ts`'s re-insert;
+  adoption/update must not silently re-enable a disabled trigger).
+- [ ] **Step 5: Audit the rest of the contract the same way.** `enabled` was
+  found by accident while measuring. Diff a real published `agent.json` against
+  the schema field-by-field and report **every** other divergence — do not stop
+  at the first. Check `team.json` too.
+- [ ] **Step 6: Run → PASS. Verify + commit.**
+```bash
+git commit -m "fix(marketplace): accept and honour triggers[].enabled from the catalog"
 ```
 
 ---
