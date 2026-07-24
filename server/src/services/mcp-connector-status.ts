@@ -6,8 +6,25 @@
  * non-active connector to `active` on approve, which would activate a connector
  * with no credentials.
  *
- * INVARIANT: this function never returns "active" while `requiresSecret &&
- * !hasSecret`. Nothing else in the codebase may write "active" to a connector.
+ * INVARIANT (unconditional): this function never returns "active" while
+ * `requiresSecret && !hasSecret`.
+ *
+ * SCOPE — read this before relying on it. The invariant above is a property of
+ * THIS FUNCTION, and it is the whole story only on the CREATE path, which routes
+ * every status decision through here. It is NOT yet a codebase-wide guarantee
+ * that a connector can only become "active" via this resolver. Two other writers
+ * exist today:
+ *
+ *  - `services/approvals.ts` (install_mcp_connector approve) sets
+ *    `status: "active"` directly, without consulting this function. That is the
+ *    exact defect described above, re-introduced on a different path, and it is
+ *    being closed in a following task.
+ *  - `routes/mcp-connectors.ts` PATCH permits status → "active" in
+ *    `local_trusted`. That one is DELIBERATE and stays: a loopback deployment
+ *    has no governance gate to bypass.
+ *
+ * So: do not treat "status is active" as proof that credentials are bound until
+ * the approval path is routed through here too.
  */
 
 export type ConnectorStatus = "pending_approval" | "needs_credentials" | "active" | "disabled";

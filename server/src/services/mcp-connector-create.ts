@@ -17,9 +17,13 @@
  * write. So each caller asserts it itself, ahead of calling this function. There
  * is a test pinning this absence; do not "helpfully" move the gate in here.
  *
- * STATUS: `resolveConnectorStatus` is the ONLY thing that may decide `active`
- * (see mcp-connector-status.ts). This function does not branch on deployment
- * mode itself — it hands the axes to that resolver and persists the answer.
+ * STATUS: on THIS PATH, `resolveConnectorStatus` is the only thing that decides
+ * the status — this function does not branch on deployment mode itself, it hands
+ * the axes to that resolver and persists the answer. That is a property of the
+ * create path, NOT a codebase-wide guarantee: `services/approvals.ts` still
+ * writes `status: "active"` directly on approve (being closed in a following
+ * task), and PATCH → "active" stays deliberately open in `local_trusted`. See
+ * the SCOPE note in mcp-connector-status.ts before relying on it more broadly.
  *
  * DEPENDENCIES ARE INJECTED so the governance above is unit-testable with no DB.
  */
@@ -63,7 +67,11 @@ export type CreateConnectorInput = {
   companyId: string;
   serverName: string;
   displayName: string;
-  transport: string;
+  /**
+   * Narrow on purpose: this is the field the D7 gate keys on, and the future
+   * catalog caller is exactly who a widened `string` would fail to protect.
+   */
+  transport: "http" | "stdio";
   url?: string | null;
   command?: string | null;
   args?: string[];

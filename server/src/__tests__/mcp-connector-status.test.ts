@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { DEPLOYMENT_MODES } from "@armyofagents/shared";
 import { resolveConnectorStatus } from "../services/mcp-connector-status.js";
 
 describe("resolveConnectorStatus", () => {
@@ -38,13 +39,20 @@ describe("resolveConnectorStatus", () => {
     })).toBe("active");
   });
 
+  // Iterates the REAL mode list (an earlier version hand-wrote one including
+  // "cloud_auth", which is not a deployment mode), so a mode added later is
+  // covered automatically rather than silently skipped.
   it("never returns active when a required secret is missing (exhaustive)", () => {
-    for (const deploymentMode of ["local_trusted", "authenticated", "cloud_auth"]) {
+    for (const deploymentMode of DEPLOYMENT_MODES) {
       for (const approved of [true, false]) {
         const s = resolveConnectorStatus({
           deploymentMode, approved, requiresSecret: true, hasSecret: false,
         });
         expect(s).not.toBe("active");
+        // Stronger than "not active": pin which non-active status, and why.
+        expect(s).toBe(
+          deploymentMode === "local_trusted" || approved ? "needs_credentials" : "pending_approval",
+        );
       }
     }
   });

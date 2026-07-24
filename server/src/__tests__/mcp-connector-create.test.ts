@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { DEPLOYMENT_MODES } from "@armyofagents/shared";
 
 // This suite deliberately imports the create service DIRECTLY — no express, no
 // drizzle, no DB. Every dependency is injected, which is the whole point of the
@@ -25,6 +26,18 @@ const approvalsSvc = { create: vi.fn() };
 const logActivity = vi.fn();
 
 const deps = { svc, secretsSvc, approvalsSvc, logActivity };
+
+/**
+ * Per deployment mode, the status a connector that NEEDS a secret but has none
+ * must land in. Neither is "active" — that is the point — but they differ in
+ * WHY: local_trusted clears governance on the loopback trust boundary and is
+ * held back purely by credentials, while authenticated fails the governance
+ * axis first and never reaches the credential check.
+ */
+const EXPECTED_UNCREDENTIALED_STATUS: Record<string, string> = {
+  local_trusted: "needs_credentials",
+  authenticated: "pending_approval",
+};
 
 const httpInput = {
   companyId: COMPANY,
@@ -133,19 +146,29 @@ describe("createConnector — deployment mode, status, approval", () => {
     expect(out.approvalId).toBeNull();
   });
 
-  it("never marks a requiresSecret connector active without a bound secret, in any mode", async () => {
-    for (const deploymentMode of ["local_trusted", "authenticated", "cloud_auth"]) {
-      vi.clearAllMocks();
-      svc.getByName.mockResolvedValue(null);
-      svc.create.mockImplementation(async (_c: string, input: any) => ({ id: CONNECTOR_ID, ...input }));
-      approvalsSvc.create.mockResolvedValue({ id: "approval-1" });
+  // Iterates the REAL mode list rather than a hand-written one, so this stays
+  // honest if a deployment mode is ever added — a new mode with no expected
+  // status mapped below fails the test instead of silently going uncovered.
+  // (An earlier version of this loop included "cloud_auth", which is not a
+  // deployment mode at all and read as coverage that did not exist.)
+  it.each([...DEPLOYMENT_MODES])(
+    "%s: a requiresSecret connector with no bound secret gets its mode's non-active status",
+    async (deploymentMode) => {
+      const expected = EXPECTED_UNCREDENTIALED_STATUS[deploymentMode];
+      expect(
+        expected,
+        `no expected status mapped for deployment mode "${deploymentMode}" — add one`,
+      ).toBeDefined();
+      expect(expected).not.toBe("active");
+
       await createConnector(deps as any, { ...httpInput, requiresSecret: true, deploymentMode });
-      expect(svc.create).not.toHaveBeenCalledWith(
+      // Positive assertion: pins the exact status, not merely "not active".
+      expect(svc.create).toHaveBeenCalledWith(
         COMPANY,
-        expect.objectContaining({ status: "active" }),
+        expect.objectContaining({ status: expected }),
       );
-    }
-  });
+    },
+  );
 });
 
 describe("createConnector — caller-forced provenance", () => {

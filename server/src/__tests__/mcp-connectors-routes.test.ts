@@ -48,7 +48,11 @@ vi.mock("../services/permissions.js", () => ({
   }),
 }));
 
-import { mcpConnectorRoutes, assertTransportAllowed } from "../routes/mcp-connectors.js";
+import { mcpConnectorRoutes } from "../routes/mcp-connectors.js";
+// The D7 gate lives in services/, not in this route module: it has two callers
+// (BYO create + catalog install) and a route is the wrong place to source an
+// authorization primitive from.
+import { assertTransportAllowed } from "../services/mcp-connector-transport-gate.js";
 import { errorHandler } from "../middleware/index.js";
 
 const COMPANY = "company-A";
@@ -378,6 +382,54 @@ describe("mcp-connectors routes — deployment mode + approval", () => {
         payload: expect.objectContaining({ connectorId: CONNECTOR_ID }),
       }),
     );
+  });
+});
+
+describe("mcp-connectors routes — POST response contract", () => {
+  // `approvalId` is a LIVE CONTRACT, not an implementation detail: the settings
+  // UI branches on it to decide whether to tell the founder their connector is
+  // waiting on board approval
+  // (ui/src/components/settings/sections/MCPConnectorsSection.tsx). Nothing else
+  // in this suite asserted it, so the create-path refactor could have dropped it
+  // silently and the only symptom would have been a missing notice in the UI.
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetEffectiveRole.mockResolvedValue("founder");
+    mockConnectorSvc.getByName.mockResolvedValue(null);
+    mockConnectorSvc.create.mockImplementation(async (_c: string, input: any) => ({
+      id: CONNECTOR_ID,
+      companyId: COMPANY,
+      ...input,
+    }));
+    mockApprovalSvc.create.mockResolvedValue({ id: "approval-1" });
+  });
+
+  it("authenticated: response carries the raised approval's id alongside the connector", async () => {
+    deploymentMode = "authenticated";
+    const res = await postConnector(makeApp(founderActor), goodHttp);
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({
+      id: CONNECTOR_ID,
+      serverName: "notion",
+      status: "pending_approval",
+      approvalId: "approval-1",
+    });
+  });
+
+  it("local_trusted: approvalId is present and null (the UI reads it, so it must exist)", async () => {
+    deploymentMode = "local_trusted";
+    const res = await postConnector(makeApp(founderActor), goodHttp);
+    expect(res.status).toBe(201);
+    expect(res.body).toHaveProperty("approvalId", null);
+    expect(res.body.status).toBe("active");
+  });
+
+  it("authenticated: approvalId is null when the approval service returns nothing", async () => {
+    deploymentMode = "authenticated";
+    mockApprovalSvc.create.mockResolvedValue(undefined);
+    const res = await postConnector(makeApp(founderActor), goodHttp);
+    expect(res.status).toBe(201);
+    expect(res.body).toHaveProperty("approvalId", null);
   });
 });
 

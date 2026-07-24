@@ -10,6 +10,7 @@ import {
 } from "../services/index.js";
 import { badRequest, forbidden } from "../errors.js";
 import { createConnector } from "../services/mcp-connector-create.js";
+import { assertTransportAllowed } from "../services/mcp-connector-transport-gate.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { assertRole } from "../middleware/rbac.js";
 import { loadConfig } from "../config.js";
@@ -42,8 +43,9 @@ import { loadConfig } from "../config.js";
  * marketplace copy being the untested one.
  *
  * GOVERNANCE (close the stdio→host-exec chain on a multi-tenant host):
- *  - D7/C1 (`assertTransportAllowed`): a `stdio` connector runs a command on the
- *    AoA host, so it is refused in `authenticated` mode for founder (BYO) input.
+ *  - D7/C1 (`assertTransportAllowed`, services/mcp-connector-transport-gate.ts):
+ *    a `stdio` connector runs a command on the AoA host, so it is refused in
+ *    `authenticated` mode for founder (BYO) input.
  *  - C2 (PATCH): in `authenticated` mode PATCH may only set status to
  *    "disabled" — activation must flow through connector approval, never PATCH
  *    (which would otherwise be a one- or two-hop activation bypass).
@@ -59,49 +61,6 @@ import { loadConfig } from "../config.js";
 const SERVER_NAME_RE = /^[a-z0-9-]+$/;
 
 const templateRecord = z.record(z.string(), z.string());
-
-/**
- * D7 stdio governance gate. A `stdio` connector's `command` executes on the AoA
- * HOST when the loader serves it — in a multi-tenant/`authenticated` deployment
- * that is remote code execution. So stdio is admissible ONLY when the host is
- * the founder's own machine (`local_trusted`) or the entry is a catalog install
- * whose trust tier is `verified`. `http` is always fine — it makes a network
- * request, never a local exec.
- *
- * THIS IS AN AUTHORIZATION GATE. It answers "is this principal permitted to make
- * this host execute a command at all?" and it is the last line of defence before
- * a write. The install-time CONSENT TOKEN (a separate, later mechanism) is a UX
- * gate: it proves the founder actually saw the exact command they are installing.
- * Consent is NOT a substitute for this check and must never be accepted in its
- * place — a founder can consent to a command they are not authorized to run on a
- * shared host, and an unverified catalog entry's command is untrusted regardless
- * of how clearly it was displayed. Both gates run; neither subsumes the other.
- *
- * C4 — TIER AWARENESS: the catalog exemption requires `trustTier === "verified"`.
- * The gate previously keyed on `source` alone while its comment claimed
- * "verified"; that was safe only for as long as no route could construct a
- * `catalog` source. The catalog install route does exactly that, and the catalog
- * schema admits `community`/`unverified` tiers, so source alone would let an
- * unverified third-party `npx` command spawn a process on a shared host.
- * `trustTier` is optional and FAIL-CLOSED: an omitted or unrecognised tier is
- * never treated as verified.
- *
- * Exported so its full truth table is unit-tested directly.
- */
-export function assertTransportAllowed(
-  transport: string,
-  deploymentMode: string,
-  source: string,
-  trustTier?: string,
-): void {
-  if (transport !== "stdio") return; // http is always fine
-  if (deploymentMode === "local_trusted") return; // host is the founder's own machine
-  if (source === "catalog" && trustTier === "verified") return; // verified catalog entries only (C4)
-  throw badRequest(
-    "Only remote HTTP connectors can be added in this deployment. stdio connectors run a " +
-      "command on the AoA host and are restricted to verified catalog entries.",
-  );
-}
 
 // C3: `source` is DELIBERATELY absent from the schema and stripped from the body
 // before validation, so a client can never set it (a spoofed `source:"catalog"`
