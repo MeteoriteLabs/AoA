@@ -19,7 +19,7 @@ import { HttpError, badRequest, notFound, forbidden } from "../errors.js";
 import { agentLoopService, type RuntimeAttachmentStorage } from "../services/internal-agent/agent-loop.js";
 import { detectCliTool } from "../services/internal-agent/cli-mode.js";
 import { ensureCommanderAgent } from "../services/internal-agent/aoa-agents/ensure-commander.js";
-import { ensureAllCrewAgents, isCrewMarketplaceManaged } from "../services/internal-agent/aoa-agents/ensure-all-crew.js";
+import { ensureCrewAgents, ensureInfrastructureAgents, isCrewMarketplaceManaged } from "../services/internal-agent/aoa-agents/ensure-all-crew.js";
 import { logger } from "../middleware/logger.js";
 import { companySkillService } from "../services/company-skills.js";
 import {
@@ -118,11 +118,18 @@ interface AgentAdapterFields {
 
 /**
  * Re-seed the AoA agents after a config PATCH iff any adapter-affecting field
- * changed and they aren't marketplace-managed. Crew rows follow provider/crewModel;
- * the Commander row follows cliTool/model (Task 5b). Running the full
- * ensureAllCrewAgents on any change is safe — each ensure resolves from its own
- * inputs and shouldRewriteCrewAdapter is a no-op when the adapter already matches,
- * so a crew-only change leaves Commander untouched and vice-versa.
+ * changed. Crew rows follow provider/crewModel; the Commander row follows
+ * cliTool/model (Task 5b). Running every ensure on any change is safe — each
+ * ensure resolves from its own inputs and shouldRewriteCrewAdapter is a no-op
+ * when the adapter already matches, so a crew-only change leaves Commander
+ * untouched and vice-versa.
+ *
+ * P8d: the marketplace gate suppresses the CREW half only. Infrastructure
+ * (Commander, Steward) must still be re-ensured for a marketplace-managed
+ * company — `shouldRewriteCrewAdapter` returns true whenever the resolved
+ * adapterType or model differs (resolve-crew-adapter.ts:259-264), so this is
+ * the call that migrates Commander onto the founder's newly-picked CLI/model.
+ * Skipping it wholesale stranded Commander on the old provider.
  */
 export async function maybeReensureAgentsOnConfigChange(
   db: Db,
@@ -136,8 +143,9 @@ export async function maybeReensureAgentsOnConfigChange(
     before.cliTool !== after.cliTool ||
     before.model !== after.model;
   if (!changed) return;
+  await ensureInfrastructureAgents(db, companyId);
   if (await isCrewMarketplaceManaged(db, companyId)) return;
-  await ensureAllCrewAgents(db, companyId);
+  await ensureCrewAgents(db, companyId);
 }
 
 // ── Route factory ────────────────────────────────────────────────────────────

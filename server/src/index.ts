@@ -71,7 +71,7 @@ import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-
 import { tryRecoverOrphanPostgres } from "./postgres/embedded-orphan-recovery.js";
 import { DEFAULT_BACKUP_RETENTION, MARKETPLACE_SETTINGS_DEFAULTS } from "@armyofagents/shared";
 import { runChroniclerSweep, CHRONICLER_SWEEP_INTERVAL_MS } from "./services/internal-agent/aoa-agents/sweep-chronicler.js";
-import { ensureAllCrewAgents, isCrewMarketplaceManaged } from "./services/internal-agent/aoa-agents/ensure-all-crew.js";
+import { ensureCrewAgents, ensureInfrastructureAgents, isCrewMarketplaceManaged } from "./services/internal-agent/aoa-agents/ensure-all-crew.js";
 import { backfillGoalParents } from "./migrations/backfill-goal-parents.js";
 import { backfillMemoryFolderSeeds } from "./migrations/backfill-memory-folder-seeds.js";
 import { backfillWorkQuestionSnapshots } from "./migrations/backfill-work-question-snapshots.js";
@@ -784,7 +784,9 @@ if (config.heartbeatSchedulerEnabled) {
 // and Adjutant exist for all companies. Safe to run on every startup — uses
 // ON CONFLICT DO NOTHING. Pre-existing companies miss this because the seeders
 // only run on company creation.
-// T3.5: skip ensure-*.ts if marketplace already governs this company's crew.
+// T3.5 / P8d: the marketplace gate skips only the CREW roster. Infrastructure
+// (Commander, Steward) is seeded for every company regardless — a
+// marketplace-managed company still needs its Commander row and hub curation.
 void db
   .select({ id: companies.id })
   .from(companies)
@@ -793,12 +795,13 @@ void db
       // Wrap each company independently: a failure for one company must never
       // abort the backfill for the remaining companies.
       try {
-        // T3.5: skip ensure-*.ts if marketplace already governs this company's crew.
+        await ensureInfrastructureAgents(db as any, row.id);
+        // T3.5: skip the legacy crew seeders if marketplace governs this crew.
         if (await isCrewMarketplaceManaged(db as any, row.id)) {
-          logger.debug({ companyId: row.id }, "crew startup backfill: skipping — marketplace governs");
+          logger.debug({ companyId: row.id }, "crew startup backfill: skipping crew roster — marketplace governs");
           continue;
         }
-        await ensureAllCrewAgents(db as any, row.id);
+        await ensureCrewAgents(db as any, row.id);
       } catch (err: unknown) {
         logger.warn({ err, companyId: row.id }, "crew startup backfill failed for company");
       }

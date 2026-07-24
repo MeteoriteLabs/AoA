@@ -2,7 +2,7 @@ import { and, eq, count, isNull, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { memoryFoldersService, seedCompanyRootFolder } from "./memory-folders.js";
 import { ensureInternalAgentConfig } from "./internal-agent/aoa-agents/ensure-internal-agent-config.js";
-import { ensureAllCrewAgents } from "./internal-agent/aoa-agents/ensure-all-crew.js";
+import { ensureCrewAgents, ensureInfrastructureAgents } from "./internal-agent/aoa-agents/ensure-all-crew.js";
 import { logger } from "../middleware/logger.js";
 import {
   companies,
@@ -126,9 +126,22 @@ export function companyService(db: Db) {
         // path keeps working when the env flag is re-enabled; it is no longer
         // wired into bootstrap.
         //
-        // T3.5: skip ensure-*.ts if marketplace already governs this company's crew.
-        // A brand-new company that gets a marketplace install immediately after
-        // creation must not have its agents overwritten by the legacy seeders.
+        // P8d: internal_agent_config + the infrastructure agents (Commander,
+        // Steward) are seeded UNCONDITIONALLY — they are not marketplace-owned,
+        // and a company without a config row has no autonomy/provider/model
+        // dial at all. Only the CREW roster is skipped when the marketplace
+        // governs it (below). config MUST precede ensureInfrastructureAgents:
+        // ensureCommanderAgent's internal_agent_config UPDATE no-ops without an
+        // existing config row.
+        await ensureInternalAgentConfig(db, company.id).catch((err: unknown) => {
+          logger.warn({ err, companyId: company.id }, "internal_agent_config seeding failed");
+        });
+        await ensureInfrastructureAgents(db, company.id);
+
+        // T3.5: skip the legacy CREW seeders if marketplace already governs this
+        // company's crew. A brand-new company that gets a marketplace install
+        // immediately after creation must not have those agents overwritten by
+        // the legacy seeders.
         // Wrapped in try/catch: a transient DB error here must not cause the entire
         // company creation to 500 — the company row is already committed and the
         // ensures are non-fatal. On failure, default to running the ensures so the
@@ -151,10 +164,7 @@ export function companyService(db: Db) {
         }
 
         if (!mktInstalled) {
-          await ensureInternalAgentConfig(db, company.id).catch((err: unknown) => {
-            logger.warn({ err, companyId: company.id }, "internal_agent_config seeding failed");
-          });
-          await ensureAllCrewAgents(db, company.id);
+          await ensureCrewAgents(db, company.id);
         }
         return company;
       } catch (error) {
