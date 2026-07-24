@@ -64,7 +64,7 @@
 - **T2.1 before T2.3:** `installTeam` hard-requires a department that does not exist at company-create time. Without the nullable parent there is nowhere to install to.
 - **T2.2 before T2.3:** `isCrewMarketplaceManaged` suppresses the *entire* `ensureAllCrewAgents`. The moment T2.3 makes a company marketplace-managed, Commander and Steward stop being seeded — Inbox Hub curation breaks silently.
 
-Order: **T2.1 → T2.2 → T2.3 → T2.3b → T2.3c → T2.3d → T2.5 → T2.4 → T2.6 → T2.7 → T2.8 → T2.9 → T2.10**. (T2.5 protected-origins before T2.4 so Steward is protected the moment it becomes marketplace-managed.)
+Order: **T2.1 → T2.2 → T2.3 → T2.3b → T2.3c → T2.3d → T2.3e → T2.5 → T2.4 → T2.6 → T2.7 → T2.8 → T2.9 → T2.10**. (T2.5 protected-origins before T2.4 so Steward is protected the moment it becomes marketplace-managed.)
 
 ---
 
@@ -726,6 +726,92 @@ on the phase's exit criterion, on a par with `enabled`:**
   lead = first entry); `agents[].overrides` is declared in the TS interface and
   never read. No live divergence today — the published `installOrder` happens to
   match the published `agents[]` order — but the coupling is unenforced.
+
+---
+
+## T2.3e — The installed crew must actually RUN (status + adapter)
+
+> **🔴 Second live blocker on the phase deliverable. Found by T2.3d's Step 5 audit.
+> Even with T2.3d landed, a company that successfully installs the marketplace
+> crew gets a crew that never fires and is wired to the wrong runtime.**
+
+**F1 — the marketplace crew installs INERT.** The 9 published crew bodies declare
+no `aoa.install`, so `normalizeStatus(undefined, false)` returns **`"paused"`**.
+The legacy seeder writes **`"idle"`** (`seed-crew-agent.ts:103`). Every crew
+execution path excludes paused — `dispatcher.ts:594`
+(`notInArray(agents.status, ["paused","terminated"])`), `triggers.ts:74`, and all
+four sweeps. So the install succeeds, the UI shows a crew, and **nothing ever
+runs**. This is worse than degrading to legacy, because it looks correct.
+
+**F2 — wrong adapter.** All 9 declare `aoa.adapterType: "process"` with no
+`adapterConfig`. The legacy seeder resolves the company's actual CLI via
+`resolveCrewAdapterForCompany` (`seed-crew-agent.ts:93`). **No marketplace path
+calls it**, and T2.2's gate suppresses the `ensure-*` seeders once a company is
+marketplace-managed — so nothing ever corrects it.
+
+### Decision: fix server-side, not in the catalog (locked 2026-07-24)
+
+The implementer correctly flagged this as a product call. Resolving it:
+
+1. **The catalog physically cannot express the right value.** `agent.v1`'s
+   `install.defaultStatus` enum is `active | paused | terminated` — there is no
+   `idle`. Catalog-declared parity would require widening the schema in **both**
+   repos before this blocker could be fixed at all.
+2. **F2 is unknowable to the catalog by construction.** Which CLI a crew agent
+   should use is *per-company runtime state* (`resolveCrewAdapterForCompany`).
+   No published artifact can carry it.
+3. **Precedent is already set in this plan.** T2.5's "Why" states that whether an
+   agent is essential to AoA is *"an AoA fact, not catalog metadata"*. How a crew
+   agent must be configured in order to run is the same kind of fact.
+4. It avoids gating a live blocker behind T2.4's external-repo publish + sign-off.
+
+So: **for `kind === "aoa"` installs, the server applies crew defaults** — status
+and adapter resolved the same way the legacy seeder resolves them — overriding
+catalog values that cannot express the truth. Catalog `install` hints may still
+be honoured for non-crew (`kind: "org"`) agents.
+
+**Files:** `server/src/services/marketplace-install/agent-runtime.ts`
+(`normalizeStatus`, adapter normalization), `agent-create.ts`,
+`team-installer.ts` (crew install path), `crew-repair.ts` (adoption must not
+re-break a working crew).
+
+- [ ] **Step 1: Failing test — a marketplace-installed crew agent is dispatchable.**
+  **Discriminator:** assert the agent is actually *selected* by the real
+  dispatcher/trigger query (`dispatcher.ts:594` / `triggers.ts:74`), not merely
+  that `status !== "paused"`. A status-string assertion would pass a fix that
+  still fails the real predicate.
+- [ ] **Step 2: Failing test — the installed crew agent carries the company's
+  resolved crew adapter**, matching what `resolveCrewAdapterForCompany` produces
+  for that company, not `"process"`.
+- [ ] **Step 3: Run → FAIL.**
+- [ ] **Step 4: Implement** the crew-aware server-side defaults. Apply on the
+  **install** path AND check the **adoption** path (`crew-repair.ts`) — adoption
+  is pointer-only today, so a legacy row keeps its working `idle`/CLI values;
+  make sure this change does not alter that, and that a repaired company and a
+  freshly-created one converge on the same runnable state.
+- [ ] **Step 5: Run → PASS.** Then re-run the T2.3d end-to-end bootstrap test and
+  confirm the crew is both marketplace-managed **and** dispatchable — that
+  conjunction is the phase's real exit criterion.
+- [ ] **Step 6: Verify + commit.**
+```bash
+git commit -m "fix(marketplace): install crew agents in a runnable state (status + resolved adapter)"
+```
+
+### Deferred from the same audit (F3-F5, not blockers)
+
+- **F3** `install.defaultRole: "engineering"` is not in `AGENT_ROLES`
+  (`cxo|lead|general`) — warn-and-fall-back to `general`. Affects the two
+  non-crew published agents only.
+- **F4** `adapterCompatibility.requiresInstructionsBundle` / `.requiresSkillInjection`
+  are parsed and have **no reader** anywhere in `server/` or `packages/`.
+- **F5** `team.json` has **no runtime validation at all** — unchecked
+  `JSON.parse(...) as TeamTemplateBody` (`team-installer.ts:172-174`). Within it,
+  `manifest.installOrder` and `manifest.adapterCompatibility` are stored into
+  `teams.manifest` and never read (order comes from `agents[]`, lead = first),
+  and `agents[].overrides` is declared and never read. No live divergence today
+  because the published `installOrder` happens to match `agents[]` — an
+  unenforced coupling. **Note this interacts with T2.3b's F4 finding** (a
+  `team.json` shipping `"agents": []` would commit a witness with zero agents).
 
 ---
 
