@@ -7,7 +7,12 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Db } from "@armyofagents/db";
 import type { HumanQuestionRuntimeCapabilities } from "@armyofagents/adapter-utils";
-import { mergeExternalMcpServers, type McpServerSpec } from "@armyofagents/adapter-utils";
+import {
+  mergeExternalMcpServers,
+  withSynthesizedBearerHeader,
+  aoaSecretPlaceholderFor,
+  type McpServerSpec,
+} from "@armyofagents/adapter-utils";
 import type { AgentTool } from "./types.js";
 import type { AgentStreamChunk, ChatInput } from "./agent-loop.js";
 import { createCLISessionStore } from "./cli-session-store.js";
@@ -230,7 +235,27 @@ export function buildMcpConfig(params: McpConfigParams): McpConfig {
   // connector named `__proto__` an own key instead of the map's prototype.
   const mcpServers = mergeExternalMcpServers(reserved, params.extraMcpServers ?? {}, (spec) =>
     spec.kind === "http"
-      ? { type: "http" as const, url: spec.url, headers: spec.headers }
+      ? {
+          type: "http" as const,
+          url: spec.url,
+          // FU-21: claude expands `${VAR}` inside `--mcp-config` headers
+          // (verified live against the CLI in Plan 2b), so a credentialed
+          // connector whose headerTemplate never references its token gets the
+          // conventional bearer header synthesised here. Dropping
+          // `authTokenEnvVar` — as this writer used to — emitted
+          // `{"Authorization": ""}` for every catalog install (D5 seeds template
+          // KEYS with empty values) and the agent authenticated as no-one,
+          // silently, on the DEFAULT adapter. Same rule as the opencode and
+          // gemini writers, from one shared definition.
+          // SECRETS: this writes the `${AOA_MCP_*_TOKEN}` PLACEHOLDER. The real
+          // value reaches the CLI only through the spawn env (D5) and must never
+          // be written into this file.
+          headers: withSynthesizedBearerHeader(
+            spec.headers,
+            spec.authTokenEnvVar,
+            aoaSecretPlaceholderFor,
+          ),
+        }
       : { command: spec.command, args: spec.args, env: spec.env },
   );
 

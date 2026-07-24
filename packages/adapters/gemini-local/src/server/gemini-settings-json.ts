@@ -10,6 +10,7 @@ import {
   tryResolveMcpManagedManifestPath,
   sweepAoaManagedEntries,
   tryWriteAoaManagedServerNames,
+  withSynthesizedBearerHeader,
   type McpServerSpec,
   type McpWriterResult,
   type McpWriterSkip,
@@ -83,20 +84,19 @@ type GeminiMcpEntry =
  */
 function toGeminiEntry(spec: McpServerSpec): GeminiMcpEntry {
   if (isHttpServerSpec(spec)) {
-    const headers: Record<string, string> = Object.create(null);
-    for (const [key, value] of Object.entries(spec.headers ?? {})) headers[key] = value;
     // I3: a connector can have a secret and an EMPTY headerTemplate — the API
     // defaults it to `{}` and never requires a `${TOKEN}` reference, so this is
     // creatable straight from the UI. codex is fine (it consumes
     // `authTokenEnvVar` directly), but here an empty map would emit a remote
     // server with NO auth and no skip: it authenticates as no-one, silently.
-    // Synthesize the conventional bearer header instead.
-    const authVar = spec.authTokenEnvVar;
-    if (typeof authVar === "string" && authVar.length > 0) {
-      const placeholder = `\${${authVar}}`;
-      const referenced = Object.values(headers).some((v) => v.includes(placeholder));
-      if (!referenced) headers.Authorization = `Bearer ${placeholder}`;
-    }
+    // gemini's native interpolation syntax IS `${VAR}` — the same form the specs
+    // already carry — so the shared helper renders the token ref verbatim; there
+    // is nothing else to translate (verified live, Plan 2b B2N9).
+    const headers = withSynthesizedBearerHeader(
+      spec.headers,
+      spec.authTokenEnvVar,
+      (varName) => `\${${varName}}`,
+    );
     return { httpUrl: spec.url, headers };
   }
   const stdio = spec as Extract<McpServerSpec, { kind: "stdio" }>;

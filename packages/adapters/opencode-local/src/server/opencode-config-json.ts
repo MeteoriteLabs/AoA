@@ -10,6 +10,7 @@ import {
   tryResolveMcpManagedManifestPath,
   sweepAoaManagedEntries,
   tryWriteAoaManagedServerNames,
+  withSynthesizedBearerHeader,
   type McpServerSpec,
   type McpWriterResult,
   type McpWriterSkip,
@@ -124,18 +125,19 @@ function rewriteValues(map: Record<string, string>): Record<string, string> {
 /** Render ONE external connector as an opencode `mcp.<name>` entry. */
 function toOpenCodeEntry(spec: McpServerSpec): OpenCodeMcpEntry {
   if (isHttpServerSpec(spec)) {
-    const headers = rewriteValues(spec.headers ?? {});
     // I3: a connector can have a secret and an EMPTY headerTemplate — the API
     // defaults it to `{}` and never requires a `${TOKEN}` reference, so this is
     // creatable straight from the UI. codex is fine (it consumes
     // `authTokenEnvVar` directly), but here an empty map would emit a remote
     // server with NO auth and no skip: it authenticates as no-one, silently.
-    // Synthesize the conventional bearer header instead.
-    const authVar = spec.authTokenEnvVar;
-    if (typeof authVar === "string" && authVar.length > 0) {
-      const referenced = Object.values(headers).some((v) => v.includes(`{env:${authVar}}`));
-      if (!referenced) headers.Authorization = `Bearer {env:${authVar}}`;
-    }
+    // The shared helper synthesises the conventional bearer header in opencode's
+    // `{env:VAR}` syntax — headers are pre-rewritten so the "already referenced"
+    // check compares against that same form.
+    const headers = withSynthesizedBearerHeader(
+      rewriteValues(spec.headers ?? {}),
+      spec.authTokenEnvVar,
+      (varName) => `{env:${varName}}`,
+    );
     return {
       type: "remote",
       url: spec.url,

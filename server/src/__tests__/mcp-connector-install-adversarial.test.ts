@@ -1485,7 +1485,9 @@ describe("[ESC-5] the claude .mcp.json writer discards the credential signal", (
     expect(specs.notion).toMatchObject({ authTokenEnvVar: "AOA_MCP_NOTION_TOKEN" });
   });
 
-  it("CHARACTERIZATION: buildMcpConfig drops it, emitting an empty Authorization header", () => {
+  // FIXED (FU-21): buildMcpConfig now REWRITES the empty-valued Authorization
+  // header to reference the token env var, rather than dropping the signal.
+  it("[ESC-5] FIXED: buildMcpConfig overwrites the empty Authorization with the token reference", () => {
     const config = buildMcpConfig({
       ...params,
       extraMcpServers: { notion: httpSpecWithToken } as never,
@@ -1493,12 +1495,13 @@ describe("[ESC-5] the claude .mcp.json writer discards the credential signal", (
     expect(config.mcpServers.notion).toEqual({
       type: "http",
       url: "https://mcp.notion.example/mcp",
-      headers: { Authorization: "" },
+      headers: { Authorization: "Bearer ${AOA_MCP_NOTION_TOKEN}" },
     });
-    expect(JSON.stringify(config.mcpServers.notion)).not.toContain("AOA_MCP_NOTION_TOKEN");
   });
 
-  it("CHARACTERIZATION: an empty headers map is emitted unauthenticated with no skip channel at all", () => {
+  // FIXED (FU-21): an EMPTY headerTemplate + a bound secret now synthesises the
+  // conventional bearer header instead of an unauthenticated remote server.
+  it("[ESC-5] FIXED: an empty headers map gains the synthesised bearer header", () => {
     const config = buildMcpConfig({
       ...params,
       extraMcpServers: { acme: { ...httpSpecWithToken, headers: {} } } as never,
@@ -1506,14 +1509,13 @@ describe("[ESC-5] the claude .mcp.json writer discards the credential signal", (
     expect(config.mcpServers.acme).toEqual({
       type: "http",
       url: "https://mcp.notion.example/mcp",
-      headers: {},
+      headers: { Authorization: "Bearer ${AOA_MCP_NOTION_TOKEN}" },
     });
-    // buildMcpConfig has no `skipped` return at all, so nothing can report this.
     expect(Object.keys(config)).toEqual(["mcpServers"]);
   });
 
   // DESIRED STATE (commitment I3, already implemented for codex/opencode/gemini).
-  it.fails("[ESC-5] DESIRED: claude synthesises the conventional bearer header from authTokenEnvVar", () => {
+  it("[ESC-5] DESIRED: claude synthesises the conventional bearer header from authTokenEnvVar", () => {
     const config = buildMcpConfig({
       ...params,
       extraMcpServers: { notion: httpSpecWithToken } as never,
@@ -1523,7 +1525,7 @@ describe("[ESC-5] the claude .mcp.json writer discards the credential signal", (
     });
   });
 
-  it.fails("[ESC-5] DESIRED: an empty-string header value is never emitted", () => {
+  it("[ESC-5] DESIRED: an empty-string header value is never emitted", () => {
     const config = buildMcpConfig({
       ...params,
       extraMcpServers: { notion: httpSpecWithToken } as never,

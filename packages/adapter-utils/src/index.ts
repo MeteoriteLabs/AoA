@@ -159,6 +159,7 @@ export {
   aoaSecretPlaceholderVars,
   aoaSecretPlaceholderFor,
   stdioSpecCarriesSecretPlaceholder,
+  withSynthesizedBearerHeader,
 } from "./mcp-server-spec.js";
 export type {
   McpServerSpec,

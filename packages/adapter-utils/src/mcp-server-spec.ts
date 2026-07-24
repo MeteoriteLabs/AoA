@@ -170,6 +170,57 @@ export function aoaSecretPlaceholderFor(varName: string): string {
 }
 
 /**
+ * Env var names this module will reference from a config file. Deliberately the
+ * POSIX-portable charset: `authTokenEnvVar` is always produced by
+ * `envVarNameFor` (server) and therefore already conforms, but a writer must
+ * never splice an unvalidated runtime string into a config it emits.
+ */
+const SAFE_ENV_VAR_NAME = /^[A-Za-z0-9_]+$/;
+
+/**
+ * I3 — SINGLE DEFINITION of the "credentialed HTTP connector with no header
+ * that references its token" rule, shared by every writer whose CLI expands a
+ * placeholder inline (claude `${VAR}`, gemini `${VAR}`, opencode `{env:VAR}`).
+ *
+ * A connector can have a secret and an EMPTY (or empty-valued) `headerTemplate`:
+ * a catalog install seeds template KEYS with empty values (D5) and the API never
+ * requires a `${TOKEN}` reference, so this is reachable straight from the UI.
+ * Without this synthesis the writer emits a remote server with NO usable auth
+ * and no skip — it authenticates as no-one, silently, which is the worst failure
+ * mode for a security-adjacent feature. codex does not use this helper: it
+ * cannot expand anything inline and consumes `authTokenEnvVar` directly via
+ * `bearer_token_env_var`.
+ *
+ * SECRETS: `renderTokenRef` must render a REFERENCE to the env var (a
+ * placeholder the CLI expands at spawn time), never a value. The real
+ * credential lives only in the process env (D5) and must never reach a config
+ * file on disk.
+ *
+ * Returns a NEW null-prototype map: header names are untrusted runtime strings,
+ * and a header literally named `__proto__` assigned onto a `{}` would hit
+ * `Object.prototype`'s setter and vanish.
+ */
+export function withSynthesizedBearerHeader(
+  headers: Record<string, string> | undefined,
+  authTokenEnvVar: string | undefined,
+  renderTokenRef: (varName: string) => string,
+): Record<string, string> {
+  const out: Record<string, string> = Object.create(null);
+  for (const [key, value] of Object.entries(headers ?? {})) out[key] = value;
+
+  if (typeof authTokenEnvVar !== "string" || !SAFE_ENV_VAR_NAME.test(authTokenEnvVar)) return out;
+
+  const ref = renderTokenRef(authTokenEnvVar);
+  // Already referenced somewhere (any header, any position) — the founder's own
+  // template wins; do not add a second, competing credential header.
+  const referenced = Object.values(out).some(
+    (value) => typeof value === "string" && value.includes(ref),
+  );
+  if (!referenced) out.Authorization = `Bearer ${ref}`;
+  return out;
+}
+
+/**
  * True when a stdio connector HAS a secret AND that secret is delivered by
  * placeholder expansion in `args`/`env`.
  *
