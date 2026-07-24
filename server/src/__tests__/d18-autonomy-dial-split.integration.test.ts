@@ -53,6 +53,28 @@ let pg: EmbeddedPostgresInstance | null = null;
 let dataDir = "";
 let db: Db;
 let setupError: unknown = null;
+let setupFailed = false;
+
+/**
+ * Fail LOUDLY and ONCE when embedded-postgres never came up.
+ *
+ * `setupError = err` alone is not a guard: embedded-postgres can reject with
+ * `undefined`, which is falsy, so the old `if (setupError) throw` silently
+ * no-oped and every case then ran against an unassigned `db` — a wall of
+ * `Cannot read properties of undefined (reading 'insert')` pointing into
+ * product code, which reads as a product bug rather than a setup failure.
+ * A boolean cannot be falsy-by-accident, and the `db` check covers a throw
+ * that happens to leave `setupError` null.
+ */
+function assertSetupOk(): void {
+  const dbReady = (db as Db | undefined) !== undefined;
+  if (!setupFailed && dbReady) return;
+  throw new Error(
+    `embedded-postgres setup failed (see the console.error above): ${
+      setupError instanceof Error ? setupError.message : String(setupError)
+    }`,
+  );
+}
 
 // Offset from the W1a (59100) / W1b (59600) ranges to avoid port collisions.
 const PORT = 60100 + Math.floor(Math.random() * 300);
@@ -193,6 +215,7 @@ beforeAll(async () => {
     db = createDb(connectionString);
   } catch (err) {
     setupError = err;
+    setupFailed = true;
     // eslint-disable-next-line no-console
     console.error("[d18-dial-split] embedded-postgres setup failed:", err);
   }
@@ -215,7 +238,7 @@ describe.skipIf(
   process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRATION !== "1",
 )("D18 integration — crew and Commander autonomy are independently dialable", () => {
   it("migration 0183 created a SECOND physical column (not an alias)", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
 
     const cols = rowsOf(
       await db.execute(sql`
@@ -239,7 +262,7 @@ describe.skipIf(
   });
 
   it("a fresh company gets Assist (1) on BOTH dials — Phase 1's default flip preserved", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
 
     const { companyId } = await seedCompanyAndAgent("Defaults");
     const [row] = rowsOf(
@@ -255,7 +278,7 @@ describe.skipIf(
   });
 
   it("writing one dial does not move the other (both directions)", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
 
     const { companyId } = await seedCompanyAndAgent("Storage");
 
@@ -292,7 +315,7 @@ describe.skipIf(
   // ── Case A — Commander Drive, crew Manual → the crew flow must stay Manual ──
 
   it("Commander=Drive + crew=Manual: the scope gate stays Manual (no tasks created)", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
 
     const { companyId, agentId } = await seedCompanyAndAgent("CaseA");
     const threadId = await seedThread(companyId);
@@ -334,7 +357,7 @@ describe.skipIf(
   // ── Case B — Commander Manual, crew Drive → the crew flow must run at Drive ──
 
   it("Commander=Manual + crew=Drive: the scope gate runs at Drive (task + wakeup)", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
 
     const { companyId, agentId } = await seedCompanyAndAgent("CaseB");
     const threadId = await seedThread(companyId);
@@ -381,7 +404,7 @@ describe.skipIf(
   // ── The per-thread override still outranks the company crew dial ────────────
 
   it("a per-thread override still wins over the company crew dial", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
 
     const { companyId, agentId } = await seedCompanyAndAgent("Override");
     const threadId = await seedThread(companyId);

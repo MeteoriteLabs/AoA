@@ -62,6 +62,28 @@ let dataDir = "";
 let runLogDir = "";
 let db: Db;
 let setupError: unknown = null;
+let setupFailed = false;
+
+/**
+ * Fail LOUDLY and ONCE when embedded-postgres never came up.
+ *
+ * `setupError = err` alone is not a guard: embedded-postgres can reject with
+ * `undefined`, which is falsy, so the old `if (setupError) throw` silently
+ * no-oped and every case then ran against an unassigned `db` — a wall of
+ * `Cannot read properties of undefined (reading 'insert')` pointing into
+ * product code, which reads as a product bug rather than a setup failure.
+ * A boolean cannot be falsy-by-accident, and the `db` check covers a throw
+ * that happens to leave `setupError` null.
+ */
+function assertSetupOk(): void {
+  const dbReady = (db as Db | undefined) !== undefined;
+  if (!setupFailed && dbReady) return;
+  throw new Error(
+    `embedded-postgres setup failed (see the console.error above): ${
+      setupError instanceof Error ? setupError.message : String(setupError)
+    }`,
+  );
+}
 
 const PORT = 61600 + Math.floor(Math.random() * 400);
 
@@ -141,6 +163,7 @@ beforeAll(async () => {
     db = createDb(connectionString);
   } catch (err) {
     setupError = err;
+    setupFailed = true;
     // eslint-disable-next-line no-console
     console.error("[crew-run-log-pointer] embedded-postgres setup failed:", err);
   }
@@ -164,7 +187,7 @@ describe.skipIf(
   process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRATION !== "1",
 )("crew run-log pointer (real PostgreSQL)", () => {
   it("migration 0179 gives internal_agent_runs nullable text log_store/log_ref", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
 
     const columns = rowsOf(
       await db.execute(sql`
@@ -188,7 +211,7 @@ describe.skipIf(
   });
 
   it("persists the handle runLogStore.begin() mints, so the transcript is findable by run id", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
 
     const { companyId, agentId } = await seedCompanyAndCrewAgent("roundtrip");
     const runId = await seedRun(companyId, agentId);
@@ -224,7 +247,7 @@ describe.skipIf(
   });
 
   it("leaves a run that never opened a transcript insertable with both columns NULL", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
 
     const { companyId, agentId } = await seedCompanyAndCrewAgent("no-transcript");
     // The fake-crew / early-bail case: the run row exists, nothing was streamed.

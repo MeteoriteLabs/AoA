@@ -325,13 +325,20 @@ describe("CommanderSection", () => {
     expect(screen.queryByText("Execution Mode")).not.toBeInTheDocument();
   });
 
-  it("Commander autonomy is read-only (its gating is the runtime-approval policy)", async () => {
+  it("shows Commander no autonomy level at all — not a hard-coded one", async () => {
     renderWithProviders(<CommanderSection />);
     await waitFor(() => {
-      expect(screen.getByText("Commander autonomy")).toBeInTheDocument();
+      expect(
+        screen.getByText(/Commander asks before every governed action/),
+      ).toBeInTheDocument();
     });
-    const autonomySelect = screen.getByText("Level 0 — Full Approval");
-    expect(autonomySelect.closest("button")).toBeDisabled();
+    // The old control was a hard-coded `<Select value="0">` that ignored
+    // `config.autonomyLevel`. That column defaults to 1 and round-trips through
+    // portability bundles, so the label could contradict storage. There is no
+    // level to show (Decision #109 addendum §12), so none is shown.
+    expect(screen.queryByText(/Level 0/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Full Approval/)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Commander autonomy")).not.toBeInTheDocument();
   });
 
   // D18 dial-split discriminator: the founder-settable agent dial must render the

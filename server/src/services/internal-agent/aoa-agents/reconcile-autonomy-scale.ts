@@ -31,42 +31,52 @@ import { discussions, internalAgentConfig } from "@armyofagents/db";
  * backfills it verbatim from `autonomy_level` — a legacy row holding 3 lands a
  * 3 in the new column too, so both need the same clamp.
  *
+ * All three statements run in ONE transaction, so the two config dials cannot
+ * end up half-clamped (one column at 2, the other left at a legacy 3) if a
+ * statement fails midway. The practical impact of that was nil — the predicates
+ * are independent and idempotent, every consumer compares `>= 1` / `>= 2` /
+ * `=== 0` so an out-of-range value behaves identically, and the next boot would
+ * self-heal — but the transaction makes this docblock's "clamps both columns"
+ * claim literally true rather than true-in-practice.
+ *
  * Safe to call on every startup — only touches rows above the canonical range.
  * Idempotent: a second run matches 0 rows and returns all-zero counts.
  */
 export async function reconcileAutonomyScale(
   db: Db,
 ): Promise<{ discussionsUpdated: number; configUpdated: number; crewConfigUpdated: number }> {
-  const discussionsResult = await db
-    .update(discussions)
-    .set({
-      autonomyLevel: 2,
-      updatedAt: new Date(),
-    })
-    .where(gt(discussions.autonomyLevel, 2));
+  return db.transaction(async (tx) => {
+    const discussionsResult = await tx
+      .update(discussions)
+      .set({
+        autonomyLevel: 2,
+        updatedAt: new Date(),
+      })
+      .where(gt(discussions.autonomyLevel, 2));
 
-  const configResult = await db
-    .update(internalAgentConfig)
-    .set({
-      autonomyLevel: 2,
-      updatedAt: new Date(),
-    })
-    .where(gt(internalAgentConfig.autonomyLevel, 2));
+    const configResult = await tx
+      .update(internalAgentConfig)
+      .set({
+        autonomyLevel: 2,
+        updatedAt: new Date(),
+      })
+      .where(gt(internalAgentConfig.autonomyLevel, 2));
 
-  const crewConfigResult = await db
-    .update(internalAgentConfig)
-    .set({
-      crewAutonomyLevel: 2,
-      updatedAt: new Date(),
-    })
-    .where(gt(internalAgentConfig.crewAutonomyLevel, 2));
+    const crewConfigResult = await tx
+      .update(internalAgentConfig)
+      .set({
+        crewAutonomyLevel: 2,
+        updatedAt: new Date(),
+      })
+      .where(gt(internalAgentConfig.crewAutonomyLevel, 2));
 
-  const discussionsUpdated =
-    (discussionsResult as unknown as { rowCount?: number | null }).rowCount ?? 0;
-  const configUpdated =
-    (configResult as unknown as { rowCount?: number | null }).rowCount ?? 0;
-  const crewConfigUpdated =
-    (crewConfigResult as unknown as { rowCount?: number | null }).rowCount ?? 0;
+    const discussionsUpdated =
+      (discussionsResult as unknown as { rowCount?: number | null }).rowCount ?? 0;
+    const configUpdated =
+      (configResult as unknown as { rowCount?: number | null }).rowCount ?? 0;
+    const crewConfigUpdated =
+      (crewConfigResult as unknown as { rowCount?: number | null }).rowCount ?? 0;
 
-  return { discussionsUpdated, configUpdated, crewConfigUpdated };
+    return { discussionsUpdated, configUpdated, crewConfigUpdated };
+  });
 }

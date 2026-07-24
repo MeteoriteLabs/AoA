@@ -52,6 +52,28 @@ let pg: EmbeddedPostgresInstance | null = null;
 let dataDir = "";
 let db: Db;
 let setupError: unknown = null;
+let setupFailed = false;
+
+/**
+ * Fail LOUDLY and ONCE when embedded-postgres never came up.
+ *
+ * `setupError = err` alone is not a guard: embedded-postgres can reject with
+ * `undefined`, which is falsy, so the old `if (setupError) throw` silently
+ * no-oped and every case then ran against an unassigned `db` — a wall of
+ * `Cannot read properties of undefined (reading 'insert')` pointing into
+ * product code, which reads as a product bug rather than a setup failure.
+ * A boolean cannot be falsy-by-accident, and the `db` check covers a throw
+ * that happens to leave `setupError` null.
+ */
+function assertSetupOk(): void {
+  const dbReady = (db as Db | undefined) !== undefined;
+  if (!setupFailed && dbReady) return;
+  throw new Error(
+    `embedded-postgres setup failed (see the console.error above): ${
+      setupError instanceof Error ? setupError.message : String(setupError)
+    }`,
+  );
+}
 
 const PORT = 57300 + Math.floor(Math.random() * 500);
 
@@ -93,6 +115,7 @@ beforeAll(async () => {
     db = createDb(connectionString);
   } catch (err) {
     setupError = err;
+    setupFailed = true;
     // eslint-disable-next-line no-console
     console.error("[teams-null-parent-cascade] embedded-postgres setup failed:", err);
   }
@@ -115,7 +138,7 @@ describe.skipIf(
   process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRATION !== "1",
 )("teams.parent_project_id nullability + cascade (real PostgreSQL)", () => {
   it("teams.parent_project_id is nullable and still ON DELETE CASCADE", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
 
     const columns = rowsOf<{ is_nullable: string }>(
       await db.execute(sql`
@@ -152,7 +175,7 @@ describe.skipIf(
   });
 
   it("deleting a department cascades its departmental team but NOT a company-wide team", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
 
     const companyId = randomUUID();
     const deptId = randomUUID();

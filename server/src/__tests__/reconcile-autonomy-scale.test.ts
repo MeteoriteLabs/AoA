@@ -30,18 +30,21 @@ function makeReconcileDb(
     makeChain(crewConfigRowCount),
   ];
 
-  const db = {
+  const db: Record<string, unknown> = {
     update: vi.fn().mockImplementation(() => {
       const chain = chains[callCount++ % chains.length];
       return { set: vi.fn().mockReturnValue(chain.setProxy) };
     }),
   };
+  // The three clamps run inside ONE db.transaction(...) — the mock hands the
+  // callback the same object so the update chains above still drive the test.
+  db.transaction = vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(db));
 
   return { db };
 }
 
 describe("reconcileAutonomyScale", () => {
-  it("calls db.update() three times (discussions + both config dials) and returns every row count", async () => {
+  it("runs all three clamps inside ONE transaction and returns every row count", async () => {
     const { db } = makeReconcileDb(3, 1, 4);
 
     const { reconcileAutonomyScale } = await import(
@@ -51,6 +54,8 @@ describe("reconcileAutonomyScale", () => {
     const result = await reconcileAutonomyScale(db as any);
 
     expect(db.update).toHaveBeenCalledTimes(3);
+    // F6: the two config dials must not be able to end up half-clamped.
+    expect(db.transaction).toHaveBeenCalledTimes(1);
     expect(result).toEqual({
       discussionsUpdated: 3,
       configUpdated: 1,
@@ -96,6 +101,7 @@ describe("reconcileAutonomyScale", () => {
       };
       return updateProxy;
     });
+    db.transaction = vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(db));
 
     const { reconcileAutonomyScale } = await import(
       "../services/internal-agent/aoa-agents/reconcile-autonomy-scale.js"

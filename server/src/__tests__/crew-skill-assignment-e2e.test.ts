@@ -63,6 +63,28 @@ let pg: EmbeddedPostgresInstance | null = null;
 let dataDir = "";
 let db: Db;
 let setupError: unknown = null;
+let setupFailed = false;
+
+/**
+ * Fail LOUDLY and ONCE when embedded-postgres never came up.
+ *
+ * `setupError = err` alone is not a guard: embedded-postgres can reject with
+ * `undefined`, which is falsy, so the old `if (setupError) throw` silently
+ * no-oped and every case then ran against an unassigned `db` — a wall of
+ * `Cannot read properties of undefined (reading 'insert')` pointing into
+ * product code, which reads as a product bug rather than a setup failure.
+ * A boolean cannot be falsy-by-accident, and the `db` check covers a throw
+ * that happens to leave `setupError` null.
+ */
+function assertSetupOk(): void {
+  const dbReady = (db as Db | undefined) !== undefined;
+  if (!setupFailed && dbReady) return;
+  throw new Error(
+    `embedded-postgres setup failed (see the console.error above): ${
+      setupError instanceof Error ? setupError.message : String(setupError)
+    }`,
+  );
+}
 
 const PORT = 62100 + Math.floor(Math.random() * 400);
 
@@ -184,6 +206,7 @@ beforeAll(async () => {
     await seedInstalledSkill(SKILL_B_KEY, "code-review", "Code Review");
   } catch (err) {
     setupError = err;
+    setupFailed = true;
     // eslint-disable-next-line no-console
     console.error("[crew-skill-assignment-e2e] embedded-postgres setup failed:", err);
   }
@@ -206,7 +229,7 @@ describe.skipIf(
   process.platform === "win32" && process.env.AOA_RUN_WIN_INTEGRATION !== "1",
 )("crew founder-assigned skill loop: assign -> deliver -> enforce -> revoke (real PostgreSQL)", () => {
   it("baseline (D17): with NO skill attached, delivery is empty and use_skill denies the installed skill", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
     const svc = companySkillService(db);
 
     // Delivery sees nothing — the agent ships with no default skills.
@@ -221,7 +244,7 @@ describe.skipIf(
   });
 
   it("ASSIGN: attaching a skill via the real PATCH route returns 200 and persists the row", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
 
     const res = await request(makeApp())
       .patch(`/api/agents/${crewAgentId}`)
@@ -238,7 +261,7 @@ describe.skipIf(
   });
 
   it("ASSIGN (slug form): attaching by SLUG persists the CANONICAL key AND survives deliver+enforce", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
 
     // The blind spot: the route advertises id/slug/normalizable ref forms as valid,
     // but a store-raw bug meant a non-canonical attach validated 200 yet was stored
@@ -268,7 +291,7 @@ describe.skipIf(
   });
 
   it("ASSIGN (validation): an unknown skill key is rejected 422 and does NOT change the row", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
 
     const res = await request(makeApp())
       .patch(`/api/agents/${crewAgentId}`)
@@ -284,7 +307,7 @@ describe.skipIf(
   });
 
   it("DELIVER (T6): listRuntimeSkillEntries returns exactly the attached skill", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
     const entries = await companySkillService(db).listRuntimeSkillEntries(companyId, crewAgentId);
     expect(entries.map((e) => e.key)).toEqual([SKILL_A_KEY]);
     expect(entries).toHaveLength(1);
@@ -292,14 +315,14 @@ describe.skipIf(
   });
 
   it("ENFORCE allow (T9): use_skill succeeds for the attached skill", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
     const res = await useSkillTool.execute({ key: SKILL_A_KEY }, crewCtx(crewAgentId));
     expect(res.success).toBe(true);
     expect((res.data as { key: string }).key).toBe(SKILL_A_KEY);
   });
 
   it("ENFORCE deny (T9): a DIFFERENT installed-but-unattached skill returns NOT_ENABLED, not NOT_FOUND", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
     // SKILL_B is genuinely installed (seeded above) — so a denial can only be the
     // allowlist. This is the discriminator: if SKILL_B didn't exist, NOT_FOUND would
     // masquerade as enforcement and prove nothing.
@@ -310,7 +333,7 @@ describe.skipIf(
   });
 
   it("REVOKE: clearing skillKeys via the route stops delivery AND re-denies the SAME key that just worked", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
 
     const res = await request(makeApp())
       .patch(`/api/agents/${crewAgentId}`)

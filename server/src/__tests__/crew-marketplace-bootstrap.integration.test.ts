@@ -87,6 +87,28 @@ let pg: EmbeddedPostgresInstance | null = null;
 let dataDir = "";
 let db: Db;
 let setupError: unknown = null;
+let setupFailed = false;
+
+/**
+ * Fail LOUDLY and ONCE when embedded-postgres never came up.
+ *
+ * `setupError = err` alone is not a guard: embedded-postgres can reject with
+ * `undefined`, which is falsy, so the old `if (setupError) throw` silently
+ * no-oped and every case then ran against an unassigned `db` — a wall of
+ * `Cannot read properties of undefined (reading 'insert')` pointing into
+ * product code, which reads as a product bug rather than a setup failure.
+ * A boolean cannot be falsy-by-accident, and the `db` check covers a throw
+ * that happens to leave `setupError` null.
+ */
+function assertSetupOk(): void {
+  const dbReady = (db as Db | undefined) !== undefined;
+  if (!setupFailed && dbReady) return;
+  throw new Error(
+    `embedded-postgres setup failed (see the console.error above): ${
+      setupError instanceof Error ? setupError.message : String(setupError)
+    }`,
+  );
+}
 
 const PORT = 57900 + Math.floor(Math.random() * 500);
 
@@ -389,6 +411,7 @@ beforeAll(async () => {
     installFixtureFetch();
   } catch (err) {
     setupError = err;
+    setupFailed = true;
     // eslint-disable-next-line no-console
     console.error("[crew-marketplace-bootstrap] embedded-postgres setup failed:", err);
   }
@@ -440,7 +463,7 @@ describe.skipIf(
   // against the pre-T2.3 create path: template_origin was NULL, there was no
   // teams row, and no install operation existed.
   it("a newly created company gets a marketplace-managed crew, not @legacy", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
     await clearCatalogCache();
 
     // R9: this is the one test where the CDN genuinely ANSWERS — every other
@@ -525,7 +548,7 @@ describe.skipIf(
   // catalog index, the team.json roster (2 of the 9 published agents) and the
   // skill bundles remain fixtures, so this proves the contract, not the CDN.
   it("T2.3d: the published agent bodies install — `enabled` and all", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
     await clearCatalogCache();
 
     publishedAgentBodies = true;
@@ -638,7 +661,7 @@ describe.skipIf(
   // re-implementation cannot pass; T2.3b used the same approach for the repair
   // path, and this is the create path it left behind.
   it("writes skill rows identical to the real installer, bundle and all", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
     await clearCatalogCache();
 
     const service = makeService({ snapshot: FIXTURE_CATALOG });
@@ -709,7 +732,7 @@ describe.skipIf(
 
   // ── Hazard 3: offline bootstrap, snapshot INJECTED not read from disk ──────
   it("offline (CDN unreachable): the bundled snapshot supplies the same roster", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
     await clearCatalogCache();
 
     const service = makeService({ snapshot: FIXTURE_CATALOG });
@@ -734,7 +757,7 @@ describe.skipIf(
   // null and be provisioned `@legacy` — non-deterministically, and invisibly
   // afterwards. Company create must not depend on winning that race.
   it("cold cache + a sync still in flight still produces the marketplace roster", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
     await clearCatalogCache();
 
     // Snapshot resolution is deliberately slow so the sync is provably still
@@ -761,7 +784,7 @@ describe.skipIf(
 
   // ── The degrade path ──────────────────────────────────────────────────────
   it("install failure never blocks create — the company still gets a legacy crew", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
     await clearCatalogCache();
 
     const service = makeService({ snapshot: FIXTURE_CATALOG });
@@ -818,7 +841,7 @@ describe.skipIf(
   // This test breaks AFTER the phase-3 commit, which the degrade test above
   // (phase 1c) cannot reach.
   it("a post-commit failure must NOT let the legacy seeders clobber the installed crew", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
     await clearCatalogCache();
 
     const service = makeService({ snapshot: FIXTURE_CATALOG });
@@ -882,7 +905,7 @@ describe.skipIf(
   //
   // Repairing the row to `success` (not claimable) is what closes it.
   it("a repair pass after an averted clobber does not re-install or mint duplicates", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
     await clearCatalogCache();
 
     const service = makeService({ snapshot: FIXTURE_CATALOG });
@@ -945,7 +968,7 @@ describe.skipIf(
   // caller reports "already dispatched", skips the legacy seeders too, and the
   // company has NO crew and no repair path, ever.
   it("a stale `running` operation is reclaimable, so a crashed install is repairable", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
     await clearCatalogCache();
 
     const service = makeService({ snapshot: FIXTURE_CATALOG });
@@ -989,7 +1012,7 @@ describe.skipIf(
 
   // Discriminator for the staleness bound: it must not steal a LIVE install.
   it("a fresh `running` operation is NOT stolen", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
     await clearCatalogCache();
 
     const service = makeService({ snapshot: FIXTURE_CATALOG });
@@ -1018,7 +1041,7 @@ describe.skipIf(
   // teams row with zero members, so the witness reads true forever: no crew
   // agents, legacy seeders permanently suppressed, repair short-circuited.
   it("a team.json declaring no agents is refused, and the company still gets a crew", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
     await clearCatalogCache();
 
     const service = makeService({ snapshot: FIXTURE_CATALOG });
@@ -1043,7 +1066,7 @@ describe.skipIf(
   // than merely abandoning their results — which matters, because an install
   // that landed after we degraded would be exactly the R1 clobber again.
   it("an install that outruns its deadline is aborted, not left running", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
     await clearCatalogCache();
 
     const service = makeService({ snapshot: FIXTURE_CATALOG });
@@ -1078,7 +1101,7 @@ describe.skipIf(
   // Without it the team installer would run again and resolveAgentNameConflict
   // would mint "Scout 2" / "Reviewer 2".
   it("a repeated bootstrap for the same company cannot double-install the crew", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
     await clearCatalogCache();
 
     const service = makeService({ snapshot: FIXTURE_CATALOG });
@@ -1114,7 +1137,7 @@ describe.skipIf(
   // With no service registered and a cold cache, create must degrade
   // immediately rather than reaching for the CDN.
   it("no registered catalog service + cold cache → immediate legacy degrade", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
     await clearCatalogCache();
     registerMarketplaceCatalogService(null);
 

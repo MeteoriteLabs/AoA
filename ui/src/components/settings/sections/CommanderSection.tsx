@@ -971,26 +971,22 @@ function ExecutionTabContent({
       <div className="rounded-md border border-border p-3 space-y-4 max-w-xl">
         <p className="text-xs font-medium text-muted-foreground">Autonomy</p>
 
-        {/* Commander's own dial. Deliberately read-only: Commander's tool gating
-            is the unconditional runtime-approval policy, not this integer, so a
-            writable control here would change nothing. Kept visible so the two
-            dials are obviously separate. */}
+        {/* Commander has NO numeric dial, so we render no number.
+            Its gating is the unconditional runtime-approval policy
+            (`mcp-bridge.ts` → `runtime-approvals.ts`, actorType "commander");
+            nothing reads `internal_agent_config.autonomy_level` at runtime
+            (Decision #109 addendum §12). Any Select here would have to display
+            SOME level, and every level would assert behaviour that does not
+            exist. The previous hard-coded `value="0"` did exactly that: the
+            column defaults to 1 and round-trips through portability bundles, so
+            a founder importing a bundle with 2 was shown "Level 0". */}
         <div>
-          <label className="text-xs text-muted-foreground mb-1 block">
-            Commander autonomy
-          </label>
-          <Select value="0" disabled>
-            <SelectTrigger className="w-full max-w-xs" disabled>
-              <SelectValue>Level 0 — Full Approval</SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="0">Level 0 — Full Approval</SelectItem>
-            </SelectContent>
-          </Select>
-          <p className="text-[11px] text-muted-foreground mt-1">
-            Commander asks before every governed action. This is enforced by the
-            runtime-approval policy above, not by a dial — higher levels are not
-            available yet. It does <strong>not</strong> affect your agents.
+          <p className="text-xs text-muted-foreground mb-1">Commander</p>
+          <p className="text-[11px] text-muted-foreground">
+            Commander asks before every governed action — there is no autonomy
+            level to set. What it may do without asking is governed by the
+            runtime-approval settings above. This does <strong>not</strong>{" "}
+            affect your agents.
           </p>
         </div>
 

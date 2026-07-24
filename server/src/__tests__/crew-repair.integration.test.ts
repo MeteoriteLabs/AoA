@@ -85,6 +85,28 @@ let dataDir = "";
 let homeDir = "";
 let db: Db;
 let setupError: unknown = null;
+let setupFailed = false;
+
+/**
+ * Fail LOUDLY and ONCE when embedded-postgres never came up.
+ *
+ * `setupError = err` alone is not a guard: embedded-postgres can reject with
+ * `undefined`, which is falsy, so the old `if (setupError) throw` silently
+ * no-oped and every case then ran against an unassigned `db` — a wall of
+ * `Cannot read properties of undefined (reading 'insert')` pointing into
+ * product code, which reads as a product bug rather than a setup failure.
+ * A boolean cannot be falsy-by-accident, and the `db` check covers a throw
+ * that happens to leave `setupError` null.
+ */
+function assertSetupOk(): void {
+  const dbReady = (db as Db | undefined) !== undefined;
+  if (!setupFailed && dbReady) return;
+  throw new Error(
+    `embedded-postgres setup failed (see the console.error above): ${
+      setupError instanceof Error ? setupError.message : String(setupError)
+    }`,
+  );
+}
 
 const PORT = 58500 + Math.floor(Math.random() * 400);
 
@@ -505,6 +527,7 @@ beforeAll(async () => {
     installFixtureFetch();
   } catch (err) {
     setupError = err;
+    setupFailed = true;
     // eslint-disable-next-line no-console
     console.error("[crew-repair] embedded-postgres setup failed:", err);
   }
@@ -541,7 +564,7 @@ describe.skipIf(
 )("crew provisioning repair (real PostgreSQL)", () => {
   // ── The task itself ────────────────────────────────────────────────────────
   it("adopts a `@legacy` crew pointer-only, un-freezing it without touching content", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
     const companyId = await createLegacyCompany("Legacy Crew Co");
 
     const before = await crewRows(companyId);
@@ -621,7 +644,7 @@ describe.skipIf(
 
   // ── The content change is the POLICY's decision, not repair's ─────────────
   it("leaves the follow-up content change to agentUpdatePolicy", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
     const companyId = await createLegacyCompany("Policy Co");
     const scout = (await crewRows(companyId)).find((r) => r.name === "Scout")!;
     const founderFile = await seedFounderInstructionBundle(scout, companyId);
@@ -686,7 +709,7 @@ describe.skipIf(
   // cannot tell "no local counterpart" from "adoption failed here", installs a
   // renamed duplicate, and the original row becomes unreachable forever.
   it("writes NOTHING when a name-matched roster member cannot be adopted", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
     const companyId = await createLegacyCompany("Partial Adopt Co");
     await withCatalog();
     const before = await crewRows(companyId);
@@ -704,7 +727,7 @@ describe.skipIf(
   }, 240_000);
 
   it("writes NOTHING when a required skill cannot be installed", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
     const companyId = await createLegacyCompany("Skill Fetch Co");
     await withCatalog();
     brokenUrls.add(`${FIXTURE_HOST}/skills/fixture-fetched-skill/SKILL.md`);
@@ -750,7 +773,7 @@ describe.skipIf(
   // legacy seeder, so `reconcileTeamMembers` installs it through the real
   // marketplace path right beside the adopted legacy rows.
   it("a repaired crew and a freshly installed one converge on the same runnable state", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
     const companyId = await createLegacyCompany("Convergence Co");
     await withCatalog();
 
@@ -807,7 +830,7 @@ describe.skipIf(
   // is computed from member origins alone, which cannot see an unmanaged row of
   // the same name.
   it("reconcileTeamMembers refuses to install over an unmanaged same-named agent", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
     const companyId = await createLegacyCompany("Reconcile Guard Co");
     await withCatalog();
 
@@ -848,7 +871,7 @@ describe.skipIf(
 
   // ── The ablation, kept permanently ────────────────────────────────────────
   it("ABLATION: repairing a legacy company via provisionCompanyCrew mints a duplicate roster", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
     const companyId = await createLegacyCompany("Naive Repair Co");
     await withCatalog();
 
@@ -866,7 +889,7 @@ describe.skipIf(
 
   // ── Re-run safety ─────────────────────────────────────────────────────────
   it("repair is a no-op on an already-marketplace-managed company", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
     await withCatalog();
     const company = await companyService(db).create({ name: "Managed Crew Co" } as never);
     const before = await crewRows(company.id);
@@ -888,7 +911,7 @@ describe.skipIf(
   }, 240_000);
 
   it("repair is a no-op when re-run on a company it just adopted", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
     const companyId = await createLegacyCompany("Twice Repaired Co");
     await withCatalog();
 
@@ -916,7 +939,7 @@ describe.skipIf(
 
   // ── The residual state the `unknown` witness leaves behind ────────────────
   it("re-provisions a company that has infrastructure agents but no crew at all", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
     await withCatalog();
 
     const companyId = randomUUID();
@@ -951,7 +974,7 @@ describe.skipIf(
 
   // ── The operation row T2.3's own repair could not fix ─────────────────────
   it("seals an install operation that still reports failure over a committed crew", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
     await withCatalog();
     const company = await companyService(db).create({ name: "Lying Op Co" } as never);
     await db.execute(sql`
@@ -973,7 +996,7 @@ describe.skipIf(
   }, 240_000);
 
   it("does not touch a FRESH `running` operation row", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
     await withCatalog();
     const company = await companyService(db).create({ name: "Live Op Co" } as never);
     await db.execute(sql`
@@ -991,7 +1014,7 @@ describe.skipIf(
   }, 240_000);
 
   it("seals a stale `running` operation row over an installed crew", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
     await withCatalog();
     const company = await companyService(db).create({ name: "Dead Owner Op Co" } as never);
     await db.execute(sql`
@@ -1006,7 +1029,7 @@ describe.skipIf(
   }, 240_000);
 
   it("ABLATION: an unsealed `failure` row lets the next provisioning pass duplicate the roster", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
     await withCatalog();
     const company = await companyService(db).create({ name: "Unsealed Op Co" } as never);
     await db.execute(sql`
@@ -1023,7 +1046,7 @@ describe.skipIf(
   }, 240_000);
 
   it("stands aside while a bootstrap install is genuinely in flight", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
     const companyId = await createLegacyCompany("Racing Install Co");
     await withCatalog();
     // A bootstrap that has claimed the operation and is mid-install: its team
@@ -1073,7 +1096,7 @@ describe.skipIf(
   // Field parity against rows the real installer wrote is the check a
   // re-implementation cannot pass.
   it("writes skill rows byte-identical to the real installer, not a hand-rolled copy", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
     const repaired = await createLegacyCompany("Skill Parity Co");
     const reference = await createLegacyCompany("Skill Reference Co");
     await withCatalog();
@@ -1109,7 +1132,7 @@ describe.skipIf(
   // then reads `healthy`. The boot backfill's `.../<slug>@legacy` stamp survives
   // the rename and is the join key that actually holds.
   it("adopts a fully RENAMED legacy crew via its legacy origin, not by name", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
     const companyId = await createLegacyCompany("Renamed Crew Co");
     await db.execute(sql`
       UPDATE agents SET name = 'Recon ' || name
@@ -1132,7 +1155,7 @@ describe.skipIf(
 
   // The partial rename reaches the same end state through the same door.
   it("adopts a PARTIALLY renamed legacy crew without leaving a member behind", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
     const companyId = await createLegacyCompany("Partly Renamed Co");
     await db.execute(sql`
       UPDATE agents SET name = 'Recon' WHERE company_id = ${companyId} AND name = 'Scout'
@@ -1162,7 +1185,7 @@ describe.skipIf(
 
   // -- The refusal that guards the crewless branch -------------------------
   it("refuses to provision beside a crew row it cannot account for", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
     await withCatalog();
     const companyId = randomUUID();
     await db.execute(sql`
@@ -1192,7 +1215,7 @@ describe.skipIf(
   // because the backfill stamped its slug from its name. Installing the roster
   // cannot duplicate it, so this must NOT block a legitimate crewless repair.
   it("still provisions a crewless company carrying a retired non-roster crew row", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
     await withCatalog();
     const companyId = randomUUID();
     await db.execute(sql`
@@ -1221,7 +1244,7 @@ describe.skipIf(
   }, 240_000);
 
   it("skips when the catalog has no crew team item", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
     const companyId = await createLegacyCompany("No Team Item Co");
     await withCatalog();
 
@@ -1234,7 +1257,7 @@ describe.skipIf(
 
   // ── The boot pass ─────────────────────────────────────────────────────────
   it("repairs degraded companies, caps productive work, leaves healthy ones alone", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
     const degradedA = await createLegacyCompany("Pass Co A");
     const degradedB = await createLegacyCompany("Pass Co B");
     await withCatalog();
@@ -1286,7 +1309,7 @@ describe.skipIf(
   }, 300_000);
 
   it("a fail-closed company does not consume budget, so it cannot starve the queue", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
     const stubborn = await createLegacyCompany("Starver Co");
     const repairable = await createLegacyCompany("Starved Co");
     await withCatalog();
@@ -1322,7 +1345,7 @@ describe.skipIf(
   }, 300_000);
 
   it("the cooldown, not luck, is what stops a degraded company being retried every pass", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
     const companyId = await createLegacyCompany("Cooldown Co");
     await withCatalog();
     let clock = Date.now();
@@ -1354,7 +1377,7 @@ describe.skipIf(
   }, 300_000);
 
   it("does no work at all when the catalog lacks the crew team item", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
     const companyId = await createLegacyCompany("Stale Catalog Co");
     const before = await crewRows(companyId);
 
@@ -1369,7 +1392,7 @@ describe.skipIf(
 
   // ── The route ─────────────────────────────────────────────────────────────
   it("POST /crew/repair: founder repairs, team_lead is refused, no catalog is 503", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
     const companyId = await createLegacyCompany("Route Co");
     const app = makeApp();
     const founderId = randomUUID();
@@ -1410,7 +1433,7 @@ describe.skipIf(
   }, 240_000);
 
   it("POST /crew/repair shares the pass cooldown unless the founder forces it", async () => {
-    if (setupError) throw new Error(String(setupError));
+    assertSetupOk();
     const companyId = await createLegacyCompany("Route Cooldown Co");
     const app = makeApp();
     const founderId = randomUUID();
