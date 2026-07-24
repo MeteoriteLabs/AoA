@@ -64,7 +64,7 @@
 - **T2.1 before T2.3:** `installTeam` hard-requires a department that does not exist at company-create time. Without the nullable parent there is nowhere to install to.
 - **T2.2 before T2.3:** `isCrewMarketplaceManaged` suppresses the *entire* `ensureAllCrewAgents`. The moment T2.3 makes a company marketplace-managed, Commander and Steward stop being seeded — Inbox Hub curation breaks silently.
 
-Order: **T2.1 → T2.2 → T2.3 → T2.5 → T2.4 → T2.6 → T2.7 → T2.8 → T2.9 → T2.10**. (T2.5 protected-origins before T2.4 so Steward is protected the moment it becomes marketplace-managed.)
+Order: **T2.1 → T2.2 → T2.3 → T2.3b → T2.5 → T2.4 → T2.6 → T2.7 → T2.8 → T2.9 → T2.10**. (T2.5 protected-origins before T2.4 so Steward is protected the moment it becomes marketplace-managed.)
 
 ---
 
@@ -233,6 +233,52 @@ Verified before deciding:
 - [x] **Step 7: Verify + commit.**
 ```bash
 git commit -m "feat(marketplace): install the default crew from the marketplace at company creation"
+```
+
+---
+
+## T2.3b — Make crew provisioning repairable (the one-way door)
+
+**Added 2026-07-24 during T2.3 review. This is not optional polish — without it
+T2.3's core property is one network call wide.**
+
+**Why:** `provisionCompanyCrew` has exactly **one** production caller — company
+create (`companies.ts:190`) — and `crew-updater.ts:151` skips `@legacy` and
+null-origin rows forever. So **any** degrade at the single instant of company
+creation (CDN blip, cold cache + no snapshot, catalog timeout, aggregate
+install deadline, process restart mid-install) permanently excludes that
+company from every future crew update, with no recovery short of manual DB
+surgery. The entire point of Phase 2 is that companies are born updateable;
+today that property depends on one network call at one moment, with no retry.
+
+This also makes the T2.3 degrade path *safe to choose*: bounded deadlines and
+fail-open behaviour are only acceptable if the resulting state is recoverable.
+
+- [ ] **Step 1: Failing test** — a company whose crew is `@legacy`/unmanaged can
+  be re-provisioned into a marketplace-managed crew, and afterwards
+  `crew-updater` no longer skips it. **Discriminator:** assert the *origins
+  change* (`@legacy`/null → `agent:aoa-curated/…`) and that a subsequent update
+  check now considers the company — not merely that a route returned 200.
+- [ ] **Step 2: Failing test — repair must be safe to re-run** on an
+  already-marketplace-managed company (no duplicate agents, no second team, no
+  clobbering of founder customizations). Re-running repair is the single most
+  likely operator action.
+- [ ] **Step 3: Run → FAIL.**
+- [ ] **Step 4: Implement.** Reuse `provisionCompanyCrew`. **Note the review
+  finding this depends on:** `crew-bootstrap.ts:134-140` currently treats *any*
+  non-`pending` operation as "someone else owns this install", including
+  `failure` — so a previously-failed bootstrap would make repair a no-op and
+  leave the company crewless. Narrow that guard to `pending | running | success`
+  **before** wiring repair, or the repair path is dead on arrival for exactly
+  the companies that need it most.
+- [ ] **Step 5: Decide and record the trigger.** Options: an authenticated
+  founder/admin route, a boot-time reconcile for degraded companies, or both.
+  Boot-time reconcile is the one that fixes companies whose founder will never
+  know to click anything — prefer it, but it must be rate-limited and must not
+  re-run on every boot for a company that legitimately has no network.
+- [ ] **Step 6: Run → PASS. Verify + commit.**
+```bash
+git commit -m "feat(marketplace): make crew provisioning repairable after a degraded bootstrap"
 ```
 
 ---
