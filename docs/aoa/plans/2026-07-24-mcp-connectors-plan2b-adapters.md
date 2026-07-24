@@ -194,3 +194,13 @@ Method note for re-runs: gemini connects MCP servers at STARTUP, before the mode
 - codex: `codex mcp get <name> --json` (reports the full transport struct)
 - opencode: `opencode mcp list` (connects, no provider auth needed)
 - gemini: `gemini --skip-trust -p …` with an auth method configured (model quota not required)
+
+## Execution notes (Plan 2b)
+
+**B2N1 — `ctx.mcpServers` is set for `claude_local` TOO, and must stay INERT there (constraint on Tasks 4-6).** Task 3 populates the carrier at both `adapter.execute` sites unconditionally, including claude runs. Claude already receives connectors via its generated `--mcp-config` file. **If any task adds a `ctx.mcpServers` reader to `packages/adapters/claude-local/`, claude gets DOUBLE delivery** (file + carrier) — duplicate servers, or a merge conflict between the two. Do not add a carrier reader to claude-local. (Alternative if ever needed: have the claude call sites pass `undefined`.) Only codex/opencode/gemini writers read the carrier.
+
+**B2N2 — the tmp claude-shaped `--mcp-config` file is now written on non-claude crew runs too.** `runner.ts` builds `buildMcpConfig({...mcpParams, extraMcpServers})` and writes it unconditionally, even for codex/opencode/gemini. Harmless today (placeholders only; not referenced by their argv; unlinked in `finally`). **Tasks 4-6 must NOT point those CLIs at this file** — each writes its own native config (TOML / opencode.json / .gemini/settings.json). If a task ever wants to skip that write for non-claude, that is a separate cleanup, not a Task 4-6 change.
+
+**B2N3 — Commander is a THIRD `resolveAgentConnectors` call site with a different value domain.** `cli-mode.ts` gates on `config.cliTool === "claude_cli"` (a `cliTool` value), not `agent.adapterType`. `adapterSupportsConnectors()` does NOT apply there. Un-gating Commander for codex needs its own parallel predicate over `cliTool` — deferred (Commander codex is out of Plan 2b scope), recorded so it isn't forgotten.
+
+**B2N4 — placement rationale correction.** The `adapterSupportsConnectors` predicate lives in the pure `mcp-connectors.ts` (not the loader) because `aoa-runner.test.ts` factory-mocks the loader module exporting ONLY `resolveAgentConnectors`. A predicate defined in the loader would be `undefined` under that suite and calling it throws `TypeError: adapterSupportsConnectors is not a function` — a hard crash, NOT a silent falsy gate (the original writeup said "silently evaluate falsy", which is wrong). The placement decision is correct; only the stated mechanism needed fixing.
