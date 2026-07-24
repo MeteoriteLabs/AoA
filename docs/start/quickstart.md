@@ -46,7 +46,7 @@ fails, return to AoA and continue rather than creating the organization again.
 
 ## Local Development
 
-Prerequisites: Node.js 20+ and pnpm 9+.
+Prerequisites: Node.js 20.3+ and pnpm 9+.
 
 ```sh
 pnpm install

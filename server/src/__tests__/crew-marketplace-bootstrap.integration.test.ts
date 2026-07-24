@@ -40,6 +40,7 @@ import {
   loadCachedCatalog,
   registerMarketplaceCatalogService,
 } from "../services/aoa-marketplace.js";
+import { agentService } from "../services/agents.js";
 import { companyService } from "../services/companies.js";
 import { provisionCompanyCrew } from "../services/crew-provisioning.js";
 
@@ -177,6 +178,8 @@ const brokenUrls = new Set<string>();
 const stalledUrls = new Set<string>();
 /** Whether the fixture CDN answers. Default unreachable; one test flips it. */
 let cdnReachable = false;
+/** Serve a team.json whose `agents` array is empty (F4). */
+let emptyTeamTemplate = false;
 /** Every URL the fixture server was asked for, in order. Deterministic — no wall clock. */
 const fetchLog: string[] = [];
 
@@ -203,6 +206,9 @@ function installFixtureFetch() {
           reject(new Error("The operation was aborted.")),
         );
       });
+    }
+    if (emptyTeamTemplate && url === `${FIXTURE_HOST}/teams/default-crew/team.json`) {
+      return new Response(JSON.stringify({ slug: "aoa-default-crew", agents: [] }), { status: 200 });
     }
     const body = FIXTURE_BODIES[url];
     if (body === undefined) {
@@ -273,6 +279,7 @@ afterEach(() => {
   brokenUrls.clear();
   stalledUrls.clear();
   cdnReachable = false;
+  emptyTeamTemplate = false;
   fetchLog.length = 0;
 });
 
@@ -363,6 +370,16 @@ describe.skipIf(
     expect(ops[0].status).toBe("success");
     expect(ops[0].idempotency_key).toBe(`bootstrap-crew:${company.id}`);
     expect(ops[0].target_department_id).toBeNull();
+
+    // F9 — the load-bearing `kind` separation that makes bundle import (R8)
+    // safe: the crew is kind='aoa' and every import/export agent path is
+    // kind='org' (agentService.list() defaults to org), so the imported roster
+    // and the crew can never see each other. Asserted here against a real DB
+    // rather than in the mocked portability suite, which cannot reach it.
+    const orgAgents = await agentService(db).list(company.id);
+    expect(orgAgents.map((a) => a.name)).not.toContain("Scout");
+    expect(orgAgents.map((a) => a.name)).not.toContain("Reviewer");
+    expect(orgAgents).toHaveLength(0);
 
     // Infrastructure agents are NOT marketplace-owned and must still be seeded
     // (P8d) — the T2.2 contract, re-proven end to end now that the crew half
@@ -533,6 +550,172 @@ describe.skipIf(
       expect(row.template_version).toBe("1.0.0");
     }
     expect(outcome.mode).toBe("marketplace-clobber-averted");
+  }, 120_000);
+
+  // ── F1: the R1 state must not become a DUPLICATE roster on repair ─────
+  // The R1 guard protects the LEGACY-seeder path. It does not protect the
+  // marketplace RE-INSTALL path, which consumes the same lying row: a second
+  // provisionCompanyCrew (i.e. T2.3b repair) hits the idempotency key, claims
+  // the `failure` row, and re-runs installTeam over a company that already has
+  // the roster — minting Scout-2 / Reviewer-2 / default-crew-2, all carrying
+  // the SAME templateOrigin, which also breaks the single-row team lookups in
+  // resolver.ts and team-reconcile.ts.
+  //
+  // Repairing the row to `success` (not claimable) is what closes it.
+  it("a repair pass after an averted clobber does not re-install or mint duplicates", async () => {
+    if (setupError) throw new Error(String(setupError));
+    await clearCatalogCache();
+
+    const service = makeService({ snapshot: FIXTURE_CATALOG });
+    await service.sync();
+    registerMarketplaceCatalogService(service);
+
+    const companyId = randomUUID();
+    await db.execute(sql`
+      INSERT INTO companies (id, name, issue_prefix) VALUES (${companyId}, 'Repair Co', ${nextIssuePrefix()})
+    `);
+
+    // Land in the R1 state: install commits, bookkeeping fails.
+    const first = await provisionCompanyCrew(db, companyId, {
+      publishLiveEvent: (event) => {
+        if (event.type === "marketplace.install.completed") {
+          throw new Error("live-event subscriber threw after the install committed");
+        }
+      },
+    });
+    expect(first.mode).toBe("marketplace-clobber-averted");
+
+    // Now the repair pass that T2.3b will run. The DAMAGE is asserted first and
+    // the audit-row state after, deliberately: the duplicate roster is the bug,
+    // the row status is only the mechanism.
+    const second = await provisionCompanyCrew(db, companyId, {});
+
+    const crew = await crewRows(companyId);
+    expect(crew.some((r) => /-2$/.test(r.name))).toBe(false);
+    expect(crew.filter((r) => r.name === "Scout")).toHaveLength(1);
+    expect(crew.filter((r) => r.name === "Reviewer")).toHaveLength(1);
+    // Exactly one team row: two rows sharing a templateOrigin break the
+    // single-row lookups downstream.
+    const teamRows = rowsOf<{ n: string }>(
+      await db.execute(sql`
+        SELECT count(*)::text AS n FROM teams
+        WHERE company_id = ${companyId} AND template_origin = ${TEAM_ID}
+      `),
+    );
+    expect(teamRows[0].n).toBe("1");
+
+    // …and the mechanism that achieves it: the audit row no longer lies, and
+    // (load-bearing) is no longer CLAIMABLE.
+    const repaired = rowsOf<{ status: string; error_message: string | null }>(
+      await db.execute(sql`
+        SELECT status, error_message
+        FROM marketplace_install_operations WHERE company_id = ${companyId}
+      `),
+    );
+    expect(repaired).toHaveLength(1);
+    expect(repaired[0].status).toBe("success");
+    expect(repaired[0].error_message).toBeNull();
+    expect(second.mode).toBe("marketplace-already-dispatched");
+  }, 120_000);
+
+  // ── F2: a crash between claim and terminal patch must not strand forever ──
+  // The owner dies mid-install: the row sits `running`. After 24h the
+  // idempotency lookup misses, the INSERT trips the unbounded unique index,
+  // onConflictDoNothing suppresses it, and the fallback SELECT (no createdAt
+  // cutoff) hands back the SAME stale row — so without a staleness bound the
+  // caller reports "already dispatched", skips the legacy seeders too, and the
+  // company has NO crew and no repair path, ever.
+  it("a stale `running` operation is reclaimable, so a crashed install is repairable", async () => {
+    if (setupError) throw new Error(String(setupError));
+    await clearCatalogCache();
+
+    const service = makeService({ snapshot: FIXTURE_CATALOG });
+    await service.sync();
+    registerMarketplaceCatalogService(service);
+
+    const companyId = randomUUID();
+    await db.execute(sql`
+      INSERT INTO companies (id, name, issue_prefix) VALUES (${companyId}, 'Stranded Co', ${nextIssuePrefix()})
+    `);
+    // Exactly what a killed process leaves behind: claimed, never finished.
+    await db.execute(sql`
+      INSERT INTO marketplace_install_operations
+        (company_id, catalog_item_id, item_type, status, idempotency_key, started_at, created_at)
+      VALUES (${companyId}, ${TEAM_ID}, 'team', 'running', ${`bootstrap-crew:${companyId}`},
+              now() - interval '30 minutes', now() - interval '30 minutes')
+    `);
+
+    const outcome = await provisionCompanyCrew(db, companyId, {});
+
+    // The HARM first: without the staleness bound this company ends up with no
+    // marketplace crew AND no legacy crew — the already-dispatched short-circuit
+    // returns before the seeders, forever.
+    const crew = await crewRows(companyId);
+    expect(
+      crew.filter((r) => r.template_origin?.startsWith("agent:aoa-curated/")).map((r) => r.name).sort(),
+    ).toEqual(["Reviewer", "Scout"]);
+    expect(outcome.mode).toBe("marketplace");
+
+    // Reclaimed in place — still one row, now terminal and error-free.
+    const ops = rowsOf<{ status: string; error_message: string | null }>(
+      await db.execute(sql`
+        SELECT status, error_message
+        FROM marketplace_install_operations WHERE company_id = ${companyId}
+      `),
+    );
+    expect(ops).toHaveLength(1);
+    expect(ops[0].status).toBe("success");
+    expect(ops[0].error_message).toBeNull();
+  }, 120_000);
+
+  // Discriminator for the staleness bound: it must not steal a LIVE install.
+  it("a fresh `running` operation is NOT stolen", async () => {
+    if (setupError) throw new Error(String(setupError));
+    await clearCatalogCache();
+
+    const service = makeService({ snapshot: FIXTURE_CATALOG });
+    await service.sync();
+    registerMarketplaceCatalogService(service);
+
+    const companyId = randomUUID();
+    await db.execute(sql`
+      INSERT INTO companies (id, name, issue_prefix) VALUES (${companyId}, 'Live Install Co', ${nextIssuePrefix()})
+    `);
+    await db.execute(sql`
+      INSERT INTO marketplace_install_operations
+        (company_id, catalog_item_id, item_type, status, idempotency_key, started_at)
+      VALUES (${companyId}, ${TEAM_ID}, 'team', 'running', ${`bootstrap-crew:${companyId}`}, now())
+    `);
+
+    const outcome = await provisionCompanyCrew(db, companyId, {});
+
+    expect(outcome.mode).toBe("marketplace-already-dispatched");
+    const crew = await crewRows(companyId);
+    expect(crew.some((r) => r.template_origin?.startsWith("agent:aoa-curated/"))).toBe(false);
+  }, 120_000);
+
+  // ── F4: an empty team must not become a permanent false witness ───────
+  // team.json is an unchecked JSON.parse cast. `"agents": []` would commit a
+  // teams row with zero members, so the witness reads true forever: no crew
+  // agents, legacy seeders permanently suppressed, repair short-circuited.
+  it("a team.json declaring no agents is refused, and the company still gets a crew", async () => {
+    if (setupError) throw new Error(String(setupError));
+    await clearCatalogCache();
+
+    const service = makeService({ snapshot: FIXTURE_CATALOG });
+    await service.sync();
+    registerMarketplaceCatalogService(service);
+    emptyTeamTemplate = true;
+
+    const company = await companyService(db).create({ name: "Empty Team Co" } as never);
+
+    const teamRows = rowsOf<{ n: string }>(
+      await db.execute(sql`SELECT count(*)::text AS n FROM teams WHERE company_id = ${company.id}`),
+    );
+    expect(teamRows[0].n).toBe("0");
+
+    const crew = await crewRows(company.id);
+    expect(crew.some((r) => r.name === "Adjutant")).toBe(true);
   }, 120_000);
 
   // ── R2: the install is bounded ────────────────────────────────────────────

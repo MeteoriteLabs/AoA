@@ -337,6 +337,22 @@ export async function installTeam(opts: InstallTeamOpts): Promise<InstallTeamRes
       });
     }
 
+    // A team row with no agents is not a crew — and it is a permanent trap.
+    // `TeamTemplateBody` is an unchecked JSON.parse cast, so a published
+    // team.json shipping `"agents": []` (or the field renamed and defaulted)
+    // would commit the `teams` row with zero members, return success, and make
+    // `crewTeamIsInstalled` true forever: no crew agents, legacy seeders
+    // permanently suppressed, repair permanently short-circuited.
+    //
+    // `undefined` is already safe (the for…of above throws and rolls back);
+    // `[]` is the hole. This is a CROSS-REPO trigger — the catalog lives in
+    // MeteoriteLabs/aoa-marketplace — so it must fail closed here.
+    if (agentInsertResults.length === 0) {
+      throw new Error(
+        `team.json for ${catalogItem.id} declared no agents — refusing to install an empty team`,
+      );
+    }
+
     // Insert team row
     const resolvedSlug = await resolveTeamSlugConflict({
       db: tx as unknown as Db,

@@ -9,7 +9,7 @@
  * constraint, since the unique index is unbounded — see schema for details).
  */
 
-import { eq, and, gt, inArray } from "drizzle-orm";
+import { eq, and, gt, lt, or, inArray } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { marketplaceInstallOperations } from "@armyofagents/db";
 import type { CascadeStepResult } from "@armyofagents/db";
@@ -182,6 +182,13 @@ export async function updateOperation(
 }
 
 /**
+ * How long an operation may sit in `running` before another caller may assume
+ * its owner died. Generous relative to CREW_INSTALL_DEADLINE_MS (30s) so a
+ * live install is never stolen mid-flight.
+ */
+export const OPERATION_CLAIM_STALE_AFTER_MS = 10 * 60 * 1000;
+
+/**
  * Atomically take ownership of an operation for dispatch.
  *
  * `startInstallOperation` is a check-then-act on the idempotency key: two
@@ -190,21 +197,48 @@ export async function updateOperation(
  * row before the winner has written `running`), so a status READ cannot decide
  * ownership. This conditional UPDATE can: exactly one caller sees a row back.
  *
- * `failure` is claimable on purpose — a previously failed bootstrap means
- * nobody owns the install and nothing was installed, so a repair pass must be
- * able to retry it. `running`/`success`/`requested` are not: someone else owns
- * it, or it is already done.
+ * Claimable:
+ * - `pending` — nobody has started it.
+ * - `failure` — nobody owns it and nothing was installed, so a repair pass must
+ *   be able to retry.
+ * - `running` **older than {@link OPERATION_CLAIM_STALE_AFTER_MS}** — the owner
+ *   died mid-install. Without this the row is stranded FOREVER: after 24h
+ *   `findExistingByIdempotencyKey` misses, `createOperation`'s INSERT trips the
+ *   unbounded unique index, `onConflictDoNothing` suppresses it, and the
+ *   fallback SELECT (which has no `createdAt` cutoff) hands back the same stale
+ *   `running` row — so the caller reports "already dispatched", skips the
+ *   legacy seeders too, and the company ends up with NO crew and no repair path.
+ *
+ * Not claimable: a fresh `running` (someone owns it), `success` (done), and
+ * `requested` (a founder-approval state — claiming it would hijack a pending
+ * human decision).
+ *
+ * `startedAt` is reset so the staleness clock measures THIS attempt, and
+ * `errorMessage`/`completedAt` are cleared so a retried-and-succeeded operation
+ * does not end up `success` still carrying the previous attempt's error text.
  *
  * @returns true if THIS caller now owns the dispatch.
  */
 export async function claimOperationForDispatch(db: Db, id: string): Promise<boolean> {
+  const staleBefore = new Date(Date.now() - OPERATION_CLAIM_STALE_AFTER_MS);
   const rows = await db
     .update(marketplaceInstallOperations)
-    .set({ status: "running" })
+    .set({
+      status: "running",
+      startedAt: new Date(),
+      errorMessage: null,
+      completedAt: null,
+    })
     .where(
       and(
         eq(marketplaceInstallOperations.id, id),
-        inArray(marketplaceInstallOperations.status, ["pending", "failure"]),
+        or(
+          inArray(marketplaceInstallOperations.status, ["pending", "failure"]),
+          and(
+            eq(marketplaceInstallOperations.status, "running"),
+            lt(marketplaceInstallOperations.startedAt, staleBefore),
+          ),
+        ),
       ),
     )
     .returning({ id: marketplaceInstallOperations.id });

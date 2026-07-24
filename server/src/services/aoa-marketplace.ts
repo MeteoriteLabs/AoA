@@ -187,9 +187,15 @@ export class MarketplaceCatalogService {
 
     // R4: a recent failed attempt means the next create would pay the full
     // budget for the same doomed fetch. Degrade immediately instead.
+    //
+    // …unless a sync is ALREADY in flight (F8): that attempt is fresh and may
+    // be about to succeed, and joining it costs nothing extra — the cooldown
+    // exists to stop us STARTING doomed fetches, not to refuse a free ride on
+    // one already running.
     if (
       this.lastSyncFailureAt !== null &&
-      Date.now() - this.lastSyncFailureAt < CATALOG_SYNC_FAILURE_COOLDOWN_MS
+      Date.now() - this.lastSyncFailureAt < CATALOG_SYNC_FAILURE_COOLDOWN_MS &&
+      !this.inFlightSync
     ) {
       return { status: "unavailable", reason: "sync-cooldown" };
     }
@@ -387,6 +393,13 @@ export function getMarketplaceCatalogService(): MarketplaceCatalogService | null
  * Never throws: a marketplace outage cannot break onboarding. An `unavailable`
  * result carries WHY, so a wiring regression (`no-service-registered`) is not
  * mistaken for a CDN blip in the logs (R7).
+ *
+ * ⚠️ `db` is used ONLY when no service is registered — with one registered,
+ * `ensureCatalogAvailable` owns the read (R10). In production a service is
+ * always registered, so in production `db` goes unused and `cache-read-error`
+ * is unreachable; both exist for the no-registry path that tests and any future
+ * non-`createApp` entry point take. Do not read `cache-read-error` in a log as
+ * "production hit a cache problem" — production cannot produce it.
  */
 export async function resolveCatalogForBootstrap(
   db: Db,

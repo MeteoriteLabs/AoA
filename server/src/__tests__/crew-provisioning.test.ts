@@ -17,11 +17,12 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { bootstrapMock, ensureCrewAgentsMock, crewTeamInstalledMock, loggerErrorMock, loggerInfoMock } =
+const { bootstrapMock, ensureCrewAgentsMock, inspectWitnessMock, updateOperationMock, loggerErrorMock, loggerInfoMock } =
   vi.hoisted(() => ({
     bootstrapMock: vi.fn(),
     ensureCrewAgentsMock: vi.fn(async () => {}),
-    crewTeamInstalledMock: vi.fn(async () => false),
+    inspectWitnessMock: vi.fn(async () => ({ state: "absent" as const })),
+    updateOperationMock: vi.fn(async () => {}),
     loggerErrorMock: vi.fn(),
     loggerInfoMock: vi.fn(),
   }));
@@ -29,7 +30,10 @@ const { bootstrapMock, ensureCrewAgentsMock, crewTeamInstalledMock, loggerErrorM
 vi.mock("../services/marketplace-install/crew-bootstrap.js", () => ({
   DEFAULT_CREW_TEAM_ITEM_ID: "team:aoa-curated/default-crew",
   bootstrapCrewFromMarketplace: bootstrapMock,
-  crewTeamIsInstalled: crewTeamInstalledMock,
+  inspectCrewTeamInstall: inspectWitnessMock,
+}));
+vi.mock("../services/marketplace-install/operation-store.js", () => ({
+  updateOperation: updateOperationMock,
 }));
 vi.mock("../services/internal-agent/aoa-agents/crew-seeding.js", () => ({
   ensureCrewAgents: ensureCrewAgentsMock,
@@ -73,8 +77,10 @@ function lastErrorLog() {
 beforeEach(() => {
   bootstrapMock.mockReset();
   ensureCrewAgentsMock.mockClear();
-  crewTeamInstalledMock.mockReset();
-  crewTeamInstalledMock.mockResolvedValue(false);
+  inspectWitnessMock.mockReset();
+  inspectWitnessMock.mockResolvedValue({ state: "absent" });
+  updateOperationMock.mockReset();
+  updateOperationMock.mockResolvedValue(undefined);
   loggerErrorMock.mockClear();
   loggerInfoMock.mockClear();
 });
@@ -237,16 +243,65 @@ describe("provisionCompanyCrew", () => {
       operationId: "op-7",
       catalog: catalogWithTeam(["agent:aoa-curated/aoa-scout"]),
     });
-    crewTeamInstalledMock.mockResolvedValue(true);
+    inspectWitnessMock.mockResolvedValue({ state: "installed", teamId: "team-installed-1" });
 
     const outcome = await provisionCompanyCrew(DB, "co-7");
 
     expect(outcome).toEqual({
       mode: "marketplace-clobber-averted",
       reason: "install failed: live-event subscriber threw after the install committed",
+      operationRepaired: true,
     });
     expect(ensureCrewAgentsMock).not.toHaveBeenCalled();
     expect(lastErrorLog().message).toMatch(/crew team IS installed/);
+
+    // F1: the lying `failure` row must be REPAIRED, not merely tolerated.
+    // Left as `failure` it stays CLAIMABLE, so the next provisioning pass
+    // (T2.3b repair) re-installs over the existing roster.
+    expect(updateOperationMock).toHaveBeenCalledWith(DB, "op-7", {
+      status: "success",
+      resultEntityId: "team-installed-1",
+      errorMessage: null,
+      completedAt: expect.any(Date),
+    });
+  });
+
+  // F6: "we could not read the witness" is not "the install committed".
+  it("an unreadable witness fails closed WITHOUT claiming the install succeeded", async () => {
+    bootstrapMock.mockResolvedValue({
+      status: "failed",
+      reason: "Failed to fetch team template: HTTP 503",
+      operationId: "op-10",
+      catalog: null,
+    });
+    inspectWitnessMock.mockResolvedValue({ state: "unknown", error: new Error("db down") });
+
+    const outcome = await provisionCompanyCrew(DB, "co-10");
+
+    expect(outcome.mode).toBe("unknown-skipped-seeding");
+    expect(ensureCrewAgentsMock).not.toHaveBeenCalled();
+    // Must NOT repair a row it cannot justify repairing.
+    expect(updateOperationMock).not.toHaveBeenCalled();
+    const { message } = lastErrorLog();
+    expect(message).toMatch(/cannot tell whether a crew exists/);
+    expect(message).not.toMatch(/the install committed/);
+  });
+
+  // F6: the averted path used to emit the big "will be stamped @legacy" ERROR
+  // and then not degrade — two contradictory ERROR lines back to back.
+  it("does not log the DEGRADED line when it did not degrade", async () => {
+    bootstrapMock.mockResolvedValue({
+      status: "failed",
+      reason: "boom",
+      operationId: "op-11",
+      catalog: null,
+    });
+    inspectWitnessMock.mockResolvedValue({ state: "installed", teamId: "team-11" });
+
+    await provisionCompanyCrew(DB, "co-11");
+
+    const messages = loggerErrorMock.mock.calls.map((c) => String(c[1] ?? ""));
+    expect(messages.some((m) => m.includes("DEGRADED to the legacy seeders"))).toBe(false);
   });
 
   // Discriminator for the guard: it must not become a blanket skip. A genuine
@@ -259,7 +314,7 @@ describe("provisionCompanyCrew", () => {
       operationId: "op-8",
       catalog: catalogWithTeam(["agent:aoa-curated/aoa-scout"]),
     });
-    crewTeamInstalledMock.mockResolvedValue(false);
+    inspectWitnessMock.mockResolvedValue({ state: "absent" });
 
     const outcome = await provisionCompanyCrew(DB, "co-8");
 
@@ -275,9 +330,9 @@ describe("provisionCompanyCrew", () => {
       order.push("bootstrap");
       return { status: "failed", reason: "boom", operationId: "op-9", catalog: null };
     });
-    crewTeamInstalledMock.mockImplementation(async () => {
+    inspectWitnessMock.mockImplementation(async () => {
       order.push("gate");
-      return true;
+      return { state: "installed", teamId: "team-installed-1" };
     });
 
     await provisionCompanyCrew(DB, "co-9");

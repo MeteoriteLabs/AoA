@@ -12,10 +12,24 @@
  * permanently-`@legacy` companies that `crew-updater.ts` can never touch —
  * precisely the state Phase 2 exists to eliminate.
  *
+ * ⚠️ **Scope of this file.** These tests mock `companyService` wholesale, so
+ * they pin ONLY the pass-through — that import calls `create` with per-create
+ * options carrying the importing actor. They do **not** exercise the crew
+ * install, and they do **not** prove the `kind` separation below; that is
+ * asserted against a real database in
+ * `crew-marketplace-bootstrap.integration.test.ts`.
+ *
  * Why it is safe against the bundle's own agents: the crew is `kind='aoa'` and
  * every import/export agent path is `kind='org'` (`agentService.list()` defaults
  * to org), so the imported roster and the crew never see each other and the
  * import's normalized-name merge cannot touch a crew row.
+ *
+ * **Known widening, deliberately NOT fixed here:**
+ * `assertCompanyShortnameAvailable` DOES see `kind='aoa'` rows, so a bundle
+ * agent named e.g. "Reviewer" now collides where it previously would not — the
+ * marketplace roster has 9 members to the legacy seeders' 8. Pre-existing in
+ * kind (the legacy crew collided the same way for its 8), wider in practice.
+ * Flagged rather than fixed: changing shortname scoping is its own decision.
  */
 import { describe, expect, it, vi } from "vitest";
 

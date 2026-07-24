@@ -253,14 +253,34 @@ export async function bootstrapCrewFromMarketplace(
     return { status: "failed", reason, operationId: null, catalog };
   } finally {
     if (deadlineTimer) clearTimeout(deadlineTimer);
+    // Abort, don't just stop the clock. On ANY exit — deadline, a 503, a parse
+    // error, or success — every fetch still in flight must be cancelled.
+    // Clearing the timer alone left ~26 orphan requests running at
+    // FETCH_TIMEOUT_MS apiece (~2.5 minutes of network work per failed create)
+    // while the caller was already writing legacy rows, which falsified this
+    // module's own "aborts rather than abandons" claim.
+    deadline.abort();
   }
 }
 
 /**
- * Did THIS company's crew-team install actually commit?
+ * The three answers to "did THIS company's crew-team install actually commit?"
  *
- * The `teams` row is written inside the same phase-3 transaction as the crew
- * agents, so its presence is an exact witness: team row ⇔ agents committed.
+ * `unknown` is NOT folded into `installed`: they are failing closed for the
+ * same reason but they are different facts, and a log line that reports a DB
+ * outage as "the install committed" is a false statement (standing rule 4).
+ */
+export type CrewTeamInstallState =
+  | { state: "installed"; teamId: string }
+  | { state: "absent" }
+  | { state: "unknown"; error: unknown };
+
+/**
+ * Look for the `teams` row this company's crew install would have written.
+ *
+ * That row is created inside the same phase-3 transaction as the crew agents,
+ * and `installTeam` now refuses to write it with zero agents, so it is an exact
+ * witness in both directions: team row ⇔ crew agents committed.
  *
  * Deliberately NOT `isCrewMarketplaceManaged`. That predicate matches **any**
  * `kind='aoa'` row with a non-`@legacy` origin, including the infrastructure
@@ -271,12 +291,14 @@ export async function bootstrapCrewFromMarketplace(
  * make a company skip its own crew entirely the day a seeder starts stamping.
  * (It did: that test failed when this guard was first written that way.)
  *
- * **Fails CLOSED** — an unreadable answer reports "installed", i.e. do not
- * seed. The asymmetry is deliberate: a crewless company is visible and
- * repairable (T2.3b), a marketplace crew silently overwritten by the legacy
- * seeders is neither.
+ * Callers must treat `unknown` as "do not seed". The asymmetry is deliberate: a
+ * crewless company is visible and repairable (T2.3b), a marketplace crew
+ * silently overwritten by the legacy seeders is neither.
  */
-export async function crewTeamIsInstalled(db: Db, companyId: string): Promise<boolean> {
+export async function inspectCrewTeamInstall(
+  db: Db,
+  companyId: string,
+): Promise<CrewTeamInstallState> {
   try {
     const [row] = await db
       .select({ id: teams.id })
@@ -285,12 +307,13 @@ export async function crewTeamIsInstalled(db: Db, companyId: string): Promise<bo
         and(eq(teams.companyId, companyId), eq(teams.templateOrigin, DEFAULT_CREW_TEAM_ITEM_ID)),
       )
       .limit(1);
-    return !!row;
+    return row ? { state: "installed", teamId: row.id } : { state: "absent" };
   } catch (err) {
     logger.warn(
       { err, companyId },
-      "crew-team install check failed — assuming INSTALLED so the legacy seeders cannot clobber it",
+      "crew-team install check failed — treating as UNKNOWN and refusing to seed, " +
+        "so the legacy seeders cannot clobber an install we simply could not see",
     );
-    return true;
+    return { state: "unknown", error: err };
   }
 }

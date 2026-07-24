@@ -18,10 +18,11 @@ import { ensureCrewAgents } from "./internal-agent/aoa-agents/crew-seeding.js";
 import {
   DEFAULT_CREW_TEAM_ITEM_ID,
   bootstrapCrewFromMarketplace,
-  crewTeamIsInstalled,
+  inspectCrewTeamInstall,
   type CrewBootstrapDeps,
   type CrewBootstrapResult,
 } from "./marketplace-install/crew-bootstrap.js";
+import { updateOperation } from "./marketplace-install/operation-store.js";
 
 /**
  * Which legacy `ensure-*` seeder (if any) can stand in for each agent the
@@ -100,10 +101,16 @@ export type CrewProvisioningOutcome =
   | { mode: "marketplace"; operationId: string; teamId: string | null }
   | { mode: "marketplace-already-dispatched"; operationId: string }
   /**
-   * The bootstrap reported failure, but the company IS marketplace-managed —
-   * the install committed and only its bookkeeping failed. Seeding was skipped.
+   * The bootstrap reported failure, but the crew team IS on disk — the install
+   * committed and only its bookkeeping failed. Seeding was skipped, and the
+   * lying operation row was repaired to `success` (see `operationRepaired`).
    */
-  | { mode: "marketplace-clobber-averted"; reason: string }
+  | { mode: "marketplace-clobber-averted"; reason: string; operationRepaired: boolean }
+  /**
+   * The witness query itself failed, so we cannot tell whether a crew exists.
+   * Failing closed: nothing was seeded, nothing was repaired.
+   */
+  | { mode: "unknown-skipped-seeding"; reason: string }
   | { mode: "legacy"; reason: string; unprovidedItemIds: string[] };
 
 /**
@@ -159,26 +166,7 @@ export async function provisionCompanyCrew(
     result.status === "unavailable"
       ? (result.detail ? `${result.reason}:${result.detail}` : result.reason)
       : `install failed: ${result.reason}`;
-  const gap = describeLegacyCoverageGap(result.catalog);
-
-  logger.error(
-    {
-      companyId,
-      teamItemId: DEFAULT_CREW_TEAM_ITEM_ID,
-      degradeReason: reason,
-      operationId: result.status === "failed" ? result.operationId : null,
-      unprovidedItemIds: gap.itemIds,
-      unprovidedSource: gap.source,
-    },
-    gap.itemIds.length > 0
-      ? `crew provisioning DEGRADED to the legacy seeders (${reason}). ` +
-          "This company will be stamped `…@legacy` and excluded from marketplace crew updates, AND " +
-          `these crew members have NO legacy seeder and will be MISSING entirely: ${gap.itemIds.join(", ")} ` +
-          `(roster source: ${gap.source})`
-      : `crew provisioning DEGRADED to the legacy seeders (${reason}). ` +
-          "This company will be stamped `…@legacy` and excluded from marketplace crew updates. " +
-          "The legacy seeders cover every declared crew member.",
-  );
+  const operationId = result.status === "failed" ? result.operationId : null;
 
   // ── The last gate before we write legacy rows ────────────────────────────
   //
@@ -198,23 +186,90 @@ export async function provisionCompanyCrew(
   // `crew-updater` will never repair it, and no duplicate rows are minted so
   // nothing in the data reveals the damage.
   //
-  // One indexed query closes the whole class rather than the two known
-  // triggers. It asks "did OUR team install commit?" (the `teams` row written
-  // in the same transaction as the agents) rather than the broad
-  // `isCrewMarketplaceManaged` predicate — that one also matches the
-  // infrastructure agents seeded moments earlier, so using it here would make
-  // a company skip its own crew the day any seeder starts stamping an origin.
-  if (await crewTeamIsInstalled(db, companyId)) {
+  // The gate runs BEFORE the DEGRADED log, not after: logging "this company
+  // will be stamped @legacy" and then not degrading emitted two contradictory
+  // ERROR lines back to back.
+  const witness = await inspectCrewTeamInstall(db, companyId);
+
+  if (witness.state === "installed") {
+    // F1: repair the row, don't just refuse to seed. Leaving it `failure`
+    // leaves it CLAIMABLE, so the next `provisionCompanyCrew` (T2.3b repair)
+    // would take it, re-run installTeam against a company that already has the
+    // roster, and mint `Scout-2` / `Reviewer-2` / `default-crew-2` — every one
+    // carrying the SAME templateOrigin, which also breaks the single-row
+    // lookups in `resolver.ts` and `team-reconcile.ts`. `success` is not
+    // claimable, so repairing closes the hole and corrects the audit record in
+    // one move.
+    let operationRepaired = false;
+    if (operationId) {
+      try {
+        await updateOperation(db, operationId, {
+          status: "success",
+          resultEntityId: witness.teamId,
+          errorMessage: null,
+          completedAt: new Date(),
+        });
+        operationRepaired = true;
+      } catch (err) {
+        logger.error(
+          { err, companyId, operationId, teamId: witness.teamId },
+          "crew install committed but its operation row could NOT be repaired — it stays " +
+            "`failure` and therefore CLAIMABLE, so a later repair pass may re-install and " +
+            "mint a duplicate roster",
+        );
+      }
+    }
+
     logger.error(
-      { companyId, degradeReason: reason, teamItemId: DEFAULT_CREW_TEAM_ITEM_ID },
-      "crew bootstrap reported failure but the crew team IS installed — " +
-        "the install committed and its bookkeeping failed. SKIPPING the legacy seeders " +
-        "(running them would silently overwrite the marketplace crew's runtimeConfig, " +
-        "adapter and instructions while leaving templateOrigin intact, putting the rows " +
-        "beyond the reach of crew-updater).",
+      {
+        companyId,
+        operationId,
+        teamId: witness.teamId,
+        operationRepaired,
+        degradeReason: reason,
+        teamItemId: DEFAULT_CREW_TEAM_ITEM_ID,
+      },
+      "crew bootstrap reported failure but the crew team IS installed — the install " +
+        "committed and its bookkeeping failed. SKIPPING the legacy seeders (running them " +
+        "would silently overwrite the marketplace crew's runtimeConfig, adapter and " +
+        "instructions while leaving templateOrigin intact, putting the rows beyond the " +
+        "reach of crew-updater).",
     );
-    return { mode: "marketplace-clobber-averted", reason };
+    return { mode: "marketplace-clobber-averted", reason, operationRepaired };
   }
+
+  if (witness.state === "unknown") {
+    // Failing closed. Say so honestly — this is NOT "the install committed".
+    logger.error(
+      { companyId, operationId, degradeReason: reason, teamItemId: DEFAULT_CREW_TEAM_ITEM_ID },
+      "crew bootstrap failed AND the crew-team witness query failed — cannot tell whether a " +
+        "crew exists, so the legacy seeders were NOT run (a clobbered marketplace crew is " +
+        "unrepairable; a crewless company is visible and repairable). This company may have " +
+        "no crew — check it.",
+    );
+    return { mode: "unknown-skipped-seeding", reason };
+  }
+
+  const gap = describeLegacyCoverageGap(result.catalog);
+
+  logger.error(
+    {
+      companyId,
+      teamItemId: DEFAULT_CREW_TEAM_ITEM_ID,
+      degradeReason: reason,
+      operationId,
+      unprovidedItemIds: gap.itemIds,
+      unprovidedSource: gap.source,
+    },
+    gap.itemIds.length > 0
+      ? `crew provisioning DEGRADED to the legacy seeders (${reason}). ` +
+          "This company will be stamped `…@legacy` and excluded from marketplace crew updates, AND " +
+          `these crew members have NO legacy seeder and will be MISSING entirely: ${gap.itemIds.join(", ")} ` +
+          `(roster source: ${gap.source})`
+      : `crew provisioning DEGRADED to the legacy seeders (${reason}). ` +
+          "This company will be stamped `…@legacy` and excluded from marketplace crew updates. " +
+          "The legacy seeders cover every declared crew member.",
+  );
 
   await ensureCrewAgents(db, companyId);
   return { mode: "legacy", reason, unprovidedItemIds: gap.itemIds };
