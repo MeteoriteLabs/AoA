@@ -1541,6 +1541,20 @@ Every write that can replace an installed row's `markdown`:
 | 4 | `POST /skills/import-package` | `importPackageFiles` | no, deliberately — see T2.9c |
 | 5 | `POST /skills` | `createLocalSkill` | no, deliberately — see T2.9b |
 | 6 | company bundle import | `company-portability.ts` | no, deliberately — see T2.9d |
+
+> **Follow-on consequence recorded 2026-07-24 (T2.9 round 2).** Clearing
+> `customized` under `caller_is_authoritative` means a bundle import declaring
+> `sourceType: "catalog"` now leaves a row **eligible for catalog auto-apply**
+> that was previously frozen out. That is the right call on the merits — the
+> row's bytes are the importer's, not a founder's, so the flag was false — but
+> it lands on the same surface T2.9's review identified as **attacker-
+> controlled**: the manifest's `sourceType` is validated only as
+> `z.string().min(1)` (`packages/shared/src/validators/company-portability.ts:81`)
+> and is written straight through by `upsertImportedSkills`. So a crafted
+> bundle can now both *name* a row as catalog-managed and *clear* its
+> customization guard in one import. Evaluate that pairing explicitly when this
+> task is picked up — validating `sourceType` against the known enum is the
+> obvious first move.
 | 7 | catalog install | `installSkill` | n/a — refuses any version change outright |
 | 8 | catalog auto-apply | `applySkillUpdate` | pre-existing (the reference implementation) |
 
