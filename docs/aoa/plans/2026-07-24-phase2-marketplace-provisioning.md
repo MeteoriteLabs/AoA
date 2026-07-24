@@ -79,7 +79,16 @@ git commit -m "feat(marketplace): allow company-wide teams with no parent depart
 
 **Why:** `ensureAllCrewAgents` is all-or-nothing and every caller skips the whole function when marketplace-managed (`index.ts:796-800`, `internal-agent.ts:139-140`). Commander and Steward live inside it.
 
-**Files:** `server/src/services/internal-agent/aoa-agents/ensure-all-crew.ts`, its two callers.
+> **Plan correction (2026-07-24, found during execution):** there are **three**
+> call sites, not two. The third is `services/companies.ts:~136-158` (company
+> create), which does not call `isCrewMarketplaceManaged` — it carries an
+> **inline duplicate** of the same query. Worse, `ensureInternalAgentConfig`
+> sat *inside* that gated block, so the moment T2.3 makes a company
+> marketplace-managed the company would get **no `internal_agent_config` row
+> at all** (no autonomy dial, no provider/model config). Both were fixed as
+> part of T2.2.
+
+**Files:** `server/src/services/internal-agent/aoa-agents/ensure-all-crew.ts`, its **three** callers (`index.ts`, `routes/internal-agent.ts`, `services/companies.ts`).
 
 - [ ] **Step 1: Failing test** — for a marketplace-managed company, the **crew** seeders are skipped while the **infrastructure** seeders (Commander, Steward) still run. Discriminator: assert Commander/Steward were ensured AND a crew role (e.g. Scout) was not.
 - [ ] **Step 2: Run → FAIL.**
@@ -95,9 +104,40 @@ git commit -m "fix(crew): gate only crew seeders on marketplace management (Comm
 
 **This is the task that unfreezes the whole update pipeline.**
 
-**Files:** `server/src/services/companies.ts` (~`:135-157`), `server/src/services/marketplace-install/team-installer.ts`, catalog fetch + snapshot fallback.
+**Files:** `server/src/services/companies.ts` (~`:135-157`), `server/src/services/marketplace-install/orchestrator.ts` (`:243`), `server/src/services/marketplace-install/team-installer.ts`, catalog fetch + snapshot fallback.
 
-- [ ] **Step 1: Read the existing pre-install gate** (`companies.ts:135-147`) and understand why it can never fire (it checks for a non-`@legacy` agent *before* any install could have run).
+### Pre-decided before implementation (2026-07-24) — do NOT relitigate mid-task
+
+A reviewer flagged that T2.3 hits a hard throw at `orchestrator.ts:243`
+(`"Team install requires targetDepartmentId"`), and that the choice was
+"bypass the orchestrator (losing the operation store + rollback) vs. revisit
+the throw". **Decision: go through the orchestrator and relax the throw.**
+Verified before deciding:
+
+1. **The user-facing guard is at the route, not the orchestrator.**
+   `routes/marketplace-installs.ts:338` returns 400 for an agent/team install
+   with no `targetDepartmentId`, and it fires **before** `startInstallOperation`.
+   So relaxing the orchestrator throw loosens **no HTTP path** — it is a
+   redundant backstop for traffic the route already rejected. Leave the route
+   400 exactly as it is; T2.1 deliberately preserved it.
+2. **Bypassing would fork the install path.** The orchestrator owns the
+   `marketplace_install_operations` record, `cascadeResults`, and
+   `idempotencyKey` dedupe — all of which **T2.7 (diff/merge) and T2.8
+   (re-materialization) build on**. A second, divergent bootstrap path is the
+   exact trap class this project keeps paying for.
+3. **Relax it to team-only null tolerance**, citing D21 / Decision #111
+   (null parent = company-wide). The agent branch never passes
+   `targetDepartmentId` to `installAgent` at all, so nothing else moves.
+4. **`requestedByUserId` needs no schema change.** The column is nullable
+   (`marketplace_install_operations.ts:47`) though `StartInstallOpts` types it
+   `string`; company create has the founding user's id, so pass it.
+5. **Use a deterministic `idempotencyKey`** (e.g. `bootstrap-crew:<companyId>`).
+   `startInstallOperation:76-79` returns the existing operation on a key hit,
+   which makes a retried or concurrent create incapable of double-installing
+   the crew. Do not skip this — company create already retries on issue-prefix
+   collision.
+
+- [ ] **Step 1: Read the existing pre-install gate** (`companies.ts:135-147`) and understand why it can never fire (it checks for a non-`@legacy` agent *before* any install could have run). Note T2.2 has since hoisted `ensureInternalAgentConfig` out of that block — do not push it back in.
 - [ ] **Step 2: Failing integration test (L4, real DB)** — a newly created company has the marketplace crew: real `agent:aoa-curated/…` `templateOrigin` (**not** `@legacy`), non-null `templateVersion`, and populated `skillKeys`. Model on `server/src/__tests__/*.integration.test.ts`; Windows-runnable (`initdbFlags: ["--encoding=UTF8","--locale=C"]`, honour `AOA_RUN_WIN_INTEGRATION=1`). **It must actually run — say so plainly if it skips.**
 - [ ] **Step 3: Failing test — offline path.** With the network stubbed out, the **bundled snapshot** produces the same roster (D11). This is the discriminator that proves creation never depends on the network.
 - [ ] **Step 4: Run → FAIL.**
