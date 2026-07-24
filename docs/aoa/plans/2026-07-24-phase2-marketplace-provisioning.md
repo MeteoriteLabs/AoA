@@ -846,11 +846,45 @@ git commit -m "fix(marketplace): install crew agents in a runnable state (status
 > the recommendation** — protection is an AoA fact about the agent, and this
 > task's own "Why" says exactly that.
 
-- [ ] **Step 1: Failing tests** — uninstalling a **protected** origin (Commander, Steward) returns a clear refusal; uninstalling **any other** marketplace agent still succeeds (the discriminator — proves the guard isn't blanket). Include a case for a **protected agent whose `templateOrigin` is NULL** (Steward today) — a set keyed only on origin would silently fail to protect it.
-- [ ] **Step 2: Run → FAIL.** **Step 3: Implement** a server-side protected-origin set + refusal. **Step 4: Run → PASS.** **Step 5: Commit.**
+- [x] **Step 1: Failing tests** — uninstalling a **protected** origin (Commander, Steward) returns a clear refusal; uninstalling **any other** marketplace agent still succeeds (the discriminator — proves the guard isn't blanket). Include a case for a **protected agent whose `templateOrigin` is NULL** (Steward today) — a set keyed only on origin would silently fail to protect it.
+- [x] **Step 2: Run → FAIL.** **Step 3: Implement** a server-side protected-origin set + refusal. **Step 4: Run → PASS.** **Step 5: Commit.**
 ```bash
 git commit -m "feat(marketplace): refuse uninstall of protected AoA agent origins (D23)"
 ```
+
+### Execution result (2026-07-24) — recommendation (a) taken, and the real hole was elsewhere
+
+**Keyed on identity, not origin,** as the blocker note recommended:
+`server/src/services/protected-agents.ts` recovers a canonical **role slug** from
+*either* signal a row can carry — the `templateOrigin` (`…/commander@legacy`,
+`agent:aoa-curated/aoa-steward`) **or** the `name` — and either alone is enough.
+Origin covers a renamed row; name covers the NULL-origin row the backfill never
+reaches. Ablated both ways: an origin-only predicate (the original spec) fails 9
+of 28 tests including every Steward case; a blanket predicate fails 16.
+
+**The gap the per-agent design would have missed entirely.**
+`DELETE /agents/:id` already refuses **every** `kind='aoa'` row before the founder
+gate (`agents.ts` FX-del), so Commander and Steward were never deletable there.
+`uninstallTeam` deletes member agents with raw SQL and never touches that route —
+it was the only unguarded path to destroying a protected agent, and it is now
+where the refusal lives (`ProtectedAgentUninstallError`, raised **before** the
+transaction opens; route answers 409, not the catch-all 500).
+
+**Whole-team refusal, deliberately.** Not "delete the rest, keep the protected
+ones": the operation is documented all-or-nothing and a `deletedAgentIds` that
+silently omits requested members is a worse failure than a named refusal.
+⚠️ **Consequence for T2.4:** once Steward joins `team:aoa-curated/default-crew`,
+that team becomes un-uninstallable through this route. Intended, but product-visible.
+
+`crew-repair.ts`'s parallel `INFRASTRUCTURE_*` lists now derive from the same
+constant so the two cannot drift; its **matching rule is left local** on purpose
+(it requires a NULL origin for the name match — right for refusal-suppression
+after roster matching, wrong for a destructive guard).
+
+**Not tamper-proof, and the docblock says so:** a founder who renames a
+NULL-origin Steward *first* erases its last signal. That closes for Steward the
+moment T2.4 publishes it. This is a guardrail against destructive operations,
+not an authorization boundary.
 
 ---
 

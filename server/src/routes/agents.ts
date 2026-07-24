@@ -57,6 +57,7 @@ import { environmentRuntimeService } from "../services/environment-runtime.js";
 import { buildApprovalHubEmit, emitHubItem } from "../services/hub-source-producers.js";
 import { logger } from "../middleware/logger.js";
 import { liveRunsForCompany, liveRunsForIssue } from "./agents-live-runs.js";
+import { protectedAgentRefusal, protectedAgentRole } from "../services/protected-agents.js";
 import { getProviderStatus } from "../adapters/provider-status.js";
 import { realProviderStatusDeps } from "../adapters/provider-status-deps.js";
 import { resolveModel, ShellUnsafeModelError } from "../services/internal-agent/model-resolution.js";
@@ -1683,6 +1684,20 @@ export function agentRoutes(db: Db) {
     const existing = await svc.getById(id);
     if (!existing) {
       res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+    // D23 (T2.5): protected AoA agents are refused on identity, independent of
+    // `kind`. Deliberately BEFORE the FX-del check below: that one is scoped to
+    // kind='aoa', so it would stop covering a protected agent the day crew rows
+    // become individually removable. Also gives a refusal that names the reason.
+    const protectedRole = protectedAgentRole(existing);
+    if (protectedRole) {
+      res.status(409).json({
+        error: protectedAgentRefusal(
+          [{ name: existing.name, role: protectedRole }],
+          "Deleting this agent",
+        ),
+      });
       return;
     }
     // FX-del: AoA agents (Commander + sub-agents) are reserved framework

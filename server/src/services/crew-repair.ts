@@ -93,6 +93,7 @@ import {
   DEFAULT_CREW_TEAM_ITEM_ID,
   crewBootstrapIdempotencyKey,
 } from "./marketplace-install/crew-bootstrap.js";
+import { PROTECTED_AGENT_NAMES, PROTECTED_AGENT_SLUGS } from "./protected-agents.js";
 import { provisionCompanyCrew, type CrewProvisioningOutcome } from "./crew-provisioning.js";
 import { ADOPTED_TEMPLATE_VERSION } from "./marketplace-install/crew-constants.js";
 
@@ -765,9 +766,16 @@ function matchesLegacySlug(origin: string | null, slugs: ReadonlySet<string>): b
  * Matched on the legacy origin slug first so a RENAMED Commander is still
  * recognised; a renamed Steward (which has no origin — it is absent from
  * `CREW_NAMES`) falls through to the refusal, which is correct.
+ *
+ * The membership comes from {@link PROTECTED_AGENT_ROLES} (D23) so the two
+ * cannot drift — the agents AoA refuses to uninstall are exactly the agents AoA
+ * seeds for itself. The **matching rule stays local**: `protectedAgentRole`
+ * matches a name regardless of origin, which is right for a destructive
+ * refusal but wrong here, where a non-NULL origin means the row has already
+ * been through roster matching.
  */
-const INFRASTRUCTURE_LEGACY_SLUGS: ReadonlySet<string> = new Set(["commander", "steward"]);
-const INFRASTRUCTURE_NAMES: ReadonlySet<string> = new Set(["Commander", "Steward"]);
+const INFRASTRUCTURE_LEGACY_SLUGS: ReadonlySet<string> = PROTECTED_AGENT_SLUGS;
+const INFRASTRUCTURE_NAMES: ReadonlySet<string> = PROTECTED_AGENT_NAMES;
 
 function isInfrastructureRow(row: CrewAgentSnapshot): boolean {
   if (matchesLegacySlug(row.templateOrigin, INFRASTRUCTURE_LEGACY_SLUGS)) return true;

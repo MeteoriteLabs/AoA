@@ -50,6 +50,13 @@ per pass; the route exists for an operator who already knows a specific company
 is stuck. Both share a 6-hour per-company cooldown — send `{"force": true}` to
 override it after fixing the underlying cause.
 
+`DELETE .../marketplace/teams/{teamId}` is founder-only and permanently deletes
+every agent on the team. It answers **409** — with `{ error, protectedAgents }` —
+when the roster contains a **protected AoA agent** (Commander, Steward). Those
+agents are part of AoA itself, so nothing is deleted and the team stays
+installed; the response names each blocking agent. Protection is decided
+server-side from the agent's identity, not from catalog metadata.
+
 ## Company Plugins
 
 Mounted under `/api/companies/{companyId}/plugins`:
