@@ -7,7 +7,7 @@ import {
   readAoaManagedServerNames,
   removeLegacyCwdManifest,
   reservedMcpServerNameCollisions,
-  resolveMcpManagedManifestPath,
+  tryResolveMcpManagedManifestPath,
   sweepAoaManagedEntries,
   tryWriteAoaManagedServerNames,
   type McpServerSpec,
@@ -152,7 +152,9 @@ export async function writeGeminiMcpSettingsJson(
   const externalServers = options.externalServers ?? {};
   const geminiDir = path.join(cwd, ".gemini");
   await fs.mkdir(geminiDir, { recursive: true });
-  const manifestPath = resolveMcpManagedManifestPath({
+  // Best-effort: a resolution failure means "no ownership tracking this run",
+  // never an aborted MCP config write (M-3).
+  const manifestPath = tryResolveMcpManagedManifestPath({
     adapter: "gemini",
     cwd,
     companyId: options.companyId,

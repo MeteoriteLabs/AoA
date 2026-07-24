@@ -7,7 +7,7 @@ import {
   readAoaManagedServerNames,
   removeLegacyCwdManifest,
   reservedMcpServerNameCollisions,
-  resolveMcpManagedManifestPath,
+  tryResolveMcpManagedManifestPath,
   sweepAoaManagedEntries,
   tryWriteAoaManagedServerNames,
   type McpServerSpec,
@@ -199,7 +199,9 @@ export async function writeOpenCodeMcpConfigJson(
   const externalServers = options.externalServers ?? {};
   await fs.mkdir(cwd, { recursive: true });
   const target = path.join(cwd, "opencode.json");
-  const manifestPath = resolveMcpManagedManifestPath({
+  // Best-effort: a resolution failure means "no ownership tracking this run",
+  // never an aborted MCP config write (M-3).
+  const manifestPath = tryResolveMcpManagedManifestPath({
     adapter: "opencode",
     cwd,
     companyId: options.companyId,

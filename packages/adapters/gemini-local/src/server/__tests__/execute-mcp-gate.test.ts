@@ -160,6 +160,64 @@ describe("gemini execute — C2 MCP presence gate", () => {
     }
   });
 
+  it("warns loudly when folder trust would silently disable ALL MCP (B7)", async () => {
+    const { root, workspace, commandPath } = await setup();
+    const previousHome = process.env.HOME;
+    const previousUserProfile = process.env.USERPROFILE;
+    try {
+      // os.homedir() reads HOME on POSIX and USERPROFILE on Windows.
+      process.env.HOME = root;
+      process.env.USERPROFILE = root;
+      await fs.mkdir(path.join(root, ".gemini"), { recursive: true });
+      await fs.writeFile(
+        path.join(root, ".gemini", "settings.json"),
+        JSON.stringify({ security: { folderTrust: { enabled: true } } }),
+        "utf8",
+      );
+
+      const logs = await runOnce({
+        workspace,
+        commandPath,
+        mcpBridge: BRIDGE,
+        mcpServers: { notion: NOTION },
+      });
+
+      const out = logs.join("");
+      expect(out).toContain("ZERO MCP servers");
+      expect(out).toContain("NO TOOLS");
+      expect(out).toContain("--skip-trust does NOT fix this");
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = previousUserProfile;
+      await fs.rm(root, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
+  it("stays quiet when folder trust is not enabled (no crying wolf)", async () => {
+    const { root, workspace, commandPath } = await setup();
+    const previousHome = process.env.HOME;
+    const previousUserProfile = process.env.USERPROFILE;
+    try {
+      process.env.HOME = root;
+      process.env.USERPROFILE = root;
+      const logs = await runOnce({
+        workspace,
+        commandPath,
+        mcpBridge: BRIDGE,
+        mcpServers: { notion: NOTION },
+      });
+      expect(logs.join("")).not.toContain("folder trust");
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = previousUserProfile;
+      await fs.rm(root, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
   it("surfaces a classified connector skip on the run log", async () => {
     const { root, workspace, commandPath } = await setup();
     try {

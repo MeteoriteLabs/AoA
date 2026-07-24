@@ -173,11 +173,13 @@ Revised status: **codex ✅ / opencode ✅ / gemini ❌ (auth-blocked)**.
 
 **A NEW PRE-EXISTING BUG FOUND WHILE PROBING (not connector-related — worth its own fix):**
 
+> **⚠ B7 BELOW IS SUPERSEDED BY B7-CORRECTED (see the amendment list at the end).** Its proposed remedy — passing `--skip-trust` — was empirically DISPROVEN: the flag suppresses the warning while leaving MCP disabled. Do not implement it. Its claim that folder trust is "independent of connectors" is also wrong; folder trust decides whether the connector config is read at all. The original text is kept below only as the record of how the issue was first found.
+
 **B7 — AoA's gemini adapter never passes `--skip-trust`, so MCP servers may be silently disabled.** gemini-cli has a workspace-trust model: in an untrusted folder it prints *"MCP servers are configured but disabled because this folder is untrusted. User-level servers are also suppressed…"* and disables **every** MCP server — which would include AoA's own `aoa` bridge, not just connectors. `grep -rnE "skip-trust|skipTrust|trust" packages/adapters/gemini-local/src/` returns NOTHING, and the argv built in `gemini-local/src/server/execute.ts:302-312` is `["--output-format","stream-json", …, "--approval-mode","yolo", "--sandbox…", "--prompt", …]` — no trust flag. **Consequence: gemini agents running in an untrusted workspace may be getting ZERO AoA tools, silently.** Needs (a) confirming what gemini treats as trusted (a git repo? a previously-approved folder?) and (b) most likely passing `--skip-trust` in the adapter. This is independent of connectors and should be fixed regardless of whether gemini connectors ship.
 
 ### GATE RESULT — FINAL (all three verified; full scope restored)
 
-**gemini is VERIFIED.** With an auth method configured in `~/.gemini/settings.json`, a real `gemini --skip-trust -p "say ok"` run from a dir containing `.gemini/settings.json` with `{"mcpServers":{"probe":{"httpUrl":"http://127.0.0.1:8993/mcp","headers":{"Authorization":"Bearer ${AOA_PROBE_TOKEN}"}}}}` and `AOA_PROBE_TOKEN=sentinel-98765` delivered **`Authorization: Bearer sentinel-98765`** to the local listener — **expanded**. So `${VAR}` DOES resolve in gemini `headers`.
+**gemini is VERIFIED.** (Note: the `--skip-trust` in this probe command was incidental, NOT load-bearing — see B7-CORRECTED. The run succeeded because folder trust was DISABLED, which is the default; the flag itself does not enable MCP.) With an auth method configured in `~/.gemini/settings.json`, a real `gemini --skip-trust -p "say ok"` run from a dir containing `.gemini/settings.json` with `{"mcpServers":{"probe":{"httpUrl":"http://127.0.0.1:8993/mcp","headers":{"Authorization":"Bearer ${AOA_PROBE_TOKEN}"}}}}` and `AOA_PROBE_TOKEN=sentinel-98765` delivered **`Authorization: Bearer sentinel-98765`** to the local listener — **expanded**. So `${VAR}` DOES resolve in gemini `headers`.
 
 Method note for re-runs: gemini connects MCP servers at STARTUP, before the model call. The probe's model call returned 403 (key invalid/quota) and the answer was still obtained — an auth *method* must be configured to get past the pre-flight check, but a working model quota is NOT required.
 
@@ -193,7 +195,7 @@ Method note for re-runs: gemini connects MCP servers at STARTUP, before the mode
 **Regression probes for Plan 2b (all auth-free or near-enough):**
 - codex: `codex mcp get <name> --json` (reports the full transport struct)
 - opencode: `opencode mcp list` (connects, no provider auth needed)
-- gemini: `gemini --skip-trust -p …` with an auth method configured (model quota not required)
+- gemini: `gemini -p …` with an auth method configured (model quota not required) **and folder trust disabled** — see B7-CORRECTED; `--skip-trust` does NOT substitute for disabling folder trust
 
 ## Execution notes (Plan 2b)
 
@@ -253,6 +255,26 @@ An invalid config does not degrade gracefully — opencode loads **zero** MCP se
 - **I2 (Important) — the manifest was untrusted input.** `.aoa-mcp-managed.json` sat in the agent's cwd: a checked-out user repo AoA does not control and nothing gitignores. A planted — or merely committed-then-cloned — manifest claiming the user's own `mcp` entries would delete them on the next run. Relocated to AoA-private state under `resolveAoaInstanceRootForAdapter()` (`$AOA_HOME/instances/<id>/mcp-managed/<adapter>/<sha256(company|agent|cwd)>.json`). This closes the untrusted-input path AND the per-repo pollution (M5) together. The scope is hashed so untrusted ids never become path segments and long cwds never blow MAX_PATH. A legacy in-repo manifest is DELETED WITHOUT BEING READ.
 - **I3 (Important) — secret + empty `headerTemplate`.** `routes/mcp-connectors.ts:107` defaults `headerTemplate` to `{}` and never requires a `${TOKEN}` reference, so a UI-created connector could have a secret and no auth header. codex consumed `authTokenEnvVar` and was fine; opencode and gemini emitted `headers: {}` — no auth, no skip. All three writers now synthesize the conventional bearer header when a secret exists and no header references it, in each CLI's own syntax.
 - **Minors fixed:** M1 (codex now skips a stdio connector with an unsafe env key instead of silently partially delivering), M3 (the `secret_unreachable` detector is gated on the new `McpStdioServerSpec.secretEnvVar` — set only when the DB row had a `secretValue` — rather than on placeholder shape, removing the false positive on secretless connectors), M6 (opencode's header/env rewrite builds into a null-prototype map so a key named `__proto__` survives), M9 (docstring corrected: a partially-malformed array's surviving string subset IS acted on), M7-partial (gemini logs skips to stderr, matching codex and opencode).
+
+**B7-CORRECTED — gemini folder trust disables ALL MCP; `--skip-trust` is NOT the fix (supersedes B7).**
+
+B7 parked this as "pre-existing, independent of connectors". Both halves were wrong. It is not independent — folder trust decides whether the gemini writer's output is ever READ — and its proposed remedy does not work.
+
+Probed against the real CLI under an isolated HOME with `security.folderTrust.enabled: true`, using a stdio recorder that writes a marker file the instant it is spawned (a spawn signal independent of gemini's model call, which 403s without quota):
+
+| config | recorder spawned? |
+|---|---|
+| plain | **NO** — "MCP servers are configured but disabled because this folder is untrusted" |
+| **`--skip-trust`** | **NO** — warning suppressed, servers still disabled |
+| per-server `"trust": true` | **NO** |
+
+With folder trust DISABLED (the default) all three spawn normally.
+
+`--skip-trust` is documented as "Trust the current workspace for this session", which reads like the remedy. It is not: it hides the WARNING while MCP stays off, which is strictly worse than doing nothing because the operator loses the only signal explaining why the agent had no tools. **Do not add `--skip-trust` to the adapter argv.** There is also no trust registry AoA could legitimately write — `~/.gemini/projects.json` is only a project-NAME map, and no `trustedFolders.json` is ever created.
+
+**Status: gemini connector delivery is verified ONLY with folder trust disabled (the default). With folder trust enabled it is KNOWN-BROKEN — every MCP server is dropped, including AoA's own `aoa` bridge, so the agent runs with NO TOOLS and still exits 0 — and no programmatic remedy is currently known.**
+
+**Shipped mitigation (detect-and-warn):** `packages/adapters/gemini-local/src/server/gemini-folder-trust.ts` checks both settings scopes gemini reads (`~/.gemini/settings.json` and `<cwd>/.gemini/settings.json`) for `security.folderTrust.enabled` (plus the legacy top-level shapes), and `execute()` emits a prominent stderr warning naming the setting and stating that the agent will have no tools. Best-effort: unreadable/malformed settings never fail a run and never produce a false positive. The warning text explicitly tells future maintainers that `--skip-trust` does not fix this, and a test asserts that sentence stays put.
 
 **B2N14 — Task 6 follow-ups, deliberately NOT fixed here.**
 

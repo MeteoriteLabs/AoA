@@ -171,6 +171,7 @@ export type {
 export {
   AOA_MCP_MANIFEST_FILENAME,
   resolveMcpManagedManifestPath,
+  tryResolveMcpManagedManifestPath,
   readAoaManagedServerNames,
   writeAoaManagedServerNames,
   tryWriteAoaManagedServerNames,

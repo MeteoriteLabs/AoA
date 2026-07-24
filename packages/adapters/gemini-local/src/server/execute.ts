@@ -34,6 +34,10 @@ import {
 } from "./parse.js";
 import { firstNonEmptyLine } from "./utils.js";
 import { writeGeminiMcpSettingsJson } from "./gemini-settings-json.js";
+import {
+  detectGeminiFolderTrust,
+  geminiFolderTrustWarning,
+} from "./gemini-folder-trust.js";
 
 function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean {
   const raw = env[key];
@@ -165,6 +169,19 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         "stderr",
         `[aoa] gemini MCP connector "${skip.serverName}" skipped: ${skip.reason}\n`,
       );
+    }
+
+    // B7 (corrected): everything above is moot if gemini folder trust is on —
+    // it disables EVERY MCP server, including the bridge we just wrote, and
+    // still exits 0. There is no known programmatic remedy (`--skip-trust` and
+    // per-server `trust` were both empirically disproven), so the least-bad
+    // behaviour is to make it loud. Best-effort: detection never fails the run.
+    const folderTrust = await detectGeminiFolderTrust(cwd).catch(() => ({
+      enabled: false,
+      source: null,
+    }));
+    if (folderTrust.enabled) {
+      await onLog("stderr", geminiFolderTrustWarning(folderTrust.source));
     }
   }
 

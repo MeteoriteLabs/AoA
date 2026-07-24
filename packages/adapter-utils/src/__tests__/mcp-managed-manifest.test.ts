@@ -6,6 +6,7 @@
 // able to remove a server the user added by hand.
 
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -14,6 +15,8 @@ import {
   removeLegacyCwdManifest,
   resolveMcpManagedManifestPath,
   sweepAoaManagedEntries,
+  tryResolveMcpManagedManifestPath,
+  tryWriteAoaManagedServerNames,
   writeAoaManagedServerNames,
   AOA_MCP_MANIFEST_FILENAME,
 } from "../mcp-managed-manifest.js";
@@ -110,6 +113,25 @@ describe("resolveMcpManagedManifestPath (I2 — never in the agent's repo)", () 
     expect(paths.size).toBe(5);
   });
 
+  it("keys the digest with a NUL delimiter (persisted on-disk contract)", () => {
+    // Pins the exact delimiter BYTE, not just "some delimiter". Changing it
+    // silently re-points every already-written manifest, so a future edit that
+    // swaps NUL for a space (e.g. while making this file non-binary to git)
+    // must fail here rather than orphan real users' ownership records.
+    const expected = createHash("sha256")
+      .update(`c1\u0000a1\u0000${path.resolve("/repo")}`)
+      .digest("hex")
+      .slice(0, 32);
+    const resolved = resolveMcpManagedManifestPath({
+      adapter: "opencode",
+      cwd: "/repo",
+      companyId: "c1",
+      agentId: "a1",
+      env,
+    });
+    expect(path.basename(resolved)).toBe(`${expected}.json`);
+  });
+
   it("does not let an id collide with a neighbour by concatenation", () => {
     const base = { adapter: "opencode", cwd: "/repo", env };
     const a = resolveMcpManagedManifestPath({ ...base, companyId: "a", agentId: "bc" });
@@ -132,6 +154,40 @@ describe("resolveMcpManagedManifestPath (I2 — never in the agent's repo)", () 
   it("falls back to a safe adapter segment for an unexpected adapter key", () => {
     const resolved = resolveMcpManagedManifestPath({ adapter: "../evil", cwd: "/repo", env });
     expect(resolved).toContain(`${path.sep}unknown${path.sep}`);
+  });
+});
+
+describe("tryResolveMcpManagedManifestPath (M-3 robustness)", () => {
+  it("returns a path when the instance root resolves", () => {
+    expect(
+      tryResolveMcpManagedManifestPath({
+        adapter: "opencode",
+        cwd: "/repo",
+        env: { AOA_HOME: path.join(os.tmpdir(), "h") } as NodeJS.ProcessEnv,
+      }),
+    ).toContain("mcp-managed");
+  });
+
+  it("returns null instead of throwing on a malformed AOA_INSTANCE_ID", () => {
+    // resolveAoaInstanceRootForAdapter throws here. Called bare, that throw
+    // would abort the whole MCP config write — costing the agent ALL of its
+    // tools over an env-var typo — which is exactly what the best-effort
+    // envelope around the manifest exists to prevent.
+    const env = {
+      AOA_HOME: path.join(os.tmpdir(), "h"),
+      AOA_INSTANCE_ID: "../../etc",
+    } as NodeJS.ProcessEnv;
+    expect(() =>
+      resolveMcpManagedManifestPath({ adapter: "opencode", cwd: "/repo", env }),
+    ).toThrow();
+    expect(
+      tryResolveMcpManagedManifestPath({ adapter: "opencode", cwd: "/repo", env }),
+    ).toBeNull();
+  });
+
+  it("read/write treat a null path as 'ownership tracking unavailable'", async () => {
+    expect(await readAoaManagedServerNames(null)).toEqual([]);
+    expect(await tryWriteAoaManagedServerNames(null, ["aoa"])).toBe(false);
   });
 });
 
