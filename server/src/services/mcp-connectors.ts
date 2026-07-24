@@ -58,6 +58,34 @@ export function envVarNameFor(serverName: string): string {
   return `AOA_MCP_${slug}_TOKEN`;
 }
 
+/**
+ * Adapter types whose runtime can actually host external MCP servers, and are
+ * therefore worth a connector DB read before a run.
+ *
+ * SINGLE SOURCE OF TRUTH for the connector gate — both delivery call sites
+ * (`heartbeat.ts` and the crew `aoa-agents/runner.ts`) import
+ * `adapterSupportsConnectors` from here rather than repeating the list. Lives
+ * in this pure module (no drizzle, no `@armyofagents/db`) so the two callers
+ * share it without either importing the other, and so tests that mock
+ * `mcp-connectors-loader.js` wholesale still get the real predicate.
+ *
+ * Everything NOT listed here (`process`, `http`, `cursor`, `hermes_local`, the
+ * test adapters) has no MCP client at all: resolving connectors for them would
+ * be wasted I/O plus a needless per-run failure surface, so they must never
+ * trigger the lookup.
+ */
+export const CONNECTOR_CAPABLE_ADAPTERS: ReadonlySet<string> = new Set([
+  "claude_local",
+  "codex_local",
+  "gemini_local",
+  "opencode_local",
+]);
+
+/** True when `adapterType` can consume external MCP connectors. */
+export function adapterSupportsConnectors(adapterType: string | null | undefined): boolean {
+  return typeof adapterType === "string" && CONNECTOR_CAPABLE_ADAPTERS.has(adapterType);
+}
+
 export interface ConnectorSelectionInput<T extends { id: string; status: string }> {
   connectors: T[];
   enabledConnectorIds: Set<string>;

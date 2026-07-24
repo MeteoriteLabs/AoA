@@ -94,6 +94,7 @@ import {
   resolveHeartbeatEffectiveAutonomy,
 } from "./heartbeat-mcp.js";
 import { resolveAgentConnectors } from "./mcp-connectors-loader.js";
+import { adapterSupportsConnectors } from "./mcp-connectors.js";
 
 export {
   cancelCrewRunsForAgent,
@@ -4272,19 +4273,23 @@ export function heartbeatService(db: Db) {
         effectiveAutonomy,
       } as const;
 
-      // MCP connectors (Plan 1, claude_local ONLY): resolve the company's
-      // enabled connectors for THIS agent, build adapter specs + the env map
-      // carrying the real secrets, and thread both into the delivery. Secrets
-      // never enter the config FILE — only `${AOA_MCP_*_TOKEN}` placeholders —
-      // and land in the spawn env via the delivered config.env.
+      // MCP connectors: resolve the company's enabled connectors for THIS
+      // agent, build adapter specs + the env map carrying the real secrets, and
+      // thread both into the delivery. Secrets never enter the config FILE —
+      // only `${AOA_MCP_*_TOKEN}` placeholders — and land in the spawn env via
+      // the delivered config.env.
       //
-      // Scoped to claude_local: prepareHeartbeatMcpDelivery's non-claude early
-      // return discards these fields, so loading them for other adapters would
-      // be wasted DB I/O (and a needless failure surface) on every codex/
-      // opencode/gemini/hermes run. Plan 2 wires the other adapters separately.
+      // Scoped to CONNECTOR-CAPABLE adapters (Plan 2b Task 3, widened from
+      // claude_local-only): the four CLI adapters can host external MCP
+      // servers, so all four get the delivery — claude via its `--mcp-config`
+      // file, the rest via `ctx.mcpServers` + `config.env`. `process`/`http`/
+      // `cursor`/`hermes_local` have no MCP client at all, so resolving for
+      // them would be wasted DB I/O and a needless per-run failure surface.
+      // The predicate lives in the pure `mcp-connectors.ts` and is shared with
+      // the crew runner — do not inline the list here.
       let extraMcpServers: Record<string, McpServerSpec> | undefined;
       let connectorEnv: Record<string, string> | undefined;
-      if (agent.adapterType === "claude_local") {
+      if (adapterSupportsConnectors(agent.adapterType)) {
         const resolved = await resolveAgentConnectors(db, {
           companyId: agent.companyId,
           agentId: agent.id,
@@ -4547,6 +4552,12 @@ export function heartbeatService(db: Db) {
           executionTarget,
           runtimeCommandSpec,
           mcpBridge: heartbeatMcpDelivery.mcpBridge,
+          // Plan 2b Task 3: the external connector specs, on the carrier the
+          // per-adapter writers (Tasks 4-6) read. Inert for claude_local, which
+          // already receives them through its generated `--mcp-config` file.
+          // The matching `AOA_MCP_*_TOKEN` secrets travel separately in
+          // `runScopedConfig.env` (adapters copy config.env into the spawn env).
+          mcpServers: heartbeatMcpDelivery.extraMcpServers,
           onLog: onLogWithOutput,
           onMeta: onAdapterMeta,
           authToken: authToken ?? undefined,

@@ -247,3 +247,62 @@ it("not claimable (concurrent): atomic claim empty → adapter NOT called, retur
   expect(r9.status).toBe("succeeded");
   expect(execMock).not.toHaveBeenCalled();
 });
+it("NON-claude crew (codex_local): connectorEnv merged into delivered config.env AND specs handed over on ctx.mcpServers (Plan 2b Task 3)", async () => {
+  execMock.mockClear(); resolveConnectorsMock.mockClear();
+  // The Plan-2b widening: a codex crew agent is connector-capable, so the loader
+  // runs for it and BOTH halves of the delivery must arrive — the real token in
+  // config.env (every adapter copies config.env into its spawn env) and the
+  // specs on the ctx.mcpServers carrier that Tasks 4-6 will read.
+  resolveConnectorsMock.mockResolvedValueOnce({
+    extraMcpServers: { notion: { kind:"http", url:"https://mcp.notion.com/mcp", headers:{ Authorization:"Bearer ${AOA_MCP_NOTION_TOKEN}" } } },
+    connectorEnv: { AOA_MCP_NOTION_TOKEN: "secret-abc" },
+  });
+  const db:any = {
+    select:()=>ch([{ id:"cx-conn", companyId:"co-1", name:"Scribe", adapterType:"codex_local", adapterConfig:{}, runtimeConfig:{ aoa:{ instruction:"do extraction", role:"scribe" } } }]),
+    insert:()=>({ values:()=>({ returning:()=>Promise.resolve([{id:"run-cx"}]) }) }),
+    update:()=>ch([{ id:"e1" }]),
+  };
+  await runAoaAgent(db, "cx-conn", { companyId:"co-1", source:"discussion_entry_pending", entryId:"e1" });
+
+  // (a) the gate widened: the loader ran for a NON-claude adapter, per-agent.
+  expect(resolveConnectorsMock).toHaveBeenCalledTimes(1);
+  expect(resolveConnectorsMock.mock.calls[0][1]).toMatchObject({ companyId:"co-1", agentId:"cx-conn" });
+
+  const execArg = execMock.mock.calls[0][0];
+  // (b) the REAL token rides in the delivered config.env (→ child spawn env).
+  expect(execArg.config.env.AOA_MCP_NOTION_TOKEN).toBe("secret-abc");
+  // (c) the specs reach the adapter on the previously-inert carrier.
+  expect(execArg.mcpServers).toBeDefined();
+  expect(execArg.mcpServers.notion).toMatchObject({ kind:"http", url:"https://mcp.notion.com/mcp" });
+  // (d) claude-only delivery must NOT leak into a codex argv.
+  expect(execArg.config.args ?? []).not.toContain("--mcp-config");
+  expect(execArg.config.extraArgs ?? []).not.toContain("--mcp-config");
+});
+it("NON-claude crew (codex_local): NO connectors → delivered config.env byte-identical (Plan 2b regression guard)", async () => {
+  execMock.mockClear(); resolveConnectorsMock.mockClear();
+  resolveConnectorsMock.mockResolvedValueOnce({ extraMcpServers: {}, connectorEnv: {} });
+  const db:any = {
+    select:()=>ch([{ id:"cx-noconn", companyId:"co-1", name:"Scribe", adapterType:"codex_local", adapterConfig:{}, runtimeConfig:{ aoa:{ instruction:"do extraction", role:"scribe" } } }]),
+    insert:()=>({ values:()=>({ returning:()=>Promise.resolve([{id:"run-cxn"}]) }) }),
+    update:()=>ch([{ id:"e1" }]),
+  };
+  await runAoaAgent(db, "cx-noconn", { companyId:"co-1", source:"discussion_entry_pending", entryId:"e1" });
+  const execArg = execMock.mock.calls[0][0];
+  // No connector token merged in; env stays exactly what the runtime resolver set.
+  expect(execArg.config.env).toEqual({});
+  // And still no claude-only args on a codex delivery.
+  expect(execArg.config.args ?? []).not.toContain("--mcp-config");
+});
+it("NON-connector-capable crew (process): the connector DB read is skipped entirely (Plan 2b Task 3)", async () => {
+  execMock.mockClear(); resolveConnectorsMock.mockClear();
+  const db:any = {
+    select:()=>ch([{ id:"px-1", companyId:"co-1", name:"Scribe", adapterType:"process", adapterConfig:{}, runtimeConfig:{ aoa:{ instruction:"do extraction", role:"scribe" } } }]),
+    insert:()=>({ values:()=>({ returning:()=>Promise.resolve([{id:"run-px"}]) }) }),
+    update:()=>ch([{ id:"e1" }]),
+  };
+  await runAoaAgent(db, "px-1", { companyId:"co-1", source:"discussion_entry_pending", entryId:"e1" });
+  // `process` has no MCP client at all — widening the gate must not make it pay
+  // for a connector lookup (wasted I/O + a needless per-run failure surface).
+  expect(resolveConnectorsMock).not.toHaveBeenCalled();
+  expect(execMock.mock.calls[0][0].mcpServers).toBeUndefined();
+});

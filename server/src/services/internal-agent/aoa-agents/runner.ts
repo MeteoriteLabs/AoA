@@ -9,6 +9,7 @@ import { costService } from "../../costs.js";
 import { buildMcpConfig, buildMcpBridgeSpec } from "../cli-mode.js";
 import { stripUserMcpArgs } from "../../mcp-arg-sanitize.js";
 import { resolveAgentConnectors } from "../../mcp-connectors-loader.js";
+import { adapterSupportsConnectors } from "../../mcp-connectors.js";
 import type { McpServerSpec } from "@armyofagents/adapter-utils";
 import { resolveAdapterExecutionContext } from "../../heartbeat.js";
 import { resolveBridgeEntrypoint } from "./bridge-path.js";
@@ -364,18 +365,21 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
     // by the time any later step can fail — the `finally` unlink invariant
     // ("if we created the temp file we always remove it") holds regardless of
     // where a downstream error occurs.
-    // MCP connectors (Plan 2 Task 2, claude_local crew ONLY): resolve THIS
-    // agent's enabled company connectors — per-agent opt-in, so the REAL
-    // `agentId` (never null) — into adapter specs + the env map carrying the
-    // real secrets. Gated on claude_local exactly like the heartbeat site: only
-    // the claude branch below consumes these, so loading them for codex/
-    // opencode/gemini/process crew agents would be wasted DB I/O and a needless
-    // per-run failure surface (Plan 2 wires those adapters separately). Secrets
-    // ride ONLY in the delivered `config.env` (merged in the claude branch),
-    // never in the config FILE, which holds `${AOA_MCP_*_TOKEN}` placeholders.
+    // MCP connectors: resolve THIS agent's enabled company connectors —
+    // per-agent opt-in, so the REAL `agentId` (never null) — into adapter specs
+    // + the env map carrying the real secrets. Secrets ride ONLY in the
+    // delivered `config.env` (merged below for every adapter), never in the
+    // config FILE, which holds `${AOA_MCP_*_TOKEN}` placeholders.
+    //
+    // Gated on CONNECTOR-CAPABLE adapters (Plan 2b Task 3, widened from
+    // claude_local-only) using the same shared predicate as the heartbeat site:
+    // the four CLI adapters can host external MCP servers — claude consumes
+    // them via `--mcp-config`, the rest via `ctx.mcpServers` — while
+    // `process`/`http`/`cursor`/`hermes_local` have no MCP client at all and
+    // must not pay for the DB read.
     let extraMcpServers: Record<string, McpServerSpec> | undefined;
     let connectorEnv: Record<string, string> = {};
-    if (agent.adapterType === "claude_local") {
+    if (adapterSupportsConnectors(agent.adapterType)) {
       const resolved = await resolveAgentConnectors(db, {
         companyId: agent.companyId,
         agentId,
@@ -538,16 +542,23 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
     // + applyModelResolutionToConfig (i.e. post-secret-binding), so merging here
     // is not re-scrubbed downstream. Only add the env override when connectors
     // actually exist so the no-connector case is byte-identical to the pre-task
-    // delivery. `...claudeEnvMerge` is placed AFTER `...resolvedBaseConfig` (a
+    // delivery. `...connectorEnvMerge` is placed AFTER `...resolvedBaseConfig` (a
     // connector token wins over a same-named base key) but BEFORE `[argKey]`
     // (AoA's own args still override).
-    const claudeEnvMerge =
+    //
+    // Plan 2b Task 3: hoisted OUT of the claude branch. Every connector-capable
+    // adapter copies `config.env` into its child's spawn env, so this one merge
+    // is the whole secret-delivery path for codex/opencode/gemini too — the
+    // matching specs travel structurally on `ctx.mcpServers` below. Only the
+    // `--mcp-config` argv injection stays claude-only (the other CLIs would
+    // reject the flag).
+    const connectorEnvMerge =
       Object.keys(connectorEnv).length > 0
         ? { env: { ...(resolvedConfigRecord.env as Record<string, string> | undefined), ...connectorEnv } }
         : {};
     const config = isClaudeFamily
-      ? { ...resolvedBaseConfig, promptTemplate: triggerPrompt, ...claudeEnvMerge, [argKey]: ["--mcp-config", cfgPath, "--strict-mcp-config", ...stripUserMcpArgs(userTail)] }
-      : { ...resolvedBaseConfig, promptTemplate: triggerPrompt };
+      ? { ...resolvedBaseConfig, promptTemplate: triggerPrompt, ...connectorEnvMerge, [argKey]: ["--mcp-config", cfgPath, "--strict-mcp-config", ...stripUserMcpArgs(userTail)] }
+      : { ...resolvedBaseConfig, promptTemplate: triggerPrompt, ...connectorEnvMerge };
     const { executionTarget, runtimeCommandSpec } = resolveAdapterExecutionContext(config, adapter);
 
     // Audit follow-up #27: capture the redacted+capped prompt snapshot now so
@@ -618,6 +629,11 @@ export async function runAoaAgent(db: Db, agentId: string, payload: AoaTriggerPa
         context: { aoaInstruction: instruction, payload },
         executionTarget, runtimeCommandSpec,
         mcpBridge: bridgeSpec,
+        // Plan 2b Task 3: external connector specs on the carrier the
+        // per-adapter writers (Tasks 4-6) read. Inert for claude_local, which
+        // already receives them through the `--mcp-config` file written above.
+        // The matching `AOA_MCP_*_TOKEN` secrets travel in `config.env`.
+        mcpServers: extraMcpServers,
         humanQuestionCapabilities: adapter.humanQuestionCapabilities,
         onLog: async () => {}, onMeta: async () => {},
         authToken: undefined, onSpawn: () => {},
