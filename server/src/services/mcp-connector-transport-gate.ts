@@ -41,15 +41,25 @@ import { badRequest } from "../errors.js";
  *
  * Exported so its full truth table is unit-tested directly.
  */
+export function isTransportAllowed(
+  transport: string,
+  deploymentMode: string,
+  source: string,
+  trustTier?: string,
+): boolean {
+  if (transport !== "stdio") return true; // http is always fine
+  if (deploymentMode === "local_trusted") return true; // host is the founder's own machine
+  if (source === "catalog" && trustTier === "verified") return true; // verified catalog entries only (C4)
+  return false;
+}
+
 export function assertTransportAllowed(
   transport: string,
   deploymentMode: string,
   source: string,
   trustTier?: string,
 ): void {
-  if (transport !== "stdio") return; // http is always fine
-  if (deploymentMode === "local_trusted") return; // host is the founder's own machine
-  if (source === "catalog" && trustTier === "verified") return; // verified catalog entries only (C4)
+  if (isTransportAllowed(transport, deploymentMode, source, trustTier)) return;
   throw badRequest(
     "Only remote HTTP connectors can be added in this deployment. stdio connectors run a " +
       "command on the AoA host and are restricted to verified catalog entries.",

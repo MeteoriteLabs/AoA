@@ -16,6 +16,7 @@ import type { McpServerSpec } from "@armyofagents/adapter-utils";
 import { logger } from "../middleware/logger.js";
 import { buildConnectorSpecs, selectConnectorRowsForAgent, type ResolvedConnectorRow } from "./mcp-connectors.js";
 import { secretService, type SecretConsumerContext } from "./secrets.js";
+import { loadConfig } from "../config.js";
 
 export interface LoadEnabledConnectorRowsOptions {
   companyId: string;
@@ -87,7 +88,32 @@ export async function loadEnabledConnectorRows(
     enabledConnectorIds = new Set(links.map((link) => link.connectorId));
   }
 
-  const selected = selectConnectorRowsForAgent({ connectors, enabledConnectorIds, isCommander });
+  // FU-19: re-assert D7 against the host's CURRENT deployment mode. A connector
+  // admissible at CREATE time (e.g. stdio/byo under local_trusted) but not under
+  // the mode the host runs in NOW is dropped here rather than executed on a
+  // shared host. The skip is logged (never silent) so an operator can see why a
+  // connector stopped being delivered after a mode conversion.
+  const deploymentMode = loadConfig().deploymentMode;
+  const selected = selectConnectorRowsForAgent({
+    connectors,
+    enabledConnectorIds,
+    isCommander,
+    deploymentMode,
+    onSkip: (connector, reason) => {
+      logger.warn(
+        {
+          companyId,
+          connectorId: connector.id,
+          serverName: connector.serverName,
+          transport: connector.transport,
+          source: connector.source,
+          deploymentMode,
+          reason,
+        },
+        "MCP connector skipped at delivery: no longer admissible under the current deployment mode (D7)",
+      );
+    },
+  });
   if (selected.length === 0) return [];
 
   const secrets = secretService(db);

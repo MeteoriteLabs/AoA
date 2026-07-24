@@ -1,4 +1,5 @@
 import type { McpServerSpec } from "@armyofagents/adapter-utils";
+import { isTransportAllowed } from "./mcp-connector-transport-gate.js";
 
 /**
  * A connector row joined with its resolved secret value. Source table:
@@ -27,7 +28,17 @@ export type ConnectorSkipReason =
   | "missing_url"
   | "missing_command"
   | "unknown_transport"
-  | "malformed_row";
+  | "malformed_row"
+  /**
+   * D7 (FU-19): the connector was admissible when it was CREATED but the host's
+   * CURRENT deployment mode would refuse to create it now — e.g. a stdio/byo
+   * connector registered under `local_trusted`, then the instance converted to
+   * `authenticated`, where that command is remote code execution on shared
+   * infrastructure. The admission gate is create-time only; this is the
+   * delivery-time re-assertion. Named so it can later surface in the UI (FU-1
+   * already references a "D7 block" reason that did not previously exist).
+   */
+  | "d7_blocked";
 
 export interface ConnectorBuildResult {
   specs: Record<string, McpServerSpec>;
@@ -86,11 +97,34 @@ export function adapterSupportsConnectors(adapterType: string | null | undefined
   return typeof adapterType === "string" && CONNECTOR_CAPABLE_ADAPTERS.has(adapterType);
 }
 
+/**
+ * The D7-relevant fields a connector row carries at delivery. `trustTier` is
+ * NOT a stored column — the catalog trust tier only exists at install time — so
+ * it is always absent here, which makes the delivery re-gate FAIL-CLOSED for
+ * catalog stdio connectors under `authenticated`: without proof of `verified`,
+ * an stdio command on a shared host is refused. That is the safe reading of a
+ * gate whose entire justification is "may this host execute this command".
+ */
+interface D7RelevantRow {
+  transport?: string;
+  source?: string;
+  trustTier?: string;
+}
+
 export interface ConnectorSelectionInput<T extends { id: string; status: string }> {
   connectors: T[];
   enabledConnectorIds: Set<string>;
   /** Commander receives every ACTIVE connector, exempt from per-agent opt-in (D3). */
   isCommander: boolean;
+  /**
+   * The host's CURRENT deployment mode. When provided, D7 is re-asserted at
+   * delivery (FU-19) and a connector the current host would refuse to CREATE is
+   * dropped rather than delivered. Omitting it preserves the pre-FU-19
+   * behaviour (no re-gate) — callers on the real delivery path always pass it.
+   */
+  deploymentMode?: string;
+  /** Sink for connectors dropped by the delivery-time D7 re-gate, so the drop is nameable, not silent. */
+  onSkip?: (connector: T, reason: ConnectorSkipReason) => void;
 }
 
 /**
@@ -112,7 +146,27 @@ export function selectConnectorRowsForAgent<T extends { id: string; status: stri
 ): T[] {
   return input.connectors.filter((c) => {
     if (c.status !== "active") return false;
-    return input.isCommander || input.enabledConnectorIds.has(c.id);
+    if (!input.isCommander && !input.enabledConnectorIds.has(c.id)) return false;
+    // FU-19: re-assert D7 against the host's CURRENT mode. This is an ADDITIONAL
+    // exclusion layered on the allowlist above (status + opt-in) — never a
+    // denylist. A connector the current host could not be asked to create is
+    // dropped WITH a reason, not delivered. Skipped (not thrown): one
+    // inadmissible connector must degrade to "that connector is unavailable",
+    // never break the whole run.
+    if (input.deploymentMode !== undefined) {
+      const row = c as unknown as D7RelevantRow;
+      const allowed = isTransportAllowed(
+        row.transport ?? "",
+        input.deploymentMode,
+        row.source ?? "",
+        row.trustTier,
+      );
+      if (!allowed) {
+        input.onSkip?.(c, "d7_blocked");
+        return false;
+      }
+    }
+    return true;
   });
 }
 

@@ -1227,23 +1227,44 @@ describe("[ESC-3] D7 is evaluated at CREATE time and never again at delivery", (
     expect(skipped).toEqual([]);
   });
 
-  // DESIRED STATE. Delete `.fails` when a delivery-time re-gate (or a
-  // mode-transition sweep) lands. FU-1 already names a "D7 block" skip reason
-  // that `ConnectorSkipReason` does not actually have.
-  it.fails(
-    "[ESC-3] DESIRED: delivery must drop a connector the CURRENT host would refuse to create",
+  // FIXED (FU-19): the selector now re-asserts D7 against the host's CURRENT
+  // deployment mode and drops a connector it would refuse to create now.
+  it(
+    "[ESC-3] FIXED: delivery drops a connector the CURRENT host would refuse to create",
     () => {
+      const skips: Array<{ id: string; reason: string }> = [];
       const rows = selectConnectorRowsForAgent({
         connectors: [stdioLocalRow],
         enabledConnectorIds: new Set(["conn-local"]),
         isCommander: false,
-        // The selector does not accept a deployment mode at all today — that is
-        // precisely the gap. When it does, this call site is the contract.
-        ...({ deploymentMode: "authenticated" } as Record<string, unknown>),
+        deploymentMode: "authenticated",
+        onSkip: (c, reason) => skips.push({ id: c.id, reason }),
       });
       expect(rows).toEqual([]);
+      // The drop is nameable (FU-1's "D7 block" reason now exists).
+      expect(skips).toEqual([{ id: "conn-local", reason: "d7_blocked" }]);
     },
   );
+
+  it("[ESC-3] FIXED: Commander is NOT exempt from the delivery-time D7 re-gate", () => {
+    const rows = selectConnectorRowsForAgent({
+      connectors: [stdioLocalRow],
+      enabledConnectorIds: new Set(),
+      isCommander: true,
+      deploymentMode: "authenticated",
+    });
+    expect(rows).toEqual([]);
+  });
+
+  it("[ESC-3] FIXED: the same connector is still delivered while the host stays local_trusted", () => {
+    const rows = selectConnectorRowsForAgent({
+      connectors: [stdioLocalRow],
+      enabledConnectorIds: new Set(["conn-local"]),
+      isCommander: false,
+      deploymentMode: "local_trusted",
+    });
+    expect(rows.map((r) => r.id)).toEqual(["conn-local"]);
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
