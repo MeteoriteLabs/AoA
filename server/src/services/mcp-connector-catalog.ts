@@ -1,0 +1,133 @@
+/**
+ * @fileoverview `connectors.json` fetch + cache — the read side of the curated
+ * connector shelf.
+ *
+ * DELIBERATELY IN-MEMORY. The connector catalog is a small file read on a
+ * founder-facing page; persisting it would cost a migration and a cache table
+ * for no behaviour a process-lifetime cache does not already give us. The
+ * trade-off is explicit: a restarted instance re-fetches, and an OFFLINE
+ * instance shows an EMPTY shelf. That is correct degradation, not a bug — an
+ * empty shelf is honest, and nothing here touches `catalog.json` (the
+ * marketplace catalog stays on its own DB-backed sync path either way; see the
+ * separation rationale in `@armyofagents/shared`'s `mcp-connector-catalog.ts`).
+ *
+ * THE `malformed` FLAG IS THE POINT OF THIS MODULE. `parseMcpConnectorCatalog`
+ * reports it precisely so this layer can distinguish two states that
+ * `entries.length === 0` cannot:
+ *
+ *   - `malformed: true`  — the envelope was unintelligible (a 404 HTML page, a
+ *     truncated body, a redirect to a login wall). This is NOT an answer about
+ *     what the shelf contains, so it must be treated exactly like a network
+ *     failure: KEEP the last known-good entries and report `stale: true`. If we
+ *     let it through, a single bad CDN deploy would silently empty every
+ *     instance's shelf.
+ *   - `malformed: false` with zero entries — the CDN really did say "no
+ *     connectors". A curator removing every entry (a bad connector pulled for
+ *     cause, say) is a real, intentional state and MUST propagate, otherwise a
+ *     withdrawn connector keeps being offered from a stale cache forever.
+ *
+ * Per-entry drops are a third, milder case: the envelope was understood and
+ * every item was accounted for, so the result replaces the cache and we warn
+ * with the dropped ids. Forward-compat property: a future entry shape we do not
+ * understand costs us that entry, never the file.
+ *
+ * `nowMs` is injected rather than read from `Date.now()` so TTL behaviour is
+ * testable without fake timers.
+ *
+ * NOT DONE HERE, on purpose: no in-flight de-duplication and no failure
+ * backoff. Consecutive loads past the TTL each attempt a fetch (bounded by
+ * `FETCH_TIMEOUT_MS`). Both would be worth adding if the shelf ever moves onto
+ * a hot path; today it is one founder-facing page.
+ */
+
+import {
+  parseMcpConnectorCatalog,
+  type McpConnectorCatalogEntry,
+} from "@armyofagents/shared";
+import { logger } from "../middleware/logger.js";
+
+/** Matches the marketplace catalog sync cadence. */
+export const CONNECTOR_CATALOG_TTL_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * Bounded so a hanging CDN degrades to the "offline" path instead of holding a
+ * request open. Without this the empty-shelf guarantee above would not hold.
+ */
+const FETCH_TIMEOUT_MS = 15_000;
+
+export interface ConnectorCatalogLoadResult {
+  entries: McpConnectorCatalogEntry[];
+  /** True whenever the entries are NOT from a successful fetch this cycle. */
+  stale: boolean;
+}
+
+export interface ConnectorCatalogService {
+  load(nowMs: number): Promise<ConnectorCatalogLoadResult>;
+}
+
+export function createConnectorCatalogService(opts: {
+  url: string;
+  fetchFn?: typeof fetch;
+}): ConnectorCatalogService {
+  const doFetch = opts.fetchFn ?? fetch;
+
+  let cached: McpConnectorCatalogEntry[] | null = null;
+  let fetchedAtMs = 0;
+
+  /** Last known-good, or an empty shelf if we have never had one. Always a copy. */
+  const serveCache = (): ConnectorCatalogLoadResult => ({
+    entries: cached ? [...cached] : [],
+    stale: true,
+  });
+
+  return {
+    async load(nowMs: number): Promise<ConnectorCatalogLoadResult> {
+      if (cached !== null && nowMs - fetchedAtMs < CONNECTOR_CATALOG_TTL_MS) {
+        return { entries: [...cached], stale: false };
+      }
+
+      let body: unknown;
+      try {
+        const res = await doFetch(opts.url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+        if (!res.ok) {
+          // Do not parse an error body — an HTML 503 page must never be able to
+          // be read as "the shelf is empty".
+          throw new Error(`HTTP ${res.status}`);
+        }
+        body = await res.json();
+      } catch (err) {
+        logger.warn(
+          { err, url: opts.url, hasCache: cached !== null },
+          "connector catalog: fetch failed — serving last known-good shelf",
+        );
+        return serveCache();
+      }
+
+      const { entries, dropped, malformed } = parseMcpConnectorCatalog(body);
+
+      if (malformed) {
+        // Unintelligible envelope: NOT an answer about the shelf's contents.
+        // Keep whatever we already had. Notably we also do NOT refresh
+        // `fetchedAtMs`, so the next load retries rather than pinning garbage
+        // in place for six hours.
+        logger.warn(
+          { url: opts.url, hasCache: cached !== null },
+          "connector catalog: malformed response envelope — keeping cached shelf",
+        );
+        return serveCache();
+      }
+
+      if (dropped.length > 0) {
+        logger.warn(
+          { url: opts.url, dropped, kept: entries.length },
+          "connector catalog: dropped unparseable entries",
+        );
+      }
+
+      // Real answer from the CDN — including a legitimately empty one.
+      cached = entries;
+      fetchedAtMs = nowMs;
+      return { entries: [...entries], stale: false };
+    },
+  };
+}
