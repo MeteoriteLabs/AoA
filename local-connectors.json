@@ -1,0 +1,76 @@
+{
+  "schemaVersion": "1.0.0",
+  "entries": [
+    {
+      "id": "notion",
+      "displayName": "Notion",
+      "description": "Read and write Notion pages and databases. Agents can search your workspace, create pages, and update properties.",
+      "serverName": "notion",
+      "transport": "http",
+      "url": "https://mcp.notion.com/mcp",
+      "headerTemplateKeys": ["Authorization"],
+      "requiresSecret": true,
+      "secretLabel": "Notion internal integration token",
+      "docsUrl": "https://developers.notion.com/docs/mcp",
+      "trust": { "tier": "verified" }
+    },
+    {
+      "id": "linear",
+      "displayName": "Linear",
+      "description": "Query and update Linear issues, projects and cycles from an agent.",
+      "serverName": "linear",
+      "transport": "http",
+      "url": "https://mcp.linear.app/mcp",
+      "headerTemplateKeys": ["Authorization"],
+      "requiresSecret": true,
+      "secretLabel": "Linear API key",
+      "docsUrl": "https://linear.app/docs/mcp",
+      "trust": { "tier": "verified" }
+    },
+    {
+      "id": "sentry",
+      "displayName": "Sentry",
+      "description": "Inspect Sentry issues, stack traces and release health while debugging.",
+      "serverName": "sentry",
+      "transport": "http",
+      "url": "https://mcp.sentry.dev/mcp",
+      "headerTemplateKeys": ["Authorization"],
+      "requiresSecret": true,
+      "secretLabel": "Sentry auth token",
+      "trust": { "tier": "verified" }
+    },
+    {
+      "id": "filesystem",
+      "displayName": "Filesystem",
+      "description": "Read and write files under a directory you choose. Runs locally on this machine.",
+      "serverName": "filesystem",
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
+      "requiresSecret": false,
+      "trust": { "tier": "verified" }
+    },
+    {
+      "id": "sqlite",
+      "displayName": "SQLite",
+      "description": "Query a local SQLite database. Runs locally on this machine.",
+      "serverName": "sqlite",
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-sqlite", "./data.db"],
+      "requiresSecret": false,
+      "trust": { "tier": "verified" }
+    },
+    {
+      "id": "acme-scratch",
+      "displayName": "Acme Scratchpad",
+      "description": "An unverified community connector, included so you can see the consent dialog. Runs a command on this machine.",
+      "serverName": "acme-scratch",
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@acme/mcp-scratchpad", "--root", "/tmp/scratch"],
+      "requiresSecret": false,
+      "trust": { "tier": "community" }
+    }
+  ]
+}
