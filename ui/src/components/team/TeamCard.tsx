@@ -7,7 +7,12 @@ export interface TeamCardData {
   id: string;
   name: string;
   slug: string;
-  parentProjectName: string;
+  /**
+   * Parent department name, or null for a company-wide team (D21 — the AoA
+   * crew). Null is a real state, NOT an unresolvable id: it renders as a
+   * distinct "Company-wide" pill so the crew doesn't read as a broken record.
+   */
+  parentProjectName: string | null;
   status: "active" | "archived";
   memberCount: number;
   leadName: string;
@@ -44,9 +49,18 @@ export function TeamCard({ team, onClick, onMenuClick }: Props) {
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 flex-wrap">
             <h3 className="truncate text-sm font-semibold">{team.name}</h3>
-            <span className="shrink-0 rounded-full border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
-              {team.parentProjectName}
-            </span>
+            {team.parentProjectName === null ? (
+              // Company-wide team (D21): not scoped to any department. Given its
+              // own pill so it reads as a deliberate state rather than a
+              // department badge that failed to resolve.
+              <span className="shrink-0 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
+                Company-wide
+              </span>
+            ) : (
+              <span className="shrink-0 rounded-full border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
+                {team.parentProjectName}
+              </span>
+            )}
           </div>
         </div>
         {onMenuClick && (

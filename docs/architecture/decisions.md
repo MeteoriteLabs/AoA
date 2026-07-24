@@ -1221,3 +1221,27 @@ The two items deferred by Decision #107 shipped together on `feat/inbox-hub-tabb
 7. **Tier two was satisfied by accident, and wrongly — CLOSED 2026-07-23.** Crew runs were not workspace-backed: the crew runner never set a workspace, so `cwd` fell through to `process.cwd()` (`claude-local/src/server/execute.ts:188`) — the **AoA server's own repository**. Every crew run therefore loaded *AoA's* `CLAUDE.md` rather than the customer workspace's. This is the most likely mechanism behind the observed live hijack. **Fixed by crew workspace resolution (T5):** the crew runner now populates `context.paperclipWorkspace` by reusing heartbeat's own resolver (`server/src/services/workspace-resolution.ts`, extracted from `heartbeat.ts`), with the per-agent home `<AOA_HOME>/instances/<id>/workspaces/<agentId>` as an always-present floor — so `process.cwd()` is unreachable from the crew path. Crew does **not** realize per-task git worktrees; an `isolated_workspace` / `operator_branch` project policy degrades to the project's shared primary workspace until W3b.
 
 **Key files:** `packages/adapters/claude-local/src/server/ambient-config.ts`, `execute.ts`; `packages/adapter-utils/src/server-utils.ts` (`mergeChildEnv`, `foldEnvKey`); `server/src/services/internal-agent/aoa-agents/runner.ts`. Plan: `docs/aoa/plans/2026-07-19-crew-execution-phase1-foundation.md`.
+
+## Decision #111 — Teams may be company-wide: `teams.parent_project_id` is nullable (D21) (2026-07-24)
+
+**Status:** Locked 2026-07-24 (Phase 2 marketplace provisioning, plan decision D21). Implemented by T2.1; migration `0181_light_overlord`.
+
+1. **A team may have no parent department.** `teams.parent_project_id` is nullable. `NULL` means **company-wide**, not "unknown" or "not yet set" — it is a first-class scope, and the only writer of it is the crew installer.
+
+2. **Why it had to change.** AoA crew (Adjutant, Scout, Engineer, …) are **company-wide singletons** — Adjutant serves every department. Nothing creates a department at company-create time (not company creation, not onboarding; the founder makes them), so at the moment the crew is installed there is no department to install into. Worse, the column carries `ON DELETE CASCADE`: parenting the crew to an arbitrary department meant deleting that department would silently delete the crew team row.
+
+3. **The FK stays `ON DELETE CASCADE`.** Nullability is not a relaxation of the departmental contract — a departmental team still cascades away with its department. A `NULL` parent simply has nothing to cascade from. Both halves are asserted together in `server/src/__tests__/teams-null-parent-cascade.integration.test.ts`; a test that only checks "NULL is accepted" would not have caught a dropped FK.
+
+4. **Existing rows are untouched.** The migration is a bare `DROP NOT NULL`. No backfill, no re-parenting.
+
+5. **The public install API is unchanged.** `POST …/marketplace/install` still returns **400** for a team or agent install without a `targetDepartmentId` (`server/src/routes/marketplace-installs.ts:338`), and `createTeamSchema` still requires `parentProjectId`. Only the internal crew bootstrap may omit it. `installTeam` accepts `null`/absent and skips the department pre-flight — but a **supplied** id is still fully validated (exists, belongs to the company, `type: 'department'`). A bad id is an error, never a silent fallback to company-wide.
+
+6. **Authorization fails closed on `NULL`.** `assertDepartmentAccess` takes `string | null`; a null department is founder / instance-admin only. No team lead can be "lead of no department", so the lead-scoped grant cannot apply to a company-wide entity.
+
+7. **A company-wide team's roster is installer-owned.** `addMember`, `removeMember`, and `updateMemberRole` all **refuse** when `parentProjectId` is null (`server/src/services/teams.ts`, `loadTeamForRosterEdit`). The roster comes from the marketplace package, is written by the installer inside its own transaction, and is reconciled by `team-reconcile`. This is deliberately symmetric: closing only `addMember` would let a founder strip the crew one agent at a time with no supported way to put anyone back. The department-membership lookup in `addMember` is also the **tenancy-bearing** guard — skipping it for null-parent teams rather than refusing would open a cross-tenant path. Making the crew roster founder-editable requires its own company-scoped agent check and is a separate design call.
+
+8. **Company-wide is a visible state, not a blank.** The Teams list renders a distinct **"Company-wide"** pill rather than the `—` used for an unresolvable department id, and search matches that label so the crew is findable by scope (`ui/src/components/team/TeamCard.tsx`, `ui/src/pages/TeamsListPage.tsx`).
+
+**Known follow-up:** `dispatchInstall` still hard-throws for a team install without a department (`server/src/services/marketplace-install/orchestrator.ts:243`). That gate sits on the user-initiated path and was deliberately left closed; the crew bootstrap (T2.3) must either bypass the orchestrator or revisit it.
+
+**Plan:** `docs/aoa/plans/2026-07-24-phase2-marketplace-provisioning.md` (T2.1).

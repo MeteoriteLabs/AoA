@@ -106,6 +106,10 @@ export function TeamDetail() {
     return m;
   }, [agentsQuery.data]);
 
+  // A company-wide team (D21) has `parentProjectId === null`, which no project
+  // row can match, so this already yields null and every consumer below already
+  // handles null. That is correct BY ACCIDENT, not by design — don't "fix" the
+  // find() into a non-null assertion.
   const parentProjectName = useMemo(() => {
     if (!teamQuery.data || !projectsQuery.data) return null;
     return (

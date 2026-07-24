@@ -55,7 +55,13 @@ export async function insertTeamWithUniqueSlug(
   id: string;
   slug: string;
   name: string;
-  parentProjectId: string;
+  // `tx` is `any`, so this shape is an unchecked assertion about the returned
+  // row — it must not claim more than the column guarantees. D21 made
+  // `teams.parent_project_id` nullable, so a caller reading it back can get
+  // null even though this helper's INPUT still requires a department (that
+  // narrower input is a deliberate trap: a future company-wide caller gets a
+  // compile error here rather than a silent write).
+  parentProjectId: string | null;
   [k: string]: unknown;
 }> {
   const maxRetries = options.maxRetries ?? 5;
@@ -91,6 +97,39 @@ export async function insertTeamWithUniqueSlug(
 }
 
 export function teamsService(db: Db) {
+  /**
+   * Loads a team for a roster mutation (add / remove / role change), refusing
+   * the edit outright when the team is company-wide (D21 — `parentProjectId` is
+   * null).
+   *
+   * For a company-wide team the ENTIRE membership surface is installer-owned:
+   * the roster comes from the marketplace package, is written by the installer
+   * inside its own transaction, and is reconciled by `team-reconcile`. Closing
+   * only `addMember` would be worse than closing none — a founder could strip
+   * the crew one agent at a time with no supported way to put anyone back.
+   *
+   * This is deliberately a refusal rather than a skipped check. `addMember`'s
+   * department-membership lookup is the tenancy-bearing guard (it is what stops
+   * an agent from another company being linked in); silently bypassing it for
+   * null-parent teams would open a cross-tenant path. Making the roster
+   * founder-editable needs its own company-scoped agent check — a real design
+   * call, not a side effect of making the column nullable.
+   */
+  const loadTeamForRosterEdit = async (teamId: string) => {
+    const teamRows = await db.select().from(teams).where(eq(teams.id, teamId));
+    if (teamRows.length === 0) throw notFound(`team ${teamId} not found`);
+    const team = teamRows[0];
+    if (team.parentProjectId === null) {
+      throw badRequest(
+        `team ${teamId} is company-wide (no parent department) — its roster is installer-owned and cannot be edited through this path`,
+      );
+    }
+    // Re-spread so the narrowing survives into the return type: callers get
+    // `parentProjectId: string` and can use it as a department id without a
+    // non-null assertion. Narrowing by construction, not by cast.
+    return { ...team, parentProjectId: team.parentProjectId };
+  };
+
   return {
     list: async (companyId: string, projectId?: string) => {
       // Fetch team rows
@@ -316,23 +355,7 @@ export function teamsService(db: Db) {
     },
 
     addMember: async (teamId: string, agentId: string, role: TeamRole) => {
-      const teamRows = await db
-        .select()
-        .from(teams)
-        .where(eq(teams.id, teamId));
-      if (teamRows.length === 0) throw notFound(`team ${teamId} not found`);
-      const team = teamRows[0];
-
-      // A company-wide team (D21) has no parent department to check membership
-      // against. Rather than silently skipping the tenancy-bearing check, this
-      // path is closed: crew membership is written by the installer inside its
-      // own transaction, and opening a founder-facing add path needs its own
-      // company-scoped agent check.
-      if (team.parentProjectId === null) {
-        throw badRequest(
-          `team ${teamId} is company-wide (no parent department) — members cannot be added through this path`,
-        );
-      }
+      const team = await loadTeamForRosterEdit(teamId);
 
       // Verify agent is a member of the team's parent department
       const deptMembership = await db
@@ -388,6 +411,8 @@ export function teamsService(db: Db) {
     },
 
     removeMember: async (teamId: string, agentId: string) => {
+      await loadTeamForRosterEdit(teamId);
+
       const membershipRows = await db
         .select()
         .from(teamMembers)
@@ -433,6 +458,8 @@ export function teamsService(db: Db) {
       agentId: string,
       role: TeamRole,
     ) => {
+      await loadTeamForRosterEdit(teamId);
+
       // P1-B: when promoting to lead, the partial unique index
       // team_members_one_lead_uq backstops the demote-then-promote
       // sequence. A concurrent caller racing the same promotion can win

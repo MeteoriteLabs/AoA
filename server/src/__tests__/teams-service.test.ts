@@ -710,6 +710,7 @@ describe("teamsService", () => {
     it("rejects when removing the last lead", async () => {
       const db = createAgentDb({
         selects: [
+          [{ id: "t1", parentProjectId: "p1" }], // team lookup (roster-edit guard)
           [{ id: "tm1", teamId: "t1", agentId: "a1", role: "lead" }], // membership
           [{ id: "tm1", teamId: "t1", agentId: "a1", role: "lead" }], // single lead
         ],
@@ -723,6 +724,7 @@ describe("teamsService", () => {
     it("removes a regular member", async () => {
       const db = createAgentDb({
         selects: [
+          [{ id: "t1", parentProjectId: "p1" }], // team lookup (roster-edit guard)
           [{ id: "tm2", teamId: "t1", agentId: "a2", role: "member" }], // membership
         ],
       });
@@ -735,6 +737,7 @@ describe("teamsService", () => {
     it("removes a non-last lead", async () => {
       const db = createAgentDb({
         selects: [
+          [{ id: "t1", parentProjectId: "p1" }], // team lookup (roster-edit guard)
           [{ id: "tm1", teamId: "t1", agentId: "a1", role: "lead" }], // membership
           [
             { id: "tm1", teamId: "t1", agentId: "a1", role: "lead" },
@@ -750,7 +753,10 @@ describe("teamsService", () => {
 
     it("throws notFound when membership missing", async () => {
       const db = createAgentDb({
-        selects: [[]], // membership: empty
+        selects: [
+          [{ id: "t1", parentProjectId: "p1" }], // team lookup (roster-edit guard)
+          [], // membership: empty
+        ],
       });
 
       await expect(
@@ -771,7 +777,10 @@ describe("teamsService", () => {
         { id: "tm1", teamId: "t1", agentId: "a1", role: "lead" },
       ];
       const db = createAgentDb({
-        selects: [existingLead], // existing lead lookup inside tx
+        selects: [
+          [{ id: "t1", parentProjectId: "p1" }], // team lookup (roster-edit guard)
+          existingLead, // existing lead lookup inside tx
+        ],
         updates: [
           [{ id: "tm1", role: "member" }], // demote existing lead
           [updated], // promote target
@@ -795,6 +804,7 @@ describe("teamsService", () => {
         role: "member",
       };
       const db = createAgentDb({
+        selects: [[{ id: "t1", parentProjectId: "p1" }]], // team lookup (roster-edit guard)
         updates: [[updated]],
       });
 
@@ -809,6 +819,7 @@ describe("teamsService", () => {
 
     it("throws notFound when membership missing", async () => {
       const db = createAgentDb({
+        selects: [[{ id: "t1", parentProjectId: "p1" }]], // team lookup (roster-edit guard)
         updates: [[]], // update returns no rows
       });
 
@@ -824,6 +835,12 @@ describe("teamsService", () => {
       // one's UPDATE-to-lead loses the race and throws 23505. The service
       // should map that to 409 (matching addMember's pattern).
       const db: any = {
+        // Top-level select = the roster-edit guard's team lookup (departmental).
+        select: () => ({
+          from: () => ({
+            where: () => Promise.resolve([{ id: "t1", parentProjectId: "p1" }]),
+          }),
+        }),
         transaction: async (cb: (tx: any) => Promise<unknown>) => {
           const tx: any = {
             select: () => ({
@@ -851,6 +868,86 @@ describe("teamsService", () => {
       await expect(
         teamsService(db).updateMemberRole("t1", "a1", "lead"),
       ).rejects.toMatchObject({ status: 409 });
+    });
+  });
+
+  // D21: a company-wide team (parentProjectId === null) has an installer-owned
+  // roster. The refusal must cover the WHOLE membership surface — closing only
+  // `addMember` would let a founder strip the crew one agent at a time with no
+  // supported way to put anyone back (write-out open, write-in shut).
+  describe("company-wide team roster is installer-owned (D21)", () => {
+    /** One select: the team lookup, returning a null-parent (company-wide) team. */
+    const companyWideDb = () =>
+      createAgentDb({ selects: [[{ id: "t1", parentProjectId: null }]] });
+
+    it("addMember refuses", async () => {
+      await expect(
+        teamsService(companyWideDb() as any).addMember("t1", "a1", "member"),
+      ).rejects.toMatchObject({ status: 400 });
+    });
+
+    it("removeMember refuses", async () => {
+      await expect(
+        teamsService(companyWideDb() as any).removeMember("t1", "a1"),
+      ).rejects.toMatchObject({ status: 400 });
+    });
+
+    it("updateMemberRole refuses", async () => {
+      await expect(
+        teamsService(companyWideDb() as any).updateMemberRole("t1", "a1", "lead"),
+      ).rejects.toMatchObject({ status: 400 });
+    });
+
+    it("all three name the company-wide reason (not a generic not-found)", async () => {
+      for (const call of [
+        (s: ReturnType<typeof teamsService>) => s.addMember("t1", "a1", "member"),
+        (s: ReturnType<typeof teamsService>) => s.removeMember("t1", "a1"),
+        (s: ReturnType<typeof teamsService>) => s.updateMemberRole("t1", "a1", "lead"),
+      ]) {
+        await expect(call(teamsService(companyWideDb() as any))).rejects.toThrow(
+          /company-wide/i,
+        );
+      }
+    });
+
+    it("refuses BEFORE any write — no delete/update/insert is issued", async () => {
+      // The guard has to run first, not merely report afterwards: a removeMember
+      // that deleted the row and *then* threw would still degrade the roster.
+      let writes = 0;
+      const db: any = {
+        select: () => ({
+          from: () => ({
+            where: () => Promise.resolve([{ id: "t1", parentProjectId: null }]),
+          }),
+        }),
+        insert: () => {
+          writes++;
+          throw new Error("insert must not run");
+        },
+        delete: () => {
+          writes++;
+          throw new Error("delete must not run");
+        },
+        update: () => {
+          writes++;
+          throw new Error("update must not run");
+        },
+        transaction: async () => {
+          writes++;
+          throw new Error("transaction must not run");
+        },
+      };
+
+      await expect(teamsService(db).addMember("t1", "a1", "member")).rejects.toThrow(
+        /company-wide/i,
+      );
+      await expect(teamsService(db).removeMember("t1", "a1")).rejects.toThrow(
+        /company-wide/i,
+      );
+      await expect(
+        teamsService(db).updateMemberRole("t1", "a1", "lead"),
+      ).rejects.toThrow(/company-wide/i);
+      expect(writes).toBe(0);
     });
   });
 });

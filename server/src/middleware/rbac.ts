@@ -56,6 +56,11 @@ export async function assertRole(
  * Asserts that the current user has access to the specified department.
  * Founder: full access. Team lead: only their department. Team member: no department management.
  *
+ * Bypasses, in order, BEFORE any department logic runs: agent actors,
+ * local-trusted (`local_implicit`) requests, and instance admins. Only then is
+ * the department scope consulted. Callers that need agent traffic gated must do
+ * so themselves — this helper lets it straight through.
+ *
  * `departmentId` may be null for a company-wide entity with no parent
  * department (D21 — e.g. the AoA crew team). There is no department to be lead
  * of, so the lead-scoped grant cannot apply: only the founder / instance-admin

@@ -61,6 +61,14 @@ function rowsOf<T>(result: unknown): T[] {
   return asObj?.rows ?? (result as T[]);
 }
 
+// `companies.issue_prefix` is globally unique, so a hardcoded literal would
+// collide the moment a second company is seeded in this file.
+let seedCounter = 0;
+function nextIssuePrefix(): string {
+  seedCounter += 1;
+  return `D2${seedCounter}`;
+}
+
 beforeAll(async () => {
   try {
     dataDir = await mkdtemp(join(tmpdir(), "aoa-teams-null-parent-integ-"));
@@ -113,25 +121,34 @@ describe.skipIf(
       await db.execute(sql`
         SELECT is_nullable
         FROM information_schema.columns
-        WHERE table_name = 'teams' AND column_name = 'parent_project_id'
+        WHERE table_schema = 'public'
+          AND table_name = 'teams'
+          AND column_name = 'parent_project_id'
       `),
     );
     expect(columns.length).toBe(1);
     expect(columns[0]!.is_nullable).toBe("YES");
 
     // Nullability must not have been achieved by dropping/weakening the FK —
-    // a departmental team still has to cascade away with its department.
+    // a departmental team still has to cascade away with its department. Every
+    // matching constraint is checked, not just the first: a second, non-cascade
+    // FK on the same column would be exactly the regression this guards.
     const fks = rowsOf<{ delete_rule: string }>(
       await db.execute(sql`
         SELECT rc.delete_rule
         FROM information_schema.referential_constraints rc
         JOIN information_schema.key_column_usage kcu
           ON kcu.constraint_name = rc.constraint_name
-        WHERE kcu.table_name = 'teams' AND kcu.column_name = 'parent_project_id'
+         AND kcu.constraint_schema = rc.constraint_schema
+        WHERE kcu.table_schema = 'public'
+          AND kcu.table_name = 'teams'
+          AND kcu.column_name = 'parent_project_id'
       `),
     );
     expect(fks.length).toBeGreaterThanOrEqual(1);
-    expect(fks[0]!.delete_rule).toBe("CASCADE");
+    for (const fk of fks) {
+      expect(fk.delete_rule).toBe("CASCADE");
+    }
   });
 
   it("deleting a department cascades its departmental team but NOT a company-wide team", async () => {
@@ -144,7 +161,7 @@ describe.skipIf(
 
     await db.execute(sql`
       INSERT INTO companies (id, name, issue_prefix)
-      VALUES (${companyId}, 'D21 Cascade Co', 'D21')
+      VALUES (${companyId}, 'D21 Cascade Co', ${nextIssuePrefix()})
     `);
     await db.execute(sql`
       INSERT INTO projects (id, company_id, name, type)
