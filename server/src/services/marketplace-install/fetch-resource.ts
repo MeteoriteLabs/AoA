@@ -59,7 +59,10 @@ export async function fetchCatalogResourceUrl(
  *
  * Used by both the initial install flow and the auto-updater.
  */
-export async function loadSkillContent(item: CatalogItem): Promise<string> {
+export async function loadSkillContent(
+  item: CatalogItem,
+  signal?: AbortSignal,
+): Promise<string> {
   if (item.content?.inline) return item.content.inline;
-  return fetchCatalogResource(item, "skill content");
+  return fetchCatalogResource(item, "skill content", signal);
 }

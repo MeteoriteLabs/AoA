@@ -44,21 +44,35 @@ import { installTeam } from "./team-installer.js";
 export const DEFAULT_CREW_TEAM_ITEM_ID = "team:aoa-curated/default-crew";
 
 /**
- * Aggregate wall-clock budget for the whole team install (all resource fetches
- * + the team-body transaction).
+ * Aggregate wall-clock budget for the whole team install (resource fetches +
+ * skill installs + the team-body transaction).
  *
- * Sizing: the published roster is 27 fetches — `team.json`, 9 `agent.json`, and
- * 17 skill bodies (**zero** of the crew's skills carry `content.inline`, so all
- * of them hit the network). At {@link CREW_INSTALL_FETCH_CONCURRENCY} = 6 a
- * healthy CDN (~200ms/request) finishes in ~1-2s, and even a sluggish
- * 2s/request CDN finishes in ~10s. 30s therefore never truncates a working
- * install, while capping a *degraded* (slow, not down — down fails fast) CDN
- * at 30s instead of minutes.
+ * Sizing: the published roster is 10 CDN fetches — `team.json` and 9
+ * `agent.json` — plus 17 skill installs. Every one of those 17 carries a
+ * `skill.bundle`, so since T2.3c each is a shallow-ish `git clone` of the
+ * bundle's repo rather than a single CDN GET (their bodies are no longer
+ * fetched separately; the bundle carries its own SKILL.md). At
+ * {@link CREW_INSTALL_FETCH_CONCURRENCY} = 6 that is ~3 waves of clones over
+ * 4 distinct small repos, which lands in a few seconds on a healthy network.
  *
- * Worst case for company create is now `CATALOG_AVAILABILITY_TIMEOUT_MS` (12s)
- * + this (30s) ≈ 42s, versus ~13.5 minutes before — and comfortably inside
- * Node's 300s default `requestTimeout`, which was previously the real
- * (socket-error) ceiling.
+ * What this deadline does and does NOT bound, precisely:
+ * - it aborts in-flight CDN fetches, and (since T2.3c) the `git` subprocesses
+ *   too — `installTeam` forwards the signal into `installSkill`, which forwards
+ *   it into the bundle materializer's `execFile` calls;
+ * - it is re-checked before each skill install, so at most one in-flight batch
+ *   continues past it;
+ * - a clone that is slow rather than stalled can therefore still push the
+ *   install past 30s by up to one `git` process's abort latency.
+ *
+ * Blowing the deadline is not data loss: the install fails, company create
+ * degrades to the legacy seeders with a loud log, and T2.3b's repair pass
+ * recovers the company later. Skill rows written before the abort survive and
+ * are re-used by that repair.
+ *
+ * Worst case for company create is `CATALOG_AVAILABILITY_TIMEOUT_MS` (12s) +
+ * this (30s) ≈ 42s, versus ~13.5 minutes before — and comfortably inside Node's
+ * 300s default `requestTimeout`, which was previously the real (socket-error)
+ * ceiling.
  */
 export const CREW_INSTALL_DEADLINE_MS = 30_000;
 

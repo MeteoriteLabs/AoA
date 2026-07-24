@@ -14,6 +14,13 @@ export interface InstallSkillOpts {
   companyId: string;
   db: Db;
   packageContext?: InstallSkillPackageContext;
+  /**
+   * Optional caller deadline. Chained into the body fetch AND into the bundle
+   * materializer's `git` subprocesses, so a caller that must finish inside a
+   * budget (company-create's crew bootstrap) can actually stop a stalled clone
+   * instead of waiting on git's own connect timeout. Absent = unbounded.
+   */
+  signal?: AbortSignal;
 }
 
 export interface InstallSkillPackageContext {
@@ -79,9 +86,10 @@ export async function installSkill(opts: InstallSkillOpts): Promise<InstallSkill
     ? await materializeSkillBundle(catalogItem.skill.bundle, {
         destination: managedBundleDir,
         overwrite: true,
+        signal: opts.signal,
       })
     : null;
-  const markdown = materialized?.markdown ?? await loadSkillContent(catalogItem);
+  const markdown = materialized?.markdown ?? await loadSkillContent(catalogItem, opts.signal);
 
   const slug = catalogItem.id.split("/").pop() ?? catalogItem.id;
   const fileInventory = materialized?.fileInventory ?? [];

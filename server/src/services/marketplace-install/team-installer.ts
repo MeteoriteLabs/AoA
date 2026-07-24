@@ -1,4 +1,4 @@
-import { eq, and } from "drizzle-orm";
+import { eq, and, inArray } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { teams, teamMembers, companySkills, projects } from "@armyofagents/db";
 import type { CascadeStepResult } from "@armyofagents/db";
@@ -7,6 +7,7 @@ import { fetchCatalogResource } from "./fetch-resource.js";
 import type { NormalizedMarketplaceAgentTemplate } from "./types.js";
 import { parseMarketplaceAgentTemplate, normalizeMarketplaceAgentTemplate } from "./agent-runtime.js";
 import { createMarketplaceAgent } from "./agent-create.js";
+import { installSkill } from "./skill-installer.js";
 import { resolveAgentNameConflict, resolveTeamSlugConflict } from "./conflict-resolver.js";
 
 export interface InstallTeamOpts {
@@ -23,13 +24,19 @@ export interface InstallTeamOpts {
   db: Db;
   installPlugin: PluginInstallerFn;    // injected to break circular dep
   /**
-   * Caller deadline for the whole install. Every resource fetch is chained to
-   * it, and it is re-checked before each phase, so an install cannot outrun the
-   * caller's budget. Absent = unbounded (the existing 202-accepted route path).
+   * Caller deadline for the whole install. Chained into every resource fetch
+   * (team template, agent templates, skill bodies) and re-checked before each
+   * phase and before each skill install, so an install cannot outrun the
+   * caller's budget by more than one in-flight batch. Absent = unbounded (the
+   * existing 202-accepted route path).
+   *
+   * It reaches the skill bundle materializer's `git` subprocesses too
+   * (`installSkill` forwards it), so a stalled clone is killed rather than left
+   * to git's own connect timeout.
    */
   signal?: AbortSignal;
   /**
-   * How many resource fetches to run at once during pre-flight. Defaults to 1
+   * How many resource fetches / skill installs to run at once. Defaults to 1
    * (sequential — the historical behaviour) so the public install route is
    * unchanged; the company-create bootstrap opts up, because it is the caller
    * that pays the latency synchronously.
@@ -87,29 +94,36 @@ interface TeamTemplateBody {
 }
 
 /**
- * Install a team catalog item via Saga pattern (3 phases).
+ * Install a team catalog item via Saga pattern (4 phases).
  *
  * **Phase 1 — Pre-flight (no writes):**
  *   - Validate target department exists and belongs to company (skipped when
  *     no department is supplied — that installs a company-wide team, D21)
  *   - Validate all required catalog items resolve in the catalog
- *   - Fetch + parse team.json + each required agent.json + skill content
+ *   - Fetch + parse team.json + each required agent.json
  *
  * **Phase 2 — Plugin preconditions (writes, idempotent):**
  *   - For each required plugin, call installPlugin (no-op if already installed)
  *   - Plugins are NEVER auto-uninstalled if subsequent phases fail (M2.D7)
  *
- * **Phase 3 — Atomic team body (single Postgres txn):**
- *   - Insert each required skill row
+ * **Phase 3 — Required skills (writes, idempotent, OUTSIDE the txn):**
+ *   - Each missing skill goes through the real {@link installSkill}, so bundles
+ *     are materialized and `trustLevel`/`fileInventory`/bundle metadata are
+ *     derived rather than assumed. See the phase body for why it is outside the
+ *     transaction and why an already-present key is skipped rather than upgraded.
+ *
+ * **Phase 4 — Atomic team body (single Postgres txn):**
  *   - Insert each agent row (one per agent in team.json)
  *   - Insert team row + team_members links (first agent = lead)
  *   - All-or-nothing — txn rollback on any error
  *
- * Marketplace skills/agents use sourceType="catalog" (existing in CompanySkillSourceType)
- * and trustLevel="markdown_only" (existing in CompanySkillTrustLevel). Catalog tier
- * goes in metadata.catalogTrustTier.
+ * Marketplace skills use sourceType="catalog" and record the catalog tier in
+ * metadata.catalogTrustTier; `trustLevel` reflects what the bundle actually
+ * contains (markdown_only / assets / scripts_executables).
  *
- * @throws Error from any phase. Plugins from phase 2 remain on phase 3 failure.
+ * @throws Error from any phase. Writes from earlier phases (plugins, skill rows)
+ * are NOT rolled back on a later failure — both are additive and idempotent, and
+ * a retry re-uses them.
  */
 export async function installTeam(opts: InstallTeamOpts): Promise<InstallTeamResult> {
   const { catalogItem, catalog, companyId, targetDepartmentId, db, installPlugin, signal } = opts;
@@ -121,7 +135,6 @@ export async function installTeam(opts: InstallTeamOpts): Promise<InstallTeamRes
 
   const cascadeResults: CascadeStepResult[] = [];
   const itemsById = new Map(catalog.items.map((i) => [i.id, i]));
-  const installedAt = new Date().toISOString();
 
   // ====== Phase 1: Pre-flight ======
   const phase1Start = Date.now();
@@ -182,20 +195,15 @@ export async function installTeam(opts: InstallTeamOpts): Promise<InstallTeamRes
     normalizedAgentTemplates.set(id, normalized);
   }
 
-  // 1e: Pre-fetch skill content (uses inline if available, else helper)
+  // 1e: Resolve the required skill items. Their BODIES are deliberately not
+  // pre-fetched here: `installSkill` (phase 3) loads inline content, fetches
+  // `resourceUrl`, or materializes the bundle — whichever is right for the item
+  // — so pre-fetching would be a second, discarded network round-trip per skill
+  // (17 of them for the live crew roster, none of which carry inline content).
   const requiredSkillItems = requires
     .filter((r) => r.type === "skill")
     .map((r) => itemsById.get(r.id)!)
     .filter(Boolean);
-  const skillContents = new Map<string, string>();
-  assertNotAborted(signal, "the skill content fetches");
-  const skillPairs = await mapWithConcurrency(requiredSkillItems, fetchConcurrency, async (item) => {
-    const content = item.content?.inline ?? await fetchCatalogResource(item, "skill content", signal);
-    return [item.id, content] as const;
-  });
-  for (const [id, content] of skillPairs) {
-    skillContents.set(id, content);
-  }
 
   cascadeResults.push({
     step: "preflight",
@@ -233,71 +241,90 @@ export async function installTeam(opts: InstallTeamOpts): Promise<InstallTeamRes
     }
   }
 
-  // ====== Phase 3: Atomic team body (single Postgres txn) ======
+  // ====== Phase 3: Required skills ======
+  //
+  // Through the REAL `installSkill`, and deliberately OUTSIDE the phase-4
+  // transaction. Both halves are load-bearing (T2.3c):
+  //
+  // *Real installer* — a hand-rolled insert cannot materialize
+  // `catalogItem.skill.bundle`, cannot derive `trustLevel` from what the bundle
+  // actually contains, and cannot record a real `fileInventory` or the
+  // `catalogSkillBundle` / `catalogBundleInstallPath` metadata that
+  // `company-skills.ts` reads to deliver a skill's ancillary files to an agent.
+  // Worse, stamping `sourceRef` to the current version makes `installSkill`'s
+  // own idempotency guard answer `alreadyInstalled` for that key from then on —
+  // so the bundle would never be materialized for the company. Every skill the
+  // published crew team requires carries a bundle.
+  //
+  // *Outside the transaction* — `installSkill` git-clones each bundle. Holding a
+  // Postgres transaction open across N clones is not acceptable, and it is safe
+  // in a way the agent writes are not: these are additive, idempotent,
+  // version-scoped NEW-FILE writes, never a delete of founder data. If phase 4
+  // then fails, the rows simply survive and the next attempt re-uses them.
+  // Nothing depends on them rolling back with the team — `uninstallTeam` already
+  // leaves company_skills in place ("they may be shared with other agents").
+  assertNotAborted(signal, "the skill installs");
+  const phase3Start = Date.now();
+  if (requiredSkillItems.length > 0) {
+    // Any key this company already has is SKIPPED, not upgraded — the historical
+    // behaviour of the `onConflictDoNothing` this replaces. It also keeps
+    // `installSkill`'s different-version throw ("use the update flow") out of the
+    // team path: a founder installing a team must not fail because one required
+    // skill is pinned at an older version. Upgrades belong to the update flow.
+    const existingSkillRows = await db
+      .select({ id: companySkills.id, key: companySkills.key })
+      .from(companySkills)
+      .where(
+        and(
+          eq(companySkills.companyId, companyId),
+          inArray(
+            companySkills.key,
+            requiredSkillItems.map((item) => item.id),
+          ),
+        ),
+      );
+    const existingSkillIdByKey = new Map(existingSkillRows.map((row) => [row.key, row.id]));
+
+    // Collected index-ordered and pushed afterwards so `cascadeResults` stays
+    // deterministic regardless of `fetchConcurrency`.
+    const skillSteps = await mapWithConcurrency(
+      requiredSkillItems,
+      fetchConcurrency,
+      async (skillItem): Promise<CascadeStepResult> => {
+        const startedAt = Date.now();
+        const existingId = existingSkillIdByKey.get(skillItem.id);
+        if (existingId) {
+          return {
+            step: "skill-install",
+            itemId: skillItem.id,
+            status: "skipped",
+            resultEntityId: existingId,
+            durationMs: Date.now() - startedAt,
+          };
+        }
+        // Re-checked per item: the deadline cannot interrupt a clone that has
+        // already started, but it does stop the next one from starting.
+        assertNotAborted(signal, `the skill install for ${skillItem.id}`);
+        const result = await installSkill({ catalogItem: skillItem, companyId, db, signal });
+        return {
+          step: "skill-install",
+          itemId: skillItem.id,
+          status: result.alreadyInstalled ? "skipped" : "success",
+          resultEntityId: result.skillId,
+          durationMs: Date.now() - startedAt,
+        };
+      },
+    );
+    cascadeResults.push(...skillSteps);
+  }
+
+  // ====== Phase 4: Atomic team body (single Postgres txn) ======
   // Last deadline check. Past this point the work is local DB writes inside one
   // transaction — fast, and aborting midway would only mean a rollback, so the
   // check belongs here rather than inside.
   assertNotAborted(signal, "the team-body transaction");
-  const phase3Start = Date.now();
+  const phase4Start = Date.now();
   const teamRow = await db.transaction(async (tx) => {
-    // Insert skills — idempotent: skip if the skill is already installed
-    for (const skillItem of requiredSkillItems) {
-      const slug = skillItem.id.split("/").pop() ?? skillItem.id;
-      const insertedRows = await tx
-        .insert(companySkills)
-        .values({
-          companyId,
-          key: skillItem.id,
-          slug,
-          name: skillItem.name,
-          description: skillItem.description,
-          markdown: skillContents.get(skillItem.id)!,
-          sourceType: "catalog",
-          sourceLocator: skillItem.id,
-          sourceRef: skillItem.version,
-          trustLevel: "markdown_only",
-          compatibility: "compatible",
-          fileInventory: [],
-          metadata: {
-            catalogCategory: skillItem.category,
-            catalogTags: skillItem.tags,
-            catalogTrustTier: skillItem.trust.tier,
-            installedAt,
-          },
-        })
-        .onConflictDoNothing()
-        .returning({ id: companySkills.id });
-
-      if (insertedRows.length === 0) {
-        // Skill already installed — look up its id for the cascade record.
-        // If the row disappeared between the INSERT conflict and this SELECT (concurrent DELETE),
-        // throw so the transaction rolls back rather than recording a misleading skipped entry.
-        const [existing] = await tx
-          .select({ id: companySkills.id })
-          .from(companySkills)
-          .where(and(eq(companySkills.companyId, companyId), eq(companySkills.key, skillItem.id)))
-          .limit(1);
-        if (!existing) {
-          throw new Error(`Skill conflict detected but row not found: ${skillItem.id}`);
-        }
-        cascadeResults.push({
-          step: "skill-install",
-          itemId: skillItem.id,
-          status: "skipped",
-          resultEntityId: existing.id,
-          durationMs: 0,
-        });
-      } else {
-        cascadeResults.push({
-          step: "skill-install",
-          itemId: skillItem.id,
-          status: "success",
-          resultEntityId: insertedRows[0].id,
-          durationMs: 0,
-        });
-      }
-    }
-
     // Insert agents (one per entry in team.json's agents array).
     // Routes through createMarketplaceAgent so kind, triggers, templateOrigin,
     // and templateVersion are set via the canonical install path.
@@ -390,7 +417,7 @@ export async function installTeam(opts: InstallTeamOpts): Promise<InstallTeamRes
       itemId: catalogItem.id,
       status: "success",
       resultEntityId: teamInserted[0].id,
-      durationMs: Date.now() - phase3Start,
+      durationMs: Date.now() - phase4Start,
     });
 
     return teamInserted[0];

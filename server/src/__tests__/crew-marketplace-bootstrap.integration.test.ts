@@ -34,7 +34,26 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
 import { applyPendingMigrations, createDb, type Db } from "@armyofagents/db";
-import type { MarketplaceCatalogFile } from "@armyofagents/shared";
+import type { CatalogItem, MarketplaceCatalogFile } from "@armyofagents/shared";
+
+/**
+ * T2.3c — the ONLY thing stubbed in the skill path is the git clone.
+ *
+ * `materializeSkillBundle` shells out to `git clone` against GitHub, and
+ * `isMarketplaceGitHubRepo` rejects anything that is not a github.com repo, so a
+ * bundle-carrying fixture cannot be served by the in-process fixture server.
+ * Mocking the clone (and nothing else) keeps the field-parity assertion honest:
+ * BOTH sides of the comparison run the real `installSkill` over the same mock,
+ * so a hand-rolled insert still cannot match it.
+ */
+const materializerMock = vi.hoisted(() => vi.fn());
+vi.mock("../services/marketplace-install/skill-bundle-materializer.js", async () => {
+  const actual = await vi.importActual<
+    typeof import("../services/marketplace-install/skill-bundle-materializer.js")
+  >("../services/marketplace-install/skill-bundle-materializer.js");
+  return { ...actual, materializeSkillBundle: materializerMock };
+});
+
 import {
   MarketplaceCatalogService,
   loadCachedCatalog,
@@ -43,6 +62,7 @@ import {
 import { agentService } from "../services/agents.js";
 import { companyService } from "../services/companies.js";
 import { provisionCompanyCrew } from "../services/crew-provisioning.js";
+import { installSkill } from "../services/marketplace-install/skill-installer.js";
 
 type EmbeddedPostgresInstance = {
   initialise(): Promise<void>;
@@ -74,6 +94,20 @@ const TEAM_ID = "team:aoa-curated/default-crew";
 const SCOUT_ID = "agent:aoa-curated/aoa-scout";
 const REVIEWER_ID = "agent:aoa-curated/aoa-reviewer";
 const SKILL_ID = "skill:aoa-curated/fixture-crew-skill";
+/**
+ * The shape every real crew skill has: a `skill.bundle`, a `provider`, a
+ * `resourceUrl`, and NO inline content. All 17 skills
+ * `team:aoa-curated/default-crew` requires look exactly like this in the live
+ * catalog (verified 2026-07-24 against the published `catalog.json`).
+ */
+const BUNDLE_SKILL_ID = "skill:github-skills/fixture/repo/bundle-skill";
+
+const BUNDLE_INVENTORY = [
+  { path: "SKILL.md", kind: "skill" },
+  { path: "references/guide.md", kind: "reference" },
+  { path: "scripts/run.js", kind: "script" },
+];
+const BUNDLE_MARKDOWN = "---\nname: bundle-skill\n---\n\nFrom the materialized bundle.\n";
 
 /** `companies.issue_prefix` is globally unique, so raw inserts need distinct values. */
 let seedCounter = 0;
@@ -120,6 +154,7 @@ const FIXTURE_CATALOG: MarketplaceCatalogFile = {
         { type: "agent", id: SCOUT_ID },
         { type: "agent", id: REVIEWER_ID },
         { type: "skill", id: SKILL_ID },
+        { type: "skill", id: BUNDLE_SKILL_ID },
       ],
     },
     {
@@ -133,6 +168,29 @@ const FIXTURE_CATALOG: MarketplaceCatalogFile = {
     {
       ...catalogItemBase(SKILL_ID, "skill", "Fixture Crew Skill"),
       content: { inline: "---\nname: fixture-crew-skill\n---\n\nDo the thing.\n" },
+    },
+    {
+      ...catalogItemBase(BUNDLE_SKILL_ID, "skill", "Fixture Bundle Skill"),
+      // resourceUrl but no inline content — exactly the live crew skills. The
+      // pre-T2.3c hand-rolled insert fetched THIS body; the real installer
+      // never looks at it, because the bundle carries its own SKILL.md.
+      resourceUrl: `${FIXTURE_HOST}/skills/bundle-skill/SKILL.md`,
+      skill: {
+        bundle: {
+          type: "github-directory",
+          repo: "fixture/repo",
+          commitSha: "0123456789abcdef0123456789abcdef01234567",
+          path: "skills/bundle-skill",
+          treeUrl: "https://github.com/fixture/repo/tree/0123456789abcdef/skills/bundle-skill",
+        },
+        frontmatter: { name: "bundle-skill", raw: {} },
+      },
+      provider: {
+        id: "fixture",
+        name: "Fixture",
+        logoUrl: "https://example.invalid/logo.png",
+        fallbackInitials: "FX",
+      },
     },
   ],
 } as unknown as MarketplaceCatalogFile;
@@ -169,6 +227,11 @@ const FIXTURE_BODIES: Record<string, string> = {
   [`${FIXTURE_HOST}/teams/default-crew/team.json`]: TEAM_TEMPLATE,
   [`${FIXTURE_HOST}/agents/aoa-scout/agent.json`]: agentTemplate("aoa-scout", "Scout", "scout"),
   [`${FIXTURE_HOST}/agents/aoa-reviewer/agent.json`]: agentTemplate("aoa-reviewer", "Reviewer", "reviewer"),
+  // Deliberately DIFFERENT from BUNDLE_MARKDOWN: the pre-T2.3c installer stored
+  // this body, the real installer stores the bundle's, so the two are
+  // distinguishable in the parity assertion.
+  [`${FIXTURE_HOST}/skills/bundle-skill/SKILL.md`]:
+    "---\nname: bundle-skill\n---\n\nFrom the CDN body, NOT the bundle.\n",
 };
 
 let realFetch: typeof globalThis.fetch;
@@ -248,6 +311,13 @@ async function catalogCacheSource(): Promise<string | null> {
 
 beforeAll(async () => {
   try {
+    materializerMock.mockImplementation(async (_bundle: unknown, options: { destination: string }) => ({
+      destination: options.destination,
+      markdown: BUNDLE_MARKDOWN,
+      fileInventory: BUNDLE_INVENTORY,
+      fileCount: BUNDLE_INVENTORY.length,
+      byteCount: 128,
+    }));
     dataDir = await mkdtemp(join(tmpdir(), "aoa-crew-bootstrap-integ-"));
     const { default: EmbeddedPostgres } = (await import("embedded-postgres")) as {
       default: EmbeddedPostgresCtor;
@@ -386,6 +456,90 @@ describe.skipIf(
     // takes a different path.
     expect(crew.some((r) => r.name === "Commander")).toBe(true);
     expect(crew.some((r) => r.name === "Steward")).toBe(true);
+  }, 120_000);
+
+  // ── T2.3c: the team's skills go through the REAL installer ────────────────
+  // `installTeam` phase 3 used to hand-roll its own `company_skills` insert:
+  // `trustLevel: "markdown_only"`, `fileInventory: []`, no `catalogProvider`, no
+  // `catalogSkillBundle`/`catalogBundleInstallPath`, and the markdown taken from
+  // the CDN body instead of the bundle's own SKILL.md. Every company created by
+  // T2.3 therefore got bundle-less skill rows — and because that insert stamped
+  // `sourceRef` to the current version, `installSkill`'s idempotency guard
+  // answered `alreadyInstalled: true` for the key from then on, so the bundle
+  // was never materialized for that company. All 17 skills the live crew team
+  // requires carry a bundle (verified against the published catalog).
+  //
+  // FIELD PARITY against rows the real `installSkill` wrote is the assertion a
+  // re-implementation cannot pass; T2.3b used the same approach for the repair
+  // path, and this is the create path it left behind.
+  it("writes skill rows identical to the real installer, bundle and all", async () => {
+    if (setupError) throw new Error(String(setupError));
+    await clearCatalogCache();
+
+    const service = makeService({ snapshot: FIXTURE_CATALOG });
+    await service.sync();
+    registerMarketplaceCatalogService(service);
+
+    const company = await companyService(db).create({ name: "Skill Parity Co" } as never);
+
+    // The reference: a company whose rows the real installer wrote directly.
+    const referenceId = randomUUID();
+    await db.execute(sql`
+      INSERT INTO companies (id, name, issue_prefix)
+      VALUES (${referenceId}, 'Skill Reference Co', ${nextIssuePrefix()})
+    `);
+    for (const item of FIXTURE_CATALOG.items.filter((i) => i.type === "skill")) {
+      await installSkill({ catalogItem: item as CatalogItem, companyId: referenceId, db });
+    }
+
+    // `installedAt` is a wall-clock stamp and is excluded on both sides; the
+    // bundle install path is company-scoped, so the two install paths are
+    // compared on a per-company-substituted basis below rather than raw.
+    const shape = async (companyId: string) =>
+      rowsOf<Record<string, unknown>>(
+        await db.execute(sql`
+          SELECT key, slug, name, description, markdown, source_type, source_locator,
+                 source_ref, trust_level, compatibility, file_inventory,
+                 (metadata - 'installedAt' - 'catalogBundleInstallPath') AS metadata
+          FROM company_skills WHERE company_id = ${companyId} ORDER BY key
+        `),
+      );
+
+    const installed = await shape(company.id);
+    expect(installed).toEqual(await shape(referenceId));
+    expect(installed).toHaveLength(2);
+
+    // The specifics the hand-rolled insert could not produce, stated outright so
+    // the parity assertion cannot pass by both sides being wrong together.
+    const bundled = installed.find((r) => r.key === BUNDLE_SKILL_ID)!;
+    expect(bundled.file_inventory).toEqual(BUNDLE_INVENTORY);
+    // DERIVED from the inventory (a script is present), not the hardcoded default.
+    expect(bundled.trust_level).toBe("scripts_executables");
+    expect(bundled.markdown).toBe(BUNDLE_MARKDOWN);
+    const bundledMeta = bundled.metadata as Record<string, unknown>;
+    expect((bundledMeta.catalogSkillBundle as Record<string, unknown>).path).toBe(
+      "skills/bundle-skill",
+    );
+    expect(bundledMeta.catalogProvider).toMatchObject({ id: "fixture" });
+
+    // The install path IS written, and it is this company's own directory —
+    // excluded from the parity SELECT above precisely because it must differ.
+    const paths = rowsOf<{ install_path: string | null }>(
+      await db.execute(sql`
+        SELECT metadata ->> 'catalogBundleInstallPath' AS install_path
+        FROM company_skills WHERE company_id = ${company.id} AND key = ${BUNDLE_SKILL_ID}
+      `),
+    );
+    expect(paths[0].install_path).toContain(company.id);
+
+    // The other half of the defect: the idempotency guard now short-circuits on
+    // a row that genuinely carries the bundle, instead of sealing in a stub.
+    const probe = await installSkill({
+      catalogItem: FIXTURE_CATALOG.items.find((i) => i.id === BUNDLE_SKILL_ID) as CatalogItem,
+      companyId: company.id,
+      db,
+    });
+    expect(probe.alreadyInstalled).toBe(true);
   }, 120_000);
 
   // ── Hazard 3: offline bootstrap, snapshot INJECTED not read from disk ──────

@@ -97,12 +97,17 @@ export { ADOPTED_TEMPLATE_VERSION } from "./marketplace-install/crew-constants.j
 /**
  * Budget for the `team.json` fetch — the one resource repair fetches directly.
  *
- * Skill bodies do NOT run against this clock: they go through `installSkill`,
- * which owns its own per-item fetch and git-clone timeouts, at
+ * Skill bodies do NOT run against this clock: they go through `installSkill`, at
  * {@link CREW_REPAIR_FETCH_CONCURRENCY} in flight. Sizing a single aggregate
  * deadline across 17 bundle materializations would either abort healthy work or
- * be so loose it bounded nothing; per-item timeouts times bounded concurrency is
- * the honest bound, and it is stated rather than overclaimed.
+ * be so loose it bounded nothing.
+ *
+ * Stated exactly, because an earlier revision of this comment overclaimed it:
+ * an `installSkill` body FETCH is bounded by `FETCH_TIMEOUT_MS`, but a bundle
+ * `git clone` is bounded only by git's own network timeouts unless the caller
+ * passes a signal — and repair deliberately passes none, because it is an
+ * unattended background pass with no interactive budget to protect. The
+ * interactive caller that does need the bound (company create) passes one.
  */
 export const CREW_REPAIR_FETCH_DEADLINE_MS = 30_000;
 

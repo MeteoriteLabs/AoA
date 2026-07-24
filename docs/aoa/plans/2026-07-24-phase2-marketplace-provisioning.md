@@ -393,13 +393,12 @@ agent writes are not — additive, idempotent, version-scoped new-file writes,
 never a delete of founder data — so a later transaction failure simply leaves
 rows the next attempt re-uses.
 
-> **Follow-up filed: `installTeam` has the identical defect.**
-> `team-installer.ts` phase 3 does its own hand-rolled `company_skills` insert
-> with `trustLevel: "markdown_only"` and `fileInventory: []`. Every
-> freshly-bootstrapped company therefore gets the same bundle-less, poisoned
-> rows. Out of scope here (it changes every founder-initiated team install), but
-> it means a *repaired* company currently ends up with better skill rows than a
-> newly created one.
+> **Follow-up filed: `installTeam` has the identical defect.** — ✅ CLOSED by
+> T2.3c (2026-07-24). `team-installer.ts` phase 3 did its own hand-rolled
+> `company_skills` insert with `trustLevel: "markdown_only"` and
+> `fileInventory: []`, so every freshly-bootstrapped company got the same
+> bundle-less, poisoned rows and a *repaired* company ended up with strictly
+> better skill rows than a newly created one.
 
 **Also:** bounded concurrency for skill installs (F4 — sequential would have
 blown the deadline and then not retried for a full cooldown); the advisory-lock
@@ -501,7 +500,39 @@ git commit -m "feat(marketplace): make crew provisioning repairable after a degr
 
 ---
 
-## T2.3c — Install team skills through the real installer (found via T2.3b)
+## T2.3c — Install team skills through the real installer (found via T2.3b) — ✅ SHIPPED 2026-07-24
+
+> **Execution notes.**
+>
+> 1. **Seam chosen: a new phase 3, outside the transaction — the same seam
+>    T2.3b settled on**, for the same reasons plus one this path adds:
+>    `uninstallTeam` already leaves `company_skills` in place ("they may be
+>    shared with other agents"), and the orchestrator discards `cascadeResults`
+>    entirely on a failed team install (`orchestrator.ts:359` keeps them only for
+>    `PackageInstallError`), so **nothing** depended on skill rows rolling back
+>    with the team. The phases renumbered: 1 pre-flight, 2 plugins, **3 skills**,
+>    4 team-body txn.
+> 2. **An already-present key is SKIPPED, not upgraded.** `installSkill` THROWS
+>    on a version mismatch ("use the update flow"), so routing blindly through it
+>    would make a founder's team install fail because one required skill is pinned
+>    at an older version — a new failure mode the `onConflictDoNothing` it
+>    replaces did not have. A pre-filter on `key` (exactly `installMissingRosterSkills`'s
+>    shape) preserves the old semantics and keeps the throw out of the team path.
+> 3. **The phase-1e skill-body pre-fetch was DELETED, not kept.**
+>    `installSkill` loads inline content / fetches `resourceUrl` / materializes
+>    the bundle itself, so keeping 1e meant a second, discarded round-trip per
+>    skill — 17 of them on the crew bootstrap, every one of which is thrown away
+>    because a bundle carries its own SKILL.md.
+> 4. **One thing the plan did not name: this puts N `git clone`s on the
+>    synchronous company-create POST**, and `CREW_INSTALL_DEADLINE_MS` was sized
+>    against "27 CDN fetches" — a claim T2.3c would have silently falsified. The
+>    caller's `signal` is now threaded `installTeam → installSkill →
+>    materializeSkillBundle → execFile`, so the deadline actually kills a stalled
+>    clone, and is re-checked before each skill install. Both docblocks were
+>    rewritten to state what it does and does not bound.
+> 5. **Correction to a T2.3b docblock:** it claimed `installSkill` "owns its own
+>    per-item fetch and git-clone timeouts". The fetch half was true; the clone
+>    half was not — `execFile` had no timeout and no signal. Stated honestly now.
 
 **Why:** `team-installer.ts:243-269` (phase 3 of `installTeam`) hand-rolls the
 `company_skills` insert instead of calling `installSkill`. It hardcodes
@@ -524,17 +555,17 @@ poisoned rows today.
 
 **Files:** `server/src/services/marketplace-install/team-installer.ts`, its tests.
 
-- [ ] **Step 1: Failing test** — after `installTeam`, a bundle-carrying skill has
+- [x] **Step 1: Failing test** — after `installTeam`, a bundle-carrying skill has
   real bundle metadata and a non-empty `fileInventory`, and a subsequent
   `installSkill` for the same key does **not** report `alreadyInstalled` against
   a bundle that was never materialized. **Discriminator:** assert *field parity*
   against a row the real `installSkill` wrote — the check a re-implementation
   cannot pass. (T2.3b used exactly this; reuse the approach.)
-- [ ] **Step 2: Run → FAIL. Step 3: Route the insert through `installSkill`.**
+- [x] **Step 2: Run → FAIL. Step 3: Route the insert through `installSkill`.**
   Mind the transaction: `installSkill` git-clones bundles, and T2.3b concluded
   17 clones inside a transaction holding an advisory lock is unacceptable —
   match whatever seam T2.3b settled on, and say which you chose.
-- [ ] **Step 4: Run → PASS. Step 5: Verify + commit.**
+- [x] **Step 4: Run → PASS. Step 5: Verify + commit.**
 ```bash
 git commit -m "fix(marketplace): install team skills through the real installer (bundles + trust level)"
 ```

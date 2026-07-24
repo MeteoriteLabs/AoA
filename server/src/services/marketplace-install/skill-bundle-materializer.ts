@@ -27,6 +27,13 @@ export interface MaterializeSkillBundleOptions {
   unsafeTestRepoUrl?: string;
   unsafeTestCheckoutRef?: string;
   overwrite?: boolean;
+  /**
+   * Optional caller deadline. Passed to every `git` subprocess, which is killed
+   * when it aborts. Without it a clone is bounded only by git's own network
+   * timeouts, which is minutes — too long for a caller running inside an
+   * interactive request (the company-create crew bootstrap).
+   */
+  signal?: AbortSignal;
 }
 
 export interface MaterializeSkillBundleResult {
@@ -51,9 +58,9 @@ export async function materializeSkillBundle(
 
   try {
     await prepareDestination(destination, options.overwrite ?? false);
-    await gitClone(repoUrl, checkoutDir);
-    await git(checkoutDir, "checkout", "--detach", checkoutRef);
-    await assertCheckedOutCommit(checkoutDir, bundle.commitSha);
+    await gitClone(repoUrl, checkoutDir, options.signal);
+    await git(checkoutDir, options.signal, "checkout", "--detach", checkoutRef);
+    await assertCheckedOutCommit(checkoutDir, bundle.commitSha, options.signal);
 
     const sourceDir = path.resolve(checkoutDir, bundlePath);
     assertWithin(checkoutDir, sourceDir, `Unsafe bundle path "${bundle.path}"`);
@@ -160,20 +167,26 @@ async function prepareDestination(destination: string, overwrite: boolean) {
   }
 }
 
-async function gitClone(repoUrl: string, checkoutDir: string) {
+async function gitClone(repoUrl: string, checkoutDir: string, signal?: AbortSignal) {
   await execFileAsync("git", ["clone", "--no-checkout", repoUrl, checkoutDir], {
     windowsHide: true,
+    signal,
   });
 }
 
-async function git(cwd: string, ...args: string[]) {
-  await execFileAsync("git", args, { cwd, windowsHide: true });
+async function git(cwd: string, signal: AbortSignal | undefined, ...args: string[]) {
+  await execFileAsync("git", args, { cwd, windowsHide: true, signal });
 }
 
-async function assertCheckedOutCommit(checkoutDir: string, expectedSha: string) {
+async function assertCheckedOutCommit(
+  checkoutDir: string,
+  expectedSha: string,
+  signal?: AbortSignal,
+) {
   const actualSha = (await execFileAsync("git", ["rev-parse", "HEAD"], {
     cwd: checkoutDir,
     windowsHide: true,
+    signal,
   })).stdout.trim();
   if (actualSha.toLowerCase() !== expectedSha.toLowerCase()) {
     throw new Error(`Checked out commit SHA ${actualSha} did not match expected ${expectedSha}`);
