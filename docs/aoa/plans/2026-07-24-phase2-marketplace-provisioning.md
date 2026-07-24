@@ -140,6 +140,35 @@ Verified before deciding:
 - [ ] **Step 1: Read the existing pre-install gate** (`companies.ts:135-147`) and understand why it can never fire (it checks for a non-`@legacy` agent *before* any install could have run). Note T2.2 has since hoisted `ensureInternalAgentConfig` out of that block — do not push it back in.
 - [ ] **Step 2: Failing integration test (L4, real DB)** — a newly created company has the marketplace crew: real `agent:aoa-curated/…` `templateOrigin` (**not** `@legacy`), non-null `templateVersion`, and populated `skillKeys`. Model on `server/src/__tests__/*.integration.test.ts`; Windows-runnable (`initdbFlags: ["--encoding=UTF8","--locale=C"]`, honour `AOA_RUN_WIN_INTEGRATION=1`). **It must actually run — say so plainly if it skips.**
 - [ ] **Step 3: Failing test — offline path.** With the network stubbed out, the **bundled snapshot** produces the same roster (D11). This is the discriminator that proves creation never depends on the network.
+
+  > **⚠️ This step as originally written is UNSOUND — read before writing it.**
+  > Verified 2026-07-24:
+  > **`ui/src/aoa-marketplace-snapshot.json` is gitignored** (`.gitignore:60`).
+  > It is fetched at build time by `pnpm fetch-catalog`; it is NOT in the repo.
+  > So this test would pass on a dev machine that happens to have run
+  > `fetch-catalog` and prove **nothing** in CI or a fresh clone, where
+  > `bundledSnapshotProvider` (`app.ts:468-486`) catches the failed import and
+  > returns `null` — i.e. no fallback at all.
+  > **The test must inject a snapshot fixture** (or stub
+  > `bundledSnapshotProvider`) rather than depend on the file existing. If you
+  > write a test whose outcome depends on whether `fetch-catalog` has been run,
+  > you have written a test that lies.
+
+- [ ] **Step 3b: Failing test — the cold-cache race.** This is the failure mode most likely to ship silently, and nothing in the plan covered it.
+  **The problem:** the bundled snapshot only reaches the cache *inside*
+  `syncCatalog`'s catch, and only when the cache is empty
+  (`aoa-marketplace.ts:119-131`). The boot sync is **fire-and-forget** —
+  `startSyncLoop()` calls `void this.sync()` unawaited (`:78-88`). So on a
+  fresh instance a company created in the first seconds after boot can find
+  `loadCachedCatalog` still `null`, degrade to the legacy seeders, and be
+  provisioned with the `@legacy` roster — **precisely the state Phase 2 exists
+  to eliminate**, arrived at non-deterministically and invisible afterwards.
+  **Required:** company create must not depend on the background loop winning a
+  race. Await catalog availability at the create path with a bounded timeout
+  (falling back to snapshot, then to legacy), and test that a create with an
+  empty cache and a not-yet-completed sync still produces the marketplace
+  roster. Assert on the resulting `templateOrigin`, not on whether a call was
+  made.
 - [ ] **Step 4: Run → FAIL.**
 - [ ] **Step 5: Implement.** Call `installTeam("team:aoa-curated/default-crew")` from company create with `targetDepartmentId: null` (T2.1), live catalog → snapshot fallback. **Never block or fail company creation on install failure** — degrade to the legacy seeders and log loudly, so a marketplace outage cannot break onboarding. Remove the now-unreachable pre-install gate.
 
