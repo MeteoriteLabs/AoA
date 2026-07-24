@@ -990,18 +990,149 @@ git commit -m "feat(marketplace): treat agent instruction edits as customization
 
 ---
 
-## T2.7 — Build the agent diff/merge path (P10, P11)
+## T2.7 — Build the agent diff/merge path (P10, P11) — ✅ SHIPPED 2026-07-24
 
 **Why:** today `/apply` returns 501 "use merge", `/merge` returns 404 "not a skill" — a closed loop. The Review button leads nowhere. D22 makes this load-bearing.
 
-- [ ] **Step 1: Failing tests** — an agent update with a customized local copy produces a **section-level diff**, accepts keep-mine/accept-upstream **per section**, and lands a `conflict` badge.
-- [ ] **Step 2: Run → FAIL.**
-- [ ] **Step 3: Extend** `/updates/:id/diff` and `/updates/:id/merge` to `itemType:"agent"` with section-level diffing over instruction files.
-- [ ] **Step 4: WRITE the `conflict` status.** It is currently **read in three places** (`marketplace-company.ts:154`, `UpdateCard.tsx:37`, `MarketplaceUpdatesPanel.tsx:40`) and **written nowhere** — dead enum, dead badge. Make divergence surface *before* the founder opens Review.
-- [ ] **Step 5: Run → PASS.** **Step 6: Commit.**
+- [x] **Step 1: Failing tests** — an agent update with a customized local copy produces a **section-level diff**, accepts keep-mine/accept-upstream **per section**, and lands a `conflict` badge.
+- [x] **Step 2: Run → FAIL.**
+- [x] **Step 3: Extend** `/updates/:id/diff` and `/updates/:id/merge` to `itemType:"agent"` with section-level diffing over instruction files.
+- [x] **Step 4: WRITE the `conflict` status.** It is currently **read in three places** (`marketplace-company.ts:154`, `UpdateCard.tsx:37`, `MarketplaceUpdatesPanel.tsx:40`) and **written nowhere** — dead enum, dead badge. Make divergence surface *before* the founder opens Review.
+- [x] **Step 5: Run → PASS.** **Step 6: Commit.**
 ```bash
 git commit -m "feat(marketplace): agent diff/merge with section-level review + live conflict status"
 ```
+
+### Execution notes (2026-07-24) — the three delegated design calls, and one thing the plan did not name
+
+**Files:** `server/src/services/marketplace-agent-merge.ts` (pure algebra),
+`server/src/services/marketplace-install/agent-update-merge.ts` (I/O + write),
+`server/src/routes/marketplace-company.ts` (three route branches),
+`server/src/services/marketplace-install/crew-updater.ts` (conflict status),
+`ui/src/components/marketplace/{MergeDiffPane,SnapshotUpdateModal,types}.*`.
+
+**1. A section is `<file>::<## heading>`.** The skill differ's unit, namespaced by
+file. Rejected: file granularity (an all-or-nothing choice on a 400-line
+AGENTS.md) and hunk granularity (no stable identity across a rewrite, so a
+founder cannot tell which of their edits a decision covers). The file prefix is
+load-bearing — two bundle files may both declare `## Tone`, and without it one
+decision would silently govern both. Whole-file adds/removes are *forced* to
+`added`/`removed` rather than run through `computeSectionDiff("", …)`, which
+would have labelled a brand-new file's preamble `changed`.
+
+`promptTemplate` and `bootstrapPromptTemplate` are **virtual files**
+(`promptTemplate.legacy.md`, `bootstrapPromptTemplate.legacy.md`) — the first of
+those names is not invented here, `agent-instructions.ts` already surfaces
+`promptTemplate` under exactly that path as a `virtual: true` bundle entry.
+Upstream never carries them, so they appear as `removed` sections defaulting to
+"mine". Excluding them was the other option and it is wrong in both directions:
+drop them silently and a merge becomes the D22 harm; keep them unconditionally
+and no merge could ever honestly report pure catalog content.
+
+**2. "Accept upstream" sets the flag from the BYTES, never from the clicks.**
+After a merge, `instructions_customized` is `false` iff the resulting bundle is
+byte-identical to upstream (same file set, same bytes, same entry file), else
+`true` — never back to `null`, because the divergence is now known rather than
+unknown. This is the same statement `applyCrewAgentUpdate` already makes when it
+re-asserts `false` after a full replacement.
+
+The byte test is not cosmetic. `applyMergeDecisions` **reassembles** a document
+(`sections.join("\n\n").trim() + "\n"`), so an all-"theirs" merge does not
+reproduce upstream's bytes. Two verbatim shortcuts were added for exactly this:
+a file whose every section resolves upstream is copied from `upstream` verbatim,
+and a file whose every decision is "mine" is copied from `mine` verbatim. Without
+the first, `pureUpstream` could never be true and the T2.6 backlog would be
+permanent; without the second, "keep mine" would silently rewrite the founder's
+blank lines — and would append a newline to the founder's `promptTemplate` on
+every merge.
+
+**Two defects the tests caught during the build, both in this area:**
+- Rejoining a file from its diff sections is **not** lossless. `splitSections`
+  always emits a `__preamble__` section, and for a heading-first document that
+  section holds ZERO lines while its content string is `""` —
+  indistinguishable from one blank line. Reconstruction therefore prepended a
+  newline to every heading-first file, i.e. corrupted precisely the bytes the
+  keep-mine guarantee is about. Both sides are now passed in as whole-file maps.
+- `pureUpstream` was first computed as "every section decided theirs", which
+  answered **false** for an agent whose bundle already equalled upstream (the
+  common backlog shape, where the defaults are all "mine"). It is now a byte
+  comparison of the result.
+
+**3. The merged result is written file-by-file, never through
+`materializeManagedBundle`.** `writeMergedAgentBundle` is the single named
+function that touches disk; it uses the same `agentInstructionsService`
+surface the founder's own editor uses (`writeFile` / `deleteFile` /
+`updateBundle`) and **never** does a recursive `fs.rm` of the bundle root. When
+every decision is "accept upstream" the end state is identical to what a
+replace-everything materialize would have produced, reached without the hazard.
+Deletions skip the entry file (`deleteFile` refuses it anyway); a skipped
+deletion is reported and forces `pureUpstream` to false rather than being
+papered over.
+
+**Seam left for T2.8.** T2.8's subject is the *skill* side — `/merge` rewrites
+`company_skills.markdown` and never re-materializes the checked-out bundle on
+disk. Nothing in T2.7 writes skill bundles, and the agent write is isolated in
+`writeMergedAgentBundle`, so T2.8 can add `materializeSkillBundle` to the skill
+branch without reopening the agent path. **Do not "unify" the two by routing
+the agent merge through `materializeManagedBundle`** — that reintroduces the
+`fs.rm`.
+
+**Also landed, because the plan's scope implied them:**
+- **`/apply` now handles `itemType: "agent"`.** It was answering 501 for *every*
+  agent update, including provably untouched ones with nothing to review.
+  It delegates to `applyCrewAgentUpdate` (which owns the D22 gate) and answers
+  409 `AGENT_INSTRUCTIONS_CUSTOMIZED` for `true`/`null` rows — the exact shape
+  the skill path already used. 501 now means TEAM updates only.
+- **Merge also moves `skillKeys`, `runtimeConfig.aoa.toolAllowlist`,
+  `templateVersion` and triggers**, mirroring `applyCrewAgentUpdate`. It has to:
+  stamping the new `templateVersion` without them would leave a row silently
+  claiming content it does not have, and `checkCrewUpdates` would never look at
+  it again. **D23 composes unchanged** — a protected AoA agent keeps its
+  triggers through a reviewed merge, and there is a test for it.
+- **Agent resolution fails closed on ambiguity.** `agents.template_origin` is not
+  unique per company while `marketplace_pending_updates` is unique on
+  (company, item), so two agents sharing an origin is a 409
+  `AMBIGUOUS_AGENT_ORIGIN`, not a coin flip.
+- **UI: an `Accept all upstream` / `Keep all mine` bulk control.** Not polish —
+  it is the only affordance that drains a `null`-provenance agent, whose
+  per-section default of "mine" would otherwise re-declare it customized on
+  every review, forever.
+
+**Is the T2.6 `null` backlog drainable end-to-end? Yes.** `checkCrewUpdates`
+records those agents as `conflict` → the founder opens Review → the diff shows
+either nothing (bundle already matches) or catalog-vs-catalog changes →
+`Accept all upstream` → merge writes upstream verbatim and stamps
+`instructions_customized = false` → the agent re-enters auto-update permanently.
+Both halves are tested (`marketplace-agent-update-merge.test.ts`).
+
+**Conflict-status semantics.** `conflict` = the local copy is (or may be)
+divergent, so this cannot be taken wholesale; `pending` = held back only by
+policy or the update window, one click away. Reconciliation is bidirectional but
+only ever moves rows already in `pending`/`conflict` — an `applied` or
+`dismissed` row is never resurrected here (that decision stays with
+`upsertPendingUpdate`, which makes it only for a genuinely newer release).
+`applyCrewAgentUpdate`'s "mark applied" predicate was widened to accept
+`conflict` so a stale red badge cannot survive the apply that resolved it.
+
+**Ablations run.** Removing the keep-mine branch (always take upstream) fails 11
+tests, including the on-disk byte-identity assertion and the route-level one.
+Hard-coding `nextStatus = "pending"` fails 3 conflict-status tests. A permanent
+ABLATION test also pins the pre-T2.7 reality: landing the same founder edit
+through `applyCrewAgentUpdate` leaves `AGENTS.md` byte-equal to upstream with
+the founder's lines gone.
+
+**Known gaps, stated rather than hidden.**
+- The merge writes files BEFORE its transaction. A transaction failure leaves the
+  merged bundle on disk with the row still on the old `templateVersion` — the
+  pending update survives and the next diff shows the merged content as "mine".
+  Recoverable; the reverse order is not (it would silently claim content that is
+  not there).
+- Two founders merging the same update concurrently: the pending row's
+  `pending|conflict → applied` claim serialises the DB write, and the loser gets
+  409. It cannot un-write the files the loser already put on disk.
+- An upstream entry-file **rename** is handled (via `updateBundle`) only when the
+  upstream entry file survives the merge; otherwise the old entry file is kept
+  and `pureUpstream` is forced false.
 
 ---
 

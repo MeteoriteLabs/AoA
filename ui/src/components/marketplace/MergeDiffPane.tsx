@@ -30,17 +30,55 @@ export function MergeDiffPane({ sections, onChange }: MergeDiffPaneProps) {
     onChange(next);
   }
 
+  /**
+   * Bulk choice. "Accept all upstream" is not a convenience — it is the only
+   * affordance that drains an agent whose customization state was merely
+   * *unknown* (`instructions_customized IS NULL`, every crew agent installed
+   * before migration 0182). Those bundles usually hold nothing but older
+   * catalog content, and the per-section default of "mine" would otherwise
+   * keep re-declaring them customized on every review, freezing them out of
+   * auto-update forever.
+   */
+  function pickAll(choice: "mine" | "theirs") {
+    const next: Record<string, "mine" | "theirs"> = {};
+    for (const s of sections) next[s.header] = choice;
+    setDecisions(next);
+    onChange(next);
+  }
+
+  const decidable = sections.filter((s) => s.state !== "unchanged");
+
   return (
     <div className="space-y-4 max-h-[60vh] overflow-y-auto pr-1">
+      {decidable.length > 0 && (
+        <div className="flex items-center justify-end gap-2">
+          <Button size="sm" variant="ghost" onClick={() => pickAll("mine")}>
+            Keep all mine
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => pickAll("theirs")}>
+            Accept all upstream
+          </Button>
+        </div>
+      )}
       {sections.map((section) => {
         const decision = decisions[section.header] ?? "mine";
         const unchanged = section.state === "unchanged";
+        // Agent bundles send `file` + `section`; skills send neither and put the
+        // bare heading in `header`.
+        const heading = section.section ?? section.header;
+        const label = heading === "__preamble__" ? "(Introduction)" : heading;
 
         return (
           <div key={section.header} className="border rounded-lg overflow-hidden">
             <div className="flex items-center justify-between bg-muted px-3 py-1.5">
               <span className="text-sm font-medium">
-                {section.header === "__preamble__" ? "(Introduction)" : section.header}
+                {section.file && (
+                  <span className="mr-1.5 font-mono text-xs text-muted-foreground">
+                    {section.file}
+                    {section.virtual ? " (config)" : ""} ›
+                  </span>
+                )}
+                {label}
               </span>
               <Badge
                 variant={

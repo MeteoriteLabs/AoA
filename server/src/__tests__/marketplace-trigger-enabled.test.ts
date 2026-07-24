@@ -37,6 +37,7 @@ vi.mock("@armyofagents/db", () => {
 vi.mock("drizzle-orm", () => ({
   eq: () => Symbol("op:eq"),
   and: () => Symbol("op:and"),
+  inArray: () => Symbol("op:inArray"),
 }));
 vi.mock("../middleware/logger.js", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },

@@ -27,6 +27,7 @@ vi.mock("@armyofagents/db", () => {
 vi.mock("drizzle-orm", () => ({
   eq: () => Symbol("op:eq"),
   and: () => Symbol("op:and"),
+  inArray: () => Symbol("op:inArray"),
 }));
 vi.mock("../middleware/logger.js", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -132,8 +133,14 @@ function makeTxMock(
  * value, so an unchanged row behaves as it would in production; pass it
  * explicitly to simulate a founder edit landing mid-pass.
  */
-function makeNotifyDb(rows: unknown[], liveState?: boolean | null) {
+function makeNotifyDb(
+  rows: unknown[],
+  liveState?: boolean | null,
+  opts?: { pendingRowAlreadyExists?: boolean },
+) {
   const insertedValues: Record<string, unknown>[] = [];
+  /** T2.7: SET payloads of the pending-row status reconcile (top-level, not tx). */
+  const pendingUpdateSets: Record<string, unknown>[] = [];
   const resolvedLive =
     liveState !== undefined
       ? liveState
@@ -154,14 +161,22 @@ function makeNotifyDb(rows: unknown[], liveState?: boolean | null) {
         insertedValues.push(v);
         return {
           onConflictDoNothing: vi.fn().mockReturnValue({
-            returning: vi.fn().mockResolvedValue([{ id: "pending-1" }]),
+            returning: vi
+              .fn()
+              .mockResolvedValue(opts?.pendingRowAlreadyExists ? [] : [{ id: "pending-1" }]),
           }),
         };
       }),
     }),
+    update: vi.fn().mockReturnValue({
+      set: vi.fn().mockImplementation((v: Record<string, unknown>) => {
+        pendingUpdateSets.push(v);
+        return { where: vi.fn().mockResolvedValue(undefined) };
+      }),
+    }),
     transaction: vi.fn(),
   };
-  return { db, insertedValues };
+  return { db, insertedValues, pendingUpdateSets };
 }
 
 const AUTO_SETTINGS = {
@@ -457,6 +472,89 @@ describe("checkCrewUpdates — D22 routing", () => {
     expect(updatedFields.templateVersion).toBe("0.1.0");
     // Auto-apply is silent: no pending row, no "update available" notification.
     expect(insertedValues).toHaveLength(0);
+  });
+});
+
+// ── tests: T2.7 — the `conflict` status is WRITTEN ─────────────────────────
+//
+// Before T2.7 `conflict` was read in three places and written in none: the
+// apply route's stale-status guard, `UpdateCard`'s badge and
+// `MarketplaceUpdatesPanel`'s filter all handled a value nothing produced.
+// These tests exist so it cannot quietly go back to being dead.
+
+describe("checkCrewUpdates — conflict status (T2.7)", () => {
+  const NOTIFY_SETTINGS = { ...AUTO_SETTINGS, agentUpdatePolicy: "notify" as const };
+
+  async function runNotify(
+    instructionsCustomized: boolean | null,
+    settings = AUTO_SETTINGS,
+    opts?: { pendingRowAlreadyExists?: boolean },
+  ) {
+    const harness = makeNotifyDb(
+      [
+        {
+          ...AGENT_ROW,
+          companyId: "co-1",
+          templateOrigin: CATALOG_ITEM.id,
+          kind: "aoa",
+          instructionsCustomized,
+        },
+      ],
+      undefined,
+      opts,
+    );
+    await checkCrewUpdates({
+      db: harness.db as any,
+      companyId: "co-1",
+      catalogItems: [CATALOG_ITEM],
+      settings,
+      instructionsService: { materializeManagedBundle: vi.fn().mockResolvedValue({ adapterConfig: {} }) } as any,
+    });
+    return harness;
+  }
+
+  it("records a CUSTOMIZED agent's pending update as `conflict`", async () => {
+    const { insertedValues } = await runNotify(true);
+    expect(insertedValues).toHaveLength(1);
+    expect(insertedValues[0]!.status).toBe("conflict");
+  });
+
+  it("records an UNKNOWN-provenance agent's pending update as `conflict`", async () => {
+    // The T2.6 backlog: every crew agent installed before migration 0182.
+    const { insertedValues } = await runNotify(null);
+    expect(insertedValues[0]!.status).toBe("conflict");
+  });
+
+  // THE DISCRIMINATOR. An implementation that stamped every agent update
+  // `conflict` would satisfy both tests above and make the badge meaningless
+  // again — a permanent red flag on updates that are held back only by policy
+  // and would apply with one click.
+  it("records an UNTOUCHED agent held back by POLICY as `pending`, not `conflict`", async () => {
+    const { insertedValues } = await runNotify(false, NOTIFY_SETTINGS);
+    expect(insertedValues).toHaveLength(1);
+    expect(insertedValues[0]!.status).toBe("pending");
+  });
+
+  it("promotes an ALREADY-EXISTING pending row to `conflict` when the agent diverged", async () => {
+    const { insertedValues, pendingUpdateSets } = await runNotify(true, AUTO_SETTINGS, {
+      pendingRowAlreadyExists: true,
+    });
+    // The insert lost the race with an existing row, so the status has to be
+    // reconciled by an explicit UPDATE — `onConflictDoNothing` alone would leave
+    // a stale `pending` row on a now-divergent agent forever.
+    expect(insertedValues).toHaveLength(1);
+    expect(pendingUpdateSets).toHaveLength(1);
+    expect(pendingUpdateSets[0]).toMatchObject({
+      status: "conflict",
+      latestVersion: CATALOG_ITEM.version,
+    });
+  });
+
+  it("demotes an existing row back to `pending` once the divergence is gone", async () => {
+    const { pendingUpdateSets } = await runNotify(false, NOTIFY_SETTINGS, {
+      pendingRowAlreadyExists: true,
+    });
+    expect(pendingUpdateSets[0]).toMatchObject({ status: "pending" });
   });
 });
 

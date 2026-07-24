@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { agents, aoaAgentTriggers, marketplacePendingUpdates } from "@armyofagents/db";
 import type { CatalogItem, MarketplaceSettings } from "@armyofagents/shared";
@@ -279,7 +279,10 @@ export async function applyCrewAgentUpdate(opts: {
       }
     }
 
-    // Mark pending update as applied
+    // Mark pending update as applied. `conflict` is accepted alongside
+    // `pending` (T2.7): a row can be left in `conflict` by an earlier pass and
+    // the agent subsequently become replaceable — a stale red badge must not
+    // survive the apply that resolved it.
     await tx
       .update(marketplacePendingUpdates)
       .set({ status: "applied", updatedAt: new Date() })
@@ -287,7 +290,7 @@ export async function applyCrewAgentUpdate(opts: {
         and(
           eq(marketplacePendingUpdates.companyId, agentRow.companyId),
           eq(marketplacePendingUpdates.catalogItemId, catalogItem.id),
-          eq(marketplacePendingUpdates.status, "pending"),
+          inArray(marketplacePendingUpdates.status, ["pending", "conflict"]),
         ),
       );
   });
@@ -309,7 +312,12 @@ export async function applyCrewAgentUpdate(opts: {
  * D22: the customization test is deliberately routed through the SAME notify
  * machinery as the policy test rather than a parallel path, so a customized
  * agent produces the ordinary founder-visible pending-update row that T2.7's
- * diff/merge will act on.
+ * diff/merge acts on.
+ *
+ * T2.7: the recorded row's status distinguishes the two reasons — `conflict`
+ * when the local bundle is (or may be) divergent, `pending` when only policy or
+ * the update window held it back. `pending` rows can be taken with one click via
+ * `POST /updates/:id/apply`; `conflict` rows need the reviewed merge.
  */
 export async function checkCrewUpdates(opts: {
   db: Db;
@@ -393,6 +401,24 @@ export async function checkCrewUpdates(opts: {
       );
     }
 
+    // T2.7 — WRITE the `conflict` status.
+    //
+    // `conflict` was read in three places (the apply route's stale-status guard,
+    // `UpdateCard`'s badge, `MarketplaceUpdatesPanel`'s filter) and written
+    // nowhere: a dead enum behind a dead badge. It means exactly one thing —
+    // **this update cannot be taken wholesale, because the local copy diverges
+    // (or may diverge) from the catalog.** That is the D22 condition, and it is
+    // strictly narrower than "pending": a plain `pending` agent update is one
+    // held back only by policy or the update window, and clicking Apply on it
+    // lands without a review.
+    //
+    // Surfacing it here rather than at review time is the point. Before this,
+    // the founder learned an update was contested only after opening the modal;
+    // now the Inbox/Settings list distinguishes "newer version available" from
+    // "newer version available AND your edits are in the way" at a glance.
+    const divergent = !isReplaceable(agent.instructionsCustomized);
+    const nextStatus = divergent ? "conflict" : "pending";
+
     // Notify path: record pending update + fire notification only on first detection.
     // onConflictDoNothing().returning() returns the newly-inserted row when the
     // (companyId, catalogItemId) pair is new, and returns [] when the row already
@@ -410,11 +436,37 @@ export async function checkCrewUpdates(opts: {
           itemType: "agent",
           currentVersion: agent.templateVersion ?? "0.0.0",
           latestVersion: catalogItem.version,
-          status: "pending",
+          status: nextStatus,
         })
         .onConflictDoNothing()
         .returning({ id: marketplacePendingUpdates.id });
       pendingInserted = inserted.length > 0;
+
+      if (!pendingInserted) {
+        // A row already existed. Reconcile its status and version with what we
+        // just observed, but ONLY from the two live states — an `applied` or
+        // `dismissed` row must not be resurrected by a re-run of the checker
+        // (that re-opening decision belongs to `upsertPendingUpdate`, which
+        // makes it deliberately and only for a genuinely newer release).
+        //
+        // Bidirectional on purpose: an agent whose divergence was resolved by a
+        // merge that landed pure catalog content is no longer in conflict, and
+        // a stale red badge is its own kind of lie.
+        await db
+          .update(marketplacePendingUpdates)
+          .set({
+            status: nextStatus,
+            latestVersion: catalogItem.version,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(marketplacePendingUpdates.companyId, companyId),
+              eq(marketplacePendingUpdates.catalogItemId, catalogItem.id),
+              inArray(marketplacePendingUpdates.status, ["pending", "conflict"]),
+            ),
+          );
+      }
     } catch (err) {
       logger.error({ err }, "marketplace: failed to record pending update");
     }

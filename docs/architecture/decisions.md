@@ -1511,3 +1511,132 @@ artifact class was governed two different ways for no stated reason.
 
 **Related.** [Decision #112] (marketplace crew at company creation),
 [Decision #113] (protected AoA agents), T2.7 (agent diff/merge).
+
+---
+
+## Decision #115 — Reviewed agent merge: `<file>::<section>`, byte-derived customization, no `fs.rm` (T2.7) (2026-07-24)
+
+Decision #114 (D22) routes a customized — or unknown-provenance — crew agent's
+catalog update to **notify**. It did not say what the founder does next, and
+there was nothing to do: `POST /updates/:id/apply` answered **501** "use merge",
+`POST /updates/:id/merge` answered **404** "not a skill", and
+`GET /updates/:id/diff` answered **400** "skill updates only". The Review button
+led nowhere, and #114's accepted consequence — *every* crew agent installed
+before migration `0182` routes to notify on its next catalog bump, untouched ones
+included — meant those rows accumulate with no exit. This decision closes the
+loop.
+
+**Decisions.**
+
+1. **An agent's reviewable section is `<file>::<## heading>`.** The skill
+   differ's unit, namespaced by the bundle file it came from. File granularity
+   was rejected (an all-or-nothing choice on a 400-line `AGENTS.md`), and hunk
+   granularity was rejected (a hunk has no stable identity across a rewrite, so
+   a founder cannot tell which of their edits a decision covers). The file
+   prefix is load-bearing rather than decorative: two files in one bundle may
+   both declare `## Tone`, and one shared decision key would silently govern
+   both. A file present on only one side is mapped straight to `added` /
+   `removed` sections rather than diffed against the empty string, which would
+   have labelled a brand-new file's preamble `changed`.
+
+2. **`promptTemplate` and `bootstrapPromptTemplate` are virtual files** —
+   `promptTemplate.legacy.md` and `bootstrapPromptTemplate.legacy.md`. They live
+   in `adapterConfig`, not on disk, and `applyBundleConfig` **deletes** both when
+   a catalog update materializes. The first name is not invented here:
+   `agent-instructions.ts` already surfaces `promptTemplate` under exactly that
+   path as a `virtual: true, deprecated: true` bundle entry. Upstream never
+   carries either, so they surface as `removed` sections defaulting to "mine".
+   Excluding them was the alternative and it is wrong in both directions: drop
+   them silently and the merge becomes the very harm #114 exists to prevent;
+   keep them unconditionally and no merge could ever honestly report that the
+   agent holds pure catalog content, so the backlog could never drain.
+
+3. **After a merge, `instructions_customized` is derived from the resulting
+   BYTES, not from the founder's clicks.** `false` iff the bundle is
+   byte-identical to upstream — same file set, same bytes, same entry file —
+   otherwise `true`. Never back to `null`: after a review the divergence is
+   known, not unknown. This is the same statement `applyCrewAgentUpdate` already
+   makes when it re-asserts `false` after a full replacement, and getting it
+   wrong is expensive in both directions: a false `false` re-opens surviving
+   founder bytes to a silent overwrite on the next bump, a false `true` freezes a
+   provably clean agent out of auto-update forever.
+
+   The byte test is not pedantry. `applyMergeDecisions` *reassembles* a document
+   (join the surviving sections with a blank line, trim, add a trailing
+   newline), so an all-"accept upstream" merge does not reproduce upstream's
+   bytes. Two verbatim shortcuts exist for exactly this: a file whose every
+   section resolves upstream is copied from upstream verbatim, and a file whose
+   every decision is "mine" is copied from the founder's side verbatim. Without
+   the first, `pureUpstream` could never be true. Without the second, "keep
+   mine" would rewrite the founder's blank lines and would append a newline to
+   their `promptTemplate` on every merge.
+
+   Rebuilding a file from its diff sections was tried and is **unsound**:
+   `splitSections` always emits a `__preamble__` section, and for a
+   heading-first document that section holds zero lines while its content string
+   is empty — indistinguishable from one blank line. Both sides are passed as
+   whole-file maps instead.
+
+4. **The merged result is written file-by-file; `materializeManagedBundle` is
+   never called.** Its first act is a recursive, forced `fs.rm` of the directory
+   holding the founder's edits, outside any transaction — the hazard T2.3b's
+   review and #114 both landed on. `writeMergedAgentBundle` is the single named
+   function that touches disk and uses the same `agentInstructionsService`
+   surface the founder's own editor uses. When every decision is "accept
+   upstream" the end state is identical to a replace-everything materialize,
+   reached without the rm. Deletions skip the entry file; a skipped deletion is
+   reported and forces `pureUpstream` false.
+
+5. **`conflict` is now written, and means something narrower than `pending`.**
+   It was read in three places and written in none. `conflict` = the local copy
+   is (or may be) divergent, so the update cannot be taken wholesale;
+   `pending` = held back only by policy or the update window, one click from
+   landing. Reconciliation is bidirectional but only moves rows already in
+   `pending`/`conflict` — an `applied` or `dismissed` row is never resurrected
+   here; that stays with `upsertPendingUpdate`, which does it only for a
+   genuinely newer release.
+
+6. **`/apply` handles agents; 501 now means TEAM updates only.** Forcing a
+   provably untouched agent through a review it has nothing to review is the
+   failure mode on the far side of D22. `/apply` delegates to
+   `applyCrewAgentUpdate`, which owns the D22 gate, and answers 409
+   `AGENT_INSTRUCTIONS_CUSTOMIZED` for `true`/`null` rows — the shape the skill
+   path already used.
+
+7. **A merge moves the catalog-owned non-instruction fields too** — `skillKeys`,
+   `runtimeConfig.aoa.toolAllowlist`, `templateVersion`, triggers — mirroring
+   `applyCrewAgentUpdate`. It must: stamping the new `templateVersion` without
+   them leaves a row claiming content it does not have, and `checkCrewUpdates`
+   would never look at it again. **Decision #113 (D23) composes unchanged:** a
+   protected AoA agent keeps its triggers through a reviewed merge exactly as it
+   does through an auto-applied one.
+
+8. **Agent resolution fails closed on ambiguity.** `agents.template_origin` is
+   not unique per company while `marketplace_pending_updates` is unique on
+   (company, item). Two agents sharing an origin returns 409
+   `AMBIGUOUS_AGENT_ORIGIN` rather than writing the merge into whichever row the
+   planner returned first.
+
+**Consequence: #114's `null` backlog is now drainable end to end.** Those agents
+surface as `conflict`; Review shows either nothing (bundle already matches) or
+catalog-vs-catalog changes; `Accept all upstream` (a bulk control added for this
+reason, not for convenience — the per-section default of "mine" would otherwise
+re-declare them customized on every review) lands upstream verbatim and stamps
+`instructions_customized = false`, returning the agent to auto-update
+permanently.
+
+**Known gaps, stated rather than hidden.** Files are written before the
+transaction: a transaction failure leaves the merged bundle on disk with the row
+still on the old `templateVersion`, so the pending update survives and the next
+diff shows the merged content as "mine" — recoverable, whereas the reverse order
+would silently claim content that is not there. Two concurrent merges of the same
+update are serialised by the pending row's `pending`/`conflict` → `applied` claim
+and the loser gets 409, but that cannot un-write the files the loser already put
+on disk. An upstream entry-file rename is honoured only when the upstream entry
+file survives the merge; otherwise the old entry file is kept and `pureUpstream`
+is forced false.
+
+**Related.** [Decision #113] (protected AoA agents — the trigger carve-out this
+composes with), [Decision #114] (D22, which this completes), T2.8 (skill-bundle
+re-materialization on merge — deliberately left as a separate seam; do NOT unify
+it by routing the agent merge through `materializeManagedBundle`).

@@ -6,15 +6,23 @@
  * PATCH /settings         — update company marketplace settings
  * GET  /updates           — list pending updates
  * POST /updates/:id/dismiss — dismiss a pending update
- * POST /updates/:id/apply   — apply a pending update (stub, filled in Task 11)
- * GET  /updates/:id/diff  — returns section-level diff for a skill update
+ * POST /updates/:id/apply   — apply a pending plugin/skill/agent update in one click
+ * GET  /updates/:id/diff  — section-level diff for a skill or agent update
  * POST /updates/:id/merge — apply merge decisions and save merged content
  * POST /request-install   — team_member install request (stub, filled in Task 10)
+ *
+ * **Agent updates (T2.7).** `/diff` and `/merge` accept `itemType: "agent"`.
+ * A skill's reviewable unit is a `## ` section of one markdown file; an agent's
+ * is `<file>::<## section>` across its whole instruction bundle, because agent
+ * instructions are a bundle and two files may carry the same heading. See
+ * `services/marketplace-agent-merge.ts` (the algebra) and
+ * `services/marketplace-install/agent-update-merge.ts` (the I/O + the write).
+ * `/apply` still refuses TEAM updates only.
  */
 import { Router } from "express";
 import { z } from "zod";
 import { and, eq, ne } from "drizzle-orm";
-import { type Db, marketplacePendingUpdates, companySkills, plugins } from "@armyofagents/db";
+import { type Db, agents, marketplacePendingUpdates, companySkills, plugins } from "@armyofagents/db";
 import { assertBoard, assertCanManageInstanceSettings, assertCompanyAccess } from "./authz.js";
 import { assertRole } from "../middleware/rbac.js";
 import {
@@ -25,17 +33,36 @@ import {
 import { marketplaceSettingsService } from "../services/marketplace-settings.js";
 import { computeSectionDiff, applyMergeDecisions } from "../services/marketplace-merge.js";
 import { marketplaceNotifications } from "../services/marketplace-notifications.js";
+import { agentInstructionsService } from "../services/agent-instructions.js";
 import {
   applySkillUpdate,
   SkillCustomizedError,
   SkillDeletedError,
 } from "../services/marketplace-install/skill-auto-updater.js";
+import {
+  applyCrewAgentUpdate,
+  AgentInstructionsCustomizedError,
+} from "../services/marketplace-install/crew-updater.js";
+import {
+  AgentMergeConflictError,
+  computeAgentUpdateDiff,
+  mergeAgentUpdate,
+  type AgentBundleServiceLike,
+  type MergeableAgentRow,
+} from "../services/marketplace-install/agent-update-merge.js";
+import type { AgentInstructionsServiceLike } from "../services/marketplace-install/agent-create.js";
 import type { MarketplaceCatalogFile } from "@armyofagents/shared";
 import type { PluginLifecycleManager } from "../services/plugin-lifecycle.js";
 
 export interface MarketplaceCompanyRoutesDeps {
   db: Db;
   catalogService: { readCache(): Promise<MarketplaceCatalogFile | null> };
+  /**
+   * Agent instruction bundle I/O. Defaults to the real filesystem-backed
+   * service; injectable so the agent diff/merge routes can be exercised without
+   * touching disk.
+   */
+  instructionsService?: AgentBundleServiceLike & AgentInstructionsServiceLike;
   pluginLifecycle?: PluginLifecycleManager;
   pluginLoader?: {
     installPlugin(options: {
@@ -79,6 +106,68 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
   const { db } = deps;
   const router = Router({ mergeParams: true });
   const svc = marketplaceSettingsService(db);
+  const instructionsService: AgentBundleServiceLike & AgentInstructionsServiceLike =
+    deps.instructionsService ?? agentInstructionsService();
+
+  /**
+   * Find the crew agent a pending `itemType: "agent"` update refers to.
+   *
+   * The join key is `agents.template_origin = marketplace_pending_updates.
+   * catalog_item_id` — the same key `checkCrewUpdates` used to mint the row.
+   *
+   * **Fails closed on ambiguity.** Nothing enforces one agent per origin per
+   * company (`installAgent` will happily install the same template twice under a
+   * suffixed name), while the pending-update table is unique on
+   * (companyId, catalogItemId). Picking one arbitrarily would write a merge into
+   * whichever row the planner happened to return first and silently leave the
+   * other diverged, so two matches is a 409 the founder can act on instead.
+   */
+  async function resolveAgentForUpdate(
+    companyId: string,
+    catalogItemId: string,
+  ): Promise<
+    | { ok: true; agent: MergeableAgentRow }
+    | { ok: false; status: number; body: Record<string, unknown> }
+  > {
+    const rows = await db
+      .select({
+        id: agents.id,
+        companyId: agents.companyId,
+        name: agents.name,
+        adapterType: agents.adapterType,
+        adapterConfig: agents.adapterConfig,
+        runtimeConfig: agents.runtimeConfig,
+        skillKeys: agents.skillKeys,
+        templateOrigin: agents.templateOrigin,
+        templateVersion: agents.templateVersion,
+        instructionsCustomized: agents.instructionsCustomized,
+      })
+      .from(agents)
+      .where(and(eq(agents.companyId, companyId), eq(agents.templateOrigin, catalogItemId)));
+
+    if (rows.length === 0) {
+      return { ok: false, status: 404, body: { error: "Installed agent not found for this update" } };
+    }
+    if (rows.length > 1) {
+      return {
+        ok: false,
+        status: 409,
+        body: {
+          error:
+            `${rows.length} agents in this company share the template ${catalogItemId}. ` +
+            "Remove or re-point the duplicates before reviewing this update.",
+          code: "AMBIGUOUS_AGENT_ORIGIN",
+        },
+      };
+    }
+    return { ok: true, agent: rows[0] as MergeableAgentRow };
+  }
+
+  /** Look up the catalog item a pending update points at. */
+  async function resolveCatalogItem(catalogItemId: string) {
+    const catalog = await deps.catalogService.readCache();
+    return catalog?.items.find((item) => item.id === catalogItemId) ?? null;
+  }
 
   // ── Settings ──────────────────────────────────────────────────────────────
 
@@ -293,9 +382,58 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
       return;
     }
 
-    // For agent/team snapshot types: not implemented at V1.
+    if (update.itemType === "agent") {
+      // T2.7 — an agent with NO local divergence must land with one click, the
+      // same as a skill. Before this, every agent update answered 501 "use
+      // merge", which forced a review even on a provably untouched bundle where
+      // there is nothing to review. `applyCrewAgentUpdate` owns the D22 gate, so
+      // the customized/unknown rows still fall through to 409 → the merge path.
+      const catalogItem = await resolveCatalogItem(update.catalogItemId);
+      if (!catalogItem) {
+        res.status(422).json({ error: "Catalog item not found — catalog may be stale." });
+        return;
+      }
+
+      const resolved = await resolveAgentForUpdate(companyId, update.catalogItemId);
+      if (!resolved.ok) {
+        res.status(resolved.status).json(resolved.body);
+        return;
+      }
+
+      try {
+        await applyCrewAgentUpdate({
+          db,
+          agentRow: {
+            id: resolved.agent.id,
+            companyId,
+            name: resolved.agent.name,
+            adapterType: resolved.agent.adapterType,
+            adapterConfig: resolved.agent.adapterConfig,
+            runtimeConfig: resolved.agent.runtimeConfig,
+            skillKeys: resolved.agent.skillKeys ?? [],
+            templateVersion: resolved.agent.templateVersion,
+            instructionsCustomized: resolved.agent.instructionsCustomized,
+          },
+          catalogItem,
+          instructionsService,
+        });
+        res.json({ ok: true, applied: true });
+      } catch (err) {
+        if (err instanceof AgentInstructionsCustomizedError) {
+          res.status(409).json({
+            error: "Agent instructions are customized. Manual merge required.",
+            code: "AGENT_INSTRUCTIONS_CUSTOMIZED",
+          });
+        } else {
+          res.status(500).json({ error: err instanceof Error ? err.message : "Apply failed" });
+        }
+      }
+      return;
+    }
+
+    // For team snapshot types: not implemented at V1.
     res.status(501).json({
-      error: "Direct apply not supported for agent/team updates. Use POST /updates/:id/merge for reviewed merge.",
+      error: "Direct apply not supported for team updates. Use POST /updates/:id/merge for reviewed merge.",
     });
   });
 
@@ -321,8 +459,43 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
       return;
     }
 
+    if (update.itemType === "agent") {
+      const catalogItem = await resolveCatalogItem(update.catalogItemId);
+      if (!catalogItem) {
+        res.status(422).json({ error: "Catalog item not found — catalog may be stale." });
+        return;
+      }
+
+      const resolved = await resolveAgentForUpdate(companyId, update.catalogItemId);
+      if (!resolved.ok) {
+        res.status(resolved.status).json(resolved.body);
+        return;
+      }
+
+      try {
+        const result = await computeAgentUpdateDiff({
+          instructions: instructionsService,
+          agent: resolved.agent,
+          catalogItem,
+        });
+        res.json({
+          diff: result.diff,
+          currentVersion: update.currentVersion,
+          latestVersion: update.latestVersion,
+          // Lets the modal say "nothing of yours is in the way" rather than
+          // rendering an all-unchanged wall the founder has to scroll.
+          identical: result.identical,
+          instructionsCustomized: resolved.agent.instructionsCustomized,
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        res.status(502).json({ error: `Failed to fetch upstream agent template: ${message}` });
+      }
+      return;
+    }
+
     if (update.itemType !== "skill") {
-      res.status(400).json({ error: "Section diff only supported for skill updates" });
+      res.status(400).json({ error: "Section diff only supported for skill and agent updates" });
       return;
     }
 
@@ -385,11 +558,6 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
       return;
     }
 
-    if (Object.keys(decisions).length === 0) {
-      res.status(400).json({ error: "decisions must not be empty" });
-      return;
-    }
-
     const [update] = await db
       .select()
       .from(marketplacePendingUpdates)
@@ -400,8 +568,50 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
         ),
       );
 
-    if (!update || update.itemType !== "skill") {
-      res.status(404).json({ error: "Update not found or not a skill" });
+    if (!update || (update.itemType !== "skill" && update.itemType !== "agent")) {
+      res.status(404).json({ error: "Update not found or not mergeable" });
+      return;
+    }
+
+    if (update.itemType === "agent") {
+      // An agent merge legitimately carries ZERO decisions: the founder opened
+      // a `null`-provenance update, found nothing of theirs in the way, and
+      // accepted the defaults. The skill path's non-empty guard would turn that
+      // — the exact case that drains the T2.6 backlog — into a 400.
+      const catalogItem = await resolveCatalogItem(update.catalogItemId);
+      if (!catalogItem) {
+        res.status(422).json({ error: "Catalog item not found — catalog may be stale." });
+        return;
+      }
+
+      const resolved = await resolveAgentForUpdate(companyId, update.catalogItemId);
+      if (!resolved.ok) {
+        res.status(resolved.status).json(resolved.body);
+        return;
+      }
+
+      try {
+        const outcome = await mergeAgentUpdate({
+          db,
+          instructions: instructionsService,
+          agent: resolved.agent,
+          catalogItem,
+          pendingUpdateId: id,
+          decisions,
+        });
+        res.json({ ok: true, ...outcome });
+      } catch (err) {
+        if (err instanceof AgentMergeConflictError) {
+          res.status(409).json({ error: err.message, code: "AGENT_MERGE_CONFLICT" });
+        } else {
+          res.status(500).json({ error: err instanceof Error ? err.message : "Merge failed" });
+        }
+      }
+      return;
+    }
+
+    if (Object.keys(decisions).length === 0) {
+      res.status(400).json({ error: "decisions must not be empty" });
       return;
     }
 
