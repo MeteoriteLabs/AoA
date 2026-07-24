@@ -1347,7 +1347,7 @@ bundle-less** — the 16 bundle-less items are the 11 agents, 4 plugins and 1 te
 which never reach this path. So the gap is latent, not live; fixed anyway
 because the function's contract is "the row describes what is on disk".
 `skill-auto-updater.ts`'s `resolveSkillUpdatePayload` has the identical gap on
-the auto-apply path and is **not** fixed here — filed.
+the auto-apply path and is **not** fixed here — filed as T2.8c(a).
 
 **C4 — taken.** `sourceRef` now stamps `catalogItem.version`; both the merged
 markdown and the bundle come from `catalogItem`, so it is the only stamp the
@@ -1358,7 +1358,7 @@ not on the path, and the bundle directory is not jailed: `POST /skills/import`
 with `source` set to it yields a `local_path` row that `PATCH /skills/:id/files`
 will then write into, and `PATCH /agents/:id/instructions-bundle` with
 `mode:"external"` accepts any absolute `rootPath`. Stated honestly now; jailing
-that root is filed.
+that root is filed as T2.8c(b).
 
 **Ablations, each fix separately:**
 - C1 guard removed → both replay tests fail `expected 200 to be 409` (the live
@@ -1477,6 +1477,45 @@ next reader will reason from it.
 ```bash
 git commit -m "fix(marketplace): derive skill customization from merge result bytes, not unconditionally"
 ```
+
+---
+
+## T2.8c — The two follow-ups T2.8's review round 2 deferred
+
+Both are referenced as "filed" by docblocks in
+`server/src/services/marketplace-install/skill-update-merge.ts`. Neither is
+reachable today; both are stated invariants that the code does not yet hold.
+
+**(a) `applySkillUpdate` has T2.8's C3 gap.** `resolveSkillUpdatePayload`
+(`skill-auto-updater.ts:159-167`) returns `metadataPatch: undefined` when the
+catalog item has no bundle, so an auto-applied update to an item that has
+**stopped** carrying a bundle leaves `catalogBundleInstallPath`, `fileInventory`
+and `trustLevel` naming the old version's tree — agents keep receiving scripts
+upstream no longer publishes. T2.8 fixed the merge path
+(`resolveBundleColumns`); this is the same shape on the auto-apply path. Not
+fixed inside T2.8 because it is a behaviour change to a path T2.8 did not
+otherwise touch. Latent: **0 of the 498 published skills** in the shipped
+snapshot lack a bundle (the 16 bundle-less catalog items are the 11 agents, 4
+plugins and 1 team, which never reach this code).
+
+**(b) The managed skill-bundle root is not jailed.** T2.8's safety argument is
+that a founder editing a catalog skill edits `company_skills.markdown`, because
+`companySkillsService.updateFile` writes to disk only for
+`sourceType === "local_path"` (`company-skills.ts:1591`). That gate is on the
+**row's `sourceType`**, not on the **path**, and two founder-reachable chains
+get a differently-typed row to name `.aoa/marketplace-skills/…`:
+
+- `POST /companies/:cid/skills/import` takes an arbitrary `source` path and
+  produces a `local_path` row whose `sourceLocator` is it — after which
+  `PATCH /skills/:id/files` passes the `editable` check and writes inside.
+- `PATCH /agents/:id/instructions-bundle` with `mode: "external"` accepts any
+  absolute `rootPath`, then both writes and `fs.rm`s inside it.
+
+Neither happens during a normal merge, and T2.8's staging swap means a materialize
+no longer deletes a tree it cannot replace — but "nothing can write there" would
+be false, so the docblock says so instead. The fix is to reject a
+`sourceLocator` / `rootPath` that resolves inside the managed marketplace-skills
+root, in both routes, with the containment check shared rather than duplicated.
 
 ---
 

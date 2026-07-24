@@ -52,7 +52,7 @@
  * /agents/:id/instructions-bundle` with `mode: "external"` accepts any absolute
  * `rootPath` and both writes and removes inside it. Neither happens during a
  * normal merge, but "nothing can ever write there" would be false. Jailing that
- * root is filed separately.
+ * root is plan task T2.8c(b).
  *
  * The destination is additionally **version-scoped**
  * (`.aoa/marketplace-skills/<company>/<item>/<version>`), so a merge to a new
@@ -256,7 +256,7 @@ export async function mergeSkillUpdate(
  * because this function's contract is "the row describes what is on disk".
  *
  * `skill-auto-updater.ts`'s `resolveSkillUpdatePayload` has the identical gap on
- * the auto-apply path and is NOT fixed here — see the plan's T2.8 notes.
+ * the auto-apply path and is NOT fixed here — plan task T2.8c(a).
  */
 function resolveBundleColumns(
   currentMetadata: unknown,
