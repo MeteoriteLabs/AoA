@@ -815,7 +815,15 @@ git commit -m "fix(marketplace): install crew agents in a runnable state (status
 
 ---
 
-## T2.5 — Protected origins (D23)
+## T2.5 — Protected origins (D23) — ✅ SHIPPED 2026-07-24
+
+> Landed `970de03e9`. Decision #113. **The plan aimed the guard at the wrong
+> door:** `DELETE /agents/:id` already hard-refuses every `kind='aoa'` row, so
+> the per-agent refusal this section specified would have protected nothing new.
+> The only unguarded path was `uninstallTeam`, which deletes members with raw SQL
+> inside its own transaction where a per-agent guard is invisible. Keyed on
+> identity (origin slug OR name), not origin alone — origin-only would have
+> silently failed to protect Steward, the very agent named here.
 
 **Do this BEFORE T2.4** so Steward is protected the moment it becomes marketplace-managed.
 
@@ -903,7 +911,13 @@ not an authorization boundary.
 >    added, the whole install fails and every new company silently degrades to
 >    the legacy `@legacy` roster. Fail-closed and logged, but the *symptom*
 >    appears in AoA while the *cause* is a merge in the other repo.
-> 2. **Publishing Steward must be paired with reconciling the pre-existing
+> 2. **Publishing Steward makes `default-crew` un-uninstallable** through
+>    `DELETE /marketplace/teams/:teamId`. T2.5's guard is whole-team
+>    all-or-nothing (Decision #113 point 5), so the moment Steward is a member,
+>    that route always 409s. **Accepted, but confirm it is still the intent at
+>    publish time** — no UI consumes that route today, so nobody will notice
+>    until one does.
+> 3. **Publishing Steward must be paired with reconciling the pre-existing
 >    legacy Steward row**, or companies created between T2.3 and T2.4 end up
 >    with **two** Steward agents (both carrying the `sweep` trigger → duplicated
 >    hub curation). `team-reconcile.ts:96-107` builds `installedOrigins` from a
