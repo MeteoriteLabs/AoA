@@ -1,239 +1,333 @@
-# Plan 3 — Marketplace Connectors (Design)
+# Plan 3 — Marketplace Connectors (Design, revised)
 
-**Date:** 2026-07-24
+**Date:** 2026-07-24 (revised after adversarial review)
 **Branch:** `integration/connectors-marketplace`
-**Status:** design approved, implementation plan not yet written
-**Depends on:** Plans 1 + 2 + 2b (complete, `53180c129`) and `feat/viewer-upgrade`'s `marketplace-install/` rewrite (in flight)
-**Decisions:** extends #110 (connectors) and #96 (two-repo catalog schema). Decision #97
-(`derivePackages`) is **not** affected — package synthesis is skill-items-only and
-connectors are excluded from it.
+**Status:** design revised; splits into **3a** (curated shelf) and **3b** (long tail)
+**Depends on:** Plans 1 + 2 + 2b (complete, `53180c129`)
+**Decisions:** extends #110 (connectors). Interacts with #96 (two-repo catalog) and #97
+(`derivePackages`) — see §3.3 and §9.
 **Follow-ups:** `docs/aoa/plans/mcp-connectors-followups.md`
+
+> **Revision note.** The first draft of this design was reviewed against the codebase and
+> contained five critical defects, including one that would have silently frozen the
+> marketplace catalog on every deployed AoA instance. Those corrections are folded in
+> below and marked ⚠ where a naive reading would reintroduce them.
 
 ---
 
 ## 1. Problem
 
-Plans 1/2/2b built the entire connector runtime: a founder can register an external MCP
-server and it is delivered to heartbeat agents, crew agents, and Commander across all four
-CLI adapters, with secrets held in process env rather than on disk.
+Plans 1/2/2b built the whole connector runtime — a founder can register an external MCP
+server and it reaches heartbeat agents, crew agents and Commander across all four CLI
+adapters, with secrets held in process env rather than on disk.
 
-What is missing is **discovery**. Today the only way to add a connector is
-Settings → Connectors → Add, typing the URL, transport, header template and token by hand.
-That is acceptable for a founder who already knows exactly which MCP server they want and
-how it is configured. It is not a product.
-
-Plan 3 makes connectors discoverable: a curated shelf you can browse and install in one
-click, and a search box that reaches the ~9,600-server public MCP registry for everything
-else.
+What is missing is **discovery**. The only way to add a connector today is
+Settings → Connectors → Add, typing URL, transport, header template and token by hand.
 
 ---
 
 ## 2. Shape
 
-Three commitments define the design:
+1. **Connectors are browsable and installable in one click.**
+2. **The long tail is a search, not a shelf** — never bulk-imported into `catalog.json` (§3.2).
+3. **Nothing reaches an agent implicitly** — inert until credentials are supplied *and* an
+   agent is opted in.
 
-1. **Curated connectors are a first-class marketplace item type.** They browse, they have
-   cards, they install in one click, and they go through the same install orchestrator as
-   skills/agents/teams/plugins.
-2. **The long tail is a search, not a shelf.** Registry entries are never bulk-imported
-   into the catalog (see §3.2 for the measurement that forces this).
-3. **Nothing reaches an agent implicitly.** An installed connector is inert until the
-   founder supplies credentials *and* opts a specific agent in.
-
-Sizing: **~20–40 curated connectors** ship in Plan 3 (Notion, Linear, Slack, Sentry,
-Postgres, GitHub, Figma, Stripe and similar) — enough that the shelf feels real on day one,
-few enough that each can genuinely be vetted. Further curation is follow-up work, not a
-blocker.
+Sizing: **~20–40 curated connectors** in 3a. Further curation is follow-up work.
 
 ---
 
-## 3. Key measurements that shaped this
+## 3. Measurements that shaped this
 
-### 3.1 The install dispatch is a single switch
+### 3.1 The install dispatch is one switch
 
-`server/src/services/marketplace-install/orchestrator.ts:211-252` dispatches on
-`catalogItem.type` across `skill` / `agent` / `team` / `plugin`. Adding connectors means
-adding one case there — which is also why this plan is coupled to `feat/viewer-upgrade`,
-which is currently rewriting that file.
+`marketplace-install/orchestrator.ts` dispatches on `catalogItem.type` at `:211`/`:214`/
+`:242`/`:252`, with an else-throw at `:256`.
 
-### 3.2 The catalog is downloaded whole, and filtered in the browser
+⚠ **The `feat/viewer-upgrade` dependency is NOT a blocking gate.** Its orchestrator change
+is a 13-line localized edit inside the `team` case (Decision #111). The region a connector
+case occupies is untouched. Treat as *rebase before merge*, not *wait for*.
 
-`ui/src/api/marketplace.ts:105` is `api.get<MarketplaceCatalogFile>("/marketplace/catalog")`
-— the entire catalog file. Every filter and sort (`marketplace.ts:197/226/252`) is a pure
-client-side function. There is **no server-side search or pagination anywhere.**
+### 3.2 The catalog is downloaded whole and filtered in the browser
 
-Measured against the live CDN catalog on 2026-07-24:
+`ui/src/api/marketplace.ts:105` fetches the entire catalog file; `filterByType:198`,
+`filterByCategory:227`, `sortItems:257` are pure client-side functions. There is **no
+server-side search or pagination**.
 
-| | value |
-|---|---|
-| catalog size | **1,544,110 B (1.47 MB)** |
-| items | **514** (498 skill, 11 agent, 4 plugin, 1 team) |
-| avg bytes per non-skill item | **2,154 B** |
+Measured live 2026-07-24: **1,544,110 B (1.47 MB) / 514 items** (498 skill, 11 agent,
+4 plugin, 1 team); **2,154 B** average per non-skill item.
 
-Projection if the ~9,600-entry registry were snapshotted into that file:
-
-| entry density | added | new total |
+| if registry snapshotted in | added | new total |
 |---|---|---|
 | lean (400 B) | +3.7 MB | **5.1 MB** |
-| today's (2,154 B) | +19.7 MB | **21.2 MB** |
+| today's density (2,154 B) | +19.7 MB | **21.2 MB** |
 
-Every founder's browser would download that on every marketplace visit, and it would also
-land in `marketplace_catalog_cache` and in the build-time snapshot bundled into the UI.
+**Bulk import into `catalog.json` is rejected.** This is a property of the marketplace
+generally, not of connectors — recorded as FU-9.
 
-**Conclusion: bulk import is rejected.** The client-side-filter architecture is correct for
-~500 curated items and breaks around ten thousand. The long tail becomes a server-side
-search endpoint instead — which is also how people actually find a connector. Nobody
-scrolls 9,600 cards; they type "jira".
+### 3.3 ⚠ A new item type in `catalog.json` bricks every older instance
 
-This scaling limit is a property of the marketplace generally, not of connectors. It is
-recorded in the follow-up register as a constraint any future large-catalog work inherits.
+`aoa-marketplace.ts:107` does `MarketplaceCatalogFileSchema.parse(json)`, and `type` is a
+hard `z.enum`. **One** unknown item fails the whole-array parse. The catch at `:116` writes
+`writeCache(null, "cdn", "failure", …)`, which *preserves the existing catalog*.
 
----
+Proven live against the real 514-item catalog:
 
-## 4. Architecture
+```
+baseline catalog parses: true
+catalog + ONE connector item parses: false
+=> invalid_enum_value ... received 'connector', path ["items",514,"type"]
+```
 
-### 4.1 Catalog schema (two-repo, Decision #96)
+Net effect on any instance running today's shared package: it serves its last
+pre-connector catalog **forever**, silently, for skills/agents/teams/plugins too.
 
-Add `"connector"` to `MarketplaceItemTypeSchema` (`packages/shared/src/marketplace.ts:43`),
-and a connector spec carrying:
+⚠ **Decision #96 does NOT cover this.** #96 permits *additive optional fields*, because
+zod `.strip()` drops unknown keys. `.strip()` does nothing for an unknown **enum value**.
+The first draft cited #96 as mitigation; that was wrong.
 
-- `transport`: `"http" | "stdio"`
-- `url` (http) or `command` + `args` (stdio)
-- **header template keys only** — never values, never a credential
-- which secret the founder must supply (name + human label + docs URL)
-- `verified: boolean`
+`MarketplaceCategorySchema`, `MarketplaceTagSchema` and `isSchemaVersionSupported`
+(strict equality on `"1.0.0"`) have the identical blast radius.
 
-Mirrored in `MeteoriteLabs/aoa-marketplace-cdn` as `content/connectors/<slug>/connector.json`.
-
-Two rules are load-bearing:
-
-- **`verified` is fail-closed.** Absent ⇒ community. It may be set *only* in the
-  AoA-controlled catalog repo and must never be read from registry-supplied metadata —
-  otherwise any registry publisher marks themselves verified and the trust tier evaporates.
-- **Absent fields must be tolerated** (Decision #96) so a CDN schema bump cannot break
-  older AoA instances.
-
-### 4.2 Install path — reuse, do not fork
-
-The `connector` case in the orchestrator calls the **existing** `mcpConnectorService`
-(`server/src/services/mcp-connectors-crud.ts`) to create a `company_mcp_connectors` row.
-
-No parallel write path. Everything already built and reviewed applies unchanged:
-
-- **D6 approval gate** — `local_trusted` auto-approves; `authenticated` queues an
-  `install_mcp_connector` approval, which remains the sole activation path (C2).
-- **D7 transport gate** — `assertTransportAllowed` still gates stdio by deployment mode.
-- **Secret handling** — D5 env indirection; the catalog never carries a credential.
-
-**New status `needs_credentials`:** installed, visible, and **never delivered to any
-agent**. The founder supplies the token in Settings, after which the row proceeds to
-`active` (or `pending_approval` under D6).
-
-`source` is set to `"marketplace"` **server-side**. It is never accepted from the client —
-this follows the C3 precedent from Plan 1, where trusting a client-supplied `source` was a
-reviewed vulnerability.
-
-### 4.3 Registry search
-
-`GET /marketplace/connectors/search?q=` proxies the official MCP registry server-side,
-caches responses, normalises entries into the same connector spec, and **forces
-`verified: false`** on every result.
-
-Failure behaviour: registry unreachable ⇒ search degrades with a clear message; curated
-browsing is unaffected. Offline and air-gapped instances therefore keep the curated shelf
-and lose only search. (Confirmed relevant: `registry.modelcontextprotocol.io` was
-DNS-unreachable from the development sandbox.)
-
-### 4.4 The stdio consent gate — server-enforced
-
-Installing an **unverified stdio** connector requires an explicit acknowledgement carrying
-the exact command to be run, and **the route rejects the install without it.**
-
-The rationale is the difference between hand-configured and catalog-installed connectors.
-A stdio connector spawns a process on the AoA host with the server's privileges;
-`npx -y <pkg>` downloads and executes code from npm at run time. Until now the founder
-always typed that command themselves, so consent was implicit in the act of typing. A card
-with an Install button removes that property, and the config arrives as data from a CDN or
-registry the founder never reads.
-
-The gate must live in the route, not the dialog. A UI-only confirmation is theatre —
-anything that can POST bypasses it.
-
-Note the case that motivates this most: **secretless stdio connectors have no credential
-modal**, so without this gate the sequence is click → code executes → no prompt at any
-point. Per D6, `local_trusted` — where D7 permits stdio — is the default deployment mode
-for solo founders.
-
-### 4.5 Agent exposure
-
-Unchanged from D3/D4: a marketplace install enables the connector for **no crew agents**;
-the founder opts each in. Commander receives all `active` connectors automatically.
-
-### 4.6 UI
-
-- Connector cards with a type filter, matching existing card chrome
-  (design-system §9.13–9.18).
-- A search box whose results are visually distinct and explicitly labelled unverified.
-- A **"Needs setup"** badge that deep-links to Settings → Connectors.
-
-The badge should share a surface with the connector-health work in follow-up FU-1 — both
-answer the same founder question, "why isn't this connector working?"
+**Design consequence — this is why connectors get their own file (§4.1).** AoA is
+self-hosted; the fleet cannot be forced to upgrade, so gating a CDN publish on fleet
+forward-compatibility is a gate that may never open.
 
 ---
 
-## 5. Error handling
+## 4. Architecture — Plan 3a (curated shelf)
+
+### 4.1 A separate `connectors.json` artifact
+
+**All** connectors — curated in 3a, long-tail in 3b — live in a second CDN artifact,
+`connectors.json`, published from `MeteoriteLabs/aoa-marketplace-cdn`. `catalog.json` is
+**not modified** and `MarketplaceItemTypeSchema` gains no new value.
+
+Why this rather than a new item type:
+
+- **Zero fleet risk** (§3.3). Older instances never fetch the file and simply show no
+  connectors — correct degradation, not silent breakage.
+- Reuses the proven cache + periodic sync + bundled-snapshot fallback machinery.
+- Keeps `catalog.json` at 1.47 MB.
+- **Works on air-gapped instances**, which a live registry proxy does not.
+
+Trust reuses the existing `trust: { tier: "verified" | "community" | "unverified", … }`
+shape (`marketplace.ts:165-172`).
+
+⚠ Do **not** add a parallel `verified: boolean`. The first draft proposed one; the existing
+three-value tier already expresses it (including the literal `"unverified"` tier 3b needs),
+and two representations of one fact drift apart. Fail-closed still holds: absent tier ⇒
+community, and tier is set only in the AoA-controlled repo, **never** read from
+registry-supplied metadata.
+
+Fleet-brittleness of `catalog.json` remains a latent bug regardless of this plan — a
+forward-compat hardening (per-item `safeParse` with drop-and-warn) is filed as **FU-14**.
+
+### 4.2 Install path — extract, then reuse
+
+⚠ The first draft said "call the existing `mcpConnectorService`, so everything already
+reviewed applies unchanged". **False.** That service is deliberately thin — its own header
+says the load-bearing validation lives in the route. `svc.create()` is a bare INSERT.
+
+The governance logic is ~80 lines in the POST handler (`routes/mcp-connectors.ts:176-257`):
+D7 gate, `(companyId, serverName)` 409, secretRef existence, status derivation from
+deployment mode, `install_mcp_connector` approval creation, activity log.
+
+**Required task:** extract a shared `createConnector(...)` service function; both the route
+and the orchestrator call it. Otherwise D6/D7 exist in two places and the marketplace copy
+is the one without test coverage.
+
+`source` is set **server-side** to `"catalog"` — ⚠ *not* `"marketplace"`; the codebase
+vocabulary is `"byo" | "catalog"` (`company_mcp_connectors.ts:32`) and `assertTransportAllowed`
+switches on `"catalog"`. Never accepted from the client (C3 precedent).
+
+### 4.3 ⚠ Credential state is a second dimension, not a fifth status
+
+The first draft added a `needs_credentials` status to the single `status` column. That
+collides with the D6 approval machine in two ways:
+
+- `approvals.ts:260-262` flips **any** non-active status to `active` on approve — so
+  approving would activate a connector with **no credentials**, exactly what the design
+  forbids.
+- `approvals.ts:321` only disables rows in `pending_approval`, so **rejecting** a
+  `needs_credentials` connector is silently a no-op.
+
+The real model is two orthogonal axes: **approval** (`pending_approval` / approved /
+rejected) × **credential** (bound / unbound). Activation requires `approved && secretBound`.
+
+Implement as a separate `secretBound`-style field, keeping `status` as the governance axis.
+No DB migration needed for the column type — `status` is `text().notNull().default("pending_approval")`,
+not a pg enum. Must be updated in step: `updateConnectorSchema`'s `z.enum` (`routes/mcp-connectors.ts:145`),
+the UI union (`ui/src/api/mcpConnectors.ts:23`), and `StatusBadge`
+(`MCPConnectorsSection.tsx:32-34`, which has **no fallback return** — an unknown status
+renders no badge at all).
+
+✅ **`selectConnectorRowsForAgent` (`mcp-connectors.ts:110-117`) is an allowlist** —
+`if (c.status !== "active") return false;` — and is the sole delivery chokepoint. Any new
+state is excluded from agent delivery for free. **Do not "helpfully" convert it to a
+denylist.**
+
+### 4.4 ⚠ There is no secret-binding write path today — 3a must add one
+
+`ConnectorPatch` is `{ displayName?, status? }` and `updateConnectorSchema` is `.strict()`
+on those two, with a deliberate comment that transport-relevant fields cannot be edited.
+Routes are GET / POST / PATCH / DELETE / PUT `…/agents` — nothing sets `secretRef` after
+create. The POST handler also validates `secretRef` existence at write time, which is the
+invariant an unbound install must violate.
+
+So the central journey — install → configure → active — **cannot be built today**.
+
+Add `POST …/:id/credentials`, which sets `secretRef` and re-derives status via the *same*
+helper the install path uses. ⚠ It must **never** accept a caller-supplied status — a naive
+`PATCH {secretRef, status:"active"}` reopens the C2 activation bypass the existing handler
+works to close.
+
+### 4.5 ⚠ D7 must become verification-aware
+
+`assertTransportAllowed` (`routes/mcp-connectors.ts:69-80`) currently reads:
+
+```ts
+if (source === "catalog") return; // verified catalog entries only (C3)
+```
+
+The comment says *verified*; the code checks only *source*. That was safe because — as its
+own docstring states — no route could construct a `catalog` source. **Plan 3 builds that
+route and introduces unverified entries**, so an unverified stdio connector would bypass D7
+and spawn a process on a shared host in `authenticated` mode.
+
+Change to `if (source === "catalog" && tier === "verified") return;`.
+
+⚠ The §4.6 consent gate is **not** a substitute. Consent is a *UX* gate proving the founder
+saw the command; D7 is an *authorization* gate about whether the deployment permits host
+exec at all. They are additive.
+
+### 4.6 The consent gate — server-enforced
+
+Installing an **unverified stdio** connector requires an acknowledgement bound to the exact
+command, and the route rejects the install without it.
+
+Rationale: a stdio connector spawns a process on the AoA host with the server's privileges.
+Until now the founder typed that command, so consent was implicit in typing it. A card with
+an Install button removes that property. The motivating case is **secretless stdio**, which
+has no credential modal — without this gate the sequence is click → code executes → no
+prompt at any point, and per D6 `local_trusted` (where D7 permits stdio) is the solo-founder
+default.
+
+No such primitive exists in the codebase; it is net-new. Enforcement at the route is viable:
+`startInstallOperation` runs synchronously in the request and `dispatchInstall` is
+fire-and-forget after it, so the check goes before `startInstallOperation`.
+
+⚠ Three requirements: the field **must** be added to `SingleInstallRequestSchema` (plain
+`z.object` **strips** unknown keys, so an unlisted field is silently dropped and the gate
+silently disappears); it must bind to the exact command (short-TTL HMAC over
+`itemId + command + args`), not be a bare `true`; and the resolved command must be
+snapshotted into the operation row to close the TOCTOU window across a catalog re-sync.
+
+### 4.7 ⚠ Marketplace RBAC must be decided, not defaulted
+
+`canInstallType` (`routes/marketplace-installs.ts:57-68`) returns `true` for `team_lead` on
+anything that is not a plugin. Adding connectors without touching it grants team leads
+ungated connector installs — while direct connector CRUD is `assertRole(…, "founder")`.
+The marketplace would be a strictly weaker door onto the same object, by omission.
+
+3a sets connectors to **founder-only**, matching CRUD. A `allowTeamLeadConnectors` setting
+can follow if wanted. Also check `resolveInstallDecision`'s `"request"` branch — a team
+member's request terminates at `"requested"` with no approve route, a dead end today.
+
+### 4.8 Agent exposure
+
+Unchanged (D3/D4): install enables the connector for **no** crew agents; the founder opts
+each in. Commander receives all `active` connectors automatically — ⚠ on the **claude path
+only**; `cli-mode.ts:770` gates on `cliTool === "claude_cli"`, so codex-mode Commander gets
+none (FU-8).
+
+### 4.9 UI
+
+Connector cards matching existing card chrome (design-system §9.13–9.18, `:738`–`:829`); a
+**"Needs setup"** badge deep-linking to Settings → Connectors, sharing a surface with FU-1's
+connector-health work.
+
+⚠ `pathToItemType` (`ui/src/lib/marketplace-constants.ts:92-103`) is a runtime allowlist of
+four string comparisons returning `null` → 404. It will **not** raise a TS error, so
+connector detail routes would silently 404. By contrast `TYPE_ICONS`/`TYPE_LABELS` are
+`Record<MarketplaceItemType, …>` and *will* fail compile — useful fail-fast.
+
+---
+
+## 5. Architecture — Plan 3b (long tail)
+
+A generation job pulls the registry, normalises entries, and publishes them into
+`connectors.json` with `trust.tier: "unverified"`. The browser fetches the file lazily when
+the Connectors surface opens.
+
+Because normalisation happens **at generation time**, the runtime never meets registry
+schema drift. The generator must handle what the live registry actually returns:
+
+- **The registry supplies no command** — only `registryType` + `identifier` + `runtimeHint`.
+  AoA *synthesizes* the command, so §4.6's consent binds to an AoA-derived string that must
+  be computed once and reused.
+- **Runtimes beyond npm** — `npx` / `uvx` / `docker` / nuget. "Runtime not installed on the
+  host" is a real failure class.
+- **Multiple packages per server** — selection policy must be explicit.
+- **`remotes[].type` is `streamable-http` or `sse`.** AoA's union is `http | stdio`;
+  `buildConnectorSpecs` skips anything else as `unknown_transport`. SSE-only servers are
+  un-installable and should be filtered at generation with a recorded count.
+- **Duplicates** — entries are version-scoped; the same server appears more than once.
+
+---
+
+## 6. Error handling
 
 | Condition | Behaviour |
 |---|---|
-| Registry unreachable / times out | search degrades with a message; curated unaffected |
-| Catalog missing connector fields | tolerated; entry renders with what is present (Decision #96) |
+| `connectors.json` unreachable | Connectors surface degrades; `catalog.json` unaffected |
+| Older instance, no knowledge of the file | shows no connectors; catalog sync unharmed |
 | stdio blocked by D7 for the deployment mode | install refused with the deployment-mode reason |
-| Unverified stdio install without consent token | route rejects (400) — not a UI-level check |
-| Connector installed but unconfigured | `needs_credentials`, badge shown, never delivered |
-| Approval pending (authenticated mode) | `pending_approval`; only approval activates (C2) |
+| Unverified stdio install without consent token | route rejects (400) — before `startInstallOperation` |
+| Unverified stdio in `authenticated` mode | refused by D7 **regardless** of consent (§4.5) |
+| Installed but unconfigured | credential-unbound; badge shown; never delivered (§4.3 allowlist) |
+| Approval pending (`authenticated`) | activation requires `approved && secretBound` |
 
 ---
 
-## 6. Testing
+## 7. Testing
 
-Full-stack coverage is a requirement of this plan, not a nicety. Every review round in
-Plans 1/2/2b found a real defect that passed first-pass green tests — an RCE chain, an
-arg-injection bypass, a data-loss bug, and silently-unauthenticated connectors — and three
-of those four were in the adversarial category.
+Every review round in Plans 1/2/2b found a real defect that passed first-pass green tests —
+an RCE chain, an arg-injection bypass, a data-loss bug, silently-unauthenticated connectors.
+Three of four were adversarial-category.
 
 | Layer | Coverage |
 |---|---|
-| **Unit** | schema parse with absent fields; `verified` fail-closed; registry→spec normalisation; consent-token validation |
-| **Contract** | search + install API shapes (existing `*-routes-contract` pattern) |
-| **Service** | install dispatch via sequence-based mock DBs (house pattern, see CLAUDE.md § Test Patterns) |
-| **Integration** (embedded-PG) | install → `needs_credentials` → add secret → `active` → loader delivers to a real run |
-| **E2E** (Playwright) | browse → install → badge → configure. Linux is the required gate; **Windows e2e is skipped** (Issue #114) so this cannot be verified locally |
-| **Adversarial** | unverified stdio rejected without consent; `verified` uninjectable from registry data; prototype pollution via connector names; reveal panel cannot be used to spoof a command; client-supplied `source` ignored |
+| **Unit** | `connectors.json` parse with absent fields; trust-tier fail-closed; registry→spec normalisation; consent-token validation + TTL + command binding |
+| **Contract** | install + credential-binding API shapes (`*-routes-contract` pattern) |
+| **Service** | shared `createConnector` dispatch via sequence-based mock DBs (house pattern) |
+| **Integration** (embedded-PG) | install → unbound → bind secret → approved → `active` → loader delivers to a real run; approve/reject against an unbound row (§4.3) |
+| **E2E** (Playwright) | browse → install → badge → configure. ⚠ Windows is skipped **in CI only** (Issue #114); run locally with `AOA_E2E_FORCE_WINDOWS=1` (`tests/e2e/playwright.config.ts:18-25`) |
+| **Adversarial** | unverified stdio rejected without consent; unverified stdio rejected by D7 in `authenticated` even *with* consent; trust tier uninjectable from registry data; consent token unbindable to a different command; client-supplied `source` ignored; prototype pollution via connector names; **regression: publishing connectors does not alter `catalog.json` parsing** |
 
 ---
 
-## 7. Risks and dependencies
+## 8. Risks
 
-1. **`feat/viewer-upgrade` must land first.** It is rewriting `marketplace-install/`
-   (orchestrator, team-installer, crew-updater, fetch-resource, operation-store) plus
-   `routes/marketplace-company.ts`. This plan extends the same dispatch. Execution is
-   gated on that work reaching `integration/connectors-marketplace`.
-2. **Two-repo coordination.** The `aoa-marketplace-cdn` schema bump must land before AoA
-   ships entries that depend on it. AoA-side code must handle the fields being absent
-   (Decision #96).
-3. **Curation is real, recurring work.** ~20–40 entries must actually be vetted — package
-   pinned, behaviour reviewed. If they are marked `verified` without that review, the
-   trust tier is a label and the design degrades to "no gate at all".
-4. **Registry availability and schema drift.** A third-party service; its response shape
-   can change. Normalisation is the isolation layer.
+1. **Curation is real, recurring work** — ~20–40 entries genuinely vetted. Marked verified
+   without review, the trust tier is a label and §4.5's gate degrades to nothing.
+2. **Two-repo coordination** — `connectors.json` must be publishable from the CDN repo
+   (unverified: that repo is not in this worktree).
+3. **`catalog.json` remains fleet-brittle** (§3.3) — avoided here, not fixed. FU-14.
+4. **Registry schema drift** — contained to the generation job, not the runtime.
 
 ---
 
-## 8. Out of scope
+## 9. Out of scope
 
-- **Bulk registry import** — rejected in §3.2.
-- **OAuth-brokered connectors** — Plan 4 (Better Auth `genericOAuth`), though the
-  `needs_credentials` state is deliberately the shape OAuth will need.
-- **Flagship UI-rich plugins** (Slack/Discord/Telegram) — Plan 4.
-- **Server-side marketplace search/pagination for all item types** — a real constraint
-  (§3.2) but a separate initiative; recorded as FU-9.
+- **Bulk import into `catalog.json`** — rejected (§3.2).
+- **OAuth-brokered connectors** — Plan 4; the credential-unbound state is deliberately the
+  shape OAuth needs.
+- **Flagship UI-rich plugins** — Plan 4.
+- **Server-side marketplace search/pagination** — FU-9.
+- **`catalog.json` forward-compat hardening** — FU-14.
+- **`derivePackages`** — connectors are excluded from *synthesis* (skill-items-only), but
+  ⚠ `derivePackages.ts:65-79` checks explicit `packageId` **before** the skill guard, so a
+  connector carrying `packageId` would be grouped and rendered with the skill-themed
+  `PackageCard`. Since connectors are not catalog items here this cannot arise, but do not
+  restate it as "connectors are excluded from #97".

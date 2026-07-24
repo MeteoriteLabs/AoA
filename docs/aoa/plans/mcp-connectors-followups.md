@@ -56,7 +56,9 @@ All three spawn normally when `folderTrust` is disabled (the default). There is 
 registry AoA can write — `~/.gemini/projects.json` is only a project-name map and no
 `trustedFolders.json` is ever created.
 
-Shipped mitigation: detect-and-warn (`gemini-folder-trust.ts`). **Do not "fix" this by
+Shipped mitigation: detect-and-warn, implemented in
+`packages/adapters/gemini-local/src/server/execute.ts` (tests in
+`__tests__/gemini-folder-trust.test.ts`). **Do not "fix" this by
 adding `--skip-trust`** — it advertises "Trust the current workspace for this session" but
 does not re-enable MCP. Plan 2b amendment B7-CORRECTED holds the detail. Revisit if
 gemini-cli changes behaviour upstream.
@@ -111,6 +113,30 @@ DB (uuid PKs), but a sibling root would make collision structurally impossible.
 read and are never swept.
 (c) `docs/aoa/plans/2026-06-24-provider-switching-watched-walkthrough.md:98,116,128,146`
 still documents the per-company path with stale line numbers.
+
+### FU-14 — `catalog.json` parsing is fleet-brittle: one unknown enum value freezes it · P1
+Discovered while designing Plan 3, and the reason connectors ship in their own
+`connectors.json` rather than as a new catalog item type.
+
+`server/src/services/aoa-marketplace.ts:107` does `MarketplaceCatalogFileSchema.parse(json)`
+and `type` is a hard `z.enum`. **One** item with an unknown type fails the whole-array
+parse; the catch at `:116` calls `writeCache(null, "cdn", "failure", …)` which *preserves
+the existing catalog*. Proven live against the real 514-item catalog: adding a single
+`type: "connector"` item flips `safeParse` from `true` to `false`.
+
+So any instance running an older shared package would serve its last good catalog
+**forever**, silently — for skills, agents, teams and plugins too — with the reason visible
+only in `lastSyncStatus`. Not an error, just permanent staleness.
+
+⚠ **Decision #96 does not cover this.** #96 permits additive *optional fields* because zod
+`.strip()` drops unknown keys; `.strip()` does nothing for an unknown **enum value**.
+`MarketplaceCategorySchema`, `MarketplaceTagSchema`, and `isSchemaVersionSupported`
+(strict equality on `"1.0.0"`) have the same blast radius.
+
+Because AoA is self-hosted, the fleet cannot be forced to upgrade, so this constrains every
+future catalog schema change. Fix: per-item `safeParse` with drop-and-warn, or `type` as
+`z.string()` with a known-type refinement at the render/dispatch layer — shipped as a
+forward-compat release *before* any CDN change that relies on it.
 
 ---
 
