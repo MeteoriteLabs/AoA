@@ -131,6 +131,24 @@ export function createConnectorCatalogService(opts: {
         return serveCache();
       }
 
+      // FU-22 — kept-ZERO but dropped-MANY is NOT a real "empty shelf" answer.
+      // Every raw entry failed to parse (a schema we tighten later, or a genuinely
+      // malformed publish that `.strip()` cannot rescue), so treat it exactly like a
+      // malformed envelope: keep the last known-good cache, report `stale: true`, and
+      // do NOT refresh `fetchedAtMs` (so the next load retries rather than pinning an
+      // empty shelf for the full TTL). This is the backstop behind the schema's
+      // `.strip()`: `.strip()` stops an ADDITIVE field from ever reaching here, and
+      // this stops the NEXT class (a genuinely unparseable batch) from blanking the
+      // shelf. A LEGITIMATELY empty shelf (`dropped.length === 0`) still replaces the
+      // cache below — a curator withdrawing every connector is a real, intended state.
+      if (entries.length === 0 && dropped.length > 0) {
+        logger.warn(
+          { url: opts.url, dropped, hasCache: cached !== null },
+          "connector catalog: every entry was dropped — keeping cached shelf",
+        );
+        return serveCache();
+      }
+
       if (dropped.length > 0) {
         logger.warn(
           { url: opts.url, dropped, kept: entries.length },

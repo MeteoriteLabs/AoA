@@ -32,12 +32,25 @@ describe("McpConnectorCatalogEntrySchema", () => {
     expect(r.success).toBe(false);
   });
 
-  it("rejects an unknown headerTemplate field", () => {
+  it("strips an unknown value-bearing headerTemplate field so a smuggled secret cannot survive", () => {
+    // FU-22: the entry schema is `.strip()` (forward-compat), so an unknown field
+    // no longer FAILS the entry — but the secret-smuggling property must survive.
+    // `headerTemplate` (VALUES) is not a field this schema knows; it is stripped,
+    // so the pasted credential never reaches `entryToCreateInput` or a downstream
+    // header-map writer.
     const r = McpConnectorCatalogEntrySchema.safeParse({
       ...httpEntry,
       headerTemplate: { Authorization: "Bearer sk-live-real" },
     });
-    expect(r.success).toBe(false); // .strict() — headerTemplate is not a field
+    expect(r.success).toBe(true);
+    expect(r.success && r.data).not.toHaveProperty("headerTemplate");
+    expect(JSON.stringify(r.success && r.data)).not.toContain("sk-live-real");
+  });
+
+  it("tolerates a purely additive optional field, stripping it (FU-22 / Decision #96)", () => {
+    const r = McpConnectorCatalogEntrySchema.safeParse({ ...httpEntry, iconUrl: "https://cdn/x.png" });
+    expect(r.success).toBe(true);
+    expect(r.success && r.data).not.toHaveProperty("iconUrl");
   });
 
   it("drops an unparseable entry but keeps the good ones (forward compatible)", () => {

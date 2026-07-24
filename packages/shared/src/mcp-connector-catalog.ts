@@ -67,7 +67,20 @@ export const McpConnectorCatalogEntrySchema = z
     docsUrl: z.string().url().optional(),
     trust: McpConnectorTrustSchema,
   })
-  .strict()
+  // FU-22 — `.strip()`, NOT `.strict()`. A purely additive optional field on a
+  // newer `connectors.json` (say `iconUrl`) must NOT fail the entry: `.strict()`
+  // would drop every entry the moment we publish one, blanking the shelf on every
+  // older instance in a self-hosted fleet (the connector-side twin of FU-14).
+  // `.strip()` drops the unknown key and validates the known shape — Decision #96's
+  // forward-compat mode.
+  //
+  // The secret-smuggling property SURVIVES this: `.strip()` removes ANY unknown
+  // key, so an entry carrying a value-bearing `headerTemplate`/`envTemplate` object
+  // (as opposed to the `*Keys` arrays this schema knows) is stripped harmlessly and
+  // its values never reach `entryToCreateInput` or a downstream writer. Trust also
+  // cannot be self-promoted: a top-level `verified`/`tier`/`trustTier` is stripped,
+  // and the real `trust` field stays enum-validated and fail-closed to `community`.
+  .strip()
   .superRefine((val, ctx) => {
     // Symmetric with server/src/routes/mcp-connectors.ts's BYO connector schema:
     // each transport requires its own field and forbids the other transport's

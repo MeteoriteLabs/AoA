@@ -360,16 +360,32 @@ describe("[inv-4] a catalog entry cannot declare itself verified", () => {
     ["an `installable` flag", { installable: true }],
     ["a `consentRequired` flag", { consentRequired: false }],
     ["a forged `consentToken`", { consentToken: "1.".padEnd(66, "a") }],
-  ])("%s is rejected outright by .strict() — the entry is DROPPED, never promoted", (_l, extra) => {
+  ])("%s is STRIPPED (FU-22 .strip() forward-compat) — the field has no effect, never promoted", (_l, extra) => {
+    // FU-22: the entry schema moved from `.strict()` (DROP the whole entry) to
+    // `.strip()` (drop the unknown KEY, keep the entry). The security property is
+    // unchanged in substance: the injected governance/trust field does not survive
+    // onto the parsed entry, so it cannot influence trust, source, or status.
     const parsed = McpConnectorCatalogEntrySchema.safeParse({ ...base, ...extra });
-    expect(parsed.success).toBe(false);
+    expect(parsed.success).toBe(true);
+    const injectedKey = Object.keys(extra)[0]!;
+    expect(parsed.success && parsed.data).not.toHaveProperty(injectedKey);
+    // Trust is untouched — still fail-closed to community, still D7-refused for
+    // stdio in authenticated.
+    expect(parsed.success && parsed.data.trust.tier).toBe("community");
+    expect(() =>
+      assertTransportAllowed("stdio", "authenticated", "catalog", (parsed as { data: { trust: { tier: string } } }).data.trust.tier),
+    ).toThrow(D7_REFUSAL);
 
-    // ...and the whole-file parser drops exactly that entry, keeping the rest.
+    // ...and the whole-file parser now KEEPS both entries (nothing dropped), with
+    // the injected key gone from the self-promoted one.
     const result = parseMcpConnectorCatalog({
       entries: [{ ...base, ...extra }, { ...base, id: "clean", serverName: "clean" }],
     });
-    expect(result.entries.map((e) => e.id)).toEqual(["clean"]);
-    expect(result.dropped).toEqual(["self-promoted"]);
+    expect(result.entries.map((e) => e.id).sort()).toEqual(["clean", "self-promoted"]);
+    expect(result.dropped).toEqual([]);
+    const promoted = result.entries.find((e) => e.id === "self-promoted")!;
+    expect(promoted).not.toHaveProperty(injectedKey);
+    expect(promoted.trust.tier).toBe("community");
   });
 
   it.each([
@@ -1091,26 +1107,29 @@ describe("[inv-8] CDN responses and the cached shelf", () => {
     });
   });
 
-  // ── [ESC-6] CONFIRMED DEFECT ────────────────────────────────────────────
-  // One purely ADDITIVE optional field on every entry (the schema is `.strict()`)
-  // drops 100% of them. `malformed` stays false, so the cache layer accepts the
-  // empty result as a real CDN answer: the shelf is emptied, reported FRESH, and
-  // pinned for another 6h. Every older instance in a self-hosted fleet loses its
-  // whole connector shelf from one forward-compatible CDN publish.
-  it("CHARACTERIZATION [ESC-6]: an additive field drops every entry and the parse looks clean", () => {
+  // ── [ESC-6] FIXED (FU-22) ───────────────────────────────────────────────
+  // Two independent fixes, both landed:
+  //   Part 1 — the entry schema is `.strip()`, not `.strict()`: a purely ADDITIVE
+  //     optional field (say `iconUrl`) is dropped from the entry, not fatal to it,
+  //     so a forward-compatible CDN publish no longer blanks the shelf at all.
+  //   Part 2 — the cache layer treats kept-ZERO/dropped-MANY like a malformed
+  //     envelope: keep the last known-good cache, report stale, do not pin. This is
+  //     the backstop for the NEXT unknown-shape problem (a genuinely malformed entry
+  //     or a schema we tighten later) that `.strip()` cannot rescue.
+  it("[ESC-6] FIXED (part 1): an additive field is STRIPPED and every entry survives", () => {
     const withIcon = [
       rawEntry("alpha", { iconUrl: "https://cdn/x.png" }),
       rawEntry("beta", { iconUrl: "https://cdn/x.png" }),
     ];
     const result = parseMcpConnectorCatalog({ entries: withIcon });
-    expect(result.entries).toEqual([]);
-    expect(result.dropped).toEqual(["alpha", "beta"]);
-    // This is the discarded signal: `dropped.length > 0 && entries.length === 0`
-    // is distinguishable from a curator emptying the shelf (dropped.length === 0).
+    expect(result.entries.map((e) => e.id)).toEqual(["alpha", "beta"]);
+    expect(result.dropped).toEqual([]);
     expect(result.malformed).toBe(false);
+    // the additive field does not survive onto the parsed entry
+    expect(result.entries[0]).not.toHaveProperty("iconUrl");
   });
 
-  it("CHARACTERIZATION [ESC-6]: the emptied shelf replaces the cache, reads FRESH, and pins for the TTL", async () => {
+  it("[ESC-6] FIXED (part 1): the additive-field shelf survives FRESH and pins normally", async () => {
     const body = { current: { entries: [rawEntry("alpha"), rawEntry("beta")] } as unknown };
     const { svc, fetchFn } = svcWith(body);
     await svc.load(T0);
@@ -1118,39 +1137,37 @@ describe("[inv-8] CDN responses and the cached shelf", () => {
     body.current = {
       entries: [rawEntry("alpha", { iconUrl: "x" }), rawEntry("beta", { iconUrl: "x" })],
     };
-    const emptied = await svc.load(T0 + CONNECTOR_CATALOG_TTL_MS);
-    expect(emptied.entries).toEqual([]);
-    expect(emptied.stale).toBe(false); // the founder is told this shelf is healthy
+    const res = await svc.load(T0 + CONNECTOR_CATALOG_TTL_MS);
+    expect(res.entries.map((e) => e.id)).toEqual(["alpha", "beta"]);
+    expect(res.stale).toBe(false); // a real, healthy answer — the shelf is intact
 
-    // fetchedAtMs WAS refreshed -> no retry for another full TTL.
+    // fetchedAtMs WAS refreshed -> pinned for the TTL, as a healthy answer should be.
     const pinned = await svc.load(T0 + CONNECTOR_CATALOG_TTL_MS + 1);
     expect(fetchFn).toHaveBeenCalledTimes(2);
-    expect(pinned.entries).toEqual([]);
-    expect(pinned.stale).toBe(false);
+    expect(pinned.entries.map((e) => e.id)).toEqual(["alpha", "beta"]);
   });
 
-  // DESIRED STATE. Delete `.fails` when the fix lands (see [ESC-6] in the report).
-  // The fix is a design decision because `mcp-connector-catalog-service.test.ts:282`
-  // deliberately asserts the opposite ("an all-dropped payload still replaces the
-  // cache — every entry was answered for"), so flipping it must be an explicit call.
-  it.fails(
-    "[ESC-6] DESIRED: kept-zero/dropped-many must be treated like a malformed envelope",
-    async () => {
-      const body = { current: { entries: [rawEntry("alpha"), rawEntry("beta")] } as unknown };
-      const { svc, fetchFn } = svcWith(body);
-      await svc.load(T0);
+  it("[ESC-6] FIXED (part 2): kept-zero/dropped-many is treated like a malformed envelope", async () => {
+    const body = { current: { entries: [rawEntry("alpha"), rawEntry("beta")] } as unknown };
+    const { svc, fetchFn } = svcWith(body);
+    await svc.load(T0);
 
-      body.current = {
-        entries: [rawEntry("alpha", { iconUrl: "x" }), rawEntry("beta", { iconUrl: "x" })],
-      };
-      const res = await svc.load(T0 + CONNECTOR_CATALOG_TTL_MS);
+    // A newer publish where EVERY entry is genuinely unparseable (an unknown
+    // transport enum — the class `.strip()` can NOT rescue). The parse keeps zero
+    // and drops many, and the cache layer must not read that as "empty shelf".
+    body.current = {
+      entries: [
+        { ...rawEntry("alpha"), transport: "carrier-pigeon" },
+        { ...rawEntry("beta"), transport: "carrier-pigeon" },
+      ],
+    };
+    const res = await svc.load(T0 + CONNECTOR_CATALOG_TTL_MS);
 
-      expect(res.entries.map((e) => e.id)).toEqual(["alpha", "beta"]); // cache survives
-      expect(res.stale).toBe(true); // and the founder is told so
-      await svc.load(T0 + CONNECTOR_CATALOG_TTL_MS + 1);
-      expect(fetchFn).toHaveBeenCalledTimes(3); // not pinned
-    },
-  );
+    expect(res.entries.map((e) => e.id)).toEqual(["alpha", "beta"]); // cache survives
+    expect(res.stale).toBe(true); // and the founder is told so
+    await svc.load(T0 + CONNECTOR_CATALOG_TTL_MS + 1);
+    expect(fetchFn).toHaveBeenCalledTimes(3); // not pinned — the next load retries
+  });
 
   it("INVARIANT 7: a connectors.json entry is not a marketplace item and never enters catalog.json's parse", () => {
     // The whole reason connectors ship in their own file. A marketplace-shaped

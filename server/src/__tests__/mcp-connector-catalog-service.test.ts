@@ -281,7 +281,11 @@ describe("connector catalog service — dropped entries", () => {
     expect(warn).not.toHaveBeenCalled();
   });
 
-  it("an all-dropped payload still replaces the cache — every entry was answered for", async () => {
+  it("an all-dropped payload KEEPS the cache and reports stale (FU-22)", async () => {
+    // FU-22 reversal (previously asserted the opposite): kept-zero/dropped-many is
+    // NOT a real "empty shelf" answer — every raw entry failed to parse, so the
+    // last known-good cache survives and the founder is told it is stale, rather
+    // than the whole shelf being blanked and pinned as fresh.
     let body: unknown = { entries: [httpEntry("alpha")] };
     const fetchFn = vi.fn(async () => okJson(body));
     const svc = createConnectorCatalogService({ url: URL_, fetchFn: fetchFn as unknown as typeof fetch });
@@ -290,10 +294,8 @@ describe("connector catalog service — dropped entries", () => {
     body = { entries: [{ id: "bad-one" }] };
     const res = await svc.load(T0 + CONNECTOR_CATALOG_TTL_MS);
 
-    // Distinct from `malformed`: the envelope was understood, so this is the
-    // CDN's real answer — it just contains nothing this version can use.
-    expect(res.stale).toBe(false);
-    expect(res.entries).toEqual([]);
+    expect(res.stale).toBe(true);
+    expect(res.entries.map((e) => e.id)).toEqual(["alpha"]);
   });
 });
 
