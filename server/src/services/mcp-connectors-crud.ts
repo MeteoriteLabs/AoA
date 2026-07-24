@@ -41,6 +41,16 @@ export type ConnectorInsert = {
 export type ConnectorPatch = {
   displayName?: string;
   status?: string;
+  /**
+   * The NAME of a company secret, not a secret value — resolved at delivery time
+   * (see mcp-connectors-loader.ts). Settable only through
+   * `POST …/mcp-connectors/:id/credentials`, which checks the secret exists and
+   * re-derives `status` in the same write; `updateConnectorSchema` (PATCH) is
+   * `.strict()` on displayName+status and deliberately does NOT accept it, because
+   * changing the bound credential without re-deriving status is how a connector
+   * ends up `active` with a dangling ref. `null` clears the binding.
+   */
+  secretRef?: string | null;
 };
 
 export function mcpConnectorService(db: Db) {
@@ -127,6 +137,7 @@ export function mcpConnectorService(db: Db) {
       const set: Record<string, unknown> = { updatedAt: new Date() };
       if (patch.displayName !== undefined) set.displayName = patch.displayName;
       if (patch.status !== undefined) set.status = patch.status;
+      if (patch.secretRef !== undefined) set.secretRef = patch.secretRef;
       return db
         .update(companyMcpConnectors)
         .set(set)

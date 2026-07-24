@@ -10,6 +10,7 @@ import {
 } from "../services/index.js";
 import { badRequest, forbidden } from "../errors.js";
 import { createConnector } from "../services/mcp-connector-create.js";
+import { resolveConnectorStatus } from "../services/mcp-connector-status.js";
 import { assertTransportAllowed } from "../services/mcp-connector-transport-gate.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { assertRole } from "../middleware/rbac.js";
@@ -51,6 +52,10 @@ import { loadConfig } from "../config.js";
  *    (which would otherwise be a one- or two-hop activation bypass).
  *  - C3: client-supplied `source` is stripped; every connector created here is
  *    forced to "byo", so the D7 catalog exemption is unreachable from this route.
+ *  - C3 (POST …/:id/credentials): binding a secret re-derives the status through
+ *    `resolveConnectorStatus` instead of accepting one. It cannot activate a
+ *    connector still awaiting approval and cannot resurrect a disabled one, so it
+ *    is not a second activation surface.
  *
  * RBAC (A20/D6): create/update/delete/agent-assignment are founder-only — team
  * leads may not add external network access unilaterally. List is any board
@@ -115,6 +120,11 @@ const createConnectorSchema = z.preprocess(
 // fields (transport/url/command/args/templates/serverName) cannot be edited —
 // `.strict()` makes any such key a 400. Recreate the connector to change them.
 //
+// `secretRef` is NOT here on purpose, even though `ConnectorPatch` now carries it:
+// changing the bound credential without re-deriving `status` in the same write is
+// how a connector ends up `active` pointing at a dangling ref. Binding goes
+// through POST …/:id/credentials, which validates the secret and re-derives.
+//
 // C2: the schema still accepts all three status values because `local_trusted`
 // (which has no governance gate) may set any of them. The `authenticated`-mode
 // restriction — status may ONLY be set to "disabled" — is enforced in the
@@ -130,6 +140,18 @@ const updateConnectorSchema = z
   .refine((v) => v.displayName !== undefined || v.status !== undefined, {
     message: "Provide displayName and/or status",
   });
+
+// C3 — the secret-binding body. `secretRef` and NOTHING else.
+//
+// The resulting status is DERIVED from `resolveConnectorStatus`, never accepted
+// from the caller. `.strict()` (rather than quietly dropping unknown keys) is the
+// load-bearing part: a request carrying `status: "active"` must be a 400. If it
+// were silently ignored the caller would believe they had activated the
+// connector, and the endpoint would read as a second activation surface next to
+// the PATCH one the handler above works to close.
+export const bindCredentialsSchema = z
+  .object({ secretRef: z.string().min(1) })
+  .strict();
 
 const replaceAgentsSchema = z
   .object({
@@ -262,6 +284,99 @@ export function mcpConnectorRoutes(db: Db) {
         entityType: "mcp_connector",
         entityId: id,
         details: req.body,
+      });
+
+      res.json(updated);
+    },
+  );
+
+  // Bind a company secret to a connector, then RE-DERIVE its status — founder only.
+  //
+  // C3: this is the missing middle of the central journey. A catalog connector is
+  // installed unconfigured (`needs_credentials`) and must never reach an agent
+  // until a credential is bound; before this route there was no way to set
+  // `secretRef` after create, so `needs_credentials → active` was unreachable.
+  router.post(
+    "/companies/:companyId/mcp-connectors/:id/credentials",
+    validate(bindCredentialsSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const id = req.params.id as string;
+      assertBoard(req);
+      assertCompanyAccess(req, companyId);
+      await assertRole(db, req, companyId, "founder");
+
+      const existing = await svc.getById(id);
+      if (!existing || existing.companyId !== companyId) {
+        res.status(404).json({ error: "Connector not found" });
+        return;
+      }
+
+      const { secretRef } = req.body as z.infer<typeof bindCredentialsSchema>;
+
+      // Same A19/A20 rule as create: a secretRef must name an EXISTING company
+      // secret. Rejecting the dangling ref here beats letting the delivery path
+      // silently drop the connector at run time. Scoped to this company, so a
+      // founder cannot bind another tenant's secret.
+      const secret = await secretsSvc.getByName(companyId, secretRef);
+      if (!secret) {
+        throw badRequest(`secretRef "${secretRef}" does not reference an existing secret`);
+      }
+
+      // HOW `approved` IS INFERRED, and why the current status is a sound signal.
+      //
+      // There is no approval pointer on the connector row, so the status itself is
+      // the only governance evidence available. It is sufficient because status is
+      // the OUTPUT of the governance axis, and only two writers produce it:
+      //   - create  (mcp-connector-create.ts): in a non-local_trusted deployment a
+      //     new connector is ALWAYS `pending_approval`, whatever its credentials.
+      //   - approve/reject (applyConnectorApproval / applyConnectorRejection).
+      // So in a shared deployment a connector can reach `needs_credentials` or
+      // `active` ONLY by having been approved, and `pending_approval` means it has
+      // not been. That makes the mapping below a reading of governance state, not a
+      // guess:
+      //   pending_approval → not yet approved  → binding leaves it pending (no bypass)
+      //   disabled         → rejected/deactivated
+      //   needs_credentials / active → governance already satisfied
+      //
+      // `disabled` is short-circuited rather than fed to the resolver: with
+      // approved=true the resolver would answer `active`, i.e. binding a secret
+      // would RESURRECT a connector the board rejected. Re-enabling is PATCH's job
+      // (and in a shared deployment, a fresh approval's).
+      //
+      // Nothing here decides `active` on its own — `resolveConnectorStatus` does,
+      // and it is unconditionally incapable of returning `active` while the
+      // connector requires a secret it does not have.
+      const approved = existing.status !== "pending_approval" && existing.status !== "disabled";
+      const nextStatus =
+        existing.status === "disabled"
+          ? "disabled"
+          : resolveConnectorStatus({
+            deploymentMode: loadConfig().deploymentMode,
+            approved,
+            requiresSecret: existing.requiresSecret === true,
+            // A non-empty secretRef was just validated to exist, so it IS bound.
+            hasSecret: true,
+          });
+
+      const updated = await svc.update(id, { secretRef, status: nextStatus });
+      if (!updated) {
+        res.status(404).json({ error: "Connector not found" });
+        return;
+      }
+
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        action: "mcp_connector.credentials_bound",
+        entityType: "mcp_connector",
+        entityId: id,
+        // `secretRef` is a secret NAME, never a secret value — safe to log, and it
+        // is what makes a later "which credential was bound?" audit answerable.
+        details: { secretRef, status: nextStatus },
       });
 
       res.json(updated);
