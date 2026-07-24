@@ -270,11 +270,11 @@ describe("SettingsPage redesign — Phase F shell", () => {
     try { localStorage.removeItem("aoa.settings-secondary-collapsed"); } catch { /* noop */ }
   });
 
-  it("renders the SecondarySidebar with all 15 section items", () => {
+  it("renders the SecondarySidebar with all 16 section items", () => {
     renderSettings();
     // Defensive: catch silent drift in section count.
     const totalItems = SETTINGS_SECTIONS.flatMap((g) => g.items).length;
-    expect(totalItems).toBe(15);
+    expect(totalItems).toBe(16);
     // Each label appears in both the desktop sidebar and the mobile sub-nav pill row
     // (CSS media queries that hide one or the other are not evaluated in JSDOM).
     expect(screen.getAllByText("General").length).toBeGreaterThan(0);
@@ -287,6 +287,8 @@ describe("SettingsPage redesign — Phase F shell", () => {
     expect(screen.queryByText("LLM providers")).toBeNull();
     expect(screen.getAllByText("Budget & caps").length).toBeGreaterThan(0);
     expect(screen.getAllByText("MCP API keys").length).toBeGreaterThan(0);
+    // Outbound connectors — the sibling of the inbound MCP API keys section.
+    expect(screen.getAllByText("Connectors").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Environments").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Secrets").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Environments")[0]).toBeVisible();
