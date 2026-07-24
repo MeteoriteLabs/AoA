@@ -3,7 +3,9 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 vi.mock("@armyofagents/db", () => {
   const tableProxy = new Proxy({}, { get: () => Symbol("col") });
   // T3.2: aoaAgentTriggers added so trigger-insert path in createMarketplaceAgent resolves
-  return { agents: tableProxy, aoaAgentTriggers: tableProxy };
+  // T2.3e: internalAgentConfig — createMarketplaceAgent resolves the company crew
+  // adapter for kind='aoa' templates (resolveCrewAdapterForCompany).
+  return { agents: tableProxy, aoaAgentTriggers: tableProxy, internalAgentConfig: tableProxy };
 });
 vi.mock("drizzle-orm", () => ({
   eq: () => Symbol("op:eq"),
@@ -11,6 +13,16 @@ vi.mock("drizzle-orm", () => ({
 }));
 
 import { installAgent } from "../services/marketplace-install/agent-installer.js";
+
+/**
+ * T2.3e: the `internal_agent_config` read `resolveCrewAdapterForCompany` makes
+ * for `kind: "aoa"` installs. An empty result models a company with no config
+ * row — the openai/codex fallback. Every db stub below carries it so a crew
+ * install does not blow up on a missing `select`.
+ */
+const crewConfigSelect = () => ({
+  from: () => ({ where: () => ({ limit: () => Promise.resolve([]) }) }),
+});
 import type { CatalogItem } from "@armyofagents/shared";
 
 const AGENT_TEMPLATE: CatalogItem = {
@@ -53,6 +65,7 @@ describe("installAgent", () => {
         };
       },
     }),
+    select: crewConfigSelect,
     transaction: async (cb: any) => cb(mockDb),
   };
 
@@ -181,6 +194,7 @@ describe("installAgent", () => {
           return { where: () => Promise.resolve() };
         },
       }),
+      select: crewConfigSelect,
       transaction: async (cb: any) => cb(db),
     };
 
@@ -271,6 +285,7 @@ describe("installAgent", () => {
           return { where: () => Promise.resolve() };
         },
       }),
+      select: crewConfigSelect,
       transaction: async (cb: any) => cb(db),
     };
 
@@ -358,6 +373,7 @@ describe("installAgent", () => {
           return { where: () => Promise.resolve() };
         },
       }),
+      select: crewConfigSelect,
       transaction: async (cb: any) => cb(db),
     };
 
@@ -417,6 +433,7 @@ describe("installAgent", () => {
       throw new Error("bundle write failed");
     });
     const db = {
+      select: crewConfigSelect,
       transaction: async (cb: any) => {
         const pendingRows: any[] = [];
         const tx = {
@@ -477,6 +494,7 @@ describe("installAgent", () => {
       throw new Error("bundle write failed");
     });
     const db = {
+      select: crewConfigSelect,
       transaction: async (cb: any) => {
         const pendingRows: any[] = [];
         const tx = {
@@ -593,6 +611,7 @@ describe("installAgent", () => {
           return { returning: () => Promise.resolve([{ ...row, id: "agent-uuid-t3" }]) };
         },
       }),
+      select: crewConfigSelect,
       transaction: async (cb: any) => cb(dbWithTriggerTracking),
     };
 

@@ -25,7 +25,14 @@ import { fileURLToPath } from "node:url";
 
 vi.mock("@armyofagents/db", () => {
   const tableProxy = new Proxy({}, { get: () => Symbol("col") });
-  return { agents: tableProxy, aoaAgentTriggers: tableProxy, marketplacePendingUpdates: tableProxy };
+  // T2.3e: internalAgentConfig — `createMarketplaceAgent` resolves the
+  // company's crew adapter for `kind: "aoa"` templates.
+  return {
+    agents: tableProxy,
+    aoaAgentTriggers: tableProxy,
+    marketplacePendingUpdates: tableProxy,
+    internalAgentConfig: tableProxy,
+  };
 });
 vi.mock("drizzle-orm", () => ({
   eq: () => Symbol("op:eq"),
@@ -163,6 +170,11 @@ function makeInsertCapturingDb() {
   const triggerRows: Array<Record<string, unknown>> = [];
   let sawAgentInsert = false;
   const db = {
+    // T2.3e: the `internal_agent_config` read `resolveCrewAdapterForCompany`
+    // makes for a crew install. Empty → the openai/codex fallback.
+    select: () => ({
+      from: () => ({ where: () => ({ limit: () => Promise.resolve([]) }) }),
+    }),
     insert: () => ({
       values: (row: Record<string, unknown>) => {
         if (!sawAgentInsert) {

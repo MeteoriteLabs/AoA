@@ -4,6 +4,8 @@ import { agents, aoaAgentTriggers } from "@armyofagents/db";
 import type { CatalogItem } from "@armyofagents/shared";
 import { deriveSiblingResourceUrl } from "./agent-runtime.js";
 import { fetchCatalogResourceUrl } from "./fetch-resource.js";
+import { applyCrewInstallDefaults, isCrewTemplate } from "./crew-install-defaults.js";
+import { resolveCrewAdapterForCompany } from "../internal-agent/aoa-agents/resolve-crew-adapter.js";
 import type { NormalizedMarketplaceAgentTemplate } from "./types.js";
 
 export interface AgentInstructionsServiceLike {
@@ -60,7 +62,19 @@ export async function createMarketplaceAgent(opts: {
   template: NormalizedMarketplaceAgentTemplate;
   instructionsService?: AgentInstructionsServiceLike;
 }): Promise<{ agentId: string }> {
-  const { catalogItem, companyId, db, desiredName, template, instructionsService } = opts;
+  const { catalogItem, companyId, db, desiredName, instructionsService } = opts;
+
+  // T2.3e — the single chokepoint where a marketplace agent row is born, and
+  // therefore the one place the crew defaults can be applied without a caller
+  // being able to forget them. `installTeam`, `installAgent` and
+  // `reconcileTeamMembers` all route through here.
+  //
+  // Crew status + adapter are AoA facts the catalog cannot express; see
+  // `crew-install-defaults.ts`. Non-crew (`kind: "org"`) templates are passed
+  // through untouched, so catalog `install` hints still apply to them.
+  const template = isCrewTemplate(opts.template)
+    ? applyCrewInstallDefaults(opts.template, await resolveCrewAdapterForCompany(db, companyId))
+    : opts.template;
 
   const instructions = instructionsService
     ? await loadMarketplaceInstructionFiles(catalogItem, template)

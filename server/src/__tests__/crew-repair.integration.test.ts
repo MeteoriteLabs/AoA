@@ -59,6 +59,8 @@ import { reconcileTeamMembers } from "../services/marketplace-install/team-recon
 import { ensureInfrastructureAgents } from "../services/internal-agent/aoa-agents/crew-seeding.js";
 import { backfillCrewTemplateOrigin } from "../services/internal-agent/aoa-agents/backfill-template-origin.js";
 import { agentInstructionsService } from "../services/agent-instructions.js";
+import { listEnabledOutboxAgents } from "../services/internal-agent/aoa-agents/triggers.js";
+import { resolveCrewAdapterForCompany } from "../services/internal-agent/aoa-agents/resolve-crew-adapter.js";
 import { installSkill } from "../services/marketplace-install/skill-installer.js";
 import { createMarketplaceCompanyRouter } from "../routes/marketplace-company.js";
 import { errorHandler } from "../middleware/error-handler.js";
@@ -267,6 +269,7 @@ async function withCatalog(): Promise<void> {
 interface CrewRow {
   id: string;
   name: string;
+  status: string;
   template_origin: string | null;
   template_version: string | null;
   skill_keys: string[];
@@ -280,7 +283,7 @@ interface CrewRow {
 async function crewRows(companyId: string): Promise<CrewRow[]> {
   return rowsOf<CrewRow>(
     await db.execute(sql`
-      SELECT id, name, template_origin, template_version, skill_keys,
+      SELECT id, name, status, template_origin, template_version, skill_keys,
              runtime_config, adapter_config, adapter_type, title, role
       FROM agents WHERE company_id = ${companyId} AND kind = 'aoa' ORDER BY name
     `),
@@ -713,6 +716,68 @@ describe.skipIf(
       SCOUT_ID,
     );
     expect(second.action).toBe("adopted");
+  }, 240_000);
+
+  // ── T2.3e: adoption and a fresh install must land in the SAME state ───────
+  //
+  // Adoption is pointer-only, so an adopted row keeps the `idle` status and the
+  // resolved CLI adapter `seedCrewAgent` gave it; T2.3e makes the marketplace
+  // install path produce exactly those values too. If the two ever diverge, a
+  // repaired company and a freshly created one are silently different products,
+  // and only one of them runs. Proved inside ONE company: Reviewer has no
+  // legacy seeder, so `reconcileTeamMembers` installs it through the real
+  // marketplace path right beside the adopted legacy rows.
+  it("a repaired crew and a freshly installed one converge on the same runnable state", async () => {
+    if (setupError) throw new Error(String(setupError));
+    const companyId = await createLegacyCompany("Convergence Co");
+    await withCatalog();
+
+    const repaired = await repairCompanyCrew(db, companyId, { catalogItems: CATALOG_ITEMS });
+    expect(repaired.action).toBe("adopted");
+    await reconcileTeamMembers({
+      db,
+      companyId,
+      catalogItems: CATALOG_ITEMS,
+      instructionsService: agentInstructionsService(),
+    });
+
+    const after = await crewRows(companyId);
+    const adopted = after.find((r) => r.name === "Scout")!; // legacy row, adopted
+    const installed = after.find((r) => r.name === "Reviewer")!; // fresh install
+    expect(installed.template_origin).toBe(REVIEWER_ID);
+
+    // The company's own resolved crew adapter — not a literal, so a provider
+    // default change has to move every side together or none.
+    const expected = await resolveCrewAdapterForCompany(db, companyId);
+    expect(expected.adapterType).not.toBe("process");
+
+    for (const row of [adopted, installed]) {
+      expect(row.status, row.name).toBe("idle");
+      expect(row.adapter_type, row.name).toBe(expected.adapterType);
+      expect(row.adapter_config, row.name).toMatchObject(expected.adapterConfig);
+    }
+    expect(installed.status).toBe(adopted.status);
+    expect(installed.adapter_type).toBe(adopted.adapter_type);
+
+    // And both are actually selected by the real production predicate
+    // (`triggers.ts:74`), with a genuinely paused control that must not be.
+    const pausedControl = rowsOf<{ id: string }>(
+      await db.execute(sql`
+        INSERT INTO agents (company_id, name, kind, role, status, adapter_type)
+        VALUES (${companyId}, 'Paused Control', 'aoa', 'general', 'paused', 'claude_local')
+        RETURNING id
+      `),
+    )[0].id;
+    for (const agentId of [adopted.id, installed.id, pausedControl]) {
+      await db.execute(sql`
+        INSERT INTO aoa_agent_triggers (company_id, agent_id, kind, enabled, config)
+        VALUES (${companyId}, ${agentId}, 'outbox', true, '{}'::jsonb)
+      `);
+    }
+    const dispatchable = await listEnabledOutboxAgents(db, companyId);
+    expect(dispatchable).toContain(adopted.id);
+    expect(dispatchable).toContain(installed.id);
+    expect(dispatchable).not.toContain(pausedControl);
   }, 240_000);
 
   // ── The other side of the same hazard ─────────────────────────────────────

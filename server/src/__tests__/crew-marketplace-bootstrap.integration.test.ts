@@ -63,6 +63,8 @@ import {
 } from "../services/aoa-marketplace.js";
 import { agentService } from "../services/agents.js";
 import { companyService } from "../services/companies.js";
+import { listEnabledOutboxAgents } from "../services/internal-agent/aoa-agents/triggers.js";
+import { resolveCrewAdapterForCompany } from "../services/internal-agent/aoa-agents/resolve-crew-adapter.js";
 import { provisionCompanyCrew } from "../services/crew-provisioning.js";
 import { installSkill } from "../services/marketplace-install/skill-installer.js";
 
@@ -331,13 +333,18 @@ async function clearCatalogCache() {
 /** Every kind='aoa' agent for a company, with the fields T2.3 is about. */
 async function crewRows(companyId: string) {
   return rowsOf<{
+    id: string;
     name: string;
+    status: string;
+    adapter_type: string;
+    adapter_config: Record<string, unknown> | null;
     template_origin: string | null;
     template_version: string | null;
     skill_keys: string[];
   }>(
     await db.execute(sql`
-      SELECT name, template_origin, template_version, skill_keys
+      SELECT id, name, status, adapter_type, adapter_config,
+             template_origin, template_version, skill_keys
       FROM agents
       WHERE company_id = ${companyId} AND kind = 'aoa'
       ORDER BY name
@@ -562,6 +569,58 @@ describe.skipIf(
       { name: "Reviewer", kind: "mention", enabled: true, config: { role: "reviewer" } },
       { name: "Scout", kind: "mention", enabled: true, config: { role: "scout" } },
     ]);
+
+    // ── T2.3e: marketplace-managed AND dispatchable ─────────────────────────
+    //
+    // The phase's real exit criterion, and the conjunction nothing proved
+    // before. Every assertion above passed while the installed crew was
+    // `status='paused'` on `adapter_type='process'` — an install that succeeds
+    // into a state where no execution path will ever select the agent and the
+    // adapter would throw "Process adapter missing command" if one did.
+
+    // F2 — the company's OWN resolved crew adapter, computed by the same
+    // function the legacy seeder uses (`seed-crew-agent.ts:93`), against this
+    // company's real `internal_agent_config` row. Not a literal: a provider
+    // default change must move both sides together or neither.
+    const expectedAdapter = await resolveCrewAdapterForCompany(db, company.id);
+    expect(expectedAdapter.adapterType).not.toBe("process");
+    for (const row of marketplaceCrew) {
+      expect(row.adapter_type, row.name).toBe(expectedAdapter.adapterType);
+      expect(row.adapter_config, row.name).toMatchObject(expectedAdapter.adapterConfig);
+    }
+
+    // F1 — selected by the REAL production selection function
+    // (`listEnabledOutboxAgents`, whose filter is `triggers.ts:74`) running its
+    // real query against real PostgreSQL. The outbox trigger rows are test
+    // setup: the published crew declare `mention`/`sweep` triggers, and what is
+    // under test is the AGENT ROW's status, not which trigger kind it carries.
+    const scoutId = marketplaceCrew.find((r) => r.name === "Scout")!.id;
+    const reviewerId = marketplaceCrew.find((r) => r.name === "Reviewer")!.id;
+    for (const agentId of [scoutId, reviewerId]) {
+      await db.execute(sql`
+        INSERT INTO aoa_agent_triggers (company_id, agent_id, kind, enabled, config)
+        VALUES (${company.id}, ${agentId}, 'outbox', true, '{}'::jsonb)
+      `);
+    }
+    // The discriminator: a crew row that IS genuinely paused, carrying an
+    // identical enabled outbox trigger. If the predicate ever stops filtering,
+    // the assertion above must stop passing for free.
+    const pausedControl = rowsOf<{ id: string }>(
+      await db.execute(sql`
+        INSERT INTO agents (company_id, name, kind, role, status, adapter_type)
+        VALUES (${company.id}, 'Paused Control', 'aoa', 'general', 'paused', 'claude_local')
+        RETURNING id
+      `),
+    )[0].id;
+    await db.execute(sql`
+      INSERT INTO aoa_agent_triggers (company_id, agent_id, kind, enabled, config)
+      VALUES (${company.id}, ${pausedControl}, 'outbox', true, '{}'::jsonb)
+    `);
+
+    const dispatchable = await listEnabledOutboxAgents(db, company.id);
+    expect(dispatchable).toContain(scoutId);
+    expect(dispatchable).toContain(reviewerId);
+    expect(dispatchable).not.toContain(pausedControl);
   }, 120_000);
 
   // ── T2.3c: the team's skills go through the REAL installer ────────────────
