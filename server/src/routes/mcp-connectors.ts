@@ -47,9 +47,13 @@ import { loadConfig } from "../config.js";
  *  - D7/C1 (`assertTransportAllowed`, services/mcp-connector-transport-gate.ts):
  *    a `stdio` connector runs a command on the AoA host, so it is refused in
  *    `authenticated` mode for founder (BYO) input.
- *  - C2 (PATCH): in `authenticated` mode PATCH may only set status to
- *    "disabled" — activation must flow through connector approval, never PATCH
- *    (which would otherwise be a one- or two-hop activation bypass).
+ *  - C2 (PATCH, governance axis): in `authenticated` mode PATCH may only set
+ *    status to "disabled" — activation must flow through connector approval,
+ *    never PATCH (which would otherwise be a one- or two-hop activation bypass).
+ *  - FU-15 (PATCH, credential axis): in EVERY mode, PATCH refuses "active" while
+ *    the connector requires a secret it does not have. `local_trusted`'s PATCH
+ *    freedom is a decision about governance only; an uncredentialed connector
+ *    cannot authenticate regardless of who flipped it.
  *  - C3: client-supplied `source` is stripped; every connector created here is
  *    forced to "byo", so the D7 catalog exemption is unreachable from this route.
  *  - C3 (POST …/:id/credentials): binding a secret re-derives the status through
@@ -249,14 +253,50 @@ export function mcpConnectorRoutes(db: Db) {
         return;
       }
 
-      // C2: in a shared deployment, PATCH may only DEACTIVATE. Activation
-      // (active) and re-arming for approval (pending_approval) must not be
-      // reachable through PATCH — they would bypass the (deferred) approval
-      // gate, including the two-hop pending→disabled→active path. Deactivation
-      // is always safe. local_trusted has no governance gate, so it is
-      // unrestricted.
       const deploymentMode = loadConfig().deploymentMode;
       const nextStatus = (req.body as z.infer<typeof updateConnectorSchema>).status;
+
+      // FU-15 — CREDENTIAL precondition on activation. Applies in EVERY deployment
+      // mode, and is checked before the governance gate below so it is not shadowed
+      // in `authenticated` (where governance would refuse first).
+      //
+      // Governance and credentials are orthogonal, and `local_trusted`'s PATCH
+      // freedom is a decision about GOVERNANCE only. A connector with
+      // `requiresSecret` and no bound secret cannot authenticate no matter who
+      // flips it, so permitting `active` there just manufactures a broken connector
+      // that `selectConnectorRowsForAgent` then delivers to agents. The old
+      // exemption was written when the two axes were still one.
+      //
+      // Routed through `resolveConnectorStatus` rather than hand-written as
+      // `requiresSecret && !secretRef`, so the credential rule keeps living in
+      // exactly one place (plan invariant #3) and this gate inherits any future
+      // change to it. `approved: true` deliberately NEUTRALISES the governance axis
+      // — that axis is the next block's job — which leaves the credential axis as
+      // the only thing that can make the answer anything other than "active".
+      if (nextStatus === "active") {
+        const credentialsPermitActive =
+          resolveConnectorStatus({
+            deploymentMode,
+            approved: true,
+            requiresSecret: existing.requiresSecret === true,
+            // Empty string names no secret, so it is not a bound credential.
+            hasSecret: Boolean(existing.secretRef),
+          }) === "active";
+        if (!credentialsPermitActive) {
+          throw badRequest(
+            "This connector requires a credential and none is bound, so it cannot be " +
+              "activated. Bind one first with POST /companies/:companyId/mcp-connectors/:id/" +
+              "credentials.",
+          );
+        }
+      }
+
+      // C2: in a shared deployment, PATCH may only DEACTIVATE. Activation
+      // (active) and re-arming for approval (pending_approval) must not be
+      // reachable through PATCH — they would bypass the approval gate, including
+      // the two-hop pending→disabled→active path. Deactivation is always safe.
+      // local_trusted has no governance gate, so it is unrestricted — on the
+      // governance axis only; the credential precondition above still applies.
       if (
         deploymentMode !== "local_trusted" &&
         nextStatus !== undefined &&

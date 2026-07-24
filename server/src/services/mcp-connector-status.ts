@@ -9,24 +9,31 @@
  * INVARIANT (unconditional): this function never returns "active" while
  * `requiresSecret && !hasSecret`.
  *
- * SCOPE — read this before relying on it. The invariant above is a property of
- * THIS FUNCTION. Every path that DERIVES a status now routes through here:
+ * SCOPE — this is now a CODEBASE-WIDE guarantee, not just a property of this
+ * function. `company_mcp_connectors` has exactly two writers, both in
+ * `services/mcp-connectors-crud.ts`: the INSERT in `create` and the UPDATE in
+ * `update`. Every route into them consults this resolver before "active":
  *
- *  - create (`services/mcp-connector-create.ts`)
- *  - approve (`services/approvals.ts` → `applyConnectorApproval`, Plan 3a Task 7 —
- *    this used to set `status: "active"` directly, which was the exact defect
- *    described above re-introduced on a second path)
- *  - credential binding (`routes/mcp-connectors.ts` POST …/credentials)
+ *  - create (`services/mcp-connector-create.ts`) — derives the status here
+ *  - approve (`services/approvals.ts` → `applyConnectorApproval`) — derives it
+ *    here. This used to set `status: "active"` directly, which was the exact
+ *    defect described above re-introduced on a second path.
+ *  - credential binding (`routes/mcp-connectors.ts` POST …/credentials) — derives
+ *    it here
+ *  - PATCH (`routes/mcp-connectors.ts`) — the one path where the founder ASSERTS
+ *    a status rather than deriving one, so it is bounded instead: it refuses
+ *    "active" unless this resolver would permit it on the credential axis, in
+ *    EVERY deployment mode (FU-15).
  *
- * ONE writer still sets "active" without consulting this function:
+ * So: "status is active" implies a bound credential whenever one is required.
  *
- *  - `routes/mcp-connectors.ts` PATCH permits status → "active", but ONLY in
- *    `local_trusted` (the handler rejects it in every other mode). That one is
- *    DELIBERATE and stays: a loopback deployment has no governance gate to
- *    bypass, and the founder is the host.
+ * What PATCH still permits, deliberately, is GOVERNANCE latitude: in
+ * `local_trusted` a founder may hand-set "active" on a connector that needs no
+ * secret, with no approval. That is a loopback trust boundary with no governance
+ * gate to bypass — and it is orthogonal to the credential invariant above.
  *
- * So: in `local_trusted` a founder can still hand-set "active" via PATCH. In a
- * shared deployment, "status is active" does imply this resolver said so.
+ * If you add a third writer to `company_mcp_connectors`, this paragraph is the
+ * thing you are invalidating.
  */
 
 export type ConnectorStatus = "pending_approval" | "needs_credentials" | "active" | "disabled";

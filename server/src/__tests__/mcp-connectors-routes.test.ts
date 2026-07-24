@@ -589,6 +589,123 @@ describe("mcp-connectors routes — C2 PATCH cannot activate in authenticated", 
   });
 });
 
+describe("mcp-connectors routes — FU-15 PATCH cannot activate an uncredentialed connector", () => {
+  // Governance and credentials are ORTHOGONAL, and `local_trusted`'s PATCH freedom
+  // is a decision about governance only. A connector that requires a secret it does
+  // not have cannot authenticate no matter who flips it, so `active` there just
+  // manufactures a broken connector that the delivery allowlist hands to agents.
+  // This gate is therefore mode-INDEPENDENT — hence a case per deployment mode.
+  const NEEDS_SECRET_UNBOUND = {
+    id: CONNECTOR_ID,
+    companyId: COMPANY,
+    status: "needs_credentials",
+    requiresSecret: true,
+    secretRef: null,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetEffectiveRole.mockResolvedValue("founder");
+    mockConnectorSvc.update.mockImplementation(async (_id: string, patchArg: any) => ({
+      id: CONNECTOR_ID,
+      companyId: COMPANY,
+      ...patchArg,
+    }));
+  });
+
+  // DEPLOYMENT_MODES is exactly ["local_trusted", "authenticated"] — there is no
+  // third mode today, so this covers every one of them.
+  it.each(["local_trusted", "authenticated"])(
+    "%s: PATCH -> active on a connector needing an unbound secret -> 400, no write",
+    async (mode) => {
+      deploymentMode = mode;
+      mockConnectorSvc.getById.mockResolvedValue(NEEDS_SECRET_UNBOUND);
+
+      const res = await patch(makeApp(founderActor), { status: "active" });
+
+      expect(res.status).toBe(400);
+      expect(mockConnectorSvc.update).not.toHaveBeenCalled();
+    },
+  );
+
+  it("local_trusted: the 400 names the credential problem and points at the credentials endpoint", async () => {
+    // In local_trusted the governance gate does NOT fire, so this proves the
+    // credential gate is what refused — not the C2 rule wearing a different hat.
+    deploymentMode = "local_trusted";
+    mockConnectorSvc.getById.mockResolvedValue(NEEDS_SECRET_UNBOUND);
+
+    const res = await patch(makeApp(founderActor), { status: "active" });
+
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(res.body)).toMatch(/credential/i);
+    expect(JSON.stringify(res.body)).toContain("/credentials");
+  });
+
+  it("treats an empty-string secretRef as unbound -> 400", async () => {
+    deploymentMode = "local_trusted";
+    mockConnectorSvc.getById.mockResolvedValue({ ...NEEDS_SECRET_UNBOUND, secretRef: "" });
+
+    const res = await patch(makeApp(founderActor), { status: "active" });
+
+    expect(res.status).toBe(400);
+    expect(mockConnectorSvc.update).not.toHaveBeenCalled();
+  });
+
+  it("local_trusted: PATCH -> active IS allowed once the required secret is bound", async () => {
+    // The gate must refuse the unbound case only; it must not become a blanket
+    // ban on activating credentialed connectors.
+    deploymentMode = "local_trusted";
+    mockConnectorSvc.getById.mockResolvedValue({
+      ...NEEDS_SECRET_UNBOUND,
+      secretRef: "mcp:notion",
+    });
+
+    const res = await patch(makeApp(founderActor), { status: "active" });
+
+    expect(res.status).toBe(200);
+    expect(mockConnectorSvc.update).toHaveBeenCalledWith(CONNECTOR_ID, { status: "active" });
+  });
+
+  it("deactivating an uncredentialed connector is still allowed -> 200", async () => {
+    // The gate is activation-only. Disabling must never be blocked.
+    deploymentMode = "local_trusted";
+    mockConnectorSvc.getById.mockResolvedValue(NEEDS_SECRET_UNBOUND);
+
+    const res = await patch(makeApp(founderActor), { status: "disabled" });
+
+    expect(res.status).toBe(200);
+    expect(mockConnectorSvc.update).toHaveBeenCalledWith(CONNECTOR_ID, { status: "disabled" });
+  });
+
+  it("local_trusted governance freedom is otherwise untouched: active -> disabled -> active on a connector needing no secret", async () => {
+    deploymentMode = "local_trusted";
+    mockConnectorSvc.getById.mockResolvedValue({
+      id: CONNECTOR_ID,
+      companyId: COMPANY,
+      status: "active",
+      requiresSecret: false,
+      secretRef: null,
+    });
+
+    const off = await patch(makeApp(founderActor), { status: "disabled" });
+    expect(off.status).toBe(200);
+
+    const on = await patch(makeApp(founderActor), { status: "active" });
+    expect(on.status).toBe(200);
+    expect(mockConnectorSvc.update).toHaveBeenLastCalledWith(CONNECTOR_ID, { status: "active" });
+  });
+
+  it("a displayName-only PATCH on an uncredentialed connector is unaffected -> 200", async () => {
+    deploymentMode = "local_trusted";
+    mockConnectorSvc.getById.mockResolvedValue(NEEDS_SECRET_UNBOUND);
+
+    const res = await patch(makeApp(founderActor), { displayName: "Renamed" });
+
+    expect(res.status).toBe(200);
+    expect(mockConnectorSvc.update).toHaveBeenCalledWith(CONNECTOR_ID, { displayName: "Renamed" });
+  });
+});
+
 describe("mcp-connectors routes — M2 PATCH is founder-only", () => {
   beforeEach(() => {
     vi.clearAllMocks();

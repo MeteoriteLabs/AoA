@@ -4,7 +4,7 @@ Everything identified across Plans 1, 2 and 2b that was **deliberately not fixed
 plus constraints discovered along the way that future work inherits.
 
 Kept as a standing document so these do not survive only as buried plan amendments.
-Last updated 2026-07-24 (`integration/connectors-marketplace`, HEAD `53180c129`).
+Last updated 2026-07-24 (`integration/connectors-marketplace`, HEAD `ae710b089`).
 
 Severity: **P1** = user-visible correctness or security · **P2** = robustness / maintenance ·
 **P3** = docs, cleanup, cosmetics.
@@ -138,29 +138,6 @@ future catalog schema change. Fix: per-item `safeParse` with drop-and-warn, or `
 `z.string()` with a known-type refinement at the render/dispatch layer — shipped as a
 forward-compat release *before* any CDN change that relies on it.
 
-### FU-15 — `local_trusted` PATCH can still set `active` on an uncredentialed connector · P2
-Found while closing C2/C3 (Plan 3a Tasks 7/8), and the **one remaining exception** to the
-plan's invariant #3 ("`status` is never set to `active` while a connector requires a secret
-it does not have").
-
-Every path that *derives* a status now routes through `resolveConnectorStatus` — create,
-approve (`applyConnectorApproval`), and the new credential-binding route. The exception is
-`routes/mcp-connectors.ts` PATCH: in `local_trusted` it accepts a founder-supplied
-`status: "active"` with no credential check, so a `needs_credentials` connector can be
-hand-flipped to `active` and will then pass the `selectConnectorRowsForAgent` allowlist with
-`secretRef: null`.
-
-**Not an escalation.** It is loopback-only, the founder is the host, and for `stdio` the
-command would run at `active` regardless of whether a credential is bound. The impact is a
-connector delivered to agents that cannot authenticate — a confusing broken state, not a
-credential leak. It is recorded because the invariant is stated unconditionally elsewhere and
-the docstring in `mcp-connector-status.ts` is deliberately honest about it.
-
-Fix when convenient: in the PATCH handler, refuse `status: "active"` when
-`existing.requiresSecret && !existing.secretRef`, in **every** mode — the founder should be
-sent to `POST …/:id/credentials` instead. Left out of Tasks 7/8 to keep those commits scoped
-to the defects they were dispatched for.
-
 ---
 
 ## Pre-existing, not caused by this work
@@ -176,6 +153,18 @@ Expects `http://localhost:5173/…`, gets `http://127.0.0.1:3100/…`. Confirmed
 clean HEAD.
 
 ---
+
+## Closed during Plan 3a (recorded so they are not re-opened)
+
+- **FU-15 — `local_trusted` PATCH could set `active` on an uncredentialed connector** ·
+  found while closing C2/C3, was the last exception to invariant #3. Fixed in the PATCH
+  handler: activation is now refused, in **every** deployment mode, unless
+  `resolveConnectorStatus` would permit `active` on the credential axis — the founder is
+  pointed at `POST …/:id/credentials` instead. `local_trusted`'s *governance* latitude is
+  untouched (a connector needing no secret can still be hand-flipped
+  `active → disabled → active`). With this, the "never `active` while a required secret is
+  unbound" invariant is codebase-wide: `company_mcp_connectors` has exactly two writers and
+  every route into them consults the resolver.
 
 ## Closed during Plans 1/2/2b (recorded so they are not re-opened)
 
