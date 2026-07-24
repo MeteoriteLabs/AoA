@@ -1,0 +1,1 @@
+ALTER TABLE "company_mcp_connectors" ADD COLUMN "requires_secret" boolean DEFAULT false NOT NULL;

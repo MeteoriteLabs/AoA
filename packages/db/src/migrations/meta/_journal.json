@@ -1254,6 +1254,13 @@
       "when": 1784824926514,
       "tag": "0178_fantastic_killmonger",
       "breakpoints": true
+    },
+    {
+      "idx": 179,
+      "version": "7",
+      "when": 1784897083857,
+      "tag": "0179_nasty_stick",
+      "breakpoints": true
     }
   ]
 }

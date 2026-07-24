@@ -1,4 +1,4 @@
-import { index, pgTable, text, timestamp, uniqueIndex, uuid, jsonb } from "drizzle-orm/pg-core";
+import { boolean, index, pgTable, text, timestamp, uniqueIndex, uuid, jsonb } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 
 /**
@@ -27,8 +27,14 @@ export const companyMcpConnectors = pgTable(
     envTemplate: jsonb("env_template").$type<Record<string, string>>().notNull().default({}),
     // Key into company_secrets (e.g. "mcp:notion"). Null for unauthenticated servers.
     secretRef: text("secret_ref"),
+    // Whether this connector CANNOT function without a bound secret. Set from the
+    // catalog entry at install; false for BYO connectors, whose founder supplies
+    // everything up front. Load-bearing: resolveConnectorStatus refuses to mark a
+    // requiresSecret connector `active` while secretRef is null, so an approval can
+    // never activate an uncredentialed connector.
+    requiresSecret: boolean("requires_secret").notNull().default(false),
     source: text("source").notNull().default("byo"), // "byo" | "catalog"
-    status: text("status").notNull().default("pending_approval"), // pending_approval | active | disabled
+    status: text("status").notNull().default("pending_approval"), // pending_approval | needs_credentials | active | disabled
     createdByUserId: uuid("created_by_user_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
