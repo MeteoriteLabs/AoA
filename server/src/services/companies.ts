@@ -1,8 +1,12 @@
-import { and, eq, count, isNull, sql } from "drizzle-orm";
+import { eq, count, isNull, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { memoryFoldersService, seedCompanyRootFolder } from "./memory-folders.js";
 import { ensureInternalAgentConfig } from "./internal-agent/aoa-agents/ensure-internal-agent-config.js";
-import { ensureCrewAgents, ensureInfrastructureAgents } from "./internal-agent/aoa-agents/ensure-all-crew.js";
+import {
+  ensureCrewAgents,
+  ensureInfrastructureAgents,
+  isCrewMarketplaceManaged,
+} from "./internal-agent/aoa-agents/crew-seeding.js";
 import { logger } from "../middleware/logger.js";
 import {
   companies,
@@ -126,44 +130,37 @@ export function companyService(db: Db) {
         // path keeps working when the env flag is re-enabled; it is no longer
         // wired into bootstrap.
         //
+        // T3.5: skip the legacy CREW seeders if marketplace already governs this
+        // company's crew. A brand-new company that gets a marketplace install
+        // immediately after creation must not have those agents overwritten by
+        // the legacy seeders.
+        //
+        // Read the gate BEFORE seeding anything. The predicate matches any
+        // kind='aoa' row with a non-`@legacy` templateOrigin, and the seeders
+        // below insert kind='aoa' rows — reading after writing would be a
+        // read-your-own-writes hazard the moment anyone stamps an origin at
+        // insert time (today nothing does; see crew-seeding.ts). The failure
+        // mode is silent: the company would see its own fresh Commander,
+        // conclude "marketplace-managed", and skip its entire crew.
+        //
+        // isCrewMarketplaceManaged fails open to `false` on a DB error, so a
+        // transient blip degrades to the legacy seeders rather than leaving the
+        // company crewless — the same semantics the inline copy of this query
+        // used to provide.
+        const crewIsMarketplaceManaged = await isCrewMarketplaceManaged(db, company.id);
+
         // P8d: internal_agent_config + the infrastructure agents (Commander,
         // Steward) are seeded UNCONDITIONALLY — they are not marketplace-owned,
         // and a company without a config row has no autonomy/provider/model
-        // dial at all. Only the CREW roster is skipped when the marketplace
-        // governs it (below). config MUST precede ensureInfrastructureAgents:
-        // ensureCommanderAgent's internal_agent_config UPDATE no-ops without an
-        // existing config row.
+        // dial at all. Only the CREW roster is gated. config MUST precede
+        // ensureInfrastructureAgents: ensureCommanderAgent's
+        // internal_agent_config UPDATE no-ops without an existing config row.
         await ensureInternalAgentConfig(db, company.id).catch((err: unknown) => {
           logger.warn({ err, companyId: company.id }, "internal_agent_config seeding failed");
         });
         await ensureInfrastructureAgents(db, company.id);
 
-        // T3.5: skip the legacy CREW seeders if marketplace already governs this
-        // company's crew. A brand-new company that gets a marketplace install
-        // immediately after creation must not have those agents overwritten by
-        // the legacy seeders.
-        // Wrapped in try/catch: a transient DB error here must not cause the entire
-        // company creation to 500 — the company row is already committed and the
-        // ensures are non-fatal. On failure, default to running the ensures so the
-        // company is never left without a crew.
-        let mktInstalled: { id: string } | undefined;
-        try {
-          [mktInstalled] = await db
-            .select({ id: agents.id })
-            .from(agents)
-            .where(
-              and(
-                eq(agents.companyId, company.id),
-                eq(agents.kind, "aoa"),
-                sql`${agents.templateOrigin} IS NOT NULL AND ${agents.templateOrigin} NOT LIKE '%@legacy'`,
-              ),
-            )
-            .limit(1);
-        } catch (err: unknown) {
-          logger.warn({ err, companyId: company.id }, "marketplace gate check failed — defaulting to legacy crew ensures");
-        }
-
-        if (!mktInstalled) {
+        if (!crewIsMarketplaceManaged) {
           await ensureCrewAgents(db, company.id);
         }
         return company;

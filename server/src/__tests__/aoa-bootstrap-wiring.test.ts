@@ -163,15 +163,23 @@ const NEW_COMPANY_ID = "co-new-9";
 // the freshly-created company row (with id). All ensure-seeds are mocked,
 // so no further DB ops are exercised by this test.
 //
-// T3.5 addition: createCompanyWithUniquePrefix now calls
-// db.select().from(agents).where(...).limit(1) to check whether a marketplace-
-// governed crew already exists. Returning [] simulates a fresh legacy company
-// so the legacy ensure-*.ts path still runs and the wiring assertions hold.
+// T3.5 addition: createCompanyWithUniquePrefix calls isCrewMarketplaceManaged,
+// which issues db.select().from(agents).where(...).limit(1) to check whether a
+// marketplace-governed crew already exists. Returning [] simulates a fresh
+// legacy company so the legacy ensure-*.ts path still runs and the wiring
+// assertions hold.
 //
-// P8d: `managed` flips the inline marketplace gate — [{ id }] means an
-// `agent:…` row with a non-`@legacy` templateOrigin already exists, i.e. the
-// marketplace governs this company's crew.
-function makeDb(opts: { managed?: boolean } = {}) {
+// P8d: `managed` flips the marketplace gate — [{ id }] means a `kind='aoa'`
+// row with a non-`@legacy` templateOrigin already exists, i.e. the marketplace
+// governs this company's crew.
+//
+// `stampsOriginOnSeed` simulates the future regression the gate-read ordering
+// defends against: a seeder that stamps a non-`@legacy` templateOrigin at
+// insert time (the cleanup `backfill-template-origin.ts:29-37` practically
+// invites). The gate query then starts matching as soon as Commander exists.
+// Reading the gate BEFORE seeding makes that harmless; reading it after would
+// make every newly-created company look marketplace-managed to itself.
+function makeDb(opts: { managed?: boolean; stampsOriginOnSeed?: boolean } = {}) {
   return {
     insert: () => ({
       values: () => ({
@@ -181,7 +189,13 @@ function makeDb(opts: { managed?: boolean } = {}) {
     select: () => ({
       from: () => ({
         where: () => ({
-          limit: () => Promise.resolve(opts.managed ? [{ id: "mkt-agent-1" }] : []),
+          limit: () => {
+            const selfInflicted =
+              opts.stampsOriginOnSeed === true && seedCalls.includes("commander");
+            return Promise.resolve(
+              opts.managed || selfInflicted ? [{ id: "mkt-agent-1" }] : [],
+            );
+          },
         }),
       }),
     }),
@@ -241,6 +255,23 @@ describe("A9.1 — Commander-Team seeds wired into createCompanyWithUniquePrefix
     const db = makeDb();
     await companyService(db).create({ name: "Acme" } as any);
 
+    expect(seedCalls.slice().sort()).toEqual(
+      ["adjutant", "chronicler", "commander", "config", "engineer", "librarian", "scout", "staff", "steward"],
+    );
+  });
+
+  // ── F2 — the gate must be READ BEFORE anything is SEEDED ─────────────────
+  // Fails if the gate read is moved back below the seeding writes. With a
+  // seeder that stamps a non-`@legacy` origin, a read-after-write gate sees the
+  // company's own fresh Commander, concludes "marketplace-managed", and skips
+  // the entire crew — silently, on every newly created company.
+  it("a seeder that stamps a non-@legacy origin cannot make a company skip its own crew", async () => {
+    const db = makeDb({ stampsOriginOnSeed: true });
+    await companyService(db).create({ name: "Acme" } as any);
+
+    expect(seedCalls).toContain("commander");
+    // The whole point: the crew still seeds despite the self-inflicted match.
+    expect(seedCalls).toContain("scout");
     expect(seedCalls.slice().sort()).toEqual(
       ["adjutant", "chronicler", "commander", "config", "engineer", "librarian", "scout", "staff", "steward"],
     );

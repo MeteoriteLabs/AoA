@@ -4,14 +4,12 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // vi.hoisted: the mock fns are referenced inside the vi.mock factory (hoisted to
 // the top of the module), so they must be defined via vi.hoisted to exist at
 // factory-evaluation time. Matches the codebase idiom (aoa-ensure-commander.test.ts).
-const { ensureAll, ensureInfra, ensureCrew, isManaged } = vi.hoisted(() => ({
-  ensureAll: vi.fn(async () => {}),
+const { ensureInfra, ensureCrew, isManaged } = vi.hoisted(() => ({
   ensureInfra: vi.fn(async () => {}),
   ensureCrew: vi.fn(async () => {}),
   isManaged: vi.fn(async () => false),
 }));
-vi.mock("../services/internal-agent/aoa-agents/ensure-all-crew.js", () => ({
-  ensureAllCrewAgents: ensureAll,
+vi.mock("../services/internal-agent/aoa-agents/crew-seeding.js", () => ({
   ensureInfrastructureAgents: ensureInfra,
   ensureCrewAgents: ensureCrew,
   isCrewMarketplaceManaged: isManaged,
@@ -23,7 +21,6 @@ const base = { provider: "openai", crewModel: null, cliTool: "claude_cli", model
 
 describe("maybeReensureAgentsOnConfigChange", () => {
   beforeEach(() => {
-    ensureAll.mockClear();
     ensureInfra.mockClear();
     ensureCrew.mockClear();
     isManaged.mockClear();
@@ -59,9 +56,5 @@ describe("maybeReensureAgentsOnConfigChange", () => {
     // Commander's adapter must still follow a provider/cliTool switch.
     expect(ensureInfra).toHaveBeenCalledWith({}, "co-1");
     expect(ensureCrew).not.toHaveBeenCalled();
-  });
-  it("never reaches the ungated ensureAllCrewAgents union", async () => {
-    await maybeReensureAgentsOnConfigChange({} as any, "co-1", base, { ...base, provider: "anthropic" });
-    expect(ensureAll).not.toHaveBeenCalled();
   });
 });

@@ -30,8 +30,8 @@ vi.mock("../services/internal-agent/aoa-agents/ensure-librarian.js", () => ({ en
 
 // Partial mock: keep the REAL ensureInfrastructureAgents / ensureCrewAgents so
 // the split itself is under test; stub only the DB-backed gate predicate.
-vi.mock("../services/internal-agent/aoa-agents/ensure-all-crew.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../services/internal-agent/aoa-agents/ensure-all-crew.js")>()),
+vi.mock("../services/internal-agent/aoa-agents/crew-seeding.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../services/internal-agent/aoa-agents/crew-seeding.js")>()),
   isCrewMarketplaceManaged: isManaged,
 }));
 

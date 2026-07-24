@@ -1,9 +1,10 @@
-// server/src/__tests__/ensure-all-crew.test.ts
+// server/src/__tests__/crew-seeding.test.ts
 //
 // P8d split: `ensureInfrastructureAgents` (Commander + Steward — always seeded)
 // vs `ensureCrewAgents` (the marketplace-owned roster — gated by the caller on
-// isCrewMarketplaceManaged). `ensureAllCrewAgents` is the ungated union kept for
-// the T2.3 legacy-fallback path.
+// isCrewMarketplaceManaged). There is deliberately no "seed everything" union
+// export; each half is exercised on its own here, and the caller-seam gate is
+// covered by crew-seeding-marketplace-gate.test.ts.
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const calls: string[] = [];
@@ -17,11 +18,11 @@ vi.mock("../services/internal-agent/aoa-agents/ensure-steward.js", () => ({ ensu
 vi.mock("../services/internal-agent/aoa-agents/ensure-librarian.js", () => ({ ensureLibrarian: vi.fn(async () => { calls.push("librarian"); }) }));
 vi.mock("../middleware/logger.js", () => ({ logger: { warn: vi.fn(), debug: vi.fn() } }));
 
+import * as crewSeeding from "../services/internal-agent/aoa-agents/crew-seeding.js";
 import {
-  ensureAllCrewAgents,
   ensureCrewAgents,
   ensureInfrastructureAgents,
-} from "../services/internal-agent/aoa-agents/ensure-all-crew.js";
+} from "../services/internal-agent/aoa-agents/crew-seeding.js";
 
 const INFRA = ["commander", "steward"];
 const CREW = ["adjutant", "chronicler", "engineer", "librarian", "scout", "staff"];
@@ -39,13 +40,16 @@ describe("crew seeding split (P8d)", () => {
     expect(calls.slice().sort()).toEqual(CREW);
   });
 
-  it("ensureAllCrewAgents runs all eight, infrastructure first", async () => {
-    await ensureAllCrewAgents({} as any, "co-1");
-    expect(calls.slice().sort()).toEqual([...CREW, ...INFRA].sort());
-    // Commander must land before any crew seeder: it is the row
-    // internal_agent_config.agentId points at.
-    expect(calls[0]).toBe("commander");
-    expect(calls.indexOf("steward")).toBeLessThan(calls.indexOf("staff"));
+  // The union export was deleted deliberately: a "seed everything" symbol in a
+  // module whose whole point is the split invites `if (managed) return;
+  // seedEverything()` — P8d restored. Callers must pick a half.
+  it("exports no ungated seed-everything union", () => {
+    const exported = Object.keys(crewSeeding).sort();
+    expect(exported).toEqual([
+      "ensureCrewAgents",
+      "ensureInfrastructureAgents",
+      "isCrewMarketplaceManaged",
+    ]);
   });
 
   it("one failing crew ensure does not abort the rest of the crew", async () => {
@@ -56,21 +60,19 @@ describe("crew seeding split (P8d)", () => {
     expect(calls.length).toBe(5);
   });
 
-  it("a failing INFRASTRUCTURE ensure does not prevent the crew seeders", async () => {
+  it("a failing infrastructure ensure does not abort the other infrastructure ensure", async () => {
     const mod = await import("../services/internal-agent/aoa-agents/ensure-commander.js");
     (mod.ensureCommanderAgent as any).mockRejectedValueOnce(new Error("boom"));
-    await ensureAllCrewAgents({} as any, "co-1");
-    expect(calls).toContain("steward");
-    expect(calls.slice().sort()).toEqual([...CREW, "steward"].sort());
-    expect(calls.length).toBe(7);
+    await ensureInfrastructureAgents({} as any, "co-1");
+    expect(calls).toEqual(["steward"]);
   });
 
-  it("a failing CREW ensure does not prevent the infrastructure seeders", async () => {
-    const staff = await import("../services/internal-agent/aoa-agents/ensure-command-staff.js");
-    (staff.ensureCommandStaff as any).mockRejectedValueOnce(new Error("boom"));
-    await ensureAllCrewAgents({} as any, "co-1");
-    expect(calls).toContain("commander");
-    expect(calls).toContain("steward");
+  it("a failing infrastructure ensure does not prevent a subsequent crew seed", async () => {
+    const mod = await import("../services/internal-agent/aoa-agents/ensure-commander.js");
+    (mod.ensureCommanderAgent as any).mockRejectedValueOnce(new Error("boom"));
+    await ensureInfrastructureAgents({} as any, "co-1");
+    await ensureCrewAgents({} as any, "co-1");
+    expect(calls.slice().sort()).toEqual([...CREW, "steward"].sort());
     expect(calls.length).toBe(7);
   });
 });

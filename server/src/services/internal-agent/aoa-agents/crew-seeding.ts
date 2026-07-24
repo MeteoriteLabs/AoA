@@ -1,4 +1,13 @@
-// server/src/services/internal-agent/aoa-agents/ensure-all-crew.ts
+// server/src/services/internal-agent/aoa-agents/crew-seeding.ts
+//
+// The legacy (non-marketplace) agent seeding entrypoints, split in two by the
+// marketplace boundary (P8d), plus the predicate that decides which half a
+// caller may skip.
+//
+// There is deliberately NO "seed everything" union export. Every caller must
+// choose a half: infrastructure is unconditional, the crew roster is gated.
+// A union symbol invites `if (managed) return; seedEverything()` — which is
+// exactly the bug this module was split to fix.
 import { and, eq, sql } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { agents } from "@armyofagents/db";
@@ -19,6 +28,18 @@ import { ensureLibrarian } from "./ensure-librarian.js";
  *
  * This gate applies to {@link ensureCrewAgents} ONLY.
  * {@link ensureInfrastructureAgents} runs unconditionally (P8d).
+ *
+ * **Read this BEFORE seeding anything.** It is a read-your-own-writes hazard
+ * otherwise: the predicate matches any `kind='aoa'` row with a non-`@legacy`
+ * origin, and the seeders insert `kind='aoa'` rows. Today they stamp no
+ * `templateOrigin` at all (`seed-crew-agent.ts`; the `@legacy` suffix is
+ * applied only by `backfill-template-origin.ts` at boot) so seeding first
+ * happens to be safe — but nothing enforces that, and the failure mode is
+ * silent: a company would see its own just-inserted Commander, conclude
+ * "marketplace-managed", and skip its entire crew.
+ *
+ * Fails open to "not managed" (run the legacy seeders) on a DB error — a
+ * company must never be left crewless because a gate query blipped.
  */
 export async function isCrewMarketplaceManaged(db: Db, companyId: string): Promise<boolean> {
   try {
@@ -70,21 +91,41 @@ async function runEnsureSteps(companyId: string, scope: string, steps: EnsureSte
  *   marketplace-managed company must still reach this on a config change or
  *   Commander is stranded on the old provider.
  * - **Steward** — Inbox Hub curation.
- *   ⚠️ **TEMPORARY PLACEMENT.** Steward sits here only because it is not
- *   published in the marketplace catalog (verified against the live CDN on
- *   2026-07-24: 11 published agents, none of them Steward; the bundled
- *   `ui/src/aoa-marketplace-snapshot.json` agrees). T2.4 of
- *   `docs/aoa/plans/2026-07-24-phase2-marketplace-provisioning.md` authors and
- *   publishes `agent:aoa-curated/aoa-steward` and adds it to
- *   `team:aoa-curated/default-crew`. **When T2.4 lands, move `ensureSteward`
- *   out of this list and into {@link ensureCrewAgents}** — its continued
- *   existence is then guaranteed by the team install, and T2.5's
- *   protected-origin set is what stops it being uninstalled.
+ *
+ * ⚠️ **Steward's placement here is TEMPORARY.** It sits on the infrastructure
+ * side only because it is not published in the marketplace catalog (verified
+ * against the live CDN on 2026-07-24: 11 published agents, none of them
+ * Steward; the bundled `ui/src/aoa-marketplace-snapshot.json` agrees). T2.4 of
+ * `docs/aoa/plans/2026-07-24-phase2-marketplace-provisioning.md` authors and
+ * publishes `agent:aoa-curated/aoa-steward` and adds it to
+ * `team:aoa-curated/default-crew`.
+ *
+ * **Moving `ensureSteward` into {@link ensureCrewAgents} is NOT sufficient on
+ * its own — it must be paired with a reconciliation of the pre-existing legacy
+ * Steward rows.** Companies created between T2.3 and T2.4 own a Steward row
+ * with `templateOrigin` NULL: `seed-crew-agent.ts` stamps no origin on insert,
+ * and "Steward" is absent from `CREW_NAMES` in `backfill-template-origin.ts`,
+ * so the boot backfill never stamps it either. `team-reconcile.ts:96-107`
+ * computes its `missing` set from the non-null `templateOrigin`s of the
+ * installed team's *members* — a legacy Steward is neither a team member nor
+ * origin-stamped, so it fails that lookup twice over and reconcile installs a
+ * SECOND Steward. That does not crash —
+ * `resolveAgentNameConflict` renames the newcomer — so the company silently
+ * ends up with two Steward agents, both carrying the
+ * `{kind:"sweep", config:{role:"steward"}}` trigger, i.e. duplicated hub
+ * curation runs. T2.4 must stamp or remove the legacy row as part of the move.
+ *
+ * **Chronicler has the identical NULL-origin gap** (also absent from
+ * `CREW_NAMES`), so it needs the same reconciliation whenever its catalog
+ * status is acted on. Do NOT "fix" the gap by stamping these rows with a
+ * non-`@legacy` origin — see the plan's T2.5 section: that NULL is load-bearing
+ * for {@link isCrewMarketplaceManaged}, and a non-`@legacy` stamp would
+ * suppress every company's crew seeding.
  */
 export async function ensureInfrastructureAgents(db: Db, companyId: string): Promise<void> {
   await runEnsureSteps(companyId, "ensureInfrastructureAgents", [
     ["commander", () => ensureCommanderAgent(db, companyId)],
-    // See the Steward note above — move to ensureCrewAgents once T2.4 publishes it.
+    // See the Steward note above — moving this line is a two-part change.
     ["steward", () => ensureSteward(db, companyId)],
   ]);
 }
@@ -96,7 +137,9 @@ export async function ensureInfrastructureAgents(db: Db, companyId: string): Pro
  * the install owns them and these legacy seeders must not overwrite them.
  *
  * **Callers are responsible for the gate:** skip this when
- * {@link isCrewMarketplaceManaged} is true.
+ * {@link isCrewMarketplaceManaged} is true. This is also the call for a
+ * deliberate degrade-to-legacy fallback (T2.3) — infrastructure will already
+ * have been seeded unconditionally by then.
  *
  * Re-running this after a provider/crewModel change migrates existing rows to
  * the newly-resolved adapter via shouldRewriteCrewAdapter + mergeCrewAdapterConfig
@@ -111,24 +154,4 @@ export async function ensureCrewAgents(db: Db, companyId: string): Promise<void>
     ["chronicler", () => ensureChronicler(db, companyId)],
     ["librarian", () => ensureLibrarian(db, companyId)],
   ]);
-}
-
-/**
- * Infrastructure + the full legacy crew roster, UNGATED.
- *
- * ⚠️ This is **not** the entrypoint for normal provisioning. Every production
- * caller (boot backfill, company create, config-change re-ensure) now calls
- * {@link ensureInfrastructureAgents} unconditionally and
- * {@link ensureCrewAgents} only when {@link isCrewMarketplaceManaged} is false.
- * Calling this behind a whole-function marketplace gate is the bug P8d fixed —
- * it silently stops seeding Commander and Steward.
- *
- * It survives as the single "give this company the complete legacy roster"
- * call for the deliberate fallback path in T2.3 (company create degrades to
- * the legacy seeders when the marketplace install fails), where running the
- * whole roster ungated is exactly what is wanted.
- */
-export async function ensureAllCrewAgents(db: Db, companyId: string): Promise<void> {
-  await ensureInfrastructureAgents(db, companyId);
-  await ensureCrewAgents(db, companyId);
 }

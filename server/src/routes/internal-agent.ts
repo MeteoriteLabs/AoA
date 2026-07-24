@@ -19,7 +19,7 @@ import { HttpError, badRequest, notFound, forbidden } from "../errors.js";
 import { agentLoopService, type RuntimeAttachmentStorage } from "../services/internal-agent/agent-loop.js";
 import { detectCliTool } from "../services/internal-agent/cli-mode.js";
 import { ensureCommanderAgent } from "../services/internal-agent/aoa-agents/ensure-commander.js";
-import { ensureCrewAgents, ensureInfrastructureAgents, isCrewMarketplaceManaged } from "../services/internal-agent/aoa-agents/ensure-all-crew.js";
+import { ensureCrewAgents, ensureInfrastructureAgents, isCrewMarketplaceManaged } from "../services/internal-agent/aoa-agents/crew-seeding.js";
 import { logger } from "../middleware/logger.js";
 import { companySkillService } from "../services/company-skills.js";
 import {
