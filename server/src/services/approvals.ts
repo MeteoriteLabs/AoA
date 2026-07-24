@@ -11,6 +11,23 @@ import { mcpConnectorService } from "./mcp-connectors-crud.js";
 import { resolveConnectorStatus } from "./mcp-connector-status.js";
 
 /**
+ * Approval types NO CLIENT MAY EVER SUPPLY A PAYLOAD FOR.
+ *
+ * Membership rule: the type is minted only by server-internal code and its
+ * payload names the object a decision acts on. Neither is in
+ * `CREATABLE_APPROVAL_TYPES`, so creation is already blocked — but `resubmit`
+ * REWRITES `payload` wholesale (`z.record(z.unknown())`), which would re-open
+ * the same vector one hop later. Exported so the guard's membership is testable
+ * without reaching into the service closure.
+ *
+ * If you add a system-internal approval type, add it here in the same commit.
+ */
+export const SYSTEM_INTERNAL_APPROVAL_TYPES: ReadonlySet<string> = new Set([
+  "crew_dispatch",
+  "install_mcp_connector",
+]);
+
+/**
  * The slice of `mcpConnectorService` the two helpers below need. Structural, so
  * the truth table can be unit-tested with plain object stubs and no DB.
  */
@@ -504,8 +521,19 @@ export function approvalService(db: Db) {
       // Codex #267 P1: crew_dispatch is system-internal. Resubmit rewrites payload, so
       // allowing it would re-open the caller-controlled-taskIds dispatch vector even
       // though creation is already blocked. Only the system sets a crew_dispatch payload.
-      if (existing.type === "crew_dispatch") {
-        throw unprocessable("System-internal crew_dispatch approvals cannot be resubmitted");
+      //
+      // Plan 3a Task 12: `install_mcp_connector` is system-internal in exactly the
+      // same sense and was missed when this guard was written. It is not in
+      // CREATABLE_APPROVAL_TYPES (it is not even in APPROVAL_TYPES) — the ONLY
+      // producer is `createConnector`. Its payload's `connectorId` is the sole input
+      // selecting which row `applyConnectorApproval` flips to `active`, so a caller
+      // who can rewrite it makes the founder a confused deputy: the approval keeps
+      // displaying `serverName: "notion"` while approving activates whatever
+      // connector id was swapped in — including a stdio one that spawns a process on
+      // the AoA host, and including one whose OWN approval is still pending or has
+      // already been rejected.
+      if (SYSTEM_INTERNAL_APPROVAL_TYPES.has(existing.type)) {
+        throw unprocessable(`System-internal ${existing.type} approvals cannot be resubmitted`);
       }
 
       const now = new Date();

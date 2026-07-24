@@ -4,7 +4,8 @@ Everything identified across Plans 1, 2 and 2b that was **deliberately not fixed
 plus constraints discovered along the way that future work inherits.
 
 Kept as a standing document so these do not survive only as buried plan amendments.
-Last updated 2026-07-24 (`integration/connectors-marketplace`, HEAD `ae710b089`).
+Last updated 2026-07-24 (`integration/connectors-marketplace`; FU-17…FU-23 added by
+Plan 3a Task 12's adversarial sweep, on top of HEAD `dab442416`).
 
 Severity: **P1** = user-visible correctness or security · **P2** = robustness / maintenance ·
 **P3** = docs, cleanup, cosmetics.
@@ -161,6 +162,162 @@ future catalog schema change. Fix: per-item `safeParse` with drop-and-warn, or `
 `z.string()` with a known-type refinement at the render/dispatch layer — shipped as a
 forward-compat release *before* any CDN change that relies on it.
 
+### FU-17 — the `install_mcp_connector` approval carries NO role gate · P1
+*Found by the Task 12 adversarial sweep. Regression tests:
+`server/src/__tests__/mcp-connector-approval-adversarial.test.ts` (`[ESC-1]`).*
+
+Every connector mutation in `routes/mcp-connectors.ts` is founder-only, and C2 blocks
+even the founder from PATCH→active in `authenticated` **precisely so that activation
+flows through this approval**. But `POST /approvals/:id/approve` (`routes/approvals.ts:132`),
+`/reject` (:260) and `/request-revision` (:305) run only `assertBoard` +
+`assertCompanyAccess` — no `assertRole`, and `approve()` itself does no role lookup.
+
+So a plain **`team_member`** can activate a connector (real `applyConnectorApproval` →
+`updateIfStatus(id, "pending_approval", {status:"active"})`), after which Commander
+receives it with no founder step at all (D3 exempts Commander from the founder-only
+per-agent opt-in) and the CLI spawns the command on the AoA host. The same actor can
+`reject` a founder's pending connector to `disabled`, which is **terminal** in
+`authenticated`. The pending payload is also returned unredacted by
+`GET /companies/:cid/approvals`, so the target id is discoverable.
+
+The asymmetry that shows this is an oversight, not a decision: the identical action via
+the MCP `approval-decision` tool **does** require founder. The HTTP door is weaker than
+the MCP door.
+
+⚠ **The fix is a governance decision, not a patch** — see FU-10. Founder-only makes the
+approval a self-approval formality in `authenticated` (the founder both requests and
+resolves it), which is arguably not what D6's "board approval" meant. Options: (a)
+founder-only, matching connector CRUD; (b) `team_lead`+; (c) require a decider distinct
+from the requester. Whichever is chosen must be **type-scoped** — `hire_agent` and
+`approve_ceo_strategy` are genuinely board decisions and must stay board-resolvable.
+
+### FU-18 — `POST /approvals/:id/resubmit` has no board gate · P2
+*Connector-specific half CLOSED (see below); the route-level hole remains.*
+
+The handler runs `assertCompanyAccess` and one actor check that fires **only** for
+`type === "agent"`. An `mcp` API-key actor — not a board user at all — reaches it and
+rewrites `payload` wholesale (`z.record(z.unknown())`); `boardMutationGuard` does not
+cover it either (it only inspects `board` actors).
+
+⚠ **Do NOT "fix" this with a bare `assertBoard(req)`** — that would 403 the *requesting
+agent*, which this route deliberately supports. The right shape is "board OR the
+requesting agent". There is a `REGRESSION FLOOR` test pinning the agent path.
+
+### FU-19 — D7 is a CREATE-TIME-ONLY gate; delivery never re-asks · P1
+*Regression tests: `mcp-connector-install-adversarial.test.ts` (`[ESC-3]`).*
+
+`assertTransportAllowed` has exactly three call sites, all in `routes/mcp-connectors.ts`
+(shelf projection :360, install :429, BYO create :497). None is on the read/delivery
+path, and `ConnectorSkipReason` has no D7 value — the "D7 block" reason FU-1 already
+names **does not exist**.
+
+Consequence: a founder registers a `stdio` BYO connector under `local_trusted`
+(permitted, `status: "active"`), the operator later converts the instance to
+`authenticated` (`AOA_DEPLOYMENT_MODE` + restart; the DB carries over). The row is
+untouched, `selectConnectorRowsForAgent` still returns it, `buildConnectorSpecs` still
+emits `{kind:"stdio", command:"npx", …}` with `skipped: []`, and the command now runs on
+a multi-tenant host — the exact thing D7 exists to prevent. Verified live against
+embedded-postgres: after the flip `assertTransportAllowed("stdio","authenticated","byo")`
+throws while the identical connector is still delivered.
+
+Fix: re-assert the gate at delivery (`selectConnectorRowsForAgent` /
+`loadEnabledConnectorRows`, reporting a `d7_blocked` skip reason — which also needs
+FU-1's surface), **or** sweep on mode transition and flip such connectors to `disabled`.
+A gate whose whole justification is "may this host execute this command" must be
+evaluated against the host's *current* mode.
+
+### FU-20 — a literal credential in `headerTemplate` / `envTemplate` / `args` is accepted end-to-end · P1
+*Regression tests: `mcp-connector-install-adversarial.test.ts` (`[ESC-4]`).*
+
+`templateRecord = z.record(z.string(), z.string())` constrains keys but imposes **nothing
+on values**, and nothing downstream does either. A founder who pastes a real token gets
+it stored in `company_mcp_connectors.header_template` — plain jsonb, **not** the
+encrypted `company_secrets` store — and from there:
+
+- (a) written verbatim into `<CODEX_HOME>/config.toml` and into `<cwd>/opencode.json`,
+  where *cwd is the agent's working directory* (a git repo the agent can commit and push);
+- (b) returned in full by `GET /companies/:cid/mcp-connectors`, which is `assertBoard`
+  only with **no founder check** — every board member reads it back;
+- (c) **not** masked by `redactSensitiveBodyFields`: the patterns are anchored
+  (`/^api[_-]?key$/i`), so `X-Api-Key` passes straight through and the error handler logs
+  the full value on any 5xx.
+
+Three independent decisions, each with a `.fails` test: reject literals at write time
+(what counts as a literal? entropy? prefix? an `${...}` allow-shape?); widen redaction to
+substring-match header-ish key names (blast radius: every log in the app); strip templates
+from the list route for non-founders (or make list founder-only).
+
+✅ **Partially mitigated in Task 12**: the Settings header hint said
+`Authorization: Bearer ${MCP_TOKEN}`, but `buildConnectorSpecs` substitutes **only** the
+literal `${TOKEN}` — so a founder copying the app's own example built a connector that
+authenticates as no-one, and the obvious workaround is pasting the real token. Both the
+placeholder and the `${VAR}` helper text now say `${TOKEN}`, with a regression guard.
+
+### FU-21 — `claude_local` drops `authTokenEnvVar`: catalog HTTP connectors authenticate as no-one · P1
+*Regression tests: `mcp-connector-install-adversarial.test.ts` (`[ESC-5]`).*
+
+D5 seeds catalog template KEYS with empty values, so a bound-secret http connector's spec
+is `{kind:"http", url, headers:{Authorization:""}, authTokenEnvVar:"AOA_MCP_X_TOKEN"}` —
+the credential signal rides on `authTokenEnvVar` alone. `buildMcpConfig`
+(`internal-agent/cli-mode.ts:231`) maps http specs to `{type, url, headers}` and
+**discards** it, emitting `{"type":"http","url":…,"headers":{"Authorization":""}}` with
+`skipped: []` while the real token sits unused in the spawn env.
+
+codex synthesises `bearer_token_env_var`, opencode `Authorization: Bearer {env:…}`, gemini
+`Authorization: Bearer ${…}` — all per commitment I3 ("an empty map would emit a remote
+server with NO auth and no skip… synthesise the conventional bearer header instead").
+claude, the default adapter for heartbeat **and** Commander, does neither. This is exactly
+the first-real-`needs_credentials`-row failure FU-16 warns about.
+
+Not patched here because the right expansion syntax for claude's `.mcp.json` headers needs
+an empirical check (a wrong guess ships a literal `${VAR}` — FU-2's failure mode in a new
+place). Minimum: stop emitting empty-string header values.
+
+### FU-22 — one additive `connectors.json` field empties the shelf fleet-wide, reported as fresh · P1
+*Regression tests: `mcp-connector-install-adversarial.test.ts` (`[ESC-6]`).*
+
+`McpConnectorCatalogEntrySchema` is `.strict()`, so a purely **additive optional** field
+(say `iconUrl`) on every entry drops every entry: `{entries: [], dropped: [a,b,c],
+malformed: false}`. The cache layer (`services/mcp-connector-catalog.ts:134-144`) reads
+`malformed: false` as a real CDN answer, so it sets `cached = []` **and refreshes
+`fetchedAtMs`** — the empty shelf is returned with `stale: false` (the founder is told it
+is healthy) and pinned for another 6 h with no refetch. Every older instance in a
+self-hosted fleet loses its whole connector shelf from one forward-compatible publish.
+The only trace is a `logger.warn`, invisible in the API response (same class as FU-1).
+
+The distinguishing signal already exists and is discarded: a curator legitimately emptying
+the shelf yields `dropped.length === 0`; this yields `dropped.length === N`.
+
+⚠ **This is a decision, not a bug fix** — `mcp-connector-catalog-service.test.ts:282`
+deliberately asserts the opposite ("an all-dropped payload still replaces the cache —
+every entry was answered for"), and that test only ever exercises a *structurally broken*
+entry, never a well-formed-but-newer one. Reversing it must be explicit. Options: treat
+`kept === 0 && dropped > 0` like a malformed envelope (keep cache, `stale: true`, do not
+refresh `fetchedAtMs`), or drop `.strict()` so unknown fields are stripped per-entry.
+Note this is the connector-side twin of FU-14 and constrains every future CDN change.
+
+### FU-23 — the connector env-scrub module is dead code · P1
+*Regression tests: `mcp-connector-install-adversarial.test.ts` (`[ESC-7]`).*
+
+`buildConnectorProcessEnv` / `mergeConnectorEnv` (`services/mcp-connectors-env.ts`) are
+referenced by **nothing** except their own unit test. Production merges connector tokens
+into `config.env` and every connector-capable adapter spawns the CLI with the full
+unscrubbed server environment (`claude-local/…/execute.ts:251`, `opencode-local:235`,
+`gemini-local:242`, Commander's `cli-mode.ts`). The CLI then spawns each stdio connector
+as a child that inherits it — verified live with a minimal 18-key env and a recorder MCP
+server: `DATABASE_URL`, `BETTER_AUTH_SECRET`, `AOA_AGENT_JWT_SECRET`, `GITHUB_PAT`,
+`OPENAI_API_KEY` and every *other* connector's `AOA_MCP_*_TOKEN` all reached the child.
+Only codex is protected, and only incidentally (B2N9).
+
+The module's own header promises "AoA's own secrets must never reach a third-party
+server", so today it reads as an implemented control that is not implemented.
+
+⚠ **Not a drop-in wiring job**: `buildScrubbedCliEnv` removes `DATABASE_URL`, which
+`server/src/index.ts:450` deliberately exposes *so the AoA MCP bridge child can inherit
+it*. Scrubbing at the adapter boundary would break the bridge. Needs per-child scoping
+(bridge keeps its env, connector children get the scrubbed one), which the current
+single-`spawnEnv` shape cannot express. Either do that or delete the module.
+
 ---
 
 ## Pre-existing, not caused by this work
@@ -187,6 +344,19 @@ clean HEAD.
 ---
 
 ## Closed during Plan 3a (recorded so they are not re-opened)
+
+- **Confused-deputy payload swap on `install_mcp_connector` approvals** (Task 12) ·
+  found by the adversarial sweep. `approvalService.resubmit` rewrites `payload`
+  wholesale and its system-internal denylist covered only `crew_dispatch`. So an actor
+  who could reach `request-revision` (any board member) then `resubmit` (any
+  company-scoped actor, including an MCP API key — FU-18) could point an approval at a
+  *different* `connectorId` while it kept displaying the original `serverName`: the
+  founder approves "notion" and an `npx`-spawning stdio connector goes `active`,
+  including one whose own approval is still pending or already rejected. Fixed by
+  hoisting the denylist to an exported `SYSTEM_INTERNAL_APPROVAL_TYPES` set and adding
+  `install_mcp_connector` — it is not in `CREATABLE_APPROVAL_TYPES` (nor even in
+  `APPROVAL_TYPES`); its only producer is `createConnector`. Add any future
+  system-internal type to that set in the same commit.
 
 - **FU-15 — `local_trusted` PATCH could set `active` on an uncredentialed connector** ·
   found while closing C2/C3, was the last exception to invariant #3. Fixed in the PATCH

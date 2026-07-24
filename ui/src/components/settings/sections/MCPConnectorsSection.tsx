@@ -342,7 +342,12 @@ export function MCPConnectorsSection() {
                         className={`${inputCls} min-h-[64px] font-mono`}
                         value={headersText}
                         onChange={(e) => setHeadersText(e.target.value)}
-                        placeholder={"Authorization: Bearer ${MCP_TOKEN}"}
+                        // ${TOKEN} is the ONLY placeholder buildConnectorSpecs
+                        // substitutes (services/mcp-connectors.ts). Naming any
+                        // other variable here ships that literal to the MCP
+                        // server, which then authenticates as no-one — and the
+                        // obvious founder workaround is pasting a real token.
+                        placeholder={"Authorization: Bearer ${TOKEN}"}
                       />
                     </label>
                   )}
@@ -358,8 +363,8 @@ export function MCPConnectorsSection() {
                       placeholder="mcp:notion"
                     />
                     <div className="text-[11px] text-muted-foreground">
-                      Must reference an existing company secret. Header/arg values use{" "}
-                      <code>{"${VAR}"}</code> placeholders resolved from it.
+                      Must reference an existing company secret. Header/arg values use the{" "}
+                      <code>{"${TOKEN}"}</code> placeholder, which resolves to it.
                     </div>
                   </label>
 
