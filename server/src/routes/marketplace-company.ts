@@ -18,6 +18,14 @@
  * `services/marketplace-agent-merge.ts` (the algebra) and
  * `services/marketplace-install/agent-update-merge.ts` (the I/O + the write).
  * `/apply` still refuses TEAM updates only.
+ *
+ * **Skill merges re-materialize the bundle (T2.8).** The skill branch of
+ * `/merge` delegates to `services/marketplace-install/skill-update-merge.ts`,
+ * which writes the upstream commit's `references/`, `scripts/` and `assets/`
+ * to disk alongside the merged markdown. It used to write markdown only, which
+ * left the files an agent actually receives pinned at the old commit. The
+ * agent branch stays separate on purpose (Decision #115): its bundle root is
+ * founder-editable, so it must never be routed through a materializer.
  */
 import { Router } from "express";
 import { z } from "zod";
@@ -31,7 +39,7 @@ import {
   type CrewRepairDiagnosis,
 } from "../services/crew-repair.js";
 import { marketplaceSettingsService } from "../services/marketplace-settings.js";
-import { computeSectionDiff, applyMergeDecisions } from "../services/marketplace-merge.js";
+import { computeSectionDiff } from "../services/marketplace-merge.js";
 import { marketplaceNotifications } from "../services/marketplace-notifications.js";
 import { agentInstructionsService } from "../services/agent-instructions.js";
 import {
@@ -50,6 +58,10 @@ import {
   type AgentBundleServiceLike,
   type MergeableAgentRow,
 } from "../services/marketplace-install/agent-update-merge.js";
+import {
+  SkillMergeUpstreamError,
+  mergeSkillUpdate,
+} from "../services/marketplace-install/skill-update-merge.js";
 import type { AgentInstructionsServiceLike } from "../services/marketplace-install/agent-create.js";
 import type { MarketplaceCatalogFile } from "@armyofagents/shared";
 import type { PluginLifecycleManager } from "../services/plugin-lifecycle.js";
@@ -615,8 +627,15 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
       return;
     }
 
+    // `metadata` is read (not just written) because the bundle re-materialization
+    // patches it rather than replacing it — the row's catalog trust tier and
+    // package provenance must survive a merge.
     const [skill] = await db
-      .select({ id: companySkills.id, markdown: companySkills.markdown })
+      .select({
+        id: companySkills.id,
+        markdown: companySkills.markdown,
+        metadata: companySkills.metadata,
+      })
       .from(companySkills)
       .where(
         and(
@@ -637,33 +656,35 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
       return;
     }
 
-    const upstreamRes = await fetch(catalogItem.resourceUrl as string, {
-      signal: AbortSignal.timeout(15000),
-    });
-    if (!upstreamRes.ok) {
-      res.status(502).json({ error: "Failed to fetch upstream content" });
-      return;
+    // T2.8: the merged markdown AND the bundle's files land together. Writing
+    // only the markdown left `references/`, `scripts/` and `assets/` pinned at
+    // the old commit while `sourceRef` advanced, so nothing would ever repair
+    // them. See `skill-update-merge.ts` for the ordering and its failure modes.
+    try {
+      const outcome = await mergeSkillUpdate({
+        db,
+        companyId,
+        skill,
+        catalogItem,
+        pendingUpdateId: id,
+        latestVersion: update.latestVersion,
+        decisions,
+      });
+      // `outcome.bundlePath` is deliberately NOT echoed: it is an absolute
+      // server path, the client has no use for it, and the merge modal ignores
+      // the body entirely today.
+      res.json({
+        ok: true,
+        bundleMaterialized: outcome.bundleMaterialized,
+        ...(outcome.fileCount !== undefined ? { bundleFileCount: outcome.fileCount } : {}),
+      });
+    } catch (err) {
+      if (err instanceof SkillMergeUpstreamError) {
+        res.status(502).json({ error: err.message });
+      } else {
+        res.status(500).json({ error: err instanceof Error ? err.message : "Merge failed" });
+      }
     }
-    const upstreamContent = await upstreamRes.text();
-    const diff = computeSectionDiff(skill.markdown ?? "", upstreamContent);
-    const merged = applyMergeDecisions(diff, decisions);
-
-    // Both writes are wrapped in a transaction: if the server crashes after the skill
-    // update but before the pending-update status change, the transaction rolls back
-    // and neither write is committed — the pending row stays "pending" and can be retried.
-    await db.transaction(async (tx) => {
-      await tx
-        .update(companySkills)
-        .set({ markdown: merged, sourceRef: update.latestVersion, customized: true, updatedAt: new Date() })
-        .where(eq(companySkills.id, skill.id));
-
-      await tx
-        .update(marketplacePendingUpdates)
-        .set({ status: "applied", updatedAt: new Date() })
-        .where(eq(marketplacePendingUpdates.id, id));
-    });
-
-    res.json({ ok: true });
   });
 
   // ── Crew provisioning repair (T2.3b) ──────────────────────────────────────

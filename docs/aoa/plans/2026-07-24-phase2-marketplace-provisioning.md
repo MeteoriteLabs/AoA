@@ -1221,15 +1221,88 @@ verbatim as upstream).
 
 ---
 
-## T2.8 — Bundle re-materialization on merge (P12)
+## T2.8 — Bundle re-materialization on merge (P12) — ✅ SHIPPED 2026-07-24
 
 **Why:** merge rewrites markdown but never calls the materializer (`marketplace-company.ts` has zero materializer calls; only `skill-installer` and `skill-auto-updater` do), leaving bundled skill files stale on disk.
 
-- [ ] **Step 1: Failing test** — after a merge, bundled files on disk match the upstream commit.
-- [ ] **Step 2: Run → FAIL.** **Step 3: Call the materializer from the merge path.** **Step 4: Run → PASS.** **Step 5: Commit.**
+- [x] **Step 1: Failing test** — after a merge, bundled files on disk match the upstream commit.
+- [x] **Step 2: Run → FAIL.** **Step 3: Call the materializer from the merge path.** **Step 4: Run → PASS.** **Step 5: Commit.**
 ```bash
 git commit -m "fix(marketplace): re-materialize bundled skill files on reviewed merge"
 ```
+
+### Execution notes (2026-07-24) — the premise held, plus the three delegated design calls
+
+**Defect confirmed exactly as briefed.** `routes/marketplace-company.ts` had zero
+materializer calls; the skill branch of `/merge` set
+`{ markdown, sourceRef, customized, updatedAt }` and stopped. The consumer that
+makes it bite is `listRuntimeSkillEntries` (`company-skills.ts:2232-2236`): it
+reads `metadata.catalogBundleInstallPath` and hands those files to the agent, so
+a merged skill shipped a new SKILL.md next to the OLD `scripts/`.
+
+**Files:** `server/src/services/marketplace-install/skill-update-merge.ts` (new;
+the I/O half, mirroring T2.7's `agent-update-merge.ts` split),
+`server/src/routes/marketplace-company.ts` (the skill branch delegates),
+`server/src/__tests__/marketplace-skill-update-merge.test.ts` (new),
+`docs/api/marketplace-and-plugins.md`.
+
+**1. Ordering: clone BEFORE the transaction**, matching `applySkillUpdate`.
+Clone fails → nothing committed, the pending row stays `pending`, retryable. The
+transaction fails after the clone → an unreferenced directory at the new
+version; the row still points at the old files, which still match its old
+markdown, and a retry re-materializes over itself (`overwrite: true`). Dead
+disk, not corruption. The reverse order is the bug being fixed, now with
+`sourceRef` stamped over it: disk-first fails loudly, DB-first fails silently.
+T2.3c's "outside the transaction" precedent survives the merge case, for the
+reason in (2).
+
+**2. Stale files: the pointer moves, the old directory stays.**
+`managedCatalogSkillDir` is **version-scoped**, so a merge writes a directory
+that did not exist and deletes nothing; a file the upstream commit removed is
+simply never copied, and `fileInventory` + `catalogBundleInstallPath` are
+repointed in the same transaction. There is therefore no orphan in the *active*
+bundle — the correctness claim. The previous version's directory is left alone,
+consistently with `installSkill` / `applySkillUpdate`, and deliberately: an
+`fs.rm` of a path derived from a *stale* row is Decision #115's hazard class,
+and when `catalogItem.version` equals the installed version the "old" directory
+IS the one just written. Reclaiming old versions is disk hygiene for a sweeper.
+
+**3. Founder edits cannot be overwritten, structurally.** For
+`sourceType = "catalog"` there is no founder write path to the bundle directory
+at all: `companySkillsService.updateFile` writes to disk only for `local_path`
+(`company-skills.ts:1586`), and `readFile` returns `null` for every
+non-`SKILL.md` path on a catalog skill. The founder's edits live entirely in
+`company_skills.markdown`, which the merge preserves — the code writes `merged`,
+never `materialized.markdown`. Copying `applySkillUpdate`'s
+`markdown: payload.markdown` line in here would have been the skill-side D22
+harm; a dedicated test asserts a "keep mine" section survives while the bundle
+still advances. This is also why the skill side may use a materializer at all
+and the **agent side still must not** (Decision #115): the agent's bundle root
+IS founder-editable. The two paths stay separate.
+
+**Also recorded:**
+- The bundle directory is keyed by `catalogItem.version`, not the pending row's
+  `latestVersion` — the bytes come from `catalogItem.skill.bundle` and the
+  catalog cache can lead the pending row. `sourceRef` still stamps
+  `latestVersion` (unchanged); the pointer is self-describing, so a drift
+  under-reports the version and the next checker pass converges it.
+- `AbortSignal.timeout(60_000)` on the checkout. Not a perf budget — without it
+  a stalled `git` pins an interactive founder request for git's own network
+  timeout. No `BundleCheckoutCache`: one merge is one bundle is one repo, so it
+  would hold one entry and save nothing.
+- The route no longer echoes the absolute bundle path; it answers
+  `{ ok, bundleMaterialized, bundleFileCount? }`. `SnapshotUpdateModal` ignores
+  the body entirely, so the path was pure server-layout disclosure.
+- **Ablation-verified.** With only the materializer call disabled, 5 of 8 tests
+  fail on bytes: the removed `scripts/legacy.js` is still present,
+  `references/guide.md` still reads `v1 guide` while the markdown advanced, and
+  the route answers `bundleMaterialized: false`. The tests read the bundle
+  through whatever `metadata.catalogBundleInstallPath` the row holds *after* the
+  merge — modelling `listRuntimeSkillEntries` — so an unpatched pointer fails as
+  "the old files are still live", not as a TypeError. The materializer is not
+  mocked: a real two-commit local git repo is cloned through the real
+  `materializeSkillBundle`, with only the remote redirected via the
+  test-env-guarded `unsafeTestRepoUrl`.
 
 ---
 

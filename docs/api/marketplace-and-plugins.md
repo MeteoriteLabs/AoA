@@ -29,6 +29,24 @@ DELETE /api/companies/{companyId}/marketplace/teams/{teamId}
 
 Marketplace catalog data comes from the configured AoA marketplace CDN with a build-time snapshot fallback. Company routes apply company policy and installation state.
 
+`GET .../updates/{id}/diff` and `POST .../updates/{id}/merge` accept skill and
+agent updates. `/diff` returns a section-level diff (a skill's unit is a `## `
+section of its SKILL.md; an agent's is `<file>::<## section>` across its whole
+instruction bundle); `/merge` takes a `decisions` map of section → `"mine"` |
+`"theirs"`. `/apply` is the unreviewed one-click landing and refuses team
+updates.
+
+Merging a **skill** whose catalog item carries a bundle also re-materializes the
+bundle's `references/`, `scripts/` and `assets/` from the upstream commit, into
+a new version-scoped directory that the row's
+`metadata.catalogBundleInstallPath` is repointed at in the same transaction —
+so a file the upstream commit deleted is not delivered to agents afterwards.
+The founder's merged markdown is what lands in `company_skills.markdown`; the
+bundle's own SKILL.md is never written over it. The checkout runs before the
+transaction, so a failed fetch leaves the pending update untouched and
+retryable. The response reports `bundleMaterialized` and, when a bundle was
+written, `bundleFileCount`.
+
 `POST .../marketplace/crew/repair` is founder-only. It diagnoses whether the
 company's AoA crew is inside the marketplace update pipeline and repairs it if
 not — adopting `…@legacy`/unstamped crew agents in place, re-provisioning a
