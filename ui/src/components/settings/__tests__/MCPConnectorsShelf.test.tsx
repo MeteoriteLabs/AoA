@@ -222,7 +222,32 @@ describe("connector shelf", () => {
     expect(catalogCallsAtInstall).toBe(1);
   });
 
-  it("renders a deployment-refused entry as unavailable, with the reason", async () => {
+  it("renders a deployment-refused entry as unavailable, quoting the SERVER's reason", async () => {
+    // The reason must come off the wire, not out of a client-side constant: the
+    // shelf must report whichever refusal branch the server's D7 gate actually
+    // took, including one this build has never heard of.
+    catalogMock.mockResolvedValue({
+      entries: [
+        stdioEntry({
+          installable: false,
+          unavailableReason: "A future refusal branch nobody hard-coded here.",
+          consentToken: undefined,
+          consentExpiresAt: undefined,
+        }),
+      ],
+      stale: false,
+    });
+    renderSection();
+
+    const card = await screen.findByTestId("connector-shelf-card-sketchy-fs");
+    expect(within(card).getByText(/unavailable/i)).toBeInTheDocument();
+    expect(
+      within(card).getByText(/A future refusal branch nobody hard-coded here\./),
+    ).toBeInTheDocument();
+    expect(within(card).queryByRole("button", { name: /install/i })).not.toBeInTheDocument();
+  });
+
+  it("falls back to generic copy when the server sends no reason", async () => {
     catalogMock.mockResolvedValue({
       entries: [stdioEntry({ installable: false, consentToken: undefined, consentExpiresAt: undefined })],
       stale: false,
@@ -230,8 +255,9 @@ describe("connector shelf", () => {
     renderSection();
 
     const card = await screen.findByTestId("connector-shelf-card-sketchy-fs");
-    expect(within(card).getByText(/unavailable/i)).toBeInTheDocument();
-    expect(within(card).getByText(/run a command on the AoA host/i)).toBeInTheDocument();
+    expect(
+      within(card).getByText(/cannot be installed in this deployment/i),
+    ).toBeInTheDocument();
     expect(within(card).queryByRole("button", { name: /install/i })).not.toBeInTheDocument();
   });
 

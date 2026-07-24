@@ -12,8 +12,7 @@ import {
 } from "../services/index.js";
 import { badRequest, conflict, forbidden } from "../errors.js";
 import {
-  createConnectorCatalogService,
-  DEFAULT_CONNECTOR_CATALOG_URL,
+  resolveConnectorCatalogService,
   type ConnectorCatalogService,
 } from "../services/mcp-connector-catalog.js";
 import {
@@ -289,8 +288,7 @@ export function mcpConnectorRoutes(db: Db, opts: McpConnectorRouteOptions = {}) 
   const approvalsSvc = approvalService(db);
   // Constructing this performs no I/O — the fetch happens on the first `load()`,
   // i.e. only when a founder actually opens the shelf.
-  const connectorCatalog =
-    opts.catalog ?? createConnectorCatalogService({ url: DEFAULT_CONNECTOR_CATALOG_URL });
+  const connectorCatalog = opts.catalog ?? resolveConnectorCatalogService();
 
   // List — any board member with access to the company.
   router.get("/companies/:companyId/mcp-connectors", async (req, res) => {
@@ -355,15 +353,33 @@ export function mcpConnectorRoutes(db: Db, opts: McpConnectorRouteOptions = {}) 
       // A PROJECTION of the real gate, not a second implementation of it — same
       // function, same arguments the install handler will pass, so the shelf can
       // never disagree with what install will do.
+      //
+      // `unavailableReason` carries the GATE'S OWN message rather than letting the
+      // client derive one. Today the gate has a single refusal branch, so a
+      // client-side constant happens to be exact — but that is an accident of the
+      // current implementation, and a second branch would turn it into a confident
+      // lie about why a capability disappeared. Sourcing the copy from the thrown
+      // error means the refusal the founder reads is always the refusal that
+      // actually happened.
       let installable = true;
+      let unavailableReason: string | undefined;
       try {
         assertTransportAllowed(entry.transport, deploymentMode, "catalog", entry.trust?.tier);
-      } catch {
+      } catch (err) {
         installable = false;
+        unavailableReason =
+          err instanceof Error && err.message
+            ? err.message
+            : "This connector cannot be installed in this deployment.";
       }
 
       const consentRequired = requiresInstallConsent(entry);
-      const base = { ...entry, installable, consentRequired };
+      const base = {
+        ...entry,
+        installable,
+        consentRequired,
+        ...(unavailableReason ? { unavailableReason } : {}),
+      };
 
       // No token for an entry D7 will refuse. Handing one out would suggest
       // consent is the thing standing in the way, when the deployment simply may

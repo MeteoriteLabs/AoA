@@ -15,20 +15,18 @@ import { isConsentFresh } from "./consentFreshness";
 import { ConnectorInstallDialog, commandLine } from "./ConnectorInstallDialog";
 
 /**
- * The single reason `installable` is ever false. The server computes it by
- * running the real D7 gate (`assertTransportAllowed`) and only reports the
- * boolean, but the gate has exactly one refusal branch — non-`local_trusted`
- * deployment + stdio + non-verified tier — so this copy cannot drift from it
- * without the gate itself gaining a second branch.
+ * Last-resort copy only. The reason a card is unavailable comes from the SERVER
+ * (`entry.unavailableReason`), sourced from the D7 gate's own thrown message, so
+ * the founder always reads the refusal that actually happened rather than a
+ * client-side guess that would go stale the moment the gate grows a second
+ * refusal branch. This constant covers only the case where the field is missing.
  *
  * Rendering the reason (rather than hiding the card, or greying it silently) is
  * the point: a capability that disappears without explanation is indistinguishable
  * from a bug, and founders work around bugs by pasting credentials into the
  * manual form.
  */
-const UNAVAILABLE_REASON =
-  "Unverified local connectors run a command on the AoA host, so this deployment " +
-  "only allows verified catalog entries. Remote HTTP connectors are unaffected.";
+const UNAVAILABLE_FALLBACK = "This connector cannot be installed in this deployment.";
 
 function TrustPill({ tier }: { tier: string }) {
   if (tier === "verified") return null;
@@ -98,9 +96,12 @@ function ShelfCard({ entry, installed, busy, onInstall }: ShelfCardProps) {
       )}
 
       {unavailable && (
-        <div className="mt-3 rounded-md border border-border bg-card-2 px-2.5 py-2 text-[11.5px] text-dim">
+        <div
+          data-testid="connector-unavailable-reason"
+          className="mt-3 rounded-md border border-border bg-card-2 px-2.5 py-2 text-[11.5px] text-dim"
+        >
           <span className="font-medium text-foreground">Unavailable in this deployment. </span>
-          {UNAVAILABLE_REASON}
+          {entry.unavailableReason ?? UNAVAILABLE_FALLBACK}
         </div>
       )}
 

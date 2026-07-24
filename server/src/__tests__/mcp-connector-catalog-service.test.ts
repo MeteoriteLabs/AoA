@@ -1,13 +1,15 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
 const warn = vi.fn();
 vi.mock("../middleware/logger.js", () => ({
   logger: { warn, error: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }));
 
-const { createConnectorCatalogService, CONNECTOR_CATALOG_TTL_MS } = await import(
-  "../services/mcp-connector-catalog.js"
-);
+const { createConnectorCatalogService, resolveConnectorCatalogService, CONNECTOR_CATALOG_TTL_MS } =
+  await import("../services/mcp-connector-catalog.js");
 
 const URL_ = "https://cdn.example.test/connectors.json";
 const T0 = 1_000_000;
@@ -292,5 +294,53 @@ describe("connector catalog service — dropped entries", () => {
     // CDN's real answer — it just contains nothing this version can use.
     expect(res.stale).toBe(false);
     expect(res.entries).toEqual([]);
+  });
+});
+
+describe("resolveConnectorCatalogService — the E2E fixture seam", () => {
+  const fixture = path.join(os.tmpdir(), `aoa-connectors-fixture-${process.pid}.json`);
+  const originalPath = process.env.AOA_E2E_CONNECTOR_CATALOG_PATH;
+  const originalNodeEnv = process.env.NODE_ENV;
+
+  beforeEach(async () => {
+    await fs.writeFile(fixture, JSON.stringify({ entries: [httpEntry("fixture-one")] }), "utf8");
+    process.env.AOA_E2E_CONNECTOR_CATALOG_PATH = fixture;
+  });
+
+  afterEach(async () => {
+    if (originalPath === undefined) delete process.env.AOA_E2E_CONNECTOR_CATALOG_PATH;
+    else process.env.AOA_E2E_CONNECTOR_CATALOG_PATH = originalPath;
+    if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = originalNodeEnv;
+    await fs.rm(fixture, { force: true });
+  });
+
+  it("serves the local file through the SAME parse/cache path as the CDN", async () => {
+    process.env.NODE_ENV = "test";
+    const res = await resolveConnectorCatalogService().load(T0);
+    expect(res.entries.map((e) => e.id)).toEqual(["fixture-one"]);
+    expect(res.stale).toBe(false);
+  });
+
+  it("is INERT in production — the seam can never redirect a real deployment's shelf", async () => {
+    // Asserted on the branch's own log line rather than by calling `load()`,
+    // which in production would reach for the real CDN over the network.
+    process.env.NODE_ENV = "production";
+    resolveConnectorCatalogService();
+    expect(warn).not.toHaveBeenCalled();
+
+    process.env.NODE_ENV = "test";
+    resolveConnectorCatalogService();
+    expect(warn).toHaveBeenCalledWith(
+      { fixturePath: fixture },
+      "connector catalog: serving E2E fixture instead of the CDN",
+    );
+  });
+
+  it("is inert when the seam is unset — the default is always the CDN", async () => {
+    delete process.env.AOA_E2E_CONNECTOR_CATALOG_PATH;
+    process.env.NODE_ENV = "test";
+    resolveConnectorCatalogService();
+    expect(warn).not.toHaveBeenCalled();
   });
 });

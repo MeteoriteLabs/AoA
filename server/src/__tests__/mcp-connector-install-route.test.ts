@@ -757,6 +757,26 @@ describe("catalog shelf route — how the UI obtains a consent token", () => {
     expect(byId.fs.installable).toBe(true);
   });
 
+  it("carries the GATE'S OWN refusal message, and only on refused entries", async () => {
+    // The UI renders this verbatim. Deriving the copy client-side is exact only
+    // while the gate has one refusal branch; sourcing it from the thrown error
+    // means the founder always reads the refusal that actually happened.
+    deploymentMode = "authenticated";
+    const res = await getCatalog(makeApp(founderActor));
+    const byId = Object.fromEntries(
+      res.body.entries.map((e: { id: string }) => [e.id, e]),
+    ) as Record<string, { installable: boolean; unavailableReason?: string }>;
+
+    expect(byId.acme.installable).toBe(false);
+    expect(byId.acme.unavailableReason).toBe(
+      "Only remote HTTP connectors can be added in this deployment. stdio connectors run a " +
+        "command on the AoA host and are restricted to verified catalog entries.",
+    );
+    // An installable entry must not carry a refusal reason at all.
+    expect(byId.notion).not.toHaveProperty("unavailableReason");
+    expect(byId.fs).not.toHaveProperty("unavailableReason");
+  });
+
   it("never leaks a secret VALUE — every template key stays a bare key list", async () => {
     const res = await getCatalog(makeApp(founderActor));
     const notion = res.body.entries.find((e: { id: string }) => e.id === "notion");

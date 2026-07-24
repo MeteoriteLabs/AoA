@@ -78,6 +78,13 @@ export interface CreateConnectorInput {
  */
 export interface McpConnectorShelfEntry extends McpConnectorCatalogEntry {
   installable: boolean;
+  /**
+   * The refusal message from the server's own D7 gate, present only when
+   * `installable` is false. Rendered verbatim: deriving the copy client-side was
+   * exact only because the gate has one refusal branch today, and would silently
+   * misreport the reason the moment it grows a second.
+   */
+  unavailableReason?: string;
   consentRequired: boolean;
   consentToken?: string;
   consentExpiresAt?: number;

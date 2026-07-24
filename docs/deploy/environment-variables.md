@@ -198,6 +198,7 @@ These are read by tests and dev scripts; you should not need to set them in prod
 | `AOA_RUN_WIN_INTEGRATION` | Opt-in flag for real embedded-Postgres integration tests on Windows. Unset ⇒ Windows skips those tests |
 | `AOA_E2E_FAKE_CREW_LLM` | Playwright e2e harness flag (`=1`) that swaps the real crew CLI for the deterministic fake-crew harness (`fake-crew-llm.ts`). Never activates when `NODE_ENV=production`. |
 | `AOA_E2E_FAKE_CREW_CONTROL` | E2E only. Path to a JSON control file that scripts the fake-crew harness per test (e.g. the controller-mode Adjutant scope turn). Read fresh on every fake turn; absent/invalid ⇒ legacy fake behavior. Set by `tests/e2e/playwright.config.ts`. No effect unless `AOA_E2E_FAKE_CREW_LLM=1`. |
+| `AOA_E2E_CONNECTOR_CATALOG_PATH` | E2E only. Absolute path to a local `connectors.json` served instead of fetching the connector-shelf CDN, so `connector-install.spec.ts` has a deterministic shelf to browse and install from. A FILE path, never a URL — it cannot point a deployment's shelf at an arbitrary host. Ignored when `NODE_ENV=production`. Set by `tests/e2e/playwright.config.ts`. |
 | `AOA_ACCEPTANCE_CLI` | Selects the real CLI binary in acceptance/integration tests |
 | `AOA_PI_COMMAND` | Overrides the `pi` adapter binary in adapter-model tests |
 | `AOA_TEST_CODEX_MODEL` | Codex model override for live crew e2e tests |

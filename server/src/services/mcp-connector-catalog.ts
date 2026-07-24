@@ -145,3 +145,40 @@ export function createConnectorCatalogService(opts: {
     },
   };
 }
+
+/**
+ * The service the app actually wires up.
+ *
+ * E2E SEAM (`AOA_E2E_CONNECTOR_CATALOG_PATH`). The shelf's whole input is a
+ * remote file on a 6h TTL, so an end-to-end browse→install→bind journey has no
+ * deterministic shelf to browse — and `install` resolves `entryId` against the
+ * SERVER's catalog, so faking the response in the browser would only produce a
+ * 404 at the write. The seam is a local FILE PATH, deliberately not a URL: it
+ * cannot point a deployment's shelf at an arbitrary host, which is exactly the
+ * reason `DEFAULT_CONNECTOR_CATALOG_URL` has no env override. Same shape and the
+ * same `NODE_ENV !== "production"` fuse as the other `AOA_E2E_FAKE_*` harness
+ * seams (see `AOA_E2E_FAKE_EMBEDDER`), and documented in
+ * `docs/deploy/environment-variables.md`.
+ *
+ * It injects a `fetchFn` rather than a whole service so the fixture path runs
+ * through the SAME parse, drop, malformed and cache logic as the CDN path — a
+ * bypass would make the e2e prove something production never does.
+ */
+export function resolveConnectorCatalogService(): ConnectorCatalogService {
+  const fixturePath = process.env.AOA_E2E_CONNECTOR_CATALOG_PATH?.trim();
+  if (fixturePath && process.env.NODE_ENV !== "production") {
+    logger.warn({ fixturePath }, "connector catalog: serving E2E fixture instead of the CDN");
+    return createConnectorCatalogService({
+      url: fixturePath,
+      fetchFn: async (input) => {
+        const { readFile } = await import("node:fs/promises");
+        const body = await readFile(String(input), "utf8");
+        return new Response(body, {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      },
+    });
+  }
+  return createConnectorCatalogService({ url: DEFAULT_CONNECTOR_CATALOG_URL });
+}
