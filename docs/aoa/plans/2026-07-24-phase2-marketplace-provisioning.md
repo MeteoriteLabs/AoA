@@ -951,7 +951,43 @@ stops being enough.
 
 ---
 
-## T2.4 — Author + publish the missing catalog content (P13b, D18, D20)
+## T2.4 — Author + publish the missing catalog content (P13b, D18, D20) — ✅ PUBLISHED + LIVE-VERIFIED 2026-07-25
+
+> **Steward is LIVE in the catalog.** Published via a direct merge to
+> `MeteoriteLabs/aoa-marketplace` `main` (the GitHub PR-create endpoint was
+> down with HTTP 500 on both GraphQL and REST at publish time; `main` is
+> unprotected, so a `--no-ff` merge `afb2c70` achieved the same end state, then
+> the manifest fix `e806323`). The `Aggregate Catalog` workflow republished
+> `catalog.json` to the CDN automatically. **Verified against the live catalog
+> (`generatedAt 2026-07-24T19:52:15Z`, via the GitHub raw-media API to bypass
+> Pages/raw caching):** `agent:aoa-curated/aoa-steward` v1.0.0 published, and
+> `team:aoa-curated/default-crew` now lists **10** agent members with Steward
+> last. `pnpm fetch-catalog` confirmed the AoA snapshot picks it up end-to-end.
+>
+> **Two-file catch (would have shipped a half-publish):** the team lives in
+> **two** files. `content/teams/default-crew/team.json` is the *installer*
+> roster (`agents[]` + `installOrder`); `content/teams/default-crew/manifest.json`
+> is what the *catalog aggregator* reads to build the published team `requires`
+> (`adapter.ts:193` hardcodes `manifest.json` for every type). The plan's Step 3
+> named only `team.json`, so editing it alone published the Steward *agent* but
+> left the *team* at 9 members. Both files must carry Steward. Caught by
+> live-verifying the published team, not by trusting the merge.
+>
+> **Skills for Chronicler/Memory Keeper/Navigator: declared NONE (D17).**
+> Examining the real agents: none carries `use_skill` in its allowlist — all
+> three are closed mechanical tool-sets (Chronicler's instruction literally says
+> "NEVER call any tool outside those three"). A declared skill would be inert
+> without a published capability change to their allowlists. "No honest fit →
+> declare none." Steward is the same shape (tight 2-tool agent) → `requires: []`.
+>
+> **AoA-side remainder (filed as tasks, NOT yet done):**
+> - Steward **reconcile migration** — **pre-ship requirement**; the window is
+>   now open because the catalog is live. Without it, a marketplace-managed
+>   company with a legacy null-origin Steward gets a duplicate on next reconcile.
+> - Uninstall UI must surface `retainedAgentIds` (latent until such a UI exists).
+> - Step 6 **dependency-audit test** (guard, currently green).
+> - Step 5 snapshot = gitignored build artifact, auto-refreshed by `prebuild`.
+
 
 ⚠️ **This task touches TWO EXTERNAL REPOS and publishes publicly. STOP and confirm with the product owner before opening either PR.** (Write access confirmed; PRs pre-authorised in principle — still confirm at the moment of publishing.)
 
