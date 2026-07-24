@@ -29,6 +29,16 @@
  * shape would validate the other. JSON escapes and delimits every element, so
  * no attacker-controlled field can impersonate a delimiter. `exp` is INSIDE the
  * payload (not merely a prefix on the wire) so raising it invalidates the mac.
+ *
+ * WHY THE TYPES ARE RE-CHECKED AT RUNTIME (`assertBindable`). JSON framing is
+ * injective ONLY over genuine strings. `JSON.stringify` serialises an in-array
+ * `undefined` as `null`, so `args: ["a", undefined]` and `args: ["a", null]`
+ * produce byte-identical payloads — an actual cross-command collision, and the
+ * one way a token minted for one argv could validate another. Both inputs
+ * violate the declared type, but callers hand this untrusted request bodies
+ * where TypeScript guarantees nothing, so the invariant is enforced rather than
+ * assumed. Mint throws and verify fails closed on the same condition, so verify
+ * can never accept a shape mint would have refused.
  */
 
 import { createHmac, timingSafeEqual } from "node:crypto";
@@ -78,6 +88,18 @@ export function resolveConsentSecret(): string {
   return s;
 }
 
+/**
+ * True only when every signed field is a real string (and `args` a real array
+ * of them). See the `assertBindable` note in the file header: this is what
+ * makes the JSON framing injective, and therefore what makes "a token is only
+ * valid for the command it was minted for" actually true.
+ */
+function isBindable(entryId: string, cmd: ConsentCommand): boolean {
+  if (typeof entryId !== "string" || typeof cmd?.command !== "string") return false;
+  const args = cmd.args ?? [];
+  return Array.isArray(args) && args.every((a) => typeof a === "string");
+}
+
 function signingInput(expiryMs: number, entryId: string, cmd: ConsentCommand): string {
   return JSON.stringify([expiryMs, entryId, cmd.command, cmd.args ?? []]);
 }
@@ -100,6 +122,9 @@ export function mintConsentToken(
   nowMs: number,
 ): string {
   if (!secret) throw new Error("consent token requires a non-empty signing secret");
+  if (!isBindable(entryId, cmd)) {
+    throw new Error("consent token requires a string entryId, command and args");
+  }
   const exp = nowMs + CONSENT_TOKEN_TTL_MS;
   return `${exp}.${mac(secret, signingInput(exp, entryId, cmd))}`;
 }
@@ -119,6 +144,9 @@ export function verifyConsentToken(
   nowMs: number,
 ): ConsentVerifyResult {
   if (!secret) return { ok: false, reason: "no_secret" };
+  // Fail closed on exactly the condition mint refuses, so verify can never
+  // accept a payload shape that mint would not have produced.
+  if (!isBindable(entryId, cmd)) return { ok: false, reason: "malformed" };
   if (typeof token !== "string" || token.length === 0) return { ok: false, reason: "malformed" };
 
   const dot = token.indexOf(".");

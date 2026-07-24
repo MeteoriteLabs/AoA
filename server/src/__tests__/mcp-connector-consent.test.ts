@@ -8,6 +8,9 @@ import {
 const SECRET = "test-signing-secret";
 const cmd = { command: "npx", args: ["-y", "acme-db-tool"] };
 
+/** Deliberately loose — these tests feed shapes the declared type forbids. */
+type ConsentCommandLike = { command: string; args?: string[] };
+
 describe("consent token", () => {
   it("round-trips for the exact command it was minted for", () => {
     const t = mintConsentToken(SECRET, "acme", cmd, 1_000_000);
@@ -187,6 +190,56 @@ describe("consent token — adversarial", () => {
     expect(verifyConsentToken(SECRET, "acme", { command: "npx", args: ["x"] }, t, 1_000_000).ok).toBe(
       false,
     );
+  });
+
+  it("closes the undefined/null arg collision — the one real cross-command hole", () => {
+    // JSON.stringify serialises an IN-ARRAY `undefined` as `null`, so
+    // ["a", undefined] and ["a", null] frame to byte-identical payloads. That
+    // is a genuine "token minted for one command validates another". Both
+    // violate the declared type, but this primitive is fed request bodies, so
+    // it must fail closed rather than trust TypeScript.
+    const sneaky = { command: "npx", args: ["a", undefined] } as unknown as {
+      command: string;
+      args: string[];
+    };
+    const nulled = { command: "npx", args: ["a", null] } as unknown as {
+      command: string;
+      args: string[];
+    };
+
+    expect(() => mintConsentToken(SECRET, "acme", sneaky, 1_000_000)).toThrow();
+    expect(() => mintConsentToken(SECRET, "acme", nulled, 1_000_000)).toThrow();
+
+    // And a well-formed token can never be redeemed against either shape.
+    const good = mintConsentToken(SECRET, "acme", { command: "npx", args: ["a", "b"] }, 1_000_000);
+    expect(verifyConsentToken(SECRET, "acme", sneaky, good, 1_000_000)).toEqual({
+      ok: false,
+      reason: "malformed",
+    });
+    expect(verifyConsentToken(SECRET, "acme", nulled, good, 1_000_000)).toEqual({
+      ok: false,
+      reason: "malformed",
+    });
+  });
+
+  it("fails closed on any non-string signed field", () => {
+    const good = mintConsentToken(SECRET, "acme", cmd, 1_000_000);
+    const bad: Array<[unknown, unknown]> = [
+      [{ command: 42, args: [] }, "acme"],
+      [{ command: "npx", args: "not-an-array" }, "acme"],
+      [{ command: "npx", args: [{ toString: () => "-y" }] }, "acme"],
+      [{ args: [] }, "acme"],
+      [cmd, 42],
+      [cmd, null],
+    ];
+    for (const [c, id] of bad) {
+      expect(() =>
+        mintConsentToken(SECRET, id as string, c as ConsentCommandLike, 1_000_000),
+      ).toThrow();
+      expect(
+        verifyConsentToken(SECRET, id as string, c as ConsentCommandLike, good, 1_000_000).ok,
+      ).toBe(false);
+    }
   });
 
   it("does not treat a prefix of the args as a match", () => {
