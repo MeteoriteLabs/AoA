@@ -142,6 +142,22 @@ Verified before deciding:
 - [ ] **Step 3: Failing test — offline path.** With the network stubbed out, the **bundled snapshot** produces the same roster (D11). This is the discriminator that proves creation never depends on the network.
 - [ ] **Step 4: Run → FAIL.**
 - [ ] **Step 5: Implement.** Call `installTeam("team:aoa-curated/default-crew")` from company create with `targetDepartmentId: null` (T2.1), live catalog → snapshot fallback. **Never block or fail company creation on install failure** — degrade to the legacy seeders and log loudly, so a marketplace outage cannot break onboarding. Remove the now-unreachable pre-install gate.
+
+  **Two constraints on the fallback, found during T2.2 review — do not rediscover:**
+  1. **Call `ensureCrewAgents`, NOT `ensureAllCrewAgents`.** After T2.2,
+     `ensureInfrastructureAgents` has *already run* at `companies.ts:139`
+     before the gate. The union would redundantly re-run Commander + Steward
+     (idempotent, but wrong intent). `ensureAllCrewAgents` currently has zero
+     production callers and exists only for this decision — if you pick
+     `ensureCrewAgents`, say so and consider deleting the union.
+  2. **The legacy fallback under-provisions, silently.** The legacy seeders
+     cover 8 roles; `team:aoa-curated/default-crew`'s `requires[]` names **9**,
+     including `agent:aoa-curated/aoa-reviewer` — and **no `ensure-reviewer.ts`
+     exists anywhere in the tree** (verified). So a company created during a
+     marketplace outage gets a roster permanently missing Reviewer, with
+     nothing distinguishing it from a complete one. "Log loudly" must therefore
+     name *which* roles the fallback could not provide — a generic "install
+     failed, using legacy seeders" is not sufficient to diagnose this later.
 - [ ] **Step 6: Run → PASS.** Verify the legacy path still works as the fallback.
 - [ ] **Step 7: Verify + commit.**
 ```bash
@@ -158,7 +174,30 @@ git commit -m "feat(marketplace): install the default crew from the marketplace 
 
 **Files:** `server/src/services/marketplace-install/team-uninstaller.ts`, the agent-uninstall path, a new shared const.
 
-- [ ] **Step 1: Failing tests** — uninstalling a **protected** origin (Commander, Steward) returns a clear refusal; uninstalling **any other** marketplace agent still succeeds (the discriminator — proves the guard isn't blanket).
+> **⚠️ Blocker found during T2.2 review (2026-07-24) — read before Step 1.**
+> This task is specified as a protected-origin set **keyed on `templateOrigin`**,
+> but **Steward has no `templateOrigin` and never will get one.**
+> `backfill-template-origin.ts:39-49` `CREW_NAMES` lists Commander, Adjutant,
+> Scout, Engineer, Navigator, Planner, Dispatcher, Memory Keeper, Librarian —
+> **Steward and Chronicler are absent**, so their rows keep `templateOrigin =
+> NULL` permanently. Verified directly: no seeder writes `templateOrigin`; the
+> backfill is its only writer.
+>
+> That NULL is *load-bearing elsewhere* — it is precisely why running
+> `ensureInfrastructureAgents` before the marketplace gate can't flip the gate
+> to "managed" (the predicate requires `templateOrigin IS NOT NULL`). So do
+> **not** casually add Steward to `CREW_NAMES`: stamping it `…@legacy` is
+> harmless to the gate, but stamping it anything non-`@legacy` would make every
+> company self-report as marketplace-managed and suppress the entire crew.
+>
+> Decide deliberately in Step 1 between: (a) key the protected set on the
+> agent's **name/role** rather than origin (origin-independent, works today,
+> survives T2.4 publishing Steward), or (b) add Steward + Chronicler to
+> `CREW_NAMES` with an explicit `@legacy` suffix and key on origin. **(a) is
+> the recommendation** — protection is an AoA fact about the agent, and this
+> task's own "Why" says exactly that.
+
+- [ ] **Step 1: Failing tests** — uninstalling a **protected** origin (Commander, Steward) returns a clear refusal; uninstalling **any other** marketplace agent still succeeds (the discriminator — proves the guard isn't blanket). Include a case for a **protected agent whose `templateOrigin` is NULL** (Steward today) — a set keyed only on origin would silently fail to protect it.
 - [ ] **Step 2: Run → FAIL.** **Step 3: Implement** a server-side protected-origin set + refusal. **Step 4: Run → PASS.** **Step 5: Commit.**
 ```bash
 git commit -m "feat(marketplace): refuse uninstall of protected AoA agent origins (D23)"
