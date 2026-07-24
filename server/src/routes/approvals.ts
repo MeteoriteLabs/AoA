@@ -19,6 +19,7 @@ import {
   trustScoreService,
 } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertRole } from "../middleware/rbac.js";
 import { redactEventPayload } from "../redaction.js";
 import { buildApprovalHubEmit, emitHubItem } from "../services/hub-source-producers.js";
 import { hubItemsService } from "../services/hub-items.js";
@@ -28,6 +29,64 @@ function redactApprovalPayload<T extends { payload: Record<string, unknown> }>(a
     ...approval,
     payload: redactEventPayload(approval.payload) ?? {},
   };
+}
+
+/**
+ * FU-17 — the ROLE gate on the connector governance approval.
+ *
+ * Every connector mutation in `routes/mcp-connectors.ts` (create, PATCH, delete,
+ * credentials, agent-assignment, catalog install) is
+ * `assertRole(db, req, companyId, "founder")`. And amendment C2 blocks even the
+ * FOUNDER from PATCH→active in `authenticated` mode, deliberately, so that
+ * activation flows through the `install_mcp_connector` approval instead. That
+ * makes this approval the connector governance gate — yet the resolve routes
+ * carried only `assertBoard` + `assertCompanyAccess`, so the gate was strictly
+ * WEAKER than the CRUD it protects: any board member, including a plain
+ * `team_member`, could activate (or veto) an external MCP server.
+ *
+ * Founder decision (2026-07-24): `founder` and `team_lead` may resolve an
+ * `install_mcp_connector` approval; `team_member` may not.
+ *
+ * SCOPED TO THE TYPE ON PURPOSE. `hire_agent` and the other board decisions are
+ * genuinely board-resolvable and MUST stay that way — founder-gating every
+ * approval would be a different, much larger governance change. That is why this
+ * runs after `svc.getById`, on the type of the row actually being decided,
+ * rather than as blanket route middleware.
+ *
+ * `request-revision` is included alongside approve/reject. The founder's decision
+ * named approve/reject, but for THIS type request-revision is strictly worse than
+ * a reject: `install_mcp_connector` is on `SYSTEM_INTERNAL_APPROVAL_TYPES`, so a
+ * revision_requested connector approval can never be resubmitted (422) — parking
+ * it there permanently bricks the install with no route back except recreating
+ * the connector. A member who cannot approve but can irreversibly park still
+ * controls the outcome, which is the same reasoning that put reject in scope.
+ *
+ * ON `assertRole`'s AGENT EARLY-RETURN: `assertRole` returns immediately for
+ * `req.actor.type === "agent"`, which would be a hole here — except that every
+ * call site below runs `assertBoard(req)` FIRST, and that 403s any non-board
+ * actor (agent and mcp alike). The early-return is therefore unreachable on
+ * these routes. Do not reorder these two calls.
+ *
+ * ON DEPARTMENT SCOPE: `assertRole` takes no department and asks only
+ * `getEffectiveRole(companyId, userId)`, so ANY team lead of the company passes —
+ * it is a company-wide role check, not a department-scoped one. That is the
+ * correct semantics here because a connector is itself a company-wide object:
+ * `company_mcp_connectors` has no `departmentId`, and per-agent scoping is a
+ * separate founder-only assignment step. There is no department to scope the
+ * decision to, so `assertDepartmentAccess` is not applicable. The founder's
+ * decision — "team leads may approve" — is therefore implemented as written, and
+ * the residual is understood: a lead of any one department can approve a
+ * connector that all departments may then be granted.
+ */
+async function assertMayResolveApproval(
+  db: Db,
+  req: Parameters<typeof assertRole>[1],
+  approval: { type: string; companyId: string },
+): Promise<void> {
+  if (approval.type !== "install_mcp_connector") return;
+  // `assertRole` passes `founder` unconditionally, so listing `team_lead` yields
+  // exactly "founder or team_lead".
+  await assertRole(db, req, approval.companyId, "team_lead");
 }
 
 export function approvalRoutes(db: Db) {
@@ -138,6 +197,8 @@ export function approvalRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+    // FU-17 — connector installs are founder/team_lead only. Type-scoped.
+    await assertMayResolveApproval(db, req, existing);
 
     const decidedBy = req.actor.userId ?? "local-board";
     const approvalResult = await db.transaction(async (tx) => {
@@ -266,6 +327,9 @@ export function approvalRoutes(db: Db) {
       return;
     }
     assertCompanyAccess(req, existing.companyId);
+    // FU-17 — a member who cannot approve but CAN reject still controls the
+    // outcome, so the same gate applies here.
+    await assertMayResolveApproval(db, req, existing);
 
     const decidedBy = req.actor.userId ?? "local-board";
     const approval = await db.transaction(async (tx) => {
@@ -314,6 +378,10 @@ export function approvalRoutes(db: Db) {
         return;
       }
       assertCompanyAccess(req, existing.companyId);
+      // FU-17 — for install_mcp_connector this is IRREVERSIBLE (the type is on
+      // SYSTEM_INTERNAL_APPROVAL_TYPES, so it can never be resubmitted), which
+      // makes it a stronger veto than reject. Same gate.
+      await assertMayResolveApproval(db, req, existing);
 
       const decidedBy = req.actor.userId ?? "local-board";
       const approval = await db.transaction(async (tx) => {

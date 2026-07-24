@@ -157,6 +157,7 @@ const COMPANY = "company-A";
 const APPROVAL_ID = "22222222-2222-4222-8222-222222222222";
 const TEAM_MEMBER = "11111111-1111-4111-8111-111111111111";
 const FOUNDER = "44444444-4444-4444-8444-444444444444";
+const TEAM_LEAD = "55555555-5555-4555-8555-555555555555";
 const CONNECTOR_ID = "conn-1";
 const EVIL_CONNECTOR_ID = "99999999-9999-4999-8999-999999999999";
 
@@ -220,10 +221,22 @@ beforeEach(() => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// [ESC-1] any board member can resolve the connector governance approval
+// [ESC-1] — CLOSED (FU-17). The connector governance approval is now
+// founder-or-team_lead only, type-scoped.
+//
+// Founder decision 2026-07-24: `founder` and `team_lead` may resolve an
+// `install_mcp_connector` approval; `team_member` may not. `request-revision` is
+// gated alongside approve/reject because for THIS type it is irreversible — the
+// type is on SYSTEM_INTERNAL_APPROVAL_TYPES, so a revision_requested connector
+// approval can never be resubmitted, making it a stronger veto than reject.
+//
+// The blocks below were `it.fails` characterizations of the defect; they are now
+// real assertions. The CONTROL and REGRESSION FLOOR cases are unchanged and pin
+// the two ways a fix could have overshot: breaking the founder, or founder-gating
+// every approval type.
 // ═══════════════════════════════════════════════════════════════════════════
 
-describe("[ESC-1] install_mcp_connector approval carries no role gate", () => {
+describe("[ESC-1] install_mcp_connector approval is founder/team_lead only (FU-17)", () => {
   it("CONTROL: the same actor IS refused by the founder gate every connector CRUD route uses", async () => {
     const req = { actor: boardActor(TEAM_MEMBER) } as never;
     await expect(assertRole({} as never, req, COMPANY, "founder")).rejects.toMatchObject({
@@ -247,36 +260,93 @@ describe("[ESC-1] install_mcp_connector approval carries no role gate", () => {
     expect(mocks.svcApprove).not.toHaveBeenCalled();
   });
 
-  it("CHARACTERIZATION: a plain team_member approves the install — 200, and no role was ever consulted", async () => {
+  it("FIXED: a plain team_member is 403 on approve, and the role WAS consulted", async () => {
     const res = await request(makeApp(boardActor(TEAM_MEMBER)))
       .post(`/api/approvals/${APPROVAL_ID}/approve`)
       .send({ decisionNote: "ok" });
 
-    expect(res.status).toBe(200);
-    expect(mocks.svcApprove).toHaveBeenCalledWith(APPROVAL_ID, COMPANY, TEAM_MEMBER, "ok");
-    // The smoking gun: `assertBoard` passed and nothing else ran.
-    expect(mocks.getEffectiveRole).not.toHaveBeenCalled();
+    expect(res.status).toBe(403);
+    expect(mocks.svcApprove).not.toHaveBeenCalled();
+    // The gate actually ran — not an incidental 403 from somewhere else.
+    expect(mocks.getEffectiveRole).toHaveBeenCalledWith(COMPANY, TEAM_MEMBER);
   });
 
-  it("CHARACTERIZATION: the same team_member can REJECT a founder's pending connector", async () => {
+  it("FIXED: the same team_member can no longer REJECT a founder's pending connector", async () => {
     const res = await request(makeApp(boardActor(TEAM_MEMBER)))
       .post(`/api/approvals/${APPROVAL_ID}/reject`)
       .send({ decisionNote: "no" });
-    expect(res.status).toBe(200);
-    expect(mocks.svcReject).toHaveBeenCalledWith(APPROVAL_ID, COMPANY, TEAM_MEMBER, "no");
-    expect(mocks.getEffectiveRole).not.toHaveBeenCalled();
+    expect(res.status).toBe(403);
+    expect(mocks.svcReject).not.toHaveBeenCalled();
+    expect(mocks.getEffectiveRole).toHaveBeenCalledWith(COMPANY, TEAM_MEMBER);
   });
 
-  it("CHARACTERIZATION: ...and can move it to revision_requested", async () => {
+  it("FIXED: ...nor park it in revision_requested (irreversible for this type)", async () => {
+    // `install_mcp_connector` is on SYSTEM_INTERNAL_APPROVAL_TYPES, so a
+    // revision_requested connector approval can NEVER be resubmitted. Parking it
+    // is a permanent veto — a stronger power than reject, so it is gated too.
     const res = await request(makeApp(boardActor(TEAM_MEMBER)))
       .post(`/api/approvals/${APPROVAL_ID}/request-revision`)
       .send({ decisionNote: "n" });
-    expect(res.status).toBe(200);
-    expect(mocks.svcRequestRevision).toHaveBeenCalled();
-    expect(mocks.getEffectiveRole).not.toHaveBeenCalled();
+    expect(res.status).toBe(403);
+    expect(mocks.svcRequestRevision).not.toHaveBeenCalled();
   });
 
-  it("CHARACTERIZATION: the pending payload is returned UNREDACTED, naming the connector to target", async () => {
+  it("FIXED: a TEAM LEAD may resolve it — the founder's decision, not founder-only", async () => {
+    mocks.getEffectiveRole.mockResolvedValue("team_lead");
+    const approve = await request(makeApp(boardActor(TEAM_LEAD)))
+      .post(`/api/approvals/${APPROVAL_ID}/approve`)
+      .send({ decisionNote: "ok" });
+    expect(approve.status).toBe(200);
+    expect(mocks.svcApprove).toHaveBeenCalledWith(APPROVAL_ID, COMPANY, TEAM_LEAD, "ok");
+
+    const reject = await request(makeApp(boardActor(TEAM_LEAD)))
+      .post(`/api/approvals/${APPROVAL_ID}/reject`)
+      .send({ decisionNote: "no" });
+    expect(reject.status).toBe(200);
+  });
+
+  it("FIXED: an unrecognised/absent role fails CLOSED", async () => {
+    // `getEffectiveRole` answering anything outside {founder, team_lead} must 403
+    // rather than fall through.
+    for (const role of ["team_member", "guest", undefined, null]) {
+      mocks.svcApprove.mockClear();
+      mocks.getEffectiveRole.mockResolvedValue(role);
+      const res = await request(makeApp(boardActor(TEAM_MEMBER)))
+        .post(`/api/approvals/${APPROVAL_ID}/approve`)
+        .send({});
+      expect({ role, status: res.status }).toEqual({ role, status: 403 });
+      expect(mocks.svcApprove).not.toHaveBeenCalled();
+    }
+  });
+
+  it("FIXED: a non-board principal (MCP API key) never reaches the gate — assertBoard 403s first", async () => {
+    // Load-bearing ordering: `assertRole` RETURNS EARLY for agent actors, so if
+    // the gate ran before `assertBoard` an agent/MCP principal would sail past it.
+    // `assertBoard` runs first and refuses every non-board actor.
+    for (const actor of [
+      mcpKeyActor,
+      { type: "agent", source: "token", companyId: COMPANY, agentId: "agent-1" },
+    ]) {
+      mocks.svcApprove.mockClear();
+      const res = await request(makeApp(actor))
+        .post(`/api/approvals/${APPROVAL_ID}/approve`)
+        .send({});
+      expect(res.status).toBe(403);
+      expect(mocks.svcApprove).not.toHaveBeenCalled();
+    }
+  });
+
+  it("FIXED: an agent actor cannot REJECT a connector approval either", async () => {
+    const res = await request(
+      makeApp({ type: "agent", source: "token", companyId: COMPANY, agentId: "agent-1" }),
+    )
+      .post(`/api/approvals/${APPROVAL_ID}/reject`)
+      .send({});
+    expect(res.status).toBe(403);
+    expect(mocks.svcReject).not.toHaveBeenCalled();
+  });
+
+  it("CHARACTERIZATION: the pending payload is still returned UNREDACTED to any board member", async () => {
     // `redactEventPayload` is real here; `connectorId` is not a secret-shaped key,
     // so a team_member can read exactly which id to aim a resubmit at.
     const res = await request(makeApp(boardActor(TEAM_MEMBER))).get(
@@ -336,9 +406,9 @@ describe("[ESC-1] install_mcp_connector approval carries no role gate", () => {
     expect(mocks.connUpdate).toHaveBeenCalledWith(CONNECTOR_ID, { status: "disabled" });
   });
 
-  // DESIRED STATE — [ESC-1]. Delete `.fails` when the governance decision lands.
-  it.fails.each(["approve", "reject", "request-revision"])(
-    "[ESC-1] DESIRED: a non-founder gets 403 on /%s of an install_mcp_connector approval",
+  // [ESC-1] — was `it.fails` while the defect stood; now the real assertion.
+  it.each(["approve", "reject", "request-revision"])(
+    "[ESC-1] a team_member gets 403 on /%s of an install_mcp_connector approval",
     async (action) => {
       const res = await request(makeApp(boardActor(TEAM_MEMBER)))
         .post(`/api/approvals/${APPROVAL_ID}/${action}`)
@@ -347,11 +417,39 @@ describe("[ESC-1] install_mcp_connector approval carries no role gate", () => {
     },
   );
 
-  it.fails("[ESC-1] DESIRED: a non-founder decision never reaches the service", async () => {
+  it("[ESC-1] a team_member's decision never reaches the service", async () => {
     await request(makeApp(boardActor(TEAM_MEMBER)))
       .post(`/api/approvals/${APPROVAL_ID}/approve`)
       .send({});
     expect(mocks.svcApprove).not.toHaveBeenCalled();
+  });
+
+  it("[ESC-1] the refusal happens BEFORE the transaction — no partial write, no hub emit", async () => {
+    // The gate sits above `db.transaction`, so a refused decision cannot have
+    // logged an activity row or reconciled a hub item on its way out.
+    await request(makeApp(boardActor(TEAM_MEMBER)))
+      .post(`/api/approvals/${APPROVAL_ID}/reject`)
+      .send({});
+    expect(mocks.logActivity).not.toHaveBeenCalled();
+  });
+
+  it("local_trusted loopback is unaffected — the synthetic board user still resolves it", async () => {
+    // `assertRole` short-circuits on `source: "local_implicit"`. That is the
+    // deployment-wide trust boundary, not a hole: there is one implicitly-trusted
+    // human at the loopback. A fix that broke this would break every solo install.
+    const res = await request(
+      makeApp({
+        type: "board",
+        source: "local_implicit",
+        userId: null,
+        companyIds: [COMPANY],
+        isInstanceAdmin: true,
+      }),
+    )
+      .post(`/api/approvals/${APPROVAL_ID}/approve`)
+      .send({});
+    expect(res.status).toBe(200);
+    expect(mocks.svcApprove).toHaveBeenCalledWith(APPROVAL_ID, COMPANY, "local-board", undefined);
   });
 
   it("REGRESSION FLOOR: a FOUNDER must still be able to resolve it once the gate lands", async () => {
@@ -372,10 +470,33 @@ describe("[ESC-1] install_mcp_connector approval carries no role gate", () => {
     mocks.svcApprove.mockResolvedValue(
       installApproval({ type: "hire_agent", status: "approved", payload: { agentId: "agent-9" } }),
     );
+    mocks.svcReject.mockResolvedValue(
+      installApproval({ type: "hire_agent", status: "rejected", payload: { agentId: "agent-9" } }),
+    );
+    for (const action of ["approve", "reject", "request-revision"]) {
+      const res = await request(makeApp(boardActor(TEAM_MEMBER)))
+        .post(`/api/approvals/${APPROVAL_ID}/${action}`)
+        .send({});
+      expect({ action, status: res.status }).toEqual({ action, status: 200 });
+    }
+    // And the gate did not even run for a non-connector type.
+    expect(mocks.getEffectiveRole).not.toHaveBeenCalled();
+  });
+
+  it("REGRESSION FLOOR: crew_dispatch — the other system-internal type — also stays board-resolvable", async () => {
+    // FU-17 was scoped to install_mcp_connector deliberately. crew_dispatch is a
+    // different governance question and was NOT part of the founder's decision.
+    mocks.svcGetById.mockResolvedValue(
+      installApproval({ type: "crew_dispatch", payload: { taskIds: ["t1"] } }),
+    );
+    mocks.svcApprove.mockResolvedValue(
+      installApproval({ type: "crew_dispatch", status: "approved", payload: { taskIds: ["t1"] } }),
+    );
     const res = await request(makeApp(boardActor(TEAM_MEMBER)))
       .post(`/api/approvals/${APPROVAL_ID}/approve`)
       .send({});
     expect(res.status).toBe(200);
+    expect(mocks.getEffectiveRole).not.toHaveBeenCalled();
   });
 });
 
