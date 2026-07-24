@@ -174,3 +174,23 @@ Revised status: **codex ✅ / opencode ✅ / gemini ❌ (auth-blocked)**.
 **A NEW PRE-EXISTING BUG FOUND WHILE PROBING (not connector-related — worth its own fix):**
 
 **B7 — AoA's gemini adapter never passes `--skip-trust`, so MCP servers may be silently disabled.** gemini-cli has a workspace-trust model: in an untrusted folder it prints *"MCP servers are configured but disabled because this folder is untrusted. User-level servers are also suppressed…"* and disables **every** MCP server — which would include AoA's own `aoa` bridge, not just connectors. `grep -rnE "skip-trust|skipTrust|trust" packages/adapters/gemini-local/src/` returns NOTHING, and the argv built in `gemini-local/src/server/execute.ts:302-312` is `["--output-format","stream-json", …, "--approval-mode","yolo", "--sandbox…", "--prompt", …]` — no trust flag. **Consequence: gemini agents running in an untrusted workspace may be getting ZERO AoA tools, silently.** Needs (a) confirming what gemini treats as trusted (a git repo? a previously-approved folder?) and (b) most likely passing `--skip-trust` in the adapter. This is independent of connectors and should be fixed regardless of whether gemini connectors ship.
+
+### GATE RESULT — FINAL (all three verified; full scope restored)
+
+**gemini is VERIFIED.** With an auth method configured in `~/.gemini/settings.json`, a real `gemini --skip-trust -p "say ok"` run from a dir containing `.gemini/settings.json` with `{"mcpServers":{"probe":{"httpUrl":"http://127.0.0.1:8993/mcp","headers":{"Authorization":"Bearer ${AOA_PROBE_TOKEN}"}}}}` and `AOA_PROBE_TOKEN=sentinel-98765` delivered **`Authorization: Bearer sentinel-98765`** to the local listener — **expanded**. So `${VAR}` DOES resolve in gemini `headers`.
+
+Method note for re-runs: gemini connects MCP servers at STARTUP, before the model call. The probe's model call returned 403 (key invalid/quota) and the answer was still obtained — an auth *method* must be configured to get past the pre-flight check, but a working model quota is NOT required.
+
+| CLI | Secret mechanism | Verified | Writer form |
+|---|---|---|---|
+| claude | `${VAR}` in args/env/headers | ✅ Plan 1 | shipped |
+| **codex** | env-var **NAME** indirection | ✅ live | flat `url` + `bearer_token_env_var` (B4) |
+| **opencode** | `{env:VAR}` | ✅ live, auth-free via `opencode mcp list` | `{type:"remote", url, headers:{...{env:VAR}}}` |
+| **gemini** | `${VAR}` | ✅ live | `{httpUrl, headers:{...${VAR}}}` |
+
+**FULL SCOPE RESTORED. Task 6 (opencode + gemini writers) is back IN, unconditional.** B6's gemini-defer clause is void. B2 stands and is now fully specified: three different auth renderings, one per adapter — codex reads `authTokenEnvVar` (B3), opencode emits `{env:<name>}`, gemini emits `${<name>}`. Each writer renders its own; do NOT share a single placeholder string across adapters.
+
+**Regression probes for Plan 2b (all auth-free or near-enough):**
+- codex: `codex mcp get <name> --json` (reports the full transport struct)
+- opencode: `opencode mcp list` (connects, no provider auth needed)
+- gemini: `gemini --skip-trust -p …` with an auth method configured (model quota not required)
