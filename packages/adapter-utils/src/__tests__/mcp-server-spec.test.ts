@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   isHttpServerSpec,
   isStdioServerSpec,
+  aoaSecretPlaceholderVars,
   containsAoaSecretPlaceholder,
   mergeExternalMcpServers,
   reservedMcpServerNameCollisions,
@@ -245,24 +246,26 @@ describe("AoA secret placeholder detection (B2N9)", () => {
     expect(containsAoaSecretPlaceholder(value)).toBe(true);
   });
 
-  it("flags a stdio spec carrying a placeholder in args", () => {
+  it("flags a stdio spec whose OWN secret placeholder is in args", () => {
     expect(
       stdioSpecCarriesSecretPlaceholder({
         kind: "stdio",
         command: "npx",
         args: ["srv", "--token", "${AOA_MCP_X_TOKEN}"],
         env: {},
+        secretEnvVar: "AOA_MCP_X_TOKEN",
       }),
     ).toBe(true);
   });
 
-  it("flags a stdio spec carrying a placeholder in env values", () => {
+  it("flags a stdio spec whose OWN secret placeholder is in env values", () => {
     expect(
       stdioSpecCarriesSecretPlaceholder({
         kind: "stdio",
         command: "npx",
         args: [],
         env: { API_KEY: "${AOA_MCP_X_TOKEN}" },
+        secretEnvVar: "AOA_MCP_X_TOKEN",
       }),
     ).toBe(true);
   });
@@ -276,5 +279,62 @@ describe("AoA secret placeholder detection (B2N9)", () => {
         env: { LOG: "debug" },
       }),
     ).toBe(false);
+  });
+
+  // M3 — the detector is gated on the connector ACTUALLY having a secret, not
+  // on placeholder shape. A connector with no secret cannot have a credential
+  // that fails to arrive, so reporting `secret_unreachable` for it is a lie.
+  it("does NOT flag a SECRETLESS spec that merely mentions another connector's var", () => {
+    expect(
+      stdioSpecCarriesSecretPlaceholder({
+        kind: "stdio",
+        command: "npx",
+        args: ["srv", "--token", "${AOA_MCP_OTHER_TOKEN}"],
+        env: {},
+      }),
+    ).toBe(false);
+  });
+
+  it("does NOT flag a spec whose secret placeholder is absent from args/env", () => {
+    // It has a secret, but nothing references it — there is no placeholder for
+    // the CLI to fail to expand, so this connector is deliverable as-is.
+    expect(
+      stdioSpecCarriesSecretPlaceholder({
+        kind: "stdio",
+        command: "npx",
+        args: ["srv"],
+        env: { LOG: "debug" },
+        secretEnvVar: "AOA_MCP_X_TOKEN",
+      }),
+    ).toBe(false);
+  });
+
+  it("ignores a DIFFERENT connector's placeholder when it has its own secret", () => {
+    expect(
+      stdioSpecCarriesSecretPlaceholder({
+        kind: "stdio",
+        command: "npx",
+        args: ["srv", "--other", "${AOA_MCP_OTHER_TOKEN}"],
+        env: {},
+        secretEnvVar: "AOA_MCP_X_TOKEN",
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("aoaSecretPlaceholderVars", () => {
+  it("returns every referenced var name, deduped and in order", () => {
+    expect(aoaSecretPlaceholderVars("${AOA_MCP_A_TOKEN}/${AOA_MCP_B_TOKEN}/${AOA_MCP_A_TOKEN}"))
+      .toEqual(["AOA_MCP_A_TOKEN", "AOA_MCP_B_TOKEN"]);
+  });
+
+  it("returns [] for text with no AoA placeholder", () => {
+    expect(aoaSecretPlaceholderVars("Bearer ${HOME}")).toEqual([]);
+  });
+
+  it("is not stateful across calls", () => {
+    const v = "Bearer ${AOA_MCP_X_TOKEN}";
+    expect(aoaSecretPlaceholderVars(v)).toEqual(["AOA_MCP_X_TOKEN"]);
+    expect(aoaSecretPlaceholderVars(v)).toEqual(["AOA_MCP_X_TOKEN"]);
   });
 });

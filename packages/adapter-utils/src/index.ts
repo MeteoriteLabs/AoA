@@ -156,6 +156,8 @@ export {
   mergeExternalMcpServers,
   AOA_SECRET_PLACEHOLDER_PATTERN,
   containsAoaSecretPlaceholder,
+  aoaSecretPlaceholderVars,
+  aoaSecretPlaceholderFor,
   stdioSpecCarriesSecretPlaceholder,
 } from "./mcp-server-spec.js";
 export type {
@@ -168,7 +170,11 @@ export type {
 } from "./mcp-server-spec.js";
 export {
   AOA_MCP_MANIFEST_FILENAME,
+  resolveMcpManagedManifestPath,
   readAoaManagedServerNames,
   writeAoaManagedServerNames,
+  tryWriteAoaManagedServerNames,
+  removeLegacyCwdManifest,
   sweepAoaManagedEntries,
 } from "./mcp-managed-manifest.js";
+export type { McpManagedManifestScope } from "./mcp-managed-manifest.js";

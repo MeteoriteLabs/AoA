@@ -133,6 +133,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (ctx.mcpBridge !== undefined || ctx.mcpServers !== undefined) {
     const result = await writeGeminiMcpSettingsJson(cwd, ctx.mcpBridge ?? null, {
       externalServers: ctx.mcpServers ?? {},
+      // Scopes the ownership manifest, which lives under the AoA instance root
+      // rather than in this workspace.
+      companyId: agent.companyId,
+      agentId: agent.id,
     });
     if (executionTargetIsRemote) {
       await syncAdapterExecutionTargetFile({
@@ -153,10 +157,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       `[aoa] Wired gemini MCP config via .gemini/settings.json (${ctx.mcpBridge ? "bridge + " : ""}${connectorCount} external connector${connectorCount === 1 ? "" : "s"})\n`,
     );
     // Never let a connector vanish silently — the founder would believe the
-    // agent has a tool it does not have.
+    // agent has a tool it does not have. stderr, matching codex and opencode:
+    // a skip is a diagnostic, and splitting them across streams makes the three
+    // adapters impossible to grep uniformly (M7).
     for (const skip of result.skipped) {
       await onLog(
-        "stdout",
+        "stderr",
         `[aoa] gemini MCP connector "${skip.serverName}" skipped: ${skip.reason}\n`,
       );
     }

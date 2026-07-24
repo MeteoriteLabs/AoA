@@ -77,6 +77,53 @@ describe("buildConnectorSpecs", () => {
     expect(spec.authTokenEnvVar).toBeUndefined();
   });
 
+  // secretEnvVar is the authoritative "this connector has a secret" signal that
+  // codex's `secret_unreachable` skip is gated on (M3). If it were set for a
+  // secretless row, that skip would fire on connectors with nothing to deliver.
+  it("omits secretEnvVar on a stdio spec when the row has NO secret", () => {
+    const { specs } = buildConnectorSpecs([
+      {
+        serverName: "pg",
+        transport: "stdio",
+        url: null,
+        command: "npx",
+        // A secretless row can still MENTION a placeholder — this is exactly
+        // the false-positive case, so shape must not imply a secret.
+        args: ["-y", "dbhub", "--ref", "${TOKEN}"],
+        headerTemplate: {},
+        envTemplate: {},
+        secretValue: null,
+      },
+    ]);
+    const spec = specs.pg as { secretEnvVar?: string };
+    expect(spec.secretEnvVar).toBeUndefined();
+  });
+
+  it("never sets secretEnvVar on an http spec (authTokenEnvVar is its channel)", () => {
+    const { specs } = buildConnectorSpecs([httpRow]);
+    const spec = specs.notion as { secretEnvVar?: string };
+    expect(spec.secretEnvVar).toBeUndefined();
+  });
+
+  it("sets secretEnvVar to the same NAME as the env map key, never a value", () => {
+    const { specs, env } = buildConnectorSpecs([
+      {
+        serverName: "pg",
+        transport: "stdio",
+        url: null,
+        command: "npx",
+        args: [],
+        headerTemplate: {},
+        envTemplate: { DSN: "${TOKEN}" },
+        secretValue: "postgres://x",
+      },
+    ]);
+    const spec = specs.pg as { secretEnvVar?: string };
+    expect(spec.secretEnvVar).toBe("AOA_MCP_PG_TOKEN");
+    expect(env.AOA_MCP_PG_TOKEN).toBe("postgres://x");
+    expect(JSON.stringify(specs)).not.toContain("postgres://x");
+  });
+
   it("never emits the raw secret inside the spec", () => {
     const { specs } = buildConnectorSpecs([httpRow]);
     expect(JSON.stringify(specs)).not.toContain("secret-abc");
@@ -100,6 +147,10 @@ describe("buildConnectorSpecs", () => {
       command: "npx",
       args: ["-y", "@bytebase/dbhub@1.2.3"],
       env: { DSN: "${AOA_MCP_PG_TOKEN}" },
+      // The stdio counterpart of authTokenEnvVar: a NAME, never a value. It is
+      // the authoritative "this connector has a secret" signal for writers,
+      // because placeholder shape alone is not (see stdioSpecCarries...).
+      secretEnvVar: "AOA_MCP_PG_TOKEN",
     });
   });
 
@@ -121,6 +172,7 @@ describe("buildConnectorSpecs", () => {
       command: "npx",
       args: ["-y", "dbhub", "--token", "${AOA_MCP_PG_TOKEN}"],
       env: {},
+      secretEnvVar: "AOA_MCP_PG_TOKEN",
     });
   });
 

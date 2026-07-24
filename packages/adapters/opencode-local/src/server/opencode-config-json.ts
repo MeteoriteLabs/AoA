@@ -5,9 +5,11 @@ import {
   isStdioServerSpec,
   mergeExternalMcpServers,
   readAoaManagedServerNames,
+  removeLegacyCwdManifest,
   reservedMcpServerNameCollisions,
+  resolveMcpManagedManifestPath,
   sweepAoaManagedEntries,
-  writeAoaManagedServerNames,
+  tryWriteAoaManagedServerNames,
   type McpServerSpec,
   type McpWriterResult,
   type McpWriterSkip,
@@ -109,7 +111,10 @@ function toOpenCodeEnvSyntax(value: string): string {
 }
 
 function rewriteValues(map: Record<string, string>): Record<string, string> {
-  const out: Record<string, string> = {};
+  // Null prototype: a header or env key literally named `__proto__` assigned
+  // onto a normal `{}` hits Object.prototype's setter — no own key is created
+  // and the entry silently vanishes from the emitted config.
+  const out: Record<string, string> = Object.create(null);
   for (const [key, value] of Object.entries(map ?? {})) {
     out[key] = typeof value === "string" ? toOpenCodeEnvSyntax(value) : value;
   }
@@ -119,10 +124,22 @@ function rewriteValues(map: Record<string, string>): Record<string, string> {
 /** Render ONE external connector as an opencode `mcp.<name>` entry. */
 function toOpenCodeEntry(spec: McpServerSpec): OpenCodeMcpEntry {
   if (isHttpServerSpec(spec)) {
+    const headers = rewriteValues(spec.headers ?? {});
+    // I3: a connector can have a secret and an EMPTY headerTemplate — the API
+    // defaults it to `{}` and never requires a `${TOKEN}` reference, so this is
+    // creatable straight from the UI. codex is fine (it consumes
+    // `authTokenEnvVar` directly), but here an empty map would emit a remote
+    // server with NO auth and no skip: it authenticates as no-one, silently.
+    // Synthesize the conventional bearer header instead.
+    const authVar = spec.authTokenEnvVar;
+    if (typeof authVar === "string" && authVar.length > 0) {
+      const referenced = Object.values(headers).some((v) => v.includes(`{env:${authVar}}`));
+      if (!referenced) headers.Authorization = `Bearer {env:${authVar}}`;
+    }
     return {
       type: "remote",
       url: spec.url,
-      headers: rewriteValues(spec.headers ?? {}),
+      headers,
       enabled: true,
     };
   }
@@ -149,6 +166,13 @@ export interface WriteOpenCodeMcpConfigOptions {
   externalServers?: Record<string, McpServerSpec>;
   /** Key for AoA's own loopback bridge. */
   serverName?: string;
+  /**
+   * Identity the ownership manifest is scoped to. The manifest lives under the
+   * AoA instance root (never in `cwd` — see `mcp-managed-manifest.ts`), keyed by
+   * company + agent + cwd so concurrent runs never collide.
+   */
+  companyId?: string | null;
+  agentId?: string | null;
 }
 
 /**
@@ -156,11 +180,12 @@ export interface WriteOpenCodeMcpConfigOptions {
  * the AoA internal-agent MCP bridge plus every external connector.
  * Idempotent. Preserves unrelated keys and the user's own `mcp.*` entries.
  *
- * STALENESS (B5): AoA-owned entry names are recorded in a sidecar manifest and
- * swept on the next run — see `mcp-managed-manifest.ts` for the full rationale
- * and the rejected alternatives (an in-file manifest key is empirically FATAL
- * here: opencode refuses unknown top-level keys and then loads NO MCP servers
- * at all).
+ * STALENESS (B5): AoA-owned entry names are recorded in an ownership manifest
+ * under the AoA instance root and swept on the next run — see
+ * `mcp-managed-manifest.ts` for the full rationale, the rejected alternatives
+ * (an in-file manifest key is empirically FATAL here: opencode refuses unknown
+ * top-level keys and then loads NO MCP servers at all), why the manifest must
+ * not live in the agent's repo, and why it is written BEFORE this config.
  *
  * `spec` may be null: a run with connectors but no bridge still writes — and
  * therefore still cleans — the file.
@@ -174,6 +199,15 @@ export async function writeOpenCodeMcpConfigJson(
   const externalServers = options.externalServers ?? {};
   await fs.mkdir(cwd, { recursive: true });
   const target = path.join(cwd, "opencode.json");
+  const manifestPath = resolveMcpManagedManifestPath({
+    adapter: "opencode",
+    cwd,
+    companyId: options.companyId,
+    agentId: options.agentId,
+  });
+  // An earlier build wrote the manifest into the repo. Remove it (never read
+  // it — it is untrusted there); see removeLegacyCwdManifest.
+  await removeLegacyCwdManifest(cwd);
 
   let existing: Record<string, unknown> = {};
   try {
@@ -197,7 +231,7 @@ export async function writeOpenCodeMcpConfigJson(
   // connector stops being offered to the agent. `serverName` is included even
   // when it predates the manifest, so the bridge's full-replace semantics
   // (no shallow-merge of environment) are preserved.
-  const previouslyManaged = await readAoaManagedServerNames(cwd);
+  const previouslyManaged = await readAoaManagedServerNames(manifestPath);
   const preserved = sweepAoaManagedEntries(existingMcp, [...previouslyManaged, serverName]);
 
   // Classify what we cannot deliver BEFORE merging, so nothing is dropped
@@ -276,6 +310,21 @@ export async function writeOpenCodeMcpConfigJson(
   // case) is well below any sane LLM-call latency, so this doesn't change
   // observable latency on the happy path.
   const body = JSON.stringify(next, null, 2) + "\n";
+
+  // I1 — MANIFEST FIRST, WITH THE UNION. The two files cannot be written
+  // atomically together, so the crash window must fail safe. Claiming ownership
+  // BEFORE the config means a name can never be written to disk without already
+  // being claimed. Config-first was wrong: a crash after the config left the new
+  // names unowned FOREVER (the next run rewrites the manifest from its own set
+  // and never learns about them), which is exactly the revoked-connector-still-
+  // live failure. The union can only over-claim names AoA is about to write or
+  // already owned, both AoA-owned by the ownership rule, so it can never eat a
+  // user entry. See mcp-managed-manifest.ts.
+  await tryWriteAoaManagedServerNames(manifestPath, [
+    ...previouslyManaged,
+    ...managedServerNames,
+  ]);
+
   const tempName = `opencode.json.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`;
   const tempPath = path.join(cwd, tempName);
   await fs.writeFile(tempPath, body, "utf8");
@@ -287,11 +336,9 @@ export async function writeOpenCodeMcpConfigJson(
     throw err;
   }
 
-  // Manifest AFTER the config, deliberately. A crash between the two leaves a
-  // manifest that UNDER-claims ownership (a stale entry survives one more
-  // sweep) rather than one that OVER-claims (which could delete a key AoA never
-  // wrote). See mcp-managed-manifest.ts.
-  await writeAoaManagedServerNames(cwd, managedServerNames);
+  // Narrow the claim to exactly what this run wrote, now that the config is
+  // durable. A crash before this point just leaves the (safe) union.
+  await tryWriteAoaManagedServerNames(manifestPath, managedServerNames);
 
   return { managedServerNames, skipped };
 }

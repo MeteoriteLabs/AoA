@@ -6,7 +6,7 @@
 // on non-emptiness (or on `ctx.mcpBridge` alone) leaves a revoked connector in
 // opencode.json forever and the agent keeps the tool.
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -97,11 +97,20 @@ async function runOnce(opts: RunOpts): Promise<string[]> {
 
 async function setup(): Promise<{ root: string; workspace: string; commandPath: string }> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "aoa-opencode-mcp-gate-"));
+  // The ownership manifest lives under the AoA instance root (I2). Point it at
+  // the throwaway root so tests never write into the developer's real ~/.aoa.
+  process.env.AOA_HOME = path.join(root, "aoa-home");
   const workspace = path.join(root, "workspace");
   await fs.mkdir(workspace, { recursive: true });
   const commandPath = await writeFakeOpenCodeCommand(path.join(root, "agent"));
   return { root, workspace, commandPath };
 }
+
+const PREVIOUS_AOA_HOME = process.env.AOA_HOME;
+afterEach(() => {
+  if (PREVIOUS_AOA_HOME === undefined) delete process.env.AOA_HOME;
+  else process.env.AOA_HOME = PREVIOUS_AOA_HOME;
+});
 
 describe("opencode execute — C2 MCP presence gate", () => {
   it("writes opencode.json when ONLY ctx.mcpServers is present (no bridge)", async () => {

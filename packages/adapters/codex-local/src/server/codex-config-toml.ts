@@ -2,6 +2,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import {
+  aoaSecretPlaceholderFor,
+  aoaSecretPlaceholderVars,
   isHttpServerSpec,
   isStdioServerSpec,
   reservedMcpServerNameCollisions,
@@ -151,29 +153,86 @@ const SAFE_MCP_SERVER_NAME = /^[A-Za-z0-9_-]+$/;
  * Skipping is deliberate: an adapter that cannot support a transport must drop
  * that entry and keep running rather than fail the whole run.
  *
- * stdio mirrors the bridge shape. HTTP uses codex's FLAT env-var-NAME
- * indirection — verified against codex-cli 0.144.1 via
- * `codex mcp add --url … --bearer-token-env-var …`:
+ * stdio mirrors the bridge shape. HTTP uses codex's env-var-NAME indirection,
+ * in three complementary forms — all verified against the real codex binary:
  *
  *   [mcp_servers.notion]
  *   url = "https://mcp.notion.com/mcp"
  *   bearer_token_env_var = "AOA_MCP_NOTION_TOKEN"
+ *   env_http_headers = { "X-Api-Key" = "AOA_MCP_ACME_TOKEN" }
+ *   http_headers = { "X-Tenant" = "acme" }
  *
- * codex does NOT expand `${VAR}` inside values, so the `${VAR}`-bearing
- * `headers` map on McpHttpServerSpec is intentionally NOT emitted — writing it
- * would hand the connector a literal `${VAR}` as its token. The env var NAME is
- * read straight off `spec.authTokenEnvVar`; it is never reverse-engineered out
- * of a header string. The real token reaches the child through the spawn env
- * (connectorEnv → config.env → execute()'s child env), never through this file.
+ * `bearer_token_env_var` sends `Authorization: Bearer <value-of-that-var>`.
+ * `env_http_headers` maps a header NAME to an env var NAME and sends the var's
+ * RAW value as that header. `http_headers` carries literal, non-secret values.
+ * All three are name-indirection or plain literals, so D5 holds: only env var
+ * NAMES ever reach disk, and the real token travels in the spawn env
+ * (connectorEnv → config.env → execute()'s child env).
  *
- * The FLAT form is required over `[mcp_servers.<name>.http_headers]`: the
- * legacy per-name stripper only knows `[mcp_servers.<n>]` and
- * `[mcp_servers.<n>.env]`, so a third sub-table could be orphaned. Flat keys
- * are always carried with their parent header.
+ * WHY ALL THREE (the C1 fix): the first version emitted `bearer_token_env_var`
+ * unconditionally and DISCARDED `spec.headers` entirely. A connector that
+ * authenticates with `X-Api-Key: ${TOKEN}` therefore got an `Authorization:
+ * Bearer` header its server never reads, lost its real header, and was NOT
+ * skipped — the precise "authenticates as no-one" outcome the skip channel
+ * exists to prevent. Non-auth headers such as `X-Tenant` were dropped silently
+ * too. Now every header is classified and nothing is discarded in silence.
+ *
+ * The `Bearer ` prefix is why `bearer_token_env_var` is kept rather than
+ * expressing everything through `env_http_headers`: `env_http_headers` sends
+ * the variable's raw value, so routing `Authorization: Bearer ${VAR}` through it
+ * would send the bare token WITHOUT the `Bearer ` scheme and break the
+ * overwhelmingly common case.
+ *
+ * These are all FLAT keys (inline tables), never `[mcp_servers.<n>.http_headers]`
+ * sub-tables — B4. The legacy per-name stripper only knows `[mcp_servers.<n>]`
+ * and `[mcp_servers.<n>.env]`, so a third sub-table could be orphaned; a flat
+ * key is always carried with its parent header.
  */
 type RenderedExternalBlock =
   | { block: string }
   | { block: null; reason: McpWriterSkip["reason"] };
+
+/**
+ * Render a TOML inline table: `{ "k" = "v", "k2" = "v2" }`. Keys are quoted
+ * basic strings so any header name that passed validation is representable.
+ */
+function tomlInlineTable(entries: Array<[string, string]>): string {
+  return `{ ${entries.map(([k, v]) => `${tomlString(k)} = ${tomlString(v)}`).join(", ")} }`;
+}
+
+/**
+ * Classify ONE http header into the codex form that can carry it.
+ *
+ * `null` means codex has no representation for it, which is a connector-level
+ * skip rather than a dropped header: a partially-delivered auth story is how a
+ * connector ends up silently unauthenticated.
+ */
+type HeaderPlan =
+  | { form: "bearer"; varName: string }
+  | { form: "env"; varName: string }
+  | { form: "literal"; value: string }
+  | null;
+
+function planHttpHeader(headerName: string, value: string): HeaderPlan {
+  const vars = aoaSecretPlaceholderVars(value);
+  if (vars.length === 0) return { form: "literal", value };
+  if (vars.length > 1) return null; // two secrets in one header: not expressible
+  const varName = vars[0];
+  if (!SAFE_MCP_SERVER_NAME.test(varName)) return null;
+
+  const placeholder = aoaSecretPlaceholderFor(varName);
+  // Whole value IS the placeholder → env_http_headers sends the raw value.
+  if (value === placeholder) return { form: "env", varName };
+  // `Authorization: Bearer ${VAR}` → codex's dedicated bearer form, which adds
+  // the `Bearer ` prefix that env_http_headers would omit.
+  if (headerName.toLowerCase() === "authorization" && value === `Bearer ${placeholder}`) {
+    return { form: "bearer", varName };
+  }
+  // Placeholder embedded in other text (e.g. `Token ${VAR}` or `${VAR}-suffix`).
+  // env_http_headers cannot add the surrounding text and http_headers would
+  // write the literal placeholder, which authenticates as no-one.
+  return null;
+}
 
 function renderExternalMcpBlock(name: string, spec: McpServerSpec): RenderedExternalBlock {
   if (!SAFE_MCP_SERVER_NAME.test(name)) return { block: null, reason: "unsafe_name" };
@@ -207,16 +266,23 @@ function renderExternalMcpBlock(name: string, spec: McpServerSpec): RenderedExte
       return { block: null, reason: "secret_unreachable" };
     }
 
+    const envEntries = Object.entries(spec.env ?? {});
+    // M1: a key that is not a TOML bare key used to be silently dropped, which
+    // shipped a connector missing part of its environment while reporting
+    // success. Partial delivery is indistinguishable from a broken server at
+    // runtime, so refuse the whole connector and say why.
+    if (envEntries.some(([key]) => !SAFE_MCP_SERVER_NAME.test(key))) {
+      return { block: null, reason: "unsafe_name" };
+    }
+
     const lines: string[] = [];
     lines.push(`[mcp_servers.${name}]`);
     lines.push(`command = ${tomlString(spec.command)}`);
     lines.push(`args = ${tomlStringArray(spec.args ?? [])}`);
-    const envEntries = Object.entries(spec.env ?? {});
     if (envEntries.length > 0) {
       lines.push("");
       lines.push(`[mcp_servers.${name}.env]`);
       for (const [key, value] of envEntries) {
-        if (!SAFE_MCP_SERVER_NAME.test(key)) continue;
         lines.push(`${key} = ${tomlString(value)}`);
       }
     }
@@ -224,12 +290,55 @@ function renderExternalMcpBlock(name: string, spec: McpServerSpec): RenderedExte
   }
 
   if (isHttpServerSpec(spec)) {
+    const headers = Object.entries(spec.headers ?? {});
+    // Header NAMES get the same bare-key validation as server names: they end
+    // up as inline-table keys, and an unvalidated name is an injection surface.
+    if (headers.some(([headerName]) => !SAFE_MCP_SERVER_NAME.test(headerName))) {
+      return { block: null, reason: "unsafe_name" };
+    }
+
+    const envHeaders: Array<[string, string]> = [];
+    const literalHeaders: Array<[string, string]> = [];
+    let bearerVar: string | null = null;
+    /** Did some header already carry this connector's credential? */
+    let secretDelivered = false;
+
+    for (const [headerName, value] of headers) {
+      const plan = planHttpHeader(headerName, typeof value === "string" ? value : "");
+      if (plan === null) return { block: null, reason: "secret_unreachable" };
+      if (plan.form === "literal") {
+        literalHeaders.push([headerName, plan.value]);
+      } else if (plan.form === "env") {
+        envHeaders.push([headerName, plan.varName]);
+        secretDelivered = true;
+      } else {
+        bearerVar = plan.varName;
+        secretDelivered = true;
+      }
+    }
+
+    // I3: a connector can have a secret and an EMPTY headerTemplate (the API
+    // defaults it to `{}` and never requires a `${TOKEN}` reference). Fall back
+    // to the bearer form so it authenticates, instead of emitting a URL with no
+    // credential at all.
+    const authVar = spec.authTokenEnvVar;
+    if (
+      !secretDelivered
+      && typeof authVar === "string"
+      && SAFE_MCP_SERVER_NAME.test(authVar)
+    ) {
+      bearerVar = authVar;
+    }
+
     const lines: string[] = [];
     lines.push(`[mcp_servers.${name}]`);
     lines.push(`url = ${tomlString(spec.url)}`);
-    const envVar = spec.authTokenEnvVar;
-    if (typeof envVar === "string" && SAFE_MCP_SERVER_NAME.test(envVar)) {
-      lines.push(`bearer_token_env_var = ${tomlString(envVar)}`);
+    if (bearerVar) lines.push(`bearer_token_env_var = ${tomlString(bearerVar)}`);
+    if (envHeaders.length > 0) {
+      lines.push(`env_http_headers = ${tomlInlineTable(envHeaders)}`);
+    }
+    if (literalHeaders.length > 0) {
+      lines.push(`http_headers = ${tomlInlineTable(literalHeaders)}`);
     }
     return { block: lines.join("\n") };
   }

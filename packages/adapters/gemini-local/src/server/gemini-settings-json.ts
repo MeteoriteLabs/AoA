@@ -5,9 +5,11 @@ import {
   isStdioServerSpec,
   mergeExternalMcpServers,
   readAoaManagedServerNames,
+  removeLegacyCwdManifest,
   reservedMcpServerNameCollisions,
+  resolveMcpManagedManifestPath,
   sweepAoaManagedEntries,
-  writeAoaManagedServerNames,
+  tryWriteAoaManagedServerNames,
   type McpServerSpec,
   type McpWriterResult,
   type McpWriterSkip,
@@ -81,7 +83,21 @@ type GeminiMcpEntry =
  */
 function toGeminiEntry(spec: McpServerSpec): GeminiMcpEntry {
   if (isHttpServerSpec(spec)) {
-    return { httpUrl: spec.url, headers: { ...(spec.headers ?? {}) } };
+    const headers: Record<string, string> = Object.create(null);
+    for (const [key, value] of Object.entries(spec.headers ?? {})) headers[key] = value;
+    // I3: a connector can have a secret and an EMPTY headerTemplate — the API
+    // defaults it to `{}` and never requires a `${TOKEN}` reference, so this is
+    // creatable straight from the UI. codex is fine (it consumes
+    // `authTokenEnvVar` directly), but here an empty map would emit a remote
+    // server with NO auth and no skip: it authenticates as no-one, silently.
+    // Synthesize the conventional bearer header instead.
+    const authVar = spec.authTokenEnvVar;
+    if (typeof authVar === "string" && authVar.length > 0) {
+      const placeholder = `\${${authVar}}`;
+      const referenced = Object.values(headers).some((v) => v.includes(placeholder));
+      if (!referenced) headers.Authorization = `Bearer ${placeholder}`;
+    }
+    return { httpUrl: spec.url, headers };
   }
   const stdio = spec as Extract<McpServerSpec, { kind: "stdio" }>;
   return {
@@ -100,6 +116,13 @@ export interface WriteGeminiMcpSettingsOptions {
   externalServers?: Record<string, McpServerSpec>;
   /** Key for AoA's own loopback bridge. */
   serverName?: string;
+  /**
+   * Identity the ownership manifest is scoped to. The manifest lives under the
+   * AoA instance root (never in the workspace — see `mcp-managed-manifest.ts`),
+   * keyed by company + agent + cwd so concurrent runs never collide.
+   */
+  companyId?: string | null;
+  agentId?: string | null;
 }
 
 /**
@@ -107,13 +130,15 @@ export interface WriteGeminiMcpSettingsOptions {
  * internal-agent MCP bridge plus every external connector. Idempotent.
  * Preserves unrelated keys and the user's own `mcpServers.*` entries.
  *
- * STALENESS (B5): AoA-owned entry names are recorded in a sidecar manifest and
- * swept on the next run — see `mcp-managed-manifest.ts` for the rationale and
- * the rejected alternatives. Notably, the sidecar was chosen over an in-file
- * manifest key precisely so that this writer does NOT have to bet on gemini
- * tolerating an unknown key in settings.json — a property that could not be
- * verified here (gemini exits at an auth wall before config load is
- * observable), and whose failure mode on the sibling CLI is total MCP loss.
+ * STALENESS (B5): AoA-owned entry names are recorded in an ownership manifest
+ * under the AoA instance root and swept on the next run — see
+ * `mcp-managed-manifest.ts` for the rationale, the rejected alternatives, why
+ * the manifest must not live in the workspace, and why it is written BEFORE
+ * this config. Notably, a separate manifest was chosen over an in-file key
+ * precisely so this writer does NOT have to bet on gemini tolerating an unknown
+ * key in settings.json — a property that could not be verified here (gemini
+ * exits at an auth wall before config load is observable), and whose failure
+ * mode on the sibling CLI is total MCP loss.
  *
  * `spec` may be null: a run with connectors but no bridge still writes — and
  * therefore still cleans — the file.
@@ -127,6 +152,15 @@ export async function writeGeminiMcpSettingsJson(
   const externalServers = options.externalServers ?? {};
   const geminiDir = path.join(cwd, ".gemini");
   await fs.mkdir(geminiDir, { recursive: true });
+  const manifestPath = resolveMcpManagedManifestPath({
+    adapter: "gemini",
+    cwd,
+    companyId: options.companyId,
+    agentId: options.agentId,
+  });
+  // An earlier build wrote the manifest into the workspace. Remove it (never
+  // read it — it is untrusted there); see removeLegacyCwdManifest.
+  await removeLegacyCwdManifest(geminiDir);
   const target = path.join(geminiDir, "settings.json");
 
   let existing: Record<string, unknown> = {};
@@ -152,11 +186,7 @@ export async function writeGeminiMcpSettingsJson(
   // connector stops being offered to the agent. `serverName` is included even
   // when it predates the manifest, preserving the bridge's full-replace
   // semantics (no stale env carryover).
-  //
-  // The manifest lives in `.gemini/` (beside settings.json), NOT in cwd — it is
-  // AoA-created and already gemini-scoped, which keeps the pollution radius
-  // where the plan put settings.json itself.
-  const previouslyManaged = await readAoaManagedServerNames(geminiDir);
+  const previouslyManaged = await readAoaManagedServerNames(manifestPath);
   const preserved = sweepAoaManagedEntries(existingServers, [
     ...previouslyManaged,
     serverName,
@@ -224,6 +254,19 @@ export async function writeGeminiMcpSettingsJson(
   // against the same target briefly fail with the destination locked —
   // POSIX never sees this.
   const body = JSON.stringify(next, null, 2) + "\n";
+
+  // I1 — MANIFEST FIRST, WITH THE UNION. The two files cannot be written
+  // atomically together, so the crash window must fail safe. Claiming ownership
+  // BEFORE the config means a name can never be written to disk without already
+  // being claimed. Config-first was wrong: a crash after the config left the new
+  // names unowned FOREVER (the next run rewrites the manifest from its own set
+  // and never learns about them). The union can only over-claim names AoA is
+  // about to write or already owned, so it can never eat a user entry.
+  await tryWriteAoaManagedServerNames(manifestPath, [
+    ...previouslyManaged,
+    ...managedServerNames,
+  ]);
+
   const tempName = `settings.json.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`;
   const tempPath = path.join(geminiDir, tempName);
   await fs.writeFile(tempPath, body, "utf8");
@@ -235,10 +278,9 @@ export async function writeGeminiMcpSettingsJson(
     throw err;
   }
 
-  // Manifest AFTER the config, deliberately: a crash between the two leaves a
-  // manifest that UNDER-claims (stale entry survives one more sweep) rather
-  // than one that OVER-claims (could delete a key AoA never wrote).
-  await writeAoaManagedServerNames(geminiDir, managedServerNames);
+  // Narrow the claim to exactly what this run wrote, now that the config is
+  // durable. A crash before this point just leaves the (safe) union.
+  await tryWriteAoaManagedServerNames(manifestPath, managedServerNames);
 
   return { managedServerNames, skipped };
 }

@@ -179,6 +179,14 @@ export function buildConnectorSpecs(rows: ResolvedConnectorRow[]): ConnectorBuil
           // `${TOKEN}`, which expands to nothing and authenticates as no-one.
           args: row.args.map((value) => substitute(value)),
           env: substituteValues(row.envTemplate),
+          // The stdio counterpart of `authTokenEnvVar`, and the AUTHORITATIVE
+          // "this connector has a secret" signal for writers. codex cannot
+          // deliver a stdio secret at all (B2N9) and must skip such connectors,
+          // but it cannot infer "has a secret" from placeholder shape: a
+          // secretless connector can still contain `${AOA_MCP_*}` text, and
+          // skipping it as `secret_unreachable` would be a false positive. Only
+          // `row.secretValue` tells the truth, and only this module sees it.
+          ...(row.secretValue ? { secretEnvVar: varName } : {}),
         };
       } else {
         // Unknown transport — skip rather than guess. `transport` is free text

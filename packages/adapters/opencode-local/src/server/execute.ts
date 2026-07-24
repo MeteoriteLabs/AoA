@@ -145,6 +145,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (ctx.mcpBridge !== undefined || ctx.mcpServers !== undefined) {
     const result = await writeOpenCodeMcpConfigJson(cwd, ctx.mcpBridge ?? null, {
       externalServers: ctx.mcpServers ?? {},
+      // Scopes the ownership manifest, which lives under the AoA instance root
+      // rather than in this repo.
+      companyId: agent.companyId,
+      agentId: agent.id,
     });
     if (executionTargetIsRemote) {
       await syncAdapterExecutionTargetFile({

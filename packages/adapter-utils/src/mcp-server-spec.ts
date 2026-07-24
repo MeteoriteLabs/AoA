@@ -19,6 +19,23 @@ export interface McpStdioServerSpec {
    * specs are persisted into run events. See D5.
    */
   env: Record<string, string>;
+  /**
+   * The ENV VAR NAME (never a value) holding this connector's secret, set ONLY
+   * when the connector actually has one. The stdio counterpart of
+   * {@link McpHttpServerSpec.authTokenEnvVar}.
+   *
+   * This is the AUTHORITATIVE "does this connector have a secret?" signal for
+   * writers, and it exists because placeholder SHAPE is not that signal. A
+   * founder can put `${AOA_MCP_OTHER_TOKEN}` (or their own connector's
+   * placeholder, when no secret is configured) into `args` on a connector that
+   * has no secret at all; treating any `${AOA_MCP_*}`-looking text as proof of a
+   * secret made codex skip such connectors as `secret_unreachable`, which is a
+   * false positive. Only the row's `secretValue` tells the truth, and only the
+   * server sees it — so it is recorded here.
+   *
+   * SECRETS: this is a NAME. Never assign a token value here.
+   */
+  secretEnvVar?: string;
 }
 
 /** A remote MCP server reached over streamable HTTP. */
@@ -136,23 +153,48 @@ export function containsAoaSecretPlaceholder(value: string): boolean {
   return new RegExp(AOA_SECRET_PLACEHOLDER_PATTERN.source).test(value);
 }
 
+/** Every `${AOA_MCP_*}` var NAME referenced by `value`, in order, deduped. */
+export function aoaSecretPlaceholderVars(value: string): string[] {
+  const re = new RegExp(AOA_SECRET_PLACEHOLDER_PATTERN.source, "g");
+  const out: string[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(value)) !== null) {
+    if (!out.includes(match[1])) out.push(match[1]);
+  }
+  return out;
+}
+
+/** The literal placeholder text for an env var name. */
+export function aoaSecretPlaceholderFor(varName: string): string {
+  return `\${${varName}}`;
+}
+
 /**
- * True when a stdio spec's `args` or `env` still carry a `${AOA_MCP_*}`
- * placeholder — i.e. the connector's credential is delivered by placeholder
- * expansion rather than by an env-var-NAME indirection.
+ * True when a stdio connector HAS a secret AND that secret is delivered by
+ * placeholder expansion in `args`/`env`.
  *
  * Only codex needs this (Plan 2b B2N9, verified against the real CLIs): codex
  * expands nothing inside `args`/`env` AND scrubs its own environment before
  * spawning an MCP child, so there is NO route by which the credential can
  * reach the server. claude, opencode and gemini all expand their own syntax and
  * therefore must NOT call this — for them a placeholder is the working design.
+ *
+ * GATED ON {@link McpStdioServerSpec.secretEnvVar}, not on placeholder shape.
+ * Shape alone produced a false positive: a connector with NO secret that merely
+ * mentions some `${AOA_MCP_*}` text (a stale template, or another connector's
+ * var) was reported `secret_unreachable`, which is a lie — it has no credential
+ * to fail to deliver. `secretEnvVar` is set only when the DB row actually had a
+ * `secretValue`, so it is the one trustworthy signal.
  */
 export function stdioSpecCarriesSecretPlaceholder(spec: McpStdioServerSpec): boolean {
+  const varName = spec.secretEnvVar;
+  if (typeof varName !== "string" || varName.length === 0) return false;
+  const needle = aoaSecretPlaceholderFor(varName);
   for (const arg of spec.args ?? []) {
-    if (typeof arg === "string" && containsAoaSecretPlaceholder(arg)) return true;
+    if (typeof arg === "string" && arg.includes(needle)) return true;
   }
   for (const value of Object.values(spec.env ?? {})) {
-    if (typeof value === "string" && containsAoaSecretPlaceholder(value)) return true;
+    if (typeof value === "string" && value.includes(needle)) return true;
   }
   return false;
 }

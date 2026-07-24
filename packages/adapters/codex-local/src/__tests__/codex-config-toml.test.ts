@@ -656,8 +656,8 @@ describe("writeCodexMcpConfigToml", () => {
       // FLAT form only — the sub-table would be orphaned by the per-name stripper.
       expect(raw).not.toContain("[mcp_servers.notion.http_headers]");
       expect(parsed["mcp_servers.notion.http_headers"]).toBeUndefined();
-      // No `${VAR}`-bearing header string leaks into the file either.
-      expect(raw).not.toContain("Authorization");
+      // `Authorization: Bearer ${VAR}` is carried by bearer_token_env_var, so
+      // no `${VAR}`-bearing header string leaks into the file.
       expect(raw).not.toContain("${AOA_MCP_NOTION_TOKEN}");
       // And absolutely no real secret value.
       expect(raw).not.toContain(REAL_TOKEN);
@@ -717,6 +717,7 @@ describe("writeCodexMcpConfigToml", () => {
               command: "npx",
               args: ["-y", "server-filesystem", "/data"],
               env: { FS_ROOT: "/data", FS_TOKEN: "${AOA_MCP_FS_TOKEN}" },
+              secretEnvVar: "AOA_MCP_FS_TOKEN",
             },
           },
         });
@@ -739,6 +740,7 @@ describe("writeCodexMcpConfigToml", () => {
               command: "npx",
               args: ["srv", "--token", "${AOA_MCP_SLACK_TOKEN}"],
               env: {},
+              secretEnvVar: "AOA_MCP_SLACK_TOKEN",
             },
           },
         });
@@ -763,6 +765,7 @@ describe("writeCodexMcpConfigToml", () => {
                 command: "npx",
                 args: [],
                 env: { FS_TOKEN: "${AOA_MCP_FS_TOKEN}" },
+                secretEnvVar: "AOA_MCP_FS_TOKEN",
               },
             },
           });
@@ -784,6 +787,7 @@ describe("writeCodexMcpConfigToml", () => {
               command: "npx",
               args: [],
               env: { FS_TOKEN: "${AOA_MCP_FS_TOKEN}" },
+              secretEnvVar: "AOA_MCP_FS_TOKEN",
             },
           },
         });
@@ -847,25 +851,194 @@ describe("writeCodexMcpConfigToml", () => {
         expect(raw).toContain("[mcp_servers.aoa]");
       });
 
-      it("a real-looking secret in an http header value NEVER lands on disk", async () => {
-        // codex emits `url` + `bearer_token_env_var` ONLY. The `headers` map is
-        // deliberately not emitted at all, so even a caller that wrongly put a
-        // live token there cannot leak it into config.toml.
+      it("a placeholder-bearing Authorization header never writes the placeholder", async () => {
+        // The conventional shape routes through bearer_token_env_var, so only
+        // the env var NAME lands on disk.
         await writeCodexMcpConfigToml(tmpDir, BRIDGE, {
           externalServers: {
             notion: {
               kind: "http",
               url: "https://mcp.notion.com/mcp",
-              headers: { Authorization: "Bearer REALSECRET" },
+              headers: { Authorization: "Bearer ${AOA_MCP_NOTION_TOKEN}" },
               authTokenEnvVar: "AOA_MCP_NOTION_TOKEN",
             },
           },
         });
 
         const raw = await fs.readFile(path.join(tmpDir, "config.toml"), "utf8");
-        expect(raw).not.toContain("REALSECRET");
-        expect(raw).not.toContain("Authorization");
+        expect(raw).not.toContain(REAL_TOKEN);
+        expect(raw).not.toContain("${AOA_MCP_NOTION_TOKEN}");
         expect(raw).toContain('bearer_token_env_var = "AOA_MCP_NOTION_TOKEN"');
+      });
+
+      // ── C1: non-bearer HTTP auth must WORK, not be dropped ───────────────
+      // The first version emitted bearer_token_env_var unconditionally and
+      // discarded spec.headers, so an X-Api-Key connector got an Authorization
+      // header its server never reads, lost its real header, and was not
+      // skipped — "authenticates as no-one" with no report.
+      it("emits env_http_headers for a non-bearer auth header (X-Api-Key)", async () => {
+        const result = await writeCodexMcpConfigToml(tmpDir, BRIDGE, {
+          externalServers: {
+            acme: {
+              kind: "http",
+              url: "https://acme.example.com/mcp",
+              headers: { "X-Api-Key": "${AOA_MCP_ACME_TOKEN}" },
+              authTokenEnvVar: "AOA_MCP_ACME_TOKEN",
+            },
+          },
+        });
+
+        const raw = await fs.readFile(path.join(tmpDir, "config.toml"), "utf8");
+        expect(raw).toContain('env_http_headers = { "X-Api-Key" = "AOA_MCP_ACME_TOKEN" }');
+        // The header was NOT dropped, and no bogus Authorization was invented.
+        expect(raw).not.toContain("bearer_token_env_var");
+        // Only the env var NAME reaches disk (D5).
+        expect(raw).not.toContain("${AOA_MCP_ACME_TOKEN}");
+        expect(raw).not.toContain(REAL_TOKEN);
+        expect(result.skipped).toEqual([]);
+        expect(result.managedServerNames).toContain("acme");
+      });
+
+      it("carries NON-AUTH headers through http_headers instead of dropping them", async () => {
+        await writeCodexMcpConfigToml(tmpDir, BRIDGE, {
+          externalServers: {
+            acme: {
+              kind: "http",
+              url: "https://acme.example.com/mcp",
+              headers: {
+                "X-Api-Key": "${AOA_MCP_ACME_TOKEN}",
+                "X-Tenant": "acme-prod",
+              },
+              authTokenEnvVar: "AOA_MCP_ACME_TOKEN",
+            },
+          },
+        });
+
+        const raw = await fs.readFile(path.join(tmpDir, "config.toml"), "utf8");
+        expect(raw).toContain('env_http_headers = { "X-Api-Key" = "AOA_MCP_ACME_TOKEN" }');
+        expect(raw).toContain('http_headers = { "X-Tenant" = "acme-prod" }');
+      });
+
+      it("uses inline tables, never an orphan-able sub-table (B4)", async () => {
+        await writeCodexMcpConfigToml(tmpDir, BRIDGE, {
+          externalServers: {
+            acme: {
+              kind: "http",
+              url: "https://acme.example.com/mcp",
+              headers: { "X-Api-Key": "${AOA_MCP_ACME_TOKEN}", "X-Tenant": "t" },
+            },
+          },
+        });
+        const raw = await fs.readFile(path.join(tmpDir, "config.toml"), "utf8");
+        expect(raw).not.toContain("[mcp_servers.acme.http_headers]");
+        expect(raw).not.toContain("[mcp_servers.acme.env_http_headers]");
+      });
+
+      it("I3: synthesizes bearer auth when headerTemplate is EMPTY but a secret exists", async () => {
+        // routes/mcp-connectors.ts defaults headerTemplate to {} and never
+        // requires a ${TOKEN} reference, so this is creatable from the UI.
+        const result = await writeCodexMcpConfigToml(tmpDir, BRIDGE, {
+          externalServers: {
+            notion: {
+              kind: "http",
+              url: "https://mcp.notion.com/mcp",
+              headers: {},
+              authTokenEnvVar: "AOA_MCP_NOTION_TOKEN",
+            },
+          },
+        });
+        const raw = await fs.readFile(path.join(tmpDir, "config.toml"), "utf8");
+        expect(raw).toContain('bearer_token_env_var = "AOA_MCP_NOTION_TOKEN"');
+        expect(result.skipped).toEqual([]);
+      });
+
+      it("does not double up auth when a header already carries the secret", async () => {
+        await writeCodexMcpConfigToml(tmpDir, BRIDGE, {
+          externalServers: {
+            acme: {
+              kind: "http",
+              url: "https://acme.example.com/mcp",
+              headers: { "X-Api-Key": "${AOA_MCP_ACME_TOKEN}" },
+              authTokenEnvVar: "AOA_MCP_ACME_TOKEN",
+            },
+          },
+        });
+        const raw = await fs.readFile(path.join(tmpDir, "config.toml"), "utf8");
+        expect(raw).not.toContain("bearer_token_env_var");
+      });
+
+      it("SKIPS a header whose placeholder is embedded in other text", async () => {
+        // `Token ${VAR}` cannot be expressed: env_http_headers sends the raw
+        // value (losing the prefix) and http_headers would write the literal
+        // placeholder. Either way the connector authenticates as no-one.
+        const result = await writeCodexMcpConfigToml(tmpDir, BRIDGE, {
+          externalServers: {
+            acme: {
+              kind: "http",
+              url: "https://acme.example.com/mcp",
+              headers: { Authorization: "Token ${AOA_MCP_ACME_TOKEN}" },
+              authTokenEnvVar: "AOA_MCP_ACME_TOKEN",
+            },
+          },
+        });
+        const raw = await fs.readFile(path.join(tmpDir, "config.toml"), "utf8");
+        expect(raw).not.toContain("[mcp_servers.acme]");
+        expect(raw).not.toContain("${AOA_MCP_ACME_TOKEN}");
+        expect(result.skipped).toEqual([
+          { serverName: "acme", reason: "secret_unreachable" },
+        ]);
+      });
+
+      it("SKIPS a connector with an unsafe HEADER name rather than dropping it", async () => {
+        const result = await writeCodexMcpConfigToml(tmpDir, BRIDGE, {
+          externalServers: {
+            acme: {
+              kind: "http",
+              url: "https://acme.example.com/mcp",
+              headers: { 'X-Bad"] injected': "v" },
+            },
+          },
+        });
+        const raw = await fs.readFile(path.join(tmpDir, "config.toml"), "utf8");
+        expect(raw).not.toContain("[mcp_servers.acme]");
+        expect(raw).not.toContain("injected");
+        expect(result.skipped).toEqual([{ serverName: "acme", reason: "unsafe_name" }]);
+      });
+
+      // M1 — partial delivery is indistinguishable from a broken server.
+      it("SKIPS a stdio connector with an unsafe ENV key instead of dropping the key", async () => {
+        const result = await writeCodexMcpConfigToml(tmpDir, BRIDGE, {
+          externalServers: {
+            fs2: {
+              kind: "stdio",
+              command: "npx",
+              args: [],
+              env: { GOOD: "1", 'BAD"] = injected\n[evil': "2" },
+            },
+          },
+        });
+        const raw = await fs.readFile(path.join(tmpDir, "config.toml"), "utf8");
+        expect(raw).not.toContain("[mcp_servers.fs2]");
+        expect(raw).not.toContain("injected");
+        expect(raw).not.toContain("[evil");
+        expect(result.skipped).toEqual([{ serverName: "fs2", reason: "unsafe_name" }]);
+      });
+
+      // M3 — the skip must track a real secret, not placeholder shape.
+      it("does NOT skip a SECRETLESS stdio connector that mentions another connector's var", async () => {
+        const result = await writeCodexMcpConfigToml(tmpDir, BRIDGE, {
+          externalServers: {
+            tool: {
+              kind: "stdio",
+              command: "npx",
+              args: ["srv", "--ref", "${AOA_MCP_OTHER_TOKEN}"],
+              env: {},
+            },
+          },
+        });
+        const raw = await fs.readFile(path.join(tmpDir, "config.toml"), "utf8");
+        expect(raw).toContain("[mcp_servers.tool]");
+        expect(result.skipped).toEqual([]);
       });
 
       it("classifies an unsafe name and an unknown transport distinctly", async () => {
