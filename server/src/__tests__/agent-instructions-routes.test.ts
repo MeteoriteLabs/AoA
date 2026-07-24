@@ -35,6 +35,8 @@ const mockAccessService = vi.hoisted(() => ({
 const mockSecretService = vi.hoisted(() => ({
   resolveAdapterConfigForRuntime: vi.fn(),
   normalizeAdapterConfigForPersistence: vi.fn(async (_companyId: string, config: Record<string, unknown>) => config),
+  // Called by PATCH /instructions-path after the agent write.
+  syncEnvBindingsForTarget: vi.fn().mockResolvedValue(undefined),
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
@@ -329,5 +331,71 @@ describe("agent instructions bundle routes", () => {
     expect(mockAgentInstructionsService.updateBundle).toHaveBeenCalled();
     expect(mockAgentService.update).toHaveBeenCalled();
     expect(mockLogActivity).toHaveBeenCalled();
+  });
+
+  // ── D22: instruction edits are customizations, not app code ──────────────
+  // Every route that can change what an agent's instructions SAY must stamp
+  // `instructionsCustomized: true`, or `crew-updater` will full-replace the edit
+  // on the next catalog bump.
+
+  it("marks the agent customized when a bundle file is written", async () => {
+    const res = await request(createApp())
+      .put("/api/agents/11111111-1111-4111-8111-111111111111/instructions-bundle/file?companyId=company-1")
+      .send({ path: "AGENTS.md", content: "# Founder edit\n" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({ instructionsCustomized: true }),
+      expect.any(Object),
+    );
+  });
+
+  it("marks the agent customized when a bundle file is deleted", async () => {
+    mockAgentInstructionsService.deleteFile.mockResolvedValue({
+      bundle: { files: [] },
+      adapterConfig: { instructionsBundleMode: "managed" },
+    });
+
+    const res = await request(createApp())
+      .delete("/api/agents/11111111-1111-4111-8111-111111111111/instructions-bundle/file?companyId=company-1&path=docs/TOOLS.md");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({ instructionsCustomized: true }),
+      expect.any(Object),
+    );
+  });
+
+  it("marks the agent customized when the bundle config is repointed", async () => {
+    mockAgentInstructionsService.updateBundle.mockResolvedValue({
+      bundle: { mode: "external", rootPath: "/tmp/external", files: [] },
+      adapterConfig: { instructionsBundleMode: "external", instructionsRootPath: "/tmp/external" },
+    });
+
+    const res = await request(createApp())
+      .patch("/api/agents/11111111-1111-4111-8111-111111111111/instructions-bundle?companyId=company-1")
+      .send({ mode: "external", rootPath: "/tmp/external" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({ instructionsCustomized: true }),
+      expect.any(Object),
+    );
+  });
+
+  it("marks the agent customized when the legacy instructions path is repointed", async () => {
+    const res = await request(createApp())
+      .patch("/api/agents/11111111-1111-4111-8111-111111111111/instructions-path?companyId=company-1")
+      .send({ path: "/tmp/external/AGENTS.md" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({ instructionsCustomized: true }),
+      expect.any(Object),
+    );
   });
 });

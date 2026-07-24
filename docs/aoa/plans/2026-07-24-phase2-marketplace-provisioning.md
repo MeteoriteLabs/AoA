@@ -966,9 +966,24 @@ git commit -m "feat(marketplace): publish Steward + declare skills for Chronicle
 
 **This REVERSES a shipped design.** `crew-updater.ts:24-31` currently states *"instruction files are app code, not user config"* and full-replaces on update. D22 (product-owner decision) says agent instruction edits are treated like skills: `customized` + notify/diff/merge. **Record the reversal in `docs/architecture/decisions.md`.**
 
-- [ ] **Step 1: Failing tests** — an agent whose instructions a founder edited is **not** silently overwritten by a catalog bump; an **untouched** agent still auto-updates (the discriminator).
-- [ ] **Step 2: Run → FAIL.** **Step 3: Implement** — set `customized` when a founder edits a marketplace-managed agent's instructions via the editor; `crew-updater` routes customized agents to notify instead of full-replace. **Step 4: Run → PASS.**
-- [ ] **Step 5: Record the reversal** in `decisions.md`, superseding the `crew-updater.ts:24-31` rationale. **Step 6: Commit.**
+- [x] **Step 1: Failing tests** — an agent whose instructions a founder edited is **not** silently overwritten by a catalog bump; an **untouched** agent still auto-updates (the discriminator).
+- [x] **Step 2: Run → FAIL.** **Step 3: Implement** — set `customized` when a founder edits a marketplace-managed agent's instructions via the editor; `crew-updater` routes customized agents to notify instead of full-replace. **Step 4: Run → PASS.**
+- [x] **Step 5: Record the reversal** in `decisions.md`, superseding the `crew-updater.ts:24-31` rationale. **Step 6: Commit.**
+
+**SHIPPED.** `agents.instructions_customized` is **three-state** (migration
+`0182`): `false` = provably untouched, `true` = edited through the instructions
+API, **`null` = unknown → treated as customized (fail closed)**. There is no
+backfill: `agent_config_revisions` only writes a row when `changedKeys.length >
+0`, and an instruction file write on an already-managed bundle leaves
+`adapterConfig` byte-identical — so the edits that matter have no revision row,
+and a content hash has no pre-existing baseline either. **Consequence:** every
+crew agent installed before `0182` routes to notify on its next catalog bump,
+including untouched ones, and `POST /updates/:id/apply` still answers 501 for
+`itemType: "agent"` until T2.7. The D22 gate runs BEFORE
+`materializeManagedBundle`'s `fs.rm`; a transactional
+`instructions_customized = false` predicate is defence in depth for the
+concurrent case. Adopted (T2.3b) rows carry `null`, so pointer-only adoption is
+unchanged — D22 makes content adoption safe to build, T2.7 must build it.
 ```bash
 git commit -m "feat(marketplace): treat agent instruction edits as customizations, not app code (D22)"
 ```

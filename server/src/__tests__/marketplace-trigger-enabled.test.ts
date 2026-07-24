@@ -220,6 +220,20 @@ describe("createMarketplaceAgent — trigger rows", () => {
   });
 });
 
+/**
+ * D22: `applyCrewAgentUpdate`'s agent UPDATE is `.where(...).returning(...)` (the
+ * `instructions_customized = false` optimistic lock), while the pending-update
+ * UPDATE awaits `.where(...)` directly. Drizzle builders are both chainable and
+ * thenable; the stub has to be too.
+ */
+function agentUpdateResult() {
+  return {
+    returning: () => Promise.resolve([{ id: "agent-1" }]),
+    then: (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) =>
+      Promise.resolve(undefined).then(resolve, reject),
+  };
+}
+
 // ─── Step 4b: insert site #2 — crew-updater's re-insert ──────────────────────
 //
 // Adoption/update must not silently re-enable a trigger the catalog disabled.
@@ -233,7 +247,7 @@ describe("applyCrewAgentUpdate — trigger re-insert", () => {
     updateBody.value = body;
     const triggerRows: Array<Record<string, unknown>> = [];
     const tx = {
-      update: () => ({ set: () => ({ where: () => Promise.resolve(undefined) }) }),
+      update: () => ({ set: () => ({ where: () => agentUpdateResult() }) }),
       insert: () => ({
         values: (row: Record<string, unknown>) => {
           triggerRows.push(row);
@@ -254,6 +268,9 @@ describe("applyCrewAgentUpdate — trigger re-insert", () => {
         runtimeConfig: {},
         skillKeys: [],
         templateVersion: "0.0.1",
+        // D22: provably untouched, so the customization gate lets the update run.
+        // These suites are about triggers, not about the gate.
+        instructionsCustomized: false,
       },
       catalogItem: ENGINEER_ITEM,
       instructionsService: {
@@ -302,7 +319,7 @@ describe("applyCrewAgentUpdate — protected agents keep their triggers (D23)", 
     const inserted: Array<Record<string, unknown>> = [];
     let deleteCount = 0;
     const tx = {
-      update: () => ({ set: () => ({ where: () => Promise.resolve(undefined) }) }),
+      update: () => ({ set: () => ({ where: () => agentUpdateResult() }) }),
       insert: () => ({
         values: (row: Record<string, unknown>) => {
           inserted.push(row);
@@ -328,6 +345,9 @@ describe("applyCrewAgentUpdate — protected agents keep their triggers (D23)", 
         runtimeConfig: {},
         skillKeys: [],
         templateVersion: "0.0.1",
+        // D22: provably untouched, so the customization gate lets the update run.
+        // These suites are about triggers, not about the gate.
+        instructionsCustomized: false,
       },
       catalogItem: item,
       instructionsService: {

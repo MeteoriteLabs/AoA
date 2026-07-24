@@ -20,40 +20,106 @@ export interface CrewAgentRow {
   runtimeConfig: Record<string, unknown> | null;
   skillKeys: string[];
   templateVersion: string | null;
+  /**
+   * D22 gate input. `false` = provably untouched → replaceable. `true` = edited.
+   * `null`/absent = unknown → treated as edited. See `agents.instructionsCustomized`.
+   */
+  instructionsCustomized: boolean | null;
+}
+
+/**
+ * Thrown when the agent's instruction bundle is (or may be) founder-edited, so
+ * a full replacement would destroy work. The caller falls back to notify.
+ *
+ * Mirrors `SkillCustomizedError` deliberately — the two are the same product
+ * rule applied to the two customizable artifact kinds.
+ */
+export class AgentInstructionsCustomizedError extends Error {
+  constructor(
+    readonly agentId: string,
+    readonly state: boolean | null | undefined,
+  ) {
+    super(
+      `Agent ${agentId} instruction bundle is ${state === true ? "customized" : "of unknown provenance"}; ` +
+        "skipping full-replacement update",
+    );
+    this.name = "AgentInstructionsCustomizedError";
+  }
+}
+
+/**
+ * Is this row safe to full-replace? Only a hard `false` qualifies.
+ *
+ * Fails closed on `null`/`undefined`: a row whose customization state was never
+ * recorded is exactly the row whose edits we cannot see.
+ */
+function isReplaceable(state: boolean | null | undefined): boolean {
+  return state === false;
 }
 
 /**
  * Apply a full-replacement update to a single crew agent.
  *
- * DESIGN DECISION: instruction files are app code, not user config.
- * replaceExisting: true → ALL files replaced (no preservation of edits).
- * Also replaces: skillKeys, runtimeConfig.aoa.toolAllowlist, templateVersion.
- * Triggers are replaced (DELETE + re-INSERT) from catalog definition.
+ * ── D22: instruction files are FOUNDER CONFIG, not app code ─────────────────
+ *
+ * This module previously asserted the opposite, verbatim:
+ *
+ * > "DESIGN DECISION: instruction files are app code, not user config.
+ * >  replaceExisting: true → ALL files replaced (no preservation of edits)."
+ *
+ * That is **reversed** (Decision #114 / D22). Agent instruction bundles are
+ * founder-editable through a first-class editor (`routes/agents.ts`
+ * `/agents/:id/instructions-bundle*`), which is the whole reason that editor
+ * exists — so treating what it writes as disposable app code made every catalog
+ * bump a silent, unrecoverable data loss. Edits are now tracked exactly like
+ * skill edits (`company_skills.customized`): a customized agent routes to
+ * NOTIFY, never to replace.
+ *
+ * What is still fully replaced, for a row that is provably untouched:
+ * instructions, `skillKeys`, `runtimeConfig.aoa.toolAllowlist`,
+ * `templateVersion`, and triggers (DELETE + re-INSERT).
  *
  * Deliberately does NOT touch `name`, `role`, `title`, `icon`, `capabilities`,
  * `permissions`, `metadata` or `adapterType` — those are the founder's, not the
  * catalog's.
  *
  * **D23 exception:** for a protected AoA agent the trigger replacement is
- * skipped entirely (see the guard at the DELETE below). Everything else —
- * instructions, `skillKeys`, `toolAllowlist`, `templateVersion` — is still
- * fully replaced, so this is a narrow carve-out for the one field whose loss is
- * silent and unrecoverable, not a general exemption.
+ * skipped entirely (see the guard at the DELETE below). That carve-out is
+ * unchanged by D22 and composes with it: D22 decides *whether* this function
+ * runs at all, D23 narrows *what* it writes once it does.
  *
- * ⚠️ **THIS IS NOT ATOMIC, AND ITS DESTRUCTIVE HALF IS NOT ROLLED BACK.**
- * Network fetches happen before the transaction, but so does
- * `instructionsService.materializeManagedBundle(..., { replaceExisting: true })`
- * — which opens with `fs.rm(rootPath, { recursive: true, force: true })` on the
- * agent's managed-instructions root (`agent-instructions.ts`). That directory
- * is where a founder's edits live (`routes/agents.ts` exposes an editor for
- * it). If the transaction below then fails, the DB row is unchanged but the
- * founder's instruction files are **already gone and unrecoverable**.
+ * ── Ordering is load-bearing ────────────────────────────────────────────────
  *
- * That is tolerable here only because this function runs behind
- * `agentUpdatePolicy` — a founder who chose `auto` opted into full replacement.
- * Do NOT call it from a path that has not consulted that policy. (T2.3b's crew
- * repair deliberately does not: it adopts the row POINTER and leaves content to
- * this policy-respecting path. See `services/crew-repair.ts`.)
+ * The D22 gate runs FIRST, before any fetch and before
+ * `materializeManagedBundle(..., { replaceExisting: true })` — whose first act
+ * is `fs.rm(rootPath, { recursive: true, force: true })` on the directory
+ * holding the founder's edits (`agent-instructions.ts`), outside any
+ * transaction. A gate placed inside the transaction would throw *after* the
+ * files were already gone, which is no gate at all.
+ *
+ * ⚠️ **Residual race, stated honestly.** The gate reads a snapshot taken by the
+ * caller. A founder edit that commits between that read and the `fs.rm` is
+ * still lost on disk. The transactional `instructions_customized = false`
+ * predicate below closes the *database* half — the row is never stamped as
+ * updated in that case, so the founder still sees a pending update — but it
+ * cannot un-delete files. Closing the disk half needs the edit routes and this
+ * path to share a lock; not done, and not claimed.
+ *
+ * ⚠️ **The write is still not atomic with the filesystem.** If the transaction
+ * fails after a successful materialize, the row keeps its old `templateVersion`
+ * while the bundle on disk already holds new catalog content. That is now a
+ * catalog-vs-catalog inconsistency rather than destroyed founder work, and the
+ * next pass converges it.
+ *
+ * Do NOT call this from a path that has not consulted `agentUpdatePolicy`.
+ * (T2.3b's crew repair deliberately does not: it adopts the row POINTER and
+ * leaves content to this policy-respecting path. See `services/crew-repair.ts`.
+ * Its adopted rows carry `instructionsCustomized = null`, so they route to
+ * notify here — correct, because repair genuinely cannot know whether the
+ * legacy bundle it adopted was edited.)
+ *
+ * @throws {AgentInstructionsCustomizedError} when the bundle is, or may be,
+ * founder-edited. Callers must catch and fall back to notify.
  */
 export async function applyCrewAgentUpdate(opts: {
   db: Db;
@@ -62,6 +128,11 @@ export async function applyCrewAgentUpdate(opts: {
   instructionsService: AgentInstructionsServiceLike;
 }): Promise<void> {
   const { db, agentRow, catalogItem, instructionsService } = opts;
+
+  // D22 GATE — before the fetch, and above all before the fs.rm.
+  if (!isReplaceable(agentRow.instructionsCustomized)) {
+    throw new AgentInstructionsCustomizedError(agentRow.id, agentRow.instructionsCustomized);
+  }
 
   // D23: is this row a protected AoA agent? `catalogItem.id` is the origin the
   // row is being updated against, which is the strongest identity signal
@@ -110,16 +181,35 @@ export async function applyCrewAgentUpdate(opts: {
   };
 
   await db.transaction(async (tx) => {
-    await tx
+    // D22 optimistic lock. `instructions_customized = false` in the WHERE means
+    // a founder edit that committed since the gate above wins: RETURNING comes
+    // back empty and we throw instead of stamping the row as updated. NULL rows
+    // never satisfy `= false`, so an unknown-provenance row is excluded here too
+    // (defence in depth behind the gate).
+    //
+    // `instructionsCustomized: false` is re-asserted in the SET so the column
+    // stays a statement about the CURRENT bundle: after this commit the bundle
+    // on disk is catalog content again. It is what makes the flag meaningful for
+    // T2.7's merge path, which will set it back to `true`.
+    const updatedRows = await tx
       .update(agents)
       .set({
         skillKeys: template.skillKeys,
         runtimeConfig: updatedRc,
         templateVersion: catalogItem.version,
+        instructionsCustomized: false,
         ...(materialized ? { adapterConfig: materialized.adapterConfig } : {}),
         updatedAt: new Date(),
       })
-      .where(eq(agents.id, agentRow.id));
+      .where(and(eq(agents.id, agentRow.id), eq(agents.instructionsCustomized, false)))
+      .returning({ id: agents.id });
+
+    if (updatedRows.length === 0) {
+      // Either a concurrent founder edit flipped the flag, or the row vanished.
+      // Both must abort the transaction: triggers and the pending-update row
+      // below must not be written against an agent we did not actually update.
+      throw new AgentInstructionsCustomizedError(agentRow.id, true);
+    }
 
     // Replace triggers: delete existing, re-insert from catalog.
     // `enabled` is taken from the catalog (T2.3d) — an update must not silently
@@ -173,8 +263,16 @@ export async function applyCrewAgentUpdate(opts: {
 
 /**
  * Check all installed crew agents against the catalog for new versions.
- * auto policy + within window → apply immediately (silent, no notification).
- * notify policy or outside window → record pending_update + updateAvailable notification.
+ *
+ * - auto policy + within window + **provably untouched instructions** → apply
+ *   immediately (silent, no notification).
+ * - notify policy, outside window, or **customized/unknown instructions** →
+ *   record pending_update + updateAvailable notification.
+ *
+ * D22: the customization test is deliberately routed through the SAME notify
+ * machinery as the policy test rather than a parallel path, so a customized
+ * agent produces the ordinary founder-visible pending-update row that T2.7's
+ * diff/merge will act on.
  */
 export async function checkCrewUpdates(opts: {
   db: Db;
@@ -196,6 +294,7 @@ export async function checkCrewUpdates(opts: {
       skillKeys: agents.skillKeys,
       templateOrigin: agents.templateOrigin,
       templateVersion: agents.templateVersion,
+      instructionsCustomized: agents.instructionsCustomized,
     })
     .from(agents)
     .where(and(eq(agents.companyId, companyId), eq(agents.kind, "aoa")));
@@ -208,8 +307,14 @@ export async function checkCrewUpdates(opts: {
     if (!catalogItem) continue;
     if (catalogItem.version === agent.templateVersion) continue;
 
+    // D22: a customized (or unknown-provenance) bundle is never auto-replaced,
+    // whatever the policy says. `agentUpdatePolicy: "auto"` is consent to take
+    // catalog content over CATALOG content — not consent to discard the
+    // founder's own edits, which they would have no way to recover.
     const autoApply =
-      settings.agentUpdatePolicy === "auto" && isWithinUpdateWindow(settings.updateWindow);
+      settings.agentUpdatePolicy === "auto" &&
+      isWithinUpdateWindow(settings.updateWindow) &&
+      isReplaceable(agent.instructionsCustomized);
 
     if (autoApply) {
       try {
@@ -226,6 +331,19 @@ export async function checkCrewUpdates(opts: {
           "marketplace: crew auto-update failed — notifying",
         );
       }
+    } else if (
+      settings.agentUpdatePolicy === "auto" &&
+      !isReplaceable(agent.instructionsCustomized)
+    ) {
+      logger.info(
+        {
+          agentId: agent.id,
+          catalogItemId: catalogItem.id,
+          instructionsCustomized: agent.instructionsCustomized,
+        },
+        "marketplace: crew agent instructions are customized (or of unknown provenance) — " +
+          "routing the update to notify instead of full replacement (D22)",
+      );
     }
 
     // Notify path: record pending update + fire notification only on first detection.

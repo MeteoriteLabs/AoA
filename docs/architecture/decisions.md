@@ -1374,3 +1374,100 @@ uninstall must never destroy them.
 
 **Related.** [Decision #111] (company-wide teams), [Decision #112] (marketplace
 crew at company creation).
+
+---
+
+## Decision #114 — Agent instruction bundles are founder config, not app code (D22) (2026-07-24)
+
+**This reverses a shipped design.** `services/marketplace-install/crew-updater.ts`
+opened with, verbatim:
+
+> `DESIGN DECISION: instruction files are app code, not user config.`
+> `replaceExisting: true → ALL files replaced (no preservation of edits).`
+
+That rationale is **withdrawn**. It was internally inconsistent with the rest of
+the product: `routes/agents.ts` ships a first-class instructions editor
+(`GET/PATCH /agents/:id/instructions-bundle`, `PUT/DELETE
+…/instructions-bundle/file`, `PATCH …/instructions-path`) whose entire purpose
+is to let a founder edit those files — and a founder editing an AoA agent is
+gated to `founder` role specifically because the edit is consequential. Calling
+the output of that editor "app code" made every catalog version bump a silent,
+unrecoverable deletion (`materializeManagedBundle`'s first act is
+`fs.rm(rootPath, { recursive: true, force: true })`), with no diff, no
+notification, and no backup. Skills already had the opposite rule
+(`company_skills.customized` → `SkillCustomizedError` → notify), so the same
+artifact class was governed two different ways for no stated reason.
+
+**Decisions.**
+
+1. **Agent instruction edits are customizations, governed exactly like skill
+   edits.** A customized agent routes to **notify** — the ordinary
+   `marketplace_pending_updates` row + `updateAvailable` notification — never to
+   full replacement. `agentUpdatePolicy: "auto"` is consent to take catalog
+   content over *catalog* content; it is not consent to discard the founder's
+   own work, which they have no way to recover.
+
+2. **The flag is a column on `agents`: `instructions_customized`, mirroring
+   `company_skills.customized`.** Not a `metadata` key — it participates in an
+   optimistic-lock `WHERE instructions_customized = false … RETURNING`, the same
+   concurrency guard `applySkillUpdate` uses.
+
+3. **It is THREE-state, unlike the skills flag.** `false` = AoA materialized
+   this bundle from a catalog template and no edit has been observed since;
+   `true` = an edit landed through the instructions API; **`null` = unknown**.
+   `null` is treated as `true` (fail closed).
+
+4. **`null` is the honest answer for rows that predate the column, and there is
+   no backfill.** Two candidate historical witnesses were investigated and both
+   are unsound: `agent_config_revisions` only records a row when
+   `changedKeys.length > 0`, and an instruction file write on an
+   already-managed bundle leaves `adapterConfig` byte-identical — so the edits
+   that matter most are exactly the ones with no revision row. A content hash
+   has no pre-existing baseline to compare against, so it cannot answer the
+   historical question either. Defaulting the column to `false` would assert
+   "untouched" about every pre-existing row, which is the one claim the data
+   cannot support and the precise harm this decision exists to prevent.
+   **Consequence, accepted:** every crew agent installed before this migration
+   routes to notify on its next catalog bump, including untouched ones. Until
+   T2.7 lands the agent diff/merge path, `POST /updates/:id/apply` still answers
+   501 for `itemType: "agent"`, so those updates sit as pending rows. That is a
+   visible, reversible cost; silent data loss is neither.
+
+5. **Detection is an explicit flag set by the edit routes, not a content hash.**
+   Chosen because it is the pattern `company_skills` already uses, because it
+   costs no filesystem I/O in a pass that walks every crew agent of every
+   company at boot, and because a disk-only hash would miss the legacy
+   `promptTemplate` pseudo-file, which lives in `adapterConfig` rather than on
+   disk. **What it does NOT detect, stated plainly:** an edit made directly on
+   the filesystem outside the API (the bundle root is a real directory under the
+   founder's home); an edit made before this column existed; and any future
+   write path that bypasses these routes. It also *over*-detects: a no-op write
+   of byte-identical content marks the agent customized. A false "customized"
+   costs one notification; a false "untouched" costs the founder's work.
+
+6. **The gate runs before the fetch and before `materializeManagedBundle`.**
+   Ordering is load-bearing: a check inside the transaction would throw *after*
+   the `fs.rm` had already deleted the edits. The transactional
+   `instructions_customized = false` predicate is defence in depth for the
+   concurrent case — it stops the DB claiming the update applied — but it cannot
+   un-delete files. The residual window (gate read → `fs.rm`) is not closed;
+   closing it needs the edit routes and the updater to share a lock. Not done,
+   not claimed.
+
+7. **`applyCrewAgentUpdate` throws `AgentInstructionsCustomizedError` rather
+   than silently skipping,** so callers must make an explicit fallback choice.
+   `checkCrewUpdates` catches it into the existing notify path.
+
+8. **Composes with, and does not weaken, [Decision #113].** D22 decides
+   *whether* `applyCrewAgentUpdate` runs; D23's protected-agent carve-out
+   narrows *what* it writes once it does. Both gates are independent and both
+   fail closed.
+
+9. **This does not change T2.3b's pointer-only adoption.** Repaired rows carry
+   `instructions_customized = null`, so they route to notify — which is correct:
+   repair genuinely cannot know whether the legacy bundle it adopted was edited.
+   D22 makes content adoption *safe* to build; it does not perform it. Adopting
+   content for those rows is T2.7's diff/merge.
+
+**Related.** [Decision #112] (marketplace crew at company creation),
+[Decision #113] (protected AoA agents), T2.7 (agent diff/merge).

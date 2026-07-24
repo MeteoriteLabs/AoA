@@ -471,6 +471,10 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
   // "improve" this by calling `applyCrewAgentUpdate` here: it deletes the
   // agent's managed-instructions directory outside any transaction. It is
   // founder-only because it changes how the company's agents are GOVERNED.
+  //
+  // D22 (Decision #114): adopted rows carry `instructions_customized = NULL`
+  // (unknown), which `crew-updater` treats as customized — so the follow-on
+  // content change is a founder-visible pending update even under `auto`.
   router.post("/crew/repair", async (req, res) => {
     assertBoard(req);
     const companyId = (req.params as Record<string, string>).companyId;

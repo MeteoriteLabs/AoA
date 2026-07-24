@@ -6,6 +6,7 @@ import {
   integer,
   timestamp,
   jsonb,
+  boolean,
   index,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
@@ -43,6 +44,26 @@ export const agents = pgTable(
     skillKeys: jsonb("skill_keys").$type<string[]>().notNull().default([]),
     templateOrigin: text("template_origin"),
     templateVersion: text("template_version"),
+    /**
+     * D22 — has anyone edited this agent's instruction bundle since AoA
+     * materialized it from the catalog? Mirrors `company_skills.customized`.
+     *
+     * **Deliberately THREE-STATE, unlike the skills flag.**
+     * - `false` — AoA wrote this bundle from a catalog template and no edit has
+     *   gone through the API since. Safe to full-replace on a catalog bump.
+     * - `true`  — a founder edit landed through one of the
+     *   `/agents/:id/instructions*` routes. Never full-replace; notify instead.
+     * - `null`  — UNKNOWN. The row predates this column, so no edit could have
+     *   been observed. Treated exactly like `true` (fail closed): the harm this
+     *   column exists to prevent is silently destroying edits we cannot see, and
+     *   a row we have never observed is precisely that case.
+     *
+     * Nullable with NO default on purpose: a `false` default would assert
+     * "untouched" about every pre-existing row, which is the one claim the data
+     * cannot support. Insert paths that genuinely know the answer (marketplace
+     * install) write `false` explicitly.
+     */
+    instructionsCustomized: boolean("instructions_customized"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

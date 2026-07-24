@@ -1275,6 +1275,13 @@
       "when": 1784873201946,
       "tag": "0181_light_overlord",
       "breakpoints": true
+    },
+    {
+      "idx": 182,
+      "version": "7",
+      "when": 1784901664857,
+      "tag": "0182_friendly_stature",
+      "breakpoints": true
     }
   ]
 }

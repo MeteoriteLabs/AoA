@@ -643,9 +643,31 @@ describe.skipIf(
       ADOPTED_TEMPLATE_VERSION,
     );
 
-    // auto: the founder opted into full replacement, so now it applies. This is
-    // the discriminator — it proves the `notify` result above is the POLICY
-    // deciding, not repair simply being unable to update anything.
+    // D22 (Decision #114): `auto` is NOT enough on its own any more. An adopted
+    // row carries `instructions_customized IS NULL` — repair cannot know whether
+    // the legacy bundle it adopted was edited — and unknown fails closed. This
+    // assertion was inverted before D22 (it expected the founder's file to be
+    // gone); that was the reversed design, and it is exactly the harm D22
+    // exists to prevent.
+    await checkCrewUpdates({
+      db,
+      companyId,
+      catalogItems: CATALOG_ITEMS,
+      settings: AUTO_SETTINGS,
+      instructionsService: agentInstructionsService(),
+    });
+    expect(await readIfPresent(founderFile)).toBe(FOUNDER_EDIT_BODY);
+    expect((await crewRows(companyId)).find((r) => r.name === "Scout")!.template_version).toBe(
+      ADOPTED_TEMPLATE_VERSION,
+    );
+
+    // THE DISCRIMINATOR. Same company, same catalog, same `auto` settings — the
+    // ONLY change is that the row is now provably untouched. It applies, which
+    // proves both refusals above are the D22 gate deciding, not the pipeline
+    // being structurally unable to update an adopted row.
+    await db.execute(sql`
+      UPDATE agents SET instructions_customized = false WHERE id = ${scout.id}
+    `);
     await checkCrewUpdates({
       db,
       companyId,

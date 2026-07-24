@@ -20,6 +20,14 @@
  * so it routes the content change through the company's own `agentUpdatePolicy`
  * — auto-apply, or a founder-visible pending update + notification.
  *
+ * **D22 amendment (Decision #114).** An adopted row leaves `agents`'
+ * `instructions_customized` as NULL — repair genuinely cannot tell whether the
+ * legacy bundle it just adopted was founder-edited. `crew-updater` treats NULL
+ * as customized, so the follow-on content change routes to NOTIFY even under
+ * `agentUpdatePolicy: "auto"`. That strengthens the pointer-only stance below
+ * rather than replacing it: repair still adopts nothing but the pointer, and the
+ * update path no longer has a mode in which it silently overwrites edits.
+ *
  * The alternative — having repair call `applyCrewAgentUpdate` itself — was
  * built first and rejected. It runs
  * `materializeManagedBundle(..., { replaceExisting: true })`, whose first act is

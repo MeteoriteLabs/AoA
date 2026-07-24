@@ -1372,7 +1372,7 @@ export function agentRoutes(db: Db) {
     const actor = getActorInfo(req);
     const agent = await svc.update(
       id,
-      { adapterConfig: normalizedAdapterConfig },
+      { adapterConfig: normalizedAdapterConfig, instructionsCustomized: true },
       {
         recordRevision: {
           createdByAgentId: actor.agentId,
@@ -2129,6 +2129,24 @@ export function agentRoutes(db: Db) {
   });
 
   // ── Agent Instructions Bundle routes ──
+  //
+  // D22 (Decision #114): every route below that can change what an agent's
+  // instructions SAY stamps `instructionsCustomized: true`. That flag is what
+  // stops `marketplace-install/crew-updater.ts` from full-replacing the bundle
+  // on the next catalog bump — see that module's docblock.
+  //
+  // ⚠️ This flag records edits **that went through this API**. It does NOT
+  // detect a file edited directly on disk (the bundle root is a real directory
+  // under the founder's home), nor an edit made before the column existed —
+  // those rows stay NULL, which the updater treats as customized. It is also
+  // deliberately one-way: it is set on a no-op write (content identical to the
+  // catalog's), because a false "customized" costs a notification while a false
+  // "untouched" costs the founder's work. Nothing here ever clears it; only a
+  // successful catalog replacement does.
+  //
+  // `instructionsCustomized` is absent from `updateAgentSchema`, and `validate`
+  // re-assigns `req.body` from the parsed result, so a client cannot clear the
+  // flag through `PATCH /agents/:id`.
 
   router.get("/agents/:id/instructions-bundle", async (req, res) => {
     const id = req.params.id as string;
@@ -2158,7 +2176,7 @@ export function agentRoutes(db: Db) {
     );
     await svc.update(
       id,
-      { adapterConfig: normalizedAdapterConfig },
+      { adapterConfig: normalizedAdapterConfig, instructionsCustomized: true },
       {
         recordRevision: {
           createdByAgentId: actor.agentId,
@@ -2221,7 +2239,7 @@ export function agentRoutes(db: Db) {
     );
     await svc.update(
       id,
-      { adapterConfig: normalizedAdapterConfig },
+      { adapterConfig: normalizedAdapterConfig, instructionsCustomized: true },
       {
         recordRevision: {
           createdByAgentId: actor.agentId,
@@ -2270,7 +2288,7 @@ export function agentRoutes(db: Db) {
     );
     await svc.update(
       id,
-      { adapterConfig: normalizedAdapterConfig },
+      { adapterConfig: normalizedAdapterConfig, instructionsCustomized: true },
       {
         recordRevision: {
           createdByAgentId: actor.agentId,

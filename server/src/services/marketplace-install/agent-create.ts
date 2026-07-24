@@ -102,6 +102,12 @@ export async function createMarketplaceAgent(opts: {
         skillKeys: template.skillKeys,
         templateOrigin: catalogItem.id,
         templateVersion: catalogItem.version,
+        // D22: a row this function just minted has, by construction, never been
+        // edited — everything in it came from the catalog template. This is the
+        // one place that can honestly assert `false`, and asserting it here is
+        // what keeps freshly-installed agents inside the auto-update path.
+        // (Rows NOT written by this function stay NULL = unknown = fail closed.)
+        instructionsCustomized: false,
         metadata: template.metadata,
       })
       .returning();
