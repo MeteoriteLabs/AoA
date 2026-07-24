@@ -4,6 +4,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Button } from "@/components/ui/button";
 import { PdfDocumentViewer } from "@/components/viewers/PdfDocumentViewer";
+import { parseCsv } from "./csv-parse";
 import type { ViewerResolution } from "./viewer-registry";
 
 interface SharedContentViewerProps {
@@ -262,13 +263,6 @@ function CsvOutputViewer({ content }: { content: string }) {
       </table>
     </div>
   );
-}
-
-function parseCsv(content: string): string[][] {
-  return content
-    .split(/\r?\n/)
-    .filter((line) => line.trim().length > 0)
-    .map((line) => line.split(",").map((cell) => cell.trim()));
 }
 
 function CanvasOutputViewer({ content }: { content: string }) {
