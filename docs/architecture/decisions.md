@@ -1242,6 +1242,36 @@ The two items deferred by Decision #107 shipped together on `feat/inbox-hub-tabb
 
 8. **Company-wide is a visible state, not a blank.** The Teams list renders a distinct **"Company-wide"** pill rather than the `—` used for an unresolvable department id, and search matches that label so the crew is findable by scope (`ui/src/components/team/TeamCard.tsx`, `ui/src/pages/TeamsListPage.tsx`).
 
-**Known follow-up:** `dispatchInstall` still hard-throws for a team install without a department (`server/src/services/marketplace-install/orchestrator.ts:243`). That gate sits on the user-initiated path and was deliberately left closed; the crew bootstrap (T2.3) must either bypass the orchestrator or revisit it.
+**Resolved follow-up (T2.3, 2026-07-24):** `dispatchInstall` no longer hard-throws for a team install without a department. The throw was a redundant backstop — the user-facing guard is the route's 400 (point 5 above), which fires *before* `startInstallOperation` — so relaxing it loosened no HTTP path. The relaxation is **null-only**: a supplied department id is still forwarded verbatim to `installTeam`, which validates it. See Decision #112.
 
 **Plan:** `docs/aoa/plans/2026-07-24-phase2-marketplace-provisioning.md` (T2.1).
+
+---
+
+## Decision #112 — Company creation installs the crew from the marketplace, and degrades loudly (D21/P8, P8c) (2026-07-24)
+
+**Status:** Locked 2026-07-24 (Phase 2 marketplace provisioning, T2.3).
+
+1. **Company create installs `team:aoa-curated/default-crew`.** The legacy `ensure-*` seeders write no `templateOrigin`; the boot backfill stamps them `…@legacy`; and `crew-updater.ts` skips `@legacy` rows **forever**. Every company was therefore permanently frozen out of the update pipeline that was already built and running. Installing the marketplace team at create time is what makes a company **born updateable**.
+
+2. **Through the orchestrator, not straight to `installTeam`.** `startInstallOperation` + `dispatchInstall` own the `marketplace_install_operations` record, `cascadeResults`, and idempotency-key dedupe — which T2.7 (diff/merge) and T2.8 (re-materialization) build on. A second, divergent bootstrap path would fork them.
+
+3. **Deterministic idempotency key `bootstrap-crew:<companyId>`.** `startInstallOperation` returns the existing operation on a key hit, and the bootstrap **dispatches only a freshly-`pending` row**. A retried or concurrent create therefore cannot double-install (company create already retries on issue-prefix collision, so this is reachable). Dispatching a non-pending row would re-run the team installer and mint a renamed duplicate roster.
+
+4. **Catalog resolution is a bounded wait, not a cache read.** cached catalog → (bounded) live sync, which itself falls back to the bundled snapshot → `null`. The boot sync is fire-and-forget (`startSyncLoop` → `void this.sync()`), so a company created seconds after boot would otherwise read an empty cache and be provisioned `@legacy` — non-deterministically, and invisibly afterwards. `MarketplaceCatalogService.ensureCatalogAvailable` **joins** the in-flight sync (deduped) under `CATALOG_AVAILABILITY_TIMEOUT_MS` (12s, deliberately shorter than the 30s CDN timeout so a hung CDN cannot hold onboarding open).
+
+   **What this guarantees vs. makes likely:** it *guarantees* create never loses to the boot sync merely by ordering — a cold cache waits for the same attempt instead of racing it. It does **not** guarantee a marketplace roster: a CDN that is slow past the budget, or unreachable with no bundled snapshot present, still degrades. That is intentional.
+
+5. **`app.ts` registers the catalog service in a process-wide registry.** The service is constructed at the app layer (it owns the bundled-snapshot provider); company create sits far below the route layer. With **no** service registered — every unit and integration test that is not explicitly exercising this path — resolution is cache-only and degrades immediately. That is the seam that keeps the test suite off the network.
+
+6. **The degrade is lossy, and the log says which roles are lost.** The legacy seeders cover 8 roles; the crew team declares 9. There is **no `ensure-reviewer.ts` anywhere in the tree**, so a company provisioned during a marketplace outage is permanently missing its Reviewer with nothing in the data to distinguish it from a complete roster. `describeLegacyCoverageGap` computes the gap from the live team item's `requires[]` when a catalog is in hand (authoritative, catches roster drift) and from a static last-known map otherwise, and the degrade log names the gap in both the message and the structured context. A generic "install failed, using legacy seeders" line is not sufficient to diagnose this later.
+
+7. **The degrade calls `ensureCrewAgents`, never a union.** `ensureInfrastructureAgents` has already run unconditionally by then (P8d / T2.2). There is deliberately no "seed everything" export.
+
+8. **The create-time `isCrewMarketplaceManaged` gate SURVIVES.** T2.3 was specified to delete it as unreachable. It was kept: it is what pins the **read-the-gate-before-any-seeding** ordering that `aoa-bootstrap-wiring.test.ts` (`stampsOriginOnSeed`) guards — a read-after-write gate would let a company see its own freshly-inserted Commander, conclude "marketplace-managed", and skip its entire crew — and it correctly short-circuits a concurrent create that already installed the marketplace crew. It costs one indexed query.
+
+**Known limitation — "offline" means *catalog* offline, not *install* offline.** The bundled snapshot carries only the catalog **index**. `installTeam` still fetches `team.json` and each `agent.json` over the network (`fetchCatalogResource`), and published skills carry `content.inline === null`, so their bodies are fetched too. A genuinely network-isolated instance resolves a catalog from the snapshot and then **fails the install**, degrading to legacy. True offline provisioning would require bundling resource bodies, not just the index — not built, not claimed.
+
+**Key files:** `server/src/services/crew-provisioning.ts`, `server/src/services/marketplace-install/crew-bootstrap.ts`, `server/src/services/aoa-marketplace.ts`, `server/src/services/companies.ts`, `server/src/services/marketplace-install/orchestrator.ts`.
+
+**Plan:** `docs/aoa/plans/2026-07-24-phase2-marketplace-provisioning.md` (T2.3).

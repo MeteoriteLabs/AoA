@@ -313,8 +313,14 @@ describe("dispatchInstall", () => {
     expect(publish).toHaveBeenCalledWith(expect.objectContaining({ type: "marketplace.install.failed" }));
   });
 
-  it("throws when team install missing targetDepartmentId", async () => {
-    const installTeamMock = vi.fn();
+  // T2.3 / D21 (Decision #111): a team install with NO targetDepartmentId is a
+  // COMPANY-WIDE install, not an error. The orchestrator used to throw here;
+  // that check was a redundant backstop for traffic the route already rejects
+  // with a 400 (routes/marketplace-installs.ts, before startInstallOperation),
+  // and it blocked the crew bootstrap at company create — which runs before any
+  // department exists.
+  it("team install with a null targetDepartmentId installs company-wide (D21)", async () => {
+    const installTeamMock = vi.fn(async () => ({ teamId: "team-1", cascadeResults: [] }));
     const updateOp = vi.fn(async () => {});
     const publish = vi.fn();
 
@@ -335,11 +341,43 @@ describe("dispatchInstall", () => {
       publishLiveEvent: publish,
     });
 
-    expect(installTeamMock).not.toHaveBeenCalled();
+    // The null must be PASSED THROUGH, not defaulted to something — installTeam
+    // is what decides company-wide vs departmental.
+    expect(installTeamMock).toHaveBeenCalledWith(
+      expect.objectContaining({ targetDepartmentId: null, companyId: "c1" }),
+    );
     expect(updateOp).toHaveBeenCalledWith("op-uuid-1", expect.objectContaining({
-      status: "failure",
-      errorMessage: expect.stringMatching(/targetDepartmentId/),
+      status: "success",
+      resultEntityId: "team-1",
     }));
+  });
+
+  // Discriminator for the relaxation above: only NULL is tolerated. A supplied
+  // department id must still be forwarded verbatim so installTeam's
+  // exists/ownership/type validation runs — relaxing to "ignore the field"
+  // would silently turn a bad department id into a company-wide install.
+  it("team install with a department id still forwards it (the relaxation is null-only)", async () => {
+    const installTeamMock = vi.fn(async () => ({ teamId: "team-2", cascadeResults: [] }));
+    const TEAM_ITEM = { ...SKILL, id: "team:test", type: "team" as const };
+
+    await dispatchInstall({
+      operation: { id: "op-uuid-2", catalogItemId: TEAM_ITEM.id, itemType: "team", companyId: "c1", targetDepartmentId: "dept-9" } as any,
+      catalogItem: TEAM_ITEM,
+      catalog: { ...CATALOG, items: [TEAM_ITEM] },
+      db: {} as any,
+      installers: {
+        installSkill: vi.fn(),
+        installAgent: vi.fn(),
+        installTeam: installTeamMock,
+        installPlugin: vi.fn(),
+      },
+      updateOperation: vi.fn(async () => {}),
+      publishLiveEvent: vi.fn(),
+    });
+
+    expect(installTeamMock).toHaveBeenCalledWith(
+      expect.objectContaining({ targetDepartmentId: "dept-9" }),
+    );
   });
 
   it("publishes started event before installer runs", async () => {

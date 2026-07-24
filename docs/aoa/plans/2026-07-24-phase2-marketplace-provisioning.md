@@ -108,6 +108,34 @@ git commit -m "fix(crew): gate only crew seeders on marketplace management (Comm
 
 ### Pre-decided before implementation (2026-07-24) — do NOT relitigate mid-task
 
+> **Execution notes (2026-07-24) — what differed from this plan.**
+>
+> 1. **The pre-install gate was KEPT, not removed** (Step 5). After T2.2 it is
+>    `isCrewMarketplaceManaged`, and it is what pins the read-before-write
+>    ordering that `aoa-bootstrap-wiring.test.ts` (`stampsOriginOnSeed`)
+>    guards; it also short-circuits a concurrent create that already installed
+>    the crew. One indexed query. See Decision #112 point 8.
+> 2. **Step 3 as written is not achievable, and the plan's framing of it is
+>    wrong in a second way.** The bundled snapshot carries only the catalog
+>    **index**. `installTeam` fetches `team.json` + every `agent.json` over the
+>    network, and published skills have `content.inline === null` so their
+>    bodies are fetched too. So "creation never depends on the network" is
+>    FALSE: a genuinely offline instance resolves a catalog from the snapshot
+>    and then fails the install, degrading to legacy. The offline test proves
+>    what is actually true — *CDN* down + snapshot present + resource fetches
+>    stubbed → marketplace roster. Recorded as a known limitation on Decision
+>    #112.
+> 3. **`ensureAllCrewAgents` did not need deleting** — T2.2 had already
+>    deleted it. The degrade calls `ensureCrewAgents`, as specified.
+> 4. Hazards 2, 3 and 4 were all re-verified and all hold: no
+>    `ensure-reviewer.ts` exists (9 required agents vs 8 legacy seeders);
+>    `ui/src/aoa-marketplace-snapshot.json` is gitignored at `.gitignore:60`;
+>    the boot sync is unawaited at `aoa-marketplace.ts` `startSyncLoop`.
+> 5. Bonus finding: `loadCachedCatalog`'s docblock claimed it was "used by the
+>    company bootstrap path (companies.ts)". It had **zero** production
+>    callers. Corrected.
+
+
 A reviewer flagged that T2.3 hits a hard throw at `orchestrator.ts:243`
 (`"Team install requires targetDepartmentId"`), and that the choice was
 "bypass the orchestrator (losing the operation store + rollback) vs. revisit
@@ -137,9 +165,9 @@ Verified before deciding:
    the crew. Do not skip this — company create already retries on issue-prefix
    collision.
 
-- [ ] **Step 1: Read the existing pre-install gate** (`companies.ts:135-147`) and understand why it can never fire (it checks for a non-`@legacy` agent *before* any install could have run). Note T2.2 has since hoisted `ensureInternalAgentConfig` out of that block — do not push it back in.
-- [ ] **Step 2: Failing integration test (L4, real DB)** — a newly created company has the marketplace crew: real `agent:aoa-curated/…` `templateOrigin` (**not** `@legacy`), non-null `templateVersion`, and populated `skillKeys`. Model on `server/src/__tests__/*.integration.test.ts`; Windows-runnable (`initdbFlags: ["--encoding=UTF8","--locale=C"]`, honour `AOA_RUN_WIN_INTEGRATION=1`). **It must actually run — say so plainly if it skips.**
-- [ ] **Step 3: Failing test — offline path.** With the network stubbed out, the **bundled snapshot** produces the same roster (D11). This is the discriminator that proves creation never depends on the network.
+- [x] **Step 1: Read the existing pre-install gate** (`companies.ts:135-147`) and understand why it can never fire (it checks for a non-`@legacy` agent *before* any install could have run). Note T2.2 has since hoisted `ensureInternalAgentConfig` out of that block — do not push it back in.
+- [x] **Step 2: Failing integration test (L4, real DB)** — a newly created company has the marketplace crew: real `agent:aoa-curated/…` `templateOrigin` (**not** `@legacy`), non-null `templateVersion`, and populated `skillKeys`. Model on `server/src/__tests__/*.integration.test.ts`; Windows-runnable (`initdbFlags: ["--encoding=UTF8","--locale=C"]`, honour `AOA_RUN_WIN_INTEGRATION=1`). **It must actually run — say so plainly if it skips.**
+- [x] **Step 3: Failing test — offline path.** With the network stubbed out, the **bundled snapshot** produces the same roster (D11). This is the discriminator that proves creation never depends on the network.
 
   > **⚠️ This step as originally written is UNSOUND — read before writing it.**
   > Verified 2026-07-24:
@@ -154,7 +182,7 @@ Verified before deciding:
   > write a test whose outcome depends on whether `fetch-catalog` has been run,
   > you have written a test that lies.
 
-- [ ] **Step 3b: Failing test — the cold-cache race.** This is the failure mode most likely to ship silently, and nothing in the plan covered it.
+- [x] **Step 3b: Failing test — the cold-cache race.** This is the failure mode most likely to ship silently, and nothing in the plan covered it.
   **The problem:** the bundled snapshot only reaches the cache *inside*
   `syncCatalog`'s catch, and only when the cache is empty
   (`aoa-marketplace.ts:119-131`). The boot sync is **fire-and-forget** —
@@ -169,8 +197,8 @@ Verified before deciding:
   empty cache and a not-yet-completed sync still produces the marketplace
   roster. Assert on the resulting `templateOrigin`, not on whether a call was
   made.
-- [ ] **Step 4: Run → FAIL.**
-- [ ] **Step 5: Implement.** Call `installTeam("team:aoa-curated/default-crew")` from company create with `targetDepartmentId: null` (T2.1), live catalog → snapshot fallback. **Never block or fail company creation on install failure** — degrade to the legacy seeders and log loudly, so a marketplace outage cannot break onboarding. Remove the now-unreachable pre-install gate.
+- [x] **Step 4: Run → FAIL.**
+- [x] **Step 5: Implement.** Call `installTeam("team:aoa-curated/default-crew")` from company create with `targetDepartmentId: null` (T2.1), live catalog → snapshot fallback. **Never block or fail company creation on install failure** — degrade to the legacy seeders and log loudly, so a marketplace outage cannot break onboarding. Remove the now-unreachable pre-install gate.
 
   **Two constraints on the fallback, found during T2.2 review — do not rediscover:**
   1. **Call `ensureCrewAgents`, NOT `ensureAllCrewAgents`.** After T2.2,
@@ -187,8 +215,8 @@ Verified before deciding:
      nothing distinguishing it from a complete one. "Log loudly" must therefore
      name *which* roles the fallback could not provide — a generic "install
      failed, using legacy seeders" is not sufficient to diagnose this later.
-- [ ] **Step 6: Run → PASS.** Verify the legacy path still works as the fallback.
-- [ ] **Step 7: Verify + commit.**
+- [x] **Step 6: Run → PASS.** Verify the legacy path still works as the fallback.
+- [x] **Step 7: Verify + commit.**
 ```bash
 git commit -m "feat(marketplace): install the default crew from the marketplace at company creation"
 ```

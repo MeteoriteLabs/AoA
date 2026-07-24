@@ -27,6 +27,24 @@ const DEFAULT_CDN_URL =
 const SYNC_TIMEOUT_MS = 30_000;
 const SYNC_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6h, M.4 makes this configurable
 
+/**
+ * How long a caller that NEEDS a catalog (today: the company-create crew
+ * bootstrap) will wait for one before degrading.
+ *
+ * Sized to cover a cold boot: `startSyncLoop()` fires its first sync
+ * unawaited, so a company created seconds after boot would otherwise read an
+ * empty cache and be provisioned from the legacy seeders — permanently
+ * `@legacy`, permanently excluded from the update pipeline, and invisible
+ * afterwards. `ensureCatalogAvailable` joins that in-flight sync instead of
+ * racing it.
+ *
+ * Deliberately shorter than SYNC_TIMEOUT_MS: a *hung* CDN must not hold
+ * onboarding open for 30s. The bounded wait covers the common cold-cache case
+ * (CDN answers, or fails fast and the bundled snapshot lands); a genuinely
+ * stalled CDN degrades to the legacy seeders.
+ */
+export const CATALOG_AVAILABILITY_TIMEOUT_MS = 12_000;
+
 interface MarketplaceCatalogServiceDeps {
   db: Db;
   cdnUrl?: string;
@@ -35,10 +53,12 @@ interface MarketplaceCatalogServiceDeps {
 
 /**
  * Read the catalog from the DB cache without needing a service instance.
- * Used by the company bootstrap path (companies.ts) which runs before the
- * full MarketplaceCatalogService is wired. Returns null if no catalog has
- * been cached yet (caller should skip marketplace-install and fall back to
- * legacy seeders).
+ *
+ * This is the cache-only half of catalog resolution — it does NOT fetch and
+ * does NOT fall back to the bundled snapshot, so on a cold cache it returns
+ * `null` even though a catalog is moments away. Callers that need a catalog
+ * (the company-create crew bootstrap) must go through
+ * {@link resolveCatalogForBootstrap}, which layers the bounded wait on top.
  */
 export async function loadCachedCatalog(db: Db): Promise<MarketplaceCatalogFile | null> {
   const rows = await db
@@ -67,6 +87,7 @@ export class MarketplaceCatalogService {
   private readonly cdnUrl: string;
   private readonly bundledSnapshotProvider: () => Promise<MarketplaceCatalogFile | null>;
   private syncTimer: NodeJS.Timeout | null = null;
+  private inFlightSync: Promise<MarketplaceCatalogFile | null> | null = null;
 
   constructor(deps: MarketplaceCatalogServiceDeps) {
     this.db = deps.db;
@@ -77,13 +98,9 @@ export class MarketplaceCatalogService {
   /** Start the periodic sync loop. */
   startSyncLoop(): void {
     if (this.syncTimer) return;
-    void this.sync().catch((err) =>
-      logger.error({ err }, "marketplace: initial catalog sync failed"),
-    );
+    void this.runDedupedSync();
     this.syncTimer = setInterval(() => {
-      void this.sync().catch((err) =>
-        logger.error({ err }, "marketplace: catalog sync failed"),
-      );
+      void this.runDedupedSync();
     }, SYNC_INTERVAL_MS);
   }
 
@@ -91,6 +108,55 @@ export class MarketplaceCatalogService {
     if (this.syncTimer) {
       clearInterval(this.syncTimer);
       this.syncTimer = null;
+    }
+  }
+
+  /**
+   * Run `sync()`, but share one in-flight attempt across concurrent callers so
+   * the boot sync and a simultaneous company-create bootstrap issue a single
+   * CDN fetch rather than two. Never rejects — `sync()` already handles CDN
+   * failure internally; anything past that (e.g. a cache write error) is logged
+   * and reported as `null`.
+   */
+  private runDedupedSync(): Promise<MarketplaceCatalogFile | null> {
+    if (this.inFlightSync) return this.inFlightSync;
+    const started = this.sync().catch((err) => {
+      logger.error({ err }, "marketplace: catalog sync failed");
+      return null;
+    });
+    this.inFlightSync = started;
+    void started.finally(() => {
+      if (this.inFlightSync === started) this.inFlightSync = null;
+    });
+    return started;
+  }
+
+  /**
+   * Return a usable catalog, waiting up to `timeoutMs` for one if the cache is
+   * cold. Cache hit → immediate. Cache miss → join (or start) a sync, which
+   * itself falls back to the bundled snapshot when the CDN is unreachable.
+   * Returns `null` if no catalog is available within the budget — callers MUST
+   * treat that as "degrade", never as "fail".
+   *
+   * This exists because `startSyncLoop()` fires its first sync unawaited: any
+   * caller that merely *reads* the cache races the boot sync and loses
+   * non-deterministically.
+   */
+  async ensureCatalogAvailable(
+    timeoutMs: number = CATALOG_AVAILABILITY_TIMEOUT_MS,
+  ): Promise<MarketplaceCatalogFile | null> {
+    const cached = await this.readCache();
+    if (cached) return cached;
+
+    let timer: NodeJS.Timeout | undefined;
+    const budget = new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), timeoutMs);
+      timer.unref?.();
+    });
+    try {
+      return await Promise.race([this.runDedupedSync(), budget]);
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 
@@ -240,5 +306,66 @@ export class MarketplaceCatalogService {
         },
       });
     return catalog;
+  }
+}
+
+// ── Process-wide catalog-service registry ────────────────────────────────────
+//
+// `MarketplaceCatalogService` is constructed in `app.ts` (it needs the bundled
+// snapshot provider, which is an app-layer concern). The company-create path
+// lives far below the route layer and cannot reach that instance by
+// construction, so app.ts registers it here on boot.
+//
+// The registry is deliberately allowed to be empty: in unit/integration tests
+// nothing registers a service, so `resolveCatalogForBootstrap` degrades to
+// "cache only". That is what keeps tests off the network — a test that WANTS
+// the marketplace path either seeds `marketplace_catalog_cache` or registers
+// its own service instance.
+
+let activeCatalogService: MarketplaceCatalogService | null = null;
+
+/** Register the process-wide catalog service (app.ts on boot). Pass `null` to clear. */
+export function registerMarketplaceCatalogService(service: MarketplaceCatalogService | null): void {
+  activeCatalogService = service;
+}
+
+export function getMarketplaceCatalogService(): MarketplaceCatalogService | null {
+  return activeCatalogService;
+}
+
+export interface ResolvedBootstrapCatalog {
+  catalog: MarketplaceCatalogFile;
+  /** Where it came from — `cache` = already synced, `sync` = we waited for one. */
+  source: "cache" | "sync";
+}
+
+/**
+ * Resolve a catalog for the company-create crew bootstrap:
+ * cached catalog → (if a service is registered) a bounded wait on the live
+ * sync, which itself falls back to the bundled snapshot → `null`.
+ *
+ * `null` means "no catalog within budget" and the caller must degrade to the
+ * legacy seeders. It never throws: a marketplace outage cannot break onboarding.
+ */
+export async function resolveCatalogForBootstrap(
+  db: Db,
+  timeoutMs: number = CATALOG_AVAILABILITY_TIMEOUT_MS,
+): Promise<ResolvedBootstrapCatalog | null> {
+  try {
+    const cached = await loadCachedCatalog(db);
+    if (cached) return { catalog: cached, source: "cache" };
+  } catch (err) {
+    logger.warn({ err }, "marketplace: cached catalog read failed during crew bootstrap");
+  }
+
+  const service = activeCatalogService;
+  if (!service) return null;
+
+  try {
+    const synced = await service.ensureCatalogAvailable(timeoutMs);
+    return synced ? { catalog: synced, source: "sync" } : null;
+  } catch (err) {
+    logger.warn({ err }, "marketplace: catalog availability wait failed during crew bootstrap");
+    return null;
   }
 }

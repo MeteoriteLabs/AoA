@@ -240,9 +240,20 @@ export async function dispatchInstall(opts: DispatchInstallOpts): Promise<void> 
         durationMs: 0,
       });
     } else if (catalogItem.type === "team") {
-      if (!operation.targetDepartmentId) {
-        throw new Error("Team install requires targetDepartmentId");
-      }
+      // D21 / Decision #111: a NULL targetDepartmentId is a company-wide team.
+      // The AoA crew bootstrap (company create) installs before any department
+      // exists, so it has nothing to parent to.
+      //
+      // This does NOT loosen any HTTP path. The user-facing guard for a
+      // founder-initiated team install lives at the route
+      // (`routes/marketplace-installs.ts` — 400 when targetDepartmentId is
+      // missing) and fires BEFORE startInstallOperation; the check that used to
+      // sit here was a redundant backstop for traffic the route had already
+      // rejected. Leave that route 400 in place.
+      //
+      // A SUPPLIED id is still fully validated inside installTeam (exists +
+      // belongs to this company + type='department'); null is the only
+      // relaxation.
       const r = await installers.installTeam({
         catalogItem, catalog, companyId: operation.companyId,
         targetDepartmentId: operation.targetDepartmentId, db,

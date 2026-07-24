@@ -104,7 +104,7 @@ import { createMarketplaceRouter } from "./routes/marketplace.js";
 import { createMarketplaceInstallRouter } from "./routes/marketplace-installs.js";
 import { createMarketplaceCompanyRouter } from "./routes/marketplace-company.js";
 import { providerRoutes } from "./routes/providers.js";
-import { MarketplaceCatalogService } from "./services/aoa-marketplace.js";
+import { MarketplaceCatalogService, registerMarketplaceCatalogService } from "./services/aoa-marketplace.js";
 import { pluginLoader } from "./services/plugin-loader.js";
 import { pluginRollbackService } from "./services/plugin-rollback.js";
 import { pluginRegistryService } from "./services/plugin-registry.js";
@@ -485,6 +485,10 @@ export async function createApp(
       }
     },
   });
+  // Publish the instance so paths below the route layer can reach it — today
+  // the company-create crew bootstrap (T2.3), which must be able to WAIT for a
+  // catalog on a cold cache rather than race the fire-and-forget boot sync.
+  registerMarketplaceCatalogService(marketplaceCatalogService);
   marketplaceCatalogService.startSyncLoop();
   api.use("/marketplace", createMarketplaceRouter({ service: marketplaceCatalogService }));
 

@@ -3,10 +3,10 @@ import type { Db } from "@armyofagents/db";
 import { memoryFoldersService, seedCompanyRootFolder } from "./memory-folders.js";
 import { ensureInternalAgentConfig } from "./internal-agent/aoa-agents/ensure-internal-agent-config.js";
 import {
-  ensureCrewAgents,
   ensureInfrastructureAgents,
   isCrewMarketplaceManaged,
 } from "./internal-agent/aoa-agents/crew-seeding.js";
+import { provisionCompanyCrew } from "./crew-provisioning.js";
 import { logger } from "../middleware/logger.js";
 import {
   companies,
@@ -55,6 +55,15 @@ import {
 } from "@armyofagents/db";
 import { notCrewAssigned } from "./issue-crew-scope.js";
 
+export interface CreateCompanyOptions {
+  /**
+   * Attribution for the crew's marketplace install operation
+   * (`marketplace_install_operations.requested_by_user_id` — free text, no FK).
+   * Optional: the bootstrap falls back to a synthetic system actor.
+   */
+  requestedByUserId?: string | null;
+}
+
 export function companyService(db: Db) {
   const ISSUE_PREFIX_FALLBACK = "CMP";
 
@@ -96,7 +105,10 @@ export function companyService(db: Db) {
     return false;
   }
 
-  async function createCompanyWithUniquePrefix(data: typeof companies.$inferInsert) {
+  async function createCompanyWithUniquePrefix(
+    data: typeof companies.$inferInsert,
+    opts: CreateCompanyOptions = {},
+  ) {
     const base = deriveIssuePrefixBase(data.name);
     let suffix = 1;
     while (suffix < 10000) {
@@ -130,10 +142,17 @@ export function companyService(db: Db) {
         // path keeps working when the env flag is re-enabled; it is no longer
         // wired into bootstrap.
         //
-        // T3.5: skip the legacy CREW seeders if marketplace already governs this
-        // company's crew. A brand-new company that gets a marketplace install
-        // immediately after creation must not have those agents overwritten by
-        // the legacy seeders.
+        // T3.5: skip CREW provisioning entirely if the marketplace already
+        // governs this company's crew. A brand-new company that gets a
+        // marketplace install immediately after creation must not have those
+        // agents overwritten by the legacy seeders.
+        //
+        // T2.3 note on why this gate SURVIVED rather than being deleted as
+        // "unreachable": it is what pins the read-before-write ordering below,
+        // and `aoa-bootstrap-wiring.test.ts` (`stampsOriginOnSeed`) is the
+        // regression guard for the silent failure that ordering prevents.
+        // It also correctly short-circuits the concurrent-create case, where a
+        // sibling create already installed the marketplace crew.
         //
         // Read the gate BEFORE seeding anything. The predicate matches any
         // kind='aoa' row with a non-`@legacy` templateOrigin, and the seeders
@@ -160,8 +179,17 @@ export function companyService(db: Db) {
         });
         await ensureInfrastructureAgents(db, company.id);
 
+        // T2.3 (P8/P8c): install `team:aoa-curated/default-crew` from the
+        // marketplace so this company is born UPDATEABLE. Legacy-seeded rows
+        // are stamped `…@legacy` and `crew-updater.ts` skips those forever.
+        //
+        // provisionCompanyCrew never throws and degrades to the legacy seeders
+        // (with a log naming the crew members the fallback cannot provide), so
+        // a marketplace outage cannot break onboarding.
         if (!crewIsMarketplaceManaged) {
-          await ensureCrewAgents(db, company.id);
+          await provisionCompanyCrew(db, company.id, {
+            requestedByUserId: opts.requestedByUserId ?? null,
+          });
         }
         return company;
       } catch (error) {
@@ -182,7 +210,8 @@ export function companyService(db: Db) {
         .where(eq(companies.id, id))
         .then((rows) => rows[0] ?? null),
 
-    create: async (data: typeof companies.$inferInsert) => createCompanyWithUniquePrefix(data),
+    create: async (data: typeof companies.$inferInsert, opts: CreateCompanyOptions = {}) =>
+      createCompanyWithUniquePrefix(data, opts),
 
     update: (id: string, data: Partial<typeof companies.$inferInsert>) =>
       db
