@@ -162,3 +162,17 @@ POST /api/companies/{companyId}/skills/{skillId}/install-update
 ```
 
 Skills are company-scoped and may be installed directly, imported from packages, or updated from marketplace sources.
+
+**Founder edits are never silently overwritten.** Once a skill has been edited through
+`PATCH .../skills/{skillId}/files`, `company_skills.customized` is `true` and the
+source-re-read paths refuse rather than replace it:
+
+- `POST .../skills/{skillId}/install-update` → **409** with
+  `details.code = "SKILL_CUSTOMIZED"`. Nothing in the database or on disk is changed.
+- `POST .../skills/import` → **201** with the affected skills listed in
+  `refusedCustomized` (and a matching entry in `warnings`); they are absent from
+  `imported`. Un-edited skills in the same import still update.
+
+Both also raise a founder hub item. To take the upstream version, delete the skill and
+re-import it. This mirrors the catalog apply path, which answers 409 `SKILL_CUSTOMIZED`
+and routes the founder to the diff/merge review instead.

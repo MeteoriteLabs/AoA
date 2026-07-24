@@ -4,7 +4,7 @@ import path from "node:path";
 import { and, asc, eq } from "drizzle-orm";
 import type { Db } from "@armyofagents/db";
 import { companySkills, agents as agentsTable } from "@armyofagents/db";
-import { normalizeAgentUrlKey } from "@armyofagents/shared";
+import { normalizeAgentUrlKey, SKILL_CUSTOMIZED_ERROR_CODE } from "@armyofagents/shared";
 import type {
   CompanySkill,
   CompanySkillCreateRequest,
@@ -13,6 +13,7 @@ import type {
   CompanySkillFileDetail,
   CompanySkillFileInventoryEntry,
   CompanySkillImportResult,
+  CompanySkillRefusedImport,
   CompanySkillListItem,
   CompanySkillProjectScanConflict,
   CompanySkillProjectScanRequest,
@@ -24,7 +25,7 @@ import type {
   CompanySkillUpdateStatus,
   CompanySkillUsageAgent,
 } from "@armyofagents/shared";
-import { notFound, unprocessable } from "../errors.js";
+import { conflict, notFound, unprocessable } from "../errors.js";
 import { resolveAoaInstanceRoot } from "../home-paths.js";
 import { logger } from "../middleware/logger.js";
 import { findActiveServerAdapter } from "../adapters/registry.js";
@@ -83,6 +84,34 @@ export interface ParsedSkillImportSource {
   requestedSkillSlug: string | null;
   originalSkillsShUrl: string | null;
   warnings: string[];
+}
+
+/**
+ * T2.9 — what an overwrite of an already-installed skill row does when that row
+ * carries founder edits (`company_skills.customized === true`).
+ *
+ * There is deliberately NO default. Every caller of {@link companySkillService}'s
+ * upsert primitive has to state which one it is, so a new install path cannot
+ * inherit "overwrite" by forgetting to think about it.
+ */
+export type CustomizedSkillWritePolicy =
+  /**
+   * The bytes on the other side are UPSTREAM's. Skip the row, leave the founder's
+   * markdown exactly as it is, and report the skip back to the caller.
+   */
+  | "preserve_founder_edits"
+  /**
+   * The caller IS the authoring surface the founder is currently driving (they
+   * are creating/replacing this skill right now), so there are no third-party
+   * edits to protect. Overwrites unconditionally.
+   */
+  | "caller_is_authoritative";
+
+export interface UpsertImportedSkillsResult {
+  /** Rows actually written. Under `preserve_founder_edits` this excludes refusals. */
+  skills: CompanySkill[];
+  /** Rows skipped because they carry founder edits. Always `[]` under `caller_is_authoritative`. */
+  refused: CompanySkillRefusedImport[];
 }
 
 export type LocalSkillInventoryMode = "full" | "skill_only" | "project_root";
@@ -1101,6 +1130,25 @@ function serializeFileInventory(
   return inv.map((entry) => ({ path: entry.path, kind: entry.kind }));
 }
 
+/**
+ * T2.9 — refusal for an install/reinstall that would have overwritten founder
+ * edits. Mirrors the catalog path's 409 + `SKILL_CUSTOMIZED` contract
+ * (`routes/marketplace-company.ts:383-387`) so both surfaces answer the same way.
+ */
+function skillCustomizedConflict(skill: Pick<CompanySkill, "id" | "name">) {
+  return conflict(
+    `"${skill.name}" has local edits. Installing this update would discard them — ` +
+    "delete the skill and re-import it if you want the upstream version.",
+    { code: SKILL_CUSTOMIZED_ERROR_CODE, skillId: skill.id },
+  );
+}
+
+function refusedCustomizedEntry(
+  skill: Pick<CompanySkill, "id" | "key" | "slug" | "name">,
+): CompanySkillRefusedImport {
+  return { skillId: skill.id, key: skill.key, slug: skill.slug, name: skill.name, reason: "customized" };
+}
+
 function getSkillMeta(skill: CompanySkill): SkillSourceMeta {
   const meta = skill.metadata;
 
@@ -1385,22 +1433,36 @@ export function companySkillService(db: Db) {
   // Core DB queries
   // -----------------------------------------------------------------------
 
-  async function listFull(companyId: string): Promise<CompanySkill[]> {
+  /**
+   * Raw rows, not `CompanySkill`. `toCompanySkill` deliberately does not carry
+   * `customized` (it is provenance bookkeeping, not part of the public skill
+   * shape), so the T2.9 guard reads the flag from the row instead of widening
+   * the shared type.
+   */
+  async function listFullRows(companyId: string): Promise<CompanySkillRow[]> {
     await ensureSkillInventoryCurrent(companyId);
-    const rows = await db
+    return db
       .select()
       .from(companySkills)
       .where(eq(companySkills.companyId, companyId))
       .orderBy(asc(companySkills.name));
-    return rows.map(toCompanySkill);
   }
 
-  async function getById(id: string): Promise<CompanySkill | null> {
-    const row = await db
+  async function listFull(companyId: string): Promise<CompanySkill[]> {
+    return (await listFullRows(companyId)).map(toCompanySkill);
+  }
+
+  /** See {@link listFullRows} — raw row, used where `customized` matters. */
+  async function getRowById(id: string): Promise<CompanySkillRow | null> {
+    return db
       .select()
       .from(companySkills)
       .where(eq(companySkills.id, id))
       .then((rows) => rows[0] ?? null);
+  }
+
+  async function getById(id: string): Promise<CompanySkill | null> {
+    const row = await getRowById(id);
     return row ? toCompanySkill(row) : null;
   }
 
@@ -1683,7 +1745,11 @@ export function companySkillService(db: Db) {
     await fs.writeFile(path.join(skillDir, "SKILL.md"), markdown, "utf8");
 
     const parsed = parseFrontmatterMarkdown(markdown);
-    const imported = await upsertImportedSkills(companyId, [{
+    // T2.9 policy: the founder is authoring this skill right now and its bytes
+    // were just written to disk above, so there is no third-party edit to
+    // protect. (A create that collides with an existing customized key still
+    // overwrites — pre-existing behaviour, out of T2.9's scope; filed as T2.9b.)
+    const imported = (await upsertImportedSkills(companyId, [{
       key: `company/${companyId}/${slug}`,
       slug,
       name: asString(parsed.frontmatter.name) ?? input.name,
@@ -1696,7 +1762,7 @@ export function companySkillService(db: Db) {
       compatibility: "compatible",
       fileInventory: [{ path: "SKILL.md", kind: "skill" }],
       metadata: { sourceKind: "managed_local" },
-    }]);
+    }], "caller_is_authoritative")).skills;
 
     return imported[0]!;
   }
@@ -1784,7 +1850,14 @@ export function companySkillService(db: Db) {
 
       // 6. Upsert — always overwrites markdown (caller is authoritative source)
       //    lastPackageImportAt lets callers detect package-imported vs manually edited
-      const imported = await upsertImportedSkills(companyId, [{
+      //
+      //    T2.9 policy note: this MUST stay `caller_is_authoritative`. Step 3
+      //    above already `rm -rf`'d and rewrote the skill directory, so refusing
+      //    the DB write here would leave the founder's markdown in the row and
+      //    the caller's files on disk — a torn state strictly worse than the
+      //    overwrite. Making this path founder-safe requires reordering the disk
+      //    write, not flipping this flag; filed as T2.9c.
+      const imported = (await upsertImportedSkills(companyId, [{
         key: finalKey,
         slug: finalSlug,
         name: rawName,
@@ -1800,7 +1873,7 @@ export function companySkillService(db: Db) {
           sourceKind: "managed_local",
           lastPackageImportAt: new Date().toISOString(),
         },
-      }]);
+      }], "caller_is_authoritative")).skills;
 
       return imported[0]!;
     };
@@ -1842,6 +1915,14 @@ export function companySkillService(db: Db) {
   // Import from source
   // -----------------------------------------------------------------------
 
+  /**
+   * Install (or re-install) skills from a github / url / skills.sh / local source.
+   *
+   * T2.9 — re-importing over a row the founder has edited does NOT overwrite it:
+   * the row is skipped, listed in `refusedCustomized`, and called out in
+   * `warnings`. Nothing on disk is touched either way; this path only reads its
+   * source. Un-edited rows still update normally.
+   */
   async function importFromSource(companyId: string, source: string): Promise<CompanySkillImportResult> {
     const parsed = parseSkillImportSourceInput(source);
     const local = !/^https?:\/\//i.test(parsed.resolvedSource);
@@ -1877,8 +1958,17 @@ export function companySkillService(db: Db) {
         skill.key = deriveCanonicalSkillKey(companyId, skill);
       }
     }
-    const imported = await upsertImportedSkills(companyId, filteredSkills);
-    return { imported, warnings };
+    const { skills: imported, refused } = await upsertImportedSkills(
+      companyId,
+      filteredSkills,
+      "preserve_founder_edits",
+    );
+    const refusalWarnings = refused.map(
+      (entry) =>
+        `Skipped "${entry.name}" — it has local edits that this install would have discarded. ` +
+        "Delete the skill and re-import it if you want the upstream version.",
+    );
+    return { imported, warnings: [...warnings, ...refusalWarnings], refusedCustomized: refused };
   }
 
   // -----------------------------------------------------------------------
@@ -2110,12 +2200,33 @@ export function companySkillService(db: Db) {
   // Install update
   // -----------------------------------------------------------------------
 
+  /**
+   * Reinstall an already-installed github / url / local_path skill from its source.
+   *
+   * T2.9 — this is the non-catalog twin of `applySkillUpdate`
+   * (`marketplace-install/skill-auto-updater.ts`) and honours
+   * `company_skills.customized` the same way: a row the founder has edited is
+   * never silently replaced by upstream bytes. Refusal throws
+   * {@link skillCustomizedConflict} (HTTP 409); nothing on disk is touched,
+   * because this path only ever reads its source.
+   *
+   * The check is deliberately duplicated as (a) a pre-read and (b) a
+   * `customized = false` predicate on the UPDATE. (b) is the one that matters:
+   * a founder edit committed between (a) and the write makes RETURNING empty
+   * and we refuse rather than overwrite. Same known approximation as the
+   * catalog path — an empty RETURNING could also mean the row was hard-deleted
+   * in that window, which we report as "customized" rather than paying for a
+   * second SELECT to tell the two apart.
+   */
   async function installUpdate(
     companyId: string,
     skillId: string,
   ): Promise<CompanySkill | null> {
-    const skill = await getById(skillId);
-    if (!skill || skill.companyId !== companyId) return null;
+    const row = await getRowById(skillId);
+    if (!row || row.companyId !== companyId) return null;
+    const skill = toCompanySkill(row);
+
+    if (row.customized) throw skillCustomizedConflict(skill);
 
     const resolved = await resolveSkillReference(skill);
     if (!resolved || !resolved.latestContent) {
@@ -2142,10 +2253,12 @@ export function companySkillService(db: Db) {
         },
         updatedAt: new Date(),
       })
-      .where(eq(companySkills.id, skillId))
+      .where(and(eq(companySkills.id, skillId), eq(companySkills.customized, false)))
       .returning();
 
-    return updated ? toCompanySkill(updated) : null;
+    if (!updated) throw skillCustomizedConflict(skill);
+
+    return toCompanySkill(updated);
   }
 
   // -----------------------------------------------------------------------
@@ -2286,14 +2399,32 @@ export function companySkillService(db: Db) {
   // Upsert imported skills
   // -----------------------------------------------------------------------
 
+  /**
+   * Insert-or-update a batch of imported skills, matched on the canonical key.
+   *
+   * T2.9 — the update branch is the one shared primitive through which every
+   * non-catalog install path overwrites an installed row, so the
+   * `customized` decision lives HERE rather than in each caller. `policy` has
+   * no default on purpose: a future install path cannot compile without saying
+   * which side wins.
+   *
+   * Under `preserve_founder_edits` a refused row is skipped, reported in
+   * `refused`, and absent from `skills` — so `skills` is NOT positionally
+   * aligned with `imports`. Callers that pair the two by index must pass
+   * `caller_is_authoritative` (or be rewritten to pair by key).
+   */
   async function upsertImportedSkills(
     companyId: string,
     imports: ImportedSkill[],
-  ): Promise<CompanySkill[]> {
-    const existing = await listFull(companyId);
+    policy: CustomizedSkillWritePolicy,
+  ): Promise<UpsertImportedSkillsResult> {
+    const existingRows = await listFullRows(companyId);
+    const existing = existingRows.map(toCompanySkill);
+    const customizedById = new Map(existingRows.map((row) => [row.id, row.customized === true]));
     const usedSlugs = new Set(existing.map((s) => s.slug));
     const usedKeys = new Set(existing.map((s) => s.key));
     const results: CompanySkill[] = [];
+    const refused: CompanySkillRefusedImport[] = [];
 
     for (const imp of imports) {
       const safeMarkdown = sanitizeMarkdown(imp.markdown);
@@ -2314,6 +2445,15 @@ export function companySkillService(db: Db) {
       const slug = uniqueSkillSlug(imp.slug, slugPool);
       const key = existingByKey?.key ?? (imp.key ?? uniqueImportedSkillKey(companyId, slug, usedKeys));
       if (existingByKey) {
+        const preserve = policy === "preserve_founder_edits";
+
+        // T2.9 — refuse before we write, then re-assert it as a predicate on the
+        // UPDATE so a founder edit that commits between the two still wins.
+        if (preserve && customizedById.get(existingByKey.id)) {
+          refused.push(refusedCustomizedEntry(existingByKey));
+          continue;
+        }
+
         // Update existing
         const [updated] = await db
           .update(companySkills)
@@ -2331,9 +2471,20 @@ export function companySkillService(db: Db) {
             metadata: imp.metadata,
             updatedAt: new Date(),
           })
-          .where(eq(companySkills.id, existingByKey.id))
+          .where(
+            preserve
+              ? and(eq(companySkills.id, existingByKey.id), eq(companySkills.customized, false))
+              : eq(companySkills.id, existingByKey.id),
+          )
           .returning();
-        if (updated) results.push(toCompanySkill(updated));
+        if (updated) {
+          results.push(toCompanySkill(updated));
+        } else if (preserve) {
+          // Empty RETURNING under the optimistic lock: a concurrent founder edit
+          // (or, rarely, a concurrent delete) won the race. Refuse either way —
+          // same approximation the catalog path documents.
+          refused.push(refusedCustomizedEntry(existingByKey));
+        }
       } else {
         // Insert new
         const [inserted] = await db
@@ -2360,7 +2511,7 @@ export function companySkillService(db: Db) {
       }
     }
 
-    return results;
+    return { skills: results, refused };
   }
 
   // -----------------------------------------------------------------------

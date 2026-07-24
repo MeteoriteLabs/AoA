@@ -52,7 +52,7 @@ let sourceSkills: SkillRow[] = [];
 let sourceAgents: AgentRow[] = [];
 let targetSkills: SkillRow[] = [];
 let targetAgents: AgentRow[] = [];
-const skillUpsertCalls: Array<{ companyId: string; imports: any[] }> = [];
+const skillUpsertCalls: Array<{ companyId: string; imports: any[]; policy?: string }> = [];
 const agentUpdateCalls: Array<{ id: string; data: any }> = [];
 
 vi.mock("../services/companies.js", () => ({
@@ -133,8 +133,10 @@ vi.mock("../services/company-skills.js", () => ({
       if (companyId === TGT_CO_ID) return targetSkills;
       return [];
     }),
-    upsertImportedSkills: vi.fn(async (companyId: string, imports: any[]) => {
-      skillUpsertCalls.push({ companyId, imports });
+    // T2.9 — third arg is the required `CustomizedSkillWritePolicy`; portability
+    // passes "caller_is_authoritative" (it pairs results to inputs positionally).
+    upsertImportedSkills: vi.fn(async (companyId: string, imports: any[], policy: string) => {
+      skillUpsertCalls.push({ companyId, imports, policy });
       const results: SkillRow[] = [];
       for (const imp of imports) {
         const existing = targetSkills.find((s) => s.key === imp.key);
@@ -177,7 +179,7 @@ vi.mock("../services/company-skills.js", () => ({
         targetSkills.push(row);
         results.push(row);
       }
-      return results;
+      return { skills: results, refused: [] };
     }),
   }),
 }));
@@ -382,6 +384,9 @@ describe("company-portability skills", () => {
       "user-1",
     );
     expect(skillUpsertCalls).toHaveLength(1);
+    // T2.9 — bundle import pairs results to inputs by index, so it must stay on
+    // the policy that never returns a short array.
+    expect(skillUpsertCalls[0]!.policy).toBe("caller_is_authoritative");
     const imp = skillUpsertCalls[0]!.imports[0]!;
     expect(imp.key).toBe("alpha");
     expect(imp.slug).toBe("alpha");

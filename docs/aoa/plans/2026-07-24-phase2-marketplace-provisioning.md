@@ -1519,15 +1519,123 @@ root, in both routes, with the containment check shared rather than duplicated.
 
 ---
 
-## T2.9 — Guard the non-catalog install path (P13)
+## T2.9 — Guard the non-catalog install path (P13) — ✅ SHIPPED 2026-07-24
 
 **Why:** the catalog path guards `customized` with an optimistic lock (`skill-auto-updater.ts:100-133`); the github/url install path has **no such check** and blind-overwrites a founder's customized skill.
 
-- [ ] **Step 1: Failing test** — reinstalling over a **customized** skill notifies instead of overwriting; an **uncustomized** skill still updates (discriminator).
-- [ ] **Step 2: Run → FAIL.** **Step 3: Apply the same `customized` check + optimistic lock** to the github/url install/reinstall path. **Step 4: Run → PASS.** **Step 5: Commit.**
+- [x] **Step 1: Failing test** — reinstalling over a **customized** skill notifies instead of overwriting; an **uncustomized** skill still updates (discriminator).
+- [x] **Step 2: Run → FAIL.** **Step 3: Apply the same `customized` check + optimistic lock** to the github/url install/reinstall path. **Step 4: Run → PASS.** **Step 5: Commit.**
 ```bash
 git commit -m "fix(marketplace): stop the github/url install path overwriting customized skills"
 ```
+
+### Entry points enumerated before choosing where the guard goes
+
+Every write that can replace an installed row's `markdown`:
+
+| # | Entry point | Service | Guarded now? |
+|---|---|---|---|
+| 1 | `POST /skills/:id/install-update` | `installUpdate` | **YES** (T2.9) — pre-read + `customized = false` predicate; throws 409 `SKILL_CUSTOMIZED` |
+| 2 | `POST /skills/import` | `importFromSource` → `upsertImportedSkills` | **YES** (T2.9) — `preserve_founder_edits`; refusals in `refusedCustomized` + `warnings` |
+| 3 | `POST /skills/scan-projects` | `scanProjectWorkspaces` (own inline UPDATE) | no — see T2.9e |
+| 4 | `POST /skills/import-package` (+ MCP) | `importPackageFiles` | no, deliberately — see T2.9c |
+| 5 | `POST /skills` | `createLocalSkill` | no, deliberately — see T2.9b |
+| 6 | company bundle import | `company-portability.ts` | no, deliberately — see T2.9d |
+| 7 | catalog install | `installSkill` | n/a — refuses any version change outright |
+| 8 | catalog auto-apply | `applySkillUpdate` | pre-existing (the reference implementation) |
+
+The guard sits on the **shared upsert primitive** (`upsertImportedSkills`), which 2/4/5/6
+all funnel through, and its `CustomizedSkillWritePolicy` argument is **required with no
+default** — a future install path cannot compile without stating which side wins.
+
+### Correction to the brief's premise (verified in code, 2026-07-24)
+
+The `github` / `url` / `skills_sh` rows named in the brief **cannot reach `customized = true`
+today**: `customized` is only ever written by `companySkillsService.updateFile`
+(`company-skills.ts:1623`, `:1632`), which first requires `deriveSkillSourceInfo().editable`
+— true only for `local_path` and `catalog` (`:2377`). So the live lossy chain is narrower
+than "github reinstall eats founder edits":
+
+- **`local_path` rows** *can* be customized, and `installUpdate` accepts them. Normally the
+  founder's edit is on the same disk the reinstall re-reads, so nothing is lost — **except**
+  `updateFile` swallows filesystem-write failures (`:1605-1608`), leaving the edit DB-only.
+  A reinstall then silently reverted it. That is real, and now refused.
+- For `github` / `url` this is a **fail-closed class fix**, not a fix for a live loss: the
+  only thing preventing data loss was a caller-side editability check in a *different*
+  function. Per standing rule 3 that is exactly the shape that must not be relied on.
+
+`marketplace_pending_updates` is **not** an expressible notification channel here: its
+`catalogItemId` / `itemType` / `currentVersion` / `latestVersion` are all `notNull`, it is
+uniquely indexed on `(companyId, catalogItemId)`, and every consumer resolves that id
+against the live catalog (`marketplace-company.ts:367-372`, `:403-407`). A synthetic row for
+a non-catalog skill would surface an Updates entry that 422s on every action. "Notifies"
+therefore resolved to a **founder hub item** via the existing `marketplaceNotifications`
+family (`skillUpdateRefusedCustomized`, semantic type `marketplace_op`), fired from the
+route next to the activity log it already writes, plus the synchronous 409 / `refusedCustomized`
+in the response.
+
+---
+
+## T2.9b — `createLocalSkill` overwrites a colliding customized key
+
+`POST /companies/:cid/skills` derives the key `company/<cid>/<slug>` and passes
+`caller_is_authoritative`, so creating a skill whose slug collides with an existing
+**customized** skill silently replaces it instead of 409-ing on the collision. Pre-existing
+behaviour, unchanged by T2.9. The fix is a collision refusal at create time (the founder
+should be told the name is taken), not a policy flip — a create genuinely IS authoritative
+for the row it creates.
+
+**Files:** `server/src/services/company-skills.ts` `createLocalSkill`.
+
+---
+
+## T2.9c — `importPackageFiles` deletes the skill directory before it knows it may write
+
+`importPackageFiles` `fs.rm(skillDir, { recursive: true, force: true })`s and rewrites the
+whole directory (`company-skills.ts:1769-1778`) **before** the upsert. That is the same
+delete-before-commit shape T2.8's review found on the merge path and fixed with
+stage-then-rename. Consequences:
+
+1. It must stay `caller_is_authoritative` today — refusing at the DB layer after the disk
+   is already gone would leave the founder's markdown in the row and the caller's files on
+   disk, a torn state strictly worse than the overwrite.
+2. An MCP/agent package re-import therefore destroys founder edits **on disk** for a
+   `local_path` skill with no check at all.
+
+The fix is to reuse `skill-bundle-materializer`'s `stageDirectoryFor` / `swapIntoPlace` so
+the write is atomic, and only then decide the `customized` policy. Not done in T2.9 because
+it is a behaviour change to a path T2.9 does not otherwise touch.
+
+**Files:** `server/src/services/company-skills.ts` `importPackageFiles`;
+`server/src/services/marketplace-install/skill-bundle-materializer.ts`.
+
+---
+
+## T2.9d — company bundle import has no founder-edit surface
+
+`company-portability.ts` pairs `upsertImportedSkills` results to inputs **positionally**,
+so `preserve_founder_edits` (which returns a short array on refusal) would mis-pair every
+row after the first skip. It therefore passes `caller_is_authoritative` and a bundle import
+into a company with customized skills overwrites them. The import plan already has a
+`collisionStrategy` (`skip` / `replace` / `rename`) and a conflict surface — the right fix
+is to make `customized` a planned collision reason there, not to flip the policy.
+
+**Files:** `server/src/services/company-portability.ts` (~`:2610`), the import planner.
+
+---
+
+## T2.9e — project scan re-syncs over customized rows
+
+`scanProjectWorkspaces` updates an existing `local_path` row matched on `sourceLocator`
+with its own inline UPDATE (`company-skills.ts:1972-1984`) — it does not go through the
+upsert primitive and does not read `customized`. Same narrow live exposure as T2.9's
+`local_path` case (the scanned directory is normally also the founder's edit surface).
+Deliberately left alone because a bulk sweep needs a *report*, not an exception: refusals
+should land in the existing `conflicts[]` array with a `customized` reason, which is a
+UI-visible contract change.
+
+**Files:** `server/src/services/company-skills.ts` `scanProjectWorkspaces`;
+`CompanySkillProjectScanConflict` in `packages/shared/src/types/company-skill.ts`.
 
 ---
 
@@ -1560,7 +1668,7 @@ git commit -m "refactor(autonomy): split the crew and Commander autonomy dials (
 | T2.6 | — | customized→notify, untouched→auto | — | — | — |
 | T2.7 | section differ | diff/merge routes | — | — | conflict badge |
 | T2.8 | — | materializer called on merge | — | files on disk match upstream | — |
-| T2.9 | — | customized→notify | — | — | — |
+| T2.9 | — | customized→notify (+ on-disk bytes untouched) | — | — | — |
 | T2.10 | dial resolution | each reader's dial | new column | — | — |
 
 ---

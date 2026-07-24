@@ -6,10 +6,12 @@ import {
   companySkillImportSchema,
   companySkillImportPackageSchema,
   companySkillProjectScanRequestSchema,
+  SKILL_CUSTOMIZED_ERROR_CODE,
 } from "@armyofagents/shared";
 import { validate } from "../middleware/validate.js";
 import { accessService, agentService, companySkillService, logActivity } from "../services/index.js";
-import { forbidden } from "../errors.js";
+import { marketplaceNotifications } from "../services/marketplace-notifications.js";
+import { forbidden, HttpError } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 
 export function companySkillRoutes(db: Db) {
@@ -17,6 +19,29 @@ export function companySkillRoutes(db: Db) {
   const agents = agentService(db);
   const access = accessService(db);
   const svc = companySkillService(db);
+
+  /**
+   * T2.9 — the founder-visible record of a refused install. The service owns the
+   * gate (it throws / reports `refusedCustomized`); the route owns telling the
+   * founder, next to the activity log it already writes. Best-effort: a failed
+   * notification must not turn a correct refusal into a 500.
+   */
+  async function notifyRefusedCustomized(companyId: string, skillName: string, skillId: string) {
+    try {
+      await marketplaceNotifications.skillUpdateRefusedCustomized(db, companyId, skillName, skillId);
+    } catch {
+      // marketplaceNotifications already logs; never fail the request on this.
+    }
+  }
+
+  function customizedRefusalFrom(err: unknown): { skillId: string } | null {
+    if (!(err instanceof HttpError) || err.status !== 409) return null;
+    const details = err.details;
+    if (!details || typeof details !== "object") return null;
+    const record = details as Record<string, unknown>;
+    if (record.code !== SKILL_CUSTOMIZED_ERROR_CODE || typeof record.skillId !== "string") return null;
+    return { skillId: record.skillId };
+  }
 
   function canCreateAgents(agent: { permissions: Record<string, unknown> | null | undefined }) {
     if (!agent.permissions || typeof agent.permissions !== "object") return false;
@@ -200,6 +225,12 @@ export function companySkillRoutes(db: Db) {
       const source = String(req.body.source ?? "");
       const result = await svc.importFromSource(companyId, source);
 
+      // T2.9 — rows this import declined to overwrite because they carry
+      // founder edits. Surfaced in the response body AND as a hub item.
+      for (const refused of result.refusedCustomized) {
+        await notifyRefusedCustomized(companyId, refused.name, refused.skillId);
+      }
+
       const actor = getActorInfo(req);
       await logActivity(db, {
         companyId,
@@ -215,6 +246,7 @@ export function companySkillRoutes(db: Db) {
           importedCount: result.imported.length,
           importedSlugs: result.imported.map((skill) => skill.slug),
           warningCount: result.warnings.length,
+          refusedCustomizedKeys: result.refusedCustomized.map((entry) => entry.key),
         },
       });
 
@@ -288,7 +320,21 @@ export function companySkillRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     const skillId = req.params.skillId as string;
     await assertCanMutateCompanySkills(req, companyId);
-    const result = await svc.installUpdate(companyId, skillId);
+
+    let result;
+    try {
+      result = await svc.installUpdate(companyId, skillId);
+    } catch (err) {
+      // T2.9 — refused because the skill carries founder edits. Notify, then let
+      // the 409 propagate to the error handler unchanged.
+      const refusal = customizedRefusalFrom(err);
+      if (refusal) {
+        const skill = await svc.getById(refusal.skillId);
+        await notifyRefusedCustomized(companyId, skill?.name ?? "skill", refusal.skillId);
+      }
+      throw err;
+    }
+
     if (!result) {
       res.status(404).json({ error: "Skill not found" });
       return;

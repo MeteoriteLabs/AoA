@@ -251,6 +251,7 @@ export type {
   CompanySkillUpdateStatus,
   CompanySkillImportRequest,
   CompanySkillImportResult,
+  CompanySkillRefusedImport,
   CompanySkillProjectScanRequest,
   CompanySkillProjectScanResult,
   CompanySkillProjectScanSkipped,

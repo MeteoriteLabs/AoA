@@ -2607,7 +2607,17 @@ export function companyPortabilityService(db: Db) {
             : [],
           metadata: manifestSkill.metadata ?? null,
         }));
-        const upserted = await skills.upsertImportedSkills(targetCompany.id, imports);
+        // T2.9 policy: the bundle IS the authority for a company import, and the
+        // loop below pairs results to inputs POSITIONALLY — `preserve_founder_edits`
+        // returns a short array on refusal and would silently mis-pair every row
+        // after the first skip. Founder-edit protection for bundle imports needs
+        // the conflict surface the import plan already has, not this flag; filed
+        // as T2.9d.
+        const upserted = (await skills.upsertImportedSkills(
+          targetCompany.id,
+          imports,
+          "caller_is_authoritative",
+        )).skills;
         for (let i = 0; i < skillsToUpsert.length; i++) {
           const entry = skillsToUpsert[i]!;
           const created = upserted[i] ?? null;

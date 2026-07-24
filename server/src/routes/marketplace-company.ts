@@ -63,7 +63,7 @@ import {
   mergeSkillUpdate,
 } from "../services/marketplace-install/skill-update-merge.js";
 import type { AgentInstructionsServiceLike } from "../services/marketplace-install/agent-create.js";
-import type { MarketplaceCatalogFile } from "@armyofagents/shared";
+import { SKILL_CUSTOMIZED_ERROR_CODE, type MarketplaceCatalogFile } from "@armyofagents/shared";
 import type { PluginLifecycleManager } from "../services/plugin-lifecycle.js";
 
 export interface MarketplaceCompanyRoutesDeps {
@@ -383,7 +383,7 @@ export function createMarketplaceCompanyRouter(deps: MarketplaceCompanyRoutesDep
         if (err instanceof SkillCustomizedError) {
           res.status(409).json({
             error: "Skill customized. Manual merge required.",
-            code: "SKILL_CUSTOMIZED",
+            code: SKILL_CUSTOMIZED_ERROR_CODE,
           });
         } else if (err instanceof SkillDeletedError) {
           res.status(410).json({ error: "Skill removed.", code: "SKILL_DELETED" });
