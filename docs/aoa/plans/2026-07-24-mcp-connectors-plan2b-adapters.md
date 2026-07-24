@@ -162,3 +162,15 @@ Do this BEFORE codex's HTTP writer — it changes where the file lives and how i
 **Consequence — Plan 2b scope narrows to codex + the shared server wiring.** Tasks 2, 3, 4, 5, 7 proceed as written. **Task 6 is cut** to a deferred follow-up: gemini and opencode HTTP writers wait until their mechanisms can be verified on a machine with those CLIs authenticated. The server-side plural-carrier wiring (Task 3) is adapter-agnostic, so when those writers are built later they plug into a delivery path that already works.
 
 **To un-block later:** run the same probe method (local HTTP listener recording the inbound `Authorization` header, driven by a real one-shot session) on a machine where `gemini` is authenticated and `opencode` is installed. Do NOT ship either HTTP writer on documentation alone — codex's documented-looking `${VAR}` assumption turned out to be wrong, which is exactly why this gate exists.
+
+### GATE RESULT — UPDATE 2 (opencode VERIFIED, auth-free)
+
+**opencode is verified.** `opencode mcp list` (via `npx -y opencode-ai@latest`, v1.18.4) actually CONNECTS to configured servers to report status — no provider auth required. Probe: `opencode.json` with `{"mcp":{"probe":{"type":"remote","url":"http://127.0.0.1:8994/mcp","enabled":true,"headers":{"Authorization":"Bearer {env:AOA_PROBE_TOKEN}"}}}}`, run with `AOA_PROBE_TOKEN=sentinel-77777`. The local listener received **`Authorization: Bearer sentinel-77777`** — expanded. So **`{env:VAR}` works in opencode `headers`; opencode HTTP connectors are viable.**
+
+Revised status: **codex ✅ / opencode ✅ / gemini ❌ (auth-blocked)**.
+
+`opencode mcp list` is also the ideal regression probe for Plan 2b's opencode work — it exercises the real config file the adapter writes, with no model call.
+
+**A NEW PRE-EXISTING BUG FOUND WHILE PROBING (not connector-related — worth its own fix):**
+
+**B7 — AoA's gemini adapter never passes `--skip-trust`, so MCP servers may be silently disabled.** gemini-cli has a workspace-trust model: in an untrusted folder it prints *"MCP servers are configured but disabled because this folder is untrusted. User-level servers are also suppressed…"* and disables **every** MCP server — which would include AoA's own `aoa` bridge, not just connectors. `grep -rnE "skip-trust|skipTrust|trust" packages/adapters/gemini-local/src/` returns NOTHING, and the argv built in `gemini-local/src/server/execute.ts:302-312` is `["--output-format","stream-json", …, "--approval-mode","yolo", "--sandbox…", "--prompt", …]` — no trust flag. **Consequence: gemini agents running in an untrusted workspace may be getting ZERO AoA tools, silently.** Needs (a) confirming what gemini treats as trusted (a git repo? a previously-approved folder?) and (b) most likely passing `--skip-trust` in the adapter. This is independent of connectors and should be fixed regardless of whether gemini connectors ship.
