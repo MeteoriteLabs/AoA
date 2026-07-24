@@ -32,7 +32,7 @@ describe("McpConnectorCatalogEntrySchema", () => {
     expect(r.success).toBe(false);
   });
 
-  it("rejects an entry carrying a secret VALUE rather than a key", () => {
+  it("rejects an unknown headerTemplate field", () => {
     const r = McpConnectorCatalogEntrySchema.safeParse({
       ...httpEntry,
       headerTemplate: { Authorization: "Bearer sk-live-real" },
@@ -77,5 +77,69 @@ describe("McpConnectorCatalogEntrySchema", () => {
       envTemplateKeys: ["NOTION_TOKEN", "_PRIVATE"],
     });
     expect(r.success).toBe(true);
+  });
+
+  it("rejects an http entry that also carries a command (symmetric transport exclusion)", () => {
+    const r = McpConnectorCatalogEntrySchema.safeParse({ ...httpEntry, command: "npx" });
+    expect(r.success).toBe(false);
+  });
+
+  it("rejects a stdio entry that also carries a url (symmetric transport exclusion)", () => {
+    const r = McpConnectorCatalogEntrySchema.safeParse({
+      ...httpEntry,
+      transport: "stdio",
+      command: "npx",
+      // url is still the http one inherited from httpEntry — this is the point of the test
+    });
+    expect(r.success).toBe(false);
+  });
+});
+
+describe("parseMcpConnectorCatalog — envelope handling (never throws)", () => {
+  const notObjectInputs: Array<[string, unknown]> = [
+    ["null", null],
+    ["undefined", undefined],
+    ["a number", 42],
+    ["a string", "not a catalog"],
+  ];
+
+  it.each(notObjectInputs)("treats %s input as malformed, never throws", (_label, input) => {
+    expect(() => parseMcpConnectorCatalog(input)).not.toThrow();
+    expect(parseMcpConnectorCatalog(input)).toEqual({ entries: [], dropped: [], malformed: true });
+  });
+
+  it("treats a missing `entries` field as malformed", () => {
+    expect(() => parseMcpConnectorCatalog({})).not.toThrow();
+    expect(parseMcpConnectorCatalog({})).toEqual({ entries: [], dropped: [], malformed: true });
+  });
+
+  it("treats a non-array `entries` field as malformed", () => {
+    const input = { entries: "not-an-array" };
+    expect(() => parseMcpConnectorCatalog(input)).not.toThrow();
+    expect(parseMcpConnectorCatalog(input)).toEqual({ entries: [], dropped: [], malformed: true });
+  });
+
+  it("treats a legitimately empty `entries` array as NOT malformed", () => {
+    const input = { entries: [] };
+    expect(() => parseMcpConnectorCatalog(input)).not.toThrow();
+    expect(parseMcpConnectorCatalog(input)).toEqual({ entries: [], dropped: [], malformed: false });
+  });
+
+  it("drops a non-object entry as <unidentified>, never throws, and is not malformed", () => {
+    const input = { entries: [42] };
+    expect(() => parseMcpConnectorCatalog(input)).not.toThrow();
+    expect(parseMcpConnectorCatalog(input)).toEqual({
+      entries: [],
+      dropped: ["<unidentified>"],
+      malformed: false,
+    });
+  });
+
+  it("drops an entry whose id is not a string as <unidentified>", () => {
+    const input = { entries: [{ id: 123, transport: "carrier-pigeon" }] };
+    expect(() => parseMcpConnectorCatalog(input)).not.toThrow();
+    const result = parseMcpConnectorCatalog(input);
+    expect(result.dropped).toEqual(["<unidentified>"]);
+    expect(result.malformed).toBe(false);
   });
 });
