@@ -84,9 +84,20 @@ const AgentRuntimeSchema = z.object({
     // kind="aoa" marks this agent as trigger-driven (not heartbeat-driven).
     // triggers lists the aoa_agent_triggers rows to insert on install.
     kind: z.enum(["org", "aoa"]).optional(),
+    // T2.3d: `enabled` is part of the published contract — every crew agent in
+    // `aoa-curated` declares it (9/9 of those that declare triggers, verified
+    // 2026-07-24). Omitting it from this `.strict()` object rejected every
+    // published crew body with `unrecognized_keys: ["enabled"]`, which aborted
+    // `installTeam` and degraded every live company create to the `@legacy`
+    // seeders. Defaulting to `true` keeps pre-`enabled` templates behaving
+    // exactly as before; the value is threaded to `aoa_agent_triggers.enabled`
+    // at BOTH insert sites (`agent-create.ts`, `crew-updater.ts`) so a trigger
+    // the catalog disabled is never installed — or re-enabled on update — as
+    // enabled.
     triggers: z.array(
       z.object({
         kind: z.string().min(1),
+        enabled: z.boolean().optional().default(true),
         config: z.record(z.unknown()).optional().default({}),
       }).strict(),
     ).optional(),
@@ -305,6 +316,9 @@ export function normalizeMarketplaceAgentTemplate(opts: {
     kind: (runtime.aoa?.kind ?? "org") as "org" | "aoa",
     triggers: (runtime.aoa?.triggers ?? []).map((t) => ({
       kind: t.kind,
+      // Absent in the body → `true` via the schema default, so this preserves
+      // the pre-T2.3d behaviour for templates that predate the field.
+      enabled: t.enabled ?? true,
       config: t.config ?? {},
     })),
     title: runtime.name,

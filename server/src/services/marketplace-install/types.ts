@@ -139,8 +139,13 @@ export interface NormalizedMarketplaceAgentTemplate {
   role: AgentRole | string;
   /** "org" = heartbeat-driven (default). "aoa" = trigger-driven crew agent. */
   kind: "org" | "aoa";
-  /** Trigger rows to materialise in aoa_agent_triggers on install. */
-  triggers: Array<{ kind: string; config: Record<string, unknown> }>;
+  /**
+   * Trigger rows to materialise in aoa_agent_triggers on install.
+   * `enabled` mirrors the catalog's `aoa.triggers[].enabled` (default `true`
+   * when the template omits it) and is written straight to the column — a
+   * trigger the catalog disabled must not install, or update, as enabled.
+   */
+  triggers: Array<{ kind: string; enabled: boolean; config: Record<string, unknown> }>;
   title?: string | null;
   icon?: string | null;
   status: AgentStatus;

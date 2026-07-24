@@ -106,14 +106,16 @@ export async function applyCrewAgentUpdate(opts: {
       })
       .where(eq(agents.id, agentRow.id));
 
-    // Replace triggers: delete existing, re-insert from catalog
+    // Replace triggers: delete existing, re-insert from catalog.
+    // `enabled` is taken from the catalog (T2.3d) — an update must not silently
+    // re-enable a trigger the catalog disabled.
     await tx.delete(aoaAgentTriggers).where(eq(aoaAgentTriggers.agentId, agentRow.id));
     for (const trigger of template.triggers ?? []) {
       await tx.insert(aoaAgentTriggers).values({
         companyId: agentRow.companyId,
         agentId: agentRow.id,
         kind: trigger.kind,
-        enabled: true,
+        enabled: trigger.enabled,
         config: trigger.config,
       });
     }

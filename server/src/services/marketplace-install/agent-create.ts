@@ -95,14 +95,16 @@ export async function createMarketplaceAgent(opts: {
     const agent = inserted[0];
 
     // Materialise any aoa_agent_triggers rows declared in the template.
-    // Each trigger is enabled by default; config is merged from the template.
+    // `enabled` comes from the catalog (T2.3d) — the normalizer defaults it to
+    // `true` when the template omits it, so a trigger the catalog explicitly
+    // disabled is never installed as enabled.
     // Only executed when there are triggers to insert (org-kind agents have []).
     for (const trigger of template.triggers ?? []) {
       await tx.insert(aoaAgentTriggers).values({
         companyId,
         agentId: agent.id,
         kind: trigger.kind,
-        enabled: true,
+        enabled: trigger.enabled,
         config: trigger.config,
       });
     }

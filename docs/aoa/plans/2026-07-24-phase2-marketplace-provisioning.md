@@ -655,26 +655,77 @@ is `notNull().default(true)`.
 schema, `:306` normalizer), `agent-create.ts` (`:105` insert),
 `crew-updater.ts` (`:111` trigger re-insert), fixtures.
 
-- [ ] **Step 1: Failing test against a PRODUCTION-SHAPED fixture.** Copy a real
+- [x] **Step 1: Failing test against a PRODUCTION-SHAPED fixture.** Copy a real
   published `agent.json` body (triggers carrying `enabled`) rather than
   hand-writing one. It must fail today with `unrecognized_keys: ["enabled"]`.
-- [ ] **Step 2: Failing test — `enabled: false` is HONOURED.** The discriminator:
+- [x] **Step 2: Failing test — `enabled: false` is HONOURED.** The discriminator:
   a catalog trigger marked disabled must produce `aoa_agent_triggers.enabled =
   false`, not `true`. A test that only asserts "install succeeds" would pass a
   bare schema relaxation and miss the semantic bug entirely.
-- [ ] **Step 3: Run → FAIL.**
-- [ ] **Step 4: Implement** — accept `enabled` (default `true` when absent,
+- [x] **Step 3: Run → FAIL.**
+- [x] **Step 4: Implement** — accept `enabled` (default `true` when absent,
   preserving today's behaviour), thread it through the normalizer, and honour it
   at BOTH insert sites (`agent-create.ts` and `crew-updater.ts`'s re-insert;
   adoption/update must not silently re-enable a disabled trigger).
-- [ ] **Step 5: Audit the rest of the contract the same way.** `enabled` was
+- [x] **Step 5: Audit the rest of the contract the same way.** `enabled` was
   found by accident while measuring. Diff a real published `agent.json` against
   the schema field-by-field and report **every** other divergence — do not stop
   at the first. Check `team.json` too.
-- [ ] **Step 6: Run → PASS. Verify + commit.**
+- [x] **Step 6: Run → PASS. Verify + commit.**
 ```bash
 git commit -m "fix(marketplace): accept and honour triggers[].enabled from the catalog"
 ```
+
+### Step 5 audit result (2026-07-24) — field-by-field, all 11 published agents + `team.json`
+
+Method: fetched every published `aoa-curated` body at the catalog's own
+`commitSha` (`ad575a0a…`, live CDN `generatedAt` 2026-07-24T04:06:31Z) and ran
+the REAL `parseMarketplaceAgentTemplate` + `normalizeMarketplaceAgentTemplate`
+over each, then enumerated every leaf key path in the bodies and traced each to
+its consumer.
+
+**Hard rejections (schema refuses the body):** exactly one — `aoa.triggers[].enabled`,
+on 9/11 agents (2 declare no triggers). Fixed here. After the fix all 11 parse.
+
+**Open findings — NOT fixed here, they need a product decision. F1 is a live blocker
+on the phase's exit criterion, on a par with `enabled`:**
+
+- **F1 — a marketplace-installed crew is INERT (`status: "paused"`).** The 9 crew
+  bodies declare no `aoa.install` block, so `normalizeStatus(undefined, false)`
+  (`agent-runtime.ts:193-197`) returns `"paused"` and `agent-create.ts` writes it.
+  The legacy seeder writes `"idle"` (`seed-crew-agent.ts:101`). Every crew
+  dispatch path excludes paused: `dispatcher.ts:594`
+  (`notInArray(agents.status, ["paused","terminated"])`), `triggers.ts:74`, and
+  every sweep (`sweep-adjutant.ts:69`, `sweep-chronicler.ts:61`,
+  `sweep-memory-keeper.ts:61`, `sweep-steward.ts:71`). Verified empirically: all
+  9 normalize to `status=paused`. Fix is either upstream (`install.defaultStatus`
+  in the catalog — note `agent.v1` only permits `active|paused|terminated`, so it
+  cannot express the seeder's `idle`) or server-side (crew-aware default).
+- **F2 — the crew installs on the wrong adapter.** The 9 bodies declare
+  `aoa.adapterType: "process"` and no `adapterConfig`, so every crew agent lands
+  `adapterType="process"`, `adapterConfig={}`. The legacy seeder resolves the
+  company's configured CLI via `resolveCrewAdapterForCompany`
+  (`seed-crew-agent.ts:93`), and no marketplace path ever calls it —
+  `resolveCrewAdapterForCompany`/`shouldRewriteCrewAdapter` are referenced only
+  from the `ensure-*` seeders, which T2.2's gate suppresses for a
+  marketplace-managed company.
+- **F3 — `install.defaultRole: "engineering"` is not a valid AoA role.**
+  `AGENT_ROLES = ["cxo","lead","general"]` (`packages/shared/src/constants.ts:68`),
+  so the two published non-crew agents warn-and-fall-back to `general`. Soft
+  (warn-and-continue), but the catalog author believes otherwise.
+- **F4 — parsed-then-never-read agent fields:**
+  `aoa.adapterCompatibility.requiresInstructionsBundle` and
+  `.requiresSkillInjection` (declared by both non-crew agents) have no reader
+  anywhere in `server/` or `packages/`.
+- **F5 — `team.json` has NO runtime validation at all.** It is an unchecked
+  `JSON.parse(...) as TeamTemplateBody` (`team-installer.ts:172-174`), so no field
+  can be rejected — the empty-roster guard at `:400` is the only structural check.
+  Within it: `manifest.installOrder` and `manifest.adapterCompatibility`
+  (`supported`, `membersInheritWhenSingleChoice`) are stored verbatim into
+  `teams.manifest` and never read (install order comes from the `agents[]` array;
+  lead = first entry); `agents[].overrides` is declared in the TS interface and
+  never read. No live divergence today — the published `installOrder` happens to
+  match the published `agents[]` order — but the coupling is unenforced.
 
 ---
 

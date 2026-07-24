@@ -191,7 +191,12 @@ function agentTemplate(id: string, name: string, triggerRole: string) {
       adapterType: "claude_local",
       skillKeys: [INLINE_SKILL_ID, FETCHED_SKILL_ID],
       install: { defaultStatus: "active", defaultRole: "general" },
-      triggers: [{ kind: "mention", config: { role: triggerRole } }],
+      // `enabled` is part of the published contract — every crew agent in
+      // `aoa-curated` declares it. Omitting it here is what let T2.3d ship a
+      // schema that rejected every real body (see
+      // `marketplace-trigger-enabled.test.ts`, which uses verbatim published
+      // bodies rather than hand-written ones).
+      triggers: [{ kind: "mention", enabled: true, config: { role: triggerRole } }],
     },
   });
 }

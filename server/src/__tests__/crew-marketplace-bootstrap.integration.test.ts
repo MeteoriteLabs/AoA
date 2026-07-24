@@ -29,6 +29,8 @@
  */
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -207,8 +209,18 @@ function agentTemplate(id: string, name: string, triggerRole: string) {
       adapterType: "claude_local",
       skillKeys: [SKILL_ID],
       // agent.v1 only allows active|paused|terminated here.
+      //
+      // ⚠️ KNOWN DIVERGENCES FROM THE PUBLISHED BODIES, kept deliberately so
+      // this suite stays about T2.3: the real crew agents declare NO `install`
+      // block (so they normalize to `status: "paused"`, `role: "general"`),
+      // `adapterType: "process"`, and `instructions: {type:"file"}`. Those are
+      // reported as open findings on T2.3d, not fixed here.
       install: { defaultStatus: "active", defaultRole: "general" },
-      triggers: [{ kind: "mention", config: { role: triggerRole } }],
+      // `enabled` IS production-shaped: every published crew agent declares it,
+      // and hand-writing it away is what let T2.3d ship a schema that rejected
+      // every real body. See `marketplace-trigger-enabled.test.ts`, which parses
+      // verbatim published bodies.
+      triggers: [{ kind: "mention", enabled: true, config: { role: triggerRole } }],
     },
   });
 }
@@ -234,6 +246,31 @@ const FIXTURE_BODIES: Record<string, string> = {
     "---\nname: bundle-skill\n---\n\nFrom the CDN body, NOT the bundle.\n",
 };
 
+/**
+ * T2.3d — the REAL published bodies, byte-for-byte, from
+ * `raw.githubusercontent.com/MeteoriteLabs/aoa-marketplace` @
+ * `ad575a0ae45d9bfd3c754ab4ee3af85e7f02dc68` (fetched 2026-07-24).
+ *
+ * `agentTemplate()` above is hand-written, and hand-written trigger fixtures are
+ * precisely why T2.3 shipped a schema that rejected every real crew body
+ * (`unrecognized_keys: ["enabled"]`) and degraded every live company create to
+ * the `@legacy` seeders. Nothing derived from the bundled catalog *index* could
+ * have caught it either: triggers live only in the separately-fetched
+ * `agent.json`.
+ */
+const PUBLISHED_AGENT_BODIES: Record<string, string> = {
+  [`${FIXTURE_HOST}/agents/aoa-scout/agent.json`]: readFileSync(
+    fileURLToPath(new URL("./__fixtures__/published-catalog/aoa-scout.agent.json", import.meta.url)),
+    "utf8",
+  ),
+  [`${FIXTURE_HOST}/agents/aoa-reviewer/agent.json`]: readFileSync(
+    fileURLToPath(
+      new URL("./__fixtures__/published-catalog/aoa-reviewer.agent.json", import.meta.url),
+    ),
+    "utf8",
+  ),
+};
+
 let realFetch: typeof globalThis.fetch;
 /** URLs the fixture server should 503 on — used to force a mid-install failure. */
 const brokenUrls = new Set<string>();
@@ -243,6 +280,11 @@ const stalledUrls = new Set<string>();
 let cdnReachable = false;
 /** Serve a team.json whose `agents` array is empty (F4). */
 let emptyTeamTemplate = false;
+/**
+ * T2.3d — serve the VERBATIM published `agent.json` bodies for Scout and
+ * Reviewer instead of the hand-written ones. See {@link PUBLISHED_AGENT_BODIES}.
+ */
+let publishedAgentBodies = false;
 /** Every URL the fixture server was asked for, in order. Deterministic — no wall clock. */
 const fetchLog: string[] = [];
 
@@ -273,7 +315,8 @@ function installFixtureFetch() {
     if (emptyTeamTemplate && url === `${FIXTURE_HOST}/teams/default-crew/team.json`) {
       return new Response(JSON.stringify({ slug: "aoa-default-crew", agents: [] }), { status: 200 });
     }
-    const body = FIXTURE_BODIES[url];
+    const body = (publishedAgentBodies ? PUBLISHED_AGENT_BODIES[url] : undefined)
+      ?? FIXTURE_BODIES[url];
     if (body === undefined) {
       return new Response(`no fixture for ${url}`, { status: 404 });
     }
@@ -350,6 +393,7 @@ afterEach(() => {
   stalledUrls.clear();
   cdnReachable = false;
   emptyTeamTemplate = false;
+  publishedAgentBodies = false;
   fetchLog.length = 0;
 });
 
@@ -456,6 +500,68 @@ describe.skipIf(
     // takes a different path.
     expect(crew.some((r) => r.name === "Commander")).toBe(true);
     expect(crew.some((r) => r.name === "Steward")).toBe(true);
+  }, 120_000);
+
+  // ── T2.3d: the same create path, against the REAL published bodies ────────
+  //
+  // The phase's exit criterion, and the case no test covered: a bootstrap over
+  // agent templates that are byte-for-byte what the catalog publishes must
+  // produce a marketplace-managed crew rather than degrading to `@legacy`.
+  //
+  // It failed for every live company before this fix — the published triggers
+  // carry `enabled`, the `.strict()` trigger schema rejected it, pre-flight
+  // threw `unrecognized_keys: ["enabled"]`, `installTeam` aborted, and
+  // `provisionCompanyCrew` fell through to the legacy seeders. The hand-written
+  // fixture in the test above could not see it because it omitted `enabled`.
+  //
+  // Still fixture-served, not live network: only the agent BODIES are real. The
+  // catalog index, the team.json roster (2 of the 9 published agents) and the
+  // skill bundles remain fixtures, so this proves the contract, not the CDN.
+  it("T2.3d: the published agent bodies install — `enabled` and all", async () => {
+    if (setupError) throw new Error(String(setupError));
+    await clearCatalogCache();
+
+    publishedAgentBodies = true;
+    const service = makeService({ snapshot: FIXTURE_CATALOG });
+    await service.sync();
+    registerMarketplaceCatalogService(service);
+
+    const company = await companyService(db).create({ name: "Published Bodies Co" } as never);
+
+    const crew = await crewRows(company.id);
+    const marketplaceCrew = crew.filter((r) => r.template_origin?.startsWith("agent:aoa-curated/"));
+    expect(marketplaceCrew.map((r) => r.name).sort()).toEqual(["Reviewer", "Scout"]);
+    for (const row of marketplaceCrew) {
+      expect(row.template_origin).not.toMatch(/@legacy$/);
+    }
+    // The legacy roster is the failure state this whole phase exists to remove.
+    expect(crew.some((r) => r.name === "Adjutant")).toBe(false);
+
+    // The published skillKeys, which the hand-written fixture replaced with a
+    // single synthetic id — proof the bodies really are the published ones.
+    const scout = marketplaceCrew.find((r) => r.name === "Scout");
+    expect(scout?.skill_keys).toEqual([
+      "skill:github-skills/garrytan/gstack/investigate",
+      "skill:github-skills/obra/superpowers/brainstorming",
+      "skill:github-skills/obra/superpowers/systematic-debugging",
+    ]);
+
+    // And the trigger rows the published bodies declare, with the `enabled`
+    // value that used to be dropped on the floor.
+    const triggers = rowsOf<{ name: string; kind: string; enabled: boolean; config: unknown }>(
+      await db.execute(sql`
+        SELECT a.name, t.kind, t.enabled, t.config
+        FROM aoa_agent_triggers t
+        JOIN agents a ON a.id = t.agent_id
+        WHERE t.company_id = ${company.id}
+          AND a.template_origin LIKE 'agent:aoa-curated/%'
+        ORDER BY a.name
+      `),
+    );
+    expect(triggers).toEqual([
+      { name: "Reviewer", kind: "mention", enabled: true, config: { role: "reviewer" } },
+      { name: "Scout", kind: "mention", enabled: true, config: { role: "scout" } },
+    ]);
   }, 120_000);
 
   // ── T2.3c: the team's skills go through the REAL installer ────────────────
