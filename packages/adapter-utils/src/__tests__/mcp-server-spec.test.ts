@@ -32,6 +32,33 @@ describe("McpServerSpec", () => {
     expect(isStdioServerSpec(spec)).toBe(false);
   });
 
+  it("narrows an http spec that also carries authTokenEnvVar", () => {
+    const spec: McpServerSpec = {
+      kind: "http",
+      url: "https://mcp.notion.com/mcp",
+      headers: { Authorization: "Bearer ${AOA_MCP_NOTION_TOKEN}" },
+      authTokenEnvVar: "AOA_MCP_NOTION_TOKEN",
+    };
+    expect(isHttpServerSpec(spec)).toBe(true);
+    expect(isStdioServerSpec(spec)).toBe(false);
+  });
+
+  it("narrows an http spec without authTokenEnvVar the same as with it (optional field)", () => {
+    const withVar: McpServerSpec = {
+      kind: "http",
+      url: "https://mcp.notion.com/mcp",
+      headers: {},
+      authTokenEnvVar: "AOA_MCP_NOTION_TOKEN",
+    };
+    const withoutVar: McpServerSpec = {
+      kind: "http",
+      url: "https://mcp.notion.com/mcp",
+      headers: {},
+    };
+    expect(isHttpServerSpec(withVar)).toBe(isHttpServerSpec(withoutVar));
+    expect((withoutVar as { authTokenEnvVar?: string }).authTokenEnvVar).toBeUndefined();
+  });
+
   it("rejects non-objects", () => {
     for (const value of [null, undefined, "http", 42, true]) {
       expect(isStdioServerSpec(value)).toBe(false);

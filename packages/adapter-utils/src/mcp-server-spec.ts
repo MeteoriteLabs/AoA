@@ -30,6 +30,15 @@ export interface McpHttpServerSpec {
    * specs are persisted into run events. See D5.
    */
   headers: Record<string, string>;
+  /**
+   * The ENV VAR NAME (never a value) holding this connector's token, for CLIs
+   * that take a variable name rather than expanding `${VAR}` inline — e.g.
+   * codex's `bearer_token_env_var`. Writers that need it read it directly;
+   * never parse it back out of a `headers` string.
+   *
+   * SECRETS: this is a NAME. Never assign a token value here.
+   */
+  authTokenEnvVar?: string;
 }
 
 /**

@@ -41,8 +41,40 @@ describe("buildConnectorSpecs", () => {
       kind: "http",
       url: "https://mcp.notion.com/mcp",
       headers: { Authorization: "Bearer ${AOA_MCP_NOTION_TOKEN}" },
+      authTokenEnvVar: "AOA_MCP_NOTION_TOKEN",
     });
     expect(env.AOA_MCP_NOTION_TOKEN).toBe("secret-abc");
+  });
+
+  it("sets authTokenEnvVar to the same value as the env-map key for CLIs that need a NAME, not a header string", () => {
+    const { specs, env } = buildConnectorSpecs([httpRow]);
+    const spec = specs.notion as { authTokenEnvVar?: string };
+    expect(spec.authTokenEnvVar).toBe("AOA_MCP_NOTION_TOKEN");
+    expect(spec.authTokenEnvVar).toBe(Object.keys(env)[0]);
+    expect(env[spec.authTokenEnvVar as string]).toBe("secret-abc");
+  });
+
+  it("omits authTokenEnvVar on an http spec when the row has no secret", () => {
+    const { specs } = buildConnectorSpecs([{ ...httpRow, secretValue: null }]);
+    const spec = specs.notion as { authTokenEnvVar?: string };
+    expect(spec.authTokenEnvVar).toBeUndefined();
+  });
+
+  it("never sets authTokenEnvVar on a stdio spec, even when the row has a secret", () => {
+    const { specs } = buildConnectorSpecs([
+      {
+        serverName: "pg",
+        transport: "stdio",
+        url: null,
+        command: "npx",
+        args: ["-y", "@bytebase/dbhub@1.2.3"],
+        headerTemplate: {},
+        envTemplate: { DSN: "${TOKEN}" },
+        secretValue: "postgres://x",
+      },
+    ]);
+    const spec = specs.pg as { authTokenEnvVar?: string };
+    expect(spec.authTokenEnvVar).toBeUndefined();
   });
 
   it("never emits the raw secret inside the spec", () => {
@@ -170,6 +202,7 @@ describe("buildConnectorSpecs", () => {
         Authorization: "${AOA_MCP_NOTION_TOKEN}",
         Pair: "${AOA_MCP_NOTION_TOKEN}/${AOA_MCP_NOTION_TOKEN}",
       },
+      authTokenEnvVar: "AOA_MCP_NOTION_TOKEN",
     });
   });
 

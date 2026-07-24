@@ -301,6 +301,7 @@ describe("resolveAgentConnectors", () => {
       kind: "http",
       url: "https://mcp.notion.com/mcp",
       headers: { Authorization: "Bearer ${AOA_MCP_NOTION_TOKEN}" },
+      authTokenEnvVar: "AOA_MCP_NOTION_TOKEN",
     });
     expect(result.connectorEnv.AOA_MCP_NOTION_TOKEN).toBe("secret-abc");
     expect(seamWarn).not.toHaveBeenCalled();

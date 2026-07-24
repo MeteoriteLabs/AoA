@@ -131,6 +131,11 @@ export function buildConnectorSpecs(rows: ResolvedConnectorRow[]): ConnectorBuil
           kind: "http",
           url: row.url,
           headers: substituteValues(row.headerTemplate),
+          // Env-var-NAME indirection for CLIs that take a variable name rather
+          // than expanding `${VAR}` inline (e.g. codex's `bearer_token_env_var`).
+          // Same `varName` as the env map key below — never a secret value, and
+          // never set when there is no secret to point at.
+          ...(row.secretValue ? { authTokenEnvVar: varName } : {}),
         };
       } else if (row.transport === "stdio") {
         if (!row.command) {
