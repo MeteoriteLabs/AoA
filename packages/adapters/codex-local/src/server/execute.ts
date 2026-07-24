@@ -316,10 +316,15 @@ export async function execute(
       ? env.OPENAI_API_KEY.trim()
       : null;
 
+  // The managed home is per-AGENT (Plan 2b B1): codex reads its MCP servers
+  // from one config.toml per CODEX_HOME, so sharing a home across a company's
+  // agents would leak one agent's opted-in connectors to another and race two
+  // concurrent runs onto the same file.
   const managedCodexHome = await prepareManagedCodexHome(
     process.env,
     (msg) => onLog("stderr", `${msg}\n`),
     agent.companyId,
+    agent.id,
     { apiKey: configuredOpenAiApiKey },
   );
   const isRemoteExecutionTarget = adapterExecutionTargetIsRemote(executionTarget);

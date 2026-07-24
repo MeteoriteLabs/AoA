@@ -265,6 +265,167 @@ describe("writeCodexMcpConfigToml", () => {
     expect(parsed["mcp_servers.aoa.env"].AOA_SESSION_COMPANY_ID).toBe("new");
     expect(parsed["mcp_servers.aoa.env"].AOA_TOOL_ALLOWLIST).toBe("submit_extracted_items");
   });
+
+  // -------------------------------------------------------------------------
+  // B5 (Plan 2b): ownership fencing. AoA-written blocks are wrapped in sentinel
+  // comments so the writer can strip EVERYTHING it previously owned without
+  // enumerating names. Without this, a connector block written by an earlier run
+  // survives forever once the connector is disabled/deleted — the agent keeps
+  // the tool. Content OUTSIDE the fence is user-authored and must survive.
+  // -------------------------------------------------------------------------
+
+  it("wraps the AoA-written block in aoa-managed sentinel comments", async () => {
+    await writeCodexMcpConfigToml(tmpDir, {
+      command: "node",
+      args: ["/bridge.js"],
+      env: { AOA_SESSION_COMPANY_ID: "c" },
+    });
+
+    const raw = await fs.readFile(path.join(tmpDir, "config.toml"), "utf8");
+    const startIdx = raw.indexOf("# >>> aoa-managed");
+    const endIdx = raw.indexOf("# <<< aoa-managed");
+    expect(startIdx).toBeGreaterThanOrEqual(0);
+    expect(endIdx).toBeGreaterThan(startIdx);
+    // The AoA block lives INSIDE the fence.
+    const blockIdx = raw.indexOf("[mcp_servers.aoa]");
+    expect(blockIdx).toBeGreaterThan(startIdx);
+    expect(blockIdx).toBeLessThan(endIdx);
+  });
+
+  it("strips ALL previously-fenced AoA blocks (incl. connectors no longer present) and preserves user blocks byte-for-byte", async () => {
+    const userBlock = [
+      "[mcp_servers.mine]",
+      'command = "my-server"',
+      'args = ["--flag"]',
+      "",
+      "[mcp_servers.mine.env]",
+      'MY_TOKEN = "keep-me"',
+    ].join("\n");
+
+    const preExisting = [
+      "[other]",
+      'foo = "bar"',
+      "",
+      userBlock,
+      "",
+      "# >>> aoa-managed (do not edit below; regenerated each run)",
+      "[mcp_servers.aoa]",
+      'command = "node"',
+      'args = ["/old/bridge.js"]',
+      "",
+      "[mcp_servers.aoa.env]",
+      'AOA_SESSION_COMPANY_ID = "old"',
+      "",
+      "[mcp_servers.stale_connector]",
+      'url = "https://stale.example.com/mcp"',
+      'bearer_token_env_var = "AOA_MCP_STALE_TOKEN"',
+      "",
+      "[mcp_servers.another_stale]",
+      'command = "stale-bin"',
+      "args = []",
+      "# <<< aoa-managed",
+      "",
+    ].join("\n");
+    await fs.writeFile(path.join(tmpDir, "config.toml"), preExisting, "utf8");
+
+    await writeCodexMcpConfigToml(tmpDir, {
+      command: "node",
+      args: ["/new/bridge.js"],
+      env: { AOA_SESSION_COMPANY_ID: "new" },
+    });
+
+    const raw = await fs.readFile(path.join(tmpDir, "config.toml"), "utf8");
+
+    // Every previously-fenced AoA block is gone — including ones whose names the
+    // writer never knew about.
+    expect(raw).not.toContain("stale_connector");
+    expect(raw).not.toContain("another_stale");
+    expect(raw).not.toContain("AOA_MCP_STALE_TOKEN");
+    expect(raw).not.toContain("/old/bridge.js");
+
+    // The user's own block survives byte-for-byte.
+    expect(raw).toContain(userBlock);
+
+    // Unrelated settings survive; the fresh AoA block is present exactly once.
+    const parsed = parseToml(raw);
+    expect(parsed["other"].foo).toBe("bar");
+    expect(parsed["mcp_servers.mine"].command).toBe("my-server");
+    expect(parsed["mcp_servers.mine.env"].MY_TOKEN).toBe("keep-me");
+    expect(parsed["mcp_servers.aoa"].args).toEqual(["/new/bridge.js"]);
+    expect(raw.match(/^\[mcp_servers\.aoa\]$/gm) ?? []).toHaveLength(1);
+    expect(raw.match(/^# >>> aoa-managed/gm) ?? []).toHaveLength(1);
+    expect(raw.match(/^# <<< aoa-managed$/gm) ?? []).toHaveLength(1);
+  });
+
+  it("upgrades a legacy pre-fence config.toml without duplicating the aoa block", async () => {
+    // Exactly what the pre-fence writer produced: an UNFENCED [mcp_servers.aoa].
+    const legacy = [
+      "[other]",
+      'foo = "bar"',
+      "",
+      "[mcp_servers.aoa]",
+      'command = "node"',
+      'args = ["/legacy/bridge.js"]',
+      "",
+      "[mcp_servers.aoa.env]",
+      'AOA_SESSION_COMPANY_ID = "legacy"',
+      "",
+    ].join("\n");
+    await fs.writeFile(path.join(tmpDir, "config.toml"), legacy, "utf8");
+
+    await writeCodexMcpConfigToml(tmpDir, {
+      command: "node",
+      args: ["/new/bridge.js"],
+      env: { AOA_SESSION_COMPANY_ID: "new" },
+    });
+
+    const raw = await fs.readFile(path.join(tmpDir, "config.toml"), "utf8");
+
+    // Old unfenced block removed, not duplicated.
+    expect(raw.match(/^\[mcp_servers\.aoa\]$/gm) ?? []).toHaveLength(1);
+    expect(raw.match(/^\[mcp_servers\.aoa\.env\]$/gm) ?? []).toHaveLength(1);
+    expect(raw).not.toContain("/legacy/bridge.js");
+    expect(raw).not.toContain('AOA_SESSION_COMPANY_ID = "legacy"');
+
+    // Now fenced.
+    const startIdx = raw.indexOf("# >>> aoa-managed");
+    const blockIdx = raw.indexOf("[mcp_servers.aoa]");
+    const endIdx = raw.indexOf("# <<< aoa-managed");
+    expect(startIdx).toBeGreaterThanOrEqual(0);
+    expect(blockIdx).toBeGreaterThan(startIdx);
+    expect(endIdx).toBeGreaterThan(blockIdx);
+
+    // Unrelated content preserved; a second write stays stable.
+    expect(parseToml(raw)["other"].foo).toBe("bar");
+    await writeCodexMcpConfigToml(tmpDir, {
+      command: "node",
+      args: ["/new/bridge.js"],
+      env: { AOA_SESSION_COMPANY_ID: "new" },
+    });
+    const raw2 = await fs.readFile(path.join(tmpDir, "config.toml"), "utf8");
+    expect(raw2.match(/^\[mcp_servers\.aoa\]$/gm) ?? []).toHaveLength(1);
+    expect(raw2.match(/^# >>> aoa-managed/gm) ?? []).toHaveLength(1);
+  });
+
+  it("keeps the top-level model line working alongside the fence", async () => {
+    const { writeCodexModelConfigToml } = await import("../server/codex-config-toml.js");
+    await writeCodexMcpConfigToml(tmpDir, {
+      command: "node",
+      args: ["/bridge.js"],
+      env: { AOA_SESSION_COMPANY_ID: "c" },
+    });
+    await writeCodexModelConfigToml(tmpDir, "gpt-5-codex");
+    await writeCodexMcpConfigToml(tmpDir, {
+      command: "node",
+      args: ["/bridge.js"],
+      env: { AOA_SESSION_COMPANY_ID: "c" },
+    });
+
+    const raw = await fs.readFile(path.join(tmpDir, "config.toml"), "utf8");
+    expect(raw.match(/^model = /gm) ?? []).toHaveLength(1);
+    expect(raw.match(/^\[mcp_servers\.aoa\]$/gm) ?? []).toHaveLength(1);
+    expect(raw.match(/^# >>> aoa-managed/gm) ?? []).toHaveLength(1);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -374,7 +535,7 @@ describe("codex execute writes the MCP bridge into managed CODEX_HOME", () => {
       // No --mcp-config injected for codex.
       expect(capture.argv).not.toContain("--mcp-config");
       // CODEX_HOME points at the managed per-company dir.
-      const managedHome = path.join(codexHome, "aoa-instances", "company-1");
+      const managedHome = path.join(codexHome, "aoa-instances", "company-1", "agent-1");
       expect(capture.env.CODEX_HOME).toBe(managedHome);
 
       // config.toml written into exactly that managed dir.
@@ -436,7 +597,7 @@ describe("codex execute writes the MCP bridge into managed CODEX_HOME", () => {
       });
 
       expect(result.exitCode).toBe(0);
-      const managedHome = path.join(codexHome, "aoa-instances", "company-1");
+      const managedHome = path.join(codexHome, "aoa-instances", "company-1", "agent-1");
       const exists = await fs
         .stat(path.join(managedHome, "config.toml"))
         .then(() => true)

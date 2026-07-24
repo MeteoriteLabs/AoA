@@ -38,9 +38,9 @@ export function parseCodexAuthMode(inputs: CodexAuthInputs): ProviderAuthMode {
 
 export interface ProviderStatusDeps {
   // Codex P2: the SHARED codex home is the run's auth SOURCE — execute.ts'
-  // prepareManagedCodexHome copies <sharedHome>/auth.json into the per-company
+  // prepareManagedCodexHome copies <sharedHome>/auth.json into the per-AGENT
   // managed home on EVERY run (or writes a per-agent api-key, or removes stale
-  // auth). So status detection must read the shared home, not the per-company
+  // auth). So status detection must read the shared home, not a per-agent
   // managed home (empty on a first run / stale after a re-login) to match what
   // the run will actually use.
   resolveSharedCodexHomeDir: (env: NodeJS.ProcessEnv) => string;

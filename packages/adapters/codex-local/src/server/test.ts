@@ -25,7 +25,11 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { parseCodexJsonl } from "./parse.js";
 import { parseCodexAuthStatus, CODEX_AUTH_STATUS_ARGS } from "./auth-status.js";
-import { prepareManagedCodexHome, resolveSharedCodexHomeDir } from "./codex-home.js";
+import {
+  prepareManagedCodexHome,
+  resolveSharedCodexHomeDir,
+  CODEX_ENV_TEST_AGENT_ID,
+} from "./codex-home.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
@@ -228,6 +232,12 @@ export async function testEnvironment(
             process.env,
             () => {},
             ctx.companyId,
+            // AdapterEnvironmentTestContext carries no agent id (the probe can
+            // run against unsaved config), and managed homes are per-AGENT now.
+            // Use the reserved probe id so this never writes into — or reads a
+            // stale config.toml from — a real agent's home. Auth is provisioned
+            // through the identical path a run uses.
+            CODEX_ENV_TEST_AGENT_ID,
             { apiKey: configuredOpenAiApiKey },
           );
       const probeEnv = { ...env, CODEX_HOME: managedCodexHome };

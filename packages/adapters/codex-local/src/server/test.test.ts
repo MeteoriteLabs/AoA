@@ -182,7 +182,8 @@ describe("codex_local testEnvironment — auth_required vs auth_expired", () => 
     const helloEnv = (helloCall![0] as AdapterProviderSandboxRunInput).env;
     const statusEnv = (statusCall![0] as AdapterProviderSandboxRunInput).env;
 
-    // The hello probe reads auth from the managed per-company CODEX_HOME
+    // The hello probe reads auth from the managed (per-agent; the probe uses the
+    // reserved CODEX_ENV_TEST_AGENT_ID slot) CODEX_HOME
     // (prepareManagedCodexHome), NOT the founder's personal ~/.codex. The
     // status probe that follows a failed hello probe must read the SAME
     // store — otherwise it reports on the wrong credentials entirely.

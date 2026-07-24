@@ -3,9 +3,10 @@ import path from "node:path";
 
 /**
  * Serialize ALL config.toml mutations for a given managed home. The home is
- * per-COMPANY (`prepareManagedCodexHome(..., companyId, ...)`, execute.ts:318),
- * so concurrent heartbeat runs in one company share `<home>/config.toml`. Both
- * writers here do read-strip-rewrite; without serialization a concurrent
+ * per-AGENT (`prepareManagedCodexHome(..., companyId, agentId, ...)`), so two
+ * agents no longer share a file — but one agent can still have concurrent runs
+ * (and the model writer + MCP writer both touch the same file within a single
+ * run). Both writers here do read-strip-rewrite; without serialization a concurrent
  * MCP-write + model-write can each read before the other's write lands and drop
  * the other's section — dropping the `model =` line silently re-introduces BUG-6
  * under concurrency (Decision #5 allows up to 50 concurrent runs). This is an
@@ -157,14 +158,68 @@ function stripAoaMcpBlocks(existing: string, serverName: string): string {
 }
 
 /**
+ * Ownership fence (Plan 2b B5). Everything AoA writes into a managed
+ * `config.toml` lives between these two sentinel comment lines, so a later run
+ * can remove ALL previously AoA-owned content without knowing the names it
+ * wrote. Without the fence there is no way to enumerate prior writes: once a
+ * connector block is written, disabling or deleting the connector would leave
+ * its `[mcp_servers.<name>]` table in the file forever and the agent would keep
+ * the tool. Content OUTSIDE the fence is user-authored and is never touched.
+ *
+ * The PREFIXES are the persisted on-disk contract — changing them orphans the
+ * fenced content in every already-written config.toml. The human-facing tail of
+ * the start line is cosmetic: detection matches on the prefix only, so the
+ * wording can be reworded later without stranding existing files.
+ */
+const AOA_MANAGED_FENCE_START_PREFIX = "# >>> aoa-managed";
+const AOA_MANAGED_FENCE_END_PREFIX = "# <<< aoa-managed";
+export const AOA_MANAGED_FENCE_START = `${AOA_MANAGED_FENCE_START_PREFIX} (do not edit below; regenerated each run)`;
+export const AOA_MANAGED_FENCE_END = AOA_MANAGED_FENCE_END_PREFIX;
+
+/**
+ * Remove every fenced AoA-managed region (fence lines inclusive) from existing
+ * TOML text, preserving all other content verbatim.
+ *
+ * - Multiple regions are handled (defensive — the writer emits one).
+ * - An UNTERMINATED fence (truncated/interrupted write) is stripped to EOF: the
+ *   region is AoA-owned by definition and fully regenerated below, so keeping a
+ *   half-written table would only risk a parse error.
+ */
+function stripAoaManagedFencedRegions(existing: string): string {
+  const lines = existing.split(/\r?\n/);
+  const kept: string[] = [];
+  let inFence = false;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!inFence && trimmed.startsWith(AOA_MANAGED_FENCE_START_PREFIX)) {
+      inFence = true;
+      continue;
+    }
+    if (inFence) {
+      if (trimmed.startsWith(AOA_MANAGED_FENCE_END_PREFIX)) inFence = false;
+      continue;
+    }
+    kept.push(line);
+  }
+  while (kept.length > 0 && kept[kept.length - 1].trim() === "") kept.pop();
+  return kept.join("\n");
+}
+
+/** Wrap AoA-owned body text in the ownership fence. */
+function fenceAoaManaged(body: string): string {
+  return `${AOA_MANAGED_FENCE_START}\n${body}\n${AOA_MANAGED_FENCE_END}`;
+}
+
+/**
  * Write/merge `<managedHomeDir>/config.toml` so that codex (run with
  * `CODEX_HOME` pointed at `managedHomeDir`) discovers and spawns the AoA
  * internal-agent MCP bridge.
  *
  * The managed CODEX_HOME is adapter-owned and holds only `auth.json` + this
  * file. To stay safe and idempotent we read any existing `config.toml`, strip
- * a prior `[mcp_servers.<serverName>]` (+ `.env`) block, preserve everything
- * else verbatim, then append a freshly-rendered block. `auth.json` is never
+ * every AoA-managed fenced region (plus a legacy unfenced
+ * `[mcp_servers.<serverName>]` (+ `.env`) block), preserve everything else
+ * verbatim, then append a freshly-rendered, fenced block. `auth.json` is never
  * touched.
  */
 export async function writeCodexMcpConfigToml(
@@ -183,8 +238,14 @@ export async function writeCodexMcpConfigToml(
       existing = "";
     }
 
-    const preserved = stripAoaMcpBlocks(existing, serverName);
-    const block = renderMcpBlock(spec, serverName);
+    // Two-pass strip:
+    //  1. the ownership fence removes EVERYTHING a previous run wrote (incl.
+    //     blocks whose names this run knows nothing about), and
+    //  2. the legacy per-name pass removes an UNFENCED `[mcp_servers.<name>]`
+    //     left by a pre-fence writer, so an existing file upgrades on the first
+    //     write instead of ending up with two `aoa` blocks.
+    const preserved = stripAoaMcpBlocks(stripAoaManagedFencedRegions(existing), serverName);
+    const block = fenceAoaManaged(renderMcpBlock(spec, serverName));
     const body = preserved.trim().length > 0 ? `${preserved}\n\n${block}\n` : `${block}\n`;
 
     await fs.writeFile(target, body, "utf8");
